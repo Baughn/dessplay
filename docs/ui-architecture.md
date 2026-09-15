@@ -164,11 +164,12 @@ A behavior that exists in one place cannot drift.
 
 Local search uses `widgets/search.rs`: `Query` compiles the query once,
 `Search<K>` owns the shared TextField, ListCursor, source entries, and match
-projection. Ranked mode sorts by word quality and subsequence compactness;
-source-order mode keeps chat chronological. `modals/pane_search.rs` is the one
+projection, always sorted by word quality and subsequence compactness. `modals/pane_search.rs` is the one
 collection picker for Series, Users, Playlist, Subtitles, and Logs. Its typed
 `Target` resolves against the owning controller on acceptance. Chat embeds the
-same controller beside its untouched draft and jumps via LineKey source anchors.
+same controller beside its untouched draft, paints ranked collection rows in its
+log slot, and accepts a LineKey to center on the next conversation paint.
+Result navigation leaves the conversation source anchor untouched.
 Search dialogs own all query input, including paste. The old Series-specific
 filter controller is removed. File navigation retains its existing input flow
 and calls the same Query scorer. No new actor or wire message is involved.

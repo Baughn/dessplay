@@ -23,6 +23,9 @@ Add new days at the top. Add new entries at the bottom of existing days.
 - Improved: Searching and scrolling old chat stays responsive with long histories.
   Chat images load near your reading position with bounded memory use.
 
+- Changed: Chat search shows results by relevance. Use arrow keys to select a
+  match, then Enter to return to the conversation with that message centered.
+
 ## 2026-09-14
 
 - Added: Nyaa searches show progress while inspecting torrent results.

@@ -3423,11 +3423,11 @@ mod tests {
                 ui.advance_clock(now);
                 ui.handle(key(Key::Char(c)));
                 let text = tuirealm::testing::buffer_to_string(&render_test_buffer(&mut ui));
-                proptest::prop_assert!(text.contains("filler 79"), "typing moved the conversation");
+                proptest::prop_assert!(text.contains("Search pending"), "typing applied the query too early");
             }
             ui.advance_clock(now + 999);
             let text = tuirealm::testing::buffer_to_string(&render_test_buffer(&mut ui));
-            proptest::prop_assert!(text.contains("filler 79"));
+            proptest::prop_assert!(text.contains("Search pending"));
             proptest::prop_assert_eq!(ui.next_tick_hint(), std::time::Duration::from_millis(1));
             proptest::prop_assert!(ui.advance_clock(now + 1000));
             let text = tuirealm::testing::buffer_to_string(&render_test_buffer(&mut ui));

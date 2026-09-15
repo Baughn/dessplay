@@ -138,14 +138,19 @@ fn ten_thousand_chat_messages_remain_responsive() {
     terminal
         .draw(|f| ui.draw_with_renderer(f, &mut renderer))
         .unwrap();
+    let start = Instant::now();
     ui.handle(Event::Keyboard(KeyEvent {
         code: Key::Char('f'),
         modifiers: KeyModifiers::CONTROL,
     }));
+    terminal
+        .draw(|f| ui.draw_with_renderer(f, &mut renderer))
+        .unwrap();
+    let opening = start.elapsed();
     ui.handle(Event::Paste("ancientneedle".into()));
     let start = Instant::now();
     ui.handle(Event::Keyboard(KeyEvent {
-        code: Key::Enter,
+        code: Key::Up,
         modifiers: KeyModifiers::NONE,
     }));
     terminal
@@ -153,7 +158,7 @@ fn ten_thousand_chat_messages_remain_responsive() {
         .unwrap();
     let search = start.elapsed();
     assert!(buffer_to_string(terminal.backend().buffer()).contains("ancientneedle"));
-    let mut worst = search;
+    let mut worst = search.max(opening);
     for step in 0..10 {
         let start = Instant::now();
         // A fresh view and an incoming line exercise active-search replacement,
@@ -172,10 +177,16 @@ fn ten_thousand_chat_messages_remain_responsive() {
             .unwrap();
         worst = worst.max(start.elapsed());
     }
+    let start = Instant::now();
     ui.handle(Event::Keyboard(KeyEvent {
-        code: Key::Esc,
+        code: Key::Enter,
         modifiers: KeyModifiers::NONE,
     }));
+    terminal
+        .draw(|f| ui.draw_with_renderer(f, &mut renderer))
+        .unwrap();
+    worst = worst.max(start.elapsed());
+    assert!(buffer_to_string(terminal.backend().buffer()).contains("ancientneedle"));
     for kind in [
         MouseEventKind::ScrollDown,
         MouseEventKind::ScrollDown,

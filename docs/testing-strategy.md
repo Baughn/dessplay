@@ -150,17 +150,21 @@ restarts and unrelated settings saves.
 Local search tests compare fuzzy eligibility to an independent Unicode
 subsequence oracle and pin whole-word ranking. Controller and whole-app tests
 cover shared shortcuts, typed action-key isolation, paste routing, draft
-preservation, chat chronology and source anchors after refresh/resize, collapsed
+preservation, ranked chat results and source anchors after refresh/resize, collapsed
 List groups, subtitle focus, and stable playlist targets after reordering.
 
 Chat search timing uses injected monotonic time: a property test varies typing
-intervals and requires the viewport to stay put until a full one-second pause,
+intervals and requires results to stay pending until a full one-second pause,
 then checks that the final query executes on a timer alone. Scenarios cover
 paste, source refresh while pending, immediate navigation/submission, empty
 queries, editor cursor motion, and cancellation/reopening. Real crossterm output
 is captured through an in-memory writer to verify synchronized frame boundaries
 over successive repaints and cleanup after output failure or render panic.
 These tests cannot establish whether a physical terminal visibly flickers.
+A ranked-results property varies message age and viewport width, requiring whole
+words before substrings before scattered letters, no conversation rows in results,
+and a centered accepted message. Refresh, pruning, resize, wheel selection, draft
+cursor restoration, and cancellation retain stable identities and reading context.
 An anchored-chat property, derived from a recording of blank completed frames,
 requires a full viewport on the first paint and identical output on an unchanged
 redraw. It varies Unicode wrapping, viewport dimensions, result navigation,

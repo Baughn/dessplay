@@ -100,25 +100,23 @@ pub enum Effect<K> {
     Consumed,
 }
 
-/// Both inline document find and ranked collection pickers use this editor.
+/// All local result pickers use this ranked editor.
 /// Keys belong to the source, never to positions in a mutable source list.
 pub struct Search<K> {
     pub editor: TextField,
     pub cursor: ListCursor,
     pub entries: Vec<Entry<K>>,
     pub matches: Vec<usize>,
-    ranked: bool,
     query: String,
 }
 
 impl<K: Clone + PartialEq> Search<K> {
-    pub fn new(entries: Vec<Entry<K>>, ranked: bool) -> Self {
+    pub fn new(entries: Vec<Entry<K>>) -> Self {
         let mut search = Self {
             editor: TextField::new("Search…"),
             cursor: ListCursor::default(),
             entries,
             matches: Vec::new(),
-            ranked,
             query: String::new(),
         };
         search.rebuild();
@@ -152,9 +150,7 @@ impl<K: Clone + PartialEq> Search<K> {
             .enumerate()
             .filter_map(|(i, entry)| query.score(&entry.text).map(|score| (score, i)))
             .collect();
-        if self.ranked {
-            hits.sort_by_key(|(score, _)| *score);
-        }
+        hits.sort_by_key(|(score, _)| *score);
         self.matches = hits.into_iter().map(|(_, i)| i).collect();
         self.cursor.reset();
         self.cursor.set_hidden(&[]);
@@ -168,11 +164,6 @@ impl<K: Clone + PartialEq> Search<K> {
     /// Edit immediately but let the caller schedule applying the query.
     pub fn on_deferred(&mut self, ev: &Event<NoUserEvent>) -> Effect<K> {
         self.on_edit(ev, false)
-    }
-
-    /// The query represented by the current matches, which may lag the editor.
-    pub fn query(&self) -> &str {
-        &self.query
     }
 
     pub fn apply_query(&mut self) {
@@ -235,19 +226,16 @@ mod tests {
 
     #[test]
     fn editor_navigation_and_empty_results_share_one_controller() {
-        let mut search = Search::new(
-            vec![
-                Entry {
-                    key: 1,
-                    text: "f o o b a r".into(),
-                },
-                Entry {
-                    key: 2,
-                    text: "foo and bar".into(),
-                },
-            ],
-            true,
-        );
+        let mut search = Search::new(vec![
+            Entry {
+                key: 1,
+                text: "f o o b a r".into(),
+            },
+            Entry {
+                key: 2,
+                text: "foo and bar".into(),
+            },
+        ]);
         assert!(matches!(
             search.on(&Event::Paste("foo bar".into())),
             Effect::Changed
@@ -282,7 +270,7 @@ mod tests {
         fn replacing_source_rows_keeps_the_selected_identity(len in 1usize..100, seed in any::<usize>()) {
             let selected = seed % len;
             let entries = || (0..len).map(|key| Entry { key, text: format!("entry {key}") });
-            let mut search = Search::new(entries().collect(), true);
+            let mut search = Search::new(entries().collect());
             search.cursor.set(selected);
             search.replace(entries().rev().collect());
             prop_assert_eq!(search.selected().map(|e| e.key), Some(selected));

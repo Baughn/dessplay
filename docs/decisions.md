@@ -1626,3 +1626,24 @@ A whole-app property regression was run and confirmed to fail on one typed `x`
 before the fix. It exercises mixed editing events without changing results or
 checks, verifies Tab restores editing with the original cursor, and checks that
 a subsequent response captures input again while checkbox/download keys work.
+
+
+## Chat search uses ranked results (2026-09-15)
+
+Chronological match navigation privileged newer scattered-letter matches over
+older exact words, discarding the shared matcher's relevance order. Chat now
+uses the same ranked collection presentation and navigation as other panes.
+The shared search controller has no source-order mode, so callers cannot
+accidentally discard relevance. The conversation is hidden during search;
+selection does not move its source anchor. Enter restores chronological context
+and centers the accepted stable message identity using the current viewport,
+including after a resize. Esc retains the prior reading position and draft.
+
+The one-second query delay remains, with navigation and Enter applying pending
+edits immediately. Incoming messages preserve the selected identity and applied
+query. Wheel movement selects results, and hidden conversation hit records and
+image operations are absent from result rendering. Result bodies keep spoiler
+concealment; Enter restores the full message presentation and image previews.
+Series, Users, Playlist, Subtitles, and Logs already use relevance-ranked
+collections; file browsing ranks through the same scorer with directory grouping.
+The chat-specific chronology exception was the only sibling to remove.

@@ -2124,22 +2124,26 @@ interactive users. Recent/All search spans all franchises. Dialogs search the
 source snapshot taken when opened and resolve stable identities when accepting;
 a vanished result does not trigger an action on a replacement row.
 
-Chat search keeps the conversation in chronological order and preserves the
-message draft and its cursor. Query edits appear immediately; matching and the
-jump to the newest match run after one second without a text edit. Further text
-edits restart the delay; editor cursor motion does not. While pending, the title
-says so and the previous query's results remain active, including on incoming
-message refreshes. Clearing the query removes the highlight after the same delay
-without moving the conversation. Esc cancels any pending search.
-Up/Down visits older/newer matches, PageUp/PageDown skips ten matches, and Enter
-visits the older match. These keys work immediately: pending edits are applied
-first, with Enter submitting to the newest match and the navigation keys moving
-from that match. Navigation stops at the ends. The current message is
-underlined and the title shows the match count. Esc closes the search editor,
-restoring the draft while retaining the conversation position. Search includes
-sender names, timestamps, and displayed message bodies (including local and
+Chat search replaces the conversation with ranked results in the chat pane,
+preserving the message draft, its cursor, and the conversation's scroll position.
+Up/Down and PageUp/PageDown select results in relevance order, stopping at the
+ends. Enter closes search and restores the chronological conversation with the
+selected message centered vertically, clamped at the ends of history. Esc closes
+search and restores the previous conversation position. An empty result set
+cannot be accepted. Result rows show timestamps, senders, and message bodies;
+spoilers remain concealed and image previews return with the conversation.
+
+Query edits appear immediately; matching runs after one second without a text
+edit. Further text edits restart the delay; editor cursor motion does not.
+While pending, the title says so and the previous query's results remain active,
+including on incoming message refreshes. Clearing the query restores all results
+after the same delay. Enter and result navigation apply pending edits first;
+Enter accepts the best match, while navigation moves from that match. Esc cancels
+pending work. The title shows the result count and the selected row is highlighted.
+Search includes sender names, timestamps, and message bodies (including local and
 intermixed subtitle lines), excludes day separators, and tracks message
-identities across incoming messages, compaction, and resizing.
+identities across incoming messages, compaction, and resizing. Mouse wheel moves
+the result selection while searching.
 
 The separate subtitle pane participates in Tab order when visible and accepts
 click-to-focus. Its search chooses a retained cue to scroll into view. Log search
@@ -2148,7 +2152,8 @@ the network. File add/map search keeps recursive type-to-search and directory
 navigation, using the same fuzzy matcher and relevance order. Remote AniDB and
 Nyaa queries retain their service-specific search behavior.
 
-(why: [decisions](decisions.md#shared-pane-search-2026-09-14))
+(why: [shared search](decisions.md#shared-pane-search-2026-09-14),
+[ranked chat results](decisions.md#chat-search-uses-ranked-results-2026-09-15))
 
 ### Terminal frame presentation
 

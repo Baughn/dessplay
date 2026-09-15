@@ -21,7 +21,7 @@ impl PaneSearch {
     pub fn new(title: &str, entries: Vec<Entry<Target>>) -> Self {
         Self {
             title: format!("Search {title}"),
-            search: Search::new(entries, true),
+            search: Search::new(entries),
         }
     }
 

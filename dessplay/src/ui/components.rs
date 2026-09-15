@@ -407,6 +407,8 @@ pub struct ChatPane {
     /// Pending visual-row movement relative to the source anchor; positive is down.
     scroll_delta: i64,
     scroll_anchor: Option<(LineKey, usize, usize)>,
+    /// Accepted search identity, centered using the next arranged viewport.
+    center_on: Option<LineKey>,
     /// Text of every message this client has sent this session, for
     /// shell-style Up/Down recall. Never touches the synced chat.
     sent_history: Vec<String>,
@@ -495,6 +497,7 @@ impl Default for ChatPane {
             focused: false,
             scroll_delta: 0,
             scroll_anchor: None,
+            center_on: None,
             sent_history: Vec::new(),
             history_pos: None,
             usernames: Vec::new(),
@@ -541,22 +544,7 @@ impl ChatPane {
 
     pub(crate) fn start_search(&mut self) {
         if self.search.is_none() {
-            self.search = Some(super::widgets::search::Search::new(
-                self.search_entries(),
-                false,
-            ));
-        }
-    }
-
-    fn jump_to_search_match(&mut self) {
-        if let Some(key) = self
-            .search
-            .as_ref()
-            .and_then(|search| search.selected())
-            .map(|entry| entry.key.clone())
-        {
-            self.scroll_delta = 0;
-            self.scroll_anchor = Some((key, 0, 0));
+            self.search = Some(super::widgets::search::Search::new(self.search_entries()));
         }
     }
 
@@ -569,10 +557,6 @@ impl ChatPane {
             )
         {
             self.apply_search_query();
-            // Enter submits the pending query; subsequent presses visit older matches.
-            if plain(ev) == Some(Key::Enter) {
-                return Some(Msg::None);
-            }
         }
         let search = self.search.as_mut()?;
         match search.on_deferred(ev) {
@@ -583,12 +567,13 @@ impl ChatPane {
             Effect::Changed => {
                 self.search_due = Some(self.search_clock.saturating_add(1000));
             }
-            Effect::Moved => self.jump_to_search_match(),
-            Effect::Accept(_) => {
-                search.cursor.nav(Key::Up, search.matches.len());
-                self.jump_to_search_match();
+            Effect::Accept(key) => {
+                self.center_on = Some(key);
+                self.scroll_delta = 0;
+                self.search = None;
+                self.search_due = None;
             }
-            Effect::Consumed => {}
+            Effect::Moved | Effect::Consumed => {}
         }
         Some(Msg::None)
     }
@@ -597,10 +582,6 @@ impl ChatPane {
         self.search_due = None;
         if let Some(search) = &mut self.search {
             search.apply_query();
-            search.cursor.set(search.matches.len().saturating_sub(1));
-            if !search.query().trim().is_empty() {
-                self.jump_to_search_match();
-            }
         }
     }
 
@@ -1172,10 +1153,7 @@ impl ChatPane {
     /// Keys shown in the keybinding bar (derived from the keymap).
     pub fn keybindings(&self) -> Vec<Keybinding> {
         if let Some(search) = &self.search {
-            let mut items = search.keybindings();
-            items.retain(|(key, _)| *key != "Enter");
-            items.push(("Enter", "Older match"));
-            items
+            search.keybindings()
         } else {
             let mut items = CHAT_KEYMAP.bar();
             items.push(("Ctrl-f", "Search"));
@@ -1216,6 +1194,13 @@ impl ChatPane {
     /// Mouse wheel over the chat column: scroll the log. Render clamps
     /// the offset to the top of the history, so over-scrolling is safe.
     pub(crate) fn scroll_wheel(&mut self, up: bool) {
+        if self.searching() {
+            self.search_on(&Event::Keyboard(tuirealm::event::KeyEvent {
+                code: if up { Key::Up } else { Key::Down },
+                modifiers: tuirealm::event::KeyModifiers::NONE,
+            }));
+            return;
+        }
         if up {
             self.scroll_delta = self.scroll_delta.saturating_sub(CHAT_WHEEL_STEP as i64);
         } else {
@@ -1354,7 +1339,7 @@ impl ChatPane {
             .text(
                 "input-title",
                 if self.searching() {
-                    "Search · ↑ older / ↓ newer · Esc close"
+                    "Search · ↑↓ select · Enter go to · Esc close"
                 } else {
                     ""
                 },
@@ -1387,6 +1372,7 @@ impl ChatPane {
             .collect::<Vec<_>>();
         self.rendered = RenderedChatLog::default();
         scene.paint_with_slots(frame, |name, frame, area, style| match name {
+            "log" if self.searching() => self.render_search_results(frame, area, style, renderer),
             "log" => self.render_log(
                 frame,
                 area,
@@ -1424,6 +1410,50 @@ impl ChatPane {
         }
     }
 
+    fn render_search_results(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        style: Style,
+        renderer: &mut super::layout::Renderer,
+    ) {
+        let Some(search) = &mut self.search else {
+            return;
+        };
+        // Search entry indices follow the non-separator source rows. This also
+        // keeps hidden conversation text/image hit records out of result mode.
+        let sources: Vec<_> = self.lines.iter().filter(|line| !line.separator).collect();
+        let rows: Vec<_> = search
+            .matches
+            .iter()
+            .map(|index| {
+                let line = sources[*index];
+                super::layout::PresentedRow {
+                    key: format!("{:?}", search.entries[*index].key),
+                    data: super::layout::Presentation::default().text(
+                        "text",
+                        format!(
+                            "{} {} {}",
+                            line.time,
+                            line.sender,
+                            display_body(line, &self.spoilers)
+                        ),
+                    ),
+                    gap_after: false,
+                }
+            })
+            .collect();
+        let _ = renderer.paint_cursor_collection(
+            frame,
+            area,
+            "pane-search-result",
+            &rows,
+            &mut search.cursor,
+            rows.len(),
+            style,
+        );
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn render_log(
         &mut self,
@@ -1439,6 +1469,9 @@ impl ChatPane {
         let max_image_rows = (visible / 3) as u16;
         if log_inner.is_empty() {
             return;
+        }
+        if let Some(key) = self.center_on.take() {
+            self.scroll_anchor = Some((key, 0, visible / 2));
         }
         // Resolve an identity once, then measure outwards from it. Never walk
         // the intervening history between an old search result and the live tail.
@@ -1465,17 +1498,6 @@ impl ChatPane {
         }
         let mut measure = |idx: usize| {
             let line = &self.lines[idx];
-            let style = if self
-                .search
-                .as_ref()
-                .filter(|s| !s.query().trim().is_empty())
-                .and_then(|s| s.selected())
-                .is_some_and(|entry| entry.key.matches(line))
-            {
-                style.add_modifier(tuirealm::ratatui::style::Modifier::UNDERLINED)
-            } else {
-                style
-            };
             let Ok((message_rows, message)) = layout_chat_line(
                 line,
                 width as u16,
@@ -6275,6 +6297,41 @@ mod pane_search_tests {
 
     proptest::proptest! {
         #[test]
+        fn chat_results_rank_before_recency_and_accept_centers_the_message(
+            width in 40u16..100,
+            target in 15u64..35,
+        ) {
+            let mut pane = ChatPane::default();
+            pane.set_lines((0..80).map(|i| line(i, if i == target {
+                "Fable"
+            } else if i == 50 {
+                "Fables"
+            } else if i == 70 {
+                "f a b l e"
+            } else {
+                "ordinary message"
+            })).collect());
+            pane.insert_text("unsent draft");
+            pane.start_search();
+            pane.on(&Event::Paste("Fable".into()));
+            pane.advance_search(1000);
+            proptest::prop_assert_eq!(pane.search.as_ref().unwrap().selected().unwrap().key.millis, target);
+            let results = draw(&mut pane, width);
+            proptest::prop_assert!(!results.contains("ordinary message"));
+            proptest::prop_assert!(results.find("Fable").unwrap() < results.find("Fables").unwrap());
+            proptest::prop_assert!(results.find("Fables").unwrap() < results.find("f a b l e").unwrap());
+            pane.on(&key(Key::Down));
+            proptest::prop_assert_eq!(pane.search.as_ref().unwrap().selected().unwrap().key.millis, 50);
+            pane.on(&key(Key::Up));
+            pane.on(&key(Key::Enter));
+            proptest::prop_assert!(!pane.searching());
+            draw(&mut pane, width);
+            let row = pane.rendered.rows.iter().position(|row| pane.lines[row.line].millis == target).unwrap();
+            proptest::prop_assert_eq!(row, usize::from(pane.rendered.area.height) / 2);
+            proptest::prop_assert_eq!(pane.text(), "unsent draft");
+        }
+
+        #[test]
         fn chat_anchored_viewport_is_complete_on_its_first_frame(
             width in 24u16..100,
             height in 8u16..40,
@@ -6291,7 +6348,11 @@ mod pane_search_tests {
             pane.start_search();
             pane.on(&Event::Paste("item".into()));
             pane.advance_search(1000);
+            // Retain the original near-tail regression now that ranking starts
+            // at the first result instead of selecting the newest message.
+            for _ in 0..10 { pane.on(&key(Key::PageDown)); }
             for _ in 0..older { pane.on(&key(Key::Up)); }
+            pane.on(&key(Key::Enter));
 
             // A redraw without input must never repair a partially filled viewport.
             let mut verify = |pane: &mut ChatPane, width, height| {
@@ -6304,12 +6365,16 @@ mod pane_search_tests {
             };
             verify(&mut pane, width, height)?;
             for direction in navigation {
+                pane.start_search();
+                pane.on(&Event::Paste("item".into()));
+                for _ in 0..10 { pane.on(&key(Key::PageDown)); }
                 pane.on(&key(match direction {
                     0 => Key::Up,
                     1 => Key::Down,
                     2 => Key::PageUp,
                     _ => Key::PageDown,
                 }));
+                pane.on(&key(Key::Enter));
                 verify(&mut pane, width, height)?;
             }
             // Rewrapping and removing newer messages can shorten the anchored tail too.
@@ -6320,15 +6385,15 @@ mod pane_search_tests {
     }
 
     #[test]
-    fn chat_find_jumps_in_order_preserves_draft_and_anchor_through_refresh_and_resize() {
+    fn chat_results_preserve_draft_and_identity_through_refresh_resize_and_pruning() {
         let mut pane = ChatPane::default();
         let lines: Vec<_> = (0..60)
             .map(|i| {
                 line(
                     i,
-                    if i == 5 {
+                    if i == 15 {
                         "Frieren first"
-                    } else if i == 25 {
+                    } else if i == 35 {
                         "Frieren second"
                     } else {
                         "ordinary message"
@@ -6338,33 +6403,82 @@ mod pane_search_tests {
             .collect();
         pane.set_lines(lines.clone());
         pane.insert_text("unsent /draft");
-        pane.on(&Event::Keyboard(KeyEvent {
-            code: Key::Char('f'),
-            modifiers: KeyModifiers::CONTROL,
-        }));
+        pane.on(&key(Key::Left));
+        pane.start_search();
         pane.on(&Event::Paste("fr rn".into()));
         pane.advance_search(1000);
         assert_eq!(pane.search.as_ref().unwrap().matches.len(), 2);
-        assert!(draw(&mut pane, 55).contains("Frieren second"));
-        pane.on(&key(Key::Up));
-        assert!(draw(&mut pane, 55).contains("Frieren first"));
-        assert_eq!(pane.text(), "unsent /draft");
+        pane.on(&key(Key::Down));
+        assert_eq!(
+            pane.search.as_ref().unwrap().selected().unwrap().key.millis,
+            35
+        );
         let mut updated = vec![line(0, "earlier arrival")];
         updated.extend(lines);
         updated.push(line(80, "Frieren newest"));
         pane.set_lines(updated);
         assert_eq!(
             pane.search.as_ref().unwrap().selected().unwrap().key.millis,
-            5
+            35
         );
-        assert!(draw(&mut pane, 35).contains("Frieren first"));
-        pane.on(&key(Key::Down));
         assert!(draw(&mut pane, 35).contains("Frieren second"));
+        pane.set_lines(pane.lines[10..].to_vec());
+        assert_eq!(
+            pane.search.as_ref().unwrap().selected().unwrap().key.millis,
+            35
+        );
         assert_eq!(pane.on(&key(Key::Enter)), Some(Msg::None));
-        assert!(draw(&mut pane, 35).contains("Frieren first"));
-        pane.on(&key(Key::Esc));
         assert!(!pane.searching());
-        assert_eq!(pane.text(), "unsent /draft");
+        draw(&mut pane, 35);
+        let row = pane
+            .rendered
+            .rows
+            .iter()
+            .position(|row| pane.lines[row.line].millis == 35)
+            .unwrap();
+        assert_eq!(row, usize::from(pane.rendered.area.height) / 2);
+        pane.on(&key(Key::Char('!')));
+        assert_eq!(pane.text(), "unsent /draf!t");
+    }
+
+    #[test]
+    fn cancelling_chat_results_restores_scrollback_and_conceals_spoilers() {
+        let mut pane = ChatPane::default();
+        pane.set_lines(
+            (0..80)
+                .map(|i| {
+                    line(
+                        i,
+                        if i == 30 {
+                            "Fable ||secret ending||"
+                        } else {
+                            "ordinary message"
+                        },
+                    )
+                })
+                .collect(),
+        );
+        pane.scroll_anchor = Some((LineKey::of(&pane.lines[25]), 0, 0));
+        pane.insert_text("draft");
+        let original = draw(&mut pane, 55);
+        let anchor = pane.scroll_anchor.clone();
+        pane.start_search();
+        pane.on(&Event::Paste("Fable".into()));
+        pane.advance_search(1000);
+        let results = draw(&mut pane, 55);
+        assert!(results.contains("Fable"));
+        assert!(!results.contains("secret ending"));
+        assert!(
+            pane.rendered.rows.is_empty(),
+            "hidden chat has no selection or spoiler hit records"
+        );
+        pane.scroll_wheel(false);
+        pane.on(&key(Key::PageDown));
+        pane.on(&Event::Paste("pending edit".into()));
+        pane.on(&key(Key::Esc));
+        assert!(!pane.advance_search(10_000));
+        assert_eq!(draw(&mut pane, 55), original);
+        assert_eq!(pane.scroll_anchor, anchor);
     }
 
     #[test]
@@ -6377,6 +6491,7 @@ mod pane_search_tests {
         pane.advance_search(1000);
         assert!(draw(&mut pane, 55).contains("No matches"));
         assert_eq!(pane.on(&key(Key::Enter)), Some(Msg::None));
+        assert!(pane.searching());
         pane.on(&key(Key::Esc));
         assert_eq!(pane.text(), "draft");
     }
@@ -6401,37 +6516,26 @@ mod pane_search_tests {
             4,
             "refresh uses the applied query"
         );
-        pane.on(&key(Key::Enter));
+        pane.on(&key(Key::Down));
         assert_eq!(pane.search.as_ref().unwrap().matches.len(), 2);
         assert_eq!(
             pane.search.as_ref().unwrap().selected().unwrap().key.millis,
             2
         );
         assert!(pane.search_due.is_none());
-        pane.on(&key(Key::Up));
+        pane.scroll_wheel(true);
         assert_eq!(
             pane.search.as_ref().unwrap().selected().unwrap().key.millis,
             1
         );
-        pane.on(&key(Key::Down));
-        assert_eq!(
-            pane.search.as_ref().unwrap().selected().unwrap().key.millis,
-            2
-        );
+        assert_eq!(pane.scroll_delta, 0);
+        pane.on(&Event::Paste(" older".into()));
+        pane.on(&key(Key::Enter));
+        assert!(!pane.searching());
+        assert_eq!(pane.center_on.as_ref().unwrap().millis, 1);
         assert!(
             !pane.advance_search(10_000),
-            "no delayed jump after submission"
-        );
-
-        pane.on(&Event::Paste(" older".into()));
-        pane.on(&key(Key::Down));
-        assert_eq!(
-            pane.search.as_ref().unwrap().selected().unwrap().key.millis,
-            1
-        );
-        assert!(
-            pane.search_due.is_none(),
-            "navigation also submits pending edits"
+            "no delayed jump after acceptance"
         );
     }
 

@@ -385,7 +385,9 @@ Browser and search definitions are in `templates/collections.xml`.
 and `editing`, `has-message`, `has-results` booleans. `pane-search-result` exposes
 literal `text`. The shared controller owns query editing and stable selection.
 Chat reuses its `input` slot for the search editor while searching; `input-title`
-labels search and `title` carries the match count. The draft remains independent.
+labels search and `title` carries the match count. Its `log` slot paints ranked
+`pane-search-result` rows until Enter restores the conversation centered on the
+selected message, or Esc restores the previous view. The draft remains independent.
 `file-browser` exposes `title`, `filter-label`, rich `filter`, boolean
 `filter-visible`, and slot `body`. `file-row` exposes `marker`, `name`, and
 boolean `entry`, including directory, file, parent, selection, and note rows.
