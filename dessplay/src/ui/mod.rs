@@ -4,6 +4,7 @@
 pub mod app;
 pub mod commands;
 pub mod components;
+pub mod delivery;
 pub mod layout;
 pub mod modals;
 pub mod msg;

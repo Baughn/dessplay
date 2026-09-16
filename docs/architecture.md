@@ -1,6 +1,6 @@
 # Architecture
 
-Last updated: 2026-09-07
+Last updated: 2026-09-16
 
 This document describes DessPlay's internal structure: actor boundaries,
 message flow, and concurrency model. For the external protocol, see
@@ -25,7 +25,9 @@ message flow, and concurrency model. For the external protocol, see
 
 The prototype suffered from "a dozen threads and too many mutexes." DessPlay2
 uses an **actor model**: each actor is a tokio task that owns its state and
-communicates via typed message channels. No `Arc<Mutex<...>>`, no shared state.
+communicates via typed message channels. No shared mutable application state.
+Transport internals may use a short lock to transfer owned messages; the UI
+mailbox does this without sharing the controllers or actor state.
 
 ### Typed Message Enums
 
@@ -225,6 +227,24 @@ There is no asynchronous `UiActor` task. `ui::app::Ui` is the synchronous
 dispatcher that owns component state, focus, and the modal stack. Production's
 `ui::shell` owns the terminal/input threads and exchanges `UiInput` and
 `UserAction` values with the bridge loop; tests drive the same `Ui` directly.
+
+`ui::delivery` owns the input mailbox used by the bridge, background workers,
+terminal input, and test harnesses. An exhaustive `UiInput` match assigns each
+variant reliable, replaceable, or shutdown delivery. `UiSender::send` never
+waits for queue capacity and can fail only when the mailbox is closed; callers
+cannot select a lossy send for a required reply. Reliable events form FIFO
+ordering barriers. Between barriers, snapshots coalesce by state and progress
+by job identity (hash filename, search request ID, or import ID).
+
+The mailbox keeps an uncapped reliable backlog and at most one replaceable
+update per key between barriers. A short internal mutex protects only queued
+owned inputs; payload destruction happens outside the lock. A capacity-one
+standard channel carries wakeups and sender-lifetime notification, never UI
+payloads. There is no forwarding task, per-message task, or retry timer.
+Shutdown discards the backlog and wakes the UI immediately; receiver drop
+releases queued payloads and closes every sender clone. First-run and session
+teardown also close the action receiver before joining the UI thread, releasing
+any blocked UI action send. The bridge exits when the UI mailbox closes.
 
 **Receives:**
 - `StateUpdate(CrdtSnapshot)` -- new CRDT state to display
@@ -863,8 +883,8 @@ standalone harness uses these same observations and explicit typed actions.
 outbox/history in short SQLite transactions. The UI emits
 `UserAction::Roguelike`; the session executes it and returns
 `UiInput::Roguelike` containing a `RunView` only after commit. The previous
-committed view remains displayed on failure. A full UI input channel retains
-and retries the acknowledgement rather than permanently locking game input.
+committed view remains displayed on failure. The shared UI mailbox retains the
+acknowledgement while the renderer is behind; no game-specific retry is needed.
 
 Local schema migration v8 intentionally deletes every old roguelike run and
 history row, including pending reports, once and transactionally. It leaves

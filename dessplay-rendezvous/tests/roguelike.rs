@@ -102,13 +102,14 @@ fn before_death(storage: &Storage, path: &std::path::Path) -> Run {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn committed_game_reply_survives_a_full_ui_queue() {
+async fn committed_game_reply_survives_a_stalled_ui() {
     init_test_logging();
     let harness = Harness::new(90504);
     let dir = tempfile::tempdir().unwrap();
     let rig = loop_rig(&harness, "kim", 1, dir.path());
-    // LoopRig has 64 UI slots. Keep its receiver idle while enough ordered
-    // notices pass through the session loop to fill every slot before Open.
+    // Keep the UI idle while a backlog of ordered notices precedes Open.
+    // The shared mailbox must retain the committed reply without a game-only
+    // retry timer or any dependence on the renderer catching up.
     for index in 0..128 {
         rig.actions
             .send(UserAction::Notice(format!("busy UI {index}")))
@@ -144,7 +145,7 @@ async fn committed_game_reply_survives_a_full_ui_queue() {
         }
     })
     .await
-    .expect("game committed despite the full UI queue");
+    .expect("game committed despite the stalled UI");
     let saved: serde_json::Value = serde_json::from_str(&save).unwrap();
     let committed: Run = serde_json::from_value(saved["run"].clone()).unwrap();
     assert_eq!(receive_run(&rig).await, committed.view());

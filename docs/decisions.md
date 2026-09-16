@@ -1,6 +1,6 @@
 # DessPlay Decision Log
 
-Last updated: 2026-09-15
+Last updated: 2026-09-16
 
 The reasoning behind the rules in [design.md](design.md): the failure that
 motivated each one, the alternatives that were rejected, and the date it
@@ -15,6 +15,56 @@ and links back to the section that states it; design.md links here with
 remembering (a bug, a review finding, a user decision), the rule goes in
 design.md and the reason goes here, in the same commit. Entries are never
 deleted; a superseded decision gets a note saying what replaced it.
+
+## UI delivery policy belongs to the mailbox (2026-09-16)
+
+**Rule:** [UI Principles](design.md#ui-principles) retain one-shot replies and
+local history, coalesce pending snapshots/progress between reliable events,
+and give shutdown precedence. The user explicitly chose to preserve local
+IRC, system, and subtitle history alongside completions.
+
+**Why:** The UI's 64-slot input channel used ignored `try_send` errors for both
+replaceable state and irreplaceable events. A slow renderer could lose browser
+and AniDB/Nyaa search answers, hash/import completion, local-copy offers, or
+shutdown. Roguelike replies had a separate retry timer; image workers blocked
+on delivery to avoid leaking occupied loading slots. These were individual
+repairs to one shared delivery problem. A regression left the UI unread,
+submitted 128 browser requests through the real bridge, then quit. It failed
+before the change because required replies disappeared.
+
+All UI producers now use one mailbox with an exhaustive delivery-policy match.
+Its send API has no capacity failure, so a new call site cannot silently choose
+lossy delivery for a reply. State/progress replace only updates with the same
+key in the trailing replaceable segment. Reliable events are barriers: replacing
+across them could expose future state to an earlier action, or move progress
+past a completion. Completion always remains an event even when it shares a
+payload type with progress. The UI still rejects answers to superseded searches
+using the existing request identity checks.
+
+Blocking session sends were rejected because they can stop Quit and create a
+cycle with the UI's action sends. Per-feature retries were rejected because
+every new input would need to rediscover the same rule. The mailbox uses a short
+transport-only lock and a capacity-one wakeup channel; it adds no forwarding
+task or polling timer. Application state stays owned by its actor/UI thread.
+Preserving history while producers remain live means accepting an uncapped
+in-memory reliable backlog when the UI stalls. Replaceable ticks do not build
+an independent backlog; there is at most one update per key between events.
+
+The audit covered session replies, file-result forwarding, local narration and
+IRC/subtitles, image workers, terminal input, first-run setup, normal teardown,
+and the production harnesses. Receiver closure releases payloads; shutdown
+cancels queued input even if the terminal input thread retains a sender.
+Teardown closes the action receiver before joining the UI, so a UI already
+blocked sending an action can exit too. The independent layout-reload channel
+already retries delivery and rejects stale generations; actor protocol channels
+are outside the UI mailbox boundary.
+
+Validation on macOS: all 1,574 default-gate tests and both available release
+performance tests passed, as did workspace/all-target Clippy with warnings
+denied. The playback/download input probe measured 28 microseconds worst-case;
+the 10,000-message chat check stayed below 8 milliseconds. These are local
+synthetic measurements, not guarantees for every machine. The Linux-only CPU
+test was not exercised on this host.
 
 ## Larger chat history with bounded viewport work (2026-09-15)
 

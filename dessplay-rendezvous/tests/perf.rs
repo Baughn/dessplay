@@ -43,8 +43,8 @@
 
 mod common;
 
+use dessplay::ui::delivery::UiSender;
 use std::path::PathBuf;
-use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -231,7 +231,7 @@ fn ten_thousand_chat_messages_remain_responsive() {
 struct PerfRig {
     actions: mpsc::Sender<UserAction>,
     sync: mpsc::Sender<SyncCommand>,
-    ui_probe: SyncSender<UiInput>,
+    ui_probe: UiSender,
     media_root: PathBuf,
     _loop: tokio::task::JoinHandle<SessionEnd>,
     _ui_thread: std::thread::JoinHandle<()>,
@@ -295,7 +295,7 @@ async fn perf_rig(harness: &Harness, name: &str, nonce: u128, series_count: u32)
 
     let sync = handle.sync.clone();
     let (action_tx, action_rx) = mpsc::channel(64);
-    let (ui_tx, ui_rx) = std::sync::mpsc::sync_channel::<UiInput>(64);
+    let (ui_tx, ui_rx) = dessplay::ui::delivery::channel();
     let ui_probe = ui_tx.clone();
 
     // Seed the metadata library locally (we're isolated, so these apply to
@@ -487,29 +487,13 @@ fn process_cpu_seconds() -> f64 {
 const PROBE_CAP: Duration = Duration::from_secs(2);
 
 /// Send one latency probe into the UI channel and measure how long until
-/// the UI loop stamps it. The time spent waiting for channel space (the
-/// snapshot backlog draining ahead of the probe) is exactly the lag we
-/// want to catch, so it counts. Bounded by [`PROBE_CAP`] so a saturated
-/// debug build can't block the test for tens of seconds.
-fn probe_latency(ui_probe: &SyncSender<UiInput>) -> Option<Duration> {
-    use std::sync::mpsc::TrySendError;
+/// the UI loop stamps it. Queue delay plus draw/refresh work ahead of the
+/// probe is the latency we want to catch. Bounded by [`PROBE_CAP`] so an
+/// overloaded debug build cannot block the test for tens of seconds.
+fn probe_latency(ui_probe: &UiSender) -> Option<Duration> {
     let cell = Arc::new(Mutex::new(None));
     let t0 = Instant::now();
-    // Enqueue (the channel may be full while the UI thread is behind).
-    let mut pending = Some(UiInput::Probe(cell.clone()));
-    while let Some(probe) = pending.take() {
-        match ui_probe.try_send(probe) {
-            Ok(()) => {}
-            Err(TrySendError::Full(probe)) => {
-                if t0.elapsed() >= PROBE_CAP {
-                    return Some(PROBE_CAP); // never even got a slot in time
-                }
-                pending = Some(probe);
-                std::thread::sleep(Duration::from_millis(1));
-            }
-            Err(TrySendError::Disconnected(_)) => return None,
-        }
-    }
+    ui_probe.send(UiInput::Probe(cell.clone())).ok()?;
     // Enqueued: wait for the UI loop to handle it.
     loop {
         if let Some(handled) = *cell.lock().unwrap() {
@@ -552,9 +536,8 @@ async fn playback_cpu_under_10_percent() {
     }
 }
 
-/// The UI thread must stay responsive during an active session. Under the
-/// snapshot flood the bounded UI channel saturates and new input queues
-/// behind a backlog of full redraws — the lag the user reported.
+/// The UI thread must stay responsive during an active session. Snapshot
+/// floods must coalesce without making input wait behind redundant redraws.
 #[tokio::test(flavor = "multi_thread")]
 async fn ui_responsive_during_playback_and_download() {
     let harness = Harness::new(0xBADCAB);
@@ -573,8 +556,8 @@ async fn ui_responsive_during_playback_and_download() {
             .expect("loop gone");
     }
 
-    // Warm up, then probe responsiveness on a dedicated thread (blocking
-    // sends must not sit on a tokio worker).
+    // Warm up, then probe on a dedicated thread: waiting for the UI's
+    // acknowledgement must not block a tokio worker.
     tokio::time::sleep(Duration::from_secs(1)).await;
     let ui_probe = rig.ui_probe.clone();
     let worst = tokio::task::spawn_blocking(move || {

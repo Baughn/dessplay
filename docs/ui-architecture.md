@@ -64,7 +64,7 @@ automated roguelike recovery. See [ui-layouts.md](ui-layouts.md) for the
 current authoring contract and [plan.md](plan.md#phase-36-runtime-editable-display-layouts)
 for outstanding migration work.
 
-Last updated: 2026-09-08
+Last updated: 2026-09-16
 
 DessPlay uses **tui-realm** as its TUI framework, providing an Elm-style
 architecture on top of ratatui. This document covers the component structure,
@@ -485,6 +485,15 @@ This mapping is a pure function (presence and subtitle data arrive as
 explicit inputs alongside the snapshot), making it testable independently.
 
 ### Non-snapshot inputs and the hashing overlay
+
+All producers use `ui::delivery::UiSender`, including terminal input and image
+workers. The mailbox retains one-shot inputs and local history without waiting
+for the renderer. Pending snapshots and per-job progress coalesce only between
+reliable event barriers, preserving the state preceding a reply or user input.
+Hash/import completion is reliable, so an old progress update cannot overtake
+completion and resurrect a finished row. Shutdown takes precedence over queued
+work. See [architecture.md](architecture.md#ui-subsystem) for mailbox ownership
+and lifetime, and [design.md](design.md#ui-principles) for the backlog policy.
 
 Besides snapshots and terminal events, the bridge loop feeds `Ui`
 local-only inputs through `UiInput`: `Subtitle { text, speaker,

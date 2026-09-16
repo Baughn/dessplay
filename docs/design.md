@@ -1,6 +1,6 @@
 # DessPlay Design Document
 
-Last updated: 2026-09-15
+Last updated: 2026-09-16
 
 A synchronized video player for watch parties. Terminal-first, built for
 reliability over flaky connections. Server-coordinated, including relayed
@@ -1838,6 +1838,18 @@ regions are known. Overlap suppression applies across pane boundaries. Inline
 text definitions retain declarations and measured fragment bounds for inspection.
 
 ### UI Principles
+
+**UI delivery survives a slow renderer.** Browser replies, search results,
+job completions, image answers, committed game replies, local-copy offers,
+terminal input, and local IRC/system/subtitle history are retained in arrival
+order while the UI is alive. Producers never wait for UI queue capacity.
+Snapshots and progress updates may replace an older pending update for the same
+state or job, but cannot cross a retained event. Job completion is a retained
+event, not disposable progress. Shutdown cancels pending input and takes
+precedence over the backlog; closing the UI releases pending payloads and
+rejects further input. The reliable backlog is in memory and has no fixed cap;
+it is not persisted across shutdown or a crash.
+(why: [decisions](decisions.md#ui-delivery-policy-belongs-to-the-mailbox-2026-09-16))
 
 **One color scheme when true-color is available.** During production terminal
 setup DessPlay asks crossterm for the terminal's advertised color count once,

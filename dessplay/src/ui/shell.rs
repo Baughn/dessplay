@@ -225,7 +225,7 @@ pub enum UiInput {
 /// terminal setup must not leave the caller waiting forever.
 pub fn run_ui_thread(
     mut ui: Ui,
-    inputs: std::sync::mpsc::Receiver<UiInput>,
+    inputs: super::delivery::UiReceiver,
     actions: mpsc::Sender<UserAction>,
     on_terminal_ready: impl FnOnce(),
 ) {
@@ -393,7 +393,7 @@ fn select_image_picker() -> ratatui_image::picker::Picker {
 /// setup/teardown (raw mode, alternate screen, `restore`).
 pub fn run_ui_loop<A: TerminalAdapter>(
     mut ui: Ui,
-    inputs: std::sync::mpsc::Receiver<UiInput>,
+    inputs: super::delivery::UiReceiver,
     actions: mpsc::Sender<UserAction>,
     adapter: &mut A,
 ) where
@@ -685,7 +685,7 @@ fn is_left_drag(event: &crossterm::event::Event) -> bool {
 
 /// Read crossterm events on the current (dedicated) thread, forwarding
 /// them as [`UiInput::Event`]s until the channel closes.
-pub fn run_input_thread(inputs: std::sync::mpsc::SyncSender<UiInput>) {
+pub fn run_input_thread(inputs: super::delivery::UiSender) {
     tracing::debug!("input thread started");
     // An event read ahead while coalescing a drag run, still to forward.
     let mut queued: Option<crossterm::event::Event> = None;

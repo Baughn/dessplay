@@ -30,7 +30,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         directory: Some(directory),
         builtin: false,
     });
-    let (inputs, receiver) = std::sync::mpsc::sync_channel(128);
+    let (inputs, receiver) = dessplay::ui::delivery::channel();
     let (actions, mut action_receiver) = tokio::sync::mpsc::channel(128);
     let replies = inputs.clone();
     let worker = std::thread::spawn(move || {

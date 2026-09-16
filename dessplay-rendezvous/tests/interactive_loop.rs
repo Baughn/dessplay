@@ -41,6 +41,59 @@ fn release_fifo(fifo: &Path) {
     let _ = std::fs::OpenOptions::new().write(true).open(fifo);
 }
 
+/// A stalled renderer must neither lose one-shot replies nor prevent Quit.
+/// Ordered actions and joining the session provide the barriers; no sleeps
+/// or assumptions about the relative scheduling of the actors are needed.
+#[tokio::test(flavor = "multi_thread")]
+async fn browser_replies_survive_a_stalled_ui_without_blocking_quit() {
+    let harness = Harness::new(803);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut rig = loop_rig(&harness, "kim", 1, dir.path());
+    let requests: Vec<_> = (0..128)
+        .map(|index| dessplay::ui::msg::BrowseRequest::Add {
+            after: Some(hash(index)),
+        })
+        .collect();
+    for request in &requests {
+        rig.actions
+            .send(UserAction::Browse(request.clone()))
+            .await
+            .expect("loop gone");
+    }
+    rig.actions.send(UserAction::Quit).await.expect("loop gone");
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(5), &mut rig.task)
+            .await
+            .expect("UI delivery blocked Quit")
+            .expect("loop panicked"),
+        SessionEnd::Quit,
+    );
+    let received: Vec<_> = rig
+        .ui_rx
+        .try_iter()
+        .filter_map(|input| match input {
+            UiInput::Browse { request, .. } => Some(request),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(received, requests, "a required browser reply was lost");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_closed_ui_ends_the_session_without_another_action() {
+    let harness = Harness::new(804);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let rig = loop_rig(&harness, "kim", 1, dir.path());
+    drop(rig.ui_rx);
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(5), rig.task)
+            .await
+            .expect("session ignored UI closure")
+            .expect("loop panicked"),
+        SessionEnd::Quit,
+    );
+}
+
 /// The Ctrl-C regression: a quit must be processed even while a
 /// playlist-add hash is stuck (or merely slow). Pointing the hash at a
 /// FIFO makes "stuck" reproducible.

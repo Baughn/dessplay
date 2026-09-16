@@ -9,6 +9,12 @@ append-only; you cannot reword or remove existing entries.
 
 Add new days at the top. Add new entries at the bottom of existing days.
 
+## 2026-09-16
+
+- Fixed: A busy terminal no longer loses browser or search replies, leaves
+  finished jobs on screen, or drops local chat and subtitle lines. Quitting
+  bypasses pending display updates.
+
 ## 2026-09-15
 
 - Changed: Chat search waits for a one-second typing pause before jumping to

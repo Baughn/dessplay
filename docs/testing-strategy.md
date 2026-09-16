@@ -1,6 +1,6 @@
 # Testing Strategy
 
-Last updated: 2026-09-15
+Last updated: 2026-09-16
 
 ## Table of Contents
 
@@ -179,6 +179,19 @@ and cap image slots across history changes and delayed fetch completion. A wheel
 scenario checks exact row steps, clamping, and resumed tail following.
 
 ## Running the Suite
+
+UI delivery tests use the production mailbox. A bridge regression leaves the
+UI unread, submits 128 uniquely anchored browser requests, then quits and checks
+every reply in order. It was confirmed failing against the old 64-slot lossy
+channel; ordered actions and joining the session supply the barriers, with no
+sleeps. The committed-game-reply test exercises the same stalled-consumer path.
+Mailbox properties vary snapshot/progress families, job keys, and partial
+consumption: every reliable event must observe the same state as the full
+uncoalesced input trace, with at most one pending update per key between events.
+Additional cases cover every one-shot input family, state/completion ordering,
+concurrent sender order and wakeups, last-sender closure, receiver-drop payload
+release, and shutdown precedence. The existing release UI latency/CPU tests use
+the same mailbox as production.
 
 The Unix launcher integration tests run the real `install.sh` with isolated
 Git, Cargo, and Nix shell substitutes. Both launch branches cover an installed

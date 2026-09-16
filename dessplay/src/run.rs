@@ -58,13 +58,10 @@ pub struct HeadlessArgs {
 /// Forward the local UI lines produced by the session shell (subtitle
 /// lines and the narrator's system chat lines) to the UI. Both are local
 /// only — never synced — and share the chat interleave domain.
-fn forward_ui_lines(
-    ui: &std::sync::mpsc::SyncSender<crate::ui::shell::UiInput>,
-    lines: crate::session::UiLines,
-) {
+fn forward_ui_lines(ui: &crate::ui::delivery::UiSender, lines: crate::session::UiLines) {
     use crate::ui::shell::UiInput;
     for line in lines.subtitles {
-        let _ = ui.try_send(UiInput::Subtitle {
+        let _ = ui.send(UiInput::Subtitle {
             text: line.text,
             speaker: line.speaker,
             video_millis: line.video_millis,
@@ -72,7 +69,7 @@ fn forward_ui_lines(
         });
     }
     for notice in lines.system {
-        let _ = ui.try_send(UiInput::System {
+        let _ = ui.send(UiInput::System {
             timestamp: notice.timestamp,
             text: notice.text,
         });
@@ -876,7 +873,7 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
             Default::default()
         });
     ui.set_layout_options(args.layout_options.clone());
-    let (input_tx, input_rx) = std::sync::mpsc::sync_channel::<UiInput>(64);
+    let (input_tx, input_rx) = crate::ui::delivery::channel();
     let (action_tx, mut action_rx) = mpsc::channel::<UserAction>(64);
     // The input thread starts only once the UI thread says the terminal
     // is ready: terminal setup round-trips stdio (the image-protocol
@@ -906,7 +903,7 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
                         saved.launcher_track.as_ref(),
                     ) {
                         tracing::error!(%error);
-                        let _ = input_tx.try_send(UiInput::System {
+                        let _ = input_tx.send(UiInput::System {
                             timestamp: (system_clock())(),
                             text: error,
                         });
@@ -922,7 +919,8 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
                     break;
                 }
                 Some(UserAction::Quit) | None => {
-                    let _ = input_tx.try_send(UiInput::Shutdown);
+                    action_rx.close();
+                    let _ = input_tx.send(UiInput::Shutdown);
                     let _ = ui_thread.join();
                     return Ok(());
                 }
@@ -1077,7 +1075,9 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
     // Teardown: release the terminal immediately (the user asked to
     // leave), then Goodbye + flush with a bounded wait — a wedged actor
     // must never hold the process hostage.
-    let _ = input_tx.try_send(UiInput::Shutdown);
+    // Release a UI blocked on sending actions before joining its thread.
+    session.actions.close();
+    let _ = input_tx.send(UiInput::Shutdown);
     let _ = ui_thread.join();
     if let SessionEnd::Rejected(message) = &end {
         return Err(message.clone());
@@ -1301,8 +1301,8 @@ pub struct SessionLoop<F: crate::player::PlayerFactory> {
     pub shell: crate::session::SessionShell<F>,
     /// Actions from the UI (or a test).
     pub actions: mpsc::Receiver<crate::ui::msg::UserAction>,
-    /// Inputs to the UI thread (snapshots, subtitles); lossy sends.
-    pub ui: std::sync::mpsc::SyncSender<crate::ui::shell::UiInput>,
+    /// Inputs to the UI thread; the mailbox owns delivery/coalescing policy.
+    pub ui: crate::ui::delivery::UiSender,
     /// Settings/history/TOFU storage.
     pub storage: Storage,
     /// Database path (settings saves reopen for `&mut` access).
@@ -1442,23 +1442,14 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
         let mut ui_dirty = false;
         let mut ui_tick = tokio::time::interval(std::time::Duration::from_millis(100));
         ui_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        let mut rogue_reply = None;
-        let mut rogue_delivery = tokio::time::interval(std::time::Duration::from_millis(10));
-        rogue_delivery.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut rogue_retry = tokio::time::interval(std::time::Duration::from_secs(30));
         rogue_retry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
+            if self.ui.is_closed() {
+                return SessionEnd::Quit;
+            }
             tokio::select! {
                 _ = rogue_retry.tick() => self.publish_roguelike_reports().await,
-                _ = rogue_delivery.tick(), if rogue_reply.is_some() => {
-                    if let Some(reply) = rogue_reply.take() {
-                        match self.ui.try_send(reply) {
-                            Ok(()) => {}
-                            Err(std::sync::mpsc::TrySendError::Full(reply)) => rogue_reply = Some(reply),
-                            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => return SessionEnd::Quit,
-                        }
-                    }
-                }
                 action = self.actions.recv() => {
                     match action {
                         Some(UserAction::Roguelike(command)) => {
@@ -1469,7 +1460,7 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                                 tracing::error!(%error, "saving dungeon expedition");
                                 format!("Could not save: {error}. Your previous turn is safe; close and reopen to retry.")
                             });
-                            rogue_reply = Some(UiInput::Roguelike(result));
+                            let _ = self.ui.send(UiInput::Roguelike(result));
                             self.publish_roguelike_reports().await;
                         }
                         None | Some(UserAction::Quit) => return SessionEnd::Quit,
@@ -1533,7 +1524,7 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                                 start = start.as_ref().map(|p| p.display().to_string()),
                                 "browse: answering with the library index"
                             );
-                            let _ = self.ui.try_send(UiInput::Browse {
+                            let _ = self.ui.send(UiInput::Browse {
                                 request,
                                 files,
                                 watched,
@@ -1571,9 +1562,8 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                                 };
                                 let _ = tokio::task::spawn_blocking(move || {
                                     let result = crate::chat_images::fetch(&url, &cache_dir);
-                                    // Blocking send belongs on this pool, never a
-                                    // tokio worker or the session loop. The permit
-                                    // stays held through delivery (two workers max).
+                                    // Delivery shares the reliable UI mailbox; the
+                                    // worker never waits for the renderer to catch up.
                                     let _ = ui.send(UiInput::ChatImage {
                                         url,
                                         result: result.map(Box::new),
@@ -1591,7 +1581,7 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                             if let Some(text) =
                                 self.shell.add_by_hash(hash, after, &last_view).await
                             {
-                                let _ = self.ui.try_send(UiInput::System {
+                                let _ = self.ui.send(UiInput::System {
                                     timestamp: (system_clock())(),
                                     text,
                                 });
@@ -1675,7 +1665,7 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                         Some(UserAction::Notice(text)) => {
                             // Command feedback — stamp with the shared clock
                             // (the UI has none) and post a local chat line.
-                            let _ = self.ui.try_send(UiInput::System {
+                            let _ = self.ui.send(UiInput::System {
                                 timestamp: (system_clock())(),
                                 text,
                             });
@@ -1727,7 +1717,7 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                                 self.settings.launcher_track.as_ref(), saved.launcher_track.as_ref(),
                             ) {
                                 tracing::error!(%error);
-                                let _ = self.ui.try_send(UiInput::System {
+                                let _ = self.ui.send(UiInput::System {
                                     timestamp: (system_clock())(), text: error,
                                 });
                                 continue;
@@ -1772,7 +1762,7 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                             if saved.torrent_enabled != self.settings.torrent_enabled {
                                 self.shell.set_torrent_enabled(saved.torrent_enabled).await;
                                 if saved.torrent_enabled && self.torrent_engine.is_none() {
-                                    let _ = self.ui.try_send(UiInput::System {
+                                    let _ = self.ui.send(UiInput::System {
                                         timestamp: (system_clock())(),
                                         text: "BitTorrent engine not started — restart dessplay \
                                                to enable torrent downloads."
@@ -1954,7 +1944,7 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                             self.shell.set_clock_offset(*offset_millis).await;
                         }
                         ClientEvent::Network(NetworkEvent::SearchResults { query, results }) => {
-                            let _ = self.ui.try_send(UiInput::SearchResults {
+                            let _ = self.ui.send(UiInput::SearchResults {
                                 query: query.clone(),
                                 results: results.clone(),
                             });
@@ -1973,7 +1963,7 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                             // sticky advisor row that carries the remedy
                             // until DivergenceHealed.
                             self.advisor.on_diverged_persistent();
-                            let _ = self.ui.try_send(UiInput::System {
+                            let _ = self.ui.send(UiInput::System {
                                 timestamp: (system_clock())(),
                                 text: "sync: state diverged and is not healing — run /resync \
                                        (or dessplay --reset-sync)"
@@ -2167,7 +2157,7 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                             .await;
                         self.forward_lines(lines, &snapshot.view).await;
                         last_view = snapshot.view.clone();
-                        let _ = self.ui.try_send(UiInput::Snapshot(Box::new(snapshot)));
+                        let _ = self.ui.send(UiInput::Snapshot(Box::new(snapshot)));
                     }
                 }
                 event = self.irc_events.recv(), if self.irc_alive => {
@@ -2180,7 +2170,7 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                     match event {
                         None => self.irc_alive = false,
                         Some(IrcEvent::Message { from, text, action }) => {
-                            let _ = self.ui.try_send(UiInput::Irc {
+                            let _ = self.ui.send(UiInput::Irc {
                                 timestamp: (system_clock())(),
                                 sender: from,
                                 text,
@@ -2188,25 +2178,25 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                             });
                         }
                         Some(IrcEvent::Connected) => {
-                            let _ = self.ui.try_send(UiInput::System {
+                            let _ = self.ui.send(UiInput::System {
                                 timestamp: (system_clock())(),
                                 text: format!("Connected to IRC ({}).", self.settings.irc_channel),
                             });
                         }
                         Some(IrcEvent::Disconnected { reason }) => {
-                            let _ = self.ui.try_send(UiInput::System {
+                            let _ = self.ui.send(UiInput::System {
                                 timestamp: (system_clock())(),
                                 text: format!("IRC disconnected: {reason}"),
                             });
                         }
                         Some(IrcEvent::Presence { text }) => {
-                            let _ = self.ui.try_send(UiInput::System {
+                            let _ = self.ui.send(UiInput::System {
                                 timestamp: (system_clock())(),
                                 text,
                             });
                         }
                         Some(IrcEvent::Summoned { pinged, unmatched }) => {
-                            let _ = self.ui.try_send(UiInput::System {
+                            let _ = self.ui.send(UiInput::System {
                                 timestamp: (system_clock())(),
                                 text: summon_report(&pinged, &unmatched),
                             });
@@ -2227,7 +2217,7 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                             done_bytes,
                             total_bytes,
                         } => {
-                            let _ = self.ui.try_send(UiInput::Hashing {
+                            let _ = self.ui.send(UiInput::Hashing {
                                 filename: display_name(&path),
                                 done_bytes,
                                 total_bytes,
@@ -2235,7 +2225,7 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                             });
                         }
                         crate::session::FileEffect::HashDone { path } => {
-                            let _ = self.ui.try_send(UiInput::Hashing {
+                            let _ = self.ui.send(UiInput::Hashing {
                                 filename: display_name(&path),
                                 done_bytes: 0,
                                 total_bytes: 0,
@@ -2243,10 +2233,10 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                             });
                         }
                         crate::session::FileEffect::NyaaSearchProgress { request_id, progress } => {
-                            let _ = self.ui.try_send(UiInput::NyaaSearchProgress { request_id, progress });
+                            let _ = self.ui.send(UiInput::NyaaSearchProgress { request_id, progress });
                         }
                         crate::session::FileEffect::NyaaSearchFinished { request_id, query, result } => {
-                            let _ = self.ui.try_send(UiInput::NyaaResults { request_id, query, result });
+                            let _ = self.ui.send(UiInput::NyaaResults { request_id, query, result });
                         }
                         crate::session::FileEffect::NyaaImportProgress {
                             id,
@@ -2255,7 +2245,7 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                             done_bytes,
                             total_bytes,
                         } => {
-                            let _ = self.ui.try_send(UiInput::NyaaImportProgress {
+                            let _ = self.ui.send(UiInput::NyaaImportProgress {
                                 id,
                                 filename,
                                 stage,
@@ -2268,24 +2258,24 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                             filename,
                             error,
                         } => {
-                            let _ = self.ui.try_send(UiInput::NyaaImportFinished { id });
+                            let _ = self.ui.send(UiInput::NyaaImportFinished { id });
                             let text = match error {
                                 Some(error) => format!("Nyaa add failed ({filename}): {error}"),
                                 None => format!("Added {filename} from Nyaa"),
                             };
-                            let _ = self.ui.try_send(UiInput::System {
+                            let _ = self.ui.send(UiInput::System {
                                 timestamp: (system_clock())(),
                                 text,
                             });
                         }
                         crate::session::FileEffect::Archived { timestamp, text } => {
-                            let _ = self.ui.try_send(UiInput::System { timestamp, text });
+                            let _ = self.ui.send(UiInput::System { timestamp, text });
                             // Archive doesn't emit a sync event, so push a
                             // fresh snapshot to clear the "temporary" marker
                             // (cache_hashes is recomputed from storage).
                             if let Some(snapshot) = self.snapshot().await {
                                 last_view = snapshot.view.clone();
-                                let _ = self.ui.try_send(UiInput::Snapshot(Box::new(snapshot)));
+                                let _ = self.ui.send(UiInput::Snapshot(Box::new(snapshot)));
                                 ui_dirty = false;
                             }
                         }
@@ -2301,7 +2291,7 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                                 String::new()
                             };
                             if !text.is_empty() {
-                                let _ = self.ui.try_send(UiInput::System {
+                                let _ = self.ui.send(UiInput::System {
                                     timestamp: (system_clock())(),
                                     text,
                                 });
@@ -2314,7 +2304,7 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                             // the top of Recent Series at once.
                             if let Some(snapshot) = self.snapshot().await {
                                 last_view = snapshot.view.clone();
-                                let _ = self.ui.try_send(UiInput::Snapshot(Box::new(snapshot)));
+                                let _ = self.ui.send(UiInput::Snapshot(Box::new(snapshot)));
                                 ui_dirty = false;
                             }
                         }
@@ -2325,7 +2315,7 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                             // storage).
                             if let Some(snapshot) = self.snapshot().await {
                                 last_view = snapshot.view.clone();
-                                let _ = self.ui.try_send(UiInput::Snapshot(Box::new(snapshot)));
+                                let _ = self.ui.send(UiInput::Snapshot(Box::new(snapshot)));
                                 ui_dirty = false;
                             }
                         }
@@ -2353,7 +2343,7 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
             *last_view = snapshot.view.clone();
             let _ = self
                 .ui
-                .try_send(crate::ui::shell::UiInput::Snapshot(Box::new(snapshot)));
+                .send(crate::ui::shell::UiInput::Snapshot(Box::new(snapshot)));
         }
     }
 
@@ -2388,7 +2378,7 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
         let shown = !candidates.is_empty()
             && self
                 .ui
-                .try_send(crate::ui::shell::UiInput::LocalCopyOffer {
+                .send(crate::ui::shell::UiInput::LocalCopyOffer {
                     file: offer.file,
                     filename: offer.filename.clone(),
                     candidates: candidates.clone(),

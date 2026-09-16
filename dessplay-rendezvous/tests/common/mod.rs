@@ -723,9 +723,8 @@ pub fn user_seek_authority(name: &str, event_at: u64) -> dessplay_core::types::S
 /// same directory models a client restart.
 pub struct LoopRig {
     pub actions: mpsc::Sender<dessplay::ui::msg::UserAction>,
-    /// UI inputs the loop pushed (kept alive — sends are lossy
-    /// `try_send`s into this).
-    pub ui_rx: std::sync::mpsc::Receiver<dessplay::ui::shell::UiInput>,
+    /// Production UI mailbox, consumed at the pace chosen by the test.
+    pub ui_rx: dessplay::ui::delivery::UiReceiver,
     pub sync: mpsc::Sender<SyncCommand>,
     pub task: tokio::task::JoinHandle<dessplay::run::SessionEnd>,
 }
@@ -788,7 +787,7 @@ pub fn loop_rig(harness: &Harness, name: &str, nonce: u128, db_dir: &std::path::
     let storage = dessplay::storage::Storage::open(&db_dir.join(format!("{name}.db")))
         .expect("opening storage");
     let (action_tx, action_rx) = mpsc::channel(64);
-    let (ui_tx, ui_rx) = std::sync::mpsc::sync_channel(64);
+    let (ui_tx, ui_rx) = dessplay::ui::delivery::channel();
     // Inert IRC bridge: the opposite ends are dropped so it never connects.
     let (irc_tx, _irc_rx) = mpsc::channel(8);
     let (_irc_ev_tx, irc_events) = mpsc::channel(8);
