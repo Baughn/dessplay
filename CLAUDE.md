@@ -6,6 +6,7 @@
 - Sync state (CRDTs via `crdts` crate, compaction): docs/sync-state.md
 - Network design (QUIC, hub-and-spoke, file transfer): docs/network-design.md
 - Testing strategy: docs/testing-strategy.md
+- Client memory profile and census: docs/memory-profile-2026-09-19.md
 - UI architecture (tui-realm, Elm model): docs/ui-architecture.md
 - Runtime layout authoring and migration status: docs/ui-layouts.md
 - Implementation plan: docs/plan.md
