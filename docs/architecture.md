@@ -1,6 +1,6 @@
 # Architecture
 
-Last updated: 2026-09-16
+Last updated: 2026-09-23
 
 This document describes DessPlay's internal structure: actor boundaries,
 message flow, and concurrency model. For the external protocol, see
@@ -140,6 +140,12 @@ inputs is a bug: it would be behavior the harness cannot see.
 **Seeder composition:** in seeder mode (`--seeder`), only SyncActor,
 NetworkActor, and FileActor are spawned -- no UI subsystem, no PlayerActor. The
 main loop is the same; the routing arms for absent actors simply never fire.
+
+**Oracle composition:** `--oracle` runs the same headless loop with only
+SyncActor and NetworkActor, plus an `oracle::Oracle` driver. The driver pulls
+a view on each `StateChanged`, runs model calls under `spawn_blocking`, and
+feeds finished answers back through a channel arm that posts `Mutation::Chat`
+(see [design](design.md#oracle)).
 
 The interactive client additionally spawns an [IrcActor](#ircactor) (the
 optional IRC chat bridge), wired in by `run_interactive` rather than

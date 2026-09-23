@@ -27,7 +27,7 @@ A `.env` file (gitignored) contains `DESSPLAY_PASSWORD` for the default rendezvo
 
 # Deployment
 
-The rendezvous server and the primary seeder run on **tsugumi.local** as systemd services **`dessplay-rendezvous`** and **`dessplay-seeder`**. Their NixOS configuration lives in `~/nixos/machines/tsugumi`.
+The rendezvous server, the primary seeder and the oracle run on **tsugumi.local** as systemd services **`dessplay-rendezvous`**, **`dessplay-seeder`** and **`dessplay-oracle`**. Their NixOS configuration lives in `~/nixos/machines/tsugumi`. The oracle's Anthropic key is the agenix secret `claude-api.key`.
 
 # Update tracks
 

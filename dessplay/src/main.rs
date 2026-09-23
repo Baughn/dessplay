@@ -34,6 +34,12 @@ struct Cli {
     #[arg(long)]
     seeder: bool,
 
+    /// Run headless as the oracle: answers chat lines starting with
+    /// `oracle:` using Claude with web search. Stateless like a seeder;
+    /// needs ANTHROPIC_API_KEY in the environment.
+    #[arg(long, conflicts_with_all = ["seeder", "headless"])]
+    oracle: bool,
+
     /// Rendezvous server, `host[:port]`. Overrides the stored setting.
     #[arg(long)]
     server: Option<String>,
@@ -186,8 +192,12 @@ fn main() -> color_eyre::Result<()> {
         }
         return Ok(());
     }
-    let interactive =
-        cli.command.is_none() && !cli.seeder && !cli.headless && !cli.dump && !cli.reset_sync;
+    let interactive = cli.command.is_none()
+        && !cli.seeder
+        && !cli.oracle
+        && !cli.headless
+        && !cli.dump
+        && !cli.reset_sync;
     // The TUI owns the screen: route logs to a file there. Without
     // this, supervisory failures (a crashed thread, a wedged shutdown)
     // are completely invisible.
@@ -244,6 +254,7 @@ fn main() -> color_eyre::Result<()> {
             builtin: cli.builtin_layout,
         },
         seeder: cli.seeder,
+        oracle: cli.oracle,
         server: cli.server,
         username: cli.username,
         password: cli.password,

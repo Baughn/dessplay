@@ -12,6 +12,10 @@ Add new days at the top. Add new entries at the bottom of existing days.
 ## 2026-09-23
 
 - Changed: AI commentary now uses Claude Opus 5.5.
+- Added: Ask the oracle in chat. Start a line with `oracle:` and a question,
+  and it answers briefly, searching the web when needed and avoiding
+  spoilers past the current episode. `Tab` completes `oracle: `.
+- Changed: Seeders now tab-complete in chat like other users.
 
 ## 2026-09-16
 

@@ -92,13 +92,14 @@ fn humanize_ago(elapsed_millis: u64) -> String {
     }
 }
 
-/// Names of chat participants: interactive peers that are present or lost
-/// (seeders and departed users excluded). Used for chat tab-completion and
-/// mention highlighting.
+/// Names of chat participants: peers that are present or lost (departed
+/// users excluded). Seeder-role peers are included, because the oracle
+/// runs in that role and is addressed by name (design.md, Oracle). Used
+/// for chat tab-completion and mention highlighting.
 pub fn chat_usernames(peers: &[PeerInfo]) -> Vec<String> {
     peers
         .iter()
-        .filter(|p| p.role != Role::Seeder && p.presence != Presence::Departed)
+        .filter(|p| p.presence != Presence::Departed)
         .map(|p| p.username.to_string())
         .collect()
 }
@@ -2834,6 +2835,19 @@ mod tests {
             addresses: vec![],
             connected_since: 0,
         }
+    }
+
+    /// The oracle runs in the seeder role and is addressed by name, so
+    /// seeder-role peers complete. Departed users don't.
+    #[test]
+    fn chat_usernames_include_seeder_role_peers_but_not_departed() {
+        let peers = [
+            peer("kim", Role::Interactive, Presence::Present),
+            peer("ghost", Role::Interactive, Presence::Lost),
+            peer("gone", Role::Interactive, Presence::Departed),
+            peer("oracle", Role::Seeder, Presence::Present),
+        ];
+        assert_eq!(chat_usernames(&peers), vec!["kim", "ghost", "oracle"]);
     }
 
     fn known_user(name: &str, last_seen: u64) -> dessplay_core::net::KnownUser {

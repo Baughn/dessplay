@@ -17,7 +17,7 @@ use dessplay_core::types::UserId;
 use tokio::sync::mpsc;
 
 use crate::actors::network::{NetworkCommand, NetworkEvent};
-use crate::actors::sync::SyncCommand;
+use crate::actors::sync::{SyncCommand, SyncEvent};
 use crate::client::{ClientConfig, ClientEvent, SyncConfigExtras, spawn_client};
 use crate::storage::Storage;
 
@@ -32,6 +32,9 @@ pub struct HeadlessArgs {
     /// Run as a seeder: no settings database, flags/env only, never
     /// gates playback.
     pub seeder: bool,
+    /// Run as the oracle (design.md, Oracle): stateless like a seeder,
+    /// but serves no files. It answers `oracle:` questions in chat.
+    pub oracle: bool,
     /// Server `host[:port]`.
     pub server: Option<String>,
     /// Username.
@@ -53,6 +56,14 @@ pub struct HeadlessArgs {
     /// Attach to a user-launched mpv at this IPC socket instead of
     /// spawning one (a dev/headless aid). Interactive only.
     pub attach_mpv: Option<PathBuf>,
+}
+
+impl HeadlessArgs {
+    /// Seeders and the oracle persist no settings or state and are
+    /// configured by flags/env only.
+    pub fn stateless(&self) -> bool {
+        self.seeder || self.oracle
+    }
 }
 
 /// Forward the local UI lines produced by the session shell (subtitle
@@ -321,7 +332,7 @@ pub(crate) async fn prepare(args: &HeadlessArgs) -> Result<ClientSetup, String> 
     // Settings: stored for interactive clients (flags override, never
     // persisted), flags/env only for seeders.
     let phase = std::time::Instant::now();
-    let storage = if args.seeder {
+    let storage = if args.stateless() {
         None
     } else {
         let path = match &args.db_path {
@@ -482,7 +493,20 @@ fn load_state_tolerant(
 pub async fn run_headless(args: HeadlessArgs) -> Result<(), String> {
     let start = std::time::Instant::now();
     let seeder = args.seeder;
+    let stateless = args.stateless();
     let db_path = args.db_path.clone();
+    // The oracle's API key comes from the environment only (the systemd
+    // unit exports it from a credential). Check it before connecting.
+    let oracle_token = if args.oracle {
+        Some(
+            std::env::var("ANTHROPIC_API_KEY")
+                .ok()
+                .filter(|key| !key.trim().is_empty())
+                .ok_or("--oracle needs ANTHROPIC_API_KEY in the environment")?,
+        )
+    } else {
+        None
+    };
 
     // Refuse to start if another dessplay process already owns this
     // database/cache. This is the colliding case from the field: a seeder and
@@ -502,7 +526,7 @@ pub async fn run_headless(args: HeadlessArgs) -> Result<(), String> {
     // Stored CRDT state, from the sibling sync database (the sync actor
     // owns the handle outright; opening it also completes the one-time
     // move of any legacy crdt_state row — we hold the instance lock).
-    let (initial, sync_storage) = if seeder {
+    let (initial, sync_storage) = if stateless {
         (None, None)
     } else {
         let sync_storage = crate::sync_storage::SyncStorage::open(&resolved_db)
@@ -511,7 +535,9 @@ pub async fn run_headless(args: HeadlessArgs) -> Result<(), String> {
         (initial, Some(sync_storage))
     };
 
-    let role = if seeder {
+    // The oracle shares the seeder role: headless, never gates playback.
+    // A new role would be a wire change old clients can't decode.
+    let role = if stateless {
         Role::Seeder
     } else {
         Role::Interactive
@@ -569,8 +595,20 @@ pub async fn run_headless(args: HeadlessArgs) -> Result<(), String> {
         (None, None)
     };
 
+    let (mut oracle, mut oracle_results) = match oracle_token {
+        Some(token) => {
+            let (oracle, results) = crate::oracle::Oracle::new(
+                UserId::new(&username),
+                Arc::new(crate::oracle::AnthropicOracle::new(token)),
+            );
+            tracing::info!("oracle: answering `{}` questions", crate::oracle::TRIGGER);
+            (Some(oracle), Some(results))
+        }
+        None => (None, None),
+    };
+
     // ---- Event loop until Ctrl-C.
-    let mut pin_pending = first_use && !seeder;
+    let mut pin_pending = first_use && !stateless;
     let mut first_connected = true;
     let mut first_peer_list = true;
     loop {
@@ -590,6 +628,17 @@ pub async fn run_headless(args: HeadlessArgs) -> Result<(), String> {
             } => {
                 if let (Some(output), Some(transfer)) = (output, seeder_transfer.as_mut()) {
                     transfer.on_file_output(output).await;
+                }
+            }
+            // Finished oracle answers: post them to chat.
+            outcome = async {
+                match &mut oracle_results {
+                    Some(rx) => rx.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                if let (Some(outcome), Some(oracle)) = (outcome, oracle.as_mut()) {
+                    oracle.on_outcome(outcome, &handle.sync).await;
                 }
             }
             event = handle.events.recv() => {
@@ -629,6 +678,14 @@ pub async fn run_headless(args: HeadlessArgs) -> Result<(), String> {
                         let peers = handle.peers.borrow().clone();
                         transfer.on_state(&view, &peers).await;
                     }
+                }
+                if let (Some(oracle), ClientEvent::Sync(SyncEvent::StateChanged)) =
+                    (oracle.as_mut(), &event)
+                {
+                    let adopted = *handle.state_adopted.borrow();
+                    oracle
+                        .on_state_changed(&handle.sync, adopted, (system_clock())())
+                        .await;
                 }
                 match event {
                     ClientEvent::Network(NetworkEvent::Connected { observed_addr }) => {

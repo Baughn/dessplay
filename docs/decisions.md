@@ -1781,3 +1781,58 @@ handling. Opus 5.5 can't disable thinking and defaults to `medium`
 effort, so effort is always stated explicitly: `low` for commentary and
 the curator. Commentary's `max_tokens` rose from 3000 to 8000 because
 thinking counts against it.
+
+
+## Oracle is a separate headless node (2026-09-23)
+
+**Rule:** The oracle is its own stateless headless process
+(`dessplay --oracle`) on the rendezvous host. It connects in the Seeder
+role and reads its API key from the environment; see
+[design.md](design.md#oracle).
+
+**Why:** Running the feature in every client would need every client to
+hold a key, and would need an election so only one of them answers. One
+node with a server-held key (agenix, the existing `claude-api.key`)
+answers exactly once, and it is up whenever the server is. We reused the
+Seeder role instead of adding a `Role::Utility`, because a new variant is
+a wire change that older clients can't deserialize. The roles already
+mean the right thing: headless and never gating playback. The cost was
+that seeders were excluded from chat tab-completion. That exclusion was
+dropped, since completing the colocated seeder's name is harmless and
+completing `oracle: ` is the point.
+
+## Oracle answers only questions that arrive while it watches (2026-09-23)
+
+**Rule:** The oracle baselines the first adopted chat view, dedupes lines
+by content rather than list position, and ignores questions older than
+5 minutes with a cutoff that never moves backwards; see
+[design.md](design.md#oracle).
+
+**Why:** A stateless client re-adopts the whole chat on every restart and
+reconnect. Answering from that would replay old questions. List indices
+are not stable, because GList merges can insert mid-list. The age cutoff
+covers a line that surfaces late after a partition, when the asker has
+long since moved on. It also bounds the seen-set's memory. The cutoff
+never moves backwards so that a local clock step can't revive a line
+that has already aged out. The property test
+`each_fresh_question_is_answered_exactly_once` fails when the baseline
+is removed.
+
+## Oracle uses server-side web tools (2026-09-23)
+
+**Rule:** The oracle grounds answers with Anthropic's server-side
+`web_search_20260209` and `web_fetch_20260209` tools. It uses a combined
+budget of 16 calls per answer, and exhaustion is signalled by a
+mid-conversation system message, not by changing the tools; see
+[design.md](design.md#oracle).
+
+**Why:** The server-side tools fetch and condense pages on Anthropic's
+side (dynamic filtering), so we have no HTML-to-text dependency and no
+scraping code to maintain. `max_uses` applies per request, and every
+`pause_turn` continuation is a new request, so the loop enforces the
+budget itself. Changing `tools` mid-answer would break the
+byte-identical prefix that prompt caching and preserved thinking rely
+on. A system message appended after the paused assistant turn leaves
+the prefix intact. The wrap-up request is the last one sent, so an
+answer costs a bounded number of requests even if the model keeps
+searching.

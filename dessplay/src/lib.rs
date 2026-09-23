@@ -25,6 +25,7 @@ pub mod dump;
 pub mod import;
 pub mod instance_lock;
 pub mod logging;
+pub mod oracle;
 pub mod placeholder;
 pub mod player;
 pub mod roguelike;

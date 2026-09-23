@@ -783,8 +783,8 @@ different encodes/versions. See [Content Hash](#content-hash).
   Your **own** messages are not echoed to your OSD
 - **Username tab-completion**: pressing `Tab` completes the word at the end
   of the input when it is a non-empty, case-insensitive prefix of an online
-  username (present or lost interactive peers; seeders and departed users
-  excluded). When the buffer is *nothing but* that prefix the completion
+  username (present or lost peers, seeder-role peers such as the
+  [oracle](#oracle) included; departed users excluded). When the buffer is *nothing but* that prefix the completion
   appends `": "` (the IRC "Baughn: " address form); mid-sentence it just
   fills in the name. If several names match, repeated `Tab` (without an
   intervening edit) cycles through them. When the trailing word matches no
@@ -2150,6 +2150,64 @@ to its whole line), re-copying on each step. Any other key or click —
 or the timeout — dismisses the highlight; the clipboard keeps the last
 copy. A motionless click never touches the clipboard.
 (why: [decisions](decisions.md#chat-selection-copies-on-release-with-no-copy-key))
+
+### Oracle
+
+The **oracle** is a headless utility client that answers questions
+asked in chat. It runs as `dessplay --oracle` on the rendezvous host,
+under the username `oracle`.
+
+- **Trigger.** A chat line that starts with `oracle:` (case-insensitive,
+  leading whitespace allowed) and has a non-empty question after the
+  prefix. `/me` actions and the oracle's own lines never trigger. The
+  name tab-completes like any user's, and in an empty input box `Tab`
+  produces exactly `oracle: `.
+- **Only new questions.** Nothing is answered before the client has
+  adopted the server's state. The first adopted view is the baseline:
+  everything already in chat is history. After that a line is
+  identified by its content (sender, timestamp, text), never by its
+  position in the list. Questions more than 5 minutes old are ignored,
+  and that cutoff never moves backwards. A reconnect or restart
+  therefore never re-answers anything
+  (why: [decisions](decisions.md#oracle-answers-only-questions-that-arrive-while-it-watches-2026-09-23)).
+- **Context.** Each question goes to the
+  [Anthropic model](#anthropic-model) at medium effort. The request
+  carries:
+  - the now-playing series, episode number, filename and approximate
+    position (the freshest synced position for that file)
+  - the last 50 chat lines, question included
+  - the question itself
+- **Grounding.** The request enables Anthropic's server-side
+  `web_search` and `web_fetch` tools. They fetch and condense pages on
+  Anthropic's side, so the client never parses HTML
+  (why: [decisions](decisions.md#oracle-uses-server-side-web-tools-2026-09-23)).
+- **Search budget.** Each answer may use at most 16 searches and fetches
+  combined, counted across `pause_turn` continuations. Once the budget
+  is spent, the oracle sends no more continuations. It sends one wrap-up
+  request, a mid-conversation system message telling the model to answer
+  from what it has, and nothing after that. Tools and the system prompt
+  never change mid-answer, so the request prefix stays byte-identical.
+  Continuations are also capped at 16 regardless of tool count.
+- **Answers.** The prompt asks for chat-sized plain text, usually one to
+  three sentences. It forbids spoilers past the current episode, even
+  when a fetched page contains them: if an honest answer would spoil,
+  the oracle says so and declines. The reply is the trailing text of the
+  model's turn. Citation metadata is dropped and no sources are listed.
+  It is posted as ordinary chat, split on blank lines, at most 4
+  messages and 1200 characters in total, with `…` marking any cut.
+- **One at a time.** One question is in flight at a time. Up to 3 more
+  wait in a queue; anything beyond that is dropped with a warning.
+- **Failures.** The asker should never be met with silence. Any failure
+  posts one line, "Sorry, I couldn't look that up just now." A refusal
+  posts "Sorry, I can't help with that one." Details go to the log at
+  warn.
+- **Role and key.** The oracle connects with the Seeder role, so it
+  never gates playback and appears on the Users pane's seeders line. It
+  serves no files. Like a seeder it persists nothing and is configured
+  by flags and environment only. Its API key comes from
+  `ANTHROPIC_API_KEY`, which is separate from the client-provisioned
+  `anthropic_token`
+  (why: [decisions](decisions.md#oracle-is-a-separate-headless-node-2026-09-23)).
 
 ### Pane search
 
