@@ -12,6 +12,7 @@
 
 pub mod actors;
 pub mod advisor;
+pub mod anthropic;
 pub mod build_cache;
 pub mod changelog;
 pub mod chat_images;

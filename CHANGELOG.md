@@ -9,6 +9,10 @@ append-only; you cannot reword or remove existing entries.
 
 Add new days at the top. Add new entries at the bottom of existing days.
 
+## 2026-09-23
+
+- Changed: AI commentary now uses Claude Opus 5.5.
+
 ## 2026-09-16
 
 - Fixed: A busy terminal no longer loses browser or search replies, leaves

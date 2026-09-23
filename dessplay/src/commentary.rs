@@ -64,22 +64,22 @@ use rand::{Rng, SeedableRng};
 use tokio::sync::mpsc;
 
 use crate::advisor::AdvisorContext;
+use crate::anthropic::{self, Anthropic, ApiError};
 use crate::config::CommentaryInterval;
 
-/// The model every call uses. Hardcoded on purpose: this is a
-/// single-user gimmick, not a configuration surface.
-const MODEL: &str = "claude-opus-4-6";
+/// The model every call uses: the project-wide constant. Not a
+/// configuration surface — this is a single-user gimmick.
+use dessplay_core::ai::ANTHROPIC_MODEL as MODEL;
 /// Thinking effort for both calls — the task is short and low-stakes.
-/// Paired with `thinking: {type: "adaptive"}` (the recommended shape on
-/// the pinned model and the only accepted on-mode on newer ones — the
-/// old fixed-budget `{type: "enabled", budget_tokens}` shape is
-/// deprecated on claude-opus-4-6 and a 400 on anything newer, so a
-/// routine model bump must never resurrect it).
+/// Always explicit: the pinned model's default is `medium`. Paired with
+/// `thinking: {type: "adaptive"}` (thinking can't be disabled on the
+/// pinned model, and the old fixed-budget `{type: "enabled",
+/// budget_tokens}` shape is a 400, so a routine model bump must never
+/// resurrect it).
 const EFFORT: &str = "low";
 /// Caps thinking *plus* text: adaptive thinking spends out of the same
 /// `max_tokens` budget as the reply, so it must not be lowballed.
-const MAX_TOKENS: u32 = 3000;
-const API_URL: &str = "https://api.anthropic.com/v1/messages";
+const MAX_TOKENS: u32 = 8000;
 /// Vision calls are slow; the nyaa agent's 30s would spuriously abort.
 const HTTP_TIMEOUT: Duration = Duration::from_secs(120);
 /// Chance per tick of re-rolling the commentator once one exists. The
@@ -353,19 +353,6 @@ fn normalize_comment(name: &str, raw: &str) -> String {
     line
 }
 
-/// Pull the human-readable message out of an Anthropic error body
-/// (`{"type":"error","error":{"message":…}}`), falling back to a
-/// truncated raw snippet — a 4xx must always say *why*, not just that
-/// it happened.
-fn api_error_detail(body: &[u8]) -> String {
-    if let Ok(v) = serde_json::from_slice::<serde_json::Value>(body)
-        && let Some(msg) = v["error"]["message"].as_str()
-    {
-        return msg.to_string();
-    }
-    String::from_utf8_lossy(body).chars().take(200).collect()
-}
-
 // ---- Request bodies (pure; the shapes are unit-tested) ------------------
 
 /// One user message's content blocks: the frame (if any), then the
@@ -437,82 +424,33 @@ fn build_character_body(req: &CharacterRequest) -> serde_json::Value {
 
 // ---- The Anthropic implementation ---------------------------------------
 
-/// The real model client. Deliberately no `Debug` impl — it holds the
-/// API token.
+/// The real model client, over the shared [`Anthropic`] transport.
 pub struct AnthropicModel {
-    agent: ureq::Agent,
-    token: String,
+    client: Anthropic,
 }
 
 impl AnthropicModel {
     /// A client for the given API token.
     pub fn new(token: String) -> Self {
         Self {
-            agent: ureq::Agent::from(
-                ureq::config::Config::builder()
-                    .timeout_global(Some(HTTP_TIMEOUT))
-                    // A 4xx must reach us as a response, not an error:
-                    // the body names the offending field, and ureq's
-                    // status-as-error discards it (a bare "http status:
-                    // 400" was undiagnosable, 2026-07-26).
-                    .http_status_as_error(false)
-                    .build(),
-            ),
-            token,
+            client: Anthropic::new(token, HTTP_TIMEOUT),
         }
     }
 
     /// One Messages call; returns the first text block. `what` labels
     /// the token-usage log line ("cast" / "comment").
     fn call(&self, body: &serde_json::Value, what: &str) -> Result<String, CommentaryError> {
-        let bytes = serde_json::to_vec(body)
-            .map_err(|e| CommentaryError::Api(format!("encoding request: {e}")))?;
-        let response = self
-            .agent
-            .post(API_URL)
-            .header("x-api-key", &self.token)
-            .header("anthropic-version", "2023-06-01")
-            .header("content-type", "application/json")
-            .send(&bytes[..])
-            .map_err(|e| CommentaryError::Http(e.to_string()))?;
-        let status = response.status();
-        let reply = response
-            .into_body()
-            .with_config()
-            .limit(4 * 1024 * 1024)
-            .read_to_vec()
-            .map_err(|e| CommentaryError::Http(format!("reading response: {e}")))?;
-        if !status.is_success() {
-            return Err(CommentaryError::Http(format!(
-                "status {}: {}",
-                status.as_u16(),
-                api_error_detail(&reply)
-            )));
-        }
-        let reply: serde_json::Value = serde_json::from_slice(&reply)
-            .map_err(|e| CommentaryError::Api(format!("parsing response: {e}")))?;
-        // Token accounting at info: the caching setup is invisible
-        // otherwise, and "is the cache hitting?" is one grep away.
-        let usage = &reply["usage"];
-        tracing::info!(
-            call = what,
-            input_tokens = usage["input_tokens"].as_u64().unwrap_or(0),
-            output_tokens = usage["output_tokens"].as_u64().unwrap_or(0),
-            cache_read_tokens = usage["cache_read_input_tokens"].as_u64().unwrap_or(0),
-            cache_write_tokens = usage["cache_creation_input_tokens"].as_u64().unwrap_or(0),
-            "commentary: token usage"
-        );
-        if reply["stop_reason"].as_str() == Some("refusal") {
+        let reply = self
+            .client
+            .messages(body, &format!("commentary/{what}"))
+            .map_err(|e| match e {
+                ApiError::Http(e) => CommentaryError::Http(e),
+                ApiError::Api(e) => CommentaryError::Api(e),
+            })?;
+        if anthropic::is_refusal(&reply) {
             return Err(CommentaryError::Refused);
         }
-        reply["content"]
-            .as_array()
-            .and_then(|blocks| {
-                blocks
-                    .iter()
-                    .find(|block| block["type"].as_str() == Some("text"))
-            })
-            .and_then(|block| block["text"].as_str())
+        anthropic::first_text(&reply)
             .map(str::to_string)
             .ok_or_else(|| CommentaryError::Api("no text block in response".into()))
     }
@@ -1757,8 +1695,8 @@ mod tests {
 
     /// Both request bodies use the same deliberate thinking depth:
     /// `thinking: {type: "adaptive"}` with `output_config.effort` (the
-    /// recommended shape on the pinned claude-opus-4-6 and the only
-    /// accepted on-mode on newer models). The deprecated
+    /// only accepted on-mode on the pinned model, where thinking can't
+    /// be disabled). The deprecated
     /// `{type: "enabled", budget_tokens}` shape must never reappear —
     /// it turns a routine model bump into a 400 on every call
     /// (2026-08-12 review).
@@ -2225,16 +2163,6 @@ mod tests {
             None
         );
         assert!(!path.exists(), "the oversized frame is still cleaned up");
-    }
-
-    /// An Anthropic 4xx body names the offending field; the logged
-    /// error must carry that message, not a bare "http status: 400"
-    /// (which is what made the original failure undiagnosable).
-    #[test]
-    fn api_error_details_are_extracted_from_the_body() {
-        let body = br#"{"type":"error","error":{"type":"invalid_request_error","message":"image exceeds 10 MB maximum"}}"#;
-        assert_eq!(api_error_detail(body), "image exceeds 10 MB maximum");
-        assert_eq!(api_error_detail(b"not json at all"), "not json at all");
     }
 
     /// Regression (2026-08-12 review): a panic inside the blocking job

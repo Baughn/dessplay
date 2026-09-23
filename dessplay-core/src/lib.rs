@@ -11,6 +11,7 @@
 #![deny(clippy::todo)]
 #![deny(clippy::dbg_macro)]
 
+pub mod ai;
 pub mod compact;
 pub mod derive;
 pub mod episode_parse;

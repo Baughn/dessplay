@@ -1,6 +1,6 @@
 # DessPlay Design Document
 
-Last updated: 2026-09-16
+Last updated: 2026-09-23
 
 A synchronized video player for watch parties. Terminal-first, built for
 reliability over flaky connections. Server-coordinated, including relayed
@@ -1994,13 +1994,24 @@ suggestion > blank**.
 
 The row is dead to the mouse (it is outside every pane rect).
 
+### Anthropic model
+
+Every Anthropic call in the project (commentary, the short-title
+curator, the [oracle](#oracle)) uses **one** model, `claude-opus-5-5`,
+named once in `dessplay_core::ai`. On that model thinking is always on
+and the default effort is `medium`, so every request pins
+`output_config.effort` explicitly and sizes `max_tokens` for thinking
+plus the reply
+(why: [decisions](decisions.md#one-anthropic-model-constant-2026-09-23)).
+
 ### AI Commentary (the marquee)
 
 A **single-user gimmick** (the settings tab says "Baughn only"): on the
 configured interval — jittered ±15 s per comment, and only while
 connected, playing, and holding the now-playing file — the client with
-an Anthropic token asks **claude-opus-4-6** (adaptive thinking at low
-effort, hardcoded) to react to the episode *in character*, and the
+an Anthropic token asks the project's
+[Anthropic model](#anthropic-model) (adaptive thinking at low effort,
+hardcoded) to react to the episode *in character*, and the
 reply scrolls across the bottom line's middle slot on **every** client.
 (why: [decisions](decisions.md#commentary-model-and-request-shape))
 

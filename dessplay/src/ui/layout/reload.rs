@@ -272,7 +272,7 @@ mod tests {
             }
         }
         let _restore = RestorePermissions(unrelated.clone());
-        std::fs::set_permissions(&unrelated, std::fs::Permissions::from_mode(0)).unwrap();
+        std::fs::set_permissions(&unrelated, std::fs::Permissions::from_mode(0o0)).unwrap();
         // Exercise registration both before and after the override tree exists.
         for initially_present in [false, true] {
             let directory = parent.path().join(if initially_present {

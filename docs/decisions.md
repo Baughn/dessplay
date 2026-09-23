@@ -1,6 +1,6 @@
 # DessPlay Decision Log
 
-Last updated: 2026-09-16
+Last updated: 2026-09-23
 
 The reasoning behind the rules in [design.md](design.md): the failure that
 motivated each one, the alternatives that were rejected, and the date it
@@ -1040,7 +1040,7 @@ text/repetition pipeline while their existing keymaps remain in controllers.
 
 ### Commentary model and request shape
 
-**Rule:** Commentary calls `claude-opus-4-6` with adaptive thinking at low effort, hardcoded, jittered ±15 s per tick; see [design.md](design.md#ai-commentary-the-marquee).
+**Rule:** Commentary calls the project's Anthropic model with adaptive thinking at low effort, hardcoded, jittered ±15 s per tick; see [design.md](design.md#ai-commentary-the-marquee).
 
 **Why:** The feature is just for fun and explicitly a single-user gimmick. Adaptive thinking is the forward-compatible request shape; the deprecated fixed thinking-token budget is never used. The jitter keeps the comments from feeling metronomic.
 
@@ -1761,3 +1761,23 @@ concealment; Enter restores the full message presentation and image previews.
 Series, Users, Playlist, Subtitles, and Logs already use relevance-ranked
 collections; file browsing ranks through the same scorer with directory grouping.
 The chat-specific chronology exception was the only sibling to remove.
+
+
+## One Anthropic model constant (2026-09-23)
+
+**Rule:** All Anthropic calls use `dessplay_core::ai::ANTHROPIC_MODEL`
+(`claude-opus-5-5`), each with an explicit effort; see
+[design.md](design.md#anthropic-model).
+
+**Why:** Commentary and the curator had each hardcoded their own model
+and had drifted apart (`claude-opus-4-6` and `claude-opus-5`). With one
+constant, a model bump is a single edit that can't miss a feature. The
+constant sits in `dessplay-core` because the curator runs in the
+rendezvous crate and the other features run in the client. Only the
+constant is shared across crates. The client-side transport
+(`dessplay/src/anthropic.rs`) is shared by commentary and the oracle.
+The curator keeps its own transport because it needs different timeout
+handling. Opus 5.5 can't disable thinking and defaults to `medium`
+effort, so effort is always stated explicitly: `low` for commentary and
+the curator. Commentary's `max_tokens` rose from 3000 to 8000 because
+thinking counts against it.

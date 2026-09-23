@@ -35,11 +35,12 @@ use dessplay_core::types::AniDbSeriesId;
 
 use crate::storage::TitleRow;
 
-/// The model every call uses. Current Opus tier; the task is a trivial
-/// knowledge lookup, so `effort: low` keeps it cheap and fast.
-const MODEL: &str = "claude-opus-5";
-/// The Messages endpoint.
-const API_URL: &str = "https://api.anthropic.com/v1/messages";
+// The model every call uses: the project-wide constant. The task is a
+// trivial knowledge lookup, so `effort: low` keeps it cheap and fast.
+use dessplay_core::ai::{
+    ANTHROPIC_API_URL as API_URL, ANTHROPIC_MODEL as MODEL, ANTHROPIC_VERSION,
+};
+
 /// Whole-request timeout. Batches are small and effort is low, but
 /// thinking is on by default on this model tier and the call is
 /// non-streaming, so the whole generation must fit in this window —
@@ -165,7 +166,7 @@ impl ShortTitleCurator for AnthropicCurator {
             .agent
             .post(API_URL)
             .header("x-api-key", token)
-            .header("anthropic-version", "2023-06-01")
+            .header("anthropic-version", ANTHROPIC_VERSION)
             .header("content-type", "application/json")
             .send(&body[..])
             .map_err(classify_send_error)?;
