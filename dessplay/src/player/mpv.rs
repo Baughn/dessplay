@@ -216,6 +216,24 @@ impl MpvPlayer {
         ] {
             player.command(json!(["set_property", name, value])).await?;
         }
+        // A resident pitch corrector for drift slew. mpv's automatic one
+        // (autoaspeed, `--audio-pitch-correction`) inserts a fresh
+        // scaletempo2 on leaving speed 1.0 and drains it on returning,
+        // with no crossfade — each splice is an audible click. A
+        // user-chain instance takes the speed commands instead and stays
+        // put, passing audio through near 1.0 with a sample-exact
+        // re-sync. `add` appends after the user's own filters (the last
+        // tempo filter in the chain wins) and the label makes re-adding
+        // on reconnect a replace. `change-list` rather than the `af`
+        // command, which would flash the filter list on the OSD.
+        player
+            .command(json!([
+                "change-list",
+                "af",
+                "add",
+                "@dessplay-tempo:scaletempo2"
+            ]))
+            .await?;
         for (id, name) in [
             (OBS_PAUSE, "pause"),
             (OBS_TIME_POS, "time-pos"),

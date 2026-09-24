@@ -10,8 +10,12 @@
 //! Measured against real mpv (2026-07-22): a **sustained** ±2%
 //! pitch-corrected slew is spectrally indistinguishable from baseline,
 //! but every speed **transition** is a broadband click, and a short
-//! 1.0 → 0.98 → 1.0 blip puts artifacts within 10dB of the signal. So
-//! the controller's job is to spend as few transitions as possible:
+//! 1.0 → 0.98 → 1.0 blip puts artifacts within 10dB of the signal. (The
+//! click came from mpv inserting and draining scaletempo2 at speed 1.0,
+//! which the player's resident tempo filter now avoids; see
+//! docs/decisions.md, "Resident scaletempo2 for drift slew". The
+//! transition budget below predates that fix.) So the controller's job
+//! is to spend as few transitions as possible:
 //!
 //! - **Hysteresis**: engage above [`DRIFT_ENGAGE_MILLIS`], but keep
 //!   correcting until the drift is under [`DRIFT_RELEASE_MILLIS`]. The

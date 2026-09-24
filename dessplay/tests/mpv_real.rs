@@ -235,6 +235,33 @@ async fn expect_profile_marker(probe: &mut Probe, context: &str) {
     panic!("{context}: sub-pos is {last}, expected {PROFILE_SUB_POS} from the [dessplay] profile");
 }
 
+/// Assert setup's resident tempo filter is in the user filter chain,
+/// alongside (not instead of) the profile's own filter. mpv's automatic
+/// pitch correction inserts scaletempo2 on leaving speed 1.0 and drains
+/// it on returning, and each splice is an audible click; a resident
+/// user-chain instance takes the speed commands instead and stays put.
+/// Polls for the same reason as [`expect_profile_marker`].
+async fn expect_resident_tempo_filter(probe: &mut Probe, context: &str) {
+    let deadline = tokio::time::Instant::now() + BUDGET;
+    let mut last = Value::Null;
+    while tokio::time::Instant::now() < deadline {
+        last = probe.get("af").await;
+        let filters = last.as_array().cloned().unwrap_or_default();
+        let has = |name: &str, label: Option<&str>| {
+            filters.iter().any(|f| {
+                f["name"] == name && label.is_none_or(|l| f["label"] == l) && f["enabled"] != false
+            })
+        };
+        if has("scaletempo2", Some("dessplay-tempo")) && has("lavfi", None) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!(
+        "{context}: af is {last}, expected the profile's lavfi plus @dessplay-tempo:scaletempo2"
+    );
+}
+
 /// Load a file and wait until mpv confirms it opened.
 async fn load_and_settle(player: &MpvPlayer, path: &Path, title: Option<&str>) {
     player.load(path, title).await.unwrap();
@@ -289,7 +316,7 @@ async fn dessplay_profile_holds_across_arbitrary_player_sequences() {
     std::fs::create_dir(&conf_dir).unwrap();
     std::fs::write(
         conf_dir.join("mpv.conf"),
-        format!("[dessplay]\nsub-pos={PROFILE_SUB_POS}\n"),
+        format!("[dessplay]\nsub-pos={PROFILE_SUB_POS}\naf=lavfi=[anull]\n"),
     )
     .unwrap();
 
@@ -312,6 +339,7 @@ async fn dessplay_profile_holds_across_arbitrary_player_sequences() {
         let mut probe = Probe::connect(&socket).await;
         // Applied while idle, before anything has loaded at all.
         expect_profile_marker(&mut probe, &format!("seed {seed}: idle after launch")).await;
+        expect_resident_tempo_filter(&mut probe, &format!("seed {seed}: idle after launch")).await;
 
         // The reported scenario, pinned: the placeholder loads first,
         // then the real episode swaps in over it.
@@ -352,6 +380,7 @@ async fn dessplay_profile_holds_across_arbitrary_player_sequences() {
             }
             drain_events(&player).await;
             expect_profile_marker(&mut probe, &context).await;
+            expect_resident_tempo_filter(&mut probe, &context).await;
         }
 
         // Let this mpv die fully before the next seed reuses the socket.

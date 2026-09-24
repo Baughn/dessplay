@@ -541,6 +541,12 @@ their authored chrome when the form is rearranged.
 
 **Why:** A sustained pitch-corrected 2% slew is inaudible, but each speed *transition* is a broadband click. Corrections must therefore be few and long rather than frequent and brief, which is what the wide engage/release gap and the rate limit buy.
 
+### Resident scaletempo2 for drift slew
+
+**Rule:** On every mpv connection, setup appends a labelled `scaletempo2` to the user audio filter chain. See [design.md](design.md#commands-sent-to-player).
+
+**Why (2026-09-24):** The per-transition click found on 2026-07-22 comes from mpv's automatic pitch correction (autoaspeed, `filters/f_auto_filters.c` in mpv 0.41.0), not from scaletempo2's time stretching. Autoaspeed creates a new scaletempo2 when speed leaves 1.0. When speed returns to 1.0 it drains that instance with EOF and deletes it, which pads the tail with silence and truncates it. Neither splice is crossfaded, and WSOLA output is only aligned with its input to within ±20ms, so each splice clicks. Speed changes that stay away from 1.0 go to the existing instance and are smooth. A user-chain tempo filter takes the speed commands instead (`set_speed_any`), so autoaspeed stays inactive. The resident instance passes audio through near 1.0 and re-syncs exactly on entry. Doing this over IPC in setup, rather than with a launch flag, also covers `--attach-mpv` and survives a profile that sets `af`. We use `add` rather than `set` so the user's own filters are kept. Rejected: waiting for an upstream fix, since the handoff to mpv is in progress but a patch would take a release cycle to reach users. Measured by `dessplay/tests/mpv_audio.rs`: the worst splice went from -9.8dB out-of-chord energy (with about 14ms of audio dropped) to -141.6dB, which is float rounding. The hysteresis and rate limiting above predate this fix and are kept for now. They could be relaxed, but that is a separate decision.
+
 ### Invalid user authority is never followed
 
 **Rule:** A user seek authority is followed only when that user is present and advertises the now-playing file `Ready` or `DownloadingPlayable`; otherwise it is treated like Server authority. See [design.md](design.md#playback-rules).

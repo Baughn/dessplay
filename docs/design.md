@@ -3140,6 +3140,11 @@ for it to come back. Interactive-only; seeders have no player.
 - `seek <seconds>`: Seek to position
 - `set_property speed <factor>`: Slew playback rate for drift correction
   (±2% max; mpv's pitch correction makes this inaudible)
+- `change-list af add @dessplay-tempo:scaletempo2` (at connection setup,
+  after the `[dessplay]` profile): a resident pitch corrector appended to
+  the user's audio filters. Speed changes go to it, not to mpv's automatic
+  one, so crossing speed 1.0 never adds or removes a filter
+  (why: [decisions](decisions.md#resident-scaletempo2-for-drift-slew))
 - `get_property time-pos`: Query current position
 - `osd-overlay <id> ...`: Persistent OSD overlays — one slot for the
   rolling chat log (top-left, per-message 8s minimum retention), one for
