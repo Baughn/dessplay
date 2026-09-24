@@ -1,6 +1,6 @@
 # Testing Strategy
 
-Last updated: 2026-09-16
+Last updated: 2026-09-24
 
 ## Table of Contents
 
@@ -554,10 +554,23 @@ panic message. This lives here rather than as a fuzz target because
 the oracle is real mpv's option state — dessplay keeps no profile
 state to fuzz in-process.
 
+An **audio artifact test** (`dessplay/tests/mpv_audio.rs`) checks that
+drift slew is free of audible splices. A periodic four-tone chord plays
+through the production `MpvPlayer`, captured with `--ao=pcm` and paced
+by `lavfi=[arealtime]`. Speed steps follow a wall-clock schedule,
+because time-pos under an untimed AO isn't a stream clock. The test
+fails on any frame with energy outside the chord's bins, and on output
+that isn't stretched as far as the schedule implies. The chord's period
+(5.3ms) sits inside scaletempo2's similarity search, so sustained
+stretching is sample-exact and only transitions can splatter. The
+spectral detector is property-tested without mpv (skips, repeats and
+dropouts anywhere in the chord), so that part runs in the default gate.
+
 - Requires the `mpv` binary; gated behind `--features mpv-tests`.
 - The test video is encoded on the fly *by mpv itself* from a lavfi
   source — no committed media, no ffmpeg dependency.
-- mpv runs with `--vo=null --ao=null --force-window=no`.
+- mpv runs with `--vo=null --ao=null --force-window=no` (the audio
+  test swaps `--ao=null` for `--ao=pcm`).
 - Processes are spawned with tokio's `kill_on_drop`, so failures don't
   leak mpv instances.
 
