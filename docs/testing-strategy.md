@@ -1,6 +1,6 @@
 # Testing Strategy
 
-Last updated: 2026-09-24
+Last updated: 2026-09-26
 
 ## Table of Contents
 
@@ -274,6 +274,19 @@ Codex test subprocesses inherit its filesystem and network restrictions; see
 the [official sandbox documentation](https://learn.chatgpt.com/docs/sandboxing).
 Allowlisting an HTTP destination is not a substitute for permission to create
 raw UDP listeners and Unix sockets.
+
+### macOS: test binaries run from a clone
+
+`.cargo/config.toml` sets a macOS target runner, `.cargo/deps-runner.sh`,
+that runs each binary from `target/*/deps/` as an APFS clone in
+`$TMPDIR/dessplay-test-bins/`. On macOS every FSEvents registration takes
+about 0.7 s when the running executable's real path is in a huge
+directory. `deps/` keeps every old codegen unit's `.o` file (about 480k
+entries after a long session), and notify re-registers its stream on
+every `watch`/`unwatch`. Together those timed out the layout
+live-reload tests. Symlinks and hardlinks don't help because they
+resolve to the `deps/` path; a clone is a new file and costs nothing.
+`cargo run` of the app itself is not redirected.
 
 ### Nextest profiles and case counts
 

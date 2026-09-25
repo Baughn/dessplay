@@ -1,0 +1,5 @@
+# Test binaries in target/*/deps/ run through a symlink outside that
+# (huge) directory, which macOS FSEvents registration is slow for. See
+# the script for details.
+[target.'cfg(target_os = "macos")']
+runner = ".cargo/deps-runner.sh"
