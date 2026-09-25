@@ -1,6 +1,6 @@
 # DessPlay Decision Log
 
-Last updated: 2026-09-23
+Last updated: 2026-09-26
 
 The reasoning behind the rules in [design.md](design.md): the failure that
 motivated each one, the alternatives that were rejected, and the date it
@@ -1842,3 +1842,24 @@ on. A system message appended after the paused assistant turn leaves
 the prefix intact. The wrap-up request is the last one sent, so an
 answer costs a bounded number of requests even if the model keeps
 searching.
+
+## Oracle marks now-playing switches in its chat window (2026-09-26)
+
+**Rule:** The oracle interleaves a `--- now playing changed from X to Y`
+marker into the chat lines it sends, at the switch's LWW stamp; see
+[design.md](design.md#oracle).
+
+**Why:** The group keeps talking about the previous episode for a while
+after moving on. With only the current episode in `<now_playing>`, the
+model has no way to tell that a question refers to the earlier one. A marker inline in the chat says exactly
+which lines came before the switch; a separate list of switches would
+leave the model to line up timestamps itself. The stamp comes from the
+`now_playing` register (exposed as `StateView::now_playing_since`), which
+is the same Lamport shared clock chat uses. Observation time would land
+a network hop late and put the marker after lines typed just after the
+switch. The shared state only holds the current file, so "from" is known
+only to an observer: the oracle records switches as it watches them and
+caches each file's label while it plays, because the old entry may leave
+the playlist in the same update. It persists nothing, like a seeder, so
+a restart forgets earlier switches. Its adoption state is a baseline,
+the same as for chat questions.

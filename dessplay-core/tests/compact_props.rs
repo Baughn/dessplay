@@ -51,6 +51,8 @@ fn assert_views_match(rebuilt: &StateView, expected: &StateView) {
         for entry in &mut view.playlist {
             entry.state.position = crdts::Identifier::between(None, None, ActorId::SERVER);
         }
+        // Compaction restamps every register; only the value survives.
+        view.now_playing_since = None;
         view
     };
     assert_eq!(strip(rebuilt), strip(expected));

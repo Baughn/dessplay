@@ -1,6 +1,6 @@
 # DessPlay Design Document
 
-Last updated: 2026-09-23
+Last updated: 2026-09-26
 
 A synchronized video player for watch parties. Terminal-first, built for
 reliability over flaky connections. Server-coordinated, including relayed
@@ -2175,7 +2175,15 @@ under the username `oracle`.
   carries:
   - the now-playing series, episode number, filename and approximate
     position (the freshest synced position for that file)
-  - the last 50 chat lines, question included
+  - the last 50 chat lines, question included, with a
+    `--- now playing changed from X to Y` marker wherever the
+    now-playing file switched inside that window. X and Y name the
+    series, episode and filename when known, or `nothing`. A marker sits
+    at the switch's timestamp, so the model can tell talk about the
+    previous episode from talk about the current one. Only switches the
+    oracle watched happen count: the state at adoption is a baseline, the
+    last 16 are kept in memory, and a restart forgets them
+    (why: [decisions](decisions.md#oracle-marks-now-playing-switches-in-its-chat-window-2026-09-26)).
   - the question itself
 - **Grounding.** The request enables Anthropic's server-side
   `web_search` and `web_fetch` tools. They fetch and condense pages on

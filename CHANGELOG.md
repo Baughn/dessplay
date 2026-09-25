@@ -9,6 +9,12 @@ append-only; you cannot reword or remove existing entries.
 
 Add new days at the top. Add new entries at the bottom of existing days.
 
+## 2026-09-26
+
+- Changed: The oracle now knows when you switched episodes during the
+  recent chat, so questions about the previous episode are answered
+  about that one.
+
 ## 2026-09-24
 
 - Fixed: Drift correction no longer makes an audible click when it starts

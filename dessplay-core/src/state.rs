@@ -995,6 +995,7 @@ impl CrdtState {
             playlist: self.playlist_entries(),
             watched: map_view(&self.watched),
             now_playing: resolve_value(&self.now_playing).flatten(),
+            now_playing_since: self.now_playing.timestamp(),
             seek_authority: resolve_value(&self.seek_authority),
             playback_intent: resolve_value(&self.playback_intent).unwrap_or(PlaybackIntent::Paused),
             series_preference: map_view(&self.series_preference),
@@ -1267,6 +1268,10 @@ pub struct StateView {
     pub watched: BTreeMap<Ed2kHash, bool>,
     /// The currently playing file.
     pub now_playing: Option<Ed2kHash>,
+    /// The LWW stamp of the last `now_playing` write (compaction
+    /// restamps it without changing the value).
+    #[serde(default)]
+    pub now_playing_since: Option<SharedTimestamp>,
     /// Current seek authority.
     pub seek_authority: Option<SeekAuthority>,
     /// The play/pause latch (`Paused` when never written).

@@ -3,8 +3,10 @@
 use std::cell::RefCell;
 use std::collections::BTreeSet;
 
+use dessplay_core::playlist::{NewPlaylistEntry, PlaylistEntry};
 use dessplay_core::types::{
-    AniDbMetadata, Ed2kHash, MetadataSource, PlaybackPosition, SharedTimestamp, encode_action,
+    ActorId, AniDbMetadata, Ed2kHash, MetadataSource, PlaybackPosition, SharedTimestamp,
+    encode_action,
 };
 use proptest::prelude::*;
 
@@ -230,7 +232,7 @@ fn request_carries_now_playing_position_and_a_bounded_chat_window() {
     view.chat.push(msg("bob", 60, &encode_action("stretches")));
     view.chat
         .push(msg("bob", 61, "oracle: are there foxes on Okinawa?"));
-    let req = build_request(&view, view.chat.len() - 1).expect("a question");
+    let req = build_request(&view, view.chat.len() - 1, []).expect("a question");
     assert_eq!(req.asker, "bob");
     assert_eq!(req.question, "are there foxes on Okinawa?");
     assert_eq!(req.series.as_deref(), Some("Non Non Biyori"));
@@ -253,7 +255,165 @@ fn request_carries_now_playing_position_and_a_bounded_chat_window() {
     assert!(text.contains("filename: unknown"));
     assert!(text.contains("position in episode: about 12:34"));
     assert!(text.ends_with("bob asks: are there foxes on Okinawa?"));
-    assert!(build_request(&view, 0).is_none(), "not a question");
+    assert!(build_request(&view, 0, []).is_none(), "not a question");
+}
+
+// ---- Now-playing switches ------------------------------------------------
+
+/// The playlist entries for `files`, built the way real ones are.
+fn entries(files: &[(Ed2kHash, &str)]) -> Vec<PlaylistEntry> {
+    let mut state = dessplay_core::CrdtState::new();
+    for (i, (hash, filename)) in files.iter().enumerate() {
+        state.push_playlist_entry(
+            ActorId::SERVER,
+            SharedTimestamp::from_millis(i as u64 + 1),
+            NewPlaylistEntry {
+                hash: *hash,
+                added_by: UserId::new("alice"),
+                filename: (*filename).into(),
+                size_bytes: 1,
+                duration_millis: None,
+            },
+        );
+    }
+    state.view().playlist
+}
+
+fn episode(series: &str, number: &str) -> Option<AniDbMetadata> {
+    Some(AniDbMetadata {
+        source: MetadataSource::AniDb,
+        series_name: series.into(),
+        series_id: None,
+        episode_number: Some(number.into()),
+    })
+}
+
+/// A view playing `file` since `since`, with episodes 4 and 5 known.
+fn playing(file: Option<Ed2kHash>, since: u64, on_playlist: &[Ed2kHash]) -> StateView {
+    let (ep4, ep5) = (Ed2kHash([4; 16]), Ed2kHash([5; 16]));
+    let mut view = StateView {
+        now_playing: file,
+        now_playing_since: Some(SharedTimestamp::from_millis(since)),
+        ..StateView::default()
+    };
+    view.anidb_metadata.insert(ep4, episode("Mushishi", "4"));
+    view.anidb_metadata.insert(ep5, episode("Mushishi", "5"));
+    let files: Vec<_> = [(ep4, "mushishi-04.mkv"), (ep5, "mushishi-05.mkv")]
+        .into_iter()
+        .filter(|(hash, _)| on_playlist.contains(hash))
+        .collect();
+    view.playlist = entries(&files);
+    view
+}
+
+#[test]
+fn switches_are_logged_from_and_to_after_the_baseline() {
+    let (ep4, ep5) = (Ed2kHash([4; 16]), Ed2kHash([5; 16]));
+    let mut log = NowPlayingLog::default();
+    log.observe(&playing(None, 1, &[]), false);
+    log.observe(&playing(Some(ep4), 10, &[ep4, ep5]), true);
+    assert_eq!(log.changes().count(), 0, "the adopted state is baseline");
+    // Episode 4 leaves the playlist while still playing: its cached
+    // label keeps the filename.
+    log.observe(&playing(Some(ep4), 10, &[ep5]), true);
+    // The switch to 5: the "from" label comes from what the log saw
+    // while 4 was still listed.
+    log.observe(&playing(Some(ep5), 20, &[ep5]), true);
+    log.observe(&playing(Some(ep5), 25, &[ep5]), true);
+    log.observe(&playing(None, 30, &[]), true);
+    let changes: Vec<_> = log.changes().cloned().collect();
+    assert_eq!(
+        changes,
+        vec![
+            NowPlayingChange {
+                at: SharedTimestamp::from_millis(20),
+                from: "Mushishi episode 4 (\"mushishi-04.mkv\")".into(),
+                to: "Mushishi episode 5 (\"mushishi-05.mkv\")".into(),
+            },
+            NowPlayingChange {
+                at: SharedTimestamp::from_millis(30),
+                from: "Mushishi episode 5 (\"mushishi-05.mkv\")".into(),
+                to: "nothing".into(),
+            },
+        ]
+    );
+}
+
+#[test]
+fn the_log_is_bounded() {
+    let mut log = NowPlayingLog::default();
+    for i in 0..(MAX_NOW_PLAYING_CHANGES as u64 + 5) {
+        let file = Ed2kHash([(i % 2) as u8; 16]);
+        log.observe(&playing(Some(file), i, &[]), true);
+    }
+    assert_eq!(log.changes().count(), MAX_NOW_PLAYING_CHANGES);
+}
+
+#[test]
+fn switch_markers_interleave_with_the_chat_window_by_timestamp() {
+    let change = |at, from: &str, to: &str| NowPlayingChange {
+        at: SharedTimestamp::from_millis(at),
+        from: from.into(),
+        to: to.into(),
+    };
+    let changes = [
+        change(5, "ep 2", "ep 3"),     // before the window
+        change(1_070, "ep 3", "ep 4"), // inside it
+        change(1_070, "x", "y"),       // same stamp: both, stable order
+        change(2_000, "ep 4", "ep 5"), // after the question
+    ];
+    let mut view = StateView::default();
+    for i in 0..60 {
+        view.chat
+            .push(msg("alice", 1_000 + i * 2, &format!("line {i}")));
+    }
+    view.chat
+        .push(msg("bob", 1_200, "oracle: was that the same fox?"));
+    let req = build_request(&view, view.chat.len() - 1, &changes).expect("a question");
+    assert_eq!(req.chat.len(), CONTEXT_LINES + 2);
+    let at = req
+        .chat
+        .iter()
+        .position(|l| l.starts_with("---"))
+        .expect("a marker");
+    assert_eq!(req.chat[at - 1], "<alice> line 34", "stamped 1068");
+    assert_eq!(req.chat[at], "--- now playing changed from ep 3 to ep 4");
+    assert_eq!(req.chat[at + 1], "--- now playing changed from x to y");
+    assert_eq!(req.chat[at + 2], "<alice> line 35", "stamped 1070");
+    assert!(user_text(&req).contains("--- now playing changed from ep 3 to ep 4"));
+}
+
+/// Answers with the chat window it was given, one line per message.
+struct EchoChat;
+
+impl OracleModel for EchoChat {
+    fn answer(&self, req: &OracleRequest) -> Result<String, OracleError> {
+        Ok(req.chat.join("\n\n"))
+    }
+}
+
+#[tokio::test]
+async fn the_driver_shows_the_switch_it_watched() {
+    let (ep4, ep5) = (Ed2kHash([4; 16]), Ed2kHash([5; 16]));
+    let (mut oracle, mut results) = Oracle::new(UserId::new("oracle"), Arc::new(EchoChat));
+    let mut view = playing(Some(ep4), 10, &[ep4, ep5]);
+    view.chat.push(msg("alice", 900, "what a fox"));
+    oracle.on_view(&view, true, 1_000);
+    let mut view = playing(Some(ep5), 1_010, &[ep5]);
+    view.chat.push(msg("alice", 900, "what a fox"));
+    view.chat
+        .push(msg("bob", 1_020, "oracle: what kind of fox was that?"));
+    oracle.on_view(&view, true, 1_020);
+    let outcome = results.recv().await.unwrap();
+    assert_eq!(
+        oracle.finish(outcome),
+        vec![
+            "<alice> what a fox",
+            "--- now playing changed from Mushishi episode 4 (\"mushishi-04.mkv\") \
+             to Mushishi episode 5 (\"mushishi-05.mkv\")",
+            "<bob> oracle: what kind of fox was that?",
+        ]
+    );
 }
 
 fn request() -> OracleRequest {
