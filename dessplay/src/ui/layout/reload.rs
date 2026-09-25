@@ -147,14 +147,38 @@ fn refresh_watches(
     registered: &mut Vec<PathBuf>,
     directory: &std::path::Path,
 ) -> notify::Result<()> {
+    // A batch is registered at commit, not path by path, so a directory
+    // created meanwhile goes unseen: re-register until the deepest
+    // existing ancestor holds still.
+    for _ in 0..4 {
+        let before = deepest_existing(directory);
+        register_batch(watcher, registered, directory)?;
+        if deepest_existing(directory) == before {
+            break;
+        }
+    }
+    Ok(())
+}
+/// One batch through `paths_mut`: on macOS FSEvents each separate
+/// `watch`/`unwatch` restarts the event stream, a daemon round trip that
+/// can take most of a second, so a refresh costs one restart instead of
+/// one per ancestor. Other backends apply the changes one at a time.
+fn register_batch(
+    watcher: &mut impl notify::Watcher,
+    registered: &mut Vec<PathBuf>,
+    directory: &std::path::Path,
+) -> notify::Result<()> {
+    let mut paths = watcher.paths_mut();
     for path in registered.drain(..).rev() {
         // A deleted directory may already have been removed by the backend.
-        let _ = watcher.unwatch(&path);
+        let _ = paths.remove(&path);
     }
     // Shallow ancestor watches observe creation/replacement without traversing
     // unrelated siblings (e.g. private Nix directories under /tmp on Linux).
-    // Root first closes the race with creation while registering descendants.
+    // Root first closes the race with creation while registering descendants
+    // on backends that apply each change immediately.
     let ancestors: Vec<_> = directory.ancestors().collect();
+    let mut result = Ok(());
     for path in ancestors.into_iter().rev() {
         if !path.is_dir() {
             break;
@@ -167,9 +191,19 @@ fn refresh_watches(
         // Track even a failed recursive watch: some backends install a prefix
         // of the tree before failing, which must be cleaned up on the retry.
         registered.push(path.to_path_buf());
-        watcher.watch(path, mode)?;
+        if let Err(error) = paths.add(path, mode) {
+            result = Err(error);
+            break;
+        }
     }
-    Ok(())
+    // Always commit: an uncommitted batch may leave the watcher stopped.
+    paths.commit().and(result)
+}
+fn deepest_existing(directory: &std::path::Path) -> Option<PathBuf> {
+    directory
+        .ancestors()
+        .find(|path| path.is_dir())
+        .map(std::path::Path::to_path_buf)
 }
 // Resolve existing ancestors too: the override directory need not exist yet.
 fn watch_target(directory: &std::path::Path) -> std::io::Result<PathBuf> {
