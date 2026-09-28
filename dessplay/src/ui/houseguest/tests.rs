@@ -471,7 +471,7 @@ fn terrain_read_is_cheap() {
     let (buf, view) = real_frame(&mut ui, 200, 60);
     let started = std::time::Instant::now();
     for _ in 0..100 {
-        std::hint::black_box(Terrain::read(&buf, &view.protected, false));
+        std::hint::black_box(Terrain::read(&buf, &view.protected, true));
     }
     let per_read = started.elapsed() / 100;
     eprintln!("terrain read: {per_read:?}");
@@ -547,4 +547,47 @@ fn standing_on_a_floor_draws_the_floor_row_into_the_image() {
         under.contains('─'),
         "the image's last row is a floor: {under}"
     );
+}
+
+/// Her line-art goodbye: for the first beats the image stays and the
+/// dissolve writes nothing else; if anything lands in her space (a modal,
+/// typing) the image is dropped at once rather than painted over it.
+#[test]
+fn the_goodbye_waves_as_line_art_but_never_over_new_content() {
+    let placeholder = |buf: &Buffer| {
+        buf.content
+            .iter()
+            .any(|cell| cell.symbol().contains('\u{10EEEE}'))
+    };
+    let mut ui = real_ui();
+    let (real, view) = real_frame(&mut ui, 100, 30);
+    let mut guest = Guest::new(7);
+    guest.set_picker(kitty());
+    let before = run(&mut guest, &real, &view, 0, 95_000);
+    assert!(placeholder(&before), "she is line art before the key press");
+    let State::Visiting(visit) = &guest.state else {
+        panic!("visiting");
+    };
+    let (x, y) = (visit.osaka.x as u16, visit.osaka.y as u16);
+    guest.activity(95_000);
+
+    let beat = paint(&mut guest, &real, &view, 95_100);
+    assert!(placeholder(&beat), "startled, still line art");
+    for (got, want) in beat.content.iter().zip(&real.content) {
+        if got != want {
+            assert!(
+                cells::untouchable(got),
+                "only image cells change during the beats"
+            );
+        }
+    }
+
+    let mut changed = real.clone();
+    changed.set_string(x, y - 2, "modal", Style::new());
+    let covered = paint(&mut guest, &changed, &view, 95_200);
+    assert!(
+        !placeholder(&covered),
+        "the image is dropped over new content"
+    );
+    assert_eq!(covered.cell((x, y - 2)), changed.cell((x, y - 2)));
 }
