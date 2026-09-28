@@ -137,11 +137,13 @@
   </g>
 
   <!-- Profile (facing right). Skull around (52, 38); the long hair hangs
-       down her back; the collar's square flap lies on her back. -->
+       down her back; the collar's square flap lies on her back. The
+       bangs have no outline (it read as a seam, a "hair cap"): depth
+       comes from shading, the back hair a shade darker. -->
   <g id="p-hair-back">
     <path d="M 76 24 C 68 6 42 4 30 17 C 20 30 19 62 21 104 L 27 99 L 31 108
              L 36 100 L 41 106 L 45 64 L 50 46 Z"
-          fill="#4a3326" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+          fill="#3f2b20" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
   </g>
   <g id="p-face">
     <path d="M 48 30 C 58 27 70 28 74.5 34 C 75.8 38 76 42 76.2 45.5 L 78.2 49.2
@@ -152,9 +154,9 @@
   <g id="p-hair-front">
     <path d="M 45 25 C 53 12 69 12 75.5 22 C 76.8 26 77 31 77 36 L 75 34.5 L 73.5 38
              L 71 34 L 68.5 37.5 L 65.5 33.5 L 62.5 36.5 L 59 33 L 55 35.5 L 50 33 Z"
-          fill="#553a2b" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+          fill="#553a2b"/>
     <path d="M 49 34 C 45 50 46 66 52 80 L 55 64 C 53 54 53 44 55 34 Z"
-          fill="#553a2b" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+          fill="#553a2b"/>
   </g>
   <g id="p-eye-open">
     <path d="M 63.5 42.8 C 66.5 40.5 71 40.5 73.5 43.5 L 73.5 50.5 C 70.5 53 66.5 52.8 64 49.8 Z"
