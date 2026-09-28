@@ -1,6 +1,6 @@
 # Proposal: The Houseguest (idle Osaka)
 
-Status: **ACCEPTED; phase 1 and line art implemented 2026-09-28**
+Status: **ACCEPTED; phases 1–2 and line art implemented 2026-09-28**
 (design.md, Houseguest). Brainstormed by five parallel research passes
 (Osaka canon, prior art, the TUI as terrain, progression/AI, terminal
 animation craft) and merged here; revised after phase 1 and the switch to

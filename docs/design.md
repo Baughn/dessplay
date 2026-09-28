@@ -1388,8 +1388,7 @@ this section states what is built.
   swap in reach) as base × fit × cooldown and picks at random, weighted,
   among the top four. Four needs (0–1) set the fit: *sleepy* rises over a
   visit and a doze eases it a little, so she dozes more as a visit goes
-  on; *restless* starts high, rises while she's still, and moving answers
-  it; *tidy* rises while a line is on offer and a pull answers it;
+  on; *restless* starts high, rises steadily, and moving answers it; *tidy* rises while a line is on offer and a pull answers it;
   *mischief* rises slowly and a swap answers it. Fit is 0.1 + need² (0.5
   for an offer no need wants); repeating one of her last three choices
   multiplies by 0.4. Needs only weight choices: nothing is ever ruled out,

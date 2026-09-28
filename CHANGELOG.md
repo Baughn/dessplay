@@ -27,7 +27,7 @@ Add new days at the top. Add new entries at the bottom of existing days.
 - Added: The houseguest talks a little: she says hello when she arrives,
   "...I'm OK." after a tumble, and muses aloud while spacing out.
 - Changed: The houseguest now follows her moods: she gets sleepier the
-  longer she stays, restless after sitting still, keen to tidy when
+  longer she stays, restless after a while, keen to tidy when
   there's mess, and mischievous now and then.
 
 ## 2026-09-26

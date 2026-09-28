@@ -17,7 +17,7 @@ use super::osaka::Activity;
 pub(super) enum Need {
     /// Rises over a visit; a doze on her back eases it a little.
     Sleepy,
-    /// Rises while she's still; moving about answers it.
+    /// Rises steadily; moving about answers it.
     Restless,
     /// Rises while there's text to tidy; tidying answers it.
     Tidy,
