@@ -1989,6 +1989,24 @@ Rejected: the chat as a room (new lines would send pieces to the closet
 constantly); putting her "room" in a fixed screen corner (layouts
 differ, and the corner is often text).
 
+## Houseguest and her furniture share one image (2026-09-28)
+
+**Rule:** Furniture is solid to text but not to her: she walks in front
+of it, and wherever her box overlaps pieces, one image draws them and
+her back to front. See [design.md](design.md#houseguest).
+
+**Why:** It's image composition, nothing more (the user's call, after
+the first attempt over-engineered it). Two kitty images over the same
+cells would each blank the other's cells with their placeholders, so
+the overlap has to be one image. The cost is distinct images — every
+column she crosses in front of a piece is a new one — but the frame
+cache bounds them (a furnished home measured well under the cache over
+twenty-minute visits), and deleting images as they leave the cache is
+the known fallback if a terminal ever runs short. Rejected: pieces
+solid to her with overlap only at fixed seats — each piece cut its
+floor into stretches she couldn't cross, which then needed "ducking
+behind" links, all to save images the cache already bounds.
+
 ## Houseguest chooses by needs among the top few (2026-09-28)
 
 **Rule:** Her next act is a weighted-random pick among the four

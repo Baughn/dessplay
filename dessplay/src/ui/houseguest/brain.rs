@@ -11,6 +11,7 @@
 
 use super::Rng;
 use super::osaka::Activity;
+use super::room::Use;
 
 /// Something she can want.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -120,6 +121,8 @@ pub(super) enum Kind {
     Travel,
     Pull,
     Swap,
+    /// Use a piece of her furniture.
+    Use(Use),
 }
 
 impl Kind {
@@ -137,6 +140,10 @@ impl Kind {
             Self::Travel => 10.0,
             Self::Pull => 16.0,
             Self::Swap => 8.0,
+            // Her own things are what home is for.
+            Self::Use(Use::Watch) => 10.0,
+            Self::Use(Use::Sleep) => 10.0,
+            Self::Use(_) => 8.0,
         }
     }
 
@@ -153,6 +160,10 @@ impl Kind {
             Self::Walk | Self::Travel => Some((Need::Restless, 0.4)),
             Self::Pull => Some((Need::Tidy, 0.6)),
             Self::Swap => Some((Need::Mischief, 0.8)),
+            // A proper bed answers sleepiness far better than a border.
+            Self::Use(Use::Sleep) => Some((Need::Sleepy, 0.7)),
+            Self::Use(Use::Nap) => Some((Need::Sleepy, 0.3)),
+            Self::Use(Use::Lounge | Use::Homework | Use::Watch) => None,
             Self::Stand
             | Self::SpaceOut
             | Self::Sneeze

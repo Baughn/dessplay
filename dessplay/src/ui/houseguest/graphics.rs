@@ -35,15 +35,16 @@ pub(super) enum Look {
     Pose(Pose, Face),
     /// The goodbye wave, arm up or down.
     Wave(bool),
-    /// A piece of her furniture.
-    Prop(Furniture),
+    /// A piece of her furniture, or the part of it behind or in front of
+    /// her.
+    Prop(Furniture, art::Layer),
 }
 
 impl Look {
     /// The box it fills, in cells (columns, rows above the floor).
     fn size(self) -> (i32, i32) {
         match self {
-            Self::Prop(item) => {
+            Self::Prop(item, _) => {
                 let (cols, rows) = item.footprint();
                 (i32::from(cols), i32::from(rows))
             }
@@ -57,19 +58,43 @@ impl Look {
                 art::render(&Rig::for_pose(pose, face), facing, LINE, width, height)
             }
             Self::Wave(raised) => art::render(&Rig::waving(raised), facing, LINE, width, height),
-            Self::Prop(item) => art::render_prop(item, facing, LINE, width, height),
+            Self::Prop(item, layer) => {
+                art::render_prop_layer(item, layer, facing, LINE, width, height)
+            }
         }
+    }
+}
+
+/// One thing in an image: `look` in its box, centred on column `at.0`
+/// (rounding left) with its feet on row `at.1`; `standing` adds the floor
+/// row beneath, whose line it redraws so feet rest on it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(super) struct Layer {
+    pub look: Look,
+    pub facing: Facing,
+    pub at: (i32, i32),
+    pub standing: bool,
+}
+
+impl Layer {
+    /// Its box's left column, top row, columns and rows (with the floor
+    /// row when standing).
+    fn bounds(&self) -> (i32, i32, i32, i32) {
+        let (width, height) = self.look.size();
+        let rows = if self.standing { height + 1 } else { height };
+        (self.at.0 - width / 2, self.at.1 - height, width, rows)
     }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct Key {
-    look: Look,
-    facing: Facing,
-    /// Rows in the image: her four, plus the floor row when standing.
-    rows: u16,
-    /// The line glyphs her image covers and redraws, with their colours,
-    /// at (column, row) within her box.
+    /// Back to front: what, facing, its box origin within the image, and
+    /// whether it stands on the floor row.
+    layers: Vec<(Look, Facing, (u16, u16), bool)>,
+    /// The image in cells.
+    size: (u16, u16),
+    /// The line glyphs the image covers and redraws, with their colours,
+    /// at (column, row) within it.
     lines: Vec<(u16, u16, char, [u8; 3])>,
     /// The visible part of the image, in cells relative to its origin.
     clip: (u16, u16, u16, u16),
@@ -237,46 +262,50 @@ impl Graphics {
         (u32::from(size.width), u32::from(size.height))
     }
 
-    /// Paint `look` at anchor `(x, y)`: centred on column `x` (rounding
-    /// left), feet on row `y`. With `standing`, the floor row joins the
-    /// image. Returns the cells covered, or `None` when any body cell
-    /// isn't `open` or isn't blank or a line it can redraw.
-    pub fn paint(
+    /// Paint `layers` (back to front) as **one** image over the union of
+    /// their boxes: two images would each hide the other's cells behind
+    /// their placeholders. Every cell of the union must be hers to cover:
+    /// floor-row cells lines, the rest `open` and blank or a line the
+    /// image redraws. Returns the cells covered, or `None`.
+    pub fn paint_layers(
         &mut self,
         buf: &mut Buffer,
-        look: Look,
-        facing: Facing,
-        (x, y): (i32, i32),
-        standing: bool,
+        layers: &[Layer],
         open: &dyn Fn(i32, i32) -> bool,
     ) -> Option<Rect> {
         let (cw, ch) = self.cell();
         if cw == 0 || ch == 0 {
             return None;
         }
+        let bounds: Vec<_> = layers.iter().map(Layer::bounds).collect();
+        let left = bounds.iter().map(|b| b.0).min()?;
+        let top = bounds.iter().map(|b| b.1).min()?;
+        let right = bounds.iter().map(|b| b.0 + b.2).max()?;
+        let bottom = bounds.iter().map(|b| b.1 + b.3).max()?;
         let area = buf.area;
-        let (width, height) = look.size();
-        let rows = if standing { height + 1 } else { height };
-        let (left, top) = (x - width / 2, y - height);
         let vx0 = left.max(i32::from(area.left()));
         let vy0 = top.max(i32::from(area.top()));
-        let vx1 = (left + width).min(i32::from(area.right()));
-        let vy1 = (top + rows).min(i32::from(area.bottom()));
+        let vx1 = right.min(i32::from(area.right()));
+        let vy1 = bottom.min(i32::from(area.bottom()));
         if vx0 >= vx1 || vy0 >= vy1 {
             return None;
         }
-        // Body cells must be hers to cover (blank, or a line she
-        // redraws); the floor row must be lines.
+        let floor = |cx: i32, cy: i32| {
+            layers.iter().zip(&bounds).any(|(layer, b)| {
+                layer.standing && cy == layer.at.1 && (b.0..b.0 + b.2).contains(&cx)
+            })
+        };
         let mut lines = Vec::new();
         for cy in vy0..vy1 {
             for cx in vx0..vx1 {
-                if cy < y && !open(cx, cy) {
+                let floor = floor(cx, cy);
+                if !floor && !open(cx, cy) {
                     return None;
                 }
                 let cell = buf.cell((cx as u16, cy as u16))?;
                 let symbol = cell.symbol();
                 if symbol.trim().is_empty() {
-                    if cy >= y {
+                    if floor {
                         return None;
                     }
                     continue;
@@ -292,9 +321,19 @@ impl Graphics {
             (vy1 - vy0) as u16,
         );
         let key = Key {
-            look,
-            facing,
-            rows: rows as u16,
+            layers: layers
+                .iter()
+                .zip(&bounds)
+                .map(|(layer, b)| {
+                    (
+                        layer.look,
+                        layer.facing,
+                        ((b.0 - left) as u16, (b.1 - top) as u16),
+                        layer.standing,
+                    )
+                })
+                .collect(),
+            size: ((right - left) as u16, (bottom - top) as u16),
             lines,
             clip,
             cell: (cw as u16, ch as u16),
@@ -312,27 +351,38 @@ impl Graphics {
         Some(rect)
     }
 
+    /// Distinct images made so far (since the cache last started over).
+    #[cfg(test)]
+    pub fn cached(&self) -> usize {
+        self.cache.len()
+    }
+
     /// Compose and encode one frame.
     fn frame(&self, key: &Key) -> Option<Protocol> {
         let (cw, ch) = self.cell();
-        let rows = u32::from(key.rows);
-        let (width, height) = key.look.size();
-        let standing = i32::from(key.rows) > height;
-        let (w, h) = (cw * width as u32, ch * rows);
+        let (w, h) = (cw * u32::from(key.size.0), ch * u32::from(key.size.1));
         let mut canvas = RgbaImage::new(w, h);
-        // Her feet rest on the line when standing, on the box floor
-        // otherwise.
-        let feet = if standing {
-            ch * height as u32 + self.line.offset + self.line.thickness
-        } else {
-            ch * height as u32
-        };
         for &(col, row, c, color) in &key.lines {
             let origin = (u32::from(col) * cw, u32::from(row) * ch);
             draw_glyph(&mut canvas, c, color, origin, (cw, ch), self.line);
         }
-        let body = key.look.render(key.facing, w, feet)?;
-        image::imageops::overlay(&mut canvas, &body, 0, 0);
+        for &(look, facing, (ox, oy), standing) in &key.layers {
+            let (width, height) = look.size();
+            // Feet rest on the line when standing, on the box floor
+            // otherwise.
+            let feet = if standing {
+                ch * height as u32 + self.line.offset + self.line.thickness
+            } else {
+                ch * height as u32
+            };
+            let body = look.render(facing, cw * width as u32, feet)?;
+            image::imageops::overlay(
+                &mut canvas,
+                &body,
+                i64::from(u32::from(ox) * cw),
+                i64::from(u32::from(oy) * ch),
+            );
+        }
         let (cx, cy, cwn, chn) = key.clip;
         let cropped = image::imageops::crop_imm(
             &canvas,

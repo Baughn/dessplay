@@ -1439,8 +1439,20 @@ this section states what is built.
   closet for that frame (hidden, still owned). When a room's pane is gone
   or too small to hold all its pieces, the whole room moves to a free
   pane where every piece fits, and stays there; with none, the whole
-  room is in the closet. A placed piece and the floor beneath it are
-  solid to her and to moved text. Her furniture shows only while she
+  room is in the closet. A new piece is only set down where she also
+  fits on it. A placed piece and the floor beneath it are solid to text
+  (nothing is moved onto it, and bubbles never go over it); she walks
+  in front of it. In line art, the pieces her box overlaps are drawn in
+  **one image with her**, back to front (the bed's quilt over her while
+  she sleeps; the sofa's cushion in her arms while she naps), since two
+  images would cut each other out. **Using her furniture**: she walks to
+  a piece and sits on the sofa, naps on it hugging the cushion
+  (answers *sleepy* a little), sleeps in bed (answers *sleepy* far
+  better than a doze on a border), does homework at the desk (nodding
+  off onto the paper halfway through), or sits beside the TV watching
+  it; each is an offer to the brain while the piece is placed and she
+  can get there. If the piece goes into the closet while she's using it,
+  she's left blinking where it was. Her furniture shows only while she
   does, and the goodbye rain takes it along with her
   (why: [decisions](decisions.md#houseguest-furniture-is-pane-relative-and-leaves-with-her-2026-09-28)).
 

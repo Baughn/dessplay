@@ -428,15 +428,30 @@ proptest! {
                         a != b && !layer.contains(&at)
                     })
                     .count();
-                let furniture: usize = shown
-                    .iter()
-                    .map(|prop| {
-                        let (cols, rows) = prop.item.footprint();
-                        usize::from(cols) * usize::from(rows + 1)
-                    })
-                    .sum();
-                let most = (sprite::WIDTH * (sprite::HEIGHT + 1)) as usize + 24 + furniture;
-                prop_assert!(changed <= most, "{} cells changed", changed);
+                // Her box (with its floor row), a bubble, her furniture,
+                // and the blank cells an image of her with the pieces she
+                // overlaps spans beyond them.
+                let (furniture, spanned) = match &guest.state {
+                    State::Visiting(visit) => {
+                        let area = |r: Rect| usize::from(r.width) * usize::from(r.height);
+                        let furniture: usize = shown.iter().map(|p| area(p.cover())).sum();
+                        let her = Rect::new(
+                            (visit.osaka.x - sprite::WIDTH / 2).max(0) as u16,
+                            (visit.osaka.y - sprite::HEIGHT).max(0) as u16,
+                            sprite::WIDTH as u16,
+                            sprite::HEIGHT as u16 + 1,
+                        );
+                        let union = visit.with.iter().fold(her, |r, p| r.union(p.cover()));
+                        (furniture, area(union))
+                    }
+                    _ => (0, 0),
+                };
+                let most = (sprite::WIDTH * (sprite::HEIGHT + 1)) as usize + 24 + furniture + spanned;
+                let debug = match &guest.state {
+                    State::Visiting(visit) => format!("{:?} with {:?} at ({}, {})", visit.shown, visit.with, visit.osaka.x, visit.osaka.y),
+                    _ => String::new(),
+                };
+                prop_assert!(changed <= most, "{} cells changed (most {}): {}", changed, most, debug);
             }
         }
         let &(w, h) = sizes.last().unwrap();
@@ -763,6 +778,7 @@ fn visiting_at(guest: &mut Guest, real: &Buffer, view: &IdleView, (x, y): (i32, 
         layer: layer::TextLayer::default(),
         chances: osaka::Chances::default(),
         shown: Vec::new(),
+        with: Vec::new(),
         size: (real.area.width, real.area.height),
     }));
 }
@@ -1185,6 +1201,7 @@ fn every_scene_has_a_spot_in_the_stage_room() {
                 let (mut moved, mut swapped, mut climbed, mut poses) =
                     (0, false, false, Vec::new());
                 let mut said = false;
+                let mut used = None;
                 let mut now = 0;
                 while now < 10_000 {
                     now += guest
@@ -1204,6 +1221,7 @@ fn every_scene_has_a_spot_in_the_stage_room() {
                             .any(|b| a.at == b.source && b.at == a.source && a.source != b.source)
                     });
                     climbed |= visit.osaka.y != start_y;
+                    used = used.or(visit.osaka.using());
                     let (pose, _, bubble) = visit.osaka.appearance(now);
                     said |= matches!(bubble, Some(osaka::Bubble::Say(_)));
                     poses.push(std::mem::discriminant(&pose));
@@ -1223,6 +1241,11 @@ fn every_scene_has_a_spot_in_the_stage_room() {
                     Scene::Stretch => posed(Pose::Stretch),
                     Scene::Gaze => posed(Pose::Gaze),
                     Scene::Muse => said,
+                    Scene::Lounge => posed(Pose::Lounge),
+                    Scene::Nap => posed(Pose::Nap(0)),
+                    Scene::Sleep => posed(Pose::Sleep(0)),
+                    Scene::Homework => posed(Pose::Homework(0)),
+                    Scene::Watch => used == Some(Furniture::Tv),
                 };
                 assert!(happened, "{at}: {note:?}, moved {moved}");
             }
@@ -1294,32 +1317,35 @@ fn bubbles_find_a_blank_spot_around_her_head() {
     let terrain = Terrain::read(&empty, &[], true);
     osaka.facing = sprite::Facing::Right;
     assert_eq!(
-        bubble_spot(&empty, &terrain, &osaka, Pose::Stand, 4),
+        bubble_spot(&empty, &terrain, &[], &osaka, Pose::Stand, 4),
         Some((23, 5))
     );
     osaka.facing = sprite::Facing::Left;
     assert_eq!(
-        bubble_spot(&empty, &terrain, &osaka, Pose::Stand, 4),
+        bubble_spot(&empty, &terrain, &[], &osaka, Pose::Stand, 4),
         Some((14, 5))
     );
     // Text on her left above her head: the other side.
     let mut buf = empty.clone();
     buf.set_string(15, 5, "busy", Style::new());
     assert_eq!(
-        bubble_spot(&buf, &terrain, &osaka, Pose::Stand, 4),
+        bubble_spot(&buf, &terrain, &[], &osaka, Pose::Stand, 4),
         Some((23, 5))
     );
     // The whole row above her taken: beside her head.
     buf.set_string(0, 5, "x".repeat(40), Style::new());
     assert_eq!(
-        bubble_spot(&buf, &terrain, &osaka, Pose::Stand, 4),
+        bubble_spot(&buf, &terrain, &[], &osaka, Pose::Stand, 4),
         Some((13, 6))
     );
     // Nowhere at all.
     for y in 0..12 {
         buf.set_string(0, y, "x".repeat(40), Style::new());
     }
-    assert_eq!(bubble_spot(&buf, &terrain, &osaka, Pose::Stand, 4), None);
+    assert_eq!(
+        bubble_spot(&buf, &terrain, &[], &osaka, Pose::Stand, 4),
+        None
+    );
 }
 
 /// Lying down or sitting, her bubble is by her head wherever it is, not
@@ -1334,7 +1360,7 @@ fn bubbles_follow_her_head_when_she_is_down() {
     let spot = |osaka: &Osaka, pose, facing, len| {
         let mut osaka = osaka.clone();
         osaka.facing = facing;
-        bubble_spot(&empty, &terrain, &osaka, pose, len)
+        bubble_spot(&empty, &terrain, &[], &osaka, pose, len)
     };
     use sprite::Facing::{Left, Right};
     // On her back facing right, head on the floor at x=18: "zzz" just
@@ -1355,7 +1381,7 @@ fn bubbles_follow_her_head_when_she_is_down() {
     let mut lying = osaka.clone();
     lying.facing = sprite::Facing::Right;
     assert_eq!(
-        bubble_spot(&busy, &terrain, &lying, Pose::LieBack(0), 3),
+        bubble_spot(&busy, &terrain, &[], &lying, Pose::LieBack(0), 3),
         Some((14, 9))
     );
     // Whatever the pose, never inside her box.
@@ -1515,4 +1541,90 @@ fn her_sofa_stands_in_a_quiet_pane_and_leaves_with_her() {
         // She still owns it next visit.
         assert!(guest.home.owns(Furniture::Sofa));
     }
+}
+
+/// Two quiet panes side by side over one floor (the bottom borders
+/// meet), with the keybar strip below: a home she can walk all of.
+fn home_screen() -> (Buffer, IdleView) {
+    let (width, height) = (100u16, 20u16);
+    let mut buf = Buffer::empty(Rect::new(0, 0, width, height));
+    let users = Rect::new(0, 8, 50, 9);
+    let playlist = Rect::new(50, 8, 50, 9);
+    for area in [users, playlist] {
+        tuirealm::ratatui::widgets::Widget::render(
+            tuirealm::ratatui::widgets::Block::bordered(),
+            area,
+            &mut buf,
+        );
+    }
+    buf.set_string(0, height - 2, "Tab Next pane | Enter Send", Style::new());
+    let view = IdleView {
+        nooks: vec![(Nook::Users, users), (Nook::Playlist, playlist)],
+        ..view(bottom_strip(width, height))
+    };
+    (buf, view)
+}
+
+/// A furnished home over long visits in line art: she uses her things
+/// (and sleeps in her bed more than on a border once she has one), her
+/// image with the pieces she overlaps never hides text, and the distinct
+/// images stay within the frame cache.
+#[test]
+fn a_furnished_home_gets_used_and_stays_cheap() {
+    use super::brain::Kind;
+    use super::room::Use;
+    let (real, view) = home_screen();
+    let mut choices: Vec<Kind> = Vec::new();
+    for seed in 0..2u64 {
+        let mut guest = Guest::new(seed);
+        guest.set_picker(kitty());
+        guest.cue(Scene::Arrive);
+        paint(&mut guest, &real, &view, 0);
+        for item in Furniture::ALL {
+            guest.give(item);
+            paint(&mut guest, &real, &view, 0);
+        }
+        assert_eq!(
+            Furniture::ALL
+                .iter()
+                .filter(|&&item| guest.home.owns(item))
+                .count(),
+            4,
+            "seed {seed}: {:?}",
+            guest.cue_note()
+        );
+        let mut now = 0;
+        while now < 20 * 60_000 {
+            now += guest
+                .next_tick(now)
+                .map_or(1000, |d| d.as_millis() as u64)
+                .clamp(1, 1000);
+            if guest.advance(now) {
+                let frame = paint(&mut guest, &real, &view, now);
+                let State::Visiting(visit) = &guest.state else {
+                    panic!("seed {seed}: still visiting");
+                };
+                let layer: Vec<(u16, u16)> = visit.layer.cells().collect();
+                assert_nothing_hidden(&frame, &real, &layer)
+                    .unwrap_or_else(|e| panic!("seed {seed} at {now}: {e}"));
+            }
+        }
+        let State::Visiting(visit) = &guest.state else {
+            panic!("seed {seed}: still visiting");
+        };
+        choices.extend(&visit.osaka.choices);
+        let cached = guest.graphics.as_ref().map_or(0, |g| g.cached());
+        assert!(cached < 200, "seed {seed}: {cached} distinct images");
+    }
+    let count = |kind: Kind| choices.iter().filter(|&&k| k == kind).count();
+    for what in [Use::Lounge, Use::Nap, Use::Sleep, Use::Homework, Use::Watch] {
+        assert!(
+            count(Kind::Use(what)) > 0,
+            "she never chose {what:?}: {choices:?}"
+        );
+    }
+    assert!(
+        count(Kind::Use(Use::Sleep)) >= count(Kind::Idle(osaka::Activity::LieBack)),
+        "the bed beats a border: {choices:?}"
+    );
 }

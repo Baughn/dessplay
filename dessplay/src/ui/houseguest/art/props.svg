@@ -9,8 +9,8 @@
      with a front and a back (bed, desk) face right, and are mirrored
      when placed facing left. -->
 <defs>
-  <!-- A two-seat sofa, seen from the front, with a yellow throw
-       cushion on its left arm. -->
+  <!-- A two-seat sofa, seen from the front; its yellow throw cushion
+       (sofa-cushion) sits on its left arm. -->
   <g id="sofa">
     <rect x="12" y="118" width="7" height="8" fill="#5b3d2a" stroke="currentColor" stroke-width="1.4"/>
     <rect x="161" y="118" width="7" height="8" fill="#5b3d2a" stroke="currentColor" stroke-width="1.4"/>
@@ -21,6 +21,9 @@
     <rect x="90" y="74" width="68" height="16" rx="6" fill="#6fa19c" stroke="currentColor" stroke-width="1.6"/>
     <rect x="2" y="56" width="24" height="64" rx="10" fill="#5f8f8b" stroke="currentColor" stroke-width="2"/>
     <rect x="154" y="56" width="24" height="64" rx="10" fill="#5f8f8b" stroke="currentColor" stroke-width="2"/>
+  </g>
+  <!-- The throw cushion, apart so she can take it for a nap. -->
+  <g id="sofa-cushion">
     <rect x="30" y="50" width="24" height="24" rx="5" transform="rotate(-12 42 62)"
           fill="#e7c77a" stroke="currentColor" stroke-width="1.6"/>
     <path d="M 36 56 L 48 68 M 48 56 L 36 68" fill="none" stroke="#b8963f" stroke-width="1" transform="rotate(-12 42 62)"/>
@@ -51,7 +54,7 @@
   </g>
 
   <!-- A single bed seen from the side: headboard on the left, a pillow,
-       a blue polka-dot quilt folded back at the head. -->
+       and a blue polka-dot quilt (bed-quilt) folded back at the head. -->
   <g id="bed">
     <rect x="4" y="44" width="16" height="82" rx="6" fill="#9a7350" stroke="currentColor" stroke-width="2"/>
     <rect x="182" y="76" width="14" height="50" rx="5" fill="#9a7350" stroke="currentColor" stroke-width="2"/>
@@ -60,6 +63,9 @@
     <rect x="164" y="112" width="7" height="14" fill="#7a5a3e" stroke="currentColor" stroke-width="1.4"/>
     <rect x="20" y="80" width="162" height="18" rx="4" fill="#f0ede4" stroke="currentColor" stroke-width="1.8"/>
     <ellipse cx="42" cy="76" rx="18" ry="8" fill="#f7f4f0" stroke="currentColor" stroke-width="1.6"/>
+  </g>
+  <!-- The quilt, apart so it can cover her when she sleeps. -->
+  <g id="bed-quilt">
     <path d="M 70 78 C 100 74 150 74 182 78 L 184 104 C 150 108 100 108 72 104 Z"
           fill="#8fb3d9" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
     <path d="M 70 78 C 64 84 64 98 72 104" fill="#b7cfe8" stroke="currentColor" stroke-width="1.6"/>
@@ -68,6 +74,21 @@
       <circle cx="132" cy="84" r="2.2"/><circle cx="152" cy="94" r="2.2"/>
       <circle cx="170" cy="86" r="2.2"/><circle cx="100" cy="99" r="2"/>
       <circle cx="142" cy="100" r="2"/>
+    </g>
+  </g>
+
+  <!-- The quilt pulled up over her (the bed's front when she sleeps):
+       it rises over her body from her shoulders to her feet, leaving her
+       head on the pillow. -->
+  <g id="bed-quilt-over">
+    <path d="M 54 80 C 58 62 90 58 118 64 C 142 68 166 72 182 78 L 184 104 C 150 108 100 108 56 104 Z"
+          fill="#8fb3d9" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+    <path d="M 54 80 C 49 88 50 98 56 104" fill="#b7cfe8" stroke="currentColor" stroke-width="1.6"/>
+    <g fill="#f7f4f0">
+      <circle cx="76" cy="76" r="2.2"/><circle cx="96" cy="90" r="2.2"/>
+      <circle cx="112" cy="72" r="2.2"/><circle cx="132" cy="92" r="2.2"/>
+      <circle cx="150" cy="80" r="2.2"/><circle cx="170" cy="92" r="2.2"/>
+      <circle cx="84" cy="99" r="2"/><circle cx="150" cy="100" r="2"/>
     </g>
   </g>
 

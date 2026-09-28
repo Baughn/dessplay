@@ -53,6 +53,16 @@ pub(super) enum Pose {
     Gaze,
     /// Standing side-on, looking the way she faces.
     Side,
+    /// Sitting on the sofa, legs over the seat's edge.
+    Lounge,
+    /// Curled up asleep on the sofa, hugging the cushion (frame 0–1
+    /// breathes).
+    Nap(u8),
+    /// Asleep in bed under the quilt (frame 0–1 breathes).
+    Sleep(u8),
+    /// At the desk on a stool, side-on (frame 0–1 writing, 2–3 nodding
+    /// off onto the paper).
+    Homework(u8),
 }
 
 /// Her face, drawn into the head of frontal poses.
@@ -116,6 +126,22 @@ const TOE_TOUCH: [[&str; 4]; 2] = [
 const STRETCH: [&str; 4] = ["(._.)", "\\|V|/", " /_\\ ", " / \\ "];
 const GAZE: [&str; 4] = ["( 'o)", " |V| ", " /_\\ ", " / \\ "];
 const SIDE: [&str; 4] = ["( ._)", " |V| ", " /_\\ ", " / \\ "];
+const LOUNGE: [&str; 4] = ["(._.)", "/|V|\\", " d b ", "     "];
+const NAP: [[&str; 4]; 2] = [
+    ["     ", "     ", "o#V=<", "     "],
+    ["     ", "     ", "o#V=/", "     "],
+];
+// Her head on the pillow at the headboard end; the quilt over the rest.
+const SLEEP: [[&str; 4]; 2] = [
+    ["     ", "     ", "o~~~~", "     "],
+    ["     ", "     ", "o~~~-", "     "],
+];
+const HOMEWORK: [[&str; 4]; 4] = [
+    ["     ", "( ._)", " |V|=", "_/ \\ "],
+    ["     ", "( ._)", " |V|-", "_/ \\ "],
+    ["     ", "( -_)", " |V|=", "_/ \\ "],
+    ["     ", "     ", " (-_)", "_/|\\ "],
+];
 const PULL: [[&str; 4]; 2] = [
     ["( ._)", "\\|V|=", " /_\\ ", " / \\ "],
     ["(._ )", "\\|V|=", " /_\\ ", "/  \\ "],
@@ -138,6 +164,10 @@ fn rows(pose: Pose) -> ([&'static str; 4], bool) {
         Pose::Stretch => (STRETCH, true),
         Pose::Gaze => (GAZE, false),
         Pose::Side => (SIDE, false),
+        Pose::Lounge => (LOUNGE, true),
+        Pose::Nap(frame) => (NAP[usize::from(frame % 2)], false),
+        Pose::Sleep(frame) => (SLEEP[usize::from(frame % 2)], false),
+        Pose::Homework(frame) => (HOMEWORK[usize::from(frame % 4)], false),
     }
 }
 
@@ -257,7 +287,7 @@ pub(super) fn cells(pose: Pose, facing: Facing, face: Face) -> Vec<SpriteCell> {
 mod tests {
     use super::*;
 
-    const ALL: [Pose; 24] = [
+    const ALL: [Pose; 33] = [
         Pose::Stand,
         Pose::Walk(0),
         Pose::Walk(1),
@@ -288,6 +318,15 @@ mod tests {
         Pose::Stretch,
         Pose::Gaze,
         Pose::Side,
+        Pose::Lounge,
+        Pose::Nap(0),
+        Pose::Nap(1),
+        Pose::Sleep(0),
+        Pose::Sleep(1),
+        Pose::Homework(0),
+        Pose::Homework(1),
+        Pose::Homework(2),
+        Pose::Homework(3),
     ];
 
     /// Every pose has a head where her head is drawn: an "o" or

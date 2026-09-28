@@ -118,6 +118,50 @@ pub enum Nook {
     Playlist,
 }
 
+/// Something she does with a piece of furniture.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(super) enum Use {
+    /// Sit on the sofa.
+    Lounge,
+    /// Nap on the sofa, hugging the cushion.
+    Nap,
+    /// Sleep in bed.
+    Sleep,
+    /// Homework at the desk (she nods off onto it).
+    Homework,
+    /// Sit beside the TV and watch it.
+    Watch,
+}
+
+impl Use {
+    /// What each piece is for.
+    pub fn of(item: Furniture) -> &'static [Use] {
+        match item {
+            Furniture::Sofa => &[Use::Lounge, Use::Nap],
+            Furniture::Tv => &[Use::Watch],
+            Furniture::Bed => &[Use::Sleep],
+            Furniture::Desk => &[Use::Homework],
+        }
+    }
+
+    /// Whether she uses it from in it (sits on it, lies in it), rather
+    /// than from beside it.
+    pub fn inside(self) -> bool {
+        self != Use::Watch
+    }
+}
+
+/// Where she goes to use a piece: she walks to `x` on its floor (in
+/// front of it, or beside the TV) and faces `facing`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Seat {
+    pub what: Use,
+    pub item: Furniture,
+    pub x: i32,
+    pub y: i32,
+    pub facing: Facing,
+}
+
 /// Which room a piece belongs to. Panes are her rooms: all the pieces of
 /// one room stand in the same pane, and each pane holds one room.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -167,6 +211,52 @@ impl Shown {
         Rect::new(rect.x, rect.y, rect.width, rect.height + 1)
     }
 
+    /// Where she'd be to use this piece for `what`: her anchor column and
+    /// the way she faces. In the piece for most uses; for the TV, at
+    /// `beside` (a standing spot next to it), facing it.
+    pub fn seat(&self, what: Use, beside: i32) -> Seat {
+        let (cols, _) = self.item.footprint();
+        let cols = i32::from(cols);
+        let mirrored = |col: i32| match self.facing {
+            Facing::Right => self.left + col,
+            Facing::Left => self.left + cols - 1 - col,
+        };
+        let flip = |f: Facing| match f {
+            Facing::Right => Facing::Left,
+            Facing::Left => Facing::Right,
+        };
+        let (x, facing) = match what {
+            Use::Lounge | Use::Nap => (mirrored(4), self.facing),
+            // Head at the headboard end.
+            Use::Sleep => (mirrored(3), self.facing),
+            // On a stool just past the desk's front, facing it.
+            Use::Homework => (mirrored(7), flip(self.facing)),
+            Use::Watch => (
+                beside,
+                if beside < self.left {
+                    Facing::Right
+                } else {
+                    Facing::Left
+                },
+            ),
+        };
+        Seat {
+            what,
+            item: self.item,
+            x,
+            y: self.floor,
+            facing,
+        }
+    }
+
+    /// The standing spots just beside it on its floor, her box clear of
+    /// its footprint: left of it, then right.
+    pub fn beside(&self) -> [i32; 2] {
+        let half = super::sprite::WIDTH / 2;
+        let rect = self.rect();
+        [i32::from(rect.x) - half - 1, i32::from(rect.right()) + half]
+    }
+
     /// Every footprint cell, with its ASCII glyph if drawn.
     pub fn cells(&self) -> impl Iterator<Item = (i32, i32, Option<char>)> + '_ {
         let (cols, rows) = self.item.footprint();
@@ -208,7 +298,7 @@ impl Home {
     /// it's in the closet this frame). A room whose pane is gone or too
     /// small moves, whole, to a free pane where every piece fits; with
     /// none, the whole room is in the closet. `blocked` cells are never
-    /// covered (protected rectangles, moved text, her own box).
+    /// covered by a piece (protected rectangles, moved text).
     pub fn resolve(
         &mut self,
         buf: &Buffer,
@@ -292,8 +382,10 @@ impl Home {
                 })
             })
             .filter(|&(nook, prop)| {
-                place(prop, nook, nooks)
-                    .is_some_and(|at| fits(buf, &at, &|x, y| free(shown, blocked, x, y)))
+                place(prop, nook, nooks).is_some_and(|at| {
+                    let clear = |x: i32, y: i32| free(shown, blocked, x, y);
+                    fits(buf, &at, &clear) && roomy(buf, &at, &clear)
+                })
             })
             .collect();
         spots.get(rng.below(spots.len() as u64) as usize).copied()
@@ -313,6 +405,30 @@ impl Home {
         self.props.push(prop);
         true
     }
+}
+
+/// Whether she'd fit where she uses `at` from inside it: her box at each
+/// such seat, beyond the piece itself, is blank and `clear` (a new piece
+/// is never set down where she couldn't get on it).
+fn roomy(buf: &Buffer, at: &Shown, clear: &dyn Fn(i32, i32) -> bool) -> bool {
+    let half = super::sprite::WIDTH / 2;
+    let rect = at.rect();
+    Use::of(at.item).iter().filter(|u| u.inside()).all(|&what| {
+        let seat = at.seat(what, 0);
+        (1..=super::sprite::HEIGHT).all(|dy| {
+            (-half..=half).all(|dx| {
+                let (x, y) = (seat.x + dx, seat.y - dy);
+                let (Ok(ux), Ok(uy)) = (u16::try_from(x), u16::try_from(y)) else {
+                    return false;
+                };
+                rect.contains((ux, uy).into())
+                    || clear(x, y)
+                        && buf
+                            .cell((ux, uy))
+                            .is_some_and(|c| !untouchable(c) && c.symbol().trim().is_empty())
+            })
+        })
+    })
 }
 
 /// Whether `(x, y)` is neither `blocked` nor under a shown piece.

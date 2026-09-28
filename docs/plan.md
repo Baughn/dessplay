@@ -1993,6 +1993,25 @@ welcome; the only goal is "watching her is kind of fun".
   ASCII drawings double as the goodbye's noise. Stage: `f` gives her the
   next piece. The `Home` lives on `Guest` (in memory until the ledger).
   SVG work goes to fork agents (the user's suggestion, to save context).
+- **Steps 2–3 done (2026-09-28).** `graphics::Layer` and
+  `Graphics::paint_layers`: one image over the union of several layers
+  (her single paint is the one-layer case). Pieces are solid to text
+  only; she walks in front, and the pieces her box overlaps are
+  composited with her (`draw_art`; `art::Layer` Whole/Back/Bare/Front
+  picks the bed's quilt over her, the sofa without the cushion she
+  hugs). Uses (`room::Use`: Lounge, Nap, Sleep, Homework, Watch) are
+  `Seat`s in `Chances::seats`, brain offers `Kind::Use`, and a
+  `Job::Use` walks her there; `Act::Use` holds the pose. New poses
+  (`Pose::Lounge`, `Nap`, `Sleep`, `Homework`) with rigs from the fork
+  (`use_sheet`: `HOUSEGUEST_USE=/tmp/use.png cargo test -p dessplay
+  --lib use_sheet -- --ignored`; seated legs are their own parts). Stage
+  scenes for each use give her the piece if she lacks it. No `Offers`
+  struct yet: seats ride in `Chances`, so `decide()` still grew one loop.
+- **Known gap:** in the stage room the chat floor is a pit — she drops
+  into it and, with the chat full of text, has no way back up to the
+  panes where her home is. Pre-existing terrain limit; worth a "climb
+  the divider from beside it" link or letting her leave by an edge and
+  walk back in.
 
 ### Testing
 

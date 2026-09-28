@@ -77,6 +77,8 @@ pub(super) struct Swap {
 pub(super) enum Job {
     Pull(Pull),
     Swap(Swap),
+    /// Use a piece of her furniture.
+    Use(super::room::Seat),
 }
 
 impl Job {
@@ -85,6 +87,7 @@ impl Job {
         match self {
             Self::Pull(p) => (p.x, p.y),
             Self::Swap(s) => (s.x, s.y),
+            Self::Use(seat) => (seat.x, seat.y),
         }
     }
 
@@ -92,6 +95,10 @@ impl Job {
         match self {
             Self::Pull(p) => p.side,
             Self::Swap(s) => s.side,
+            Self::Use(seat) => match seat.facing {
+                super::sprite::Facing::Left => Side::Left,
+                super::sprite::Facing::Right => Side::Right,
+            },
         }
     }
 
@@ -100,6 +107,7 @@ impl Job {
         let (row, y) = match self {
             Self::Pull(p) => (p.row, p.y),
             Self::Swap(s) => (s.row, s.y),
+            Self::Use(_) => return 1,
         };
         (i32::from(row) - (y - HEIGHT)).clamp(0, HEIGHT - 1) as u8
     }

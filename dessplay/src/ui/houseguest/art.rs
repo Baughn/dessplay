@@ -86,6 +86,14 @@ pub(super) struct Rig {
     pub scale: f32,
     /// Legs drawn in front of her skirt (knees up in front of her).
     pub legs_front: bool,
+    /// Sitting on her stool (drawn under her, at the canvas floor).
+    pub stool: bool,
+    /// Hugging the sofa's throw cushion to her chest.
+    pub cushion: bool,
+    /// Sitting on something (in profile): her skirt drapes forward over
+    /// her lap and her legs are the seated part (thighs along the seat,
+    /// shins hanging); `legs` is ignored.
+    pub seated: bool,
     /// (shoulder, elbow).
     pub arms: [(f32, f32); 2],
     /// (hip, knee).
@@ -104,6 +112,9 @@ impl Rig {
             turn: 0.0,
             scale: 1.0,
             legs_front: false,
+            stool: false,
+            cushion: false,
+            seated: false,
             arms: [(12.0, -4.0), (-12.0, 4.0)],
             legs: [(3.0, 0.0), (-3.0, 0.0)],
         }
@@ -249,6 +260,11 @@ impl Rig {
                 arms: [(6.0, -8.0), (-4.0, -10.0)],
                 ..stand
             },
+            Pose::Lounge => Self::sofa_sit(expression),
+            Pose::Nap(_) => Self::sofa_nap(expression),
+            Pose::Sleep(frame) => Self::bed_sleep(frame),
+            // Writing (two frames), nodding off, asleep on the paper.
+            Pose::Homework(frame) => Self::homework(frame.saturating_sub(1), expression),
             Pose::Gaze => Self {
                 profile: true,
                 tilt: -16.0,
@@ -305,6 +321,9 @@ impl Rig {
             turn: 0.0,
             scale: 1.0,
             legs_front: false,
+            stool: false,
+            cushion: false,
+            seated: false,
             arms: [(arm(0) + 4.0, 0.0), (arm(1), 0.0)],
             legs,
         }
@@ -344,8 +363,92 @@ impl Rig {
             turn: 0.0,
             scale: 1.0,
             legs_front: false,
+            stool: false,
+            cushion: false,
+            seated: false,
             arms,
             legs,
+        }
+    }
+
+    /// Sitting on the sofa's seat in profile, leaning back a little,
+    /// hands in her lap and her feet dangling short of the floor. Drawn
+    /// centred on the sofa's column 4.
+    pub fn sofa_sit(expression: Expression) -> Self {
+        // Hips on the seat cushion (52 units above the floor): thighs
+        // along the seat, knees at its front, shins hanging.
+        let lap = (68.0, 112.0);
+        let arm = |i: usize| aim((P_SHOULDERS[i], P_SHOULDER_Y), lap);
+        Self {
+            bob: -12.0,
+            profile: true,
+            seated: true,
+            arms: [(arm(0) + 4.0, -10.0), (arm(1), -14.0)],
+            ..Self::standing(expression)
+        }
+    }
+
+    /// Napping on the sofa's seat on her back, knees drawn up, hugging
+    /// its throw cushion. Drawn centred on the sofa's column 4, with the
+    /// sofa's `Bare` layer behind her (the cushion is in her arms).
+    pub fn sofa_nap(expression: Expression) -> Self {
+        Self {
+            turn: -90.0,
+            scale: 0.74,
+            shift: 30.0,
+            bob: -24.0,
+            tilt: -6.0,
+            profile: true,
+            cushion: true,
+            legs: [(-34.0, 64.0), (-24.0, 56.0)],
+            arms: [(-70.0, -70.0), (-60.0, -80.0)],
+            ..Self::standing(expression)
+        }
+    }
+
+    /// Asleep in bed on her back, head on the pillow, one hand up by her
+    /// cheek; the quilt (the bed's `Front` layer) goes over her. `frame`
+    /// breathes. Drawn centred on the bed's column 3.
+    pub fn bed_sleep(frame: u8) -> Self {
+        Self {
+            turn: -90.0,
+            scale: 0.74,
+            shift: 30.0,
+            bob: if frame.is_multiple_of(2) { -5.0 } else { -5.8 },
+            tilt: -10.0,
+            profile: true,
+            legs: [(-4.0, 0.0), (0.0, 0.0)],
+            arms: [(10.0, 0.0), (160.0, 150.0)],
+            ..Self::standing(Expression::Blink)
+        }
+    }
+
+    /// Homework: on her stool at the desk, in profile facing it, writing;
+    /// from `frame` 1 she nods off, head sinking, until at 2+ she's
+    /// asleep on the paper. Drawn centred on the desk's column 7 (a cell
+    /// past its end) and facing it (the desk faces right, she faces
+    /// left).
+    pub fn homework(frame: u8, expression: Expression) -> Self {
+        // Nodding off she leans in, so she sits back to keep her head in
+        // her box.
+        let (lean, tilt, shift, expression) = match frame {
+            0 => (6.0, 10.0, -16.0, expression),
+            1 => (14.0, 22.0, -18.0, Expression::Blink),
+            _ => (20.0, 38.0, -27.0, Expression::Blink),
+        };
+        let desk = (86.0, 98.0);
+        let arm = |i: usize| aim((P_SHOULDERS[i] + shift, P_SHOULDER_Y), desk) - lean;
+        Self {
+            expression,
+            lean,
+            tilt,
+            bob: -4.0,
+            shift,
+            profile: true,
+            stool: true,
+            legs: [(-86.0, 84.0), (-92.0, 92.0)],
+            arms: [(arm(0), 0.0), (arm(1), 0.0)],
+            ..Self::standing(expression)
         }
     }
 
@@ -413,17 +516,32 @@ pub(super) fn scene(rig: &Rig, facing: Facing, line: &str) -> String {
         r##"<use href="#{prefix}face"/><use href="#{prefix}{face}"/><use href="#{prefix}hair-front"/>"##,
         face = rig.expression.id(),
     ));
+    // The cushion she hugs sits on her chest, under her near arm.
+    let cushion = if rig.cushion {
+        if rig.profile {
+            r##"<use href="#cushion" transform="translate(60 88) rotate(-10)"/>"##
+        } else {
+            r##"<use href="#cushion" transform="translate(50 90)"/>"##
+        }
+    } else {
+        ""
+    };
     // Frontal: both arms over everything (hands can reach past the
     // head). Profile: far limbs behind the body, near limbs in front.
     let body = if rig.profile {
         format!(
-            r##"{legs_behind}<g transform="rotate({lean} 50 {HIP_Y})">{far_arm}{hair}<use href="#p-skirt"/><use href="#p-torso"/>{head}</g>{legs_before}<g transform="rotate({lean} 50 {HIP_Y})">{near_arm}</g>"##,
-            legs_behind = if rig.legs_front {
+            r##"{legs_behind}<g transform="rotate({lean} 50 {HIP_Y})">{far_arm}{hair}<use href="#{skirt}"/><use href="#p-torso"/>{head}</g>{legs_before}<g transform="rotate({lean} 50 {HIP_Y})">{cushion}{near_arm}</g>"##,
+            legs_behind = if rig.seated || rig.legs_front {
                 String::new()
             } else {
                 leg(0) + &leg(1)
             },
-            legs_before = if rig.legs_front {
+            legs_before = if rig.seated {
+                format!(
+                    r##"<g transform="rotate({} 50 {HIP_Y})"><use href="#p-seated-legs"/></g>"##,
+                    rig.lean
+                )
+            } else if rig.legs_front {
                 leg(0) + &leg(1)
             } else {
                 String::new()
@@ -431,19 +549,34 @@ pub(super) fn scene(rig: &Rig, facing: Facing, line: &str) -> String {
             lean = rig.lean,
             far_arm = arm(0),
             near_arm = arm(1),
+            skirt = if rig.seated {
+                "p-skirt-seated"
+            } else {
+                "p-skirt"
+            },
+            cushion = cushion,
         )
     } else {
         format!(
-            r##"<g transform="rotate({lean} 50 {HIP_Y})">{hair}</g>{leg0}{leg1}<g transform="rotate({lean} 50 {HIP_Y})"><use href="#skirt"/><use href="#torso"/>{head}{arm0}{arm1}</g>"##,
+            r##"<g transform="rotate({lean} 50 {HIP_Y})">{hair}</g>{leg0}{leg1}<g transform="rotate({lean} 50 {HIP_Y})"><use href="#skirt"/><use href="#torso"/>{head}{cushion}{arm0}{arm1}</g>"##,
             leg0 = leg(0),
             leg1 = leg(1),
             lean = rig.lean,
             arm0 = arm(0),
             arm1 = arm(1),
+            cushion = cushion,
         )
     };
     format!(
-        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {CANVAS_W} {CANVAS_H}" color="{line}">{PARTS}<g{mirror}><g transform="translate({shift} {bob}) translate(50 {HIP_Y}) scale({scale}) rotate({turn}) translate(-50 -{HIP_Y})">{body}</g></g></svg>"##,
+        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {CANVAS_W} {CANVAS_H}" color="{line}">{PARTS}<g{mirror}>{stool}<g transform="translate({shift} {bob}) translate(50 {HIP_Y}) scale({scale}) rotate({turn}) translate(-50 -{HIP_Y})">{body}</g></g></svg>"##,
+        stool = if rig.stool {
+            format!(
+                r##"<use href="#stool" transform="translate({} 0)"/>"##,
+                rig.shift
+            )
+        } else {
+            String::new()
+        },
         shift = rig.shift,
         bob = rig.bob,
         scale = rig.scale,
@@ -468,22 +601,68 @@ pub(super) fn render(
     )
 }
 
-/// A piece of furniture as an SVG document, in its own frame (see
-/// `art/props.svg`), facing right unless mirrored.
-pub(super) fn prop_scene(prop: Furniture, facing: Facing, line: &str) -> String {
+/// Which parts of a piece to draw, for compositing her into it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(super) enum Layer {
+    /// The whole piece, as it stands.
+    Whole,
+    /// What goes behind her when she uses it (all but the bed's quilt).
+    Back,
+    /// The back without its loose things (the sofa without its throw
+    /// cushion, which she's hugging).
+    Bare,
+    /// What goes in front of her (the bed's quilt).
+    Front,
+}
+
+/// The SVG parts of `prop` in `layer`, back to front.
+fn parts(prop: Furniture, layer: Layer) -> &'static [&'static str] {
+    match (prop, layer) {
+        (_, Layer::Front) if prop != Furniture::Bed => &[],
+        (Furniture::Sofa, Layer::Whole | Layer::Back) => &["sofa", "sofa-cushion"],
+        (Furniture::Sofa, _) => &["sofa"],
+        (Furniture::Tv, _) => &["tv", "tv-screen"],
+        (Furniture::Bed, Layer::Whole) => &["bed", "bed-quilt"],
+        (Furniture::Bed, Layer::Front) => &["bed-quilt-over"],
+        (Furniture::Bed, _) => &["bed"],
+        (Furniture::Desk, _) => &["desk"],
+    }
+}
+
+/// `layer` of a piece as an SVG document, in the piece's own frame.
+fn layer_scene(prop: Furniture, layer: Layer, facing: Facing, line: &str) -> String {
     let (w, h) = prop_frame(prop);
     let mirror = match facing {
         Facing::Right => String::new(),
         Facing::Left => format!(r#" transform="translate({w} 0) scale(-1 1)""#),
     };
-    let screen = if prop == Furniture::Tv {
-        r##"<use href="#tv-screen"/>"##
-    } else {
-        ""
-    };
+    let uses: String = parts(prop, layer)
+        .iter()
+        .map(|id| format!(r##"<use href="#{id}"/>"##))
+        .collect();
     format!(
-        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w} {h}" color="{line}">{PROPS}<g{mirror}><use href="#{id}"/>{screen}</g></svg>"##,
-        id = prop.art_id(),
+        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w} {h}" color="{line}">{PROPS}<g{mirror}>{uses}</g></svg>"##
+    )
+}
+
+/// Render `layer` of a piece like [`render_prop`]; `None` when the
+/// layer is empty (only the bed has a front).
+pub(super) fn render_prop_layer(
+    prop: Furniture,
+    layer: Layer,
+    facing: Facing,
+    line: &str,
+    width: u32,
+    height: u32,
+) -> Option<image::RgbaImage> {
+    if parts(prop, layer).is_empty() {
+        return None;
+    }
+    rasterize(
+        &layer_scene(prop, layer, facing, line),
+        prop_frame(prop),
+        width,
+        height,
     )
 }
 
@@ -493,23 +672,6 @@ fn prop_frame(prop: Furniture) -> (f32, f32) {
     (
         f32::from(cols) * CELL_UNITS.0,
         f32::from(rows) * CELL_UNITS.1,
-    )
-}
-
-/// Render a piece of furniture into a `width × height` pixel image,
-/// scaled uniformly and bottom-aligned (standing on the box's floor).
-pub(super) fn render_prop(
-    prop: Furniture,
-    facing: Facing,
-    line: &str,
-    width: u32,
-    height: u32,
-) -> Option<image::RgbaImage> {
-    rasterize(
-        &prop_scene(prop, facing, line),
-        prop_frame(prop),
-        width,
-        height,
     )
 }
 
@@ -588,6 +750,13 @@ mod tests {
             ("gaze", Rig::for_pose(Pose::Gaze, Face::Curious)),
             ("wave", Rig::waving(true)),
             ("wave", Rig::waving(false)),
+            ("sofa sit", Rig::sofa_sit(Expression::Smile)),
+            ("sofa nap", Rig::sofa_nap(Expression::Blink)),
+            ("bed sleep", Rig::bed_sleep(0)),
+            ("bed sleep", Rig::bed_sleep(1)),
+            ("homework", Rig::homework(0, Expression::Vacant)),
+            ("homework", Rig::homework(1, Expression::Vacant)),
+            ("homework", Rig::homework(2, Expression::Vacant)),
         ]);
         out
     }
@@ -662,7 +831,8 @@ mod tests {
             let (cols, rows) = prop.footprint();
             for facing in [Facing::Left, Facing::Right] {
                 let (w, h) = (u32::from(cols) * 9, u32::from(rows) * 19);
-                let image = render_prop(prop, facing, LINE, w, h).expect("renders");
+                let image =
+                    render_prop_layer(prop, Layer::Whole, facing, LINE, w, h).expect("renders");
                 let inked = image.pixels().filter(|p| p.0[3] > 0).count();
                 assert!(inked as u32 > w * h / 4, "{prop:?}: only {inked} pixels");
             }
@@ -744,7 +914,7 @@ mod tests {
                             );
                         }
                     }
-                    let svg = prop_scene(prop, Facing::Right, LINE);
+                    let svg = layer_scene(prop, Layer::Whole, Facing::Right, LINE);
                     let svg = if outline { unfilled(&svg) } else { svg };
                     let image =
                         rasterize(&svg, prop_frame(prop), w * cols, h * prop_rows + h / 2).unwrap();
@@ -762,6 +932,131 @@ mod tests {
                         i64::from(hx),
                         i64::from(floor - h * 4),
                     );
+                    x0 += span(s);
+                }
+            }
+        }
+        sheet.save(path).unwrap();
+    }
+
+    /// Her using each piece: (piece, layer behind her, her rig, the
+    /// piece's column her box is centred on, and her facing when the
+    /// piece faces right).
+    fn uses() -> Vec<(Furniture, Layer, Rig, i32, Facing)> {
+        let mut out = vec![
+            (
+                Furniture::Sofa,
+                Layer::Back,
+                Rig::sofa_sit(Expression::Smile),
+                4,
+                Facing::Right,
+            ),
+            (
+                Furniture::Sofa,
+                Layer::Bare,
+                Rig::sofa_nap(Expression::Blink),
+                4,
+                Facing::Right,
+            ),
+        ];
+        for frame in 0..2 {
+            out.push((
+                Furniture::Bed,
+                Layer::Back,
+                Rig::bed_sleep(frame),
+                3,
+                Facing::Right,
+            ));
+        }
+        for frame in 0..3 {
+            out.push((
+                Furniture::Desk,
+                Layer::Back,
+                Rig::homework(frame, Expression::Vacant),
+                7,
+                Facing::Left,
+            ));
+        }
+        out
+    }
+
+    /// Her furniture poses for review, composited as the terminal will
+    /// show them (the piece's back, her, the piece's front):
+    /// `HOUSEGUEST_USE=/tmp/use.png cargo test use_sheet -- --ignored`.
+    /// Each use facing right (left half) and mirrored (right half), at
+    /// 1×, 2× and 4×, with the cell grid and the floor line.
+    #[test]
+    #[ignore = "writes a PNG for review"]
+    fn use_sheet() {
+        let path = std::env::var("HOUSEGUEST_USE").expect("HOUSEGUEST_USE");
+        let (cw, ch) = (9u32, 19u32);
+        let scales = [1u32, 2, 4];
+        // Up to 12 cells of scene plus a cell either side.
+        let span = |s: u32| cw * s * 14;
+        let half: u32 = scales.iter().map(|&s| span(s)).sum();
+        let row_h = ch * 4 * 7;
+        let uses = uses();
+        let mut sheet = image::RgbaImage::from_pixel(
+            half * 2,
+            row_h * uses.len() as u32,
+            image::Rgba([13, 17, 23, 255]),
+        );
+        for (row, (prop, back, rig, c, her_facing)) in uses.into_iter().enumerate() {
+            let (cols, rows) = prop.footprint();
+            let (cols, rows) = (i32::from(cols), u32::from(rows));
+            for (side, mirrored) in [false, true].into_iter().enumerate() {
+                let (facing, c, her) = if mirrored {
+                    let flip = match her_facing {
+                        Facing::Left => Facing::Right,
+                        Facing::Right => Facing::Left,
+                    };
+                    (Facing::Left, cols - 1 - c, flip)
+                } else {
+                    (Facing::Right, c, her_facing)
+                };
+                let mut x0 = side as u32 * half;
+                for &s in &scales {
+                    let (w, h) = (cw * s, ch * s);
+                    // The scene's leftmost column, a cell in from x0.
+                    let first = (c - 2).min(0);
+                    let origin = |col: i32| {
+                        (i64::from(x0) + i64::from(w) * i64::from(col - first + 1)) as u32
+                    };
+                    let floor = row as u32 * row_h + row_h - h;
+                    let line = floor + h / 2;
+                    for gx in 0..span(s) - w {
+                        for t in 0..s {
+                            sheet.put_pixel(x0 + gx, line + t, image::Rgba([139, 148, 158, 255]));
+                        }
+                    }
+                    let last = (c + 3).max(cols);
+                    for gy in 0..=rows.max(4) {
+                        for gx in origin(first)..origin(last) {
+                            sheet.put_pixel(gx, floor - gy * h, image::Rgba([40, 46, 56, 255]));
+                        }
+                    }
+                    let (pw, ph) = (w * cols as u32, h * rows + h / 2);
+                    let top = i64::from(floor + h / 2 - ph);
+                    let mut layers = Vec::new();
+                    let behind = if back == Layer::Back {
+                        render_prop_layer(prop, Layer::Back, facing, LINE, pw, ph)
+                    } else {
+                        render_prop_layer(prop, back, facing, LINE, pw, ph)
+                    };
+                    layers.extend(behind.map(|i| (i, 0)));
+                    let osaka = render(&rig, her, LINE, w * 5, h * 4 + h / 2).unwrap();
+                    layers.push((osaka, 1));
+                    layers.extend(
+                        render_prop_layer(prop, Layer::Front, facing, LINE, pw, ph).map(|i| (i, 0)),
+                    );
+                    for (image, is_her) in layers {
+                        let (x, y) = if is_her == 1 {
+                            (origin(c - 2), i64::from(floor - h * 4))
+                        } else {
+                            (origin(0), top)
+                        };
+                        image::imageops::overlay(&mut sheet, &image, i64::from(x), y);
+                    }
                     x0 += span(s);
                 }
             }

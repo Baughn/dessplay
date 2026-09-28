@@ -13,6 +13,7 @@ use tuirealm::ratatui::buffer::Buffer;
 use tuirealm::ratatui::layout::Rect;
 
 use super::osaka::{Activity, Chances};
+use super::room::Use;
 use super::scenes::{self, Job, Side};
 use super::sprite::WIDTH;
 use super::terrain::{Link, Route, Terrain};
@@ -54,11 +55,21 @@ pub enum Scene {
     Gaze,
     /// Space out, saying something first.
     Muse,
+    /// Sit on her sofa (she gets one if she has none).
+    Lounge,
+    /// Nap on her sofa, hugging the cushion.
+    Nap,
+    /// Sleep in her bed.
+    Sleep,
+    /// Homework at her desk.
+    Homework,
+    /// Watch her TV.
+    Watch,
 }
 
 impl Scene {
     /// Every scene, in menu order.
-    pub const ALL: [Scene; 15] = [
+    pub const ALL: [Scene; 20] = [
         Self::Arrive,
         Self::Pull,
         Self::Swap,
@@ -74,6 +85,11 @@ impl Scene {
         Self::Stretch,
         Self::Gaze,
         Self::Muse,
+        Self::Lounge,
+        Self::Nap,
+        Self::Sleep,
+        Self::Homework,
+        Self::Watch,
     ];
 
     /// A short menu label.
@@ -94,7 +110,24 @@ impl Scene {
             Self::Stretch => "stretch",
             Self::Gaze => "gaze",
             Self::Muse => "muse",
+            Self::Lounge => "sit on the sofa",
+            Self::Nap => "nap on the sofa",
+            Self::Sleep => "sleep in bed",
+            Self::Homework => "homework",
+            Self::Watch => "watch TV",
         }
+    }
+
+    /// What she does with her furniture in this scene.
+    pub(super) fn furniture(self) -> Option<Use> {
+        Some(match self {
+            Self::Lounge => Use::Lounge,
+            Self::Nap => Use::Nap,
+            Self::Sleep => Use::Sleep,
+            Self::Homework => Use::Homework,
+            Self::Watch => Use::Watch,
+            _ => return None,
+        })
     }
 
     fn activity(self) -> Option<Activity> {
@@ -171,6 +204,26 @@ pub(super) fn direct(
             osaka.place(start, y, now);
             osaka.pursue(job, now);
             Ok(format!("{name} at ({x}, {y})"))
+        }
+        _ if scene.furniture().is_some() => {
+            let what = scene.furniture();
+            let seats: Vec<_> = chances
+                .seats
+                .iter()
+                .filter(|s| Some(s.what) == what)
+                .copied()
+                .collect();
+            let seat = pick(&seats, rng)
+                .ok_or_else(|| format!("{name}: no room for her furniture here"))?;
+            let job = Job::Use(seat);
+            let away = match job.side() {
+                Side::Left => 1,
+                Side::Right => -1,
+            };
+            let start = approach(terrain, seat.x, seat.y, away);
+            osaka.place(start, seat.y, now);
+            osaka.pursue(job, now);
+            Ok(format!("{name} at ({}, {})", seat.x, seat.y))
         }
         Scene::Sneeze => {
             let spot = terrain

@@ -5,6 +5,7 @@
 use super::Rng;
 use super::brain::{self, Kind, Need, Needs};
 use super::layer::Placed;
+use super::room::{Furniture, Seat, Use};
 use super::scenes::{Job, LayerOp, Side};
 use super::sprite::{self, Face, Facing, HEIGHT, Pose, SpriteCell};
 use super::terrain::{Link, Route, Terrain};
@@ -18,6 +19,8 @@ pub(super) struct Chances {
     pub swaps: Vec<super::scenes::Swap>,
     /// Glyphs a sneeze where she stands would knock loose.
     pub loose: Vec<(u16, u16)>,
+    /// Her furniture, and where she'd go to use it.
+    pub seats: Vec<Seat>,
 }
 
 impl Chances {
@@ -25,6 +28,7 @@ impl Chances {
         match job {
             Job::Pull(p) => self.pulls.contains(p),
             Job::Swap(s) => self.swaps.contains(s),
+            Job::Use(seat) => self.seats.contains(seat),
         }
     }
 }
@@ -165,6 +169,47 @@ enum Act {
         since: u64,
         until: u64,
     },
+    /// Using a piece of her furniture (the task is its seat).
+    Use {
+        what: Use,
+        since: u64,
+        until: u64,
+    },
+}
+
+/// How long she keeps at `what` (ms range).
+fn use_duration(what: Use) -> (u64, u64) {
+    match what {
+        Use::Lounge => (15_000, 30_000),
+        Use::Nap => (30_000, 60_000),
+        Use::Sleep => (60_000, 180_000),
+        Use::Homework => (30_000, 60_000),
+        Use::Watch => (20_000, 45_000),
+    }
+}
+
+/// Animation frame period for `what`.
+const USE_FRAME_MS: u64 = 1400;
+
+/// How she looks `elapsed` ms into `what`, which lasts `length` ms.
+fn use_look(what: Use, elapsed: u64, length: u64) -> (Pose, Face, Option<Bubble>) {
+    let frame = (elapsed / USE_FRAME_MS % 2) as u8;
+    match what {
+        Use::Lounge => (Pose::Lounge, Face::Vacant, None),
+        Use::Nap => (Pose::Nap(frame), Face::Blink, Some(Bubble::Zzz)),
+        Use::Sleep => (Pose::Sleep(frame), Face::Blink, Some(Bubble::Zzz)),
+        // Writing for the first half, then nodding off onto the paper.
+        Use::Homework => {
+            if elapsed < length / 2 {
+                (Pose::Homework(frame), Face::Vacant, None)
+            } else if elapsed < length * 3 / 4 {
+                (Pose::Homework(2), Face::Blink, Some(Bubble::Dots))
+            } else {
+                (Pose::Homework(3), Face::Blink, Some(Bubble::Zzz))
+            }
+        }
+        Use::Watch => (Pose::Sit, Face::Curious, None),
+    }
 }
 
 /// Something to do on the spot that isn't staring at the viewer.
@@ -468,6 +513,9 @@ impl Osaka {
                 since + WINDUP_MS + if knocked { RECOIL_MS } else { 0 }
             }
             Act::Idle { what, since, until } => next_frame(what, since, now).min(until),
+            Act::Use { since, until, .. } => {
+                (since + (now.saturating_sub(since) / USE_FRAME_MS + 1) * USE_FRAME_MS).min(until)
+            }
             Act::Look {
                 surprised_until, ..
             } => surprised_until,
@@ -597,6 +645,15 @@ impl Osaka {
                     self.act_due = next_frame(what, since, at).min(until);
                 }
             }
+            Act::Use { since, until, .. } => {
+                if at >= until {
+                    self.decide(at, terrain, chances, rng);
+                } else {
+                    let frame =
+                        since + (at.saturating_sub(since) / USE_FRAME_MS + 1) * USE_FRAME_MS;
+                    self.act_due = frame.min(until);
+                }
+            }
             Act::Dazed { .. } => {
                 // Said in place of a hello when it's her entrance.
                 if !self.greeted || rng.below(2) == 0 {
@@ -713,6 +770,19 @@ impl Osaka {
                     && job.spot() == (self.x, self.y)
                 {
                     self.facing = side_facing(job.side());
+                    if let Job::Use(seat) = *job {
+                        self.facing = seat.facing;
+                        let (lo, hi) = use_duration(seat.what);
+                        tracing::debug!(?seat, "houseguest: using her furniture");
+                        return self.set(
+                            Act::Use {
+                                what: seat.what,
+                                since: at,
+                                until: at + rng.range(lo, hi),
+                            },
+                            at,
+                        );
+                    }
                     let Job::Pull(task) = job else {
                         // At the word: reach for the letters.
                         return self.set(
@@ -959,6 +1029,37 @@ impl Osaka {
         }
     }
 
+    /// Where she's using a piece of her furniture, if she is.
+    pub fn seat(&self) -> Option<Seat> {
+        match (self.act, &self.task) {
+            (Act::Use { .. }, Some(Job::Use(seat))) => Some(*seat),
+            _ => None,
+        }
+    }
+
+    /// The piece she was using went into the closet: she's back on her
+    /// feet where it was, blinking.
+    pub fn lost_seat(&mut self, now: u64) {
+        if let (Act::Use { .. }, Some(Job::Use(seat))) = (self.act, self.task.take()) {
+            tracing::debug!(?seat, "houseguest: her furniture went away under her");
+            self.set(
+                Act::Look {
+                    surprised_until: now + SURPRISED_MS,
+                    until: now + LOOK_MS / 2,
+                },
+                now,
+            );
+        }
+    }
+
+    /// Whether she's using `item` (inside it or beside it).
+    pub fn using(&self) -> Option<Furniture> {
+        match (self.act, &self.task) {
+            (Act::Use { .. }, Some(Job::Use(seat))) => Some(seat.item),
+            _ => None,
+        }
+    }
+
     /// The text she was pulling changed under her (someone scrolled the
     /// chat): she lets go and stares.
     pub fn lost_grip(&mut self, now: u64) {
@@ -1017,6 +1118,12 @@ impl Osaka {
         }
         if !chances.pulls.is_empty() {
             offers.push(Kind::Pull);
+        }
+        for seat in &chances.seats {
+            let kind = Kind::Use(seat.what);
+            if !offers.contains(&kind) {
+                offers.push(kind);
+            }
         }
         // One piece of mischief at a time: no new swap while one is owed.
         if !chances.swaps.is_empty() && !self.owes() {
@@ -1095,6 +1202,18 @@ impl Osaka {
                 };
                 self.travel(link, at);
                 return true;
+            }
+            Kind::Use(what) => {
+                let seats: Vec<Seat> = chances
+                    .seats
+                    .iter()
+                    .filter(|s| s.what == what)
+                    .copied()
+                    .collect();
+                let Some(&seat) = seats.get(rng.below(seats.len() as u64) as usize) else {
+                    return false;
+                };
+                return self.go_to(Job::Use(seat), here, terrain, at);
             }
             Kind::Pull | Kind::Swap => {
                 // A few tries at one she can get to.
@@ -1366,6 +1485,9 @@ impl Osaka {
                     .checked_div(what.period())
                     .map_or(0, |n| (n % 2) as u8);
                 what.look(frame)
+            }
+            Act::Use { what, since, until } => {
+                use_look(what, now.saturating_sub(since), until.saturating_sub(since))
             }
             Act::SpaceOut { .. } => (Pose::Stand, Face::Vacant, Some(Bubble::Dots)),
             Act::Walk { .. } => (Pose::Walk(self.x.rem_euclid(4) as u8), Face::Vacant, None),

@@ -92,6 +92,9 @@ struct Visit {
     chances: osaka::Chances,
     /// Her furniture as placed in the last frame.
     shown: Vec<Shown>,
+    /// The pieces drawn in her image in the last frame (she overlapped
+    /// them).
+    with: Vec<Shown>,
     size: (u16, u16),
 }
 
@@ -102,6 +105,8 @@ struct Leaving {
     image: Option<Placement>,
     /// Her furniture's line art, held until the rain.
     props: Vec<Shown>,
+    /// The pieces she overlapped, drawn in her image.
+    with: Vec<Shown>,
 }
 
 enum State {
@@ -171,6 +176,15 @@ impl Guest {
     /// works — starting a visit if she isn't here (the idle wait is
     /// skipped). See [`stage`].
     pub fn cue(&mut self, scene: stage::Scene) {
+        // A scene with her furniture: she gets the piece if she has none.
+        if let Some(what) = scene.furniture()
+            && let Some(&item) = Furniture::ALL
+                .iter()
+                .find(|&&item| room::Use::of(item).contains(&what))
+            && !self.home.owns(item)
+        {
+            self.gift = Some(item);
+        }
         if scene == stage::Scene::Arrive || !matches!(self.state, State::Visiting(_)) {
             self.state = State::Arriving;
         }
@@ -233,7 +247,12 @@ impl Guest {
                     self.state = State::Leaving(Box::new(Leaving {
                         dissolve,
                         image: visit.image,
-                        props: visit.shown,
+                        props: visit
+                            .shown
+                            .into_iter()
+                            .filter(|s| !visit.with.contains(s))
+                            .collect(),
+                        with: visit.with,
                     }));
                 }
             }
@@ -306,6 +325,7 @@ impl Guest {
                         layer: layer::TextLayer::default(),
                         chances: osaka::Chances::default(),
                         shown: Vec::new(),
+                        with: Vec::new(),
                         size,
                     }));
                 }
@@ -343,19 +363,26 @@ impl Guest {
                     && untouched
                 {
                     // Startled, then a wave; then she bursts into letters.
+                    // She jumps up out of anything she was in; what she
+                    // overlapped is still drawn in her image.
                     let look = if t < dissolve::SMILE_FROM_MS {
                         Look::Pose(sprite::Pose::Stand, sprite::Face::Surprised)
                     } else {
                         Look::Wave((t / dissolve::WAVE_MS).is_multiple_of(2))
                     };
-                    graphics.paint(
-                        buf,
+                    let her = graphics::Layer {
                         look,
-                        image.facing,
-                        (image.x, image.y),
-                        image.standing,
-                        &|x, y| terrain.open(x, y),
-                    );
+                        facing: image.facing,
+                        at: (image.x, image.y),
+                        standing: image.standing,
+                    };
+                    let layers: Vec<graphics::Layer> = leaving
+                        .with
+                        .iter()
+                        .map(|p| prop_layer(p, art::Layer::Whole))
+                        .chain([her])
+                        .collect();
+                    graphics.paint_layers(buf, &layers, &|x, y| terrain.open(x, y));
                 }
             }
             State::Visiting(visit) => {
@@ -365,7 +392,8 @@ impl Guest {
                 visit.layer.validate(buf, &view.protected);
                 // Her furniture stands on blank cells, clear of protected
                 // ones, moved text, and her; what doesn't fit is in the
-                // closet this frame. Placed, it's solid to her and to text.
+                // closet this frame. Placed, it's solid to text; she walks
+                // in front of it.
                 visit.shown = furnish(
                     &mut self.home,
                     &mut self.gift,
@@ -375,6 +403,11 @@ impl Guest {
                     visit,
                     &mut self.rng,
                 );
+                if let Some(item) = visit.osaka.using()
+                    && !visit.shown.iter().any(|s| s.item == item)
+                {
+                    visit.osaka.lost_seat(now);
+                }
                 let mut base = view.protected.clone();
                 base.extend(visit.shown.iter().map(Shown::cover));
                 let mut gripped = true;
@@ -388,7 +421,7 @@ impl Guest {
                 if !gripped {
                     visit.osaka.lost_grip(now);
                 }
-                let mut protected = base.clone();
+                let mut protected = view.protected.clone();
                 protected.extend(visit.layer.cells().map(|(x, y)| Rect::new(x, y, 1, 1)));
                 visit.terrain = Terrain::read(buf, &protected, self.graphics.is_some());
                 visit.size = size;
@@ -404,6 +437,8 @@ impl Guest {
                 // A line she moved isn't hers to pull again (it's
                 // protected), but its letters are hers to swap where
                 // they now sit: swaps read the frame with her layer on.
+                // Text reads keep every piece solid.
+                protected.extend(visit.shown.iter().map(Shown::cover));
                 let pulls = scenes::pulls(buf, &visit.terrain, &protected);
                 let mut layer = visit.layer.paint(buf);
                 let mut holes = base;
@@ -414,6 +449,7 @@ impl Guest {
                         pulls: pulls.clone(),
                         swaps: swaps.clone(),
                         loose: Vec::new(),
+                        seats: seats(&visit.shown, &visit.terrain),
                     };
                     let note =
                         stage::direct(scene, buf, &protected, visit, &offered, now, &mut self.rng);
@@ -434,11 +470,24 @@ impl Guest {
                     pulls,
                     swaps,
                     loose,
+                    seats: seats(&visit.shown, &visit.terrain),
                 };
+                // In line art, pieces she overlaps go in her image: two
+                // images would cut each other out.
+                let her = Rect::new(
+                    (visit.osaka.x - sprite::WIDTH / 2).max(0) as u16,
+                    (visit.osaka.y - sprite::HEIGHT).max(0) as u16,
+                    sprite::WIDTH as u16,
+                    sprite::HEIGHT as u16 + 1,
+                );
+                let (with, apart): (Vec<Shown>, Vec<Shown>) = visit
+                    .shown
+                    .iter()
+                    .partition(|s| self.graphics.is_some() && s.cover().intersects(her));
                 layer.extend(draw_props(
                     buf,
                     self.graphics.as_mut(),
-                    &visit.shown,
+                    &apart,
                     self.truecolor,
                 ));
                 match &mut self.graphics {
@@ -448,22 +497,27 @@ impl Guest {
                             graphics,
                             &visit.osaka,
                             &visit.terrain,
+                            &visit.shown,
+                            &with,
                             now,
                             self.truecolor,
                         );
                         layer.extend(painted);
                         visit.image = image;
+                        visit.with = with;
                     }
                     None => {
                         layer.extend(draw(
                             buf,
                             &visit.osaka,
                             &visit.terrain,
+                            &visit.shown,
                             now,
                             self.truecolor,
                             true,
                         ));
                         visit.image = None;
+                        visit.with = Vec::new();
                     }
                 }
                 visit.painted = layer;
@@ -524,10 +578,12 @@ fn ink(part: Part, truecolor: bool) -> Ink {
 
 /// Paint her (and any bubble) into `buf`, returning what was painted
 /// over what.
+#[allow(clippy::too_many_arguments)]
 fn draw(
     buf: &mut Buffer,
     osaka: &Osaka,
     terrain: &Terrain,
+    shown: &[Shown],
     now: u64,
     truecolor: bool,
     with_sprite: bool,
@@ -552,7 +608,7 @@ fn draw(
         let text = bubble.text();
         let len = text.chars().count() as i32;
         let (pose, _, _) = osaka.appearance(now);
-        if let Some((start, row)) = bubble_spot(buf, terrain, osaka, pose, len) {
+        if let Some((start, row)) = bubble_spot(buf, terrain, shown, osaka, pose, len) {
             let bold = Ink::new(ink(Part::Body, truecolor).fg, Modifier::BOLD);
             for (i, glyph) in text.chars().enumerate() {
                 wanted.push((start + i as i32, row, glyph, bold, None));
@@ -597,6 +653,7 @@ fn draw(
 fn bubble_spot(
     buf: &Buffer,
     terrain: &Terrain,
+    shown: &[Shown],
     osaka: &Osaka,
     pose: Pose,
     len: i32,
@@ -658,6 +715,7 @@ fn bubble_spot(
             return false;
         };
         terrain.open(i32::from(x), i32::from(y))
+            && !shown.iter().any(|s| s.rect().contains((x, y).into()))
             && buf
                 .cell((x, y))
                 .is_some_and(|c| c.symbol().trim().is_empty())
@@ -671,8 +729,7 @@ fn bubble_spot(
 }
 
 /// Where her furniture stands this frame, placing the stage's gift
-/// first if there is one. Nothing covers protected cells, moved text,
-/// or her box (a piece that would land on her waits in the closet).
+/// first if there is one. Nothing covers protected cells or moved text.
 fn furnish(
     home: &mut Home,
     gift: &mut Option<Furniture>,
@@ -683,15 +740,11 @@ fn furnish(
     rng: &mut Rng,
 ) -> Vec<Shown> {
     let moved: std::collections::HashSet<(u16, u16)> = visit.layer.cells().collect();
-    let (x, y) = (visit.osaka.x, visit.osaka.y);
-    let half = sprite::WIDTH / 2;
     let blocked = |cx: i32, cy: i32| {
         let (Ok(ux), Ok(uy)) = (u16::try_from(cx), u16::try_from(cy)) else {
             return true;
         };
-        (x - half..=x + half).contains(&cx) && (y - sprite::HEIGHT..=y).contains(&cy)
-            || moved.contains(&(ux, uy))
-            || view.protected.iter().any(|r| r.contains((ux, uy).into()))
+        moved.contains(&(ux, uy)) || view.protected.iter().any(|r| r.contains((ux, uy).into()))
     };
     let shown = home.resolve(buf, &view.nooks, &blocked);
     let Some(item) = gift.take() else {
@@ -716,6 +769,23 @@ fn furnish(
     home.resolve(buf, &view.nooks, &blocked)
 }
 
+/// Where she could go to use each piece shown: in front of it on its
+/// floor, or for the TV, beside it facing it.
+fn seats(shown: &[Shown], terrain: &Terrain) -> Vec<room::Seat> {
+    let mut out = Vec::new();
+    for piece in shown {
+        for &what in room::Use::of(piece.item) {
+            let spots: &[i32] = if what.inside() { &[0] } else { &piece.beside() };
+            let seat = spots
+                .iter()
+                .map(|&beside| piece.seat(what, beside))
+                .find(|seat| terrain.platform_at(seat.x, seat.y).is_some());
+            out.extend(seat);
+        }
+    }
+    out
+}
+
 /// Her furniture's colour as text (the ASCII drawings).
 fn prop_ink(item: Furniture, truecolor: bool) -> Ink {
     let fg = match (item, truecolor) {
@@ -731,18 +801,22 @@ fn prop_ink(item: Furniture, truecolor: bool) -> Ink {
     Ink::new(fg, Modifier::empty())
 }
 
+/// `layer` of a piece of furniture as an image layer, standing on its
+/// floor.
+fn prop_layer(prop: &Shown, layer: art::Layer) -> graphics::Layer {
+    let (cols, _) = prop.item.footprint();
+    graphics::Layer {
+        look: Look::Prop(prop.item, layer),
+        facing: prop.facing,
+        at: (prop.left + i32::from(cols) / 2, prop.floor),
+        standing: true,
+    }
+}
+
 /// Paint one piece's line art. Returns whether it went on.
 fn paint_prop_art(buf: &mut Buffer, graphics: &mut Graphics, prop: &Shown) -> bool {
-    let (cols, _) = prop.item.footprint();
     graphics
-        .paint(
-            buf,
-            Look::Prop(prop.item),
-            prop.facing,
-            (prop.left + i32::from(cols) / 2, prop.floor),
-            true,
-            &|_, _| true,
-        )
+        .paint_layers(buf, &[prop_layer(prop, art::Layer::Whole)], &|_, _| true)
         .is_some()
 }
 
@@ -803,11 +877,17 @@ fn draw_props(
 /// Paint her as line art, plus any bubble as text. The frozen cells for
 /// a dissolve are her box's (blank) cells, carrying the ASCII sprite's
 /// glyphs as the noise class she bursts into.
+/// The pieces she overlaps (`with`) are drawn in the same image: behind
+/// her, bar the quilt of a bed she's asleep in (and the sofa's cushion
+/// is in her arms when she naps).
+#[allow(clippy::too_many_arguments)]
 fn draw_art(
     buf: &mut Buffer,
     graphics: &mut Graphics,
     osaka: &Osaka,
     terrain: &Terrain,
+    shown: &[Shown],
+    with: &[Shown],
     now: u64,
     truecolor: bool,
 ) -> (Vec<Frozen>, Option<Placement>) {
@@ -841,18 +921,48 @@ fn draw_art(
             });
         }
     }
+    let her = graphics::Layer {
+        look: Look::Pose(pose, face),
+        facing: osaka.facing,
+        at: (osaka.x, osaka.y),
+        standing: placement.standing,
+    };
+    let using = osaka.seat().filter(|seat| seat.what.inside());
+    let part = |piece: &Shown, front: bool| {
+        let what = using.filter(|seat| seat.item == piece.item).map(|s| s.what);
+        match (what, front) {
+            (Some(room::Use::Sleep), false) => Some(art::Layer::Back),
+            (Some(room::Use::Sleep), true) => Some(art::Layer::Front),
+            (Some(room::Use::Nap), false) => Some(art::Layer::Bare),
+            (_, false) => Some(art::Layer::Whole),
+            (_, true) => None,
+        }
+    };
+    let mut layers = Vec::with_capacity(with.len() * 2 + 1);
+    for piece in with {
+        layers.extend(part(piece, false).map(|layer| prop_layer(piece, layer)));
+        body.extend(piece.cells().filter_map(|(x, y, glyph)| {
+            let (ux, uy) = (u16::try_from(x).ok()?, u16::try_from(y).ok()?);
+            Some(Frozen {
+                x: ux,
+                y: uy,
+                glyph: glyph.unwrap_or('.'),
+                ink: prop_ink(piece.item, truecolor),
+                under: buf.cell((ux, uy))?.clone(),
+                face: None,
+                burst: true,
+            })
+        }));
+    }
+    layers.push(her);
+    for piece in with {
+        layers.extend(part(piece, true).map(|layer| prop_layer(piece, layer)));
+    }
     let placed = graphics
-        .paint(
-            buf,
-            Look::Pose(pose, face),
-            osaka.facing,
-            (osaka.x, osaka.y),
-            placement.standing,
-            &|x, y| terrain.open(x, y),
-        )
+        .paint_layers(buf, &layers, &|x, y| terrain.open(x, y))
         .is_some();
     let mut painted = if placed { body } else { Vec::new() };
-    painted.extend(draw(buf, osaka, terrain, now, truecolor, false));
+    painted.extend(draw(buf, osaka, terrain, shown, now, truecolor, false));
     (painted, placed.then_some(placement))
 }
 
