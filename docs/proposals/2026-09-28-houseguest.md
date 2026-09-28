@@ -1,9 +1,9 @@
 # Proposal: The Houseguest (idle Osaka)
 
-Status: **DRAFT, 2026-09-28.** Brainstormed by five parallel research
-passes (Osaka canon, prior art, the TUI as terrain, progression/AI,
-terminal animation craft) and merged here. Nothing is implemented; see
-[Open questions](#open-questions).
+Status: **ACCEPTED, not implemented, 2026-09-28.** Brainstormed by five
+parallel research passes (Osaka canon, prior art, the TUI as terrain,
+progression/AI, terminal animation craft) and merged here. See
+[Decisions](#decisions) for the settled scope questions.
 
 ## Summary
 
@@ -70,11 +70,22 @@ ledge).
 ## Idle and activity
 
 **A visit may begin** when all hold for the configured threshold
-(default 5 min, see open questions): playback idle, no chat activity, no
+(default 5 min): playback idle, no chat activity, no
 local input, no overlay, no held selection, terminal ≥ 60×18.
 
-**Activity** (ends a visit): any key, mouse, or paste event; a new chat /
-IRC line from anyone; playback starting; any modal or overlay opening.
+**Activity** (ends a visit): any local key, mouse, or paste event;
+playback starting; any modal or overlay opening.
+
+**Remote chat does not end a visit.** A new chat / IRC / `/me` line from
+someone else cuts her current scene (any instant is a safe cut) and she
+**stops and looks**: turns toward the new line, walks over if it's close,
+and sometimes pokes it (the line's letters jiggle for a frame, a `?` or
+`!` bubble). The message is never altered, covered, or scrambled; its
+cells are forbidden to her overlay while it is the newest line. Glyphs
+she displaced from the chat pane are dropped by the ordinary validation
+rule when the log scrolls. While a conversation continues she sits and
+watches the chat pane like the TV, and resumes her routine once it has
+been quiet for a minute. Only local input sends her away.
 
 **Not activity**: snapshot churn (health metrics, sync age, marquee,
 download progress), subtitle/system lines, layout reload.
@@ -290,6 +301,11 @@ episode pages and Wikipedia's episode list.
     Users pane until the next tidy. [U]
 
 ### Reading the screen
+
+0. ★ **A message arrives** — she stops mid-whatever, turns, stares at
+   the new chat line; sometimes walks over and pokes it (letters jiggle
+   one frame, `?`). A second message soon after: she sits down to watch.
+   [always, on remote chat]
 
 Semantic reading is best-effort: concatenate a row's cells per pane,
 skip wide-glyph continuation cells, match case-insensitively, accept
@@ -586,8 +602,9 @@ input during the dissolve never restarts or extends it.
 
 Under F3 → Playback & display (next to Roguelike effects), local only:
 
-- **Houseguest**: Off / Visits only (no persisted room) / Full.
-- **Arrival after**: idle threshold (default: open question).
+- **Houseguest**: Off / Visits only (no persisted room) / **Full
+  (default)**.
+- **Arrival after**: idle threshold, default 5 minutes.
 - **Night stays**: on/off (off = she leaves at bedtime instead of
   sleeping over, for shared screens left on overnight).
 - The dissolve follows the Full/Reduced/Off pattern of `RoguelikeEffects`:
@@ -669,19 +686,20 @@ Per docs/testing-strategy.md: seeded RNG, injected clock, no sleeps.
 4. **Colour**: calendar table, screen reading, dreams, cameos, rarity
    tiers and pity, credits.
 
-## Open questions
+## Decisions
 
-1. **Default on or off?** On gets changelog discovery and the joy of
-   surprise; off is safer for people who leave the client on a shared or
-   streamed screen.
-2. **Idle threshold default**: 5 min? 10?
-3. **Remote chat**: should a friend's message end the visit (current
-   draft; she scurries off) or merely make her pause and look at it,
-   ending only on local input?
-4. **Persistence default**: Full (room grows over weeks) or Visits only?
-5. **Name**: "Houseguest" for the setting; is a character-neutral name
-   preferred in the UI, with Osaka as the (only) guest?
-6. **Cameo scope**: other characters in phase 4, or keep it Osaka-only?
+Settled with the user, 2026-09-28:
+
+1. **On by default** (Full), with the setting to turn it off or limit it
+   to visits only. The first-visit chat line says where the setting is.
+2. **Idle threshold**: 5 minutes default, configurable.
+3. **Remote chat**: she stops and looks, maybe pokes the message, but
+   never changes it; only local input ends a visit (see
+   [Idle and activity](#idle-and-activity)).
+4. **Persistence**: the room persists across visits (Full is the
+   default).
+5. **Name**: "Houseguest" in the UI.
+6. **Cameos**: included (phase 4); variety is the point.
 
 ## Rejected alternatives
 
