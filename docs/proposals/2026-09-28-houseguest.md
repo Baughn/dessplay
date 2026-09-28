@@ -811,6 +811,20 @@ distinct images a session makes and Ghostty evicts old ones past its
 storage limit. If a cached pose ever renders blank after a long session,
 delete images as they leave the cache.
 
+**Going underneath ratatui-image** (later, one piece of work): it writes
+each image row as a single run of kitty placeholders with inferred
+columns, so every cell of her 5×4 box hides the text beneath it, and she
+may only stand where the whole box is clear. That limits tidying most
+(census, 2026-09-28: line-art screens with a chat pull 33/60 at 100×30,
+17/60 at 80×24; ASCII, which has no box-clear rule, 42/60 and 31/60).
+Writing the placeholder runs ourselves — only her opaque cells, with
+explicit column diacritics — would let lines run under the empty parts
+of her box (terrain then needs each pose's footprint). Once we own that
+layer, true translucency (her drawing over the text itself) becomes
+possible too, which would lift the rule altogether. Reaching head- and
+foot-height rows is small beside that (+5/60, +2/60) and needs tiptoe and
+crouch poses.
+
 ## Decisions
 
 Settled with the user, 2026-09-28:
