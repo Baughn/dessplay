@@ -4,6 +4,7 @@
 
 use super::Rng;
 use super::brain::{self, Kind, Need, Needs};
+use super::layer::Placed;
 use super::scenes::{Job, LayerOp, Side};
 use super::sprite::{self, Face, Facing, HEIGHT, Pose, SpriteCell};
 use super::terrain::{Link, Route, Terrain};
@@ -620,15 +621,16 @@ impl Osaka {
                 let Some(Job::Swap(swap)) = self.task.clone() else {
                     return self.decide(at, terrain, chances, rng);
                 };
-                let a = (swap.pair.0, swap.row);
-                let b = (swap.pair.1, swap.row);
+                let (a, b) = (swap.a, swap.b);
                 let revert = at + rng.range(SWAP_KEPT_MS.0, SWAP_KEPT_MS.1);
-                tracing::debug!(row = swap.row, ?swap.pair, "houseguest: swapping two letters");
+                tracing::debug!(?a, ?b, "houseguest: swapping two letters");
                 self.ops.push(LayerOp::Swap { a, b });
+                // Back where they were shown: home, or along a line she
+                // pulled.
                 self.schedule(
                     revert,
                     LayerOp::Restore {
-                        sources: vec![a, b],
+                        to: vec![a, b],
                         tries: 0,
                     },
                 );
@@ -898,10 +900,10 @@ impl Osaka {
     /// giggled at leaves her puzzled instead.
     pub fn refused(&mut self, now: u64, op: LayerOp) {
         match op {
-            LayerOp::Restore { sources, tries } if tries < RETRIES => self.schedule(
+            LayerOp::Restore { to, tries } if tries < RETRIES => self.schedule(
                 now + PUT_BACK_MS,
                 LayerOp::Restore {
-                    sources,
+                    to,
                     tries: tries + 1,
                 },
             ),
@@ -950,7 +952,7 @@ impl Osaka {
             self.schedule(
                 putting_back + i as u64 * PUT_BACK_MS,
                 LayerOp::Restore {
-                    sources: vec![source],
+                    to: vec![Placed::home(source)],
                     tries: 0,
                 },
             );

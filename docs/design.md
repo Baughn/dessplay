@@ -1380,7 +1380,8 @@ this section states what is built.
   (600 ms × (1 + glyphs/40)): first reeling in any slack until the line
   reaches her hands, then stepping away while the whole line follows into
   the space she left. She pulls it 2–7 cells past her hands or until she
-  runs out of floor, then looks pleased ("hehe"). If the text changes under her she
+  runs out of floor, then looks pleased ("hehe"). A line she has moved
+  is never pulled again. If the text changes under her she
   lets go and stares. Her decisions and their reasons are logged at
   debug level (`RUST_LOG=dessplay::ui::houseguest=debug`, or F11's level).
 - **Choosing what to do**: each decision scores what's on offer where she
@@ -1413,7 +1414,10 @@ this section states what is built.
     letters beside her box or up to two blank cells off (chest height, the
     two pairs nearest her within reach), she trades two adjacent different letters (`sat` → `sta`),
     giggles ("hehe"), whistles innocently looking up ("~"), and swaps them
-    back 7–14 s later.
+    back 7–14 s later. Words count as shown: the letters of a line she
+    pulled trade where they now sit, and swapping back returns them there,
+    not home
+    (why: [decisions](decisions.md#houseguest-swaps-letters-where-they-are-shown-2026-09-28)).
   - **Sneeze**: "a..." then "chu!" — 2–4 glyphs beside her box (up to
     three cells out, on her box rows, never border lines) pop up a row and
     away from her, fall until something stops them (at most four rows),

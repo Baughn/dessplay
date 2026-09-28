@@ -1940,6 +1940,25 @@ a garbled log. Rejected: undoing only at the goodbye (the swap would last
 minutes, and it isn't a joke any more); swapping within the newest line
 (it's the one people are reading).
 
+## Houseguest swaps letters where they are shown (2026-09-28)
+
+**Rule:** A pulled line is never pulled again, but letter swaps read the
+frame with her layer painted, so a pulled line's letters can be swapped
+where they sit; the undo puts each letter back where it was shown. See
+[design.md](design.md#houseguest).
+
+**Why:** Pulling the same line twice looks robotic, but after a pull the
+line she moved is usually the only text in reach — it ends at her hands
+— so hiding it from swaps too left her with nothing to play with. The
+layer operations now name a glyph by its source *and* where it's shown:
+a swap trades shown places, and the undo is "put these back where they
+were", which is home for an ordinary swap and the pulled spot for a
+pulled one (undoing to home would half-unpull the line). The same
+primitive serves the sneeze put-back. It only ever moves glyphs already
+in the layer, so an undo after the text changed underneath can't pick up
+new text. Rejected: re-deriving the swap against the real frame
+(the pulled letters' real cells are holes).
+
 ## Houseguest chooses by needs among the top few (2026-09-28)
 
 **Rule:** Her next act is a weighted-random pick among the four

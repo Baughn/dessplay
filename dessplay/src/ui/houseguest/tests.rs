@@ -839,7 +839,11 @@ fn a_letter_swap_undoes_itself() {
             .find(|s| s.x == 15 && s.y == 26)
             .cloned()
             .expect("a swap from where she stands");
-        assert_eq!(swap.pair, (11, 12), "the last two letters of 'sat'");
+        assert_eq!(
+            (swap.a.at.0, swap.b.at.0),
+            (11, 12),
+            "the last two letters of 'sat'"
+        );
         visit.osaka.swap_now(swap, 0);
         let frame = run(&mut guest, &real, &view, 0, 2000);
         assert_eq!(
@@ -867,6 +871,101 @@ fn a_letter_swap_undoes_itself() {
             "the cat sat",
             "graphics={graphics}"
         );
+    }
+}
+
+/// A line she has pulled isn't pulled again, but its letters are still
+/// hers to swap — likely the only ones in reach by then. The swap trades
+/// them where they now sit, and undoing it leaves the line pulled.
+#[test]
+fn she_swaps_letters_on_a_line_she_pulled() {
+    for graphics in [false, true] {
+        let (real, view) = words_room();
+        let mut guest = Guest::new(3);
+        if graphics {
+            guest.set_picker(kitty());
+        }
+        visiting_at(&mut guest, &real, &view, (15, 26));
+        paint(&mut guest, &real, &view, 0);
+        let State::Visiting(visit) = &mut guest.state else {
+            panic!("visiting");
+        };
+        let pull = visit
+            .chances
+            .pulls
+            .iter()
+            .find(|p| p.row == 24 && p.side == scenes::Side::Left && p.cells.len() == 9)
+            .cloned()
+            .expect("the whole line is pullable from its end");
+        visit.osaka.pursue(scenes::Job::Pull(pull), 0);
+        // Until the pulled line has been still for a while (she admires
+        // it for two seconds).
+        let (mut now, mut still_since, mut last) = (0, 0, String::new());
+        let pulled = loop {
+            now += 100;
+            assert!(now < 30_000, "graphics={graphics}: never finished pulling");
+            guest.advance(now);
+            let frame = paint(&mut guest, &real, &view, now);
+            let row = row_text(&frame, 24, 0..40);
+            let State::Visiting(visit) = &guest.state else {
+                panic!("visiting");
+            };
+            if row != last || visit.layer.entries().len() != 9 {
+                (still_since, last) = (now, row);
+            } else if now - still_since >= 1500 {
+                break row;
+            }
+        };
+        assert!(!pulled.starts_with("  the"), "{pulled:?}: moved");
+        let State::Visiting(visit) = &mut guest.state else {
+            panic!("visiting");
+        };
+        assert!(
+            visit.chances.pulls.iter().all(|p| p.row != 24),
+            "not pulled twice"
+        );
+        let shown: Vec<u16> = visit.layer.entries().iter().map(|d| d.at.0).collect();
+        // Just the line: her picture beside it animates.
+        let end = shown.iter().max().map_or(0, |&x| x + 1);
+        let pulled: String = pulled.chars().take(usize::from(end)).collect();
+        let swap = visit
+            .chances
+            .swaps
+            .iter()
+            .find(|s| s.row == 24 && shown.contains(&s.a.at.0) && shown.contains(&s.b.at.0))
+            .cloned()
+            .unwrap_or_else(|| panic!("graphics={graphics}: {:?}", visit.chances.swaps));
+        let stand = (swap.x, swap.y);
+        visit.osaka.place(stand.0, stand.1, now);
+        visit.osaka.swap_now(swap.clone(), now);
+        let frame = run(&mut guest, &real, &view, now, now + 2000);
+        now += 2000;
+        let swapped = row_text(&frame, 24, 0..end);
+        let (a, b) = (usize::from(swap.a.at.0), usize::from(swap.b.at.0));
+        let mut expected: Vec<char> = pulled.chars().collect();
+        expected.swap(a, b);
+        assert_eq!(
+            swapped,
+            expected.iter().collect::<String>(),
+            "graphics={graphics}: traded where they sit"
+        );
+        // Undone on schedule, back to the pulled line — not home.
+        let back = loop {
+            now += 100;
+            assert!(now < 60_000, "graphics={graphics}: never swapped back");
+            guest.advance(now);
+            let frame = paint(&mut guest, &real, &view, now);
+            let row = row_text(&frame, 24, 0..end);
+            if row != swapped {
+                break row;
+            }
+        };
+        assert_eq!(back, pulled, "graphics={graphics}");
+        let State::Visiting(visit) = &guest.state else {
+            panic!("visiting");
+        };
+        assert_eq!(visit.layer.entries().len(), 9, "still pulled");
+        assert!(!visit.osaka.owes_anything());
     }
 }
 
@@ -1087,10 +1186,15 @@ fn reach_census() {
                     .into_iter()
                     .filter(|p| p.cells.iter().all(|&x| inside(x, p.row)))
                     .collect();
-                let s: Vec<_> = super::scenes::swaps(&real, &terrain, &view.protected)
-                    .into_iter()
-                    .filter(|s| inside(s.pair.0, s.row))
-                    .collect();
+                let s: Vec<_> = super::scenes::swaps(
+                    &real,
+                    &terrain,
+                    &view.protected,
+                    &layer::TextLayer::default(),
+                )
+                .into_iter()
+                .filter(|s| inside(s.a.at.0, s.row))
+                .collect();
                 pulls += usize::from(!p.is_empty());
                 swaps += usize::from(!s.is_empty());
                 spots += p.len();

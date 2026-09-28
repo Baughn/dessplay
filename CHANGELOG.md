@@ -33,6 +33,8 @@ Add new days at the top. Add new entries at the bottom of existing days.
   (was five).
 - Fixed: The houseguest's hums and snores now float by her head when
   she lies down, not high above her.
+- Fixed: The houseguest can still swap letters in a line after pulling it
+  along, instead of running out of things to play with.
 
 ## 2026-09-26
 

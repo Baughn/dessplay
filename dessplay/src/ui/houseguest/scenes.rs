@@ -11,7 +11,7 @@ use tuirealm::ratatui::layout::{Position, Rect};
 
 use super::cells::untouchable;
 use super::graphics::strokes;
-use super::layer::{TextLayer, takeable};
+use super::layer::{Placed, TextLayer, takeable};
 use super::sprite::{HEIGHT, WIDTH};
 use super::terrain::Terrain;
 
@@ -60,14 +60,16 @@ pub(super) struct Pull {
 
 /// Two adjacent letters of a word she could swap: standing at `x` on
 /// the floor at `y`, the word on `row` ends right beside her box on
-/// `side`, and `pair` are the columns of the letters to trade.
+/// `side`, and `a` and `b` (left to right) are the letters to trade, as
+/// shown — home, or where she pulled them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Swap {
     pub x: i32,
     pub y: i32,
     pub row: u16,
     pub side: Side,
-    pub pair: (u16, u16),
+    pub a: Placed,
+    pub b: Placed,
 }
 
 /// Something she means to do at a spot on some floor.
@@ -113,16 +115,18 @@ pub(super) enum LayerOp {
         cells: Vec<u16>,
         offset: i16,
     },
-    /// Trade two letters.
-    Swap { a: (u16, u16), b: (u16, u16) },
+    /// Trade two letters where they're shown: each moves to the other's
+    /// place.
+    Swap { a: Placed, b: Placed },
     /// Knock the glyph at `source` loose: it pops up a row and away in
     /// direction `dir` (−1 left, 1 right) — wherever there's room nearest
     /// that — and then falls.
     Knock { source: (u16, u16), dir: i8 },
     /// A knocked glyph drops a row, if there's room below.
     Fall { source: (u16, u16) },
-    /// Put these glyphs back home together. `tries` counts refusals.
-    Restore { sources: Vec<(u16, u16)>, tries: u8 },
+    /// Put these glyphs back where they were shown (home, for most),
+    /// together. `tries` counts refusals.
+    Restore { to: Vec<Placed>, tries: u8 },
 }
 
 impl LayerOp {
@@ -136,9 +140,9 @@ impl LayerOp {
     pub fn sources(&self) -> Vec<(u16, u16)> {
         match self {
             Self::Pull { row, cells, .. } => cells.iter().map(|&c| (c, *row)).collect(),
-            Self::Swap { a, b } => vec![*a, *b],
+            Self::Swap { a, b } => vec![a.source, b.source],
             Self::Knock { source, .. } | Self::Fall { source } => vec![*source],
-            Self::Restore { sources, .. } => sources.clone(),
+            Self::Restore { to, .. } => to.iter().map(|p| p.source).collect(),
         }
     }
 }
@@ -167,7 +171,7 @@ pub(super) fn apply(op: &LayerOp, layer: &mut TextLayer, buf: &Buffer, protected
         LayerOp::Fall { source } => layer
             .at_of(*source)
             .is_some_and(|(x, y)| layer.shift(buf, protected, *source, (x, y.saturating_add(1)))),
-        LayerOp::Restore { sources, .. } => layer.restore_all(sources),
+        LayerOp::Restore { to, .. } => layer.place(buf, protected, to),
         LayerOp::Pull { row, cells, offset } => {
             let mut ok = true;
             // Leading glyph first: each moves into the cell (or hole) its
@@ -241,8 +245,17 @@ pub(super) fn pulls(buf: &Buffer, terrain: &Terrain, protected: &[Rect]) -> Vec<
 
 /// Every letter pair she could swap from where the terrain lets her
 /// stand: in an ASCII word of three or more letters that ends beside her
-/// box, within her reach of its end.
-pub(super) fn swaps(buf: &Buffer, terrain: &Terrain, protected: &[Rect]) -> Vec<Swap> {
+/// box, within her reach of its end. `shown` is the frame as she left it
+/// (her layer painted over the real one), so the letters of a line she
+/// pulled count where they now sit; `protected` must cover the holes
+/// she left.
+pub(super) fn swaps(
+    shown: &Buffer,
+    terrain: &Terrain,
+    protected: &[Rect],
+    layer: &TextLayer,
+) -> Vec<Swap> {
+    let buf = shown;
     let half = WIDTH / 2;
     let mut out = Vec::new();
     for platform in &terrain.platforms {
@@ -277,12 +290,20 @@ pub(super) fn swaps(buf: &Buffer, terrain: &Terrain, protected: &[Rect]) -> Vec<
                         let letter =
                             |c: u16| buf.cell((c, row)).map(|cell| cell.symbol().to_owned());
                         if letter(a) != letter(b) {
+                            let placed = |c: u16| {
+                                let at = (c, row);
+                                Placed {
+                                    source: layer.shown_from(at).unwrap_or(at),
+                                    at,
+                                }
+                            };
                             out.push(Swap {
                                 x,
                                 y,
                                 row,
                                 side,
-                                pair: (a.min(b), a.max(b)),
+                                a: placed(a.min(b)),
+                                b: placed(a.max(b)),
                             });
                         }
                     }
@@ -542,8 +563,12 @@ mod tests {
             "└───────────────────────",
         ]);
         let terrain = Terrain::read(&buf, &[], true);
-        let swaps = swaps(&buf, &terrain, &[]);
-        let here: Vec<_> = swaps.iter().filter(|s| s.x == 15).map(|s| s.pair).collect();
+        let swaps = swaps(&buf, &terrain, &[], &TextLayer::default());
+        let here: Vec<_> = swaps
+            .iter()
+            .filter(|s| s.x == 15)
+            .map(|s| (s.a.at.0, s.b.at.0))
+            .collect();
         assert_eq!(
             here,
             vec![(11, 12), (10, 11)],
@@ -562,12 +587,12 @@ mod tests {
             "└───────────────────────",
         ]);
         let terrain = Terrain::read(&buf, &[], true);
-        let swaps = swaps(&buf, &terrain, &[]);
+        let swaps = swaps(&buf, &terrain, &[], &TextLayer::default());
         let here: Vec<_> = swaps.iter().filter(|s| s.x == 13).collect();
         assert_eq!(here.len(), 2, "{swaps:?}");
         assert!(here.iter().all(|s| s.side == Side::Right));
-        assert_eq!(here[0].pair, (16, 17));
-        assert_eq!(here[1].pair, (17, 18));
+        assert_eq!((here[0].a.at.0, here[0].b.at.0), (16, 17));
+        assert_eq!((here[1].a.at.0, here[1].b.at.0), (17, 18));
     }
 
     #[test]
@@ -578,7 +603,11 @@ mod tests {
             let floor = format!("└{}", "─".repeat(23));
             let buf = room(&[&blank, &line, &blank, &blank, &floor]);
             let terrain = Terrain::read(&buf, &[], true);
-            assert_eq!(swaps(&buf, &terrain, &[]), vec![], "{word}");
+            assert_eq!(
+                swaps(&buf, &terrain, &[], &TextLayer::default()),
+                vec![],
+                "{word}"
+            );
         }
     }
 
@@ -593,7 +622,10 @@ mod tests {
         ]);
         let newest = [Rect::new(1, 1, 23, 1)];
         let terrain = Terrain::read(&buf, &newest, true);
-        assert_eq!(swaps(&buf, &terrain, &newest), vec![]);
+        assert_eq!(
+            swaps(&buf, &terrain, &newest, &TextLayer::default()),
+            vec![]
+        );
     }
 
     #[test]

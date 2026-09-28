@@ -351,8 +351,14 @@ impl Guest {
                     self.quiet_since = now;
                     return;
                 }
+                // A line she moved isn't hers to pull again (it's
+                // protected), but its letters are hers to swap where
+                // they now sit: swaps read the frame with her layer on.
                 let pulls = scenes::pulls(buf, &visit.terrain, &protected);
-                let swaps = scenes::swaps(buf, &visit.terrain, &protected);
+                let mut layer = visit.layer.paint(buf);
+                let mut holes = view.protected.clone();
+                holes.extend(visit.layer.holes().map(|(x, y)| Rect::new(x, y, 1, 1)));
+                let swaps = scenes::swaps(buf, &visit.terrain, &holes, &visit.layer);
                 if let Some(scene) = self.cue.take() {
                     let offered = osaka::Chances {
                         pulls: pulls.clone(),
@@ -379,7 +385,6 @@ impl Guest {
                     swaps,
                     loose,
                 };
-                let mut layer = visit.layer.paint(buf);
                 match &mut self.graphics {
                     Some(graphics) => {
                         let (painted, image) = draw_art(

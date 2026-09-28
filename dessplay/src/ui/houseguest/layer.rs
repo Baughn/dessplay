@@ -46,6 +46,21 @@ impl Displaced {
     }
 }
 
+/// A glyph as shown: the real cell it came from (`source`), and where it sits
+/// (`at == source` when it's home).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Placed {
+    pub source: (u16, u16),
+    pub at: (u16, u16),
+}
+
+impl Placed {
+    /// A glyph at home.
+    pub fn home(source: (u16, u16)) -> Self {
+        Self { source, at: source }
+    }
+}
+
 /// Whether the real cell at `(x, y)` is free for a moved glyph: on
 /// screen, blank, touchable, and not protected.
 pub(super) fn free(buf: &Buffer, protected: &[Rect], (x, y): (u16, u16)) -> bool {
@@ -98,6 +113,20 @@ impl TextLayer {
             .iter()
             .find(|d| d.source == source)
             .map(|d| d.at)
+    }
+
+    /// Where the glyph shown at `at` came from, if it's one she moved.
+    pub fn shown_from(&self, at: (u16, u16)) -> Option<(u16, u16)> {
+        self.entries.iter().find(|d| d.at == at).map(|d| d.source)
+    }
+
+    /// The holes she left that nothing of hers covers.
+    pub fn holes(&self) -> impl Iterator<Item = (u16, u16)> + '_ {
+        let covered: Vec<(u16, u16)> = self.entries.iter().flat_map(|d| d.at_cells()).collect();
+        self.entries
+            .iter()
+            .flat_map(|d| d.source_cells().collect::<Vec<_>>())
+            .filter(move |c| !covered.contains(c))
     }
 
     /// Every cell the layer uses: sources (holes) and targets.
@@ -218,70 +247,95 @@ impl TextLayer {
         !blocked
     }
 
-    /// Swap the glyphs at `a` and `b`: each moves into the other's hole.
-    /// Both go or neither does.
-    pub fn swap(&mut self, buf: &Buffer, protected: &[Rect], a: (u16, u16), b: (u16, u16)) -> bool {
-        let taken = |layer: &Self, c: (u16, u16)| {
-            layer
-                .entries
-                .iter()
-                .any(|d| d.source_cells().chain(d.at_cells()).any(|x| x == c))
-        };
-        if self.entries.len() + 2 > CAP
-            || a == b
-            || taken(self, a)
-            || taken(self, b)
-            || !takeable(buf, protected, a)
-            || !takeable(buf, protected, b)
-        {
-            return false;
+    /// Trade the glyphs shown as `a` and `b`: each moves to the other's
+    /// place. A glyph at home must be one she may take and hasn't; one
+    /// she moved must still be where `a`/`b` says. Both go or neither
+    /// does.
+    pub fn swap(&mut self, buf: &Buffer, protected: &[Rect], a: Placed, b: Placed) -> bool {
+        let before = self.entries.clone();
+        let mut fresh = 0;
+        for p in [a, b] {
+            let ok = if p.at == p.source {
+                let used = self
+                    .entries
+                    .iter()
+                    .any(|d| d.source_cells().chain(d.at_cells()).any(|c| c == p.source));
+                let taken = (!used && takeable(buf, protected, p.source))
+                    .then(|| buf.cell(p.source).cloned())
+                    .flatten()
+                    .filter(|cell| width(cell) <= 1);
+                taken.map(|expected| {
+                    fresh += 1;
+                    self.entries.push(Displaced {
+                        source: p.source,
+                        expected,
+                        at: p.at,
+                    });
+                })
+            } else {
+                self.entries
+                    .iter()
+                    .find(|d| d.source == p.source && d.at == p.at && !d.wide())
+                    .map(|_| ())
+            };
+            if ok.is_none() || a.source == b.source || before.len() + fresh > CAP {
+                self.entries = before;
+                return false;
+            }
         }
-        let (Some(ea), Some(eb)) = (buf.cell(a).cloned(), buf.cell(b).cloned()) else {
-            return false;
-        };
-        if width(&ea) > 1 || width(&eb) > 1 {
-            return false;
+        let traded = [
+            Placed {
+                source: a.source,
+                at: b.at,
+            },
+            Placed {
+                source: b.source,
+                at: a.at,
+            },
+        ];
+        if self.place(buf, protected, &traded) {
+            return true;
         }
-        self.entries.push(Displaced {
-            source: a,
-            expected: ea,
-            at: b,
-        });
-        self.entries.push(Displaced {
-            source: b,
-            expected: eb,
-            at: a,
-        });
-        let n = self.entries.len();
-        let ok = (n - 2..n).all(|i| {
-            self.entries
-                .get(i)
-                .is_some_and(|d| self.fits(buf, protected, d, Some(i)))
-        });
-        if !ok {
-            self.entries.truncate(n - 2);
-        }
-        ok
+        self.entries = before;
+        false
     }
 
-    /// Put every glyph from `sources` back home at once — refused while
-    /// any other glyph sits in one of their holes. Sources no longer in
-    /// the layer are already home.
-    pub fn restore_all(&mut self, sources: &[(u16, u16)]) -> bool {
-        let homes: Vec<(u16, u16)> = self
-            .entries
+    /// Put each glyph in `to` where it says (home when `at == source`),
+    /// all at once — refused, changing nothing, unless every one then
+    /// fits and no other glyph sits in a hole that's closing. A source
+    /// no longer in the layer is skipped: it's home already, and this
+    /// never picks anything up.
+    pub fn place(&mut self, buf: &Buffer, protected: &[Rect], to: &[Placed]) -> bool {
+        let before = self.entries.clone();
+        let mut moved = Vec::new();
+        for p in to {
+            if let Some(d) = self.entries.iter_mut().find(|d| d.source == p.source) {
+                d.at = p.at;
+                moved.push(p.source);
+            }
+        }
+        let (home, away): (Vec<Displaced>, Vec<Displaced>) = std::mem::take(&mut self.entries)
+            .into_iter()
+            .partition(|d| d.at == d.source);
+        self.entries = away;
+        let closing: Vec<(u16, u16)> = home
             .iter()
-            .filter(|d| sources.contains(&d.source))
             .flat_map(|d| d.source_cells().collect::<Vec<_>>())
             .collect();
         let blocked = self
             .entries
             .iter()
-            .any(|d| !sources.contains(&d.source) && d.at_cells().any(|c| homes.contains(&c)));
-        if !blocked {
-            self.entries.retain(|d| !sources.contains(&d.source));
+            .any(|d| d.at_cells().any(|c| closing.contains(&c)));
+        let fits = (0..self.entries.len()).all(|i| {
+            self.entries.get(i).is_some_and(|d| {
+                !moved.contains(&d.source) || self.fits(buf, protected, d, Some(i))
+            })
+        });
+        if blocked || !fits {
+            self.entries = before;
+            return false;
         }
-        !blocked
+        true
     }
 
     /// Drop every entry the real frame no longer supports — a source that
@@ -465,18 +519,65 @@ mod tests {
         assert!(!layer.take(&real, &[Rect::new(1, 0, 1, 1)], (1, 0), (2, 0)));
     }
 
+    /// The glyph shown at `at`, as a swap names it.
+    fn shown(layer: &TextLayer, at: (u16, u16)) -> Placed {
+        Placed {
+            source: layer.shown_from(at).unwrap_or(at),
+            at,
+        }
+    }
+
+    fn composed(layer: &mut TextLayer, real: &Buffer) -> Buffer {
+        let mut frame = real.clone();
+        layer.validate(&frame, &[]);
+        layer.paint(&mut frame);
+        frame
+    }
+
     #[test]
     fn a_swap_trades_two_letters_and_restores_as_a_pair() {
         let real = text(&["the  "]);
         let mut layer = TextLayer::default();
-        assert!(layer.swap(&real, &[], (1, 0), (2, 0)));
-        let mut frame = real.clone();
-        layer.validate(&frame, &[]);
-        layer.paint(&mut frame);
-        assert_eq!(frame, text(&["teh  "]));
+        let (a, b) = (Placed::home((1, 0)), Placed::home((2, 0)));
+        assert!(layer.swap(&real, &[], a, b));
+        assert_eq!(composed(&mut layer, &real), text(&["teh  "]));
         assert!(!layer.restore((1, 0)), "each sits in the other's hole");
-        assert!(layer.restore_all(&[(1, 0), (2, 0)]));
+        assert!(layer.place(&real, &[], &[a, b]));
         assert!(layer.is_empty());
+    }
+
+    /// Letters she moved (a pulled line) trade where they sit, and the
+    /// swap's undo puts them back there, not home.
+    #[test]
+    fn a_swap_of_moved_letters_trades_them_where_they_sit() {
+        let real = text(&["cat    "]);
+        let mut layer = TextLayer::default();
+        for c in (0..3).rev() {
+            assert!(layer.take(&real, &[], (c, 0), (c + 3, 0)));
+        }
+        assert_eq!(composed(&mut layer, &real), text(&["   cat "]));
+        let (a, b) = (shown(&layer, (4, 0)), shown(&layer, (5, 0)));
+        assert_eq!(a.source, (1, 0));
+        assert!(layer.swap(&real, &[], a, b));
+        assert_eq!(composed(&mut layer, &real), text(&["   cta "]));
+        assert_eq!(layer.entries().len(), 3, "no new entries");
+        assert!(!layer.swap(&real, &[], a, b), "not where they were");
+        assert!(layer.place(&real, &[], &[a, b]));
+        assert_eq!(composed(&mut layer, &real), text(&["   cat "]));
+    }
+
+    /// A moved letter and one at home trade too.
+    #[test]
+    fn a_moved_letter_trades_with_one_at_home() {
+        let real = text(&["ab x "]);
+        let mut layer = TextLayer::default();
+        assert!(layer.take(&real, &[], (1, 0), (2, 0)));
+        let (a, b) = (shown(&layer, (2, 0)), shown(&layer, (3, 0)));
+        assert!(layer.swap(&real, &[], a, b));
+        assert_eq!(composed(&mut layer, &real), text(&["a xb "]));
+        assert!(layer.place(&real, &[], &[a, b]));
+        assert_eq!(composed(&mut layer, &real), text(&["a bx "]));
+        assert_eq!(layer.entries().len(), 1);
     }
 
     #[test]
@@ -484,20 +585,26 @@ mod tests {
         let real = text(&["t漢e  "]);
         let mut layer = TextLayer::default();
         assert!(
-            !layer.swap(&real, &[], (0, 0), (1, 0)),
+            !layer.swap(&real, &[], Placed::home((0, 0)), Placed::home((1, 0))),
             "wide glyphs don't swap"
         );
         assert!(
-            !layer.swap(&real, &[], (0, 0), (4, 0)),
+            !layer.swap(&real, &[], Placed::home((0, 0)), Placed::home((4, 0))),
             "a blank isn't a letter"
         );
         assert!(
-            !layer.swap(&real, &[Rect::new(3, 0, 1, 1)], (0, 0), (3, 0)),
+            !layer.swap(
+                &real,
+                &[Rect::new(3, 0, 1, 1)],
+                Placed::home((0, 0)),
+                Placed::home((3, 0))
+            ),
             "protected"
         );
         assert!(layer.is_empty());
-        assert!(layer.swap(&real, &[], (0, 0), (3, 0)));
-        assert!(!layer.swap(&real, &[], (3, 0), (0, 0)), "already swapped");
+        let (a, b) = (Placed::home((0, 0)), Placed::home((3, 0)));
+        assert!(layer.swap(&real, &[], a, b));
+        assert!(!layer.swap(&real, &[], b, a), "already swapped");
         assert_eq!(layer.entries().len(), 2);
     }
 
@@ -520,10 +627,16 @@ mod tests {
             for (kind, from, to) in moves {
                 match kind {
                     0 => {
-                        layer.swap(&real, &protected, from, to);
+                        let (a, b) = (shown(&layer, from), shown(&layer, to));
+                        layer.swap(&real, &protected, a, b);
                     }
                     1 => {
-                        layer.restore_all(&[from, to]);
+                        // Putting back never picks anything up, whatever
+                        // it's told (an undo after the text changed).
+                        let before = layer.entries().len();
+                        let to = [Placed { source: from, at: to }, Placed::home(to)];
+                        layer.place(&real, &protected, &to);
+                        prop_assert!(layer.entries().len() <= before);
                     }
                     _ => {
                         if !layer.shift(&real, &protected, from, to) {
