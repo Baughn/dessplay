@@ -2018,6 +2018,19 @@ welcome; the only goal is "watching her is kind of fun".
   seen scenes and last-fired times (phase 4 rarity; `serde(default)`
   makes adding them free). No changelog entry yet: until she can get
   furniture on her own there's nothing for a user to keep.
+- **Step 6 done (2026-09-29): deliveries and the shopping channel.**
+  `Prop::boxed` and `Ledger { ordered, bought_on }`. The TV is ordered
+  on visit 2 (`FIRST_TV_VISIT`); `advert()` offers the next of
+  `CATALOGUE` when she watches ≥ `SHOP_EVERY` visits after the last
+  purchase, nothing on order or boxed. `Osaka` reports `HomeEvent::
+  Bought` (at the scene's start) and `Unpacked` (at its end); the guest
+  records them. `furnish` delivers an order from an earlier visit as a
+  boxed piece; `Use::Unpack` (base 40) is the only use of a boxed piece.
+  Art: `render_parcel`, `render_tv(Channel::Snow | Shopping)` in
+  `art/delivery.svg` (`delivery_sheet`). Stage: "a parcel", "shopping
+  channel". Tests: the whole progression over twelve visits across a
+  restart; an interrupted unpacking waits. Not built: the box sliding in
+  (it appears in place), absences (step 7).
 - **Pits fixed (2026-09-28, the user's call: all three).** Terrain
   links `Route::Clamber` (over a divider, floors sharing no standing
   spot) and `Route::Around` (out at one screen edge, back in at another);

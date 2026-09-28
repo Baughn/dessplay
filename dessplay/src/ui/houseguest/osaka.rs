@@ -22,6 +22,18 @@ pub(super) struct Chances {
     pub loose: Vec<(u16, u16)>,
     /// Her furniture, and where she'd go to use it.
     pub seats: Vec<Seat>,
+    /// What the shopping channel would sell her, were she to watch now.
+    pub advert: Option<Furniture>,
+}
+
+/// Something she did to her home (the guest keeps the record).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum HomeEvent {
+    /// Bought off the shopping channel: on order from this moment (the
+    /// scene's start), whatever interrupts it.
+    Bought(Furniture),
+    /// Out of its box.
+    Unpacked(Furniture),
 }
 
 impl Chances {
@@ -197,11 +209,13 @@ enum Act {
         since: u64,
         to: (i32, i32),
     },
-    /// Using a piece of her furniture (the task is its seat).
+    /// Using a piece of her furniture (the task is its seat). Watching
+    /// the TV, `advert` is what the shopping channel is selling her.
     Use {
         what: Use,
         since: u64,
         until: u64,
+        advert: Option<Furniture>,
     },
 }
 
@@ -318,14 +332,21 @@ fn use_duration(what: Use) -> (u64, u64) {
         Use::Sleep => (60_000, 180_000),
         Use::Homework => (30_000, 60_000),
         Use::Watch => (20_000, 45_000),
+        Use::Unpack => (4_000, 6_000),
     }
 }
 
 /// Animation frame period for `what`.
 const USE_FRAME_MS: u64 = 1400;
 
-/// How she looks `elapsed` ms into `what`, which lasts `length` ms.
-fn use_look(what: Use, elapsed: u64, length: u64) -> (Pose, Face, Option<Bubble>) {
+/// How she looks `elapsed` ms into `what`, which lasts `length` ms
+/// (with `advert` on the TV).
+fn use_look(
+    what: Use,
+    advert: Option<Furniture>,
+    elapsed: u64,
+    length: u64,
+) -> (Pose, Face, Option<Bubble>) {
     let frame = (elapsed / USE_FRAME_MS % 2) as u8;
     match what {
         Use::Lounge => (Pose::Lounge, Face::Vacant, None),
@@ -341,7 +362,19 @@ fn use_look(what: Use, elapsed: u64, length: u64) -> (Pose, Face, Option<Bubble>
                 (Pose::Homework(3), Face::Blink, Some(Bubble::Zzz))
             }
         }
-        Use::Watch => (Pose::Sit, Face::Curious, None),
+        Use::Watch => match advert {
+            // Hooked, then sold.
+            Some(_) if elapsed < length * 2 / 5 => (Pose::Sit, Face::Curious, Some(Bubble::Ooh)),
+            Some(item) if elapsed < length * 3 / 5 => {
+                (Pose::Sit, Face::Happy, Some(Bubble::Say(item.pitch())))
+            }
+            _ => (Pose::Sit, Face::Curious, None),
+        },
+        // Bent over the box, rummaging.
+        Use::Unpack => {
+            let bubble = (elapsed > length * 3 / 5).then_some(Bubble::Ooh);
+            (Pose::ToeTouch(frame), Face::Happy, bubble)
+        }
     }
 }
 
@@ -466,6 +499,8 @@ pub(super) struct Osaka {
     pole: i32,
     /// Layer changes for the next paint to apply.
     ops: Vec<LayerOp>,
+    /// Changes to her home for the guest to record.
+    events: Vec<HomeEvent>,
     /// Layer changes due later, whatever she's doing by then: undoing
     /// mischief is scheduled when it's made, so nothing can strand it.
     pending: Vec<(u64, LayerOp)>,
@@ -499,6 +534,7 @@ impl Osaka {
             goal: None,
             pole: x,
             ops: Vec::new(),
+            events: Vec::new(),
             pending: Vec::new(),
             speech: None,
             greeted: false,
@@ -854,8 +890,14 @@ impl Osaka {
                     self.decide(at, terrain, chances, rng);
                 }
             },
-            Act::Use { since, until, .. } => {
+            Act::Use {
+                what, since, until, ..
+            } => {
                 if at >= until {
+                    if let (Use::Unpack, Some(Job::Use(seat))) = (what, &self.task) {
+                        tracing::info!(item = ?seat.item, "houseguest: unpacked");
+                        self.events.push(HomeEvent::Unpacked(seat.item));
+                    }
                     self.decide(at, terrain, chances, rng);
                 } else {
                     let frame =
@@ -983,11 +1025,19 @@ impl Osaka {
                         self.facing = seat.facing;
                         let (lo, hi) = use_duration(seat.what);
                         tracing::debug!(?seat, "houseguest: using her furniture");
+                        // The shopping channel: she's bought it the moment
+                        // it comes on.
+                        let advert = chances.advert.filter(|_| seat.what == Use::Watch);
+                        if let Some(item) = advert {
+                            tracing::info!(?item, "houseguest: bought off the shopping channel");
+                            self.events.push(HomeEvent::Bought(item));
+                        }
                         return self.set(
                             Act::Use {
                                 what: seat.what,
                                 since: at,
                                 until: at + rng.range(lo, hi),
+                                advert,
                             },
                             at,
                         );
@@ -1215,6 +1265,11 @@ impl Osaka {
         std::mem::take(&mut self.ops)
     }
 
+    /// What she did to her home since last asked.
+    pub fn take_events(&mut self) -> Vec<HomeEvent> {
+        std::mem::take(&mut self.events)
+    }
+
     /// The paint refused `op` (the frame didn't allow it). A put-back is
     /// tried again shortly. Mischief that never happened owes nothing:
     /// what was queued to follow it is cancelled, and a swap she'd have
@@ -1300,6 +1355,20 @@ impl Osaka {
                 },
                 now,
             );
+        }
+    }
+
+    /// Watching the TV: since when, and what the shopping channel is
+    /// selling (for what's on screen).
+    pub fn watching(&self) -> Option<(u64, Option<Furniture>)> {
+        match self.act {
+            Act::Use {
+                what: Use::Watch,
+                since,
+                advert,
+                ..
+            } => Some((since, advert)),
+            _ => None,
         }
     }
 
@@ -1798,9 +1867,17 @@ impl Osaka {
                     .map_or(0, |n| (n % 2) as u8);
                 what.look(frame)
             }
-            Act::Use { what, since, until } => {
-                use_look(what, now.saturating_sub(since), until.saturating_sub(since))
-            }
+            Act::Use {
+                what,
+                since,
+                until,
+                advert,
+            } => use_look(
+                what,
+                advert,
+                now.saturating_sub(since),
+                until.saturating_sub(since),
+            ),
             Act::SpaceOut { .. } => (Pose::Stand, Face::Vacant, Some(Bubble::Dots)),
             Act::Clamber { column, to_y, .. } if self.x == column && self.y != to_y => {
                 let pole = ((self.pole - self.x) * self.facing_sign()).clamp(-3, 3) as i8;

@@ -40,13 +40,21 @@ pub(super) enum Look {
     /// A piece of her furniture, or the part of it behind or in front of
     /// her.
     Prop(Furniture, art::Layer),
+    /// A piece still in its delivery box (open while she unpacks it).
+    Parcel(Furniture, bool),
+    /// Her TV, switched on.
+    Tv(art::Channel),
 }
 
 impl Look {
     /// The box it fills, in cells (columns, rows above the floor).
     fn size(self) -> (i32, i32) {
         match self {
-            Self::Prop(item, _) => {
+            Self::Tv(_) => {
+                let (cols, rows) = Furniture::Tv.footprint();
+                (i32::from(cols), i32::from(rows))
+            }
+            Self::Prop(item, _) | Self::Parcel(item, _) => {
                 let (cols, rows) = item.footprint();
                 (i32::from(cols), i32::from(rows))
             }
@@ -64,6 +72,8 @@ impl Look {
             Self::Prop(item, layer) => {
                 art::render_prop_layer(item, layer, facing, LINE, width, height)
             }
+            Self::Parcel(item, open) => art::render_parcel(item, open, facing, LINE, width, height),
+            Self::Tv(channel) => art::render_tv(channel, facing, LINE, width, height),
         }
     }
 }

@@ -50,6 +50,16 @@ impl Furniture {
         }
     }
 
+    /// What she says buying it off the shopping channel.
+    pub fn pitch(self) -> &'static str {
+        match self {
+            Self::Sofa => "A sofa! I'll take it!",
+            Self::Tv => "A TV! I'll take it!",
+            Self::Bed => "A bed... yes please!",
+            Self::Desk => "A desk. For homework.",
+        }
+    }
+
     /// A short name.
     pub fn name(self) -> &'static str {
         match self {
@@ -95,6 +105,17 @@ pub(super) fn glyph(item: Furniture, facing: Facing, dx: u16, dy: u16) -> Option
     (c != ' ').then_some(c)
 }
 
+/// A delivery box, five wide and two tall, on the floor in the middle of
+/// a `cols × rows` footprint.
+const PARCEL: [&str; 2] = [" ___ ", "|_#_|"];
+
+fn parcel_glyph(cols: u16, rows: u16, dx: u16, dy: u16) -> Option<char> {
+    let left = (cols.saturating_sub(5)) / 2;
+    let row = PARCEL.get(usize::from(dy.checked_sub(rows.checked_sub(2)?)?))?;
+    let c = row.chars().nth(usize::from(dx.checked_sub(left)?))?;
+    (c != ' ').then_some(c)
+}
+
 fn mirror(c: char) -> char {
     match c {
         '/' => '\\',
@@ -131,6 +152,8 @@ pub(super) enum Use {
     Homework,
     /// Sit beside the TV and watch it.
     Watch,
+    /// Unpack it from its delivery box.
+    Unpack,
 }
 
 impl Use {
@@ -171,12 +194,13 @@ pub(super) enum RoomKind {
 }
 
 /// A piece she owns, `at` thousandths of the way along its room's
-/// floor.
+/// floor; `boxed` until she unpacks it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Prop {
     pub item: Furniture,
     pub at: u16,
     pub facing: Facing,
+    pub boxed: bool,
 }
 
 /// A prop as placed in this frame.
@@ -184,6 +208,8 @@ pub(super) struct Prop {
 pub(super) struct Shown {
     pub item: Furniture,
     pub facing: Facing,
+    /// Still in its delivery box (drawn as the box).
+    pub boxed: bool,
     /// The pane it stands in.
     pub nook: Nook,
     /// Its leftmost column.
@@ -231,6 +257,8 @@ impl Shown {
             Use::Sleep => (mirrored(3), self.facing),
             // On a stool just past the desk's front, facing it.
             Use::Homework => (mirrored(7), flip(self.facing)),
+            // In front of the box, bending over it.
+            Use::Unpack => (self.left + cols / 2, self.facing),
             Use::Watch => (
                 beside,
                 if beside < self.left {
@@ -257,17 +285,31 @@ impl Shown {
         [i32::from(rect.x) - half - 1, i32::from(rect.right()) + half]
     }
 
-    /// Every footprint cell, with its ASCII glyph if drawn.
+    /// Every footprint cell, with its ASCII glyph if drawn (the parcel's,
+    /// while it's boxed).
     pub fn cells(&self) -> impl Iterator<Item = (i32, i32, Option<char>)> + '_ {
         let (cols, rows) = self.item.footprint();
         (0..rows).flat_map(move |dy| {
             (0..cols).map(move |dx| {
+                let glyph = if self.boxed {
+                    parcel_glyph(cols, rows, dx, dy)
+                } else {
+                    glyph(self.item, self.facing, dx, dy)
+                };
                 (
                     self.left + i32::from(dx),
                     self.floor - i32::from(rows) + i32::from(dy),
-                    glyph(self.item, self.facing, dx, dy),
+                    glyph,
                 )
             })
+        })
+    }
+
+    /// The TV's screen: the two cells inside its brackets.
+    pub fn screen(&self) -> Option<[(i32, i32); 2]> {
+        (self.item == Furniture::Tv && !self.boxed).then(|| {
+            let y = self.floor - 2;
+            [(self.left + 2, y), (self.left + 3, y)]
         })
     }
 }
@@ -283,6 +325,22 @@ impl Home {
     /// Whether she owns `item`.
     pub fn owns(&self, item: Furniture) -> bool {
         self.props.iter().any(|p| p.item == item)
+    }
+
+    /// Unpack `item`: it's out of its box. False if it wasn't boxed.
+    pub fn unbox(&mut self, item: Furniture) -> bool {
+        match self.props.iter_mut().find(|p| p.item == item && p.boxed) {
+            Some(prop) => {
+                prop.boxed = false;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Whether anything is still in its box.
+    pub fn boxed(&self) -> bool {
+        self.props.iter().any(|p| p.boxed)
     }
 
     /// The pane `kind` is in, if she has furnished it.
@@ -377,6 +435,7 @@ impl Home {
                             item,
                             at: step * 100,
                             facing,
+                            boxed: false,
                         },
                     )
                 })
@@ -467,6 +526,7 @@ fn place(prop: Prop, nook: Nook, nooks: &[(Nook, Rect)]) -> Option<Shown> {
     Some(Shown {
         item: prop.item,
         facing: prop.facing,
+        boxed: prop.boxed,
         nook,
         left: i32::from(rect.x) + 1 + span * i32::from(prop.at.min(1000)) / 1000,
         floor: i32::from(rect.bottom()) - 1,
@@ -533,6 +593,7 @@ mod tests {
             item,
             at,
             facing: Facing::Right,
+            boxed: false,
         }
     }
 

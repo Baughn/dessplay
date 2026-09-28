@@ -1,0 +1,58 @@
+<!-- Deliveries and the TV's shopping channel, in the hand of osaka.svg
+     and props.svg (outlines in currentColor, soft fills).
+
+     The parcel is drawn in its own 100 x 80 frame, floor along the
+     bottom edge; `art.rs` centres it in the frame of the piece it holds.
+     The channel parts are in the TV's 120 x 168 frame, over its screen
+     (26..84 x 72..118); `art.rs` clips them to the glass. -->
+<defs>
+  <!-- A cardboard box, taped shut: a shipping label and "this way up"
+       arrows on the front. -->
+  <g id="parcel-body">
+    <rect x="6" y="26" width="88" height="54" fill="#c69c6d" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+    <path d="M 76 28 L 76 78" fill="none" stroke="#a87e52" stroke-width="1.2"/>
+    <rect x="14" y="46" width="28" height="20" rx="1" fill="#f7f4f0" stroke="currentColor" stroke-width="1.3"/>
+    <path d="M 18 52 L 36 52 M 18 57 L 32 57 M 18 62 L 34 62" fill="none" stroke="#6b5f55" stroke-width="1.4" stroke-linecap="round"/>
+    <path d="M 55 66 L 55 48 M 50 53 L 55 47 L 60 53 M 66 66 L 66 48 M 61 53 L 66 47 L 71 53 M 49 70 L 72 70"
+          fill="none" stroke="#5b3d2a" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+  <g id="parcel">
+    <use href="#parcel-body"/>
+    <rect x="3" y="17" width="94" height="12" rx="1.5" fill="#d4ac7c" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+    <rect x="44" y="16" width="12" height="28" fill="#eadbb2" stroke="#b89b6a" stroke-width="0.9"/>
+  </g>
+  <!-- Opened: the flaps up, packing peanuts spilling over the edge. -->
+  <g id="parcel-open">
+    <path d="M 8 26 L 2 6 L 36 3 L 46 24 Z" fill="#d4ac7c" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+    <path d="M 92 26 L 98 6 L 64 3 L 54 24 Z" fill="#d4ac7c" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+    <path d="M 38 6 L 44 20 M 62 6 L 56 20" fill="none" stroke="#eadbb2" stroke-width="4"/>
+    <g fill="#f3ead6" stroke="currentColor" stroke-width="1">
+      <ellipse cx="24" cy="25" rx="7" ry="5"/>
+      <ellipse cx="38" cy="21" rx="7" ry="5.5" transform="rotate(-15 38 21)"/>
+      <ellipse cx="51" cy="18" rx="7.5" ry="5.5"/>
+      <ellipse cx="64" cy="22" rx="7" ry="5" transform="rotate(20 64 22)"/>
+      <ellipse cx="77" cy="25" rx="7" ry="5"/>
+      <ellipse cx="46" cy="26" rx="6" ry="4.5"/>
+    </g>
+    <use href="#parcel-body"/>
+    <rect x="6" y="24" width="88" height="4" fill="#6b4a2c"/>
+  </g>
+
+  <!-- Chiyo-chichi (Azumanga Daioh): a round, flat orange cat head with
+       small ears, dot eyes, a tiny body below. Centred on the screen. -->
+  <g id="chiyo-chichi">
+    <ellipse cx="55" cy="117" rx="10" ry="7" fill="#f0913a" stroke="currentColor" stroke-width="1.3"/>
+    <path d="M 42.5 91 L 43.5 76.5 L 51.5 84.5 Z" fill="#f0913a" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
+    <path d="M 67.5 91 L 66.5 76.5 L 58.5 84.5 Z" fill="#f0913a" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
+    <circle cx="55" cy="96" r="14" fill="#f0913a" stroke="currentColor" stroke-width="1.5"/>
+    <circle cx="49.5" cy="94" r="1.7" fill="#241a14"/>
+    <circle cx="60.5" cy="94" r="1.7" fill="#241a14"/>
+    <path d="M 40 98 L 46 97.5 M 40 101 L 46 100 M 70 98 L 64 97.5 M 70 101 L 64 100" fill="none" stroke="#8a4a1c" stroke-width="0.8" stroke-linecap="round"/>
+  </g>
+  <g id="chiyo-chichi-hum">
+    <path d="M 51.5 100 Q 55 103 58.5 100" fill="none" stroke="#241a14" stroke-width="1.3" stroke-linecap="round"/>
+  </g>
+  <g id="chiyo-chichi-talk">
+    <ellipse cx="55" cy="101.5" rx="2.8" ry="2.2" fill="#6a2530" stroke="#241a14" stroke-width="0.9"/>
+  </g>
+</defs>

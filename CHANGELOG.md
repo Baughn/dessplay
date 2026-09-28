@@ -9,6 +9,16 @@ append-only; you cannot reword or remove existing entries.
 
 Add new days at the top. Add new entries at the bottom of existing days.
 
+## 2026-09-29
+
+- Added: The houseguest is moving in. From her second visit she has a
+  TV, and now and then Chiyo-chichi's shopping channel sells her
+  something for her room — a sofa, a bed, a desk — which turns up on a
+  later visit as a parcel she unpacks and then uses (naps on the sofa,
+  sleeps in her bed, homework at the desk). Each pane she furnishes is a
+  room, and her home is kept between sessions; F3 → Playback → Osaka
+  moved out clears it.
+
 ## 2026-09-28
 
 - Added: A houseguest. When nothing has happened for five minutes, Osaka

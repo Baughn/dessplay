@@ -1435,8 +1435,16 @@ this section states what is built.
     and after a moment ("...") she puts them back one every 400 ms. A
     put-back the frame refuses is retried a few times; the goodbye rain
     re-knits anything left.
-- **Furniture** (phase 3, in progress; only the stage gives it so
-  far): a sofa (9×3 cells), TV (6×4), bed (10×3), and desk (7×3), drawn
+- **Getting furniture**: her TV is ordered for her and arrives on her
+  second visit. After that, when she watches TV at least three visits
+  after her last purchase, with nothing on order or still boxed, the
+  shopping channel comes on (Chiyo-chichi) and she buys the next piece
+  she lacks — sofa, bed, desk, in that order — the moment it comes on,
+  whatever happens next. What she buys arrives on a later visit as a
+  parcel ("A parcel!") where the piece will stand; she unpacks it (her
+  strongest wish while it's there) and it becomes the piece. A parcel
+  stays boxed, across visits, until she finishes unpacking it.
+- **Furniture** (phase 3): a sofa (9×3 cells), TV (6×4), bed (10×3), and desk (7×3), drawn
   in her style (outlined, soft fills) as line art, or as ASCII without
   graphics. She owns her furniture across visits. **Panes are rooms**:
   each piece belongs to a room (living room: sofa, TV; bedroom: bed,

@@ -143,6 +143,8 @@ impl Kind {
             // Her own things are what home is for.
             Self::Use(Use::Watch) => 10.0,
             Self::Use(Use::Sleep) => 10.0,
+            // A parcel! Nothing comes close.
+            Self::Use(Use::Unpack) => 40.0,
             Self::Use(_) => 8.0,
         }
     }
@@ -164,7 +166,7 @@ impl Kind {
             Self::Use(Use::Sleep) => Some((Need::Sleepy, 0.7)),
             // A sofa nap is lounging, not bedtime: it would always lose
             // to the bed if it answered the same need.
-            Self::Use(Use::Lounge | Use::Nap | Use::Homework | Use::Watch) => None,
+            Self::Use(Use::Lounge | Use::Nap | Use::Homework | Use::Watch | Use::Unpack) => None,
             Self::Stand
             | Self::SpaceOut
             | Self::Sneeze

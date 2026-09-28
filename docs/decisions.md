@@ -2024,6 +2024,25 @@ drawn in her image), so "ignoring what's there" only ever means the
 terrain between, never text. The sofa nap was made a lounging choice
 in the same change: answering sleepiness, it always lost to the bed.
 
+## Houseguest shops, and what she buys comes boxed (2026-09-29)
+
+**Rule:** The TV arrives on her second visit; after that the shopping
+channel sells her one piece at a time, at most once every three visits,
+and it arrives boxed on a later visit for her to unpack. See
+[design.md](design.md#houseguest).
+
+**Why:** The user chose the TV first and the channel after, and about
+one piece per three visits (with the default one-minute delay, visits
+are frequent; the full set takes a dozen or so). A purchase is recorded
+when the channel comes on, not when the scene ends — the proposal's
+"room mutations commit at scene start" — so a key press mid-advert
+loses nothing. Delivery waits for a later visit so buying and receiving
+are two moments, not one. "Boxed" is part of the record rather than an
+animation, so an interrupted unpacking simply waits for her: the box is
+still there next time. Rejected: a box sliding in from the screen edge
+(it would cross text on the way); unpacking as a timed animation that
+commits at the end (an interruption would leave a piece half-owned).
+
 ## Houseguest keeps a local record (2026-09-29)
 
 **Rule:** Her home, visit count and master seed live in one local JSON

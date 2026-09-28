@@ -350,6 +350,7 @@ proptest! {
                     item: Furniture::ALL[item],
                     at: along,
                     facing: if left { sprite::Facing::Left } else { sprite::Facing::Right },
+                    boxed: false,
                 },
             );
         }
@@ -1256,6 +1257,8 @@ fn every_scene_has_a_spot_in_the_stage_room() {
                     Scene::Sleep => posed(Pose::Sleep(0)),
                     Scene::Homework => posed(Pose::Homework(0)),
                     Scene::Watch => used == Some(Furniture::Tv),
+                    Scene::Parcel => guest.ledger.home.props.iter().any(|p| !p.boxed),
+                    Scene::Shopping => guest.ledger.ordered.is_some(),
                 };
                 assert!(happened, "{at}: {note:?}, moved {moved}");
             }
@@ -1808,7 +1811,7 @@ fn her_home_outlives_a_restart() {
     let State::Visiting(visit) = &guest.state else {
         panic!("visiting again");
     };
-    assert_eq!(visit.shown, [before], "the sofa where she left it");
+    assert!(visit.shown.contains(&before), "the sofa where she left it");
     let ledger = guest.ledger_to_save().expect("a new visit");
     assert_eq!(ledger.visits, 2);
     assert_ne!(ledger.visit_seed(0), ledger.visit_seed(1));
@@ -1837,4 +1840,125 @@ fn moving_out_wipes_her_record_and_an_unreadable_one_is_kept() {
     guest.give(Furniture::Sofa);
     paint(&mut guest, &real, &view, 0);
     assert!(guest.ledger_to_save().is_none());
+}
+
+// ---- Deliveries and the shopping channel ----
+
+/// One whole visit of `minutes`, ending with a key press and the goodbye.
+fn one_visit(guest: &mut Guest, real: &Buffer, view: &IdleView, from: u64, minutes: u64) -> u64 {
+    guest.cue(Scene::Arrive);
+    paint(guest, real, view, from);
+    let until = from + minutes * 60_000;
+    let mut now = from;
+    while now < until {
+        now += guest
+            .next_tick(now)
+            .map_or(1000, |d| d.as_millis() as u64)
+            .clamp(1, 1000);
+        if guest.advance(now) {
+            paint(guest, real, view, now);
+        }
+    }
+    guest.activity(now);
+    let _ = run(guest, real, view, now, now + dissolve::DURATION_MS);
+    now + dissolve::DURATION_MS
+}
+
+/// Her home fills up over visits, across a restart: the TV comes boxed
+/// on her second visit and she unpacks it; after that the shopping
+/// channel sells her one piece at a time, at most once every three
+/// visits, and each arrives boxed on a later visit.
+#[test]
+fn her_home_fills_up_over_visits() {
+    let (real, view) = home_screen();
+    let mut guest = Guest::new(11);
+    let mut now = 0;
+    let mut bought: Vec<(u64, Furniture)> = Vec::new();
+    for visit in 1..=12u64 {
+        if visit == 6 {
+            // A restart halfway.
+            let ledger = guest
+                .ledger_to_save()
+                .unwrap_or_else(|| guest.ledger.clone());
+            guest = Guest::restore(Ledger::from_json(&ledger.to_json()).unwrap());
+        }
+        let ordered = guest.ledger.ordered;
+        now = one_visit(&mut guest, &real, &view, now, 4);
+        assert_eq!(guest.ledger.visits, visit);
+        if let Some(item) = guest.ledger.ordered
+            && ordered != Some(item)
+        {
+            bought.push((visit, item));
+        }
+        if visit == 1 {
+            assert!(guest.ledger.home.props.is_empty(), "a first meeting");
+        }
+        if visit == 2 {
+            assert!(guest.ledger.home.owns(Furniture::Tv), "the TV came");
+        }
+    }
+    let home = &guest.ledger.home;
+    assert!(
+        home.props
+            .iter()
+            .any(|p| p.item == Furniture::Tv && !p.boxed),
+        "she unpacked her TV: {home:?}"
+    );
+    assert!(
+        CATALOGUE.iter().any(|&item| home.owns(item)),
+        "she bought something: {bought:?}"
+    );
+    for pair in bought.windows(2) {
+        assert!(pair[1].0 >= pair[0].0 + SHOP_EVERY, "too often: {bought:?}");
+    }
+    // Nothing turns up that she didn't buy.
+    for prop in &home.props {
+        assert!(
+            prop.item == Furniture::Tv || bought.iter().any(|&(_, item)| item == prop.item),
+            "{:?} unbought: {bought:?}",
+            prop.item
+        );
+    }
+}
+
+/// A parcel she's interrupted unpacking is still boxed next visit, and
+/// she unpacks it then.
+#[test]
+fn an_interrupted_unpacking_waits_for_her() {
+    let (real, view) = home_screen();
+    let mut guest = Guest::new(3);
+    guest.cue(Scene::Parcel);
+    paint(&mut guest, &real, &view, 0);
+    let item = guest
+        .ledger
+        .home
+        .props
+        .first()
+        .map(|p| p.item)
+        .expect("a parcel");
+    // Straight away: not enough time to unpack.
+    let _ = run(&mut guest, &real, &view, 0, 1500);
+    assert!(
+        guest
+            .ledger
+            .home
+            .props
+            .iter()
+            .any(|p| p.item == item && p.boxed)
+    );
+    guest.activity(1500);
+    let now = 1500 + dissolve::DURATION_MS;
+    let _ = run(&mut guest, &real, &view, 1500, now);
+    let now = one_visit(&mut guest, &real, &view, now, 2);
+    let _ = now;
+    assert!(
+        guest
+            .ledger
+            .home
+            .props
+            .iter()
+            .any(|p| p.item == item && !p.boxed),
+        "unpacked on the next visit: {:?}",
+        guest.ledger.home
+    );
 }

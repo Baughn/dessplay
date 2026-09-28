@@ -12,6 +12,7 @@ use super::sprite::{Face, Facing, Pose};
 const PARTS: &str = include_str!("art/osaka.svg");
 const PROPS: &str = include_str!("art/props.svg");
 const DOOR: &str = include_str!("art/door.svg");
+const DELIVERY: &str = include_str!("art/delivery.svg");
 /// Prop units per cell (her scale at a 9 × 19 px cell), so her
 /// furniture shares her line weights.
 const CELL_UNITS: (f32, f32) = (20.0, 42.0);
@@ -713,6 +714,144 @@ pub(super) fn render_prop_layer(
     )
 }
 
+/// The parcel's own frame (floor along its bottom edge).
+const PARCEL: (f32, f32) = (100.0, 80.0);
+
+/// A delivery box holding `item`, as an SVG document in the piece's own
+/// frame: centred on its floor, no wider than the piece.
+fn parcel_scene(item: Furniture, open: bool, facing: Facing, line: &str) -> String {
+    let (w, h) = prop_frame(item);
+    let mirror = match facing {
+        Facing::Right => String::new(),
+        Facing::Left => format!(r#" transform="translate({w} 0) scale(-1 1)""#),
+    };
+    let scale = (w / PARCEL.0).min(1.0);
+    let (dx, dy) = ((w - PARCEL.0 * scale) / 2.0, h - PARCEL.1 * scale);
+    let id = if open { "parcel-open" } else { "parcel" };
+    format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w} {h}" color="{line}">{DELIVERY}<g{mirror}><g transform="translate({dx} {dy}) scale({scale})"><use href="#{id}"/></g></g></svg>"##
+    )
+}
+
+/// A delivery box holding `item`, closed or opened, rendered like
+/// [`render_prop_layer`] so it stands where the piece will.
+pub(super) fn render_parcel(
+    item: Furniture,
+    open: bool,
+    facing: Facing,
+    line: &str,
+    width: u32,
+    height: u32,
+) -> Option<image::RgbaImage> {
+    rasterize(
+        &parcel_scene(item, open, facing, line),
+        prop_frame(item),
+        width,
+        height,
+    )
+}
+
+/// What's on her TV: static, or Chiyo-chichi's shopping channel; each
+/// with animation frames 0–1.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(super) enum Channel {
+    Snow(u8),
+    Shopping(u8),
+}
+
+/// The TV's glass, in its frame.
+const GLASS: (f32, f32, f32, f32) = (26.0, 72.0, 58.0, 46.0);
+
+/// TV static: a grid of grey specks, reshuffled each frame.
+fn snow(frame: u8) -> String {
+    let (x0, y0, w, h) = GLASS;
+    let mut state = 0x2545_F491_4F6C_DD1D_u64 ^ u64::from(frame).wrapping_mul(0x9E37_79B9);
+    let mut out = format!(r##"<rect x="{x0}" y="{y0}" width="{w}" height="{h}" fill="#3a3f45"/>"##);
+    let step = 2.5;
+    let mut y = y0;
+    while y < y0 + h {
+        let mut x = x0;
+        while x < x0 + w {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            let grey = 70 + (state % 170) as u8;
+            out.push_str(&format!(
+                r#"<rect x="{x}" y="{y}" width="{step}" height="{step}" fill="rgb({grey},{grey},{grey})"/>"#
+            ));
+            x += step;
+        }
+        y += step;
+    }
+    out
+}
+
+/// The shopping channel's studio: a pink-and-yellow sunburst behind him.
+fn sunburst() -> String {
+    let (x0, y0, w, h) = GLASS;
+    let (cx, cy) = (x0 + w / 2.0, y0 + h / 2.0 + 2.0);
+    let mut out = format!(r##"<rect x="{x0}" y="{y0}" width="{w}" height="{h}" fill="#ffd66b"/>"##);
+    let rays = 14;
+    for i in (0..rays).step_by(2) {
+        let a0 = std::f32::consts::TAU * i as f32 / rays as f32;
+        let a1 = std::f32::consts::TAU * (i + 1) as f32 / rays as f32;
+        let r = 60.0;
+        out.push_str(&format!(
+            r##"<path d="M {cx} {cy} L {} {} L {} {} Z" fill="#ff9db3"/>"##,
+            cx + r * a0.cos(),
+            cy + r * a0.sin(),
+            cx + r * a1.cos(),
+            cy + r * a1.sin(),
+        ));
+    }
+    out
+}
+
+/// The TV showing `channel`, as an SVG document in its frame.
+fn tv_scene(channel: Channel, facing: Facing, line: &str) -> String {
+    let (w, h) = prop_frame(Furniture::Tv);
+    let mirror = match facing {
+        Facing::Right => String::new(),
+        Facing::Left => format!(r#" transform="translate({w} 0) scale(-1 1)""#),
+    };
+    let (x0, y0, gw, gh) = GLASS;
+    let picture = match channel {
+        Channel::Snow(frame) => snow(frame),
+        Channel::Shopping(frame) => {
+            // He bobs, and talks on the up-beat.
+            let (bob, mouth) = if frame % 2 == 0 {
+                (0.0, "chiyo-chichi-hum")
+            } else {
+                (-1.5, "chiyo-chichi-talk")
+            };
+            format!(
+                r##"{}<g transform="translate(0 {bob})"><use href="#chiyo-chichi"/><use href="#{mouth}"/></g>"##,
+                sunburst()
+            )
+        }
+    };
+    format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w} {h}" color="{line}">{PROPS}{DELIVERY}<defs><clipPath id="tv-glass"><rect x="{x0}" y="{y0}" width="{gw}" height="{gh}" rx="8"/></clipPath></defs><g{mirror}><use href="#tv"/><g clip-path="url(#tv-glass)">{picture}</g><rect x="{x0}" y="{y0}" width="{gw}" height="{gh}" rx="8" fill="none" stroke="currentColor" stroke-width="1.6"/></g></svg>"##
+    )
+}
+
+/// The whole TV with `channel` on its screen, rendered like
+/// [`render_prop_layer`].
+pub(super) fn render_tv(
+    channel: Channel,
+    facing: Facing,
+    line: &str,
+    width: u32,
+    height: u32,
+) -> Option<image::RgbaImage> {
+    rasterize(
+        &tv_scene(channel, facing, line),
+        prop_frame(Furniture::Tv),
+        width,
+        height,
+    )
+}
+
 /// A prop's frame in SVG units.
 fn prop_frame(prop: Furniture) -> (f32, f32) {
     let (cols, rows) = prop.footprint();
@@ -833,6 +972,132 @@ mod tests {
                 assert_eq!(image.get_pixel(44, 0).0[3], 0, "{frame:?}");
             }
         }
+    }
+
+    const CHANNELS: [Channel; 4] = [
+        Channel::Snow(0),
+        Channel::Snow(1),
+        Channel::Shopping(0),
+        Channel::Shopping(1),
+    ];
+
+    #[test]
+    fn every_parcel_and_channel_renders_inside_its_box() {
+        for facing in [Facing::Left, Facing::Right] {
+            for item in Furniture::ALL {
+                let (cols, rows) = item.footprint();
+                let (w, h) = (u32::from(cols) * 9, u32::from(rows) * 19);
+                for open in [false, true] {
+                    let image = render_parcel(item, open, facing, LINE, w, h).expect("renders");
+                    let inked = image.pixels().filter(|p| p.0[3] > 0).count();
+                    assert!(inked > 400, "{item:?} open={open}: only {inked} pixels");
+                    // It stands on the floor, well below the box's top.
+                    assert!(
+                        (0..w).all(|x| image.get_pixel(x, 0).0[3] == 0),
+                        "{item:?} open={open}: reaches the top"
+                    );
+                }
+            }
+            let mut shown = Vec::new();
+            for channel in CHANNELS {
+                let image = render_tv(channel, facing, LINE, 54, 76).expect("renders");
+                let inked = image.pixels().filter(|p| p.0[3] > 0).count();
+                assert!(inked > 1200, "{channel:?}: only {inked} pixels");
+                shown.push(image);
+            }
+            // Each frame differs from the other.
+            assert_ne!(shown[0], shown[1], "static moves");
+            assert_ne!(shown[2], shown[3], "he moves");
+        }
+    }
+
+    /// Deliveries and the TV for review:
+    /// `HOUSEGUEST_DELIVERY=/tmp/delivery.png cargo test delivery_sheet -- --ignored`.
+    /// Rows: each piece's parcel closed then open (in its footprint); the
+    /// TV on each channel frame; her sitting beside it watching the
+    /// shopping channel. 1×, 2× and 4×, with the cell grid and floor line.
+    #[test]
+    #[ignore = "writes a PNG for review"]
+    fn delivery_sheet() {
+        enum Item {
+            Parcel(Furniture, bool),
+            Tv(Channel),
+            Watching(Channel),
+        }
+        let path = std::env::var("HOUSEGUEST_DELIVERY").expect("HOUSEGUEST_DELIVERY");
+        let (cw, ch) = (9u32, 19u32);
+        let scales = [1u32, 2, 4];
+        let span = |s: u32| cw * s * 16;
+        let row_h = ch * 4 * 6;
+        let mut items: Vec<Item> = Vec::new();
+        for item in Furniture::ALL {
+            items.push(Item::Parcel(item, false));
+            items.push(Item::Parcel(item, true));
+        }
+        items.extend(CHANNELS.map(Item::Tv));
+        items.push(Item::Watching(Channel::Shopping(0)));
+        items.push(Item::Watching(Channel::Shopping(1)));
+        let mut sheet = image::RgbaImage::from_pixel(
+            scales.iter().map(|&s| span(s)).sum(),
+            row_h * items.len() as u32,
+            image::Rgba([13, 17, 23, 255]),
+        );
+        let sitting = Rig::for_pose(Pose::Sit, Face::Curious);
+        for (row, item) in items.iter().enumerate() {
+            let row = row as u32;
+            let mut x0 = 0;
+            for &s in &scales {
+                let (w, h) = (cw * s, ch * s);
+                let piece = match item {
+                    Item::Parcel(item, _) => *item,
+                    Item::Tv(_) | Item::Watching(_) => Furniture::Tv,
+                };
+                let (cols, rows) = piece.footprint();
+                let (cols, rows) = (u32::from(cols), u32::from(rows));
+                let floor = row * row_h + row_h - h;
+                let line = floor + h / 2;
+                for gx in 0..span(s) - w {
+                    for t in 0..s {
+                        sheet.put_pixel(x0 + gx, line + t, image::Rgba([139, 148, 158, 255]));
+                    }
+                }
+                let px = x0 + w;
+                for gy in 0..=rows {
+                    for gx in 0..w * cols {
+                        sheet.put_pixel(px + gx, floor - gy * h, image::Rgba([40, 46, 56, 255]));
+                    }
+                }
+                let (pw, ph) = (w * cols, h * rows + h / 2);
+                let image = match item {
+                    Item::Parcel(item, open) => {
+                        render_parcel(*item, *open, Facing::Right, LINE, pw, ph)
+                    }
+                    Item::Tv(channel) | Item::Watching(channel) => {
+                        render_tv(*channel, Facing::Right, LINE, pw, ph)
+                    }
+                }
+                .unwrap();
+                image::imageops::overlay(
+                    &mut sheet,
+                    &image,
+                    i64::from(px),
+                    i64::from(floor - h * rows),
+                );
+                if let Item::Watching(_) = item {
+                    // Her box centred 3 columns past the TV's right edge.
+                    let hx = px + w * (cols + 1);
+                    let osaka = render(&sitting, Facing::Left, LINE, w * 5, h * 4 + h / 2).unwrap();
+                    image::imageops::overlay(
+                        &mut sheet,
+                        &osaka,
+                        i64::from(hx),
+                        i64::from(floor - h * 4),
+                    );
+                }
+                x0 += span(s);
+            }
+        }
+        sheet.save(path).unwrap();
     }
 
     /// Her door for review:

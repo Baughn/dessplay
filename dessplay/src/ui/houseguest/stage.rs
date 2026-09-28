@@ -71,11 +71,15 @@ pub enum Scene {
     Homework,
     /// Watch her TV.
     Watch,
+    /// A parcel arrives with her next piece, and she unpacks it.
+    Parcel,
+    /// The shopping channel comes on while she watches, and she buys.
+    Shopping,
 }
 
 impl Scene {
     /// Every scene, in menu order.
-    pub const ALL: [Scene; 23] = [
+    pub const ALL: [Scene; 25] = [
         Self::Arrive,
         Self::Pull,
         Self::Swap,
@@ -99,6 +103,8 @@ impl Scene {
         Self::Sleep,
         Self::Homework,
         Self::Watch,
+        Self::Parcel,
+        Self::Shopping,
     ];
 
     /// A short menu label.
@@ -127,6 +133,8 @@ impl Scene {
             Self::Sleep => "sleep in bed",
             Self::Homework => "homework",
             Self::Watch => "watch TV",
+            Self::Parcel => "a parcel",
+            Self::Shopping => "shopping channel",
         }
     }
 
@@ -137,7 +145,8 @@ impl Scene {
             Self::Nap => Use::Nap,
             Self::Sleep => Use::Sleep,
             Self::Homework => Use::Homework,
-            Self::Watch => Use::Watch,
+            Self::Watch | Self::Shopping => Use::Watch,
+            Self::Parcel => Use::Unpack,
             _ => return None,
         })
     }

@@ -24,6 +24,10 @@ pub struct Ledger {
     pub(super) visits: u64,
     /// Her home.
     pub(super) home: Home,
+    /// Bought and not yet delivered.
+    pub(super) ordered: Option<Furniture>,
+    /// The visit she last bought something on.
+    pub(super) bought_on: u64,
 }
 
 impl Ledger {
@@ -33,6 +37,8 @@ impl Ledger {
             master_seed,
             visits: 0,
             home: Home::default(),
+            ordered: None,
+            bought_on: 0,
         }
     }
 
@@ -71,13 +77,20 @@ impl Ledger {
                     item: prop.item,
                     at: prop.at.min(1000),
                     facing: prop.facing,
+                    boxed: prop.boxed,
                 });
             }
         }
+        let ordered = raw
+            .ordered
+            .and_then(|v| serde_json::from_value::<Furniture>(v).ok())
+            .filter(|&item| !home.owns(item));
         Ok(Self {
             master_seed: raw.master_seed,
             visits: raw.visits,
             home,
+            ordered,
+            bought_on: raw.bought_on,
         })
     }
 
@@ -96,8 +109,11 @@ impl Ledger {
                     item: p.item,
                     at: p.at,
                     facing: p.facing,
+                    boxed: p.boxed,
                 })
                 .collect(),
+            ordered: self.ordered,
+            bought_on: self.bought_on,
         };
         serde_json::to_string(&raw).unwrap_or_default()
     }
@@ -127,6 +143,8 @@ struct SavedProp {
     at: u16,
     #[serde(default = "facing_right")]
     facing: Facing,
+    #[serde(default)]
+    boxed: bool,
 }
 
 fn facing_right() -> Facing {
@@ -140,6 +158,8 @@ struct Saved<'a> {
     visits: u64,
     rooms: &'a [(RoomKind, Nook)],
     props: Vec<SavedProp>,
+    ordered: Option<Furniture>,
+    bought_on: u64,
 }
 
 /// What's read, before the entries this build knows are picked out.
@@ -154,6 +174,10 @@ struct Raw {
     rooms: Vec<serde_json::Value>,
     #[serde(default)]
     props: Vec<serde_json::Value>,
+    #[serde(default)]
+    ordered: Option<serde_json::Value>,
+    #[serde(default)]
+    bought_on: u64,
 }
 
 #[cfg(test)]
@@ -164,6 +188,8 @@ mod tests {
     fn furnished() -> Ledger {
         let mut ledger = Ledger::new(42);
         ledger.visits = 7;
+        ledger.ordered = Some(Furniture::Desk);
+        ledger.bought_on = 6;
         for (item, at) in [(Furniture::Sofa, 0), (Furniture::Tv, 900)] {
             assert!(ledger.home.add(
                 Nook::Users,
@@ -171,6 +197,7 @@ mod tests {
                     item,
                     at,
                     facing: Facing::Left,
+                    boxed: false,
                 },
             ));
         }
@@ -180,6 +207,7 @@ mod tests {
                 item: Furniture::Bed,
                 at: 500,
                 facing: Facing::Right,
+                boxed: true,
             },
         ));
         ledger

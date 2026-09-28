@@ -38,10 +38,35 @@ use graphics::{Graphics, Look};
 pub use idle::{Busy, ChatMark, IdleView, grow};
 pub use ledger::Ledger;
 use osaka::Osaka;
+use room::Shown;
 pub use room::{Furniture, Nook};
-use room::{Home, Shown};
 use sprite::{Part, Pose};
 use terrain::Terrain;
+
+/// What the shopping channel sells, in order (the TV comes first, on
+/// its own).
+const CATALOGUE: [Furniture; 3] = [Furniture::Sofa, Furniture::Bed, Furniture::Desk];
+/// She buys at most once every this many visits.
+const SHOP_EVERY: u64 = 3;
+/// The visit her TV arrives on (the first is a first meeting).
+const FIRST_TV_VISIT: u64 = 2;
+/// How long each frame of what's on TV lasts.
+const CHANNEL_FRAME_MS: u64 = 400;
+/// What she says when a parcel arrives.
+const PARCEL: &str = "A parcel!";
+
+/// What the shopping channel sells her if she watches now: the next
+/// piece she lacks, at most once every [`SHOP_EVERY`] visits (any time
+/// with the stage's `shop_now`), and never while something's on order
+/// or still boxed.
+fn advert(ledger: &Ledger, shop_now: bool) -> Option<Furniture> {
+    let due = shop_now || ledger.visits >= ledger.bought_on + SHOP_EVERY;
+    let idle = ledger.ordered.is_none() && !ledger.home.boxed();
+    let item = CATALOGUE
+        .into_iter()
+        .find(|&item| !ledger.home.owns(item))?;
+    (due && idle && ledger.home.owns(Furniture::Tv)).then_some(item)
+}
 
 /// Smallest terminal she visits.
 const MIN_WIDTH: u16 = 60;
@@ -145,6 +170,8 @@ pub struct Guest {
     persist: bool,
     /// A piece the stage gave her, placed at the next paint.
     gift: Option<Furniture>,
+    /// The stage: the shopping channel is on whenever she watches.
+    shop_now: bool,
 }
 
 impl Guest {
@@ -171,6 +198,7 @@ impl Guest {
             cue: None,
             note: None,
             gift: None,
+            shop_now: false,
         }
     }
 
@@ -193,6 +221,7 @@ impl Guest {
         self.unsaved = true;
         self.persist = true;
         self.gift = None;
+        self.shop_now = false;
         if matches!(self.state, State::Visiting(_) | State::Arriving) {
             self.state = State::Absent;
         }
@@ -202,6 +231,24 @@ impl Guest {
     /// pane's floor where it fits (the note says where, or why not).
     pub fn give(&mut self, item: Furniture) {
         self.gift = Some(item);
+    }
+
+    /// The stage: a parcel with the next piece she doesn't own (her TV
+    /// first), delivered at the next paint.
+    pub fn send_parcel(&mut self) {
+        let next = std::iter::once(Furniture::Tv)
+            .chain(CATALOGUE)
+            .find(|&item| !self.ledger.home.owns(item));
+        if let Some(item) = next {
+            self.ledger.ordered = Some(item);
+            self.ledger.bought_on = self.ledger.visits.saturating_sub(1);
+            self.unsaved = true;
+        }
+    }
+
+    /// The stage: put the shopping channel on next time she watches.
+    pub fn shop(&mut self) {
+        self.shop_now = true;
     }
 
     /// The stage: the first piece she doesn't own yet.
@@ -216,13 +263,24 @@ impl Guest {
     /// skipped). See [`stage`].
     pub fn cue(&mut self, scene: stage::Scene) {
         // A scene with her furniture: she gets the piece if she has none.
-        if let Some(what) = scene.furniture()
-            && let Some(&item) = Furniture::ALL
-                .iter()
-                .find(|&&item| room::Use::of(item).contains(&what))
-            && !self.ledger.home.owns(item)
-        {
-            self.gift = Some(item);
+        match scene {
+            stage::Scene::Parcel => self.send_parcel(),
+            stage::Scene::Shopping => {
+                self.shop();
+                if !self.ledger.home.owns(Furniture::Tv) {
+                    self.gift = Some(Furniture::Tv);
+                }
+            }
+            _ => {
+                if let Some(what) = scene.furniture()
+                    && let Some(&item) = Furniture::ALL
+                        .iter()
+                        .find(|&&item| room::Use::of(item).contains(&what))
+                    && !self.ledger.home.owns(item)
+                {
+                    self.gift = Some(item);
+                }
+            }
         }
         if scene == stage::Scene::Arrive || !matches!(self.state, State::Visiting(_)) {
             self.state = State::Arriving;
@@ -398,7 +456,7 @@ impl Guest {
                     && untouched
                 {
                     for prop in &leaving.props {
-                        paint_prop_art(buf, graphics, prop);
+                        paint_prop_art(buf, graphics, prop, None);
                     }
                 }
                 if let (Some(image), Some(graphics)) = (leaving.image, &mut self.graphics)
@@ -422,7 +480,7 @@ impl Guest {
                     let layers: Vec<graphics::Layer> = leaving
                         .with
                         .iter()
-                        .map(|p| prop_layer(p, art::Layer::Whole))
+                        .map(|p| prop_layer(p, piece_look(p, art::Layer::Whole, None, false)))
                         .chain([her])
                         .collect();
                     graphics.paint_layers(buf, &layers, &|x, y| terrain.open(x, y));
@@ -437,17 +495,32 @@ impl Guest {
                 // ones, moved text, and her; what doesn't fit is in the
                 // closet this frame. Placed, it's solid to text; she walks
                 // in front of it.
-                let before = self.ledger.home.clone();
-                visit.shown = furnish(
-                    &mut self.ledger.home,
+                let before = self.ledger.clone();
+                for event in visit.osaka.take_events() {
+                    match event {
+                        osaka::HomeEvent::Bought(item) => {
+                            self.ledger.ordered = Some(item);
+                            self.ledger.bought_on = self.ledger.visits;
+                            self.shop_now = false;
+                            self.unsaved = true;
+                        }
+                        osaka::HomeEvent::Unpacked(item) => {
+                            self.unsaved |= self.ledger.home.unbox(item);
+                        }
+                    }
+                }
+                let shown = furnish(
+                    &mut self.ledger,
                     &mut self.gift,
                     &mut self.note,
                     buf,
                     view,
                     visit,
+                    now,
                     &mut self.rng,
                 );
-                if self.ledger.home != before {
+                visit.shown = shown;
+                if self.ledger != before {
                     self.unsaved = true;
                 }
                 if let Some(item) = visit.osaka.using()
@@ -497,6 +570,7 @@ impl Guest {
                         swaps: swaps.clone(),
                         loose: Vec::new(),
                         seats: seats(&visit.shown, &visit.terrain),
+                        advert: advert(&self.ledger, self.shop_now),
                     };
                     let note =
                         stage::direct(scene, buf, &protected, visit, &offered, now, &mut self.rng);
@@ -518,6 +592,7 @@ impl Guest {
                     swaps,
                     loose,
                     seats: seats(&visit.shown, &visit.terrain),
+                    advert: advert(&self.ledger, self.shop_now),
                 };
                 // In line art, pieces she overlaps go in her image: two
                 // images would cut each other out.
@@ -531,10 +606,19 @@ impl Guest {
                     .shown
                     .iter()
                     .partition(|s| self.graphics.is_some() && s.cover().intersects(her));
+                // She's watching: the TV is on.
+                let tv = visit.osaka.watching().map(|(since, advert)| {
+                    let frame = (now.saturating_sub(since) / CHANNEL_FRAME_MS % 2) as u8;
+                    match advert {
+                        Some(_) => art::Channel::Shopping(frame),
+                        None => art::Channel::Snow(frame),
+                    }
+                });
                 layer.extend(draw_props(
                     buf,
                     self.graphics.as_mut(),
                     &apart,
+                    tv,
                     self.truecolor,
                 ));
                 match &mut self.graphics {
@@ -546,6 +630,7 @@ impl Guest {
                             &visit.terrain,
                             &visit.shown,
                             &with,
+                            tv,
                             now,
                             self.truecolor,
                         );
@@ -804,13 +889,15 @@ fn bubble_spot(
 
 /// Where her furniture stands this frame, placing the stage's gift
 /// first if there is one. Nothing covers protected cells or moved text.
+#[allow(clippy::too_many_arguments)]
 fn furnish(
-    home: &mut Home,
+    ledger: &mut Ledger,
     gift: &mut Option<Furniture>,
     note: &mut Option<Result<String, String>>,
     buf: &Buffer,
     view: &IdleView,
-    visit: &Visit,
+    visit: &mut Visit,
+    now: u64,
     rng: &mut Rng,
 ) -> Vec<Shown> {
     let moved: std::collections::HashSet<(u16, u16)> = visit.layer.cells().collect();
@@ -820,7 +907,31 @@ fn furnish(
         };
         moved.contains(&(ux, uy)) || view.protected.iter().any(|r| r.contains((ux, uy).into()))
     };
-    let shown = home.resolve(buf, &view.nooks, &blocked);
+    let home = &mut ledger.home;
+    let mut shown = home.resolve(buf, &view.nooks, &blocked);
+    // A delivery: what she ordered on an earlier visit arrives boxed,
+    // wherever it will fit. Her first TV is ordered for her, to arrive
+    // on her second visit.
+    if ledger.ordered.is_none() && !home.owns(Furniture::Tv) && ledger.visits >= FIRST_TV_VISIT {
+        ledger.ordered = Some(Furniture::Tv);
+        ledger.bought_on = ledger.visits - 1;
+    }
+    if let Some(item) = ledger.ordered
+        && ledger.bought_on < ledger.visits
+        && let Some((nook, prop)) = home.spot(buf, &view.nooks, &shown, &blocked, item, rng)
+        && home.add(
+            nook,
+            room::Prop {
+                boxed: true,
+                ..prop
+            },
+        )
+    {
+        tracing::info!(?item, ?nook, "houseguest: a parcel arrived");
+        ledger.ordered = None;
+        visit.osaka.say(PARCEL, now);
+        shown = home.resolve(buf, &view.nooks, &blocked);
+    }
     let Some(item) = gift.take() else {
         return shown;
     };
@@ -848,7 +959,13 @@ fn furnish(
 fn seats(shown: &[Shown], terrain: &Terrain) -> Vec<room::Seat> {
     let mut out = Vec::new();
     for piece in shown {
-        for &what in room::Use::of(piece.item) {
+        // Boxed, it's only for unpacking.
+        let uses: &[room::Use] = if piece.boxed {
+            &[room::Use::Unpack]
+        } else {
+            room::Use::of(piece.item)
+        };
+        for &what in uses {
             let spots: &[i32] = if what.inside() { &[0] } else { &piece.beside() };
             let seat = spots
                 .iter()
@@ -875,12 +992,22 @@ fn prop_ink(item: Furniture, truecolor: bool) -> Ink {
     Ink::new(fg, Modifier::empty())
 }
 
-/// `layer` of a piece of furniture as an image layer, standing on its
-/// floor.
-fn prop_layer(prop: &Shown, layer: art::Layer) -> graphics::Layer {
+/// How a piece looks: `layer` of it, or its box while it's boxed (open
+/// while she's `unpacking` it), or with `tv` on its screen.
+fn piece_look(prop: &Shown, layer: art::Layer, tv: Option<art::Channel>, unpacking: bool) -> Look {
+    match (prop.boxed, prop.item, tv) {
+        (true, item, _) => Look::Parcel(item, unpacking),
+        (false, Furniture::Tv, Some(channel)) => Look::Tv(channel),
+        (false, item, _) => Look::Prop(item, layer),
+    }
+}
+
+/// A piece of furniture as an image layer that `look`s so, standing on
+/// its floor.
+fn prop_layer(prop: &Shown, look: Look) -> graphics::Layer {
     let (cols, _) = prop.item.footprint();
     graphics::Layer {
-        look: Look::Prop(prop.item, layer),
+        look,
         facing: prop.facing,
         at: (prop.left + i32::from(cols) / 2, prop.floor),
         standing: true,
@@ -888,9 +1015,15 @@ fn prop_layer(prop: &Shown, layer: art::Layer) -> graphics::Layer {
 }
 
 /// Paint one piece's line art. Returns whether it went on.
-fn paint_prop_art(buf: &mut Buffer, graphics: &mut Graphics, prop: &Shown) -> bool {
+fn paint_prop_art(
+    buf: &mut Buffer,
+    graphics: &mut Graphics,
+    prop: &Shown,
+    tv: Option<art::Channel>,
+) -> bool {
+    let look = piece_look(prop, art::Layer::Whole, tv, false);
     graphics
-        .paint_layers(buf, &[prop_layer(prop, art::Layer::Whole)], &|_, _| true)
+        .paint_layers(buf, &[prop_layer(prop, look)], &|_, _| true)
         .is_some()
 }
 
@@ -900,21 +1033,39 @@ fn draw_props(
     buf: &mut Buffer,
     mut graphics: Option<&mut Graphics>,
     shown: &[Shown],
+    tv: Option<art::Channel>,
     truecolor: bool,
 ) -> Vec<Frozen> {
     let mut painted = Vec::new();
     for prop in shown {
         let ink = prop_ink(prop.item, truecolor);
+        // On, the TV's screen shows what's on.
+        let screen = prop.screen().zip(tv).map(|(cells, channel)| {
+            let glyphs = match channel {
+                art::Channel::Snow(0) => [':', '.'],
+                art::Channel::Snow(_) => ['.', ':'],
+                art::Channel::Shopping(_) => ['^', '^'],
+            };
+            (cells, glyphs)
+        });
         let unders: Vec<_> = prop
             .cells()
             .filter_map(|(x, y, glyph)| {
                 let (ux, uy) = (u16::try_from(x).ok()?, u16::try_from(y).ok()?);
+                let glyph = screen
+                    .and_then(|(cells, glyphs)| {
+                        cells
+                            .iter()
+                            .position(|&c| c == (x, y))
+                            .and_then(|i| glyphs.get(i).copied())
+                    })
+                    .or(glyph);
                 Some((ux, uy, glyph, buf.cell((ux, uy))?.clone()))
             })
             .collect();
         match graphics.as_deref_mut() {
             Some(graphics) => {
-                if paint_prop_art(buf, graphics, prop) {
+                if paint_prop_art(buf, graphics, prop, tv) {
                     painted.extend(unders.into_iter().map(|(x, y, glyph, under)| Frozen {
                         x,
                         y,
@@ -962,6 +1113,7 @@ fn draw_art(
     terrain: &Terrain,
     shown: &[Shown],
     with: &[Shown],
+    tv: Option<art::Channel>,
     now: u64,
     truecolor: bool,
 ) -> (Vec<Frozen>, Option<Placement>) {
@@ -1004,13 +1156,19 @@ fn draw_art(
     let using = osaka.seat().filter(|seat| seat.what.inside());
     let part = |piece: &Shown, front: bool| {
         let what = using.filter(|seat| seat.item == piece.item).map(|s| s.what);
-        match (what, front) {
-            (Some(room::Use::Sleep), false) => Some(art::Layer::Back),
-            (Some(room::Use::Sleep), true) => Some(art::Layer::Front),
-            (Some(room::Use::Nap), false) => Some(art::Layer::Bare),
-            (_, false) => Some(art::Layer::Whole),
-            (_, true) => None,
-        }
+        let layer = match (what, front) {
+            (Some(room::Use::Sleep), false) => art::Layer::Back,
+            (Some(room::Use::Sleep), true) => art::Layer::Front,
+            (Some(room::Use::Nap), false) => art::Layer::Bare,
+            (_, false) => art::Layer::Whole,
+            (_, true) => return None,
+        };
+        Some(piece_look(
+            piece,
+            layer,
+            tv,
+            what == Some(room::Use::Unpack),
+        ))
     };
     let mut layers = Vec::with_capacity(with.len() * 2 + 1);
     for piece in with {
