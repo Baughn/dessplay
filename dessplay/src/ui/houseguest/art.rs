@@ -19,6 +19,12 @@ const SHOULDER_Y: f32 = 75.0;
 const SHOULDERS: [f32; 2] = [35.5, 64.5];
 const UPPER_ARM: f32 = 13.0;
 const NECK: (f32, f32) = (50.0, 70.0);
+/// Profile pivots: shoulders and hips stacked, far limb first.
+const P_SHOULDERS: [f32; 2] = [49.0, 52.0];
+const P_SHOULDER_Y: f32 = 76.0;
+const P_HIPS: [f32; 2] = [48.0, 52.5];
+/// A standing image spans ~4.5 rows of the canvas's 160 units.
+const ROW_UNITS: f32 = CANVAS_H / 4.5;
 
 /// Her expression.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -42,6 +48,12 @@ impl Expression {
     }
 }
 
+/// The rig angle (degrees clockwise from hanging down) that points from
+/// `from` at `to`.
+fn aim(from: (f32, f32), to: (f32, f32)) -> f32 {
+    -(to.0 - from.0).atan2(to.1 - from.1).to_degrees()
+}
+
 /// Joint angles in degrees, clockwise on screen; limbs hang straight
 /// down at 0. Index 0 is the limb on the viewer's left.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -55,6 +67,9 @@ pub(super) struct Rig {
     pub bob: f32,
     /// Horizontal offset in canvas units, toward the side she faces.
     pub shift: f32,
+    /// Seen from the side (facing right before mirroring): index 0 is her
+    /// far limb, drawn behind her.
+    pub profile: bool,
     /// (shoulder, elbow).
     pub arms: [(f32, f32); 2],
     /// (hip, knee).
@@ -69,6 +84,7 @@ impl Rig {
             tilt: 0.0,
             bob: 0.0,
             shift: 0.0,
+            profile: false,
             arms: [(8.0, -4.0), (-8.0, 4.0)],
             legs: [(3.0, 0.0), (-3.0, 0.0)],
         }
@@ -86,55 +102,40 @@ impl Rig {
         let stand = Self::standing(expression);
         match pose {
             Pose::Stand => stand,
-            // Facing right, a forward swing is counter-clockwise.
+            // In profile, facing right: a forward swing is
+            // counter-clockwise. Index 0 is the far limb.
             Pose::Walk(frame) => {
                 let (legs, arms, bob) = match frame % 4 {
                     0 => (
-                        [(-18.0, 0.0), (16.0, 24.0)],
-                        [(14.0, -8.0), (-14.0, -10.0)],
+                        [(18.0, 22.0), (-22.0, 4.0)],
+                        [(-20.0, -14.0), (22.0, -6.0)],
                         0.0,
                     ),
                     1 => (
-                        [(-2.0, 0.0), (4.0, 18.0)],
-                        [(4.0, -4.0), (-4.0, -4.0)],
-                        -2.0,
+                        [(4.0, 26.0), (-2.0, 0.0)],
+                        [(-6.0, -8.0), (6.0, -4.0)],
+                        -2.5,
                     ),
                     2 => (
-                        [(16.0, 24.0), (-18.0, 0.0)],
-                        [(-14.0, -10.0), (14.0, -8.0)],
+                        [(-22.0, 4.0), (18.0, 22.0)],
+                        [(22.0, -6.0), (-20.0, -14.0)],
                         0.0,
                     ),
                     _ => (
-                        [(4.0, 18.0), (-2.0, 0.0)],
-                        [(-4.0, -4.0), (4.0, -4.0)],
-                        -2.0,
+                        [(-2.0, 0.0), (4.0, 26.0)],
+                        [(6.0, -4.0), (-6.0, -8.0)],
+                        -2.5,
                     ),
                 };
                 Self {
                     legs,
                     arms,
                     bob,
+                    profile: true,
                     ..stand
                 }
             }
-            Pose::Climb(frame) => {
-                let (arms, legs) = if frame % 2 == 0 {
-                    (
-                        [(172.0, -18.0), (-150.0, 30.0)],
-                        [(-12.0, 34.0), (6.0, 0.0)],
-                    )
-                } else {
-                    (
-                        [(150.0, -30.0), (-172.0, 18.0)],
-                        [(-6.0, 0.0), (12.0, -34.0)],
-                    )
-                };
-                Self {
-                    arms,
-                    legs,
-                    ..stand
-                }
-            }
+            Pose::Climb { frame, pole } => Self::climbing(frame, pole, expression),
             Pose::Fall => Self {
                 expression: Expression::Surprised,
                 arms: [(150.0, -25.0), (-150.0, 25.0)],
@@ -150,32 +151,30 @@ impl Rig {
             },
             Pose::Pull { heaving, row } => Self::pulling(heaving, row, expression),
             Pose::Peer => Self {
-                lean: 10.0,
-                tilt: 10.0,
-                arms: [(12.0, -6.0), (-128.0, -96.0)],
+                lean: 14.0,
+                tilt: 12.0,
+                profile: true,
+                arms: [(18.0, -10.0), (-118.0, -100.0)],
+                legs: [(10.0, 6.0), (-6.0, 0.0)],
                 ..stand
             },
         }
     }
 
-    /// Pulling a line on box row `row`: body shifted toward the line and
-    /// leaning back, both hands reaching the box edge at that row (a
-    /// standing image spans ~4.5 rows of the canvas's 160 units).
+    /// Pulling a line on box row `row`, in profile facing it: leaning
+    /// back, both hands reaching the box edge at that row.
     fn pulling(heaving: bool, row: u8, expression: Expression) -> Self {
-        const ROW_UNITS: f32 = CANVAS_H / 4.5;
-        let shift = 16.0;
+        // Her shoulders sit mid-box in profile and her arms are short:
+        // shift her toward the line (leaning back keeps her face inside
+        // the box) so her hands meet its edge.
+        let shift = 22.0;
         let target = (CANVAS_W, (f32::from(row) + 0.5) * ROW_UNITS);
-        let aim = |shoulder: f32| {
-            let dx = target.0 - (shoulder + shift);
-            let dy = target.1 - SHOULDER_Y;
-            -dx.atan2(dy).to_degrees()
-        };
-        // Facing right, the leading leg braces forward (towards the line,
-        // counter-clockwise) and the trailing one bends behind her.
+        let arm = |i: usize| aim((P_SHOULDERS[i] + shift, P_SHOULDER_Y), target);
+        // The leading leg braces forward, the trailing one bends behind.
         let (lean, legs) = if heaving {
-            (-16.0, [(20.0, 24.0), (-30.0, 0.0)])
+            (-16.0, [(26.0, 26.0), (-30.0, 0.0)])
         } else {
-            (-8.0, [(12.0, 10.0), (-18.0, 0.0)])
+            (-8.0, [(14.0, 12.0), (-18.0, 0.0)])
         };
         Self {
             expression,
@@ -183,7 +182,42 @@ impl Rig {
             tilt: -4.0,
             bob: 0.0,
             shift,
-            arms: [(aim(SHOULDERS[0]) + 6.0, 0.0), (aim(SHOULDERS[1]), 0.0)],
+            profile: true,
+            arms: [(arm(0) + 4.0, 0.0), (arm(1), 0.0)],
+            legs,
+        }
+    }
+
+    /// Climbing a pole `pole` cells ahead of her (in profile, facing it):
+    /// both hands on the pole, one high and one low, alternating; the
+    /// knee on the high hand's side lifted against it.
+    fn climbing(frame: u8, pole: i8, expression: Expression) -> Self {
+        let cell = CANVAS_W / 5.0;
+        let pole_x = (CANVAS_W / 2.0 + f32::from(pole) * cell).clamp(58.0, CANVAS_W - 2.0);
+        let shift = if pole <= 0 { 0.0 } else { 6.0 };
+        // Her arms are short (chibi): aim the high hand nearly straight
+        // up and the low one at her waist so the alternation reads.
+        let (high, low) = (-20.0, 100.0);
+        let reach = |i: usize, y: f32| aim((P_SHOULDERS[i] + shift, P_SHOULDER_Y), (pole_x, y));
+        let (arms, legs) = if frame.is_multiple_of(2) {
+            (
+                [(reach(0, low), 0.0), (reach(1, high), 0.0)],
+                [(6.0, 0.0), (-62.0, 78.0)],
+            )
+        } else {
+            (
+                [(reach(0, high), 0.0), (reach(1, low), 0.0)],
+                [(-62.0, 78.0), (6.0, 0.0)],
+            )
+        };
+        Self {
+            expression,
+            lean: 6.0,
+            tilt: -6.0,
+            bob: 0.0,
+            shift,
+            profile: true,
+            arms,
             legs,
         }
     }
@@ -217,39 +251,61 @@ pub(super) fn scene(rig: &Rig, facing: Facing, line: &str) -> String {
         Facing::Right => String::new(),
         Facing::Left => format!(r#" transform="translate({CANVAS_W} 0) scale(-1 1)""#),
     };
-    let legs: String = (0..2)
-        .map(|i| {
-            limb(
-                (HIPS[i], HIP_Y),
-                rig.legs[i],
-                "leg-upper",
-                "leg-lower",
-                THIGH,
-            )
-        })
-        .collect();
-    let arms: Vec<String> = (0..2)
-        .map(|i| {
-            limb(
-                (SHOULDERS[i], SHOULDER_Y),
-                rig.arms[i],
-                "arm-upper",
-                "arm-lower",
-                UPPER_ARM,
-            )
-        })
-        .collect();
-    format!(
-        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {CANVAS_W} {CANVAS_H}" color="{line}">{PARTS}<g{mirror}><g transform="translate({shift} {bob})">{legs}<g transform="rotate({lean} 50 {HIP_Y})"><use href="#skirt"/><use href="#torso"/><g transform="rotate({tilt} {nx} {ny})"><use href="#hair-back"/><use href="#face"/><use href="#{face}"/><use href="#hair-front"/></g>{arm0}{arm1}</g></g></g></svg>"##,
-        bob = rig.bob,
-        shift = rig.shift,
-        lean = rig.lean,
-        arm0 = arms[0],
-        arm1 = arms[1],
+    let (shoulders, shoulder_y, hips, prefix) = if rig.profile {
+        (P_SHOULDERS, P_SHOULDER_Y, P_HIPS, "p-")
+    } else {
+        (SHOULDERS, SHOULDER_Y, HIPS, "")
+    };
+    let leg = |i: usize| {
+        limb(
+            (hips[i], HIP_Y),
+            rig.legs[i],
+            "leg-upper",
+            "leg-lower",
+            THIGH,
+        )
+    };
+    let arm = |i: usize| {
+        limb(
+            (shoulders[i], shoulder_y),
+            rig.arms[i],
+            "arm-upper",
+            "arm-lower",
+            UPPER_ARM,
+        )
+    };
+    let head = format!(
+        r##"<g transform="rotate({tilt} {nx} {ny})"><use href="#{prefix}hair-back"/><use href="#{prefix}face"/><use href="#{prefix}{face}"/><use href="#{prefix}hair-front"/></g>"##,
         tilt = rig.tilt,
         nx = NECK.0,
         ny = NECK.1,
         face = rig.expression.id(),
+    );
+    // Frontal: both arms over everything (hands can reach past the
+    // head). Profile: far limbs behind the body, near limbs in front.
+    let body = if rig.profile {
+        format!(
+            r##"{far_leg}{near_leg}<g transform="rotate({lean} 50 {HIP_Y})">{far_arm}<use href="#p-skirt"/><use href="#p-torso"/>{head}{near_arm}</g>"##,
+            far_leg = leg(0),
+            near_leg = leg(1),
+            lean = rig.lean,
+            far_arm = arm(0),
+            near_arm = arm(1),
+        )
+    } else {
+        format!(
+            r##"{leg0}{leg1}<g transform="rotate({lean} 50 {HIP_Y})"><use href="#skirt"/><use href="#torso"/>{head}{arm0}{arm1}</g>"##,
+            leg0 = leg(0),
+            leg1 = leg(1),
+            lean = rig.lean,
+            arm0 = arm(0),
+            arm1 = arm(1),
+        )
+    };
+    format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {CANVAS_W} {CANVAS_H}" color="{line}">{PARTS}<g{mirror}><g transform="translate({shift} {bob})">{body}</g></g></svg>"##,
+        shift = rig.shift,
+        bob = rig.bob,
     )
 }
 
@@ -294,8 +350,14 @@ mod tests {
             out.push(("walk", Rig::for_pose(Pose::Walk(frame), Face::Vacant)));
         }
         out.extend([
-            ("climb", Rig::for_pose(Pose::Climb(0), Face::Vacant)),
-            ("climb", Rig::for_pose(Pose::Climb(1), Face::Vacant)),
+            (
+                "climb",
+                Rig::for_pose(Pose::Climb { frame: 0, pole: 3 }, Face::Vacant),
+            ),
+            (
+                "climb",
+                Rig::for_pose(Pose::Climb { frame: 1, pole: 3 }, Face::Vacant),
+            ),
             ("fall", Rig::for_pose(Pose::Fall, Face::Vacant)),
             ("dazed", Rig::for_pose(Pose::Dazed, Face::Vacant)),
             ("peer", Rig::for_pose(Pose::Peer, Face::Vacant)),

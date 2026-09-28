@@ -580,10 +580,20 @@ Four visual layers, from the app outward:
   5×4-cell box (one row taller when standing). Dark outlines, muted
   fills; at 1× she reads right, at full resolution she looks like a
   poseable doll.
-- **Poses**: stand, blink, four walk frames, two climb frames, fall,
-  dazed, peer, look (surprised), and a two-frame wave. Expressions:
-  vacant (flat sleepy lids), blink, surprised, smile, dizzy. Facing left
-  mirrors the scene.
+- **Two views.** *Frontal* (her vacant stare at the viewer) for
+  standing, looking, falling, dazed and waving; *profile* for walking,
+  pulling, peering and climbing, so she walks with a real stride instead
+  of crab-walking. The profile has its own head (the bob covering the
+  back of her head, the fringe, one sleepy eye), torso (the sailor
+  collar's square flap on her back, the neckerchief in front) and skirt;
+  far limbs are drawn behind her body, near limbs in front.
+- **Poses**: stand, blink, four walk frames, two climb frames (in
+  profile, facing the pole: one hand up beside her head, the other on the
+  pole at her waist, the high-hand knee lifted; the pole's position is
+  carried on the climb link), fall, dazed, peer, pull (brace and heave,
+  hands at the box edge on the line's row), look (surprised), and a
+  two-frame wave. Expressions: vacant (flat sleepy lids), blink,
+  surprised, smile, dizzy, in both views. Facing left mirrors the scene.
 - **Placement**: kitty unicode placeholders via ratatui-image, which
   transmits each image once and afterwards only places it. Frames are
   cached per (look, facing, covered lines, clip, cell size), up to 256.

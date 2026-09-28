@@ -20,8 +20,12 @@ pub(super) enum Pose {
     Stand,
     /// Walk cycle frame 0–3.
     Walk(u8),
-    /// Climb frame 0–1 (hands alternate).
-    Climb(u8),
+    /// Climb frame 0–1 (hands alternate), with the pole `pole` cells to
+    /// the side she faces (0 = in front of her).
+    Climb {
+        frame: u8,
+        pole: i8,
+    },
     Fall,
     Dazed,
     /// Peering over the edge she faces.
@@ -77,7 +81,7 @@ fn rows(pose: Pose) -> ([&'static str; 4], bool) {
     match pose {
         Pose::Stand => (STAND, true),
         Pose::Walk(frame) => (WALK[usize::from(frame % 4)], false),
-        Pose::Climb(frame) => (CLIMB[usize::from(frame % 2)], true),
+        Pose::Climb { frame, .. } => (CLIMB[usize::from(frame % 2)], true),
         Pose::Fall => (FALL, false),
         Pose::Dazed => (DAZED, false),
         Pose::Peer => (PEER, false),
@@ -208,8 +212,8 @@ mod tests {
             Pose::Walk(1),
             Pose::Walk(2),
             Pose::Walk(3),
-            Pose::Climb(0),
-            Pose::Climb(1),
+            Pose::Climb { frame: 0, pole: 2 },
+            Pose::Climb { frame: 1, pole: 0 },
             Pose::Fall,
             Pose::Dazed,
             Pose::Peer,

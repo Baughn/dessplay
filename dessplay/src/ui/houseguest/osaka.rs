@@ -119,6 +119,8 @@ pub(super) struct Osaka {
     task: Option<Pull>,
     /// A pull on another floor she's making her way towards.
     goal: Option<Pull>,
+    /// The pole she's climbing (column).
+    pole: i32,
     /// Layer changes for the next paint to apply.
     ops: Vec<LayerOp>,
 }
@@ -137,6 +139,7 @@ impl Osaka {
             watch_x: x,
             task: None,
             goal: None,
+            pole: x,
             ops: Vec::new(),
         };
         osaka.act_due = osaka.first_due(now);
@@ -357,6 +360,11 @@ impl Osaka {
                 match then {
                     Some(link) if link.route == Route::Climb => {
                         let to_y = terrain.platforms.get(link.to).map_or(self.y, |p| p.y);
+                        // She faces the pole and climbs it.
+                        self.pole = link.pole;
+                        if link.pole != self.x {
+                            self.facing = toward(self.x, link.pole);
+                        }
                         self.set(Act::Climb { to_y }, at);
                     }
                     Some(link) => self.set(
@@ -726,6 +734,13 @@ impl Osaka {
         (sprite::cells(pose, self.facing, face), bubble)
     }
 
+    fn facing_sign(&self) -> i32 {
+        match self.facing {
+            Facing::Left => -1,
+            Facing::Right => 1,
+        }
+    }
+
     /// Whether she is standing on a floor (not climbing or falling), so
     /// her line art includes the floor under her feet.
     pub fn standing(&self) -> bool {
@@ -746,7 +761,11 @@ impl Osaka {
             Act::SpaceOut { .. } => (Pose::Stand, Face::Vacant, Some(Bubble::Dots)),
             Act::Walk { .. } => (Pose::Walk(self.x.rem_euclid(4) as u8), Face::Vacant, None),
             Act::Peer { .. } => (Pose::Peer, Face::Vacant, None),
-            Act::Climb { .. } => (Pose::Climb(self.y.rem_euclid(2) as u8), Face::Vacant, None),
+            Act::Climb { .. } => {
+                let pole = ((self.pole - self.x) * self.facing_sign()).clamp(-3, 3) as i8;
+                let frame = self.y.rem_euclid(2) as u8;
+                (Pose::Climb { frame, pole }, Face::Vacant, None)
+            }
             Act::Fall { .. } => (Pose::Fall, Face::Surprised, None),
             Act::Dazed { .. } => (Pose::Dazed, Face::Vacant, None),
             Act::Pull { heaving, .. } => {

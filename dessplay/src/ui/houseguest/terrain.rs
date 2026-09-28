@@ -112,6 +112,8 @@ pub(super) struct Link {
     pub to: usize,
     pub x: i32,
     pub route: Route,
+    /// The pole's column, for a climb (her hands go on it).
+    pub pole: i32,
 }
 
 /// The walkable world of one frame.
@@ -282,25 +284,29 @@ impl Terrain {
                 if lo > hi {
                     continue;
                 }
-                // A pole within reach of a standing spot both platforms
-                // share, running unbroken between them.
-                let climb = (lo - HALF..=hi + HALF).find_map(|column| {
+                // A pole within reach — in her box or just beside it — of
+                // a standing spot both platforms share, running unbroken
+                // between them.
+                let climb = (lo - HALF - 1..=hi + HALF + 1).find_map(|column| {
                     let x = column.clamp(lo, hi);
                     let unbroken = (upper.y + 1..lower.y).all(|row| pole(column, row));
-                    (unbroken && (upper.y + 1..=lower.y).all(|row| self.clear(x, row))).then_some(x)
+                    (unbroken && (upper.y + 1..=lower.y).all(|row| self.clear(x, row)))
+                        .then_some((x, column))
                 });
-                if let Some(x) = climb {
+                if let Some((x, pole)) = climb {
                     links.push(Link {
                         from: a,
                         to: b,
                         x,
                         route: Route::Climb,
+                        pole,
                     });
                     links.push(Link {
                         from: b,
                         to: a,
                         x,
                         route: Route::Climb,
+                        pole,
                     });
                 }
             }
@@ -318,6 +324,7 @@ impl Terrain {
                         to,
                         x,
                         route: Route::Drop { over },
+                        pole: x,
                     });
                 }
             }
