@@ -1423,7 +1423,7 @@ this section states what is built.
   switching the setting off removes her at once. A terminal resize
   re-anchors her (she falls if her floor went away); during a dissolve it
   ends the dissolve immediately. Focus changes are not activity.
-- **Setting** (F3 → Playback): *Houseguest* — after 1, 2, 5 (default),
+- **Setting** (F3 → Playback): *Houseguest* — after 1 (default), 2, 5,
   10, or 30 idle minutes, or Off. Local only.
 - Timing uses the UI thread's monotonic clock and her behaviour comes
   from a per-visit seeded generator; she redraws only when her pose

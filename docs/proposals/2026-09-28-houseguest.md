@@ -81,7 +81,7 @@ draw_frame(adapter.raw_mut(), |frame| {
 ## Idle and activity
 
 **A visit may begin** when all hold for the configured delay (default
-5 minutes): not busy, no local input, no new chat or IRC line, terminal
+1 minute): not busy, no local input, no new chat or IRC line, terminal
 at least 60×18.
 
 **Activity** (ends a visit with the goodbye): any local key, mouse, or
@@ -749,7 +749,7 @@ never restarts or extends it; a resize ends it at once.
 
 Built, under F3 → Playback, local only:
 
-- **Houseguest**: After 1, 2, 5 (default), 10 or 30 idle minutes, or
+- **Houseguest**: After 1 (default), 2, 5, 10 or 30 idle minutes, or
   Off.
 
 *Planned with the ledger (phase 3):* Full / Visits only (no persisted

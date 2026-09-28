@@ -29,6 +29,8 @@ Add new days at the top. Add new entries at the bottom of existing days.
 - Changed: The houseguest now follows her moods: she gets sleepier the
   longer she stays, restless after a while, keen to tidy when
   there's mess, and mischievous now and then.
+- Changed: The houseguest now visits after one idle minute by default
+  (was five).
 
 ## 2026-09-26
 

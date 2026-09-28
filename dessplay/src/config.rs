@@ -370,7 +370,7 @@ pub enum Houseguest {
 
 impl Default for Houseguest {
     fn default() -> Self {
-        Houseguest::After(Duration::from_secs(5 * 60))
+        Houseguest::After(Duration::from_secs(60))
     }
 }
 
@@ -607,7 +607,7 @@ pub struct Settings {
     /// Local cosmetic injury presentation for the waiting-room expedition.
     pub roguelike_effects: RoguelikeEffects,
     /// Whether and when the idle houseguest visits (proposal
-    /// 2026-09-28-houseguest). Default: after five idle minutes.
+    /// 2026-09-28-houseguest). Default: after one idle minute.
     pub houseguest: Houseguest,
     /// Sort order for the All Series browser mode (toggled with `s`).
     /// Local-only display preference; persisted across sessions.
@@ -1122,7 +1122,7 @@ mod tests {
         let storage = Storage::open_in_memory().unwrap();
         assert_eq!(
             storage.load_settings().unwrap().houseguest,
-            Houseguest::After(Duration::from_secs(300))
+            Houseguest::After(Duration::from_secs(60))
         );
         let mut seen = vec![];
         let mut value = Houseguest::Off;
