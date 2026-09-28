@@ -168,7 +168,8 @@ impl Rig {
             Pose::LieBack(frame) => Self {
                 turn: -90.0,
                 scale: 0.74,
-                shift: 16.0,
+                // Head towards the back edge: keep it inside the box.
+                shift: 30.0,
                 bob: 17.0,
                 tilt: -6.0,
                 profile: true,
@@ -560,39 +561,36 @@ mod tests {
         let row_h = cell(*scales.last().unwrap()).1 * 6;
         let mut sheet = image::RgbaImage::from_pixel(
             col_w * 2,
-            row_h * poses.len() as u32 / 2 + row_h,
+            row_h * poses.len() as u32,
             image::Rgba([13, 17, 23, 255]),
         );
+        // Each pose facing right (left column) and left (right column).
         for (index, (_, rig)) in poses.iter().enumerate() {
-            let (col, row) = (index as u32 % 2, index as u32 / 2);
-            let mut x0 = col * col_w;
-            let y0 = row * row_h;
-            for &s in &scales {
-                let (w, h) = cell(s);
-                let facing = if index % 3 == 2 {
-                    Facing::Left
-                } else {
-                    Facing::Right
-                };
-                let image = render(rig, facing, LINE, w * 5, h * 4).unwrap();
-                let (bx, by) = (x0 + w, y0 + row_h - h * 5);
-                // Cell grid (faint) and the floor border line mid-row.
-                for gy in 0..=4 {
-                    for gx in 0..w * 5 {
-                        sheet.put_pixel(bx + gx, by + gy * h, image::Rgba([40, 46, 56, 255]));
+            for (col, facing) in [(0u32, Facing::Right), (1, Facing::Left)] {
+                let row = index as u32;
+                let mut x0 = col * col_w;
+                let y0 = row * row_h;
+                for &s in &scales {
+                    let (w, h) = cell(s);
+                    let image = render(rig, facing, LINE, w * 5, h * 4).unwrap();
+                    let (bx, by) = (x0 + w, y0 + row_h - h * 5);
+                    for gy in 0..=4 {
+                        for gx in 0..w * 5 {
+                            sheet.put_pixel(bx + gx, by + gy * h, image::Rgba([40, 46, 56, 255]));
+                        }
                     }
-                }
-                for gx in 0..w * 7 {
-                    for t in 0..s {
-                        sheet.put_pixel(
-                            x0 + gx,
-                            by + h * 4 + h / 2 + t,
-                            image::Rgba([139, 148, 158, 255]),
-                        );
+                    for gx in 0..w * 7 {
+                        for t in 0..s {
+                            sheet.put_pixel(
+                                x0 + gx,
+                                by + h * 4 + h / 2 + t,
+                                image::Rgba([139, 148, 158, 255]),
+                            );
+                        }
                     }
+                    image::imageops::overlay(&mut sheet, &image, i64::from(bx), i64::from(by));
+                    x0 += w * 7;
                 }
-                image::imageops::overlay(&mut sheet, &image, i64::from(bx), i64::from(by));
-                x0 += w * 7;
             }
         }
         sheet.save(path).unwrap();
