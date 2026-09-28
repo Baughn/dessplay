@@ -135,10 +135,14 @@ Terrain is **read from the rendered cells** every frame she is on screen
 
 **Generalising the rule for later phases** (*planned*): her image may
 cover only what it can redraw. Blank cells, lines, and **her own
-furnishings** (we render those, so they can be composited into her image
-when she stands in front of them) qualify; text does not. Text she
-carries or pushes stays in text cells beside her box, her hands drawn at
-the box edge.
+furnishings** (we render those, so they can be composited into her
+image) qualify; text does not. Text she carries or pushes stays in text
+cells beside her box, her hands drawn at the box edge.
+
+**Depth order**: where she and a prop overlap, one image composites
+both, in whichever order the scene needs — usually she stands in front,
+but some scenes put her *behind* or *inside* a prop: asleep in bed under
+the covers, in the shower, legs under the kotatsu.
 
 ## The room model (*planned*, phase 3)
 
@@ -218,10 +222,9 @@ Borrowed from the original screensaver:
 1. Sometimes she **leaves for her part-time job** (walks off an edge);
    the room stands empty-but-furnished, and she returns later with a
    shopping bag.
-2. Occasionally she sits before the TV and **Chiyo-chichi's shopping
-   channel** comes on: a round orange cat head advertising one item
-   ("Hello everynyan. Today: sofa."). She buys it. (Where the TV lives is
-   an [open question](#open-questions).)
+2. Occasionally she sits before her TV (a piece of furniture) and
+   **Chiyo-chichi's shopping channel** comes on: a round orange cat head
+   advertising one item ("Hello everynyan. Today: sofa."). She buys it.
 3. A box slides in from the edge; she unpacks it; it becomes a prop, and
    **each prop unlocks scenes** (sofa → naps, TV-watching from the sofa;
    desk → homework; bed → proper sleep; bookshelf → reading; fridge →
@@ -401,7 +404,9 @@ false negatives.
 
 ### The TV
 
-Where the TV is drawn is an [open question](#open-questions).
+The TV is **one of her furnishings** (the Player Status block is far too
+wide and short to read as a screen, and it's protected anyway). It is
+among the first things she owns, since the shopping channel plays on it.
 
 36. **Watching TV** — sits cross-legged before it; static, or harvested
     title letters scrolling. [C]
@@ -603,8 +608,10 @@ modifiers only, never background.
 ### Furnishings (*planned*, phase 3)
 
 Coloured, unfilled line art, rendered through the same pipeline as her,
-occupying blank cells only. When she stands in front of a prop, her
-image composites the prop's lines so it isn't cut out behind her box.
+occupying blank cells only. Where she and a prop overlap, one image
+composites both in the scene's depth order (in front of the sofa; under
+the bed covers; behind the shower curtain; legs under the kotatsu), so
+neither is cut out by the other's placeholders. The TV is furniture.
 
 ### Building from harvested letters (*planned*)
 
@@ -768,23 +775,11 @@ version mismatch and unknown items.
 
 ## Open questions
 
-1. **Where does the TV live?** The Player Status block was going to be
-   her TV, but it is protected (she never covers it, and in line-art mode
-   she couldn't draw into it without hiding its text). Options: the TV
-   becomes one of her furnishings (the shopping channel plays on a prop
-   she owns); or the status interior may show the TV while idle, with its
-   real text returning on any change.
-2. **Furniture in front of her?** Compositing props into her image
-   handles her standing in front of furniture. Should she ever stand
-   *behind* furniture (the kotatsu covers her legs), which means
-   compositing the other way?
-3. **Image lifetime.** ratatui-image never deletes images from the
-   terminal. The frame cache bounds how many distinct images a session
-   makes, and Ghostty evicts old ones past its storage limit; if a cached
-   pose ever renders blank after a long session, the fix is to delete
-   images when they leave the cache.
-4. **tmux.** Kitty passthrough inside tmux is ratatui-image's behaviour
-   and is untested here.
+None open. Noted for later: **image lifetime** — ratatui-image never
+deletes images from the terminal; the frame cache bounds how many
+distinct images a session makes and Ghostty evicts old ones past its
+storage limit. If a cached pose ever renders blank after a long session,
+delete images as they leave the cache.
 
 ## Decisions
 
@@ -810,6 +805,12 @@ Settled with the user, 2026-09-28:
    redrawn stretch is accepted as a highlight.
 10. **The goodbye** takes ~3.75 s (2.5 s felt slightly too fast) and ends
     in a letter burst rather than a stream of per-frame images.
+11. **The TV is furniture**: the Player Status block is far too wide and
+    short to work as a screen.
+12. **Depth order both ways**: props can be in front of her too (bed
+    covers, shower, kotatsu), composited into one image.
+13. **tmux is out of scope**: dessplay's core use is playing video, so it
+    runs on a local terminal.
 
 ## Rejected alternatives
 
