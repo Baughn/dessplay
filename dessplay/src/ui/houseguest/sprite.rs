@@ -8,7 +8,7 @@ pub(super) const WIDTH: i32 = 5;
 pub(super) const HEIGHT: i32 = 4;
 
 /// Which way she faces.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub(super) enum Facing {
     Left,
     Right,

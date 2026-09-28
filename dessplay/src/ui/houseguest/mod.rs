@@ -18,6 +18,7 @@ mod dissolve;
 mod graphics;
 mod idle;
 mod layer;
+mod ledger;
 mod osaka;
 mod room;
 mod scenes;
@@ -35,6 +36,7 @@ use cells::{Ink, put};
 use dissolve::{Dissolve, Frozen};
 use graphics::{Graphics, Look};
 pub use idle::{Busy, ChatMark, IdleView, grow};
+pub use ledger::Ledger;
 use osaka::Osaka;
 pub use room::{Furniture, Nook};
 use room::{Home, Shown};
@@ -134,17 +136,31 @@ pub struct Guest {
     cue: Option<stage::Scene>,
     /// What came of the last cue.
     note: Option<Result<String, String>>,
-    /// What she owns; it outlives her visits.
-    home: Home,
+    /// Her record: her home, and what her visits are seeded from.
+    ledger: Ledger,
+    /// The ledger changed since it was last handed out for saving.
+    unsaved: bool,
+    /// Whether it's saved at all (not when the stored one couldn't be
+    /// read: that one is left alone).
+    persist: bool,
     /// A piece the stage gave her, placed at the next paint.
     gift: Option<Furniture>,
 }
 
 impl Guest {
-    /// A guest whose behaviour is fully determined by `seed`.
+    /// A guest whose behaviour is fully determined by `seed`, meeting
+    /// her for the first time.
     pub fn new(seed: u64) -> Self {
+        Self::restore(Ledger::new(seed))
+    }
+
+    /// The guest `ledger` records.
+    pub fn restore(ledger: Ledger) -> Self {
         Self {
-            rng: Rng(seed),
+            rng: Rng(ledger.visit_seed(ledger.visits)),
+            ledger,
+            unsaved: false,
+            persist: true,
             state: State::Absent,
             open: false,
             delay: None,
@@ -154,8 +170,31 @@ impl Guest {
             graphics: None,
             cue: None,
             note: None,
-            home: Home::default(),
             gift: None,
+        }
+    }
+
+    /// Never hand out the ledger for saving (the stored one couldn't be
+    /// read, and is kept as it is).
+    pub fn keep_unsaved(&mut self) {
+        self.persist = false;
+    }
+
+    /// Her ledger, when it changed since last asked and is to be saved.
+    pub fn ledger_to_save(&mut self) -> Option<Ledger> {
+        (std::mem::take(&mut self.unsaved) && self.persist).then(|| self.ledger.clone())
+    }
+
+    /// "Osaka moved out": her home and record are gone; the next visit
+    /// is a first meeting, drawn from `seed`. She leaves at once.
+    pub fn move_out(&mut self, seed: u64) {
+        tracing::info!("houseguest moved out");
+        self.ledger = Ledger::new(seed);
+        self.unsaved = true;
+        self.persist = true;
+        self.gift = None;
+        if matches!(self.state, State::Visiting(_) | State::Arriving) {
+            self.state = State::Absent;
         }
     }
 
@@ -169,7 +208,7 @@ impl Guest {
     pub fn wishlist(&self) -> Option<Furniture> {
         Furniture::ALL
             .into_iter()
-            .find(|&item| !self.home.owns(item))
+            .find(|&item| !self.ledger.home.owns(item))
     }
 
     /// The stage: have her do `scene` at the next paint, somewhere it
@@ -181,7 +220,7 @@ impl Guest {
             && let Some(&item) = Furniture::ALL
                 .iter()
                 .find(|&&item| room::Use::of(item).contains(&what))
-            && !self.home.owns(item)
+            && !self.ledger.home.owns(item)
         {
             self.gift = Some(item);
         }
@@ -314,9 +353,13 @@ impl Guest {
             self.state = State::Absent;
             if size.0 >= MIN_WIDTH && size.1 >= MIN_HEIGHT {
                 let terrain = Terrain::read(buf, &view.protected, self.graphics.is_some());
+                // Each visit draws from its own seed.
+                self.rng = Rng(self.ledger.visit_seed(self.ledger.visits));
                 if let Some(osaka) = Osaka::arrive(now, &terrain, i32::from(size.0), &mut self.rng)
                 {
-                    tracing::info!("houseguest arrived");
+                    self.ledger.visits += 1;
+                    self.unsaved = true;
+                    tracing::info!(visit = self.ledger.visits, "houseguest arrived");
                     self.state = State::Visiting(Box::new(Visit {
                         osaka,
                         terrain,
@@ -394,8 +437,9 @@ impl Guest {
                 // ones, moved text, and her; what doesn't fit is in the
                 // closet this frame. Placed, it's solid to text; she walks
                 // in front of it.
+                let before = self.ledger.home.clone();
                 visit.shown = furnish(
-                    &mut self.home,
+                    &mut self.ledger.home,
                     &mut self.gift,
                     &mut self.note,
                     buf,
@@ -403,6 +447,9 @@ impl Guest {
                     visit,
                     &mut self.rng,
                 );
+                if self.ledger.home != before {
+                    self.unsaved = true;
+                }
                 if let Some(item) = visit.osaka.using()
                     && !visit.shown.iter().any(|s| s.item == item)
                 {

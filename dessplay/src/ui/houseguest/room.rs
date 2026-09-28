@@ -16,7 +16,7 @@ use super::graphics::strokes;
 use super::sprite::Facing;
 
 /// A piece of furniture.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Furniture {
     /// A two-seat sofa (naps, TV from the sofa).
     Sofa,
@@ -108,7 +108,7 @@ fn mirror(c: char) -> char {
 }
 
 /// A quiet pane she may furnish (the chat is too busy).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Nook {
     /// The List (series), when short.
     List,
@@ -164,7 +164,7 @@ pub(super) struct Seat {
 
 /// Which room a piece belongs to. Panes are her rooms: all the pieces of
 /// one room stand in the same pane, and each pane holds one room.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub(super) enum RoomKind {
     Living,
     Bedroom,
@@ -273,7 +273,7 @@ impl Shown {
 }
 
 /// Everything she owns, and which pane each room is in.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub(super) struct Home {
     pub props: Vec<Prop>,
     pub rooms: Vec<(RoomKind, Nook)>,

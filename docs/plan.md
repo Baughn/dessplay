@@ -2007,6 +2007,17 @@ welcome; the only goal is "watching her is kind of fun".
   --lib use_sheet -- --ignored`; seated legs are their own parts). Stage
   scenes for each use give her the piece if she lacks it. No `Offers`
   struct yet: seats ride in `Chances`, so `decide()` still grew one loop.
+- **Step 5 done (2026-09-29): the ledger.** `houseguest/ledger.rs`:
+  `Ledger { master_seed, visits, home }`, JSON v1 under settings key
+  `houseguest`, unknown entries skipped, unreadable records kept (the
+  guest runs with `keep_unsaved`). `run.rs` loads it into
+  `Ui::houseguest_ledger`; the shell builds `Guest::restore` from it and
+  sends `UserAction::SaveHouseguest` whenever `ledger_to_save` has one.
+  F3 → Playback → "Osaka moved out" confirms, then `Msg::HouseguestMovedOut`
+  → `Ui::houseguest_moved_out` → `Guest::move_out`. Not yet recorded:
+  seen scenes and last-fired times (phase 4 rarity; `serde(default)`
+  makes adding them free). No changelog entry yet: until she can get
+  furniture on her own there's nothing for a user to keep.
 - **Pits fixed (2026-09-28, the user's call: all three).** Terrain
   links `Route::Clamber` (over a divider, floors sharing no standing
   spot) and `Route::Around` (out at one screen edge, back in at another);

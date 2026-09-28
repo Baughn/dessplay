@@ -344,7 +344,7 @@ proptest! {
         let nook = [Nook::List, Nook::Users, Nook::Playlist];
         for &(item, at, along, left) in &owned {
             // A second room offered a taken pane is refused, as in play.
-            let _ = guest.home.add(
+            let _ = guest.ledger.home.add(
                 nook[at],
                 room::Prop {
                     item: Furniture::ALL[item],
@@ -1538,7 +1538,7 @@ fn her_sofa_stands_in_a_quiet_pane_and_leaves_with_her() {
             (rect.x..rect.right()).any(|x| drawn(x, rect.bottom() - 1)),
             "graphics={graphics}: the sofa is on screen"
         );
-        assert!(guest.home.owns(Furniture::Sofa));
+        assert!(guest.ledger.home.owns(Furniture::Sofa));
         guest.activity(30_000);
         let end = run(
             &mut guest,
@@ -1552,7 +1552,7 @@ fn her_sofa_stands_in_a_quiet_pane_and_leaves_with_her() {
             "graphics={graphics}: the rain restores the frame"
         );
         // She still owns it next visit.
-        assert!(guest.home.owns(Furniture::Sofa));
+        assert!(guest.ledger.home.owns(Furniture::Sofa));
     }
 }
 
@@ -1600,7 +1600,7 @@ fn a_furnished_home_gets_used_and_stays_cheap() {
         assert_eq!(
             Furniture::ALL
                 .iter()
-                .filter(|&&item| guest.home.owns(item))
+                .filter(|&&item| guest.ledger.home.owns(item))
                 .count(),
             4,
             "seed {seed}: {:?}",
@@ -1721,7 +1721,7 @@ fn she_gets_out_of_a_pit_through_a_door() {
                     .platform_at(visit.osaka.x, visit.osaka.y)
                     .is_some();
         }
-        assert!(guest.home.owns(Furniture::Sofa));
+        assert!(guest.ledger.home.owns(Furniture::Sofa));
         assert!(out, "graphics={graphics}: still in the pit after {now} ms");
         assert!(doored || !graphics, "graphics={graphics}: out by a door");
     }
@@ -1775,4 +1775,66 @@ fn she_steps_out_and_walks_back_in_on_her_feet() {
         }
         assert!(back, "graphics={graphics}: out {out}, back {back}");
     }
+}
+
+// ---- Her record ----
+
+/// Her home outlives the process: the ledger handed out for saving
+/// restores a guest who, on her next visit, has the same furniture in
+/// the same pane; each visit counts and draws from its own seed.
+#[test]
+fn her_home_outlives_a_restart() {
+    let (real, view) = home_screen();
+    let mut guest = Guest::new(4);
+    guest.cue(Scene::Arrive);
+    paint(&mut guest, &real, &view, 0);
+    guest.give(Furniture::Sofa);
+    paint(&mut guest, &real, &view, 0);
+    let ledger = guest.ledger_to_save().expect("changed");
+    assert!(guest.ledger_to_save().is_none(), "handed out once");
+    assert_eq!(ledger.visits, 1);
+    let State::Visiting(visit) = &guest.state else {
+        panic!("visiting");
+    };
+    let [before] = visit.shown[..] else {
+        panic!("{:?}", visit.shown);
+    };
+
+    // A restart: the record round-trips through its stored form.
+    let stored = Ledger::from_json(&ledger.to_json()).unwrap();
+    let mut guest = Guest::restore(stored);
+    guest.cue(Scene::Arrive);
+    paint(&mut guest, &real, &view, 0);
+    let State::Visiting(visit) = &guest.state else {
+        panic!("visiting again");
+    };
+    assert_eq!(visit.shown, [before], "the sofa where she left it");
+    let ledger = guest.ledger_to_save().expect("a new visit");
+    assert_eq!(ledger.visits, 2);
+    assert_ne!(ledger.visit_seed(0), ledger.visit_seed(1));
+}
+
+/// "Osaka moved out" wipes her home and record (and she leaves at once);
+/// a record that couldn't be read is never saved over.
+#[test]
+fn moving_out_wipes_her_record_and_an_unreadable_one_is_kept() {
+    let (real, view) = home_screen();
+    let mut guest = Guest::new(4);
+    guest.cue(Scene::Arrive);
+    paint(&mut guest, &real, &view, 0);
+    guest.give(Furniture::Sofa);
+    paint(&mut guest, &real, &view, 0);
+    let _ = guest.ledger_to_save();
+    guest.move_out(77);
+    assert!(!guest.present());
+    let ledger = guest.ledger_to_save().expect("the wipe is saved");
+    assert_eq!(ledger, Ledger::new(77));
+
+    let mut guest = Guest::new(4);
+    guest.keep_unsaved();
+    guest.cue(Scene::Arrive);
+    paint(&mut guest, &real, &view, 0);
+    guest.give(Furniture::Sofa);
+    paint(&mut guest, &real, &view, 0);
+    assert!(guest.ledger_to_save().is_none());
 }

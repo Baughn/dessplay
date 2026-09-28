@@ -137,6 +137,9 @@ pub enum Msg {
     /// Settings modal: the "Reset synced state" action row was
     /// activated (the modal path to [`UserAction::ResetSyncedState`]).
     ResetSyncedState,
+    /// "Osaka moved out" confirmed: the houseguest's home and record are
+    /// wiped.
+    HouseguestMovedOut,
     /// Settings modal: save these settings + media roots.
     SettingsSaved(Box<Settings>, Vec<PathBuf>),
     /// List edit modal: save this entry, plus the edited progress register
@@ -237,6 +240,7 @@ impl Msg {
             Msg::DirChosen(_) => "DirChosen",
             Msg::OpenDirPicker => "OpenDirPicker",
             Msg::ResetSyncedState => "ResetSyncedState",
+            Msg::HouseguestMovedOut => "HouseguestMovedOut",
             Msg::SettingsSaved(..) => "SettingsSaved",
             Msg::ListEntrySaved(..) => "ListEntrySaved",
             Msg::FocusNext => "FocusNext",
@@ -336,6 +340,8 @@ pub enum UserAction {
     SaveSettings(Box<Settings>, Vec<PathBuf>),
     /// Persist local layout drag proportions independently of application settings.
     SaveLayoutSettings(super::layout::LayoutSettings),
+    /// Persist the houseguest's record (local, never synced).
+    SaveHouseguest(super::houseguest::Ledger),
     /// Ask the server for an AniDB name search (results come back as a
     /// UI input).
     AniDbSearch {

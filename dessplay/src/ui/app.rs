@@ -133,6 +133,7 @@ fn log_action(action: &UserAction) {
         }
         UserAction::SaveSettings(..) => tracing::debug!("user action: SaveSettings"),
         UserAction::SaveLayoutSettings(..) => tracing::debug!("user action: SaveLayoutSettings"),
+        UserAction::SaveHouseguest(..) => tracing::trace!("user action: SaveHouseguest"),
         UserAction::AniDbSearch { query } => {
             tracing::debug!(%query, "user action: AniDbSearch");
         }
@@ -381,6 +382,11 @@ pub struct Ui {
     pointer_order: Vec<String>,
     pub(crate) layout_settings: super::layout::LayoutSettings,
     pub(crate) layout_settings_dirty: bool,
+    /// The houseguest's record as loaded at startup (`Err` when the stored
+    /// one couldn't be read); the shell takes it to build her.
+    pub(crate) houseguest_ledger: Option<Result<super::houseguest::Ledger, ()>>,
+    /// "Osaka moved out" was confirmed; the shell resets her.
+    pub(crate) houseguest_moved_out: bool,
     layout_source: String,
     layout_revision: String,
     split_regions: Vec<super::layout::SplitRegion>,
@@ -520,6 +526,8 @@ impl Ui {
             pointer_order: Vec::new(),
             layout_settings: Default::default(),
             layout_settings_dirty: false,
+            houseguest_ledger: None,
+            houseguest_moved_out: false,
             layout_source: String::new(),
             layout_revision: String::new(),
             split_regions: Vec::new(),
@@ -2553,6 +2561,11 @@ impl Ui {
             // The Settings action row's path to the same reset `/resync`
             // performs; the modal stays open (like OpenDirPicker's flow).
             Msg::ResetSyncedState => Some(UserAction::ResetSyncedState),
+            Msg::HouseguestMovedOut => {
+                tracing::info!("user action: Osaka moved out");
+                self.houseguest_moved_out = true;
+                None
+            }
             Msg::DirChosen(path) => {
                 self.pop_modal();
                 if let Some(Modal::Settings(settings)) = self.modals.last_mut() {

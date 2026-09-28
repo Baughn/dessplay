@@ -2024,6 +2024,25 @@ drawn in her image), so "ignoring what's there" only ever means the
 terrain between, never text. The sofa nap was made a lounging choice
 in the same change: answering sleepiness, it always lost to the bed.
 
+## Houseguest keeps a local record (2026-09-29)
+
+**Rule:** Her home, visit count and master seed live in one local JSON
+record (settings key `houseguest`), saved on change; an unreadable
+record is kept, not overwritten. See [design.md](design.md#houseguest).
+
+**Why:** A home is the point of phase 3, and it has to outlive the
+process. Local like the layout sizes: each client has its own Osaka,
+and syncing her would make one user's idle screen everyone's business.
+Unknown pieces are skipped rather than failing the record, so an older
+build reading a newer home loses a piece, not the home. A record it
+can't read at all might be a newer build's: overwriting it would lose
+someone's room for good, where starting afresh for one session costs
+nothing. Seeding each visit from `(master seed, visit number)` makes a
+visit reproducible from the record alone (the first visit's seed is
+the master seed itself, so seeded tests are unchanged). Rejected: a
+table in the synced store (not shared state); saving on exit only (a
+crash would lose the delivery that just happened).
+
 ## Houseguest chooses by needs among the top few (2026-09-28)
 
 **Rule:** Her next act is a weighted-random pick among the four

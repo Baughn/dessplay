@@ -433,12 +433,37 @@ pub fn run_ui_loop<A: TerminalAdapter>(
     // every cell.
     // The idle houseguest: a post-render overlay that reads each frame
     // and paints over it, never feeding back into `ui`.
-    let mut guest = super::houseguest::Guest::new(rand::random());
+    let mut guest = match ui.houseguest_ledger.take() {
+        Some(Ok(ledger)) => super::houseguest::Guest::restore(ledger),
+        None => super::houseguest::Guest::new(rand::random()),
+        Some(Err(())) => {
+            let mut guest = super::houseguest::Guest::new(rand::random());
+            guest.keep_unsaved();
+            guest
+        }
+    };
+    let mut ledger_unsent: Option<super::houseguest::Ledger> = None;
     if let Some(picker) = ui.image_picker() {
         guest.set_picker(picker);
     }
     let _ = draw(adapter, &mut ui, &mut renderer, &mut guest);
     loop {
+        if std::mem::take(&mut ui.houseguest_moved_out) {
+            guest.move_out(rand::random());
+        }
+        if let Some(ledger) = guest.ledger_to_save() {
+            ledger_unsent = Some(ledger);
+        }
+        if let Some(ledger) = ledger_unsent.take() {
+            match actions.try_send(UserAction::SaveHouseguest(ledger)) {
+                Ok(()) => {}
+                Err(mpsc::error::TrySendError::Full(UserAction::SaveHouseguest(ledger))) => {
+                    ledger_unsent = Some(ledger);
+                }
+                Err(mpsc::error::TrySendError::Full(_)) => {}
+                Err(mpsc::error::TrySendError::Closed(_)) => break,
+            }
+        }
         if ui.layout_settings_dirty {
             match actions.try_send(UserAction::SaveLayoutSettings(ui.layout_settings.clone())) {
                 Ok(()) => ui.layout_settings_dirty = false,

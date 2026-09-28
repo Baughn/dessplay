@@ -929,6 +929,15 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
             tracing::warn!(%error, "cannot restore layout sizes");
             Default::default()
         });
+    ui.houseguest_ledger = match crate::ui::houseguest::Ledger::load(&setup_storage) {
+        Ok(Some(ledger)) => Some(Ok(ledger)),
+        Ok(None) => None,
+        Err(error) => {
+            // Left as it is: she starts afresh, and saves nothing over it.
+            tracing::warn!(%error, "cannot restore the houseguest; not saving over it");
+            Some(Err(()))
+        }
+    };
     ui.set_layout_options(args.layout_options.clone());
     let (input_tx, input_rx) = crate::ui::delivery::channel();
     let (action_tx, mut action_rx) = mpsc::channel::<UserAction>(64);
@@ -952,6 +961,11 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
                 Some(UserAction::SaveLayoutSettings(saved)) => {
                     if let Err(error) = saved.save(&setup_storage) {
                         tracing::error!(%error, "saving layout sizes");
+                    }
+                }
+                Some(UserAction::SaveHouseguest(ledger)) => {
+                    if let Err(error) = ledger.save(&setup_storage) {
+                        tracing::error!(%error, "saving the houseguest");
                     }
                 }
                 Some(UserAction::SaveSettings(saved, roots)) => {
@@ -1767,6 +1781,11 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                         Some(UserAction::SaveLayoutSettings(saved)) => {
                             if let Err(error) = saved.save(&self.storage) {
                                 tracing::error!(%error, "saving layout sizes");
+                            }
+                        }
+                        Some(UserAction::SaveHouseguest(ledger)) => {
+                            if let Err(error) = ledger.save(&self.storage) {
+                                tracing::error!(%error, "saving the houseguest");
                             }
                         }
                         Some(UserAction::SaveSettings(saved, roots)) => {

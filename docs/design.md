@@ -1472,7 +1472,17 @@ this section states what is built.
   re-anchors her (she falls if her floor went away); during a dissolve it
   ends the dissolve immediately. Focus changes are not activity.
 - **Setting** (F3 → Playback): *Houseguest* — after 1 (default), 2, 5,
-  10, or 30 idle minutes, or Off. Local only.
+  10, or 30 idle minutes, or Off. Local only. Below it, *Osaka moved
+  out* (asks first) wipes her record: her home goes, and the next visit
+  is a first meeting.
+- **Her record** is local and never synced (the same tier as layout
+  sizes): her home (pieces, where each room is), the number of visits,
+  and a master seed; each visit's randomness is drawn from the master
+  seed and the visit's number. It's saved whenever it changes. Pieces
+  or rooms a build doesn't know are skipped; a record that can't be read
+  at all (malformed, another version) is left as it is and never saved
+  over — she starts afresh for that session
+  (why: [decisions](decisions.md#houseguest-keeps-a-local-record-2026-09-29)).
 - Timing uses the UI thread's monotonic clock and her behaviour comes
   from a per-visit seeded generator; she redraws only when her pose
   changes, never at a fixed frame rate.

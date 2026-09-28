@@ -1042,6 +1042,7 @@ enum SettingId {
     ChatImages,
     RoguelikeEffects,
     Houseguest,
+    HouseguestMovedOut,
     MediaRoot(PathBuf),
     AddMediaRoot,
     ResetSyncedState,
@@ -1300,6 +1301,7 @@ impl SettingsForm {
                 "Houseguest",
                 self.settings.houseguest.label(),
             ),
+            FormRow::action(SettingId::HouseguestMovedOut, "Osaka moved out"),
         ]
     }
 
@@ -1487,6 +1489,13 @@ impl FormModel for SettingsForm {
             }
             (SettingId::AddMediaRoot, FormEdit::Activate) => {
                 return Ok(FormEffect::Out(Msg::OpenDirPicker));
+            }
+            (SettingId::HouseguestMovedOut, FormEdit::Activate) => {
+                return Ok(FormEffect::Out(Msg::Confirm {
+                    prompt: "Osaka moves out: her room and everything she owns go with her. Sure?"
+                        .into(),
+                    then: Box::new(Msg::HouseguestMovedOut),
+                }));
             }
             (SettingId::ResetSyncedState, FormEdit::Activate) => {
                 return Ok(FormEffect::Out(Msg::ResetSyncedState));
@@ -4697,6 +4706,28 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// "Osaka moved out" sits under the Houseguest setting and asks
+    /// before anything is wiped.
+    #[test]
+    fn osaka_moving_out_asks_first() {
+        let mut modal = SettingsModal::new(Settings::default(), vec![]);
+        modal.form.model.category = SettingsCategory::Playback;
+        let ids: Vec<SettingId> = modal.form.model.rows().into_iter().map(|r| r.id).collect();
+        let at = ids
+            .iter()
+            .position(|id| *id == SettingId::HouseguestMovedOut)
+            .expect("the row");
+        assert_eq!(ids[at - 1], SettingId::Houseguest);
+        let effect = modal
+            .form
+            .model
+            .apply(&SettingId::HouseguestMovedOut, FormEdit::Activate);
+        let Ok(FormEffect::Out(Msg::Confirm { then, .. })) = effect else {
+            panic!("expected a confirmation");
+        };
+        assert_eq!(*then, Msg::HouseguestMovedOut);
     }
 
     #[test]
