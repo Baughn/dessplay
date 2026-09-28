@@ -16,13 +16,16 @@ mod cells;
 mod dissolve;
 mod graphics;
 mod idle;
+mod layer;
 mod osaka;
+mod scenes;
 mod sprite;
 mod terrain;
 
 use std::time::Duration;
 
 use tuirealm::ratatui::buffer::Buffer;
+use tuirealm::ratatui::layout::Rect;
 use tuirealm::ratatui::style::{Color, Modifier};
 
 use cells::{Ink, put};
@@ -78,6 +81,10 @@ struct Visit {
     painted: Vec<Frozen>,
     /// Her line art in the last frame, if she was drawn as an image.
     image: Option<Placement>,
+    /// Text she has moved.
+    layer: layer::TextLayer,
+    /// What the last frame offered her (lines to pull).
+    chances: osaka::Chances,
     size: (u16, u16),
 }
 
@@ -157,7 +164,6 @@ impl Guest {
                         visit.osaka.x,
                         self.truecolor,
                         visit.size,
-                        visit.image.is_some(),
                     );
                     self.state = State::Leaving(Box::new(Leaving {
                         dissolve,
@@ -185,7 +191,11 @@ impl Guest {
                 false
             }
             State::Arriving => true,
-            State::Visiting(visit) => visit.osaka.tick(now, &visit.terrain, &mut self.rng),
+            State::Visiting(visit) => {
+                visit
+                    .osaka
+                    .tick(now, &visit.terrain, &visit.chances, &mut self.rng)
+            }
             State::Leaving(leaving) => {
                 if leaving.dissolve.done(now) {
                     tracing::trace!("houseguest gone");
@@ -227,6 +237,8 @@ impl Guest {
                         terrain,
                         painted: Vec::new(),
                         image: None,
+                        layer: layer::TextLayer::default(),
+                        chances: osaka::Chances::default(),
                         size,
                     }));
                 }
@@ -272,7 +284,20 @@ impl Guest {
                 }
             }
             State::Visiting(visit) => {
-                visit.terrain = Terrain::read(buf, &view.protected, self.graphics.is_some());
+                // Read before paint: the layer validates against the real
+                // frame, then its cells join the protected set so she
+                // never stands over moved text or the holes it left.
+                visit.layer.validate(buf, &view.protected);
+                let mut gripped = true;
+                for op in visit.osaka.take_ops() {
+                    gripped &= scenes::apply(&op, &mut visit.layer, buf, &view.protected);
+                }
+                if !gripped {
+                    visit.osaka.lost_grip(now);
+                }
+                let mut protected = view.protected.clone();
+                protected.extend(visit.layer.cells().map(|(x, y)| Rect::new(x, y, 1, 1)));
+                visit.terrain = Terrain::read(buf, &protected, self.graphics.is_some());
                 visit.size = size;
                 if size.0 < MIN_WIDTH
                     || size.1 < MIN_HEIGHT
@@ -283,6 +308,10 @@ impl Guest {
                     self.quiet_since = now;
                     return;
                 }
+                visit.chances = osaka::Chances {
+                    pulls: scenes::pulls(buf, &visit.terrain, &protected),
+                };
+                let mut layer = visit.layer.paint(buf);
                 match &mut self.graphics {
                     Some(graphics) => {
                         let (painted, image) = draw_art(
@@ -293,15 +322,22 @@ impl Guest {
                             now,
                             self.truecolor,
                         );
-                        visit.painted = painted;
+                        layer.extend(painted);
                         visit.image = image;
                     }
                     None => {
-                        visit.painted =
-                            draw(buf, &visit.osaka, &visit.terrain, now, self.truecolor, true);
+                        layer.extend(draw(
+                            buf,
+                            &visit.osaka,
+                            &visit.terrain,
+                            now,
+                            self.truecolor,
+                            true,
+                        ));
                         visit.image = None;
                     }
                 }
+                visit.painted = layer;
             }
         }
     }
@@ -433,6 +469,7 @@ fn draw(
                 ink,
                 under,
                 face,
+                burst: false,
             });
         }
     }
@@ -476,6 +513,7 @@ fn draw_art(
                 ink: ink(cell.map_or(Part::Body, |c| c.part), truecolor),
                 under,
                 face: None,
+                burst: true,
             });
         }
     }

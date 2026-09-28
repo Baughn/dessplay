@@ -26,6 +26,12 @@ pub(super) enum Pose {
     Dazed,
     /// Peering over the edge she faces.
     Peer,
+    /// Pulling a line on her box row `row` (0 = top) on the side she
+    /// faces: bracing, or heaving back.
+    Pull {
+        heaving: bool,
+        row: u8,
+    },
 }
 
 /// Her face, drawn into the head of frontal poses.
@@ -62,6 +68,10 @@ const CLIMB: [[&str; 4]; 2] = [
 const FALL: [&str; 4] = ["(o_o)", "\\|V|/", " /_\\ ", " / \\ "];
 const DAZED: [&str; 4] = ["(@_@)", "/|V|\\", " /_\\ ", " / \\ "];
 const PEER: [&str; 4] = ["( o.)", "/|V|>", " /_\\ ", " / \\ "];
+const PULL: [[&str; 4]; 2] = [
+    ["( ._)", "\\|V|=", " /_\\ ", " / \\ "],
+    ["(._ )", "\\|V|=", " /_\\ ", "/  \\ "],
+];
 
 fn rows(pose: Pose) -> ([&'static str; 4], bool) {
     match pose {
@@ -71,6 +81,7 @@ fn rows(pose: Pose) -> ([&'static str; 4], bool) {
         Pose::Fall => (FALL, false),
         Pose::Dazed => (DAZED, false),
         Pose::Peer => (PEER, false),
+        Pose::Pull { heaving, .. } => (PULL[usize::from(heaving)], false),
     }
 }
 
@@ -202,6 +213,14 @@ mod tests {
             Pose::Fall,
             Pose::Dazed,
             Pose::Peer,
+            Pose::Pull {
+                heaving: false,
+                row: 1,
+            },
+            Pose::Pull {
+                heaving: true,
+                row: 2,
+            },
         ];
         for pose in poses {
             for facing in [Facing::Left, Facing::Right] {

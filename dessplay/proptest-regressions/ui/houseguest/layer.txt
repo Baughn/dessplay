@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 84e79fb1f53df0ab7ca49f4cc17540154ca114bb2f47f18830ee1d09cf3f8e7c # shrinks to rows = ["漢 a漢漢a a 漢漢漢", "aa漢aaa漢a 漢漢漢", "  aaaa漢a漢 漢漢", "a漢aa aa  aa "], moves = [((3, 3), (3, 3))], guard = (0, 0, 1, 1)

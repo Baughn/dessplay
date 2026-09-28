@@ -53,6 +53,8 @@ pub(super) struct Rig {
     pub tilt: f32,
     /// Vertical offset in canvas units (negative is up).
     pub bob: f32,
+    /// Horizontal offset in canvas units, toward the side she faces.
+    pub shift: f32,
     /// (shoulder, elbow).
     pub arms: [(f32, f32); 2],
     /// (hip, knee).
@@ -66,6 +68,7 @@ impl Rig {
             lean: 0.0,
             tilt: 0.0,
             bob: 0.0,
+            shift: 0.0,
             arms: [(8.0, -4.0), (-8.0, 4.0)],
             legs: [(3.0, 0.0), (-3.0, 0.0)],
         }
@@ -145,12 +148,43 @@ impl Rig {
                 legs: [(6.0, 0.0), (-6.0, 0.0)],
                 ..stand
             },
+            Pose::Pull { heaving, row } => Self::pulling(heaving, row, expression),
             Pose::Peer => Self {
                 lean: 10.0,
                 tilt: 10.0,
                 arms: [(12.0, -6.0), (-128.0, -96.0)],
                 ..stand
             },
+        }
+    }
+
+    /// Pulling a line on box row `row`: body shifted toward the line and
+    /// leaning back, both hands reaching the box edge at that row (a
+    /// standing image spans ~4.5 rows of the canvas's 160 units).
+    fn pulling(heaving: bool, row: u8, expression: Expression) -> Self {
+        const ROW_UNITS: f32 = CANVAS_H / 4.5;
+        let shift = 16.0;
+        let target = (CANVAS_W, (f32::from(row) + 0.5) * ROW_UNITS);
+        let aim = |shoulder: f32| {
+            let dx = target.0 - (shoulder + shift);
+            let dy = target.1 - SHOULDER_Y;
+            -dx.atan2(dy).to_degrees()
+        };
+        // Facing right, the leading leg braces forward (towards the line,
+        // counter-clockwise) and the trailing one bends behind her.
+        let (lean, legs) = if heaving {
+            (-16.0, [(20.0, 24.0), (-30.0, 0.0)])
+        } else {
+            (-8.0, [(12.0, 10.0), (-18.0, 0.0)])
+        };
+        Self {
+            expression,
+            lean,
+            tilt: -4.0,
+            bob: 0.0,
+            shift,
+            arms: [(aim(SHOULDERS[0]) + 6.0, 0.0), (aim(SHOULDERS[1]), 0.0)],
+            legs,
         }
     }
 
@@ -206,8 +240,9 @@ pub(super) fn scene(rig: &Rig, facing: Facing, line: &str) -> String {
         })
         .collect();
     format!(
-        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {CANVAS_W} {CANVAS_H}" color="{line}">{PARTS}<g{mirror}><g transform="translate(0 {bob})">{legs}<g transform="rotate({lean} 50 {HIP_Y})"><use href="#skirt"/><use href="#torso"/><g transform="rotate({tilt} {nx} {ny})"><use href="#hair-back"/><use href="#face"/><use href="#{face}"/><use href="#hair-front"/></g>{arm0}{arm1}</g></g></g></svg>"##,
+        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {CANVAS_W} {CANVAS_H}" color="{line}">{PARTS}<g{mirror}><g transform="translate({shift} {bob})">{legs}<g transform="rotate({lean} 50 {HIP_Y})"><use href="#skirt"/><use href="#torso"/><g transform="rotate({tilt} {nx} {ny})"><use href="#hair-back"/><use href="#face"/><use href="#{face}"/><use href="#hair-front"/></g>{arm0}{arm1}</g></g></g></svg>"##,
         bob = rig.bob,
+        shift = rig.shift,
         lean = rig.lean,
         arm0 = arms[0],
         arm1 = arms[1],
@@ -264,6 +299,26 @@ mod tests {
             ("fall", Rig::for_pose(Pose::Fall, Face::Vacant)),
             ("dazed", Rig::for_pose(Pose::Dazed, Face::Vacant)),
             ("peer", Rig::for_pose(Pose::Peer, Face::Vacant)),
+            (
+                "pull",
+                Rig::for_pose(
+                    Pose::Pull {
+                        heaving: false,
+                        row: 1,
+                    },
+                    Face::Vacant,
+                ),
+            ),
+            (
+                "pull",
+                Rig::for_pose(
+                    Pose::Pull {
+                        heaving: true,
+                        row: 2,
+                    },
+                    Face::Vacant,
+                ),
+            ),
             ("look", Rig::for_pose(Pose::Stand, Face::Surprised)),
             ("wave", Rig::waving(true)),
             ("wave", Rig::waving(false)),

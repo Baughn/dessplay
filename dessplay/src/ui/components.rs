@@ -906,13 +906,46 @@ impl ChatPane {
         Some(text)
     }
 
-    /// Whether a finished selection is being held (Shift-Up/Down extend
-    /// it; any other key dismisses it).
     /// The input line's painted area in the last draw.
     pub(crate) fn input_area(&self) -> Rect {
         self.input_area
     }
 
+    /// The painted extent of each row showing the newest chat or IRC
+    /// message (not system, subtitle or separator lines) in the last
+    /// draw. The houseguest never touches it.
+    pub(crate) fn newest_message_rows(&self) -> Vec<Rect> {
+        let newest = self
+            .lines
+            .iter()
+            .rposition(|line| !line.system && !line.subtitle && !line.separator);
+        let Some(newest) = newest else {
+            return Vec::new();
+        };
+        // Only the painted text, not the blank rest of the row.
+        let area = self.rendered.area;
+        self.rendered
+            .rows
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| row.line == newest)
+            .map(|(i, row)| {
+                let end = row
+                    .body_col
+                    .saturating_add(unicode_width::UnicodeWidthStr::width(row.body.as_str()) as u16)
+                    .min(area.right());
+                Rect::new(
+                    area.x,
+                    area.y.saturating_add(i as u16),
+                    end.saturating_sub(area.x),
+                    1,
+                )
+            })
+            .collect()
+    }
+
+    /// Whether a finished selection is being held (Shift-Up/Down extend
+    /// it; any other key dismisses it).
     pub(crate) fn selection_held(&self) -> bool {
         matches!(self.selection, Some(Selection::Held { .. }))
     }

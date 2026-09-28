@@ -45,6 +45,38 @@ pub(super) struct Frozen {
     pub under: Cell,
     /// Index into her face, for the startled/smile beat.
     pub face: Option<usize>,
+    /// Part of her line-art box: hidden until the rain begins (her image
+    /// shows), then noise at once. Other cells hold their frozen glyph
+    /// until a drop reaches them.
+    pub burst: bool,
+}
+
+impl Frozen {
+    /// A hole she left: shows blank until the rain re-knits `under`.
+    pub fn hole(x: u16, y: u16, under: Cell) -> Self {
+        Self {
+            x,
+            y,
+            glyph: ' ',
+            ink: Ink::new(Color::Reset, Modifier::empty()),
+            under,
+            face: None,
+            burst: false,
+        }
+    }
+
+    /// A glyph she moved here, in its own colours.
+    pub fn glyph(x: u16, y: u16, moved: &Cell, under: Cell) -> Self {
+        Self {
+            x,
+            y,
+            glyph: moved.symbol().chars().next().unwrap_or(' '),
+            ink: Ink::new(moved.fg, moved.modifier),
+            under,
+            face: None,
+            burst: false,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -77,10 +109,6 @@ pub(super) struct Dissolve {
     seed: u64,
     truecolor: bool,
     size: (u16, u16),
-    /// She was line art: until the rain begins her image shows (the
-    /// caller paints it), then every frozen cell bursts into noise at
-    /// once instead of holding her glyph until a drop arrives.
-    burst: bool,
 }
 
 fn hash(seed: u64, x: u16) -> u64 {
@@ -95,7 +123,6 @@ impl Dissolve {
         origin: i32,
         truecolor: bool,
         size: (u16, u16),
-        burst: bool,
     ) -> Self {
         let mut columns: BTreeMap<u16, Column> = BTreeMap::new();
         for cell in &cells {
@@ -135,7 +162,6 @@ impl Dissolve {
             seed: t0,
             truecolor,
             size,
-            burst,
         }
     }
 
@@ -144,11 +170,12 @@ impl Dissolve {
         self.t0
     }
 
-    /// Whether every frozen cell still shows what she froze over (no
+    /// Whether her line-art box still shows what she froze over (no
     /// modal, typing or new text has landed in her space).
     pub fn unchanged(&self, buf: &Buffer) -> bool {
         self.cells
             .iter()
+            .filter(|cell| cell.burst)
             .all(|cell| buf.cell((cell.x, cell.y)) == Some(&cell.under))
     }
 
@@ -251,8 +278,8 @@ impl Dissolve {
             let phase = if unchanged && !self.strands_partner(buf, cell) {
                 match self.phase(cell, t) {
                     // Her image is showing; the caller painted it.
-                    _ if self.burst && t < RAIN_FROM_MS => continue,
-                    Phase::Frozen if self.burst => Phase::Trail { faded: false },
+                    _ if cell.burst && t < RAIN_FROM_MS => continue,
+                    Phase::Frozen if cell.burst => Phase::Trail { faded: false },
                     phase => phase,
                 }
             } else {
@@ -325,6 +352,7 @@ mod tests {
                 ink: INK,
                 under: buf.cell((x, y)).cloned().unwrap_or_default(),
                 face: (i % 5 == 1).then_some(i % 3),
+                burst: i % 3 == 0,
             })
             .collect()
     }
@@ -357,15 +385,15 @@ mod tests {
         /// is deterministic, settled cells never show noise again, and no
         /// frame ever holds half of a wide glyph.
         #[test]
-        fn dissolve_ends_on_the_real_frame((w, h, positions, text, t0, origin) in arbitrary_scene(), burst in any::<bool>()) {
+        fn dissolve_ends_on_the_real_frame((w, h, positions, text, t0, origin) in arbitrary_scene()) {
             let text: Vec<(u16, u16, &str)> = text.iter().map(|(x, y, s)| (*x, *y, s.as_str())).collect();
             let real = live(w, h, &text);
             let mut positions = positions;
             positions.sort_unstable();
             positions.dedup();
             let cells = frozen_over(&real, &positions);
-            let mut a = Dissolve::new(t0, cells.clone(), origin, false, (w, h), burst);
-            let mut b = Dissolve::new(t0, cells, origin, false, (w, h), burst);
+            let mut a = Dissolve::new(t0, cells.clone(), origin, false, (w, h));
+            let mut b = Dissolve::new(t0, cells, origin, false, (w, h));
             let mut ever_settled = vec![false; positions.len()];
             for step in 0..=(DURATION_MS / 20) {
                 let now = t0 + step * 20;
@@ -400,7 +428,7 @@ mod tests {
             positions.sort_unstable();
             positions.dedup();
             let cells = frozen_over(&real, &positions);
-            let mut dissolve = Dissolve::new(t0, cells, origin, true, (w, h), false);
+            let mut dissolve = Dissolve::new(t0, cells, origin, true, (w, h));
             let mut changed = real.clone();
             for &(x, y) in &positions {
                 changed.set_string(x, y, "!", Style::new());
@@ -425,9 +453,10 @@ mod tests {
                 ink: INK,
                 under: Cell::default(),
                 face: (1..=3).contains(&i).then(|| i - 1),
+                burst: false,
             })
             .collect();
-        let mut dissolve = Dissolve::new(1000, cells, 5, false, (10, 6), false);
+        let mut dissolve = Dissolve::new(1000, cells, 5, false, (10, 6));
         let row = |buf: &Buffer| {
             (3..8)
                 .map(|x| buf.cell((x, 2)).unwrap().symbol().to_string())

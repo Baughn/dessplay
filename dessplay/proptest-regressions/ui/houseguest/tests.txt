@@ -6,3 +6,4 @@
 # everyone who runs the test benefits from these saved cases.
 cc 98191f04e7fcdc034fdc2f572a6da1a13dcdfb89b2c54c5143cb967eaa4f2eb0 # shrinks to seed = 0, sizes = [(60, 18)], text = [(1, 14, "漢漢│"), (2, 14, "│漢  ")], skips = [], chats = [1545708, 1255140, 1403200], protect = (15, 5, 2, 4)
 cc ab04475250aebdaa68a75907accc275ff6eb95c3f26e0ce3e4703f66358ce9f1 # shrinks to seed = 5950016936137716878, graphics = true, sizes = [(60, 18), (60, 23)], text = [(47, 15, "─│"), (5, 4, "│c漢漢t"), (33, 5, "漢p漢a│"), (30, 10, "── ─ │"), (41, 8, "漢pr漢 漢")], skips = [(31, 14), (18, 14), (22, 10), (27, 9)], chats = [202854], protect = (25, 2, 6, 1)
+cc 3318939718d3e128c02fff345318c18b7321d52c4cac9f84072472f9e3bd97c9 # shrinks to seed = 423168317490450178, graphics = true, sizes = [(60, 18), (62, 27)], text = [(25, 8, "漢a─aaa")], skips = [], chats = [], protect = (0, 0, 1, 1)

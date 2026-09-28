@@ -3,8 +3,21 @@
 //! instant is a safe place to cut the visit short.
 
 use super::Rng;
+use super::scenes::{LayerOp, Pull};
 use super::sprite::{self, Face, Facing, HEIGHT, Pose, SpriteCell};
 use super::terrain::{Link, Route, Terrain};
+
+/// What the current frame offers her beyond walking around.
+#[derive(Clone, Debug, Default)]
+pub(super) struct Chances {
+    /// Lines she could pull.
+    pub pulls: Vec<Pull>,
+}
+
+/// One brace-and-heave cycle, stretched for longer lines.
+fn heave_ms(glyphs: usize) -> u64 {
+    600 * (40 + glyphs as u64) / 40
+}
 
 /// Milliseconds per cell walked (3 cells/s: dreamy, not brisk).
 const WALK_MS: u64 = 333;
@@ -25,14 +38,45 @@ const BLINK_MS: u64 = 150;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Act {
-    Stand { until: u64 },
-    SpaceOut { until: u64 },
-    Walk { to: i32, then: Option<Link> },
-    Peer { until: u64, then: Option<Link> },
-    Climb { to_y: i32 },
-    Fall { from_y: i32, since: u64, to_y: i32 },
-    Dazed { until: u64 },
-    Look { surprised_until: u64, until: u64 },
+    Stand {
+        until: u64,
+    },
+    SpaceOut {
+        until: u64,
+    },
+    Walk {
+        to: i32,
+        then: Option<Link>,
+    },
+    Peer {
+        until: u64,
+        then: Option<Link>,
+    },
+    Climb {
+        to_y: i32,
+    },
+    Fall {
+        from_y: i32,
+        since: u64,
+        to_y: i32,
+    },
+    Dazed {
+        until: u64,
+    },
+    Look {
+        surprised_until: u64,
+        until: u64,
+    },
+    /// Pulling `task`: bracing, or heaving (stepping back with the line).
+    Pull {
+        offset: u16,
+        goal: u16,
+        heaving: bool,
+    },
+    /// Done pulling: a pleased moment.
+    Admire {
+        until: u64,
+    },
 }
 
 /// A speech or thought bubble.
@@ -41,6 +85,7 @@ pub(super) enum Bubble {
     Dots,
     Bang,
     Huh,
+    Hehe,
 }
 
 impl Bubble {
@@ -49,6 +94,7 @@ impl Bubble {
             Self::Dots => "...",
             Self::Bang => "!",
             Self::Huh => "?",
+            Self::Hehe => "hehe",
         }
     }
 }
@@ -69,6 +115,10 @@ pub(super) struct Osaka {
     /// While a chat conversation continues she stands watching it.
     watch_until: u64,
     watch_x: i32,
+    /// A pull she's walking to, or doing.
+    task: Option<Pull>,
+    /// Layer changes for the next paint to apply.
+    ops: Vec<LayerOp>,
 }
 
 impl Osaka {
@@ -83,6 +133,8 @@ impl Osaka {
             blink_until: 0,
             watch_until: 0,
             watch_x: x,
+            task: None,
+            ops: Vec::new(),
         };
         osaka.act_due = osaka.first_due(now);
         osaka
@@ -163,16 +215,33 @@ impl Osaka {
         ))
     }
 
+    /// Test fixture: standing at `(x, y)`, about to decide.
+    #[cfg(test)]
+    pub fn standing_at(x: i32, y: i32, now: u64, rng: &mut Rng) -> Self {
+        Self::new(
+            x,
+            y,
+            Facing::Right,
+            Act::Stand { until: now + 100 },
+            now,
+            rng,
+        )
+    }
+
     fn first_due(&self, now: u64) -> u64 {
         match self.act {
             Act::Stand { until }
             | Act::SpaceOut { until }
             | Act::Peer { until, .. }
-            | Act::Dazed { until } => until,
+            | Act::Dazed { until }
+            | Act::Admire { until } => until,
             Act::Look {
                 surprised_until, ..
             } => surprised_until,
             Act::Walk { .. } => now + WALK_MS,
+            Act::Pull { .. } => {
+                now + self.task.as_ref().map_or(600, |t| heave_ms(t.cells.len())) / 2
+            }
             Act::Climb { .. } => now + CLIMB_MS,
             Act::Fall { from_y, since, .. } => fall_time(since, (self.y - from_y + 1) as u64),
         }
@@ -194,7 +263,7 @@ impl Osaka {
     }
 
     /// Run every event due by `now`. Returns whether her pose changed.
-    pub fn tick(&mut self, now: u64, terrain: &Terrain, rng: &mut Rng) -> bool {
+    pub fn tick(&mut self, now: u64, terrain: &Terrain, chances: &Chances, rng: &mut Rng) -> bool {
         let mut changed = false;
         for _ in 0..64 {
             let due = self.due();
@@ -211,7 +280,7 @@ impl Osaka {
                 }
                 continue;
             }
-            self.fire(due, terrain, rng);
+            self.fire(due, terrain, chances, rng);
         }
         // Far behind (a suspended laptop): resume from now.
         self.act_due = self.act_due.max(now);
@@ -225,10 +294,10 @@ impl Osaka {
         self.act_due = self.first_due(at);
     }
 
-    fn fire(&mut self, at: u64, terrain: &Terrain, rng: &mut Rng) {
+    fn fire(&mut self, at: u64, terrain: &Terrain, chances: &Chances, rng: &mut Rng) {
         match self.act {
-            Act::Stand { .. } | Act::SpaceOut { .. } | Act::Dazed { .. } => {
-                self.decide(at, terrain, rng)
+            Act::Stand { .. } | Act::SpaceOut { .. } | Act::Dazed { .. } | Act::Admire { .. } => {
+                self.decide(at, terrain, chances, rng)
             }
             Act::Look {
                 surprised_until,
@@ -237,7 +306,7 @@ impl Osaka {
                 if at <= surprised_until && until > at {
                     self.act_due = until;
                 } else {
-                    self.decide(at, terrain, rng);
+                    self.decide(at, terrain, chances, rng);
                 }
             }
             Act::Walk { to, then } => {
@@ -247,7 +316,7 @@ impl Osaka {
                     let inside = terrain.platform_at(next, self.y).is_some();
                     let entering = terrain.platform_at(self.x, self.y).is_none() && !inside;
                     if !inside && !entering {
-                        return self.decide(at, terrain, rng);
+                        return self.decide(at, terrain, chances, rng);
                     }
                     self.x = next;
                 }
@@ -255,6 +324,23 @@ impl Osaka {
                     self.act_due = at + WALK_MS;
                     return;
                 }
+                if let Some(task) = &self.task
+                    && task.x == self.x
+                    && task.y == self.y
+                {
+                    // At the line's end: face it and brace.
+                    self.facing = Facing::Left;
+                    let goal = rng.range(3, 9) as u16;
+                    return self.set(
+                        Act::Pull {
+                            offset: 0,
+                            goal,
+                            heaving: false,
+                        },
+                        at,
+                    );
+                }
+                self.task = None;
                 match then {
                     Some(link) if link.route == Route::Climb => {
                         let to_y = terrain.platforms.get(link.to).map_or(self.y, |p| p.y);
@@ -282,7 +368,7 @@ impl Osaka {
                                 at,
                             );
                         } else {
-                            self.decide(at, terrain, rng);
+                            self.decide(at, terrain, chances, rng);
                         }
                     }
                 }
@@ -306,9 +392,53 @@ impl Osaka {
                 }
                 _ => {
                     self.facing = flip(self.facing);
-                    self.decide(at, terrain, rng);
+                    self.decide(at, terrain, chances, rng);
                 }
             },
+            Act::Pull {
+                offset,
+                goal,
+                heaving,
+            } => {
+                let Some(task) = self.task.clone() else {
+                    return self.decide(at, terrain, chances, rng);
+                };
+                if !heaving {
+                    // The heave: she steps back and the line follows.
+                    let next = self.x + 1;
+                    let room =
+                        terrain.platform_at(next, self.y).is_some() && terrain.clear(next, self.y);
+                    if !room {
+                        return self.finish_pull(at);
+                    }
+                    self.x = next;
+                    let offset = offset + 1;
+                    self.ops.push(LayerOp::Pull {
+                        row: task.row,
+                        cells: task.cells.clone(),
+                        offset,
+                    });
+                    self.set(
+                        Act::Pull {
+                            offset,
+                            goal,
+                            heaving: true,
+                        },
+                        at,
+                    );
+                } else if offset >= goal {
+                    self.finish_pull(at);
+                } else {
+                    self.set(
+                        Act::Pull {
+                            offset,
+                            goal,
+                            heaving: false,
+                        },
+                        at,
+                    );
+                }
+            }
             Act::Climb { to_y } => {
                 self.y += (to_y - self.y).signum();
                 if self.y == to_y {
@@ -342,8 +472,34 @@ impl Osaka {
         }
     }
 
+    fn finish_pull(&mut self, at: u64) {
+        self.task = None;
+        self.set(Act::Admire { until: at + 2000 }, at);
+    }
+
+    /// Layer changes queued since the last paint.
+    pub fn take_ops(&mut self) -> Vec<LayerOp> {
+        std::mem::take(&mut self.ops)
+    }
+
+    /// The text she was pulling changed under her (someone scrolled the
+    /// chat): she lets go and stares.
+    pub fn lost_grip(&mut self, now: u64) {
+        if self.task.take().is_some() {
+            tracing::trace!("houseguest lost her grip");
+            self.set(
+                Act::Look {
+                    surprised_until: now,
+                    until: now + LOOK_MS / 2,
+                },
+                now,
+            );
+        }
+    }
+
     /// Choose what to do next, standing somewhere valid.
-    fn decide(&mut self, at: u64, terrain: &Terrain, rng: &mut Rng) {
+    fn decide(&mut self, at: u64, terrain: &Terrain, chances: &Chances, rng: &mut Rng) {
+        self.task = None;
         let Some(here) = terrain.platform_at(self.x, self.y) else {
             return self.set(Act::Stand { until: at + 1000 }, at);
         };
@@ -357,6 +513,33 @@ impl Osaka {
             );
         }
         let platform = terrain.platforms.get(here).copied();
+        // Tidying: a line she can reach from this floor.
+        let reachable: Vec<&Pull> = chances
+            .pulls
+            .iter()
+            .filter(|p| p.y == self.y && platform.is_some_and(|f| f.contains(p.x)))
+            .collect();
+        if !reachable.is_empty() && rng.below(100) < 35 {
+            let pick = rng.below(reachable.len() as u64) as usize;
+            if let Some(&pull) = reachable.get(pick) {
+                tracing::trace!(
+                    row = pull.row,
+                    glyphs = pull.cells.len(),
+                    "houseguest tidies"
+                );
+                self.task = Some(pull.clone());
+                if pull.x != self.x {
+                    self.facing = toward(self.x, pull.x);
+                }
+                return self.set(
+                    Act::Walk {
+                        to: pull.x,
+                        then: None,
+                    },
+                    at,
+                );
+            }
+        }
         let roll = rng.below(100);
         let act = if roll < 30 {
             Act::Stand {
@@ -397,6 +580,10 @@ impl Osaka {
     /// A chat message arrived: stop and look at it.
     pub fn look(&mut self, now: u64, chat_x: i32) {
         self.watch_until = now + WATCH_MS;
+        if !matches!(self.act, Act::Fall { .. } | Act::Climb { .. }) {
+            // She lets go of whatever she was pulling.
+            self.task = None;
+        }
         self.watch_x = chat_x;
         if matches!(self.act, Act::Fall { .. } | Act::Climb { .. }) {
             return; // She looks once she has landed (decide watches).
@@ -516,6 +703,11 @@ impl Osaka {
             Act::Climb { .. } => (Pose::Climb(self.y.rem_euclid(2) as u8), Face::Vacant, None),
             Act::Fall { .. } => (Pose::Fall, Face::Surprised, None),
             Act::Dazed { .. } => (Pose::Dazed, Face::Vacant, None),
+            Act::Pull { heaving, .. } => {
+                let row = self.task.as_ref().map_or(1, Pull::box_row);
+                (Pose::Pull { heaving, row }, Face::Vacant, None)
+            }
+            Act::Admire { .. } => (Pose::Stand, Face::Pleased, Some(Bubble::Hehe)),
             Act::Look {
                 surprised_until, ..
             } => {

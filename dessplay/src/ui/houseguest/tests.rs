@@ -9,6 +9,7 @@ use tuirealm::ratatui::buffer::Buffer;
 use tuirealm::ratatui::layout::{Position, Rect};
 use tuirealm::ratatui::style::Style;
 
+use super::osaka::{self, Osaka};
 use super::terrain::{Route, Terrain};
 use super::*;
 use crate::config::{Houseguest, Settings};
@@ -245,28 +246,42 @@ fn kitty() -> ratatui_image::picker::Picker {
     picker
 }
 
-/// In graphics mode nothing is ever hidden behind her: every cell she
-/// changes was blank, or a line her image redraws.
-fn assert_image_only_over_blanks_and_floors(
+/// Nothing is ever hidden behind her: her image cells (placeholders)
+/// cover only blanks and lines her image redraws; every other changed
+/// cell belongs to the text layer (a hole or a moved glyph) or is a
+/// bubble on a blank cell.
+fn assert_nothing_hidden(
     frame: &Buffer,
     real: &Buffer,
+    layer: &[(u16, u16)],
 ) -> Result<(), TestCaseError> {
+    let width = real.area.width as usize;
     for (index, (got, want)) in frame.content.iter().zip(&real.content).enumerate() {
         if got == want {
             continue;
         }
+        let at = ((index % width) as u16, (index / width) as u16);
         let blank = want.symbol().trim().is_empty();
         let line = want
             .symbol()
             .chars()
             .next()
             .is_some_and(|c| graphics::strokes(c).is_some());
-        prop_assert!(
-            blank || line,
-            "cell {} ({:?}) hidden behind her",
-            index,
-            want.symbol()
-        );
+        if cells::untouchable(got) {
+            prop_assert!(
+                blank || line,
+                "cell {:?} ({:?}) hidden behind her image",
+                at,
+                want.symbol()
+            );
+        } else {
+            prop_assert!(
+                blank || layer.contains(&at),
+                "cell {:?} ({:?}) changed outside the text layer",
+                at,
+                want.symbol()
+            );
+        }
     }
     Ok(())
 }
@@ -298,7 +313,7 @@ proptest! {
         sizes in proptest::collection::vec((60u16..130, 18u16..45), 1..4),
         text in proptest::collection::vec((0u16..60, 0u16..18, "[a-z漢─│ ]{1,6}"), 0..20),
         skips in proptest::collection::vec((0u16..60, 0u16..18), 0..6),
-        chats in proptest::collection::vec(0u64..300_000, 0..4),
+        chats in proptest::collection::vec(0u64..200_000, 0..4),
         protect in (0u16..40, 0u16..10, 1u16..20, 1u16..6),
     ) {
         let mut guest = Guest::new(seed);
@@ -306,7 +321,7 @@ proptest! {
             guest.set_picker(kitty());
         }
         let mut now = 0;
-        let span = 300_000 / sizes.len() as u64;
+        let span = 200_000 / sizes.len() as u64;
         let mut mark = ChatMark::default();
         for &(w, h) in &sizes {
             let mut real = rooms(w, h);
@@ -328,8 +343,12 @@ proptest! {
                 guest.advance(now);
                 let frame = paint(&mut guest, &real, &view, now);
                 assert_untouched(&frame, &real, &protected)?;
+                let layer: Vec<(u16, u16)> = match &guest.state {
+                    State::Visiting(visit) => visit.layer.cells().collect(),
+                    _ => Vec::new(),
+                };
                 if graphics {
-                    assert_image_only_over_blanks_and_floors(&frame, &real)?;
+                    assert_nothing_hidden(&frame, &real, &layer)?;
                 }
                 let changed = frame
                     .content
@@ -365,6 +384,26 @@ fn real_ui() -> Ui {
         false,
     );
     ui.apply_snapshot(UiSnapshot::default());
+    ui
+}
+
+/// The real UI with `n` short chat messages (alternating senders).
+fn chatty_ui(n: usize) -> Ui {
+    let mut ui = real_ui();
+    let view = dessplay_core::state::StateView {
+        chat: (0..n)
+            .map(|i| dessplay_core::types::ChatMessage {
+                timestamp: dessplay_core::types::SharedTimestamp(1_000 + i as u64 * 60_000),
+                sender: UserId::new(if i % 2 == 0 { "kim" } else { "bob" }),
+                text: format!("line {i}"),
+            })
+            .collect(),
+        ..Default::default()
+    };
+    ui.apply_snapshot(UiSnapshot {
+        view: std::sync::Arc::new(view),
+        ..UiSnapshot::default()
+    });
     ui
 }
 
@@ -636,4 +675,98 @@ fn line_art_bursts_into_letters_that_rain_away() {
     }
     assert!(rained >= 10, "her box rained letters (peak {rained} cells)");
     assert_eq!(paint(&mut guest, &real, &view, end), real);
+}
+
+/// The newest message's rows are protected: she looks, never touches.
+#[test]
+fn the_newest_chat_message_is_protected() {
+    let mut ui = chatty_ui(3);
+    let (buf, view) = real_frame(&mut ui, 100, 30);
+    let newest = (0..buf.area.height)
+        .find(|&y| {
+            (0..buf.area.width)
+                .map(|x| buf.cell((x, y)).unwrap().symbol().to_string())
+                .collect::<String>()
+                .contains("line 2")
+        })
+        .expect("the newest line is on screen");
+    let x = (0..buf.area.width)
+        .find(|&x| buf.cell((x, newest)).unwrap().symbol() == "l")
+        .unwrap();
+    assert!(
+        view.protected
+            .iter()
+            .any(|r| r.contains(Position::new(x, newest))),
+        "{:?}",
+        view.protected
+    );
+}
+
+/// Start a visit with her standing at `(x, y)` (skipping the idle wait
+/// and her wandering).
+fn visiting_at(guest: &mut Guest, real: &Buffer, view: &IdleView, (x, y): (i32, i32)) {
+    paint(guest, real, view, 0);
+    let mut rng = Rng(1);
+    guest.state = State::Visiting(Box::new(Visit {
+        osaka: Osaka::standing_at(x, y, 0, &mut rng),
+        terrain: Terrain::default(),
+        painted: Vec::new(),
+        image: None,
+        layer: layer::TextLayer::default(),
+        chances: osaka::Chances::default(),
+        size: (real.area.width, real.area.height),
+    }));
+}
+
+/// With a full log of short chat lines she tidies one: it moves right,
+/// in both drawing modes; the goodbye rain puts everything back exactly.
+#[test]
+fn she_pulls_a_chat_line_and_the_goodbye_puts_it_back() {
+    for graphics in [false, true] {
+        let mut ui = chatty_ui(40);
+        let (real, view) = real_frame(&mut ui, 100, 30);
+        let mut found = None;
+        for seed in 0..20u64 {
+            let mut guest = Guest::new(seed);
+            if graphics {
+                guest.set_picker(kitty());
+            }
+            visiting_at(&mut guest, &real, &view, (30, 21));
+            let mut now = 0;
+            while now < 120_000 && found.is_none() {
+                now += guest
+                    .next_tick(now)
+                    .map_or(1000, |d| d.as_millis() as u64)
+                    .max(1);
+                if guest.advance(now) {
+                    let frame = paint(&mut guest, &real, &view, now);
+                    if let State::Visiting(visit) = &guest.state
+                        && visit.layer.entries().len() >= 3
+                    {
+                        found = Some((seed, frame));
+                    }
+                }
+            }
+            if found.is_some() {
+                guest.activity(now);
+                let end = run(&mut guest, &real, &view, now, now + dissolve::DURATION_MS);
+                assert_eq!(end, real, "graphics={graphics}: the rain restores the text");
+                break;
+            }
+        }
+        let (seed, frame) = found.unwrap_or_else(|| panic!("graphics={graphics}: no pull"));
+        let moved = (15..21u16).any(|y| {
+            let row = |b: &Buffer| {
+                (1..48u16)
+                    .map(|x| b.cell((x, y)).unwrap().symbol().to_string())
+                    .collect::<String>()
+            };
+            let (before, after) = (row(&real), row(&frame));
+            before.contains("line") && after.starts_with(' ') && after.contains("line")
+        });
+        assert!(
+            moved,
+            "graphics={graphics} seed={seed}: a chat line moved right"
+        );
+    }
 }

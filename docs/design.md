@@ -1354,6 +1354,23 @@ this section states what is built.
 - A **chat or IRC line** from anyone does not end a visit: she stops,
   turns toward the chat pane with a `!` then a `?`, and keeps watching
   until chat has been quiet for a minute.
+- The **newest chat or IRC message** is never touched: its painted text
+  is part of the protected set.
+- **Moving text.** She keeps a text layer of glyphs she has moved and
+  the holes they left. Every frame, before anything of hers is painted,
+  each moved glyph is dropped if its source no longer shows what she took
+  or its target stopped being free (a free cell is blank, or a hole
+  another moved glyph left); dropping repeats until stable. Wide glyphs
+  move whole. At most 60 glyphs. Her body never stands over moved text or
+  holes. The goodbye rain re-knits holes and moved glyphs back to the
+  real text.
+- **Tidying**: when a line ends right beside where her box could stand on
+  a floor, at chest height (box rows 1–2), she may walk there, face it,
+  and pull it: a brace, then a heave per cycle (600 ms × (1 + glyphs/40)),
+  stepping back one cell while the whole line follows into the space she
+  left. She pulls 3–8 cells or until she runs out of floor, then looks
+  pleased ("hehe"). If the text changes under her she lets go and stares.
+
 - Playback starting or an overlay opening mid-visit starts the dissolve;
   switching the setting off removes her at once. A terminal resize
   re-anchors her (she falls if her floor went away); during a dissolve it

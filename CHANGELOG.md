@@ -13,9 +13,10 @@ Add new days at the top. Add new entries at the bottom of existing days.
 
 - Added: A houseguest. When nothing has happened for five minutes, Osaka
   wanders into the terminal and makes herself at home on the pane
-  borders, drawn as line art in terminals with kitty graphics (Ghostty).
-  Press any key and she waves goodbye; a chat message only makes her stop
-  and look. F3 → Playback → Houseguest changes the delay or turns her
+  borders, drawn as line art in terminals with kitty graphics (Ghostty),
+  and tidies up short chat lines by pulling them along. Press any key and
+  she waves goodbye while everything rains back into place; a chat
+  message only makes her stop and look. F3 → Playback → Houseguest changes the delay or turns her
   off.
 
 ## 2026-09-26

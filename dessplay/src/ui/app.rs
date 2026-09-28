@@ -599,6 +599,8 @@ impl Ui {
             self.panes.keybar,
         ];
         protected.extend(images.iter().map(|&image| grow(image, 1)));
+        // The newest message is never touched, only looked at.
+        protected.extend(self.chat.newest_message_rows());
         protected.retain(|rect| !rect.is_empty());
         IdleView {
             delay: self.settings.houseguest.delay(),
