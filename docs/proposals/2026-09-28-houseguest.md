@@ -93,8 +93,8 @@ someone else cuts her current act (any instant is a safe cut) and she
 **stops and looks**: turns toward the chat pane with a `!`, then a `?`,
 and keeps watching until chat has been quiet for a minute. *Planned
 (phase 2, when she starts touching chat):* she walks over and pokes the
-line (its letters jiggle for a frame), and the newest line's cells are
-forbidden to her; `Ui` doesn't expose that row yet.
+line (its letters jiggle for a frame). *Built:* the newest message's
+painted text is protected, so she never touches it.
 
 **Not activity**: snapshot churn (health metrics, sync age, marquee,
 download progress), subtitle and system lines, layout reload, focus
