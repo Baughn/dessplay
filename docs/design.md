@@ -1365,11 +1365,17 @@ this section states what is built.
   holes. The goodbye rain re-knits holes and moved glyphs back to the
   real text.
 - **Tidying**: when a line ends right beside where her box could stand on
-  a floor, at chest height (box rows 1–2), she may walk there, face it,
-  and pull it: a brace, then a heave per cycle (600 ms × (1 + glyphs/40)),
-  stepping back one cell while the whole line follows into the space she
-  left. She pulls 3–8 cells or until she runs out of floor, then looks
-  pleased ("hehe"). If the text changes under her she lets go and stares.
+  a floor, at chest height (box rows 1–2), on either side of her, she may
+  go and pull it — any pane: chat, Users, Playlist, The List. A "line" is
+  a run of glyphs up to a border, a protected cell, or a gap of two blank
+  cells, so table columns are independent. She makes for lines on other
+  floors along the shortest route of links (climbs, drops). At the line:
+  she faces it, braces, then heaves once per cycle
+  (600 ms × (1 + glyphs/40)), stepping away while the whole line follows
+  into the space she left. She pulls 3–8 cells or until she runs out of
+  floor, then looks pleased ("hehe"). If the text changes under her she
+  lets go and stares. Her decisions and their reasons are logged at
+  debug level (`RUST_LOG=dessplay::ui::houseguest=debug`, or F11's level).
 
 - Playback starting or an overlay opening mid-visit starts the dissolve;
   switching the setting off removes her at once. A terminal resize

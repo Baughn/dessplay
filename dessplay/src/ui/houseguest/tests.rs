@@ -722,7 +722,14 @@ fn visiting_at(guest: &mut Guest, real: &Buffer, view: &IdleView, (x, y): (i32, 
 /// in both drawing modes; the goodbye rain puts everything back exactly.
 #[test]
 fn she_pulls_a_chat_line_and_the_goodbye_puts_it_back() {
-    for graphics in [false, true] {
+    // On the chat floor itself, and on the Playlist's floor across the
+    // screen (she has to make her way over).
+    for (graphics, start) in [
+        (false, (30, 21)),
+        (true, (30, 21)),
+        (false, (70, 24)),
+        (true, (70, 24)),
+    ] {
         let mut ui = chatty_ui(40);
         let (real, view) = real_frame(&mut ui, 100, 30);
         let mut found = None;
@@ -731,9 +738,9 @@ fn she_pulls_a_chat_line_and_the_goodbye_puts_it_back() {
             if graphics {
                 guest.set_picker(kitty());
             }
-            visiting_at(&mut guest, &real, &view, (30, 21));
+            visiting_at(&mut guest, &real, &view, start);
             let mut now = 0;
-            while now < 120_000 && found.is_none() {
+            while now < 240_000 && found.is_none() {
                 now += guest
                     .next_tick(now)
                     .map_or(1000, |d| d.as_millis() as u64)

@@ -308,9 +308,11 @@ impl Guest {
                     self.quiet_since = now;
                     return;
                 }
-                visit.chances = osaka::Chances {
-                    pulls: scenes::pulls(buf, &visit.terrain, &protected),
-                };
+                let pulls = scenes::pulls(buf, &visit.terrain, &protected);
+                if pulls.len() != visit.chances.pulls.len() {
+                    tracing::debug!(lines = pulls.len(), "houseguest: lines she could tidy");
+                }
+                visit.chances = osaka::Chances { pulls };
                 let mut layer = visit.layer.paint(buf);
                 match &mut self.graphics {
                     Some(graphics) => {

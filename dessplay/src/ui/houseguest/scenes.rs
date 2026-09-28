@@ -21,13 +21,32 @@ pub(super) const PULL_ROWS: [i32; 2] = [1, 2];
 /// A line must have at least this many glyphs to be worth pulling.
 const MIN_GLYPHS: usize = 3;
 
+/// Which side of her box a line is on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(super) enum Side {
+    Left,
+    Right,
+}
+
+impl Side {
+    /// Cells the line moves per heave: away from its side, towards
+    /// where she steps.
+    pub fn step(self) -> i32 {
+        match self {
+            Self::Left => 1,
+            Self::Right => -1,
+        }
+    }
+}
+
 /// A line she can pull: standing at `x` on the floor at `y`, the line on
-/// `row` ends right beside her box's left edge.
+/// `row` ends right beside her box on `side`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Pull {
     pub x: i32,
     pub y: i32,
     pub row: u16,
+    pub side: Side,
     /// Columns of the line's glyphs, left to right.
     pub cells: Vec<u16>,
 }
@@ -42,11 +61,12 @@ impl Pull {
 /// A change to the text layer, applied at paint time.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum LayerOp {
-    /// The line's glyphs should sit `offset` cells right of home.
+    /// The line's glyphs should sit `offset` cells from home (positive is
+    /// right).
     Pull {
         row: u16,
         cells: Vec<u16>,
-        offset: u16,
+        offset: i16,
     },
 }
 
@@ -56,11 +76,20 @@ pub(super) fn apply(op: &LayerOp, layer: &mut TextLayer, buf: &Buffer, protected
     match op {
         LayerOp::Pull { row, cells, offset } => {
             let mut ok = true;
-            // Rightmost first: each glyph moves into the cell (or hole)
-            // its right neighbour just left.
-            for &c in cells.iter().rev() {
+            // Leading glyph first: each moves into the cell (or hole) its
+            // neighbour just left.
+            let order: Vec<u16> = if *offset > 0 {
+                cells.iter().rev().copied().collect()
+            } else {
+                cells.clone()
+            };
+            for c in order {
                 let source = (c, *row);
-                let to = (c.saturating_add(*offset), *row);
+                let Some(x) = c.checked_add_signed(*offset) else {
+                    ok = false;
+                    continue;
+                };
+                let to = (x, *row);
                 let moved = if layer.at_of(source).is_some() {
                     layer.shift(buf, protected, source, to)
                 } else {
@@ -84,16 +113,29 @@ pub(super) fn pulls(buf: &Buffer, terrain: &Terrain, protected: &[Rect]) -> Vec<
                 continue;
             }
             for box_row in PULL_ROWS {
-                let row = y - HEIGHT + box_row;
-                let end = x - half - 1;
-                let (Ok(end), Ok(row)) = (u16::try_from(end), u16::try_from(row)) else {
+                let Ok(row) = u16::try_from(y - HEIGHT + box_row) else {
                     continue;
                 };
-                if !takeable(buf, protected, (end, row)) {
-                    continue;
-                }
-                if let Some(cells) = line_ending_at(buf, protected, end, row) {
-                    out.push(Pull { x, y, row, cells });
+                for side in [Side::Left, Side::Right] {
+                    let edge = match side {
+                        Side::Left => x - half - 1,
+                        Side::Right => x + half + 1,
+                    };
+                    let Ok(edge) = u16::try_from(edge) else {
+                        continue;
+                    };
+                    if !takeable(buf, protected, (edge, row)) {
+                        continue;
+                    }
+                    if let Some(cells) = segment(buf, protected, edge, row, -side.step()) {
+                        out.push(Pull {
+                            x,
+                            y,
+                            row,
+                            side,
+                            cells,
+                        });
+                    }
                 }
             }
         }
@@ -101,11 +143,14 @@ pub(super) fn pulls(buf: &Buffer, terrain: &Terrain, protected: &[Rect]) -> Vec<
     out
 }
 
-/// The line on `row` ending at column `end`: every glyph leftwards up to
-/// a border line, a protected or image cell, or the screen edge.
-fn line_ending_at(buf: &Buffer, protected: &[Rect], end: u16, row: u16) -> Option<Vec<u16>> {
+/// The run of text on `row` from `start` outwards (`dir` −1 = leftwards):
+/// glyphs up to a border line, a protected or image cell, the screen edge,
+/// or a gap of two blank cells — so a table's columns stay independent
+/// while a sentence's single spaces don't split it.
+fn segment(buf: &Buffer, protected: &[Rect], start: u16, row: u16, dir: i32) -> Option<Vec<u16>> {
     let mut cells = Vec::new();
-    let mut x = end;
+    let mut blanks = 0;
+    let mut x = start;
     loop {
         let cell = buf.cell((x, row))?;
         let symbol = cell.symbol();
@@ -116,18 +161,31 @@ fn line_ending_at(buf: &Buffer, protected: &[Rect], end: u16, row: u16) -> Optio
         {
             break;
         }
-        if !symbol.trim().is_empty() {
+        // A wide glyph's trailing cell is part of the glyph, not a gap.
+        let trailing = x
+            .checked_sub(1)
+            .and_then(|left| buf.cell((left, row)))
+            .is_some_and(|left| super::cells::width(left) > 1);
+        if symbol.trim().is_empty() {
+            if !trailing {
+                blanks += 1;
+                if blanks >= 2 {
+                    break;
+                }
+            }
+        } else {
             if !takeable(buf, protected, (x, row)) {
                 return None;
             }
+            blanks = 0;
             cells.push(x);
         }
-        let Some(left) = x.checked_sub(1) else {
-            break;
-        };
-        x = left;
+        match x.checked_add_signed(dir as i16) {
+            Some(next) => x = next,
+            None => break,
+        }
     }
-    cells.reverse();
+    cells.sort_unstable();
     (cells.len() >= MIN_GLYPHS).then_some(cells)
 }
 
@@ -156,6 +214,7 @@ mod tests {
         let pull = pulls.iter().find(|p| p.row == 1).expect("a pull on row 1");
         assert_eq!(pull.x, 10, "her box's left edge sits right after 'hi'");
         assert_eq!(pull.cells, vec![1, 2, 3, 4, 6, 7]);
+        assert_eq!(pull.side, Side::Left);
         assert_eq!(pull.box_row(), 1);
     }
 
@@ -181,7 +240,7 @@ mod tests {
             let op = LayerOp::Pull {
                 row: 0,
                 cells: cells.clone(),
-                offset,
+                offset: offset as i16,
             };
             assert!(apply(&op, &mut layer, &buf, &[]), "heave {offset}");
         }
@@ -203,5 +262,38 @@ mod tests {
         let newest = [Rect::new(1, 1, 17, 1)];
         let terrain = Terrain::read(&buf, &newest, true);
         assert!(pulls(&buf, &terrain, &newest).iter().all(|p| p.row != 1));
+    }
+
+    /// A table row: pulling the right-hand column must not drag the
+    /// left-hand one along (the gap between them is two or more cells).
+    #[test]
+    fn table_columns_are_separate_lines() {
+        let buf = room(&["│Futsuka     BQ     ", "│                   "]);
+        assert_eq!(segment(&buf, &[], 14, 0, -1), None, "BQ alone is too short");
+        let buf = room(&["│Futsuka     BQX    ", "│                   "]);
+        assert_eq!(segment(&buf, &[], 15, 0, -1), Some(vec![13, 14, 15]));
+        assert_eq!(
+            segment(&buf, &[], 7, 0, -1),
+            Some(vec![1, 2, 3, 4, 5, 6, 7])
+        );
+    }
+
+    #[test]
+    fn a_line_on_her_right_is_pulled_leftwards() {
+        let buf = room(&["      hi kim"]);
+        let mut layer = TextLayer::default();
+        let cells = vec![6, 7, 9, 10, 11];
+        for offset in 1..=2i16 {
+            let op = LayerOp::Pull {
+                row: 0,
+                cells: cells.clone(),
+                offset: -offset,
+            };
+            assert!(apply(&op, &mut layer, &buf, &[]));
+        }
+        let mut frame = buf.clone();
+        layer.validate(&frame, &[]);
+        layer.paint(&mut frame);
+        assert_eq!(frame, room(&["    hi kim  "]));
     }
 }

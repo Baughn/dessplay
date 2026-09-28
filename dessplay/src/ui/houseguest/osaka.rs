@@ -3,7 +3,7 @@
 //! instant is a safe place to cut the visit short.
 
 use super::Rng;
-use super::scenes::{LayerOp, Pull};
+use super::scenes::{LayerOp, Pull, Side};
 use super::sprite::{self, Face, Facing, HEIGHT, Pose, SpriteCell};
 use super::terrain::{Link, Route, Terrain};
 
@@ -115,8 +115,10 @@ pub(super) struct Osaka {
     /// While a chat conversation continues she stands watching it.
     watch_until: u64,
     watch_x: i32,
-    /// A pull she's walking to, or doing.
+    /// A pull she's walking to on this floor, or doing.
     task: Option<Pull>,
+    /// A pull on another floor she's making her way towards.
+    goal: Option<Pull>,
     /// Layer changes for the next paint to apply.
     ops: Vec<LayerOp>,
 }
@@ -134,6 +136,7 @@ impl Osaka {
             watch_until: 0,
             watch_x: x,
             task: None,
+            goal: None,
             ops: Vec::new(),
         };
         osaka.act_due = osaka.first_due(now);
@@ -329,8 +332,18 @@ impl Osaka {
                     && task.y == self.y
                 {
                     // At the line's end: face it and brace.
-                    self.facing = Facing::Left;
+                    self.facing = match task.side {
+                        Side::Left => Facing::Left,
+                        Side::Right => Facing::Right,
+                    };
                     let goal = rng.range(3, 9) as u16;
+                    tracing::debug!(
+                        row = task.row,
+                        glyphs = task.cells.len(),
+                        side = ?task.side,
+                        cells = goal,
+                        "houseguest: pulling a line"
+                    );
                     return self.set(
                         Act::Pull {
                             offset: 0,
@@ -405,10 +418,12 @@ impl Osaka {
                 };
                 if !heaving {
                     // The heave: she steps back and the line follows.
-                    let next = self.x + 1;
+                    let step = task.side.step();
+                    let next = self.x + step;
                     let room =
                         terrain.platform_at(next, self.y).is_some() && terrain.clear(next, self.y);
                     if !room {
+                        tracing::debug!("houseguest: out of floor, done pulling");
                         return self.finish_pull(at);
                     }
                     self.x = next;
@@ -416,7 +431,7 @@ impl Osaka {
                     self.ops.push(LayerOp::Pull {
                         row: task.row,
                         cells: task.cells.clone(),
-                        offset,
+                        offset: (i32::from(offset) * step) as i16,
                     });
                     self.set(
                         Act::Pull {
@@ -513,32 +528,62 @@ impl Osaka {
             );
         }
         let platform = terrain.platforms.get(here).copied();
-        // Tidying: a line she can reach from this floor.
-        let reachable: Vec<&Pull> = chances
-            .pulls
-            .iter()
-            .filter(|p| p.y == self.y && platform.is_some_and(|f| f.contains(p.x)))
-            .collect();
-        if !reachable.is_empty() && rng.below(100) < 35 {
-            let pick = rng.below(reachable.len() as u64) as usize;
-            if let Some(&pull) = reachable.get(pick) {
-                tracing::trace!(
+        // Tidying: keep making for a line still on offer, or maybe pick
+        // one anywhere she can reach.
+        let kept = self.goal.take().filter(|g| chances.pulls.contains(g));
+        let fresh = kept.is_none() && !chances.pulls.is_empty() && rng.below(100) < 40;
+        let target = kept.or_else(|| {
+            fresh
+                .then(|| {
+                    let pick = rng.below(chances.pulls.len() as u64) as usize;
+                    chances.pulls.get(pick).cloned()
+                })
+                .flatten()
+        });
+        if let Some(pull) = target {
+            let there = terrain.platform_at(pull.x, pull.y);
+            if there == Some(here) {
+                tracing::debug!(
                     row = pull.row,
-                    glyphs = pull.cells.len(),
-                    "houseguest tidies"
+                    to = pull.x,
+                    offered = chances.pulls.len(),
+                    "houseguest: walking to a line to tidy"
                 );
-                self.task = Some(pull.clone());
                 if pull.x != self.x {
                     self.facing = toward(self.x, pull.x);
                 }
-                return self.set(
-                    Act::Walk {
-                        to: pull.x,
-                        then: None,
-                    },
-                    at,
-                );
+                let to = pull.x;
+                self.task = Some(pull);
+                return self.set(Act::Walk { to, then: None }, at);
             }
+            match there.and_then(|there| route(terrain, here, there)) {
+                Some(link) => {
+                    tracing::debug!(
+                        row = pull.row,
+                        via = ?link.route,
+                        offered = chances.pulls.len(),
+                        "houseguest: heading for a line on another floor"
+                    );
+                    self.goal = Some(pull);
+                    if link.x != self.x {
+                        self.facing = toward(self.x, link.x);
+                    }
+                    return self.set(
+                        Act::Walk {
+                            to: link.x,
+                            then: Some(link),
+                        },
+                        at,
+                    );
+                }
+                None => tracing::debug!(
+                    row = pull.row,
+                    offered = chances.pulls.len(),
+                    "houseguest: a line to tidy, but no way there"
+                ),
+            }
+        } else if chances.pulls.is_empty() {
+            tracing::trace!("houseguest: nothing to tidy");
         }
         let roll = rng.below(100);
         let act = if roll < 30 {
@@ -574,6 +619,7 @@ impl Osaka {
                 Act::Walk { to, then }
             }
         };
+        tracing::debug!(?act, roll, "houseguest: pottering");
         self.set(act, at);
     }
 
@@ -745,4 +791,33 @@ fn rows_fallen(since: u64, at: u64) -> i32 {
 /// When the fall started at `since` crosses its `rows`th row.
 fn fall_time(since: u64, rows: u64) -> u64 {
     since + ((2.0 * rows as f64 / GRAVITY).sqrt() * 1000.0).ceil() as u64
+}
+
+/// The first link on a shortest route from platform `from` to `to`.
+fn route(terrain: &Terrain, from: usize, to: usize) -> Option<Link> {
+    let mut first: Vec<Option<Link>> = vec![None; terrain.platforms.len()];
+    let mut seen = vec![false; terrain.platforms.len()];
+    let mut queue = std::collections::VecDeque::from([from]);
+    if let Some(s) = seen.get_mut(from) {
+        *s = true;
+    }
+    while let Some(at) = queue.pop_front() {
+        if at == to {
+            return first.get(at).copied().flatten();
+        }
+        for link in terrain.links.iter().filter(|l| l.from == at) {
+            if seen.get(link.to).copied().unwrap_or(true) {
+                continue;
+            }
+            if let Some(s) = seen.get_mut(link.to) {
+                *s = true;
+            }
+            let via = first.get(at).copied().flatten().unwrap_or(*link);
+            if let Some(slot) = first.get_mut(link.to) {
+                *slot = Some(via);
+            }
+            queue.push_back(link.to);
+        }
+    }
+    None
 }
