@@ -33,7 +33,7 @@ channel on her TV. We borrow that backbone (see
 |---|---|---|
 | 1 | Seam, idle gate, terrain, walking/climbing/falling, goodbye dissolve, setting, perf test | **done** |
 | 1b | Line art: SVG rig, kitty placement, redrawn lines, letter-burst goodbye | **done** |
-| 2 | Tidying and mischief: text layer and newest-line protection, pulling lines, letter swap, sneeze scatter, scheduled self-reverting (**done**); bubbles, the brain with needs | in progress |
+| 2 | Tidying and mischief: text layer and newest-line protection, pulling lines, letter swap, sneeze scatter, scheduled self-reverting, the stage (**done**); bubbles, then the brain with needs (bubbles first: they show her reasons, which makes the brain testable by eye) | in progress |
 | 3 | The room: furnishings (coloured line art), anchors, ledger, Chiyo-chichi's shop, routine | planned |
 | 4 | Colour: calendar, screen reading, dreams, cameos, rarity and pity, credits | planned |
 | 5 | The text factory: text hauled into an industrial space and compacted into materials | planned, last |
@@ -387,6 +387,18 @@ false negatives.
     Blue One?" (Ep 13, Bruce Lee). [R]
 29. **Long words** — tries to pronounce any ≥ 10-letter word, garbles it.
     [U]
+
+30. **Remarks on her surroundings** (*later*; the user's idea,
+    2026-09-28) — now and then she comments on what's around her: the
+    playlist, the chat log, the List, in Osaka's voice, written by Opus
+    from what's on screen. Needs network protocol work (the model key
+    lives server-side, so the client asks for a remark through the
+    oracle), which is why it waits. Shape: a slow cadence (minutes, not
+    seconds), only mid-visit, the request built from text already on
+    screen, the reply shown as her speech bubble (so the ≤ 24-char bubble
+    limit becomes wrapping), and a canned Osaka-ism when the answer
+    doesn't arrive in time. The AI commentary engine (design.md, AI
+    Commentary) is the nearest existing pattern. [U]
 
 ### The neighbours (Users pane)
 
