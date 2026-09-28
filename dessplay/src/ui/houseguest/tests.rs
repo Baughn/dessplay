@@ -342,17 +342,17 @@ proptest! {
             guest.set_picker(kitty());
         }
         let nook = [Nook::List, Nook::Users, Nook::Playlist];
-        guest.room.props = owned
-            .iter()
-            .map(|&(item, at, along, left)| room::Prop {
-                item: Furniture::ALL[item],
-                anchor: room::Anchor {
-                    nook: nook[at],
+        for &(item, at, along, left) in &owned {
+            // A second room offered a taken pane is refused, as in play.
+            let _ = guest.home.add(
+                nook[at],
+                room::Prop {
+                    item: Furniture::ALL[item],
                     at: along,
                     facing: if left { sprite::Facing::Left } else { sprite::Facing::Right },
                 },
-            })
-            .collect();
+            );
+        }
         let mut now = 0;
         let span = 200_000 / sizes.len() as u64;
         let mut mark = ChatMark::default();
@@ -384,6 +384,16 @@ proptest! {
                     State::Visiting(visit) => (visit.layer.cells().collect(), visit.shown.clone()),
                     _ => (Vec::new(), Vec::new()),
                 };
+                // A room's pieces share a pane, and a pane holds one room.
+                for a in &shown {
+                    for b in &shown {
+                        prop_assert_eq!(
+                            a.item.room() == b.item.room(),
+                            a.nook == b.nook,
+                            "{:?} and {:?}", a, b
+                        );
+                    }
+                }
                 // Her furniture stands on lines, over blank cells only,
                 // clear of protected cells, text she moved, and her.
                 for prop in &shown {
@@ -1489,7 +1499,7 @@ fn her_sofa_stands_in_a_quiet_pane_and_leaves_with_her() {
             (rect.x..rect.right()).any(|x| drawn(x, rect.bottom() - 1)),
             "graphics={graphics}: the sofa is on screen"
         );
-        assert!(guest.room.owns(Furniture::Sofa));
+        assert!(guest.home.owns(Furniture::Sofa));
         guest.activity(30_000);
         let end = run(
             &mut guest,
@@ -1503,6 +1513,6 @@ fn her_sofa_stands_in_a_quiet_pane_and_leaves_with_her() {
             "graphics={graphics}: the rain restores the frame"
         );
         // She still owns it next visit.
-        assert!(guest.room.owns(Furniture::Sofa));
+        assert!(guest.home.owns(Furniture::Sofa));
     }
 }

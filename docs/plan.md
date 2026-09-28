@@ -1982,13 +1982,17 @@ welcome; the only goal is "watching her is kind of fun".
   `art/props.svg` (filled, reviewed on `props_sheet`:
   `HOUSEGUEST_PROPS=/tmp/props.png cargo test -p dessplay --lib
   props_sheet -- --ignored`). `room.rs`: `Furniture`, `Nook` (List,
-  Users, Playlist, carried in `IdleView::nooks`), `Anchor { nook, at
-  (‰ along the bottom border), facing }`, `Room::resolve` / `spot`.
+  Users, Playlist, carried in `IdleView::nooks`), `Prop { item, at
+  (‰ along the bottom border), facing }`, `Home::resolve` / `spot`.
+  Pieces carry a `RoomKind` (living: sofa, TV; bedroom: bed, desk); a
+  room lives in one pane (`Home::rooms`) and moves whole when its pane
+  can't hold it. Later: she makes space for her things herself.
   Pieces are solid (their footprint and floor join the protected set)
   until step 2's compositing; one that would land on her waits in the
   closet. `Look::Prop` goes through the same `Graphics::paint` as her;
   ASCII drawings double as the goodbye's noise. Stage: `f` gives her the
-  next piece. The room lives on `Guest` (in memory until the ledger).
+  next piece. The `Home` lives on `Guest` (in memory until the ledger).
+  SVG work goes to fork agents (the user's suggestion, to save context).
 
 ### Testing
 

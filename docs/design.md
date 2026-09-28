@@ -1427,13 +1427,19 @@ this section states what is built.
 - **Furniture** (phase 3, in progress; only the stage gives it so
   far): a sofa (9×3 cells), TV (6×4), bed (10×3), and desk (7×3), drawn
   in her style (outlined, soft fills) as line art, or as ASCII without
-  graphics. She owns her furniture across visits. Each piece stands on a
-  quiet pane's bottom border — Users, Playlist, or The List, never the
-  chat — at a fraction of the way along it, so resizes and layout
-  changes carry it along. It stands only on unbroken line glyphs over
-  blank cells, clear of protected cells, text she moved, other pieces,
-  and her box; a piece that doesn't fit is in the closet for that frame
-  (hidden, still owned). A placed piece and the floor beneath it are
+  graphics. She owns her furniture across visits. **Panes are rooms**:
+  each piece belongs to a room (living room: sofa, TV; bedroom: bed,
+  desk), all of a room's pieces stand in one quiet pane — Users,
+  Playlist, or The List, never the chat — and a pane holds one room. A
+  room's first piece picks a free pane; the rest follow it. Each piece
+  stands on its pane's bottom border at a fraction of the way along it,
+  so resizes and layout changes carry it along, and only on unbroken line
+  glyphs over blank cells, clear of protected cells, text she moved,
+  other pieces, and her box; a piece whose cells aren't free is in the
+  closet for that frame (hidden, still owned). When a room's pane is gone
+  or too small to hold all its pieces, the whole room moves to a free
+  pane where every piece fits, and stays there; with none, the whole
+  room is in the closet. A placed piece and the floor beneath it are
   solid to her and to moved text. Her furniture shows only while she
   does, and the goodbye rain takes it along with her
   (why: [decisions](decisions.md#houseguest-furniture-is-pane-relative-and-leaves-with-her-2026-09-28)).

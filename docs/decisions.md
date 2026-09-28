@@ -1977,6 +1977,14 @@ a sofa that outlived her would be a UI element nobody asked for. Filled
 art: the user compared filled and coloured-outline versions on the
 props sheet; the fills are what read on the dark theme and match her,
 while outlines lost the TV screen and turned the quilt to noise.
+**Panes are rooms** (the user's call): pieces carry a room tag so the
+sofa and TV stay together and the bed and desk make a bedroom elsewhere
+— a home reads as rooms, not furniture scattered wherever it fits. A
+room that loses its pane moves whole (the user preferred that to pieces
+waiting in the closet one by one); text over a piece doesn't move the
+room, only closets that piece, so a user joining the Users pane doesn't
+send her living room wandering. Later, she should be able to *make*
+space for her things; until then, no space means the closet.
 Rejected: the chat as a room (new lines would send pieces to the closet
 constantly); putting her "room" in a fixed screen corner (layouts
 differ, and the corner is often text).

@@ -37,7 +37,7 @@ use graphics::{Graphics, Look};
 pub use idle::{Busy, ChatMark, IdleView, grow};
 use osaka::Osaka;
 pub use room::{Furniture, Nook};
-use room::{Room, Shown};
+use room::{Home, Shown};
 use sprite::{Part, Pose};
 use terrain::Terrain;
 
@@ -130,7 +130,7 @@ pub struct Guest {
     /// What came of the last cue.
     note: Option<Result<String, String>>,
     /// What she owns; it outlives her visits.
-    room: Room,
+    home: Home,
     /// A piece the stage gave her, placed at the next paint.
     gift: Option<Furniture>,
 }
@@ -149,7 +149,7 @@ impl Guest {
             graphics: None,
             cue: None,
             note: None,
-            room: Room::default(),
+            home: Home::default(),
             gift: None,
         }
     }
@@ -164,7 +164,7 @@ impl Guest {
     pub fn wishlist(&self) -> Option<Furniture> {
         Furniture::ALL
             .into_iter()
-            .find(|&item| !self.room.owns(item))
+            .find(|&item| !self.home.owns(item))
     }
 
     /// The stage: have her do `scene` at the next paint, somewhere it
@@ -367,7 +367,7 @@ impl Guest {
                 // ones, moved text, and her; what doesn't fit is in the
                 // closet this frame. Placed, it's solid to her and to text.
                 visit.shown = furnish(
-                    &mut self.room,
+                    &mut self.home,
                     &mut self.gift,
                     &mut self.note,
                     buf,
@@ -674,7 +674,7 @@ fn bubble_spot(
 /// first if there is one. Nothing covers protected cells, moved text,
 /// or her box (a piece that would land on her waits in the closet).
 fn furnish(
-    room: &mut Room,
+    home: &mut Home,
     gift: &mut Option<Furniture>,
     note: &mut Option<Result<String, String>>,
     buf: &Buffer,
@@ -693,24 +693,27 @@ fn furnish(
             || moved.contains(&(ux, uy))
             || view.protected.iter().any(|r| r.contains((ux, uy).into()))
     };
-    let shown = room.resolve(buf, &view.nooks, &blocked);
+    let shown = home.resolve(buf, &view.nooks, &blocked);
     let Some(item) = gift.take() else {
         return shown;
     };
-    let result = if room.owns(item) {
+    let result = if home.owns(item) {
         Err(format!("she already has a {}", item.name()))
     } else {
-        match Room::spot(buf, &view.nooks, &shown, &blocked, item, rng) {
-            Some(anchor) => {
-                tracing::info!(?item, ?anchor, "houseguest: new furniture");
-                room.props.push(room::Prop { item, anchor });
-                Ok(format!("a {} in {:?}", item.name(), anchor.nook))
+        match home.spot(buf, &view.nooks, &shown, &blocked, item, rng) {
+            Some((nook, prop)) => {
+                tracing::info!(?item, ?nook, at = prop.at, "houseguest: new furniture");
+                if home.add(nook, prop) {
+                    Ok(format!("a {} in {:?}", item.name(), nook))
+                } else {
+                    Err(format!("{nook:?} is another room"))
+                }
             }
             None => Err(format!("no room for a {}", item.name())),
         }
     };
     *note = Some(result);
-    room.resolve(buf, &view.nooks, &blocked)
+    home.resolve(buf, &view.nooks, &blocked)
 }
 
 /// Her furniture's colour as text (the ASCII drawings).
