@@ -1041,3 +1041,52 @@ fn every_scene_has_a_spot_in_the_stage_room() {
         }
     }
 }
+
+/// How often natural chat offers her text to tidy or play with: over
+/// random logs (message lengths like real chat), the share of screens
+/// with at least one pull and one swap. Prints; run by hand.
+#[test]
+#[ignore]
+fn reach_census() {
+    const WORDS: [&str; 12] = [
+        "ok", "yes", "lol", "the", "episode", "is", "that", "what", "watching", "no", "cat", "brb",
+    ];
+    for (width, height) in [(100, 30), (80, 24)] {
+        for graphics in [false, true] {
+            let (mut pulls, mut swaps, mut spots) = (0, 0, 0);
+            let screens = 60;
+            for seed in 0..screens {
+                let mut rng = Rng(seed);
+                let lines: Vec<String> = (0..40)
+                    .map(|_| {
+                        let n = 1 + rng.below(7) as usize;
+                        (0..n)
+                            .map(|_| WORDS[rng.below(WORDS.len() as u64) as usize])
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    })
+                    .collect();
+                let mut ui = super::stage::chat_ui(lines.into_iter());
+                let (real, view) = real_frame(&mut ui, width, height);
+                let terrain = Terrain::read(&real, &view.protected, graphics);
+                // Only text in the chat pane counts.
+                let chat = view.chat;
+                let inside = |x: u16, y: u16| chat.contains(Position::new(x, y));
+                let p: Vec<_> = super::scenes::pulls(&real, &terrain, &view.protected)
+                    .into_iter()
+                    .filter(|p| p.cells.iter().all(|&x| inside(x, p.row)))
+                    .collect();
+                let s: Vec<_> = super::scenes::swaps(&real, &terrain, &view.protected)
+                    .into_iter()
+                    .filter(|s| inside(s.pair.0, s.row))
+                    .collect();
+                pulls += usize::from(!p.is_empty());
+                swaps += usize::from(!s.is_empty());
+                spots += p.len();
+            }
+            eprintln!(
+                "{width}x{height} graphics={graphics}: pulls on {pulls}/{screens} screens ({spots} spots), swaps on {swaps}/{screens}"
+            );
+        }
+    }
+}

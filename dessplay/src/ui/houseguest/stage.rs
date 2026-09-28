@@ -273,7 +273,7 @@ pub fn stage_ui() -> Ui {
     chat_ui((0..40).map(|i| LINES[i % LINES.len()].to_string()))
 }
 
-fn chat_ui(lines: impl Iterator<Item = String>) -> Ui {
+pub(super) fn chat_ui(lines: impl Iterator<Item = String>) -> Ui {
     let mut ui = real_ui();
     let senders = ["kim", "bob", "ana"];
     let view = dessplay_core::state::StateView {

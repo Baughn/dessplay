@@ -1370,16 +1370,18 @@ this section states what is built.
   at something ("ooh"). They weigh more in the first five minutes of a
   visit. Standing still facing the viewer is short and rare; watching the
   chat, she stands side-on facing it.
-- **Tidying**: when a line ends right beside where her box could stand on
-  a floor, at chest height (box rows 1–2), on either side of her, she may
+- **Tidying**: when a line ends beside where her box could stand on a
+  floor — against it or up to three blank cells off — at chest height
+  (box rows 1–2), on either side of her, she may
   go and pull it — any pane: chat, Users, Playlist, The List. A "line" is
   a run of glyphs up to a border, a protected cell, or a gap of two blank
   cells, so table columns are independent. She makes for lines on other
   floors along the shortest route of links (climbs, drops). At the line:
   she faces it, braces, then heaves once per cycle
-  (600 ms × (1 + glyphs/40)), stepping away while the whole line follows
-  into the space she left. She pulls 3–8 cells or until she runs out of
-  floor, then looks pleased ("hehe"). If the text changes under her she
+  (600 ms × (1 + glyphs/40)): first reeling in any slack until the line
+  reaches her hands, then stepping away while the whole line follows into
+  the space she left. She pulls it 2–7 cells past her hands or until she
+  runs out of floor, then looks pleased ("hehe"). If the text changes under her she
   lets go and stares. Her decisions and their reasons are logged at
   debug level (`RUST_LOG=dessplay::ui::houseguest=debug`, or F11's level).
 - **Mischief undoes itself on a schedule**, fixed when it's made and kept
@@ -1388,8 +1390,8 @@ this section states what is built.
   piece of mischief is outstanding at a time
   (why: [decisions](decisions.md#houseguest-mischief-undoes-itself-on-a-schedule-2026-09-28)).
   - **Letter swap**: at the end of a whole ASCII word of three or more
-    letters beside her box (chest height, the last two pairs within
-    reach), she trades two adjacent different letters (`sat` → `sta`),
+    letters beside her box or up to two blank cells off (chest height, the
+    two pairs nearest her within reach), she trades two adjacent different letters (`sat` → `sta`),
     giggles ("hehe"), whistles innocently looking up ("~"), and swaps them
     back 7–14 s later.
   - **Sneeze**: "a..." then "chu!" — 2–4 glyphs beside her box (up to

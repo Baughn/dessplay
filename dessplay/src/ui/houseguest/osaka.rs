@@ -641,8 +641,9 @@ impl Osaka {
                             at,
                         );
                     };
-                    // At the line's end: brace.
-                    let goal = rng.range(3, 9) as u16;
+                    // At the line's end: brace. She reels in any slack
+                    // first, then heaves it 2–7 cells further.
+                    let goal = task.gap + rng.range(2, 8) as u16;
                     tracing::debug!(
                         row = task.row,
                         glyphs = task.cells.len(),
@@ -728,16 +729,19 @@ impl Osaka {
                     return self.decide(at, terrain, chances, rng);
                 };
                 if !heaving {
-                    // The heave: she steps back and the line follows.
+                    // The heave: the line comes to her hands (reeling in
+                    // the slack), then she steps back and it follows.
                     let step = task.side.step();
-                    let next = self.x + step;
-                    let room =
-                        terrain.platform_at(next, self.y).is_some() && terrain.clear(next, self.y);
-                    if !room {
-                        tracing::debug!("houseguest: out of floor, done pulling");
-                        return self.finish_pull(at);
+                    if offset >= task.gap {
+                        let next = self.x + step;
+                        let room = terrain.platform_at(next, self.y).is_some()
+                            && terrain.clear(next, self.y);
+                        if !room {
+                            tracing::debug!("houseguest: out of floor, done pulling");
+                            return self.finish_pull(at);
+                        }
+                        self.x = next;
                     }
-                    self.x = next;
                     let offset = offset + 1;
                     self.ops.push(LayerOp::Pull {
                         row: task.row,

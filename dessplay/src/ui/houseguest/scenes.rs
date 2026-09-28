@@ -20,6 +20,11 @@ use super::terrain::Terrain;
 pub(super) const PULL_ROWS: [i32; 2] = [1, 2];
 /// A line must have at least this many glyphs to be worth pulling.
 const MIN_GLYPHS: usize = 3;
+/// Blank cells a line's end may be from her hands: she reels it in
+/// before stepping back with it.
+pub(super) const PULL_GAP: u16 = 3;
+/// Blank cells a word may be from her hands and still be swapped.
+const SWAP_GAP: u16 = 2;
 
 /// Which side of her box a line is on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -40,7 +45,7 @@ impl Side {
 }
 
 /// A line she can pull: standing at `x` on the floor at `y`, the line on
-/// `row` ends right beside her box on `side`.
+/// `row` ends `gap` blank cells beside her box on `side`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Pull {
     pub x: i32,
@@ -49,6 +54,8 @@ pub(super) struct Pull {
     pub side: Side,
     /// Columns of the line's glyphs, left to right.
     pub cells: Vec<u16>,
+    /// Blank cells between her box and the line's end.
+    pub gap: u16,
 }
 
 /// Two adjacent letters of a word she could swap: standing at `x` on
@@ -211,16 +218,18 @@ pub(super) fn pulls(buf: &Buffer, terrain: &Terrain, protected: &[Rect]) -> Vec<
                     let Ok(edge) = u16::try_from(edge) else {
                         continue;
                     };
-                    if !takeable(buf, protected, (edge, row)) {
+                    let dir = -side.step();
+                    let Some((start, gap)) = reach(buf, protected, edge, row, dir, PULL_GAP) else {
                         continue;
-                    }
-                    if let Some(cells) = segment(buf, protected, edge, row, -side.step()) {
+                    };
+                    if let Some(cells) = segment(buf, protected, start, row, dir) {
                         out.push(Pull {
                             x,
                             y,
                             row,
                             side,
                             cells,
+                            gap,
                         });
                     }
                 }
@@ -254,7 +263,11 @@ pub(super) fn swaps(buf: &Buffer, terrain: &Terrain, protected: &[Rect]) -> Vec<
                     let Ok(edge) = u16::try_from(edge) else {
                         continue;
                     };
-                    let Some(word) = word(buf, protected, edge, row, -side.step()) else {
+                    let dir = -side.step();
+                    let Some((start, _)) = reach(buf, protected, edge, row, dir, SWAP_GAP) else {
+                        continue;
+                    };
+                    let Some(word) = word(buf, protected, start, row, dir) else {
                         continue;
                     };
                     for pair in word.windows(2).take(REACH) {
@@ -278,6 +291,30 @@ pub(super) fn swaps(buf: &Buffer, terrain: &Terrain, protected: &[Rect]) -> Vec<
         }
     }
     out
+}
+
+/// The first glyph she can take on `row` from the cell beside her box
+/// (`edge`) outwards in `dir`, across at most `max_gap` free cells: its
+/// column and the gap.
+fn reach(
+    buf: &Buffer,
+    protected: &[Rect],
+    edge: u16,
+    row: u16,
+    dir: i32,
+    max_gap: u16,
+) -> Option<(u16, u16)> {
+    let mut x = edge;
+    for gap in 0..=max_gap {
+        if takeable(buf, protected, (x, row)) {
+            return Some((x, gap));
+        }
+        if !super::layer::free(buf, protected, (x, row)) {
+            return None;
+        }
+        x = x.checked_add_signed(dir as i16)?;
+    }
+    None
 }
 
 /// Letter pairs from a word's end she can reach.
@@ -412,6 +449,27 @@ mod tests {
         assert_eq!(pull.cells, vec![1, 2, 3, 4, 6, 7]);
         assert_eq!(pull.side, Side::Left);
         assert_eq!(Job::Pull(pull.clone()).box_row(), 1);
+    }
+
+    /// A line ending a little way off is still in reach: she reels in
+    /// the slack. Further than [`PULL_GAP`] it isn't.
+    #[test]
+    fn a_line_a_few_cells_off_is_reeled_in() {
+        let buf = room(&[
+            "│                       ",
+            "│kim: hi                ",
+            "│                       ",
+            "│                       ",
+            "└───────────────────────",
+        ]);
+        let terrain = Terrain::read(&buf, &[], true);
+        let pulls = pulls(&buf, &terrain, &[]);
+        let gaps: Vec<(i32, u16)> = pulls
+            .iter()
+            .filter(|p| p.row == 1)
+            .map(|p| (p.x, p.gap))
+            .collect();
+        assert_eq!(gaps, vec![(10, 0), (11, 1), (12, 2), (13, 3)]);
     }
 
     #[test]
