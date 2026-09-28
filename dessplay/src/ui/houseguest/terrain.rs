@@ -61,6 +61,10 @@ fn horizontal_only(c: char) -> bool {
     )
 }
 
+fn blank(symbol: &str) -> bool {
+    symbol.trim().is_empty()
+}
+
 fn ledge(symbol: &str) -> bool {
     box_drawing(symbol).is_some_and(|c| !vertical_only(c))
 }
@@ -125,20 +129,39 @@ impl Terrain {
     /// Read the terrain from a finished frame. `protected` rectangles
     /// (and image cells) are solid: her body never enters them, though
     /// she may stand on a ledge that lies inside one.
-    pub fn read(buf: &Buffer, protected: &[Rect]) -> Self {
+    ///
+    /// `graphics` is the line-art mode: her image replaces the cells it
+    /// covers, so her body only enters cells that are blank or lines her
+    /// image redraws (text is never hidden behind her), and she only
+    /// stands on lines it can redraw.
+    pub fn read(buf: &Buffer, protected: &[Rect], graphics: bool) -> Self {
         let area = buf.area;
         let (width, height) = (i32::from(area.width), i32::from(area.height));
         let mut open = Vec::with_capacity((width * height).max(0) as usize);
         let mut ledges = Vec::with_capacity(open.capacity());
         let mut poles = Vec::with_capacity(open.capacity());
         for y in 0..area.height {
+            // The cell after a wide glyph looks blank but is half of it.
+            let mut after_wide = false;
             for x in 0..area.width {
                 let position = Position::new(area.x + x, area.y + y);
                 let cell = buf.cell(position);
+                let trailing = std::mem::replace(
+                    &mut after_wide,
+                    cell.is_some_and(|c| super::cells::width(c) > 1),
+                );
                 let skip = cell.is_none_or(super::cells::untouchable);
                 let symbol = cell.map_or(" ", |cell| cell.symbol());
-                open.push(!skip && !protected.iter().any(|r| r.contains(position)));
-                ledges.push(!skip && ledge(symbol));
+                let redrawable = || {
+                    symbol
+                        .chars()
+                        .next()
+                        .is_some_and(|c| super::graphics::strokes(c).is_some())
+                };
+                let text_ok = !graphics || (blank(symbol) && !trailing) || redrawable();
+                open.push(!skip && text_ok && !protected.iter().any(|r| r.contains(position)));
+                let floor = ledge(symbol) && (!graphics || redrawable());
+                ledges.push(!skip && floor);
                 poles.push(!skip && pole(symbol));
             }
         }
@@ -321,7 +344,7 @@ mod tests {
             "            ",
             "────────────",
         ]);
-        let terrain = Terrain::read(&buf, &[]);
+        let terrain = Terrain::read(&buf, &[], false);
         assert_eq!(
             terrain.platforms,
             [Platform {
@@ -343,7 +366,7 @@ mod tests {
             "            ",
             "────────────",
         ]);
-        let terrain = Terrain::read(&buf, &[Rect::new(8, 0, 4, 4)]);
+        let terrain = Terrain::read(&buf, &[Rect::new(8, 0, 4, 4)], false);
         let [platform] = terrain.platforms[..] else {
             panic!("{:?}", terrain.platforms);
         };
@@ -362,7 +385,7 @@ mod tests {
             "            ",
             "────────────",
         ]);
-        assert!(Terrain::read(&buf, &[]).platforms.is_empty());
+        assert!(Terrain::read(&buf, &[], false).platforms.is_empty());
     }
 
     #[test]
@@ -379,7 +402,7 @@ mod tests {
             "│            │",
             "└────────────┘",
         ]);
-        let terrain = Terrain::read(&buf, &[]);
+        let terrain = Terrain::read(&buf, &[], false);
         assert_eq!(terrain.platforms.len(), 2);
         let climbs: Vec<_> = terrain
             .links
@@ -404,7 +427,7 @@ mod tests {
             "              ",
             "──────────────",
         ]);
-        let terrain = Terrain::read(&buf, &[]);
+        let terrain = Terrain::read(&buf, &[], false);
         let drop = terrain
             .links
             .iter()

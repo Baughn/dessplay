@@ -11,14 +11,10 @@
 //! All timing is in the shell's monotonic millis and all randomness
 //! comes from a seeded generator, so tests reproduce exactly.
 
-// Line-art Osaka, under review; wired into painting once approved.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "art awaits review before wiring")
-)]
 mod art;
 mod cells;
 mod dissolve;
+mod graphics;
 mod idle;
 mod osaka;
 mod sprite;
@@ -31,6 +27,7 @@ use tuirealm::ratatui::style::{Color, Modifier};
 
 use cells::{Ink, put};
 use dissolve::{Dissolve, Frozen};
+use graphics::{Graphics, Look};
 pub use idle::{Busy, ChatMark, IdleView, grow};
 use osaka::Osaka;
 use sprite::Part;
@@ -64,13 +61,31 @@ impl Rng {
     }
 }
 
+/// Where her line art was placed in the last frame.
+#[derive(Clone, Copy, Debug)]
+struct Placement {
+    x: i32,
+    y: i32,
+    facing: sprite::Facing,
+    standing: bool,
+}
+
 struct Visit {
     osaka: Osaka,
     terrain: Terrain,
     /// What she painted in the last frame, with the real cells beneath —
     /// the dissolve's frozen composite if activity arrives now.
     painted: Vec<Frozen>,
+    /// Her line art in the last frame, if she was drawn as an image.
+    image: Option<Placement>,
     size: (u16, u16),
+}
+
+struct Leaving {
+    dissolve: Dissolve,
+    /// Line art for the startled-and-wave beat before she bursts into
+    /// letters.
+    image: Option<Placement>,
 }
 
 enum State {
@@ -78,7 +93,7 @@ enum State {
     /// The idle delay elapsed; she enters on the next paint.
     Arriving,
     Visiting(Box<Visit>),
-    Leaving(Box<Dissolve>),
+    Leaving(Box<Leaving>),
 }
 
 /// The idle houseguest.
@@ -92,6 +107,8 @@ pub struct Guest {
     /// Monotonic millis since which the client has been idle.
     quiet_since: u64,
     chat_mark: Option<ChatMark>,
+    /// Line art through the kitty protocol, when the terminal has it.
+    graphics: Option<Graphics>,
 }
 
 impl Guest {
@@ -105,7 +122,15 @@ impl Guest {
             truecolor: false,
             quiet_since: 0,
             chat_mark: None,
+            graphics: None,
         }
+    }
+
+    /// Draw her as line art through this terminal's image protocol
+    /// (kitty only); without it she stays an ASCII sprite.
+    pub fn set_picker(&mut self, picker: ratatui_image::picker::Picker) {
+        self.graphics = Graphics::new(picker);
+        tracing::debug!(graphics = self.graphics.is_some(), "houseguest renderer");
     }
 
     /// Whether she is on screen (visiting or leaving).
@@ -132,8 +157,12 @@ impl Guest {
                         visit.osaka.x,
                         self.truecolor,
                         visit.size,
+                        visit.image.is_some(),
                     );
-                    self.state = State::Leaving(Box::new(dissolve));
+                    self.state = State::Leaving(Box::new(Leaving {
+                        dissolve,
+                        image: visit.image,
+                    }));
                 }
             }
             leaving @ State::Leaving(_) => self.state = leaving,
@@ -157,8 +186,8 @@ impl Guest {
             }
             State::Arriving => true,
             State::Visiting(visit) => visit.osaka.tick(now, &visit.terrain, &mut self.rng),
-            State::Leaving(dissolve) => {
-                if dissolve.done(now) {
+            State::Leaving(leaving) => {
+                if leaving.dissolve.done(now) {
                     tracing::trace!("houseguest gone");
                     self.state = State::Absent;
                 }
@@ -176,7 +205,7 @@ impl Guest {
             }
             State::Arriving => now,
             State::Visiting(visit) => visit.osaka.due(),
-            State::Leaving(dissolve) => dissolve.next_frame(now),
+            State::Leaving(leaving) => leaving.dissolve.next_frame(now),
         };
         Some(Duration::from_millis(due.saturating_sub(now)))
     }
@@ -189,7 +218,7 @@ impl Guest {
         if matches!(self.state, State::Arriving) {
             self.state = State::Absent;
             if size.0 >= MIN_WIDTH && size.1 >= MIN_HEIGHT {
-                let terrain = Terrain::read(buf, &view.protected);
+                let terrain = Terrain::read(buf, &view.protected, self.graphics.is_some());
                 if let Some(osaka) = Osaka::arrive(now, &terrain, i32::from(size.0), &mut self.rng)
                 {
                     tracing::info!("houseguest arrived");
@@ -197,6 +226,7 @@ impl Guest {
                         osaka,
                         terrain,
                         painted: Vec::new(),
+                        image: None,
                         size,
                     }));
                 }
@@ -208,16 +238,37 @@ impl Guest {
         }
         match &mut self.state {
             State::Absent | State::Arriving => {}
-            State::Leaving(dissolve) => {
-                if dissolve.size() != size {
+            State::Leaving(leaving) => {
+                if leaving.dissolve.size() != size {
                     // The geometry she froze against is gone.
                     self.state = State::Absent;
-                } else {
-                    dissolve.paint(buf, now);
+                    return;
                 }
+                let t = now.saturating_sub(leaving.dissolve.started());
+                if let (Some(image), Some(graphics)) = (leaving.image, &mut self.graphics)
+                    && t < dissolve::RAIN_FROM_MS
+                    && leaving.dissolve.unchanged(buf)
+                {
+                    // Startled, then a wave; then she bursts into letters.
+                    let look = if t < dissolve::SMILE_FROM_MS {
+                        Look::Pose(sprite::Pose::Stand, sprite::Face::Surprised)
+                    } else {
+                        Look::Wave((t / 100) % 2 == 0)
+                    };
+                    let terrain = Terrain::read(buf, &view.protected, true);
+                    graphics.paint(
+                        buf,
+                        look,
+                        image.facing,
+                        (image.x, image.y),
+                        image.standing,
+                        &terrain,
+                    );
+                }
+                leaving.dissolve.paint(buf, now);
             }
             State::Visiting(visit) => {
-                visit.terrain = Terrain::read(buf, &view.protected);
+                visit.terrain = Terrain::read(buf, &view.protected, self.graphics.is_some());
                 visit.size = size;
                 if size.0 < MIN_WIDTH
                     || size.1 < MIN_HEIGHT
@@ -228,7 +279,25 @@ impl Guest {
                     self.quiet_since = now;
                     return;
                 }
-                visit.painted = draw(buf, &visit.osaka, &visit.terrain, now, self.truecolor);
+                match &mut self.graphics {
+                    Some(graphics) => {
+                        let (painted, image) = draw_art(
+                            buf,
+                            graphics,
+                            &visit.osaka,
+                            &visit.terrain,
+                            now,
+                            self.truecolor,
+                        );
+                        visit.painted = painted;
+                        visit.image = image;
+                    }
+                    None => {
+                        visit.painted =
+                            draw(buf, &visit.osaka, &visit.terrain, now, self.truecolor, true);
+                        visit.image = None;
+                    }
+                }
             }
         }
     }
@@ -292,10 +361,12 @@ fn draw(
     terrain: &Terrain,
     now: u64,
     truecolor: bool,
+    with_sprite: bool,
 ) -> Vec<Frozen> {
     let (sprite, bubble) = osaka.picture(now);
     let mut wanted: Vec<(i32, i32, char, Ink, Option<usize>)> = sprite
         .iter()
+        .filter(|_| with_sprite)
         .map(|cell| {
             let face = (cell.part == Part::Head && (-1..=1).contains(&cell.dx))
                 .then(|| (cell.dx + 1) as usize);
@@ -319,7 +390,15 @@ fn draw(
             sprite::Facing::Right => [right, left],
             sprite::Facing::Left => [left, right],
         };
-        let fits = |start: i32| (start..start + len).all(|x| terrain.open(x, row));
+        // Bubbles are text: only over blank cells, never over a line.
+        let blank = |x: i32| {
+            let (Ok(x), Ok(y)) = (u16::try_from(x), u16::try_from(row)) else {
+                return false;
+            };
+            buf.cell((x, y))
+                .is_some_and(|c| c.symbol().trim().is_empty())
+        };
+        let fits = |start: i32| (start..start + len).all(|x| terrain.open(x, row) && blank(x));
         if let Some(start) = sides.into_iter().find(|&start| fits(start)) {
             let bold = Ink::new(ink(Part::Body, truecolor).fg, Modifier::BOLD);
             for (i, glyph) in text.chars().enumerate() {
@@ -354,6 +433,61 @@ fn draw(
         }
     }
     painted
+}
+
+/// Paint her as line art, plus any bubble as text. The frozen cells for
+/// a dissolve are her box's (blank) cells, carrying the ASCII sprite's
+/// glyphs as the noise class she bursts into.
+fn draw_art(
+    buf: &mut Buffer,
+    graphics: &mut Graphics,
+    osaka: &Osaka,
+    terrain: &Terrain,
+    now: u64,
+    truecolor: bool,
+) -> (Vec<Frozen>, Option<Placement>) {
+    let (pose, face, _) = osaka.appearance(now);
+    let (sprite, _) = osaka.picture(now);
+    let placement = Placement {
+        x: osaka.x,
+        y: osaka.y,
+        facing: osaka.facing,
+        standing: osaka.standing(),
+    };
+    let mut body: Vec<Frozen> = Vec::new();
+    for dy in -sprite::HEIGHT..0 {
+        for dx in -(sprite::WIDTH / 2)..=(sprite::WIDTH / 2) {
+            let (x, y) = (osaka.x + dx, osaka.y + dy);
+            let (Ok(ux), Ok(uy)) = (u16::try_from(x), u16::try_from(y)) else {
+                continue;
+            };
+            let Some(under) = buf.cell((ux, uy)).cloned() else {
+                continue;
+            };
+            let cell = sprite.iter().find(|c| c.dx == dx && c.dy == dy);
+            body.push(Frozen {
+                x: ux,
+                y: uy,
+                glyph: cell.map_or('a', |c| c.glyph),
+                ink: ink(cell.map_or(Part::Body, |c| c.part), truecolor),
+                under,
+                face: None,
+            });
+        }
+    }
+    let placed = graphics
+        .paint(
+            buf,
+            Look::Pose(pose, face),
+            osaka.facing,
+            (osaka.x, osaka.y),
+            placement.standing,
+            terrain,
+        )
+        .is_some();
+    let mut painted = if placed { body } else { Vec::new() };
+    painted.extend(draw(buf, osaka, terrain, now, truecolor, false));
+    (painted, placed.then_some(placement))
 }
 
 #[cfg(test)]

@@ -604,6 +604,11 @@ impl ChatPane {
             .map(|due| std::time::Duration::from_millis(due.saturating_sub(self.search_clock)))
     }
 
+    /// The terminal's image protocol picker, once detected.
+    pub(crate) fn picker(&self) -> Option<&ratatui_image::picker::Picker> {
+        self.picker.as_ref()
+    }
+
     /// Set the detected image-protocol capability (production: once at
     /// terminal setup; tests inject `Picker::halfblocks()` for
     /// deterministic Unicode output).

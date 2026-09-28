@@ -137,12 +137,27 @@ impl Osaka {
                 return Some(Self::new(x, 0, Facing::Right, act, now, rng));
             }
         }
-        let (x, y, facing, to) = *entries.first()?;
+        if let Some(&(x, y, facing, to)) = entries.first() {
+            return Some(Self::new(
+                x,
+                y,
+                facing,
+                Act::Walk { to, then: None },
+                now,
+                rng,
+            ));
+        }
+        // Nowhere to walk in from or drop onto: she's simply there,
+        // blinking, as if she'd been home all along.
+        let pick = rng.below(terrain.platforms.len() as u64) as usize;
+        let platform = terrain.platforms.get(pick)?;
+        let x = platform.x0 + rng.below((platform.x1 - platform.x0 + 1) as u64) as i32;
+        let until = now + rng.range(2000, 5000);
         Some(Self::new(
             x,
-            y,
-            facing,
-            Act::Walk { to, then: None },
+            platform.y,
+            Facing::Right,
+            Act::Stand { until },
             now,
             rng,
         ))
@@ -474,7 +489,19 @@ impl Osaka {
 
     /// Her current sprite cells and bubble.
     pub fn picture(&self, now: u64) -> (Vec<SpriteCell>, Option<Bubble>) {
-        let (pose, face, bubble) = match self.act {
+        let (pose, face, bubble) = self.appearance(now);
+        (sprite::cells(pose, self.facing, face), bubble)
+    }
+
+    /// Whether she is standing on a floor (not climbing or falling), so
+    /// her line art includes the floor under her feet.
+    pub fn standing(&self) -> bool {
+        !matches!(self.act, Act::Climb { .. } | Act::Fall { .. })
+    }
+
+    /// Her pose, face and bubble at `now`.
+    pub fn appearance(&self, now: u64) -> (Pose, Face, Option<Bubble>) {
+        match self.act {
             Act::Stand { .. } => {
                 let blink = now < self.blink_until;
                 (
@@ -498,8 +525,7 @@ impl Osaka {
                     (Pose::Stand, Face::Vacant, Some(Bubble::Huh))
                 }
             }
-        };
-        (sprite::cells(pose, self.facing, face), bubble)
+        }
     }
 }
 

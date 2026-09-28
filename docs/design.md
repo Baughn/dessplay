@@ -1363,6 +1363,20 @@ this section states what is built.
 - Timing uses the UI thread's monotonic clock and her behaviour comes
   from a per-visit seeded generator; she redraws only when her pose
   changes, never at a fixed frame rate.
+- **Line art** when the terminal speaks the kitty graphics protocol
+  (Ghostty): SVG parts posed by a rig, rendered at the terminal's cell
+  size and placed over her 5×4-cell box with unicode placeholders.
+  Placeholders replace the cells they cover, so in this mode her box
+  only covers **blank cells or solid box-drawing lines, which her image
+  redraws** (never text, and never half of a wide glyph); standing, the
+  image grows one row to include the floor, so her feet rest on the line.
+  The redrawn lines follow the terminal's geometry (thickness ≈ cell
+  height / 16, centred); `DESSPLAY_HOUSEGUEST_LINE=thickness[,offset]`
+  overrides it. Each distinct frame is transmitted once and cached.
+  Without kitty graphics she is the ASCII sprite. Her goodbye in line
+  art: startled, a wave, then she bursts into letters that rain away
+  through the same dissolve
+  (why: [decisions](decisions.md#houseguest-line-art-over-kitty-placeholders-2026-09-28)).
 
 ### Watching a Series
 

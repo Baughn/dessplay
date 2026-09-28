@@ -712,6 +712,34 @@ Differences from the plan above, decided while building phase 1:
 - The shell forwards only key, mouse, and paste events as activity;
   resize re-anchors; focus changes are ignored.
 
+## Art direction (2026-09-28)
+
+Decided with the user after the ASCII sprite read as "a very
+large-headed alien":
+
+- **Osaka is line art** (SVG parts posed by a rig, rendered with resvg)
+  shown through the kitty graphics protocol; everyone in the group runs
+  Ghostty. She stays anime-styled, rendered at the terminal's real cell
+  size (1× for nearly everyone; at full resolution she looks like a
+  poseable doll, at 1× she reads right). The ASCII sprite remains the
+  fallback without graphics.
+- **Her box stays 5×4 cells.** Kitty unicode placeholders replace the
+  cells they cover, so in graphics mode she only ever stands where her
+  box is blank; pushing and pulling text keeps her hands at the box edge.
+  The floor row is drawn into her image (the border stretch under her
+  feet, matched to Ghostty's line geometry, tunable) so she stands *on*
+  the line rather than hovering half a cell above it.
+- **Four visual layers**: text (the app), panes (lines — fit both
+  worlds), furnishings, Osaka. **Furnishings bridge the gap: coloured,
+  unfilled line art**, halfway between the text UI and her anime style.
+- **Last on the feature list: the text factory.** Instead of only pushing
+  text out of sight, she hauls some into an industrial space (its font
+  changes on the way in) and compacts it into raw materials for
+  furniture.
+- **Her exit** keeps the startled face and a wave as image frames, then
+  she bursts into letters that rain away through the spoiler-scramble
+  dissolve — no stream of per-frame images for the terminal to store.
+
 ## Decisions
 
 Settled with the user, 2026-09-28:

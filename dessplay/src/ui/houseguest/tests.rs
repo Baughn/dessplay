@@ -214,7 +214,7 @@ fn assert_untouched(
             if protected.iter().any(|r| r.contains(position)) || cells::untouchable(want) {
                 prop_assert_eq!(got, want, "protected cell ({}, {}) changed", x, y);
             }
-            if cells::width(got) > 1 && x + 1 < area.right() {
+            if cells::width(got) > 1 && !cells::untouchable(got) && x + 1 < area.right() {
                 prop_assert_eq!(
                     frame.cell((x + 1, y)).unwrap().symbol(),
                     " ",
@@ -222,6 +222,41 @@ fn assert_untouched(
                 );
             }
         }
+    }
+    Ok(())
+}
+
+/// A Ghostty-like picker: kitty protocol, 9×19 px cells. (The fixed
+/// font size constructor is the only deterministic one.)
+#[allow(deprecated)]
+fn kitty() -> ratatui_image::picker::Picker {
+    let mut picker = ratatui_image::picker::Picker::from_fontsize((9, 19).into());
+    picker.set_protocol_type(ratatui_image::picker::ProtocolType::Kitty);
+    picker
+}
+
+/// In graphics mode nothing is ever hidden behind her: every cell she
+/// changes was blank, or a line her image redraws.
+fn assert_image_only_over_blanks_and_floors(
+    frame: &Buffer,
+    real: &Buffer,
+) -> Result<(), TestCaseError> {
+    for (index, (got, want)) in frame.content.iter().zip(&real.content).enumerate() {
+        if got == want {
+            continue;
+        }
+        let blank = want.symbol().trim().is_empty();
+        let line = want
+            .symbol()
+            .chars()
+            .next()
+            .is_some_and(|c| graphics::strokes(c).is_some());
+        prop_assert!(
+            blank || line,
+            "cell {} ({:?}) hidden behind her",
+            index,
+            want.symbol()
+        );
     }
     Ok(())
 }
@@ -249,6 +284,7 @@ proptest! {
     #[test]
     fn long_visits_never_touch_what_is_protected(
         seed in any::<u64>(),
+        graphics in any::<bool>(),
         sizes in proptest::collection::vec((60u16..130, 18u16..45), 1..4),
         text in proptest::collection::vec((0u16..60, 0u16..18, "[a-z漢─│ ]{1,6}"), 0..20),
         skips in proptest::collection::vec((0u16..60, 0u16..18), 0..6),
@@ -256,6 +292,9 @@ proptest! {
         protect in (0u16..40, 0u16..10, 1u16..20, 1u16..6),
     ) {
         let mut guest = Guest::new(seed);
+        if graphics {
+            guest.set_picker(kitty());
+        }
         let mut now = 0;
         let span = 300_000 / sizes.len() as u64;
         let mut mark = ChatMark::default();
@@ -279,6 +318,9 @@ proptest! {
                 guest.advance(now);
                 let frame = paint(&mut guest, &real, &view, now);
                 assert_untouched(&frame, &real, &protected)?;
+                if graphics {
+                    assert_image_only_over_blanks_and_floors(&frame, &real)?;
+                }
                 let changed = frame
                     .content
                     .iter()
@@ -332,9 +374,13 @@ fn real_frame(ui: &mut Ui, width: u16, height: u16) -> (Buffer, IdleView) {
 /// The terrain the default layout offers, drawn over the screen:
 /// `=` standable floor, `#` protected, `^`/`v` climb and drop starts.
 fn terrain_map(width: u16, height: u16) -> String {
+    terrain_map_in(width, height, false)
+}
+
+fn terrain_map_in(width: u16, height: u16, graphics: bool) -> String {
     let mut ui = real_ui();
     let (buf, view) = real_frame(&mut ui, width, height);
-    let terrain = Terrain::read(&buf, &view.protected);
+    let terrain = Terrain::read(&buf, &view.protected, graphics);
     let mut rows: Vec<Vec<char>> = (0..height)
         .map(|y| {
             (0..width)
@@ -374,6 +420,12 @@ fn terrain_map(width: u16, height: u16) -> String {
 #[test]
 fn default_layout_terrain_100x30() {
     insta::assert_snapshot!(terrain_map(100, 30));
+}
+
+/// Line-art mode: only blank headroom and straight floor glyphs.
+#[test]
+fn default_layout_terrain_graphics_100x30() {
+    insta::assert_snapshot!(terrain_map_in(100, 30, true));
 }
 
 #[test]
@@ -419,11 +471,80 @@ fn terrain_read_is_cheap() {
     let (buf, view) = real_frame(&mut ui, 200, 60);
     let started = std::time::Instant::now();
     for _ in 0..100 {
-        std::hint::black_box(Terrain::read(&buf, &view.protected));
+        std::hint::black_box(Terrain::read(&buf, &view.protected, false));
     }
     let per_read = started.elapsed() / 100;
     eprintln!("terrain read: {per_read:?}");
     if !cfg!(debug_assertions) {
         assert!(per_read < Duration::from_millis(2), "{per_read:?}");
     }
+}
+
+/// The first placement of a frame carries its image data; later frames
+/// with the same look only place it (the terminal keeps the image).
+#[test]
+fn a_frame_is_transmitted_once_then_only_placed() {
+    let mut ui = real_ui();
+    let (real, view) = real_frame(&mut ui, 100, 30);
+    let mut guest = Guest::new(7);
+    guest.set_picker(kitty());
+    let transmits = |buf: &Buffer| {
+        buf.content
+            .iter()
+            .filter(|cell| cell.symbol().contains("\x1b_G"))
+            .count()
+    };
+    let mut now = 0;
+    paint(&mut guest, &real, &view, now);
+    let mut seen_image = false;
+    let mut total = 0;
+    let mut frames = 0;
+    while now < 120_000 {
+        let step = guest
+            .next_tick(now)
+            .map_or(1000, |d| d.as_millis() as u64)
+            .max(1);
+        now += step;
+        if guest.advance(now) {
+            let frame = paint(&mut guest, &real, &view, now);
+            let placed = frame
+                .content
+                .iter()
+                .any(|cell| cell.symbol().contains('\u{10EEEE}'));
+            seen_image |= placed;
+            total += transmits(&frame);
+            frames += usize::from(placed);
+        }
+    }
+    assert!(seen_image, "she was drawn as line art");
+    assert!(total < frames, "{total} transmits over {frames} frames");
+}
+
+/// Standing on a floor, the floor row joins her image (feet on the line).
+#[test]
+fn standing_on_a_floor_draws_the_floor_row_into_the_image() {
+    let mut ui = real_ui();
+    let (real, view) = real_frame(&mut ui, 100, 30);
+    let mut guest = Guest::new(7);
+    guest.set_picker(kitty());
+    let frame = run(&mut guest, &real, &view, 0, 95_000);
+    let rows: Vec<u16> = (0..frame.area.height)
+        .filter(|&y| {
+            (0..frame.area.width).any(|x| {
+                frame
+                    .cell((x, y))
+                    .is_some_and(|c| c.symbol().contains('\u{10EEEE}'))
+            })
+        })
+        .collect();
+    assert_eq!(rows.len(), 5, "4 body rows + the floor row: {rows:?}");
+    let floor = *rows.last().unwrap();
+    let under: String = (0..real.area.width)
+        .filter_map(|x| real.cell((x, floor)))
+        .map(|c| c.symbol().to_string())
+        .collect();
+    assert!(
+        under.contains('─'),
+        "the image's last row is a floor: {under}"
+    );
 }

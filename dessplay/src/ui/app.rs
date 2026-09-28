@@ -566,6 +566,11 @@ impl Ui {
         self.color_depth = color_depth;
     }
 
+    /// The detected image protocol picker (the houseguest draws with it).
+    pub fn image_picker(&self) -> Option<ratatui_image::picker::Picker> {
+        self.chat.picker().cloned()
+    }
+
     /// What the idle houseguest may know about the frame just drawn
     /// (proposal 2026-09-28-houseguest). `images` are the renderer's
     /// protocol-image rectangles for that frame.

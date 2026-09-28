@@ -434,6 +434,9 @@ pub fn run_ui_loop<A: TerminalAdapter>(
     // The idle houseguest: a post-render overlay that reads each frame
     // and paints over it, never feeding back into `ui`.
     let mut guest = super::houseguest::Guest::new(rand::random());
+    if let Some(picker) = ui.image_picker() {
+        guest.set_picker(picker);
+    }
     let _ = draw(adapter, &mut ui, &mut renderer, &mut guest);
     loop {
         if ui.layout_settings_dirty {

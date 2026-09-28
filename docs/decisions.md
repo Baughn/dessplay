@@ -1901,3 +1901,23 @@ protected rectangle (she stands on the status separator); only her body
 cells are checked. A release-build read of a 200×60 frame takes ~80 µs,
 so it runs every frame she is on screen.
 
+## Houseguest line art over kitty placeholders (2026-09-28)
+
+**Rule:** With kitty graphics, Osaka is line art placed by unicode
+placeholders; her box only covers blank cells and solid lines her image
+redraws. See [design.md](design.md#houseguest).
+
+**Why:** A 5×4-cell ASCII figure read as "a very large-headed alien";
+everyone in the group runs Ghostty, so line art costs nothing in reach.
+Placeholders replace the cells they cover — transparent pixels show the
+cell background, not the text — so rather than float over text (which
+would mean hand-rolling kitty placements outside ratatui-image, or
+re-rendering the text ourselves), she only stands where nothing would be
+hidden, and redraws any border line under her. That also puts her feet
+*on* the line instead of half a cell above it. Her exit keeps two image
+beats and then bursts into text rain, because a stream of per-frame
+images would pile up in the terminal's image store (ratatui-image never
+deletes images). Rejected: vendoring ratatui-image for real overlay
+placements (possible later); a larger box (more detail, fewer floors on
+80×24).
+

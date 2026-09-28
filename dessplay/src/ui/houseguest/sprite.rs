@@ -8,14 +8,14 @@ pub(super) const WIDTH: i32 = 5;
 pub(super) const HEIGHT: i32 = 4;
 
 /// Which way she faces.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) enum Facing {
     Left,
     Right,
 }
 
 /// A body pose.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) enum Pose {
     Stand,
     /// Walk cycle frame 0–3.
@@ -29,7 +29,7 @@ pub(super) enum Pose {
 }
 
 /// Her face, drawn into the head of frontal poses.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) enum Face {
     Vacant,
     Blink,
