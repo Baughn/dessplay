@@ -11,6 +11,12 @@
 //! All timing is in the shell's monotonic millis and all randomness
 //! comes from a seeded generator, so tests reproduce exactly.
 
+// Line-art Osaka, under review; wired into painting once approved.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "art awaits review before wiring")
+)]
+mod art;
 mod cells;
 mod dissolve;
 mod idle;

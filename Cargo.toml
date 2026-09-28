@@ -83,6 +83,7 @@ percent-encoding = "2"
 # Placeholder PNG generation (Phase 9): rasterize status text with the
 # embedded DejaVu Sans into a PNG mpv can display. The decode formats
 # (jpeg/webp/gif) are for inline chat images — see chat_images.rs.
+resvg = { version = "0.48", default-features = false }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
 # Inline chat images: renders a decoded image into the ratatui buffer
 # via the terminal's best protocol (Kitty graphics on Ghostty/kitty/

@@ -1,0 +1,104 @@
+<!-- Osaka's parts, posed by `art.rs`. Canvas 100 x 160; feet rest on
+     y = 158. Each part is a symbol drawn at its pivot; `art.rs` places
+     them with rotate/translate. Outlines use currentColor (the theme's
+     foreground); interior detail is dark so it reads on light fills. -->
+<defs>
+  <!-- Bob: behind the face, ends curling in at the jaw. -->
+  <g id="hair-back">
+    <path d="M 21 46 C 18 22 33 7 50 7 C 67 7 82 22 79 46 L 80 64
+             C 81 70 77 74 72 71 C 71 67 70 64 68 62 L 32 62
+             C 30 64 29 67 28 71 C 23 74 19 70 20 64 Z"
+          fill="#6f4330" stroke="currentColor" stroke-width="2"/>
+  </g>
+  <g id="face">
+    <path d="M 28 40 C 28 57 38 68 50 68 C 62 68 72 57 72 40
+             C 72 30 62 25 50 25 C 38 25 28 30 28 40 Z"
+          fill="#f3d9c8" stroke="currentColor" stroke-width="2"/>
+  </g>
+  <!-- Bangs cut across the forehead, uneven tips, plus the two locks
+       that frame her face. -->
+  <g id="hair-front">
+    <path d="M 24 46 C 23 22 36 10 50 10 C 64 10 77 22 76 46
+             L 72.5 45 L 71 37 L 68.5 40.5 L 65 36.5 L 61 40 L 56 37
+             L 51 40.5 L 46 37 L 41 40.5 L 37 37 L 33.5 41 L 31 38 L 28 45 Z"
+          fill="#7a4a35" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+    <path d="M 25 44 C 24 54 25 61 29 68 L 31 57 C 30 52 29 48 29 44 Z"
+          fill="#7a4a35" stroke="currentColor" stroke-width="1.6"/>
+    <path d="M 75 44 C 76 54 75 61 71 68 L 69 57 C 70 52 71 48 71 44 Z"
+          fill="#7a4a35" stroke="currentColor" stroke-width="1.6"/>
+  </g>
+
+  <!-- Faces: eyes and mouth only. Her default is the vacant stare:
+       heavy upper lids over small, level irises. -->
+  <g id="face-vacant">
+    <path d="M 36 45.2 L 44.2 45.2 L 44.2 48.5 A 4.1 4.6 0 0 1 36 48.5 Z" fill="#3b2a22"/>
+    <path d="M 56 45.2 L 64.2 45.2 L 64.2 48.5 A 4.1 4.6 0 0 1 56 48.5 Z" fill="#3b2a22"/>
+    <circle cx="41.9" cy="47.4" r="1.2" fill="#ffffff"/>
+    <circle cx="61.9" cy="47.4" r="1.2" fill="#ffffff"/>
+    <path d="M 34 45.5 L 46 44.8" fill="none" stroke="#2b1d18" stroke-width="2" stroke-linecap="round"/>
+    <path d="M 54 44.8 L 66 45.5" fill="none" stroke="#2b1d18" stroke-width="2" stroke-linecap="round"/>
+    <path d="M 47.5 59.5 Q 50 61.2 52.5 59.5" fill="none" stroke="#2b1d18" stroke-width="1.6" stroke-linecap="round"/>
+  </g>
+  <g id="face-blink">
+    <path d="M 34 48 Q 39.5 50.5 45 48" fill="none" stroke="#2b1d18" stroke-width="2.2" stroke-linecap="round"/>
+    <path d="M 55 48 Q 60.5 50.5 66 48" fill="none" stroke="#2b1d18" stroke-width="2.2" stroke-linecap="round"/>
+    <path d="M 47.5 59.5 Q 50 61.2 52.5 59.5" fill="none" stroke="#2b1d18" stroke-width="1.6" stroke-linecap="round"/>
+  </g>
+  <g id="face-surprised">
+    <circle cx="40" cy="47" r="4.8" fill="#ffffff" stroke="#2b1d18" stroke-width="1.8"/>
+    <circle cx="60" cy="47" r="4.8" fill="#ffffff" stroke="#2b1d18" stroke-width="1.8"/>
+    <circle cx="40.8" cy="47.3" r="1.8" fill="#2b1d18"/>
+    <circle cx="60.8" cy="47.3" r="1.8" fill="#2b1d18"/>
+    <ellipse cx="50" cy="60.5" rx="2.2" ry="2.8" fill="#8a3b34" stroke="#2b1d18" stroke-width="1.2"/>
+  </g>
+  <g id="face-smile">
+    <path d="M 34.5 49 Q 39.5 42.5 44.5 49" fill="none" stroke="#2b1d18" stroke-width="2.2" stroke-linecap="round"/>
+    <path d="M 55.5 49 Q 60.5 42.5 65.5 49" fill="none" stroke="#2b1d18" stroke-width="2.2" stroke-linecap="round"/>
+    <path d="M 45.5 58.5 Q 50 63.5 54.5 58.5 Z" fill="#8a3b34" stroke="#2b1d18" stroke-width="1.3" stroke-linejoin="round"/>
+  </g>
+  <g id="face-dizzy">
+    <path d="M 40 47 m -4.5 0 a 4.5 4.5 0 1 0 9 0 a 3.2 3.2 0 1 0 -6.4 0 a 1.8 1.8 0 1 0 3.6 0"
+          fill="none" stroke="#2b1d18" stroke-width="1.5"/>
+    <path d="M 60 47 m -4.5 0 a 4.5 4.5 0 1 0 9 0 a 3.2 3.2 0 1 0 -6.4 0 a 1.8 1.8 0 1 0 3.6 0"
+          fill="none" stroke="#2b1d18" stroke-width="1.5"/>
+    <path d="M 45.5 60 Q 47.8 58 50 60 Q 52.2 62 54.5 60" fill="none" stroke="#2b1d18" stroke-width="1.5" stroke-linecap="round"/>
+  </g>
+
+  <!-- Summer sailor uniform: light blouse, navy collar with a white
+       stripe, red neckerchief. Neck pivot at (50, 70). -->
+  <g id="torso">
+    <rect x="46.5" y="64" width="7" height="9" fill="#f3d9c8" stroke="currentColor" stroke-width="1.4"/>
+    <path d="M 37 72 C 41 70 59 70 63 72 L 66 104 L 34 104 Z"
+          fill="#d7dee8" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+    <path d="M 37 72 C 41 70 59 70 63 72 L 64 81 L 50 91 L 36 81 Z"
+          fill="#2d3f7a" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+    <path d="M 38.2 79.5 L 50 88.3 L 61.8 79.5" fill="none" stroke="#ffffff" stroke-width="1.1"/>
+    <path d="M 50 89 L 42.5 85 L 43.5 94 Z M 50 89 L 57.5 85 L 56.5 94 Z"
+          fill="#d64545" stroke="#7d2323" stroke-width="0.9" stroke-linejoin="round"/>
+    <path d="M 48.8 90 L 45.5 100 L 50 97.5 L 54.5 100 L 51.2 90 Z"
+          fill="#d64545" stroke="#7d2323" stroke-width="0.9" stroke-linejoin="round"/>
+  </g>
+  <g id="skirt">
+    <path d="M 34.5 102 L 65.5 102 L 72 124 L 28 124 Z"
+          fill="#27325e" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+    <path d="M 42 103 L 39.5 123.5 M 50 103 L 50 123.5 M 58 103 L 60.5 123.5"
+          fill="none" stroke="#11183a" stroke-width="1.2"/>
+  </g>
+
+  <!-- Limbs, drawn hanging straight down from a pivot at (0, 0). -->
+  <g id="arm-upper">
+    <rect x="-3.4" y="-1" width="6.8" height="15" rx="3" fill="#d7dee8" stroke="currentColor" stroke-width="1.6"/>
+  </g>
+  <g id="arm-lower">
+    <rect x="-2.2" y="-1" width="4.4" height="12.5" rx="2" fill="#f3d9c8" stroke="currentColor" stroke-width="1.4"/>
+    <circle cx="0" cy="13" r="2.8" fill="#f3d9c8" stroke="currentColor" stroke-width="1.4"/>
+  </g>
+  <g id="leg-upper">
+    <rect x="-2.8" y="-1" width="5.6" height="19" rx="2.5" fill="#f3d9c8" stroke="currentColor" stroke-width="1.5"/>
+  </g>
+  <g id="leg-lower">
+    <rect x="-2.6" y="-1" width="5.2" height="16" rx="2.3" fill="#f3d9c8" stroke="currentColor" stroke-width="1.5"/>
+    <rect x="-2.6" y="5" width="5.2" height="10" rx="1.5" fill="#f4f6f8" stroke="currentColor" stroke-width="1.2"/>
+    <ellipse cx="1.6" cy="16.2" rx="4.4" ry="2.4" fill="#4a2a1c" stroke="currentColor" stroke-width="1.2"/>
+  </g>
+</defs>
