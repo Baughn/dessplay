@@ -777,3 +777,54 @@ fn she_pulls_a_chat_line_and_the_goodbye_puts_it_back() {
         );
     }
 }
+
+/// She keeps herself busy: across visits she does on-the-spot activities
+/// (sitting, lying, calisthenics…) and spends little time just standing
+/// and staring at the viewer.
+#[test]
+fn she_mostly_does_things_rather_than_stare() {
+    use super::sprite::Pose;
+    let real = rooms(100, 30);
+    let view = view(bottom_strip(100, 30));
+    let (mut staring, mut total, mut activities) = (0u64, 0u64, 0usize);
+    for seed in 0..4u64 {
+        let mut guest = Guest::new(seed);
+        let mut now = 0;
+        paint(&mut guest, &real, &view, now);
+        let mut last = None;
+        while now < 300_000 {
+            let step = guest
+                .next_tick(now)
+                .map_or(1000, |d| d.as_millis() as u64)
+                .clamp(1, 1000);
+            if let State::Visiting(visit) = &guest.state {
+                let (pose, ..) = visit.osaka.appearance(now);
+                total += step;
+                if pose == Pose::Stand {
+                    staring += step;
+                }
+                let active = matches!(
+                    pose,
+                    Pose::Sit
+                        | Pose::LieBack(_)
+                        | Pose::LieFront(_)
+                        | Pose::Jack(_)
+                        | Pose::ToeTouch(_)
+                        | Pose::Stretch
+                        | Pose::Gaze
+                );
+                if active && last != Some(std::mem::discriminant(&pose)) {
+                    activities += 1;
+                }
+                last = Some(std::mem::discriminant(&pose));
+            }
+            now += step;
+            if guest.advance(now) {
+                paint(&mut guest, &real, &view, now);
+            }
+        }
+    }
+    assert!(total > 0);
+    assert!(activities >= 4, "{activities} activities over four visits");
+    assert!(staring * 4 < total, "stared {staring} of {total} ms");
+}

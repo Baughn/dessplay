@@ -77,6 +77,72 @@ enum Act {
     Admire {
         until: u64,
     },
+    /// An activity on the spot.
+    Idle {
+        what: Activity,
+        since: u64,
+        until: u64,
+    },
+}
+
+/// Something to do on the spot that isn't staring at the viewer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Activity {
+    Sit,
+    LieBack,
+    LieFront,
+    Jacks,
+    ToeTouch,
+    Stretch,
+    Gaze,
+}
+
+impl Activity {
+    const ALL: [Activity; 7] = [
+        Self::Sit,
+        Self::LieBack,
+        Self::LieFront,
+        Self::Jacks,
+        Self::ToeTouch,
+        Self::Stretch,
+        Self::Gaze,
+    ];
+
+    /// How long she keeps at it (ms range).
+    fn duration(self) -> (u64, u64) {
+        match self {
+            Self::Sit => (10_000, 25_000),
+            Self::LieBack => (15_000, 40_000),
+            Self::LieFront => (10_000, 25_000),
+            Self::Jacks => (4_000, 8_000),
+            Self::ToeTouch => (5_000, 9_000),
+            Self::Stretch => (2_000, 4_000),
+            Self::Gaze => (4_000, 10_000),
+        }
+    }
+
+    /// Animation frame period; 0 for a held pose.
+    fn period(self) -> u64 {
+        match self {
+            Self::LieBack => 1400,
+            Self::LieFront => 500,
+            Self::Jacks => 450,
+            Self::ToeTouch => 900,
+            Self::Sit | Self::Stretch | Self::Gaze => 0,
+        }
+    }
+
+    fn look(self, frame: u8) -> (Pose, Face, Option<Bubble>) {
+        match self {
+            Self::Sit => (Pose::Sit, Face::Vacant, None),
+            Self::LieBack => (Pose::LieBack(frame), Face::Blink, Some(Bubble::Zzz)),
+            Self::LieFront => (Pose::LieFront(frame), Face::Happy, Some(Bubble::Hum)),
+            Self::Jacks => (Pose::Jack(frame), Face::Happy, Some(Bubble::Count)),
+            Self::ToeTouch => (Pose::ToeTouch(frame), Face::Vacant, None),
+            Self::Stretch => (Pose::Stretch, Face::Blink, Some(Bubble::Stretch)),
+            Self::Gaze => (Pose::Gaze, Face::Curious, Some(Bubble::Ooh)),
+        }
+    }
 }
 
 /// A speech or thought bubble.
@@ -86,6 +152,11 @@ pub(super) enum Bubble {
     Bang,
     Huh,
     Hehe,
+    Zzz,
+    Hum,
+    Count,
+    Stretch,
+    Ooh,
 }
 
 impl Bubble {
@@ -95,6 +166,11 @@ impl Bubble {
             Self::Bang => "!",
             Self::Huh => "?",
             Self::Hehe => "hehe",
+            Self::Zzz => "zzz",
+            Self::Hum => "~",
+            Self::Count => "1, 2!",
+            Self::Stretch => "nnn~",
+            Self::Ooh => "ooh",
         }
     }
 }
@@ -121,6 +197,8 @@ pub(super) struct Osaka {
     goal: Option<Pull>,
     /// The pole she's climbing (column).
     pole: i32,
+    /// When this visit began (early visits favour activities).
+    arrived: u64,
     /// Layer changes for the next paint to apply.
     ops: Vec<LayerOp>,
 }
@@ -140,6 +218,7 @@ impl Osaka {
             task: None,
             goal: None,
             pole: x,
+            arrived: now,
             ops: Vec::new(),
         };
         osaka.act_due = osaka.first_due(now);
@@ -241,6 +320,7 @@ impl Osaka {
             | Act::Peer { until, .. }
             | Act::Dazed { until }
             | Act::Admire { until } => until,
+            Act::Idle { what, since, until } => next_frame(what, since, now).min(until),
             Act::Look {
                 surprised_until, ..
             } => surprised_until,
@@ -302,6 +382,13 @@ impl Osaka {
 
     fn fire(&mut self, at: u64, terrain: &Terrain, chances: &Chances, rng: &mut Rng) {
         match self.act {
+            Act::Idle { what, since, until } => {
+                if at >= until {
+                    self.decide(at, terrain, chances, rng);
+                } else {
+                    self.act_due = next_frame(what, since, at).min(until);
+                }
+            }
             Act::Stand { .. } | Act::SpaceOut { .. } | Act::Dazed { .. } | Act::Admire { .. } => {
                 self.decide(at, terrain, chances, rng)
             }
@@ -593,14 +680,35 @@ impl Osaka {
         } else if chances.pulls.is_empty() {
             tracing::trace!("houseguest: nothing to tidy");
         }
+        // Early in a visit she's busier; staring at the viewer is short and
+        // rare either way.
+        let early = at.saturating_sub(self.arrived) < 300_000;
+        let busy = if early { 40 } else { 28 };
         let roll = rng.below(100);
-        let act = if roll < 30 {
+        let act = if roll < 8 {
             Act::Stand {
-                until: at + rng.range(3000, 12_000),
+                until: at + rng.range(2000, 5000),
             }
-        } else if roll < 40 {
+        } else if roll < 16 {
             Act::SpaceOut {
-                until: at + rng.range(8000, 20_000),
+                until: at + rng.range(6000, 14_000),
+            }
+        } else if roll < 16 + busy {
+            let pick = rng.below(Activity::ALL.len() as u64) as usize;
+            let what = Activity::ALL.get(pick).copied().unwrap_or(Activity::Gaze);
+            let (lo, hi) = what.duration();
+            if matches!(what, Activity::Sit | Activity::LieBack | Activity::LieFront) {
+                // Sitting and lying face either way.
+                self.facing = if rng.below(2) == 0 {
+                    Facing::Left
+                } else {
+                    Facing::Right
+                };
+            }
+            Act::Idle {
+                what,
+                since: at,
+                until: at + rng.range(lo, hi),
             }
         } else {
             let links: Vec<&Link> = terrain.links.iter().filter(|l| l.from == here).collect();
@@ -752,11 +860,21 @@ impl Osaka {
         match self.act {
             Act::Stand { .. } => {
                 let blink = now < self.blink_until;
-                (
-                    Pose::Stand,
-                    if blink { Face::Blink } else { Face::Vacant },
-                    None,
-                )
+                let face = if blink { Face::Blink } else { Face::Vacant };
+                // Watching the chat she stands side-on, facing it.
+                let pose = if now < self.watch_until {
+                    Pose::Side
+                } else {
+                    Pose::Stand
+                };
+                (pose, face, None)
+            }
+            Act::Idle { what, since, .. } => {
+                let frame = now
+                    .saturating_sub(since)
+                    .checked_div(what.period())
+                    .map_or(0, |n| (n % 2) as u8);
+                what.look(frame)
             }
             Act::SpaceOut { .. } => (Pose::Stand, Face::Vacant, Some(Bubble::Dots)),
             Act::Walk { .. } => (Pose::Walk(self.x.rem_euclid(4) as u8), Face::Vacant, None),
@@ -777,9 +895,9 @@ impl Osaka {
                 surprised_until, ..
             } => {
                 if now < surprised_until {
-                    (Pose::Stand, Face::Surprised, Some(Bubble::Bang))
+                    (Pose::Side, Face::Surprised, Some(Bubble::Bang))
                 } else {
-                    (Pose::Stand, Face::Vacant, Some(Bubble::Huh))
+                    (Pose::Side, Face::Curious, Some(Bubble::Huh))
                 }
             }
         }
@@ -839,4 +957,14 @@ fn route(terrain: &Terrain, from: usize, to: usize) -> Option<Link> {
         }
     }
     None
+}
+
+/// The next animation-frame boundary of `what` after `now`, or far away
+/// for a held pose.
+fn next_frame(what: Activity, since: u64, now: u64) -> u64 {
+    let period = what.period();
+    if period == 0 {
+        return u64::MAX;
+    }
+    since + (now.saturating_sub(since) / period + 1) * period
 }

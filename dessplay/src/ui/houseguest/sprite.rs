@@ -36,6 +36,23 @@ pub(super) enum Pose {
         heaving: bool,
         row: u8,
     },
+    /// Sitting on the floor hugging her knees.
+    Sit,
+    /// Lying on her back, knees up, hands behind her head (frame 0–1
+    /// swings a foot).
+    LieBack(u8),
+    /// Lying on her stomach, chin propped, feet kicking (frame 0–1).
+    LieFront(u8),
+    /// Jumping jacks (frame 0: in, 1: out).
+    Jack(u8),
+    /// Touching her toes (frame 0: up, 1: down).
+    ToeTouch(u8),
+    /// A big stretch, arms up.
+    Stretch,
+    /// Gazing up at something.
+    Gaze,
+    /// Standing side-on, looking the way she faces.
+    Side,
 }
 
 /// Her face, drawn into the head of frontal poses.
@@ -45,6 +62,10 @@ pub(super) enum Face {
     Blink,
     Surprised,
     Pleased,
+    /// Big eyes, open smile.
+    Happy,
+    /// Looking up, a small "o".
+    Curious,
 }
 
 impl Face {
@@ -54,6 +75,8 @@ impl Face {
             Self::Blink => ['-', '_', '-'],
             Self::Surprised => ['o', '_', 'o'],
             Self::Pleased => ['^', '_', '^'],
+            Self::Happy => ['^', 'o', '^'],
+            Self::Curious => ['\'', 'o', '\''],
         }
     }
 }
@@ -72,6 +95,26 @@ const CLIMB: [[&str; 4]; 2] = [
 const FALL: [&str; 4] = ["(o_o)", "\\|V|/", " /_\\ ", " / \\ "];
 const DAZED: [&str; 4] = ["(@_@)", "/|V|\\", " /_\\ ", " / \\ "];
 const PEER: [&str; 4] = ["( o.)", "/|V|>", " /_\\ ", " / \\ "];
+const SIT: [&str; 4] = ["     ", "(._.)", "<(V)>", " d b "];
+const LIE_BACK: [[&str; 4]; 2] = [
+    ["     ", "     ", "   /\\", "o=V=^"],
+    ["     ", "     ", "  /\\ ", "o=V=^"],
+];
+const LIE_FRONT: [[&str; 4]; 2] = [
+    ["     ", "     ", "    /", "o_V_/"],
+    ["     ", "     ", "   | ", "o_V_|"],
+];
+const JACK: [[&str; 4]; 2] = [
+    ["(._.)", "/|V|\\", " /_\\ ", " | | "],
+    ["(._.)", "\\|V|/", " /_\\ ", "/   \\"],
+];
+const TOE_TOUCH: [[&str; 4]; 2] = [
+    ["( ._)", " |V| ", " /_\\ ", " / \\ "],
+    ["     ", "  __o", " /V|\\", " / \\ "],
+];
+const STRETCH: [&str; 4] = ["(._.)", "\\|V|/", " /_\\ ", " / \\ "];
+const GAZE: [&str; 4] = ["( 'o)", " |V| ", " /_\\ ", " / \\ "];
+const SIDE: [&str; 4] = ["( ._)", " |V| ", " /_\\ ", " / \\ "];
 const PULL: [[&str; 4]; 2] = [
     ["( ._)", "\\|V|=", " /_\\ ", " / \\ "],
     ["(._ )", "\\|V|=", " /_\\ ", "/  \\ "],
@@ -86,6 +129,14 @@ fn rows(pose: Pose) -> ([&'static str; 4], bool) {
         Pose::Dazed => (DAZED, false),
         Pose::Peer => (PEER, false),
         Pose::Pull { heaving, .. } => (PULL[usize::from(heaving)], false),
+        Pose::Sit => (SIT, true),
+        Pose::LieBack(frame) => (LIE_BACK[usize::from(frame % 2)], false),
+        Pose::LieFront(frame) => (LIE_FRONT[usize::from(frame % 2)], false),
+        Pose::Jack(frame) => (JACK[usize::from(frame % 2)], true),
+        Pose::ToeTouch(frame) => (TOE_TOUCH[usize::from(frame % 2)], false),
+        Pose::Stretch => (STRETCH, true),
+        Pose::Gaze => (GAZE, false),
+        Pose::Side => (SIDE, false),
     }
 }
 
@@ -125,29 +176,41 @@ pub(super) struct SpriteCell {
 /// a profile. Frontal poses take `face`; profile poses keep their own.
 pub(super) fn cells(pose: Pose, facing: Facing, face: Face) -> Vec<SpriteCell> {
     let (rows, frontal) = rows(pose);
+    // Her head is the row with her parentheses (lower when she sits).
+    let head = rows.iter().position(|row| row.contains('('));
     let mut out = Vec::with_capacity(16);
     for (row, text) in rows.iter().enumerate() {
         let dy = row as i32 - HEIGHT;
         let mut glyphs: Vec<char> = text.chars().collect();
-        if row == 0 && frontal {
-            let [a, b, c] = face.glyphs();
-            if let Some(slot) = glyphs.get_mut(1..4) {
-                slot.copy_from_slice(&[a, b, c]);
-            }
+        let is_head = head == Some(row);
+        if is_head
+            && frontal
+            && let Some(slot) = glyphs.get_mut(1..4)
+        {
+            slot.copy_from_slice(&face.glyphs());
         }
+        // Spaces are transparent, except inside her head.
+        let inside: Vec<bool> = {
+            let open = glyphs.iter().position(|&c| c == '(');
+            let close = glyphs.iter().rposition(|&c| c == ')');
+            (0..glyphs.len())
+                .map(|i| is_head && open.is_some_and(|o| i > o) && close.is_some_and(|c| i < c))
+                .collect()
+        };
+        let mut glyphs: Vec<(char, bool)> = glyphs.into_iter().zip(inside).collect();
         if facing == Facing::Left {
             glyphs.reverse();
-            for glyph in &mut glyphs {
+            for (glyph, _) in &mut glyphs {
                 *glyph = mirror(*glyph);
             }
         }
-        for (col, glyph) in glyphs.into_iter().enumerate() {
-            if glyph == ' ' && row != 0 {
+        for (col, (glyph, solid)) in glyphs.into_iter().enumerate() {
+            if glyph == ' ' && !solid {
                 continue;
             }
-            let part = match (row, glyph) {
-                (0, _) => Part::Head,
-                (1, 'V') => Part::Ribbon,
+            let part = match glyph {
+                _ if is_head => Part::Head,
+                'V' => Part::Ribbon,
                 _ => Part::Body,
             };
             out.push(SpriteCell {
@@ -225,13 +288,25 @@ mod tests {
                 heaving: true,
                 row: 2,
             },
+            Pose::Sit,
+            Pose::LieBack(0),
+            Pose::LieBack(1),
+            Pose::LieFront(0),
+            Pose::LieFront(1),
+            Pose::Jack(0),
+            Pose::Jack(1),
+            Pose::ToeTouch(0),
+            Pose::ToeTouch(1),
+            Pose::Stretch,
+            Pose::Gaze,
+            Pose::Side,
         ];
         for pose in poses {
             for facing in [Facing::Left, Facing::Right] {
                 for cell in cells(pose, facing, Face::Blink) {
                     assert!((-2..=2).contains(&cell.dx), "{pose:?}");
                     assert!((-4..=-1).contains(&cell.dy), "{pose:?}");
-                    let head_gap = cell.dy == -HEIGHT && cell.glyph == ' ';
+                    let head_gap = cell.part == Part::Head && cell.glyph == ' ';
                     assert!(cell.glyph.is_ascii_graphic() || head_gap, "{pose:?}");
                 }
             }

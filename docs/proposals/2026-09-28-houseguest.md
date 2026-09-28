@@ -572,10 +572,14 @@ Four visual layers, from the app outward:
 
 ### Osaka as line art (built)
 
-- **Parts** in `ui/houseguest/art/osaka.svg` (bob hair back and bangs,
-  face, expressions, summer sailor uniform with navy collar and red
-  neckerchief, skirt, two-segment arms and legs), **posed by a rig** in
-  `art.rs`: lean, head tilt, bob, and shoulder/elbow and hip/knee angles.
+- **Parts** in `ui/houseguest/art/osaka.svg`, drawn after the character
+  sheet in `docs/ayumu.webp`: long straight dark-brown hair with ragged
+  bangs (split so it hangs behind her body), very large round eyes with
+  brown irises, the winter uniform (salmon top, white sailor collar with
+  red trim, thin red cord with a yellow toggle, maroon pleated skirt,
+  white knee socks, brown loafers), two-segment arms and legs. **Posed by
+  a rig** in `art.rs`: lean, head tilt, bob, shift, a whole-figure turn
+  and scale (for lying down), and shoulder/elbow and hip/knee angles.
   resvg renders the posed scene at the terminal's cell size into her
   5×4-cell box (one row taller when standing). Dark outlines, muted
   fills; at 1× she reads right, at full resolution she looks like a
@@ -591,9 +595,13 @@ Four visual layers, from the app outward:
   profile, facing the pole: one hand up beside her head, the other on the
   pole at her waist, the high-hand knee lifted; the pole's position is
   carried on the climb link), fall, dazed, peer, pull (brace and heave,
-  hands at the box edge on the line's row), look (surprised), and a
-  two-frame wave. Expressions: vacant (flat sleepy lids), blink,
-  surprised, smile, dizzy, in both views. Facing left mirrors the scene.
+  hands at the box edge on the line's row), look (surprised), side-on
+  standing, sit (hugging her knees), lie on her back and on her stomach,
+  jumping jacks, toe touches, stretch, gaze, and a two-frame wave.
+  Expressions: vacant (her wide-eyed blank look), blink, surprised,
+  smile, happy (open smile), curious (looking up), dizzy, in both views.
+  Facing left mirrors the scene. Climbing hangs straight from her
+  handholds.
 - **Placement**: kitty unicode placeholders via ratatui-image, which
   transmits each image once and afterwards only places it. Frames are
   cached per (look, facing, covered lines, clip, cell size), up to 256.

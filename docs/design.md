@@ -1364,6 +1364,12 @@ this section states what is built.
   move whole. At most 60 glyphs. Her body never stands over moved text or
   holes. The goodbye rain re-knits holes and moved glyphs back to the
   real text.
+- **Activities** keep her busy on the spot: sitting hugging her knees,
+  lying on her back (dozing, "zzz") or stomach (feet kicking, "~"),
+  jumping jacks ("1, 2!"), toe touches, a big stretch ("nnn~"), gazing up
+  at something ("ooh"). They weigh more in the first five minutes of a
+  visit. Standing still facing the viewer is short and rare; watching the
+  chat, she stands side-on facing it.
 - **Tidying**: when a line ends right beside where her box could stand on
   a floor, at chest height (box rows 1–2), on either side of her, she may
   go and pull it — any pane: chat, Users, Playlist, The List. A "line" is
