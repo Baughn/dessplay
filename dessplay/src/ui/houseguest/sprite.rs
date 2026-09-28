@@ -100,9 +100,10 @@ const LIE_BACK: [[&str; 4]; 2] = [
     ["     ", "     ", "   /\\", "o=V=^"],
     ["     ", "     ", "  /\\ ", "o=V=^"],
 ];
+// Head towards the way she faces, as in the line art.
 const LIE_FRONT: [[&str; 4]; 2] = [
-    ["     ", "     ", "    /", "o_V_/"],
-    ["     ", "     ", "   | ", "o_V_|"],
+    ["     ", "     ", "\\    ", "\\_V_o"],
+    ["     ", "     ", " |   ", "|_V_o"],
 ];
 const JACK: [[&str; 4]; 2] = [
     ["(._.)", "/|V|\\", " /_\\ ", " | | "],
@@ -150,6 +151,34 @@ fn mirror(c: char) -> char {
         ')' => '(',
         other => other,
     }
+}
+
+/// Where her head is in `pose`: the columns `dx0..=dx1` on row `dy`
+/// (anchor-relative, like [`SpriteCell`]). It's the row with her
+/// parentheses, or else her lone "o" (lying down, touching her toes).
+pub(super) fn head(pose: Pose, facing: Facing) -> (i32, i32, i32) {
+    let (rows, _) = rows(pose);
+    let found = rows.iter().enumerate().find_map(|(row, text)| {
+        let open = text.find('(');
+        let close = text.rfind(')');
+        match (open, close) {
+            (Some(open), Some(close)) => Some((open, close, row)),
+            _ => None,
+        }
+    });
+    let (c0, c1, row) = found
+        .or_else(|| {
+            rows.iter()
+                .enumerate()
+                .find_map(|(row, text)| text.find('o').map(|col| (col, col, row)))
+        })
+        .unwrap_or((0, WIDTH as usize - 1, 0));
+    let (dx0, dx1) = (c0 as i32 - WIDTH / 2, c1 as i32 - WIDTH / 2);
+    let (dx0, dx1) = match facing {
+        Facing::Right => (dx0, dx1),
+        Facing::Left => (-dx1, -dx0),
+    };
+    (dx0, dx1, row as i32 - HEIGHT)
 }
 
 /// What a sprite cell is, for styling.
@@ -228,6 +257,68 @@ pub(super) fn cells(pose: Pose, facing: Facing, face: Face) -> Vec<SpriteCell> {
 mod tests {
     use super::*;
 
+    const ALL: [Pose; 24] = [
+        Pose::Stand,
+        Pose::Walk(0),
+        Pose::Walk(1),
+        Pose::Walk(2),
+        Pose::Walk(3),
+        Pose::Climb { frame: 0, pole: 2 },
+        Pose::Climb { frame: 1, pole: 0 },
+        Pose::Fall,
+        Pose::Dazed,
+        Pose::Peer,
+        Pose::Pull {
+            heaving: false,
+            row: 1,
+        },
+        Pose::Pull {
+            heaving: true,
+            row: 2,
+        },
+        Pose::Sit,
+        Pose::LieBack(0),
+        Pose::LieBack(1),
+        Pose::LieFront(0),
+        Pose::LieFront(1),
+        Pose::Jack(0),
+        Pose::Jack(1),
+        Pose::ToeTouch(0),
+        Pose::ToeTouch(1),
+        Pose::Stretch,
+        Pose::Gaze,
+        Pose::Side,
+    ];
+
+    /// Every pose has a head where her head is drawn: an "o" or
+    /// parentheses, inside the box.
+    #[test]
+    fn every_pose_has_a_head() {
+        for pose in ALL {
+            for facing in [Facing::Left, Facing::Right] {
+                let (dx0, dx1, dy) = head(pose, facing);
+                assert!(-2 <= dx0 && dx0 <= dx1 && dx1 <= 2, "{pose:?} {facing:?}");
+                let at = |dx| {
+                    cells(pose, facing, Face::Blink)
+                        .into_iter()
+                        .find(|c| (c.dx, c.dy) == (dx, dy))
+                        .map(|c| c.glyph)
+                };
+                let ends = (at(dx0), at(dx1));
+                assert!(
+                    matches!(ends, (Some('('), Some(')')) | (Some('o'), Some('o'))),
+                    "{pose:?} {facing:?}: {ends:?}"
+                );
+            }
+        }
+        // Lying on her back facing right, her head is at her feet's
+        // other end, on the floor.
+        assert_eq!(head(Pose::LieBack(0), Facing::Right), (-2, -2, -1));
+        assert_eq!(head(Pose::LieFront(0), Facing::Right), (2, 2, -1));
+        assert_eq!(head(Pose::LieFront(0), Facing::Left), (-2, -2, -1));
+        assert_eq!(head(Pose::Sit, Facing::Left), (-2, 2, -3));
+    }
+
     fn picture(pose: Pose, facing: Facing, face: Face) -> Vec<String> {
         let mut grid = vec![vec![' '; WIDTH as usize]; HEIGHT as usize];
         for cell in cells(pose, facing, face) {
@@ -269,39 +360,7 @@ mod tests {
 
     #[test]
     fn every_pose_fits_the_box_and_is_ascii() {
-        let poses = [
-            Pose::Stand,
-            Pose::Walk(0),
-            Pose::Walk(1),
-            Pose::Walk(2),
-            Pose::Walk(3),
-            Pose::Climb { frame: 0, pole: 2 },
-            Pose::Climb { frame: 1, pole: 0 },
-            Pose::Fall,
-            Pose::Dazed,
-            Pose::Peer,
-            Pose::Pull {
-                heaving: false,
-                row: 1,
-            },
-            Pose::Pull {
-                heaving: true,
-                row: 2,
-            },
-            Pose::Sit,
-            Pose::LieBack(0),
-            Pose::LieBack(1),
-            Pose::LieFront(0),
-            Pose::LieFront(1),
-            Pose::Jack(0),
-            Pose::Jack(1),
-            Pose::ToeTouch(0),
-            Pose::ToeTouch(1),
-            Pose::Stretch,
-            Pose::Gaze,
-            Pose::Side,
-        ];
-        for pose in poses {
+        for pose in ALL {
             for facing in [Facing::Left, Facing::Right] {
                 for cell in cells(pose, facing, Face::Blink) {
                     assert!((-2..=2).contains(&cell.dx), "{pose:?}");

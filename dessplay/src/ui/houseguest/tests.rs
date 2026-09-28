@@ -1111,21 +1111,85 @@ fn bubbles_find_a_blank_spot_around_her_head() {
     let empty = Buffer::empty(Rect::new(0, 0, 40, 12));
     let terrain = Terrain::read(&empty, &[], true);
     osaka.facing = sprite::Facing::Right;
-    assert_eq!(bubble_spot(&empty, &terrain, &osaka, 4), Some((23, 5)));
+    assert_eq!(
+        bubble_spot(&empty, &terrain, &osaka, Pose::Stand, 4),
+        Some((23, 5))
+    );
     osaka.facing = sprite::Facing::Left;
-    assert_eq!(bubble_spot(&empty, &terrain, &osaka, 4), Some((14, 5)));
+    assert_eq!(
+        bubble_spot(&empty, &terrain, &osaka, Pose::Stand, 4),
+        Some((14, 5))
+    );
     // Text on her left above her head: the other side.
     let mut buf = empty.clone();
     buf.set_string(15, 5, "busy", Style::new());
-    assert_eq!(bubble_spot(&buf, &terrain, &osaka, 4), Some((23, 5)));
+    assert_eq!(
+        bubble_spot(&buf, &terrain, &osaka, Pose::Stand, 4),
+        Some((23, 5))
+    );
     // The whole row above her taken: beside her head.
     buf.set_string(0, 5, "x".repeat(40), Style::new());
-    assert_eq!(bubble_spot(&buf, &terrain, &osaka, 4), Some((13, 6)));
+    assert_eq!(
+        bubble_spot(&buf, &terrain, &osaka, Pose::Stand, 4),
+        Some((13, 6))
+    );
     // Nowhere at all.
     for y in 0..12 {
         buf.set_string(0, y, "x".repeat(40), Style::new());
     }
-    assert_eq!(bubble_spot(&buf, &terrain, &osaka, 4), None);
+    assert_eq!(bubble_spot(&buf, &terrain, &osaka, Pose::Stand, 4), None);
+}
+
+/// Lying down or sitting, her bubble is by her head wherever it is, not
+/// up at the top of her box — and never inside the box, where it would
+/// scribble over her.
+#[test]
+fn bubbles_follow_her_head_when_she_is_down() {
+    let mut rng = Rng(1);
+    let mut osaka = Osaka::standing_at(20, 10, 0, &mut rng);
+    let empty = Buffer::empty(Rect::new(0, 0, 40, 12));
+    let terrain = Terrain::read(&empty, &[], true);
+    let spot = |osaka: &Osaka, pose, facing, len| {
+        let mut osaka = osaka.clone();
+        osaka.facing = facing;
+        bubble_spot(&empty, &terrain, &osaka, pose, len)
+    };
+    use sprite::Facing::{Left, Right};
+    // On her back facing right, head on the floor at x=18: "zzz" just
+    // up and behind it.
+    assert_eq!(spot(&osaka, Pose::LieBack(0), Right, 3), Some((15, 8)));
+    assert_eq!(spot(&osaka, Pose::LieBack(0), Left, 3), Some((23, 8)));
+    // On her front, head at the end she faces.
+    assert_eq!(spot(&osaka, Pose::LieFront(0), Right, 1), Some((23, 8)));
+    assert_eq!(spot(&osaka, Pose::LieFront(0), Left, 1), Some((17, 8)));
+    // Touching her toes, head low on the side she faces.
+    assert_eq!(spot(&osaka, Pose::ToeTouch(1), Right, 4), Some((23, 6)));
+    // Sitting: level with the box's top row, just outside it.
+    assert_eq!(spot(&osaka, Pose::Sit, Right, 3), Some((23, 6)));
+    // Both diagonals taken (chat to either side): level with her head
+    // rather than way up over her box.
+    let mut busy = empty.clone();
+    busy.set_string(0, 8, "x".repeat(40), Style::new());
+    let mut lying = osaka.clone();
+    lying.facing = sprite::Facing::Right;
+    assert_eq!(
+        bubble_spot(&busy, &terrain, &lying, Pose::LieBack(0), 3),
+        Some((14, 9))
+    );
+    // Whatever the pose, never inside her box.
+    osaka.x = 20;
+    for pose in [
+        Pose::LieBack(1),
+        Pose::LieFront(1),
+        Pose::Sit,
+        Pose::ToeTouch(1),
+    ] {
+        for facing in [Left, Right] {
+            let (start, row) = spot(&osaka, pose, facing, 5).expect("room");
+            let inside = (6..10).contains(&row) && start <= 22 && start + 5 > 18;
+            assert!(!inside, "{pose:?} {facing:?}: ({start}, {row})");
+        }
+    }
 }
 
 /// Something she says shows for 1.2 s + 60 ms a character, then goes.

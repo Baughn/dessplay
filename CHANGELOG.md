@@ -31,6 +31,8 @@ Add new days at the top. Add new entries at the bottom of existing days.
   there's mess, and mischievous now and then.
 - Changed: The houseguest now visits after one idle minute by default
   (was five).
+- Fixed: The houseguest's hums and snores now float by her head when
+  she lies down, not high above her.
 
 ## 2026-09-26
 

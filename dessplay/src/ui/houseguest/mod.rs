@@ -35,7 +35,7 @@ use dissolve::{Dissolve, Frozen};
 use graphics::{Graphics, Look};
 pub use idle::{Busy, ChatMark, IdleView, grow};
 use osaka::Osaka;
-use sprite::Part;
+use sprite::{Part, Pose};
 use terrain::Terrain;
 
 /// Smallest terminal she visits.
@@ -490,7 +490,8 @@ fn draw(
     if let Some(bubble) = bubble {
         let text = bubble.text();
         let len = text.chars().count() as i32;
-        if let Some((start, row)) = bubble_spot(buf, terrain, osaka, len) {
+        let (pose, _, _) = osaka.appearance(now);
+        if let Some((start, row)) = bubble_spot(buf, terrain, osaka, pose, len) {
             let bold = Ink::new(ink(Part::Body, truecolor).fg, Modifier::BOLD);
             for (i, glyph) in text.chars().enumerate() {
                 wanted.push((start + i as i32, row, glyph, bold, None));
@@ -528,28 +529,69 @@ fn draw(
 }
 
 /// Where a bubble of `len` characters goes: the first of several spots
-/// around her head (the side she faces first) that is all blank, open
-/// cells — bubbles are text, so never over a line or anything else.
-fn bubble_spot(buf: &Buffer, terrain: &Terrain, osaka: &Osaka, len: i32) -> Option<(i32, i32)> {
-    let head = osaka.y - sprite::HEIGHT;
+/// around her head in `pose` (the side it's nearer, else the side she
+/// faces, first) that is all blank, open cells — bubbles are text, so
+/// never over a line or anything else, and never inside her box, which
+/// is hers.
+fn bubble_spot(
+    buf: &Buffer,
+    terrain: &Terrain,
+    osaka: &Osaka,
+    pose: Pose,
+    len: i32,
+) -> Option<(i32, i32)> {
     let half = sprite::WIDTH / 2;
-    let x = osaka.x;
-    // Up and to the side, as a speech bubble sits.
-    let (right, left) = ((x + half + 1, head - 1), (x - half - len, head - 1));
-    let (ahead, behind) = match osaka.facing {
-        sprite::Facing::Right => (right, left),
-        sprite::Facing::Left => (left, right),
+    let (x, y) = (osaka.x, osaka.y);
+    let (dx0, dx1, dy) = sprite::head(pose, osaka.facing);
+    let (hx0, hx1, head) = (x + dx0, x + dx1, y + dy);
+    let in_box = |row: i32| (y - sprite::HEIGHT..y).contains(&row);
+    // The start of a bubble on `row` just clear of her head (and her
+    // box) on one side, `gap` blank cells further out.
+    let right = |row: i32, gap: i32| {
+        let edge = if in_box(row) { x + half } else { hx1 };
+        (edge + 1 + gap, row)
     };
-    let beside = |(start, _): (i32, i32)| (start + if start > x { 1 } else { -1 }, head);
-    let spots = [
-        ahead,
-        behind,
-        (x - len / 2, head - 1),
-        beside(ahead),
-        beside(behind),
-        (ahead.0, head - 2),
-        (behind.0, head - 2),
+    let left = |row: i32, gap: i32| {
+        let edge = if in_box(row) { x - half } else { hx0 };
+        (edge - gap - len, row)
+    };
+    let right_first = match (dx0 + dx1).signum() {
+        1 => true,
+        -1 => false,
+        _ => osaka.facing == sprite::Facing::Right,
+    };
+    let side = |near: bool, row: i32, gap: i32| {
+        if near == right_first {
+            right(row, gap)
+        } else {
+            left(row, gap)
+        }
+    };
+    // Up and to the side, as a speech bubble sits; then above her head;
+    // then level with it; then higher up. When she's down, "above her
+    // head" means over her whole box, far from it: the last resort.
+    let down = in_box(head - 1);
+    let over = (
+        (hx0 + hx1) / 2 - len / 2,
+        if down {
+            y - sprite::HEIGHT - 1
+        } else {
+            head - 1
+        },
+    );
+    let mut spots = vec![
+        side(true, head - 1, 0),
+        side(false, head - 1, 0),
+        over,
+        side(true, head, 1),
+        side(false, head, 1),
+        side(true, head - 2, 0),
+        side(false, head - 2, 0),
     ];
+    if down {
+        spots.retain(|&spot| spot != over);
+        spots.push(over);
+    }
     let blank = |x: i32, y: i32| {
         let (Ok(x), Ok(y)) = (u16::try_from(x), u16::try_from(y)) else {
             return false;
@@ -559,8 +601,11 @@ fn bubble_spot(buf: &Buffer, terrain: &Terrain, osaka: &Osaka, len: i32) -> Opti
                 .cell((x, y))
                 .is_some_and(|c| c.symbol().trim().is_empty())
     };
+    let clear_of_her =
+        |(start, row): (i32, i32)| !in_box(row) || start + len <= x - half || start > x + half;
     spots
         .into_iter()
+        .filter(|&spot| clear_of_her(spot))
         .find(|&(start, row)| (start..start + len).all(|x| blank(x, row)))
 }
 

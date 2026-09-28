@@ -1395,9 +1395,11 @@ this section states what is built.
   and nothing bad happens when a need is high
   (why: [decisions](decisions.md#houseguest-chooses-by-needs-among-the-top-few-2026-09-28)).
 - **Bubbles and speech**: her bubbles are text in the first of several
-  spots around her head — up and to the side she faces, the other side,
-  centred above, beside her head, two rows up — whose cells are all blank
-  and open; with no such spot the bubble isn't shown. Things she *says*
+  spots around her head, wherever the pose puts it (lying down, it's on
+  the floor at one end) — up and to the side it's nearer (the side she
+  faces when centred), the other side, centred above, beside her head,
+  two rows up — never inside her box, and whose cells are all blank and
+  open; with no such spot the bubble isn't shown. Things she *says*
   (≤ 24 characters) show for 1.2 s + 60 ms per character over her act's
   own bubble: "Nice to meet you." on first finding her feet, "...I'm OK."
   after a hard landing (always on her entrance, else half the time), and
