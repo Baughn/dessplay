@@ -3,6 +3,7 @@
 //! instant is a safe place to cut the visit short.
 
 use super::Rng;
+use super::brain::{self, Kind, Need, Needs};
 use super::scenes::{Job, LayerOp, Side};
 use super::sprite::{self, Face, Facing, HEIGHT, Pose, SpriteCell};
 use super::terrain::{Link, Route, Terrain};
@@ -61,6 +62,8 @@ const FALL_ROWS: u64 = 4;
 /// After a sneeze: a moment's "...", then one glyph back per beat.
 const OOPS_MS: u64 = 900;
 const PUT_BACK_MS: u64 = 400;
+/// Choices remembered for the cooldown.
+const RECENT: usize = 3;
 /// A refused put-back is retried this many times.
 const RETRIES: u8 = 5;
 
@@ -164,7 +167,7 @@ enum Act {
 }
 
 /// Something to do on the spot that isn't staring at the viewer.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) enum Activity {
     Sit,
     LieBack,
@@ -176,7 +179,7 @@ pub(super) enum Activity {
 }
 
 impl Activity {
-    const ALL: [Activity; 7] = [
+    pub const ALL: [Activity; 7] = [
         Self::Sit,
         Self::LieBack,
         Self::LieFront,
@@ -282,8 +285,6 @@ pub(super) struct Osaka {
     goal: Option<Job>,
     /// The pole she's climbing (column).
     pole: i32,
-    /// When this visit began (early visits favour activities).
-    arrived: u64,
     /// Layer changes for the next paint to apply.
     ops: Vec<LayerOp>,
     /// Layer changes due later, whatever she's doing by then: undoing
@@ -293,6 +294,14 @@ pub(super) struct Osaka {
     speech: Option<(&'static str, u64)>,
     /// She has said hello (or "I'm OK", which does as well).
     greeted: bool,
+    needs: Needs,
+    /// Her last few choices (repeating herself is discouraged).
+    recent: Vec<Kind>,
+    /// When she last chose.
+    decided: u64,
+    /// Every choice she made (tests read it).
+    #[cfg(test)]
+    pub choices: Vec<Kind>,
 }
 
 impl Osaka {
@@ -310,11 +319,15 @@ impl Osaka {
             task: None,
             goal: None,
             pole: x,
-            arrived: now,
             ops: Vec::new(),
             pending: Vec::new(),
             speech: None,
             greeted: false,
+            needs: Needs::default(),
+            recent: Vec::new(),
+            decided: now,
+            #[cfg(test)]
+            choices: Vec::new(),
         };
         osaka.act_due = osaka.first_due(now);
         osaka
@@ -975,112 +988,165 @@ impl Osaka {
                 at,
             );
         }
-        let platform = terrain.platforms.get(here).copied();
-        // Tidying: keep making for a line still on offer, or maybe pick
-        // one anywhere she can reach.
-        let kept = self.goal.take().filter(|g| chances.offers(g));
-        // One piece of mischief at a time: no new swap while one is owed.
-        let swaps = if self.owes() {
-            &[][..]
-        } else {
-            &chances.swaps[..]
-        };
-        let offered = chances.pulls.len() + swaps.len();
-        let fresh = kept.is_none() && offered > 0 && rng.below(100) < 40;
-        let target = kept.or_else(|| {
-            if !fresh {
-                return None;
-            }
-            // Mostly tidying; now and then a swap.
-            let swap = !swaps.is_empty() && (chances.pulls.is_empty() || rng.below(100) < 30);
-            if swap {
-                let pick = rng.below(swaps.len() as u64) as usize;
-                swaps.get(pick).cloned().map(Job::Swap)
-            } else {
-                let pick = rng.below(chances.pulls.len() as u64) as usize;
-                chances.pulls.get(pick).cloned().map(Job::Pull)
-            }
-        });
-        if let Some(job) = target {
-            let (x, y) = job.spot();
-            let there = terrain.platform_at(x, y);
-            if there == Some(here) {
-                tracing::debug!(?job, offered, "houseguest: walking to a job");
-                return self.pursue(job, at);
-            }
-            match there.and_then(|there| route(terrain, here, there)) {
-                Some(link) => {
-                    tracing::debug!(
-                        ?job,
-                        via = ?link.route,
-                        offered,
-                        "houseguest: heading for a job on another floor"
-                    );
-                    self.goal = Some(job);
-                    return self.travel(link, at);
-                }
-                None => tracing::debug!(?job, offered, "houseguest: a job, but no way there"),
-            }
-        } else if offered == 0 {
-            tracing::trace!("houseguest: nothing to tidy");
-        }
-        // Early in a visit she's busier; staring at the viewer is short and
-        // rare either way.
-        let early = at.saturating_sub(self.arrived) < 300_000;
-        let busy = if early { 40 } else { 28 };
         if !self.greeted {
             self.greeted = true;
             self.say(GREETING, at);
         }
-        let roll = rng.below(100);
-        let act = if roll < 8 {
-            Act::Stand {
+        // Her needs move on with the time since she last chose.
+        self.needs
+            .pass(at.saturating_sub(self.decided), !chances.pulls.is_empty());
+        self.decided = at;
+        // Still making for a job on another floor, while it's on offer.
+        if let Some(job) = self.goal.take().filter(|g| chances.offers(g))
+            && self.go_to(job, here, terrain, at)
+        {
+            return;
+        }
+        let links: Vec<Link> = terrain
+            .links
+            .iter()
+            .filter(|l| l.from == here)
+            .copied()
+            .collect();
+        let mut offers = vec![Kind::Stand, Kind::SpaceOut, Kind::Sneeze, Kind::Walk];
+        offers.extend(Activity::ALL.iter().map(|&a| Kind::Idle(a)));
+        if !links.is_empty() {
+            offers.push(Kind::Travel);
+        }
+        if !chances.pulls.is_empty() {
+            offers.push(Kind::Pull);
+        }
+        // One piece of mischief at a time: no new swap while one is owed.
+        if !chances.swaps.is_empty() && !self.owes() {
+            offers.push(Kind::Swap);
+        }
+        while let Some((i, top)) = brain::choose(&offers, &self.needs, &self.recent, rng) {
+            let kind = offers.remove(i);
+            if self.start(kind, here, &links, terrain, chances, at, rng) {
+                tracing::debug!(
+                    ?kind,
+                    needs = %self.needs.summary(),
+                    ?top,
+                    "houseguest: decided"
+                );
+                self.recent.push(kind);
+                #[cfg(test)]
+                self.choices.push(kind);
+                if self.recent.len() > RECENT {
+                    self.recent.remove(0);
+                }
+                if let Some((need, amount)) = kind.serves() {
+                    self.needs.serve(need, amount);
+                }
+                return;
+            }
+            tracing::debug!(?kind, "houseguest: couldn't after all");
+        }
+        self.set(Act::Stand { until: at + 2000 }, at);
+    }
+
+    /// Start `kind` from platform `here`. False when it turns out not to
+    /// be possible (nowhere else to walk, no way to the job).
+    #[allow(clippy::too_many_arguments)]
+    fn start(
+        &mut self,
+        kind: Kind,
+        here: usize,
+        links: &[Link],
+        terrain: &Terrain,
+        chances: &Chances,
+        at: u64,
+        rng: &mut Rng,
+    ) -> bool {
+        let act = match kind {
+            Kind::Stand => Act::Stand {
                 until: at + rng.range(2000, 5000),
+            },
+            Kind::SpaceOut => {
+                if rng.below(3) == 0 {
+                    self.muse(at, rng);
+                    return true;
+                }
+                Act::SpaceOut {
+                    until: at + rng.range(6000, 14_000),
+                }
             }
-        } else if roll < 16 {
-            if rng.below(3) == 0 {
-                tracing::debug!(roll, "houseguest: pottering (musing)");
-                return self.muse(at, rng);
-            }
-            Act::SpaceOut {
-                until: at + rng.range(6000, 14_000),
-            }
-        } else if roll < 19 {
-            Act::Sneeze {
+            Kind::Sneeze => Act::Sneeze {
                 since: at,
                 knocked: false,
+            },
+            Kind::Idle(what) => self.idle_act(what, at, rng),
+            Kind::Walk => {
+                let Some(p) = terrain.platforms.get(here) else {
+                    return false;
+                };
+                let to = p.x0 + rng.below((p.x1 - p.x0 + 1) as u64) as i32;
+                if to == self.x {
+                    return false;
+                }
+                self.facing = toward(self.x, to);
+                Act::Walk { to, then: None }
             }
-        } else if roll < 19 + busy {
-            let pick = rng.below(Activity::ALL.len() as u64) as usize;
-            let what = Activity::ALL.get(pick).copied().unwrap_or(Activity::Gaze);
-            self.idle_act(what, at, rng)
-        } else {
-            let links: Vec<&Link> = terrain.links.iter().filter(|l| l.from == here).collect();
-            let travel = roll >= 75 && !links.is_empty();
-            let (to, then) = if travel {
-                let link = **links
-                    .get(rng.below(links.len() as u64) as usize)
-                    .unwrap_or(&links[0]);
-                (link.x, Some(link))
-            } else {
-                let to = platform.map_or(self.x, |p| {
-                    p.x0 + rng.below((p.x1 - p.x0 + 1) as u64) as i32
-                });
-                (to, None)
-            };
-            if to == self.x && then.is_none() {
-                Act::Stand {
-                    until: at + rng.range(2000, 6000),
+            Kind::Travel => {
+                let Some(&link) = links.get(rng.below(links.len() as u64) as usize) else {
+                    return false;
+                };
+                self.travel(link, at);
+                return true;
+            }
+            Kind::Pull | Kind::Swap => {
+                // A few tries at one she can get to.
+                for _ in 0..8 {
+                    let job = if kind == Kind::Pull {
+                        let pick = rng.below(chances.pulls.len() as u64) as usize;
+                        chances.pulls.get(pick).cloned().map(Job::Pull)
+                    } else {
+                        let pick = rng.below(chances.swaps.len() as u64) as usize;
+                        chances.swaps.get(pick).cloned().map(Job::Swap)
+                    };
+                    let Some(job) = job else {
+                        return false;
+                    };
+                    if self.go_to(job, here, terrain, at) {
+                        return true;
+                    }
                 }
-            } else {
-                if to != self.x {
-                    self.facing = toward(self.x, to);
-                }
-                Act::Walk { to, then }
+                return false;
             }
         };
-        tracing::debug!(?act, roll, "houseguest: pottering");
         self.set(act, at);
+        true
+    }
+
+    /// Head for `job`: straight there on this floor, or along the first
+    /// link of a route to its floor. False when there's no way there.
+    fn go_to(&mut self, job: Job, here: usize, terrain: &Terrain, at: u64) -> bool {
+        let (x, y) = job.spot();
+        let there = terrain.platform_at(x, y);
+        if there == Some(here) {
+            tracing::debug!(?job, "houseguest: walking to a job");
+            self.pursue(job, at);
+            return true;
+        }
+        match there.and_then(|there| route(terrain, here, there)) {
+            Some(link) => {
+                tracing::debug!(?job, via = ?link.route, "houseguest: heading for a job on another floor");
+                self.goal = Some(job);
+                self.travel(link, at);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Her needs.
+    pub fn needs(&self) -> &Needs {
+        &self.needs
+    }
+
+    /// Stage: make `need` pressing.
+    pub fn press(&mut self, need: Need) {
+        self.needs.serve(need, -1.0);
     }
 
     /// Walk to `job`'s spot on this floor and do it.

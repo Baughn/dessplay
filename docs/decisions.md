@@ -1939,3 +1939,23 @@ protected anyway, but swapped letters two lines up would still read as
 a garbled log. Rejected: undoing only at the goodbye (the swap would last
 minutes, and it isn't a joke any more); swapping within the newest line
 (it's the one people are reading).
+
+## Houseguest chooses by needs among the top few (2026-09-28)
+
+**Rule:** Her next act is a weighted-random pick among the four
+best-scoring offers, scored by base × (floor + need²) × cooldown. See
+[design.md](design.md#houseguest).
+
+**Why:** The phase 1 roll table gave every visit the same texture: she
+dozed as often in minute one as in minute thirty, and "busier early" had
+to be a special case. Needs give a visit a shape without scripting it.
+Argmax was rejected as robotic (the pressing need always wins, the same
+act again and again); flat random as a slot machine (needs would barely
+show). The squared need keeps half-full needs quiet — with a linear fit
+she dozed a quarter of the time straight after arriving — and the floor
+keeps every offer possible, so no need can starve the rest (the
+Tamagotchi lesson: needs flavour, never punish). A doze eases sleepiness
+only a little: when it reset it, sleepiness oscillated at the same level
+all visit and the "sleepier later" shape vanished. Only needs with both
+a driver and an answer today exist; `hungry` and `social` wait for food
+words and cameos.

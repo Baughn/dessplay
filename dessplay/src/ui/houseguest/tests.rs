@@ -1157,3 +1157,57 @@ fn she_says_a_line_and_then_stops() {
     let frame = run(&mut guest, &real, &view, 500, gone + 50);
     assert!(!shows(&frame), "{line:?} gone after {gone} ms");
 }
+
+/// Over long visits her needs show: she dozes more in a visit's second
+/// half than its first, no one thing takes over, and she still tidies.
+#[test]
+fn her_needs_shape_long_visits() {
+    use super::brain::Kind;
+    use super::sprite::Pose;
+    let mut ui = stage_ui();
+    let (real, view) = real_frame(&mut ui, 100, 30);
+    let half = 10 * 60_000;
+    let (mut early, mut late) = (0u64, 0u64);
+    let mut choices: Vec<Kind> = Vec::new();
+    for seed in 0..4u64 {
+        let mut guest = Guest::new(seed);
+        guest.cue(Scene::Arrive);
+        let mut now = 0;
+        paint(&mut guest, &real, &view, now);
+        while now < 2 * half {
+            let step = guest
+                .next_tick(now)
+                .map_or(1000, |d| d.as_millis() as u64)
+                .clamp(1, 1000);
+            if let State::Visiting(visit) = &guest.state {
+                let (pose, ..) = visit.osaka.appearance(now);
+                if matches!(pose, Pose::LieBack(_)) {
+                    if now < half {
+                        early += step;
+                    } else {
+                        late += step;
+                    }
+                }
+            }
+            now += step;
+            if guest.advance(now) {
+                paint(&mut guest, &real, &view, now);
+            }
+        }
+        let State::Visiting(visit) = &guest.state else {
+            panic!("seed {seed}: still visiting");
+        };
+        choices.extend(&visit.osaka.choices);
+    }
+    assert!(late > 2 * early, "dozing: {early} ms early, {late} ms late");
+    let most = choices
+        .iter()
+        .map(|k| choices.iter().filter(|c| *c == k).count())
+        .max()
+        .unwrap_or(0);
+    assert!(
+        most * 2 < choices.len(),
+        "one choice took over: {choices:?}"
+    );
+    assert!(choices.contains(&Kind::Pull), "she tidied");
+}

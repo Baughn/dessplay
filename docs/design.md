@@ -1367,8 +1367,7 @@ this section states what is built.
 - **Activities** keep her busy on the spot: sitting hugging her knees,
   lying on her back (dozing, "zzz") or stomach (feet kicking, "~"),
   jumping jacks ("1, 2!"), toe touches, a big stretch ("nnn~"), gazing up
-  at something ("ooh"). They weigh more in the first five minutes of a
-  visit. Standing still facing the viewer is short and rare; watching the
+  at something ("ooh"). Standing still facing the viewer is short and rare; watching the
   chat, she stands side-on facing it.
 - **Tidying**: when a line ends beside where her box could stand on a
   floor — against it or up to three blank cells off — at chest height
@@ -1384,6 +1383,18 @@ this section states what is built.
   runs out of floor, then looks pleased ("hehe"). If the text changes under her she
   lets go and stares. Her decisions and their reasons are logged at
   debug level (`RUST_LOG=dessplay::ui::houseguest=debug`, or F11's level).
+- **Choosing what to do**: each decision scores what's on offer where she
+  stands (stand, space out, sneeze, walk, travel, each activity, a pull or
+  swap in reach) as base × fit × cooldown and picks at random, weighted,
+  among the top four. Four needs (0–1) set the fit: *sleepy* rises over a
+  visit and a doze eases it a little, so she dozes more as a visit goes
+  on; *restless* starts high, rises while she's still, and moving answers
+  it; *tidy* rises while a line is on offer and a pull answers it;
+  *mischief* rises slowly and a swap answers it. Fit is 0.1 + need² (0.5
+  for an offer no need wants); repeating one of her last three choices
+  multiplies by 0.4. Needs only weight choices: nothing is ever ruled out,
+  and nothing bad happens when a need is high
+  (why: [decisions](decisions.md#houseguest-chooses-by-needs-among-the-top-few-2026-09-28)).
 - **Bubbles and speech**: her bubbles are text in the first of several
   spots around her head — up and to the side she faces, the other side,
   centred above, beside her head, two rows up — whose cells are all blank

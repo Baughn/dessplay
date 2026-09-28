@@ -111,6 +111,31 @@ impl Scene {
     }
 }
 
+/// A need the stage can make pressing, to provoke what answers it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Want {
+    /// She gets sleepy.
+    Sleepy,
+    /// She gets restless.
+    Restless,
+    /// She wants to tidy.
+    Tidy,
+    /// She feels mischievous.
+    Mischief,
+}
+
+impl Want {
+    pub(super) fn need(self) -> super::brain::Need {
+        use super::brain::Need;
+        match self {
+            Self::Sleepy => Need::Sleepy,
+            Self::Restless => Need::Restless,
+            Self::Tidy => Need::Tidy,
+            Self::Mischief => Need::Mischief,
+        }
+    }
+}
+
 /// How far from the spot she starts, so the walk there shows.
 const APPROACH: i32 = 6;
 

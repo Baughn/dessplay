@@ -12,6 +12,7 @@
 //! comes from a seeded generator, so tests reproduce exactly.
 
 mod art;
+mod brain;
 mod cells;
 mod dissolve;
 mod graphics;
@@ -148,6 +149,21 @@ impl Guest {
             self.state = State::Arriving;
         }
         self.cue = Some(scene);
+    }
+
+    /// The stage: make `want` pressing (it weighs on her next choice).
+    pub fn press(&mut self, want: stage::Want) {
+        if let State::Visiting(visit) = &mut self.state {
+            visit.osaka.press(want.need());
+        }
+    }
+
+    /// Her needs, while she's visiting (for the stage).
+    pub fn mood(&self) -> Option<String> {
+        match &self.state {
+            State::Visiting(visit) => Some(visit.osaka.needs().summary()),
+            _ => None,
+        }
     }
 
     /// What came of the last cue: what she's doing, or why the room

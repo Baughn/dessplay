@@ -33,7 +33,7 @@ channel on her TV. We borrow that backbone (see
 |---|---|---|
 | 1 | Seam, idle gate, terrain, walking/climbing/falling, goodbye dissolve, setting, perf test | **done** |
 | 1b | Line art: SVG rig, kitty placement, redrawn lines, letter-burst goodbye | **done** |
-| 2 | Tidying and mischief: text layer and newest-line protection, pulling lines, letter swap, sneeze scatter, scheduled self-reverting, the stage (**done**); bubbles and speech (**done**); the brain with needs next | in progress |
+| 2 | Tidying and mischief: text layer and newest-line protection, pulling lines, letter swap, sneeze scatter, scheduled self-reverting, the stage (**done**); bubbles and speech, the brain with needs (**done**) | done |
 | 3 | The room: furnishings (coloured line art), anchors, ledger, Chiyo-chichi's shop, routine | planned |
 | 4 | Colour: calendar, screen reading, dreams, cameos, rarity and pity, credits | planned |
 | 5 | The text factory: text hauled into an industrial space and compacted into materials | planned, last |
@@ -186,14 +186,41 @@ edge, fall, land dazed, look at chat. Choices are weighted random from a
 per-visit seeded generator; every act is finite, so any instant is a
 safe cut.
 
-*Planned (phase 2 on):* **utility-scored scenes over interruptible
+**As built (phase 2): needs and offers** (`brain.rs`). Each decision
+gathers what's on offer here — stand, space out (a third of the time
+musing aloud), sneeze, walk on this floor, travel along a link, each
+activity, a pull if a line is in reach, a swap if a word is and no
+mischief is owed — scores each as `base × fit × cooldown`, and picks at
+random, weighted by score, among the **top four**. `fit` is 0.5 for an
+offer that answers no need, else `0.1 + need²`: a need weighs little
+until it's pressing, and the floor keeps every offer possible.
+`cooldown` is 0.4 per repeat among her last three choices. Four needs,
+each with a driver and something that answers it today:
+
+| Need | Starts | Rises (0→1) | Answered by |
+|---|---|---|---|
+| sleepy | 0 | over 15 min | a doze on her back (−0.15), sitting (−0.1) |
+| restless | 0.7 | over 90 s | walking, travelling (−0.4); jacks, toe touches, stretching (−0.5) |
+| tidy | 0.5 | over 60 s while a line is on offer | a pull (−0.6) |
+| mischief | 0.2 | over 4 min | a swap (−0.8) |
+
+Needs move on at each decision by the time since the last one, and are
+answered when an act is chosen (acts are finite, so this is where they
+commit). A doze only takes the edge off, so over a visit she gets
+sleepier and dozes more (measured: ~1% of the first ten minutes, ~6% of
+the next ten). Restless starting high replaces phase 1's "busier in the
+first five minutes". A chat conversation and a job on another floor
+still come first. `hungry` and `social` wait for something to answer
+them (food words, cameos). The stage shows the needs, and keys 1–4 make
+one pressing.
+
+*Planned (phase 3 on):* **utility-scored scenes over interruptible
 keyframe lists** — The Sims' "smart objects" plus Johnny Castaway's
 scene pool.
 
-- **Needs** (0..1, slow, never punitive): `sleepy`, `hungry`, `bored`,
-  `tidy_urge` (rises with foreign glyphs in the chat rect), `social`
-  (drives cameos). They weight choices; she never sickens, starves, or
-  guilt-trips (the Tamagotchi lesson).
+- **Needs** (0..1, slow, never punitive): add `hungry` and `social`
+  (drives cameos) as their affordances arrive. They weight choices; she
+  never sickens, starves, or guilt-trips (the Tamagotchi lesson).
 - **Advertising**: panes and props advertise affordances ("chat: messy",
   "users: people to wave at", "sofa: rest", "desk: homework"). Adding a
   prop adds behaviour without touching the brain.

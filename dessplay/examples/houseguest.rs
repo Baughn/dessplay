@@ -6,7 +6,11 @@
 //! ```
 //!
 //! ←/→ pick a scene · Enter play it · m a chat message arrives ·
-//! g goodbye · n new seed · [ ] slower / faster · q quit.
+//! g goodbye · n new seed · [ ] slower / faster · 1–4 make her sleepy,
+//! restless, keen to tidy, or mischievous · q quit. The bar shows her
+//! needs. Her decisions and their reasons are logged to
+//! `houseguest-stage.log` in the working directory (`tail -f` it beside
+//! the stage).
 //!
 //! No client, network, or IRC: only the UI, drawn locally.
 
@@ -16,7 +20,7 @@ use std::time::{Duration, Instant};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::{cursor, execute, terminal};
 use dessplay::ui::houseguest::Guest;
-use dessplay::ui::houseguest::stage::{Scene, stage_ui};
+use dessplay::ui::houseguest::stage::{Scene, Want, stage_ui};
 use dessplay::ui::layout::{LayoutBundle, Renderer};
 use dessplay::ui::shell::{TERMINAL_STATE_PROLOGUE, select_image_picker};
 use dessplay::ui::theme::ColorDepth;
@@ -33,6 +37,14 @@ fn restore() {
 
 fn main() -> color_eyre::Result<()> {
     color_eyre::install()?;
+    let log = std::fs::File::create("houseguest-stage.log")?;
+    tracing_subscriber::fmt()
+        .with_writer(std::sync::Mutex::new(log))
+        .with_ansi(false)
+        .with_env_filter(tracing_subscriber::EnvFilter::new(
+            "dessplay::ui::houseguest=debug",
+        ))
+        .init();
     let mut seed: u64 = std::env::args()
         .nth(1)
         .and_then(|s| s.parse().ok())
@@ -96,11 +108,13 @@ fn run(seed: &mut u64, picker: ratatui_image::picker::Picker) -> color_eyre::Res
                 Some(Err(why)) => format!("✗ {why}"),
                 None => String::new(),
             };
+            let mood = guest.mood().unwrap_or_default();
             let menu = format!(
-                " ◀ {} ▶  Enter play · m chat · g goodbye · n seed {} · [ ] {}× · q quit │ {}",
+                " ◀ {} ▶  Enter play · m chat · g bye · n seed {} · [ ] {}× · 1-4 needs · q │ {} │ {}",
                 scene.name(),
                 seed,
                 SPEEDS[speed],
+                mood,
                 note
             );
             let blank = " ".repeat(usize::from(area.width));
@@ -140,6 +154,10 @@ fn run(seed: &mut u64, picker: ratatui_image::picker::Picker) -> color_eyre::Res
                 guest = fresh(*seed);
                 guest.cue(Scene::ALL[selected]);
             }
+            KeyCode::Char('1') => guest.press(Want::Sleepy),
+            KeyCode::Char('2') => guest.press(Want::Restless),
+            KeyCode::Char('3') => guest.press(Want::Tidy),
+            KeyCode::Char('4') => guest.press(Want::Mischief),
             KeyCode::Char('[') => speed = speed.saturating_sub(1),
             KeyCode::Char(']') => speed = (speed + 1).min(SPEEDS.len() - 1),
             _ => {}
