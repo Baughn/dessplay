@@ -104,8 +104,10 @@ pub(super) struct SpriteCell {
     pub part: Part,
 }
 
-/// The visible cells of `pose` (spaces are transparent). Frontal poses
-/// take `face`; profile poses keep their drawn face.
+/// The visible cells of `pose`. Body spaces are transparent (the UI
+/// shows between her legs), but her head is solid: its three middle
+/// cells always exist, so the goodbye beat can draw a frontal face over
+/// a profile. Frontal poses take `face`; profile poses keep their own.
 pub(super) fn cells(pose: Pose, facing: Facing, face: Face) -> Vec<SpriteCell> {
     let (rows, frontal) = rows(pose);
     let mut out = Vec::with_capacity(16);
@@ -125,7 +127,7 @@ pub(super) fn cells(pose: Pose, facing: Facing, face: Face) -> Vec<SpriteCell> {
             }
         }
         for (col, glyph) in glyphs.into_iter().enumerate() {
-            if glyph == ' ' {
+            if glyph == ' ' && row != 0 {
                 continue;
             }
             let part = match (row, glyph) {
@@ -170,6 +172,23 @@ mod tests {
         );
     }
 
+    /// Every head has all three face cells, so the dissolve's startled
+    /// and smiling faces are whole even over a profile (a real-terminal
+    /// run showed `( _o)` before heads were solid).
+    #[test]
+    fn every_head_has_three_face_cells() {
+        for pose in [Pose::Walk(0), Pose::Peer, Pose::Stand] {
+            for facing in [Facing::Left, Facing::Right] {
+                let face: Vec<i32> = cells(pose, facing, Face::Vacant)
+                    .iter()
+                    .filter(|c| c.part == Part::Head && (-1..=1).contains(&c.dx))
+                    .map(|c| c.dx)
+                    .collect();
+                assert_eq!(face, [-1, 0, 1], "{pose:?} {facing:?}");
+            }
+        }
+    }
+
     #[test]
     fn every_pose_fits_the_box_and_is_ascii() {
         let poses = [
@@ -189,7 +208,8 @@ mod tests {
                 for cell in cells(pose, facing, Face::Blink) {
                     assert!((-2..=2).contains(&cell.dx), "{pose:?}");
                     assert!((-4..=-1).contains(&cell.dy), "{pose:?}");
-                    assert!(cell.glyph.is_ascii_graphic(), "{pose:?}");
+                    let head_gap = cell.dy == -HEIGHT && cell.glyph == ' ';
+                    assert!(cell.glyph.is_ascii_graphic() || head_gap, "{pose:?}");
                 }
             }
         }
