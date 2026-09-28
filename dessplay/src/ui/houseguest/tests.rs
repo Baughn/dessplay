@@ -138,11 +138,21 @@ fn local_activity_dissolves_back_to_the_real_frame_in_time() {
     guest.activity(60_000);
     let during = paint(&mut guest, &real, &view, 60_000);
     assert_ne!(during, real, "the dissolve starts from her");
-    let after = run(&mut guest, &real, &view, 60_000, 62_500);
+    let after = run(
+        &mut guest,
+        &real,
+        &view,
+        60_000,
+        60_000 + dissolve::DURATION_MS,
+    );
     assert_eq!(after, real);
     assert!(!guest.present());
     // The idle timer restarted at the key press.
-    assert_eq!(guest.next_tick(62_500), Some(Duration::from_millis(2_500)));
+    let end = 60_000 + dissolve::DURATION_MS;
+    assert_eq!(
+        guest.next_tick(end),
+        Some(DELAY - Duration::from_millis(dissolve::DURATION_MS))
+    );
 }
 
 #[test]
@@ -590,4 +600,40 @@ fn the_goodbye_waves_as_line_art_but_never_over_new_content() {
         "the image is dropped over new content"
     );
     assert_eq!(covered.cell((x, y - 2)), changed.cell((x, y - 2)));
+}
+
+/// After the wave she bursts into letters that rain away: her box shows
+/// noise for a while, then the real frame. (The first line-art build
+/// showed no rain — the dissolve saw her own image as "the UI changed
+/// here" and settled every cell at once.)
+#[test]
+fn line_art_bursts_into_letters_that_rain_away() {
+    let mut ui = real_ui();
+    let (real, view) = real_frame(&mut ui, 100, 30);
+    let mut guest = Guest::new(7);
+    guest.set_picker(kitty());
+    run(&mut guest, &real, &view, 0, 95_000);
+    let State::Visiting(visit) = &guest.state else {
+        panic!("visiting");
+    };
+    let (x, y) = (visit.osaka.x, visit.osaka.y);
+    guest.activity(95_000);
+    let mut rained = 0;
+    let mut now = 95_000;
+    let end = now + dissolve::DURATION_MS;
+    while now < end {
+        let frame = paint(&mut guest, &real, &view, now);
+        let letters = (-2..=2)
+            .flat_map(|dx| (1..=4).map(move |dy| (x + dx, y - dy)))
+            .filter(|&(cx, cy)| {
+                frame
+                    .cell((cx as u16, cy as u16))
+                    .is_some_and(|c| c.symbol().chars().all(|ch| ch.is_ascii_alphanumeric()))
+            })
+            .count();
+        rained = rained.max(letters);
+        now += dissolve::FRAME_MS;
+    }
+    assert!(rained >= 10, "her box rained letters (peak {rained} cells)");
+    assert_eq!(paint(&mut guest, &real, &view, end), real);
 }

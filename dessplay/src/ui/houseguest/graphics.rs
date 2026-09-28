@@ -91,28 +91,11 @@ impl LineGeometry {
     }
 }
 
-/// Resolve a cell colour to RGB as the truecolor theme paints it.
+/// Resolve a cell colour to RGB as the truecolor theme paints it. With
+/// truecolor the frame already holds RGB; named colours (limited depth,
+/// tests) go through the theme's own mapping.
 fn rgb(color: Color) -> [u8; 3] {
-    use crate::ui::theme::{TRUECOLOR_FOREGROUND, TRUECOLOR_MUTED_FOREGROUND};
-    let resolve = |c: Color| match c {
-        Color::Rgb(r, g, b) => Some([r, g, b]),
-        _ => None,
-    };
-    resolve(color).unwrap_or_else(|| match color {
-        Color::Reset | Color::White | Color::Gray => {
-            resolve(TRUECOLOR_FOREGROUND).unwrap_or([230, 237, 243])
-        }
-        Color::DarkGray | Color::Black => {
-            resolve(TRUECOLOR_MUTED_FOREGROUND).unwrap_or([139, 148, 158])
-        }
-        Color::Red | Color::LightRed => [248, 81, 73],
-        Color::Green | Color::LightGreen => [63, 185, 80],
-        Color::Yellow | Color::LightYellow => [210, 153, 34],
-        Color::Blue | Color::LightBlue => [88, 166, 255],
-        Color::Magenta | Color::LightMagenta => [188, 140, 255],
-        Color::Cyan | Color::LightCyan => [57, 197, 207],
-        _ => [139, 148, 158],
-    })
+    crate::ui::theme::truecolor_rgb(color)
 }
 
 /// The strokes of a box-drawing glyph her image can redraw.

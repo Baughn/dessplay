@@ -330,6 +330,15 @@ fn terminal_palette(color: Color) -> Color {
     }
 }
 
+/// The RGB the dark truecolor theme paints `color` as (for pixels that
+/// must match painted text, like the houseguest's redrawn borders).
+pub fn truecolor_rgb(color: Color) -> [u8; 3] {
+    match dark_foreground(color) {
+        Color::Rgb(r, g, b) => [r, g, b],
+        _ => [139, 148, 158],
+    }
+}
+
 fn dark_foreground(color: Color) -> Color {
     match color {
         Color::Reset => TRUECOLOR_FOREGROUND,

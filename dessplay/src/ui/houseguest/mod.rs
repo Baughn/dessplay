@@ -244,18 +244,23 @@ impl Guest {
                     self.state = State::Absent;
                     return;
                 }
+                // Everything that compares against the real frame reads it
+                // before any of her pixels or glyphs go on: her own image
+                // must never look like "the UI changed here".
                 let t = now.saturating_sub(leaving.dissolve.started());
+                let untouched = leaving.dissolve.unchanged(buf);
+                let terrain = Terrain::read(buf, &view.protected, true);
+                leaving.dissolve.paint(buf, now);
                 if let (Some(image), Some(graphics)) = (leaving.image, &mut self.graphics)
                     && t < dissolve::RAIN_FROM_MS
-                    && leaving.dissolve.unchanged(buf)
+                    && untouched
                 {
                     // Startled, then a wave; then she bursts into letters.
                     let look = if t < dissolve::SMILE_FROM_MS {
                         Look::Pose(sprite::Pose::Stand, sprite::Face::Surprised)
                     } else {
-                        Look::Wave((t / 100) % 2 == 0)
+                        Look::Wave((t / dissolve::WAVE_MS).is_multiple_of(2))
                     };
-                    let terrain = Terrain::read(buf, &view.protected, true);
                     graphics.paint(
                         buf,
                         look,
@@ -265,7 +270,6 @@ impl Guest {
                         &terrain,
                     );
                 }
-                leaving.dissolve.paint(buf, now);
             }
             State::Visiting(visit) => {
                 visit.terrain = Terrain::read(buf, &view.protected, self.graphics.is_some());

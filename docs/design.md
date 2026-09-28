@@ -1344,11 +1344,11 @@ this section states what is built.
   above it; vertical borders let her climb between floors; a ledge's
   real end lets her drop to the floor below
   (why: [decisions](decisions.md#houseguest-terrain-comes-from-the-rendered-frame-2026-09-28)).
-- **Local key, mouse, or paste input** ends a visit with a ~2.5 s
+- **Local key, mouse, or paste input** ends a visit with a ~3.75 s
   dissolve: a startled face, a goodbye smile, then per-column "rain"
   rippling out from her, each cell cycling spoiler-scramble-class noise
   (`spoiler::rain_glyph`) before settling to the real UI. Every cell has
-  settled by 2.4 s and the overlay is gone at 2.5 s; a cell the real UI
+  settled by 3.6 s and the overlay is gone at 3.75 s; a cell the real UI
   changed since the input shows the real UI at once, and a settled cell
   never shows noise again.
 - A **chat or IRC line** from anyone does not end a visit: she stops,

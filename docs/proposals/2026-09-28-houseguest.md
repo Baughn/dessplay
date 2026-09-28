@@ -709,6 +709,8 @@ Differences from the plan above, decided while building phase 1:
 - **The dissolve's dirty set is her sprite and bubble** until phase 2
   gives her displaced glyphs. Wide-glyph pairs settle together, so a
   settled half is never knocked out again by its partner.
+- **The goodbye takes ~3.75 s**, not 2.5: the first look in Ghostty felt
+  slightly too fast, so every dissolve timing was stretched by 3/2.
 - The shell forwards only key, mouse, and paste events as activity;
   resize re-anchors; focus changes are ignored.
 

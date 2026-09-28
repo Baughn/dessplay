@@ -1,4 +1,4 @@
-//! The exit: ~2.5 s of "matrix rain" over every cell she changed,
+//! The exit: ~3.75 s of "matrix rain" over every cell she changed,
 //! settling each back to the real UI (proposal 2026-09-28-houseguest,
 //! The exit dissolve). A pure function of the frozen composite, the live
 //! frame, and the time since activity — the spoiler tease's discipline:
@@ -14,19 +14,25 @@ use super::sprite::Face;
 use crate::ui::theme;
 
 /// The whole dissolve; the overlay is gone after this.
-pub(super) const DURATION_MS: u64 = 2500;
+pub(super) const DURATION_MS: u64 = 3750;
 /// Every rain column has settled by this point (then a safety band).
-const SETTLE_BY_MS: u64 = 2400;
+const SETTLE_BY_MS: u64 = 3600;
 /// Rain begins after her startled beat.
-pub(super) const RAIN_FROM_MS: u64 = 450;
+pub(super) const RAIN_FROM_MS: u64 = 675;
 /// Latest any column may start.
-const RAIN_LATEST_MS: u64 = 1300;
+const RAIN_LATEST_MS: u64 = 1950;
 /// Noise re-rolls at ~16 fps.
 pub(super) const FRAME_MS: u64 = 60;
 /// Her face turns from startled to a goodbye smile.
-pub(super) const SMILE_FROM_MS: u64 = 250;
-/// Slowest rain, in rows per millisecond (12 rows/s).
-const MIN_SPEED: f64 = 0.012;
+pub(super) const SMILE_FROM_MS: u64 = 375;
+/// Slowest rain, in rows per millisecond (8 rows/s).
+const MIN_SPEED: f64 = 0.008;
+/// Her wave alternates arm up/down this often (line art).
+pub(super) const WAVE_MS: u64 = 150;
+/// How much later each column's drop starts, per column from her.
+const RIPPLE_MS: u64 = 90;
+/// Per-column start jitter.
+const JITTER_MS: u64 = 180;
 
 /// One cell of her world at the moment activity began.
 #[derive(Clone, Debug, PartialEq)]
@@ -94,9 +100,10 @@ impl Dissolve {
         let mut columns: BTreeMap<u16, Column> = BTreeMap::new();
         for cell in &cells {
             let h = hash(t0, cell.x);
-            let start =
-                (RAIN_FROM_MS + 60 * (i32::from(cell.x) - origin).unsigned_abs() as u64 + h % 120)
-                    .min(RAIN_LATEST_MS);
+            let start = (RAIN_FROM_MS
+                + RIPPLE_MS * (i32::from(cell.x) - origin).unsigned_abs() as u64
+                + h % JITTER_MS)
+                .min(RAIN_LATEST_MS);
             let column = columns.entry(cell.x).or_insert(Column {
                 start,
                 top: i32::from(cell.y) - 1,
@@ -427,7 +434,7 @@ mod tests {
                 .collect::<String>()
         };
         assert_eq!(row(&frame(&mut dissolve, &real, 1000)), "(o_o)");
-        assert_eq!(row(&frame(&mut dissolve, &real, 1300)), "(^_^)");
-        assert_eq!(row(&frame(&mut dissolve, &real, 3500)), "     ");
+        assert_eq!(row(&frame(&mut dissolve, &real, 1400)), "(^_^)");
+        assert_eq!(row(&frame(&mut dissolve, &real, 4800)), "     ");
     }
 }
