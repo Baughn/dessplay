@@ -6,7 +6,8 @@
 //! ```
 //!
 //! ←/→ pick a scene · Enter play it · m a chat message arrives ·
-//! g goodbye · n new seed · [ ] slower / faster · 1–4 make her sleepy,
+//! f give her the next piece of furniture · g goodbye · n new seed ·
+//! [ ] slower / faster · 1–4 make her sleepy,
 //! restless, keen to tidy, or mischievous · q quit. The bar shows her
 //! needs. Her decisions and their reasons are logged to
 //! `houseguest-stage.log` in the working directory (`tail -f` it beside
@@ -110,7 +111,7 @@ fn run(seed: &mut u64, picker: ratatui_image::picker::Picker) -> color_eyre::Res
             };
             let mood = guest.mood().unwrap_or_default();
             let menu = format!(
-                " ◀ {} ▶  Enter play · m chat · g bye · n seed {} · [ ] {}× · 1-4 needs · q │ {} │ {}",
+                " ◀ {} ▶  Enter play · f furnish · m chat · g bye · n seed {} · [ ] {}× · 1-4 needs · q │ {} │ {}",
                 scene.name(),
                 seed,
                 SPEEDS[speed],
@@ -148,6 +149,11 @@ fn run(seed: &mut u64, picker: ratatui_image::picker::Picker) -> color_eyre::Res
             KeyCode::Right => selected = (selected + 1) % Scene::ALL.len(),
             KeyCode::Enter | KeyCode::Char(' ') => guest.cue(Scene::ALL[selected]),
             KeyCode::Char('m') => chats += 1,
+            KeyCode::Char('f') => {
+                if let Some(item) = guest.wishlist() {
+                    guest.give(item);
+                }
+            }
             KeyCode::Char('g') => guest.activity(now),
             KeyCode::Char('n') => {
                 *seed = rand::random();

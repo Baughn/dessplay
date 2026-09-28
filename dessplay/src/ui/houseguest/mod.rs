@@ -19,6 +19,7 @@ mod graphics;
 mod idle;
 mod layer;
 mod osaka;
+mod room;
 mod scenes;
 mod sprite;
 pub mod stage;
@@ -35,6 +36,8 @@ use dissolve::{Dissolve, Frozen};
 use graphics::{Graphics, Look};
 pub use idle::{Busy, ChatMark, IdleView, grow};
 use osaka::Osaka;
+pub use room::{Furniture, Nook};
+use room::{Room, Shown};
 use sprite::{Part, Pose};
 use terrain::Terrain;
 
@@ -87,6 +90,8 @@ struct Visit {
     layer: layer::TextLayer,
     /// What the last frame offered her (lines to pull).
     chances: osaka::Chances,
+    /// Her furniture as placed in the last frame.
+    shown: Vec<Shown>,
     size: (u16, u16),
 }
 
@@ -95,6 +100,8 @@ struct Leaving {
     /// Line art for the startled-and-wave beat before she bursts into
     /// letters.
     image: Option<Placement>,
+    /// Her furniture's line art, held until the rain.
+    props: Vec<Shown>,
 }
 
 enum State {
@@ -122,6 +129,10 @@ pub struct Guest {
     cue: Option<stage::Scene>,
     /// What came of the last cue.
     note: Option<Result<String, String>>,
+    /// What she owns; it outlives her visits.
+    room: Room,
+    /// A piece the stage gave her, placed at the next paint.
+    gift: Option<Furniture>,
 }
 
 impl Guest {
@@ -138,7 +149,22 @@ impl Guest {
             graphics: None,
             cue: None,
             note: None,
+            room: Room::default(),
+            gift: None,
         }
+    }
+
+    /// The stage: give her `item`, placed at the next paint on a quiet
+    /// pane's floor where it fits (the note says where, or why not).
+    pub fn give(&mut self, item: Furniture) {
+        self.gift = Some(item);
+    }
+
+    /// The stage: the first piece she doesn't own yet.
+    pub fn wishlist(&self) -> Option<Furniture> {
+        Furniture::ALL
+            .into_iter()
+            .find(|&item| !self.room.owns(item))
     }
 
     /// The stage: have her do `scene` at the next paint, somewhere it
@@ -207,6 +233,7 @@ impl Guest {
                     self.state = State::Leaving(Box::new(Leaving {
                         dissolve,
                         image: visit.image,
+                        props: visit.shown,
                     }));
                 }
             }
@@ -278,6 +305,7 @@ impl Guest {
                         image: None,
                         layer: layer::TextLayer::default(),
                         chances: osaka::Chances::default(),
+                        shown: Vec::new(),
                         size,
                     }));
                 }
@@ -302,6 +330,14 @@ impl Guest {
                 let untouched = leaving.dissolve.unchanged(buf);
                 let terrain = Terrain::read(buf, &view.protected, true);
                 leaving.dissolve.paint(buf, now);
+                if let Some(graphics) = &mut self.graphics
+                    && t < dissolve::RAIN_FROM_MS
+                    && untouched
+                {
+                    for prop in &leaving.props {
+                        paint_prop_art(buf, graphics, prop);
+                    }
+                }
                 if let (Some(image), Some(graphics)) = (leaving.image, &mut self.graphics)
                     && t < dissolve::RAIN_FROM_MS
                     && untouched
@@ -318,7 +354,7 @@ impl Guest {
                         image.facing,
                         (image.x, image.y),
                         image.standing,
-                        &terrain,
+                        &|x, y| terrain.open(x, y),
                     );
                 }
             }
@@ -327,9 +363,23 @@ impl Guest {
                 // frame, then its cells join the protected set so she
                 // never stands over moved text or the holes it left.
                 visit.layer.validate(buf, &view.protected);
+                // Her furniture stands on blank cells, clear of protected
+                // ones, moved text, and her; what doesn't fit is in the
+                // closet this frame. Placed, it's solid to her and to text.
+                visit.shown = furnish(
+                    &mut self.room,
+                    &mut self.gift,
+                    &mut self.note,
+                    buf,
+                    view,
+                    visit,
+                    &mut self.rng,
+                );
+                let mut base = view.protected.clone();
+                base.extend(visit.shown.iter().map(Shown::cover));
                 let mut gripped = true;
                 for op in visit.osaka.take_ops() {
-                    if !scenes::apply(&op, &mut visit.layer, buf, &view.protected) {
+                    if !scenes::apply(&op, &mut visit.layer, buf, &base) {
                         tracing::trace!(?op, "houseguest: the frame refused a layer change");
                         gripped &= !op.grips();
                         visit.osaka.refused(now, op);
@@ -338,7 +388,7 @@ impl Guest {
                 if !gripped {
                     visit.osaka.lost_grip(now);
                 }
-                let mut protected = view.protected.clone();
+                let mut protected = base.clone();
                 protected.extend(visit.layer.cells().map(|(x, y)| Rect::new(x, y, 1, 1)));
                 visit.terrain = Terrain::read(buf, &protected, self.graphics.is_some());
                 visit.size = size;
@@ -356,7 +406,7 @@ impl Guest {
                 // they now sit: swaps read the frame with her layer on.
                 let pulls = scenes::pulls(buf, &visit.terrain, &protected);
                 let mut layer = visit.layer.paint(buf);
-                let mut holes = view.protected.clone();
+                let mut holes = base;
                 holes.extend(visit.layer.holes().map(|(x, y)| Rect::new(x, y, 1, 1)));
                 let swaps = scenes::swaps(buf, &visit.terrain, &holes, &visit.layer);
                 if let Some(scene) = self.cue.take() {
@@ -385,6 +435,12 @@ impl Guest {
                     swaps,
                     loose,
                 };
+                layer.extend(draw_props(
+                    buf,
+                    self.graphics.as_mut(),
+                    &visit.shown,
+                    self.truecolor,
+                ));
                 match &mut self.graphics {
                     Some(graphics) => {
                         let (painted, image) = draw_art(
@@ -614,6 +670,133 @@ fn bubble_spot(
         .find(|&(start, row)| (start..start + len).all(|x| blank(x, row)))
 }
 
+/// Where her furniture stands this frame, placing the stage's gift
+/// first if there is one. Nothing covers protected cells, moved text,
+/// or her box (a piece that would land on her waits in the closet).
+fn furnish(
+    room: &mut Room,
+    gift: &mut Option<Furniture>,
+    note: &mut Option<Result<String, String>>,
+    buf: &Buffer,
+    view: &IdleView,
+    visit: &Visit,
+    rng: &mut Rng,
+) -> Vec<Shown> {
+    let moved: std::collections::HashSet<(u16, u16)> = visit.layer.cells().collect();
+    let (x, y) = (visit.osaka.x, visit.osaka.y);
+    let half = sprite::WIDTH / 2;
+    let blocked = |cx: i32, cy: i32| {
+        let (Ok(ux), Ok(uy)) = (u16::try_from(cx), u16::try_from(cy)) else {
+            return true;
+        };
+        (x - half..=x + half).contains(&cx) && (y - sprite::HEIGHT..=y).contains(&cy)
+            || moved.contains(&(ux, uy))
+            || view.protected.iter().any(|r| r.contains((ux, uy).into()))
+    };
+    let shown = room.resolve(buf, &view.nooks, &blocked);
+    let Some(item) = gift.take() else {
+        return shown;
+    };
+    let result = if room.owns(item) {
+        Err(format!("she already has a {}", item.name()))
+    } else {
+        match Room::spot(buf, &view.nooks, &shown, &blocked, item, rng) {
+            Some(anchor) => {
+                tracing::info!(?item, ?anchor, "houseguest: new furniture");
+                room.props.push(room::Prop { item, anchor });
+                Ok(format!("a {} in {:?}", item.name(), anchor.nook))
+            }
+            None => Err(format!("no room for a {}", item.name())),
+        }
+    };
+    *note = Some(result);
+    room.resolve(buf, &view.nooks, &blocked)
+}
+
+/// Her furniture's colour as text (the ASCII drawings).
+fn prop_ink(item: Furniture, truecolor: bool) -> Ink {
+    let fg = match (item, truecolor) {
+        (Furniture::Sofa, true) => Color::Rgb(111, 161, 156),
+        (Furniture::Sofa, false) => Color::Cyan,
+        (Furniture::Tv, true) => Color::Rgb(203, 191, 168),
+        (Furniture::Tv, false) => Color::Gray,
+        (Furniture::Bed, true) => Color::Rgb(143, 179, 217),
+        (Furniture::Bed, false) => Color::LightBlue,
+        (Furniture::Desk, true) => Color::Rgb(192, 150, 100),
+        (Furniture::Desk, false) => Color::Yellow,
+    };
+    Ink::new(fg, Modifier::empty())
+}
+
+/// Paint one piece's line art. Returns whether it went on.
+fn paint_prop_art(buf: &mut Buffer, graphics: &mut Graphics, prop: &Shown) -> bool {
+    let (cols, _) = prop.item.footprint();
+    graphics
+        .paint(
+            buf,
+            Look::Prop(prop.item),
+            prop.facing,
+            (prop.left + i32::from(cols) / 2, prop.floor),
+            true,
+            &|_, _| true,
+        )
+        .is_some()
+}
+
+/// Paint her furniture (as line art, or as ASCII without graphics),
+/// returning what was painted over what.
+fn draw_props(
+    buf: &mut Buffer,
+    mut graphics: Option<&mut Graphics>,
+    shown: &[Shown],
+    truecolor: bool,
+) -> Vec<Frozen> {
+    let mut painted = Vec::new();
+    for prop in shown {
+        let ink = prop_ink(prop.item, truecolor);
+        let unders: Vec<_> = prop
+            .cells()
+            .filter_map(|(x, y, glyph)| {
+                let (ux, uy) = (u16::try_from(x).ok()?, u16::try_from(y).ok()?);
+                Some((ux, uy, glyph, buf.cell((ux, uy))?.clone()))
+            })
+            .collect();
+        match graphics.as_deref_mut() {
+            Some(graphics) => {
+                if paint_prop_art(buf, graphics, prop) {
+                    painted.extend(unders.into_iter().map(|(x, y, glyph, under)| Frozen {
+                        x,
+                        y,
+                        glyph: glyph.unwrap_or('.'),
+                        ink,
+                        under,
+                        face: None,
+                        burst: true,
+                    }));
+                }
+            }
+            None => {
+                for (x, y, glyph, under) in unders {
+                    if let Some(glyph) = glyph
+                        && put(buf, i32::from(x), i32::from(y), glyph, ink)
+                    {
+                        painted.push(Frozen {
+                            x,
+                            y,
+                            glyph,
+                            ink,
+                            under,
+                            face: None,
+                            burst: false,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    painted
+}
+
 /// Paint her as line art, plus any bubble as text. The frozen cells for
 /// a dissolve are her box's (blank) cells, carrying the ASCII sprite's
 /// glyphs as the noise class she bursts into.
@@ -662,7 +845,7 @@ fn draw_art(
             osaka.facing,
             (osaka.x, osaka.y),
             placement.standing,
-            terrain,
+            &|x, y| terrain.open(x, y),
         )
         .is_some();
     let mut painted = if placed { body } else { Vec::new() };

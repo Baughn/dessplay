@@ -6,9 +6,14 @@
 use resvg::tiny_skia;
 use resvg::usvg;
 
+use super::room::Furniture;
 use super::sprite::{Face, Facing, Pose};
 
 const PARTS: &str = include_str!("art/osaka.svg");
+const PROPS: &str = include_str!("art/props.svg");
+/// Prop units per cell (her scale at a 9 × 19 px cell), so her
+/// furniture shares her line weights.
+const CELL_UNITS: (f32, f32) = (20.0, 42.0);
 /// The parts' canvas; feet rest on its bottom edge.
 const CANVAS_W: f32 = 100.0;
 const CANVAS_H: f32 = 160.0;
@@ -455,12 +460,67 @@ pub(super) fn render(
     width: u32,
     height: u32,
 ) -> Option<image::RgbaImage> {
-    let svg = scene(rig, facing, line);
-    let tree = usvg::Tree::from_str(&svg, &usvg::Options::default()).ok()?;
+    rasterize(
+        &scene(rig, facing, line),
+        (CANVAS_W, CANVAS_H),
+        width,
+        height,
+    )
+}
+
+/// A piece of furniture as an SVG document, in its own frame (see
+/// `art/props.svg`), facing right unless mirrored.
+pub(super) fn prop_scene(prop: Furniture, facing: Facing, line: &str) -> String {
+    let (w, h) = prop_frame(prop);
+    let mirror = match facing {
+        Facing::Right => String::new(),
+        Facing::Left => format!(r#" transform="translate({w} 0) scale(-1 1)""#),
+    };
+    let screen = if prop == Furniture::Tv {
+        r##"<use href="#tv-screen"/>"##
+    } else {
+        ""
+    };
+    format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w} {h}" color="{line}">{PROPS}<g{mirror}><use href="#{id}"/>{screen}</g></svg>"##,
+        id = prop.art_id(),
+    )
+}
+
+/// A prop's frame in SVG units.
+fn prop_frame(prop: Furniture) -> (f32, f32) {
+    let (cols, rows) = prop.footprint();
+    (
+        f32::from(cols) * CELL_UNITS.0,
+        f32::from(rows) * CELL_UNITS.1,
+    )
+}
+
+/// Render a piece of furniture into a `width × height` pixel image,
+/// scaled uniformly and bottom-aligned (standing on the box's floor).
+pub(super) fn render_prop(
+    prop: Furniture,
+    facing: Facing,
+    line: &str,
+    width: u32,
+    height: u32,
+) -> Option<image::RgbaImage> {
+    rasterize(
+        &prop_scene(prop, facing, line),
+        prop_frame(prop),
+        width,
+        height,
+    )
+}
+
+/// Rasterize `svg`, whose frame is `(fw, fh)` units, into a `width ×
+/// height` image: scaled uniformly, centred, bottom-aligned.
+fn rasterize(svg: &str, (fw, fh): (f32, f32), width: u32, height: u32) -> Option<image::RgbaImage> {
+    let tree = usvg::Tree::from_str(svg, &usvg::Options::default()).ok()?;
     let mut pixmap = tiny_skia::Pixmap::new(width, height)?;
-    let scale = (width as f32 / CANVAS_W).min(height as f32 / CANVAS_H);
-    let dx = (width as f32 - CANVAS_W * scale) / 2.0;
-    let dy = height as f32 - CANVAS_H * scale;
+    let scale = (width as f32 / fw).min(height as f32 / fh);
+    let dx = (width as f32 - fw * scale) / 2.0;
+    let dy = height as f32 - fh * scale;
     let transform = tiny_skia::Transform::from_scale(scale, scale).post_translate(dx, dy);
     resvg::render(&tree, transform, &mut pixmap.as_mut());
     let mut out = image::RgbaImage::new(width, height);
@@ -590,6 +650,119 @@ mod tests {
                     }
                     image::imageops::overlay(&mut sheet, &image, i64::from(bx), i64::from(by));
                     x0 += w * 7;
+                }
+            }
+        }
+        sheet.save(path).unwrap();
+    }
+
+    #[test]
+    fn every_prop_renders_inside_its_footprint() {
+        for prop in Furniture::ALL {
+            let (cols, rows) = prop.footprint();
+            for facing in [Facing::Left, Facing::Right] {
+                let (w, h) = (u32::from(cols) * 9, u32::from(rows) * 19);
+                let image = render_prop(prop, facing, LINE, w, h).expect("renders");
+                let inked = image.pixels().filter(|p| p.0[3] > 0).count();
+                assert!(inked as u32 > w * h / 4, "{prop:?}: only {inked} pixels");
+            }
+        }
+    }
+
+    /// Her unfilled-furniture alternative: each fill becomes the outline.
+    fn unfilled(svg: &str) -> String {
+        let mut out = String::new();
+        for (i, part) in svg.split('<').enumerate() {
+            if i > 0 {
+                out.push('<');
+            }
+            let fill = part
+                .find(r##"fill="#"##)
+                .map(|at| part[at + 6..at + 13].to_string());
+            match fill {
+                Some(colour) if !part.starts_with('g') => {
+                    let part = part.replace(&format!(r#"fill="{colour}""#), r#"fill="none""#);
+                    let part = if part.contains("currentColor") {
+                        part.replace(r#"stroke="currentColor""#, &format!(r#"stroke="{colour}""#))
+                    } else if part.contains("stroke=") {
+                        part
+                    } else {
+                        part.replacen(' ', &format!(r#" stroke="{colour}" "#), 1)
+                    };
+                    out.push_str(&part);
+                }
+                _ => out.push_str(part),
+            }
+        }
+        out
+    }
+
+    /// Her furniture for review, beside her for scale:
+    /// `HOUSEGUEST_PROPS=/tmp/props.png cargo test props_sheet -- --ignored`.
+    /// Each piece filled (top) and as coloured outlines (below), at 1×,
+    /// 2× and 4×, over the dark theme, with the cell grid and the floor
+    /// line both stand on.
+    #[test]
+    #[ignore = "writes a PNG for review"]
+    fn props_sheet() {
+        let path = std::env::var("HOUSEGUEST_PROPS").expect("HOUSEGUEST_PROPS");
+        let (cw, ch) = (9u32, 19u32);
+        let scales = [1u32, 2, 4];
+        // Prop, a cell's gap, her, a cell's gap.
+        let span = |s: u32| cw * s * 18;
+        let row_h = ch * 4 * 6;
+        let rows = Furniture::ALL.len() as u32 * 2;
+        let mut sheet = image::RgbaImage::from_pixel(
+            scales.iter().map(|&s| span(s)).sum(),
+            row_h * rows,
+            image::Rgba([13, 17, 23, 255]),
+        );
+        let her = Rig::for_pose(Pose::Stand, Face::Vacant);
+        for (index, prop) in Furniture::ALL.into_iter().enumerate() {
+            for (variant, outline) in [false, true].into_iter().enumerate() {
+                let row = index as u32 * 2 + variant as u32;
+                let mut x0 = 0;
+                for &s in &scales {
+                    let (w, h) = (cw * s, ch * s);
+                    let (cols, prop_rows) = prop.footprint();
+                    let (cols, prop_rows) = (u32::from(cols), u32::from(prop_rows));
+                    // The floor line, half a row below the boxes.
+                    let floor = row * row_h + row_h - h;
+                    let line = floor + h / 2;
+                    for gx in 0..span(s) - w {
+                        for t in 0..s {
+                            sheet.put_pixel(x0 + gx, line + t, image::Rgba([139, 148, 158, 255]));
+                        }
+                    }
+                    let px = x0 + w;
+                    for gy in 0..=prop_rows {
+                        for gx in 0..w * cols {
+                            sheet.put_pixel(
+                                px + gx,
+                                floor - gy * h,
+                                image::Rgba([40, 46, 56, 255]),
+                            );
+                        }
+                    }
+                    let svg = prop_scene(prop, Facing::Right, LINE);
+                    let svg = if outline { unfilled(&svg) } else { svg };
+                    let image =
+                        rasterize(&svg, prop_frame(prop), w * cols, h * prop_rows + h / 2).unwrap();
+                    image::imageops::overlay(
+                        &mut sheet,
+                        &image,
+                        i64::from(px),
+                        i64::from(floor - h * prop_rows),
+                    );
+                    let hx = px + w * (cols + 1);
+                    let osaka = render(&her, Facing::Left, LINE, w * 5, h * 4 + h / 2).unwrap();
+                    image::imageops::overlay(
+                        &mut sheet,
+                        &osaka,
+                        i64::from(hx),
+                        i64::from(floor - h * 4),
+                    );
+                    x0 += span(s);
                 }
             }
         }

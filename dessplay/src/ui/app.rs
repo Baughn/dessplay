@@ -575,7 +575,7 @@ impl Ui {
     /// (proposal 2026-09-28-houseguest). `images` are the renderer's
     /// protocol-image rectangles for that frame.
     pub fn idle_view(&self, images: &[Rect]) -> super::houseguest::IdleView {
-        use super::houseguest::{Busy, ChatMark, IdleView, grow};
+        use super::houseguest::{Busy, ChatMark, IdleView, Nook, grow};
         let view = &self.snapshot.view;
         let playing = view.now_playing.is_some()
             && view.playback_intent == dessplay_core::types::PlaybackIntent::Playing;
@@ -612,6 +612,14 @@ impl Ui {
             },
             chat: self.panes.chat,
             protected,
+            nooks: [
+                (Nook::List, self.panes.series),
+                (Nook::Users, self.panes.users),
+                (Nook::Playlist, self.panes.playlist),
+            ]
+            .into_iter()
+            .filter(|(_, rect)| !rect.is_empty())
+            .collect(),
             truecolor: self.color_depth == ColorDepth::TrueColor,
         }
     }

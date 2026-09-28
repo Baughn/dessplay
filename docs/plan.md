@@ -1920,22 +1920,24 @@ Osaka gets a home that outlives a visit: furniture she acquires, placed
 around the panes, that gives her new things to do — and a record so the
 room is still there next time.
 
-### Settle with the user first
+### Settled with the user (2026-09-28)
 
-The proposal fixes the direction but not these; ask before building:
+1. **First items and sizes**: sofa 9×3, TV 6×4, bed 10×3, desk 7×3.
+2. **Where props stand**: on floors she can reach, over blank cells
+   only, in the quiet panes (Users, Playlist, a short List); never in
+   the chat. A prop that no longer fits goes to the closet.
+3. **Acquisition**: on an early visit a box brings the TV; after that,
+   Chiyo-chichi's shopping channel on the TV sells her one item at a
+   time.
+4. **Cadence**: about one item per three visits; now and then she leaves
+   for her part-time job, and the furnished room stands empty for 1–3
+   minutes before she returns with a bag.
+5. **Reset**: "Osaka moved out" is a row under Houseguest in F3 →
+   Playback, with a confirmation; it wipes the ledger.
 
-1. **First items and sizes.** Proposed first set: sofa, TV, bed, desk.
-   Each needs a footprint in cells that fits beside her 5×4 box on a
-   floor (a sofa ~9×3? a TV ~6×4?) and still fits 80×24.
-2. **Where props may stand.** On floors she can reach, in blank cells
-   only (placeholders hide text). Empty panes (Users, Playlist, The List
-   when short) are the natural rooms; the chat is busy. Confirm.
-3. **How she acquires them.** The shopping channel on the TV (which is
-   itself the first delivery?), or a starter set, or building from
-   harvested letters (proposal *Building*, later).
-4. **Shopping cadence and absences** (the part-time job): how often,
-   how long the room stands empty.
-5. **Reset**: the "Osaka moved out" settings action — where it lives.
+**Creative licence.** The proposal, the original screensaver and The
+Sims are inspiration, not a spec. New scenes, props and gags are
+welcome; the only goal is "watching her is kind of fun".
 
 ### What gets built (suggested order; each step testable in the stage)
 
@@ -1973,6 +1975,20 @@ The proposal fixes the direction but not these; ask before building:
    before the delivery animation plays, so an interrupt loses nothing.
 7. **Absences**: she leaves for her job and the room stands furnished.
 8. The rest of the catalogue, ~8 props placed at most.
+
+### Progress
+
+- **Step 1 done (2026-09-28).** Art for all four pieces in
+  `art/props.svg` (filled, reviewed on `props_sheet`:
+  `HOUSEGUEST_PROPS=/tmp/props.png cargo test -p dessplay --lib
+  props_sheet -- --ignored`). `room.rs`: `Furniture`, `Nook` (List,
+  Users, Playlist, carried in `IdleView::nooks`), `Anchor { nook, at
+  (‰ along the bottom border), facing }`, `Room::resolve` / `spot`.
+  Pieces are solid (their footprint and floor join the protected set)
+  until step 2's compositing; one that would land on her waits in the
+  closet. `Look::Prop` goes through the same `Graphics::paint` as her;
+  ASCII drawings double as the goodbye's noise. Stage: `f` gives her the
+  next piece. The room lives on `Guest` (in memory until the ledger).
 
 ### Testing
 

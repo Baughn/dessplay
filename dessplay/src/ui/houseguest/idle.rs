@@ -43,6 +43,8 @@ pub struct IdleView {
     /// Rectangles her body and bubbles never cover: the chat input, the
     /// Player Status block, the keybinding bar, and inline images.
     pub protected: Vec<Rect>,
+    /// The quiet panes she may furnish, as drawn (borders included).
+    pub nooks: Vec<(super::Nook, Rect)>,
     /// Whether the terminal renders true colour.
     pub truecolor: bool,
 }

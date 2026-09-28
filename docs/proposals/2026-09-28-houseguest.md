@@ -455,6 +455,8 @@ among the first things she owns, since the shopping channel plays on it.
 38. **Whacking it** — taps it; the picture shakes. [U]
 39. ★ **Chiyo-chichi's shopping channel** — the progression engine (see
     above). [U, paced by progression]
+39a. **Rabbit ears** — static; she adjusts the antenna, it gets worse,
+    she whacks the set, and the picture comes back upside down. [U]
 
 ### Food
 
@@ -527,11 +529,13 @@ among the first things she owns, since the shopping channel plays on it.
 ### Home life (prop-gated)
 
 66. ★ **Homework** — at the desk, writes, gets heavier-lidded, asleep on
-    the paper; the test paper shows **42** (Ep 13, 22). [C, 20:00–22:30]
+    the paper, the desk lamp drooping lower as she does; the test paper
+    shows **42** (Ep 13, 22). [C, 20:00–22:30]
 67. ★ **Kotatsu** — only her head visible, for hours; mikan on top
     (Ep 24–25). [C, Dec–Feb evenings]
-68. **Sofa nap** — curls up, `z` drifts; falls asleep standing if she has
-    no sofa. [C]
+68. **Sofa nap** — curls up hugging the throw cushion, `z` drifts;
+    sometimes the cushion rolls off onto the floor line. Falls asleep
+    standing if she has no sofa. [C]
 69. **Blank-line nap** — lies in the widest blank run in chat; a real
     repaint of that run is her alarm clock. [U]
 70. **Lamp** — switches it off before bed. [C, bedtime]

@@ -24,6 +24,7 @@ fn view(protected: Vec<Rect>) -> IdleView {
         chat_mark: ChatMark::default(),
         chat: Rect::new(0, 0, 30, 20),
         protected,
+        nooks: Vec::new(),
         truecolor: false,
     }
 }
@@ -51,6 +52,27 @@ fn rooms(width: u16, height: u16) -> Buffer {
     }
     buf.set_string(0, height - 2, "Tab Next pane | Enter Send", Style::new());
     buf
+}
+
+/// The quiet panes of [`rooms`]: the tall left box and the two stacked
+/// right ones.
+fn nooks(width: u16, height: u16) -> Vec<(Nook, Rect)> {
+    vec![
+        (Nook::List, Rect::new(0, 0, width / 2, height - 3)),
+        (
+            Nook::Users,
+            Rect::new(width / 2, 0, width - width / 2, (height - 3) / 2),
+        ),
+        (
+            Nook::Playlist,
+            Rect::new(
+                width / 2,
+                (height - 3) / 2,
+                width - width / 2,
+                height - 3 - (height - 3) / 2,
+            ),
+        ),
+    ]
 }
 
 fn bottom_strip(width: u16, height: u16) -> Vec<Rect> {
@@ -313,11 +335,24 @@ proptest! {
         skips in proptest::collection::vec((0u16..60, 0u16..18), 0..6),
         chats in proptest::collection::vec(0u64..200_000, 0..4),
         protect in (0u16..40, 0u16..10, 1u16..20, 1u16..6),
+        owned in proptest::collection::vec((0usize..4, 0usize..3, 0u16..=1000, any::<bool>()), 0..5),
     ) {
         let mut guest = Guest::new(seed);
         if graphics {
             guest.set_picker(kitty());
         }
+        let nook = [Nook::List, Nook::Users, Nook::Playlist];
+        guest.room.props = owned
+            .iter()
+            .map(|&(item, at, along, left)| room::Prop {
+                item: Furniture::ALL[item],
+                anchor: room::Anchor {
+                    nook: nook[at],
+                    at: along,
+                    facing: if left { sprite::Facing::Left } else { sprite::Facing::Right },
+                },
+            })
+            .collect();
         let mut now = 0;
         let span = 200_000 / sizes.len() as u64;
         let mut mark = ChatMark::default();
@@ -337,14 +372,36 @@ proptest! {
                 if chats.iter().any(|&c| c <= now && c > now - step) {
                     mark.synced += 1;
                 }
-                let view = IdleView { chat_mark: mark, ..view(protected.clone()) };
+                let view = IdleView {
+                    chat_mark: mark,
+                    nooks: nooks(w, h),
+                    ..view(protected.clone())
+                };
                 guest.advance(now);
                 let frame = paint(&mut guest, &real, &view, now);
                 assert_untouched(&frame, &real, &protected)?;
-                let layer: Vec<(u16, u16)> = match &guest.state {
-                    State::Visiting(visit) => visit.layer.cells().collect(),
-                    _ => Vec::new(),
+                let (layer, shown): (Vec<(u16, u16)>, Vec<Shown>) = match &guest.state {
+                    State::Visiting(visit) => (visit.layer.cells().collect(), visit.shown.clone()),
+                    _ => (Vec::new(), Vec::new()),
                 };
+                // Her furniture stands on lines, over blank cells only,
+                // clear of protected cells, text she moved, and her.
+                for prop in &shown {
+                    let (cols, _) = prop.item.footprint();
+                    let floor = (prop.left..prop.left + i32::from(cols)).map(|x| (x, prop.floor, None));
+                    for (x, y, _) in prop.cells().chain(floor) {
+                        let at = (x as u16, y as u16);
+                        let want = real.cell(at).unwrap();
+                        prop_assert!(!cells::untouchable(want));
+                        prop_assert!(!protected.iter().any(|r| r.contains(at.into())), "{:?} protected", at);
+                        prop_assert!(!layer.contains(&at), "{:?} over moved text", at);
+                        if y < prop.floor {
+                            prop_assert!(want.symbol().trim().is_empty(), "{:?} over {:?}", at, want.symbol());
+                        } else {
+                            prop_assert!(want.symbol().chars().next().is_some_and(|c| graphics::strokes(c).is_some()));
+                        }
+                    }
+                }
                 if graphics {
                     assert_nothing_hidden(&frame, &real, &layer)?;
                 }
@@ -361,14 +418,24 @@ proptest! {
                         a != b && !layer.contains(&at)
                     })
                     .count();
-                let most = (sprite::WIDTH * (sprite::HEIGHT + 1)) as usize + 24;
+                let furniture: usize = shown
+                    .iter()
+                    .map(|prop| {
+                        let (cols, rows) = prop.item.footprint();
+                        usize::from(cols) * usize::from(rows + 1)
+                    })
+                    .sum();
+                let most = (sprite::WIDTH * (sprite::HEIGHT + 1)) as usize + 24 + furniture;
                 prop_assert!(changed <= most, "{} cells changed", changed);
             }
         }
         let &(w, h) = sizes.last().unwrap();
         let mut real = rooms(w, h);
         scatter(&mut real, &text, &skips);
-        let view = view(bottom_strip(w, h));
+        let view = IdleView {
+            nooks: nooks(w, h),
+            ..view(bottom_strip(w, h))
+        };
         guest.activity(now);
         let end = run(&mut guest, &real, &view, now, now + dissolve::DURATION_MS);
         prop_assert_eq!(end, real);
@@ -685,6 +752,7 @@ fn visiting_at(guest: &mut Guest, real: &Buffer, view: &IdleView, (x, y): (i32, 
         image: None,
         layer: layer::TextLayer::default(),
         chances: osaka::Chances::default(),
+        shown: Vec::new(),
         size: (real.area.width, real.area.height),
     }));
 }
@@ -1378,4 +1446,63 @@ fn her_needs_shape_long_visits() {
         "one choice took over: {choices:?}"
     );
     assert!(choices.contains(&Kind::Pull), "she tidied");
+}
+
+// ---- Her room ----
+
+/// Given a sofa in the stage's room, she places it on a quiet pane's
+/// floor, keeps it through the visit, and her goodbye takes it along:
+/// the rain lands exactly on the real frame. In both drawing modes.
+#[test]
+fn her_sofa_stands_in_a_quiet_pane_and_leaves_with_her() {
+    for graphics in [false, true] {
+        let mut ui = stage_ui();
+        let (real, view) = real_frame(&mut ui, 100, 30);
+        let mut guest = Guest::new(3);
+        if graphics {
+            guest.set_picker(kitty());
+        }
+        guest.cue(Scene::Arrive);
+        paint(&mut guest, &real, &view, 0);
+        guest.give(Furniture::Sofa);
+        let frame = run(&mut guest, &real, &view, 0, 30_000);
+        assert!(
+            matches!(guest.cue_note(), Some(Ok(_))),
+            "{:?}",
+            guest.cue_note()
+        );
+        let State::Visiting(visit) = &guest.state else {
+            panic!("she left");
+        };
+        let [sofa] = visit.shown[..] else {
+            panic!("graphics={graphics}: {:?}", visit.shown);
+        };
+        let rect = sofa.rect();
+        assert!(
+            view.nooks
+                .iter()
+                .any(|&(_, pane)| pane.intersection(rect) == rect),
+            "inside a quiet pane"
+        );
+        let drawn = |x: u16, y: u16| frame.cell((x, y)) != real.cell((x, y));
+        assert!(
+            (rect.x..rect.right()).any(|x| drawn(x, rect.bottom() - 1)),
+            "graphics={graphics}: the sofa is on screen"
+        );
+        assert!(guest.room.owns(Furniture::Sofa));
+        guest.activity(30_000);
+        let end = run(
+            &mut guest,
+            &real,
+            &view,
+            30_000,
+            30_000 + dissolve::DURATION_MS,
+        );
+        assert_eq!(
+            end, real,
+            "graphics={graphics}: the rain restores the frame"
+        );
+        // She still owns it next visit.
+        assert!(guest.room.owns(Furniture::Sofa));
+    }
 }

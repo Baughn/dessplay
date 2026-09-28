@@ -1959,6 +1959,28 @@ in the layer, so an undo after the text changed underneath can't pick up
 new text. Rejected: re-deriving the swap against the real frame
 (the pulled letters' real cells are holes).
 
+## Houseguest furniture is pane-relative and leaves with her (2026-09-28)
+
+**Rule:** A piece of furniture is stored as a quiet pane and a fraction
+along its bottom border, resolved against every frame; it shows only
+over blank cells and while she is there, and the goodbye rain takes it
+along. Pieces are drawn filled, in her style. See
+[design.md](design.md#houseguest).
+
+**Why:** Absolute cells go stale on the first resize or layout edit, and
+panes are what the user recognises as places ("her sofa is in the Users
+pane"). Blank cells only, because a kitty placeholder hides what's
+under it, and furniture over a user's text would be a screensaver
+getting in the way. Leaving with her follows from her being a
+post-render overlay: once the user is active the screen is theirs, and
+a sofa that outlived her would be a UI element nobody asked for. Filled
+art: the user compared filled and coloured-outline versions on the
+props sheet; the fills are what read on the dark theme and match her,
+while outlines lost the TV screen and turned the quilt to noise.
+Rejected: the chat as a room (new lines would send pieces to the closet
+constantly); putting her "room" in a fixed screen corner (layouts
+differ, and the corner is often text).
+
 ## Houseguest chooses by needs among the top few (2026-09-28)
 
 **Rule:** Her next act is a weighted-random pick among the four

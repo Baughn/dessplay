@@ -21,8 +21,8 @@ use tuirealm::ratatui::style::Color;
 use tuirealm::ratatui::widgets::Widget;
 
 use super::art::{self, Rig};
+use super::room::Furniture;
 use super::sprite::{Face, Facing, HEIGHT, Pose, WIDTH};
-use super::terrain::Terrain;
 
 /// Her outline colour: dark line art, read against the fills.
 const LINE: &str = "#1d1714";
@@ -35,13 +35,29 @@ pub(super) enum Look {
     Pose(Pose, Face),
     /// The goodbye wave, arm up or down.
     Wave(bool),
+    /// A piece of her furniture.
+    Prop(Furniture),
 }
 
 impl Look {
-    fn rig(self) -> Rig {
+    /// The box it fills, in cells (columns, rows above the floor).
+    fn size(self) -> (i32, i32) {
         match self {
-            Self::Pose(pose, face) => Rig::for_pose(pose, face),
-            Self::Wave(raised) => Rig::waving(raised),
+            Self::Prop(item) => {
+                let (cols, rows) = item.footprint();
+                (i32::from(cols), i32::from(rows))
+            }
+            Self::Pose(..) | Self::Wave(_) => (WIDTH, HEIGHT),
+        }
+    }
+
+    fn render(self, facing: Facing, width: u32, height: u32) -> Option<RgbaImage> {
+        match self {
+            Self::Pose(pose, face) => {
+                art::render(&Rig::for_pose(pose, face), facing, LINE, width, height)
+            }
+            Self::Wave(raised) => art::render(&Rig::waving(raised), facing, LINE, width, height),
+            Self::Prop(item) => art::render_prop(item, facing, LINE, width, height),
         }
     }
 }
@@ -221,9 +237,10 @@ impl Graphics {
         (u32::from(size.width), u32::from(size.height))
     }
 
-    /// Paint her at anchor `(x, y)` (feet on row `y`). With `standing`,
-    /// the floor row joins the image. Returns the cells covered, or
-    /// `None` when any cell she'd cover isn't hers to cover.
+    /// Paint `look` at anchor `(x, y)`: centred on column `x` (rounding
+    /// left), feet on row `y`. With `standing`, the floor row joins the
+    /// image. Returns the cells covered, or `None` when any body cell
+    /// isn't `open` or isn't blank or a line it can redraw.
     pub fn paint(
         &mut self,
         buf: &mut Buffer,
@@ -231,18 +248,19 @@ impl Graphics {
         facing: Facing,
         (x, y): (i32, i32),
         standing: bool,
-        terrain: &Terrain,
+        open: &dyn Fn(i32, i32) -> bool,
     ) -> Option<Rect> {
         let (cw, ch) = self.cell();
         if cw == 0 || ch == 0 {
             return None;
         }
         let area = buf.area;
-        let rows = if standing { HEIGHT + 1 } else { HEIGHT };
-        let (left, top) = (x - WIDTH / 2, y - HEIGHT);
+        let (width, height) = look.size();
+        let rows = if standing { height + 1 } else { height };
+        let (left, top) = (x - width / 2, y - height);
         let vx0 = left.max(i32::from(area.left()));
         let vy0 = top.max(i32::from(area.top()));
-        let vx1 = (left + WIDTH).min(i32::from(area.right()));
+        let vx1 = (left + width).min(i32::from(area.right()));
         let vy1 = (top + rows).min(i32::from(area.bottom()));
         if vx0 >= vx1 || vy0 >= vy1 {
             return None;
@@ -252,7 +270,7 @@ impl Graphics {
         let mut lines = Vec::new();
         for cy in vy0..vy1 {
             for cx in vx0..vx1 {
-                if cy < y && !terrain.open(cx, cy) {
+                if cy < y && !open(cx, cy) {
                     return None;
                 }
                 let cell = buf.cell((cx as u16, cy as u16))?;
@@ -298,21 +316,22 @@ impl Graphics {
     fn frame(&self, key: &Key) -> Option<Protocol> {
         let (cw, ch) = self.cell();
         let rows = u32::from(key.rows);
-        let standing = key.rows > HEIGHT as u16;
-        let (w, h) = (cw * WIDTH as u32, ch * rows);
+        let (width, height) = key.look.size();
+        let standing = i32::from(key.rows) > height;
+        let (w, h) = (cw * width as u32, ch * rows);
         let mut canvas = RgbaImage::new(w, h);
         // Her feet rest on the line when standing, on the box floor
         // otherwise.
         let feet = if standing {
-            ch * HEIGHT as u32 + self.line.offset + self.line.thickness
+            ch * height as u32 + self.line.offset + self.line.thickness
         } else {
-            ch * HEIGHT as u32
+            ch * height as u32
         };
         for &(col, row, c, color) in &key.lines {
             let origin = (u32::from(col) * cw, u32::from(row) * ch);
             draw_glyph(&mut canvas, c, color, origin, (cw, ch), self.line);
         }
-        let body = art::render(&key.look.rig(), key.facing, LINE, w, feet)?;
+        let body = key.look.render(key.facing, w, feet)?;
         image::imageops::overlay(&mut canvas, &body, 0, 0);
         let (cx, cy, cwn, chn) = key.clip;
         let cropped = image::imageops::crop_imm(

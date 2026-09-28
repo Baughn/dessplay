@@ -1424,6 +1424,19 @@ this section states what is built.
     and after a moment ("...") she puts them back one every 400 ms. A
     put-back the frame refuses is retried a few times; the goodbye rain
     re-knits anything left.
+- **Furniture** (phase 3, in progress; only the stage gives it so
+  far): a sofa (9×3 cells), TV (6×4), bed (10×3), and desk (7×3), drawn
+  in her style (outlined, soft fills) as line art, or as ASCII without
+  graphics. She owns her furniture across visits. Each piece stands on a
+  quiet pane's bottom border — Users, Playlist, or The List, never the
+  chat — at a fraction of the way along it, so resizes and layout
+  changes carry it along. It stands only on unbroken line glyphs over
+  blank cells, clear of protected cells, text she moved, other pieces,
+  and her box; a piece that doesn't fit is in the closet for that frame
+  (hidden, still owned). A placed piece and the floor beneath it are
+  solid to her and to moved text. Her furniture shows only while she
+  does, and the goodbye rain takes it along with her
+  (why: [decisions](decisions.md#houseguest-furniture-is-pane-relative-and-leaves-with-her-2026-09-28)).
 
 - Playback starting or an overlay opening mid-visit starts the dissolve;
   switching the setting off removes her at once. A terminal resize
