@@ -1422,6 +1422,9 @@ this section states what is built.
   art: startled, a wave, then she bursts into letters that rain away
   through the same dissolve
   (why: [decisions](decisions.md#houseguest-line-art-over-kitty-placeholders-2026-09-28)).
+- **Stage** (developer tool, not in the client): `cargo run -p dessplay
+  --example houseguest` cues any scene on demand in the default layout,
+  placed where it works, with slow motion.
 
 ### Watching a Series
 

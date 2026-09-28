@@ -333,7 +333,7 @@ pub fn run_ui_thread(
 /// cursor", which is the sequence ratatui-image embeds in every Kitty
 /// image row, so each row of a picture printed at the screen's
 /// top-left instead of under its message.
-const TERMINAL_STATE_PROLOGUE: &str = "\x1b[?69l\x1b[r\x1b[?6l";
+pub const TERMINAL_STATE_PROLOGUE: &str = "\x1b[?69l\x1b[r\x1b[?6l";
 
 /// Pick the image-rendering protocol for inline chat images.
 ///
@@ -350,7 +350,7 @@ const TERMINAL_STATE_PROLOGUE: &str = "\x1b[?69l\x1b[r\x1b[?6l";
 /// out of graphics (the robust path, keeping the queried font size);
 /// `kitty`, `sixel`, or `iterm2` force a protocol the query did not
 /// pick, for experiments; `auto` (or unset) is the default.
-fn select_image_picker() -> ratatui_image::picker::Picker {
+pub fn select_image_picker() -> ratatui_image::picker::Picker {
     use ratatui_image::picker::{Picker, ProtocolType};
     let mut picker = match Picker::from_query_stdio() {
         Ok(picker) => picker,

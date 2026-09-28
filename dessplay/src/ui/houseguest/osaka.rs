@@ -394,8 +394,7 @@ impl Osaka {
         self.owes()
     }
 
-    /// Test fixture: start a sneeze now.
-    #[cfg(test)]
+    /// Start a sneeze now.
     pub fn sneeze_now(&mut self, now: u64) {
         self.set(
             Act::Sneeze {
@@ -936,11 +935,7 @@ impl Osaka {
             let there = terrain.platform_at(x, y);
             if there == Some(here) {
                 tracing::debug!(?job, offered, "houseguest: walking to a job");
-                if x != self.x {
-                    self.facing = toward(self.x, x);
-                }
-                self.task = Some(job);
-                return self.set(Act::Walk { to: x, then: None }, at);
+                return self.pursue(job, at);
             }
             match there.and_then(|there| route(terrain, here, there)) {
                 Some(link) => {
@@ -951,16 +946,7 @@ impl Osaka {
                         "houseguest: heading for a job on another floor"
                     );
                     self.goal = Some(job);
-                    if link.x != self.x {
-                        self.facing = toward(self.x, link.x);
-                    }
-                    return self.set(
-                        Act::Walk {
-                            to: link.x,
-                            then: Some(link),
-                        },
-                        at,
-                    );
+                    return self.travel(link, at);
                 }
                 None => tracing::debug!(?job, offered, "houseguest: a job, but no way there"),
             }
@@ -988,20 +974,7 @@ impl Osaka {
         } else if roll < 19 + busy {
             let pick = rng.below(Activity::ALL.len() as u64) as usize;
             let what = Activity::ALL.get(pick).copied().unwrap_or(Activity::Gaze);
-            let (lo, hi) = what.duration();
-            if matches!(what, Activity::Sit | Activity::LieBack | Activity::LieFront) {
-                // Sitting and lying face either way.
-                self.facing = if rng.below(2) == 0 {
-                    Facing::Left
-                } else {
-                    Facing::Right
-                };
-            }
-            Act::Idle {
-                what,
-                since: at,
-                until: at + rng.range(lo, hi),
-            }
+            self.idle_act(what, at, rng)
         } else {
             let links: Vec<&Link> = terrain.links.iter().filter(|l| l.from == here).collect();
             let travel = roll >= 75 && !links.is_empty();
@@ -1029,6 +1002,64 @@ impl Osaka {
         };
         tracing::debug!(?act, roll, "houseguest: pottering");
         self.set(act, at);
+    }
+
+    /// Walk to `job`'s spot on this floor and do it.
+    pub fn pursue(&mut self, job: Job, at: u64) {
+        let (x, _) = job.spot();
+        if x != self.x {
+            self.facing = toward(self.x, x);
+        }
+        self.task = Some(job);
+        self.set(Act::Walk { to: x, then: None }, at);
+    }
+
+    /// Walk to `link` on this floor and take it (climb or drop).
+    pub fn travel(&mut self, link: Link, at: u64) {
+        if link.x != self.x {
+            self.facing = toward(self.x, link.x);
+        }
+        self.set(
+            Act::Walk {
+                to: link.x,
+                then: Some(link),
+            },
+            at,
+        );
+    }
+
+    /// Do `what` on the spot.
+    pub fn idle(&mut self, what: Activity, at: u64, rng: &mut Rng) {
+        let act = self.idle_act(what, at, rng);
+        self.set(act, at);
+    }
+
+    fn idle_act(&mut self, what: Activity, at: u64, rng: &mut Rng) -> Act {
+        let (lo, hi) = what.duration();
+        if matches!(what, Activity::Sit | Activity::LieBack | Activity::LieFront) {
+            // Sitting and lying face either way.
+            self.facing = if rng.below(2) == 0 {
+                Facing::Left
+            } else {
+                Facing::Right
+            };
+        }
+        Act::Idle {
+            what,
+            since: at,
+            until: at + rng.range(lo, hi),
+        }
+    }
+
+    /// Put her at `(x, y)`, standing, having forgotten what she was up
+    /// to (mischief she owes is still undone on schedule).
+    pub fn place(&mut self, x: i32, y: i32, at: u64) {
+        self.x = x;
+        self.y = y;
+        self.task = None;
+        self.goal = None;
+        self.watch_until = 0;
+        self.set(Act::Stand { until: at + 1000 }, at);
     }
 
     /// A chat message arrived: stop and look at it.

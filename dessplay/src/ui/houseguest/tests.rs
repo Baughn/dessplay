@@ -12,12 +12,10 @@ use tuirealm::ratatui::style::Style;
 use super::osaka::{self, Osaka};
 use super::terrain::{Route, Terrain};
 use super::*;
-use crate::config::{Houseguest, Settings};
-use crate::ui::app::{Ui, UiSnapshot};
+use crate::ui::app::Ui;
 use crate::ui::layout::{LayoutBundle, Renderer};
-use dessplay_core::types::UserId;
 
-const DELAY: Duration = Duration::from_secs(5);
+use super::stage::{DELAY, Scene, chatty_ui, real_ui, stage_ui};
 
 fn view(protected: Vec<Rect>) -> IdleView {
     IdleView {
@@ -370,42 +368,6 @@ proptest! {
 }
 
 // ---- Against the real default layout ----
-
-fn real_ui() -> Ui {
-    let mut ui = Ui::with_setup(
-        UserId::new("kim"),
-        Settings {
-            username: Some("kim".into()),
-            password: Some("test".into()),
-            houseguest: Houseguest::After(DELAY),
-            ..Settings::default()
-        },
-        vec![],
-        false,
-    );
-    ui.apply_snapshot(UiSnapshot::default());
-    ui
-}
-
-/// The real UI with `n` short chat messages (alternating senders).
-fn chatty_ui(n: usize) -> Ui {
-    let mut ui = real_ui();
-    let view = dessplay_core::state::StateView {
-        chat: (0..n)
-            .map(|i| dessplay_core::types::ChatMessage {
-                timestamp: dessplay_core::types::SharedTimestamp(1_000 + i as u64 * 60_000),
-                sender: UserId::new(if i % 2 == 0 { "kim" } else { "bob" }),
-                text: format!("line {i}"),
-            })
-            .collect(),
-        ..Default::default()
-    };
-    ui.apply_snapshot(UiSnapshot {
-        view: std::sync::Arc::new(view),
-        ..UiSnapshot::default()
-    });
-    ui
-}
 
 fn real_frame(ui: &mut Ui, width: u16, height: u16) -> (Buffer, IdleView) {
     let mut renderer = Renderer::new(LayoutBundle::builtin().unwrap());
@@ -1010,4 +972,72 @@ fn a_refused_swap_leaves_nothing_owed() {
     assert!(!visit.osaka.owes_anything(), "no swap-back queued");
     let (_, face, bubble) = visit.osaka.appearance(1000);
     assert_ne!(bubble, Some(osaka::Bubble::Hehe), "{face:?}: no giggle");
+}
+
+/// Every scene the stage offers finds a spot in the stage room at the
+/// sizes the terrain snapshots pin, and visibly happens there.
+#[test]
+fn every_scene_has_a_spot_in_the_stage_room() {
+    use super::sprite::Pose;
+    for (width, height) in [(100, 30), (80, 24)] {
+        for graphics in [false, true] {
+            let mut ui = stage_ui();
+            let (real, view) = real_frame(&mut ui, width, height);
+            for scene in Scene::ALL {
+                let mut guest = Guest::new(1);
+                if graphics {
+                    guest.set_picker(kitty());
+                }
+                guest.cue(scene);
+                paint(&mut guest, &real, &view, 0);
+                let at = format!("{scene:?} at {width}x{height} graphics={graphics}");
+                let note = guest.cue_note().cloned();
+                assert!(matches!(note, Some(Ok(_))), "{at}: {note:?}");
+                let State::Visiting(visit) = &guest.state else {
+                    panic!("{at}: visiting");
+                };
+                let start_y = visit.osaka.y;
+                let (mut moved, mut swapped, mut climbed, mut poses) =
+                    (0, false, false, Vec::new());
+                let mut now = 0;
+                while now < 10_000 {
+                    now += guest
+                        .next_tick(now)
+                        .map_or(100, |d| d.as_millis() as u64)
+                        .clamp(1, 100);
+                    guest.advance(now);
+                    paint(&mut guest, &real, &view, now);
+                    let State::Visiting(visit) = &guest.state else {
+                        panic!("{at}: still visiting");
+                    };
+                    let entries = visit.layer.entries();
+                    moved = moved.max(entries.len());
+                    swapped |= entries.iter().any(|a| {
+                        entries
+                            .iter()
+                            .any(|b| a.at == b.source && b.at == a.source && a.source != b.source)
+                    });
+                    climbed |= visit.osaka.y != start_y;
+                    let (pose, ..) = visit.osaka.appearance(now);
+                    poses.push(std::mem::discriminant(&pose));
+                }
+                let posed = |pose: Pose| poses.contains(&std::mem::discriminant(&pose));
+                let happened = match scene {
+                    Scene::Arrive => true,
+                    Scene::Pull => moved >= 3,
+                    Scene::Swap => swapped,
+                    Scene::Sneeze => moved >= 2,
+                    Scene::ClimbUp | Scene::ClimbDown | Scene::Drop => climbed,
+                    Scene::Sit => posed(Pose::Sit),
+                    Scene::LieBack => posed(Pose::LieBack(0)),
+                    Scene::LieFront => posed(Pose::LieFront(0)),
+                    Scene::Jacks => posed(Pose::Jack(0)),
+                    Scene::ToeTouch => posed(Pose::ToeTouch(0)),
+                    Scene::Stretch => posed(Pose::Stretch),
+                    Scene::Gaze => posed(Pose::Gaze),
+                };
+                assert!(happened, "{at}: {note:?}, moved {moved}");
+            }
+        }
+    }
 }

@@ -20,6 +20,7 @@ mod layer;
 mod osaka;
 mod scenes;
 mod sprite;
+pub mod stage;
 mod terrain;
 
 use std::time::Duration;
@@ -116,6 +117,10 @@ pub struct Guest {
     chat_mark: Option<ChatMark>,
     /// Line art through the kitty protocol, when the terminal has it.
     graphics: Option<Graphics>,
+    /// A scene the stage asked for, applied at the next paint.
+    cue: Option<stage::Scene>,
+    /// What came of the last cue.
+    note: Option<Result<String, String>>,
 }
 
 impl Guest {
@@ -130,7 +135,25 @@ impl Guest {
             quiet_since: 0,
             chat_mark: None,
             graphics: None,
+            cue: None,
+            note: None,
         }
+    }
+
+    /// The stage: have her do `scene` at the next paint, somewhere it
+    /// works — starting a visit if she isn't here (the idle wait is
+    /// skipped). See [`stage`].
+    pub fn cue(&mut self, scene: stage::Scene) {
+        if scene == stage::Scene::Arrive || !matches!(self.state, State::Visiting(_)) {
+            self.state = State::Arriving;
+        }
+        self.cue = Some(scene);
+    }
+
+    /// What came of the last cue: what she's doing, or why the room
+    /// offers no spot for it.
+    pub fn cue_note(&self) -> Option<&Result<String, String>> {
+        self.note.as_ref()
     }
 
     /// Draw her as line art through this terminal's image protocol
@@ -314,6 +337,17 @@ impl Guest {
                 }
                 let pulls = scenes::pulls(buf, &visit.terrain, &protected);
                 let swaps = scenes::swaps(buf, &visit.terrain, &protected);
+                if let Some(scene) = self.cue.take() {
+                    let offered = osaka::Chances {
+                        pulls: pulls.clone(),
+                        swaps: swaps.clone(),
+                        loose: Vec::new(),
+                    };
+                    let note =
+                        stage::direct(scene, buf, &protected, visit, &offered, now, &mut self.rng);
+                    tracing::info!(?note, "houseguest cued");
+                    self.note = Some(note);
+                }
                 if pulls.len() != visit.chances.pulls.len()
                     || swaps.len() != visit.chances.swaps.len()
                 {

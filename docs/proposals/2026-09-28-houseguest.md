@@ -789,6 +789,15 @@ Built:
   standing adds the floor row; redrawn line geometry and colour.
 - **Perf** (`tests/perf.rs`): visit CPU is below measurement resolution;
   terrain read time is bounded in release.
+- **Stage** (`houseguest::stage`): every scene can be cued on demand and
+  is placed where it works. `cargo run -p dessplay --example houseguest
+  [seed]` shows the real default layout with an evening's chat; ←/→ pick
+  a scene, Enter plays it, `m` a chat message arrives, `g` goodbye, `n`
+  new seed, `[`/`]` slow motion down to ⅛× or fast forward to 4×. The same
+  rooms back the tests, and a test cues every scene at 100×30 and 80×24
+  in both modes and checks it visibly happens.
+- **Mischief**: a swap undoes itself on schedule and at once on chat; a
+  refused swap owes nothing; a sneeze's glyphs all go back.
 
 Planned: room anchors surviving resize sequences; displaced-glyph
 validation; pity bounds across simulated weeks; ledger round-trip,
