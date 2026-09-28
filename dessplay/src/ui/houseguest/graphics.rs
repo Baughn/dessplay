@@ -35,6 +35,8 @@ pub(super) enum Look {
     Pose(Pose, Face),
     /// The goodbye wave, arm up or down.
     Wave(bool),
+    /// A door in space, in her box.
+    Door(art::DoorFrame),
     /// A piece of her furniture, or the part of it behind or in front of
     /// her.
     Prop(Furniture, art::Layer),
@@ -48,7 +50,7 @@ impl Look {
                 let (cols, rows) = item.footprint();
                 (i32::from(cols), i32::from(rows))
             }
-            Self::Pose(..) | Self::Wave(_) => (WIDTH, HEIGHT),
+            Self::Pose(..) | Self::Wave(_) | Self::Door(_) => (WIDTH, HEIGHT),
         }
     }
 
@@ -58,6 +60,7 @@ impl Look {
                 art::render(&Rig::for_pose(pose, face), facing, LINE, width, height)
             }
             Self::Wave(raised) => art::render(&Rig::waving(raised), facing, LINE, width, height),
+            Self::Door(frame) => art::render_door(frame, facing, LINE, width, height),
             Self::Prop(item, layer) => {
                 art::render_prop_layer(item, layer, facing, LINE, width, height)
             }

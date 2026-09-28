@@ -35,6 +35,10 @@ Add new days at the top. Add new entries at the bottom of existing days.
   she lies down, not high above her.
 - Fixed: The houseguest can still swap letters in a line after pulling it
   along, instead of running out of things to play with.
+- Added: The houseguest gets around more. She clambers over the divider
+  between panes, steps out at one edge of the screen and wanders back in
+  at another, and when she's truly stuck she opens a pink door in space
+  and walks through it.
 
 ## 2026-09-26
 

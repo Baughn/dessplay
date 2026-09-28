@@ -183,6 +183,41 @@ fn mirror(c: char) -> char {
     }
 }
 
+/// A door in space, in her box: shut, ajar, open onto the night sky.
+const DOOR: [[&str; 4]; 3] = [
+    [" ___ ", "|   |", "|  o|", "|___|"],
+    [" ___ ", "|*\\ |", "|.|o|", "|_|_|"],
+    [" ___ ", "|*.*|", "|.*.|", "|___|"],
+];
+
+/// The door's cells (its drawn glyphs), relative to her anchor like
+/// [`SpriteCell`]s; `frame` 0 shut, 1 ajar, 2 open. The hinge is on the
+/// side she faces.
+pub(super) fn door_cells(frame: usize, facing: Facing) -> Vec<SpriteCell> {
+    let rows = DOOR[frame.min(2)];
+    let mut out = Vec::new();
+    for (row, text) in rows.iter().enumerate() {
+        let mut glyphs: Vec<char> = text.chars().collect();
+        if facing == Facing::Left {
+            glyphs.reverse();
+            for glyph in &mut glyphs {
+                *glyph = mirror(*glyph);
+            }
+        }
+        for (col, glyph) in glyphs.into_iter().enumerate() {
+            if glyph != ' ' {
+                out.push(SpriteCell {
+                    dx: col as i32 - WIDTH / 2,
+                    dy: row as i32 - HEIGHT,
+                    glyph,
+                    part: Part::Body,
+                });
+            }
+        }
+    }
+    out
+}
+
 /// Where her head is in `pose`: the columns `dx0..=dx1` on row `dy`
 /// (anchor-relative, like [`SpriteCell`]). It's the row with her
 /// parentheses, or else her lone "o" (lying down, touching her toes).

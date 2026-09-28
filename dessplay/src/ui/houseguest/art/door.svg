@@ -1,0 +1,60 @@
+<!-- Her door in space: a free-standing door she summons when she's
+     stuck, drawn in her canvas (100 x 160, feet on y = 158) so it fills
+     her 5 x 4-cell box beside her. Hinged on the left (facing right;
+     mirrored for left); the leaf swings towards the viewer. Through the
+     doorway: somewhere else, a night sky with a moon and stars. -->
+<defs>
+  <linearGradient id="door-night" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="#101845"/>
+    <stop offset="1" stop-color="#3a3f8f"/>
+  </linearGradient>
+
+  <!-- The frame: two posts and a lintel, standing on the floor. -->
+  <g id="door-frame">
+    <path d="M 21 158 L 21 4 L 79 4 L 79 158 L 73 158 L 73 10 L 27 10 L 27 158 Z"
+          fill="#f4a6c6" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+  </g>
+
+  <!-- Elsewhere, seen through the doorway. -->
+  <g id="door-beyond">
+    <rect x="27" y="10" width="46" height="148" fill="url(#door-night)"/>
+    <path d="M 58 28 A 9 9 0 1 0 64 44 A 7 7 0 1 1 58 28 Z" fill="#fff1b8"/>
+    <g fill="#fff6d6">
+      <circle cx="36" cy="22" r="1.6"/><circle cx="45" cy="48" r="1.2"/>
+      <circle cx="33" cy="70" r="1.4"/><circle cx="62" cy="66" r="1.6"/>
+      <circle cx="50" cy="90" r="1.2"/><circle cx="38" cy="112" r="1.5"/>
+      <circle cx="66" cy="104" r="1.2"/><circle cx="56" cy="130" r="1.4"/>
+    </g>
+    <path d="M 44 34 L 45.3 38 L 49 39 L 45.3 40 L 44 44 L 42.7 40 L 39 39 L 42.7 38 Z" fill="#fff6d6"/>
+    <path d="M 65 84 L 66 87 L 69 88 L 66 89 L 65 92 L 64 89 L 61 88 L 64 87 Z" fill="#fff6d6"/>
+    <!-- A soft hill far away, and the sill's glow. -->
+    <path d="M 27 158 L 27 146 C 40 138 58 138 73 144 L 73 158 Z" fill="#1b2a5a"/>
+  </g>
+
+  <!-- The leaf, shut in the doorway: two panels and a knob. -->
+  <g id="door-leaf-closed">
+    <rect x="27" y="10" width="46" height="148" fill="#e58db3" stroke="currentColor" stroke-width="1.8"/>
+    <rect x="33" y="18" width="34" height="54" rx="3" fill="#f4a6c6" stroke="#b25c84" stroke-width="1.4"/>
+    <rect x="33" y="84" width="34" height="62" rx="3" fill="#f4a6c6" stroke="#b25c84" stroke-width="1.4"/>
+    <circle cx="66" cy="80" r="3.4" fill="#e8c34a" stroke="currentColor" stroke-width="1.2"/>
+  </g>
+
+  <!-- Part-way open: the leaf turns on its left hinge towards the
+       viewer, its free edge nearer (taller) and foreshortened. -->
+  <g id="door-leaf-ajar">
+    <path d="M 27 10 L 50 6 L 50 160 L 27 158 Z"
+          fill="#e58db3" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+    <path d="M 31 18 L 46 15.5 L 46 70 L 31 71 Z" fill="#f4a6c6" stroke="#b25c84" stroke-width="1.2"/>
+    <path d="M 31 83 L 46 83 L 46 150 L 31 148 Z" fill="#f4a6c6" stroke="#b25c84" stroke-width="1.2"/>
+    <ellipse cx="47" cy="81" rx="2.4" ry="3.4" fill="#e8c34a" stroke="currentColor" stroke-width="1.1"/>
+  </g>
+
+  <!-- Wide open: the leaf swung out past the post, nearly edge-on. -->
+  <g id="door-leaf-open">
+    <path d="M 21 4 L 7 0.5 L 7 160 L 21 158 Z"
+          fill="#e58db3" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+    <path d="M 18 13 L 10 11 L 10 72 L 18 72 Z" fill="#f4a6c6" stroke="#b25c84" stroke-width="1.1"/>
+    <path d="M 18 84 L 10 84 L 10 150 L 18 149 Z" fill="#f4a6c6" stroke="#b25c84" stroke-width="1.1"/>
+    <ellipse cx="9" cy="80" rx="1.6" ry="3.4" fill="#e8c34a" stroke="currentColor" stroke-width="1"/>
+  </g>
+</defs>

@@ -1342,8 +1342,19 @@ this section states what is built.
 - **Terrain is read from the rendered frame**: a run of horizontal
   box-drawing glyphs is a floor wherever four rows of open cells sit
   above it; vertical borders let her climb between floors; a ledge's
-  real end lets her drop to the floor below
+  real end lets her drop to the floor below; she clambers over a
+  divider to a floor on its far side that shares no standing spot with
+  hers (climbing at her floor's end, then stepping across at most a
+  body's width); and from a floor reaching a screen edge she steps out
+  and, a few seconds later, walks back in off another such floor
   (why: [decisions](decisions.md#houseguest-terrain-comes-from-the-rendered-frame-2026-09-28)).
+- **A door in space** is her way out when there's no other: when what
+  she wants is on a floor no route reaches, or her floor has no way off,
+  a pink door appears in her box, she steps through, and it opens
+  again wherever she's going (a floor where she fits) and she steps out
+  ("Where was I?"). The door stays within her box, so it never covers
+  anything; what it ignores is the terrain in between
+  (why: [decisions](decisions.md#houseguest-has-a-door-in-space-2026-09-28)).
 - **Local key, mouse, or paste input** ends a visit with a ~3.75 s
   dissolve: a startled face, a goodbye smile, then per-column "rain"
   rippling out from her, each cell cycling spoiler-scramble-class noise
@@ -1447,7 +1458,7 @@ this section states what is built.
   she sleeps; the sofa's cushion in her arms while she naps), since two
   images would cut each other out. **Using her furniture**: she walks to
   a piece and sits on the sofa, naps on it hugging the cushion
-  (answers *sleepy* a little), sleeps in bed (answers *sleepy* far
+  (lounging, not bedtime), sleeps in bed (answers *sleepy* far
   better than a doze on a border), does homework at the desk (nodding
   off onto the paper halfway through), or sits beside the TV watching
   it; each is an offer to the brain while the piece is placed and she

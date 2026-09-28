@@ -162,8 +162,9 @@ impl Kind {
             Self::Swap => Some((Need::Mischief, 0.8)),
             // A proper bed answers sleepiness far better than a border.
             Self::Use(Use::Sleep) => Some((Need::Sleepy, 0.7)),
-            Self::Use(Use::Nap) => Some((Need::Sleepy, 0.3)),
-            Self::Use(Use::Lounge | Use::Homework | Use::Watch) => None,
+            // A sofa nap is lounging, not bedtime: it would always lose
+            // to the bed if it answered the same need.
+            Self::Use(Use::Lounge | Use::Nap | Use::Homework | Use::Watch) => None,
             Self::Stand
             | Self::SpaceOut
             | Self::Sneeze

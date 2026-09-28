@@ -519,6 +519,8 @@ fn terrain_map_in(width: u16, height: u16, graphics: bool) -> String {
             Route::Climb if terrain.platforms[link.to].y < from.y => '^',
             Route::Climb => 'v',
             Route::Drop { .. } => '>',
+            Route::Clamber { .. } => '%',
+            Route::Around { .. } => '@',
         };
         rows[from.y as usize][link.x as usize] = mark;
     }
@@ -1198,6 +1200,7 @@ fn every_scene_has_a_spot_in_the_stage_room() {
                     panic!("{at}: visiting");
                 };
                 let start_y = visit.osaka.y;
+                let (mut went_out, mut doored) = (false, false);
                 let (mut moved, mut swapped, mut climbed, mut poses) =
                     (0, false, false, Vec::new());
                 let mut said = false;
@@ -1221,6 +1224,8 @@ fn every_scene_has_a_spot_in_the_stage_room() {
                             .any(|b| a.at == b.source && b.at == a.source && a.source != b.source)
                     });
                     climbed |= visit.osaka.y != start_y;
+                    went_out |= !(0..i32::from(width)).contains(&visit.osaka.x);
+                    doored |= visit.osaka.door(now).is_some();
                     used = used.or(visit.osaka.using());
                     let (pose, _, bubble) = visit.osaka.appearance(now);
                     said |= matches!(bubble, Some(osaka::Bubble::Say(_)));
@@ -1233,6 +1238,9 @@ fn every_scene_has_a_spot_in_the_stage_room() {
                     Scene::Swap => swapped,
                     Scene::Sneeze => moved >= 2,
                     Scene::ClimbUp | Scene::ClimbDown | Scene::Drop => climbed,
+                    Scene::Clamber => climbed,
+                    Scene::StepOut => went_out,
+                    Scene::Door => doored && climbed,
                     Scene::Sit => posed(Pose::Sit),
                     Scene::LieBack => posed(Pose::LieBack(0)),
                     Scene::LieFront => posed(Pose::LieFront(0)),
@@ -1627,4 +1635,89 @@ fn a_furnished_home_gets_used_and_stays_cheap() {
         count(Kind::Use(Use::Sleep)) >= count(Kind::Idle(osaka::Activity::LieBack)),
         "the bed beats a border: {choices:?}"
     );
+}
+
+/// A pit: a room whose walls are text to the ceiling on the left and
+/// protected screen on the right and below, beside her home (a quiet
+/// pane up on the right). Returns the screen, its view, and the pit's
+/// floor row.
+fn pit_screen() -> (Buffer, IdleView, u16) {
+    let (width, height) = (100u16, 30u16);
+    let mut buf = Buffer::empty(Rect::new(0, 0, width, height));
+    let pit = Rect::new(0, 0, 50, 20);
+    let home = Rect::new(50, 0, 50, 13);
+    for area in [pit, home] {
+        tuirealm::ratatui::widgets::Widget::render(
+            tuirealm::ratatui::widgets::Block::bordered(),
+            area,
+            &mut buf,
+        );
+    }
+    for y in 1..=14 {
+        buf.set_string(1, y, "x".repeat(48), Style::new());
+    }
+    let mut protected = bottom_strip(width, height);
+    protected.push(Rect::new(50, 13, 50, 14));
+    protected.push(Rect::new(0, 0, 1, height));
+    let view = IdleView {
+        nooks: vec![(Nook::Users, home)],
+        ..view(protected)
+    };
+    (buf, view, pit.bottom() - 1)
+}
+
+/// In line art the pit has no way out — no climb past the text, no
+/// drop, no screen edge — but with her home next door she still gets
+/// there, through a door in space. (In ASCII her body may overlap text,
+/// so she can climb out; she only has to get out.)
+#[test]
+fn she_gets_out_of_a_pit_through_a_door() {
+    for graphics in [false, true] {
+        let (real, view, floor) = pit_screen();
+        let mut guest = Guest::new(5);
+        if graphics {
+            guest.set_picker(kitty());
+            let terrain = Terrain::read(&real, &view.protected, true);
+            let pit = terrain
+                .platforms
+                .iter()
+                .position(|p| p.y == i32::from(floor))
+                .expect("the pit's floor");
+            assert!(
+                terrain.links.iter().all(|l| l.from != pit),
+                "{:?}",
+                terrain.links
+            );
+        }
+        visiting_at(&mut guest, &real, &view, (20, i32::from(floor)));
+        guest.give(Furniture::Sofa);
+        let (mut out, mut doored) = (false, false);
+        let mut now = 0;
+        while now < 10 * 60_000 && !out {
+            now += guest
+                .next_tick(now)
+                .map_or(1000, |d| d.as_millis() as u64)
+                .clamp(1, 1000);
+            if guest.advance(now) {
+                let frame = paint(&mut guest, &real, &view, now);
+                if graphics && let State::Visiting(visit) = &guest.state {
+                    let layer: Vec<(u16, u16)> = visit.layer.cells().collect();
+                    assert_nothing_hidden(&frame, &real, &layer)
+                        .unwrap_or_else(|e| panic!("at {now}: {e}"));
+                }
+            }
+            let State::Visiting(visit) = &guest.state else {
+                panic!("graphics={graphics}: still visiting");
+            };
+            doored |= visit.osaka.door(now).is_some();
+            out |= visit.osaka.y < i32::from(floor)
+                && visit
+                    .terrain
+                    .platform_at(visit.osaka.x, visit.osaka.y)
+                    .is_some();
+        }
+        assert!(guest.home.owns(Furniture::Sofa));
+        assert!(out, "graphics={graphics}: still in the pit after {now} ms");
+        assert!(doored || !graphics, "graphics={graphics}: out by a door");
+    }
 }

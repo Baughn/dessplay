@@ -589,22 +589,49 @@ fn draw(
     with_sprite: bool,
 ) -> Vec<Frozen> {
     let (sprite, bubble) = osaka.picture(now);
-    let mut wanted: Vec<(i32, i32, char, Ink, Option<usize>)> = sprite
-        .iter()
+    let hidden = osaka.hidden(now);
+    let door = osaka
+        .door(now)
         .filter(|_| with_sprite)
+        .map(|frame| sprite::door_cells(frame as usize, osaka.facing))
+        .unwrap_or_default();
+    let door_ink = Ink::new(Color::LightMagenta, Modifier::empty());
+    let mut wanted: Vec<(i32, i32, char, Ink, Option<usize>)> = door
+        .iter()
         .map(|cell| {
-            let face = (cell.part == Part::Head && (-1..=1).contains(&cell.dx))
-                .then(|| (cell.dx + 1) as usize);
             (
                 osaka.x + cell.dx,
                 osaka.y + cell.dy,
                 cell.glyph,
-                ink(cell.part, truecolor),
-                face,
+                door_ink,
+                None,
             )
         })
         .collect();
-    if let Some(bubble) = bubble {
+    // Her sprite over the door; she's gone while through it.
+    wanted.retain(|&(x, y, ..)| {
+        hidden
+            || !sprite
+                .iter()
+                .any(|c| (osaka.x + c.dx, osaka.y + c.dy) == (x, y))
+    });
+    wanted.extend(
+        sprite
+            .iter()
+            .filter(|_| with_sprite && !hidden)
+            .map(|cell| {
+                let face = (cell.part == Part::Head && (-1..=1).contains(&cell.dx))
+                    .then(|| (cell.dx + 1) as usize);
+                (
+                    osaka.x + cell.dx,
+                    osaka.y + cell.dy,
+                    cell.glyph,
+                    ink(cell.part, truecolor),
+                    face,
+                )
+            }),
+    );
+    if let Some(bubble) = bubble.filter(|_| !hidden) {
         let text = bubble.text();
         let len = text.chars().count() as i32;
         let (pose, _, _) = osaka.appearance(now);
@@ -954,7 +981,16 @@ fn draw_art(
             })
         }));
     }
-    layers.push(her);
+    // A door in space stands behind her; through it, she's gone.
+    if let Some(frame) = osaka.door(now) {
+        layers.push(graphics::Layer {
+            look: Look::Door(frame),
+            ..her
+        });
+    }
+    if !osaka.hidden(now) {
+        layers.push(her);
+    }
     for piece in with {
         layers.extend(part(piece, true).map(|layer| prop_layer(piece, layer)));
     }

@@ -39,6 +39,12 @@ pub enum Scene {
     ClimbDown,
     /// Peer over a ledge's end and hop down.
     Drop,
+    /// Clamber over a divider to a floor on its other side.
+    Clamber,
+    /// Step out at a screen edge and come back in at another.
+    StepOut,
+    /// A door in space, to another floor.
+    Door,
     /// Sit hugging her knees.
     Sit,
     /// Doze on her back.
@@ -69,7 +75,7 @@ pub enum Scene {
 
 impl Scene {
     /// Every scene, in menu order.
-    pub const ALL: [Scene; 20] = [
+    pub const ALL: [Scene; 23] = [
         Self::Arrive,
         Self::Pull,
         Self::Swap,
@@ -77,6 +83,9 @@ impl Scene {
         Self::ClimbUp,
         Self::ClimbDown,
         Self::Drop,
+        Self::Clamber,
+        Self::StepOut,
+        Self::Door,
         Self::Sit,
         Self::LieBack,
         Self::LieFront,
@@ -102,6 +111,9 @@ impl Scene {
             Self::ClimbUp => "climb up",
             Self::ClimbDown => "climb down",
             Self::Drop => "hop down",
+            Self::Clamber => "clamber over",
+            Self::StepOut => "step out",
+            Self::Door => "door in space",
             Self::Sit => "sit",
             Self::LieBack => "lie on back",
             Self::LieFront => "lie on front",
@@ -239,7 +251,29 @@ pub(super) fn direct(
             osaka.sneeze_now(now);
             Ok(format!("{name} at ({x}, {y}), {n} glyphs in reach"))
         }
-        Scene::ClimbUp | Scene::ClimbDown | Scene::Drop => {
+        Scene::Door => {
+            let here = terrain.platform_at(osaka.x, osaka.y);
+            let floors: Vec<_> = terrain
+                .platforms
+                .iter()
+                .enumerate()
+                .filter(|&(i, _)| Some(i) != here)
+                .map(|(_, p)| ((p.x0 + p.x1) / 2, p.y))
+                .collect();
+            let to = pick(&floors, rng).ok_or_else(|| format!("{name}: nowhere else to go"))?;
+            if here.is_none() {
+                let start = terrain
+                    .platforms
+                    .iter()
+                    .map(|p| ((p.x0 + p.x1) / 2, p.y))
+                    .find(|&spot| spot != to)
+                    .ok_or_else(|| format!("{name}: nowhere to stand"))?;
+                osaka.place(start.0, start.1, now);
+            }
+            osaka.through_door(to, now);
+            Ok(format!("{name} to ({}, {})", to.0, to.1))
+        }
+        Scene::ClimbUp | Scene::ClimbDown | Scene::Drop | Scene::Clamber | Scene::StepOut => {
             let wanted = |link: &&Link| {
                 let from = terrain.platforms.get(link.from).map_or(0, |p| p.y);
                 let to = terrain.platforms.get(link.to).map_or(0, |p| p.y);
@@ -247,6 +281,8 @@ pub(super) fn direct(
                     (Scene::ClimbUp, Route::Climb) => to < from,
                     (Scene::ClimbDown, Route::Climb) => to > from,
                     (Scene::Drop, Route::Drop { .. }) => true,
+                    (Scene::Clamber, Route::Clamber { .. }) => true,
+                    (Scene::StepOut, Route::Around { .. }) => true,
                     _ => false,
                 }
             };

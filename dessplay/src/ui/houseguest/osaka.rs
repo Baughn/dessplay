@@ -3,6 +3,7 @@
 //! instant is a safe place to cut the visit short.
 
 use super::Rng;
+use super::art::DoorFrame;
 use super::brain::{self, Kind, Need, Needs};
 use super::layer::Placed;
 use super::room::{Furniture, Seat, Use};
@@ -169,6 +170,33 @@ enum Act {
         since: u64,
         until: u64,
     },
+    /// Clambering over a divider: over to `column`, along the pole to
+    /// `to_y`, then over to `to_x` on the new floor.
+    Clamber {
+        column: i32,
+        to_y: i32,
+        to_x: i32,
+    },
+    /// Walking off the screen to `to`, to come back in at `enter`.
+    Out {
+        to: i32,
+        enter: i32,
+        to_y: i32,
+        to_x: i32,
+    },
+    /// Off screen until `until`; then in from `enter`, to `to_x`.
+    Away {
+        until: u64,
+        enter: i32,
+        to_y: i32,
+        to_x: i32,
+    },
+    /// Through a door in space from where she stands to `to` (see
+    /// [`DOOR`]).
+    Door {
+        since: u64,
+        to: (i32, i32),
+    },
     /// Using a piece of her furniture (the task is its seat).
     Use {
         what: Use,
@@ -176,6 +204,111 @@ enum Act {
         until: u64,
     },
 }
+
+/// One beat of going through a door: the door (if shown), whether she
+/// is, whether it's the far end yet, and for how long.
+struct DoorBeat {
+    door: Option<DoorFrame>,
+    her: bool,
+    there: bool,
+    ms: u64,
+}
+
+/// A door appears, she steps through, it shuts and goes; a door appears
+/// where she's going, she steps out, it shuts and goes.
+const DOOR: [DoorBeat; 13] = [
+    DoorBeat {
+        door: Some(DoorFrame::Closed),
+        her: true,
+        there: false,
+        ms: 600,
+    },
+    DoorBeat {
+        door: Some(DoorFrame::Ajar),
+        her: true,
+        there: false,
+        ms: 300,
+    },
+    DoorBeat {
+        door: Some(DoorFrame::Open),
+        her: true,
+        there: false,
+        ms: 700,
+    },
+    DoorBeat {
+        door: Some(DoorFrame::Open),
+        her: false,
+        there: false,
+        ms: 400,
+    },
+    DoorBeat {
+        door: Some(DoorFrame::Ajar),
+        her: false,
+        there: false,
+        ms: 250,
+    },
+    DoorBeat {
+        door: Some(DoorFrame::Closed),
+        her: false,
+        there: false,
+        ms: 350,
+    },
+    DoorBeat {
+        door: None,
+        her: false,
+        there: false,
+        ms: 600,
+    },
+    DoorBeat {
+        door: Some(DoorFrame::Closed),
+        her: false,
+        there: true,
+        ms: 400,
+    },
+    DoorBeat {
+        door: Some(DoorFrame::Ajar),
+        her: false,
+        there: true,
+        ms: 250,
+    },
+    DoorBeat {
+        door: Some(DoorFrame::Open),
+        her: false,
+        there: true,
+        ms: 350,
+    },
+    DoorBeat {
+        door: Some(DoorFrame::Open),
+        her: true,
+        there: true,
+        ms: 600,
+    },
+    DoorBeat {
+        door: Some(DoorFrame::Ajar),
+        her: true,
+        there: true,
+        ms: 300,
+    },
+    DoorBeat {
+        door: Some(DoorFrame::Closed),
+        her: true,
+        there: true,
+        ms: 400,
+    },
+];
+
+/// The door beat `elapsed` ms in, and when the next begins; `None` once
+/// it's over.
+fn door_beat(elapsed: u64) -> Option<(&'static DoorBeat, u64)> {
+    let mut end = 0;
+    DOOR.iter().find_map(|beat| {
+        end += beat.ms;
+        (elapsed < end).then_some((beat, end))
+    })
+}
+
+/// What she says stepping out of a door.
+const THROUGH: &str = "Where was I?";
 
 /// How long she keeps at `what` (ms range).
 fn use_duration(what: Use) -> (u64, u64) {
@@ -516,6 +649,18 @@ impl Osaka {
             Act::Use { since, until, .. } => {
                 (since + (now.saturating_sub(since) / USE_FRAME_MS + 1) * USE_FRAME_MS).min(until)
             }
+            Act::Clamber { column, to_y, .. } => {
+                if self.x == column && self.y != to_y {
+                    now + CLIMB_MS
+                } else {
+                    now + WALK_MS
+                }
+            }
+            Act::Out { .. } => now + WALK_MS,
+            Act::Away { until, .. } => until,
+            Act::Door { since, .. } => {
+                door_beat(now.saturating_sub(since)).map_or(now, |(_, end)| since + end)
+            }
             Act::Look {
                 surprised_until, ..
             } => surprised_until,
@@ -645,6 +790,70 @@ impl Osaka {
                     self.act_due = next_frame(what, since, at).min(until);
                 }
             }
+            Act::Clamber { column, to_y, to_x } => {
+                if self.y != to_y && self.x != column {
+                    self.x += (column - self.x).signum();
+                } else if self.y != to_y {
+                    self.y += (to_y - self.y).signum();
+                } else if self.x != to_x {
+                    self.x += (to_x - self.x).signum();
+                }
+                if (self.x, self.y) == (to_x, to_y) {
+                    self.set(Act::Stand { until: at + 800 }, at);
+                } else {
+                    self.act_due = self.first_due(at);
+                }
+            }
+            Act::Out {
+                to,
+                enter,
+                to_y,
+                to_x,
+            } => {
+                self.x += (to - self.x).signum();
+                if self.x == to {
+                    tracing::debug!("houseguest: stepped out");
+                    self.set(
+                        Act::Away {
+                            until: at + rng.range(4000, 12_000),
+                            enter,
+                            to_y,
+                            to_x,
+                        },
+                        at,
+                    );
+                } else {
+                    self.act_due = at + WALK_MS;
+                }
+            }
+            Act::Away {
+                enter, to_y, to_x, ..
+            } => {
+                tracing::debug!("houseguest: back");
+                self.x = enter;
+                self.y = to_y;
+                self.facing = toward(enter, to_x);
+                self.set(
+                    Act::Walk {
+                        to: to_x,
+                        then: None,
+                    },
+                    at,
+                );
+            }
+            Act::Door { since, to } => match door_beat(at.saturating_sub(since)) {
+                Some((beat, end)) => {
+                    if beat.there && (self.x, self.y) != to {
+                        (self.x, self.y) = to;
+                    }
+                    self.act_due = since + end;
+                }
+                None => {
+                    (self.x, self.y) = to;
+                    self.say(THROUGH, at);
+                    self.decide(at, terrain, chances, rng);
+                }
+            },
             Act::Use { since, until, .. } => {
                 if at >= until {
                     self.decide(at, terrain, chances, rng);
@@ -814,6 +1023,48 @@ impl Osaka {
                 }
                 self.task = None;
                 match then {
+                    Some(Link {
+                        to,
+                        route: Route::Clamber { column },
+                        pole,
+                        ..
+                    }) => {
+                        let Some(target) = terrain.platforms.get(to) else {
+                            return self.decide(at, terrain, chances, rng);
+                        };
+                        self.pole = pole;
+                        let to_x = target.clamp(column);
+                        tracing::debug!(column, to_y = target.y, "houseguest: clambering over");
+                        self.set(
+                            Act::Clamber {
+                                column,
+                                to_y: target.y,
+                                to_x,
+                            },
+                            at,
+                        );
+                    }
+                    Some(Link {
+                        to,
+                        route: Route::Around { out, enter },
+                        ..
+                    }) => {
+                        let Some(target) = terrain.platforms.get(to) else {
+                            return self.decide(at, terrain, chances, rng);
+                        };
+                        // In at the end nearest where she comes back.
+                        let to_x = if enter < 0 { target.x0 } else { target.x1 };
+                        self.facing = toward(self.x, out);
+                        self.set(
+                            Act::Out {
+                                to: out,
+                                enter,
+                                to_y: target.y,
+                                to_x,
+                            },
+                            at,
+                        );
+                    }
                     Some(link) if link.route == Route::Climb => {
                         let to_y = terrain.platforms.get(link.to).map_or(self.y, |p| p.y);
                         // She faces the pole and climbs it.
@@ -1113,9 +1364,8 @@ impl Osaka {
             .collect();
         let mut offers = vec![Kind::Stand, Kind::SpaceOut, Kind::Sneeze, Kind::Walk];
         offers.extend(Activity::ALL.iter().map(|&a| Kind::Idle(a)));
-        if !links.is_empty() {
-            offers.push(Kind::Travel);
-        }
+        // With no way off this floor, travelling means a door in space.
+        offers.push(Kind::Travel);
         if !chances.pulls.is_empty() {
             offers.push(Kind::Pull);
         }
@@ -1197,10 +1447,23 @@ impl Osaka {
                 Act::Walk { to, then: None }
             }
             Kind::Travel => {
-                let Some(&link) = links.get(rng.below(links.len() as u64) as usize) else {
+                if let Some(&link) = links.get(rng.below(links.len() as u64) as usize) {
+                    self.travel(link, at);
+                    return true;
+                }
+                // Stuck here: through a door to anywhere else.
+                let others: Vec<_> = terrain
+                    .platforms
+                    .iter()
+                    .enumerate()
+                    .filter(|&(i, _)| i != here)
+                    .map(|(_, p)| p)
+                    .collect();
+                let Some(p) = others.get(rng.below(others.len() as u64) as usize) else {
                     return false;
                 };
-                self.travel(link, at);
+                let x = p.x0 + rng.below((p.x1 - p.x0 + 1) as u64) as i32;
+                self.through_door((x, p.y), at);
                 return true;
             }
             Kind::Use(what) => {
@@ -1249,11 +1512,17 @@ impl Osaka {
             self.pursue(job, at);
             return true;
         }
-        match there.and_then(|there| route(terrain, here, there)) {
-            Some(link) => {
+        match there.map(|there| route(terrain, here, there)) {
+            Some(Some(link)) => {
                 tracing::debug!(?job, via = ?link.route, "houseguest: heading for a job on another floor");
                 self.goal = Some(job);
                 self.travel(link, at);
+                true
+            }
+            // No way there: a door in space, straight to it.
+            Some(None) => {
+                self.goal = Some(job);
+                self.through_door((x, y), at);
                 true
             }
             None => false,
@@ -1360,6 +1629,13 @@ impl Osaka {
     /// separator). Returns false when there's nowhere left to be.
     pub fn settle(&mut self, now: u64, terrain: &Terrain) -> bool {
         match self.act {
+            // Off screen, or between doors: nothing here to fall off.
+            Act::Out { .. } | Act::Away { .. } | Act::Door { .. } => return true,
+            Act::Clamber { .. } => {
+                if terrain.clear(self.x, self.y) {
+                    return true;
+                }
+            }
             Act::Climb { to_y } => {
                 if terrain.platform_at(self.x, to_y).is_some() && terrain.clear(self.x, self.y) {
                     return true;
@@ -1453,7 +1729,36 @@ impl Osaka {
     /// Whether she is standing on a floor (not climbing or falling), so
     /// her line art includes the floor under her feet.
     pub fn standing(&self) -> bool {
-        !matches!(self.act, Act::Climb { .. } | Act::Fall { .. })
+        !matches!(
+            self.act,
+            Act::Climb { .. } | Act::Fall { .. } | Act::Clamber { .. }
+        )
+    }
+
+    /// Whether she's out of sight (through a door, or stepped out).
+    pub fn hidden(&self, now: u64) -> bool {
+        match self.act {
+            Act::Away { .. } => true,
+            Act::Door { since, .. } => {
+                door_beat(now.saturating_sub(since)).is_some_and(|(beat, _)| !beat.her)
+            }
+            _ => false,
+        }
+    }
+
+    /// The door she's going through, if any, as it looks at `now`.
+    pub fn door(&self, now: u64) -> Option<DoorFrame> {
+        match self.act {
+            Act::Door { since, .. } => door_beat(now.saturating_sub(since))?.0.door,
+            _ => None,
+        }
+    }
+
+    /// Go through a door in space to `(x, y)`, ignoring whatever lies
+    /// between: her way out when there's no other.
+    pub fn through_door(&mut self, to: (i32, i32), at: u64) {
+        tracing::debug!(from = ?(self.x, self.y), ?to, "houseguest: a door in space");
+        self.set(Act::Door { since: at, to }, at);
     }
 
     /// Her pose, face and bubble at `now`.
@@ -1490,6 +1795,19 @@ impl Osaka {
                 use_look(what, now.saturating_sub(since), until.saturating_sub(since))
             }
             Act::SpaceOut { .. } => (Pose::Stand, Face::Vacant, Some(Bubble::Dots)),
+            Act::Clamber { column, to_y, .. } if self.x == column && self.y != to_y => {
+                let pole = ((self.pole - self.x) * self.facing_sign()).clamp(-3, 3) as i8;
+                let frame = self.y.rem_euclid(2) as u8;
+                (Pose::Climb { frame, pole }, Face::Vacant, None)
+            }
+            Act::Clamber { .. } | Act::Out { .. } | Act::Away { .. } => {
+                (Pose::Walk(self.x.rem_euclid(4) as u8), Face::Vacant, None)
+            }
+            Act::Door { since, .. } => {
+                let there = door_beat(now.saturating_sub(since)).is_some_and(|(b, _)| b.there);
+                let face = if there { Face::Pleased } else { Face::Curious };
+                (Pose::Stand, face, None)
+            }
             Act::Walk { .. } => (Pose::Walk(self.x.rem_euclid(4) as u8), Face::Vacant, None),
             Act::Peer { .. } => (Pose::Peer, Face::Vacant, None),
             Act::Climb { .. } => {

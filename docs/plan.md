@@ -2007,11 +2007,15 @@ welcome; the only goal is "watching her is kind of fun".
   --lib use_sheet -- --ignored`; seated legs are their own parts). Stage
   scenes for each use give her the piece if she lacks it. No `Offers`
   struct yet: seats ride in `Chances`, so `decide()` still grew one loop.
-- **Known gap:** in the stage room the chat floor is a pit — she drops
-  into it and, with the chat full of text, has no way back up to the
-  panes where her home is. Pre-existing terrain limit; worth a "climb
-  the divider from beside it" link or letting her leave by an edge and
-  walk back in.
+- **Pits fixed (2026-09-28, the user's call: all three).** Terrain
+  links `Route::Clamber` (over a divider, floors sharing no standing
+  spot) and `Route::Around` (out at one screen edge, back in at another);
+  `Act::Door` (keyframed, `osaka::DOOR`) when `go_to` finds no route or
+  her floor has no links (Travel is always offered). Door art in
+  `art/door.svg` (`door_sheet`). Stage scenes: clamber over, step out,
+  door in space. The stage room's chat turned out not to be a pit at
+  all once clambering existed (its lines are short); `pit_screen` in the
+  tests is a real one.
 
 ### Testing
 

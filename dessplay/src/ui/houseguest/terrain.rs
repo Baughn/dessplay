@@ -103,6 +103,13 @@ pub(super) enum Route {
     Climb,
     /// Walk to the edge at `x`, hop off to `over`, and fall.
     Drop { over: i32 },
+    /// Clamber over a divider between floors that share no standing
+    /// spot: climb straight up or down at `column` (stepping over to it
+    /// first, from the upper floor), then step onto the other floor.
+    Clamber { column: i32 },
+    /// Step out: walk off the screen at `x`'s edge to `out`, and come
+    /// back in from `enter` (off the other floor's edge of the screen).
+    Around { out: i32, enter: i32 },
 }
 
 /// A connection from platform `from` (standing at `x`) to platform `to`.
@@ -194,6 +201,8 @@ impl Terrain {
             }
         }
         terrain.links = terrain.find_links(|x, y| at(&poles, x, y));
+        let around = terrain.around_links();
+        terrain.links.extend(around);
         terrain
     }
 
@@ -272,6 +281,69 @@ impl Terrain {
             .then_some(landing)
     }
 
+    /// A way over the divider between `upper` and `lower` when they share
+    /// no standing spot: from one end of `lower`, climb along a pole to
+    /// `upper`'s row, then step (at most a body's width and a bit) onto
+    /// `upper`'s near end. Returns the climbing column, `upper`'s end, and
+    /// the pole.
+    fn clamber(
+        &self,
+        upper: &Platform,
+        lower: &Platform,
+        pole: &impl Fn(i32, i32) -> bool,
+    ) -> Option<(i32, i32, i32)> {
+        let ends = [
+            (lower.x1 < upper.x0).then_some((lower.x1, upper.x0)),
+            (lower.x0 > upper.x1).then_some((lower.x0, upper.x1)),
+        ];
+        ends.into_iter().flatten().find_map(|(column, step)| {
+            if (step - column).abs() > WIDTH + 2 {
+                return None;
+            }
+            let (lo, hi) = (column.min(step), column.max(step));
+            let pole = (lo - HALF - 1..=hi + HALF + 1)
+                .find(|&c| (upper.y + 1..lower.y).all(|row| pole(c, row)))?;
+            let climb = (upper.y..=lower.y).all(|row| self.clear(column, row));
+            let across = (lo..=hi).all(|x| self.clear(x, upper.y));
+            (climb && across).then_some((column, step, pole))
+        })
+    }
+
+    /// Ways off the screen and back: from each floor whose end reaches a
+    /// screen edge, to every other such floor.
+    fn around_links(&self) -> Vec<Link> {
+        let exits: Vec<(usize, i32, i32)> = self
+            .platforms
+            .iter()
+            .enumerate()
+            .flat_map(|(i, p)| {
+                let left = (p.edge_left && p.x0 <= HALF).then_some((i, p.x0, -WIDTH));
+                let right = (p.edge_right && p.x1 >= self.width - 1 - HALF).then_some((
+                    i,
+                    p.x1,
+                    self.width + WIDTH,
+                ));
+                [left, right]
+            })
+            .flatten()
+            .collect();
+        let mut links = Vec::new();
+        for &(from, x, out) in &exits {
+            for &(to, _, enter) in &exits {
+                if to != from {
+                    links.push(Link {
+                        from,
+                        to,
+                        x,
+                        route: Route::Around { out, enter },
+                        pole: x,
+                    });
+                }
+            }
+        }
+        links
+    }
+
     fn find_links(&self, pole: impl Fn(i32, i32) -> bool) -> Vec<Link> {
         let mut links = Vec::new();
         for (a, upper) in self.platforms.iter().enumerate() {
@@ -282,6 +354,22 @@ impl Terrain {
                 let lo = upper.x0.max(lower.x0);
                 let hi = upper.x1.min(lower.x1);
                 if lo > hi {
+                    if let Some((column, step, pole)) = self.clamber(upper, lower, &pole) {
+                        links.push(Link {
+                            from: b,
+                            to: a,
+                            x: column,
+                            route: Route::Clamber { column },
+                            pole,
+                        });
+                        links.push(Link {
+                            from: a,
+                            to: b,
+                            x: step,
+                            route: Route::Clamber { column },
+                            pole,
+                        });
+                    }
                     continue;
                 }
                 // A pole within reach — in her box or just beside it — of
@@ -418,6 +506,72 @@ mod tests {
             .collect();
         assert_eq!(climbs.len(), 2, "{:?}", terrain.links);
         assert!(climbs.iter().all(|l| l.x == 2 || l.x == 11));
+    }
+
+    #[test]
+    fn a_divider_she_cant_stand_beside_is_clambered_over() {
+        // A low floor on the left, a higher one on the right, a divider
+        // between them: no standing spot in common.
+        let buf = buffer(&[
+            "                 │                 ",
+            "                 │                 ",
+            "                 │                 ",
+            "                 │                 ",
+            "                 ├─────────────────",
+            "                 │                 ",
+            "                 │                 ",
+            "                 │                 ",
+            "                 │                 ",
+            "─────────────────┘                 ",
+        ]);
+        let terrain = Terrain::read(&buf, &[], false);
+        let high = terrain
+            .platforms
+            .iter()
+            .position(|p| p.y == 4)
+            .expect("high floor");
+        let low = terrain
+            .platforms
+            .iter()
+            .position(|p| p.y == 9)
+            .expect("low floor");
+        let up = terrain
+            .links
+            .iter()
+            .find(|l| l.from == low && l.to == high)
+            .expect("a way up");
+        assert!(matches!(up.route, Route::Clamber { .. }), "{up:?}");
+        assert_eq!(up.pole, 17);
+        assert!(
+            terrain
+                .links
+                .iter()
+                .any(|l| l.from == high && l.to == low && matches!(l.route, Route::Clamber { .. }))
+        );
+    }
+
+    #[test]
+    fn floors_reaching_the_screen_edges_link_around() {
+        let buf = buffer(&[
+            "                              ",
+            "                              ",
+            "                              ",
+            "                              ",
+            "────────              ────────",
+            "│      │              │      │",
+        ]);
+        let terrain = Terrain::read(&buf, &[], false);
+        let around: Vec<_> = terrain
+            .links
+            .iter()
+            .filter(|l| matches!(l.route, Route::Around { .. }))
+            .collect();
+        assert_eq!(around.len(), 2, "{around:?}");
+        assert!(
+            around
+                .iter()
+                .any(|l| l.route == Route::Around { out: -5, enter: 35 })
+        );
     }
 
     #[test]

@@ -11,6 +11,7 @@ use super::sprite::{Face, Facing, Pose};
 
 const PARTS: &str = include_str!("art/osaka.svg");
 const PROPS: &str = include_str!("art/props.svg");
+const DOOR: &str = include_str!("art/door.svg");
 /// Prop units per cell (her scale at a 9 × 19 px cell), so her
 /// furniture shares her line weights.
 const CELL_UNITS: (f32, f32) = (20.0, 42.0);
@@ -601,6 +602,52 @@ pub(super) fn render(
     )
 }
 
+/// Her door in space, shut, part-way open, or wide open.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(super) enum DoorFrame {
+    Closed,
+    Ajar,
+    Open,
+}
+
+/// The door as an SVG document in her canvas, hinged on the left facing
+/// right (mirrored for left).
+fn door_scene(frame: DoorFrame, facing: Facing, line: &str) -> String {
+    let mirror = match facing {
+        Facing::Right => String::new(),
+        Facing::Left => format!(r#" transform="translate({CANVAS_W} 0) scale(-1 1)""#),
+    };
+    let body = match frame {
+        DoorFrame::Closed => r##"<use href="#door-leaf-closed"/><use href="#door-frame"/>"##,
+        DoorFrame::Ajar => {
+            r##"<use href="#door-beyond"/><use href="#door-frame"/><use href="#door-leaf-ajar"/>"##
+        }
+        DoorFrame::Open => {
+            r##"<use href="#door-beyond"/><use href="#door-frame"/><use href="#door-leaf-open"/>"##
+        }
+    };
+    format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {CANVAS_W} {CANVAS_H}" color="{line}">{DOOR}<g{mirror}>{body}</g></svg>"##
+    )
+}
+
+/// Render her door into her box like [`render`]: the same frame and
+/// scale, standing where her feet do.
+pub(super) fn render_door(
+    frame: DoorFrame,
+    facing: Facing,
+    line: &str,
+    width: u32,
+    height: u32,
+) -> Option<image::RgbaImage> {
+    rasterize(
+        &door_scene(frame, facing, line),
+        (CANVAS_W, CANVAS_H),
+        width,
+        height,
+    )
+}
+
 /// Which parts of a piece to draw, for compositing her into it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) enum Layer {
@@ -772,6 +819,90 @@ mod tests {
                 assert_eq!(image.get_pixel(0, 0).0[3], 0, "{name}");
             }
         }
+    }
+
+    #[test]
+    fn every_door_frame_renders_inside_the_box() {
+        for frame in [DoorFrame::Closed, DoorFrame::Ajar, DoorFrame::Open] {
+            for facing in [Facing::Left, Facing::Right] {
+                let image = render_door(frame, facing, LINE, 45, 76).expect("renders");
+                let inked = image.pixels().filter(|p| p.0[3] > 0).count();
+                assert!(inked > 800, "{frame:?}: only {inked} pixels");
+                // Free-standing: the top corners are empty.
+                assert_eq!(image.get_pixel(0, 0).0[3], 0, "{frame:?}");
+                assert_eq!(image.get_pixel(44, 0).0[3], 0, "{frame:?}");
+            }
+        }
+    }
+
+    /// Her door for review:
+    /// `HOUSEGUEST_DOOR=/tmp/door.png cargo test door_sheet -- --ignored`.
+    /// Rows: each frame on its own, her standing in front of the open
+    /// door, her side-on stepping into it. Facing right on the left,
+    /// mirrored on the right; 1×, 2× and 4×, with the cell grid and the
+    /// floor line.
+    #[test]
+    #[ignore = "writes a PNG for review"]
+    fn door_sheet() {
+        let path = std::env::var("HOUSEGUEST_DOOR").expect("HOUSEGUEST_DOOR");
+        let (cw, ch) = (9u32, 19u32);
+        let scales = [1u32, 2, 4];
+        let span = |s: u32| cw * s * 7;
+        let col_w: u32 = scales.iter().map(|&s| span(s)).sum();
+        let row_h = ch * 4 * 6;
+        type Scene = (DoorFrame, Option<Rig>);
+        let rows: [Scene; 5] = [
+            (DoorFrame::Closed, None),
+            (DoorFrame::Ajar, None),
+            (DoorFrame::Open, None),
+            (
+                DoorFrame::Open,
+                Some(Rig::for_pose(Pose::Stand, Face::Happy)),
+            ),
+            (
+                DoorFrame::Open,
+                Some(Rig::for_pose(Pose::Side, Face::Curious)),
+            ),
+        ];
+        let mut sheet = image::RgbaImage::from_pixel(
+            col_w * 2,
+            row_h * rows.len() as u32,
+            image::Rgba([13, 17, 23, 255]),
+        );
+        for (row, (frame, her)) in rows.iter().enumerate() {
+            for (col, facing) in [(0u32, Facing::Right), (1, Facing::Left)] {
+                let mut x0 = col * col_w;
+                for &s in &scales {
+                    let (w, h) = (cw * s, ch * s);
+                    let floor = row as u32 * row_h + row_h - h;
+                    let line = floor + h / 2;
+                    for gx in 0..span(s) {
+                        for t in 0..s {
+                            sheet.put_pixel(x0 + gx, line + t, image::Rgba([139, 148, 158, 255]));
+                        }
+                    }
+                    let bx = x0 + w;
+                    for gy in 0..=4 {
+                        for gx in 0..w * 5 {
+                            sheet.put_pixel(
+                                bx + gx,
+                                floor - gy * h,
+                                image::Rgba([40, 46, 56, 255]),
+                            );
+                        }
+                    }
+                    let top = i64::from(floor - h * 4);
+                    let door = render_door(*frame, facing, LINE, w * 5, h * 4 + h / 2).unwrap();
+                    image::imageops::overlay(&mut sheet, &door, i64::from(bx), top);
+                    if let Some(rig) = her {
+                        let osaka = render(rig, facing, LINE, w * 5, h * 4 + h / 2).unwrap();
+                        image::imageops::overlay(&mut sheet, &osaka, i64::from(bx), top);
+                    }
+                    x0 += span(s);
+                }
+            }
+        }
+        sheet.save(path).unwrap();
     }
 
     /// A character sheet for eyeballing the art:

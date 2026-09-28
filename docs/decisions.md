@@ -2007,6 +2007,23 @@ solid to her with overlap only at fixed seats — each piece cut its
 floor into stretches she couldn't cross, which then needed "ducking
 behind" links, all to save images the cache already bounds.
 
+## Houseguest has a door in space (2026-09-28)
+
+**Rule:** When no route reaches where she wants to be, or her floor has
+no way off, she goes through a door in space. Clambering over dividers
+and stepping out at a screen edge are ordinary links that routes use
+first. See [design.md](design.md#houseguest).
+
+**Why:** Terrain comes from whatever the user's layout draws, so some
+floors are pits: in line art a chat full of text walls its floor in,
+and her home can sit where no route reaches. The user asked for all
+three: more ways around are more to watch, and the door is the
+guarantee — the one behaviour that works on any screen, so she can
+never be stuck for good. It lives in her own box (door and doorway are
+drawn in her image), so "ignoring what's there" only ever means the
+terrain between, never text. The sofa nap was made a lounging choice
+in the same change: answering sleepiness, it always lost to the bed.
+
 ## Houseguest chooses by needs among the top few (2026-09-28)
 
 **Rule:** Her next act is a weighted-random pick among the four
