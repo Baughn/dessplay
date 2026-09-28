@@ -1654,10 +1654,15 @@ impl Osaka {
                 None if self.y < HEIGHT => return true, // still above the screen
                 None => {}
             },
-            Act::Walk { .. }
-                if terrain.platform_at(self.x, self.y).is_none() && self.offscreen(terrain) =>
+            // Walking in (on arrival, or back from stepping out): until her
+            // box is wholly on screen and over the floor, there's no floor
+            // under her, and that's fine.
+            Act::Walk { to, .. }
+                if terrain.platform_at(self.x, self.y).is_none()
+                    && self.offscreen(terrain)
+                    && terrain.platform_at(to, self.y).is_some() =>
             {
-                return true; // walking in
+                return true;
             }
             _ => {
                 if terrain.platform_at(self.x, self.y).is_some() {
@@ -1704,8 +1709,10 @@ impl Osaka {
         true
     }
 
+    /// Whether any of her box is off the screen's sides.
     fn offscreen(&self, terrain: &Terrain) -> bool {
-        !(0..terrain.width()).contains(&self.x)
+        let half = sprite::WIDTH / 2;
+        self.x - half < 0 || self.x + half >= terrain.width()
     }
 
     /// Her current sprite cells and bubble.

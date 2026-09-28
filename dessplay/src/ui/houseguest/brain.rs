@@ -270,6 +270,41 @@ mod tests {
         assert!(counts.values().all(|&n| n <= lie), "{counts:?}");
     }
 
+    /// Over a visit she gets sleepier and lies down more: with the same
+    /// offers, a settled Osaka at a visit's end (sleepy 0.9) lies down at
+    /// least twice as often as ten minutes in (sleepy 0.3), choosing as she
+    /// does — her last few choices cooling repeats.
+    #[test]
+    fn sleepiness_draws_her_to_lie_down() {
+        let share = |sleepy: f64| {
+            let needs = Needs {
+                sleepy,
+                restless: 0.1,
+                tidy: 0.0,
+                mischief: 0.2,
+            };
+            let offers = all();
+            let mut rng = Rng(3);
+            let mut recent: Vec<Kind> = Vec::new();
+            let mut lie = 0;
+            for _ in 0..4000 {
+                let (i, _) = choose(&offers, &needs, &recent, &mut rng).unwrap();
+                let kind = offers[i];
+                lie += usize::from(kind == Kind::Idle(Activity::LieBack));
+                recent.push(kind);
+                if recent.len() > 3 {
+                    recent.remove(0);
+                }
+            }
+            lie
+        };
+        let (awake, sleepy) = (share(0.3), share(0.9));
+        assert!(
+            sleepy > 2 * awake,
+            "lay down {awake} times awake, {sleepy} sleepy"
+        );
+    }
+
     #[test]
     fn a_restless_osaka_mostly_moves() {
         let needs = Needs {

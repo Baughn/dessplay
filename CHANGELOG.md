@@ -39,6 +39,8 @@ Add new days at the top. Add new entries at the bottom of existing days.
   between panes, steps out at one edge of the screen and wanders back in
   at another, and when she's truly stuck she opens a pink door in space
   and walks through it.
+- Fixed: The houseguest no longer stumbles and lands dazed as she walks
+  in from the edge of the screen.
 
 ## 2026-09-26
 

@@ -207,8 +207,9 @@ each with a driver and something that answers it today:
 Needs move on at each decision by the time since the last one, and are
 answered when an act is chosen (acts are finite, so this is where they
 commit). A doze only takes the edge off, so over a visit she gets
-sleepier and dozes more (measured: ~1% of the first ten minutes, ~6% of
-the next ten). Restless starting high replaces phase 1's "busier in the
+sleepier and dozes more (measured over eight twenty-minute visits in the stage
+room, after phase 3 gave her more ways about: ~4% of the first ten
+minutes, ~8% of the next ten). Restless starting high replaces phase 1's "busier in the
 first five minutes". A chat conversation and a job on another floor
 still come first. `hungry` and `social` wait for something to answer
 them (food words, cameos). The stage shows the needs, and keys 1–4 make
