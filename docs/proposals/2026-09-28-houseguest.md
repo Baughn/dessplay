@@ -788,6 +788,11 @@ sprite.rs     ASCII sprite, poses, faces, facing
 art.rs        the rig and resvg rendering; art/osaka.svg holds the parts
 graphics.rs   kitty placement, redrawn lines, frame cache
 cells.rs      panic-free writes that keep wide glyphs whole
+layer.rs      the text layer: moved glyphs, holes, validation
+scenes.rs     what text scenes are possible (pulls, swaps, loose glyphs)
+              and the layer operations they queue
+brain.rs      needs, offers, and the top-few choice
+stage.rs      cue any scene on demand; the rooms the tests share
 dissolve.rs   the goodbye, a pure function of (C, R, T0, t)
 tests.rs      gate, lifecycle, property and snapshot tests
 ```
@@ -796,8 +801,7 @@ tests.rs      gate, lifecycle, property and snapshot tests
 input area; the renderer exposes `image_regions()`; the shell gains the
 `draw` helper, the tick term and `activity()`; `dessplay-core::spoiler`
 gains `rain_glyph`; `theme` gains `truecolor_rgb`. Planned modules:
-`room.rs`, `brain.rs`, `scenes/`, `calendar.rs`, `bubble.rs`,
-`ledger.rs`.
+`room.rs`, `calendar.rs`, `ledger.rs` (phase 3 brief: plan.md, Phase 37).
 
 ## Testing
 

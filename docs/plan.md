@@ -1,6 +1,6 @@
 # DessPlay Implementation Plan
 
-Last updated: 2026-08-17
+Last updated: 2026-09-28
 
 The initial 10 phases are bottom-up; later numbered phases capture feature
 batches. Each phase produces testable artifacts. The first
@@ -1903,3 +1903,113 @@ player OSD, and standalone diagnostic output are outside scope.
 The current usable authoring subset, examples, and migration limitations are
 documented in [ui-layouts.md](ui-layouts.md). Do not mark this phase complete
 until all six demonstrations work with live reload and no Rust edits.
+
+## Phase 37: Houseguest phase 3 — the room
+
+**Status: planned (brief written 2026-09-28 at the end of phase 2, as a
+fresh-session handoff).** Design: [the houseguest
+proposal](proposals/2026-09-28-houseguest.md) (sections *The room model*,
+*Progression*, *Furnishings*, *Persistence*, *Routine and calendar*);
+rules as built: design.md, Houseguest. Phases 1–2 are done: terrain,
+line art, text layer, pulls, swaps, sneezes, speech, the needs brain,
+and the stage.
+
+### Goal
+
+Osaka gets a home that outlives a visit: furniture she acquires, placed
+around the panes, that gives her new things to do — and a record so the
+room is still there next time.
+
+### Settle with the user first
+
+The proposal fixes the direction but not these; ask before building:
+
+1. **First items and sizes.** Proposed first set: sofa, TV, bed, desk.
+   Each needs a footprint in cells that fits beside her 5×4 box on a
+   floor (a sofa ~9×3? a TV ~6×4?) and still fits 80×24.
+2. **Where props may stand.** On floors she can reach, in blank cells
+   only (placeholders hide text). Empty panes (Users, Playlist, The List
+   when short) are the natural rooms; the chat is busy. Confirm.
+3. **How she acquires them.** The shopping channel on the TV (which is
+   itself the first delivery?), or a starter set, or building from
+   harvested letters (proposal *Building*, later).
+4. **Shopping cadence and absences** (the part-time job): how often,
+   how long the room stands empty.
+5. **Reset**: the "Osaka moved out" settings action — where it lives.
+
+### What gets built (suggested order; each step testable in the stage)
+
+1. **Anchors and one prop.** `room.rs`: `Anchor { surface, edge, frac,
+   offset }` resolved against the current frame each paint (a pane's
+   floor, found the way terrain finds floors); a prop whose anchor no
+   longer resolves, or whose cells aren't blank, goes to the closet
+   (hidden, still owned). One hard-coded sofa as coloured, unfilled line
+   art (`art/` SVG, same resvg path as her). Stage: a key that gives
+   her the sofa.
+2. **Compositing.** Where she and a prop overlap, *one* image draws both
+   in scene depth order (she sits in front of the sofa; under the bed
+   covers; legs under the kotatsu), because placeholders from two images
+   would cut each other out. The frame cache key then includes the prop;
+   keep an eye on the number of distinct images (image-lifetime note in
+   the proposal's Open questions).
+3. **Props as offers.** Each prop advertises `Kind`s to the brain
+   (`brain.rs`): sofa → sit/nap there, bed → proper sleep (answers
+   *sleepy* far better than lying on a border), desk → homework, TV →
+   watch. Adding a prop adds behaviour without touching `decide()`.
+   Worth introducing an `Offers` struct here, which also removes the
+   `#[allow(clippy::too_many_arguments)]` on `Osaka::start`.
+4. **Terrain from props.** Decide whether a prop's top edge is a floor
+   (standing on the TV, peering off the bed) — terrain is read from the
+   rendered frame, and props are in the frame, but as images, not line
+   glyphs.
+5. **The ledger.** `ledger.rs`: local, never synced, same tier as
+   `layout_sizes` and the roguelike save; JSON with a version and
+   `#[serde(default)]`; owned props with anchors, closet, `visit_count`,
+   `master_seed`, seen scenes, last-fired times. Visit RNG from
+   `(master_seed, visit_index)`.
+6. **Acquisition** per the user's answer to 3; Chiyo-chichi's shopping
+   channel on the TV; a box sliding in and unpacking. **Room mutations
+   commit at scene start** (the proposal's rule): the prop is owned
+   before the delivery animation plays, so an interrupt loses nothing.
+7. **Absences**: she leaves for her job and the room stands furnished.
+8. The rest of the catalogue, ~8 props placed at most.
+
+### Testing
+
+- Anchors survive arbitrary resize sequences (property): a prop is
+  either placed on blank, unprotected cells or in the closet, never
+  half-drawn over text. Extend `long_visits_never_touch_what_is_protected`
+  with owned props.
+- Composited frames: her image never shows a prop's placeholders cut out
+  and vice versa; the frame cache stays bounded.
+- Ledger: round-trip, version mismatch, unknown items ignored, missing
+  file.
+- Brain: a prop's offers appear only while it's placed; the needs
+  statistics test gains "sleeps in the bed when she has one".
+- Stage: every new scene cueable and covered by
+  `every_scene_has_a_spot_in_the_stage_room`.
+
+### Handoff notes from phases 1–2
+
+- **Tools.** `cargo run -p dessplay --example houseguest [seed]` (the
+  stage: scenes, needs keys 1–4, speed `[`/`]`, decisions logged to
+  `houseguest-stage.log`); `HOUSEGUEST_SHEET=/tmp/sheet.png cargo test -p
+  dessplay --lib model_sheet -- --ignored` (every pose, both facings);
+  `cargo nextest run -p dessplay --lib reach_census --run-ignored only
+  --no-capture` (how often chat offers her something); `perf.rs`
+  `houseguest_visit_cpu_is_negligible` (release, `--profile full`).
+- **Read before paint.** Everything that compares against the real
+  frame (layer validation, terrain, the dissolve) reads it before any of
+  her pixels or glyphs go on; props must follow the same order.
+- **Placeholders hide what's under them.** Her whole box must be blank
+  or redrawable lines, which is why pulls need a line sticking out
+  beside her. Going underneath ratatui-image (cell-level transparency,
+  then true translucency) is noted in the proposal as later work; don't
+  start it inside phase 3 unless the user asks.
+- **Mischief undoes itself on a schedule** (`Osaka::pending`), separate
+  from her act; anything a prop scene changes in the text layer should
+  schedule its own undo the same way.
+- The user reviews in Ghostty and gives art feedback from the model
+  sheet and the stage; show them the sheet for any new art before wiring
+  it in.
+
