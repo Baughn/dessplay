@@ -622,10 +622,11 @@ fn the_goodbye_waves_as_line_art_but_never_over_new_content() {
 
     let beat = paint(&mut guest, &real, &view, 95_100);
     assert!(placeholder(&beat), "startled, still line art");
-    for (got, want) in beat.content.iter().zip(&real.content) {
+    // Moved text stays as it was until the rain; nothing else changes.
+    for ((got, want), was) in beat.content.iter().zip(&real.content).zip(&before.content) {
         if got != want {
             assert!(
-                cells::untouchable(got),
+                cells::untouchable(got) || got == was,
                 "only image cells change during the beats"
             );
         }
@@ -747,8 +748,11 @@ fn she_pulls_a_chat_line_and_the_goodbye_puts_it_back() {
                     .max(1);
                 if guest.advance(now) {
                     let frame = paint(&mut guest, &real, &view, now);
+                    // A pull: three or more glyphs moved along their row
+                    // (a sneeze pops them up; a swap is two).
                     if let State::Visiting(visit) = &guest.state
                         && visit.layer.entries().len() >= 3
+                        && visit.layer.entries().iter().all(|d| d.at.1 == d.source.1)
                     {
                         found = Some((seed, frame));
                     }
@@ -827,4 +831,151 @@ fn she_mostly_does_things_rather_than_stare() {
     assert!(total > 0);
     assert!(activities >= 4, "{activities} activities over four visits");
     assert!(staring * 4 < total, "stared {staring} of {total} ms");
+}
+
+/// The left room with a line of text on her box's hands row, ending
+/// three cells left of her box when she stands at x = 15 on the floor at
+/// y = 26.
+fn words_room() -> (Buffer, IdleView) {
+    let mut real = rooms(100, 30);
+    real.set_string(2, 24, "the cat sat", Style::new());
+    (real, view(bottom_strip(100, 30)))
+}
+
+fn row_text(buf: &Buffer, y: u16, xs: std::ops::Range<u16>) -> String {
+    xs.map(|x| buf.cell((x, y)).unwrap().symbol().to_string())
+        .collect()
+}
+
+/// She swaps two letters of a word, and swaps them back on schedule —
+/// no goodbye needed.
+#[test]
+fn a_letter_swap_undoes_itself() {
+    for graphics in [false, true] {
+        let (real, view) = words_room();
+        let mut guest = Guest::new(3);
+        if graphics {
+            guest.set_picker(kitty());
+        }
+        visiting_at(&mut guest, &real, &view, (15, 26));
+        paint(&mut guest, &real, &view, 0);
+        let State::Visiting(visit) = &mut guest.state else {
+            panic!("visiting");
+        };
+        let swap = visit
+            .chances
+            .swaps
+            .iter()
+            .find(|s| s.x == 15 && s.y == 26)
+            .cloned()
+            .expect("a swap from where she stands");
+        assert_eq!(swap.pair, (11, 12), "the last two letters of 'sat'");
+        visit.osaka.swap_now(swap, 0);
+        let frame = run(&mut guest, &real, &view, 0, 2000);
+        assert_eq!(
+            row_text(&frame, 24, 2..13),
+            "the cat sta",
+            "graphics={graphics}"
+        );
+        // Kept for 7–14 s, then undone where she stands.
+        let mut now = 2000;
+        let back = loop {
+            now += 100;
+            guest.advance(now);
+            let frame = paint(&mut guest, &real, &view, now);
+            let State::Visiting(visit) = &guest.state else {
+                panic!("still visiting");
+            };
+            if visit.layer.entries().is_empty() {
+                break frame;
+            }
+            assert!(now < 16_000, "graphics={graphics}: never swapped back");
+        };
+        assert!(now >= 7000, "kept a while");
+        assert_eq!(
+            row_text(&back, 24, 2..13),
+            "the cat sat",
+            "graphics={graphics}"
+        );
+    }
+}
+
+/// A chat message arriving while a swap is out puts it right at once.
+#[test]
+fn a_chat_message_undoes_a_swap_at_once() {
+    let (real, view) = words_room();
+    let mut guest = Guest::new(3);
+    visiting_at(&mut guest, &real, &view, (15, 26));
+    paint(&mut guest, &real, &view, 0);
+    let State::Visiting(visit) = &mut guest.state else {
+        panic!("visiting");
+    };
+    let swap = visit.chances.swaps.first().cloned().expect("a swap");
+    let at = (swap.x, swap.y);
+    visiting_at(&mut guest, &real, &view, at);
+    paint(&mut guest, &real, &view, 0);
+    let State::Visiting(visit) = &mut guest.state else {
+        panic!("visiting");
+    };
+    visit.osaka.swap_now(swap, 0);
+    run(&mut guest, &real, &view, 0, 2000);
+    let State::Visiting(visit) = &guest.state else {
+        panic!("visiting");
+    };
+    assert_eq!(visit.layer.entries().len(), 2, "swapped");
+    let mut chatty = view.clone();
+    chatty.chat_mark.synced += 1;
+    guest.advance(2001);
+    paint(&mut guest, &real, &chatty, 2001);
+    run(&mut guest, &real, &chatty, 2001, 2100);
+    let State::Visiting(visit) = &guest.state else {
+        panic!("still visiting: a chat message never sends her away");
+    };
+    assert!(visit.layer.entries().is_empty(), "swapped back at once");
+}
+
+/// A sneeze knocks a few letters loose; they fall, and she puts every
+/// one back — no goodbye needed.
+#[test]
+fn a_sneeze_scatters_letters_and_she_puts_them_back() {
+    for graphics in [false, true] {
+        let (real, view) = words_room();
+        let mut guest = Guest::new(5);
+        if graphics {
+            guest.set_picker(kitty());
+        }
+        visiting_at(&mut guest, &real, &view, (15, 26));
+        paint(&mut guest, &real, &view, 0);
+        let State::Visiting(visit) = &mut guest.state else {
+            panic!("visiting");
+        };
+        assert!(visit.chances.loose.len() >= 2, "{:?}", visit.chances.loose);
+        visit.osaka.sneeze_now(0);
+        let mut now = 0;
+        let mut most = 0;
+        let mut scattered = false;
+        while now < 6000 {
+            now += guest
+                .next_tick(now)
+                .map_or(100, |d| d.as_millis() as u64)
+                .clamp(1, 100);
+            guest.advance(now);
+            let frame = paint(&mut guest, &real, &view, now);
+            if let State::Visiting(visit) = &guest.state {
+                most = most.max(visit.layer.entries().len());
+                scattered |= row_text(&frame, 24, 2..13) != "the cat sat";
+            }
+        }
+        assert!(most >= 2, "graphics={graphics}: knocked {most}");
+        assert!(scattered, "graphics={graphics}: the line was disturbed");
+        let State::Visiting(visit) = &guest.state else {
+            panic!("still visiting");
+        };
+        assert!(
+            visit.layer.entries().is_empty(),
+            "graphics={graphics}: all back"
+        );
+        let frame = paint(&mut guest, &real, &view, now);
+        assert_eq!(row_text(&frame, 24, 2..13), "the cat sat");
+    }
 }

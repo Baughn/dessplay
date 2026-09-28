@@ -51,10 +51,48 @@ pub(super) struct Pull {
     pub cells: Vec<u16>,
 }
 
-impl Pull {
-    /// Which of her box rows the line is on (0 = top).
+/// Two adjacent letters of a word she could swap: standing at `x` on
+/// the floor at `y`, the word on `row` ends right beside her box on
+/// `side`, and `pair` are the columns of the letters to trade.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct Swap {
+    pub x: i32,
+    pub y: i32,
+    pub row: u16,
+    pub side: Side,
+    pub pair: (u16, u16),
+}
+
+/// Something she means to do at a spot on some floor.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum Job {
+    Pull(Pull),
+    Swap(Swap),
+}
+
+impl Job {
+    /// Where she stands to do it.
+    pub fn spot(&self) -> (i32, i32) {
+        match self {
+            Self::Pull(p) => (p.x, p.y),
+            Self::Swap(s) => (s.x, s.y),
+        }
+    }
+
+    pub fn side(&self) -> Side {
+        match self {
+            Self::Pull(p) => p.side,
+            Self::Swap(s) => s.side,
+        }
+    }
+
+    /// Which of her box rows her hands work at (0 = top).
     pub fn box_row(&self) -> u8 {
-        (i32::from(self.row) - (self.y - HEIGHT)).clamp(0, HEIGHT - 1) as u8
+        let (row, y) = match self {
+            Self::Pull(p) => (p.row, p.y),
+            Self::Swap(s) => (s.row, s.y),
+        };
+        (i32::from(row) - (y - HEIGHT)).clamp(0, HEIGHT - 1) as u8
     }
 }
 
@@ -68,12 +106,51 @@ pub(super) enum LayerOp {
         cells: Vec<u16>,
         offset: i16,
     },
+    /// Trade two letters.
+    Swap { a: (u16, u16), b: (u16, u16) },
+    /// Knock the glyph at `source` loose: it pops up a row and away in
+    /// direction `dir` (−1 left, 1 right) — wherever there's room nearest
+    /// that — and then falls.
+    Knock { source: (u16, u16), dir: i8 },
+    /// A knocked glyph drops a row, if there's room below.
+    Fall { source: (u16, u16) },
+    /// Put these glyphs back home together. `tries` counts refusals.
+    Restore { sources: Vec<(u16, u16)>, tries: u8 },
+}
+
+impl LayerOp {
+    /// Whether a refusal means she lost her grip on something she was
+    /// holding (the text changed under her hands).
+    pub fn grips(&self) -> bool {
+        matches!(self, Self::Pull { .. })
+    }
 }
 
 /// Apply `op` against the real frame. Returns false when the frame no
 /// longer supports it (whatever did apply stays, validated as usual).
 pub(super) fn apply(op: &LayerOp, layer: &mut TextLayer, buf: &Buffer, protected: &[Rect]) -> bool {
     match op {
+        LayerOp::Swap { a, b } => layer.swap(buf, protected, *a, *b),
+        LayerOp::Knock { source, dir } => {
+            let (x, y) = *source;
+            let dir = i16::from(*dir);
+            let up = y.checked_sub(1);
+            let spots = [
+                (2 * dir, up),
+                (dir, up),
+                (0, up),
+                (2 * dir, Some(y)),
+                (dir, Some(y)),
+            ];
+            spots.into_iter().any(|(dx, row)| {
+                let to = x.checked_add_signed(dx).zip(row);
+                to.is_some_and(|to| layer.take(buf, protected, *source, to))
+            })
+        }
+        LayerOp::Fall { source } => layer
+            .at_of(*source)
+            .is_some_and(|(x, y)| layer.shift(buf, protected, *source, (x, y.saturating_add(1)))),
+        LayerOp::Restore { sources, .. } => layer.restore_all(sources),
         LayerOp::Pull { row, cells, offset } => {
             let mut ok = true;
             // Leading glyph first: each moves into the cell (or hole) its
@@ -137,6 +214,115 @@ pub(super) fn pulls(buf: &Buffer, terrain: &Terrain, protected: &[Rect]) -> Vec<
                         });
                     }
                 }
+            }
+        }
+    }
+    out
+}
+
+/// Every letter pair she could swap from where the terrain lets her
+/// stand: in an ASCII word of three or more letters that ends beside her
+/// box, within her reach of its end.
+pub(super) fn swaps(buf: &Buffer, terrain: &Terrain, protected: &[Rect]) -> Vec<Swap> {
+    let half = WIDTH / 2;
+    let mut out = Vec::new();
+    for platform in &terrain.platforms {
+        let y = platform.y;
+        for x in platform.x0..=platform.x1 {
+            if !terrain.clear(x, y) {
+                continue;
+            }
+            for box_row in PULL_ROWS {
+                let Ok(row) = u16::try_from(y - HEIGHT + box_row) else {
+                    continue;
+                };
+                for side in [Side::Left, Side::Right] {
+                    let edge = match side {
+                        Side::Left => x - half - 1,
+                        Side::Right => x + half + 1,
+                    };
+                    let Ok(edge) = u16::try_from(edge) else {
+                        continue;
+                    };
+                    let Some(word) = word(buf, protected, edge, row, -side.step()) else {
+                        continue;
+                    };
+                    for pair in word.windows(2).take(REACH) {
+                        let &[a, b] = pair else {
+                            continue;
+                        };
+                        let letter =
+                            |c: u16| buf.cell((c, row)).map(|cell| cell.symbol().to_owned());
+                        if letter(a) != letter(b) {
+                            out.push(Swap {
+                                x,
+                                y,
+                                row,
+                                side,
+                                pair: (a.min(b), a.max(b)),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Letter pairs from a word's end she can reach.
+const REACH: usize = 2;
+
+/// The ASCII word on `row` starting at `start` and running in `dir`,
+/// as columns from `start` outwards — `None` unless `start` holds a
+/// letter and the word is whole (bounded by something that isn't a
+/// letter or digit) and at least [`MIN_GLYPHS`] long.
+fn word(buf: &Buffer, protected: &[Rect], start: u16, row: u16, dir: i32) -> Option<Vec<u16>> {
+    let mut cells = Vec::new();
+    let mut x = start;
+    loop {
+        let symbol = buf.cell((x, row)).map(|c| c.symbol().to_owned());
+        let letter = symbol
+            .as_deref()
+            .is_some_and(|s| s.len() == 1 && s.chars().all(|c| c.is_ascii_alphabetic()));
+        if !letter || !takeable(buf, protected, (x, row)) {
+            // A digit, or a letter she may not touch, means the word
+            // goes on past what she could swap: leave it alone.
+            let alnum = symbol
+                .as_deref()
+                .is_some_and(|s| s.chars().any(|c| c.is_alphanumeric()));
+            if alnum {
+                return None;
+            }
+            break;
+        }
+        cells.push(x);
+        match x.checked_add_signed(dir as i16) {
+            Some(next) => x = next,
+            None => break,
+        }
+    }
+    (cells.len() >= MIN_GLYPHS).then_some(cells)
+}
+
+/// Glyphs a sneeze at `(x, y)` could knock loose: beside her box (up to
+/// three cells out), on her box rows — never a border line, and never
+/// anything she mayn't take.
+pub(super) fn loose(buf: &Buffer, protected: &[Rect], x: i32, y: i32) -> Vec<(u16, u16)> {
+    let half = WIDTH / 2;
+    let columns = (x - half - 3..x - half).chain(x + half + 1..=x + half + 3);
+    let mut out = Vec::new();
+    for column in columns {
+        for row in y - HEIGHT..y {
+            let (Ok(cx), Ok(cy)) = (u16::try_from(column), u16::try_from(row)) else {
+                continue;
+            };
+            let border = buf
+                .cell((cx, cy))
+                .and_then(|c| c.symbol().chars().next())
+                .is_some_and(|c| strokes(c).is_some());
+            if !border && takeable(buf, protected, (cx, cy)) {
+                out.push((cx, cy));
             }
         }
     }
@@ -215,7 +401,7 @@ mod tests {
         assert_eq!(pull.x, 10, "her box's left edge sits right after 'hi'");
         assert_eq!(pull.cells, vec![1, 2, 3, 4, 6, 7]);
         assert_eq!(pull.side, Side::Left);
-        assert_eq!(pull.box_row(), 1);
+        assert_eq!(Job::Pull(pull.clone()).box_row(), 1);
     }
 
     #[test]
@@ -276,6 +462,66 @@ mod tests {
             segment(&buf, &[], 7, 0, -1),
             Some(vec![1, 2, 3, 4, 5, 6, 7])
         );
+    }
+
+    #[test]
+    fn she_swaps_letters_at_the_end_of_a_word_beside_her() {
+        let buf = room(&[
+            "│                       ",
+            "│kim: the cat           ",
+            "│                       ",
+            "│                       ",
+            "└───────────────────────",
+        ]);
+        let terrain = Terrain::read(&buf, &[], true);
+        let swaps = swaps(&buf, &terrain, &[]);
+        let here: Vec<_> = swaps.iter().filter(|s| s.x == 15).map(|s| s.pair).collect();
+        assert_eq!(
+            here,
+            vec![(11, 12), (10, 11)],
+            "'at' and 'ca', within reach"
+        );
+        assert!(swaps.iter().all(|s| s.row == 1 && s.side == Side::Left));
+    }
+
+    #[test]
+    fn only_whole_ascii_words_of_three_letters_are_swapped() {
+        for word in ["4cat", "ab", "漢ab", "aaa"] {
+            let line = format!("│kim: {word:<18}");
+            let blank = format!("│{:23}", "");
+            let floor = format!("└{}", "─".repeat(23));
+            let buf = room(&[&blank, &line, &blank, &blank, &floor]);
+            let terrain = Terrain::read(&buf, &[], true);
+            assert_eq!(swaps(&buf, &terrain, &[]), vec![], "{word}");
+        }
+    }
+
+    #[test]
+    fn the_newest_line_is_never_swapped() {
+        let buf = room(&[
+            "│                       ",
+            "│kim: the cat           ",
+            "│                       ",
+            "│                       ",
+            "└───────────────────────",
+        ]);
+        let newest = [Rect::new(1, 1, 23, 1)];
+        let terrain = Terrain::read(&buf, &newest, true);
+        assert_eq!(swaps(&buf, &terrain, &newest), vec![]);
+    }
+
+    #[test]
+    fn a_sneeze_never_knocks_a_border_loose() {
+        let buf = room(&[
+            "│  ab     ",
+            "│  cd     ",
+            "│         ",
+            "│         ",
+            "└─────────",
+        ]);
+        let mut loose = loose(&buf, &[], 7, 4);
+        loose.sort_unstable();
+        assert_eq!(loose, vec![(3, 0), (3, 1), (4, 0), (4, 1)]);
     }
 
     #[test]

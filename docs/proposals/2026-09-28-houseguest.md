@@ -33,7 +33,7 @@ channel on her TV. We borrow that backbone (see
 |---|---|---|
 | 1 | Seam, idle gate, terrain, walking/climbing/falling, goodbye dissolve, setting, perf test | **done** |
 | 1b | Line art: SVG rig, kitty placement, redrawn lines, letter-burst goodbye | **done** |
-| 2 | Tidying and mischief: text layer and newest-line protection, pulling lines (**done**); sneeze scatter, letter swap, bubbles, the brain with needs | in progress |
+| 2 | Tidying and mischief: text layer and newest-line protection, pulling lines, letter swap, sneeze scatter, scheduled self-reverting (**done**); bubbles, the brain with needs | in progress |
 | 3 | The room: furnishings (coloured line art), anchors, ledger, Chiyo-chichi's shop, routine | planned |
 | 4 | Colour: calendar, screen reading, dreams, cameos, rarity and pity, credits | planned |
 | 5 | The text factory: text hauled into an industrial space and compacted into materials | planned, last |
@@ -351,7 +351,9 @@ covers the keybar or the Player Status block; her lowest floor is the
     back one by one, some in the wrong spots, fixes them on a second
     glance. [U]
 18. **Letter swap** — swaps two adjacent letters (`teh`), giggles, waits,
-    nobody noticed, swaps back. Always self-reverting. [U]
+    nobody noticed, swaps back. Always self-reverting. [U] *Built:* the
+    last two pairs of a word ending beside her; the swap-back is
+    scheduled when she swaps, and a chat arrival brings it forward.
 19. **Magnet** — every `o` in chat slides toward her; she gets scared and
     shoos them home. [R]
 20. **Shelf rearranging** — swaps two playlist rows, notices the current
@@ -470,7 +472,8 @@ among the first things she owns, since the shopping channel plays on it.
     she stares after it (Ep 6). [U, boosted when something animates]
 60. ★ **Tiny sneeze** — "...chu"; the recoil knocks 2–4 nearby glyphs off
     their cells, they fall, she quietly puts them back (Ep 26). [U; C in
-    Mar–Apr]
+    Mar–Apr] *Built (always uncommon; the season comes with the
+    calendar).*
 61. **Loses a race to a child** — a pigtailed figure overtakes her along
     the status separator; enormous determination, no progress. [U]
 62. **Float like a corpse** — an empty playlist becomes a pool; she drifts

@@ -1921,3 +1921,21 @@ deletes images). Rejected: vendoring ratatui-image for real overlay
 placements (possible later); a larger box (more detail, fewer floors on
 80×24).
 
+## Houseguest mischief undoes itself on a schedule (2026-09-28)
+
+**Rule:** Letter swaps and sneeze scatter schedule their own undoing when
+they're made, independent of her current act; a chat arrival undoes them
+at once. See [design.md](design.md#houseguest).
+
+**Why:** Her acts are interruptible by design (a chat message turns her
+round, a pull can lose its grip, a resize re-anchors her), and each of
+those clears what she was doing. Keeping the undo in the act meant any
+interruption could leave `teh` on screen until the goodbye — mischief
+that silently becomes a wrong display. A separate queue of dated layer
+changes survives every interruption and makes "self-reverting" hold by
+construction. Undoing at once on chat keeps the rule that someone else's
+conversation is never changed while they're around: the newest line is
+protected anyway, but swapped letters two lines up would still read as
+a garbled log. Rejected: undoing only at the goodbye (the swap would last
+minutes, and it isn't a joke any more); swapping within the newest line
+(it's the one people are reading).

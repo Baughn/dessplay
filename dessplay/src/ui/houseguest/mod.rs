@@ -290,7 +290,11 @@ impl Guest {
                 visit.layer.validate(buf, &view.protected);
                 let mut gripped = true;
                 for op in visit.osaka.take_ops() {
-                    gripped &= scenes::apply(&op, &mut visit.layer, buf, &view.protected);
+                    if !scenes::apply(&op, &mut visit.layer, buf, &view.protected) {
+                        tracing::trace!(?op, "houseguest: the frame refused a layer change");
+                        gripped &= !op.grips();
+                        visit.osaka.refused(now, op);
+                    }
                 }
                 if !gripped {
                     visit.osaka.lost_grip(now);
@@ -309,10 +313,22 @@ impl Guest {
                     return;
                 }
                 let pulls = scenes::pulls(buf, &visit.terrain, &protected);
-                if pulls.len() != visit.chances.pulls.len() {
-                    tracing::debug!(lines = pulls.len(), "houseguest: lines she could tidy");
+                let swaps = scenes::swaps(buf, &visit.terrain, &protected);
+                if pulls.len() != visit.chances.pulls.len()
+                    || swaps.len() != visit.chances.swaps.len()
+                {
+                    tracing::debug!(
+                        lines = pulls.len(),
+                        words = swaps.len(),
+                        "houseguest: text she could tidy or play with"
+                    );
                 }
-                visit.chances = osaka::Chances { pulls };
+                let loose = scenes::loose(buf, &protected, visit.osaka.x, visit.osaka.y);
+                visit.chances = osaka::Chances {
+                    pulls,
+                    swaps,
+                    loose,
+                };
                 let mut layer = visit.layer.paint(buf);
                 match &mut self.graphics {
                     Some(graphics) => {

@@ -3,7 +3,7 @@
 //! instant is a safe place to cut the visit short.
 
 use super::Rng;
-use super::scenes::{LayerOp, Pull, Side};
+use super::scenes::{Job, LayerOp, Side};
 use super::sprite::{self, Face, Facing, HEIGHT, Pose, SpriteCell};
 use super::terrain::{Link, Route, Terrain};
 
@@ -11,7 +11,20 @@ use super::terrain::{Link, Route, Terrain};
 #[derive(Clone, Debug, Default)]
 pub(super) struct Chances {
     /// Lines she could pull.
-    pub pulls: Vec<Pull>,
+    pub pulls: Vec<super::scenes::Pull>,
+    /// Letters she could swap.
+    pub swaps: Vec<super::scenes::Swap>,
+    /// Glyphs a sneeze where she stands would knock loose.
+    pub loose: Vec<(u16, u16)>,
+}
+
+impl Chances {
+    fn offers(&self, job: &Job) -> bool {
+        match job {
+            Job::Pull(p) => self.pulls.contains(p),
+            Job::Swap(s) => self.swaps.contains(s),
+        }
+    }
 }
 
 /// One brace-and-heave cycle, stretched for longer lines.
@@ -35,6 +48,21 @@ const LOOK_MS: u64 = 4000;
 /// A conversation keeps her watching until it's been quiet this long.
 const WATCH_MS: u64 = 60_000;
 const BLINK_MS: u64 = 150;
+/// Reaching for two letters (and back again).
+const FIDDLE_MS: u64 = 700;
+/// How long a swap stays before she swaps it back.
+const SWAP_KEPT_MS: (u64, u64) = (7000, 14_000);
+/// "a... a..." before the sneeze, then the recoil.
+const WINDUP_MS: u64 = 1400;
+const RECOIL_MS: u64 = 600;
+/// Knocked glyphs drop a row this often, at most `FALL_ROWS` rows.
+const DROP_MS: u64 = 90;
+const FALL_ROWS: u64 = 4;
+/// After a sneeze: a moment's "...", then one glyph back per beat.
+const OOPS_MS: u64 = 900;
+const PUT_BACK_MS: u64 = 400;
+/// A refused put-back is retried this many times.
+const RETRIES: u8 = 5;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Act {
@@ -75,6 +103,31 @@ enum Act {
     },
     /// Done pulling: a pleased moment.
     Admire {
+        until: u64,
+    },
+    /// Reaching for the letters of a swap (`back`: to undo it).
+    Swap {
+        until: u64,
+        back: bool,
+    },
+    /// Giggling at a swap she made; she undoes it at `revert`.
+    Giggle {
+        until: u64,
+        revert: u64,
+    },
+    /// Whistling, looking anywhere but at the swapped letters.
+    Innocent {
+        until: u64,
+        revert: u64,
+    },
+    /// A sneeze: the windup, then (`knocked`) the recoil.
+    Sneeze {
+        since: u64,
+        knocked: bool,
+    },
+    /// Picking up what the sneeze knocked loose.
+    PutBack {
+        since: u64,
         until: u64,
     },
     /// An activity on the spot.
@@ -157,6 +210,8 @@ pub(super) enum Bubble {
     Count,
     Stretch,
     Ooh,
+    Achoo,
+    Chu,
 }
 
 impl Bubble {
@@ -171,6 +226,8 @@ impl Bubble {
             Self::Count => "1, 2!",
             Self::Stretch => "nnn~",
             Self::Ooh => "ooh",
+            Self::Achoo => "a...",
+            Self::Chu => "chu!",
         }
     }
 }
@@ -191,16 +248,19 @@ pub(super) struct Osaka {
     /// While a chat conversation continues she stands watching it.
     watch_until: u64,
     watch_x: i32,
-    /// A pull she's walking to on this floor, or doing.
-    task: Option<Pull>,
-    /// A pull on another floor she's making her way towards.
-    goal: Option<Pull>,
+    /// A job she's walking to on this floor, or doing.
+    task: Option<Job>,
+    /// A job on another floor she's making her way towards.
+    goal: Option<Job>,
     /// The pole she's climbing (column).
     pole: i32,
     /// When this visit began (early visits favour activities).
     arrived: u64,
     /// Layer changes for the next paint to apply.
     ops: Vec<LayerOp>,
+    /// Layer changes due later, whatever she's doing by then: undoing
+    /// mischief is scheduled when it's made, so nothing can strand it.
+    pending: Vec<(u64, LayerOp)>,
 }
 
 impl Osaka {
@@ -220,6 +280,7 @@ impl Osaka {
             pole: x,
             arrived: now,
             ops: Vec::new(),
+            pending: Vec::new(),
         };
         osaka.act_due = osaka.first_due(now);
         osaka
@@ -313,28 +374,69 @@ impl Osaka {
         )
     }
 
+    /// Test fixture: reach for `swap` now (she must stand at its spot).
+    #[cfg(test)]
+    pub fn swap_now(&mut self, swap: super::scenes::Swap, now: u64) {
+        self.facing = side_facing(swap.side);
+        self.task = Some(Job::Swap(swap));
+        self.set(
+            Act::Swap {
+                until: now + FIDDLE_MS,
+                back: false,
+            },
+            now,
+        );
+    }
+
+    /// Test fixture: start a sneeze now.
+    #[cfg(test)]
+    pub fn sneeze_now(&mut self, now: u64) {
+        self.set(
+            Act::Sneeze {
+                since: now,
+                knocked: false,
+            },
+            now,
+        );
+    }
+
     fn first_due(&self, now: u64) -> u64 {
         match self.act {
             Act::Stand { until }
             | Act::SpaceOut { until }
             | Act::Peer { until, .. }
             | Act::Dazed { until }
-            | Act::Admire { until } => until,
+            | Act::Admire { until }
+            | Act::Swap { until, .. }
+            | Act::Giggle { until, .. }
+            | Act::Innocent { until, .. }
+            | Act::PutBack { until, .. } => until,
+            Act::Sneeze { since, knocked } => {
+                since + WINDUP_MS + if knocked { RECOIL_MS } else { 0 }
+            }
             Act::Idle { what, since, until } => next_frame(what, since, now).min(until),
             Act::Look {
                 surprised_until, ..
             } => surprised_until,
             Act::Walk { .. } => now + WALK_MS,
             Act::Pull { .. } => {
-                now + self.task.as_ref().map_or(600, |t| heave_ms(t.cells.len())) / 2
+                let glyphs = match &self.task {
+                    Some(Job::Pull(t)) => t.cells.len(),
+                    _ => 0,
+                };
+                now + heave_ms(glyphs) / 2
             }
             Act::Climb { .. } => now + CLIMB_MS,
             Act::Fall { from_y, since, .. } => fall_time(since, (self.y - from_y + 1) as u64),
         }
     }
 
-    /// When her pose next changes.
+    /// When her pose (or the text layer) next changes.
     pub fn due(&self) -> u64 {
+        self.pose_due().min(self.pending_due())
+    }
+
+    fn pose_due(&self) -> u64 {
         let blinking = matches!(self.act, Act::Stand { .. });
         if blinking {
             let blink = if self.blink_until > self.next_blink {
@@ -348,6 +450,23 @@ impl Osaka {
         }
     }
 
+    fn pending_due(&self) -> u64 {
+        self.pending
+            .iter()
+            .map(|(due, _)| *due)
+            .min()
+            .unwrap_or(u64::MAX)
+    }
+
+    fn schedule(&mut self, due: u64, op: LayerOp) {
+        self.pending.push((due, op));
+    }
+
+    /// Whether some mischief is still waiting to be undone.
+    fn owes(&self) -> bool {
+        !self.pending.is_empty()
+    }
+
     /// Run every event due by `now`. Returns whether her pose changed.
     pub fn tick(&mut self, now: u64, terrain: &Terrain, chances: &Chances, rng: &mut Rng) -> bool {
         let mut changed = false;
@@ -357,6 +476,15 @@ impl Osaka {
                 return changed;
             }
             changed = true;
+            if self.pending_due() == due {
+                // Every op due now, in the order they were scheduled.
+                let (now_due, later): (Vec<_>, Vec<_>) = std::mem::take(&mut self.pending)
+                    .into_iter()
+                    .partition(|(d, _)| *d == due);
+                self.pending = later;
+                self.ops.extend(now_due.into_iter().map(|(_, op)| op));
+                continue;
+            }
             if matches!(self.act, Act::Stand { .. }) && due < self.act_due {
                 if self.blink_until > self.next_blink {
                     self.blink_until = 0;
@@ -389,8 +517,85 @@ impl Osaka {
                     self.act_due = next_frame(what, since, at).min(until);
                 }
             }
-            Act::Stand { .. } | Act::SpaceOut { .. } | Act::Dazed { .. } | Act::Admire { .. } => {
-                self.decide(at, terrain, chances, rng)
+            Act::Stand { .. }
+            | Act::SpaceOut { .. }
+            | Act::Dazed { .. }
+            | Act::Admire { .. }
+            | Act::PutBack { .. } => self.decide(at, terrain, chances, rng),
+            Act::Swap { back: true, .. } => {
+                self.task = None;
+                self.set(
+                    Act::SpaceOut {
+                        until: at + rng.range(1500, 3000),
+                    },
+                    at,
+                );
+            }
+            Act::Swap { back: false, .. } => {
+                let Some(Job::Swap(swap)) = self.task.clone() else {
+                    return self.decide(at, terrain, chances, rng);
+                };
+                let a = (swap.pair.0, swap.row);
+                let b = (swap.pair.1, swap.row);
+                let revert = at + rng.range(SWAP_KEPT_MS.0, SWAP_KEPT_MS.1);
+                tracing::debug!(row = swap.row, ?swap.pair, "houseguest: swapping two letters");
+                self.ops.push(LayerOp::Swap { a, b });
+                self.schedule(
+                    revert,
+                    LayerOp::Restore {
+                        sources: vec![a, b],
+                        tries: 0,
+                    },
+                );
+                self.set(
+                    Act::Giggle {
+                        until: at + 1500,
+                        revert,
+                    },
+                    at,
+                );
+            }
+            Act::Giggle { revert, .. } => {
+                let until = revert.saturating_sub(FIDDLE_MS).max(at);
+                self.set(Act::Innocent { until, revert }, at);
+            }
+            Act::Innocent { revert, .. } => {
+                // Nobody noticed. She quietly puts it right.
+                if let Some(task) = &self.task {
+                    self.facing = side_facing(task.side());
+                }
+                self.set(
+                    Act::Swap {
+                        until: revert.max(at),
+                        back: true,
+                    },
+                    at,
+                );
+            }
+            Act::Sneeze {
+                since,
+                knocked: false,
+            } => {
+                self.sneeze(at, chances, rng);
+                self.set(
+                    Act::Sneeze {
+                        since,
+                        knocked: true,
+                    },
+                    at,
+                );
+            }
+            Act::Sneeze { knocked: true, .. } => {
+                let last = self
+                    .pending
+                    .iter()
+                    .filter(|(_, op)| matches!(op, LayerOp::Restore { .. }))
+                    .map(|(due, _)| *due)
+                    .max();
+                match last {
+                    Some(until) => self.set(Act::PutBack { since: at, until }, at),
+                    None => self.decide(at, terrain, chances, rng),
+                }
             }
             Act::Look {
                 surprised_until,
@@ -417,15 +622,21 @@ impl Osaka {
                     self.act_due = at + WALK_MS;
                     return;
                 }
-                if let Some(task) = &self.task
-                    && task.x == self.x
-                    && task.y == self.y
+                if let Some(job) = &self.task
+                    && job.spot() == (self.x, self.y)
                 {
-                    // At the line's end: face it and brace.
-                    self.facing = match task.side {
-                        Side::Left => Facing::Left,
-                        Side::Right => Facing::Right,
+                    self.facing = side_facing(job.side());
+                    let Job::Pull(task) = job else {
+                        // At the word: reach for the letters.
+                        return self.set(
+                            Act::Swap {
+                                until: at + FIDDLE_MS,
+                                back: false,
+                            },
+                            at,
+                        );
                     };
+                    // At the line's end: brace.
                     let goal = rng.range(3, 9) as u16;
                     tracing::debug!(
                         row = task.row,
@@ -508,7 +719,7 @@ impl Osaka {
                 goal,
                 heaving,
             } => {
-                let Some(task) = self.task.clone() else {
+                let Some(Job::Pull(task)) = self.task.clone() else {
                     return self.decide(at, terrain, chances, rng);
                 };
                 if !heaving {
@@ -592,10 +803,55 @@ impl Osaka {
         std::mem::take(&mut self.ops)
     }
 
+    /// The paint refused `op` (the frame didn't allow it). A put-back is
+    /// tried again shortly; anything else is simply dropped.
+    pub fn refused(&mut self, now: u64, op: LayerOp) {
+        if let LayerOp::Restore { sources, tries } = op
+            && tries < RETRIES
+        {
+            self.schedule(
+                now + PUT_BACK_MS,
+                LayerOp::Restore {
+                    sources,
+                    tries: tries + 1,
+                },
+            );
+        }
+    }
+
+    /// "chu!": knock 2–4 glyphs beside her loose, let them fall, and
+    /// schedule putting each back.
+    fn sneeze(&mut self, at: u64, chances: &Chances, rng: &mut Rng) {
+        let mut loose = chances.loose.clone();
+        let count = (rng.range(2, 5) as usize).min(loose.len());
+        let mut knocked = Vec::with_capacity(count);
+        for _ in 0..count {
+            let pick = rng.below(loose.len() as u64) as usize;
+            knocked.push(loose.swap_remove(pick));
+        }
+        tracing::debug!(knocked = knocked.len(), "houseguest: sneezed");
+        let putting_back = at + RECOIL_MS + OOPS_MS;
+        for (i, &source) in knocked.iter().enumerate() {
+            let dir = if i32::from(source.0) < self.x { -1 } else { 1 };
+            self.ops.push(LayerOp::Knock { source, dir });
+            for row in 1..=FALL_ROWS {
+                self.schedule(at + row * DROP_MS, LayerOp::Fall { source });
+            }
+            self.schedule(
+                putting_back + i as u64 * PUT_BACK_MS,
+                LayerOp::Restore {
+                    sources: vec![source],
+                    tries: 0,
+                },
+            );
+        }
+    }
+
     /// The text she was pulling changed under her (someone scrolled the
     /// chat): she lets go and stares.
     pub fn lost_grip(&mut self, now: u64) {
-        if self.task.take().is_some() {
+        if matches!(self.task, Some(Job::Pull(_))) {
+            self.task = None;
             tracing::trace!("houseguest lost her grip");
             self.set(
                 Act::Look {
@@ -625,41 +881,49 @@ impl Osaka {
         let platform = terrain.platforms.get(here).copied();
         // Tidying: keep making for a line still on offer, or maybe pick
         // one anywhere she can reach.
-        let kept = self.goal.take().filter(|g| chances.pulls.contains(g));
-        let fresh = kept.is_none() && !chances.pulls.is_empty() && rng.below(100) < 40;
+        let kept = self.goal.take().filter(|g| chances.offers(g));
+        // One piece of mischief at a time: no new swap while one is owed.
+        let swaps = if self.owes() {
+            &[][..]
+        } else {
+            &chances.swaps[..]
+        };
+        let offered = chances.pulls.len() + swaps.len();
+        let fresh = kept.is_none() && offered > 0 && rng.below(100) < 40;
         let target = kept.or_else(|| {
-            fresh
-                .then(|| {
-                    let pick = rng.below(chances.pulls.len() as u64) as usize;
-                    chances.pulls.get(pick).cloned()
-                })
-                .flatten()
+            if !fresh {
+                return None;
+            }
+            // Mostly tidying; now and then a swap.
+            let swap = !swaps.is_empty() && (chances.pulls.is_empty() || rng.below(100) < 30);
+            if swap {
+                let pick = rng.below(swaps.len() as u64) as usize;
+                swaps.get(pick).cloned().map(Job::Swap)
+            } else {
+                let pick = rng.below(chances.pulls.len() as u64) as usize;
+                chances.pulls.get(pick).cloned().map(Job::Pull)
+            }
         });
-        if let Some(pull) = target {
-            let there = terrain.platform_at(pull.x, pull.y);
+        if let Some(job) = target {
+            let (x, y) = job.spot();
+            let there = terrain.platform_at(x, y);
             if there == Some(here) {
-                tracing::debug!(
-                    row = pull.row,
-                    to = pull.x,
-                    offered = chances.pulls.len(),
-                    "houseguest: walking to a line to tidy"
-                );
-                if pull.x != self.x {
-                    self.facing = toward(self.x, pull.x);
+                tracing::debug!(?job, offered, "houseguest: walking to a job");
+                if x != self.x {
+                    self.facing = toward(self.x, x);
                 }
-                let to = pull.x;
-                self.task = Some(pull);
-                return self.set(Act::Walk { to, then: None }, at);
+                self.task = Some(job);
+                return self.set(Act::Walk { to: x, then: None }, at);
             }
             match there.and_then(|there| route(terrain, here, there)) {
                 Some(link) => {
                     tracing::debug!(
-                        row = pull.row,
+                        ?job,
                         via = ?link.route,
-                        offered = chances.pulls.len(),
-                        "houseguest: heading for a line on another floor"
+                        offered,
+                        "houseguest: heading for a job on another floor"
                     );
-                    self.goal = Some(pull);
+                    self.goal = Some(job);
                     if link.x != self.x {
                         self.facing = toward(self.x, link.x);
                     }
@@ -671,13 +935,9 @@ impl Osaka {
                         at,
                     );
                 }
-                None => tracing::debug!(
-                    row = pull.row,
-                    offered = chances.pulls.len(),
-                    "houseguest: a line to tidy, but no way there"
-                ),
+                None => tracing::debug!(?job, offered, "houseguest: a job, but no way there"),
             }
-        } else if chances.pulls.is_empty() {
+        } else if offered == 0 {
             tracing::trace!("houseguest: nothing to tidy");
         }
         // Early in a visit she's busier; staring at the viewer is short and
@@ -693,7 +953,12 @@ impl Osaka {
             Act::SpaceOut {
                 until: at + rng.range(6000, 14_000),
             }
-        } else if roll < 16 + busy {
+        } else if roll < 19 {
+            Act::Sneeze {
+                since: at,
+                knocked: false,
+            }
+        } else if roll < 19 + busy {
             let pick = rng.below(Activity::ALL.len() as u64) as usize;
             let what = Activity::ALL.get(pick).copied().unwrap_or(Activity::Gaze);
             let (lo, hi) = what.duration();
@@ -742,6 +1007,12 @@ impl Osaka {
     /// A chat message arrived: stop and look at it.
     pub fn look(&mut self, now: u64, chat_x: i32) {
         self.watch_until = now + WATCH_MS;
+        // Someone's here: whatever she knocked over or swapped goes back
+        // at once, in order.
+        self.pending.sort_by_key(|(due, _)| *due);
+        for (due, _) in &mut self.pending {
+            *due = now;
+        }
         if !matches!(self.act, Act::Fall { .. } | Act::Climb { .. }) {
             // She lets go of whatever she was pulling.
             self.task = None;
@@ -842,6 +1113,11 @@ impl Osaka {
         (sprite::cells(pose, self.facing, face), bubble)
     }
 
+    /// The box row her hands work at for the current job.
+    fn hands_row(&self) -> u8 {
+        self.task.as_ref().map_or(1, Job::box_row)
+    }
+
     fn facing_sign(&self) -> i32 {
         match self.facing {
             Facing::Left => -1,
@@ -886,9 +1162,33 @@ impl Osaka {
             }
             Act::Fall { .. } => (Pose::Fall, Face::Surprised, None),
             Act::Dazed { .. } => (Pose::Dazed, Face::Vacant, None),
-            Act::Pull { heaving, .. } => {
-                let row = self.task.as_ref().map_or(1, Pull::box_row);
-                (Pose::Pull { heaving, row }, Face::Vacant, None)
+            Act::Pull { heaving, .. } => (
+                Pose::Pull {
+                    heaving,
+                    row: self.hands_row(),
+                },
+                Face::Vacant,
+                None,
+            ),
+            Act::Swap { back, .. } => {
+                let face = if back { Face::Vacant } else { Face::Curious };
+                let pose = Pose::Pull {
+                    heaving: false,
+                    row: self.hands_row(),
+                };
+                (pose, face, None)
+            }
+            Act::Giggle { .. } => (Pose::Stand, Face::Pleased, Some(Bubble::Hehe)),
+            Act::Innocent { .. } => (Pose::Gaze, Face::Happy, Some(Bubble::Hum)),
+            Act::Sneeze { knocked: false, .. } => (Pose::Gaze, Face::Blink, Some(Bubble::Achoo)),
+            Act::Sneeze { knocked: true, .. } => {
+                (Pose::ToeTouch(0), Face::Blink, Some(Bubble::Chu))
+            }
+            Act::PutBack { since, .. } => {
+                let oops = now < since + OOPS_MS;
+                let frame = (now.saturating_sub(since) / PUT_BACK_MS % 2) as u8;
+                let bubble = oops.then_some(Bubble::Dots);
+                (Pose::ToeTouch(frame), Face::Vacant, bubble)
             }
             Act::Admire { .. } => (Pose::Stand, Face::Pleased, Some(Bubble::Hehe)),
             Act::Look {
@@ -901,6 +1201,13 @@ impl Osaka {
                 }
             }
         }
+    }
+}
+
+fn side_facing(side: Side) -> Facing {
+    match side {
+        Side::Left => Facing::Left,
+        Side::Right => Facing::Right,
     }
 }
 

@@ -18,6 +18,10 @@ Add new days at the top. Add new entries at the bottom of existing days.
   she waves goodbye while everything rains back into place; a chat
   message only makes her stop and look. F3 → Playback → Houseguest changes the delay or turns her
   off.
+- Added: The houseguest gets up to mischief: she sometimes swaps two
+  letters of a word, giggles, and quietly swaps them back, and her
+  sneezes knock a few letters loose, which she then puts back one by
+  one.
 
 ## 2026-09-26
 

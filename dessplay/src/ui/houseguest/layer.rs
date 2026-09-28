@@ -218,6 +218,72 @@ impl TextLayer {
         !blocked
     }
 
+    /// Swap the glyphs at `a` and `b`: each moves into the other's hole.
+    /// Both go or neither does.
+    pub fn swap(&mut self, buf: &Buffer, protected: &[Rect], a: (u16, u16), b: (u16, u16)) -> bool {
+        let taken = |layer: &Self, c: (u16, u16)| {
+            layer
+                .entries
+                .iter()
+                .any(|d| d.source_cells().chain(d.at_cells()).any(|x| x == c))
+        };
+        if self.entries.len() + 2 > CAP
+            || a == b
+            || taken(self, a)
+            || taken(self, b)
+            || !takeable(buf, protected, a)
+            || !takeable(buf, protected, b)
+        {
+            return false;
+        }
+        let (Some(ea), Some(eb)) = (buf.cell(a).cloned(), buf.cell(b).cloned()) else {
+            return false;
+        };
+        if width(&ea) > 1 || width(&eb) > 1 {
+            return false;
+        }
+        self.entries.push(Displaced {
+            source: a,
+            expected: ea,
+            at: b,
+        });
+        self.entries.push(Displaced {
+            source: b,
+            expected: eb,
+            at: a,
+        });
+        let n = self.entries.len();
+        let ok = (n - 2..n).all(|i| {
+            self.entries
+                .get(i)
+                .is_some_and(|d| self.fits(buf, protected, d, Some(i)))
+        });
+        if !ok {
+            self.entries.truncate(n - 2);
+        }
+        ok
+    }
+
+    /// Put every glyph from `sources` back home at once — refused while
+    /// any other glyph sits in one of their holes. Sources no longer in
+    /// the layer are already home.
+    pub fn restore_all(&mut self, sources: &[(u16, u16)]) -> bool {
+        let homes: Vec<(u16, u16)> = self
+            .entries
+            .iter()
+            .filter(|d| sources.contains(&d.source))
+            .flat_map(|d| d.source_cells().collect::<Vec<_>>())
+            .collect();
+        let blocked = self
+            .entries
+            .iter()
+            .any(|d| !sources.contains(&d.source) && d.at_cells().any(|c| homes.contains(&c)));
+        if !blocked {
+            self.entries.retain(|d| !sources.contains(&d.source));
+        }
+        !blocked
+    }
+
     /// Drop every entry the real frame no longer supports — a source that
     /// changed, or a target that stopped fitting — repeating until stable,
     /// since a dropped entry's hole fills with real text again. Reads only
@@ -399,6 +465,42 @@ mod tests {
         assert!(!layer.take(&real, &[Rect::new(1, 0, 1, 1)], (1, 0), (2, 0)));
     }
 
+    #[test]
+    fn a_swap_trades_two_letters_and_restores_as_a_pair() {
+        let real = text(&["the  "]);
+        let mut layer = TextLayer::default();
+        assert!(layer.swap(&real, &[], (1, 0), (2, 0)));
+        let mut frame = real.clone();
+        layer.validate(&frame, &[]);
+        layer.paint(&mut frame);
+        assert_eq!(frame, text(&["teh  "]));
+        assert!(!layer.restore((1, 0)), "each sits in the other's hole");
+        assert!(layer.restore_all(&[(1, 0), (2, 0)]));
+        assert!(layer.is_empty());
+    }
+
+    #[test]
+    fn a_swap_is_all_or_nothing() {
+        let real = text(&["t漢e  "]);
+        let mut layer = TextLayer::default();
+        assert!(
+            !layer.swap(&real, &[], (0, 0), (1, 0)),
+            "wide glyphs don't swap"
+        );
+        assert!(
+            !layer.swap(&real, &[], (0, 0), (4, 0)),
+            "a blank isn't a letter"
+        );
+        assert!(
+            !layer.swap(&real, &[Rect::new(3, 0, 1, 1)], (0, 0), (3, 0)),
+            "protected"
+        );
+        assert!(layer.is_empty());
+        assert!(layer.swap(&real, &[], (0, 0), (3, 0)));
+        assert!(!layer.swap(&real, &[], (3, 0), (0, 0)), "already swapped");
+        assert_eq!(layer.entries().len(), 2);
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(dessplay_core::test_support::proptest_cases(128)))]
 
@@ -408,16 +510,26 @@ mod tests {
         #[test]
         fn the_layer_never_overlaps_or_covers_text(
             rows in proptest::collection::vec("[a-z漢 ]{12}", 4),
-            moves in proptest::collection::vec(((0u16..12, 0u16..4), (0u16..12, 0u16..4)), 0..40),
+            moves in proptest::collection::vec((0u8..4, (0u16..12, 0u16..4), (0u16..12, 0u16..4)), 0..40),
             guard in (0u16..12, 0u16..4, 1u16..4, 1u16..3),
         ) {
             let lines: Vec<&str> = rows.iter().map(String::as_str).collect();
             let real = text(&lines);
             let protected = [Rect::new(guard.0, guard.1, guard.2, guard.3).intersection(real.area)];
             let mut layer = TextLayer::default();
-            for (from, to) in moves {
-                if !layer.shift(&real, &protected, from, to) {
-                    layer.take(&real, &protected, from, to);
+            for (kind, from, to) in moves {
+                match kind {
+                    0 => {
+                        layer.swap(&real, &protected, from, to);
+                    }
+                    1 => {
+                        layer.restore_all(&[from, to]);
+                    }
+                    _ => {
+                        if !layer.shift(&real, &protected, from, to) {
+                            layer.take(&real, &protected, from, to);
+                        }
+                    }
                 }
             }
             layer.validate(&real, &protected);

@@ -1382,6 +1382,22 @@ this section states what is built.
   floor, then looks pleased ("hehe"). If the text changes under her she
   lets go and stares. Her decisions and their reasons are logged at
   debug level (`RUST_LOG=dessplay::ui::houseguest=debug`, or F11's level).
+- **Mischief undoes itself on a schedule**, fixed when it's made and kept
+  apart from whatever she is doing by then, so no interruption can
+  strand it; a chat or IRC line arriving undoes all of it at once. One
+  piece of mischief is outstanding at a time
+  (why: [decisions](decisions.md#houseguest-mischief-undoes-itself-on-a-schedule-2026-09-28)).
+  - **Letter swap**: at the end of a whole ASCII word of three or more
+    letters beside her box (chest height, the last two pairs within
+    reach), she trades two adjacent different letters (`sat` → `sta`),
+    giggles ("hehe"), whistles innocently looking up ("~"), and swaps them
+    back 7–14 s later.
+  - **Sneeze**: "a..." then "chu!" — 2–4 glyphs beside her box (up to
+    three cells out, on her box rows, never border lines) pop up a row and
+    away from her, fall until something stops them (at most four rows),
+    and after a moment ("...") she puts them back one every 400 ms. A
+    put-back the frame refuses is retried a few times; the goodbye rain
+    re-knits anything left.
 
 - Playback starting or an overlay opening mid-visit starts the dissolve;
   switching the setting off removes her at once. A terminal resize
