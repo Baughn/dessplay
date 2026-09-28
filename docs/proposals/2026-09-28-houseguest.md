@@ -1,9 +1,11 @@
 # Proposal: The Houseguest (idle Osaka)
 
-Status: **ACCEPTED, not implemented, 2026-09-28.** Brainstormed by five
-parallel research passes (Osaka canon, prior art, the TUI as terrain,
-progression/AI, terminal animation craft) and merged here. See
-[Decisions](#decisions) for the settled scope questions.
+Status: **ACCEPTED; phase 1 implemented 2026-09-28** (design.md,
+Houseguest). Brainstormed by five parallel research passes (Osaka canon,
+prior art, the TUI as terrain, progression/AI, terminal animation craft)
+and merged here. See [Decisions](#decisions) for the settled scope
+questions and [Phase 1 as built](#phase-1-as-built) for where the build
+departs from this draft.
 
 ## Summary
 
@@ -676,7 +678,7 @@ Per docs/testing-strategy.md: seeded RNG, injected clock, no sleeps.
 
 ## Phasing
 
-1. **Seam + skeleton**: `IdleView`, visit gate, shell hook and tick hint,
+1. **Seam + skeleton** *(done 2026-09-28)*: `IdleView`, visit gate, shell hook and tick hint,
    terrain map, Osaka walking/climbing/falling on borders, the dissolve
    with its property tests, settings, perf test. Shippable on its own.
 2. **Tidying and mischief**: displaced glyphs with validation, dragging,
@@ -685,6 +687,30 @@ Per docs/testing-strategy.md: seeded RNG, injected clock, no sleeps.
    Chiyo-chichi's shop and progression, routine.
 4. **Colour**: calendar table, screen reading, dreams, cameos, rarity
    tiers and pity, credits.
+
+## Phase 1 as built
+
+Differences from the plan above, decided while building phase 1:
+
+- **Terrain comes from the rendered cells**, not pane rectangles: runs of
+  horizontal box-drawing glyphs are floors (with four open rows above),
+  vertical borders are poles, real ledge ends are drop-offs. Rectangles
+  only supply the protected set. This handles user layouts, borderless
+  panes, and titles (a title is a gap in the floor she can hop through).
+- **One setting**: *Houseguest* cycles After 1/2/5/10/30 minutes idle or
+  Off. "Visits only" and "Night stays" wait for phase 3 (they only mean
+  something with a persisted room and a routine); so does a
+  reduced-motion variant of the dissolve.
+- **The first-visit chat line waits for phase 3**: it needs the ledger's
+  `intro_done`, and posting into chat would break the read-only
+  contract; the CHANGELOG entry announces her meanwhile.
+- **The newest chat line is not yet forbidden to her**; `Ui` doesn't
+  expose its row. Phase 2 (when she starts touching chat) adds it.
+- **The dissolve's dirty set is her sprite and bubble** until phase 2
+  gives her displaced glyphs. Wide-glyph pairs settle together, so a
+  settled half is never knocked out again by its partner.
+- The shell forwards only key, mouse, and paste events as activity;
+  resize re-anchors; focus changes are ignored.
 
 ## Decisions
 

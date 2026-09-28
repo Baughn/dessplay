@@ -1112,6 +1112,10 @@ impl Renderer {
         self.text_cache.insert(key, rows.clone());
         rows
     }
+    /// Protocol image rectangles recorded in the last frame.
+    pub fn image_regions(&self) -> &[Rect] {
+        &self.image_regions
+    }
     /// Record protocol image operations alongside the frame's painted geometry.
     pub fn record_image_regions(&mut self, regions: &[Rect]) {
         self.image_regions = regions.to_vec();

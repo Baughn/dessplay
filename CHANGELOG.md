@@ -9,6 +9,14 @@ append-only; you cannot reword or remove existing entries.
 
 Add new days at the top. Add new entries at the bottom of existing days.
 
+## 2026-09-28
+
+- Added: A houseguest. When nothing has happened for five minutes, Osaka
+  wanders into the terminal and makes herself at home on the pane
+  borders. Press any key and she waves goodbye; a chat message only
+  makes her stop and look. F3 → Playback → Houseguest changes the delay
+  or turns her off.
+
 ## 2026-09-26
 
 - Changed: The oracle now knows when you switched episodes during the

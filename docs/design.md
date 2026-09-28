@@ -1,6 +1,6 @@
 # DessPlay Design Document
 
-Last updated: 2026-09-26
+Last updated: 2026-09-28
 
 A synchronized video player for watch parties. Terminal-first, built for
 reliability over flaky connections. Server-coordinated, including relayed
@@ -1318,6 +1318,51 @@ unaffected.
 **Workflow rule:** every user-visible change adds a `CHANGELOG.md` entry
 under today's date at commit time, worded for the player experience, not
 the implementation (see CLAUDE.md).
+
+### Houseguest
+
+When the client has been **fully idle** for the configured delay, a
+stick-figure Osaka (*Azumanga Daioh*) visits the terminal: she walks the
+pane borders, climbs vertical borders, hops off ledge ends, peers over
+edges, spaces out, and blinks. The full plan (tidying, furniture,
+routine, cameos) is [the proposal](proposals/2026-09-28-houseguest.md);
+this section states what is built.
+
+- **Idle** means, continuously for the delay: nothing playing (intent
+  Playing with a now-playing file), no modal, layout tools, or
+  hashing/Nyaa-import overlay, no held chat selection, no local input,
+  and no new chat or IRC line. The terminal must be at least 60×18.
+- She is a **visual overlay only**, painted over each finished frame; she
+  never changes app state
+  (why: [decisions](decisions.md#houseguest-is-a-post-render-overlay-2026-09-28)).
+- She **never covers** the chat input line and its frame, the Player
+  Status block, the keybinding bar, or inline images (plus one cell of
+  margin); never writes a protocol-image cell; and never leaves half of
+  a wide glyph on screen.
+- **Terrain is read from the rendered frame**: a run of horizontal
+  box-drawing glyphs is a floor wherever four rows of open cells sit
+  above it; vertical borders let her climb between floors; a ledge's
+  real end lets her drop to the floor below
+  (why: [decisions](decisions.md#houseguest-terrain-comes-from-the-rendered-frame-2026-09-28)).
+- **Local key, mouse, or paste input** ends a visit with a ~2.5 s
+  dissolve: a startled face, a goodbye smile, then per-column "rain"
+  rippling out from her, each cell cycling spoiler-scramble-class noise
+  (`spoiler::rain_glyph`) before settling to the real UI. Every cell has
+  settled by 2.4 s and the overlay is gone at 2.5 s; a cell the real UI
+  changed since the input shows the real UI at once, and a settled cell
+  never shows noise again.
+- A **chat or IRC line** from anyone does not end a visit: she stops,
+  turns toward the chat pane with a `!` then a `?`, and keeps watching
+  until chat has been quiet for a minute.
+- Playback starting or an overlay opening mid-visit starts the dissolve;
+  switching the setting off removes her at once. A terminal resize
+  re-anchors her (she falls if her floor went away); during a dissolve it
+  ends the dissolve immediately. Focus changes are not activity.
+- **Setting** (F3 → Playback): *Houseguest* — after 1, 2, 5 (default),
+  10, or 30 idle minutes, or Off. Local only.
+- Timing uses the UI thread's monotonic clock and her behaviour comes
+  from a per-visit seeded generator; she redraws only when her pose
+  changes, never at a fixed frame rate.
 
 ### Watching a Series
 

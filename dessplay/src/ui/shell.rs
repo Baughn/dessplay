@@ -431,9 +431,10 @@ pub fn run_ui_loop<A: TerminalAdapter>(
     // so the query burns its full 2-second timeout. The alternate
     // screen is already blank and the first fullscreen draw paints
     // every cell.
-    let _ = draw_frame(adapter.raw_mut(), |frame| {
-        ui.draw_with_renderer(frame, &mut renderer)
-    });
+    // The idle houseguest: a post-render overlay that reads each frame
+    // and paints over it, never feeding back into `ui`.
+    let mut guest = super::houseguest::Guest::new(rand::random());
+    let _ = draw(adapter, &mut ui, &mut renderer, &mut guest);
     loop {
         if ui.layout_settings_dirty {
             match actions.try_send(UserAction::SaveLayoutSettings(ui.layout_settings.clone())) {
@@ -445,19 +446,19 @@ pub fn run_ui_loop<A: TerminalAdapter>(
         // Adaptive cadence: ~100ms while a marquee pass animates, the
         // lazy 1s otherwise. Idle cost is unchanged — the timeout arm
         // only repaints when advance_clock reports a visible change.
-        let input = match inputs.recv_timeout(ui.next_tick_hint()) {
+        let timeout = guest
+            .next_tick(now_millis())
+            .map_or(ui.next_tick_hint(), |due| due.min(ui.next_tick_hint()));
+        let input = match inputs.recv_timeout(timeout) {
             Ok(input) => input,
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                let mut redraw = ui.advance_clock(now_millis());
+                let now = now_millis();
+                let mut redraw = ui.advance_clock(now);
+                redraw |= guest.advance(now);
                 redraw |= poll_layout(&mut ui, &mut renderer, watcher.as_ref(), custom_enabled);
                 redraw |= dispatch_due_recovery(&mut ui, &actions);
                 dispatch_image_fetches(&mut ui, &actions);
-                if redraw
-                    && draw_frame(adapter.raw_mut(), |frame| {
-                        ui.draw_with_renderer(frame, &mut renderer)
-                    })
-                    .is_err()
-                {
+                if redraw && draw(adapter, &mut ui, &mut renderer, &mut guest).is_err() {
                     break;
                 }
                 continue;
@@ -471,7 +472,9 @@ pub fn run_ui_loop<A: TerminalAdapter>(
         // advance running animations this way too (~10Hz during
         // playback). The redraw hint is moot; every input is followed
         // by a draw below anyway.
-        let _ = ui.advance_clock(now_millis());
+        let now = now_millis();
+        let _ = ui.advance_clock(now);
+        let _ = guest.advance(now);
         match input {
             UiInput::Roguelike(result) => ui.set_roguelike(result),
             UiInput::Shutdown => break,
@@ -545,6 +548,15 @@ pub fn run_ui_loop<A: TerminalAdapter>(
                     Some(std::time::Instant::now());
             }
             UiInput::Event(event) => {
+                // Local input sends the houseguest away; a resize only
+                // re-anchors her, and focus changes (alt-tab) are not
+                // activity.
+                if matches!(
+                    event,
+                    Event::Keyboard(_) | Event::Mouse(_) | Event::Paste(_)
+                ) {
+                    guest.activity(now);
+                }
                 for action in ui.handle(event) {
                     let quit = action == UserAction::Quit;
                     if actions.blocking_send(action).is_err() || quit {
@@ -571,14 +583,29 @@ pub fn run_ui_loop<A: TerminalAdapter>(
             _ => {}
         }
         poll_layout(&mut ui, &mut renderer, watcher.as_ref(), custom_enabled);
-        if draw_frame(adapter.raw_mut(), |frame| {
-            ui.draw_with_renderer(frame, &mut renderer)
-        })
-        .is_err()
-        {
+        if draw(adapter, &mut ui, &mut renderer, &mut guest).is_err() {
             break;
         }
     }
+}
+
+/// Draw one frame: the UI, then the houseguest over it. The idle view is
+/// built after the UI's draw, which measures the pane rectangles.
+fn draw<A: TerminalAdapter>(
+    adapter: &mut A,
+    ui: &mut Ui,
+    renderer: &mut super::layout::Renderer,
+    guest: &mut super::houseguest::Guest,
+) -> Result<(), <A::Backend as tuirealm::ratatui::backend::Backend>::Error>
+where
+    A::Backend: FrameBackend,
+{
+    let now = now_millis();
+    draw_frame(adapter.raw_mut(), |frame| {
+        ui.draw_with_renderer(frame, renderer);
+        let view = ui.idle_view(renderer.image_regions());
+        guest.paint(frame.buffer_mut(), &view, now);
+    })
 }
 
 fn poll_layout(

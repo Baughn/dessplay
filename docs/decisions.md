@@ -1,6 +1,6 @@
 # DessPlay Decision Log
 
-Last updated: 2026-09-26
+Last updated: 2026-09-28
 
 The reasoning behind the rules in [design.md](design.md): the failure that
 motivated each one, the alternatives that were rejected, and the date it
@@ -1863,3 +1863,41 @@ caches each file's label while it plays, because the old entry may leave
 the playlist in the same update. It persists nothing, like a seeder, so
 a restart forgets earlier switches. Its adoption state is a baseline,
 the same as for chat questions.
+
+## Houseguest is a post-render overlay (2026-09-28)
+
+**Rule:** The idle houseguest paints over each finished frame from the
+shell loop, reading the frame and a read-only `IdleView`; nothing flows
+back into `Ui`. See [design.md](design.md#houseguest).
+
+**Why:** She exists only while nothing else is happening, so wiring her
+into the layout renderer or tui-realm (message variants, focus, template
+slots) would spread a toy across the core UI. As a layer between the
+renderer and the terminal she is one module plus a few shell lines, and
+deleting her deletes the feature. Leaving is a dissolve rather than
+"dragging everything back", because an undo animation that respects the
+user's time can't be done in the 2–3 s a returning user will tolerate.
+Rejected: moving real UI state for her gags (it would sync); behaviour
+trees or async scripts (they hold mid-plan state an interrupt must
+unwind); a fixed frame rate (CPU while she stands still, and pacing tied
+to redraw speed).
+
+**Remote chat makes her look, not leave (2026-09-28):** a friend's
+message arriving while you're away shouldn't end the visit you'd come
+back to; only local input means you're back.
+
+## Houseguest terrain comes from the rendered frame (2026-09-28)
+
+**Rule:** Floors, poles, and drop-offs are derived from the finished
+frame's cells (box-drawing runs), with protected rectangles solid. See
+[design.md](design.md#houseguest).
+
+**Why:** Layouts are user-authored, so pane rectangles don't say where
+the borders are drawn, whether a pane has one, or where a title
+interrupts it. Reading the cells makes any layout walkable and picks up
+floors no rectangle knows about (the status separator, chat day rules,
+which scroll away and make her fall). The floor may lie inside a
+protected rectangle (she stands on the status separator); only her body
+cells are checked. A release-build read of a 200×60 frame takes ~80 µs,
+so it runs every frame she is on screen.
+

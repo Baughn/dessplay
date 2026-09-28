@@ -358,6 +358,78 @@ fn humanize(d: Duration) -> String {
     plural(secs, "second")
 }
 
+/// When the idle houseguest (proposal 2026-09-28-houseguest) may arrive:
+/// after this long fully idle, or never. Local display preference.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Houseguest {
+    /// She never visits.
+    Off,
+    /// She arrives after the client has been fully idle this long.
+    After(Duration),
+}
+
+impl Default for Houseguest {
+    fn default() -> Self {
+        Houseguest::After(Duration::from_secs(5 * 60))
+    }
+}
+
+impl Houseguest {
+    const PRESETS_MIN: [u64; 5] = [1, 2, 5, 10, 30];
+
+    fn as_string(self) -> String {
+        match self {
+            Houseguest::Off => "off".into(),
+            Houseguest::After(d) => d.as_secs().to_string(),
+        }
+    }
+
+    fn parse(value: &str) -> Result<Self> {
+        match value {
+            "off" => Ok(Houseguest::Off),
+            secs => secs
+                .parse::<u64>()
+                .map(|secs| Houseguest::After(Duration::from_secs(secs)))
+                .map_err(|_| StorageError::Corrupt(format!("bad houseguest {value:?}"))),
+        }
+    }
+
+    /// Cycle the settings-screen presets: 1 -> 2 -> 5 -> 10 -> 30 min ->
+    /// Off -> wrap. A non-preset value advances to the first preset
+    /// strictly larger than it.
+    pub fn next(self) -> Self {
+        let secs = match self {
+            Houseguest::Off => 0,
+            Houseguest::After(d) => d.as_secs(),
+        };
+        let preset = Self::PRESETS_MIN
+            .iter()
+            .map(|min| min * 60)
+            .find(|&preset| preset > secs);
+        match (self, preset) {
+            (Houseguest::Off, _) => Houseguest::After(Duration::from_secs(60)),
+            (_, Some(preset)) => Houseguest::After(Duration::from_secs(preset)),
+            (_, None) => Houseguest::Off,
+        }
+    }
+
+    /// Human-readable label for the settings row.
+    pub fn label(self) -> String {
+        match self {
+            Houseguest::Off => "Off".into(),
+            Houseguest::After(d) => format!("After {} idle", humanize(d)),
+        }
+    }
+
+    /// The idle delay before a visit, when enabled.
+    pub fn delay(self) -> Option<Duration> {
+        match self {
+            Houseguest::Off => None,
+            Houseguest::After(d) => Some(d),
+        }
+    }
+}
+
 /// How often the AI commentary engine speaks. `Off` disables it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum CommentaryInterval {
@@ -534,6 +606,9 @@ pub struct Settings {
     pub chat_images: bool,
     /// Local cosmetic injury presentation for the waiting-room expedition.
     pub roguelike_effects: RoguelikeEffects,
+    /// Whether and when the idle houseguest visits (proposal
+    /// 2026-09-28-houseguest). Default: after five idle minutes.
+    pub houseguest: Houseguest,
     /// Sort order for the All Series browser mode (toggled with `s`).
     /// Local-only display preference; persisted across sessions.
     pub series_sort: SeriesSort,
@@ -603,6 +678,7 @@ impl Default for Settings {
             marquee_mode: MarqueeMode::default(),
             chat_images: true,
             roguelike_effects: RoguelikeEffects::default(),
+            houseguest: Houseguest::default(),
             series_sort: SeriesSort::default(),
             list_sort: ListSort::default(),
             file_browser_sort: BrowserSort::default(),
@@ -786,6 +862,11 @@ impl Settings {
                 .map(|value| RoguelikeEffects::parse(&value))
                 .transpose()?
                 .unwrap_or(defaults.roguelike_effects),
+            houseguest: storage
+                .setting("houseguest")?
+                .map(|value| Houseguest::parse(&value))
+                .transpose()?
+                .unwrap_or(defaults.houseguest),
             marquee_mode: storage
                 .setting("marquee_mode")?
                 .map(|value| MarqueeMode::parse(&value))
@@ -903,6 +984,7 @@ impl Settings {
             Some(self.subtitle_speaker_overflow.as_str()),
         )?;
         storage.set_setting("roguelike_effects", Some(self.roguelike_effects.as_str()))?;
+        storage.set_setting("houseguest", Some(&self.houseguest.as_string()))?;
         storage.set_setting("marquee_mode", Some(self.marquee_mode.as_str()))?;
         storage.set_setting("series_sort", Some(self.series_sort.as_str()))?;
         storage.set_setting("list_sort", Some(self.list_sort.as_str()))?;
@@ -988,6 +1070,7 @@ mod tests {
             marquee_mode: MarqueeMode::Chat,
             chat_images: false,
             roguelike_effects: RoguelikeEffects::Reduced,
+            houseguest: Houseguest::Off,
             series_sort: SeriesSort::Year,
             list_sort: ListSort::Alphabetical,
             file_browser_sort: BrowserSort::Newest,
@@ -1032,6 +1115,35 @@ mod tests {
         assert_eq!(loaded.username, None);
         assert_eq!(loaded.upload_limit, None);
         assert!(loaded.needs_setup());
+    }
+
+    #[test]
+    fn houseguest_ladder_cycles_and_round_trips() {
+        let storage = Storage::open_in_memory().unwrap();
+        assert_eq!(
+            storage.load_settings().unwrap().houseguest,
+            Houseguest::After(Duration::from_secs(300))
+        );
+        let mut seen = vec![];
+        let mut value = Houseguest::Off;
+        for _ in 0..6 {
+            value = value.next();
+            seen.push(value.label());
+            let settings = Settings {
+                houseguest: value,
+                ..Settings::default()
+            };
+            storage.save_settings(&settings).unwrap();
+            assert_eq!(storage.load_settings().unwrap().houseguest, value);
+        }
+        assert_eq!(value, Houseguest::Off, "the ladder wraps to Off");
+        assert_eq!(seen.len(), 6);
+        // Out-of-band values rejoin the ladder.
+        assert_eq!(
+            Houseguest::After(Duration::from_secs(1)).next(),
+            Houseguest::After(Duration::from_secs(60))
+        );
+        assert!(Houseguest::parse("soon").is_err());
     }
 
     #[test]

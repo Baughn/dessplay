@@ -582,3 +582,52 @@ async fn ui_responsive_during_playback_and_download() {
         );
     }
 }
+
+/// An idle client with the houseguest visiting must stay near-idle: she
+/// redraws only when her pose changes (a few times a second at most),
+/// never at a fixed frame rate (proposal 2026-09-28-houseguest).
+#[test]
+#[cfg(target_os = "linux")]
+fn houseguest_visit_cpu_is_negligible() {
+    use dessplay::config::Houseguest;
+    use tuirealm::terminal::TerminalAdapter;
+
+    let settings = Settings {
+        username: Some("kim".into()),
+        password: Some("hunter2".into()),
+        houseguest: Houseguest::After(Duration::from_secs(1)),
+        ..Settings::default()
+    };
+    // A media root, or first-run setup opens Settings (a modal: busy).
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ui = Ui::new(UserId::new("kim"), settings, vec![dir.path().to_path_buf()]);
+    let (ui_tx, ui_rx) = dessplay::ui::delivery::channel();
+    let (action_tx, _action_rx) = mpsc::channel(64);
+    let ui_thread = std::thread::spawn(move || {
+        let mut adapter = TestTerminalAdapter::new(Size::new(120, 40)).expect("test adapter");
+        run_ui_loop(ui, ui_rx, action_tx, &mut adapter);
+        adapter
+    });
+
+    // She arrives after a second of idleness; sample once she's settled in.
+    std::thread::sleep(Duration::from_millis(2500));
+    let cpu_before = process_cpu_seconds();
+    let wall = Instant::now();
+    std::thread::sleep(Duration::from_secs(3));
+    let frac = (process_cpu_seconds() - cpu_before) / wall.elapsed().as_secs_f64();
+
+    ui_tx.send(UiInput::Shutdown).expect("ui loop gone");
+    let adapter = ui_thread.join().expect("ui thread panicked");
+    let buffer = adapter.raw().backend().buffer().clone();
+    let screen: String = buffer.content.iter().map(|cell| cell.symbol()).collect();
+
+    eprintln!("houseguest visit CPU = {:.2}% of one core", frac * 100.0);
+    assert!(screen.contains("|V|"), "she was on screen:\n{screen}");
+    if !cfg!(debug_assertions) {
+        assert!(
+            frac < 0.03,
+            "a visit used {:.2}% of a core (want <3%)",
+            frac * 100.0
+        );
+    }
+}

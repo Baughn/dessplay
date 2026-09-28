@@ -1041,6 +1041,7 @@ enum SettingId {
     MarqueeMode,
     ChatImages,
     RoguelikeEffects,
+    Houseguest,
     MediaRoot(PathBuf),
     AddMediaRoot,
     ResetSyncedState,
@@ -1294,6 +1295,11 @@ impl SettingsForm {
                 "Dungeon injury effects",
                 self.settings.roguelike_effects.label(),
             ),
+            FormRow::choice(
+                SettingId::Houseguest,
+                "Houseguest",
+                self.settings.houseguest.label(),
+            ),
         ]
     }
 
@@ -1469,6 +1475,9 @@ impl FormModel for SettingsForm {
             }
             (SettingId::RoguelikeEffects, FormEdit::Cycle) => {
                 self.settings.roguelike_effects = self.settings.roguelike_effects.next();
+            }
+            (SettingId::Houseguest, FormEdit::Cycle) => {
+                self.settings.houseguest = self.settings.houseguest.next();
             }
             (SettingId::MarqueeMode, FormEdit::Cycle) => {
                 self.settings.marquee_mode = self.settings.marquee_mode.next();

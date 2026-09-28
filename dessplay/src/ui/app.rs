@@ -191,6 +191,10 @@ enum Focus {
 #[derive(Clone, Copy, Default)]
 struct PaneRects {
     chat: Rect,
+    /// The Player Status block and the keybinding bar (the houseguest
+    /// never covers them).
+    status: Rect,
+    keybar: Rect,
     /// The separate subtitle pane; zero-sized unless it was drawn.
     subs: Rect,
     series: Rect,
@@ -560,6 +564,49 @@ impl Ui {
     /// seam for true-color rendering.
     pub fn set_color_depth(&mut self, color_depth: ColorDepth) {
         self.color_depth = color_depth;
+    }
+
+    /// What the idle houseguest may know about the frame just drawn
+    /// (proposal 2026-09-28-houseguest). `images` are the renderer's
+    /// protocol-image rectangles for that frame.
+    pub fn idle_view(&self, images: &[Rect]) -> super::houseguest::IdleView {
+        use super::houseguest::{Busy, ChatMark, IdleView, grow};
+        let view = &self.snapshot.view;
+        let playing = view.now_playing.is_some()
+            && view.playback_intent == dessplay_core::types::PlaybackIntent::Playing;
+        let overlay = !self.modals.is_empty()
+            || self.layout_tools
+            || !self.hashing.is_empty()
+            || !self.nyaa_imports.is_empty();
+        let busy = if playing {
+            Some(Busy::Playing)
+        } else if overlay {
+            Some(Busy::Overlay)
+        } else if self.chat.selection_held() {
+            Some(Busy::Selection)
+        } else {
+            None
+        };
+        // The input line plus its frame; images plus a cell of margin.
+        let mut protected = vec![
+            grow(self.chat.input_area(), 1),
+            self.panes.status,
+            self.panes.keybar,
+        ];
+        protected.extend(images.iter().map(|&image| grow(image, 1)));
+        protected.retain(|rect| !rect.is_empty());
+        IdleView {
+            delay: self.settings.houseguest.delay(),
+            busy,
+            chat_mark: ChatMark {
+                synced: view.chat.len(),
+                newest: view.chat.last().map(|message| message.timestamp.0),
+                irc: self.irc_log.len(),
+            },
+            chat: self.panes.chat,
+            protected,
+            truecolor: self.color_depth == ColorDepth::TrueColor,
+        }
     }
 
     /// Set the terminal's detected image protocol (Kitty graphics,
@@ -2957,6 +3004,8 @@ impl Ui {
         let playlist_area = scene.slot("playlist");
         self.panes = PaneRects {
             chat: left,
+            status: scene.slot("status"),
+            keybar: scene.slot("keybar"),
             subs: scene.slot("subtitles"),
             series: series_area,
             users: users_area,

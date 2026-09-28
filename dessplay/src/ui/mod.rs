@@ -5,6 +5,7 @@ pub mod app;
 pub mod commands;
 pub mod components;
 pub mod delivery;
+pub mod houseguest;
 pub mod layout;
 pub mod modals;
 pub mod msg;

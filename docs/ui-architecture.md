@@ -1023,3 +1023,16 @@ scenes in layer order. Color-depth changes recurse through cached item scenes.
 Content-existence probes are cached by conditions, states, and text emptiness;
 clipping is deliberately absent from the cursor's hidden-row filter. Shared
 `paint_cursor_collection` propagates that filter into dialog controllers.
+
+## Houseguest overlay (2026-09-28)
+
+`ui::houseguest::Guest` is owned by `run_ui_loop` next to `Renderer`. Every
+draw goes through the shell's `draw` helper: `Ui::draw_with_renderer`,
+then `Ui::idle_view(renderer.image_regions())` (built after the draw,
+which measures the pane rectangles), then `Guest::paint` over the same
+frame buffer. The loop's timeout is the minimum of `Ui::next_tick_hint`
+and `Guest::next_tick`; timeout ticks call `Guest::advance`, and a redraw
+happens only when either reports a change. Keyboard, mouse, and paste
+events call `Guest::activity`. `ChatPane` records its painted input area
+for the protected set. See [design.md](design.md#houseguest).
+

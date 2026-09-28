@@ -117,16 +117,65 @@ pub fn scramble(text: &str, seed: u64, generation: u32) -> String {
             if c.is_whitespace() || c.is_ascii_punctuation() {
                 return c;
             }
-            let h = decide(seed, 0, generation, i);
-            if c.is_numeric() {
-                char::from(b'0' + (h % 10) as u8)
-            } else if c.is_uppercase() {
-                char::from(b'A' + (h % 26) as u8)
-            } else {
-                char::from(b'a' + (h % 26) as u8)
-            }
+            substitute(c, decide(seed, 0, generation, i))
         })
         .collect()
+}
+
+/// The same-class ASCII substitute for `c` picked by hash `h`: digit →
+/// `0-9`, uppercase → `A-Z`, anything else → `a-z`.
+fn substitute(c: char, h: u64) -> char {
+    if c.is_numeric() {
+        char::from(b'0' + (h % 10) as u8)
+    } else if c.is_uppercase() {
+        char::from(b'A' + (h % 26) as u8)
+    } else {
+        char::from(b'a' + (h % 26) as u8)
+    }
+}
+
+/// Box-drawing glyphs rain draws from, so borders "re-knit" as borders.
+const BOX_RAIN: &[char] = &['─', '│', '┼', '├', '┤', '┬', '┴'];
+
+fn is_box_drawing(c: char) -> bool {
+    ('\u{2500}'..='\u{257F}').contains(&c)
+}
+
+/// Whether `c` is content the spoiler scramble would substitute.
+fn is_content(c: char) -> bool {
+    !c.is_whitespace() && !c.is_ascii_punctuation()
+}
+
+/// One cell of "matrix rain" noise for the houseguest's exit dissolve
+/// (proposal 2026-09-28-houseguest): the glyph a cell shows while a drop
+/// passes over it on its way to settling on `target`, the real UI's
+/// glyph. Unlike [`scramble`], it never passes anything through — a
+/// rain cell is always visible noise:
+///
+/// - a box-drawing `target` draws from a small box class, so borders
+///   re-knit as borders rather than turning into letters;
+/// - content (letters, digits, anything non-ASCII) keeps its scramble
+///   class, so the trail already has the shape of the text it becomes;
+/// - otherwise (`target` is blank or punctuation) the class comes from
+///   `fallback` — the glyph being dissolved away — and failing that is a
+///   lowercase letter.
+///
+/// The output is always an ASCII letter/digit or a [`BOX_RAIN`] glyph:
+/// one cell wide, never whitespace. Deterministic in all inputs.
+pub fn rain_glyph(target: char, fallback: char, seed: u64, generation: u32) -> char {
+    let h = decide(seed, 2, generation, 0);
+    let source = if is_box_drawing(target) || is_content(target) {
+        target
+    } else {
+        fallback
+    };
+    if is_box_drawing(source) {
+        BOX_RAIN[(h % BOX_RAIN.len() as u64) as usize]
+    } else if is_content(source) {
+        substitute(source, h)
+    } else {
+        substitute('a', h)
+    }
 }
 
 /// The "low-grade zalgo" combining marks: a conservative set (acute,
@@ -409,6 +458,36 @@ mod tests {
             masked,
             format!("a {} c", scramble("b", seed(1234, "Baughn", 0), 0))
         );
+    }
+
+    proptest! {
+        /// Rain noise is always one visible narrow cell: an ASCII
+        /// letter/digit or a box-drawing glyph, never whitespace.
+        #[test]
+        fn rain_glyph_is_always_visible_narrow_noise(
+            target in any::<char>(),
+            fallback in any::<char>(),
+            seed in any::<u64>(),
+            generation in any::<u32>(),
+        ) {
+            let out = rain_glyph(target, fallback, seed, generation);
+            prop_assert!(out.is_ascii_alphanumeric() || BOX_RAIN.contains(&out), "{out:?}");
+            prop_assert_eq!(out, rain_glyph(target, fallback, seed, generation));
+        }
+    }
+
+    #[test]
+    fn rain_glyph_keeps_the_target_class() {
+        for generation in 0..32 {
+            assert!(rain_glyph('7', 'x', 9, generation).is_ascii_digit());
+            assert!(rain_glyph('Q', 'x', 9, generation).is_ascii_uppercase());
+            assert!(rain_glyph('q', 'X', 9, generation).is_ascii_lowercase());
+            assert!(BOX_RAIN.contains(&rain_glyph('┘', 'x', 9, generation)));
+            // Blank target: the class of what is dissolving away.
+            assert!(rain_glyph(' ', '3', 9, generation).is_ascii_digit());
+            assert!(BOX_RAIN.contains(&rain_glyph(' ', '─', 9, generation)));
+            assert!(rain_glyph(' ', '/', 9, generation).is_ascii_lowercase());
+        }
     }
 
     #[test]

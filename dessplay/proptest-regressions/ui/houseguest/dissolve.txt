@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc d6e1d13b825b87e47e4caae80540790d63313ad872e846d8ee0765159e3dea3f # shrinks to (w, h, positions, text, t0, origin) = (10, 6, [(8, 4), (0, 5), (5, 2), (8, 4), (0, 4), (2, 3), (3, 0), (2, 5), (5, 1), (4, 0), (0, 3), (6, 3), (8, 4), (7, 5), (3, 3), (1, 4), (9, 2), (2, 4), (4, 0)], [(1, 4, "─"), (6, 4, "h│"), (0, 0, "│─vn"), (6, 4, "of漢─"), (5, 0, " 漢漢h"), (9, 5, "   漢"), (9, 4, "││ 漢"), (4, 1, "漢─"), (4, 4, "│"), (3, 1, "u")], 394072, 7)
+cc 8e72900f3e09a26a4c3e53579b521a78e826d5ee2b694529c5407cc1469ba93f # shrinks to (w, h, positions, text, t0, origin) = (8, 6, [(5, 4), (5, 0), (4, 4)], [(4, 4, "漢")], 0, 0)

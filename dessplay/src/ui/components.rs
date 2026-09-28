@@ -399,6 +399,9 @@ impl RenderedChatLog {
 /// Chat log + always-visible input line.
 pub struct ChatPane {
     lines: Vec<ChatLine>,
+    /// Where the input line was painted in the last draw (zero-sized
+    /// before the first). The houseguest never covers it.
+    input_area: Rect,
     search: Option<super::widgets::search::Search<LineKey>>,
     search_due: Option<u64>,
     search_clock: u64,
@@ -505,6 +508,7 @@ impl Default for ChatPane {
             completion: None,
             spoilers: HashMap::new(),
             rendered: RenderedChatLog::default(),
+            input_area: Rect::default(),
             selection: None,
             picker: None,
             images: HashMap::new(),
@@ -899,6 +903,11 @@ impl ChatPane {
 
     /// Whether a finished selection is being held (Shift-Up/Down extend
     /// it; any other key dismisses it).
+    /// The input line's painted area in the last draw.
+    pub(crate) fn input_area(&self) -> Rect {
+        self.input_area
+    }
+
     pub(crate) fn selection_held(&self) -> bool {
         matches!(self.selection, Some(Selection::Held { .. }))
     }
@@ -1381,18 +1390,20 @@ impl ChatPane {
                 scene.has_overlay(),
                 renderer,
             ),
-            "input" => self
-                .search
-                .as_mut()
-                .map_or(&mut self.input, |search| &mut search.editor)
-                .render_content_styled(
-                    frame,
-                    area,
-                    self.focused,
-                    false,
-                    style,
-                    renderer.color_depth(),
-                ),
+            "input" => {
+                self.input_area = area;
+                self.search
+                    .as_mut()
+                    .map_or(&mut self.input, |search| &mut search.editor)
+                    .render_content_styled(
+                        frame,
+                        area,
+                        self.focused,
+                        false,
+                        style,
+                        renderer.color_depth(),
+                    )
+            }
             "suggestions" => {
                 let _ = renderer.paint_rows(
                     frame,
