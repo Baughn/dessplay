@@ -474,24 +474,7 @@ fn draw(
     if let Some(bubble) = bubble {
         let text = bubble.text();
         let len = text.chars().count() as i32;
-        let row = osaka.y - sprite::HEIGHT - 1;
-        let reach = sprite::WIDTH / 2 + 1;
-        let right = osaka.x + reach;
-        let left = osaka.x - reach - len + 1;
-        let sides = match osaka.facing {
-            sprite::Facing::Right => [right, left],
-            sprite::Facing::Left => [left, right],
-        };
-        // Bubbles are text: only over blank cells, never over a line.
-        let blank = |x: i32| {
-            let (Ok(x), Ok(y)) = (u16::try_from(x), u16::try_from(row)) else {
-                return false;
-            };
-            buf.cell((x, y))
-                .is_some_and(|c| c.symbol().trim().is_empty())
-        };
-        let fits = |start: i32| (start..start + len).all(|x| terrain.open(x, row) && blank(x));
-        if let Some(start) = sides.into_iter().find(|&start| fits(start)) {
+        if let Some((start, row)) = bubble_spot(buf, terrain, osaka, len) {
             let bold = Ink::new(ink(Part::Body, truecolor).fg, Modifier::BOLD);
             for (i, glyph) in text.chars().enumerate() {
                 wanted.push((start + i as i32, row, glyph, bold, None));
@@ -526,6 +509,43 @@ fn draw(
         }
     }
     painted
+}
+
+/// Where a bubble of `len` characters goes: the first of several spots
+/// around her head (the side she faces first) that is all blank, open
+/// cells — bubbles are text, so never over a line or anything else.
+fn bubble_spot(buf: &Buffer, terrain: &Terrain, osaka: &Osaka, len: i32) -> Option<(i32, i32)> {
+    let head = osaka.y - sprite::HEIGHT;
+    let half = sprite::WIDTH / 2;
+    let x = osaka.x;
+    // Up and to the side, as a speech bubble sits.
+    let (right, left) = ((x + half + 1, head - 1), (x - half - len, head - 1));
+    let (ahead, behind) = match osaka.facing {
+        sprite::Facing::Right => (right, left),
+        sprite::Facing::Left => (left, right),
+    };
+    let beside = |(start, _): (i32, i32)| (start + if start > x { 1 } else { -1 }, head);
+    let spots = [
+        ahead,
+        behind,
+        (x - len / 2, head - 1),
+        beside(ahead),
+        beside(behind),
+        (ahead.0, head - 2),
+        (behind.0, head - 2),
+    ];
+    let blank = |x: i32, y: i32| {
+        let (Ok(x), Ok(y)) = (u16::try_from(x), u16::try_from(y)) else {
+            return false;
+        };
+        terrain.open(i32::from(x), i32::from(y))
+            && buf
+                .cell((x, y))
+                .is_some_and(|c| c.symbol().trim().is_empty())
+    };
+    spots
+        .into_iter()
+        .find(|&(start, row)| (start..start + len).all(|x| blank(x, row)))
 }
 
 /// Paint her as line art, plus any bubble as text. The frozen cells for

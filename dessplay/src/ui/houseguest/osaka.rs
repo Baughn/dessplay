@@ -64,6 +64,31 @@ const PUT_BACK_MS: u64 = 400;
 /// A refused put-back is retried this many times.
 const RETRIES: u8 = 5;
 
+/// What she says on first finding her feet.
+const GREETING: &str = "Nice to meet you.";
+/// After a hard landing.
+const OK: &str = "...I'm OK.";
+/// Things she says when spacing out (each ≤ 24 characters).
+pub(super) const MUSINGS: [&str; 12] = [
+    "I wish I were a bird.",
+    "Why is the sky blue?",
+    "Sata andagi!",
+    "Melon bread...",
+    "Black spots on white?",
+    "Or white on black...",
+    "Escalator? Elevator?",
+    "Feels like I could fly.",
+    "Which hand's left...",
+    "Chiyo-chan's dad...",
+    "Nanja-kora.",
+    "Oh my gah.",
+];
+
+/// How long she keeps saying `text`.
+fn speech_ms(text: &str) -> u64 {
+    1200 + 60 * text.chars().count() as u64
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Act {
     Stand {
@@ -212,6 +237,8 @@ pub(super) enum Bubble {
     Ooh,
     Achoo,
     Chu,
+    /// Something she says (≤ 24 characters).
+    Say(&'static str),
 }
 
 impl Bubble {
@@ -228,6 +255,7 @@ impl Bubble {
             Self::Ooh => "ooh",
             Self::Achoo => "a...",
             Self::Chu => "chu!",
+            Self::Say(text) => text,
         }
     }
 }
@@ -261,6 +289,10 @@ pub(super) struct Osaka {
     /// Layer changes due later, whatever she's doing by then: undoing
     /// mischief is scheduled when it's made, so nothing can strand it.
     pending: Vec<(u64, LayerOp)>,
+    /// What she's saying, and until when (over her act's own bubble).
+    speech: Option<(&'static str, u64)>,
+    /// She has said hello (or "I'm OK", which does as well).
+    greeted: bool,
 }
 
 impl Osaka {
@@ -281,6 +313,8 @@ impl Osaka {
             arrived: now,
             ops: Vec::new(),
             pending: Vec::new(),
+            speech: None,
+            greeted: false,
         };
         osaka.act_due = osaka.first_due(now);
         osaka
@@ -436,9 +470,30 @@ impl Osaka {
         }
     }
 
-    /// When her pose (or the text layer) next changes.
+    /// When her pose, speech, or the text layer next changes.
     pub fn due(&self) -> u64 {
-        self.pose_due().min(self.pending_due())
+        let hush = self.speech.map_or(u64::MAX, |(_, until)| until);
+        self.pose_due().min(self.pending_due()).min(hush)
+    }
+
+    /// Say `text` for a while, over whatever bubble her act shows.
+    pub fn say(&mut self, text: &'static str, now: u64) {
+        tracing::debug!(text, "houseguest says");
+        self.speech = Some((text, now + speech_ms(text)));
+    }
+
+    /// Space out, maybe saying one of her musings first.
+    pub fn muse(&mut self, now: u64, rng: &mut Rng) {
+        let line = MUSINGS.get(rng.below(MUSINGS.len() as u64) as usize);
+        if let Some(line) = line {
+            self.say(line, now);
+        }
+        self.set(
+            Act::SpaceOut {
+                until: now + rng.range(6000, 14_000),
+            },
+            now,
+        );
     }
 
     fn pose_due(&self) -> u64 {
@@ -481,6 +536,12 @@ impl Osaka {
                 return changed;
             }
             changed = true;
+            if let Some((_, until)) = self.speech
+                && until == due
+            {
+                self.speech = None;
+                continue;
+            }
             if self.pending_due() == due {
                 // Every op due now, in the order they were scheduled.
                 let (now_due, later): (Vec<_>, Vec<_>) = std::mem::take(&mut self.pending)
@@ -522,11 +583,17 @@ impl Osaka {
                     self.act_due = next_frame(what, since, at).min(until);
                 }
             }
-            Act::Stand { .. }
-            | Act::SpaceOut { .. }
-            | Act::Dazed { .. }
-            | Act::Admire { .. }
-            | Act::PutBack { .. } => self.decide(at, terrain, chances, rng),
+            Act::Dazed { .. } => {
+                // Said in place of a hello when it's her entrance.
+                if !self.greeted || rng.below(2) == 0 {
+                    self.greeted = true;
+                    self.say(OK, at);
+                }
+                self.decide(at, terrain, chances, rng)
+            }
+            Act::Stand { .. } | Act::SpaceOut { .. } | Act::Admire { .. } | Act::PutBack { .. } => {
+                self.decide(at, terrain, chances, rng)
+            }
             Act::Swap { back: true, .. } => {
                 self.task = None;
                 self.set(
@@ -961,12 +1028,20 @@ impl Osaka {
         // rare either way.
         let early = at.saturating_sub(self.arrived) < 300_000;
         let busy = if early { 40 } else { 28 };
+        if !self.greeted {
+            self.greeted = true;
+            self.say(GREETING, at);
+        }
         let roll = rng.below(100);
         let act = if roll < 8 {
             Act::Stand {
                 until: at + rng.range(2000, 5000),
             }
         } else if roll < 16 {
+            if rng.below(3) == 0 {
+                tracing::debug!(roll, "houseguest: pottering (musing)");
+                return self.muse(at, rng);
+            }
             Act::SpaceOut {
                 until: at + rng.range(6000, 14_000),
             }
@@ -1063,6 +1138,7 @@ impl Osaka {
         self.task = None;
         self.goal = None;
         self.watch_until = 0;
+        self.speech = None;
         self.set(Act::Stand { until: at + 1000 }, at);
     }
 
@@ -1195,6 +1271,15 @@ impl Osaka {
 
     /// Her pose, face and bubble at `now`.
     pub fn appearance(&self, now: u64) -> (Pose, Face, Option<Bubble>) {
+        let (pose, face, bubble) = self.acting(now);
+        let speech = self
+            .speech
+            .filter(|&(_, until)| now < until)
+            .map(|(text, _)| Bubble::Say(text));
+        (pose, face, speech.or(bubble))
+    }
+
+    fn acting(&self, now: u64) -> (Pose, Face, Option<Bubble>) {
         match self.act {
             Act::Stand { .. } => {
                 let blink = now < self.blink_until;

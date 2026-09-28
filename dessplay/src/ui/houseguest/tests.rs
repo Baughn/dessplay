@@ -348,13 +348,21 @@ proptest! {
                 if graphics {
                     assert_nothing_hidden(&frame, &real, &layer)?;
                 }
+                // Besides text she moved: her box and the floor row
+                // under it, and one bubble of at most 24 characters.
+                let width = usize::from(frame.area.width);
                 let changed = frame
                     .content
                     .iter()
                     .zip(&real.content)
-                    .filter(|(a, b)| a != b)
+                    .enumerate()
+                    .filter(|(i, (a, b))| {
+                        let at = ((i % width) as u16, (i / width) as u16);
+                        a != b && !layer.contains(&at)
+                    })
                     .count();
-                prop_assert!(changed <= 40, "{} cells changed", changed);
+                let most = (sprite::WIDTH * (sprite::HEIGHT + 1)) as usize + 24;
+                prop_assert!(changed <= most, "{} cells changed", changed);
             }
         }
         let &(w, h) = sizes.last().unwrap();
@@ -999,6 +1007,7 @@ fn every_scene_has_a_spot_in_the_stage_room() {
                 let start_y = visit.osaka.y;
                 let (mut moved, mut swapped, mut climbed, mut poses) =
                     (0, false, false, Vec::new());
+                let mut said = false;
                 let mut now = 0;
                 while now < 10_000 {
                     now += guest
@@ -1018,7 +1027,8 @@ fn every_scene_has_a_spot_in_the_stage_room() {
                             .any(|b| a.at == b.source && b.at == a.source && a.source != b.source)
                     });
                     climbed |= visit.osaka.y != start_y;
-                    let (pose, ..) = visit.osaka.appearance(now);
+                    let (pose, _, bubble) = visit.osaka.appearance(now);
+                    said |= matches!(bubble, Some(osaka::Bubble::Say(_)));
                     poses.push(std::mem::discriminant(&pose));
                 }
                 let posed = |pose: Pose| poses.contains(&std::mem::discriminant(&pose));
@@ -1035,6 +1045,7 @@ fn every_scene_has_a_spot_in_the_stage_room() {
                     Scene::ToeTouch => posed(Pose::ToeTouch(0)),
                     Scene::Stretch => posed(Pose::Stretch),
                     Scene::Gaze => posed(Pose::Gaze),
+                    Scene::Muse => said,
                 };
                 assert!(happened, "{at}: {note:?}, moved {moved}");
             }
@@ -1089,4 +1100,60 @@ fn reach_census() {
             );
         }
     }
+}
+
+/// A bubble goes up and to the side she faces; blocked there, the other
+/// side; never over anything but blank, open cells.
+#[test]
+fn bubbles_find_a_blank_spot_around_her_head() {
+    let mut rng = Rng(1);
+    let mut osaka = Osaka::standing_at(20, 10, 0, &mut rng);
+    let empty = Buffer::empty(Rect::new(0, 0, 40, 12));
+    let terrain = Terrain::read(&empty, &[], true);
+    osaka.facing = sprite::Facing::Right;
+    assert_eq!(bubble_spot(&empty, &terrain, &osaka, 4), Some((23, 5)));
+    osaka.facing = sprite::Facing::Left;
+    assert_eq!(bubble_spot(&empty, &terrain, &osaka, 4), Some((14, 5)));
+    // Text on her left above her head: the other side.
+    let mut buf = empty.clone();
+    buf.set_string(15, 5, "busy", Style::new());
+    assert_eq!(bubble_spot(&buf, &terrain, &osaka, 4), Some((23, 5)));
+    // The whole row above her taken: beside her head.
+    buf.set_string(0, 5, "x".repeat(40), Style::new());
+    assert_eq!(bubble_spot(&buf, &terrain, &osaka, 4), Some((13, 6)));
+    // Nowhere at all.
+    for y in 0..12 {
+        buf.set_string(0, y, "x".repeat(40), Style::new());
+    }
+    assert_eq!(bubble_spot(&buf, &terrain, &osaka, 4), None);
+}
+
+/// Something she says shows for 1.2 s + 60 ms a character, then goes.
+#[test]
+fn she_says_a_line_and_then_stops() {
+    let mut ui = stage_ui();
+    let (real, view) = real_frame(&mut ui, 100, 30);
+    let mut guest = Guest::new(2);
+    guest.cue(Scene::Muse);
+    paint(&mut guest, &real, &view, 0);
+    let State::Visiting(visit) = &guest.state else {
+        panic!("visiting");
+    };
+    let (_, _, bubble) = visit.osaka.appearance(0);
+    let Some(osaka::Bubble::Say(line)) = bubble else {
+        panic!("saying something: {bubble:?}");
+    };
+    let shows = |frame: &Buffer| {
+        (0..frame.area.height).any(|y| {
+            (0..frame.area.width)
+                .map(|x| frame.cell((x, y)).unwrap().symbol().to_string())
+                .collect::<String>()
+                .contains(line)
+        })
+    };
+    let frame = run(&mut guest, &real, &view, 0, 500);
+    assert!(shows(&frame), "{line:?} on screen");
+    let gone = 1200 + 60 * line.chars().count() as u64;
+    let frame = run(&mut guest, &real, &view, 500, gone + 50);
+    assert!(!shows(&frame), "{line:?} gone after {gone} ms");
 }

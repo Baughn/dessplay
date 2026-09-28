@@ -24,6 +24,8 @@ Add new days at the top. Add new entries at the bottom of existing days.
   one.
 - Changed: The houseguest can reach text a few cells away, reeling a line
   in before she pulls it, so she tidies and plays with chat more often.
+- Added: The houseguest talks a little: she says hello when she arrives,
+  "...I'm OK." after a tumble, and muses aloud while spacing out.
 
 ## 2026-09-26
 

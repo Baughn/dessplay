@@ -33,7 +33,7 @@ channel on her TV. We borrow that backbone (see
 |---|---|---|
 | 1 | Seam, idle gate, terrain, walking/climbing/falling, goodbye dissolve, setting, perf test | **done** |
 | 1b | Line art: SVG rig, kitty placement, redrawn lines, letter-burst goodbye | **done** |
-| 2 | Tidying and mischief: text layer and newest-line protection, pulling lines, letter swap, sneeze scatter, scheduled self-reverting, the stage (**done**); bubbles, then the brain with needs (bubbles first: they show her reasons, which makes the brain testable by eye) | in progress |
+| 2 | Tidying and mischief: text layer and newest-line protection, pulling lines, letter swap, sneeze scatter, scheduled self-reverting, the stage (**done**); bubbles and speech (**done**); the brain with needs next | in progress |
 | 3 | The room: furnishings (coloured line art), anchors, ledger, Chiyo-chichi's shop, routine | planned |
 | 4 | Colour: calendar, screen reading, dreams, cameos, rarity and pity, credits | planned |
 | 5 | The text factory: text hauled into an industrial space and compacted into materials | planned, last |
@@ -309,9 +309,9 @@ covers the keybar or the Player Status block; her lowest floor is the
 
 1. ★ **Edge peek** — one eye at a pane edge, blinks, retreats, then she
    walks in and bows stiffly: "Nice to meet you." [C] *Built: she walks
-   in from a screen edge a floor reaches.*
+   in from a screen edge a floor reaches and says hello (no bow yet).*
 2. **Falls from the sky** — drops in from the top, lands dazed on a
-   floor, "...I'm OK." [U] *Built (without the line).*
+   floor, "...I'm OK." [U] *Built.*
 3. **Trapdoor** — climbs up through a gap in a floor line. [R]
 4. **Nameplate** — `Kasuga` appears on a border, a scribble overwrites it
    with `OSAKA`; she thinks the nickname is too simple (Ep 1). [U]
@@ -681,8 +681,9 @@ Measured: a visit's CPU is below `/proc`'s 10 ms resolution over 3 s
 length, off-row moves snake-follow her hand; dropped glyphs fall and
 sandpile, no bounces; speech bubbles pick a placement around her head by
 what they'd cover (blank only in line-art mode), ≤ 24 chars, shown
-1.2 s + 60 ms/char. *Built:* one-glyph-group bubbles (`...`, `!`, `?`)
-above her head, on blank cells only.
+1.2 s + 60 ms/char. *Built:* bubbles pick the first all-blank spot of
+seven around her head; speech up to 24 characters is timed as above
+(greeting, "...I'm OK.", musings), over the act's own bubble.
 
 ## The goodbye (~3.75 s)
 

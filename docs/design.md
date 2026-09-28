@@ -1384,6 +1384,14 @@ this section states what is built.
   runs out of floor, then looks pleased ("hehe"). If the text changes under her she
   lets go and stares. Her decisions and their reasons are logged at
   debug level (`RUST_LOG=dessplay::ui::houseguest=debug`, or F11's level).
+- **Bubbles and speech**: her bubbles are text in the first of several
+  spots around her head — up and to the side she faces, the other side,
+  centred above, beside her head, two rows up — whose cells are all blank
+  and open; with no such spot the bubble isn't shown. Things she *says*
+  (≤ 24 characters) show for 1.2 s + 60 ms per character over her act's
+  own bubble: "Nice to meet you." on first finding her feet, "...I'm OK."
+  after a hard landing (always on her entrance, else half the time), and
+  a musing ("I wish I were a bird.") on a third of her spacing-outs.
 - **Mischief undoes itself on a schedule**, fixed when it's made and kept
   apart from whatever she is doing by then, so no interruption can
   strand it; a chat or IRC line arriving undoes all of it at once. One

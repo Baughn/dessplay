@@ -52,11 +52,13 @@ pub enum Scene {
     Stretch,
     /// Gaze up at something.
     Gaze,
+    /// Space out, saying something first.
+    Muse,
 }
 
 impl Scene {
     /// Every scene, in menu order.
-    pub const ALL: [Scene; 14] = [
+    pub const ALL: [Scene; 15] = [
         Self::Arrive,
         Self::Pull,
         Self::Swap,
@@ -71,6 +73,7 @@ impl Scene {
         Self::ToeTouch,
         Self::Stretch,
         Self::Gaze,
+        Self::Muse,
     ];
 
     /// A short menu label.
@@ -90,6 +93,7 @@ impl Scene {
             Self::ToeTouch => "toe touches",
             Self::Stretch => "stretch",
             Self::Gaze => "gaze",
+            Self::Muse => "muse",
         }
     }
 
@@ -183,9 +187,6 @@ pub(super) fn direct(
             Ok(format!("{name} at ({}, {y})", link.x))
         }
         _ => {
-            let what = scene
-                .activity()
-                .ok_or_else(|| format!("{name}: not an activity"))?;
             if terrain.platform_at(osaka.x, osaka.y).is_none() {
                 let spot = terrain
                     .platforms
@@ -195,7 +196,10 @@ pub(super) fn direct(
                     .ok_or_else(|| format!("{name}: nowhere to stand"))?;
                 osaka.place(spot.0, spot.1, now);
             }
-            osaka.idle(what, now, rng);
+            match scene.activity() {
+                Some(what) => osaka.idle(what, now, rng),
+                None => osaka.muse(now, rng),
+            }
             Ok(name.into())
         }
     }
