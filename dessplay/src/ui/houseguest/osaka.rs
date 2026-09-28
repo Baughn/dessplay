@@ -388,6 +388,12 @@ impl Osaka {
         );
     }
 
+    /// Whether any layer change is still queued.
+    #[cfg(test)]
+    pub fn owes_anything(&self) -> bool {
+        self.owes()
+    }
+
     /// Test fixture: start a sneeze now.
     #[cfg(test)]
     pub fn sneeze_now(&mut self, now: u64) {
@@ -804,18 +810,39 @@ impl Osaka {
     }
 
     /// The paint refused `op` (the frame didn't allow it). A put-back is
-    /// tried again shortly; anything else is simply dropped.
+    /// tried again shortly. Mischief that never happened owes nothing:
+    /// what was queued to follow it is cancelled, and a swap she'd have
+    /// giggled at leaves her puzzled instead.
     pub fn refused(&mut self, now: u64, op: LayerOp) {
-        if let LayerOp::Restore { sources, tries } = op
-            && tries < RETRIES
-        {
-            self.schedule(
+        match op {
+            LayerOp::Restore { sources, tries } if tries < RETRIES => self.schedule(
                 now + PUT_BACK_MS,
                 LayerOp::Restore {
                     sources,
                     tries: tries + 1,
                 },
-            );
+            ),
+            LayerOp::Swap { .. } | LayerOp::Knock { .. } => {
+                let gone = op.sources();
+                self.pending
+                    .retain(|(_, queued)| !queued.sources().iter().any(|c| gone.contains(c)));
+                let giggling = matches!(
+                    self.act,
+                    Act::Giggle { .. } | Act::Innocent { .. } | Act::Swap { .. }
+                );
+                if matches!(op, LayerOp::Swap { .. }) && giggling {
+                    tracing::debug!("houseguest: the letters moved before she could swap them");
+                    self.task = None;
+                    self.set(
+                        Act::Look {
+                            surprised_until: now,
+                            until: now + LOOK_MS / 2,
+                        },
+                        now,
+                    );
+                }
+            }
+            _ => {}
         }
     }
 

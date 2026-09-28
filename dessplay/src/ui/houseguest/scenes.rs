@@ -124,6 +124,16 @@ impl LayerOp {
     pub fn grips(&self) -> bool {
         matches!(self, Self::Pull { .. })
     }
+
+    /// The source cells it's about.
+    pub fn sources(&self) -> Vec<(u16, u16)> {
+        match self {
+            Self::Pull { row, cells, .. } => cells.iter().map(|&c| (c, *row)).collect(),
+            Self::Swap { a, b } => vec![*a, *b],
+            Self::Knock { source, .. } | Self::Fall { source } => vec![*source],
+            Self::Restore { sources, .. } => sources.clone(),
+        }
+    }
 }
 
 /// Apply `op` against the real frame. Returns false when the frame no
@@ -482,6 +492,24 @@ mod tests {
             "'at' and 'ca', within reach"
         );
         assert!(swaps.iter().all(|s| s.row == 1 && s.side == Side::Left));
+    }
+
+    #[test]
+    fn a_word_on_her_right_swaps_from_its_start() {
+        let buf = room(&[
+            "│                       ",
+            "│               dog: hi ",
+            "│                       ",
+            "│                       ",
+            "└───────────────────────",
+        ]);
+        let terrain = Terrain::read(&buf, &[], true);
+        let swaps = swaps(&buf, &terrain, &[]);
+        let here: Vec<_> = swaps.iter().filter(|s| s.x == 13).collect();
+        assert_eq!(here.len(), 2, "{swaps:?}");
+        assert!(here.iter().all(|s| s.side == Side::Right));
+        assert_eq!(here[0].pair, (16, 17));
+        assert_eq!(here[1].pair, (17, 18));
     }
 
     #[test]

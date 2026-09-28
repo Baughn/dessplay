@@ -979,3 +979,35 @@ fn a_sneeze_scatters_letters_and_she_puts_them_back() {
         assert_eq!(row_text(&frame, 24, 2..13), "the cat sat");
     }
 }
+
+/// If the word changes before her swap lands, nothing is owed: no swap-
+/// back stays queued, and she doesn't giggle at a swap that never was.
+#[test]
+fn a_refused_swap_leaves_nothing_owed() {
+    let (real, view) = words_room();
+    let mut guest = Guest::new(3);
+    visiting_at(&mut guest, &real, &view, (15, 26));
+    paint(&mut guest, &real, &view, 0);
+    let State::Visiting(visit) = &mut guest.state else {
+        panic!("visiting");
+    };
+    let swap = visit
+        .chances
+        .swaps
+        .iter()
+        .find(|s| s.x == 15 && s.y == 26)
+        .cloned()
+        .expect("a swap");
+    visit.osaka.swap_now(swap, 0);
+    // The chat scrolls: the word is gone by the time she swaps.
+    let mut scrolled = rooms(100, 30);
+    scrolled.set_string(2, 24, "the cat", Style::new());
+    run(&mut guest, &scrolled, &view, 0, 1000);
+    let State::Visiting(visit) = &guest.state else {
+        panic!("visiting");
+    };
+    assert!(visit.layer.entries().is_empty());
+    assert!(!visit.osaka.owes_anything(), "no swap-back queued");
+    let (_, face, bubble) = visit.osaka.appearance(1000);
+    assert_ne!(bubble, Some(osaka::Bubble::Hehe), "{face:?}: no giggle");
+}
