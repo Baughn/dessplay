@@ -585,8 +585,10 @@ impl Ui {
     pub fn idle_view(&self, images: &[Rect]) -> super::houseguest::IdleView {
         use super::houseguest::{Busy, ChatMark, IdleView, Nook, grow};
         let view = &self.snapshot.view;
-        let playing = view.now_playing.is_some()
-            && view.playback_intent == dessplay_core::types::PlaybackIntent::Playing;
+        // The video actually running, as the status bar shows it: play
+        // pressed or a ready mark latches the intent at once, but nothing
+        // runs while anyone still blocks.
+        let playing = derive::playback_active(view, &self.snapshot.peers);
         let overlay = !self.modals.is_empty()
             || self.layout_tools
             || !self.hashing.is_empty()
@@ -5303,6 +5305,29 @@ mod tests {
                 ..
             }
         )));
+    }
+
+    /// The houseguest only gives way to playback that's actually running:
+    /// a ready mark (or play pressed) latches the intent at once, but
+    /// while anyone still blocks, the video doesn't run and she stays.
+    #[test]
+    fn the_houseguest_stays_until_the_video_actually_runs() {
+        use crate::ui::houseguest::Busy;
+        let state = |blocked: bool| {
+            let mut state = CrdtState::new();
+            state.set_now_playing(A, SharedTimestamp(1), Some(Ed2kHash([1; 16])));
+            state.set_playback_intent(A, SharedTimestamp(2), PlaybackIntent::Playing);
+            if blocked {
+                state.set_manual_override(A, SharedTimestamp(3), me(), Some(ManualState::Paused));
+            }
+            state.view()
+        };
+        let mut ui = ui_with_view(state(true));
+        ui.snapshot.peers = vec![peer_info("kim", dessplay_core::net::Presence::Present)];
+        assert_eq!(ui.idle_view(&[]).busy, None, "intent alone isn't playback");
+        let mut ui = ui_with_view(state(false));
+        ui.snapshot.peers = vec![peer_info("kim", dessplay_core::net::Presence::Present)];
+        assert_eq!(ui.idle_view(&[]).busy, Some(Busy::Playing));
     }
 
     #[test]

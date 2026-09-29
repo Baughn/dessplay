@@ -1328,8 +1328,10 @@ edges, spaces out, and blinks. The full plan (tidying, furniture,
 routine, cameos) is [the proposal](proposals/2026-09-28-houseguest.md);
 this section states what is built.
 
-- **Idle** means, continuously for the delay: nothing playing (intent
-  Playing with a now-playing file), no modal, layout tools, or
+- **Idle** means, continuously for the delay: nothing playing (the
+  video actually running — intent Playing, a now-playing file, and
+  nobody blocking; a ready mark or a press of play that's still waiting
+  on someone doesn't count), no modal, layout tools, or
   hashing/Nyaa-import overlay, no held chat selection, no local input,
   and no new chat or IRC line. The terminal must be at least 60×18.
 - She is a **visual overlay only**, painted over each finished frame; she

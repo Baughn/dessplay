@@ -18,6 +18,8 @@ Add new days at the top. Add new entries at the bottom of existing days.
   sleeps in her bed, homework at the desk). Each pane she furnishes is a
   room, and her home is kept between sessions; F3 → Playback → Osaka
   moved out clears it.
+- Fixed: The houseguest no longer leaves as soon as someone marks
+  themselves ready; she stays until the video actually starts.
 
 ## 2026-09-28
 
