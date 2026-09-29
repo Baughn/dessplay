@@ -63,6 +63,8 @@ pub(super) enum Pose {
     /// At the desk on a stool, side-on (frame 0–1 writing, 2–3 nodding
     /// off onto the paper).
     Homework(u8),
+    /// Home from work with a shopping bag (frame 1 holds it up).
+    Carry(u8),
 }
 
 /// Her face, drawn into the head of frontal poses.
@@ -142,6 +144,10 @@ const HOMEWORK: [[&str; 4]; 4] = [
     ["     ", "( -_)", " |V|=", "_/ \\ "],
     ["     ", "     ", " (-_)", "_/|\\ "],
 ];
+const CARRY: [[&str; 4]; 2] = [
+    ["(._.)", "/|V|\\", " [#] ", " / \\ "],
+    ["(._.)", "\\[#]/", " /_\\ ", " / \\ "],
+];
 const PULL: [[&str; 4]; 2] = [
     ["( ._)", "\\|V|=", " /_\\ ", " / \\ "],
     ["(._ )", "\\|V|=", " /_\\ ", "/  \\ "],
@@ -168,6 +174,7 @@ fn rows(pose: Pose) -> ([&'static str; 4], bool) {
         Pose::Nap(frame) => (NAP[usize::from(frame % 2)], false),
         Pose::Sleep(frame) => (SLEEP[usize::from(frame % 2)], false),
         Pose::Homework(frame) => (HOMEWORK[usize::from(frame % 4)], false),
+        Pose::Carry(frame) => (CARRY[usize::from(frame % 2)], true),
     }
 }
 
@@ -322,7 +329,7 @@ pub(super) fn cells(pose: Pose, facing: Facing, face: Face) -> Vec<SpriteCell> {
 mod tests {
     use super::*;
 
-    const ALL: [Pose; 33] = [
+    const ALL: [Pose; 35] = [
         Pose::Stand,
         Pose::Walk(0),
         Pose::Walk(1),
@@ -362,6 +369,8 @@ mod tests {
         Pose::Homework(1),
         Pose::Homework(2),
         Pose::Homework(3),
+        Pose::Carry(0),
+        Pose::Carry(1),
     ];
 
     /// Every pose has a head where her head is drawn: an "o" or

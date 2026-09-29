@@ -250,6 +250,18 @@
           fill="#e7c77a" stroke="currentColor" stroke-width="1.6"/>
     <path d="M -6 -6 L 6 6 M 6 -6 L -6 6" fill="none" stroke="#b8963f" stroke-width="1"/>
   </g>
+  <!-- Her shopping bag: kraft paper, the top folded over, a leek
+       sticking out of it on the left. Drawn with its top edge's middle
+       at (0, 0); her hands hold that edge. -->
+  <g id="bag">
+    <path d="M -12 6 L -38 -38" fill="none" stroke="currentColor" stroke-width="6.4" stroke-linecap="round"/>
+    <path d="M -12 6 L -26 -18" fill="none" stroke="#f6f4ea" stroke-width="4" stroke-linecap="round"/>
+    <path d="M -25 -16 L -38 -38 M -26 -17 L -44 -31 M -27 -18 L -32 -43" fill="none" stroke="#5c9a3c" stroke-width="3.6" stroke-linecap="round"/>
+    <path d="M -15 0 L 15 0 L 17 30 L -17 30 Z"
+          fill="#c79a62" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+    <path d="M -15 0 L 15 0 L 15.4 5 L -15.4 5 Z" fill="#b3854f" stroke="currentColor" stroke-width="1.2"/>
+    <path d="M -10 12 L -12 26 M 10 12 L 12 26" fill="none" stroke="#a87a45" stroke-width="0.9"/>
+  </g>
   <g id="stool">
     <path d="M 38 128 L 35 159 M 62 128 L 65 159" fill="none" stroke="currentColor" stroke-width="4.4" stroke-linecap="round"/>
     <path d="M 38 128 L 35 159 M 62 128 L 65 159" fill="none" stroke="#8a5f3c" stroke-width="2.4" stroke-linecap="round"/>

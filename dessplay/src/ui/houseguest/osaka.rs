@@ -24,6 +24,8 @@ pub(super) struct Chances {
     pub seats: Vec<Seat>,
     /// What the shopping channel would sell her, were she to watch now.
     pub advert: Option<Furniture>,
+    /// She has a home (to leave for work, and come back to).
+    pub furnished: bool,
 }
 
 /// Something she did to her home (the guest keeps the record).
@@ -204,10 +206,15 @@ enum Act {
         to_x: i32,
     },
     /// Through a door in space from where she stands to `to` (see
-    /// [`DOOR`]).
+    /// [`DOOR`]), away for `gap` ms between the doors.
     Door {
         since: u64,
         to: (i32, i32),
+        gap: u64,
+    },
+    /// Back from work with her shopping.
+    Home {
+        until: u64,
     },
     /// Using a piece of her furniture (the task is its seat). Watching
     /// the TV, `advert` is what the shopping channel is selling her.
@@ -312,14 +319,27 @@ const DOOR: [DoorBeat; 13] = [
 ];
 
 /// The door beat `elapsed` ms in, and when the next begins; `None` once
-/// it's over.
-fn door_beat(elapsed: u64) -> Option<(&'static DoorBeat, u64)> {
+/// it's over. `gap` stretches the time between the doors (she's away).
+fn door_beat(elapsed: u64, gap: u64) -> Option<(&'static DoorBeat, u64)> {
     let mut end = 0;
     DOOR.iter().find_map(|beat| {
-        end += beat.ms;
+        end += if beat.door.is_none() {
+            beat.ms.max(gap)
+        } else {
+            beat.ms
+        };
         (elapsed < end).then_some((beat, end))
     })
 }
+
+/// She goes to work after this long into a visit, at the earliest.
+const WORK_AFTER_MS: u64 = 3 * 60_000;
+/// How long a shift lasts (ms range).
+const SHIFT_MS: (u64, u64) = (60_000, 180_000);
+/// Back from work, showing what she brought.
+const HOME_MS: u64 = 3000;
+/// What she says, back from work.
+const HOME: &str = "I'm home!";
 
 /// What she says stepping out of a door.
 const THROUGH: &str = "Where was I?";
@@ -508,6 +528,12 @@ pub(super) struct Osaka {
     speech: Option<(&'static str, u64)>,
     /// She has said hello (or "I'm OK", which does as well).
     greeted: bool,
+    /// When this visit began.
+    arrived: u64,
+    /// Out at her part-time job (or on her way there or back).
+    at_work: bool,
+    /// She's been to work this visit (once is plenty).
+    worked: bool,
     needs: Needs,
     /// Her last few choices (repeating herself is discouraged).
     recent: Vec<Kind>,
@@ -538,6 +564,9 @@ impl Osaka {
             pending: Vec::new(),
             speech: None,
             greeted: false,
+            arrived: now,
+            at_work: false,
+            worked: false,
             needs: Needs::default(),
             recent: Vec::new(),
             decided: now,
@@ -677,7 +706,8 @@ impl Osaka {
             | Act::Swap { until, .. }
             | Act::Giggle { until, .. }
             | Act::Innocent { until, .. }
-            | Act::PutBack { until, .. } => until,
+            | Act::PutBack { until, .. }
+            | Act::Home { until } => until,
             Act::Sneeze { since, knocked } => {
                 since + WINDUP_MS + if knocked { RECOIL_MS } else { 0 }
             }
@@ -694,8 +724,8 @@ impl Osaka {
             }
             Act::Out { .. } => now + WALK_MS,
             Act::Away { until, .. } => until,
-            Act::Door { since, .. } => {
-                door_beat(now.saturating_sub(since)).map_or(now, |(_, end)| since + end)
+            Act::Door { since, gap, .. } => {
+                door_beat(now.saturating_sub(since), gap).map_or(now, |(_, end)| since + end)
             }
             Act::Look {
                 surprised_until, ..
@@ -848,10 +878,15 @@ impl Osaka {
             } => {
                 self.x += (to - self.x).signum();
                 if self.x == to {
-                    tracing::debug!("houseguest: stepped out");
+                    tracing::debug!(work = self.at_work, "houseguest: stepped out");
+                    let away = if self.at_work {
+                        rng.range(SHIFT_MS.0, SHIFT_MS.1)
+                    } else {
+                        rng.range(4000, 12_000)
+                    };
                     self.set(
                         Act::Away {
-                            until: at + rng.range(4000, 12_000),
+                            until: at + away,
                             enter,
                             to_y,
                             to_x,
@@ -877,7 +912,7 @@ impl Osaka {
                     at,
                 );
             }
-            Act::Door { since, to } => match door_beat(at.saturating_sub(since)) {
+            Act::Door { since, to, gap } => match door_beat(at.saturating_sub(since), gap) {
                 Some((beat, end)) => {
                     if beat.there && (self.x, self.y) != to {
                         (self.x, self.y) = to;
@@ -886,10 +921,13 @@ impl Osaka {
                 }
                 None => {
                     (self.x, self.y) = to;
-                    self.say(THROUGH, at);
-                    self.decide(at, terrain, chances, rng);
+                    if !self.home_from_work(at) {
+                        self.say(THROUGH, at);
+                        self.decide(at, terrain, chances, rng);
+                    }
                 }
             },
+            Act::Home { .. } => self.decide(at, terrain, chances, rng),
             Act::Use {
                 what, since, until, ..
             } => {
@@ -1131,6 +1169,7 @@ impl Osaka {
                         },
                         at,
                     ),
+                    None if self.home_from_work(at) => {}
                     None => {
                         let at_edge = terrain.platform_at(self.x, self.y).and_then(|i| {
                             let p = terrain.platforms.get(i)?;
@@ -1435,6 +1474,10 @@ impl Osaka {
         offers.extend(Activity::ALL.iter().map(|&a| Kind::Idle(a)));
         // With no way off this floor, travelling means a door in space.
         offers.push(Kind::Travel);
+        // A home to leave, a while into the visit, once.
+        if chances.furnished && !self.worked && at >= self.arrived + WORK_AFTER_MS {
+            offers.push(Kind::Work);
+        }
         if !chances.pulls.is_empty() {
             offers.push(Kind::Pull);
         }
@@ -1514,6 +1557,14 @@ impl Osaka {
                 }
                 self.facing = toward(self.x, to);
                 Act::Walk { to, then: None }
+            }
+            Kind::Work => {
+                let out = links
+                    .iter()
+                    .find(|l| matches!(l.route, Route::Around { .. }))
+                    .copied();
+                self.go_to_work(out, at, rng);
+                return true;
             }
             Kind::Travel => {
                 if let Some(&link) = links.get(rng.below(links.len() as u64) as usize) {
@@ -1664,6 +1715,7 @@ impl Osaka {
         self.goal = None;
         self.watch_until = 0;
         self.speech = None;
+        self.at_work = false;
         self.set(Act::Stand { until: at + 1000 }, at);
     }
 
@@ -1675,6 +1727,13 @@ impl Osaka {
         self.pending.sort_by_key(|(due, _)| *due);
         for (due, _) in &mut self.pending {
             *due = now;
+        }
+        // Out, or on her way: she'll see it when she's back.
+        if matches!(
+            self.act,
+            Act::Out { .. } | Act::Away { .. } | Act::Door { .. }
+        ) {
+            return;
         }
         if !matches!(self.act, Act::Fall { .. } | Act::Climb { .. }) {
             // She lets go of whatever she was pulling.
@@ -1815,8 +1874,8 @@ impl Osaka {
     pub fn hidden(&self, now: u64) -> bool {
         match self.act {
             Act::Away { .. } => true,
-            Act::Door { since, .. } => {
-                door_beat(now.saturating_sub(since)).is_some_and(|(beat, _)| !beat.her)
+            Act::Door { since, gap, .. } => {
+                door_beat(now.saturating_sub(since), gap).is_some_and(|(beat, _)| !beat.her)
             }
             _ => false,
         }
@@ -1825,7 +1884,7 @@ impl Osaka {
     /// The door she's going through, if any, as it looks at `now`.
     pub fn door(&self, now: u64) -> Option<DoorFrame> {
         match self.act {
-            Act::Door { since, .. } => door_beat(now.saturating_sub(since))?.0.door,
+            Act::Door { since, gap, .. } => door_beat(now.saturating_sub(since), gap)?.0.door,
             _ => None,
         }
     }
@@ -1834,7 +1893,55 @@ impl Osaka {
     /// between: her way out when there's no other.
     pub fn through_door(&mut self, to: (i32, i32), at: u64) {
         tracing::debug!(from = ?(self.x, self.y), ?to, "houseguest: a door in space");
-        self.set(Act::Door { since: at, to }, at);
+        self.set(
+            Act::Door {
+                since: at,
+                to,
+                gap: 0,
+            },
+            at,
+        );
+    }
+
+    /// Off to her part-time job: out at a screen edge if her floor
+    /// reaches one (`out`), else through a door, and back in 1–3
+    /// minutes with her shopping.
+    pub fn go_to_work(&mut self, out: Option<Link>, at: u64, rng: &mut Rng) {
+        tracing::info!("houseguest: off to work");
+        self.at_work = true;
+        self.worked = true;
+        match out {
+            Some(link) => self.travel(link, at),
+            None => {
+                let gap = rng.range(SHIFT_MS.0, SHIFT_MS.1);
+                let here = (self.x, self.y);
+                self.set(
+                    Act::Door {
+                        since: at,
+                        to: here,
+                        gap,
+                    },
+                    at,
+                );
+            }
+        }
+    }
+
+    /// Back from work (if she was at work): "I'm home!", showing her
+    /// shopping. Returns whether she was.
+    fn home_from_work(&mut self, at: u64) -> bool {
+        if !std::mem::take(&mut self.at_work) {
+            return false;
+        }
+        tracing::info!("houseguest: back from work");
+        self.say(HOME, at);
+        self.set(
+            Act::Home {
+                until: at + HOME_MS,
+            },
+            at,
+        );
+        true
     }
 
     /// Her pose, face and bubble at `now`.
@@ -1879,6 +1986,10 @@ impl Osaka {
                 until.saturating_sub(since),
             ),
             Act::SpaceOut { .. } => (Pose::Stand, Face::Vacant, Some(Bubble::Dots)),
+            Act::Home { until } => {
+                let frame = (until.saturating_sub(now) / 700 % 2) as u8;
+                (Pose::Carry(frame), Face::Pleased, None)
+            }
             Act::Clamber { column, to_y, .. } if self.x == column && self.y != to_y => {
                 let pole = ((self.pole - self.x) * self.facing_sign()).clamp(-3, 3) as i8;
                 let frame = self.y.rem_euclid(2) as u8;
@@ -1887,8 +1998,8 @@ impl Osaka {
             Act::Clamber { .. } | Act::Out { .. } | Act::Away { .. } => {
                 (Pose::Walk(self.x.rem_euclid(4) as u8), Face::Vacant, None)
             }
-            Act::Door { since, .. } => {
-                let there = door_beat(now.saturating_sub(since)).is_some_and(|(b, _)| b.there);
+            Act::Door { since, gap, .. } => {
+                let there = door_beat(now.saturating_sub(since), gap).is_some_and(|(b, _)| b.there);
                 let face = if there { Face::Pleased } else { Face::Curious };
                 (Pose::Stand, face, None)
             }

@@ -123,6 +123,8 @@ pub(super) enum Kind {
     Swap,
     /// Use a piece of her furniture.
     Use(Use),
+    /// Off to her part-time job for a while.
+    Work,
 }
 
 impl Kind {
@@ -140,6 +142,8 @@ impl Kind {
             Self::Travel => 10.0,
             Self::Pull => 16.0,
             Self::Swap => 8.0,
+            // Once a visit at most (osaka.rs), so it can afford to compete.
+            Self::Work => 9.0,
             // Her own things are what home is for.
             Self::Use(Use::Watch) => 10.0,
             Self::Use(Use::Sleep) => 10.0,
@@ -168,6 +172,7 @@ impl Kind {
             // to the bed if it answered the same need.
             Self::Use(Use::Lounge | Use::Nap | Use::Homework | Use::Watch | Use::Unpack) => None,
             Self::Stand
+            | Self::Work
             | Self::SpaceOut
             | Self::Sneeze
             | Self::Idle(Activity::LieFront | Activity::Gaze) => None,

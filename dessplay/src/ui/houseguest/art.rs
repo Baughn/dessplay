@@ -96,6 +96,9 @@ pub(super) struct Rig {
     /// her lap and her legs are the seated part (thighs along the seat,
     /// shins hanging); `legs` is ignored.
     pub seated: bool,
+    /// Carrying her shopping bag in front of her, its top at this height
+    /// (canvas units; frontal only).
+    pub bag: Option<f32>,
     /// (shoulder, elbow).
     pub arms: [(f32, f32); 2],
     /// (hip, knee).
@@ -117,6 +120,7 @@ impl Rig {
             stool: false,
             cushion: false,
             seated: false,
+            bag: None,
             arms: [(12.0, -4.0), (-12.0, 4.0)],
             legs: [(3.0, 0.0), (-3.0, 0.0)],
         }
@@ -267,6 +271,7 @@ impl Rig {
             Pose::Sleep(frame) => Self::bed_sleep(frame),
             // Writing (two frames), nodding off, asleep on the paper.
             Pose::Homework(frame) => Self::homework(frame.saturating_sub(1), expression),
+            Pose::Carry(frame) => Self::carrying(frame, expression),
             Pose::Gaze => Self {
                 profile: true,
                 tilt: -16.0,
@@ -326,6 +331,7 @@ impl Rig {
             stool: false,
             cushion: false,
             seated: false,
+            bag: None,
             arms: [(arm(0) + 4.0, 0.0), (arm(1), 0.0)],
             legs,
         }
@@ -368,6 +374,7 @@ impl Rig {
             stool: false,
             cushion: false,
             seated: false,
+            bag: None,
             arms,
             legs,
         }
@@ -454,6 +461,23 @@ impl Rig {
         }
     }
 
+    /// Home from her part-time job with a shopping bag, a leek sticking
+    /// out of it: held in front of her in both hands (frame 0), then up
+    /// a little, proudly (frame 1).
+    pub fn carrying(frame: u8, expression: Expression) -> Self {
+        let (arms, top, bob) = if frame.is_multiple_of(2) {
+            ([(-24.0, -38.0), (24.0, 38.0)], 92.0, 0.0)
+        } else {
+            ([(-44.0, -92.0), (44.0, 92.0)], 76.0, -4.0)
+        };
+        Self {
+            arms,
+            bob,
+            bag: Some(top),
+            ..Self::standing(expression)
+        }
+    }
+
     /// Waving goodbye (the dissolve's first beat).
     pub fn waving(raised: bool) -> Self {
         let wave = if raised { -168.0 } else { -150.0 };
@@ -528,6 +552,12 @@ pub(super) fn scene(rig: &Rig, facing: Facing, line: &str) -> String {
     } else {
         ""
     };
+    // Her shopping bag hangs from her hands, in front of her body and
+    // under her arms.
+    let bag = rig.bag.map_or(String::new(), |top| {
+        format!(r##"<use href="#bag" transform="translate(50 {top})"/>"##)
+    });
+    let cushion = format!("{cushion}{bag}");
     // Frontal: both arms over everything (hands can reach past the
     // head). Profile: far limbs behind the body, near limbs in front.
     let body = if rig.profile {
@@ -934,6 +964,8 @@ mod tests {
             ("toe", Rig::for_pose(Pose::ToeTouch(1), Face::Vacant)),
             ("stretch", Rig::for_pose(Pose::Stretch, Face::Blink)),
             ("gaze", Rig::for_pose(Pose::Gaze, Face::Curious)),
+            ("carry", Rig::carrying(0, Expression::Happy)),
+            ("carry", Rig::carrying(1, Expression::Happy)),
             ("wave", Rig::waving(true)),
             ("wave", Rig::waving(false)),
             ("sofa sit", Rig::sofa_sit(Expression::Smile)),

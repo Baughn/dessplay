@@ -1437,6 +1437,13 @@ this section states what is built.
     and after a moment ("...") she puts them back one every 400 ms. A
     put-back the frame refuses is retried a few times; the goodbye rain
     re-knits anything left.
+- **Her part-time job**: once she has a home, at most once a visit and
+  no sooner than three minutes in, she may go to work: out at a screen
+  edge if her floor reaches one, else through her door. Her room stands
+  furnished while she's gone (one to three minutes); a chat or IRC line
+  meanwhile doesn't fetch her (mischief is still undone at once). She
+  comes back the same way with a shopping bag, a leek sticking out
+  ("I'm home!").
 - **Getting furniture**: her TV is ordered for her and arrives on her
   second visit. After that, when she watches TV at least three visits
   after her last purchase, with nothing on order or still boxed, the

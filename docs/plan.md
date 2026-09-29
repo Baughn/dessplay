@@ -2031,6 +2031,14 @@ welcome; the only goal is "watching her is kind of fun".
   channel". Tests: the whole progression over twelve visits across a
   restart; an interrupted unpacking waits. Not built: the box sliding in
   (it appears in place), absences (step 7).
+- **Step 7 done (2026-09-29): her part-time job.** `Kind::Work` (base
+  9, offered with a home, once a visit, after `WORK_AFTER_MS`);
+  `Osaka::go_to_work` leaves by an `Around` link or a `Door` with a
+  `gap` of `SHIFT_MS`; `at_work` makes the return `Act::Home`
+  (`Pose::Carry`, "I'm home!"). `look()` ignores chat while she's out.
+  Carry rig with the bag and leek by a fork agent. Stage: "part-time
+  job". The shopping bag is only for show so far — a natural hook for
+  the proposal's *hungry* need (food).
 - **Pits fixed (2026-09-28, the user's call: all three).** Terrain
   links `Route::Clamber` (over a divider, floors sharing no standing
   spot) and `Route::Around` (out at one screen edge, back in at another);

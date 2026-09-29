@@ -75,11 +75,13 @@ pub enum Scene {
     Parcel,
     /// The shopping channel comes on while she watches, and she buys.
     Shopping,
+    /// Off to her part-time job (she gets a sofa if her home is empty).
+    Work,
 }
 
 impl Scene {
     /// Every scene, in menu order.
-    pub const ALL: [Scene; 25] = [
+    pub const ALL: [Scene; 26] = [
         Self::Arrive,
         Self::Pull,
         Self::Swap,
@@ -105,6 +107,7 @@ impl Scene {
         Self::Watch,
         Self::Parcel,
         Self::Shopping,
+        Self::Work,
     ];
 
     /// A short menu label.
@@ -135,6 +138,7 @@ impl Scene {
             Self::Watch => "watch TV",
             Self::Parcel => "a parcel",
             Self::Shopping => "shopping channel",
+            Self::Work => "part-time job",
         }
     }
 
@@ -259,6 +263,38 @@ pub(super) fn direct(
             osaka.place(x, y, now);
             osaka.sneeze_now(now);
             Ok(format!("{name} at ({x}, {y}), {n} glyphs in reach"))
+        }
+        Scene::Work => {
+            // From a floor reaching a screen edge if there is one (she
+            // walks out), else anywhere (she takes the door).
+            let out = terrain
+                .links
+                .iter()
+                .find(|l| matches!(l.route, Route::Around { .. }))
+                .copied();
+            let (x, y) = match out {
+                Some(link) => {
+                    let y = terrain.platforms.get(link.from).map_or(0, |p| p.y);
+                    let middle = terrain
+                        .platforms
+                        .get(link.from)
+                        .map_or(link.x, |p| (p.x0 + p.x1) / 2);
+                    (
+                        approach(terrain, link.x, y, if middle < link.x { -1 } else { 1 }),
+                        y,
+                    )
+                }
+                None => terrain
+                    .platforms
+                    .iter()
+                    .map(|p| ((p.x0 + p.x1) / 2, p.y))
+                    .find(|&(x, y)| terrain.clear(x, y))
+                    .ok_or_else(|| format!("{name}: nowhere to stand"))?,
+            };
+            osaka.place(x, y, now);
+            let how = if out.is_some() { "walking" } else { "by door" };
+            osaka.go_to_work(out, now, rng);
+            Ok(format!("{name}, {how}"))
         }
         Scene::Door => {
             let here = terrain.platform_at(osaka.x, osaka.y);

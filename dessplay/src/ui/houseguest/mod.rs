@@ -265,6 +265,11 @@ impl Guest {
         // A scene with her furniture: she gets the piece if she has none.
         match scene {
             stage::Scene::Parcel => self.send_parcel(),
+            stage::Scene::Work => {
+                if self.ledger.home.props.is_empty() {
+                    self.gift = Some(Furniture::Sofa);
+                }
+            }
             stage::Scene::Shopping => {
                 self.shop();
                 if !self.ledger.home.owns(Furniture::Tv) {
@@ -571,6 +576,7 @@ impl Guest {
                         loose: Vec::new(),
                         seats: seats(&visit.shown, &visit.terrain),
                         advert: advert(&self.ledger, self.shop_now),
+                        furnished: !self.ledger.home.props.is_empty(),
                     };
                     let note =
                         stage::direct(scene, buf, &protected, visit, &offered, now, &mut self.rng);
@@ -593,6 +599,7 @@ impl Guest {
                     loose,
                     seats: seats(&visit.shown, &visit.terrain),
                     advert: advert(&self.ledger, self.shop_now),
+                    furnished: !self.ledger.home.props.is_empty(),
                 };
                 // In line art, pieces she overlaps go in her image: two
                 // images would cut each other out.

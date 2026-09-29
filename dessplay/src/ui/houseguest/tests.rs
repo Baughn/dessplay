@@ -1202,7 +1202,8 @@ fn every_scene_has_a_spot_in_the_stage_room() {
                 };
                 let start_y = visit.osaka.y;
                 let start = (visit.osaka.x, visit.osaka.y);
-                let (mut went_out, mut doored, mut moved_on) = (false, false, false);
+                let (mut went_out, mut doored, mut moved_on, mut gone) =
+                    (false, false, false, false);
                 let (mut moved, mut swapped, mut climbed, mut poses) =
                     (0, false, false, Vec::new());
                 let mut said = false;
@@ -1228,6 +1229,7 @@ fn every_scene_has_a_spot_in_the_stage_room() {
                     climbed |= visit.osaka.y != start_y;
                     went_out |= !(0..i32::from(width)).contains(&visit.osaka.x);
                     doored |= visit.osaka.door(now).is_some();
+                    gone |= visit.osaka.hidden(now);
                     moved_on |= (visit.osaka.x, visit.osaka.y) != start;
                     used = used.or(visit.osaka.using());
                     let (pose, _, bubble) = visit.osaka.appearance(now);
@@ -1259,6 +1261,7 @@ fn every_scene_has_a_spot_in_the_stage_room() {
                     Scene::Watch => used == Some(Furniture::Tv),
                     Scene::Parcel => guest.ledger.home.props.iter().any(|p| !p.boxed),
                     Scene::Shopping => guest.ledger.ordered.is_some(),
+                    Scene::Work => went_out || gone,
                 };
                 assert!(happened, "{at}: {note:?}, moved {moved}");
             }
@@ -1582,7 +1585,8 @@ fn home_screen() -> (Buffer, IdleView) {
 }
 
 /// A furnished home over long visits in line art: she uses her things
-/// (and sleeps in her bed more than on a border once she has one), her
+/// (and sleeps in her bed more than on a border once she has one), goes
+/// to work at most once a visit, her
 /// image with the pieces she overlaps never hides text, and the distinct
 /// images stay within the frame cache.
 #[test]
@@ -1628,6 +1632,16 @@ fn a_furnished_home_gets_used_and_stays_cheap() {
         let State::Visiting(visit) = &guest.state else {
             panic!("seed {seed}: still visiting");
         };
+        let shifts = visit
+            .osaka
+            .choices
+            .iter()
+            .filter(|&&k| k == Kind::Work)
+            .count();
+        assert!(
+            shifts <= 1,
+            "seed {seed}: to work {shifts} times in one visit"
+        );
         choices.extend(&visit.osaka.choices);
         let cached = guest.graphics.as_ref().map_or(0, |g| g.cached());
         assert!(cached < 200, "seed {seed}: {cached} distinct images");
@@ -1643,6 +1657,7 @@ fn a_furnished_home_gets_used_and_stays_cheap() {
         count(Kind::Use(Use::Sleep)) >= count(Kind::Idle(osaka::Activity::LieBack)),
         "the bed beats a border: {choices:?}"
     );
+    assert!(count(Kind::Work) > 0, "she never went to work: {choices:?}");
 }
 
 /// A pit: a room whose walls are text to the ceiling on the left and
@@ -1961,4 +1976,82 @@ fn an_interrupted_unpacking_waits_for_her() {
         "unpacked on the next visit: {:?}",
         guest.ledger.home
     );
+}
+
+// ---- Her part-time job ----
+
+/// Off to work: she's gone for one to three minutes while her room stands
+/// furnished; a chat message meanwhile doesn't fetch her; she comes back
+/// with her shopping ("I'm home!"). Both ways out — a screen edge, and
+/// the door when her floor reaches none — in both drawing modes.
+#[test]
+fn her_room_stands_furnished_while_she_works() {
+    use super::sprite::Pose;
+    let edge = {
+        let mut ui = stage_ui();
+        real_frame(&mut ui, 100, 30)
+    };
+    for (label, (real, view)) in [("edge", edge), ("door", home_screen())] {
+        for graphics in [false, true] {
+            let at = format!("{label} graphics={graphics}");
+            let mut guest = Guest::new(6);
+            if graphics {
+                guest.set_picker(kitty());
+            }
+            guest.cue(Scene::Work);
+            paint(&mut guest, &real, &view, 0);
+            assert!(
+                matches!(guest.cue_note(), Some(Ok(_))),
+                "{at}: {:?}",
+                guest.cue_note()
+            );
+            let mut view = view.clone();
+            let (mut gone_since, mut home, mut nudged) = (None::<u64>, false, false);
+            let mut now = 0;
+            while now < 4 * 60_000 && !home {
+                now += guest
+                    .next_tick(now)
+                    .map_or(1000, |d| d.as_millis() as u64)
+                    .clamp(1, 1000);
+                if gone_since.is_some_and(|t| now > t + 10_000) && !nudged {
+                    // A friend says something while she's out.
+                    view.chat_mark.synced += 1;
+                    nudged = true;
+                }
+                guest.advance(now);
+                let frame = paint(&mut guest, &real, &view, now);
+                let State::Visiting(visit) = &guest.state else {
+                    panic!("{at}: still visiting");
+                };
+                let out = visit.osaka.hidden(now)
+                    || !(0..i32::from(real.area.width)).contains(&visit.osaka.x);
+                if out && gone_since.is_none() {
+                    gone_since = Some(now);
+                }
+                if out {
+                    // Her room is still there.
+                    let sofa = visit.shown.iter().find(|s| s.item == Furniture::Sofa);
+                    let sofa = sofa.unwrap_or_else(|| panic!("{at}: the sofa is shown"));
+                    let r = sofa.rect();
+                    assert!(
+                        (r.x..r.right())
+                            .any(|x| frame.cell((x, r.bottom() - 1))
+                                != real.cell((x, r.bottom() - 1))),
+                        "{at}: the sofa is drawn"
+                    );
+                }
+                let (pose, _, bubble) = visit.osaka.appearance(now);
+                home = matches!(pose, Pose::Carry(_))
+                    && bubble == Some(osaka::Bubble::Say("I'm home!"));
+            }
+            let gone = gone_since.unwrap_or_else(|| panic!("{at}: she never left"));
+            assert!(home, "{at}: not back by {now}");
+            assert!(nudged, "{at}: the chat came while she was out");
+            assert!(
+                now - gone >= 55_000,
+                "{at}: back after only {} ms",
+                now - gone
+            );
+        }
+    }
 }

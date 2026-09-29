@@ -20,6 +20,9 @@ Add new days at the top. Add new entries at the bottom of existing days.
   moved out clears it.
 - Fixed: The houseguest no longer leaves as soon as someone marks
   themselves ready; she stays until the video actually starts.
+- Added: Once she has a home, the houseguest now and then goes off to
+  her part-time job, leaving her room standing for a few minutes, and
+  comes back with the shopping.
 
 ## 2026-09-28
 
