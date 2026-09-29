@@ -233,10 +233,10 @@ mod tests {
     fn unknown_pieces_and_rooms_are_skipped() {
         let text = r#"{
             "version": 1, "master_seed": 5, "visits": 2,
-            "rooms": [["Living", "Users"], ["Kitchen", "List"]],
+            "rooms": [["Living", "Users"], ["Attic", "List"]],
             "props": [
                 {"item": "Sofa", "at": 300, "facing": "Right"},
-                {"item": "Fridge", "at": 100},
+                {"item": "Piano", "at": 100},
                 {"item": "Bed", "at": 100}
             ]
         }"#;

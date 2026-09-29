@@ -26,11 +26,28 @@ pub enum Furniture {
     Bed,
     /// A study desk (homework).
     Desk,
+    /// A floor lamp (dark while she sleeps).
+    Lamp,
+    /// A bookshelf (reading).
+    Bookshelf,
+    /// A small fridge (snacks).
+    Fridge,
+    /// A cat bed (sometimes a cat is in it).
+    CatBed,
 }
 
 impl Furniture {
     /// Every piece, in catalogue order.
-    pub const ALL: [Self; 4] = [Self::Sofa, Self::Tv, Self::Bed, Self::Desk];
+    pub const ALL: [Self; 8] = [
+        Self::Sofa,
+        Self::Tv,
+        Self::Bed,
+        Self::Desk,
+        Self::Lamp,
+        Self::Bookshelf,
+        Self::Fridge,
+        Self::CatBed,
+    ];
 
     /// Its size in cells (columns, rows), standing on a floor.
     pub fn footprint(self) -> (u16, u16) {
@@ -39,14 +56,19 @@ impl Furniture {
             Self::Tv => (6, 4),
             Self::Bed => (10, 3),
             Self::Desk => (7, 3),
+            Self::Lamp => (3, 4),
+            Self::Bookshelf => (5, 4),
+            Self::Fridge => (4, 4),
+            Self::CatBed => (4, 2),
         }
     }
 
     /// The room it belongs in.
     pub(super) fn room(self) -> RoomKind {
         match self {
-            Self::Sofa | Self::Tv => RoomKind::Living,
-            Self::Bed | Self::Desk => RoomKind::Bedroom,
+            Self::Sofa | Self::Tv | Self::CatBed => RoomKind::Living,
+            Self::Bed | Self::Desk | Self::Lamp | Self::Bookshelf => RoomKind::Bedroom,
+            Self::Fridge => RoomKind::Kitchen,
         }
     }
 
@@ -57,6 +79,10 @@ impl Furniture {
             Self::Tv => "A TV! I'll take it!",
             Self::Bed => "A bed... yes please!",
             Self::Desk => "A desk. For homework.",
+            Self::Lamp => "Ooh, a lamp!",
+            Self::Bookshelf => "Books! I'll take it!",
+            Self::Fridge => "A fridge... for snacks!",
+            Self::CatBed => "A cat bed! For a cat!",
         }
     }
 
@@ -67,6 +93,10 @@ impl Furniture {
             Self::Tv => "TV",
             Self::Bed => "bed",
             Self::Desk => "desk",
+            Self::Lamp => "lamp",
+            Self::Bookshelf => "bookshelf",
+            Self::Fridge => "fridge",
+            Self::CatBed => "cat bed",
         }
     }
 
@@ -77,6 +107,10 @@ impl Furniture {
             Self::Tv => "tv",
             Self::Bed => "bed",
             Self::Desk => "desk",
+            Self::Lamp => "lamp",
+            Self::Bookshelf => "bookshelf",
+            Self::Fridge => "fridge",
+            Self::CatBed => "cat-bed",
         }
     }
 
@@ -89,6 +123,10 @@ impl Furniture {
             Self::Tv => &["  \\/  ", ".----.", "|[  ]|", "|_::_|"],
             Self::Bed => &["|__       ", "|oo~~~~~~|", "|========|"],
             Self::Desk => &[" = u _/", "_______", "|   |=|"],
+            Self::Lamp => &[" _ ", "/_\\", " | ", "_|_"],
+            Self::Bookshelf => &["_____", "|IlI|", "|lII|", "|___|"],
+            Self::Fridge => &["____", "| .|", "|--|", "|_.|"],
+            Self::CatBed => &["    ", "\\__/"],
         }
     }
 }
@@ -154,6 +192,12 @@ pub(super) enum Use {
     Watch,
     /// Unpack it from its delivery box.
     Unpack,
+    /// Sit beside the bookshelf reading.
+    Read,
+    /// A snack from the fridge.
+    Snack,
+    /// Pet the cat in the cat bed (who bites).
+    Pet,
 }
 
 impl Use {
@@ -164,13 +208,17 @@ impl Use {
             Furniture::Tv => &[Use::Watch],
             Furniture::Bed => &[Use::Sleep],
             Furniture::Desk => &[Use::Homework],
+            Furniture::Lamp => &[],
+            Furniture::Bookshelf => &[Use::Read],
+            Furniture::Fridge => &[Use::Snack],
+            Furniture::CatBed => &[Use::Pet],
         }
     }
 
     /// Whether she uses it from in it (sits on it, lies in it), rather
     /// than from beside it.
     pub fn inside(self) -> bool {
-        self != Use::Watch
+        !matches!(self, Use::Watch | Use::Read | Use::Snack | Use::Pet)
     }
 }
 
@@ -191,6 +239,7 @@ pub(super) struct Seat {
 pub(super) enum RoomKind {
     Living,
     Bedroom,
+    Kitchen,
 }
 
 /// A piece she owns, `at` thousandths of the way along its room's
@@ -259,7 +308,7 @@ impl Shown {
             Use::Homework => (mirrored(7), flip(self.facing)),
             // In front of the box, bending over it.
             Use::Unpack => (self.left + cols / 2, self.facing),
-            Use::Watch => (
+            Use::Watch | Use::Read | Use::Snack | Use::Pet => (
                 beside,
                 if beside < self.left {
                     Facing::Right
@@ -466,27 +515,51 @@ impl Home {
     }
 }
 
-/// Whether she'd fit where she uses `at` from inside it: her box at each
-/// such seat, beyond the piece itself, is blank and `clear` (a new piece
-/// is never set down where she couldn't get on it).
+/// Whether she'd fit to use `at` every way it's used (a new piece is
+/// never set down where she couldn't): for a use in it, her box at its
+/// seat, beyond the piece itself; for a use beside it, her box at one of
+/// the spots beside it, standing on a line. Her box must be blank and
+/// `clear`.
 fn roomy(buf: &Buffer, at: &Shown, clear: &dyn Fn(i32, i32) -> bool) -> bool {
     let half = super::sprite::WIDTH / 2;
     let rect = at.rect();
-    Use::of(at.item).iter().filter(|u| u.inside()).all(|&what| {
-        let seat = at.seat(what, 0);
+    let cell = |x: i32, y: i32| {
+        let (Ok(ux), Ok(uy)) = (u16::try_from(x), u16::try_from(y)) else {
+            return None;
+        };
+        buf.cell((ux, uy))
+            .filter(|c| !untouchable(c))
+            .map(|c| (ux, uy, c))
+    };
+    let fits = |x: i32, y: i32| {
         (1..=super::sprite::HEIGHT).all(|dy| {
             (-half..=half).all(|dx| {
-                let (x, y) = (seat.x + dx, seat.y - dy);
-                let (Ok(ux), Ok(uy)) = (u16::try_from(x), u16::try_from(y)) else {
-                    return false;
-                };
-                rect.contains((ux, uy).into())
-                    || clear(x, y)
-                        && buf
-                            .cell((ux, uy))
-                            .is_some_and(|c| !untouchable(c) && c.symbol().trim().is_empty())
+                cell(x + dx, y - dy).is_some_and(|(ux, uy, c)| {
+                    rect.contains((ux, uy).into())
+                        || clear(x + dx, y - dy) && c.symbol().trim().is_empty()
+                })
             })
         })
+    };
+    let floor = |x: i32, y: i32| {
+        (-half..=half).all(|dx| {
+            cell(x + dx, y).is_some_and(|(.., c)| {
+                c.symbol()
+                    .chars()
+                    .next()
+                    .is_some_and(|c| strokes(c).is_some())
+            })
+        })
+    };
+    Use::of(at.item).iter().all(|&what| {
+        if what.inside() {
+            let seat = at.seat(what, 0);
+            fits(seat.x, seat.y)
+        } else {
+            at.beside()
+                .into_iter()
+                .any(|x| fits(x, at.floor) && floor(x, at.floor))
+        }
     })
 }
 

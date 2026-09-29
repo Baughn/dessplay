@@ -344,6 +344,14 @@ const HOME: &str = "I'm home!";
 /// What she says stepping out of a door.
 const THROUGH: &str = "Where was I?";
 
+/// The fridge stands open this long at the start of a snack.
+pub(super) const FRIDGE_OPEN_MS: u64 = 1500;
+
+/// When the cat bites, into a petting that lasts `length` ms.
+pub(super) fn bite_at(length: u64) -> u64 {
+    length * 7 / 10
+}
+
 /// How long she keeps at `what` (ms range).
 fn use_duration(what: Use) -> (u64, u64) {
     match what {
@@ -353,6 +361,9 @@ fn use_duration(what: Use) -> (u64, u64) {
         Use::Homework => (30_000, 60_000),
         Use::Watch => (20_000, 45_000),
         Use::Unpack => (4_000, 6_000),
+        Use::Read => (20_000, 40_000),
+        Use::Snack => (6_000, 9_000),
+        Use::Pet => (6_000, 9_000),
     }
 }
 
@@ -390,6 +401,13 @@ fn use_look(
             }
             _ => (Pose::Sit, Face::Curious, None),
         },
+        Use::Read => (Pose::Read(frame), Face::Vacant, None),
+        // A look in the fridge, then the melon bread.
+        Use::Snack if elapsed < FRIDGE_OPEN_MS => (Pose::Side, Face::Curious, None),
+        Use::Snack => (Pose::Eat(frame), Face::Happy, None),
+        // Petting the cat, who has had quite enough.
+        Use::Pet if elapsed < bite_at(length) => (Pose::Pet(0), Face::Happy, Some(Bubble::Hum)),
+        Use::Pet => (Pose::Pet(1), Face::Surprised, Some(Bubble::Say("Ow!"))),
         // Bent over the box, rummaging.
         Use::Unpack => {
             let bubble = (elapsed > length * 3 / 5).then_some(Bubble::Ooh);
@@ -1394,6 +1412,14 @@ impl Osaka {
                 },
                 now,
             );
+        }
+    }
+
+    /// Using a piece: where, and since and until when.
+    pub fn use_span(&self) -> Option<(Seat, u64, u64)> {
+        match (self.act, &self.task) {
+            (Act::Use { since, until, .. }, Some(Job::Use(seat))) => Some((*seat, since, until)),
+            _ => None,
         }
     }
 

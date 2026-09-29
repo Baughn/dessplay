@@ -23,6 +23,10 @@ Add new days at the top. Add new entries at the bottom of existing days.
 - Added: Once she has a home, the houseguest now and then goes off to
   her part-time job, leaving her room standing for a few minutes, and
   comes back with the shopping.
+- Added: More for the houseguest's home: a floor lamp, a bookshelf, a
+  fridge and a cat bed. She reads, raids the fridge when she's peckish,
+  and on some visits there's a grey cat asleep in the cat bed. He does
+  not like being petted.
 
 ## 2026-09-28
 

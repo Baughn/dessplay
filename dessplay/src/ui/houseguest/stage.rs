@@ -77,11 +77,17 @@ pub enum Scene {
     Shopping,
     /// Off to her part-time job (she gets a sofa if her home is empty).
     Work,
+    /// Reading beside her bookshelf.
+    Read,
+    /// A snack from her fridge.
+    Snack,
+    /// Petting the cat in his bed (he's home for it).
+    Pet,
 }
 
 impl Scene {
     /// Every scene, in menu order.
-    pub const ALL: [Scene; 26] = [
+    pub const ALL: [Scene; 29] = [
         Self::Arrive,
         Self::Pull,
         Self::Swap,
@@ -108,6 +114,9 @@ impl Scene {
         Self::Parcel,
         Self::Shopping,
         Self::Work,
+        Self::Read,
+        Self::Snack,
+        Self::Pet,
     ];
 
     /// A short menu label.
@@ -139,6 +148,9 @@ impl Scene {
             Self::Parcel => "a parcel",
             Self::Shopping => "shopping channel",
             Self::Work => "part-time job",
+            Self::Read => "read",
+            Self::Snack => "snack",
+            Self::Pet => "pet the cat",
         }
     }
 
@@ -151,6 +163,9 @@ impl Scene {
             Self::Homework => Use::Homework,
             Self::Watch | Self::Shopping => Use::Watch,
             Self::Parcel => Use::Unpack,
+            Self::Read => Use::Read,
+            Self::Snack => Use::Snack,
+            Self::Pet => Use::Pet,
             _ => return None,
         })
     }
@@ -180,6 +195,8 @@ pub enum Want {
     Tidy,
     /// She feels mischievous.
     Mischief,
+    /// She gets peckish.
+    Hungry,
 }
 
 impl Want {
@@ -190,6 +207,7 @@ impl Want {
             Self::Restless => Need::Restless,
             Self::Tidy => Need::Tidy,
             Self::Mischief => Need::Mischief,
+            Self::Hungry => Need::Hungry,
         }
     }
 }

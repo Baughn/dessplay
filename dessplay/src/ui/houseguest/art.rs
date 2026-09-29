@@ -99,6 +99,10 @@ pub(super) struct Rig {
     /// Cradling a bundle of leeks across her chest (frontal only): drawn
     /// in front of her body, under her arms, whose hands hold it.
     pub leeks: bool,
+    /// Something in her near hand: a part of `art/osaka.svg`, placed at
+    /// `(x, y)` (her own, pre-bob coordinates) and turned `angle`
+    /// degrees; drawn over her body and head, under her near arm.
+    pub hold: Option<(&'static str, f32, f32, f32)>,
     /// (shoulder, elbow).
     pub arms: [(f32, f32); 2],
     /// (hip, knee).
@@ -121,6 +125,7 @@ impl Rig {
             cushion: false,
             seated: false,
             leeks: false,
+            hold: None,
             arms: [(12.0, -4.0), (-12.0, 4.0)],
             legs: [(3.0, 0.0), (-3.0, 0.0)],
         }
@@ -272,6 +277,9 @@ impl Rig {
             // Writing (two frames), nodding off, asleep on the paper.
             Pose::Homework(frame) => Self::homework(frame.saturating_sub(1), expression),
             Pose::Carry(frame) => Self::carrying(frame, expression),
+            Pose::Read(frame) => Self::reading(frame, expression),
+            Pose::Eat(frame) => Self::eating(frame, expression),
+            Pose::Pet(frame) => Self::petting(frame, expression),
             Pose::Gaze => Self {
                 profile: true,
                 tilt: -16.0,
@@ -332,6 +340,7 @@ impl Rig {
             cushion: false,
             seated: false,
             leeks: false,
+            hold: None,
             arms: [(arm(0) + 4.0, 0.0), (arm(1), 0.0)],
             legs,
         }
@@ -375,6 +384,7 @@ impl Rig {
             cushion: false,
             seated: false,
             leeks: false,
+            hold: None,
             arms,
             legs,
         }
@@ -475,6 +485,105 @@ impl Rig {
         }
     }
 
+    /// Reading beside her bookshelf: sitting on the floor, knees up, an
+    /// open book held up in front of her face. `frame` 1 turns a page,
+    /// her head tipped a little further. Drawn facing the shelf, her box
+    /// a cell clear of it.
+    pub fn reading(frame: u8, expression: Expression) -> Self {
+        let turning = frame % 2 == 1;
+        let book = (84.0, 70.0);
+        let arm = |i: usize| aim((P_SHOULDERS[i], P_SHOULDER_Y), book);
+        Self {
+            bob: 34.0,
+            lean: -4.0,
+            tilt: if turning { 12.0 } else { 8.0 },
+            profile: true,
+            legs_front: true,
+            legs: [(-146.0, 124.0), (-138.0, 118.0)],
+            arms: [(arm(0) + 6.0, -22.0), (arm(1) + 4.0, -26.0)],
+            hold: Some((
+                if turning { "book-turn" } else { "book" },
+                book.0,
+                book.1,
+                -8.0,
+            )),
+            ..Self::standing(expression)
+        }
+    }
+
+    /// A snack from her fridge: standing side-on, a melon bread held up
+    /// to her mouth; `frame` 1 is the bite, eyes shut, munching.
+    pub fn eating(frame: u8, expression: Expression) -> Self {
+        let biting = frame % 2 == 1;
+        let bread = (83.0, 63.0);
+        let arm = aim((P_SHOULDERS[1], P_SHOULDER_Y), (78.0, 74.0));
+        Self {
+            expression: if biting {
+                Expression::Blink
+            } else {
+                expression
+            },
+            profile: true,
+            tilt: if biting { 4.0 } else { 0.0 },
+            bob: if biting { -1.0 } else { 0.0 },
+            arms: [(6.0, -8.0), (arm, -118.0)],
+            hold: Some((
+                if biting {
+                    "melon-bread-bitten"
+                } else {
+                    "melon-bread"
+                },
+                bread.0,
+                bread.1,
+                0.0,
+            )),
+            ..Self::standing(expression)
+        }
+    }
+
+    /// Petting the cat in its bed: kneeling side-on, leaning in, her near
+    /// hand reaching out low toward it. `frame` 1: bitten — the hand
+    /// yanked back up, leaning away, surprised ("Ow!").
+    pub fn petting(frame: u8, expression: Expression) -> Self {
+        let bitten = frame % 2 == 1;
+        // Sitting on the floor, knees up (as she reads), leaning in to
+        // reach low over the bed's rim; bitten, she rears back.
+        let (lean, near, far, expression) = if bitten {
+            (
+                -10.0,
+                (
+                    aim((P_SHOULDERS[1], P_SHOULDER_Y), (60.0, 34.0)) - 10.0,
+                    -80.0,
+                ),
+                (-30.0, -30.0),
+                Expression::Surprised,
+            )
+        } else {
+            (
+                16.0,
+                (
+                    aim((P_SHOULDERS[1], P_SHOULDER_Y), (112.0, 122.0)) - 16.0,
+                    -4.0,
+                ),
+                (-40.0, -20.0),
+                expression,
+            )
+        };
+        Self {
+            expression,
+            bob: 34.0,
+            lean,
+            tilt: if bitten { -8.0 } else { 10.0 },
+            // Leaning in, she sits back so her head stays in her box.
+            shift: if bitten { 0.0 } else { -12.0 },
+            profile: true,
+            legs_front: true,
+            legs: [(-146.0, 124.0), (-138.0, 118.0)],
+            arms: [far, near],
+            ..Self::standing(expression)
+        }
+    }
+
     /// Waving goodbye (the dissolve's first beat).
     pub fn waving(raised: bool) -> Self {
         let wave = if raised { -168.0 } else { -150.0 };
@@ -555,7 +664,13 @@ pub(super) fn scene(rig: &Rig, facing: Facing, line: &str) -> String {
     } else {
         ""
     };
-    let cushion = format!("{cushion}{leeks}");
+    let held = rig
+        .hold
+        .map(|(part, x, y, angle)| {
+            format!(r##"<use href="#{part}" transform="translate({x} {y}) rotate({angle})"/>"##)
+        })
+        .unwrap_or_default();
+    let cushion = format!("{cushion}{leeks}{held}");
     // Frontal: both arms over everything (hands can reach past the
     // head). Profile: far limbs behind the body, near limbs in front.
     let body = if rig.profile {
@@ -702,6 +817,10 @@ fn parts(prop: Furniture, layer: Layer) -> &'static [&'static str] {
         (Furniture::Bed, Layer::Front) => &["bed-quilt-over"],
         (Furniture::Bed, _) => &["bed"],
         (Furniture::Desk, _) => &["desk"],
+        (Furniture::Lamp, _) => &["lamp-glow", "lamp", "lamp-shade"],
+        (Furniture::Bookshelf, _) => &["bookshelf"],
+        (Furniture::Fridge, _) => &["fridge"],
+        (Furniture::CatBed, _) => &["cat-bed", "cat-bed-front"],
     }
 }
 
@@ -743,6 +862,60 @@ pub(super) fn render_prop_layer(
 }
 
 /// The parcel's own frame (floor along its bottom edge).
+/// A piece's state, for the pieces that have one (the rest are always
+/// `Plain`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(super) enum PieceState {
+    /// As it stands: the lamp lit, the fridge shut, the cat bed empty.
+    Plain,
+    /// The lamp switched off.
+    LampOff,
+    /// The fridge door open, her groceries inside.
+    FridgeOpen,
+    /// Kamineko asleep in the cat bed.
+    Cat,
+    /// Kamineko awake, and biting.
+    CatBiting,
+}
+
+/// The parts of `item` in `state`, back to front.
+fn state_parts(item: Furniture, state: PieceState) -> &'static [&'static str] {
+    match (item, state) {
+        (Furniture::Lamp, PieceState::LampOff) => &["lamp", "lamp-shade-off"],
+        (Furniture::Fridge, PieceState::FridgeOpen) => &["fridge-open"],
+        (Furniture::CatBed, PieceState::Cat) => &["cat-bed", "kamineko-sleep", "cat-bed-front"],
+        (Furniture::CatBed, PieceState::CatBiting) => {
+            &["cat-bed", "kamineko-bite", "cat-bed-front"]
+        }
+        _ => parts(item, Layer::Whole),
+    }
+}
+
+/// `item` in `state`, rendered like [`render_prop_layer`] with
+/// `Layer::Whole`; states that don't apply to it render it plain.
+pub(super) fn render_piece(
+    item: Furniture,
+    state: PieceState,
+    facing: Facing,
+    line: &str,
+    width: u32,
+    height: u32,
+) -> Option<image::RgbaImage> {
+    let (w, h) = prop_frame(item);
+    let mirror = match facing {
+        Facing::Right => String::new(),
+        Facing::Left => format!(r#" transform="translate({w} 0) scale(-1 1)""#),
+    };
+    let uses: String = state_parts(item, state)
+        .iter()
+        .map(|id| format!(r##"<use href="#{id}"/>"##))
+        .collect();
+    let svg = format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w} {h}" color="{line}">{PROPS}<g{mirror}>{uses}</g></svg>"##
+    );
+    rasterize(&svg, (w, h), width, height)
+}
+
 const PARCEL: (f32, f32) = (100.0, 80.0);
 
 /// A delivery box holding `item`, as an SVG document in the piece's own
@@ -964,6 +1137,12 @@ mod tests {
             ("gaze", Rig::for_pose(Pose::Gaze, Face::Curious)),
             ("carry", Rig::carrying(0, Expression::Happy)),
             ("carry", Rig::carrying(1, Expression::Happy)),
+            ("read", Rig::reading(0, Expression::Vacant)),
+            ("read", Rig::reading(1, Expression::Vacant)),
+            ("eat", Rig::eating(0, Expression::Happy)),
+            ("eat", Rig::eating(1, Expression::Happy)),
+            ("pet", Rig::petting(0, Expression::Smile)),
+            ("pet", Rig::petting(1, Expression::Smile)),
             ("wave", Rig::waving(true)),
             ("wave", Rig::waving(false)),
             ("sofa sit", Rig::sofa_sit(Expression::Smile)),
@@ -1010,6 +1189,142 @@ mod tests {
         Channel::Shopping(0),
         Channel::Shopping(1),
     ];
+
+    /// Every state that applies to each of the second half of the
+    /// catalogue.
+    const STATES: [(Furniture, PieceState); 8] = [
+        (Furniture::Lamp, PieceState::Plain),
+        (Furniture::Lamp, PieceState::LampOff),
+        (Furniture::Bookshelf, PieceState::Plain),
+        (Furniture::Fridge, PieceState::Plain),
+        (Furniture::Fridge, PieceState::FridgeOpen),
+        (Furniture::CatBed, PieceState::Plain),
+        (Furniture::CatBed, PieceState::Cat),
+        (Furniture::CatBed, PieceState::CatBiting),
+    ];
+
+    #[test]
+    fn every_new_piece_renders_inside_its_footprint_in_every_state() {
+        for (item, state) in STATES {
+            let (cols, rows) = item.footprint();
+            let (w, h) = (u32::from(cols) * 9, u32::from(rows) * 19);
+            for facing in [Facing::Left, Facing::Right] {
+                let image = render_piece(item, state, facing, LINE, w, h)
+                    .unwrap_or_else(|| panic!("{item:?} {state:?}"));
+                let inked = image.pixels().filter(|p| p.0[3] > 0).count() as u32;
+                assert!(inked > w * h / 6, "{item:?} {state:?}: only {inked} pixels");
+            }
+        }
+        // A state changes the drawing only where it applies.
+        let plain = |item, state| render_piece(item, state, Facing::Right, LINE, 36, 76);
+        assert_ne!(
+            plain(Furniture::Lamp, PieceState::Plain),
+            plain(Furniture::Lamp, PieceState::LampOff)
+        );
+        assert_eq!(
+            plain(Furniture::Bookshelf, PieceState::Plain),
+            plain(Furniture::Bookshelf, PieceState::FridgeOpen)
+        );
+    }
+
+    /// The second half of the catalogue for review:
+    /// `HOUSEGUEST_CATALOGUE=/tmp/catalogue.png cargo test -p dessplay
+    /// --lib catalogue_sheet -- --ignored`. Each piece in each state,
+    /// then her using each (beside it, facing it, her box a cell clear),
+    /// at 1×, 2× and 4× with the cell grid and the floor line.
+    #[test]
+    #[ignore = "writes a PNG for review"]
+    fn catalogue_sheet() {
+        let path = std::env::var("HOUSEGUEST_CATALOGUE").expect("HOUSEGUEST_CATALOGUE");
+        let (cw, ch) = (9u32, 19u32);
+        let scales = [1u32, 2, 4];
+        let span = |s: u32| cw * s * 13;
+        let row_h = ch * 4 * 6;
+        let mut rows: Vec<(Furniture, PieceState, Option<Rig>)> = STATES
+            .iter()
+            .map(|&(item, state)| (item, state, None))
+            .collect();
+        rows.extend([
+            (
+                Furniture::Bookshelf,
+                PieceState::Plain,
+                Some(Rig::reading(0, Expression::Vacant)),
+            ),
+            (
+                Furniture::Bookshelf,
+                PieceState::Plain,
+                Some(Rig::reading(1, Expression::Vacant)),
+            ),
+            (
+                Furniture::Fridge,
+                PieceState::FridgeOpen,
+                Some(Rig::eating(0, Expression::Happy)),
+            ),
+            (
+                Furniture::Fridge,
+                PieceState::FridgeOpen,
+                Some(Rig::eating(1, Expression::Happy)),
+            ),
+            (
+                Furniture::CatBed,
+                PieceState::Cat,
+                Some(Rig::petting(0, Expression::Smile)),
+            ),
+            (
+                Furniture::CatBed,
+                PieceState::CatBiting,
+                Some(Rig::petting(1, Expression::Smile)),
+            ),
+        ]);
+        let mut sheet = image::RgbaImage::from_pixel(
+            scales.iter().map(|&s| span(s)).sum(),
+            row_h * rows.len() as u32,
+            image::Rgba([13, 17, 23, 255]),
+        );
+        for (row, (item, state, her)) in rows.iter().enumerate() {
+            let row = row as u32;
+            let mut x0 = 0;
+            for &s in &scales {
+                let (w, h) = (cw * s, ch * s);
+                let (cols, prows) = item.footprint();
+                let (cols, prows) = (u32::from(cols), u32::from(prows));
+                let floor = row * row_h + row_h - h;
+                let line = floor + h / 2;
+                for gx in 0..span(s) - w {
+                    for t in 0..s {
+                        sheet.put_pixel(x0 + gx, line + t, image::Rgba([139, 148, 158, 255]));
+                    }
+                }
+                let px = x0 + w;
+                for gy in 0..=4 {
+                    for gx in 0..w * (cols + 6) {
+                        sheet.put_pixel(px + gx, floor - gy * h, image::Rgba([40, 46, 56, 255]));
+                    }
+                }
+                let (pw, ph) = (w * cols, h * prows + h / 2);
+                let image = render_piece(*item, *state, Facing::Right, LINE, pw, ph).unwrap();
+                image::imageops::overlay(
+                    &mut sheet,
+                    &image,
+                    i64::from(px),
+                    i64::from(floor - h * prows),
+                );
+                if let Some(rig) = her {
+                    // Her box a cell clear of the piece, facing it.
+                    let hx = px + w * (cols + 1);
+                    let osaka = render(rig, Facing::Left, LINE, w * 5, h * 4 + h / 2).unwrap();
+                    image::imageops::overlay(
+                        &mut sheet,
+                        &osaka,
+                        i64::from(hx),
+                        i64::from(floor - h * 4),
+                    );
+                }
+                x0 += span(s);
+            }
+        }
+        sheet.save(path).unwrap();
+    }
 
     #[test]
     fn every_parcel_and_channel_renders_inside_its_box() {

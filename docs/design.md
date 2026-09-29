@@ -1400,10 +1400,11 @@ this section states what is built.
 - **Choosing what to do**: each decision scores what's on offer where she
   stands (stand, space out, sneeze, walk, travel, each activity, a pull or
   swap in reach) as base × fit × cooldown and picks at random, weighted,
-  among the top four. Four needs (0–1) set the fit: *sleepy* rises over a
+  among the top four. Five needs (0–1) set the fit: *sleepy* rises over a
   visit and a doze eases it a little, so she dozes more as a visit goes
   on; *restless* starts high, rises steadily, and moving answers it; *tidy* rises while a line is on offer and a pull answers it;
-  *mischief* rises slowly and a swap answers it. Fit is 0.1 + need² (0.5
+  *mischief* rises slowly and a swap answers it; *hungry* rises over
+  twenty minutes and a snack from her fridge answers it. Fit is 0.1 + need² (0.5
   for an offer no need wants); repeating one of her last three choices
   multiplies by 0.4. Needs only weight choices: nothing is ever ruled out,
   and nothing bad happens when a need is high
@@ -1448,16 +1449,19 @@ this section states what is built.
   second visit. After that, when she watches TV at least three visits
   after her last purchase, with nothing on order or still boxed, the
   shopping channel comes on (Chiyo-chichi) and she buys the next piece
-  she lacks — sofa, bed, desk, in that order — the moment it comes on,
+  she lacks — sofa, bed, desk, lamp, bookshelf, fridge, cat bed, in that
+  order — the moment it comes on,
   whatever happens next. What she buys arrives on a later visit as a
   parcel ("A parcel!") where the piece will stand; she unpacks it (her
   strongest wish while it's there) and it becomes the piece. A parcel
   stays boxed, across visits, until she finishes unpacking it.
-- **Furniture** (phase 3): a sofa (9×3 cells), TV (6×4), bed (10×3), and desk (7×3), drawn
-  in her style (outlined, soft fills) as line art, or as ASCII without
-  graphics. She owns her furniture across visits. **Panes are rooms**:
-  each piece belongs to a room (living room: sofa, TV; bedroom: bed,
-  desk), all of a room's pieces stand in one quiet pane — Users,
+- **Furniture** (phase 3): a sofa (9×3 cells), TV (6×4), bed (10×3),
+  desk (7×3), floor lamp (3×4), bookshelf (5×4), fridge (4×4) and cat
+  bed (4×2), drawn in her style (outlined, soft fills) as line art, or as
+  ASCII without graphics. She owns her furniture across visits. **Panes
+  are rooms**: each piece belongs to a room (living room: sofa, TV, cat
+  bed; bedroom: bed, desk, lamp, bookshelf; kitchen: fridge), all of a
+  room's pieces stand in one quiet pane — Users,
   Playlist, or The List, never the chat — and a pane holds one room. A
   room's first piece picks a free pane; the rest follow it. Each piece
   stands on its pane's bottom border at a fraction of the way along it,
@@ -1478,8 +1482,13 @@ this section states what is built.
   (lounging, not bedtime), sleeps in bed (answers *sleepy* far
   better than a doze on a border), does homework at the desk (nodding
   off onto the paper halfway through), or sits beside the TV watching
-  it; each is an offer to the brain while the piece is placed and she
-  can get there. If the piece goes into the closet while she's using it,
+  it; she reads beside her bookshelf, gets a snack from her fridge (it
+  stands open as she looks in, then she eats a melon bread), and on
+  about half her visits Kamineko is asleep in the cat bed — she pets
+  him, and he bites ("Ow!"). Her lamp is lit, and dark while she sleeps
+  in her bed. Each use is an offer to the brain while the piece is placed
+  and she can get there, and a new piece is only set down where she
+  fits to use it. If the piece goes into the closet while she's using it,
   she's left blinking where it was. Her furniture shows only while she
   does, and the goodbye rain takes it along with her
   (why: [decisions](decisions.md#houseguest-furniture-is-pane-relative-and-leaves-with-her-2026-09-28)).

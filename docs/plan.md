@@ -1906,8 +1906,8 @@ until all six demonstrations work with live reload and no Rust edits.
 
 ## Phase 37: Houseguest phase 3 — the room
 
-**Status: planned (brief written 2026-09-28 at the end of phase 2, as a
-fresh-session handoff).** Design: [the houseguest
+**Status: done (2026-09-29).** Brief written 2026-09-28 at the end of
+phase 2; progress notes below record each step. Design: [the houseguest
 proposal](proposals/2026-09-28-houseguest.md) (sections *The room model*,
 *Progression*, *Furnishings*, *Persistence*, *Routine and calendar*);
 rules as built: design.md, Houseguest. Phases 1–2 are done: terrain,
@@ -2031,6 +2031,18 @@ welcome; the only goal is "watching her is kind of fun".
   channel". Tests: the whole progression over twelve visits across a
   restart; an interrupted unpacking waits. Not built: the box sliding in
   (it appears in place), absences (step 7).
+- **Step 8 done (2026-09-29): the rest of the catalogue.** Lamp,
+  bookshelf, fridge, cat bed (8 pieces in all, the proposal's "~8
+  placed" by construction); `RoomKind::Kitchen`; uses Read, Snack
+  (answers the new *hungry* need), Pet. `art::PieceState` (lamp off,
+  fridge open, cat, cat biting) through `Looks` per frame and
+  `piece_state`; the cat is home on about half the visits, read off
+  the visit seed (`cat_home`). `roomy()` now also requires a standing
+  spot beside a piece used from beside it. Art and the reading, eating,
+  petting rigs by a fork agent (`catalogue_sheet`). Not built from the
+  proposal: the window (a wall piece; floors only so far), the kotatsu
+  and seasonal closet rotation (with the calendar, phase 4), the
+  credits roll when the catalogue is complete.
 - **Step 7 done (2026-09-29): her part-time job.** `Kind::Work` (base
   9, offered with a home, once a visit, after `WORK_AFTER_MS`);
   `Osaka::go_to_work` leaves by an `Around` link or a `Door` with a

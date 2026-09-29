@@ -45,7 +45,15 @@ use terrain::Terrain;
 
 /// What the shopping channel sells, in order (the TV comes first, on
 /// its own).
-const CATALOGUE: [Furniture; 3] = [Furniture::Sofa, Furniture::Bed, Furniture::Desk];
+const CATALOGUE: [Furniture; 7] = [
+    Furniture::Sofa,
+    Furniture::Bed,
+    Furniture::Desk,
+    Furniture::Lamp,
+    Furniture::Bookshelf,
+    Furniture::Fridge,
+    Furniture::CatBed,
+];
 /// She buys at most once every this many visits.
 const SHOP_EVERY: u64 = 3;
 /// The visit her TV arrives on (the first is a first meeting).
@@ -172,6 +180,8 @@ pub struct Guest {
     gift: Option<Furniture>,
     /// The stage: the shopping channel is on whenever she watches.
     shop_now: bool,
+    /// The stage: the cat is home this visit.
+    cat_now: bool,
 }
 
 impl Guest {
@@ -199,6 +209,7 @@ impl Guest {
             note: None,
             gift: None,
             shop_now: false,
+            cat_now: false,
         }
     }
 
@@ -265,6 +276,12 @@ impl Guest {
         // A scene with her furniture: she gets the piece if she has none.
         match scene {
             stage::Scene::Parcel => self.send_parcel(),
+            stage::Scene::Pet => {
+                self.cat_now = true;
+                if !self.ledger.home.owns(Furniture::CatBed) {
+                    self.gift = Some(Furniture::CatBed);
+                }
+            }
             stage::Scene::Work => {
                 if self.ledger.home.props.is_empty() {
                     self.gift = Some(Furniture::Sofa);
@@ -461,7 +478,7 @@ impl Guest {
                     && untouched
                 {
                     for prop in &leaving.props {
-                        paint_prop_art(buf, graphics, prop, None);
+                        paint_prop_art(buf, graphics, prop, &Looks::default());
                     }
                 }
                 if let (Some(image), Some(graphics)) = (leaving.image, &mut self.graphics)
@@ -485,7 +502,16 @@ impl Guest {
                     let layers: Vec<graphics::Layer> = leaving
                         .with
                         .iter()
-                        .map(|p| prop_layer(p, piece_look(p, art::Layer::Whole, None, false)))
+                        .map(|p| {
+                            let look = piece_look(
+                                p,
+                                art::Layer::Whole,
+                                None,
+                                false,
+                                art::PieceState::Plain,
+                            );
+                            prop_layer(p, look)
+                        })
                         .chain([her])
                         .collect();
                     graphics.paint_layers(buf, &layers, &|x, y| terrain.open(x, y));
@@ -574,7 +600,11 @@ impl Guest {
                         pulls: pulls.clone(),
                         swaps: swaps.clone(),
                         loose: Vec::new(),
-                        seats: seats(&visit.shown, &visit.terrain),
+                        seats: seats(
+                            &visit.shown,
+                            &visit.terrain,
+                            self.cat_now || cat_home(&self.ledger),
+                        ),
                         advert: advert(&self.ledger, self.shop_now),
                         furnished: !self.ledger.home.props.is_empty(),
                     };
@@ -597,7 +627,11 @@ impl Guest {
                     pulls,
                     swaps,
                     loose,
-                    seats: seats(&visit.shown, &visit.terrain),
+                    seats: seats(
+                        &visit.shown,
+                        &visit.terrain,
+                        self.cat_now || cat_home(&self.ledger),
+                    ),
                     advert: advert(&self.ledger, self.shop_now),
                     furnished: !self.ledger.home.props.is_empty(),
                 };
@@ -613,19 +647,28 @@ impl Guest {
                     .shown
                     .iter()
                     .partition(|s| self.graphics.is_some() && s.cover().intersects(her));
-                // She's watching: the TV is on.
-                let tv = visit.osaka.watching().map(|(since, advert)| {
-                    let frame = (now.saturating_sub(since) / CHANNEL_FRAME_MS % 2) as u8;
-                    match advert {
-                        Some(_) => art::Channel::Shopping(frame),
-                        None => art::Channel::Snow(frame),
-                    }
-                });
+                // She's watching: the TV is on. And the lamp, the fridge,
+                // the cat...
+                let cat = self.cat_now || cat_home(&self.ledger);
+                let looks = Looks {
+                    tv: visit.osaka.watching().map(|(since, advert)| {
+                        let frame = (now.saturating_sub(since) / CHANNEL_FRAME_MS % 2) as u8;
+                        match advert {
+                            Some(_) => art::Channel::Shopping(frame),
+                            None => art::Channel::Snow(frame),
+                        }
+                    }),
+                    states: visit
+                        .shown
+                        .iter()
+                        .map(|p| (p.item, piece_state(p, &visit.osaka, cat, now)))
+                        .collect(),
+                };
                 layer.extend(draw_props(
                     buf,
                     self.graphics.as_mut(),
                     &apart,
-                    tv,
+                    &looks,
                     self.truecolor,
                 ));
                 match &mut self.graphics {
@@ -637,7 +680,7 @@ impl Guest {
                             &visit.terrain,
                             &visit.shown,
                             &with,
-                            tv,
+                            &looks,
                             now,
                             self.truecolor,
                         );
@@ -963,9 +1006,13 @@ fn furnish(
 
 /// Where she could go to use each piece shown: in front of it on its
 /// floor, or for the TV, beside it facing it.
-fn seats(shown: &[Shown], terrain: &Terrain) -> Vec<room::Seat> {
+fn seats(shown: &[Shown], terrain: &Terrain, cat: bool) -> Vec<room::Seat> {
     let mut out = Vec::new();
     for piece in shown {
+        // No cat, no petting.
+        if piece.item == Furniture::CatBed && !cat {
+            continue;
+        }
         // Boxed, it's only for unpacking.
         let uses: &[room::Use] = if piece.boxed {
             &[room::Use::Unpack]
@@ -995,17 +1042,74 @@ fn prop_ink(item: Furniture, truecolor: bool) -> Ink {
         (Furniture::Bed, false) => Color::LightBlue,
         (Furniture::Desk, true) => Color::Rgb(192, 150, 100),
         (Furniture::Desk, false) => Color::Yellow,
+        (Furniture::Lamp, true) => Color::Rgb(232, 195, 74),
+        (Furniture::Lamp, false) => Color::LightYellow,
+        (Furniture::Bookshelf, true) => Color::Rgb(160, 120, 79),
+        (Furniture::Bookshelf, false) => Color::Yellow,
+        (Furniture::Fridge, true) => Color::Rgb(231, 236, 239),
+        (Furniture::Fridge, false) => Color::White,
+        (Furniture::CatBed, true) => Color::Rgb(201, 69, 63),
+        (Furniture::CatBed, false) => Color::Red,
     };
     Ink::new(fg, Modifier::empty())
 }
 
 /// How a piece looks: `layer` of it, or its box while it's boxed (open
-/// while she's `unpacking` it), or with `tv` on its screen.
-fn piece_look(prop: &Shown, layer: art::Layer, tv: Option<art::Channel>, unpacking: bool) -> Look {
+/// while she's `unpacking` it), or with `tv` on its screen, or in
+/// `state`.
+fn piece_look(
+    prop: &Shown,
+    layer: art::Layer,
+    tv: Option<art::Channel>,
+    unpacking: bool,
+    state: art::PieceState,
+) -> Look {
     match (prop.boxed, prop.item, tv) {
         (true, item, _) => Look::Parcel(item, unpacking),
         (false, Furniture::Tv, Some(channel)) => Look::Tv(channel),
+        (false, item, _) if layer == art::Layer::Whole && state != art::PieceState::Plain => {
+            Look::Piece(item, state)
+        }
         (false, item, _) => Look::Prop(item, layer),
+    }
+}
+
+/// Whether the cat is in his bed this visit (about half of them): read
+/// off the visit's seed, so it's settled for the whole visit and draws
+/// nothing from her generator.
+fn cat_home(ledger: &Ledger) -> bool {
+    let owns = ledger
+        .home
+        .props
+        .iter()
+        .any(|p| p.item == Furniture::CatBed && !p.boxed);
+    owns && ledger.visit_seed(ledger.visits.saturating_sub(1)) >> 17 & 1 == 1
+}
+
+/// What state `piece` is in, given what she's doing at `now`: the lamp is
+/// off while she sleeps, the fridge open as she looks in, the cat in his
+/// bed (`cat`), biting at the end of a petting.
+fn piece_state(piece: &Shown, osaka: &Osaka, cat: bool, now: u64) -> art::PieceState {
+    use art::PieceState;
+    let span = osaka.use_span();
+    let doing = |what: room::Use| span.filter(|(seat, ..)| seat.what == what);
+    match piece.item {
+        Furniture::Lamp if doing(room::Use::Sleep).is_some() => PieceState::LampOff,
+        Furniture::Fridge
+            if doing(room::Use::Snack)
+                .is_some_and(|(_, since, _)| now < since + osaka::FRIDGE_OPEN_MS) =>
+        {
+            PieceState::FridgeOpen
+        }
+        Furniture::CatBed if cat => match doing(room::Use::Pet) {
+            Some((_, since, until))
+                if now.saturating_sub(since) >= osaka::bite_at(until.saturating_sub(since)) =>
+            {
+                PieceState::CatBiting
+            }
+            _ => PieceState::Cat,
+        },
+        _ => PieceState::Plain,
     }
 }
 
@@ -1021,14 +1125,32 @@ fn prop_layer(prop: &Shown, look: Look) -> graphics::Layer {
     }
 }
 
-/// Paint one piece's line art. Returns whether it went on.
-fn paint_prop_art(
-    buf: &mut Buffer,
-    graphics: &mut Graphics,
-    prop: &Shown,
+/// How her furniture looks this frame: what's on TV, and each piece's
+/// state.
+#[derive(Clone, Debug, Default)]
+struct Looks {
     tv: Option<art::Channel>,
-) -> bool {
-    let look = piece_look(prop, art::Layer::Whole, tv, false);
+    states: Vec<(Furniture, art::PieceState)>,
+}
+
+impl Looks {
+    fn state(&self, item: Furniture) -> art::PieceState {
+        self.states
+            .iter()
+            .find(|(i, _)| *i == item)
+            .map_or(art::PieceState::Plain, |&(_, state)| state)
+    }
+}
+
+/// Paint one piece's line art. Returns whether it went on.
+fn paint_prop_art(buf: &mut Buffer, graphics: &mut Graphics, prop: &Shown, looks: &Looks) -> bool {
+    let look = piece_look(
+        prop,
+        art::Layer::Whole,
+        looks.tv,
+        false,
+        looks.state(prop.item),
+    );
     graphics
         .paint_layers(buf, &[prop_layer(prop, look)], &|_, _| true)
         .is_some()
@@ -1040,14 +1162,19 @@ fn draw_props(
     buf: &mut Buffer,
     mut graphics: Option<&mut Graphics>,
     shown: &[Shown],
-    tv: Option<art::Channel>,
+    looks: &Looks,
     truecolor: bool,
 ) -> Vec<Frozen> {
     let mut painted = Vec::new();
     for prop in shown {
         let ink = prop_ink(prop.item, truecolor);
-        // On, the TV's screen shows what's on.
-        let screen = prop.screen().zip(tv).map(|(cells, channel)| {
+        // On, the TV's screen shows what's on; the cat curls in his bed.
+        let cat = match looks.state(prop.item) {
+            art::PieceState::Cat => Some([' ', '^', '^', ' ']),
+            art::PieceState::CatBiting => Some(['!', '^', '^', '!']),
+            _ => None,
+        };
+        let screen = prop.screen().zip(looks.tv).map(|(cells, channel)| {
             let glyphs = match channel {
                 art::Channel::Snow(0) => [':', '.'],
                 art::Channel::Snow(_) => ['.', ':'],
@@ -1066,13 +1193,18 @@ fn draw_props(
                             .position(|&c| c == (x, y))
                             .and_then(|i| glyphs.get(i).copied())
                     })
+                    .or_else(|| {
+                        let top = y == prop.floor - i32::from(prop.item.footprint().1);
+                        let glyphs = cat.filter(|_| top && !prop.boxed)?;
+                        glyphs.get((x - prop.left) as usize).copied()
+                    })
                     .or(glyph);
                 Some((ux, uy, glyph, buf.cell((ux, uy))?.clone()))
             })
             .collect();
         match graphics.as_deref_mut() {
             Some(graphics) => {
-                if paint_prop_art(buf, graphics, prop, tv) {
+                if paint_prop_art(buf, graphics, prop, looks) {
                     painted.extend(unders.into_iter().map(|(x, y, glyph, under)| Frozen {
                         x,
                         y,
@@ -1120,7 +1252,7 @@ fn draw_art(
     terrain: &Terrain,
     shown: &[Shown],
     with: &[Shown],
-    tv: Option<art::Channel>,
+    looks: &Looks,
     now: u64,
     truecolor: bool,
 ) -> (Vec<Frozen>, Option<Placement>) {
@@ -1173,8 +1305,9 @@ fn draw_art(
         Some(piece_look(
             piece,
             layer,
-            tv,
+            looks.tv,
             what == Some(room::Use::Unpack),
+            looks.state(piece.item),
         ))
     };
     let mut layers = Vec::with_capacity(with.len() * 2 + 1);

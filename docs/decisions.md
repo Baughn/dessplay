@@ -2024,6 +2024,25 @@ drawn in her image), so "ignoring what's there" only ever means the
 terrain between, never text. The sofa nap was made a lounging choice
 in the same change: answering sleepiness, it always lost to the bed.
 
+## Houseguest furniture answers what she does (2026-09-29)
+
+**Rule:** The lamp is dark while she sleeps, the fridge open as she
+looks in, the cat home on about half her visits (decided by the visit's
+seed) and biting at the end of a petting; a new piece is only set down
+where she fits to use it, in it or beside it. See
+[design.md](design.md#houseguest).
+
+**Why:** A piece that only sits there is decoration; the fun is in the
+room reacting to her. The cat's presence comes from the visit's seed
+rather than her random generator so it holds for the whole visit and
+leaves every other seeded behaviour exactly as it was. The placement
+rule used to cover only the uses *in* a piece; a cat bed set down with
+no floor beside it could never be petted, so the rule now covers the
+uses beside a piece too. The fridge brings the proposal's *hungry* need
+in, answered by a snack, now that something can answer it. Rejected
+for now: the window (a wall piece, and props only stand on floors),
+and the kotatsu with seasonal rotation (it belongs with the calendar).
+
 ## Houseguest shops, and what she buys comes boxed (2026-09-29)
 
 **Rule:** The TV arrives on her second visit; after that the shopping

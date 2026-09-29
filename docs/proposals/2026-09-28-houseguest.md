@@ -34,7 +34,7 @@ channel on her TV. We borrow that backbone (see
 | 1 | Seam, idle gate, terrain, walking/climbing/falling, goodbye dissolve, setting, perf test | **done** |
 | 1b | Line art: SVG rig, kitty placement, redrawn lines, letter-burst goodbye | **done** |
 | 2 | Tidying and mischief: text layer and newest-line protection, pulling lines, letter swap, sneeze scatter, scheduled self-reverting, the stage (**done**); bubbles and speech, the brain with needs (**done**) | done |
-| 3 | The room: furnishings (coloured line art), anchors, ledger, Chiyo-chichi's shop, routine | planned |
+| 3 | The room: eight pieces of furniture in pane-rooms, composited with her; the ledger; deliveries and Chiyo-chichi's shopping channel; her part-time job; ways out of pits (clambering, stepping out, the door); hunger and the fridge | **done** (routine and calendar moved to 4) |
 | 4 | Colour: calendar, screen reading, dreams, cameos, rarity and pity, credits | planned |
 | 5 | The text factory: text hauled into an industrial space and compacted into materials | planned, last |
 

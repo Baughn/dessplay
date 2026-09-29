@@ -66,6 +66,12 @@ pub(super) enum Pose {
     /// Home from work, a bundle of leeks cradled in her arms (frame 1
     /// bobs happily).
     Carry(u8),
+    /// Sitting with an open book (frame 1 turns a page).
+    Read(u8),
+    /// Eating a melon bread (frame 1 bites).
+    Eat(u8),
+    /// Reaching out to pet the cat (frame 1: bitten, hand yanked back).
+    Pet(u8),
 }
 
 /// Her face, drawn into the head of frontal poses.
@@ -150,6 +156,18 @@ const CARRY: [[&str; 4]; 2] = [
     ["(._.)", "\\|V/Y", " /_/ ", " / \\ "],
     ["(._.)", "\\|V/Y", " //\\ ", " / \\ "],
 ];
+const READ: [[&str; 4]; 2] = [
+    ["     ", "( ._)", "[]V| ", " d b "],
+    ["     ", "( ._)", "/]V| ", " d b "],
+];
+const EAT: [[&str; 4]; 2] = [
+    ["( ._)", " |Vo ", " /_\\ ", " / \\ "],
+    ["( o_)", " |V| ", " /_\\ ", " / \\ "],
+];
+const PET: [[&str; 4]; 2] = [
+    ["     ", "( ._)", " |V|-", " d b "],
+    ["     ", "( o_)", "\\|V| ", " d b "],
+];
 const PULL: [[&str; 4]; 2] = [
     ["( ._)", "\\|V|=", " /_\\ ", " / \\ "],
     ["(._ )", "\\|V|=", " /_\\ ", "/  \\ "],
@@ -177,6 +195,9 @@ fn rows(pose: Pose) -> ([&'static str; 4], bool) {
         Pose::Sleep(frame) => (SLEEP[usize::from(frame % 2)], false),
         Pose::Homework(frame) => (HOMEWORK[usize::from(frame % 4)], false),
         Pose::Carry(frame) => (CARRY[usize::from(frame % 2)], true),
+        Pose::Read(frame) => (READ[usize::from(frame % 2)], false),
+        Pose::Eat(frame) => (EAT[usize::from(frame % 2)], false),
+        Pose::Pet(frame) => (PET[usize::from(frame % 2)], false),
     }
 }
 
@@ -331,7 +352,7 @@ pub(super) fn cells(pose: Pose, facing: Facing, face: Face) -> Vec<SpriteCell> {
 mod tests {
     use super::*;
 
-    const ALL: [Pose; 35] = [
+    const ALL: [Pose; 41] = [
         Pose::Stand,
         Pose::Walk(0),
         Pose::Walk(1),
@@ -373,6 +394,12 @@ mod tests {
         Pose::Homework(3),
         Pose::Carry(0),
         Pose::Carry(1),
+        Pose::Read(0),
+        Pose::Read(1),
+        Pose::Eat(0),
+        Pose::Eat(1),
+        Pose::Pet(0),
+        Pose::Pet(1),
     ];
 
     /// Every pose has a head where her head is drawn: an "o" or

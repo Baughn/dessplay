@@ -109,4 +109,185 @@
     <path d="M 110 56 L 104 30 L 118 14" fill="none" stroke="#6b7a8c" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
     <path d="M 110 6 L 128 12 L 124 28 L 106 22 Z" fill="#e8c34a" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
   </g>
+  <!-- The second half of the catalogue (step 8). Frames: lamp 60 × 168
+       (3 × 4), bookshelf 100 × 168 (5 × 4), fridge 80 × 168 (4 × 4), cat
+       bed 80 × 84 (4 × 2). -->
+  <radialGradient id="lamp-halo" cx="0.5" cy="0.5" r="0.5">
+    <stop offset="0" stop-color="#ffe7a0" stop-opacity="0.85"/>
+    <stop offset="0.55" stop-color="#ffd76a" stop-opacity="0.35"/>
+    <stop offset="1" stop-color="#ffd76a" stop-opacity="0"/>
+  </radialGradient>
+  <linearGradient id="lamp-cone" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="#ffe7a0" stop-opacity="0.45"/>
+    <stop offset="1" stop-color="#ffe7a0" stop-opacity="0"/>
+  </linearGradient>
+  <!-- A floor lamp: round base, thin pole; the shade is its own part
+       (lit or not), and the glow goes behind it all when it's on. -->
+  <g id="lamp-glow">
+    <path d="M 12 66 L 48 66 L 60 160 L 0 160 Z" fill="url(#lamp-cone)"/>
+    <circle cx="30" cy="48" r="30" fill="url(#lamp-halo)"/>
+  </g>
+  <g id="lamp">
+    <ellipse cx="30" cy="164" rx="15" ry="4" fill="#8a5f3c" stroke="currentColor" stroke-width="1.8"/>
+    <rect x="28.4" y="60" width="3.2" height="104" fill="#b89a6a" stroke="currentColor" stroke-width="1.2"/>
+    <circle cx="30" cy="112" r="2.2" fill="#8a5f3c" stroke="currentColor" stroke-width="1"/>
+  </g>
+  <g id="lamp-shade">
+    <path d="M 19 28 L 41 28 L 50 64 L 10 64 Z" fill="#f4cf86" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+    <path d="M 12.5 56 L 47.5 56" fill="none" stroke="#e0a64a" stroke-width="1.3"/>
+    <path d="M 17 64 L 43 64" fill="none" stroke="#fff4c8" stroke-width="1.6"/>
+  </g>
+  <g id="lamp-shade-off">
+    <path d="M 19 28 L 41 28 L 50 64 L 10 64 Z" fill="#b8a07a" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+    <path d="M 12.5 56 L 47.5 56" fill="none" stroke="#8f7a55" stroke-width="1.3"/>
+  </g>
+
+  <!-- A small wooden bookcase: three shelves of spines (a couple
+       leaning), a pot plant and a little lucky cat on top. -->
+  <g id="bookshelf">
+    <rect x="6" y="40" width="88" height="124" rx="2" fill="#a0784f" stroke="currentColor" stroke-width="2"/>
+    <rect x="12" y="45" width="76" height="114" fill="#6e4e33" stroke="currentColor" stroke-width="1.2"/>
+    <rect x="13" y="52" width="7" height="28" rx="1" fill="#823f49" stroke="currentColor" stroke-width="1.3"/>
+    <path d="M 14.5 57 L 18.5 57 M 14.5 73 L 18.5 73" fill="none" stroke="#f7f4f0" stroke-opacity="0.7" stroke-width="0.9"/>
+    <rect x="23" y="56" width="6" height="24" rx="1" fill="#e7c77a" stroke="currentColor" stroke-width="1.3"/>
+    <path d="M 24.5 61 L 27.5 61 M 24.5 73 L 27.5 73" fill="none" stroke="#f7f4f0" stroke-opacity="0.7" stroke-width="0.9"/>
+    <rect x="29" y="50" width="7" height="30" rx="1" fill="#c9453f" stroke="currentColor" stroke-width="1.3"/>
+    <path d="M 30.5 55 L 34.5 55 M 30.5 73 L 34.5 73" fill="none" stroke="#f7f4f0" stroke-opacity="0.7" stroke-width="0.9"/>
+    <rect x="36" y="50" width="9" height="30" rx="1" fill="#9c7ab8" stroke="currentColor" stroke-width="1.3"/>
+    <path d="M 37.5 55 L 43.5 55 M 37.5 73 L 43.5 73" fill="none" stroke="#f7f4f0" stroke-opacity="0.7" stroke-width="0.9"/>
+    <rect x="45" y="56" width="9" height="24" rx="1" fill="#9c7ab8" stroke="currentColor" stroke-width="1.3"/>
+    <path d="M 46.5 61 L 52.5 61 M 46.5 73 L 52.5 73" fill="none" stroke="#f7f4f0" stroke-opacity="0.7" stroke-width="0.9"/>
+    <rect x="56" y="52" width="6" height="28" rx="1" fill="#6fa19c" stroke="currentColor" stroke-width="1.3" transform="rotate(-18 56 80)"/>
+    <rect x="70" y="50" width="9" height="30" rx="1" fill="#823f49" stroke="currentColor" stroke-width="1.3"/>
+    <path d="M 71.5 55 L 77.5 55 M 71.5 73 L 77.5 73" fill="none" stroke="#f7f4f0" stroke-opacity="0.7" stroke-width="0.9"/>
+    <rect x="79" y="56" width="8" height="24" rx="1" fill="#5f8f8b" stroke="currentColor" stroke-width="1.3"/>
+    <path d="M 80.5 61 L 85.5 61 M 80.5 73 L 85.5 73" fill="none" stroke="#f7f4f0" stroke-opacity="0.7" stroke-width="0.9"/>
+    <rect x="13" y="96" width="9" height="24" rx="1" fill="#c9453f" stroke="currentColor" stroke-width="1.3"/>
+    <path d="M 14.5 101 L 20.5 101 M 14.5 113 L 20.5 113" fill="none" stroke="#f7f4f0" stroke-opacity="0.7" stroke-width="0.9"/>
+    <rect x="22" y="90" width="6" height="30" rx="1" fill="#6fa19c" stroke="currentColor" stroke-width="1.3"/>
+    <path d="M 23.5 95 L 26.5 95 M 23.5 113 L 26.5 113" fill="none" stroke="#f7f4f0" stroke-opacity="0.7" stroke-width="0.9"/>
+    <rect x="30" y="89" width="7" height="31" rx="1" fill="#5f8f8b" stroke="currentColor" stroke-width="1.3" transform="rotate(-18 30 120)"/>
+    <rect x="45" y="90" width="6" height="30" rx="1" fill="#6b7a8c" stroke="currentColor" stroke-width="1.3"/>
+    <path d="M 46.5 95 L 49.5 95 M 46.5 113 L 49.5 113" fill="none" stroke="#f7f4f0" stroke-opacity="0.7" stroke-width="0.9"/>
+    <rect x="54" y="89" width="9" height="31" rx="1" fill="#9c7ab8" stroke="currentColor" stroke-width="1.3"/>
+    <path d="M 55.5 94 L 61.5 94 M 55.5 113 L 61.5 113" fill="none" stroke="#f7f4f0" stroke-opacity="0.7" stroke-width="0.9"/>
+    <rect x="63" y="90" width="8" height="30" rx="1" fill="#e7c77a" stroke="currentColor" stroke-width="1.3"/>
+    <path d="M 64.5 95 L 69.5 95 M 64.5 113 L 69.5 113" fill="none" stroke="#f7f4f0" stroke-opacity="0.7" stroke-width="0.9"/>
+    <rect x="71" y="89" width="6" height="31" rx="1" fill="#8fb3d9" stroke="currentColor" stroke-width="1.3"/>
+    <path d="M 72.5 94 L 75.5 94 M 72.5 113 L 75.5 113" fill="none" stroke="#f7f4f0" stroke-opacity="0.7" stroke-width="0.9"/>
+    <rect x="77" y="89" width="9" height="31" rx="1" fill="#d98f3f" stroke="currentColor" stroke-width="1.3"/>
+    <path d="M 78.5 94 L 84.5 94 M 78.5 113 L 84.5 113" fill="none" stroke="#f7f4f0" stroke-opacity="0.7" stroke-width="0.9"/>
+    <rect x="13" y="130" width="7" height="28" rx="1" fill="#6fa19c" stroke="currentColor" stroke-width="1.3"/>
+    <path d="M 14.5 135 L 18.5 135 M 14.5 151 L 18.5 151" fill="none" stroke="#f7f4f0" stroke-opacity="0.7" stroke-width="0.9"/>
+    <rect x="20" y="127" width="6" height="31" rx="1" fill="#6fa19c" stroke="currentColor" stroke-width="1.3"/>
+    <path d="M 21.5 132 L 24.5 132 M 21.5 151 L 24.5 151" fill="none" stroke="#f7f4f0" stroke-opacity="0.7" stroke-width="0.9"/>
+    <rect x="26" y="134" width="7" height="24" rx="1" fill="#e07f7a" stroke="currentColor" stroke-width="1.3"/>
+    <path d="M 27.5 139 L 31.5 139 M 27.5 151 L 31.5 151" fill="none" stroke="#f7f4f0" stroke-opacity="0.7" stroke-width="0.9"/>
+    <rect x="33" y="134" width="8" height="24" rx="1" fill="#823f49" stroke="currentColor" stroke-width="1.3"/>
+    <path d="M 34.5 139 L 39.5 139 M 34.5 151 L 39.5 151" fill="none" stroke="#f7f4f0" stroke-opacity="0.7" stroke-width="0.9"/>
+    <rect x="41" y="128" width="8" height="30" rx="1" fill="#e7c77a" stroke="currentColor" stroke-width="1.3"/>
+    <path d="M 42.5 133 L 47.5 133 M 42.5 151 L 47.5 151" fill="none" stroke="#f7f4f0" stroke-opacity="0.7" stroke-width="0.9"/>
+    <rect x="49" y="132" width="6" height="26" rx="1" fill="#c9453f" stroke="currentColor" stroke-width="1.3"/>
+    <path d="M 50.5 137 L 53.5 137 M 50.5 151 L 53.5 151" fill="none" stroke="#f7f4f0" stroke-opacity="0.7" stroke-width="0.9"/>
+    <rect x="55" y="130" width="7" height="28" rx="1" fill="#5f8f8b" stroke="currentColor" stroke-width="1.3"/>
+    <path d="M 56.5 135 L 60.5 135 M 56.5 151 L 60.5 151" fill="none" stroke="#f7f4f0" stroke-opacity="0.7" stroke-width="0.9"/>
+    <rect x="65" y="130" width="9" height="28" rx="1" fill="#e7c77a" stroke="currentColor" stroke-width="1.3"/>
+    <path d="M 66.5 135 L 72.5 135 M 66.5 151 L 72.5 151" fill="none" stroke="#f7f4f0" stroke-opacity="0.7" stroke-width="0.9"/>
+    <rect x="74" y="132" width="7" height="26" rx="1" fill="#823f49" stroke="currentColor" stroke-width="1.3"/>
+    <path d="M 75.5 137 L 79.5 137 M 75.5 151 L 79.5 151" fill="none" stroke="#f7f4f0" stroke-opacity="0.7" stroke-width="0.9"/>
+    <rect x="8" y="79" width="84" height="5" fill="#a0784f" stroke="currentColor" stroke-width="1.4"/>
+    <rect x="8" y="119" width="84" height="5" fill="#a0784f" stroke="currentColor" stroke-width="1.4"/>
+    <rect x="10" y="164" width="7" height="4" fill="#5b3d2a" stroke="currentColor" stroke-width="1"/>
+    <rect x="83" y="164" width="7" height="4" fill="#5b3d2a" stroke="currentColor" stroke-width="1"/>
+    <path d="M 70 40 L 72 28 L 84 28 L 86 40 Z" fill="#c96f45" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+    <path d="M 78 28 C 74 20 68 18 64 20 C 69 21 73 24 77 28 M 78 28 C 79 18 84 13 90 13 C 86 17 82 22 79 28 M 78 28 C 77 21 78 14 81 9 C 82 15 80 22 79 28" fill="#6fa19c" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
+    <path d="M 16 40 L 16 30 L 18 26 L 20 29 L 26 29 L 28 26 L 30 30 L 30 40 Z" fill="#f7f4f0" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
+    <path d="M 20 33.5 L 21 33.5 M 25 33.5 L 26 33.5" fill="none" stroke="currentColor" stroke-width="1.2"/>
+    <path d="M 29 34 L 32 30" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+    <circle cx="23" cy="37" r="1.3" fill="#e8c34a"/>
+  </g>
+
+  <!-- A small retro fridge, mint, rounded; freezer on top, chrome
+       handles, magnets and a note. -->
+  <g id="fridge-body">
+    <rect x="10" y="164" width="7" height="4" fill="#5b5f63" stroke="currentColor" stroke-width="1"/>
+    <rect x="63" y="164" width="7" height="4" fill="#5b5f63" stroke="currentColor" stroke-width="1"/>
+    <rect x="8" y="36" width="64" height="130" rx="12" fill="#bfe3d4" stroke="currentColor" stroke-width="2"/>
+    <path d="M 8 80 L 72 80" fill="none" stroke="currentColor" stroke-width="1.6"/>
+    <path d="M 14 44 C 26 40 54 40 66 44" fill="none" stroke="#e6f6ef" stroke-width="2.2" stroke-linecap="round"/>
+    <rect x="60" y="50" width="4.5" height="20" rx="2.2" fill="#dfe3e6" stroke="currentColor" stroke-width="1.3"/>
+    <circle cx="22" cy="60" r="3.4" fill="#c9453f" stroke="currentColor" stroke-width="1"/>
+  </g>
+  <g id="fridge">
+    <use href="#fridge-body"/>
+    <rect x="60" y="88" width="4.5" height="34" rx="2.2" fill="#dfe3e6" stroke="currentColor" stroke-width="1.3"/>
+    <path d="M 30 96 L 31.6 99.6 L 35.5 100 L 32.6 102.6 L 33.5 106.4 L 30 104.4 L 26.5 106.4 L 27.4 102.6 L 24.5 100 L 28.4 99.6 Z" fill="#e8c34a" stroke="currentColor" stroke-width="0.9"/>
+    <g transform="rotate(4 43 114)">
+      <rect x="36" y="106" width="15" height="17" fill="#f7f4f0" stroke="currentColor" stroke-width="1"/>
+      <path d="M 39 111 L 48 111 M 39 115 L 47 115 M 39 119 L 45 119" fill="none" stroke="#6b7a8c" stroke-width="0.9"/>
+    </g>
+    <circle cx="43.5" cy="106" r="1.8" fill="#5f8f8b" stroke="currentColor" stroke-width="0.8"/>
+  </g>
+  <!-- Open: the lower door swung toward the viewer (hinged on the
+       right, seen nearly edge-on), a cool light, and her groceries:
+       milk, a melon bread, a leek. -->
+  <g id="fridge-open">
+    <use href="#fridge-body"/>
+    <rect x="13" y="84" width="54" height="76" rx="3" fill="#eef8ff" stroke="currentColor" stroke-width="1.5"/>
+    <rect x="15" y="86" width="50" height="72" rx="2" fill="#dff1ff" opacity="0.8"/>
+    <path d="M 14 110 L 66 110 M 14 134 L 66 134" fill="none" stroke="#9fb6c6" stroke-width="1.6"/>
+    <path d="M 20 108 L 20 94 L 23.5 90 L 27 94 L 27 108 Z" fill="#f7f4f0" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round"/>
+    <path d="M 20 94 L 27 94 L 23.5 90 Z" fill="#6b9bd1" stroke="currentColor" stroke-width="0.8" stroke-linejoin="round"/>
+    <rect x="21" y="98" width="5" height="4" fill="#8fb3d9"/>
+    <ellipse cx="46" cy="103" rx="9" ry="6.5" fill="#e8d27a" stroke="currentColor" stroke-width="1.2"/>
+    <path d="M 40 100 L 50 108 M 44 97 L 53 104 M 38 104 L 45 109 M 42 108 L 52 99 M 39 105 L 49 97" fill="none" stroke="#b89a3f" stroke-width="0.8"/>
+    <path d="M 18 131 L 44 125" fill="none" stroke="currentColor" stroke-width="5.4" stroke-linecap="round"/>
+    <path d="M 18 131 L 44 125" fill="none" stroke="#f6f4ea" stroke-width="3.4" stroke-linecap="round"/>
+    <path d="M 44 125 L 60 119 M 44 125 L 62 124 M 44 125 L 59 128" fill="none" stroke="currentColor" stroke-width="4.4" stroke-linecap="round"/>
+    <path d="M 44 125 L 60 119 M 44 125 L 62 124 M 44 125 L 59 128" fill="none" stroke="#5c9a3c" stroke-width="2.6" stroke-linecap="round"/>
+    <rect x="22" y="142" width="18" height="12" rx="2" fill="#e07f7a" stroke="currentColor" stroke-width="1.1"/>
+    <path d="M 67 84 L 79 78 L 79 164 L 67 160 Z" fill="#bfe3d4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+    <path d="M 71 92 L 71 150" fill="none" stroke="#dfe3e6" stroke-width="2" stroke-linecap="round"/>
+  </g>
+
+  <!-- A round plush cat bed: its back rim and cushion, then its front
+       rim (drawn over whoever's in it). -->
+  <g id="cat-bed">
+    <path d="M 4 74 C 2 54 20 44 40 44 C 60 44 78 54 76 74 Z" fill="#c9453f" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+    <ellipse cx="40" cy="68" rx="29" ry="10" fill="#f2c7b8" stroke="currentColor" stroke-width="1.4"/>
+  </g>
+  <g id="cat-bed-front">
+    <path d="M 3 70 C 10 66 70 66 77 70 C 80 78 76 83 70 83 L 10 83 C 4 83 0 78 3 70 Z" fill="#d85a52" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+    <path d="M 10 73 C 26 70 54 70 70 73" fill="none" stroke="#ec8c84" stroke-width="1.6" stroke-linecap="round"/>
+  </g>
+  <!-- Kamineko, the grey biting cat, asleep in it: curled up, eyes
+       shut, a tabby stripe or three. -->
+  <g id="kamineko-sleep">
+    <path d="M 52 70 C 64 70 70 62 66 56" fill="none" stroke="currentColor" stroke-width="5.5" stroke-linecap="round"/>
+    <path d="M 52 70 C 64 70 70 62 66 56" fill="none" stroke="#8f949a" stroke-width="3.4" stroke-linecap="round"/>
+    <ellipse cx="44" cy="62" rx="20" ry="11" fill="#9aa0a6" stroke="currentColor" stroke-width="1.8"/>
+    <path d="M 40 52 C 42 56 42 60 40 63 M 48 52 C 50 56 50 60 48 64 M 56 55 C 57 58 57 61 56 64" fill="none" stroke="#6b7076" stroke-width="1.6" stroke-linecap="round"/>
+    <path d="M 17 56 L 19 45 L 25 52 Z M 30 52 L 34 44 L 37 54 Z" fill="#9aa0a6" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+    <ellipse cx="27" cy="60" rx="11" ry="9" fill="#9aa0a6" stroke="currentColor" stroke-width="1.8"/>
+    <path d="M 21 59 Q 23 61 25 59 M 29 59 Q 31 61 33 59" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+    <path d="M 26 63.5 L 28 63.5" fill="none" stroke="#d98a8a" stroke-width="1.4" stroke-linecap="round"/>
+  </g>
+  <!-- Awake, and biting: head up, fierce half-lidded eyes, jaws wide,
+       fur on end. -->
+  <g id="kamineko-bite">
+    <path d="M 54 70 C 66 70 72 60 70 50" fill="none" stroke="currentColor" stroke-width="5.5" stroke-linecap="round"/>
+    <path d="M 54 70 C 66 70 72 60 70 50" fill="none" stroke="#8f949a" stroke-width="3.4" stroke-linecap="round"/>
+    <ellipse cx="46" cy="62" rx="19" ry="11" fill="#9aa0a6" stroke="currentColor" stroke-width="1.8"/>
+    <path d="M 44 53 C 46 57 46 61 44 64 M 52 53 C 54 57 54 61 52 65" fill="none" stroke="#6b7076" stroke-width="1.6" stroke-linecap="round"/>
+    <path d="M 14 30 L 15 17 L 23 25 Z M 33 25 L 40 15 L 41 29 Z" fill="#9aa0a6" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+    <path d="M 16 23 L 17 20 L 20 24 Z M 36 22 L 39 19 L 39 25 Z" fill="#e7a6a6"/>
+    <ellipse cx="27" cy="36" rx="15" ry="13" fill="#9aa0a6" stroke="currentColor" stroke-width="1.8"/>
+    <path d="M 20 27 L 23 32 M 26 27 L 27 33 M 32 28 L 31 33" fill="none" stroke="#6b7076" stroke-width="1.4" stroke-linecap="round"/>
+    <path d="M 15 31 L 24 34 M 39 31 L 30 34" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+    <path d="M 17 34.5 C 19 33.5 22 34 23.5 35.5 L 17.5 36.2 Z M 36.5 34.5 C 34.5 33.5 31.5 34 30.5 35.5 L 36.2 36.2 Z" fill="#e8c34a" stroke="currentColor" stroke-width="1"/>
+    <path d="M 18 40 C 21 46 33 46 36 40 C 33 50 21 50 18 40 Z" fill="#7a1f24" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
+    <path d="M 20.5 41 L 22 45 L 23.5 41.6 Z M 33.5 41 L 32 45 L 30.5 41.6 Z" fill="#ffffff" stroke="currentColor" stroke-width="0.6"/>
+    <path d="M 12 38 L 3 36 M 12 41 L 3 42 M 42 38 L 51 36 M 42 41 L 51 42" fill="none" stroke="currentColor" stroke-width="0.9" stroke-linecap="round"/>
+    <path d="M 58 16 L 60 26 M 64 18 L 62 27 M 52 20 L 57 27" fill="none" stroke="#c9453f" stroke-width="2" stroke-linecap="round"/>
+  </g>
 </defs>

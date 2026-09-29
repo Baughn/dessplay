@@ -250,9 +250,6 @@
           fill="#e7c77a" stroke="currentColor" stroke-width="1.6"/>
     <path d="M -6 -6 L 6 6 M 6 -6 L -6 6" fill="none" stroke="#b8963f" stroke-width="1"/>
   </g>
-  <!-- Her shopping bag: kraft paper, the top folded over, a leek
-       sticking out of it on the left. Drawn with its top edge's middle
-       at (0, 0); her hands hold that edge. -->
   <!-- Leeks cradled across her chest (home from work): cut white
        stalks low at her viewer-left hip, green tops fanning up past
        her viewer-right shoulder. Drawn in canvas coordinates. -->
@@ -268,5 +265,27 @@
     <path d="M 38 128 L 35 159 M 62 128 L 65 159" fill="none" stroke="#8a5f3c" stroke-width="2.4" stroke-linecap="round"/>
     <path d="M 37 144 L 63 144" fill="none" stroke="#5b3d2a" stroke-width="1.6"/>
     <rect x="31" y="122" width="38" height="7" rx="3" fill="#a0784f" stroke="currentColor" stroke-width="1.8"/>
+  </g>
+  <!-- Held things, drawn centred on (0, 0): an open book seen from its
+       cover side (pages toward her), the same with a page turning, and
+       a melon bread (whole, and bitten). -->
+  <g id="book">
+    <path d="M -2 -13 L 11 -11 L 11 12 L -2 10 Z" fill="#fbf8f1" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
+    <path d="M 1 -8 L 9 -7 M 1 -4 L 9 -3 M 1 0 L 8 1 M 1 4 L 9 5" fill="none" stroke="#b9b2a4" stroke-width="0.8"/>
+    <path d="M -9 -12 L -2 -13 L -2 10 L -9 11 Z" fill="#5f8f8b" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+    <path d="M -7.5 -6 L -3.5 -6.5" fill="none" stroke="#e7c77a" stroke-width="1.6"/>
+  </g>
+  <g id="book-turn">
+    <use href="#book"/>
+    <path d="M -2 -13 C 3 -20 9 -20 13 -16 L 12 7 C 8 3 2 4 -2 10 Z" fill="#ffffff" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round"/>
+  </g>
+  <g id="melon-bread">
+    <circle r="7.5" fill="#e3cf72" stroke="currentColor" stroke-width="1.5"/>
+    <path d="M -5.5 -3 L 3 5.5 M -3 -5.5 L 5.5 3 M 0 -7 L 7 0 M -7 0 L 0 7 M -3 5.5 L 5.5 -3 M -5.5 3 L 3 -5.5 M 0 7 L 7 0" fill="none" stroke="#b8983c" stroke-width="0.9"/>
+  </g>
+  <g id="melon-bread-bitten">
+    <path d="M 5.8 -4.8 A 7.5 7.5 0 1 0 5.8 4.8 A 4 4 0 0 1 4.3 1.8 A 3.6 3.6 0 0 1 6.9 -1.6 A 3.8 3.8 0 0 1 5.8 -4.8 Z"
+          fill="#e3cf72" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+    <path d="M -5.5 -3 L 2.5 5 M -3 -5.5 L 3.5 1 M -7 0 L 0 7 M -3 5.5 L 3 -0.5 M -5.5 3 L 3 -5.5" fill="none" stroke="#b8983c" stroke-width="0.9"/>
   </g>
 </defs>

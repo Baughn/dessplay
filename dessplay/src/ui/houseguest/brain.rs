@@ -24,6 +24,8 @@ pub(super) enum Need {
     Tidy,
     /// Rises slowly; a swapped letter answers it.
     Mischief,
+    /// Rises over a visit; a snack from her fridge answers it.
+    Hungry,
 }
 
 /// Her needs, each 0..=1.
@@ -33,6 +35,7 @@ pub(super) struct Needs {
     pub restless: f64,
     pub tidy: f64,
     pub mischief: f64,
+    pub hungry: f64,
 }
 
 /// Milliseconds for each need to rise from 0 to 1.
@@ -40,6 +43,7 @@ const SLEEPY_MS: f64 = 15.0 * 60_000.0;
 const RESTLESS_MS: f64 = 90_000.0;
 const TIDY_MS: f64 = 60_000.0;
 const MISCHIEF_MS: f64 = 4.0 * 60_000.0;
+const HUNGRY_MS: f64 = 20.0 * 60_000.0;
 
 impl Default for Needs {
     /// Arriving, she's wide awake, keen to move and to look around.
@@ -49,6 +53,7 @@ impl Default for Needs {
             restless: 0.7,
             tidy: 0.5,
             mischief: 0.2,
+            hungry: 0.2,
         }
     }
 }
@@ -60,6 +65,7 @@ impl Needs {
             Need::Restless => &mut self.restless,
             Need::Tidy => &mut self.tidy,
             Need::Mischief => &mut self.mischief,
+            Need::Hungry => &mut self.hungry,
         }
     }
 
@@ -69,6 +75,7 @@ impl Needs {
             Need::Restless => self.restless,
             Need::Tidy => self.tidy,
             Need::Mischief => self.mischief,
+            Need::Hungry => self.hungry,
         }
     }
 
@@ -78,6 +85,7 @@ impl Needs {
         self.sleepy += ms / SLEEPY_MS;
         self.restless += ms / RESTLESS_MS;
         self.mischief += ms / MISCHIEF_MS;
+        self.hungry += ms / HUNGRY_MS;
         if mess {
             self.tidy += ms / TIDY_MS;
         }
@@ -91,7 +99,13 @@ impl Needs {
     }
 
     fn clamp(&mut self) {
-        for need in [Need::Sleepy, Need::Restless, Need::Tidy, Need::Mischief] {
+        for need in [
+            Need::Sleepy,
+            Need::Restless,
+            Need::Tidy,
+            Need::Mischief,
+            Need::Hungry,
+        ] {
             let v = self.get_mut(need);
             *v = v.clamp(0.0, 1.0);
         }
@@ -100,8 +114,8 @@ impl Needs {
     /// A compact readout for the stage and logs.
     pub fn summary(&self) -> String {
         format!(
-            "sleepy {:.1} restless {:.1} tidy {:.1} mischief {:.1}",
-            self.sleepy, self.restless, self.tidy, self.mischief
+            "sleepy {:.1} restless {:.1} tidy {:.1} mischief {:.1} hungry {:.1}",
+            self.sleepy, self.restless, self.tidy, self.mischief, self.hungry
         )
     }
 }
@@ -166,11 +180,20 @@ impl Kind {
             Self::Walk | Self::Travel => Some((Need::Restless, 0.4)),
             Self::Pull => Some((Need::Tidy, 0.6)),
             Self::Swap => Some((Need::Mischief, 0.8)),
+            Self::Use(Use::Snack) => Some((Need::Hungry, 0.8)),
             // A proper bed answers sleepiness far better than a border.
             Self::Use(Use::Sleep) => Some((Need::Sleepy, 0.7)),
             // A sofa nap is lounging, not bedtime: it would always lose
             // to the bed if it answered the same need.
-            Self::Use(Use::Lounge | Use::Nap | Use::Homework | Use::Watch | Use::Unpack) => None,
+            Self::Use(
+                Use::Lounge
+                | Use::Nap
+                | Use::Homework
+                | Use::Watch
+                | Use::Unpack
+                | Use::Read
+                | Use::Pet,
+            ) => None,
             Self::Stand
             | Self::Work
             | Self::SpaceOut
@@ -271,6 +294,7 @@ mod tests {
             restless: 0.0,
             tidy: 0.0,
             mischief: 0.0,
+            hungry: 0.0,
         };
         let counts = tally(needs, &all());
         let lie = counts[&Kind::Idle(Activity::LieBack)];
@@ -289,6 +313,7 @@ mod tests {
                 restless: 0.1,
                 tidy: 0.0,
                 mischief: 0.2,
+                hungry: 0.0,
             };
             let offers = all();
             let mut rng = Rng(3);
@@ -312,6 +337,23 @@ mod tests {
         );
     }
 
+    /// Hungry, with a fridge on offer, a snack is her likeliest choice.
+    #[test]
+    fn a_hungry_osaka_has_a_snack() {
+        let needs = Needs {
+            sleepy: 0.0,
+            restless: 0.0,
+            tidy: 0.0,
+            mischief: 0.0,
+            hungry: 1.0,
+        };
+        let mut offers = all();
+        offers.push(Kind::Use(Use::Snack));
+        let counts = tally(needs, &offers);
+        let snack = counts[&Kind::Use(Use::Snack)];
+        assert!(counts.values().all(|&n| n <= snack), "{counts:?}");
+    }
+
     #[test]
     fn a_restless_osaka_mostly_moves() {
         let needs = Needs {
@@ -319,6 +361,7 @@ mod tests {
             restless: 1.0,
             tidy: 0.0,
             mischief: 0.0,
+            hungry: 0.0,
         };
         let counts = tally(needs, &all());
         let moving: usize = [Kind::Walk, Kind::Travel]
@@ -338,12 +381,14 @@ mod tests {
                 restless: 0.0,
                 tidy: 0.0,
                 mischief: 0.0,
+                hungry: 0.0,
             },
             Needs {
                 sleepy: 1.0,
                 restless: 1.0,
                 tidy: 1.0,
                 mischief: 1.0,
+                hungry: 0.0,
             },
         ] {
             let counts = tally(needs, &all());

@@ -1262,6 +1262,9 @@ fn every_scene_has_a_spot_in_the_stage_room() {
                     Scene::Parcel => guest.ledger.home.props.iter().any(|p| !p.boxed),
                     Scene::Shopping => guest.ledger.ordered.is_some(),
                     Scene::Work => went_out || gone,
+                    Scene::Read => posed(Pose::Read(0)),
+                    Scene::Snack => posed(Pose::Eat(0)),
+                    Scene::Pet => posed(Pose::Pet(0)),
                 };
                 assert!(happened, "{at}: {note:?}, moved {moved}");
             }
@@ -1600,12 +1603,19 @@ fn a_furnished_home_gets_used_and_stays_cheap() {
         guest.set_picker(kitty());
         guest.cue(Scene::Arrive);
         paint(&mut guest, &real, &view, 0);
-        for item in Furniture::ALL {
+        // Her living room and bedroom (the screen has two panes).
+        let pieces = [
+            Furniture::Sofa,
+            Furniture::Tv,
+            Furniture::Bed,
+            Furniture::Desk,
+        ];
+        for item in pieces {
             guest.give(item);
             paint(&mut guest, &real, &view, 0);
         }
         assert_eq!(
-            Furniture::ALL
+            pieces
                 .iter()
                 .filter(|&&item| guest.ledger.home.owns(item))
                 .count(),
@@ -2053,5 +2063,97 @@ fn her_room_stands_furnished_while_she_works() {
                 now - gone
             );
         }
+    }
+}
+
+// ---- The rest of the catalogue ----
+
+/// Cue `scene` in the two-pane home with `pieces` (a bedroom and a living
+/// room), and run until `until` holds of her, the piece shown and the
+/// time; returns whether it ever did.
+fn watch_scene(
+    scene: Scene,
+    pieces: &[Furniture],
+    graphics: bool,
+    until: impl Fn(&Visit, u64) -> bool,
+) -> bool {
+    let (real, view) = home_screen();
+    let mut guest = Guest::new(8);
+    if graphics {
+        guest.set_picker(kitty());
+    }
+    guest.cue(Scene::Arrive);
+    paint(&mut guest, &real, &view, 0);
+    for &item in pieces {
+        guest.give(item);
+        paint(&mut guest, &real, &view, 0);
+        assert!(
+            guest.ledger.home.owns(item),
+            "{item:?}: {:?}",
+            guest.cue_note()
+        );
+    }
+    guest.cue(scene);
+    let mut now = 0;
+    paint(&mut guest, &real, &view, now);
+    while now < 20_000 {
+        now += guest
+            .next_tick(now)
+            .map_or(100, |d| d.as_millis() as u64)
+            .clamp(1, 100);
+        guest.advance(now);
+        let frame = paint(&mut guest, &real, &view, now);
+        let State::Visiting(visit) = &guest.state else {
+            panic!("{scene:?}: still visiting");
+        };
+        if graphics {
+            let layer: Vec<(u16, u16)> = visit.layer.cells().collect();
+            assert_nothing_hidden(&frame, &real, &layer)
+                .unwrap_or_else(|e| panic!("{scene:?} at {now}: {e}"));
+        }
+        if until(visit, now) {
+            return true;
+        }
+    }
+    false
+}
+
+/// The state `item` is in right now, as drawn.
+fn state_of(visit: &Visit, item: Furniture, cat: bool, now: u64) -> Option<art::PieceState> {
+    let piece = visit.shown.iter().find(|s| s.item == item)?;
+    Some(piece_state(piece, &visit.osaka, cat, now))
+}
+
+/// Her lamp goes dark while she sleeps in her bed, the fridge stands open
+/// as she looks in, and the cat bites at the end of a petting — each in
+/// both drawing modes, never hiding text.
+#[test]
+fn her_things_answer_what_she_does() {
+    use art::PieceState;
+    for graphics in [false, true] {
+        assert!(
+            watch_scene(
+                Scene::Sleep,
+                &[Furniture::Bed, Furniture::Lamp],
+                graphics,
+                |v, now| { state_of(v, Furniture::Lamp, false, now) == Some(PieceState::LampOff) }
+            ),
+            "graphics={graphics}: the lamp went off"
+        );
+        assert!(
+            watch_scene(Scene::Snack, &[], graphics, |v, now| {
+                state_of(v, Furniture::Fridge, false, now) == Some(PieceState::FridgeOpen)
+            }),
+            "graphics={graphics}: the fridge opened"
+        );
+        assert!(
+            watch_scene(Scene::Pet, &[Furniture::Sofa], graphics, |v, now| {
+                let (pose, _, bubble) = v.osaka.appearance(now);
+                state_of(v, Furniture::CatBed, true, now) == Some(PieceState::CatBiting)
+                    && matches!(pose, super::sprite::Pose::Pet(1))
+                    && bubble == Some(osaka::Bubble::Say("Ow!"))
+            }),
+            "graphics={graphics}: the cat bit"
+        );
     }
 }

@@ -44,6 +44,8 @@ pub(super) enum Look {
     Parcel(Furniture, bool),
     /// Her TV, switched on.
     Tv(art::Channel),
+    /// A piece in some state (the lamp off, the cat in his bed…).
+    Piece(Furniture, art::PieceState),
 }
 
 impl Look {
@@ -54,7 +56,7 @@ impl Look {
                 let (cols, rows) = Furniture::Tv.footprint();
                 (i32::from(cols), i32::from(rows))
             }
-            Self::Prop(item, _) | Self::Parcel(item, _) => {
+            Self::Prop(item, _) | Self::Parcel(item, _) | Self::Piece(item, _) => {
                 let (cols, rows) = item.footprint();
                 (i32::from(cols), i32::from(rows))
             }
@@ -74,6 +76,7 @@ impl Look {
             }
             Self::Parcel(item, open) => art::render_parcel(item, open, facing, LINE, width, height),
             Self::Tv(channel) => art::render_tv(channel, facing, LINE, width, height),
+            Self::Piece(item, state) => art::render_piece(item, state, facing, LINE, width, height),
         }
     }
 }
