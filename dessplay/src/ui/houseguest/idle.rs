@@ -8,11 +8,12 @@ use tuirealm::ratatui::layout::Rect;
 /// Why the client is not idle right now.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Busy {
-    /// The group is playing.
+    /// The group is playing (a resident stays anyway).
     Playing,
     /// A modal, the layout tools, or a work overlay covers the panes.
     Overlay,
-    /// A held chat selection (the user is mid-copy).
+    /// A held chat selection (the user is mid-copy; a resident keeps
+    /// out of the chat pane instead).
     Selection,
 }
 
@@ -36,12 +37,19 @@ pub struct IdleView {
     pub delay: Option<Duration>,
     /// Why the client isn't idle, if it isn't.
     pub busy: Option<Busy>,
+    /// Resident Osaka: local input doesn't send her away, playback
+    /// doesn't keep her out, and she keeps clear of the focused pane.
+    pub resident: bool,
+    /// The focused pane (resident only), also in `protected`: she and
+    /// her things rain out of it the moment it's focused.
+    pub focus: Option<Rect>,
     /// Chat arrivals, for "stop and look".
     pub chat_mark: ChatMark,
     /// The chat pane, which she turns toward when a message arrives.
     pub chat: Rect,
     /// Rectangles her body and bubbles never cover: the chat input, the
-    /// Player Status block, the keybinding bar, and inline images.
+    /// Player Status block, the keybinding bar, and inline images (and,
+    /// for a resident, the focused pane).
     pub protected: Vec<Rect>,
     /// The quiet panes she may furnish, as drawn (borders included).
     pub nooks: Vec<(super::Nook, Rect)>,

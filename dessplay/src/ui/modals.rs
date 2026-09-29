@@ -964,7 +964,7 @@ static BROWSER_DIR_KEYMAP: Keymap<FileBrowser, Msg> = Keymap(&[
 
 // ---- Settings ----------------------------------------------------------
 
-/// The five settings tabs, in keyboard-navigation order.
+/// The six settings tabs, in keyboard-navigation order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SettingsCategory {
     Account,
@@ -972,15 +972,17 @@ enum SettingsCategory {
     Files,
     Irc,
     Commentary,
+    Houseguest,
 }
 
 impl SettingsCategory {
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 6] = [
         Self::Account,
         Self::Playback,
         Self::Files,
         Self::Irc,
         Self::Commentary,
+        Self::Houseguest,
     ];
 
     fn index(self) -> usize {
@@ -990,6 +992,7 @@ impl SettingsCategory {
             Self::Files => 2,
             Self::Irc => 3,
             Self::Commentary => 4,
+            Self::Houseguest => 5,
         }
     }
 
@@ -1000,6 +1003,7 @@ impl SettingsCategory {
             Self::Files => "Files",
             Self::Irc => "IRC",
             Self::Commentary => "AI",
+            Self::Houseguest => "Houseguest",
         }
     }
 
@@ -1010,6 +1014,7 @@ impl SettingsCategory {
             Self::Files => "Files & transfers",
             Self::Irc => "IRC bridge",
             Self::Commentary => "AI commentary",
+            Self::Houseguest => "Houseguest",
         }
     }
 
@@ -1042,6 +1047,7 @@ enum SettingId {
     ChatImages,
     RoguelikeEffects,
     Houseguest,
+    HouseguestResident,
     HouseguestMovedOut,
     MediaRoot(PathBuf),
     AddMediaRoot,
@@ -1065,7 +1071,7 @@ enum SettingId {
 /// keys) is the shared widget; this file only declares the rows.
 pub struct SettingsModal {
     form: Form<SettingsForm>,
-    selections: [Option<SettingId>; 5],
+    selections: [Option<SettingId>; SettingsCategory::ALL.len()],
 }
 
 /// The settings form model: working copies, committed on save.
@@ -1086,7 +1092,7 @@ impl SettingsModal {
                 roots,
                 category: SettingsCategory::Account,
             }),
-            selections: [None, None, None, None, None],
+            selections: std::array::from_fn(|_| None),
         }
     }
 
@@ -1296,11 +1302,27 @@ impl SettingsForm {
                 "Dungeon injury effects",
                 self.settings.roguelike_effects.label(),
             ),
+        ]
+    }
+
+    fn houseguest_rows(&self) -> Vec<FormRow<SettingId>> {
+        let resident = FormRow::toggle(
+            SettingId::HouseguestResident,
+            "Resident",
+            self.settings.houseguest_resident,
+        )
+        .annotated("stays through playback and typing", theme::dim());
+        vec![
             FormRow::choice(
                 SettingId::Houseguest,
-                "Houseguest",
+                "Visits",
                 self.settings.houseguest.label(),
             ),
+            if self.settings.houseguest == crate::config::Houseguest::Off {
+                resident.styled(theme::dim())
+            } else {
+                resident
+            },
             FormRow::action(SettingId::HouseguestMovedOut, "Osaka moved out"),
         ]
     }
@@ -1437,6 +1459,7 @@ impl FormModel for SettingsForm {
             SettingsCategory::Files => self.files_rows(),
             SettingsCategory::Irc => self.irc_rows(),
             SettingsCategory::Commentary => self.commentary_rows(),
+            SettingsCategory::Houseguest => self.houseguest_rows(),
         }
     }
 
@@ -1480,6 +1503,9 @@ impl FormModel for SettingsForm {
             }
             (SettingId::Houseguest, FormEdit::Cycle) => {
                 self.settings.houseguest = self.settings.houseguest.next();
+            }
+            (SettingId::HouseguestResident, FormEdit::SetBool(value)) => {
+                self.settings.houseguest_resident = value;
             }
             (SettingId::MarqueeMode, FormEdit::Cycle) => {
                 self.settings.marquee_mode = self.settings.marquee_mode.next();
@@ -4708,18 +4734,33 @@ mod tests {
         }
     }
 
-    /// "Osaka moved out" sits under the Houseguest setting and asks
+    /// The Houseguest tab holds her settings, and "Osaka moved out" asks
     /// before anything is wiped.
     #[test]
     fn osaka_moving_out_asks_first() {
         let mut modal = SettingsModal::new(Settings::default(), vec![]);
-        modal.form.model.category = SettingsCategory::Playback;
+        modal.form.model.category = SettingsCategory::Houseguest;
         let ids: Vec<SettingId> = modal.form.model.rows().into_iter().map(|r| r.id).collect();
-        let at = ids
-            .iter()
-            .position(|id| *id == SettingId::HouseguestMovedOut)
-            .expect("the row");
-        assert_eq!(ids[at - 1], SettingId::Houseguest);
+        assert_eq!(
+            ids,
+            [
+                SettingId::Houseguest,
+                SettingId::HouseguestResident,
+                SettingId::HouseguestMovedOut
+            ]
+        );
+        assert!(
+            modal.form.model.settings.houseguest_resident,
+            "on by default"
+        );
+        assert!(
+            modal
+                .form
+                .model
+                .apply(&SettingId::HouseguestResident, FormEdit::SetBool(false))
+                .is_ok()
+        );
+        assert!(!modal.form.model.settings.houseguest_resident);
         let effect = modal
             .form
             .model

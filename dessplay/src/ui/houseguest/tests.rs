@@ -21,6 +21,8 @@ fn view(protected: Vec<Rect>) -> IdleView {
     IdleView {
         delay: Some(DELAY),
         busy: None,
+        resident: false,
+        focus: None,
         chat_mark: ChatMark::default(),
         chat: Rect::new(0, 0, 30, 20),
         protected,
@@ -774,6 +776,7 @@ fn visiting_at(guest: &mut Guest, real: &Buffer, view: &IdleView, (x, y): (i32, 
     paint(guest, real, view, 0);
     let mut rng = Rng(1);
     guest.state = State::Visiting(Box::new(Visit {
+        fades: Vec::new(),
         osaka: Osaka::standing_at(x, y, 0, &mut rng),
         terrain: Terrain::default(),
         painted: Vec::new(),
@@ -2155,5 +2158,343 @@ fn her_things_answer_what_she_does() {
             }),
             "graphics={graphics}: the cat bit"
         );
+    }
+}
+
+// ---- Resident Osaka ----
+
+/// [`rooms`] as a resident sees it: the tall left box is the chat, the
+/// two right ones her quiet panes.
+fn resident_view(width: u16, height: u16, focus: Option<Rect>) -> IdleView {
+    let panes = nooks(width, height);
+    let mut protected = bottom_strip(width, height);
+    protected.extend(focus);
+    IdleView {
+        resident: true,
+        focus,
+        chat: panes[0].1,
+        nooks: panes[1..].to_vec(),
+        ..view(protected)
+    }
+}
+
+/// A resident doesn't leave when someone's at the keys.
+#[test]
+fn a_resident_stays_through_local_input() {
+    let real = rooms(100, 30);
+    let view = resident_view(100, 30, None);
+    let mut guest = Guest::new(11);
+    run(&mut guest, &real, &view, 0, 30_000);
+    assert!(guest.present());
+    for press in [30_000, 30_500, 31_000] {
+        guest.activity(press);
+        guest.advance(press);
+        paint(&mut guest, &real, &view, press);
+        assert!(
+            matches!(guest.state, State::Visiting(_)),
+            "still visiting after a key press"
+        );
+    }
+    run(&mut guest, &real, &view, 31_000, 60_000);
+    assert!(matches!(guest.state, State::Visiting(_)));
+    // Before she's arrived, input still restarts the idle wait.
+    let mut early = Guest::new(11);
+    paint(&mut early, &real, &view, 0);
+    early.activity(4_000);
+    assert!(!early.advance(5_000), "the idle wait restarted");
+}
+
+/// A swap out in the chat when someone presses a key: the letters are
+/// back at once, nothing is owed, and she stays. Out of the chat, the
+/// same swap is left alone.
+#[test]
+fn a_key_press_shakes_off_what_she_moved_in_the_chat() {
+    for in_chat in [true, false] {
+        let (real, _) = words_room();
+        let mut view = resident_view(100, 30, None);
+        if !in_chat {
+            view.chat = view.nooks[0].1;
+        }
+        let mut guest = Guest::new(3);
+        visiting_at(&mut guest, &real, &view, (15, 26));
+        paint(&mut guest, &real, &view, 0);
+        let State::Visiting(visit) = &mut guest.state else {
+            panic!("visiting");
+        };
+        let swap = visit
+            .chances
+            .swaps
+            .iter()
+            .find(|s| s.x == 15 && s.y == 26)
+            .cloned()
+            .expect("a swap from where she stands");
+        visit.osaka.swap_now(swap, 0);
+        let frame = run(&mut guest, &real, &view, 0, 2000);
+        assert_eq!(row_text(&frame, 24, 2..13), "the cat sta");
+        guest.activity(2001);
+        guest.advance(2001);
+        let frame = paint(&mut guest, &real, &view, 2001);
+        let State::Visiting(visit) = &guest.state else {
+            panic!("a resident stays");
+        };
+        if in_chat {
+            assert_eq!(row_text(&frame, 24, 2..13), "the cat sat", "put back");
+            assert!(visit.layer.entries().is_empty());
+            assert!(!visit.osaka.owes_anything(), "nothing left to undo");
+        } else {
+            assert_eq!(row_text(&frame, 24, 2..13), "the cat sta", "not the chat");
+            assert!(visit.osaka.owes_anything(), "still to swap back");
+        }
+    }
+}
+
+/// Focusing the pane she's in: what of her was there rains away at once
+/// (no startled beat), the pane is itself again once the rain is done,
+/// and she steps out of her door somewhere else ("Where was I?").
+#[test]
+fn focusing_her_pane_rains_her_out_and_she_steps_out_elsewhere() {
+    for graphics in [false, true] {
+        let real = rooms(100, 30);
+        let panes = nooks(100, 30);
+        let mut guest = Guest::new(21);
+        if graphics {
+            guest.set_picker(kitty());
+        }
+        let quiet = resident_view(100, 30, None);
+        let mut now = 0;
+        paint(&mut guest, &real, &quiet, now);
+        // Until she's on screen, standing in one of the panes.
+        let (pane, last) = loop {
+            now += 250;
+            guest.advance(now);
+            let last = paint(&mut guest, &real, &quiet, now);
+            if let State::Visiting(visit) = &guest.state
+                && !visit.osaka.hidden(now)
+                && visit.osaka.standing()
+                && let Some(&(_, pane)) = panes
+                    .iter()
+                    .find(|(_, pane)| osaka::box_meets(*pane, (visit.osaka.x, visit.osaka.y)))
+                && last != real
+            {
+                break (pane, last);
+            }
+            assert!(now < 120_000, "graphics={graphics}: she never stood still");
+        };
+        let hers = |frame: &Buffer| {
+            (pane.top()..pane.bottom())
+                .flat_map(|y| (pane.left()..pane.right()).map(move |x| (x, y)))
+                .filter(|&at| frame.cell(at) != real.cell(at))
+                .count()
+        };
+        assert!(hers(&last) > 0, "graphics={graphics}: she's in the pane");
+        let focused = resident_view(100, 30, Some(pane));
+        let landed = now + 1;
+        now = landed;
+        guest.advance(now);
+        let first = paint(&mut guest, &real, &focused, now);
+        assert!(
+            hers(&first) > 0,
+            "graphics={graphics}: the rain starts at once"
+        );
+        let mut out = false;
+        while now < landed + 8000 {
+            now += 50;
+            guest.advance(now);
+            let frame = paint(&mut guest, &real, &focused, now);
+            if now >= landed + dissolve::DURATION_MS {
+                assert_eq!(
+                    hers(&frame),
+                    0,
+                    "graphics={graphics}: the pane is itself again"
+                );
+            }
+            let State::Visiting(visit) = &guest.state else {
+                panic!("graphics={graphics}: a resident stays");
+            };
+            if !visit.osaka.hidden(now) && visit.osaka.door(now).is_none() {
+                assert!(
+                    !osaka::box_meets(pane, (visit.osaka.x, visit.osaka.y)),
+                    "graphics={graphics}: she's out of the focused pane"
+                );
+                out = true;
+            }
+        }
+        assert!(out, "graphics={graphics}: she stepped out somewhere else");
+    }
+}
+
+/// Whether she stands in `rect`.
+fn osaka_in(visit: &Visit, rect: Rect) -> bool {
+    let (x, y) = (visit.osaka.x, visit.osaka.y);
+    x >= 0 && y >= 0 && rect.contains((x as u16, y as u16).into())
+}
+
+/// Over long visits a resident spends far less of her time in the chat
+/// than a visitor does (the chat's offers are a tenth as likely).
+#[test]
+fn a_resident_mostly_keeps_out_of_the_chat() {
+    let real = rooms(100, 30);
+    let chat = nooks(100, 30)[0].1;
+    let mut share = [0.0; 2];
+    for (i, resident) in [false, true].into_iter().enumerate() {
+        let view = IdleView {
+            resident,
+            ..resident_view(100, 30, None)
+        };
+        let (mut inside, mut total) = (0u64, 0u64);
+        for seed in 0..4 {
+            let mut guest = Guest::new(seed);
+            let mut now = 0;
+            paint(&mut guest, &real, &view, now);
+            while now < 15 * 60_000 {
+                now += 1000;
+                guest.advance(now);
+                paint(&mut guest, &real, &view, now);
+                if let State::Visiting(visit) = &guest.state
+                    && !visit.osaka.hidden(now)
+                {
+                    total += 1;
+                    inside += u64::from(osaka_in(visit, chat));
+                }
+            }
+        }
+        share[i] = inside as f64 / total.max(1) as f64;
+    }
+    let [visitor, resident] = share;
+    eprintln!("time in the chat: visitor {visitor:.2}, resident {resident:.2}");
+    assert!(
+        resident < visitor * 0.5,
+        "visitor {visitor:.2}, resident {resident:.2}"
+    );
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(dessplay_core::test_support::proptest_cases(16)))]
+
+    /// A resident through focus changes and key presses: she never
+    /// leaves; a newly focused pane shows only the rain over what of
+    /// hers was in it, and nothing of hers once that's done; the
+    /// protected strip is never touched.
+    #[test]
+    fn a_resident_keeps_out_of_the_focused_pane(
+        seed in any::<u64>(),
+        graphics in any::<bool>(),
+        (w, h) in (70u16..130, 24u16..45),
+        text in proptest::collection::vec((0u16..60, 0u16..18, "[a-z ]{1,6}"), 0..20),
+        focuses in proptest::collection::vec((0u64..120_000, proptest::option::of(0usize..3)), 1..8),
+        presses in proptest::collection::vec(0u64..120_000, 0..10),
+        owned in proptest::collection::vec((0usize..4, 0usize..2, 0u16..=1000, any::<bool>()), 0..4),
+    ) {
+        let mut guest = Guest::new(seed);
+        if graphics {
+            guest.set_picker(kitty());
+        }
+        let panes = nooks(w, h);
+        let quiet = [Nook::Users, Nook::Playlist];
+        for &(item, at, along, left) in &owned {
+            let _ = guest.ledger.home.add(
+                quiet[at],
+                room::Prop {
+                    item: Furniture::ALL[item],
+                    at: along,
+                    facing: if left { sprite::Facing::Left } else { sprite::Facing::Right },
+                    boxed: false,
+                },
+            );
+        }
+        let mut real = rooms(w, h);
+        scatter(&mut real, &text, &[]);
+        let base = bottom_strip(w, h);
+        let mut focuses = focuses;
+        focuses.sort_unstable();
+        // The resident is on screen from her arrival.
+        let mut arrived = false;
+        let mut focus: Option<Rect> = None;
+        // When the current focus landed, and what of hers was in it.
+        let mut landed = 0;
+        let mut hers_there: Vec<(u16, u16)> = Vec::new();
+        let mut last = real.clone();
+        let mut now = 0;
+        let until = 120_000;
+        while now < until {
+            let step = guest
+                .next_tick(now)
+                .map_or(until - now, |d| d.as_millis() as u64)
+                .clamp(1, 1000.min(until - now));
+            now += step;
+            if presses.iter().any(|&p| p <= now && p > now - step) {
+                guest.activity(now);
+            }
+            let next = focuses
+                .iter()
+                .rev()
+                .find(|(at, _)| *at <= now)
+                .and_then(|(_, pane)| pane.map(|i| panes.get(i).map_or(panes[0].1, |p| p.1)));
+            if next != focus {
+                focus = next;
+                landed = now;
+                hers_there = focus.map_or_else(Vec::new, |rect| {
+                    last.content
+                        .iter()
+                        .zip(&real.content)
+                        .enumerate()
+                        .filter(|(_, (a, b))| a != b)
+                        .map(|(i, _)| ((i % usize::from(w)) as u16, (i / usize::from(w)) as u16))
+                        .filter(|&(x, y)| rect.contains((x, y).into()))
+                        .collect()
+                });
+            }
+            let view = resident_view(w, h, focus);
+            guest.advance(now);
+            let frame = paint(&mut guest, &real, &view, now);
+            assert_untouched(&frame, &real, &base)?;
+            arrived |= guest.present();
+            if arrived {
+                prop_assert!(
+                    matches!(guest.state, State::Visiting(_)),
+                    "a resident never leaves (at {})", now
+                );
+            }
+            if let (Some(rect), State::Visiting(visit)) = (focus, &guest.state) {
+                let osaka = &visit.osaka;
+                prop_assert!(
+                    osaka.hidden(now)
+                        || osaka.door(now).is_some()
+                        || !osaka::box_meets(rect, (osaka.x, osaka.y)),
+                    "she's in the focused pane at ({}, {}) at {}: {:?}", osaka.x, osaka.y, now, osaka
+                );
+            }
+            // She may stand on a line of the focused pane (its top
+            // border, her body in the pane above): her image redraws the
+            // floor under her feet, as on any protected line.
+            let feet = match &guest.state {
+                State::Visiting(visit) if visit.osaka.standing() => {
+                    Some((visit.osaka.x, visit.osaka.y))
+                }
+                _ => None,
+            };
+            if let Some(rect) = focus {
+                for y in rect.top()..rect.bottom() {
+                    for x in rect.left()..rect.right() {
+                        let (got, want) = (frame.cell((x, y)).unwrap(), real.cell((x, y)).unwrap());
+                        if got == want {
+                            continue;
+                        }
+                        let underfoot = feet.is_some_and(|(fx, fy)| {
+                            i32::from(y) == fy && (i32::from(x) - fx).abs() <= sprite::WIDTH / 2
+                        }) && want.symbol().chars().next().is_some_and(|c| graphics::strokes(c).is_some());
+                        if underfoot {
+                            continue;
+                        }
+                        prop_assert!(
+                            now < landed + dissolve::DURATION_MS && hers_there.contains(&(x, y)),
+                            "({}, {}) in the focused pane shows {:?} at {} (focused at {})",
+                            x, y, got.symbol(), now, landed
+                        );
+                    }
+                }
+            }
+            last = frame;
+        }
     }
 }

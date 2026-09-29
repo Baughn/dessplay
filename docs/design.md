@@ -92,7 +92,7 @@ Both Nix and system-Cargo launchers use this same sequence.
 
 ### Settings Screen
 
-The settings screen is divided into five tabs, selected with Left/Right;
+The settings screen is divided into six tabs, selected with Left/Right;
 Up/Down moves between controls in the active tab. Capital `S`, the visible
 `[Save]` row, or Ctrl-S where the terminal delivers it saves the complete
 working copy atomically. Tabs containing a missing required value carry a
@@ -167,6 +167,9 @@ working copy atomically. Tabs containing a missing required value carry a
   Both apply live. The tab's note says plainly that
   recent subtitles and a player screenshot are sent to Anthropic. See
   [AI Commentary](#ai-commentary-the-marquee).
+- **Houseguest**: *Visits* (when she arrives, or Off), *Resident* (on by
+  default; dim while visits are off), and *Osaka moved out*. See
+  [Houseguest](#houseguest).
 
 Rows whose values do not apply immediately carry a dim lifecycle annotation
 (`next restart`, `reconnects IRC`, the BitTorrent row's asymmetric
@@ -1333,7 +1336,9 @@ this section states what is built.
   nobody blocking; a ready mark or a press of play that's still waiting
   on someone doesn't count), no modal, layout tools, or
   hashing/Nyaa-import overlay, no held chat selection, no local input,
-  and no new chat or IRC line. The terminal must be at least 60×18.
+  and no new chat or IRC line. For a **resident** (below) playback and
+  a held chat selection don't count against it. The terminal must be at
+  least 60×18.
 - She is a **visual overlay only**, painted over each finished frame; she
   never changes app state
   (why: [decisions](decisions.md#houseguest-is-a-post-render-overlay-2026-09-28)).
@@ -1357,9 +1362,10 @@ this section states what is built.
   ("Where was I?"). The door stays within her box, so it never covers
   anything; what it ignores is the terrain in between
   (why: [decisions](decisions.md#houseguest-has-a-door-in-space-2026-09-28)).
-- **Local key, mouse, or paste input** ends a visit with a ~3.75 s
-  dissolve: a startled face, a goodbye smile, then per-column "rain"
-  rippling out from her, each cell cycling spoiler-scramble-class noise
+- **Local key, mouse, or paste input** ends a visit (unless she's
+  resident) with a ~3.75 s dissolve: a startled face, a goodbye smile,
+  then per-column "rain" rippling out from her, each cell cycling
+  spoiler-scramble-class noise
   (`spoiler::rain_glyph`) before settling to the real UI. Every cell has
   settled by 3.6 s and the overlay is gone at 3.75 s; a cell the real UI
   changed since the input shows the real UI at once, and a settled cell
@@ -1493,14 +1499,36 @@ this section states what is built.
   does, and the goodbye rain takes it along with her
   (why: [decisions](decisions.md#houseguest-furniture-is-pane-relative-and-leaves-with-her-2026-09-28)).
 
-- Playback starting or an overlay opening mid-visit starts the dissolve;
-  switching the setting off removes her at once. A terminal resize
+- Playback starting (for a visitor) or an overlay opening mid-visit
+  starts the dissolve; switching the setting off removes her at once. A terminal resize
   re-anchors her (she falls if her floor went away); during a dissolve it
-  ends the dissolve immediately. Focus changes are not activity.
-- **Setting** (F3 → Playback): *Houseguest* — after 1 (default), 2, 5,
-  10, or 30 idle minutes, or Off. Local only. Below it, *Osaka moved
-  out* (asks first) wipes her record: her home goes, and the next visit
-  is a first meeting.
+  ends the dissolve immediately. Terminal focus changes (alt-tab) are not activity.
+- **Resident Osaka** (on by default): once she's arrived she stays —
+  through playback, and through local input. She keeps out of the way
+  instead (why: [decisions](decisions.md#resident-houseguest-keeps-out-of-the-focused-pane-2026-09-30)):
+  - The **focused pane** (whichever it is — the chat, a quiet pane, the
+    subtitles) is protected like the chat input. When a pane gains focus,
+    everything of hers in it — her, her furniture, text she moved — rains
+    out at once (the goodbye rain without the startled beat), and she is
+    already through her door: it opens on a floor clear of that pane, and
+    she steps out ("Where was I?"). Her furniture there is in the closet
+    until focus moves on. She may still stand on the focused pane's top
+    border with her body in the pane above, as on any protected line.
+    Headed out to work, she still goes; on her way home, the door is how
+    she gets in.
+  - **The chat** is where people read: whatever would take her into the
+    chat pane — a pull or swap there, a climb or hop or door that lands
+    her there, a walk along a floor into it — is a tenth as likely.
+  - **Local input** puts back at once everything she moved in the chat
+    (swapped letters, a sneeze's scatter, pulled lines); nothing
+    scheduled for them is owed any more, and if she was at it, she looks
+    up, caught out. What she moved elsewhere stays.
+  - A **held chat selection** protects the chat pane instead of ending
+    the visit. Overlays still end it, as does switching visits off.
+- **Settings** (F3 → Houseguest), local only: *Visits* — after 1
+  (default), 2, 5, 10, or 30 idle minutes, or Off; *Resident* (default
+  on); *Osaka moved out* (asks first) wipes her record: her home goes,
+  and the next visit is a first meeting.
 - **Her record** is local and never synced (the same tier as layout
   sizes): her home (pieces, where each room is), the number of visits,
   and a master seed; each visit's randomness is drawn from the master

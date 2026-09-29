@@ -338,6 +338,17 @@ impl TextLayer {
         true
     }
 
+    /// Put back every glyph that came from `rect` or sits in it, at
+    /// once. Returns how many went back. (A glyph sitting in a hole one
+    /// of them left is dropped by the next validation.)
+    pub fn drop_in(&mut self, rect: Rect) -> usize {
+        let before = self.entries.len();
+        let inside = |(x, y): (u16, u16)| rect.contains(Position::new(x, y));
+        self.entries
+            .retain(|d| !d.source_cells().chain(d.at_cells()).any(inside));
+        before - self.entries.len()
+    }
+
     /// Drop every entry the real frame no longer supports — a source that
     /// changed, or a target that stopped fitting — repeating until stable,
     /// since a dropped entry's hole fills with real text again. Reads only

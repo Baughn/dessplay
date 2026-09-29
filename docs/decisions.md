@@ -2081,6 +2081,41 @@ the master seed itself, so seeded tests are unchanged). Rejected: a
 table in the synced store (not shared state); saving on exit only (a
 crash would lose the delivery that just happened).
 
+## Resident houseguest keeps out of the focused pane (2026-09-30)
+
+**Rule:** With *Resident* on (the default), she stays through playback
+and local input; the focused pane is protected and rains her out, she
+leaves it by her door, whatever would take her into the chat is a tenth
+as likely, and local input puts back what she moved in the chat. See
+[design.md](design.md#houseguest).
+
+**Why:** It was a pity she vanished the moment the video started — the
+screen people glance at during an episode went back to being furniture.
+But she still mustn't get in the way. The user named the two levers:
+the focused pane is where the user is working, whichever it is, so
+nothing of hers may be there; and the chat is where people read, so she
+mostly stays out of it. Making the focused pane *protected* reuses every
+existing guarantee (her body, bubbles, furniture, moved text, and swaps
+all already respect protected rectangles) instead of adding a parallel
+"hidden pane" rule. The rain, not an instant cut, because what's lost
+is only ~3.6 s in a pane the user just arrived at, and the rain is the
+visual language she already speaks; it starts at once (no startled
+beat) because she isn't leaving. She leaves by her door rather than
+falling or being dazed onto the nearest floor: the door is her existing
+"nowhere else to be" move, and a door that opens elsewhere reads as her
+choice. A tenth rather than never: she's allowed in the chat, just
+rarely, which keeps "nothing is ever ruled out". Typing undoes her chat
+mischief so anyone can shake it off with a harmless key (arrow-down)
+without her leaving. Her body — not the floor under her feet — decides
+whether she's in the focused pane: a pane's top border may be the floor
+of the pane above, and standing on a protected line is already allowed.
+
+Consequence, accepted: the chat is focused by default, so an ordinary
+idle visit by a resident rarely goes into the chat unless the user
+tabbed elsewhere first. Rejected: resident only while playing (two
+modes of one guest); hiding the focused pane's contents only (she'd
+walk around invisible); banning the chat outright.
+
 ## Houseguest chooses by needs among the top few (2026-09-28)
 
 **Rule:** Her next act is a weighted-random pick among the four

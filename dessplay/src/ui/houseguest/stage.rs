@@ -414,6 +414,9 @@ pub fn real_ui() -> Ui {
             username: Some("kim".into()),
             password: Some("test".into()),
             houseguest: Houseguest::After(DELAY),
+            // A visitor: a resident keeps out of the focused pane, and
+            // the chat is focused.
+            houseguest_resident: false,
             ..Settings::default()
         },
         vec![],

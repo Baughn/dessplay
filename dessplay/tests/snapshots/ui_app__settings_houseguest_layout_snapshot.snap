@@ -6,11 +6,11 @@ expression: screen
 │                                                ││                                                │
 │                                                ││                                                │
 │                                                ││                                                │
-│              ┌Settings — AI commentary────────────────────────────────────────────┐              │
+│              ┌Settings — Houseguest───────────────────────────────────────────────┐              │
 │              │[Account] [Playback] [Files] [IRC] [AI] [Houseguest]                │              │
-│              │Anthropic API token                                      Baughn only│              │
-│              │Comment interval        Off                            needs a token│              │
-│              │                                                                    │──────────────┘
+│              │Visits                  After 1 minute idle                         │              │
+│              │Resident                yes        stays through playback and typing│              │
+│              │[Osaka moved out]                                                   │──────────────┘
 │              │                                                                    │──────────────┐
 │              │                                                                    │              │
 │              │                                                                    │              │
@@ -24,7 +24,7 @@ expression: screen
 │              │                                                                    │              │
 │              │                                                                    │              │
 └──────────────│                                                                    │              │
-┌──────────────│Sends recent subtitles and a player screenshot to Anthropic.        │              │
+┌──────────────│                                                                    │              │
 │say something…│[Save]                                                              │              │
 └──────────────└────────────────────────────────────────────────────────────────────┘──────────────┘
                                                                                    link: connecting…

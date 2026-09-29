@@ -9,6 +9,17 @@ append-only; you cannot reword or remove existing entries.
 
 Add new days at the top. Add new entries at the bottom of existing days.
 
+## 2026-09-30
+
+- Added: The houseguest can now stay while you watch. With F3 →
+  Houseguest → Resident on (the default), she no longer leaves when the
+  video starts or when you type: she keeps out of whichever pane you
+  have selected (she rains out of it and steps through her door to
+  somewhere else), rarely wanders into the chat, and pressing any key
+  undoes whatever she's been up to in the chat.
+- Changed: The houseguest's settings have their own tab, F3 →
+  Houseguest.
+
 ## 2026-09-29
 
 - Added: The houseguest is moving in. From her second visit she has a

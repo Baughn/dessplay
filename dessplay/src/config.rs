@@ -609,6 +609,10 @@ pub struct Settings {
     /// Whether and when the idle houseguest visits (proposal
     /// 2026-09-28-houseguest). Default: after one idle minute.
     pub houseguest: Houseguest,
+    /// Resident Osaka: once she's arrived, the houseguest stays through
+    /// playback and local input, keeping out of the focused pane
+    /// (design.md, Houseguest). Local only. Default true.
+    pub houseguest_resident: bool,
     /// Sort order for the All Series browser mode (toggled with `s`).
     /// Local-only display preference; persisted across sessions.
     pub series_sort: SeriesSort,
@@ -679,6 +683,7 @@ impl Default for Settings {
             chat_images: true,
             roguelike_effects: RoguelikeEffects::default(),
             houseguest: Houseguest::default(),
+            houseguest_resident: true,
             series_sort: SeriesSort::default(),
             list_sort: ListSort::default(),
             file_browser_sort: BrowserSort::default(),
@@ -875,6 +880,11 @@ impl Settings {
                         .ok()
                 })
                 .unwrap_or(defaults.houseguest),
+            houseguest_resident: storage
+                .setting("houseguest_resident")?
+                .map(|value| parse_bool("houseguest_resident", &value))
+                .transpose()?
+                .unwrap_or(defaults.houseguest_resident),
             marquee_mode: storage
                 .setting("marquee_mode")?
                 .map(|value| MarqueeMode::parse(&value))
@@ -993,6 +1003,14 @@ impl Settings {
         )?;
         storage.set_setting("roguelike_effects", Some(self.roguelike_effects.as_str()))?;
         storage.set_setting("houseguest", Some(&self.houseguest.as_string()))?;
+        storage.set_setting(
+            "houseguest_resident",
+            Some(if self.houseguest_resident {
+                "true"
+            } else {
+                "false"
+            }),
+        )?;
         storage.set_setting("marquee_mode", Some(self.marquee_mode.as_str()))?;
         storage.set_setting("series_sort", Some(self.series_sort.as_str()))?;
         storage.set_setting("list_sort", Some(self.list_sort.as_str()))?;
@@ -1079,6 +1097,7 @@ mod tests {
             chat_images: false,
             roguelike_effects: RoguelikeEffects::Reduced,
             houseguest: Houseguest::Off,
+            houseguest_resident: false,
             series_sort: SeriesSort::Year,
             list_sort: ListSort::Alphabetical,
             file_browser_sort: BrowserSort::Newest,

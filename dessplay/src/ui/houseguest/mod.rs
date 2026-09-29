@@ -5,8 +5,10 @@
 //! She is a **post-render overlay** owned by the shell loop, not a
 //! tui-realm component: after `Ui` has painted a frame, [`Guest::paint`]
 //! reads that frame and an [`IdleView`] and paints over it. Nothing flows
-//! back into `Ui`. Local input sends her away with a ~2.5 s rain
-//! dissolve; a friend's chat message only makes her stop and look.
+//! back into `Ui`. Local input sends her away with a ~3.75 s rain
+//! dissolve — unless she's resident, when she stays and only keeps out
+//! of the focused pane; a friend's chat message only makes her stop and
+//! look.
 //!
 //! All timing is in the shell's monotonic millis and all randomness
 //! comes from a seeded generator, so tests reproduce exactly.
@@ -130,6 +132,8 @@ struct Visit {
     /// The pieces drawn in her image in the last frame (she overlapped
     /// them).
     with: Vec<Shown>,
+    /// What of hers is raining out of a pane that was just focused.
+    fades: Vec<Dissolve>,
     size: (u16, u16),
 }
 
@@ -158,6 +162,11 @@ pub struct Guest {
     state: State,
     /// The client was idle and the setting on at the last paint.
     open: bool,
+    /// Resident Osaka, as of the last paint.
+    resident: bool,
+    /// Local input since the last paint (resident): what she moved in
+    /// the chat goes back.
+    shake: bool,
     delay: Option<Duration>,
     truecolor: bool,
     /// Monotonic millis since which the client has been idle.
@@ -200,6 +209,8 @@ impl Guest {
             persist: true,
             state: State::Absent,
             open: false,
+            resident: false,
+            shake: false,
             delay: None,
             truecolor: false,
             quiet_since: 0,
@@ -343,11 +354,19 @@ impl Guest {
         matches!(self.state, State::Visiting(_) | State::Leaving(_))
     }
 
-    /// Local input (key, mouse, paste): she leaves, and the idle timer
-    /// restarts.
+    /// Local input (key, mouse, paste): the idle timer restarts, and she
+    /// leaves — or, resident, stays, and what she moved in the chat goes
+    /// back.
     pub fn activity(&mut self, now: u64) {
         self.quiet_since = now;
-        self.leave(now);
+        if !self.resident {
+            return self.leave(now);
+        }
+        match self.state {
+            State::Arriving => self.state = State::Absent,
+            State::Visiting(_) => self.shake = true,
+            State::Absent | State::Leaving(_) => {}
+        }
     }
 
     fn leave(&mut self, now: u64) {
@@ -396,9 +415,12 @@ impl Guest {
             }
             State::Arriving => true,
             State::Visiting(visit) => {
+                visit.fades.retain(|fade| !fade.done(now));
+                let fading = !visit.fades.is_empty();
                 visit
                     .osaka
                     .tick(now, &visit.terrain, &visit.chances, &mut self.rng)
+                    || fading
             }
             State::Leaving(leaving) => {
                 if leaving.dissolve.done(now) {
@@ -418,7 +440,11 @@ impl Guest {
                 self.quiet_since + delay.as_millis() as u64
             }
             State::Arriving => now,
-            State::Visiting(visit) => visit.osaka.due(),
+            State::Visiting(visit) => visit
+                .fades
+                .iter()
+                .map(|fade| fade.next_frame(now))
+                .fold(visit.osaka.due(), u64::min),
             State::Leaving(leaving) => leaving.dissolve.next_frame(now),
         };
         Some(Duration::from_millis(due.saturating_sub(now)))
@@ -449,6 +475,7 @@ impl Guest {
                         chances: osaka::Chances::default(),
                         shown: Vec::new(),
                         with: Vec::new(),
+                        fades: Vec::new(),
                         size,
                     }));
                 }
@@ -518,6 +545,42 @@ impl Guest {
                 }
             }
             State::Visiting(visit) => {
+                // Someone's at the keys: what she moved in the chat goes
+                // back (the holes it leaves settle in the validation).
+                if std::mem::take(&mut self.shake) && view.resident {
+                    let undone = visit.layer.drop_in(view.chat);
+                    if undone > 0 {
+                        tracing::debug!(undone, "houseguest: chat mischief shaken off");
+                    }
+                    visit.osaka.shaken(now, view.chat);
+                }
+                // A pane was just focused: what of hers was in it rains
+                // away at once (no startled beat), while she carries on
+                // elsewhere.
+                if let Some(focus) = view.focus {
+                    let out: Vec<Frozen> = visit
+                        .painted
+                        .iter()
+                        .filter(|cell| focus.contains((cell.x, cell.y).into()))
+                        .cloned()
+                        .collect();
+                    if !out.is_empty() && visit.size == size {
+                        tracing::debug!(
+                            cells = out.len(),
+                            "houseguest: raining out of the focused pane"
+                        );
+                        visit.fades.push(Dissolve::new(
+                            now.saturating_sub(dissolve::RAIN_FROM_MS),
+                            out,
+                            visit.osaka.x,
+                            self.truecolor,
+                            size,
+                        ));
+                    }
+                }
+                visit
+                    .fades
+                    .retain(|fade| fade.size() == size && !fade.done(now));
                 // Read before paint: the layer validates against the real
                 // frame, then its cells join the protected set so she
                 // never stands over moved text or the holes it left.
@@ -576,7 +639,15 @@ impl Guest {
                 protected.extend(visit.layer.cells().map(|(x, y)| Rect::new(x, y, 1, 1)));
                 visit.terrain = Terrain::read(buf, &protected, self.graphics.is_some());
                 visit.size = size;
-                if size.0 < MIN_WIDTH
+                let chat = view.resident.then_some(view.chat);
+                // Out of the focused pane, through her door.
+                let evicted = view.focus.is_some_and(|focus| {
+                    !visit
+                        .osaka
+                        .evict(focus, &visit.terrain, chat, now, &mut self.rng)
+                });
+                if evicted
+                    || size.0 < MIN_WIDTH
                     || size.1 < MIN_HEIGHT
                     || !visit.osaka.settle(now, &visit.terrain)
                 {
@@ -607,6 +678,7 @@ impl Guest {
                         ),
                         advert: advert(&self.ledger, self.shop_now),
                         furnished: !self.ledger.home.props.is_empty(),
+                        chat,
                     };
                     let note =
                         stage::direct(scene, buf, &protected, visit, &offered, now, &mut self.rng);
@@ -634,6 +706,7 @@ impl Guest {
                     ),
                     advert: advert(&self.ledger, self.shop_now),
                     furnished: !self.ledger.home.props.is_empty(),
+                    chat,
                 };
                 // In line art, pieces she overlaps go in her image: two
                 // images would cut each other out.
@@ -703,6 +776,11 @@ impl Guest {
                     }
                 }
                 visit.painted = layer;
+                // Last, over the real frame in the focused pane (where
+                // nothing else of hers goes).
+                for fade in &mut visit.fades {
+                    fade.paint(buf, now);
+                }
             }
         }
     }
@@ -710,6 +788,7 @@ impl Guest {
     /// Update the idle gate and chat arrivals from the frame's view.
     fn observe(&mut self, view: &IdleView, now: u64) {
         self.open = view.open();
+        self.resident = view.resident;
         self.delay = view.delay;
         self.truecolor = view.truecolor;
         if !self.open {

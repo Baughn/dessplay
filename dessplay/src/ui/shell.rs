@@ -576,7 +576,8 @@ pub fn run_ui_loop<A: TerminalAdapter>(
                     Some(std::time::Instant::now());
             }
             UiInput::Event(event) => {
-                // Local input sends the houseguest away; a resize only
+                // Local input sends the houseguest away (a resident stays,
+                // putting back what she moved in the chat); a resize only
                 // re-anchors her, and focus changes (alt-tab) are not
                 // activity.
                 if matches!(

@@ -7,7 +7,7 @@ expression: screen
 │                                                ││                                                │
 │                                                ││                                                │
 │              ┌Settings — Playback & display───────────────────────────────────────┐              │
-│              │[Account] [Playback] [Files] [IRC] [AI]                             │              │
+│              │[Account] [Playback] [Files] [IRC] [AI] [Houseguest]                │              │
 │              │Player                  mpv                        WIP — not applied│              │
 │              │Subtitle display        Off                                         │              │
 │              │Speaker names           no                         subtitles are off│──────────────┘
@@ -16,8 +16,8 @@ expression: screen
 │              │Commentary marquee      Marquee                                     │              │
 │              │Inline chat images      yes                                         │              │
 │              │Dungeon injury effects  Full                                        │              │
-│              │Houseguest              After 1 minute idle                         │              │
-│              │[Osaka moved out]                                                   │              │
+│              │                                                                    │              │
+│              │                                                                    │              │
 │              │                                                                    │──────────────┘
 │              │                                                                    │──────────────┐
 │              │                                                                    │              │

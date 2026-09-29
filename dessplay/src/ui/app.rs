@@ -593,11 +593,15 @@ impl Ui {
             || self.layout_tools
             || !self.hashing.is_empty()
             || !self.nyaa_imports.is_empty();
-        let busy = if playing {
-            Some(Busy::Playing)
-        } else if overlay {
+        // Resident Osaka stays through playback, and keeps out of the
+        // way of what the user is doing instead of leaving.
+        let resident = self.settings.houseguest_resident;
+        let selecting = self.chat.selection_held();
+        let busy = if overlay {
             Some(Busy::Overlay)
-        } else if self.chat.selection_held() {
+        } else if playing && !resident {
+            Some(Busy::Playing)
+        } else if selecting && !resident {
             Some(Busy::Selection)
         } else {
             None
@@ -611,10 +615,21 @@ impl Ui {
         protected.extend(images.iter().map(|&image| grow(image, 1)));
         // The newest message is never touched, only looked at.
         protected.extend(self.chat.newest_message_rows());
+        // A resident keeps out of the focused pane, and out of the chat
+        // while someone is selecting in it.
+        let focus = (resident && !self.focus_order.is_empty())
+            .then(|| self.panes.bounds(self.focus.name()))
+            .filter(|rect| !rect.is_empty());
+        protected.extend(focus);
+        if resident && selecting {
+            protected.push(self.panes.chat);
+        }
         protected.retain(|rect| !rect.is_empty());
         IdleView {
             delay: self.settings.houseguest.delay(),
             busy,
+            resident,
+            focus,
             chat_mark: ChatMark {
                 synced: view.chat.len(),
                 newest: view.chat.last().map(|message| message.timestamp.0),
@@ -5307,9 +5322,10 @@ mod tests {
         )));
     }
 
-    /// The houseguest only gives way to playback that's actually running:
-    /// a ready mark (or play pressed) latches the intent at once, but
-    /// while anyone still blocks, the video doesn't run and she stays.
+    /// A visiting houseguest only gives way to playback that's actually
+    /// running: a ready mark (or play pressed) latches the intent at once,
+    /// but while anyone still blocks, the video doesn't run and she stays.
+    /// A resident stays through playback too.
     #[test]
     fn the_houseguest_stays_until_the_video_actually_runs() {
         use crate::ui::houseguest::Busy;
@@ -5322,12 +5338,23 @@ mod tests {
             }
             state.view()
         };
-        let mut ui = ui_with_view(state(true));
-        ui.snapshot.peers = vec![peer_info("kim", dessplay_core::net::Presence::Present)];
-        assert_eq!(ui.idle_view(&[]).busy, None, "intent alone isn't playback");
-        let mut ui = ui_with_view(state(false));
-        ui.snapshot.peers = vec![peer_info("kim", dessplay_core::net::Presence::Present)];
-        assert_eq!(ui.idle_view(&[]).busy, Some(Busy::Playing));
+        let ui = |blocked: bool, resident: bool| {
+            let mut ui = ui_with_view(state(blocked));
+            ui.settings.houseguest_resident = resident;
+            ui.snapshot.peers = vec![peer_info("kim", dessplay_core::net::Presence::Present)];
+            ui
+        };
+        assert_eq!(
+            ui(true, false).idle_view(&[]).busy,
+            None,
+            "intent alone isn't playback"
+        );
+        assert_eq!(ui(false, false).idle_view(&[]).busy, Some(Busy::Playing));
+        assert_eq!(
+            ui(false, true).idle_view(&[]).busy,
+            None,
+            "a resident stays"
+        );
     }
 
     #[test]

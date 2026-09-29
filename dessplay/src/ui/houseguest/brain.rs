@@ -222,18 +222,20 @@ pub(super) fn score(kind: Kind, needs: &Needs, recent: &[Kind]) -> f64 {
     kind.base() * fit * COOLDOWN.powi(repeats as i32)
 }
 
-/// Choose among `offers`: weighted by score among the top few. Returns
-/// the chosen index and the scored top offers (for the log).
+/// Choose among `offers`: weighted by score, times the offer's `factor`
+/// (where it would take her), among the top few. Returns the chosen
+/// index and the scored top offers (for the log).
 pub(super) fn choose(
     offers: &[Kind],
     needs: &Needs,
     recent: &[Kind],
+    factor: &dyn Fn(Kind) -> f64,
     rng: &mut Rng,
 ) -> Option<(usize, Vec<(Kind, f64)>)> {
     let mut scored: Vec<(usize, f64)> = offers
         .iter()
         .enumerate()
-        .map(|(i, &k)| (i, score(k, needs, recent)))
+        .map(|(i, &k)| (i, score(k, needs, recent) * factor(k)))
         .collect();
     scored.sort_by(|a, b| b.1.total_cmp(&a.1));
     scored.truncate(TOP);
@@ -281,7 +283,7 @@ mod tests {
         let mut rng = Rng(9);
         let mut counts = std::collections::HashMap::new();
         for _ in 0..2000 {
-            let (i, _) = choose(offers, &needs, &[], &mut rng).unwrap();
+            let (i, _) = choose(offers, &needs, &[], &|_| 1.0, &mut rng).unwrap();
             *counts.entry(offers[i]).or_default() += 1;
         }
         counts
@@ -320,7 +322,7 @@ mod tests {
             let mut recent: Vec<Kind> = Vec::new();
             let mut lie = 0;
             for _ in 0..4000 {
-                let (i, _) = choose(&offers, &needs, &recent, &mut rng).unwrap();
+                let (i, _) = choose(&offers, &needs, &recent, &|_| 1.0, &mut rng).unwrap();
                 let kind = offers[i];
                 lie += usize::from(kind == Kind::Idle(Activity::LieBack));
                 recent.push(kind);

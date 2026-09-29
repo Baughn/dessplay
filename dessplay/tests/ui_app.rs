@@ -462,6 +462,21 @@ fn settings_playback_layout_snapshot() {
 }
 
 #[test]
+fn settings_houseguest_layout_snapshot() {
+    let mut ui = ui();
+    ui.handle(key(Key::Function(3)));
+    ui.handle(key(Key::Left));
+    let screen = render(&mut ui, 100, 30);
+    assert!(screen.contains("Settings — Houseguest"), "{screen}");
+    assert!(
+        screen.contains("stays through playback and typing"),
+        "{screen}"
+    );
+    assert!(screen.contains("[Osaka moved out]"), "{screen}");
+    insta::assert_snapshot!(screen);
+}
+
+#[test]
 fn settings_files_layout_snapshot_scrolls_many_roots() {
     let settings = Settings {
         username: Some("kim".into()),

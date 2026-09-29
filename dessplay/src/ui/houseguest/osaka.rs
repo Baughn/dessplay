@@ -9,7 +9,8 @@ use super::layer::Placed;
 use super::room::{Furniture, Seat, Use};
 use super::scenes::{Job, LayerOp, Side};
 use super::sprite::{self, Face, Facing, HEIGHT, Pose, SpriteCell};
-use super::terrain::{Link, Route, Terrain};
+use super::terrain::{Link, Platform, Route, Terrain};
+use tuirealm::ratatui::layout::Rect;
 
 /// What the current frame offers her beyond walking around.
 #[derive(Clone, Debug, Default)]
@@ -26,6 +27,85 @@ pub(super) struct Chances {
     pub advert: Option<Furniture>,
     /// She has a home (to leave for work, and come back to).
     pub furnished: bool,
+    /// The chat pane, when she's resident: people read there, so what
+    /// would take her into it is [`CHAT_FACTOR`] as likely.
+    pub chat: Option<Rect>,
+}
+
+/// How much less likely a resident is to do what takes her into the
+/// chat pane.
+pub(super) const CHAT_FACTOR: f64 = 0.1;
+
+/// Whether `rect` holds the cell `(x, y)`.
+fn holds(rect: Rect, (x, y): (i32, i32)) -> bool {
+    match (u16::try_from(x), u16::try_from(y)) {
+        (Ok(x), Ok(y)) => rect.contains((x, y).into()),
+        _ => false,
+    }
+}
+
+/// Her box standing at `(x, y)` overlaps `rect`. Only her body counts:
+/// the floor under her feet may be another pane's border (and nothing
+/// of hers is painted on a protected cell anyway).
+pub(super) fn box_meets(rect: Rect, (x, y): (i32, i32)) -> bool {
+    let half = sprite::WIDTH / 2;
+    let (left, right) = (i32::from(rect.x), i32::from(rect.right()));
+    let (top, bottom) = (i32::from(rect.y), i32::from(rect.bottom()));
+    x - half < right && x + half >= left && y - HEIGHT < bottom && y > top
+}
+
+/// Whether there's at least one, and all are.
+fn all_of(mut each: impl Iterator<Item = bool>) -> bool {
+    let mut any = false;
+    each.all(|yes| {
+        any = true;
+        yes
+    }) && any
+}
+
+/// Where taking `link` puts her down.
+fn landing(link: &Link, terrain: &Terrain) -> Option<(i32, i32)> {
+    let p = terrain.platforms.get(link.to)?;
+    let x = match link.route {
+        Route::Climb => link.x,
+        Route::Drop { over } => over,
+        Route::Clamber { column } => column,
+        Route::Around { enter, .. } => {
+            if enter < 0 {
+                p.x0
+            } else {
+                p.x1
+            }
+        }
+    };
+    Some((p.clamp(x), p.y))
+}
+
+/// A spot on `p`'s floor, midway.
+fn middle(p: &Platform) -> (i32, i32) {
+    ((p.x0 + p.x1) / 2, p.y)
+}
+
+/// Pick one of `n` things, those `in_chat` weighing [`CHAT_FACTOR`].
+/// With none in the chat it's a plain uniform pick (the same draw as
+/// ever, so seeded visits replay).
+fn pick(n: usize, in_chat: impl Fn(usize) -> bool, rng: &mut Rng) -> Option<usize> {
+    if n == 0 {
+        return None;
+    }
+    if !(0..n).any(&in_chat) {
+        return Some(rng.below(n as u64) as usize);
+    }
+    let weight = |i: usize| if in_chat(i) { CHAT_FACTOR } else { 1.0 };
+    let total: f64 = (0..n).map(weight).sum();
+    let mut roll = rng.below(1_000_000) as f64 / 1_000_000.0 * total;
+    for i in 0..n {
+        if roll < weight(i) {
+            return Some(i);
+        }
+        roll -= weight(i);
+    }
+    Some(n - 1)
 }
 
 /// Something she did to her home (the guest keeps the record).
@@ -39,6 +119,11 @@ pub(super) enum HomeEvent {
 }
 
 impl Chances {
+    /// Whether `spot` is in the chat pane (and she's resident).
+    fn in_chat(&self, spot: (i32, i32)) -> bool {
+        self.chat.is_some_and(|chat| holds(chat, spot))
+    }
+
     fn offers(&self, job: &Job) -> bool {
         match job {
             Job::Pull(p) => self.pulls.contains(p),
@@ -330,6 +415,43 @@ fn door_beat(elapsed: u64, gap: u64) -> Option<(&'static DoorBeat, u64)> {
         };
         (elapsed < end).then_some((beat, end))
     })
+}
+
+/// How long a door takes to let her through and close behind her: the
+/// beats before the gap.
+const DOOR_THROUGH_MS: u64 = {
+    let mut ms = 0;
+    let mut i = 0;
+    while i < DOOR.len() && DOOR[i].door.is_some() {
+        ms += DOOR[i].ms;
+        i += 1;
+    }
+    ms
+};
+
+/// A spot on a floor where her box is `clear` (of the focused pane),
+/// chosen at random, the chat's floors [`CHAT_FACTOR`] as likely.
+fn elsewhere(
+    terrain: &Terrain,
+    clear: &dyn Fn((i32, i32)) -> bool,
+    chat: Option<Rect>,
+    rng: &mut Rng,
+) -> Option<(i32, i32)> {
+    let spots: Vec<(i32, i32)> = terrain
+        .platforms
+        .iter()
+        .filter_map(|p| {
+            let x = p.x0 + rng.below((p.x1 - p.x0 + 1) as u64) as i32;
+            let spot = (x, p.y);
+            clear(spot).then_some(spot)
+        })
+        .collect();
+    let in_chat = |i: usize| {
+        spots
+            .get(i)
+            .is_some_and(|&spot| chat.is_some_and(|chat| holds(chat, spot)))
+    };
+    pick(spots.len(), in_chat, rng).and_then(|i| spots.get(i).copied())
 }
 
 /// She goes to work after this long into a visit, at the earliest.
@@ -1517,7 +1639,36 @@ impl Osaka {
         if !chances.swaps.is_empty() && !self.owes() {
             offers.push(Kind::Swap);
         }
-        while let Some((i, top)) = brain::choose(&offers, &self.needs, &self.recent, rng) {
+        // Where each offer would take her: a resident mostly keeps out
+        // of the chat, where people are reading.
+        let floor_in_chat = |i: usize| {
+            terrain
+                .platforms
+                .get(i)
+                .is_some_and(|p| chances.in_chat(middle(p)))
+        };
+        let pulls_in_chat = all_of(chances.pulls.iter().map(|p| chances.in_chat((p.x, p.y))));
+        let swaps_in_chat = all_of(chances.swaps.iter().map(|s| chances.in_chat((s.x, s.y))));
+        let travel_in_chat = if links.is_empty() {
+            all_of(
+                (0..terrain.platforms.len())
+                    .filter(|&i| i != here)
+                    .map(floor_in_chat),
+            )
+        } else {
+            all_of(
+                links
+                    .iter()
+                    .map(|l| landing(l, terrain).is_some_and(|spot| chances.in_chat(spot))),
+            )
+        };
+        let factor = |kind: Kind| match kind {
+            Kind::Pull if pulls_in_chat => CHAT_FACTOR,
+            Kind::Swap if swaps_in_chat => CHAT_FACTOR,
+            Kind::Travel if travel_in_chat => CHAT_FACTOR,
+            _ => 1.0,
+        };
+        while let Some((i, top)) = brain::choose(&offers, &self.needs, &self.recent, &factor, rng) {
             let kind = offers.remove(i);
             if self.start(kind, here, &links, terrain, chances, at, rng) {
                 tracing::debug!(
@@ -1577,7 +1728,17 @@ impl Osaka {
                 let Some(p) = terrain.platforms.get(here) else {
                     return false;
                 };
-                let to = p.x0 + rng.below((p.x1 - p.x0 + 1) as u64) as i32;
+                // A floor running into the chat: the far end of it is a
+                // tenth as likely, from outside.
+                let into_chat =
+                    |x: i32| !chances.in_chat((self.x, self.y)) && chances.in_chat((x, p.y));
+                let to = p.x0
+                    + pick(
+                        (p.x1 - p.x0 + 1) as usize,
+                        |i| into_chat(p.x0 + i as i32),
+                        rng,
+                    )
+                    .unwrap_or(0) as i32;
                 if to == self.x {
                     return false;
                 }
@@ -1585,15 +1746,25 @@ impl Osaka {
                 Act::Walk { to, then: None }
             }
             Kind::Work => {
-                let out = links
-                    .iter()
-                    .find(|l| matches!(l.route, Route::Around { .. }))
+                // Home by a way that doesn't come in through the chat,
+                // when there is one.
+                let around = || {
+                    links
+                        .iter()
+                        .filter(|l| matches!(l.route, Route::Around { .. }))
+                };
+                let out = around()
+                    .find(|l| !landing(l, terrain).is_some_and(|s| chances.in_chat(s)))
+                    .or_else(|| around().next())
                     .copied();
                 self.go_to_work(out, at, rng);
                 return true;
             }
             Kind::Travel => {
-                if let Some(&link) = links.get(rng.below(links.len() as u64) as usize) {
+                let into_chat = |l: &Link| landing(l, terrain).is_some_and(|s| chances.in_chat(s));
+                if let Some(&link) = pick(links.len(), |i| links.get(i).is_some_and(into_chat), rng)
+                    .and_then(|i| links.get(i))
+                {
                     self.travel(link, at);
                     return true;
                 }
@@ -1605,7 +1776,12 @@ impl Osaka {
                     .filter(|&(i, _)| i != here)
                     .map(|(_, p)| p)
                     .collect();
-                let Some(p) = others.get(rng.below(others.len() as u64) as usize) else {
+                let Some(p) = pick(
+                    others.len(),
+                    |i| others.get(i).is_some_and(|p| chances.in_chat(middle(p))),
+                    rng,
+                )
+                .and_then(|i| others.get(i)) else {
                     return false;
                 };
                 let x = p.x0 + rng.below((p.x1 - p.x0 + 1) as u64) as i32;
@@ -1628,11 +1804,21 @@ impl Osaka {
                 // A few tries at one she can get to.
                 for _ in 0..8 {
                     let job = if kind == Kind::Pull {
-                        let pick = rng.below(chances.pulls.len() as u64) as usize;
-                        chances.pulls.get(pick).cloned().map(Job::Pull)
+                        let pulls = &chances.pulls;
+                        let in_chat =
+                            |i: usize| pulls.get(i).is_some_and(|p| chances.in_chat((p.x, p.y)));
+                        pick(pulls.len(), in_chat, rng)
+                            .and_then(|i| pulls.get(i))
+                            .cloned()
+                            .map(Job::Pull)
                     } else {
-                        let pick = rng.below(chances.swaps.len() as u64) as usize;
-                        chances.swaps.get(pick).cloned().map(Job::Swap)
+                        let swaps = &chances.swaps;
+                        let in_chat =
+                            |i: usize| swaps.get(i).is_some_and(|s| chances.in_chat((s.x, s.y)));
+                        pick(swaps.len(), in_chat, rng)
+                            .and_then(|i| swaps.get(i))
+                            .cloned()
+                            .map(Job::Swap)
                     };
                     let Some(job) = job else {
                         return false;
@@ -1927,6 +2113,113 @@ impl Osaka {
             },
             at,
         );
+    }
+
+    /// The focused pane `focus` covers where she is (she's resident): she
+    /// has rained out of it, and is already through her door, which
+    /// opens on a floor clear of it — the chat's floors [`CHAT_FACTOR`]
+    /// as likely — where she steps out. Headed for work, she still
+    /// goes; on her way home, she's home. Returns false when no floor is
+    /// clear of it.
+    pub fn evict(
+        &mut self,
+        focus: Rect,
+        terrain: &Terrain,
+        chat: Option<Rect>,
+        now: u64,
+        rng: &mut Rng,
+    ) -> bool {
+        let clear = |spot: (i32, i32)| !box_meets(focus, spot);
+        match &mut self.act {
+            // Out of sight: when she's back in, she'll be moved on.
+            Act::Away { .. } => return true,
+            // Not through yet: the far door opens somewhere else instead.
+            Act::Door { since, to, gap } => {
+                let there =
+                    door_beat(now.saturating_sub(*since), *gap).is_none_or(|(beat, _)| beat.there);
+                if there {
+                    if clear((self.x, self.y)) {
+                        return true;
+                    }
+                } else {
+                    if clear(*to) {
+                        return true;
+                    }
+                    let Some(spot) = elsewhere(terrain, &clear, chat, rng) else {
+                        return false;
+                    };
+                    tracing::debug!(?spot, "houseguest: her door opens elsewhere");
+                    *to = spot;
+                    return true;
+                }
+            }
+            _ => {
+                if clear((self.x, self.y)) {
+                    return true;
+                }
+            }
+        }
+        let Some(spot) = elsewhere(terrain, &clear, chat, rng) else {
+            return false;
+        };
+        tracing::debug!(from = ?(self.x, self.y), to = ?spot, "houseguest: out of the focused pane");
+        // On her way out to work, the shift still happens; coming home
+        // from it, the door is the way in.
+        let leaving_for_work = self.at_work
+            && matches!(
+                self.act,
+                Act::Out { .. }
+                    | Act::Walk {
+                        then: Some(Link {
+                            route: Route::Around { .. },
+                            ..
+                        }),
+                        ..
+                    }
+            );
+        let gap = if leaving_for_work {
+            rng.range(SHIFT_MS.0, SHIFT_MS.1)
+        } else {
+            0
+        };
+        self.set(
+            Act::Door {
+                since: now.saturating_sub(DOOR_THROUGH_MS),
+                to: spot,
+                gap,
+            },
+            now,
+        );
+        true
+    }
+
+    /// Someone's at the keys (she's resident): whatever she'd moved in
+    /// the chat has just been put back, so nothing queued for those
+    /// letters is owed any more, and if she was at it there, she looks
+    /// up, caught out.
+    pub fn shaken(&mut self, now: u64, chat: Rect) {
+        self.pending.retain(|(_, op)| {
+            !op.sources()
+                .iter()
+                .any(|&(x, y)| chat.contains((x, y).into()))
+        });
+        let busy_there = self.task.as_ref().is_some_and(|job| {
+            matches!(job, Job::Pull(_) | Job::Swap(_)) && holds(chat, job.spot())
+        }) && matches!(
+            self.act,
+            Act::Pull { .. } | Act::Swap { .. } | Act::Giggle { .. } | Act::Innocent { .. }
+        );
+        if busy_there {
+            tracing::debug!("houseguest: shaken off in the chat");
+            self.task = None;
+            self.set(
+                Act::Look {
+                    surprised_until: now + SURPRISED_MS,
+                    until: now + LOOK_MS / 2,
+                },
+                now,
+            );
+        }
     }
 
     /// Off to her part-time job: out at a screen edge if her floor

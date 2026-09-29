@@ -35,6 +35,7 @@ channel on her TV. We borrow that backbone (see
 | 1b | Line art: SVG rig, kitty placement, redrawn lines, letter-burst goodbye | **done** |
 | 2 | Tidying and mischief: text layer and newest-line protection, pulling lines, letter swap, sneeze scatter, scheduled self-reverting, the stage (**done**); bubbles and speech, the brain with needs (**done**) | done |
 | 3 | The room: eight pieces of furniture in pane-rooms, composited with her; the ledger; deliveries and Chiyo-chichi's shopping channel; her part-time job; ways out of pits (clambering, stepping out, the door); hunger and the fridge | **done** (routine and calendar moved to 4) |
+| 3b | Resident Osaka: stays through playback and local input, rains out of the focused pane and leaves it by her door, a tenth as likely into the chat, input undoes her chat mischief; the Houseguest settings tab | **done** 2026-09-30 |
 | 4 | Colour: calendar, screen reading, dreams, cameos, rarity and pity, credits | planned |
 | 5 | The text factory: text hauled into an industrial space and compacted into materials | planned, last |
 
@@ -752,17 +753,19 @@ never restarts or extends it; a resize ends it at once.
 
 ## Settings
 
-Built, under F3 → Playback, local only:
+Built, under F3 → Houseguest, local only:
 
-- **Houseguest**: After 1 (default), 2, 5, 10 or 30 idle minutes, or
-  Off.
+- **Visits**: After 1 (default), 2, 5, 10 or 30 idle minutes, or Off.
+- **Resident** (default on): she stays through playback and input,
+  keeping out of the focused pane (design.md, Houseguest).
+- **Osaka moved out**: wipes her record, after asking.
 
 *Planned with the ledger (phase 3):* Full / Visits only (no persisted
 room); **Night stays** on/off (off = she leaves at bedtime instead of
 sleeping over, for shared screens left on overnight); a reduced-motion
 goodbye (a plain short scramble, or an instant cut). First visit ever: a
 shy intro scene, plus one local system line in chat, "Someone seems to
-have moved into your terminal. (F3 → Playback → Houseguest)"; until then
+have moved into your terminal. (F3 → Houseguest)"; until then
 the CHANGELOG entry announces her.
 
 ## Persistence (*planned*, phase 3)

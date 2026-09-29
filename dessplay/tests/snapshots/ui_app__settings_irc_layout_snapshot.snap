@@ -7,7 +7,7 @@ expression: screen
 │                                                ││                                                │
 │                                                ││                                                │
 │              ┌Settings — IRC bridge───────────────────────────────────────────────┐              │
-│              │[Account] [Playback] [Files] [IRC] [AI]                             │              │
+│              │[Account] [Playback] [Files] [IRC] [AI] [Houseguest]                │              │
 │              │IRC bridge              yes                           reconnects IRC│              │
 │              │IRC server              irc.rizon.net                 reconnects IRC│              │
 │              │IRC TLS                 yes                           reconnects IRC│──────────────┘
