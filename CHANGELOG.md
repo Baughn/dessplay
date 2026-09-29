@@ -27,6 +27,9 @@ Add new days at the top. Add new entries at the bottom of existing days.
   fridge and a cat bed. She reads, raids the fridge when she's peckish,
   and on some visits there's a grey cat asleep in the cat bed. He does
   not like being petted.
+- Fixed: The client no longer refuses to start with "bad houseguest"
+  after her first visit. Her room starts over once, and the "houseguest
+  arrives after" setting goes back to one minute.
 
 ## 2026-09-28
 

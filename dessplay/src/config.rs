@@ -862,10 +862,18 @@ impl Settings {
                 .map(|value| RoguelikeEffects::parse(&value))
                 .transpose()?
                 .unwrap_or(defaults.roguelike_effects),
+            // Tolerant: builds before 2026-09-29 saved her ledger under this
+            // same key, so a JSON ledger here resets the setting instead of
+            // refusing to start.
             houseguest: storage
                 .setting("houseguest")?
-                .map(|value| Houseguest::parse(&value))
-                .transpose()?
+                .and_then(|value| {
+                    Houseguest::parse(&value)
+                        .inspect_err(
+                            |error| tracing::warn!(%error, "resetting the houseguest setting"),
+                        )
+                        .ok()
+                })
                 .unwrap_or(defaults.houseguest),
             marquee_mode: storage
                 .setting("marquee_mode")?

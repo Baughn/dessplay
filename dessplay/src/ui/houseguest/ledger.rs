@@ -13,7 +13,8 @@ use super::sprite::Facing;
 /// The format this build writes.
 const VERSION: u32 = 1;
 /// Its key in local settings storage.
-const KEY: &str = "houseguest";
+// Not "houseguest": that key is her arrival setting (config.rs).
+const KEY: &str = "houseguest_ledger";
 
 /// Everything that outlives a visit.
 #[derive(Clone, Debug, PartialEq)]
@@ -268,5 +269,35 @@ mod tests {
         let ledger = furnished();
         ledger.save(&storage).unwrap();
         assert_eq!(Ledger::load(&storage).unwrap(), Some(ledger));
+    }
+
+    #[test]
+    fn it_does_not_clobber_her_arrival_setting() {
+        let storage = crate::storage::Storage::open_in_memory().unwrap();
+        let settings = crate::config::Settings {
+            houseguest: crate::config::Houseguest::Off,
+            ..storage.load_settings().unwrap()
+        };
+        storage.save_settings(&settings).unwrap();
+        let ledger = furnished();
+        ledger.save(&storage).unwrap();
+        assert_eq!(
+            storage.load_settings().unwrap().houseguest,
+            crate::config::Houseguest::Off
+        );
+        storage.save_settings(&settings).unwrap();
+        assert_eq!(Ledger::load(&storage).unwrap(), Some(ledger));
+    }
+
+    #[test]
+    fn a_ledger_under_the_old_key_resets_the_setting() {
+        let storage = crate::storage::Storage::open_in_memory().unwrap();
+        storage
+            .set_setting("houseguest", Some(&furnished().to_json()))
+            .unwrap();
+        assert_eq!(
+            storage.load_settings().unwrap().houseguest,
+            crate::config::Houseguest::default()
+        );
     }
 }
