@@ -1442,7 +1442,7 @@ this section states what is built.
   edge if her floor reaches one, else through her door. Her room stands
   furnished while she's gone (one to three minutes); a chat or IRC line
   meanwhile doesn't fetch her (mischief is still undone at once). She
-  comes back the same way with a shopping bag, a leek sticking out
+  comes back the same way with a bundle of leeks cradled in her arms
   ("I'm home!").
 - **Getting furniture**: her TV is ordered for her and arrives on her
   second visit. After that, when she watches TV at least three visits

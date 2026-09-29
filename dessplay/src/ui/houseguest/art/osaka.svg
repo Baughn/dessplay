@@ -253,14 +253,15 @@
   <!-- Her shopping bag: kraft paper, the top folded over, a leek
        sticking out of it on the left. Drawn with its top edge's middle
        at (0, 0); her hands hold that edge. -->
-  <g id="bag">
-    <path d="M -12 6 L -38 -38" fill="none" stroke="currentColor" stroke-width="6.4" stroke-linecap="round"/>
-    <path d="M -12 6 L -26 -18" fill="none" stroke="#f6f4ea" stroke-width="4" stroke-linecap="round"/>
-    <path d="M -25 -16 L -38 -38 M -26 -17 L -44 -31 M -27 -18 L -32 -43" fill="none" stroke="#5c9a3c" stroke-width="3.6" stroke-linecap="round"/>
-    <path d="M -15 0 L 15 0 L 17 30 L -17 30 Z"
-          fill="#c79a62" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
-    <path d="M -15 0 L 15 0 L 15.4 5 L -15.4 5 Z" fill="#b3854f" stroke="currentColor" stroke-width="1.2"/>
-    <path d="M -10 12 L -12 26 M 10 12 L 12 26" fill="none" stroke="#a87a45" stroke-width="0.9"/>
+  <!-- Leeks cradled across her chest (home from work): cut white
+       stalks low at her viewer-left hip, green tops fanning up past
+       her viewer-right shoulder. Drawn in canvas coordinates. -->
+  <g id="leeks">
+    <path d="M 50.6 84.4 Q 60.4 70.5 63.7 58.7 M 50.6 84.4 Q 61.8 71.6 68.8 62.0 M 55.1 84.9 Q 65.5 71.5 72.7 57.8 M 55.1 84.9 Q 67.1 72.9 78.7 62.9 M 57.7 87.4 Q 69.1 74.7 81.1 60.4 M 57.7 87.4 Q 70.3 76.0 86.2 65.9 M 58.5 91.8 Q 70.7 80.0 88.0 66.1 M 58.5 91.8 Q 72.1 81.6 93.3 74.0" fill="none" stroke="currentColor" stroke-width="5.6" stroke-linecap="round"/>
+    <path d="M 30.8 105.6 L 50.6 84.4 M 34.3 107.2 L 55.1 84.9 M 36.9 109.7 L 57.7 87.4 M 38.7 113.0 L 58.5 91.8" fill="none" stroke="currentColor" stroke-width="5.8" stroke-linecap="round"/>
+    <path d="M 50.6 84.4 Q 60.4 70.5 63.7 58.7 M 50.6 84.4 Q 61.8 71.6 68.8 62.0 M 55.1 84.9 Q 65.5 71.5 72.7 57.8 M 55.1 84.9 Q 67.1 72.9 78.7 62.9 M 57.7 87.4 Q 69.1 74.7 81.1 60.4 M 57.7 87.4 Q 70.3 76.0 86.2 65.9 M 58.5 91.8 Q 70.7 80.0 88.0 66.1 M 58.5 91.8 Q 72.1 81.6 93.3 74.0" fill="none" stroke="#5c9a3c" stroke-width="3.4" stroke-linecap="round"/>
+    <path d="M 42.4 93.2 L 50.6 84.4 M 46.9 93.7 L 55.1 84.9 M 49.5 96.1 L 57.7 87.4 M 50.3 100.6 L 58.5 91.8" fill="none" stroke="#b9d88a" stroke-width="3.6" stroke-linecap="butt"/>
+    <path d="M 30.8 105.6 L 42.4 93.2 M 34.3 107.2 L 46.9 93.7 M 36.9 109.7 L 49.5 96.1 M 38.7 113.0 L 50.3 100.6" fill="none" stroke="#f6f4ea" stroke-width="3.6" stroke-linecap="round"/>
   </g>
   <g id="stool">
     <path d="M 38 128 L 35 159 M 62 128 L 65 159" fill="none" stroke="currentColor" stroke-width="4.4" stroke-linecap="round"/>

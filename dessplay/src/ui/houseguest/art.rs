@@ -96,9 +96,9 @@ pub(super) struct Rig {
     /// her lap and her legs are the seated part (thighs along the seat,
     /// shins hanging); `legs` is ignored.
     pub seated: bool,
-    /// Carrying her shopping bag in front of her, its top at this height
-    /// (canvas units; frontal only).
-    pub bag: Option<f32>,
+    /// Cradling a bundle of leeks across her chest (frontal only): drawn
+    /// in front of her body, under her arms, whose hands hold it.
+    pub leeks: bool,
     /// (shoulder, elbow).
     pub arms: [(f32, f32); 2],
     /// (hip, knee).
@@ -120,7 +120,7 @@ impl Rig {
             stool: false,
             cushion: false,
             seated: false,
-            bag: None,
+            leeks: false,
             arms: [(12.0, -4.0), (-12.0, 4.0)],
             legs: [(3.0, 0.0), (-3.0, 0.0)],
         }
@@ -331,7 +331,7 @@ impl Rig {
             stool: false,
             cushion: false,
             seated: false,
-            bag: None,
+            leeks: false,
             arms: [(arm(0) + 4.0, 0.0), (arm(1), 0.0)],
             legs,
         }
@@ -374,7 +374,7 @@ impl Rig {
             stool: false,
             cushion: false,
             seated: false,
-            bag: None,
+            leeks: false,
             arms,
             legs,
         }
@@ -461,19 +461,16 @@ impl Rig {
         }
     }
 
-    /// Home from her part-time job with a shopping bag, a leek sticking
-    /// out of it: held in front of her in both hands (frame 0), then up
-    /// a little, proudly (frame 1).
+    /// Home from her part-time job with her shopping: a bundle of leeks
+    /// cradled across her chest, cut ends at her viewer-left hip, green
+    /// tops fanning up past her viewer-right shoulder. Her viewer-left
+    /// forearm comes across under the bundle; her viewer-right hand grips
+    /// the stalks at her chest. Frame 1 bobs up, pleased.
     pub fn carrying(frame: u8, expression: Expression) -> Self {
-        let (arms, top, bob) = if frame.is_multiple_of(2) {
-            ([(-24.0, -38.0), (24.0, 38.0)], 92.0, 0.0)
-        } else {
-            ([(-44.0, -92.0), (44.0, 92.0)], 76.0, -4.0)
-        };
         Self {
-            arms,
-            bob,
-            bag: Some(top),
+            arms: [(0.0, -40.0), (-11.8, 109.0)],
+            bob: if frame.is_multiple_of(2) { 0.0 } else { -4.0 },
+            leeks: true,
             ..Self::standing(expression)
         }
     }
@@ -552,12 +549,13 @@ pub(super) fn scene(rig: &Rig, facing: Facing, line: &str) -> String {
     } else {
         ""
     };
-    // Her shopping bag hangs from her hands, in front of her body and
-    // under her arms.
-    let bag = rig.bag.map_or(String::new(), |top| {
-        format!(r##"<use href="#bag" transform="translate(50 {top})"/>"##)
-    });
-    let cushion = format!("{cushion}{bag}");
+    // Leeks in her arms: in front of her body, under her arms.
+    let leeks = if rig.leeks {
+        r##"<use href="#leeks"/>"##
+    } else {
+        ""
+    };
+    let cushion = format!("{cushion}{leeks}");
     // Frontal: both arms over everything (hands can reach past the
     // head). Profile: far limbs behind the body, near limbs in front.
     let body = if rig.profile {

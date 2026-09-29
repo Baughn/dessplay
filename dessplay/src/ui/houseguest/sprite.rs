@@ -63,7 +63,8 @@ pub(super) enum Pose {
     /// At the desk on a stool, side-on (frame 0–1 writing, 2–3 nodding
     /// off onto the paper).
     Homework(u8),
-    /// Home from work with a shopping bag (frame 1 holds it up).
+    /// Home from work, a bundle of leeks cradled in her arms (frame 1
+    /// bobs happily).
     Carry(u8),
 }
 
@@ -144,9 +145,10 @@ const HOMEWORK: [[&str; 4]; 4] = [
     ["     ", "( -_)", " |V|=", "_/ \\ "],
     ["     ", "     ", " (-_)", "_/|\\ "],
 ];
+// The leeks run up across her from the hip, leafy tops past her shoulder.
 const CARRY: [[&str; 4]; 2] = [
-    ["(._.)", "/|V|\\", " [#] ", " / \\ "],
-    ["(._.)", "\\[#]/", " /_\\ ", " / \\ "],
+    ["(._.)", "\\|V/Y", " /_/ ", " / \\ "],
+    ["(._.)", "\\|V/Y", " //\\ ", " / \\ "],
 ];
 const PULL: [[&str; 4]; 2] = [
     ["( ._)", "\\|V|=", " /_\\ ", " / \\ "],
