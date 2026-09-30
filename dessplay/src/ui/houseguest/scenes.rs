@@ -215,7 +215,8 @@ pub(super) fn pulls(buf: &Buffer, terrain: &Terrain, protected: &[Rect]) -> Vec<
     for platform in &terrain.platforms {
         let y = platform.y;
         for x in platform.x0..=platform.x1 {
-            if !terrain.clear(x, y) {
+            // She stays a while at a job: only where her box is calm.
+            if !terrain.restful(x, y) {
                 continue;
             }
             for box_row in PULL_ROWS {
@@ -269,7 +270,8 @@ pub(super) fn swaps(
     for platform in &terrain.platforms {
         let y = platform.y;
         for x in platform.x0..=platform.x1 {
-            if !terrain.clear(x, y) {
+            // She stays a while at a job: only where her box is calm.
+            if !terrain.restful(x, y) {
                 continue;
             }
             for box_row in PULL_ROWS {

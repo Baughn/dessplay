@@ -269,44 +269,69 @@ fn kitty() -> ratatui_image::picker::Picker {
     picker
 }
 
-/// Nothing is ever hidden behind her: her image cells (placeholders)
-/// cover only blanks and lines her image redraws; every other changed
-/// cell belongs to the text layer (a hole or a moved glyph) or is a
-/// bubble on a blank cell.
-fn assert_nothing_hidden(
-    frame: &Buffer,
-    real: &Buffer,
-    layer: &[(u16, u16)],
-) -> Result<(), TestCaseError> {
-    let width = real.area.width as usize;
-    for (index, (got, want)) in frame.content.iter().zip(&real.content).enumerate() {
-        if got == want {
-            continue;
+/// Text her line art covers, and since when: she may pass in front of
+/// text (it's derezzed into alien glyphs), but never stay over it.
+#[derive(Default)]
+struct Hidden(std::collections::HashMap<(u16, u16), u64>);
+
+/// The longest any text stays hidden behind her image.
+const HIDDEN_MS: u64 = 10_000;
+
+impl Hidden {
+    /// Check a frame: her image covers only blank cells, lines, and text
+    /// in passing; anything else changed is her text layer.
+    fn check(
+        &mut self,
+        frame: &Buffer,
+        real: &Buffer,
+        layer: &[(u16, u16)],
+        now: u64,
+    ) -> Result<(), TestCaseError> {
+        let width = real.area.width as usize;
+        let mut hidden = std::collections::HashSet::new();
+        for (index, (got, want)) in frame.content.iter().zip(&real.content).enumerate() {
+            if got == want {
+                continue;
+            }
+            let at = ((index % width) as u16, (index / width) as u16);
+            let blank = want.symbol().trim().is_empty();
+            let line = want
+                .symbol()
+                .chars()
+                .next()
+                .is_some_and(|c| graphics::strokes(c).is_some());
+            if cells::untouchable(got) {
+                prop_assert!(
+                    cells::width(want) <= 1,
+                    "wide glyph {:?} at {:?} behind her image",
+                    want.symbol(),
+                    at
+                );
+                if !blank && !line {
+                    hidden.insert(at);
+                }
+            } else {
+                prop_assert!(
+                    blank || layer.contains(&at),
+                    "cell {:?} ({:?}) changed outside the text layer",
+                    at,
+                    want.symbol()
+                );
+            }
         }
-        let at = ((index % width) as u16, (index / width) as u16);
-        let blank = want.symbol().trim().is_empty();
-        let line = want
-            .symbol()
-            .chars()
-            .next()
-            .is_some_and(|c| graphics::strokes(c).is_some());
-        if cells::untouchable(got) {
+        self.0.retain(|at, _| hidden.contains(at));
+        for at in hidden {
+            let since = *self.0.entry(at).or_insert(now);
             prop_assert!(
-                blank || line,
-                "cell {:?} ({:?}) hidden behind her image",
+                now - since <= HIDDEN_MS,
+                "text at {:?} hidden behind her since {} (now {})",
                 at,
-                want.symbol()
-            );
-        } else {
-            prop_assert!(
-                blank || layer.contains(&at),
-                "cell {:?} ({:?}) changed outside the text layer",
-                at,
-                want.symbol()
+                since,
+                now
             );
         }
+        Ok(())
     }
-    Ok(())
 }
 
 fn scatter(buf: &mut Buffer, text: &[(u16, u16, String)], skips: &[(u16, u16)]) {
@@ -357,6 +382,7 @@ proptest! {
                 },
             );
         }
+        let mut hidden = Hidden::default();
         let mut now = 0;
         let span = 200_000 / sizes.len() as u64;
         let mut mark = ChatMark::default();
@@ -417,7 +443,7 @@ proptest! {
                     }
                 }
                 if graphics {
-                    assert_nothing_hidden(&frame, &real, &layer)?;
+                    hidden.check(&frame, &real, &layer, now)?;
                 }
                 // Besides text she moved: her box and the floor row
                 // under it, and one bubble of at most 24 characters.
@@ -1630,6 +1656,7 @@ fn a_furnished_home_gets_used_and_stays_cheap() {
             "seed {seed}: {:?}",
             guest.cue_note()
         );
+        let mut hidden = Hidden::default();
         let mut now = 0;
         while now < 20 * 60_000 {
             now += guest
@@ -1642,7 +1669,8 @@ fn a_furnished_home_gets_used_and_stays_cheap() {
                     panic!("seed {seed}: still visiting");
                 };
                 let layer: Vec<(u16, u16)> = visit.layer.cells().collect();
-                assert_nothing_hidden(&frame, &real, &layer)
+                hidden
+                    .check(&frame, &real, &layer, now)
                     .unwrap_or_else(|e| panic!("seed {seed} at {now}: {e}"));
             }
         }
@@ -1677,7 +1705,7 @@ fn a_furnished_home_gets_used_and_stays_cheap() {
     assert!(count(Kind::Work) > 0, "she never went to work: {choices:?}");
 }
 
-/// A pit: a room whose walls are text to the ceiling on the left and
+/// A pit: a room whose walls are wide text to the ceiling on the left and
 /// protected screen on the right and below, beside her home (a quiet
 /// pane up on the right). Returns the screen, its view, and the pit's
 /// floor row.
@@ -1693,8 +1721,9 @@ fn pit_screen() -> (Buffer, IdleView, u16) {
             &mut buf,
         );
     }
+    // Wide glyphs: solid even in line art (she passes narrow text).
     for y in 1..=14 {
-        buf.set_string(1, y, "x".repeat(48), Style::new());
+        buf.set_string(1, y, "漢".repeat(24), Style::new());
     }
     let mut protected = bottom_strip(width, height);
     protected.push(Rect::new(50, 13, 50, 14));
@@ -1706,7 +1735,7 @@ fn pit_screen() -> (Buffer, IdleView, u16) {
     (buf, view, pit.bottom() - 1)
 }
 
-/// In line art the pit has no way out — no climb past the text, no
+/// In line art the pit has no way out — no climb past the wide text, no
 /// drop, no screen edge — but with her home next door she still gets
 /// there, through a door in space. (In ASCII her body may overlap text,
 /// so she can climb out; she only has to get out.)
@@ -1732,6 +1761,7 @@ fn she_gets_out_of_a_pit_through_a_door() {
         visiting_at(&mut guest, &real, &view, (20, i32::from(floor)));
         guest.give(Furniture::Sofa);
         let (mut out, mut doored) = (false, false);
+        let mut hidden = Hidden::default();
         let mut now = 0;
         while now < 10 * 60_000 && !out {
             now += guest
@@ -1742,7 +1772,8 @@ fn she_gets_out_of_a_pit_through_a_door() {
                 let frame = paint(&mut guest, &real, &view, now);
                 if graphics && let State::Visiting(visit) = &guest.state {
                     let layer: Vec<(u16, u16)> = visit.layer.cells().collect();
-                    assert_nothing_hidden(&frame, &real, &layer)
+                    hidden
+                        .check(&frame, &real, &layer, now)
                         .unwrap_or_else(|e| panic!("at {now}: {e}"));
                 }
             }
@@ -2101,6 +2132,7 @@ fn watch_scene(
         );
     }
     guest.cue(scene);
+    let mut hidden = Hidden::default();
     let mut now = 0;
     paint(&mut guest, &real, &view, now);
     while now < 20_000 {
@@ -2115,7 +2147,8 @@ fn watch_scene(
         };
         if graphics {
             let layer: Vec<(u16, u16)> = visit.layer.cells().collect();
-            assert_nothing_hidden(&frame, &real, &layer)
+            hidden
+                .check(&frame, &real, &layer, now)
                 .unwrap_or_else(|e| panic!("{scene:?} at {now}: {e}"));
         }
         if until(visit, now) {
@@ -2576,10 +2609,15 @@ proptest! {
 
 /// [`rooms`] with the tall left box as the chat, scrolled back: its
 /// bottom border is the accordion, `unseen` counted in its middle (as
-/// the chat pane draws it), and protected like the real one.
+/// the chat pane draws it), and protected like the real one. The log's
+/// rows above it are full of text, as a scrolled-back log's are.
 fn accordion_room(width: u16, height: u16, unseen: usize) -> (Buffer, Rect) {
     let mut buf = rooms(width, height);
     let accordion = Rect::new(1, height - 4, width / 2 - 2, 1);
+    for y in accordion.y.saturating_sub(6)..accordion.y {
+        let text = "so what did everyone think of that ending ".repeat(4);
+        buf.set_stringn(1, y, &text, usize::from(accordion.width), Style::new());
+    }
     for (i, x) in (accordion.left()..accordion.right()).enumerate() {
         buf[(x, accordion.y)].set_symbol(if i % 2 == 0 { "╱" } else { "╲" });
     }
@@ -2603,7 +2641,7 @@ struct ErrandSeen {
     arrived: Option<u64>,
     /// When she started poking, and where she stood.
     poked: Option<(u64, (i32, i32))>,
-    /// When the painted accordion first differed from the real one.
+    /// When the accordion first shook.
     shook: Option<u64>,
     /// When she was gone again (leaving or absent).
     gone: Option<u64>,
@@ -2639,9 +2677,10 @@ fn watch_errand(
             }
             State::Arriving => {}
         }
+        // Shaking, and painted so (under her feet it's in her image).
         let moved = (accordion.left()..accordion.right())
             .any(|x| frame[(x, accordion.y)] != real[(x, accordion.y)]);
-        if moved {
+        if guest.nudge.shaking(now) && moved {
             seen.shook.get_or_insert(now);
         }
     }
@@ -2655,7 +2694,7 @@ fn watch_errand(
 /// minute is up.
 #[test]
 fn unseen_messages_bring_her_to_poke_the_accordion() {
-    for resident in [false, true] {
+    for (resident, graphics) in [(false, false), (true, false), (false, true), (true, true)] {
         let (real, accordion) = accordion_room(100, 30, 2);
         let chat = nooks(100, 30)[0].1;
         let base = IdleView {
@@ -2667,6 +2706,9 @@ fn unseen_messages_bring_her_to_poke_the_accordion() {
         };
         let view = scrolled_back(base, accordion, 2);
         let mut guest = Guest::new(5);
+        if graphics {
+            guest.set_picker(kitty());
+        }
         let seen = watch_errand(&mut guest, &real, &view, accordion, 90_000);
         // A resident was here all along; a visitor comes for it.
         let arrived = seen.arrived.expect("she came");
@@ -2675,7 +2717,10 @@ fn unseen_messages_bring_her_to_poke_the_accordion() {
         } else {
             nudge::NUDGE_MS..nudge::NUDGE_MS + 100
         };
-        assert!(expected.contains(&arrived), "resident={resident}: {seen:?}");
+        assert!(
+            expected.contains(&arrived),
+            "resident={resident} graphics={graphics}: {seen:?}"
+        );
         let (poked, (_, y)) = seen.poked.expect("she poked it");
         assert_eq!(y, i32::from(accordion.y), "standing on the accordion");
         let shook = seen.shook.expect("it shook");
@@ -2886,6 +2931,9 @@ proptest! {
                     .map(|x| buf[(x, accordion.y)].symbol().to_owned())
                     .collect()
             };
+            // Her image may stand on it (the cells under it are hers).
+            let under_her = (accordion.left()..accordion.right())
+                .any(|x| cells::untouchable(&frame[(x, accordion.y)]));
             let (got, want) = (row(&frame), row(&real));
             let slid = |by: usize| {
                 let mut r = want.clone();
@@ -2893,7 +2941,7 @@ proptest! {
                 r
             };
             prop_assert!(
-                got == want || got == slid(1) || got == slid(want.len() - 1),
+                under_her || got == want || got == slid(1) || got == slid(want.len() - 1),
                 "the accordion at {}: {:?}", now, got.concat()
             );
             match (&guest.errand, errand_since) {
@@ -2969,4 +3017,54 @@ fn the_real_chat_scrolled_back_offers_her_a_spot_on_its_accordion() {
     let terrain = Terrain::read(&buf, &view.protected, false);
     let spot = accordion_spot(&terrain, back.accordion).expect("a floor on it");
     assert_eq!(spot.1, i32::from(back.accordion.y));
+}
+
+/// In line art she passes in front of text (it derezzes into alien
+/// glyphs) but doesn't stay over it: placed standing in a block of
+/// text, she moves off to a calm spot, and no text stays hidden behind
+/// her for longer than walking past it takes.
+#[test]
+fn in_line_art_she_passes_text_but_does_not_stay_over_it() {
+    for seed in 0..6 {
+        let mut real = rooms(100, 30);
+        // Text over the left half of the tall box's floor (row 26).
+        for y in 20..26 {
+            real.set_string(1, y, "lorem ipsum dolor sit amet", Style::new());
+        }
+        let view = view(bottom_strip(100, 30));
+        let mut guest = Guest::new(seed);
+        guest.set_picker(kitty());
+        visiting_at(&mut guest, &real, &view, (12, 26));
+        let mut hidden = Hidden::default();
+        let (mut now, mut passed) = (0, false);
+        while now < 90_000 {
+            now += guest
+                .next_tick(now)
+                .map_or(1000, |d| d.as_millis() as u64)
+                .clamp(1, 250);
+            guest.advance(now);
+            let frame = paint(&mut guest, &real, &view, now);
+            let State::Visiting(visit) = &guest.state else {
+                panic!("seed {seed}: still visiting");
+            };
+            let layer: Vec<(u16, u16)> = visit.layer.cells().collect();
+            let mut strict = Hidden(hidden.0.clone());
+            // Walking past a cell takes her box's width in steps.
+            strict
+                .check(&frame, &real, &layer, now)
+                .and_then(|()| {
+                    let longest = strict.0.values().map(|&since| now - since).max();
+                    prop_assert!(
+                        longest.is_none_or(|ms| ms <= 4_000),
+                        "text hidden {:?} ms",
+                        longest
+                    );
+                    Ok(())
+                })
+                .unwrap_or_else(|e| panic!("seed {seed} at {now}: {e}"));
+            hidden = strict;
+            passed |= !hidden.0.is_empty();
+        }
+        assert!(passed, "seed {seed}: the text was never passed");
+    }
 }

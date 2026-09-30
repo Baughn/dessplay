@@ -2120,6 +2120,29 @@ onto empty space). Rejected: resident only while playing (two modes of
 one guest); hiding the focused pane's contents only (she'd walk around
 invisible); banning the chat outright.
 
+## Line-art Osaka passes text, and watches chat briefly (2026-09-30)
+
+**Rule:** In line art she may pass in front of single-width text, which
+her image derezzes into alien glyphs, but only stays where her box is
+blank or lines; wide glyphs stay solid. A chat message makes her watch
+the chat for 15 s after the latest one, not a minute. See
+[design.md](design.md#houseguest).
+
+**Why:** Found in a real session at 191×44 with a populated client.
+"Never cover text" cut every floor under a line of text into pieces:
+series titles over the Users border, user names, the chat log over its
+bottom border. So she used the door-in-space fallback all the time, and
+could never stand on the scrollback accordion, which always has the
+log's text right above it. The rule's intent is that text isn't
+*obscured so people can't read it*; a second or two while she walks past
+is fine. Derezzing rather than blanking keeps it visibly "text, briefly
+scrambled by her". It's a per-character cipher, so it looks deliberate
+rather than broken. Resting is still kept off text, so nothing stays
+unreadable. Wide glyphs stay solid because her image can't cover half of
+one. A minute of watching looked like being stuck: a lively chat kept
+her frozen for minutes. 15 s is enough to read as "she noticed", and the
+4 s startle per message still happens.
+
 ## Scrolled-back chat gets an accordion Osaka pokes (2026-09-30)
 
 **Rule:** While the chat log is scrolled back, its bottom border is a
@@ -2148,6 +2171,12 @@ Clicking the accordion follows the newest line (there was no key for it:
 `End` belongs to the input). Rejected: shaking on a timer from the
 scroll itself; a separate "N new" row in the log; a sound or OSD
 message.
+
+The first real test showed she could never get there in line art: the
+log's text sat over the accordion, and `╱╲` wasn't a line her image
+redrew. Now her image redraws the diagonals, and she may stand over the
+log's text for the poke (the spot covering least of it). She comes and
+goes by door unless she's close by, so she doesn't trail along the text.
 
 ## Houseguest chooses by needs among the top few (2026-09-28)
 

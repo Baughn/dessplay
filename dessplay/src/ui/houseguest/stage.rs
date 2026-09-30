@@ -273,7 +273,7 @@ pub(super) fn direct(
                 .platforms
                 .iter()
                 .flat_map(|p| (p.x0..=p.x1).map(move |x| (x, p.y)))
-                .filter(|&(x, y)| terrain.clear(x, y))
+                .filter(|&(x, y)| terrain.restful(x, y))
                 .map(|(x, y)| (scenes::loose(buf, protected, x, y).len(), x, y))
                 .filter(|&(n, ..)| n >= 2)
                 .max_by_key(|&(n, x, y)| (n.min(6), -(x + y)));
@@ -306,7 +306,7 @@ pub(super) fn direct(
                     .platforms
                     .iter()
                     .map(|p| ((p.x0 + p.x1) / 2, p.y))
-                    .find(|&(x, y)| terrain.clear(x, y))
+                    .find(|&(x, y)| terrain.restful(x, y))
                     .ok_or_else(|| format!("{name}: nowhere to stand"))?,
             };
             osaka.place(x, y, now);
@@ -369,7 +369,7 @@ pub(super) fn direct(
                     .platforms
                     .iter()
                     .map(|p| ((p.x0 + p.x1) / 2, p.y))
-                    .find(|&(x, y)| terrain.clear(x, y))
+                    .find(|&(x, y)| terrain.restful(x, y))
                     .ok_or_else(|| format!("{name}: nowhere to stand"))?;
                 osaka.place(spot.0, spot.1, now);
             }

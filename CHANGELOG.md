@@ -25,6 +25,14 @@ Add new days at the top. Add new entries at the bottom of existing days.
   click it to jump back down. If messages sit unread for a minute,
   Osaka comes over and pokes it until it shakes (it shakes on its own
   if her visits are off).
+- Changed: In kitty-graphics terminals the houseguest now walks past
+  text instead of treating it as a wall. What she passes in front of
+  turns briefly into alien glyphs, and she never stops on top of it. She
+  uses her magic door far less, and can now reach the chat's scrollback
+  accordion to poke it.
+- Changed: A chat message makes the houseguest stop and watch for 15
+  seconds instead of a minute, so a lively chat no longer leaves her
+  standing frozen.
 
 ## 2026-09-29
 

@@ -163,11 +163,29 @@ pub(super) struct Strokes {
     left: bool,
     right: bool,
     heavy: bool,
+    /// A diagonal: `╱` (rising) or `╲` (falling).
+    rise: bool,
+    fall: bool,
 }
 
-/// Solid light and heavy lines, corners and tees. Double and dashed
-/// lines aren't redrawn, so she treats them like text.
+/// Solid light and heavy lines, corners and tees, and the diagonals (the
+/// chat's scrollback accordion). Double and dashed lines aren't redrawn,
+/// so she treats them like text.
 pub(super) fn strokes(c: char) -> Option<Strokes> {
+    let diagonal = |rise| Strokes {
+        up: false,
+        down: false,
+        left: false,
+        right: false,
+        heavy: false,
+        rise,
+        fall: !rise,
+    };
+    match c {
+        '╱' => return Some(diagonal(true)),
+        '╲' => return Some(diagonal(false)),
+        _ => {}
+    }
     let (u, d, l, r, heavy) = match c {
         '─' => (false, false, true, true, false),
         '│' => (true, true, false, false, false),
@@ -199,6 +217,8 @@ pub(super) fn strokes(c: char) -> Option<Strokes> {
         left: l,
         right: r,
         heavy,
+        rise: false,
+        fall: false,
     })
 }
 
@@ -248,6 +268,55 @@ fn draw_glyph(
     }
     if s.down {
         fill(vx, hy, t, h - hy);
+    }
+    if s.rise || s.fall {
+        // Corner to corner, `t` thick, as a terminal draws it.
+        for py in 0..h {
+            let along = if s.rise { h - 1 - py } else { py };
+            let px = along * w.max(1) / h.max(1);
+            fill(px.saturating_sub(t / 2), py, t, 1);
+        }
+    }
+}
+
+/// Derez a text glyph her image covers: an alien glyph in its colour, a
+/// block pattern on a 3×5 grid picked by the character (the same letter
+/// always turns into the same glyph, so text reads as a cipher).
+fn draw_alien(
+    image: &mut RgbaImage,
+    c: char,
+    color: [u8; 3],
+    (x0, y0): (u32, u32),
+    (w, h): (u32, u32),
+) {
+    let mut z = u64::from(c as u32).wrapping_add(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^= z >> 31;
+    // At least a spine, so no glyph is a near-blank speck.
+    let bits = (z as u32 & 0x7FFF) | 0b010_000_010_000_010;
+    let (cols, rows) = (3u32, 5u32);
+    let (mx, my) = (w / 6, h / 8);
+    let (iw, ih) = (w.saturating_sub(2 * mx), h.saturating_sub(2 * my));
+    let (bw, bh) = ((iw / cols).max(1), (ih / rows).max(1));
+    let pixel = Rgba([color[0], color[1], color[2], 255]);
+    for row in 0..rows {
+        for col in 0..cols {
+            if bits >> (row * cols + col) & 1 == 0 {
+                continue;
+            }
+            let (bx, by) = (x0 + mx + col * bw, y0 + my + row * bh);
+            // A pixel's gap between big blocks keeps them glyph-like;
+            // small ones would crumble into dots.
+            let gap = |b: u32| if b >= 4 { b - 1 } else { b };
+            for py in by..by + gap(bh) {
+                for px in bx..bx + gap(bw) {
+                    if px < image.width() && py < image.height() {
+                        image.put_pixel(px, py, pixel);
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -326,7 +395,12 @@ impl Graphics {
                     }
                     continue;
                 }
-                let c = symbol.chars().next().filter(|&c| strokes(c).is_some())?;
+                // Lines are redrawn; the text she's passing is derezzed.
+                // What she stands on must be a line.
+                let c = symbol
+                    .chars()
+                    .next()
+                    .filter(|&c| !floor || strokes(c).is_some())?;
                 lines.push(((cx - left) as u16, (cy - top) as u16, c, rgb(cell.fg)));
             }
         }
@@ -380,7 +454,11 @@ impl Graphics {
         let mut canvas = RgbaImage::new(w, h);
         for &(col, row, c, color) in &key.lines {
             let origin = (u32::from(col) * cw, u32::from(row) * ch);
-            draw_glyph(&mut canvas, c, color, origin, (cw, ch), self.line);
+            if strokes(c).is_some() {
+                draw_glyph(&mut canvas, c, color, origin, (cw, ch), self.line);
+            } else {
+                draw_alien(&mut canvas, c, color, origin, (cw, ch));
+            }
         }
         for &(look, facing, (ox, oy), standing) in &key.layers {
             let (width, height) = look.size();

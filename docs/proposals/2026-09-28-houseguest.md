@@ -93,7 +93,7 @@ without a goodbye.
 **Remote chat does not end a visit.** A new chat / IRC / `/me` line from
 someone else cuts her current act (any instant is a safe cut) and she
 **stops and looks**: turns toward the chat pane with a `!`, then a `?`,
-and keeps watching until chat has been quiet for a minute. *Planned
+and keeps watching until chat has been quiet for 15 s. *Planned
 (phase 2, when she starts touching chat):* she walks over and pokes the
 line (its letters jiggle for a frame). *Built:* the newest message's
 painted text is protected, so she never touches it.
@@ -128,8 +128,11 @@ Terrain is **read from the rendered cells** every frame she is on screen
 - **Line art** (kitty unicode placeholders *replace* the cells they
   cover): her box covers only **blank cells and solid box-drawing lines,
   which her image redraws** in the cell's colour at the terminal's line
-  geometry. Text is never hidden behind her, and neither is half of a
-  wide glyph (a wide glyph's trailing cell is never "blank" to her).
+  geometry. Text she passes in front of is derezzed into alien glyphs;
+  she only stays where her box is blank or lines, and half of a wide
+  glyph is never hidden (wide glyphs stay solid). (Revised 2026-09-30:
+  originally she never covered text at all, which cut populated panes'
+  floors into pieces she could only leave by door.)
   Standing, the image grows one row to include the floor, so her feet
   rest *on* the line.
 - **ASCII**: her glyphs overdraw anything outside the protected set;
@@ -612,7 +615,8 @@ Player Status (both protected).
 
 Four visual layers, from the app outward:
 
-1. **Text** — the app. Never hidden behind her image.
+1. **Text** — the app. Never hidden behind her image for longer than
+   she takes to pass it (it's derezzed while she does).
 2. **Panes** — lines; they fit both worlds, and her image redraws any it
    covers.
 3. **Furnishings** (*planned*) — **coloured, unfilled line art**, halfway

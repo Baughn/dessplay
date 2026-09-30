@@ -1386,7 +1386,8 @@ this section states what is built.
   never shows noise again.
 - A **chat or IRC line** from anyone does not end a visit: she stops,
   turns toward the chat pane with a `!` then a `?`, and keeps watching
-  until chat has been quiet for a minute.
+  until chat has been quiet for 15 s, then carries on
+  (why: [decisions](decisions.md#line-art-osaka-passes-text-and-watches-chat-briefly-2026-09-30)).
 - The **newest chat or IRC message** is never touched: its painted text
   is part of the protected set.
 - **Moving text.** She keeps a text layer of glyphs she has moved and
@@ -1551,8 +1552,11 @@ this section states what is built.
   a climb, or a door she's already through finishes first; out at work,
   she comes straight back through a door). She stands on the accordion —
   its diagonals are a floor, and it's protected like the input: she
-  never moves or covers it — and pokes it for 2 s ("Somebody said
-  something."); it shakes as she starts. On the errand the focused-pane
+  never moves or covers it — where her box covers the least of the log's
+  text (rightmost on a tie), and pokes it for 2 s ("Somebody said
+  something."); it shakes as she starts. She walks there only from a
+  couple of body-widths away; otherwise she comes by door, and if she's
+  standing over text when she's done, she leaves the way she came. On the errand the focused-pane
   rule and the chat's tenth are set aside, and a visitor doesn't leave
   for input: she finishes poking first. Done, the ordinary rules resume:
   a visitor who shouldn't be here (something playing, input within the
@@ -1579,10 +1583,20 @@ this section states what is built.
 - **Line art** when the terminal speaks the kitty graphics protocol
   (Ghostty): SVG parts posed by a rig, rendered at the terminal's cell
   size and placed over her 5×4-cell box with unicode placeholders.
-  Placeholders replace the cells they cover, so in this mode her box
-  only covers **blank cells or solid box-drawing lines, which her image
-  redraws** (never text, and never half of a wide glyph); standing, the
-  image grows one row to include the floor, so her feet rest on the line.
+  Placeholders replace the cells they cover, so her image **redraws**
+  the solid box-drawing lines it covers (and the `╱╲` diagonals of the
+  chat's scrollback accordion) and **derezzes** the text it covers into
+  alien glyphs: a block pattern in the text's colour, the same for the
+  same character. She may **pass** in front of single-width text —
+  walking, climbing, falling, a door, a startled look — but only
+  **stays** where her box is blank or lines: whenever she'd choose what
+  to do next over text, she first walks to the nearest calm spot on her
+  floor, or takes a door to one; the spots she works at (pulls, swaps)
+  and steps out of a door onto when leaving a focused pane are calm ones.
+  Wide glyphs stay solid (never half of one hidden). Poking the scrollback
+  accordion is the one time she stays over text (see below). Standing,
+  the image grows one row to include the floor, so her feet rest on the
+  line.
   The redrawn lines follow the terminal's geometry (thickness ≈ cell
   height / 16, centred); `DESSPLAY_HOUSEGUEST_LINE=thickness[,offset]`
   overrides it. Each distinct frame is transmitted once and cached.

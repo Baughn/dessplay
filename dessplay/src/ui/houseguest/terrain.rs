@@ -131,8 +131,11 @@ pub(super) struct Link {
 pub(super) struct Terrain {
     width: i32,
     height: i32,
-    /// Cells her body may occupy.
+    /// Cells her body may occupy (in passing, in line art: over text).
     open: Vec<bool>,
+    /// Cells her body may stay on: open, and in line art blank or a line
+    /// her image redraws (text she only passes).
+    calm: Vec<bool>,
     pub platforms: Vec<Platform>,
     pub links: Vec<Link>,
 }
@@ -143,13 +146,15 @@ impl Terrain {
     /// she may stand on a ledge that lies inside one.
     ///
     /// `graphics` is the line-art mode: her image replaces the cells it
-    /// covers, so her body only enters cells that are blank or lines her
-    /// image redraws (text is never hidden behind her), and she only
-    /// stands on lines it can redraw.
+    /// covers, redrawing lines and derezzing text into alien glyphs, so
+    /// she passes over single-width text but only stays where her box is
+    /// blank or lines ([`Terrain::restful`]); she only stands on lines it
+    /// can redraw. Wide glyphs stay solid.
     pub fn read(buf: &Buffer, protected: &[Rect], graphics: bool) -> Self {
         let area = buf.area;
         let (width, height) = (i32::from(area.width), i32::from(area.height));
         let mut open = Vec::with_capacity((width * height).max(0) as usize);
+        let mut calm = Vec::with_capacity(open.capacity());
         let mut ledges = Vec::with_capacity(open.capacity());
         let mut poles = Vec::with_capacity(open.capacity());
         for y in 0..area.height {
@@ -170,8 +175,11 @@ impl Terrain {
                         .next()
                         .is_some_and(|c| super::graphics::strokes(c).is_some())
                 };
-                let text_ok = !graphics || (blank(symbol) && !trailing) || redrawable();
-                open.push(!skip && text_ok && !protected.iter().any(|r| r.contains(position)));
+                let quiet = (blank(symbol) && !trailing) || redrawable();
+                let narrow = !trailing && cell.is_none_or(|c| super::cells::width(c) <= 1);
+                let free = !skip && !protected.iter().any(|r| r.contains(position));
+                open.push(free && (!graphics || quiet || narrow));
+                calm.push(free && (!graphics || quiet));
                 let floor = ledge(symbol) && (!graphics || redrawable());
                 ledges.push(!skip && floor);
                 poles.push(!skip && pole(symbol));
@@ -181,6 +189,7 @@ impl Terrain {
             width,
             height,
             open,
+            calm,
             platforms: Vec::new(),
             links: Vec::new(),
         };
@@ -244,6 +253,32 @@ impl Terrain {
     /// every body cell on screen and open.
     pub fn clear(&self, x: i32, y: i32) -> bool {
         (1..=HEIGHT).all(|dy| (-HALF..=HALF).all(|dx| self.open(x + dx, y - dy)))
+    }
+
+    /// Whether she may stay standing centred on `x` on row `y`: her whole
+    /// box is blank or lines (in line art; in ASCII, wherever she's
+    /// clear). Over text she only passes.
+    pub fn restful(&self, x: i32, y: i32) -> bool {
+        (1..=HEIGHT).all(|dy| (-HALF..=HALF).all(|dx| self.calm(x + dx, y - dy)))
+    }
+
+    /// Whether her body may stay on cell `(x, y)`.
+    pub fn calm(&self, x: i32, y: i32) -> bool {
+        (0..self.width).contains(&x)
+            && (0..self.height).contains(&y)
+            && self
+                .calm
+                .get((y * self.width + x) as usize)
+                .copied()
+                .unwrap_or(false)
+    }
+
+    /// The restful spot on platform `p` nearest `x`.
+    pub fn nearest_rest(&self, p: usize, x: i32) -> Option<i32> {
+        let p = self.platforms.get(p)?;
+        (p.x0..=p.x1)
+            .filter(|&at| self.restful(at, p.y))
+            .min_by_key(|&at| ((at - x).abs(), at))
     }
 
     /// Whether her body may occupy cell `(x, y)`.

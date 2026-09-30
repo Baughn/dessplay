@@ -152,7 +152,7 @@ const PEER_MS: u64 = 1200;
 const SURPRISED_MS: u64 = 1200;
 const LOOK_MS: u64 = 4000;
 /// A conversation keeps her watching until it's been quiet this long.
-const WATCH_MS: u64 = 60_000;
+const WATCH_MS: u64 = 15_000;
 const BLINK_MS: u64 = 150;
 /// Reaching for two letters (and back again).
 const FIDDLE_MS: u64 = 700;
@@ -460,6 +460,18 @@ fn elsewhere(
     pick(spots.len(), in_chat, rng).and_then(|i| spots.get(i).copied())
 }
 
+/// [`elsewhere`], somewhere she can stay (clear of text) if there's such
+/// a spot, else anywhere `clear`.
+fn calm_elsewhere(
+    terrain: &Terrain,
+    clear: &dyn Fn((i32, i32)) -> bool,
+    chat: Option<Rect>,
+    rng: &mut Rng,
+) -> Option<(i32, i32)> {
+    let calm = |spot: (i32, i32)| clear(spot) && terrain.restful(spot.0, spot.1);
+    elsewhere(terrain, &calm, chat, rng).or_else(|| elsewhere(terrain, clear, chat, rng))
+}
+
 /// She goes to work after this long into a visit, at the earliest.
 const WORK_AFTER_MS: u64 = 3 * 60_000;
 /// How long a shift lasts (ms range).
@@ -475,6 +487,8 @@ const THROUGH: &str = "Where was I?";
 /// How long she pokes the scrollback accordion, and each poke.
 const POKE_MS: u64 = 2000;
 const POKE_FRAME_MS: u64 = 250;
+/// Farther than this along her floor, she takes a door to the accordion.
+const ERRAND_WALK: i32 = 2 * sprite::WIDTH;
 /// What she says, poking it.
 pub(super) const POKE: &str = "Somebody said something.";
 
@@ -1097,6 +1111,13 @@ impl Osaka {
                 if at >= until {
                     tracing::debug!("houseguest: errand done");
                     self.errand = None;
+                    // Off the log's text the way she came: by door.
+                    let calm = |(x, y): (i32, i32)| terrain.restful(x, y);
+                    if !terrain.restful(self.x, self.y)
+                        && let Some(spot) = elsewhere(terrain, &calm, chances.chat, rng)
+                    {
+                        return self.through_door(spot, at);
+                    }
                     self.decide(at, terrain, chances, rng);
                 } else {
                     self.act_due = (since
@@ -1631,6 +1652,11 @@ impl Osaka {
         let Some(here) = terrain.platform_at(self.x, self.y) else {
             return self.set(Act::Stand { until: at + 1000 }, at);
         };
+        // Over text she only passes: on to the nearest calm spot, or by
+        // door to one elsewhere.
+        if !terrain.restful(self.x, self.y) && self.find_rest(here, terrain, chances, at, rng) {
+            return;
+        }
         if at < self.watch_until {
             self.facing = toward(self.x, self.watch_x);
             return self.set(
@@ -2228,6 +2254,33 @@ impl Osaka {
         std::mem::take(&mut self.poked)
     }
 
+    /// Move off the text she's standing over: walk to the nearest calm
+    /// spot on her floor, or take a door to one elsewhere. False when
+    /// there's none anywhere (she stays).
+    fn find_rest(
+        &mut self,
+        here: usize,
+        terrain: &Terrain,
+        chances: &Chances,
+        at: u64,
+        rng: &mut Rng,
+    ) -> bool {
+        if let Some(x) = terrain.nearest_rest(here, self.x) {
+            tracing::debug!(from = self.x, to = x, "houseguest: off the text");
+            self.facing = toward(self.x, x);
+            self.set(Act::Walk { to: x, then: None }, at);
+            return true;
+        }
+        let calm = |(x, y): (i32, i32)| terrain.restful(x, y);
+        match elsewhere(terrain, &calm, chances.chat, rng) {
+            Some(spot) => {
+                self.through_door(spot, at);
+                true
+            }
+            None => false,
+        }
+    }
+
     fn head_for_errand(&mut self, terrain: &Terrain, at: u64) {
         let Some(spot) = self.errand else {
             return;
@@ -2237,8 +2290,13 @@ impl Osaka {
         if (self.x, self.y) == spot {
             return self.poke(at);
         }
+        // Close by on the same floor she walks; otherwise a door, so she
+        // doesn't trail along the log's text.
         let here = terrain.platform_at(self.x, self.y);
-        if here.is_some() && here == terrain.platform_at(spot.0, spot.1) {
+        if here.is_some()
+            && here == terrain.platform_at(spot.0, spot.1)
+            && (spot.0 - self.x).abs() <= ERRAND_WALK
+        {
             self.facing = toward(self.x, spot.0);
             self.set(
                 Act::Walk {
@@ -2296,7 +2354,7 @@ impl Osaka {
                     if clear(*to) {
                         return true;
                     }
-                    let Some(spot) = elsewhere(terrain, &clear, chat, rng) else {
+                    let Some(spot) = calm_elsewhere(terrain, &clear, chat, rng) else {
                         return false;
                     };
                     tracing::debug!(?spot, "houseguest: her door opens elsewhere");
@@ -2310,7 +2368,7 @@ impl Osaka {
                 }
             }
         }
-        let Some(spot) = elsewhere(terrain, &clear, chat, rng) else {
+        let Some(spot) = calm_elsewhere(terrain, &clear, chat, rng) else {
             return false;
         };
         tracing::debug!(from = ?(self.x, self.y), to = ?spot, "houseguest: out of the focused pane");

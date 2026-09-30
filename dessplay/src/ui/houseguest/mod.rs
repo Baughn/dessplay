@@ -983,18 +983,26 @@ impl Guest {
     }
 }
 
-/// Where she stands to poke `accordion`: the middle of the widest floor
-/// along it (its count splits it in two).
+/// Where she stands to poke `accordion`: the spot on it where her box
+/// covers the least text (the log's lines above it; she may stand over
+/// them for the poke), rightmost on a tie (short lines leave the right
+/// side blank).
 fn accordion_spot(terrain: &Terrain, accordion: Rect) -> Option<(i32, i32)> {
     let (left, right) = (i32::from(accordion.x), i32::from(accordion.right()) - 1);
+    let y = i32::from(accordion.y);
+    let covered = |x: i32| {
+        (1..=sprite::HEIGHT)
+            .flat_map(|dy| (-sprite::WIDTH / 2..=sprite::WIDTH / 2).map(move |dx| (x + dx, y - dy)))
+            .filter(|&(cx, cy)| !terrain.calm(cx, cy))
+            .count()
+    };
     terrain
         .platforms
         .iter()
-        .filter(|p| p.y == i32::from(accordion.y))
-        .map(|p| (p.x0.max(left), p.x1.min(right)))
-        .filter(|(x0, x1)| x0 <= x1)
-        .max_by_key(|(x0, x1)| (x1 - x0, *x0))
-        .map(|(x0, x1)| ((x0 + x1) / 2, i32::from(accordion.y)))
+        .filter(|p| p.y == y)
+        .flat_map(|p| p.x0.max(left)..=p.x1.min(right))
+        .min_by_key(|&x| (covered(x), -x))
+        .map(|x| (x, y))
 }
 
 fn ink(part: Part, truecolor: bool) -> Ink {
