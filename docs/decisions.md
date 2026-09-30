@@ -1,6 +1,6 @@
 # DessPlay Decision Log
 
-Last updated: 2026-09-28
+Last updated: 2026-10-01
 
 The reasoning behind the rules in [design.md](design.md): the failure that
 motivated each one, the alternatives that were rejected, and the date it
@@ -2177,6 +2177,58 @@ log's text sat over the accordion, and `╱╲` wasn't a line her image
 redrew. Now her image redraws the diagonals, and she may stand over the
 log's text for the poke (the spot covering least of it). She comes and
 goes by door unless she's close by, so she doesn't trail along the text.
+
+## Houseguest makes furniture of torn-off text (2026-10-01)
+
+**Rule:** With no sofa or bed to use, she tears the end off a line
+within reach and crumples it into a makeshift one, drawn as shreds of
+the derez glyphs in the text's colours; the torn glyphs are holes until
+the piece goes. A real piece of its kind wins nineteen times in twenty.
+See [design.md](design.md#houseguest).
+
+**Why:** Most clients' Osakas owned no furniture yet (the progression
+is slow, and full panes put pieces in the closet), so the room and its
+uses rarely showed. She has needs and the screen is full of text: making
+do with it is in character, and minor text changes are fine as long as
+they go away when their pane is selected — the text layer's validation
+and the focused-pane rule already guarantee that. The shreds reuse the
+derez's per-letter patterns, so the letters visibly become the piece;
+because the piece is her own furnishing, her image may cover and
+composite it like a real one (she sleeps *in* the bed, under shreds),
+which text in the terminal font could never be. "One time in twenty"
+means that when the whim lands she goes for the makeshift one; picking
+uniformly between it and the real one would have halved the rate (the
+first draft did: 2%).
+
+**Rejected:** A heap of real text glyphs she perches on top of (hops
+up a row; line art can't cover text, so it had to sit under her box,
+which needed a new perched state, hops, and a floor that isn't a line)
+or beside her as a pillow (less of a bed) — the user pointed to the
+derez art instead, which made the piece ordinary furniture. Weighting
+the offer down further ("it's a bother", 0.3 then 0.6): with the brain's
+top-four cut, she then almost never made one, and the real-piece rule
+already carries the discouragement.
+
+## Houseguest reads the frame she stands on (2026-10-01)
+
+**Rule:** Every terrain she's placed on is read from the real frame
+with the same solid set (protected cells plus the text she moved and
+its holes); her own overlays (the accordion's shake) are painted after
+every read; a seat is only offered where the whole image she'd be drawn
+in, with the pieces she overlaps, is clear of text. See
+[design.md](design.md#houseguest).
+
+**Why:** Three bugs found by a 256-case run of the property tests,
+all one class — a spot chosen against one picture of the screen and
+used against another. The accordion errand chose its spot on a terrain
+without her moved text, so the spot had no floor in her own terrain and
+she bounced between it and a door forever; the errand's poke shook the
+accordion before the terrain was read, so the shake moved the end of
+her floor out from under her, every poke; and a seat checked only her
+box, while the image she and the sofa share spans their bounding
+rectangle, which hid text for a whole nap. Moved-text cells also go into
+the solid set as row runs rather than single cells: the per-cell scans
+were ~40% of a long visit's time.
 
 ## Houseguest chooses by needs among the top few (2026-09-28)
 

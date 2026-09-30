@@ -1,6 +1,6 @@
 # DessPlay Design Document
 
-Last updated: 2026-09-30
+Last updated: 2026-10-01
 
 A synchronized video player for watch parties. Terminal-first, built for
 reliability over flaky connections. Server-coordinated, including relayed
@@ -1502,17 +1502,46 @@ this section states what is built.
   a piece and sits on the sofa, naps on it hugging the cushion
   (lounging, not bedtime), sleeps in bed (answers *sleepy* far
   better than a doze on a border), does homework at the desk (nodding
-  off onto the paper halfway through), or sits beside the TV watching
-  it; she reads beside her bookshelf, gets a snack from her fridge (it
+  off onto the paper halfway through), or watches the TV from beside
+  it, or from a sofa on the TV's floor, turned towards it; she reads beside her bookshelf, gets a snack from her fridge (it
   stands open as she looks in, then she eats a melon bread), and on
   about half her visits Kamineko is asleep in the cat bed — she pets
   him, and he bites ("Ow!"). Her lamp is lit, and dark while she sleeps
   in her bed. Each use is an offer to the brain while the piece is placed
-  and she can get there, and a new piece is only set down where she
-  fits to use it. If the piece goes into the closet while she's using it,
+  and she can get there and stay: her box, and the whole of the one
+  image she and the pieces it overlaps are drawn in (the rectangle
+  spanning them, above the floor), clear of text; if text comes up
+  there while she's using it, she gets up. A new piece is only set
+  down where she fits to use it. If the piece goes into the closet while she's using it,
   she's left blinking where it was. Her furniture shows only while she
   does, and the goodbye rain takes it along with her
   (why: [decisions](decisions.md#houseguest-furniture-is-pane-relative-and-leaves-with-her-2026-09-28)).
+- **Makeshift furniture**: wanting to sit on a sofa (or watch the TV
+  from one) or sleep in a bed and having none, she makes one of text.
+  At a line that ends beside her box at chest height (as for a pull),
+  with room on the same floor within 14 columns for the piece, she
+  braces and tears off the end nearest her ("Rrrip!"): 5–10 glyphs,
+  leaving at least two, which become holes in their line (the text
+  layer keeps them, and they count towards its 60). At the piece's
+  spot she crumples them into shape over 4–6 s ("scrunch...",
+  "There!"), and goes straight to using it. A makeshift sofa is 7×3
+  cells, a makeshift bed 7×2; each stands on a floor over blank cells
+  like her real pieces (and is solid to text the same way), and is
+  drawn as shreds of the alien glyphs her image derezzes text into, in
+  the torn text's own colours (in ASCII, its own letters, jumbled). The
+  sofa is for sitting on and watching TV from; the bed, for sleeping
+  in, under a blanket of shreds. A heap she left half-crumpled is
+  offered for finishing. It lasts for the visit, while every glyph torn
+  for it is still torn off (its line unchanged, its pane not protected)
+  and it still fits where she made it, clear of her real furniture; a
+  resize, or its pane gaining focus, takes it, and its text goes back
+  (raining out of a focused pane). She makes at most one of each a
+  visit and doesn't make a second while the first stands. **A real
+  piece comes first**: when a real one of its kind is on offer for what
+  she wants, she goes for the makeshift one (or makes one) only one
+  time in twenty, and then that's where she goes. Making one in the
+  chat is a tenth as likely, like anything else there
+  (why: [decisions](decisions.md#houseguest-makes-furniture-of-torn-off-text-2026-10-01)).
 
 - Playback starting (for a visitor) or an overlay opening mid-visit
   starts the dissolve; switching the setting off removes her at once. A terminal resize
@@ -1552,7 +1581,8 @@ this section states what is built.
   a climb, or a door she's already through finishes first; out at work,
   she comes straight back through a door). She stands on the accordion —
   its diagonals are a floor, and it's protected like the input: she
-  never moves or covers it — where her box covers the least of the log's
+  never moves or covers it; its shake is hers, painted after anything
+  of hers reads the frame, so it never moves her floor — where her box covers the least of the log's
   text (rightmost on a tie), and pokes it for 2 s ("Somebody said
   something."); it shakes as she starts. She walks there only from a
   couple of body-widths away; otherwise she comes by door, and if she's

@@ -9,6 +9,18 @@ append-only; you cannot reword or remove existing entries.
 
 Add new days at the top. Add new entries at the bottom of existing days.
 
+## 2026-10-01
+
+- Added: With no sofa or bed of her own, the houseguest makes do: she
+  tears the end off a line of text ("Rrrip!"), crumples it into a heap
+  of shredded letters in the text's own colours, and sits on it,
+  watches TV from it, or sleeps in it. The line keeps its gap until she
+  leaves, or until you select that pane, when the text comes back at
+  once. Once she owns the real thing she mostly uses that instead.
+- Fixed: The houseguest no longer gets stuck going back and forth when
+  she comes to poke the chat's scrollback accordion, and no longer naps
+  on her sofa with text hidden behind her.
+
 ## 2026-09-30
 
 - Added: The houseguest can now stay while you watch. With F3 →

@@ -13,7 +13,7 @@ use tuirealm::ratatui::buffer::Buffer;
 use tuirealm::ratatui::layout::Rect;
 
 use super::osaka::{Activity, Chances};
-use super::room::Use;
+use super::room::{Furniture, Use};
 use super::scenes::{self, Job, Side};
 use super::sprite::WIDTH;
 use super::terrain::{Link, Route, Terrain};
@@ -83,11 +83,15 @@ pub enum Scene {
     Snack,
     /// Petting the cat in his bed (he's home for it).
     Pet,
+    /// Tear text off a line and crumple it into a makeshift sofa.
+    MakeSofa,
+    /// Tear text off a line and crumple it into a makeshift bed.
+    MakeBed,
 }
 
 impl Scene {
     /// Every scene, in menu order.
-    pub const ALL: [Scene; 29] = [
+    pub const ALL: [Scene; 31] = [
         Self::Arrive,
         Self::Pull,
         Self::Swap,
@@ -117,6 +121,8 @@ impl Scene {
         Self::Read,
         Self::Snack,
         Self::Pet,
+        Self::MakeSofa,
+        Self::MakeBed,
     ];
 
     /// A short menu label.
@@ -151,6 +157,8 @@ impl Scene {
             Self::Read => "read",
             Self::Snack => "snack",
             Self::Pet => "pet the cat",
+            Self::MakeSofa => "make a sofa of text",
+            Self::MakeBed => "make a bed of text",
         }
     }
 
@@ -267,6 +275,31 @@ pub(super) fn direct(
             osaka.place(start, seat.y, now);
             osaka.pursue(job, now);
             Ok(format!("{name} at ({}, {})", seat.x, seat.y))
+        }
+        Scene::MakeSofa | Scene::MakeBed => {
+            let item = if scene == Scene::MakeSofa {
+                Furniture::Sofa
+            } else {
+                Furniture::Bed
+            };
+            let builds: Vec<_> = chances
+                .builds
+                .iter()
+                .filter(|b| b.piece.item == item)
+                .cloned()
+                .collect();
+            let build = pick(&builds, rng)
+                .ok_or_else(|| format!("{name}: no text to tear, or no room for it"))?;
+            let job = Job::Build(build);
+            let (x, y) = job.spot();
+            let away = match job.side() {
+                Side::Left => 1,
+                Side::Right => -1,
+            };
+            let start = approach(terrain, x, y, away);
+            osaka.place(start, y, now);
+            osaka.pursue(job, now);
+            Ok(format!("{name} from ({x}, {y})"))
         }
         Scene::Sneeze => {
             let spot = terrain
@@ -454,13 +487,49 @@ pub fn stage_ui() -> Ui {
         "starting soon",
         "wait for me",
     ];
-    chat_ui((0..40).map(|i| LINES[i % LINES.len()].to_string()))
+    room_ui(
+        (0..40).map(|i| LINES[i % LINES.len()].to_string()),
+        &PLAYLIST,
+    )
 }
 
+/// The stage's playlist: the text she tears off for furniture.
+const PLAYLIST: [&str; 6] = [
+    "Azumanga Daioh - 01.mkv",
+    "Azumanga Daioh - 02.mkv",
+    "Frieren - 12.mkv",
+    "Haibane Renmei - 03.mkv",
+    "Yotsuba to! - 07.mkv",
+    "Mushishi - 05.mkv",
+];
+
 pub(super) fn chat_ui(lines: impl Iterator<Item = String>) -> Ui {
+    room_ui(lines, &[])
+}
+
+/// The real UI with chat `lines` and a playlist of `files`.
+fn room_ui(lines: impl Iterator<Item = String>, files: &[&str]) -> Ui {
+    use dessplay_core::playlist::NewPlaylistEntry;
+    use dessplay_core::state::CrdtState;
+    use dessplay_core::types::{ActorId, Ed2kHash, SharedTimestamp};
     let mut ui = real_ui();
+    let mut state = CrdtState::new();
+    for (i, &file) in files.iter().enumerate() {
+        state.push_playlist_entry(
+            ActorId::SERVER,
+            SharedTimestamp(1 + i as u64),
+            NewPlaylistEntry {
+                hash: Ed2kHash([i as u8 + 1; 16]),
+                added_by: UserId::new("kim"),
+                filename: file.into(),
+                size_bytes: 1,
+                duration_millis: None,
+            },
+        );
+    }
     let senders = ["kim", "bob", "ana"];
     let view = dessplay_core::state::StateView {
+        playlist: state.view().playlist,
         chat: lines
             .enumerate()
             .map(|(i, text)| dessplay_core::types::ChatMessage {

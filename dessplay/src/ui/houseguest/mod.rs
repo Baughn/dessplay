@@ -26,6 +26,7 @@ mod nudge;
 mod osaka;
 mod room;
 mod scenes;
+mod scrap;
 mod sprite;
 pub mod stage;
 mod terrain;
@@ -33,7 +34,7 @@ mod terrain;
 use std::time::Duration;
 
 use tuirealm::ratatui::buffer::Buffer;
-use tuirealm::ratatui::layout::Rect;
+use tuirealm::ratatui::layout::{Position, Rect};
 use tuirealm::ratatui::style::{Color, Modifier};
 
 use cells::{Ink, put};
@@ -136,7 +137,44 @@ struct Visit {
     with: Vec<Shown>,
     /// What of hers is raining out of a pane that was just focused.
     fades: Vec<Dissolve>,
+    /// Makeshift furniture she has made of text this visit.
+    made: Vec<Made>,
     size: (u16, u16),
+}
+
+/// `cells` as rectangles, a run of neighbours along a row making one:
+/// protected sets are scanned per cell, and moved text comes in runs.
+fn runs(cells: impl Iterator<Item = (u16, u16)>) -> Vec<Rect> {
+    let mut cells: Vec<(u16, u16)> = cells.map(|(x, y)| (y, x)).collect();
+    cells.sort_unstable();
+    cells.dedup();
+    let mut out: Vec<Rect> = Vec::new();
+    for (y, x) in cells {
+        match out.last_mut() {
+            Some(run) if run.y == y && run.right() == x => run.width += 1,
+            _ => out.push(Rect::new(x, y, 1, 1)),
+        }
+    }
+    out
+}
+
+impl Visit {
+    /// What her body keeps out of: `protected`, and the text she moved
+    /// and the holes it left. Every terrain she's placed on is read with
+    /// this, so a spot chosen on one is a spot on the other.
+    fn solid(&self, protected: &[Rect]) -> Vec<Rect> {
+        let mut out = protected.to_vec();
+        out.extend(runs(self.layer.cells()));
+        out
+    }
+}
+
+/// A makeshift piece, and the glyphs torn off to make it (their holes
+/// stay while it does).
+#[derive(Clone, Debug)]
+struct Made {
+    piece: Shown,
+    torn: Vec<(u16, u16)>,
 }
 
 struct Leaving {
@@ -503,10 +541,11 @@ impl Guest {
                 self.quiet_since = now;
             }
         }
-        // The accordion shakes under her, not over her.
-        self.nudge.paint(buf, now);
+        // The accordion's shake is hers, painted like the rest of her:
+        // after everything that reads the real frame, and under her.
+        let nudge = &self.nudge;
         match &mut self.state {
-            State::Absent | State::Arriving => {}
+            State::Absent | State::Arriving => nudge.paint(buf, now),
             State::Leaving(leaving) => {
                 if leaving.dissolve.size() != size {
                     // The geometry she froze against is gone.
@@ -519,6 +558,7 @@ impl Guest {
                 let t = now.saturating_sub(leaving.dissolve.started());
                 let untouched = leaving.dissolve.unchanged(buf);
                 let terrain = Terrain::read(buf, &view.protected, true);
+                nudge.paint(buf, now);
                 leaving.dissolve.paint(buf, now);
                 if let Some(graphics) = &mut self.graphics
                     && t < dissolve::RAIN_FROM_MS
@@ -621,6 +661,15 @@ impl Guest {
                         osaka::HomeEvent::Unpacked(item) => {
                             self.unsaved |= self.ledger.home.unbox(item);
                         }
+                        osaka::HomeEvent::Crumpled(seat) => {
+                            for made in &mut visit.made {
+                                if made.piece.seat(room::Use::Crumple, 0) == seat
+                                    && let Some(scrap) = &mut made.piece.scrap
+                                {
+                                    scrap.stage = scrap::STAGES;
+                                }
+                            }
+                        }
                     }
                 }
                 let shown = furnish(
@@ -637,8 +686,13 @@ impl Guest {
                 if self.ledger != before {
                     self.unsaved = true;
                 }
-                if let Some(item) = visit.osaka.using()
-                    && !visit.shown.iter().any(|s| s.item == item)
+                tend_made(visit, buf, &view.protected, size, now);
+                visit.shown.extend(visit.made.iter().map(|made| made.piece));
+                if let Some((seat, ..)) = visit.osaka.use_span()
+                    && !visit
+                        .shown
+                        .iter()
+                        .any(|s| s.item == seat.item && s.scrap.is_some() == seat.makeshift)
                 {
                     visit.osaka.lost_seat(now);
                 }
@@ -650,17 +704,25 @@ impl Guest {
                         tracing::trace!(?op, "houseguest: the frame refused a layer change");
                         gripped &= !op.grips();
                         visit.osaka.refused(now, op);
+                    } else if let scenes::LayerOp::Tear { row, cells, piece } = &op {
+                        visit.made.push(made_of(buf, *row, cells, piece));
                     }
                 }
                 if !gripped {
                     visit.osaka.lost_grip(now);
                 }
-                let mut protected = view.protected.clone();
-                protected.extend(visit.layer.cells().map(|(x, y)| Rect::new(x, y, 1, 1)));
+                let mut protected = visit.solid(&view.protected);
                 visit.terrain = Terrain::read(buf, &protected, self.graphics.is_some());
                 visit.size = size;
                 let chat = view.resident.then_some(view.chat);
                 // Out of the focused pane, through her door.
+                // Text came up where she sat (under her, or under the
+                // image she's drawn in): she gets up.
+                if let Some((seat, ..)) = visit.osaka.use_span()
+                    && !stays_calm(&visit.terrain, &seat, &visit.shown)
+                {
+                    visit.osaka.lost_seat(now);
+                }
                 let evicted = view.focus.is_some_and(|focus| {
                     !visit
                         .osaka
@@ -684,8 +746,9 @@ impl Guest {
                 let pulls = scenes::pulls(buf, &visit.terrain, &protected);
                 let mut layer = visit.layer.paint(buf);
                 let mut holes = base;
-                holes.extend(visit.layer.holes().map(|(x, y)| Rect::new(x, y, 1, 1)));
+                holes.extend(runs(visit.layer.holes()));
                 let swaps = scenes::swaps(buf, &visit.terrain, &holes, &visit.layer);
+                let builds = builds(buf, visit, &pulls, &protected);
                 if let Some(scene) = self.cue.take() {
                     let offered = osaka::Chances {
                         pulls: pulls.clone(),
@@ -696,6 +759,7 @@ impl Guest {
                             &visit.terrain,
                             self.cat_now || cat_home(&self.ledger),
                         ),
+                        builds: builds.clone(),
                         advert: advert(&self.ledger, self.shop_now),
                         furnished: !self.ledger.home.props.is_empty(),
                         chat,
@@ -724,6 +788,7 @@ impl Guest {
                         &visit.terrain,
                         self.cat_now || cat_home(&self.ledger),
                     ),
+                    builds,
                     advert: advert(&self.ledger, self.shop_now),
                     furnished: !self.ledger.home.props.is_empty(),
                     chat,
@@ -757,6 +822,7 @@ impl Guest {
                         .map(|p| (p.item, piece_state(p, &visit.osaka, cat, now)))
                         .collect(),
                 };
+                nudge.paint(buf, now);
                 layer.extend(draw_props(
                     buf,
                     self.graphics.as_mut(),
@@ -820,6 +886,7 @@ impl Guest {
             shown: Vec::new(),
             with: Vec::new(),
             fades: Vec::new(),
+            made: Vec::new(),
             size,
         }));
     }
@@ -893,12 +960,17 @@ impl Guest {
     fn send(&mut self, buf: &Buffer, view: &IdleView, accordion: Rect, now: u64) -> bool {
         // The errand overrides the focused pane (the accordion's usually
         // in it).
-        let protected: Vec<Rect> = view
+        let mut protected: Vec<Rect> = view
             .protected
             .iter()
             .copied()
             .filter(|&rect| Some(rect) != view.focus)
             .collect();
+        // Where she'd stand is read as she'll read it: visiting, the text
+        // she moved (and its holes) is solid to her.
+        if let State::Visiting(visit) = &self.state {
+            protected = visit.solid(&protected);
+        }
         let terrain = Terrain::read(buf, &protected, self.graphics.is_some());
         let Some(spot) = accordion_spot(&terrain, accordion) else {
             tracing::debug!("houseguest: nowhere to stand on the accordion");
@@ -1265,30 +1337,200 @@ fn furnish(
 }
 
 /// Where she could go to use each piece shown: in front of it on its
-/// floor, or for the TV, beside it facing it.
+/// floor, or for the TV, beside it facing it — or from a sofa on the
+/// TV's floor.
 fn seats(shown: &[Shown], terrain: &Terrain, cat: bool) -> Vec<room::Seat> {
+    shown
+        .iter()
+        .flat_map(|piece| seats_of(piece, shown, terrain, cat))
+        .collect()
+}
+
+/// Where she could go to use `piece`, among the pieces `shown`: only
+/// where she may stay (in line art, where the image she'd be drawn in is
+/// clear of text).
+fn seats_of(piece: &Shown, shown: &[Shown], terrain: &Terrain, cat: bool) -> Vec<room::Seat> {
+    let mut out = spots_for(piece, shown, terrain, cat);
+    out.retain(|seat| stays_calm(terrain, seat, shown));
+    out
+}
+
+/// Whether she may stay at `seat`: her box is restful, and so is the
+/// rest of the one image she and the pieces her box overlaps are drawn
+/// in — the rectangle spanning them all, above the floor — since that
+/// image hides whatever it covers.
+fn stays_calm(terrain: &Terrain, seat: &room::Seat, shown: &[Shown]) -> bool {
+    if !terrain.restful(seat.x, seat.y) {
+        return false;
+    }
+    let half = sprite::WIDTH / 2;
+    let (mut left, mut top) = (seat.x - half, seat.y - sprite::HEIGHT);
+    let (mut right, bottom) = (seat.x + half + 1, seat.y);
+    let her = Rect::new(
+        left.max(0) as u16,
+        top.max(0) as u16,
+        sprite::WIDTH as u16,
+        sprite::HEIGHT as u16 + 1,
+    );
+    for piece in shown.iter().filter(|p| p.cover().intersects(her)) {
+        let rect = piece.rect();
+        left = left.min(i32::from(rect.x));
+        top = top.min(i32::from(rect.y));
+        right = right.max(i32::from(rect.right()));
+    }
+    let inside = |x: i32, y: i32| {
+        shown
+            .iter()
+            .any(|p| p.rect().contains(Position::new(x as u16, y as u16)))
+    };
+    (top..bottom).all(|y| (left..right).all(|x| terrain.calm(x, y) || inside(x, y)))
+}
+
+fn spots_for(piece: &Shown, shown: &[Shown], terrain: &Terrain, cat: bool) -> Vec<room::Seat> {
     let mut out = Vec::new();
-    for piece in shown {
-        // No cat, no petting.
-        if piece.item == Furniture::CatBed && !cat {
-            continue;
-        }
-        // Boxed, it's only for unpacking.
-        let uses: &[room::Use] = if piece.boxed {
-            &[room::Use::Unpack]
-        } else {
-            room::Use::of(piece.item)
-        };
-        for &what in uses {
-            let spots: &[i32] = if what.inside() { &[0] } else { &piece.beside() };
-            let seat = spots
-                .iter()
-                .map(|&beside| piece.seat(what, beside))
-                .find(|seat| terrain.platform_at(seat.x, seat.y).is_some());
-            out.extend(seat);
+    // No cat, no petting.
+    if piece.item == Furniture::CatBed && !cat {
+        return out;
+    }
+    for &what in piece.uses() {
+        let spots: &[i32] = if what.inside() { &[0] } else { &piece.beside() };
+        let seat = spots
+            .iter()
+            .map(|&beside| piece.seat(what, beside))
+            .find(|seat| {
+                terrain.restful(seat.x, seat.y) && terrain.platform_at(seat.x, seat.y).is_some()
+            });
+        out.extend(seat);
+    }
+    // A sofa on the same floor as the TV is where to watch it from.
+    if piece.uses().contains(&room::Use::Lounge) {
+        let sofa = piece.seat(room::Use::Lounge, 0);
+        let floor = terrain.platform_at(sofa.x, sofa.y);
+        let tv = shown.iter().find(|tv| {
+            tv.item == Furniture::Tv
+                && !tv.boxed
+                && floor.is_some()
+                && terrain.platform_at(tv.left, tv.floor) == floor
+        });
+        if let Some(tv) = tv {
+            let facing = if tv.left > sofa.x {
+                sprite::Facing::Right
+            } else {
+                sprite::Facing::Left
+            };
+            out.push(room::Seat {
+                what: room::Use::Watch,
+                facing,
+                ..sofa
+            });
         }
     }
     out
+}
+
+/// Keep her makeshift pieces that still stand: each while every glyph
+/// torn off for it is still torn off (its line hasn't changed, and its
+/// pane isn't protected), and it still fits where she made it, clear of
+/// her real furniture and anything `protected`; a resize takes them all.
+/// What goes, goes back into its line. One she's crumpling grows as she
+/// does.
+fn tend_made(visit: &mut Visit, buf: &Buffer, protected: &[Rect], size: (u16, u16), now: u64) {
+    let resized = visit.size != size;
+    let real = visit.shown.clone();
+    let moved: std::collections::HashSet<(u16, u16)> = visit.layer.cells().collect();
+    let clear = |x: i32, y: i32| {
+        let (Ok(ux), Ok(uy)) = (u16::try_from(x), u16::try_from(y)) else {
+            return false;
+        };
+        !moved.contains(&(ux, uy))
+            && !protected.iter().any(|r| r.contains((ux, uy).into()))
+            && !real.iter().any(|s| s.cover().contains((ux, uy).into()))
+    };
+    let mut gone = Vec::new();
+    let layer = &visit.layer;
+    visit.made.retain(|made| {
+        let stands =
+            !resized && layer.torn_intact(&made.torn) && room::fits(buf, &made.piece, &clear);
+        if !stands {
+            gone.push(made.torn.clone());
+        }
+        stands
+    });
+    for torn in gone {
+        tracing::debug!("houseguest: a makeshift piece fell apart");
+        visit.layer.mend(&torn);
+    }
+    if let Some((seat, since, until)) = visit.osaka.use_span()
+        && seat.what == room::Use::Crumple
+    {
+        let length = until.saturating_sub(since).max(1);
+        let stage = 1 + now.saturating_sub(since) * u64::from(scrap::STAGES - 1) / length;
+        for made in &mut visit.made {
+            if made.piece.seat(room::Use::Crumple, 0) == seat
+                && let Some(scrap) = &mut made.piece.scrap
+                && !scrap.done()
+            {
+                scrap.stage = scrap
+                    .stage
+                    .max(stage.min(u64::from(scrap::STAGES - 1)) as u8);
+            }
+        }
+    }
+}
+
+/// A makeshift piece `piece` of the glyphs just torn off `row` at
+/// `cells` (read before anything of hers is painted).
+fn made_of(buf: &Buffer, row: u16, cells: &[u16], piece: &Shown) -> Made {
+    let glyphs: Vec<(char, Color)> = cells
+        .iter()
+        .filter_map(|&c| {
+            let cell = buf.cell((c, row))?;
+            Some((cell.symbol().chars().next()?, cell.fg))
+        })
+        .collect();
+    // Crumpled its own way wherever it's made.
+    let seed = (piece.left as u32)
+        .wrapping_mul(0x9E37_79B9)
+        .wrapping_add(piece.floor as u32)
+        .wrapping_add(u32::from(row) << 16);
+    tracing::info!(item = ?piece.item, glyphs = glyphs.len(), "houseguest: tore text off for furniture");
+    Made {
+        piece: Shown {
+            scrap: Some(scrap::Scrap::new(&glyphs, seed)),
+            ..*piece
+        },
+        torn: cells.iter().map(|&c| (c, row)).collect(),
+    }
+}
+
+/// Makeshift pieces she could make this frame: of each kind she hasn't
+/// made yet this visit, while the text layer has room for the glyphs.
+fn builds(
+    buf: &Buffer,
+    visit: &Visit,
+    pulls: &[scenes::Pull],
+    protected: &[Rect],
+) -> Vec<scenes::Build> {
+    let wanted: Vec<Furniture> = scrap::MAKES
+        .into_iter()
+        .filter(|&item| !visit.made.iter().any(|m| m.piece.item == item))
+        .collect();
+    if wanted.is_empty() || visit.layer.cells().count() + scrap::GLYPHS > layer::CAP {
+        return Vec::new();
+    }
+    let clear = |x: i32, y: i32| {
+        let (Ok(ux), Ok(uy)) = (u16::try_from(x), u16::try_from(y)) else {
+            return false;
+        };
+        !protected.iter().any(|r| r.contains((ux, uy).into()))
+    };
+    let then = |piece: &Shown| {
+        seats_of(piece, &visit.shown, &visit.terrain, false)
+            .into_iter()
+            .filter(|seat| seat.what != room::Use::Crumple)
+            .collect()
+    };
+    scenes::builds(buf, &visit.terrain, pulls, &wanted, &clear, &then)
 }
 
 /// Her furniture's colour as text (the ASCII drawings).
@@ -1314,6 +1556,16 @@ fn prop_ink(item: Furniture, truecolor: bool) -> Ink {
     Ink::new(fg, Modifier::empty())
 }
 
+/// The colour of a makeshift piece's letter at `(x, y)`.
+fn scrap_ink(prop: &Shown, x: u16, y: u16) -> Option<Ink> {
+    let scrap = prop.scrap?;
+    let (_, rows) = prop.size();
+    let dx = u16::try_from(i32::from(x) - prop.left).ok()?;
+    let dy = u16::try_from(i32::from(y) - (prop.floor - i32::from(rows))).ok()?;
+    let (_, color) = scrap.cell(prop.item, prop.facing, dx, dy)?;
+    Some(Ink::new(color, Modifier::empty()))
+}
+
 /// How a piece looks: `layer` of it, or its box while it's boxed (open
 /// while she's `unpacking` it), or with `tv` on its screen, or in
 /// `state`.
@@ -1324,6 +1576,14 @@ fn piece_look(
     unpacking: bool,
     state: art::PieceState,
 ) -> Look {
+    if let Some(scrap) = prop.scrap {
+        let part = match layer {
+            art::Layer::Whole => scrap::Part::Whole,
+            art::Layer::Back | art::Layer::Bare => scrap::Part::Back,
+            art::Layer::Front => scrap::Part::Front,
+        };
+        return Look::Scrap(prop.item, scrap, part);
+    }
     match (prop.boxed, prop.item, tv) {
         (true, item, _) => Look::Parcel(item, unpacking),
         (false, Furniture::Tv, Some(channel)) => Look::Tv(channel),
@@ -1376,7 +1636,7 @@ fn piece_state(piece: &Shown, osaka: &Osaka, cat: bool, now: u64) -> art::PieceS
 /// A piece of furniture as an image layer that `look`s so, standing on
 /// its floor.
 fn prop_layer(prop: &Shown, look: Look) -> graphics::Layer {
-    let (cols, _) = prop.item.footprint();
+    let (cols, _) = prop.size();
     graphics::Layer {
         look,
         facing: prop.facing,
@@ -1454,7 +1714,7 @@ fn draw_props(
                             .and_then(|i| glyphs.get(i).copied())
                     })
                     .or_else(|| {
-                        let top = y == prop.floor - i32::from(prop.item.footprint().1);
+                        let top = y == prop.floor - i32::from(prop.size().1);
                         let glyphs = cat.filter(|_| top && !prop.boxed)?;
                         glyphs.get((x - prop.left) as usize).copied()
                     })
@@ -1478,6 +1738,10 @@ fn draw_props(
             }
             None => {
                 for (x, y, glyph, under) in unders {
+                    // Makeshift, it's its own letters in their own colours.
+                    let ink = prop
+                        .scrap
+                        .map_or(ink, |_| scrap_ink(prop, x, y).unwrap_or(ink));
                     if let Some(glyph) = glyph
                         && put(buf, i32::from(x), i32::from(y), glyph, ink)
                     {
@@ -1554,7 +1818,9 @@ fn draw_art(
     };
     let using = osaka.seat().filter(|seat| seat.what.inside());
     let part = |piece: &Shown, front: bool| {
-        let what = using.filter(|seat| seat.item == piece.item).map(|s| s.what);
+        let what = using
+            .filter(|seat| seat.item == piece.item && seat.makeshift == piece.scrap.is_some())
+            .map(|s| s.what);
         let layer = match (what, front) {
             (Some(room::Use::Sleep), false) => art::Layer::Back,
             (Some(room::Use::Sleep), true) => art::Layer::Front,

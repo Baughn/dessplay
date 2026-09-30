@@ -238,6 +238,28 @@ fn assert_untouched(
     real: &Buffer,
     protected: &[Rect],
 ) -> Result<(), TestCaseError> {
+    assert_untouched_but_feet(frame, real, protected, None)
+}
+
+/// [`assert_untouched`], except that standing at `feet` in line art, her
+/// image redraws the line under her feet — she may stand on a protected
+/// line (design.md, Houseguest: "though she may stand on a line inside
+/// one").
+fn assert_untouched_but_feet(
+    frame: &Buffer,
+    real: &Buffer,
+    protected: &[Rect],
+    feet: Option<(i32, i32)>,
+) -> Result<(), TestCaseError> {
+    let underfoot = |x: u16, y: u16, want: &tuirealm::ratatui::buffer::Cell| {
+        feet.is_some_and(|(fx, fy)| {
+            i32::from(y) == fy && (i32::from(x) - fx).abs() <= sprite::WIDTH / 2
+        }) && want
+            .symbol()
+            .chars()
+            .next()
+            .is_some_and(|c| graphics::strokes(c).is_some())
+    };
     let area = real.area;
     for y in area.top()..area.bottom() {
         for x in area.left()..area.right() {
@@ -245,7 +267,10 @@ fn assert_untouched(
             let (Some(got), Some(want)) = (frame.cell(position), real.cell(position)) else {
                 continue;
             };
-            if protected.iter().any(|r| r.contains(position)) || cells::untouchable(want) {
+            let redrawn = underfoot(x, y, want) && cells::untouchable(got);
+            if (protected.iter().any(|r| r.contains(position)) && !redrawn)
+                || cells::untouchable(want)
+            {
                 prop_assert_eq!(got, want, "protected cell ({}, {}) changed", x, y);
             }
             if cells::width(got) > 1 && !cells::untouchable(got) && x + 1 < area.right() {
@@ -409,7 +434,13 @@ proptest! {
                 };
                 guest.advance(now);
                 let frame = paint(&mut guest, &real, &view, now);
-                assert_untouched(&frame, &real, &protected)?;
+                let feet = match &guest.state {
+                    State::Visiting(visit) if graphics && visit.image.is_some_and(|i| i.standing) => {
+                        visit.image.map(|i| (i.x, i.y))
+                    }
+                    _ => None,
+                };
+                assert_untouched_but_feet(&frame, &real, &protected, feet)?;
                 let (layer, shown): (Vec<(u16, u16)>, Vec<Shown>) = match &guest.state {
                     State::Visiting(visit) => (visit.layer.cells().collect(), visit.shown.clone()),
                     _ => (Vec::new(), Vec::new()),
@@ -427,7 +458,7 @@ proptest! {
                 // Her furniture stands on lines, over blank cells only,
                 // clear of protected cells, text she moved, and her.
                 for prop in &shown {
-                    let (cols, _) = prop.item.footprint();
+                    let (cols, _) = prop.size();
                     let floor = (prop.left..prop.left + i32::from(cols)).map(|x| (x, prop.floor, None));
                     for (x, y, _) in prop.cells().chain(floor) {
                         let at = (x as u16, y as u16);
@@ -812,6 +843,7 @@ fn visiting_at(guest: &mut Guest, real: &Buffer, view: &IdleView, (x, y): (i32, 
         chances: osaka::Chances::default(),
         shown: Vec::new(),
         with: Vec::new(),
+        made: Vec::new(),
         size: (real.area.width, real.area.height),
     }));
 }
@@ -1291,6 +1323,12 @@ fn every_scene_has_a_spot_in_the_stage_room() {
                         Scene::Sleep => posed(Pose::Sleep(0)),
                         Scene::Homework => posed(Pose::Homework(0)),
                         Scene::Watch => used == Some(Furniture::Tv),
+                        // Torn off and taking shape (the whole scene runs
+                        // past the cap; see she_makes_furniture_of_text).
+                        Scene::MakeSofa | Scene::MakeBed => visit
+                            .made
+                            .iter()
+                            .any(|m| m.piece.scrap.is_some_and(|s| s.stage > 0)),
                         Scene::Parcel => guest.ledger.home.props.iter().any(|p| !p.boxed),
                         Scene::Shopping => guest.ledger.ordered.is_some(),
                         Scene::Work => went_out || gone,
@@ -3067,4 +3105,198 @@ fn in_line_art_she_passes_text_but_does_not_stay_over_it() {
         }
         assert!(passed, "seed {seed}: the text was never passed");
     }
+}
+
+/// Run `guest` in the stage room until she's using the makeshift piece
+/// `scene` makes, returning the time and frame; the whole scene, from
+/// the walk to the line to sitting or lying on what she made of it.
+fn make(guest: &mut Guest, scene: Scene, real: &Buffer, view: &IdleView) -> (u64, Buffer) {
+    use super::sprite::Pose;
+    guest.cue(scene);
+    paint(guest, real, view, 0);
+    assert!(
+        matches!(guest.cue_note(), Some(Ok(_))),
+        "{:?}",
+        guest.cue_note()
+    );
+    let mut now = 0;
+    loop {
+        assert!(now < 30_000, "{scene:?}: never used what she made");
+        now += guest
+            .next_tick(now)
+            .map_or(100, |d| d.as_millis() as u64)
+            .clamp(1, 100);
+        guest.advance(now);
+        let frame = paint(guest, real, view, now);
+        let State::Visiting(visit) = &guest.state else {
+            panic!("{scene:?}: still visiting");
+        };
+        let (pose, ..) = visit.osaka.appearance(now);
+        let using = matches!(pose, Pose::Lounge | Pose::Sleep(_))
+            && visit.osaka.seat().is_some_and(|seat| seat.makeshift);
+        if using {
+            return (now, frame);
+        }
+    }
+}
+
+/// Without a sofa or a bed she makes one: she tears text off a line,
+/// leaving its holes, crumples it into the piece and uses it — in both
+/// drawing modes — and the goodbye rain mends the line exactly.
+#[test]
+fn she_makes_furniture_of_text() {
+    for graphics in [false, true] {
+        for scene in [Scene::MakeSofa, Scene::MakeBed] {
+            let at = format!("{scene:?} graphics={graphics}");
+            let mut ui = stage_ui();
+            let (real, view) = real_frame(&mut ui, 100, 30);
+            let mut guest = Guest::new(1);
+            if graphics {
+                guest.set_picker(kitty());
+            }
+            let (now, frame) = make(&mut guest, scene, &real, &view);
+            let State::Visiting(visit) = &guest.state else {
+                panic!("{at}: visiting");
+            };
+            let [made] = visit.made.as_slice() else {
+                panic!("{at}: one piece, not {:?}", visit.made);
+            };
+            assert!(made.piece.scrap.is_some_and(|s| s.done()), "{at}");
+            assert!(made.torn.len() >= scrap::MIN_GLYPHS, "{at}");
+            for &(x, y) in &made.torn {
+                assert!(!real[(x, y)].symbol().trim().is_empty(), "{at}: tore text");
+                assert_eq!(frame[(x, y)].symbol(), " ", "{at}: its hole shows");
+            }
+            guest.activity(now);
+            let end = run(&mut guest, &real, &view, now, now + dissolve::DURATION_MS);
+            assert_eq!(end, real, "{at}: the rain mends the line");
+        }
+    }
+}
+
+/// Minor text changes go away when their pane is selected: focusing the
+/// pane she tore the text from puts it back at once, and the piece goes.
+#[test]
+fn focusing_the_pane_puts_torn_text_back() {
+    for graphics in [false, true] {
+        let mut ui = stage_ui();
+        let (real, view) = real_frame(&mut ui, 100, 30);
+        let mut guest = Guest::new(1);
+        if graphics {
+            guest.set_picker(kitty());
+        }
+        let (now, _) = make(&mut guest, Scene::MakeBed, &real, &view);
+        let State::Visiting(visit) = &guest.state else {
+            panic!("visiting");
+        };
+        let torn = visit.made[0].torn.clone();
+        let pane = view
+            .nooks
+            .iter()
+            .map(|&(_, rect)| rect)
+            .chain([view.chat])
+            .find(|rect| rect.contains(torn[0].into()))
+            .expect("a pane holds the torn text");
+        let focused = IdleView {
+            resident: true,
+            busy: Some(Busy::Playing),
+            focus: Some(pane),
+            ..view.clone()
+        };
+        let frame = run(
+            &mut guest,
+            &real,
+            &focused,
+            now,
+            now + dissolve::DURATION_MS,
+        );
+        let State::Visiting(visit) = &guest.state else {
+            panic!("a resident stays");
+        };
+        assert!(visit.made.is_empty(), "graphics={graphics}: the piece went");
+        for &(x, y) in &torn {
+            assert_eq!(frame[(x, y)], real[(x, y)], "graphics={graphics}: mended");
+        }
+    }
+}
+
+/// She'd rather have the real thing: with a real sofa on offer as well
+/// as makeshift ones, only about one choice in twenty is makeshift; with
+/// no real one, the makeshift is always among her options; and she
+/// doesn't make a second sofa while the first stands.
+#[test]
+fn a_real_piece_wins_nineteen_times_in_twenty() {
+    use super::osaka::{Chances, Place};
+    use super::room::{Seat, Use};
+    use super::scenes::{Build, Side};
+    let seat = |x: i32, makeshift: bool| Seat {
+        what: Use::Lounge,
+        item: Furniture::Sofa,
+        x,
+        y: 20,
+        facing: sprite::Facing::Right,
+        makeshift,
+    };
+    let piece = Shown {
+        item: Furniture::Sofa,
+        facing: sprite::Facing::Right,
+        boxed: false,
+        nook: None,
+        left: 40,
+        floor: 20,
+        scrap: Some(scrap::Scrap::new(&[], 0)),
+    };
+    let build = Build {
+        x: 30,
+        y: 20,
+        row: 18,
+        side: Side::Left,
+        cells: vec![20, 21, 22, 23, 24],
+        piece,
+        then: seat(43, true),
+    };
+    let osaka = Osaka::standing_at(10, 20, 0, &mut super::Rng(1));
+    let mut rng = super::Rng(4);
+    let tally = |chances: &Chances, rng: &mut super::Rng| {
+        let mut makeshift = 0;
+        for _ in 0..4000 {
+            let places = osaka.places_for(Use::Lounge, chances, rng);
+            let pick = places[rng.below(places.len() as u64) as usize];
+            makeshift += usize::from(!matches!(pick, Place::Seat(s) if !s.makeshift));
+        }
+        makeshift
+    };
+    let real_and_build = Chances {
+        seats: vec![seat(10, false)],
+        builds: vec![build.clone()],
+        ..Chances::default()
+    };
+    let n = tally(&real_and_build, &mut rng);
+    assert!((100..=320).contains(&n), "{n} of 4000 set about making one");
+    let real_and_made = Chances {
+        seats: vec![seat(10, false), seat(43, true)],
+        ..Chances::default()
+    };
+    let n = tally(&real_and_made, &mut rng);
+    assert!(
+        (100..=320).contains(&n),
+        "{n} of 4000 used the makeshift one"
+    );
+    let only_build = Chances {
+        builds: vec![build.clone()],
+        ..Chances::default()
+    };
+    assert_eq!(
+        osaka.places_for(Use::Lounge, &only_build, &mut rng),
+        vec![Place::Make(Furniture::Sofa)]
+    );
+    let made_and_build = Chances {
+        seats: vec![seat(43, true)],
+        builds: vec![build],
+        ..Chances::default()
+    };
+    assert_eq!(
+        osaka.places_for(Use::Lounge, &made_and_build, &mut rng),
+        vec![Place::Seat(seat(43, true))]
+    );
 }

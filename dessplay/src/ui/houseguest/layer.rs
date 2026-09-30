@@ -46,6 +46,21 @@ impl Displaced {
     }
 }
 
+/// A glyph she tore off to make furniture of: only its hole is left,
+/// until the piece goes (see `scrap.rs`).
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct Torn {
+    pub source: (u16, u16),
+    pub expected: Cell,
+}
+
+impl Torn {
+    fn cells(&self) -> impl Iterator<Item = (u16, u16)> + '_ {
+        let (x, y) = self.source;
+        std::iter::once((x, y)).chain((width(&self.expected) > 1).then(|| (x.saturating_add(1), y)))
+    }
+}
+
 /// A glyph as shown: the real cell it came from (`source`), and where it sits
 /// (`at == source` when it's home).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -93,6 +108,7 @@ pub(super) fn takeable(buf: &Buffer, protected: &[Rect], (x, y): (u16, u16)) -> 
 #[derive(Clone, Debug, Default)]
 pub(super) struct TextLayer {
     entries: Vec<Displaced>,
+    torn: Vec<Torn>,
 }
 
 impl TextLayer {
@@ -104,7 +120,60 @@ impl TextLayer {
 
     #[cfg(test)]
     pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+        self.entries.is_empty() && self.torn.is_empty()
+    }
+
+    /// Glyphs moved or torn off, against the cap.
+    fn count(&self) -> usize {
+        self.entries.len() + self.torn.len()
+    }
+
+    /// Whether `c` is a source cell of anything moved or torn, or where a
+    /// moved glyph sits.
+    fn used(&self, c: (u16, u16)) -> bool {
+        self.entries
+            .iter()
+            .any(|d| d.source_cells().chain(d.at_cells()).any(|u| u == c))
+            || self.torn.iter().any(|t| t.cells().any(|u| u == c))
+    }
+
+    /// Tear the glyphs at `sources` off, for furniture: all of them, or
+    /// (refused) none. Each must be one she may take, unused, and the cap
+    /// must allow.
+    pub fn tear(&mut self, buf: &Buffer, protected: &[Rect], sources: &[(u16, u16)]) -> bool {
+        if self.count() + sources.len() > CAP {
+            return false;
+        }
+        let mut torn = Vec::with_capacity(sources.len());
+        for &source in sources {
+            let fresh =
+                !self.used(source) && !torn.iter().any(|t: &Torn| t.cells().any(|u| u == source));
+            let Some(expected) = buf
+                .cell(source)
+                .filter(|_| fresh && takeable(buf, protected, source))
+            else {
+                return false;
+            };
+            torn.push(Torn {
+                source,
+                expected: expected.clone(),
+            });
+        }
+        self.torn.extend(torn);
+        true
+    }
+
+    /// Whether every glyph torn from `sources` is still torn off (none
+    /// has come back because its line changed).
+    pub fn torn_intact(&self, sources: &[(u16, u16)]) -> bool {
+        sources
+            .iter()
+            .all(|&s| self.torn.iter().any(|t| t.source == s))
+    }
+
+    /// Put the glyphs torn from `sources` back in their line.
+    pub fn mend(&mut self, sources: &[(u16, u16)]) {
+        self.torn.retain(|t| !sources.contains(&t.source));
     }
 
     /// Where an entry that came from `source` sits now.
@@ -126,6 +195,7 @@ impl TextLayer {
         self.entries
             .iter()
             .flat_map(|d| d.source_cells().collect::<Vec<_>>())
+            .chain(self.torn.iter().flat_map(|t| t.cells().collect::<Vec<_>>()))
             .filter(move |c| !covered.contains(c))
     }
 
@@ -134,6 +204,7 @@ impl TextLayer {
         self.entries
             .iter()
             .flat_map(|d| d.at_cells().chain(d.source_cells()).collect::<Vec<_>>())
+            .chain(self.torn.iter().flat_map(|t| t.cells().collect::<Vec<_>>()))
     }
 
     /// Whether `entry` may sit where it says, given the other entries:
@@ -154,6 +225,7 @@ impl TextLayer {
             .map(|(_, d)| d);
         let mut targets = Vec::new();
         let mut holes: Vec<(u16, u16)> = entry.source_cells().collect();
+        holes.extend(self.torn.iter().flat_map(|t| t.cells()));
         for d in others {
             targets.extend(d.at_cells());
             holes.extend(d.source_cells());
@@ -176,12 +248,13 @@ impl TextLayer {
         source: (u16, u16),
         to: (u16, u16),
     ) -> bool {
-        if self.entries.len() >= CAP
+        if self.count() >= CAP
             || to == source
             || self
                 .entries
                 .iter()
                 .any(|d| d.source_cells().any(|c| c == source))
+            || self.torn.iter().any(|t| t.cells().any(|c| c == source))
             || !takeable(buf, protected, source)
         {
             return false;
@@ -256,10 +329,7 @@ impl TextLayer {
         let mut fresh = 0;
         for p in [a, b] {
             let ok = if p.at == p.source {
-                let used = self
-                    .entries
-                    .iter()
-                    .any(|d| d.source_cells().chain(d.at_cells()).any(|c| c == p.source));
+                let used = self.used(p.source);
                 let taken = (!used && takeable(buf, protected, p.source))
                     .then(|| buf.cell(p.source).cloned())
                     .flatten()
@@ -278,7 +348,8 @@ impl TextLayer {
                     .find(|d| d.source == p.source && d.at == p.at && !d.wide())
                     .map(|_| ())
             };
-            if ok.is_none() || a.source == b.source || before.len() + fresh > CAP {
+            if ok.is_none() || a.source == b.source || before.len() + self.torn.len() + fresh > CAP
+            {
                 self.entries = before;
                 return false;
             }
@@ -342,11 +413,12 @@ impl TextLayer {
     /// once. Returns how many went back. (A glyph sitting in a hole one
     /// of them left is dropped by the next validation.)
     pub fn drop_in(&mut self, rect: Rect) -> usize {
-        let before = self.entries.len();
+        let before = self.count();
         let inside = |(x, y): (u16, u16)| rect.contains(Position::new(x, y));
         self.entries
             .retain(|d| !d.source_cells().chain(d.at_cells()).any(inside));
-        before - self.entries.len()
+        self.torn.retain(|t| !t.cells().any(inside));
+        before - self.count()
     }
 
     /// Drop every entry the real frame no longer supports — a source that
@@ -354,7 +426,13 @@ impl TextLayer {
     /// since a dropped entry's hole fills with real text again. Reads only
     /// the real frame; call before anything of hers is painted.
     pub fn validate(&mut self, buf: &Buffer, protected: &[Rect]) -> usize {
-        let before = self.entries.len();
+        let before = self.count();
+        self.torn.retain(|t| {
+            buf.cell(t.source) == Some(&t.expected)
+                && !protected
+                    .iter()
+                    .any(|r| r.contains(Position::new(t.source.0, t.source.1)))
+        });
         loop {
             let count = self.entries.len();
             let sources_ok: Vec<bool> = self
@@ -390,7 +468,7 @@ impl TextLayer {
                 break;
             }
         }
-        before - self.entries.len()
+        before - self.count()
     }
 
     /// Paint the layer over the (validated) real frame, returning the
@@ -399,6 +477,13 @@ impl TextLayer {
     pub fn paint(&self, buf: &mut Buffer) -> Vec<Frozen> {
         let mut frozen = Vec::new();
         let mut unders = Vec::new();
+        for t in &self.torn {
+            for c in t.cells() {
+                if let Some(cell) = buf.cell(c) {
+                    unders.push((c, cell.clone()));
+                }
+            }
+        }
         for d in &self.entries {
             for c in d.source_cells().chain(d.at_cells()) {
                 if let Some(cell) = buf.cell(c) {
@@ -413,14 +498,17 @@ impl TextLayer {
                 .map(|(_, cell)| cell.clone())
         };
         // Holes first, so a glyph moved within its own run lands on top.
-        for d in &self.entries {
-            for (x, y) in d.source_cells() {
-                if let Some(cell) = buf.cell_mut((x, y)) {
-                    cell.set_symbol(" ");
-                }
-                if let Some(real) = under((x, y)) {
-                    frozen.push(Frozen::hole(x, y, real));
-                }
+        let torn = self.torn.iter().flat_map(|t| t.cells().collect::<Vec<_>>());
+        let sources = self
+            .entries
+            .iter()
+            .flat_map(|d| d.source_cells().collect::<Vec<_>>());
+        for (x, y) in sources.chain(torn).collect::<Vec<_>>() {
+            if let Some(cell) = buf.cell_mut((x, y)) {
+                cell.set_symbol(" ");
+            }
+            if let Some(real) = under((x, y)) {
+                frozen.push(Frozen::hole(x, y, real));
             }
         }
         for d in &self.entries {
@@ -465,6 +553,43 @@ mod tests {
         let frozen = layer.paint(&mut frame);
         assert_eq!(frame, text(&["a   b"]));
         assert_eq!(frozen.len(), 2);
+    }
+
+    #[test]
+    fn tearing_leaves_holes_until_mended_or_the_line_changes() {
+        let real = text(&["abcdef    "]);
+        let mut layer = TextLayer::default();
+        let torn = [(3, 0), (4, 0), (5, 0)];
+        assert!(!layer.tear(&real, &[], &[(4, 0), (8, 0)]), "all or nothing");
+        assert!(layer.is_empty());
+        assert!(layer.tear(&real, &[], &torn));
+        assert!(!layer.tear(&real, &[], &[(5, 0)]), "not twice");
+        assert!(!layer.take(&real, &[], (3, 0), (8, 0)), "not taken either");
+        let mut frame = real.clone();
+        layer.validate(&frame, &[]);
+        layer.paint(&mut frame);
+        assert_eq!(frame, text(&["abc       "]));
+        assert!(layer.torn_intact(&torn));
+        // A glyph may move into a torn hole, like any hole.
+        assert!(layer.take(&real, &[], (0, 0), (4, 0)));
+        layer.mend(&torn);
+        assert!(!layer.torn_intact(&torn));
+        // The glyph in the mended hole no longer fits there.
+        layer.validate(&real, &[]);
+        assert!(layer.is_empty());
+        assert!(layer.tear(&real, &[], &torn));
+        assert_eq!(
+            layer.validate(&text(&["abcdeX    "]), &[]),
+            1,
+            "one line change"
+        );
+        assert!(!layer.torn_intact(&torn));
+        let protected = [Rect::new(0, 0, 10, 1)];
+        assert_eq!(
+            layer.validate(&real, &protected),
+            2,
+            "a protected pane mends it"
+        );
     }
 
     #[test]

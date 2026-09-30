@@ -7,7 +7,7 @@ use super::art::DoorFrame;
 use super::brain::{self, Kind, Need, Needs};
 use super::layer::Placed;
 use super::room::{Furniture, Seat, Use};
-use super::scenes::{Job, LayerOp, Side};
+use super::scenes::{Build, Job, LayerOp, Side};
 use super::sprite::{self, Face, Facing, HEIGHT, Pose, SpriteCell};
 use super::terrain::{Link, Platform, Route, Terrain};
 use tuirealm::ratatui::layout::Rect;
@@ -23,6 +23,8 @@ pub(super) struct Chances {
     pub loose: Vec<(u16, u16)>,
     /// Her furniture, and where she'd go to use it.
     pub seats: Vec<Seat>,
+    /// Makeshift furniture she could make of text, for each use.
+    pub builds: Vec<super::scenes::Build>,
     /// What the shopping channel would sell her, were she to watch now.
     pub advert: Option<Furniture>,
     /// She has a home (to leave for work, and come back to).
@@ -108,6 +110,14 @@ fn pick(n: usize, in_chat: impl Fn(usize) -> bool, rng: &mut Rng) -> Option<usiz
     Some(n - 1)
 }
 
+/// Somewhere she could go to use something.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Place {
+    Seat(Seat),
+    /// Make a makeshift piece like this first.
+    Make(Furniture),
+}
+
 /// Something she did to her home (the guest keeps the record).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum HomeEvent {
@@ -116,6 +126,9 @@ pub(super) enum HomeEvent {
     Bought(Furniture),
     /// Out of its box.
     Unpacked(Furniture),
+    /// A makeshift piece crumpled into shape: the one she'd use from
+    /// this seat.
+    Crumpled(Seat),
 }
 
 impl Chances {
@@ -128,6 +141,7 @@ impl Chances {
         match job {
             Job::Pull(p) => self.pulls.contains(p),
             Job::Swap(s) => self.swaps.contains(s),
+            Job::Build(b) => self.builds.contains(b),
             Job::Use(seat) => self.seats.contains(seat),
         }
     }
@@ -191,6 +205,16 @@ pub(super) const MUSINGS: [&str; 12] = [
     "Nanja-kora.",
     "Oh my gah.",
 ];
+
+/// Tearing text off a line for furniture: bracing, then the rip.
+const BRACE_MS: u64 = 700;
+const RIP_MS: u64 = 900;
+const RIP: &str = "Rrrip!";
+const SCRUNCH: &str = "scrunch...";
+const THERE: &str = "There!";
+/// A makeshift piece, when there's a real one she could use instead: one
+/// time in this many.
+const MAKESHIFT_ODDS: u64 = 20;
 
 /// How long she keeps saying `text`.
 fn speech_ms(text: &str) -> u64 {
@@ -306,6 +330,12 @@ enum Act {
     Poke {
         since: u64,
         until: u64,
+    },
+    /// Tearing text off a line for furniture (the task is the build):
+    /// bracing, then (`ripped`) heaving it off.
+    Tear {
+        since: u64,
+        ripped: bool,
     },
     /// Using a piece of her furniture (the task is its seat). Watching
     /// the TV, `advert` is what the shopping channel is selling her.
@@ -512,6 +542,7 @@ fn use_duration(what: Use) -> (u64, u64) {
         Use::Read => (20_000, 40_000),
         Use::Snack => (6_000, 9_000),
         Use::Pet => (6_000, 9_000),
+        Use::Crumple => (4_000, 6_000),
     }
 }
 
@@ -519,14 +550,17 @@ fn use_duration(what: Use) -> (u64, u64) {
 const USE_FRAME_MS: u64 = 1400;
 
 /// How she looks `elapsed` ms into `what`, which lasts `length` ms
-/// (with `advert` on the TV).
+/// (with `advert` on the TV; `sofa` when she's on one).
 fn use_look(
     what: Use,
     advert: Option<Furniture>,
+    sofa: bool,
     elapsed: u64,
     length: u64,
 ) -> (Pose, Face, Option<Bubble>) {
     let frame = (elapsed / USE_FRAME_MS % 2) as u8;
+    // Watching from a sofa, she sits on it.
+    let watching = if sofa { Pose::Lounge } else { Pose::Sit };
     match what {
         Use::Lounge => (Pose::Lounge, Face::Vacant, None),
         Use::Nap => (Pose::Nap(frame), Face::Blink, Some(Bubble::Zzz)),
@@ -543,11 +577,11 @@ fn use_look(
         }
         Use::Watch => match advert {
             // Hooked, then sold.
-            Some(_) if elapsed < length * 2 / 5 => (Pose::Sit, Face::Curious, Some(Bubble::Ooh)),
+            Some(_) if elapsed < length * 2 / 5 => (watching, Face::Curious, Some(Bubble::Ooh)),
             Some(item) if elapsed < length * 3 / 5 => {
-                (Pose::Sit, Face::Happy, Some(Bubble::Say(item.pitch())))
+                (watching, Face::Happy, Some(Bubble::Say(item.pitch())))
             }
-            _ => (Pose::Sit, Face::Curious, None),
+            _ => (watching, Face::Curious, None),
         },
         Use::Read => (Pose::Read(frame), Face::Vacant, None),
         // A look in the fridge, then the melon bread.
@@ -556,6 +590,15 @@ fn use_look(
         // Petting the cat, who has had quite enough.
         Use::Pet if elapsed < bite_at(length) => (Pose::Pet(0), Face::Happy, Some(Bubble::Hum)),
         Use::Pet => (Pose::Pet(1), Face::Surprised, Some(Bubble::Say("Ow!"))),
+        // Scrunching the torn text into shape, pleased with it at the end.
+        Use::Crumple => {
+            let bubble = if elapsed > length * 4 / 5 {
+                Some(Bubble::Say(THERE))
+            } else {
+                Some(Bubble::Say(SCRUNCH))
+            };
+            (Pose::ToeTouch(frame), Face::Happy, bubble)
+        }
         // Bent over the box, rummaging.
         Use::Unpack => {
             let bubble = (elapsed > length * 3 / 5).then_some(Bubble::Ooh);
@@ -711,6 +754,9 @@ pub(super) struct Osaka {
     /// She has just started poking (the guest takes it, and shakes the
     /// accordion).
     poked: bool,
+    /// The makeshift piece she tore text off for, and how she'll use it
+    /// once it's crumpled into shape.
+    making: Option<Build>,
     /// Every choice she made (tests read it).
     #[cfg(test)]
     pub choices: Vec<Kind>,
@@ -744,6 +790,7 @@ impl Osaka {
             decided: now,
             errand: None,
             poked: false,
+            making: None,
             #[cfg(test)]
             choices: Vec::new(),
         };
@@ -885,6 +932,7 @@ impl Osaka {
             Act::Sneeze { since, knocked } => {
                 since + WINDUP_MS + if knocked { RECOIL_MS } else { 0 }
             }
+            Act::Tear { since, ripped } => since + if ripped { RIP_MS } else { BRACE_MS },
             Act::Idle { what, since, until } => next_frame(what, since, now).min(until),
             Act::Use { since, until, .. } => {
                 (since + (now.saturating_sub(since) / USE_FRAME_MS + 1) * USE_FRAME_MS).min(until)
@@ -1133,12 +1181,62 @@ impl Osaka {
                         tracing::info!(item = ?seat.item, "houseguest: unpacked");
                         self.events.push(HomeEvent::Unpacked(seat.item));
                     }
+                    if let (Use::Crumple, Some(Job::Use(seat))) = (what, self.task.clone()) {
+                        tracing::info!(item = ?seat.item, "houseguest: made a makeshift piece");
+                        self.events.push(HomeEvent::Crumpled(seat));
+                        // Made for something: she goes straight to it.
+                        let made = self.making.take().filter(|b| {
+                            b.piece.seat(Use::Crumple, 0)
+                                == Seat {
+                                    makeshift: true,
+                                    ..seat
+                                }
+                        });
+                        if let Some(build) = made {
+                            self.task = None;
+                            self.goal = Some(Job::Use(build.then));
+                            return self.set(Act::Admire { until: at + 1200 }, at);
+                        }
+                    }
                     self.decide(at, terrain, chances, rng);
                 } else {
                     let frame =
                         since + (at.saturating_sub(since) / USE_FRAME_MS + 1) * USE_FRAME_MS;
                     self.act_due = frame.min(until);
                 }
+            }
+            Act::Tear { ripped: false, .. } => {
+                let Some(Job::Build(build)) = self.task.clone() else {
+                    return self.decide(at, terrain, chances, rng);
+                };
+                tracing::debug!(
+                    row = build.row,
+                    glyphs = build.cells.len(),
+                    item = ?build.piece.item,
+                    "houseguest: tearing text off for furniture"
+                );
+                self.ops.push(LayerOp::Tear {
+                    row: build.row,
+                    cells: build.cells.clone(),
+                    piece: build.piece,
+                });
+                self.say(RIP, at);
+                self.set(
+                    Act::Tear {
+                        since: at,
+                        ripped: true,
+                    },
+                    at,
+                );
+            }
+            Act::Tear { ripped: true, .. } => {
+                let Some(Job::Build(build)) = self.task.take() else {
+                    return self.decide(at, terrain, chances, rng);
+                };
+                // Over to the heap, to crumple it into shape.
+                let seat = build.piece.seat(Use::Crumple, 0);
+                self.making = Some(build);
+                self.pursue(Job::Use(seat), at);
             }
             Act::Dazed { .. } => {
                 // Said in place of a hello when it's her entrance.
@@ -1276,6 +1374,16 @@ impl Osaka {
                                 since: at,
                                 until: at + rng.range(lo, hi),
                                 advert,
+                            },
+                            at,
+                        );
+                    }
+                    if let Job::Build(_) = job {
+                        // At the line's end: brace to tear it.
+                        return self.set(
+                            Act::Tear {
+                                since: at,
+                                ripped: false,
                             },
                             at,
                         );
@@ -1620,6 +1728,7 @@ impl Osaka {
     }
 
     /// Whether she's using `item` (inside it or beside it).
+    #[cfg(test)]
     pub fn using(&self) -> Option<Furniture> {
         match (self.act, &self.task) {
             (Act::Use { .. }, Some(Job::Use(seat))) => Some(seat.item),
@@ -1630,7 +1739,7 @@ impl Osaka {
     /// The text she was pulling changed under her (someone scrolled the
     /// chat): she lets go and stares.
     pub fn lost_grip(&mut self, now: u64) {
-        if matches!(self.task, Some(Job::Pull(_))) {
+        if matches!(self.task, Some(Job::Pull(_) | Job::Build(_))) {
             self.task = None;
             tracing::trace!("houseguest lost her grip");
             self.set(
@@ -1697,8 +1806,9 @@ impl Osaka {
         if !chances.pulls.is_empty() {
             offers.push(Kind::Pull);
         }
-        for seat in &chances.seats {
-            let kind = Kind::Use(seat.what);
+        let made = chances.builds.iter().map(|b| b.then.what);
+        for what in chances.seats.iter().map(|s| s.what).chain(made) {
+            let kind = Kind::Use(what);
             if !offers.contains(&kind) {
                 offers.push(kind);
             }
@@ -1730,10 +1840,23 @@ impl Osaka {
                     .map(|l| landing(l, terrain).is_some_and(|spot| chances.in_chat(spot))),
             )
         };
+        // With nothing to use for it, a use means making something, and
+        // making it in the chat is a tenth as likely too.
+        let builds_in_chat = |what: Use| {
+            !chances.seats.iter().any(|s| s.what == what)
+                && all_of(
+                    chances
+                        .builds
+                        .iter()
+                        .filter(|b| b.then.what == what)
+                        .map(|b| chances.in_chat((b.x, b.y))),
+                )
+        };
         let factor = |kind: Kind| match kind {
             Kind::Pull if pulls_in_chat => CHAT_FACTOR,
             Kind::Swap if swaps_in_chat => CHAT_FACTOR,
             Kind::Travel if travel_in_chat => CHAT_FACTOR,
+            Kind::Use(what) if builds_in_chat(what) => CHAT_FACTOR,
             _ => 1.0,
         };
         while let Some((i, top)) = brain::choose(&offers, &self.needs, &self.recent, &factor, rng) {
@@ -1857,16 +1980,26 @@ impl Osaka {
                 return true;
             }
             Kind::Use(what) => {
-                let seats: Vec<Seat> = chances
-                    .seats
-                    .iter()
-                    .filter(|s| s.what == what)
-                    .copied()
-                    .collect();
-                let Some(&seat) = seats.get(rng.below(seats.len() as u64) as usize) else {
-                    return false;
+                let options = self.places_for(what, chances, rng);
+                return match options.get(rng.below(options.len() as u64) as usize) {
+                    Some(&Place::Seat(seat)) => self.go_to(Job::Use(seat), here, terrain, at),
+                    Some(&Place::Make(item)) => {
+                        let builds: Vec<&Build> = chances
+                            .builds
+                            .iter()
+                            .filter(|b| b.then.what == what && b.piece.item == item)
+                            .collect();
+                        let in_chat =
+                            |i: usize| builds.get(i).is_some_and(|b| chances.in_chat((b.x, b.y)));
+                        let Some(&build) =
+                            pick(builds.len(), in_chat, rng).and_then(|i| builds.get(i))
+                        else {
+                            return false;
+                        };
+                        self.go_to(Job::Build(build.clone()), here, terrain, at)
+                    }
+                    None => false,
                 };
-                return self.go_to(Job::Use(seat), here, terrain, at);
             }
             Kind::Pull | Kind::Swap => {
                 // A few tries at one she can get to.
@@ -1900,6 +2033,62 @@ impl Osaka {
         };
         self.set(act, at);
         true
+    }
+
+    /// Where she might go to `what`: every seat for it, except that a
+    /// makeshift piece is only for when there's no real one of its kind
+    /// on offer — else just one time in [`MAKESHIFT_ODDS`], and then it's
+    /// the makeshift one she goes for. A piece she'd have to make is one
+    /// place, and only when she hasn't made one of its kind already.
+    pub(super) fn places_for(&self, what: Use, chances: &Chances, rng: &mut Rng) -> Vec<Place> {
+        let seats = || chances.seats.iter().filter(|s| s.what == what);
+        let mut makeshift: Vec<Furniture> = seats()
+            .filter(|s| s.makeshift)
+            .map(|s| s.item)
+            .chain(
+                chances
+                    .builds
+                    .iter()
+                    .filter(|b| b.then.what == what)
+                    .map(|b| b.piece.item),
+            )
+            .collect();
+        makeshift.sort_by_key(|&item| item as u8);
+        makeshift.dedup();
+        // For each kind with a makeshift option, whether she goes for it:
+        // always without a real one, on a whim with.
+        let mut whims = Vec::new();
+        let mut allowed = Vec::new();
+        for item in makeshift {
+            let real = seats().any(|s| !s.makeshift && s.item == item);
+            if !real {
+                allowed.push(item);
+            } else if rng.below(MAKESHIFT_ODDS) == 0 {
+                allowed.push(item);
+                whims.push(item);
+            }
+        }
+        let mut out: Vec<Place> = seats()
+            .filter(|s| {
+                if s.makeshift {
+                    allowed.contains(&s.item)
+                } else {
+                    !whims.contains(&s.item)
+                }
+            })
+            .map(|&s| Place::Seat(s))
+            .collect();
+        for item in allowed {
+            let made = seats().any(|s| s.makeshift && s.item == item);
+            let can = chances
+                .builds
+                .iter()
+                .any(|b| b.then.what == what && b.piece.item == item);
+            if !made && can {
+                out.push(Place::Make(item));
+            }
+        }
+        out
     }
 
     /// Head for `job`: straight there on this floor, or along the first
@@ -2510,8 +2699,17 @@ impl Osaka {
             } => use_look(
                 what,
                 advert,
+                matches!(&self.task, Some(Job::Use(seat)) if seat.item == Furniture::Sofa),
                 now.saturating_sub(since),
                 until.saturating_sub(since),
+            ),
+            Act::Tear { ripped, .. } => (
+                Pose::Pull {
+                    heaving: ripped,
+                    row: self.hands_row(),
+                },
+                if ripped { Face::Happy } else { Face::Curious },
+                None,
             ),
             Act::SpaceOut { .. } => (Pose::Stand, Face::Vacant, Some(Bubble::Dots)),
             Act::Home { until } => {

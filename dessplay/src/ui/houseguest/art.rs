@@ -15,7 +15,7 @@ const DOOR: &str = include_str!("art/door.svg");
 const DELIVERY: &str = include_str!("art/delivery.svg");
 /// Prop units per cell (her scale at a 9 × 19 px cell), so her
 /// furniture shares her line weights.
-const CELL_UNITS: (f32, f32) = (20.0, 42.0);
+pub(super) const CELL_UNITS: (f32, f32) = (20.0, 42.0);
 /// The parts' canvas; feet rest on its bottom edge.
 const CANVAS_W: f32 = 100.0;
 const CANVAS_H: f32 = 160.0;
@@ -1064,7 +1064,12 @@ fn prop_frame(prop: Furniture) -> (f32, f32) {
 
 /// Rasterize `svg`, whose frame is `(fw, fh)` units, into a `width ×
 /// height` image: scaled uniformly, centred, bottom-aligned.
-fn rasterize(svg: &str, (fw, fh): (f32, f32), width: u32, height: u32) -> Option<image::RgbaImage> {
+pub(super) fn rasterize(
+    svg: &str,
+    (fw, fh): (f32, f32),
+    width: u32,
+    height: u32,
+) -> Option<image::RgbaImage> {
     let tree = usvg::Tree::from_str(svg, &usvg::Options::default()).ok()?;
     let mut pixmap = tiny_skia::Pixmap::new(width, height)?;
     let scale = (width as f32 / fw).min(height as f32 / fh);

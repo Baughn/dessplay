@@ -72,11 +72,28 @@ pub(super) struct Swap {
     pub b: Placed,
 }
 
+/// Makeshift furniture she could make: standing at `x` on the floor at
+/// `y`, tear the glyphs at `cells` (nearest her first) off the line on
+/// `row` beside her box on `side`, crumple them into `piece` on the same
+/// floor, and then use it as `then`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct Build {
+    pub x: i32,
+    pub y: i32,
+    pub row: u16,
+    pub side: Side,
+    pub cells: Vec<u16>,
+    pub piece: super::room::Shown,
+    pub then: super::room::Seat,
+}
+
 /// Something she means to do at a spot on some floor.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Job {
     Pull(Pull),
     Swap(Swap),
+    /// Tear off text to make a piece of furniture of.
+    Build(Build),
     /// Use a piece of her furniture.
     Use(super::room::Seat),
 }
@@ -87,6 +104,7 @@ impl Job {
         match self {
             Self::Pull(p) => (p.x, p.y),
             Self::Swap(s) => (s.x, s.y),
+            Self::Build(b) => (b.x, b.y),
             Self::Use(seat) => (seat.x, seat.y),
         }
     }
@@ -95,6 +113,7 @@ impl Job {
         match self {
             Self::Pull(p) => p.side,
             Self::Swap(s) => s.side,
+            Self::Build(b) => b.side,
             Self::Use(seat) => match seat.facing {
                 super::sprite::Facing::Left => Side::Left,
                 super::sprite::Facing::Right => Side::Right,
@@ -107,6 +126,7 @@ impl Job {
         let (row, y) = match self {
             Self::Pull(p) => (p.row, p.y),
             Self::Swap(s) => (s.row, s.y),
+            Self::Build(b) => (b.row, b.y),
             Self::Use(_) => return 1,
         };
         (i32::from(row) - (y - HEIGHT)).clamp(0, HEIGHT - 1) as u8
@@ -135,19 +155,28 @@ pub(super) enum LayerOp {
     /// Put these glyphs back where they were shown (home, for most),
     /// together. `tries` counts refusals.
     Restore { to: Vec<Placed>, tries: u8 },
+    /// Tear the glyphs at `cells` on `row` off their line, all or none,
+    /// to crumple into `piece`.
+    Tear {
+        row: u16,
+        cells: Vec<u16>,
+        piece: super::room::Shown,
+    },
 }
 
 impl LayerOp {
     /// Whether a refusal means she lost her grip on something she was
     /// holding (the text changed under her hands).
     pub fn grips(&self) -> bool {
-        matches!(self, Self::Pull { .. })
+        matches!(self, Self::Pull { .. } | Self::Tear { .. })
     }
 
     /// The source cells it's about.
     pub fn sources(&self) -> Vec<(u16, u16)> {
         match self {
-            Self::Pull { row, cells, .. } => cells.iter().map(|&c| (c, *row)).collect(),
+            Self::Pull { row, cells, .. } | Self::Tear { row, cells, .. } => {
+                cells.iter().map(|&c| (c, *row)).collect()
+            }
             Self::Swap { a, b } => vec![a.source, b.source],
             Self::Knock { source, .. } | Self::Fall { source } => vec![*source],
             Self::Restore { to, .. } => to.iter().map(|p| p.source).collect(),
@@ -180,6 +209,7 @@ pub(super) fn apply(op: &LayerOp, layer: &mut TextLayer, buf: &Buffer, protected
             .at_of(*source)
             .is_some_and(|(x, y)| layer.shift(buf, protected, *source, (x, y.saturating_add(1)))),
         LayerOp::Restore { to, .. } => layer.place(buf, protected, to),
+        LayerOp::Tear { .. } => layer.tear(buf, protected, &op.sources()),
         LayerOp::Pull { row, cells, offset } => {
             let mut ok = true;
             // Leading glyph first: each moves into the cell (or hole) its
@@ -451,6 +481,111 @@ fn segment(buf: &Buffer, protected: &[Rect], start: u16, row: u16, dir: i32) -> 
     }
     cells.sort_unstable();
     (cells.len() >= MIN_GLYPHS).then_some(cells)
+}
+
+/// How far (columns) from where she tears the text the piece may stand.
+const BUILD_REACH: i32 = 14;
+/// Spots tried along each floor for a piece, this many columns apart.
+const BUILD_STEP: usize = 2;
+/// Spots found per floor and kind before she stops looking.
+const BUILD_KEEP: usize = 4;
+
+/// Makeshift pieces she could make of `items`, from where the terrain
+/// lets her stand: a piece that fits on a floor ([`room::fits`], clear
+/// by `clear`, with room for her to use it), and a line in `pulls` on
+/// that floor within reach, long enough to tear at least
+/// [`scrap::MIN_GLYPHS`] off and leave some. `then` says how she'd use
+/// the finished piece (a sofa may face a TV).
+pub(super) fn builds(
+    buf: &Buffer,
+    terrain: &Terrain,
+    pulls: &[Pull],
+    items: &[super::room::Furniture],
+    clear: &dyn Fn(i32, i32) -> bool,
+    then: &dyn Fn(&super::room::Shown) -> Vec<super::room::Seat>,
+) -> Vec<Build> {
+    use super::room::{Shown, fits, roomy};
+    use super::scrap::{self, Scrap};
+    use super::sprite::Facing;
+    let mut out = Vec::new();
+    for platform in &terrain.platforms {
+        let near: Vec<&Pull> = pulls
+            .iter()
+            .filter(|p| p.y == platform.y && platform.contains(p.x))
+            .filter(|p| p.cells.len() >= scrap::MIN_GLYPHS + 2)
+            .collect();
+        if near.is_empty() {
+            continue;
+        }
+        for &item in items {
+            let (cols, _) = scrap::footprint(item);
+            let half = i32::from(cols) / 2;
+            // Only spots within reach of a line she could tear.
+            let mut lefts: Vec<i32> = near
+                .iter()
+                .flat_map(|p| {
+                    (p.x - BUILD_REACH - half..=p.x + BUILD_REACH - half).step_by(BUILD_STEP)
+                })
+                .filter(|&left| left + i32::from(cols) > platform.x0 && left <= platform.x1)
+                .collect();
+            lefts.sort_unstable();
+            lefts.dedup();
+            let mut found = 0;
+            for left in lefts {
+                if found >= BUILD_KEEP {
+                    break;
+                }
+                for facing in [Facing::Right, Facing::Left] {
+                    let mut done = Scrap::new(&[], 0);
+                    done.stage = scrap::STAGES;
+                    let piece = Shown {
+                        item,
+                        facing,
+                        boxed: false,
+                        nook: None,
+                        left,
+                        floor: platform.y,
+                        scrap: Some(done),
+                    };
+                    if !fits(buf, &piece, clear) || !roomy(buf, &piece, clear) {
+                        continue;
+                    }
+                    let middle = left + half;
+                    let Some(pull) = near
+                        .iter()
+                        .filter(|p| (p.x - middle).abs() <= BUILD_REACH)
+                        .min_by_key(|p| (p.x - middle).abs())
+                    else {
+                        continue;
+                    };
+                    let count = (pull.cells.len() - 2).min(scrap::GLYPHS);
+                    // The end of the line nearest her comes off.
+                    let cells: Vec<u16> = match pull.side {
+                        Side::Right => pull.cells.iter().take(count).copied().collect(),
+                        Side::Left => pull.cells.iter().rev().take(count).copied().collect(),
+                    };
+                    for seat in then(&piece) {
+                        out.push(Build {
+                            x: pull.x,
+                            y: pull.y,
+                            row: pull.row,
+                            side: pull.side,
+                            cells: cells.clone(),
+                            piece: Shown {
+                                scrap: Some(Scrap::new(&[], 0)),
+                                ..piece
+                            },
+                            then: seat,
+                        });
+                    }
+                    found += 1;
+                    // One way round is plenty for a spot.
+                    break;
+                }
+            }
+        }
+    }
+    out
 }
 
 #[cfg(test)]

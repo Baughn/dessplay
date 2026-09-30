@@ -37,6 +37,7 @@ channel on her TV. We borrow that backbone (see
 | 3 | The room: eight pieces of furniture in pane-rooms, composited with her; the ledger; deliveries and Chiyo-chichi's shopping channel; her part-time job; ways out of pits (clambering, stepping out, the door); hunger and the fridge | **done** (routine and calendar moved to 4) |
 | 3b | Resident Osaka: stays through playback and local input, rains out of the focused pane and leaves it by her door, a tenth as likely into the chat, input undoes her chat mischief; the Houseguest settings tab | **done** 2026-09-30 |
 | 3c | The scrollback accordion: she comes to poke the scrolled-back chat log's accordion when messages go unseen for a minute (design.md, Chat) | **done** 2026-09-30 |
+| 3d | Makeshift furniture: with no sofa or bed, she tears text off a line and crumples it into one, drawn as shreds of the derez glyphs; a real piece wins 19 times in 20 | **done** 2026-10-01 |
 | 4 | Colour: calendar, screen reading, dreams, cameos, rarity and pity, credits | planned |
 | 5 | The text factory: text hauled into an industrial space and compacted into materials | planned, last |
 
@@ -540,8 +541,10 @@ among the first things she owns, since the shopping channel plays on it.
 67. ★ **Kotatsu** — only her head visible, for hours; mikan on top
     (Ep 24–25). [C, Dec–Feb evenings]
 68. **Sofa nap** — curls up hugging the throw cushion, `z` drifts;
-    sometimes the cushion rolls off onto the floor line. Falls asleep
-    standing if she has no sofa. [C]
+    sometimes the cushion rolls off onto the floor line. [C] Without a
+    sofa or bed she makes one of text instead (*built*, phase 3d: tears
+    the end off a line, "Rrrip!", crumples it into a heap of shredded
+    derez glyphs, sits or sleeps in it).
 69. **Blank-line nap** — lies in the widest blank run in chat; a real
     repaint of that run is her alarm clock. [U]
 70. **Lamp** — switches it off before bed. [C, bedtime]
@@ -686,6 +689,10 @@ neither is cut out by the other's placeholders. The TV is furniture.
 
 ### Building from harvested letters (*planned*)
 
+*Phase 3d built a first, humbler form of this:* makeshift furniture
+torn from one line and crumpled into a 7-wide sofa or bed of shreds
+(`scrap.rs`); design.md, Houseguest, states the rules.
+
 1. **Blueprint**: a dim outline of the prop.
 2. **Harvest**: she lifts letters (keeping their original style — you can
    see she's carrying bob's message in bob's colour) from old chat lines,
@@ -805,6 +812,7 @@ layer.rs      the text layer: moved glyphs, holes, validation
 scenes.rs     what text scenes are possible (pulls, swaps, loose glyphs)
               and the layer operations they queue
 brain.rs      needs, offers, and the top-few choice
+scrap.rs      makeshift furniture of torn-off text: its shreds and ASCII
 stage.rs      cue any scene on demand; the rooms the tests share
 dissolve.rs   the goodbye, a pure function of (C, R, T0, t)
 tests.rs      gate, lifecycle, property and snapshot tests

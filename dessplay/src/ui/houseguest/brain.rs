@@ -163,6 +163,8 @@ impl Kind {
             Self::Use(Use::Sleep) => 10.0,
             // A parcel! Nothing comes close.
             Self::Use(Use::Unpack) => 40.0,
+            // A heap of torn text she meant to make something of.
+            Self::Use(Use::Crumple) => 12.0,
             Self::Use(_) => 8.0,
         }
     }
@@ -191,6 +193,7 @@ impl Kind {
                 | Use::Homework
                 | Use::Watch
                 | Use::Unpack
+                | Use::Crumple
                 | Use::Read
                 | Use::Pet,
             ) => None,

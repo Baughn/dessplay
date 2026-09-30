@@ -198,6 +198,8 @@ pub(super) enum Use {
     Snack,
     /// Pet the cat in the cat bed (who bites).
     Pet,
+    /// Crumple torn-off text into a makeshift piece.
+    Crumple,
 }
 
 impl Use {
@@ -231,6 +233,8 @@ pub(super) struct Seat {
     pub x: i32,
     pub y: i32,
     pub facing: Facing,
+    /// It's makeshift furniture she made of text.
+    pub makeshift: bool,
 }
 
 /// Which room a piece belongs to. Panes are her rooms: all the pieces of
@@ -259,18 +263,42 @@ pub(super) struct Shown {
     pub facing: Facing,
     /// Still in its delivery box (drawn as the box).
     pub boxed: bool,
-    /// The pane it stands in.
-    pub nook: Nook,
+    /// The pane its room is in (none for makeshift pieces, which belong
+    /// to no room).
+    pub nook: Option<Nook>,
     /// Its leftmost column.
     pub left: i32,
     /// The floor row it stands on (just below its footprint).
     pub floor: i32,
+    /// Makeshift, crumpled out of torn-off text (never boxed).
+    pub scrap: Option<super::scrap::Scrap>,
 }
 
 impl Shown {
+    /// Its size in cells (columns, rows).
+    pub fn size(&self) -> (u16, u16) {
+        match self.scrap {
+            Some(_) => super::scrap::footprint(self.item),
+            None => self.item.footprint(),
+        }
+    }
+
+    /// What she can do with it: unpack it while it's boxed, crumple it
+    /// into shape while it's makeshift and still a heap; a makeshift sofa
+    /// is to sit on and a makeshift bed to sleep in.
+    pub fn uses(&self) -> &'static [Use] {
+        match (self.boxed, self.scrap) {
+            (true, _) => &[Use::Unpack],
+            (false, Some(scrap)) if !scrap.done() => &[Use::Crumple],
+            (false, Some(_)) if self.item == Furniture::Bed => &[Use::Sleep],
+            (false, Some(_)) => &[Use::Lounge],
+            (false, None) => Use::of(self.item),
+        }
+    }
+
     /// Its footprint, above the floor.
     pub fn rect(&self) -> Rect {
-        let (cols, rows) = self.item.footprint();
+        let (cols, rows) = self.size();
         Rect::new(
             self.left as u16,
             (self.floor - i32::from(rows)) as u16,
@@ -290,7 +318,7 @@ impl Shown {
     /// the way she faces. In the piece for most uses; for the TV, at
     /// `beside` (a standing spot next to it), facing it.
     pub fn seat(&self, what: Use, beside: i32) -> Seat {
-        let (cols, _) = self.item.footprint();
+        let (cols, _) = self.size();
         let cols = i32::from(cols);
         let mirrored = |col: i32| match self.facing {
             Facing::Right => self.left + col,
@@ -301,13 +329,14 @@ impl Shown {
             Facing::Left => Facing::Right,
         };
         let (x, facing) = match what {
+            _ if self.scrap.is_some() => (mirrored(super::scrap::SEAT), self.facing),
             Use::Lounge | Use::Nap => (mirrored(4), self.facing),
             // Head at the headboard end.
             Use::Sleep => (mirrored(3), self.facing),
             // On a stool just past the desk's front, facing it.
             Use::Homework => (mirrored(7), flip(self.facing)),
             // In front of the box, bending over it.
-            Use::Unpack => (self.left + cols / 2, self.facing),
+            Use::Unpack | Use::Crumple => (self.left + cols / 2, self.facing),
             Use::Watch | Use::Read | Use::Snack | Use::Pet => (
                 beside,
                 if beside < self.left {
@@ -323,6 +352,7 @@ impl Shown {
             x,
             y: self.floor,
             facing,
+            makeshift: self.scrap.is_some(),
         }
     }
 
@@ -337,10 +367,12 @@ impl Shown {
     /// Every footprint cell, with its ASCII glyph if drawn (the parcel's,
     /// while it's boxed).
     pub fn cells(&self) -> impl Iterator<Item = (i32, i32, Option<char>)> + '_ {
-        let (cols, rows) = self.item.footprint();
+        let (cols, rows) = self.size();
         (0..rows).flat_map(move |dy| {
             (0..cols).map(move |dx| {
-                let glyph = if self.boxed {
+                let glyph = if let Some(scrap) = self.scrap {
+                    scrap.cell(self.item, self.facing, dx, dy).map(|(c, _)| c)
+                } else if self.boxed {
                     parcel_glyph(cols, rows, dx, dy)
                 } else {
                     glyph(self.item, self.facing, dx, dy)
@@ -520,7 +552,7 @@ impl Home {
 /// seat, beyond the piece itself; for a use beside it, her box at one of
 /// the spots beside it, standing on a line. Her box must be blank and
 /// `clear`.
-fn roomy(buf: &Buffer, at: &Shown, clear: &dyn Fn(i32, i32) -> bool) -> bool {
+pub(super) fn roomy(buf: &Buffer, at: &Shown, clear: &dyn Fn(i32, i32) -> bool) -> bool {
     let half = super::sprite::WIDTH / 2;
     let rect = at.rect();
     let cell = |x: i32, y: i32| {
@@ -551,7 +583,7 @@ fn roomy(buf: &Buffer, at: &Shown, clear: &dyn Fn(i32, i32) -> bool) -> bool {
             })
         })
     };
-    Use::of(at.item).iter().all(|&what| {
+    at.uses().iter().all(|&what| {
         if what.inside() {
             let seat = at.seat(what, 0);
             fits(seat.x, seat.y)
@@ -600,16 +632,17 @@ fn place(prop: Prop, nook: Nook, nooks: &[(Nook, Rect)]) -> Option<Shown> {
         item: prop.item,
         facing: prop.facing,
         boxed: prop.boxed,
-        nook,
+        nook: Some(nook),
         left: i32::from(rect.x) + 1 + span * i32::from(prop.at.min(1000)) / 1000,
         floor: i32::from(rect.bottom()) - 1,
+        scrap: None,
     })
 }
 
 /// Whether `at` stands on unbroken line glyphs with only blank, `clear`
 /// cells in its footprint (image cells and wide glyphs' halves are
 /// never blank).
-fn fits(buf: &Buffer, at: &Shown, clear: &dyn Fn(i32, i32) -> bool) -> bool {
+pub(super) fn fits(buf: &Buffer, at: &Shown, clear: &dyn Fn(i32, i32) -> bool) -> bool {
     let cell = |x: i32, y: i32| {
         let (Ok(x), Ok(y)) = (u16::try_from(x), u16::try_from(y)) else {
             return None;
@@ -621,7 +654,7 @@ fn fits(buf: &Buffer, at: &Shown, clear: &dyn Fn(i32, i32) -> bool) -> bool {
             && cell(x, y).is_some_and(|c| c.symbol().trim().is_empty())
             && cell(x - 1, y).is_none_or(|c| width(c) < 2)
     });
-    let (cols, _) = at.item.footprint();
+    let (cols, _) = at.size();
     let floor = (at.left..at.left + i32::from(cols)).all(|x| {
         clear(x, at.floor)
             && cell(x, at.floor)
@@ -755,7 +788,7 @@ mod tests {
         let nooks = [(Nook::Users, users), (Nook::Playlist, playlist)];
         let shown = room.resolve(&buf, &nooks, &|_, _| false);
         assert_eq!(shown.len(), 2, "{shown:?}");
-        assert!(shown.iter().all(|s| s.nook == Nook::Playlist));
+        assert!(shown.iter().all(|s| s.nook == Some(Nook::Playlist)));
         assert_eq!(room.nook_of(RoomKind::Living), Some(Nook::Playlist));
         // Nowhere holds both: the whole room is in the closet.
         let shown = room.resolve(&buf, &[(Nook::Users, users)], &|_, _| false);

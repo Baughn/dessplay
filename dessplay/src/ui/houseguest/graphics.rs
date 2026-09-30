@@ -22,6 +22,7 @@ use tuirealm::ratatui::widgets::Widget;
 
 use super::art::{self, Rig};
 use super::room::Furniture;
+use super::scrap;
 use super::sprite::{Face, Facing, HEIGHT, Pose, WIDTH};
 
 /// Her outline colour: dark line art, read against the fills.
@@ -46,6 +47,8 @@ pub(super) enum Look {
     Tv(art::Channel),
     /// A piece in some state (the lamp off, the cat in his bed…).
     Piece(Furniture, art::PieceState),
+    /// A makeshift piece she made of text, or part of it.
+    Scrap(Furniture, scrap::Scrap, scrap::Part),
 }
 
 impl Look {
@@ -58,6 +61,10 @@ impl Look {
             }
             Self::Prop(item, _) | Self::Parcel(item, _) | Self::Piece(item, _) => {
                 let (cols, rows) = item.footprint();
+                (i32::from(cols), i32::from(rows))
+            }
+            Self::Scrap(item, ..) => {
+                let (cols, rows) = scrap::footprint(item);
                 (i32::from(cols), i32::from(rows))
             }
             Self::Pose(..) | Self::Wave(_) | Self::Door(_) => (WIDTH, HEIGHT),
@@ -77,6 +84,9 @@ impl Look {
             Self::Parcel(item, open) => art::render_parcel(item, open, facing, LINE, width, height),
             Self::Tv(channel) => art::render_tv(channel, facing, LINE, width, height),
             Self::Piece(item, state) => art::render_piece(item, state, facing, LINE, width, height),
+            Self::Scrap(item, made, part) => {
+                scrap::render(item, &made, part, facing, LINE, width, height)
+            }
         }
     }
 }
@@ -151,7 +161,7 @@ impl LineGeometry {
 /// Resolve a cell colour to RGB as the truecolor theme paints it. With
 /// truecolor the frame already holds RGB; named colours (limited depth,
 /// tests) go through the theme's own mapping.
-fn rgb(color: Color) -> [u8; 3] {
+pub(super) fn rgb(color: Color) -> [u8; 3] {
     crate::ui::theme::truecolor_rgb(color)
 }
 
@@ -279,6 +289,18 @@ fn draw_glyph(
     }
 }
 
+/// The alien glyph `c` derezzes into: a 3×5 block pattern, bit
+/// `row * 3 + col` set where a block is. The same character always gives
+/// the same pattern.
+pub(super) fn alien_bits(c: char) -> u32 {
+    let mut z = u64::from(c as u32).wrapping_add(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^= z >> 31;
+    // At least a spine, so no glyph is a near-blank speck.
+    (z as u32 & 0x7FFF) | 0b010_000_010_000_010
+}
+
 /// Derez a text glyph her image covers: an alien glyph in its colour, a
 /// block pattern on a 3×5 grid picked by the character (the same letter
 /// always turns into the same glyph, so text reads as a cipher).
@@ -289,12 +311,7 @@ fn draw_alien(
     (x0, y0): (u32, u32),
     (w, h): (u32, u32),
 ) {
-    let mut z = u64::from(c as u32).wrapping_add(0x9E37_79B9_7F4A_7C15);
-    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-    z ^= z >> 31;
-    // At least a spine, so no glyph is a near-blank speck.
-    let bits = (z as u32 & 0x7FFF) | 0b010_000_010_000_010;
+    let bits = alien_bits(c);
     let (cols, rows) = (3u32, 5u32);
     let (mx, my) = (w / 6, h / 8);
     let (iw, ih) = (w.saturating_sub(2 * mx), h.saturating_sub(2 * my));
