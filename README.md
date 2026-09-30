@@ -29,25 +29,25 @@ don't stop.
 | Playlist | Shared, shuffle, undo, URL streams, trusted domains, loop | Shared CRDT playlist with play history, watched flags, a franchise browser, and an episode browser that disambiguates between copies |
 | Metadata | None | AniDB integration on the server (rate-limit ladder, relations graph, titles-dump search, AI-curated short titles) |
 | Series tracking | None | The List: statuses, watchers, next-episode auto-advance, CSV import, and identity for series AniDB has never heard of |
-| Chat | Text chat; OSD in mpv with chat input inside mpv | Chat, OSD overlays, mention highlighting, tab completion, `\|\|spoiler\|\|` scrambling with click-to-reveal, `/me`, drag-select to clipboard, derived narrator lines, day separators at 09:00 |
-| External chat | None | IRC bridge with nick sanitising, spoiler masking, and `/summon` |
+| Chat | Text chat; OSD in mpv with chat input inside mpv | Chat, OSD overlays, mention highlighting, tab completion, `\|\|spoiler\|\|` scrambling with click-to-reveal, `/me`, drag-select to clipboard, derived narrator lines, day separators at 09:00; inline images (click for fullscreen); ranked fuzzy search over a 10,000-message history |
+| External chat | None | IRC bridge with nick sanitising, spoiler masking, join/leave notices, and `/summon` |
 | Subtitles | None | Local subtitle log, intermixed or in its own pane, with a perceptually-spaced speaker palette |
 | Players | mpv, mpv.net, VLC, MPC-HC, MPC-BE, IINA, memento, mplayer2 | mpv (VLC is a settings placeholder); crash ladder; attach mode for ssh |
 | Multi-tenancy | Rooms, managed rooms with operators, room isolation, MOTD | One implicit room, one shared password |
-| UI | Qt GUI plus a console mode | TUI only; true-color theme, mouse support, resizable panes, in-app changelog |
+| UI | Qt GUI plus a console mode | TUI only; true-color theme, mouse support, resizable panes, Ctrl-F search in every pane, live-reloaded XML/CSS layouts, in-app changelog |
 | Localisation | 13 languages | English |
 | Platforms | Windows, Linux, BSD, macOS; packaged installers | Linux and macOS; built from source on every launch |
 | Security | Optional TLS; hashed filenames for privacy on public servers | Always-on TLS with TOFU pinning; threat model is "there are five of us" |
-| Gimmicks | None | An in-character AI commentary marquee that reacts to the episode; a locally saved roguelike for the waiting room |
+| Gimmicks | None | An in-character AI commentary marquee that reacts to the episode; a spoiler-aware oracle you can question from chat; a locally saved roguelike for the waiting room; Osaka, who moves into your terminal when you leave it alone |
 
 For scale, as of September 2026:
 
 | | Syncplay | DessPlay |
 |---|---|---|
-| Age | 14 years | 6.5 months, 63 days with commits |
+| Age | 14 years | 7.5 months, 79 days with commits |
 | Contributors | 101 | 1, plus Claude |
-| Core code | roughly 15 to 20k lines of Python and Lua | roughly 89k lines of Rust |
-| Tests | none in the repository | roughly 1,370 test functions, 12 fuzz targets, 27 property-test suites |
+| Core code | roughly 15 to 20k lines of Python and Lua | roughly 130k lines of Rust |
+| Tests | none in the repository | roughly 1,740 test functions, 13 fuzz targets, 42 property-test suites |
 
 Syncplay is missing nothing it set out to have. DessPlay is missing a
 second player, a GUI, and any reason for a stranger to run it.
@@ -83,6 +83,46 @@ From the Codex playtesting agent ([full playtest and ideas](docs/proposals/2026-
 > with the ember: 935 turns, 30 kills, 249 gold. Drawing a crowd of creatures
 > into a corridor was the best tactical moment. The return took 393 turns
 > with just one leftover rat; that's where I'd start improving the pacing.
+
+## Ask the oracle
+
+Start a chat line with **`oracle:`** and a question ("oracle: who was the
+guy with the eyepatch?"). The oracle is a headless node on the server that
+answers briefly in chat, searches the web when it needs to, and knows which
+episode you're on, so it won't spoil anything past it. `Tab` completes
+`oracle: `.
+
+## The houseguest
+
+Leave the client alone for a minute and Osaka wanders in. She walks the pane
+borders, tidies short chat lines by pulling them along, swaps letters and
+swaps them back, sneezes letters loose, climbs over dividers, and when she's
+truly stuck opens a pink door in space. In terminals with kitty graphics
+(Ghostty, for one) she's drawn as line art.
+
+Over repeated visits she moves in: a TV, then furniture ordered off
+Chiyo-chichi's shopping channel that arrives as parcels, a part-time job,
+and occasionally a grey cat who does not want to be petted. Her home is kept
+between sessions. By default she stays while you watch and type, keeping
+out of whichever pane you're using; any key undoes whatever she did to the
+chat. F3 → Houseguest changes the delay, lets her leave when you're busy,
+or turns her off.
+
+## Making it yours
+
+The whole interface is local XML templates plus a subset of CSS: move or
+hide panes, rearrange table columns, restyle forms and dialogs, change
+colors, borders and spacing. Edits apply live, without rebuilding or losing
+your place.
+
+```sh
+dessplay layout init    # export the defaults to ~/.config/dessplay/ui
+dessplay layout check   # validate your edits without starting the client
+```
+
+An invalid edit leaves the last good layout in place. **F12** opens the
+layout tools (diagnostics, reload, and a switch back to the bundled layout).
+See [`docs/ui-layouts.md`](docs/ui-layouts.md) for the template contract.
 
 ## Install
 
