@@ -301,6 +301,12 @@ enum Act {
     Home {
         until: u64,
     },
+    /// Poking the chat's scrollback accordion under her feet (her
+    /// errand's end).
+    Poke {
+        since: u64,
+        until: u64,
+    },
     /// Using a piece of her furniture (the task is its seat). Watching
     /// the TV, `advert` is what the shopping channel is selling her.
     Use {
@@ -465,6 +471,12 @@ const HOME: &str = "I'm home!";
 
 /// What she says stepping out of a door.
 const THROUGH: &str = "Where was I?";
+
+/// How long she pokes the scrollback accordion, and each poke.
+const POKE_MS: u64 = 2000;
+const POKE_FRAME_MS: u64 = 250;
+/// What she says, poking it.
+pub(super) const POKE: &str = "Somebody said something.";
 
 /// The fridge stands open this long at the start of a snack.
 pub(super) const FRIDGE_OPEN_MS: u64 = 1500;
@@ -679,6 +691,12 @@ pub(super) struct Osaka {
     recent: Vec<Kind>,
     /// When she last chose.
     decided: u64,
+    /// Where she's going to poke the scrollback accordion (standing on
+    /// it); it comes before anything else she'd choose.
+    errand: Option<(i32, i32)>,
+    /// She has just started poking (the guest takes it, and shakes the
+    /// accordion).
+    poked: bool,
     /// Every choice she made (tests read it).
     #[cfg(test)]
     pub choices: Vec<Kind>,
@@ -710,6 +728,8 @@ impl Osaka {
             needs: Needs::default(),
             recent: Vec::new(),
             decided: now,
+            errand: None,
+            poked: false,
             #[cfg(test)]
             choices: Vec::new(),
         };
@@ -854,6 +874,9 @@ impl Osaka {
             Act::Idle { what, since, until } => next_frame(what, since, now).min(until),
             Act::Use { since, until, .. } => {
                 (since + (now.saturating_sub(since) / USE_FRAME_MS + 1) * USE_FRAME_MS).min(until)
+            }
+            Act::Poke { since, until } => {
+                (since + (now.saturating_sub(since) / POKE_FRAME_MS + 1) * POKE_FRAME_MS).min(until)
             }
             Act::Clamber { column, to_y, .. } => {
                 if self.x == column && self.y != to_y {
@@ -1061,13 +1084,26 @@ impl Osaka {
                 }
                 None => {
                     (self.x, self.y) = to;
-                    if !self.home_from_work(at) {
+                    if self.errand == Some(to) {
+                        self.poke(at);
+                    } else if !self.home_from_work(at) {
                         self.say(THROUGH, at);
                         self.decide(at, terrain, chances, rng);
                     }
                 }
             },
             Act::Home { .. } => self.decide(at, terrain, chances, rng),
+            Act::Poke { since, until } => {
+                if at >= until {
+                    tracing::debug!("houseguest: errand done");
+                    self.errand = None;
+                    self.decide(at, terrain, chances, rng);
+                } else {
+                    self.act_due = (since
+                        + (at.saturating_sub(since) / POKE_FRAME_MS + 1) * POKE_FRAME_MS)
+                        .min(until);
+                }
+            }
             Act::Use {
                 what, since, until, ..
             } => {
@@ -1194,6 +1230,9 @@ impl Osaka {
                 if self.x != to {
                     self.act_due = at + WALK_MS;
                     return;
+                }
+                if self.errand == Some((self.x, self.y)) {
+                    return self.poke(at);
                 }
                 if let Some(job) = &self.task
                     && job.spot() == (self.x, self.y)
@@ -1586,6 +1625,9 @@ impl Osaka {
     /// Choose what to do next, standing somewhere valid.
     fn decide(&mut self, at: u64, terrain: &Terrain, chances: &Chances, rng: &mut Rng) {
         self.task = None;
+        if self.errand.is_some() {
+            return self.head_for_errand(terrain, at);
+        }
         let Some(here) = terrain.platform_at(self.x, self.y) else {
             return self.set(Act::Stand { until: at + 1000 }, at);
         };
@@ -2115,6 +2157,115 @@ impl Osaka {
         );
     }
 
+    /// She arrives for an errand: out of a door onto `spot` (the far
+    /// door's beats only), to poke the scrollback accordion under it.
+    pub fn arrive_for_errand(spot: (i32, i32), now: u64, rng: &mut Rng) -> Self {
+        let act = Act::Door {
+            since: now.saturating_sub(DOOR_THROUGH_MS),
+            to: spot,
+            gap: 0,
+        };
+        let mut osaka = Self::new(spot.0, spot.1, Facing::Right, act, now, rng);
+        osaka.errand = Some(spot);
+        osaka
+    }
+
+    /// Off to poke the scrollback accordion, standing at `spot` on it:
+    /// whatever she's doing is dropped (a fall, a climb or a door she's
+    /// already through runs its course first), and she walks there along
+    /// her floor or takes a door. Out of sight, she comes back through
+    /// one.
+    pub fn errand(&mut self, spot: (i32, i32), terrain: &Terrain, at: u64) {
+        tracing::debug!(?spot, "houseguest: off to poke the accordion");
+        self.errand = Some(spot);
+        match &mut self.act {
+            Act::Fall { .. } | Act::Climb { .. } | Act::Clamber { .. } => {}
+            Act::Door { since, to, gap } => {
+                let there =
+                    door_beat(at.saturating_sub(*since), *gap).is_none_or(|(beat, _)| beat.there);
+                if !there {
+                    *to = spot;
+                    *gap = 0;
+                    self.at_work = false;
+                }
+            }
+            Act::Away { .. } | Act::Out { .. } => {
+                // Work can wait.
+                self.at_work = false;
+                self.task = None;
+                self.goal = None;
+                self.set(
+                    Act::Door {
+                        since: at.saturating_sub(DOOR_THROUGH_MS),
+                        to: spot,
+                        gap: 0,
+                    },
+                    at,
+                );
+            }
+            _ => self.head_for_errand(terrain, at),
+        }
+    }
+
+    /// On her way to the accordion, or poking it.
+    pub fn on_errand(&self) -> bool {
+        self.errand.is_some()
+    }
+
+    /// The accordion's gone (the log follows the newest line again) or
+    /// moved: never mind.
+    pub fn drop_errand(&mut self, at: u64) {
+        if self.errand.take().is_some() {
+            tracing::debug!("houseguest: errand dropped");
+            if matches!(self.act, Act::Poke { .. }) {
+                self.set(Act::Stand { until: at + 800 }, at);
+            }
+        }
+    }
+
+    /// Whether she started poking since last asked.
+    pub fn take_poked(&mut self) -> bool {
+        std::mem::take(&mut self.poked)
+    }
+
+    fn head_for_errand(&mut self, terrain: &Terrain, at: u64) {
+        let Some(spot) = self.errand else {
+            return;
+        };
+        self.task = None;
+        self.goal = None;
+        if (self.x, self.y) == spot {
+            return self.poke(at);
+        }
+        let here = terrain.platform_at(self.x, self.y);
+        if here.is_some() && here == terrain.platform_at(spot.0, spot.1) {
+            self.facing = toward(self.x, spot.0);
+            self.set(
+                Act::Walk {
+                    to: spot.0,
+                    then: None,
+                },
+                at,
+            );
+        } else {
+            self.through_door(spot, at);
+        }
+    }
+
+    fn poke(&mut self, at: u64) {
+        tracing::debug!("houseguest: poking the accordion");
+        self.poked = true;
+        self.task = None;
+        self.say(POKE, at);
+        self.set(
+            Act::Poke {
+                since: at,
+                until: at + POKE_MS,
+            },
+            at,
+        );
+    }
+
     /// The focused pane `focus` covers where she is (she's resident): she
     /// has rained out of it, and is already through her door, which
     /// opens on a floor clear of it — the chat's floors [`CHAT_FACTOR`]
@@ -2360,6 +2511,10 @@ impl Osaka {
                 (Pose::ToeTouch(frame), Face::Vacant, bubble)
             }
             Act::Admire { .. } => (Pose::Stand, Face::Pleased, Some(Bubble::Hehe)),
+            Act::Poke { since, .. } => {
+                let frame = (now.saturating_sub(since) / POKE_FRAME_MS % 2) as u8;
+                (Pose::ToeTouch(frame), Face::Curious, None)
+            }
             Act::Look {
                 surprised_until, ..
             } => {

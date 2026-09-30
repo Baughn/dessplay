@@ -1,6 +1,6 @@
 # DessPlay Design Document
 
-Last updated: 2026-09-28
+Last updated: 2026-09-30
 
 A synchronized video player for watch parties. Terminal-first, built for
 reliability over flaky connections. Server-coordinated, including relayed
@@ -798,6 +798,20 @@ different encodes/versions. See [Content Hash](#content-hash).
   (trailing punctuation like `:` or `,` is matched-through but stays plain).
   Mentions of *your own* username are additionally reversed, so a ping stands
   out at a glance.
+- **Scrollback accordion**: while the chat log isn't following the newest
+  line, its bottom border (above the input) becomes a zigzag,
+  `└╱╲╱╲╱╲┘`, in the border's style. Chat and IRC messages that arrived
+  below since the log stopped following (not system, subtitle or
+  separator lines) are counted, bold, in its middle: `↓ 3 new`. Clicking
+  it follows the newest line again, as does sending a message. A layout
+  whose `chat-log-frame` has no bottom border shows none. A minute after
+  the first unseen message arrives, the accordion is **poked** and shakes
+  (its cells slide a column to and fro for 1.5 s), then again at most
+  once a minute and only when more have arrived since the last poke;
+  following the newest line resets it. When houseguest visits are on,
+  [Osaka](#houseguest) comes to do the poking; otherwise it shakes by
+  itself. Not while a modal or other overlay is up or a chat selection is
+  held (it waits for those to end). (why: [decisions](decisions.md#scrolled-back-chat-gets-an-accordion-osaka-pokes-2026-09-30))
 - **Spoiler tags**: `||spoiler||` (Discord's syntax) hides part of a
   message. Spoilers are a **display concern**: the raw `||...||` text is
   what syncs and archives, and only the display sites decode it. Every
@@ -1529,6 +1543,24 @@ this section states what is built.
     up, caught out. What she moved elsewhere stays.
   - A **held chat selection** protects the chat pane (as well as the
     focused one) instead of ending the visit. Overlays still end it, as does switching visits off.
+- **The scrollback accordion** (see [Chat](#chat)): when a poke is due
+  she goes to poke it, whatever the idle gate says (only an overlay or a
+  held chat selection keeps her away, and then it waits). Absent, she
+  arrives for it, out of a door standing on it; visiting, she drops what
+  she's doing and walks there along her floor, or takes a door (a fall,
+  a climb, or a door she's already through finishes first; out at work,
+  she comes straight back through a door). She stands on the accordion —
+  its diagonals are a floor, and it's protected like the input: she
+  never moves or covers it — and pokes it for 2 s ("Somebody said
+  something."); it shakes as she starts. On the errand the focused-pane
+  rule and the chat's tenth are set aside, and a visitor doesn't leave
+  for input: she finishes poking first. Done, the ordinary rules resume:
+  a visitor who shouldn't be here (something playing, input within the
+  delay or during the errand) leaves with the usual goodbye; a resident
+  in the focused pane leaves it by her door. If the log follows the
+  newest line again (or the accordion moves) before she pokes, the
+  errand is off; if she can't get there at all (too small a terminal,
+  nowhere to stand on it), the accordion shakes by itself.
 - **Settings** (F3 → Houseguest), local only: *Visits* — after 1
   (default), 2, 5, 10, or 30 idle minutes, or Off; *Resident* (default
   on); *Osaka moved out* (asks first) wipes her record: her home goes,

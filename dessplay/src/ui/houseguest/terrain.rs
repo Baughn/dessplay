@@ -65,8 +65,11 @@ fn blank(symbol: &str) -> bool {
     symbol.trim().is_empty()
 }
 
+/// A floor: a box-drawing glyph with a horizontal stroke, or a
+/// diagonal (the chat's scrollback accordion, `╱╲╱╲`, which she pokes
+/// standing on it).
 fn ledge(symbol: &str) -> bool {
-    box_drawing(symbol).is_some_and(|c| !vertical_only(c))
+    box_drawing(symbol).is_some_and(|c| !vertical_only(c)) || matches!(symbol, "╱" | "╲")
 }
 
 fn pole(symbol: &str) -> bool {
@@ -470,6 +473,31 @@ mod tests {
             platform.edge_left && !platform.edge_right,
             "a wall, not a drop"
         );
+    }
+
+    /// The chat's scrollback accordion is a floor (and no pole), even
+    /// protected: she stands on it to poke it.
+    #[test]
+    fn the_scrollback_accordion_is_a_floor() {
+        let buf = buffer(&[
+            "            ",
+            "            ",
+            "            ",
+            "            ",
+            "└╱╲╱╲╱╲╱╲╱╲┘",
+        ]);
+        let terrain = Terrain::read(&buf, &[Rect::new(1, 4, 10, 1)], false);
+        assert_eq!(
+            terrain.platforms,
+            [Platform {
+                y: 4,
+                x0: 2,
+                x1: 9,
+                edge_left: true,
+                edge_right: true,
+            }]
+        );
+        assert!(terrain.links.is_empty(), "{:?}", terrain.links);
     }
 
     #[test]

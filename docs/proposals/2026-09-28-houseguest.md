@@ -36,6 +36,7 @@ channel on her TV. We borrow that backbone (see
 | 2 | Tidying and mischief: text layer and newest-line protection, pulling lines, letter swap, sneeze scatter, scheduled self-reverting, the stage (**done**); bubbles and speech, the brain with needs (**done**) | done |
 | 3 | The room: eight pieces of furniture in pane-rooms, composited with her; the ledger; deliveries and Chiyo-chichi's shopping channel; her part-time job; ways out of pits (clambering, stepping out, the door); hunger and the fridge | **done** (routine and calendar moved to 4) |
 | 3b | Resident Osaka: stays through playback and local input, rains out of the focused pane and leaves it by her door, a tenth as likely into the chat, input undoes her chat mischief; the Houseguest settings tab | **done** 2026-09-30 |
+| 3c | The scrollback accordion: she comes to poke the scrolled-back chat log's accordion when messages go unseen for a minute (design.md, Chat) | **done** 2026-09-30 |
 | 4 | Colour: calendar, screen reading, dreams, cameos, rarity and pity, credits | planned |
 | 5 | The text factory: text hauled into an industrial space and compacted into materials | planned, last |
 

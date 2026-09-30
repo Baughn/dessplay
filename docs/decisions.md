@@ -2120,6 +2120,35 @@ onto empty space). Rejected: resident only while playing (two modes of
 one guest); hiding the focused pane's contents only (she'd walk around
 invisible); banning the chat outright.
 
+## Scrolled-back chat gets an accordion Osaka pokes (2026-09-30)
+
+**Rule:** While the chat log is scrolled back, its bottom border is a
+`╱╲` accordion counting the messages that arrived below. A minute after
+the first unseen one, and then at most once a minute while more arrive,
+it is poked and shakes — by Osaka, arriving for it if need be, or by
+itself when visits are off. See [design.md](design.md#chat).
+
+**Why:** A player twice scrolled up during a session and forgot, missing
+the conversation below. A static marker isn't enough — people are far
+better at noticing motion than patterns — so it moves, and she's the fun
+way to make it move. The border, not a row of the log: it costs no
+content rows and sits right above where you type. `╱╲` rather than
+ASCII `/\`: the box-drawing diagonals join into one zigzag, and reading
+them as floor lets her stand on it without special-casing the terrain.
+The clock is the first *unseen message*, not the scroll: being scrolled
+back costs nothing until something is missed, and it must not reset on
+scroll input — people scroll while reading. Once a minute and only with
+more unseen, so it's a nudge, not an alarm. Her errand overrides the
+idle gate (she comes during playback), the focused-pane rule (the chat
+is usually focused), and a visitor's leave-on-input (she finishes the
+poke), because the poke is the point; the ordinary rules take over the
+moment it's done. The shake is painted by the guest over the frame, not
+by the chat pane, so nothing flows back from the overlay into the UI.
+Clicking the accordion follows the newest line (there was no key for it:
+`End` belongs to the input). Rejected: shaking on a timer from the
+scroll itself; a separate "N new" row in the log; a sound or OSD
+message.
+
 ## Houseguest chooses by needs among the top few (2026-09-28)
 
 **Rule:** Her next act is a weighted-random pick among the four

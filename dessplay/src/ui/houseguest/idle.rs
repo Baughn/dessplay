@@ -30,6 +30,17 @@ pub struct ChatMark {
     pub irc: usize,
 }
 
+/// The chat log scrolled back from the newest line: its bottom border is
+/// an accordion (design.md, Chat scrollback accordion).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Scrollback {
+    /// The accordion's cells (the border between its corners).
+    pub accordion: Rect,
+    /// Chat and IRC messages that arrived below since the log stopped
+    /// following them.
+    pub unseen: usize,
+}
+
 /// The client as the houseguest sees it.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct IdleView {
@@ -49,9 +60,13 @@ pub struct IdleView {
     pub chat_mark: ChatMark,
     /// The chat pane, which she turns toward when a message arrives.
     pub chat: Rect,
+    /// The chat log is scrolled back (she pokes its accordion when
+    /// messages go unseen).
+    pub scrollback: Option<Scrollback>,
     /// Rectangles her body and bubbles never cover: the chat input, the
-    /// Player Status block, the keybinding bar, and inline images (and,
-    /// for a resident while someone selects, the chat).
+    /// Player Status block, the keybinding bar, inline images, and the
+    /// scrollback accordion (she may stand on it) — and, for a resident
+    /// while someone selects, the chat.
     pub protected: Vec<Rect>,
     /// The quiet panes she may furnish, as drawn (borders included).
     pub nooks: Vec<(super::Nook, Rect)>,

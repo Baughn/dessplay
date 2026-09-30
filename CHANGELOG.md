@@ -20,6 +20,11 @@ Add new days at the top. Add new entries at the bottom of existing days.
   chat.
 - Changed: The houseguest's settings have their own tab, F3 →
   Houseguest.
+- Added: When you've scrolled up in the chat, the bottom of the chat log
+  turns into a ╱╲╱╲ accordion showing how many new messages are below;
+  click it to jump back down. If messages sit unread for a minute,
+  Osaka comes over and pokes it until it shakes (it shakes on its own
+  if her visits are off).
 
 ## 2026-09-29
 

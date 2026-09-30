@@ -25,6 +25,7 @@ fn view(protected: Vec<Rect>) -> IdleView {
         focus: None,
         chat_mark: ChatMark::default(),
         chat: Rect::new(0, 0, 30, 20),
+        scrollback: None,
         protected,
         nooks: Vec::new(),
         truecolor: false,
@@ -2571,4 +2572,401 @@ proptest! {
             last = frame;
         }
     }
+}
+
+/// [`rooms`] with the tall left box as the chat, scrolled back: its
+/// bottom border is the accordion, `unseen` counted in its middle (as
+/// the chat pane draws it), and protected like the real one.
+fn accordion_room(width: u16, height: u16, unseen: usize) -> (Buffer, Rect) {
+    let mut buf = rooms(width, height);
+    let accordion = Rect::new(1, height - 4, width / 2 - 2, 1);
+    for (i, x) in (accordion.left()..accordion.right()).enumerate() {
+        buf[(x, accordion.y)].set_symbol(if i % 2 == 0 { "╱" } else { "╲" });
+    }
+    let label = format!(" ↓ {unseen} new ");
+    let at = accordion.x + (accordion.width - label.chars().count() as u16) / 2;
+    buf.set_string(at, accordion.y, &label, Style::new());
+    (buf, accordion)
+}
+
+fn scrolled_back(view: IdleView, accordion: Rect, unseen: usize) -> IdleView {
+    let mut view = view;
+    view.scrollback = Some(Scrollback { accordion, unseen });
+    view.protected.push(accordion);
+    view
+}
+
+/// What the errand looked like, frame by frame.
+#[derive(Debug, Default)]
+struct ErrandSeen {
+    /// When she first appeared.
+    arrived: Option<u64>,
+    /// When she started poking, and where she stood.
+    poked: Option<(u64, (i32, i32))>,
+    /// When the painted accordion first differed from the real one.
+    shook: Option<u64>,
+    /// When she was gone again (leaving or absent).
+    gone: Option<u64>,
+}
+
+fn watch_errand(
+    guest: &mut Guest,
+    real: &Buffer,
+    view: &IdleView,
+    accordion: Rect,
+    until: u64,
+) -> ErrandSeen {
+    let mut seen = ErrandSeen::default();
+    let mut now = 0;
+    paint(guest, real, view, now);
+    while now < until {
+        now += 50;
+        guest.advance(now);
+        let frame = paint(guest, real, view, now);
+        match &guest.state {
+            State::Visiting(visit) => {
+                seen.arrived.get_or_insert(now);
+                let poking = visit.osaka.appearance(now).0 == sprite::Pose::ToeTouch(0)
+                    || visit.osaka.appearance(now).0 == sprite::Pose::ToeTouch(1);
+                if poking && guest.errand.is_some() && seen.poked.is_none() {
+                    seen.poked = Some((now, (visit.osaka.x, visit.osaka.y)));
+                }
+            }
+            State::Leaving(_) | State::Absent => {
+                if seen.arrived.is_some() {
+                    seen.gone.get_or_insert(now);
+                }
+            }
+            State::Arriving => {}
+        }
+        let moved = (accordion.left()..accordion.right())
+            .any(|x| frame[(x, accordion.y)] != real[(x, accordion.y)]);
+        if moved {
+            seen.shook.get_or_insert(now);
+        }
+    }
+    seen
+}
+
+/// Scrolled back with messages unseen for a minute, she arrives even
+/// while the video plays — as a visitor, who then leaves, or a resident,
+/// for whom even the focused chat pane is no obstacle — stands on the
+/// accordion and pokes it, and it shakes. Nothing happens before the
+/// minute is up.
+#[test]
+fn unseen_messages_bring_her_to_poke_the_accordion() {
+    for resident in [false, true] {
+        let (real, accordion) = accordion_room(100, 30, 2);
+        let chat = nooks(100, 30)[0].1;
+        let base = IdleView {
+            busy: Some(Busy::Playing),
+            resident,
+            focus: resident.then_some(chat),
+            chat,
+            ..view(bottom_strip(100, 30))
+        };
+        let view = scrolled_back(base, accordion, 2);
+        let mut guest = Guest::new(5);
+        let seen = watch_errand(&mut guest, &real, &view, accordion, 90_000);
+        // A resident was here all along; a visitor comes for it.
+        let arrived = seen.arrived.expect("she came");
+        let expected = if resident {
+            DELAY.as_millis() as u64..nudge::NUDGE_MS
+        } else {
+            nudge::NUDGE_MS..nudge::NUDGE_MS + 100
+        };
+        assert!(expected.contains(&arrived), "resident={resident}: {seen:?}");
+        let (poked, (_, y)) = seen.poked.expect("she poked it");
+        assert_eq!(y, i32::from(accordion.y), "standing on the accordion");
+        let shook = seen.shook.expect("it shook");
+        assert!(shook >= poked && shook < poked + 500, "{seen:?}");
+        if resident {
+            // Done, she's out of the focused pane.
+            let State::Visiting(visit) = &guest.state else {
+                panic!("a resident stays");
+            };
+            assert!(
+                visit.osaka.hidden(90_000)
+                    || !osaka::box_meets(chat, (visit.osaka.x, visit.osaka.y)),
+                "out of the focused chat after her errand"
+            );
+        } else {
+            let gone = seen.gone.expect("a visitor leaves: the video's playing");
+            assert!(gone > poked, "{seen:?}");
+        }
+    }
+}
+
+/// Visits off: the accordion shakes by itself, once a minute while more
+/// messages keep arriving, and not again when none do.
+#[test]
+fn with_visits_off_the_accordion_shakes_by_itself() {
+    let (real, accordion) = accordion_room(100, 30, 1);
+    let off = IdleView {
+        delay: None,
+        ..view(bottom_strip(100, 30))
+    };
+    let mut guest = Guest::new(5);
+    let seen = watch_errand(
+        &mut guest,
+        &real,
+        &scrolled_back(off.clone(), accordion, 1),
+        accordion,
+        nudge::NUDGE_MS + 5_000,
+    );
+    assert!(seen.arrived.is_none());
+    let shook = seen.shook.expect("it shook");
+    assert!((nudge::NUDGE_MS..nudge::NUDGE_MS + 200).contains(&shook));
+    // Nothing new: no more shaking.
+    let quiet = scrolled_back(off.clone(), accordion, 1);
+    let mut now = nudge::NUDGE_MS + 5_000;
+    while now < 3 * nudge::NUDGE_MS {
+        now += 250;
+        guest.advance(now);
+        paint(&mut guest, &real, &quiet, now);
+        assert!(!guest.nudge.shaking(now), "at {now}");
+    }
+    // Another message: a minute after the last poke.
+    let more = scrolled_back(off, accordion, 2);
+    now += 1;
+    paint(&mut guest, &real, &more, now);
+    assert!(guest.next_tick(now).is_some());
+    now += 1000;
+    guest.advance(now);
+    paint(&mut guest, &real, &more, now);
+    assert!(
+        guest.nudge.shaking(now),
+        "due again (the last was over a minute ago)"
+    );
+}
+
+/// A key press while a visitor pokes the accordion: she finishes, then
+/// leaves.
+#[test]
+fn a_visitor_finishes_poking_before_she_leaves() {
+    let (real, accordion) = accordion_room(100, 30, 3);
+    let chat = nooks(100, 30)[0].1;
+    let view = scrolled_back(
+        IdleView {
+            chat,
+            ..view(bottom_strip(100, 30))
+        },
+        accordion,
+        3,
+    );
+    let mut guest = Guest::new(9);
+    // Someone's typing, now and then: no ordinary visit, but the errand.
+    let mut now = 0;
+    paint(&mut guest, &real, &view, now);
+    while guest.errand.as_ref().is_none_or(|errand| !errand.poked) {
+        now += 50;
+        if now % 3000 == 0 {
+            guest.activity(now);
+        }
+        guest.advance(now);
+        paint(&mut guest, &real, &view, now);
+        assert!(now < nudge::NUDGE_MS + 20_000, "she never poked it");
+    }
+    guest.activity(now);
+    let pressed = now;
+    while now < pressed + 1500 {
+        now += 50;
+        guest.advance(now);
+        paint(&mut guest, &real, &view, now);
+        assert!(
+            matches!(guest.state, State::Visiting(_)),
+            "still poking at {now}"
+        );
+    }
+    while now < pressed + 3000 {
+        now += 50;
+        guest.advance(now);
+        paint(&mut guest, &real, &view, now);
+    }
+    assert!(
+        matches!(guest.state, State::Leaving(_) | State::Absent),
+        "gone once done"
+    );
+}
+
+/// Back at the newest line mid-errand: it's off.
+#[test]
+fn following_the_newest_line_calls_the_errand_off() {
+    let (real, accordion) = accordion_room(100, 30, 1);
+    let chat = nooks(100, 30)[0].1;
+    let base = IdleView {
+        busy: Some(Busy::Playing),
+        chat,
+        ..view(bottom_strip(100, 30))
+    };
+    let back = scrolled_back(base.clone(), accordion, 1);
+    let mut guest = Guest::new(5);
+    let mut now = 0;
+    paint(&mut guest, &real, &back, now);
+    while guest.errand.is_none() {
+        now += 50;
+        guest.advance(now);
+        paint(&mut guest, &real, &back, now);
+        assert!(now < nudge::NUDGE_MS + 1000);
+    }
+    let plain = rooms(100, 30);
+    now += 50;
+    guest.advance(now);
+    paint(&mut guest, &plain, &base, now);
+    assert!(guest.errand.is_none(), "called off");
+    assert!(
+        matches!(guest.state, State::Leaving(_) | State::Absent),
+        "a visitor, and the video's playing"
+    );
+    assert!(!guest.nudge.shaking(now), "nothing left to shake");
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(dessplay_core::test_support::proptest_cases(8)))]
+
+    /// Scrolled back over arbitrary sizes, message arrivals, key presses
+    /// and playback, visitor or resident: nothing protected changes but
+    /// the accordion, which only ever shows as itself or slid a column;
+    /// every errand ends; and after a last key press with nothing new
+    /// arriving, a visitor is soon gone and the frame is the real one.
+    #[test]
+    fn errands_end_and_touch_only_the_accordion(
+        seed in any::<u64>(),
+        graphics in any::<bool>(),
+        (w, h) in (60u16..130, 18u16..45),
+        resident in any::<bool>(),
+        playing in any::<bool>(),
+        arrivals in proptest::collection::vec(0u64..60_000, 1..6),
+        presses in proptest::collection::vec(0u64..130_000, 0..20),
+    ) {
+        let mut guest = Guest::new(seed);
+        if graphics {
+            guest.set_picker(kitty());
+        }
+        let chat = nooks(w, h)[0].1;
+        let mut now = 0;
+        let mut errand_since: Option<u64> = None;
+        let view_at = |unseen: usize| {
+            let (real, accordion) = accordion_room(w, h, unseen);
+            let base = IdleView {
+                busy: playing.then_some(Busy::Playing),
+                resident,
+                focus: resident.then_some(chat),
+                chat,
+                nooks: nooks(w, h)[1..].to_vec(),
+                ..view(bottom_strip(w, h))
+            };
+            (real, accordion, scrolled_back(base, accordion, unseen))
+        };
+        let mut paints = 0;
+        while now < 130_000 {
+            let step = guest
+                .next_tick(now)
+                .map_or(1000, |d| d.as_millis() as u64)
+                .clamp(1, 1000);
+            now += step;
+            paints += 1;
+            prop_assert!(paints < 20_000, "busy at {}: {:?} errand={} next={:?}", now, guest.nudge, guest.errand.is_some(), guest.next_tick(now));
+            if presses.iter().any(|&p| p <= now && p > now - step) {
+                guest.activity(now);
+            }
+            let unseen = arrivals.iter().filter(|&&a| a <= now).count();
+            let (real, accordion, view) = view_at(unseen);
+            guest.advance(now);
+            let frame = paint(&mut guest, &real, &view, now);
+            let others: Vec<Rect> = view
+                .protected
+                .iter()
+                .copied()
+                .filter(|&r| r != accordion)
+                .collect();
+            assert_untouched(&frame, &real, &others)?;
+            let row = |buf: &Buffer| -> Vec<String> {
+                (accordion.left()..accordion.right())
+                    .map(|x| buf[(x, accordion.y)].symbol().to_owned())
+                    .collect()
+            };
+            let (got, want) = (row(&frame), row(&real));
+            let slid = |by: usize| {
+                let mut r = want.clone();
+                r.rotate_right(by);
+                r
+            };
+            prop_assert!(
+                got == want || got == slid(1) || got == slid(want.len() - 1),
+                "the accordion at {}: {:?}", now, got.concat()
+            );
+            match (&guest.errand, errand_since) {
+                (Some(_), None) => errand_since = Some(now),
+                (Some(_), Some(since)) => {
+                    prop_assert!(now - since < 60_000, "an errand since {} still on at {}", since, now);
+                }
+                (None, _) => errand_since = None,
+            }
+        }
+        // Back to the newest line, and typing away: the errand's off,
+        // and a visitor is soon gone.
+        let real = rooms(w, h);
+        let view = IdleView {
+            busy: playing.then_some(Busy::Playing),
+            resident,
+            chat,
+            nooks: nooks(w, h)[1..].to_vec(),
+            ..view(bottom_strip(w, h))
+        };
+        let mut end = paint(&mut guest, &real, &view, now);
+        for _ in 0..30 {
+            now += 1000;
+            guest.activity(now);
+            guest.advance(now);
+            end = paint(&mut guest, &real, &view, now);
+        }
+        prop_assert!(guest.errand.is_none());
+        if !resident {
+            prop_assert!(matches!(guest.state, State::Absent));
+            prop_assert_eq!(end, real);
+        }
+    }
+}
+
+/// The real default layout: scrolled back (PgUp) with two messages
+/// arriving below, the chat reports its accordion with the count, and
+/// it's a floor she can stand on to poke it.
+#[test]
+fn the_real_chat_scrolled_back_offers_her_a_spot_on_its_accordion() {
+    use tuirealm::event::{Event, Key, KeyEvent, KeyModifiers};
+    let chat = |n: usize| {
+        let view = dessplay_core::state::StateView {
+            chat: (0..n)
+                .map(|i| dessplay_core::types::ChatMessage {
+                    timestamp: dessplay_core::types::SharedTimestamp(1_000 + i as u64 * 60_000),
+                    sender: dessplay_core::types::UserId::new("kim"),
+                    text: format!("line {i}"),
+                })
+                .collect(),
+            ..Default::default()
+        };
+        crate::ui::app::UiSnapshot {
+            view: std::sync::Arc::new(view),
+            ..Default::default()
+        }
+    };
+    let mut ui = real_ui();
+    ui.apply_snapshot(chat(40));
+    let (_, view) = real_frame(&mut ui, 100, 30);
+    assert_eq!(view.scrollback, None, "following the newest line");
+    ui.handle(Event::Keyboard(KeyEvent {
+        code: Key::PageUp,
+        modifiers: KeyModifiers::NONE,
+    }));
+    real_frame(&mut ui, 100, 30);
+    ui.apply_snapshot(chat(42));
+    let (buf, view) = real_frame(&mut ui, 100, 30);
+    let back = view.scrollback.expect("scrolled back");
+    assert_eq!(back.unseen, 2);
+    assert!(view.chat.contains(back.accordion.as_position()));
+    assert!(view.protected.contains(&back.accordion));
+    let terrain = Terrain::read(&buf, &view.protected, false);
+    let spot = accordion_spot(&terrain, back.accordion).expect("a floor on it");
+    assert_eq!(spot.1, i32::from(back.accordion.y));
 }

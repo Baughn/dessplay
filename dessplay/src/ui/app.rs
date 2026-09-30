@@ -617,6 +617,13 @@ impl Ui {
         protected.extend(images.iter().map(|&image| grow(image, 1)));
         // The newest message is never touched, only looked at.
         protected.extend(self.chat.newest_message_rows());
+        // The scrollback accordion is hers to stand on and poke, not to
+        // rearrange.
+        let scrollback = self
+            .chat
+            .scrollback()
+            .filter(|back| self.panes.chat.contains(back.accordion.as_position()));
+        protected.extend(scrollback.map(|back| back.accordion));
         // While the client is in use, a resident keeps out of the focused
         // pane (the guest knows when it was last used), and out of the
         // chat while someone is selecting in it.
@@ -638,6 +645,7 @@ impl Ui {
                 irc: self.irc_log.len(),
             },
             chat: self.panes.chat,
+            scrollback,
             protected,
             nooks: [
                 (Nook::List, self.panes.series),

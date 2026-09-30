@@ -8,7 +8,8 @@
 //! back into `Ui`. Local input sends her away with a ~3.75 s rain
 //! dissolve — unless she's resident, when she stays and only keeps out
 //! of the focused pane; a friend's chat message only makes her stop and
-//! look.
+//! look. When the chat log is scrolled back and messages go unseen,
+//! she comes to poke its accordion (see [`nudge`]).
 //!
 //! All timing is in the shell's monotonic millis and all randomness
 //! comes from a seeded generator, so tests reproduce exactly.
@@ -21,6 +22,7 @@ mod graphics;
 mod idle;
 mod layer;
 mod ledger;
+mod nudge;
 mod osaka;
 mod room;
 mod scenes;
@@ -37,7 +39,7 @@ use tuirealm::ratatui::style::{Color, Modifier};
 use cells::{Ink, put};
 use dissolve::{Dissolve, Frozen};
 use graphics::{Graphics, Look};
-pub use idle::{Busy, ChatMark, IdleView, grow};
+pub use idle::{Busy, ChatMark, IdleView, Scrollback, grow};
 pub use ledger::Ledger;
 use osaka::Osaka;
 use room::Shown;
@@ -148,6 +150,17 @@ struct Leaving {
     with: Vec<Shown>,
 }
 
+/// She's on her way to the chat's scrollback accordion, or poking it.
+struct Errand {
+    /// The accordion she was sent to (moved or gone, the errand's off).
+    accordion: Rect,
+    /// She got as far as poking it.
+    poked: bool,
+    /// Someone was at the keys while she was at it (a visitor leaves
+    /// once she's done).
+    leave_after: bool,
+}
+
 enum State {
     Absent,
     /// The idle delay elapsed; she enters on the next paint.
@@ -191,6 +204,9 @@ pub struct Guest {
     shop_now: bool,
     /// The stage: the cat is home this visit.
     cat_now: bool,
+    /// When to poke the scrollback accordion, and its shake.
+    nudge: nudge::Nudge,
+    errand: Option<Errand>,
 }
 
 impl Guest {
@@ -221,6 +237,8 @@ impl Guest {
             gift: None,
             shop_now: false,
             cat_now: false,
+            nudge: nudge::Nudge::default(),
+            errand: None,
         }
     }
 
@@ -359,6 +377,13 @@ impl Guest {
     /// back.
     pub fn activity(&mut self, now: u64) {
         self.quiet_since = now;
+        // Mid-errand, a visitor finishes poking first.
+        if let Some(errand) = &mut self.errand
+            && !self.resident
+        {
+            errand.leave_after = true;
+            return;
+        }
         if !self.resident {
             return self.leave(now);
         }
@@ -401,7 +426,8 @@ impl Guest {
     /// Advance to `now` on a timer tick. Returns whether the screen
     /// could change (the shell redraws only then).
     pub fn advance(&mut self, now: u64) -> bool {
-        match &mut self.state {
+        let nudge = self.nudge.advance(now);
+        let changed = match &mut self.state {
             State::Absent => {
                 let due = self
                     .delay
@@ -409,9 +435,8 @@ impl Guest {
                 if self.open && due {
                     tracing::trace!("houseguest arriving");
                     self.state = State::Arriving;
-                    return true;
                 }
-                false
+                self.open && due
             }
             State::Arriving => true,
             State::Visiting(visit) => {
@@ -429,24 +454,28 @@ impl Guest {
                 }
                 true
             }
-        }
+        };
+        changed || nudge
     }
 
     /// How soon she next needs a tick; `None` when nothing is pending.
     pub fn next_tick(&self, now: u64) -> Option<Duration> {
         let due = match &self.state {
-            State::Absent => {
-                let delay = self.delay.filter(|_| self.open)?;
-                self.quiet_since + delay.as_millis() as u64
-            }
-            State::Arriving => now,
-            State::Visiting(visit) => visit
-                .fades
-                .iter()
-                .map(|fade| fade.next_frame(now))
-                .fold(visit.osaka.due(), u64::min),
-            State::Leaving(leaving) => leaving.dissolve.next_frame(now),
+            State::Absent => self
+                .delay
+                .filter(|_| self.open)
+                .map(|delay| self.quiet_since + delay.as_millis() as u64),
+            State::Arriving => Some(now),
+            State::Visiting(visit) => Some(
+                visit
+                    .fades
+                    .iter()
+                    .map(|fade| fade.next_frame(now))
+                    .fold(visit.osaka.due(), u64::min),
+            ),
+            State::Leaving(leaving) => Some(leaving.dissolve.next_frame(now)),
         };
+        let due = due.into_iter().chain(self.nudge.next_at(now)).min()?;
         Some(Duration::from_millis(due.saturating_sub(now)))
     }
 
@@ -456,6 +485,8 @@ impl Guest {
         self.observe(view, now);
         let view = &self.gate(view, now);
         let size = (buf.area.width, buf.area.height);
+        self.errand_progress(view, now);
+        self.nudge_due(buf, view, now);
         if matches!(self.state, State::Arriving) {
             self.state = State::Absent;
             if size.0 >= MIN_WIDTH && size.1 >= MIN_HEIGHT {
@@ -464,21 +495,7 @@ impl Guest {
                 self.rng = Rng(self.ledger.visit_seed(self.ledger.visits));
                 if let Some(osaka) = Osaka::arrive(now, &terrain, i32::from(size.0), &mut self.rng)
                 {
-                    self.ledger.visits += 1;
-                    self.unsaved = true;
-                    tracing::info!(visit = self.ledger.visits, "houseguest arrived");
-                    self.state = State::Visiting(Box::new(Visit {
-                        osaka,
-                        terrain,
-                        painted: Vec::new(),
-                        image: None,
-                        layer: layer::TextLayer::default(),
-                        chances: osaka::Chances::default(),
-                        shown: Vec::new(),
-                        with: Vec::new(),
-                        fades: Vec::new(),
-                        size,
-                    }));
+                    self.begin_visit(osaka, terrain, size);
                 }
             }
             if !self.present() {
@@ -486,6 +503,8 @@ impl Guest {
                 self.quiet_since = now;
             }
         }
+        // The accordion shakes under her, not over her.
+        self.nudge.paint(buf, now);
         match &mut self.state {
             State::Absent | State::Arriving => {}
             State::Leaving(leaving) => {
@@ -786,6 +805,123 @@ impl Guest {
         }
     }
 
+    /// A new visit, with `osaka` just arrived.
+    fn begin_visit(&mut self, osaka: Osaka, terrain: Terrain, size: (u16, u16)) {
+        self.ledger.visits += 1;
+        self.unsaved = true;
+        tracing::info!(visit = self.ledger.visits, "houseguest arrived");
+        self.state = State::Visiting(Box::new(Visit {
+            osaka,
+            terrain,
+            painted: Vec::new(),
+            image: None,
+            layer: layer::TextLayer::default(),
+            chances: osaka::Chances::default(),
+            shown: Vec::new(),
+            with: Vec::new(),
+            fades: Vec::new(),
+            size,
+        }));
+    }
+
+    /// Follow her errand: the accordion shakes when she pokes it; done
+    /// (or called off), a visitor who shouldn't be here leaves. If she
+    /// never got to poke it, it shakes by itself.
+    fn errand_progress(&mut self, view: &IdleView, now: u64) {
+        let Some(errand) = &mut self.errand else {
+            return;
+        };
+        let accordion = view.scrollback.map(|back| back.accordion);
+        let State::Visiting(visit) = &mut self.state else {
+            // She's gone (no room, or visits were switched off).
+            let poked = errand.poked;
+            self.errand = None;
+            if !poked {
+                self.nudge.shake(now);
+            }
+            return;
+        };
+        if accordion != Some(errand.accordion) {
+            visit.osaka.drop_errand(now);
+        }
+        if visit.osaka.take_poked() {
+            errand.poked = true;
+            self.nudge.shake(now);
+        }
+        if visit.osaka.on_errand() {
+            return;
+        }
+        let Some(errand) = self.errand.take() else {
+            return;
+        };
+        if !errand.poked && accordion.is_some() {
+            self.nudge.shake(now);
+        }
+        let quiet = view
+            .delay
+            .is_some_and(|delay| now >= self.quiet_since + delay.as_millis() as u64);
+        if !view.resident && (errand.leave_after || !quiet || view.busy.is_some()) {
+            self.leave(now);
+        }
+    }
+
+    /// A poke is due: send her to the accordion (arriving for it if she
+    /// isn't here), or — visits off, or nowhere for her to stand on it —
+    /// it shakes by itself. Not while something covers the panes or
+    /// someone's selecting in the chat, and not mid-goodbye.
+    fn nudge_due(&mut self, buf: &Buffer, view: &IdleView, now: u64) {
+        if !self.nudge.due(now) {
+            return;
+        }
+        let visits = view.delay.is_some();
+        let blocked = matches!(view.busy, Some(Busy::Overlay | Busy::Selection))
+            || self.errand.is_some()
+            || visits && matches!(self.state, State::Leaving(_));
+        let Some(accordion) = self.nudge.accordion().filter(|_| !blocked) else {
+            self.nudge.wait(now);
+            return;
+        };
+        self.nudge.poked(now);
+        let size = (buf.area.width, buf.area.height);
+        let roomy = size.0 >= MIN_WIDTH && size.1 >= MIN_HEIGHT;
+        if !(visits && roomy && self.send(buf, view, accordion, now)) {
+            self.nudge.shake(now);
+        }
+    }
+
+    /// Send her to poke `accordion`. False when there's no floor on it.
+    fn send(&mut self, buf: &Buffer, view: &IdleView, accordion: Rect, now: u64) -> bool {
+        // The errand overrides the focused pane (the accordion's usually
+        // in it).
+        let protected: Vec<Rect> = view
+            .protected
+            .iter()
+            .copied()
+            .filter(|&rect| Some(rect) != view.focus)
+            .collect();
+        let terrain = Terrain::read(buf, &protected, self.graphics.is_some());
+        let Some(spot) = accordion_spot(&terrain, accordion) else {
+            tracing::debug!("houseguest: nowhere to stand on the accordion");
+            return false;
+        };
+        match &mut self.state {
+            State::Visiting(visit) => visit.osaka.errand(spot, &visit.terrain, now),
+            State::Absent | State::Arriving => {
+                self.rng = Rng(self.ledger.visit_seed(self.ledger.visits));
+                let osaka = Osaka::arrive_for_errand(spot, now, &mut self.rng);
+                let size = (buf.area.width, buf.area.height);
+                self.begin_visit(osaka, terrain, size);
+            }
+            State::Leaving(_) => return false,
+        }
+        self.errand = Some(Errand {
+            accordion,
+            poked: false,
+            leave_after: false,
+        });
+        true
+    }
+
     /// `view` as she keeps to it now: while the client is in use —
     /// playing, a held selection, or local input within the idle delay —
     /// a resident keeps out of the focused pane (it's protected); left
@@ -797,7 +933,9 @@ impl Guest {
             .is_none_or(|delay| now >= self.quiet_since + delay.as_millis() as u64);
         let in_use = !quiet || view.busy.is_some();
         match view.focus {
-            Some(focus) if in_use => view.protected.push(focus),
+            // On her errand, the accordion comes first (it's usually in
+            // the focused pane).
+            Some(focus) if in_use && self.errand.is_none() => view.protected.push(focus),
             _ => view.focus = None,
         }
         view
@@ -809,6 +947,7 @@ impl Guest {
         self.resident = view.resident;
         self.delay = view.delay;
         self.truecolor = view.truecolor;
+        self.nudge.observe(view.scrollback, now);
         if !self.open {
             self.quiet_since = now;
             match self.state {
@@ -817,6 +956,8 @@ impl Guest {
                     // Switched off: no goodbye.
                     self.state = State::Absent;
                 }
+                // On an errand, she stays till it's done.
+                State::Visiting(_) if self.errand.is_some() => {}
                 State::Visiting(_) => self.leave(now),
                 State::Absent | State::Leaving(_) => {}
             }
@@ -840,6 +981,20 @@ impl Guest {
             }
         }
     }
+}
+
+/// Where she stands to poke `accordion`: the middle of the widest floor
+/// along it (its count splits it in two).
+fn accordion_spot(terrain: &Terrain, accordion: Rect) -> Option<(i32, i32)> {
+    let (left, right) = (i32::from(accordion.x), i32::from(accordion.right()) - 1);
+    terrain
+        .platforms
+        .iter()
+        .filter(|p| p.y == i32::from(accordion.y))
+        .map(|p| (p.x0.max(left), p.x1.min(right)))
+        .filter(|(x0, x1)| x0 <= x1)
+        .max_by_key(|(x0, x1)| (x1 - x0, *x0))
+        .map(|(x0, x1)| ((x0 + x1) / 2, i32::from(accordion.y)))
 }
 
 fn ink(part: Part, truecolor: bool) -> Ink {

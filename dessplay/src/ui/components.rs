@@ -410,6 +410,13 @@ pub struct ChatPane {
     /// Pending visual-row movement relative to the source anchor; positive is down.
     scroll_delta: i64,
     scroll_anchor: Option<(LineKey, usize, usize)>,
+    /// Shared-clock stamp of the newest line when the log stopped
+    /// following the newest line (`None` while it follows): what arrives
+    /// after it goes unseen.
+    left_tail: Option<u64>,
+    /// The scrollback accordion drawn in the last frame (empty when the
+    /// log follows the newest line).
+    accordion: Rect,
     /// Accepted search identity, centered using the next arranged viewport.
     center_on: Option<LineKey>,
     /// Text of every message this client has sent this session, for
@@ -500,6 +507,8 @@ impl Default for ChatPane {
             focused: false,
             scroll_delta: 0,
             scroll_anchor: None,
+            left_tail: None,
+            accordion: Rect::default(),
             center_on: None,
             sent_history: Vec::new(),
             history_pos: None,
@@ -742,6 +751,10 @@ impl ChatPane {
     /// generations are monotonic). Clicks anywhere else are no-ops here
     /// (pane focusing lives in the dispatcher).
     pub(crate) fn click(&mut self, column: u16, row: u16, now_millis: u64) {
+        if self.accordion.contains((column, row).into()) {
+            tracing::debug!("chat: accordion clicked, following the newest line");
+            return self.follow();
+        }
         let Some(key) = self.rendered.hit(column, row).cloned() else {
             return;
         };
@@ -1217,8 +1230,7 @@ impl ChatPane {
         self.clear();
         self.sent_history.push(text.clone());
         self.history_pos = None;
-        self.scroll_anchor = None; // jump to newest so you see it
-        self.scroll_delta = 0;
+        self.follow(); // jump to newest so you see it
         Some(if text.starts_with('/') {
             Msg::Command(text)
         } else {
@@ -1418,6 +1430,7 @@ impl ChatPane {
             })
             .collect::<Vec<_>>();
         self.rendered = RenderedChatLog::default();
+        self.accordion = Rect::default();
         scene.paint_with_slots(frame, |name, frame, area, style| match name {
             "log" if self.searching() => self.render_search_results(frame, area, style, renderer),
             "log" => self.render_log(
@@ -1454,9 +1467,88 @@ impl ChatPane {
             }
             _ => {}
         });
+        if !self.searching() && self.left_tail.is_some() {
+            self.paint_accordion(frame, scene.bounds("chat-log-frame"));
+        }
         if !renderer.images_deferred() {
             self.paint_images(frame, renderer);
         }
+    }
+
+    /// Scrolled back: the log's bottom border becomes an accordion
+    /// (`└╱╲╱╲┘`), with the count of unseen messages in its middle. It
+    /// keeps the border's style; a layout without a bottom border on
+    /// `chat-log-frame` shows none.
+    fn paint_accordion(&mut self, frame: &mut Frame, log_frame: Rect) {
+        let log = self.rendered.area;
+        if log.is_empty() || log_frame.bottom() <= log.bottom() || log_frame.width < 3 {
+            return;
+        }
+        let area = Rect::new(
+            log_frame.x + 1,
+            log_frame.bottom() - 1,
+            log_frame.width - 2,
+            1,
+        );
+        let unseen = self.unseen();
+        let label = if unseen == 0 {
+            String::new()
+        } else {
+            format!(" ↓ {unseen} new ")
+        };
+        let label_width = unicode_width::UnicodeWidthStr::width(label.as_str()) as u16;
+        let label_at = if label_width + 4 <= area.width {
+            Some(area.x + (area.width - label_width) / 2)
+        } else {
+            None
+        };
+        let buf = frame.buffer_mut();
+        for (i, x) in (area.x..area.right()).enumerate() {
+            let glyph = if i % 2 == 0 { "╱" } else { "╲" };
+            if let Some(cell) = buf.cell_mut((x, area.y)) {
+                cell.set_symbol(glyph);
+            }
+        }
+        if let Some(at) = label_at {
+            let style = buf
+                .cell((at, area.y))
+                .map(|cell| cell.style())
+                .unwrap_or_default()
+                .add_modifier(tuirealm::ratatui::style::Modifier::BOLD);
+            buf.set_stringn(at, area.y, &label, usize::from(label_width), style);
+        }
+        self.accordion = area;
+    }
+
+    /// Chat and IRC messages that arrived since the log stopped following
+    /// the newest line.
+    fn unseen(&self) -> usize {
+        let Some(mark) = self.left_tail else {
+            return 0;
+        };
+        self.lines
+            .iter()
+            .filter(|line| !line.system && !line.subtitle && !line.separator)
+            .filter(|line| line.millis > mark)
+            .count()
+    }
+
+    /// The log is scrolled back: where its accordion was drawn, and how
+    /// many messages have gone unseen below.
+    pub(crate) fn scrollback(&self) -> Option<super::houseguest::Scrollback> {
+        (self.left_tail.is_some() && !self.accordion.is_empty()).then(|| {
+            super::houseguest::Scrollback {
+                accordion: self.accordion,
+                unseen: self.unseen(),
+            }
+        })
+    }
+
+    /// Back to following the newest line (a click on the accordion).
+    fn follow(&mut self) {
+        self.scroll_anchor = None;
+        self.scroll_delta = 0;
+        self.left_tail = None;
     }
 
     fn render_search_results(
@@ -1534,8 +1626,7 @@ impl ChatPane {
                     .map(|index| (index, *source, *old_row))
             });
         if self.lines.is_empty() {
-            self.scroll_anchor = None;
-            self.scroll_delta = 0;
+            self.follow();
             self.rendered = RenderedChatLog::default();
             return;
         }
@@ -1682,6 +1773,12 @@ impl ChatPane {
                 (LineKey::of(&self.lines[*idx]), row.char_start, position)
             })
             .filter(|_| !at_tail);
+        self.left_tail = if at_tail {
+            None
+        } else {
+            self.left_tail
+                .or_else(|| self.lines.iter().map(|line| line.millis).max())
+        };
         // The bands intersecting the viewport, as (url, fitted size,
         // row offset relative to the viewport top — negative when the
         // band starts above it). The sliced widget crops the *fitted*
@@ -6185,6 +6282,51 @@ mod chat_layout_tests {
         pane.set_lines((0..301).map(|id| message(id, "one line")).collect());
         draw(&mut pane);
         assert_eq!(pane.rendered.rows.last().unwrap().line, 300);
+    }
+
+    /// Scrolled back, the log's bottom border is an accordion counting
+    /// the messages that arrived below since; a click on it follows the
+    /// newest line again, and the border is plain once more.
+    #[test]
+    fn scrolled_back_the_border_is_an_accordion_counting_unseen_messages() {
+        let mut pane = ChatPane::default();
+        pane.set_lines((0..300).map(|id| message(id, "one line")).collect());
+        let mut renderer = Renderer::new(LayoutBundle::builtin().unwrap());
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let mut draw = |pane: &mut ChatPane| {
+            terminal
+                .draw(|f| pane.render_layout(f, f.area(), &mut renderer))
+                .unwrap();
+            let buf = terminal.backend().buffer().clone();
+            pane.scrollback().map(|back| {
+                let row: String = (back.accordion.left()..back.accordion.right())
+                    .map(|x| buf[(x, back.accordion.y)].symbol().to_owned())
+                    .collect();
+                (back, row)
+            })
+        };
+        assert!(draw(&mut pane).is_none(), "following: a plain border");
+        pane.scroll_wheel(true);
+        let (back, row) = draw(&mut pane).expect("scrolled back");
+        assert_eq!(back.unseen, 0);
+        assert!(row.starts_with("╱╲╱╲") && !row.contains("new"), "{row}");
+        // Two messages and a system line arrive below.
+        let mut lines: Vec<ChatLine> = (0..302).map(|id| message(id, "one line")).collect();
+        lines.push(ChatLine {
+            system: true,
+            ..message(302, "kim joined")
+        });
+        pane.set_lines(lines);
+        let (back, row) = draw(&mut pane).expect("still scrolled back");
+        assert_eq!(back.unseen, 2);
+        assert!(row.contains(" ↓ 2 new "), "{row}");
+        let at = back.accordion;
+        pane.click(at.x + 2, at.y, 0);
+        assert!(
+            draw(&mut pane).is_none(),
+            "the click follows the newest line"
+        );
+        assert_eq!(pane.rendered.rows.last().unwrap().line, 302);
     }
 
     proptest::proptest! {
