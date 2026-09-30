@@ -1212,7 +1212,10 @@ fn every_scene_has_a_spot_in_the_stage_room() {
                 let mut said = false;
                 let mut used = None;
                 let mut now = 0;
-                while now < 10_000 {
+                let mut happened = false;
+                // Stop as soon as the scene has visibly happened: running
+                // all 116 cases to the 10s cap costs ~50s in a debug build.
+                while !happened && now < 10_000 {
                     now += guest
                         .next_tick(now)
                         .map_or(100, |d| d.as_millis() as u64)
@@ -1238,37 +1241,37 @@ fn every_scene_has_a_spot_in_the_stage_room() {
                     let (pose, _, bubble) = visit.osaka.appearance(now);
                     said |= matches!(bubble, Some(osaka::Bubble::Say(_)));
                     poses.push(std::mem::discriminant(&pose));
+                    let posed = |pose: Pose| poses.contains(&std::mem::discriminant(&pose));
+                    happened = match scene {
+                        Scene::Arrive => true,
+                        Scene::Pull => moved >= 3,
+                        Scene::Swap => swapped,
+                        Scene::Sneeze => moved >= 2,
+                        Scene::ClimbUp | Scene::ClimbDown | Scene::Drop => climbed,
+                        Scene::Clamber => climbed,
+                        Scene::StepOut => went_out,
+                        Scene::Door => doored && moved_on,
+                        Scene::Sit => posed(Pose::Sit),
+                        Scene::LieBack => posed(Pose::LieBack(0)),
+                        Scene::LieFront => posed(Pose::LieFront(0)),
+                        Scene::Jacks => posed(Pose::Jack(0)),
+                        Scene::ToeTouch => posed(Pose::ToeTouch(0)),
+                        Scene::Stretch => posed(Pose::Stretch),
+                        Scene::Gaze => posed(Pose::Gaze),
+                        Scene::Muse => said,
+                        Scene::Lounge => posed(Pose::Lounge),
+                        Scene::Nap => posed(Pose::Nap(0)),
+                        Scene::Sleep => posed(Pose::Sleep(0)),
+                        Scene::Homework => posed(Pose::Homework(0)),
+                        Scene::Watch => used == Some(Furniture::Tv),
+                        Scene::Parcel => guest.ledger.home.props.iter().any(|p| !p.boxed),
+                        Scene::Shopping => guest.ledger.ordered.is_some(),
+                        Scene::Work => went_out || gone,
+                        Scene::Read => posed(Pose::Read(0)),
+                        Scene::Snack => posed(Pose::Eat(0)),
+                        Scene::Pet => posed(Pose::Pet(0)),
+                    };
                 }
-                let posed = |pose: Pose| poses.contains(&std::mem::discriminant(&pose));
-                let happened = match scene {
-                    Scene::Arrive => true,
-                    Scene::Pull => moved >= 3,
-                    Scene::Swap => swapped,
-                    Scene::Sneeze => moved >= 2,
-                    Scene::ClimbUp | Scene::ClimbDown | Scene::Drop => climbed,
-                    Scene::Clamber => climbed,
-                    Scene::StepOut => went_out,
-                    Scene::Door => doored && moved_on,
-                    Scene::Sit => posed(Pose::Sit),
-                    Scene::LieBack => posed(Pose::LieBack(0)),
-                    Scene::LieFront => posed(Pose::LieFront(0)),
-                    Scene::Jacks => posed(Pose::Jack(0)),
-                    Scene::ToeTouch => posed(Pose::ToeTouch(0)),
-                    Scene::Stretch => posed(Pose::Stretch),
-                    Scene::Gaze => posed(Pose::Gaze),
-                    Scene::Muse => said,
-                    Scene::Lounge => posed(Pose::Lounge),
-                    Scene::Nap => posed(Pose::Nap(0)),
-                    Scene::Sleep => posed(Pose::Sleep(0)),
-                    Scene::Homework => posed(Pose::Homework(0)),
-                    Scene::Watch => used == Some(Furniture::Tv),
-                    Scene::Parcel => guest.ledger.home.props.iter().any(|p| !p.boxed),
-                    Scene::Shopping => guest.ledger.ordered.is_some(),
-                    Scene::Work => went_out || gone,
-                    Scene::Read => posed(Pose::Read(0)),
-                    Scene::Snack => posed(Pose::Eat(0)),
-                    Scene::Pet => posed(Pose::Pet(0)),
-                };
                 assert!(happened, "{at}: {note:?}, moved {moved}");
             }
         }
