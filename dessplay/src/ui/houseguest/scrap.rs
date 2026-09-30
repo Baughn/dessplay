@@ -92,8 +92,8 @@ impl Scrap {
 pub(super) const MAKES: [Furniture; 2] = [Furniture::Sofa, Furniture::Bed];
 
 /// A makeshift piece's size in cells (columns, rows): the sofa 7×3, the
-/// bed 7×2. Her box sits in the middle three... five columns, at column
-/// 3 ([`SEAT`]).
+/// bed 7×2. Using one, her five-column box is centred on column
+/// [`SEAT`].
 pub(super) fn footprint(item: Furniture) -> (u16, u16) {
     match item {
         Furniture::Bed => (7, 2),

@@ -3300,3 +3300,41 @@ fn a_real_piece_wins_nineteen_times_in_twenty() {
         vec![Place::Seat(seat(43, true))]
     );
 }
+
+/// Wide glyphs tear off whole: with only CJK and mixed text in reach,
+/// she still makes her pieces, never leaves half a wide glyph on screen,
+/// and the goodbye mends it all exactly — in both drawing modes.
+#[test]
+fn she_tears_wide_glyphs_whole() {
+    use super::stage::chat_ui;
+    const LINES: [&str; 3] = [
+        "葬送のフリーレン 12話",
+        "猫が座った the cat sat",
+        "おはよう osaka",
+    ];
+    for graphics in [false, true] {
+        for scene in [Scene::MakeSofa, Scene::MakeBed] {
+            let at = format!("{scene:?} graphics={graphics}");
+            let mut ui = chat_ui((0..40).map(|i| LINES[i % LINES.len()].to_string()));
+            let (real, view) = real_frame(&mut ui, 100, 30);
+            let mut guest = Guest::new(2);
+            if graphics {
+                guest.set_picker(kitty());
+            }
+            let (now, frame) = make(&mut guest, scene, &real, &view);
+            let State::Visiting(visit) = &guest.state else {
+                panic!("{at}: visiting");
+            };
+            let torn = &visit.made[0].torn;
+            assert!(
+                torn.iter().any(|&c| cells::width(&real[c]) > 1),
+                "{at}: tore a wide glyph from {torn:?}"
+            );
+            assert_untouched(&frame, &real, &view.protected)
+                .unwrap_or_else(|e| panic!("{at}: {e}"));
+            guest.activity(now);
+            let end = run(&mut guest, &real, &view, now, now + dissolve::DURATION_MS);
+            assert_eq!(end, real, "{at}: the rain mends the line");
+        }
+    }
+}

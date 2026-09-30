@@ -20,6 +20,8 @@ Add new days at the top. Add new entries at the bottom of existing days.
 - Fixed: The houseguest no longer gets stuck going back and forth when
   she comes to poke the chat's scrollback accordion, and no longer naps
   on her sofa with text hidden behind her.
+- Changed: If the houseguest's sofa is on the same floor as her TV, she
+  sometimes watches the TV from the sofa.
 
 ## 2026-09-30
 
