@@ -454,6 +454,7 @@ impl Guest {
     /// just drawn (pane rectangles are measured during the draw).
     pub fn paint(&mut self, buf: &mut Buffer, view: &IdleView, now: u64) {
         self.observe(view, now);
+        let view = &self.gate(view, now);
         let size = (buf.area.width, buf.area.height);
         if matches!(self.state, State::Arriving) {
             self.state = State::Absent;
@@ -783,6 +784,23 @@ impl Guest {
                 }
             }
         }
+    }
+
+    /// `view` as she keeps to it now: while the client is in use —
+    /// playing, a held selection, or local input within the idle delay —
+    /// a resident keeps out of the focused pane (it's protected); left
+    /// alone, the whole screen is hers again.
+    fn gate(&self, view: &IdleView, now: u64) -> IdleView {
+        let mut view = view.clone();
+        let quiet = view
+            .delay
+            .is_none_or(|delay| now >= self.quiet_since + delay.as_millis() as u64);
+        let in_use = !quiet || view.busy.is_some();
+        match view.focus {
+            Some(focus) if in_use => view.protected.push(focus),
+            _ => view.focus = None,
+        }
+        view
     }
 
     /// Update the idle gate and chat arrivals from the frame's view.

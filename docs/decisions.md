@@ -2084,8 +2084,9 @@ crash would lose the delivery that just happened).
 ## Resident houseguest keeps out of the focused pane (2026-09-30)
 
 **Rule:** With *Resident* on (the default), she stays through playback
-and local input; the focused pane is protected and rains her out, she
-leaves it by her door, whatever would take her into the chat is a tenth
+and local input; while the client is in use (playing, a held selection,
+or input within the idle delay) the focused pane is protected and rains
+her out, she leaves it by her door, whatever would take her into the chat is a tenth
 as likely, and local input puts back what she moved in the chat. See
 [design.md](design.md#houseguest).
 
@@ -2110,11 +2111,14 @@ without her leaving. Her body — not the floor under her feet — decides
 whether she's in the focused pane: a pane's top border may be the floor
 of the pane above, and standing on a protected line is already allowed.
 
-Consequence, accepted: the chat is focused by default, so an ordinary
-idle visit by a resident rarely goes into the chat unless the user
-tabbed elsewhere first. Rejected: resident only while playing (two
-modes of one guest); hiding the focused pane's contents only (she'd
-walk around invisible); banning the chat outright.
+Only while the client is in use, because the chat is focused by
+default: protecting it always would keep her out of the chat on every
+ordinary idle visit, where nobody is there to be in the way of. The gate
+is the visitor's idle gate (playing, a held selection, recent input), so
+"in use" means one thing throughout; arriving is left alone (she drops
+onto empty space). Rejected: resident only while playing (two modes of
+one guest); hiding the focused pane's contents only (she'd walk around
+invisible); banning the chat outright.
 
 ## Houseguest chooses by needs among the top few (2026-09-28)
 

@@ -1506,8 +1506,12 @@ this section states what is built.
 - **Resident Osaka** (on by default): once she's arrived she stays —
   through playback, and through local input. She keeps out of the way
   instead (why: [decisions](decisions.md#resident-houseguest-keeps-out-of-the-focused-pane-2026-09-30)):
-  - The **focused pane** (whichever it is — the chat, a quiet pane, the
-    subtitles) is protected like the chat input. When a pane gains focus,
+  - While the client is **in use** — something playing, a held chat
+    selection, or local input within the idle delay — the **focused pane**
+    (whichever it is — the chat, a quiet pane, the subtitles) is protected
+    like the chat input. Left alone for the delay with nothing playing,
+    the whole screen is hers again. When the focused pane becomes
+    protected (it gains focus, or the client comes into use),
     everything of hers in it — her, her furniture, text she moved — rains
     out at once (the goodbye rain without the startled beat), and she is
     already through her door: it opens on a floor clear of that pane, and
@@ -1523,8 +1527,8 @@ this section states what is built.
     (swapped letters, a sneeze's scatter, pulled lines); nothing
     scheduled for them is owed any more, and if she was at it, she looks
     up, caught out. What she moved elsewhere stays.
-  - A **held chat selection** protects the chat pane instead of ending
-    the visit. Overlays still end it, as does switching visits off.
+  - A **held chat selection** protects the chat pane (as well as the
+    focused one) instead of ending the visit. Overlays still end it, as does switching visits off.
 - **Settings** (F3 → Houseguest), local only: *Visits* — after 1
   (default), 2, 5, 10, or 30 idle minutes, or Off; *Resident* (default
   on); *Osaka moved out* (asks first) wipes her record: her home goes,

@@ -2163,18 +2163,17 @@ fn her_things_answer_what_she_does() {
 
 // ---- Resident Osaka ----
 
-/// [`rooms`] as a resident sees it: the tall left box is the chat, the
-/// two right ones her quiet panes.
+/// [`rooms`] as a resident sees it during playback: the tall left box is
+/// the chat, the two right ones her quiet panes.
 fn resident_view(width: u16, height: u16, focus: Option<Rect>) -> IdleView {
     let panes = nooks(width, height);
-    let mut protected = bottom_strip(width, height);
-    protected.extend(focus);
     IdleView {
+        busy: Some(Busy::Playing),
         resident: true,
         focus,
         chat: panes[0].1,
         nooks: panes[1..].to_vec(),
-        ..view(protected)
+        ..view(bottom_strip(width, height))
     }
 }
 
@@ -2323,6 +2322,77 @@ fn focusing_her_pane_rains_her_out_and_she_steps_out_elsewhere() {
     }
 }
 
+/// The focused pane is off-limits only while the client is in use. Left
+/// alone, she may stay in it; a key press rains her out; after an idle
+/// delay's quiet it's hers again.
+#[test]
+fn the_focused_pane_is_hers_again_when_the_client_is_left_alone() {
+    let real = rooms(100, 30);
+    let panes = nooks(100, 30);
+    let mut guest = Guest::new(21);
+    let alone = |focus| IdleView {
+        busy: None,
+        ..resident_view(100, 30, focus)
+    };
+    let mut now = 0;
+    paint(&mut guest, &real, &alone(None), now);
+    let pane = loop {
+        now += 250;
+        guest.advance(now);
+        paint(&mut guest, &real, &alone(None), now);
+        if let State::Visiting(visit) = &guest.state
+            && !visit.osaka.hidden(now)
+            && visit.osaka.standing()
+            && let Some(&(_, pane)) = panes
+                .iter()
+                .find(|(_, pane)| osaka::box_meets(*pane, (visit.osaka.x, visit.osaka.y)))
+        {
+            break pane;
+        }
+        assert!(now < 120_000, "she never stood still");
+    };
+    let at = |guest: &Guest| match &guest.state {
+        State::Visiting(visit) => (visit.osaka.x, visit.osaka.y),
+        _ => panic!("a resident stays"),
+    };
+    let view = alone(Some(pane));
+    // Nobody's at the keys: focusing her pane changes nothing.
+    let spot = at(&guest);
+    now += 1;
+    guest.advance(now);
+    paint(&mut guest, &real, &view, now);
+    let State::Visiting(visit) = &guest.state else {
+        panic!("visiting");
+    };
+    assert!(
+        visit.fades.is_empty(),
+        "no rain while the client is left alone"
+    );
+    assert_eq!(at(&guest), spot, "she stays where she is");
+    assert_eq!(guest.gate(&view, now).focus, None);
+    // A key press: the pane is protected, and she rains out of it.
+    guest.activity(now);
+    guest.advance(now);
+    paint(&mut guest, &real, &view, now);
+    let State::Visiting(visit) = &guest.state else {
+        panic!("a resident stays");
+    };
+    assert!(!visit.fades.is_empty(), "she rains out of the focused pane");
+    let pressed = now;
+    assert_eq!(guest.gate(&view, now).focus, Some(pane));
+    // A delay's quiet later, it's hers again.
+    run(
+        &mut guest,
+        &real,
+        &view,
+        now,
+        pressed + DELAY.as_millis() as u64,
+    );
+    now = pressed + DELAY.as_millis() as u64;
+    assert_eq!(guest.gate(&view, now).focus, None);
+    assert!(!guest.gate(&view, now).protected.contains(&pane));
+}
+
 /// Whether she stands in `rect`.
 fn osaka_in(visit: &Visit, rect: Rect) -> bool {
     let (x, y) = (visit.osaka.x, visit.osaka.y);
@@ -2339,6 +2409,7 @@ fn a_resident_mostly_keeps_out_of_the_chat() {
     for (i, resident) in [false, true].into_iter().enumerate() {
         let view = IdleView {
             resident,
+            busy: None,
             ..resident_view(100, 30, None)
         };
         let (mut inside, mut total) = (0u64, 0u64);

@@ -8,12 +8,13 @@ use tuirealm::ratatui::layout::Rect;
 /// Why the client is not idle right now.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Busy {
-    /// The group is playing (a resident stays anyway).
+    /// The group is playing (a resident stays anyway, keeping out of the
+    /// focused pane).
     Playing,
     /// A modal, the layout tools, or a work overlay covers the panes.
     Overlay,
-    /// A held chat selection (the user is mid-copy; a resident keeps
-    /// out of the chat pane instead).
+    /// A held chat selection (the user is mid-copy; a resident stays,
+    /// keeping out of the chat pane and the focused pane).
     Selection,
 }
 
@@ -40,8 +41,9 @@ pub struct IdleView {
     /// Resident Osaka: local input doesn't send her away, playback
     /// doesn't keep her out, and she keeps clear of the focused pane.
     pub resident: bool,
-    /// The focused pane (resident only), also in `protected`: she and
-    /// her things rain out of it the moment it's focused.
+    /// The focused pane (resident only). While the client is in use
+    /// (playing, a held selection, or local input within the idle delay)
+    /// the guest protects it: she and her things rain out of it.
     pub focus: Option<Rect>,
     /// Chat arrivals, for "stop and look".
     pub chat_mark: ChatMark,
@@ -49,7 +51,7 @@ pub struct IdleView {
     pub chat: Rect,
     /// Rectangles her body and bubbles never cover: the chat input, the
     /// Player Status block, the keybinding bar, and inline images (and,
-    /// for a resident, the focused pane).
+    /// for a resident while someone selects, the chat).
     pub protected: Vec<Rect>,
     /// The quiet panes she may furnish, as drawn (borders included).
     pub nooks: Vec<(super::Nook, Rect)>,
@@ -58,9 +60,15 @@ pub struct IdleView {
 }
 
 impl IdleView {
-    /// Whether the client is idle and the setting allows a visit.
+    /// Whether the setting allows a visit and nothing keeps her away: a
+    /// resident only minds overlays.
     pub fn open(&self) -> bool {
-        self.delay.is_some() && self.busy.is_none()
+        self.delay.is_some()
+            && match self.busy {
+                None => true,
+                Some(Busy::Overlay) => false,
+                Some(Busy::Playing | Busy::Selection) => self.resident,
+            }
     }
 }
 

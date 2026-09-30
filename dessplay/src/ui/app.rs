@@ -597,11 +597,13 @@ impl Ui {
         // way of what the user is doing instead of leaving.
         let resident = self.settings.houseguest_resident;
         let selecting = self.chat.selection_held();
+        // Why a visitor would stay away (a resident only minds overlays;
+        // for her, the rest is why the focused pane is off-limits).
         let busy = if overlay {
             Some(Busy::Overlay)
-        } else if playing && !resident {
+        } else if playing {
             Some(Busy::Playing)
-        } else if selecting && !resident {
+        } else if selecting {
             Some(Busy::Selection)
         } else {
             None
@@ -615,12 +617,12 @@ impl Ui {
         protected.extend(images.iter().map(|&image| grow(image, 1)));
         // The newest message is never touched, only looked at.
         protected.extend(self.chat.newest_message_rows());
-        // A resident keeps out of the focused pane, and out of the chat
-        // while someone is selecting in it.
+        // While the client is in use, a resident keeps out of the focused
+        // pane (the guest knows when it was last used), and out of the
+        // chat while someone is selecting in it.
         let focus = (resident && !self.focus_order.is_empty())
             .then(|| self.panes.bounds(self.focus.name()))
             .filter(|rect| !rect.is_empty());
-        protected.extend(focus);
         if resident && selecting {
             protected.push(self.panes.chat);
         }
@@ -5350,11 +5352,9 @@ mod tests {
             "intent alone isn't playback"
         );
         assert_eq!(ui(false, false).idle_view(&[]).busy, Some(Busy::Playing));
-        assert_eq!(
-            ui(false, true).idle_view(&[]).busy,
-            None,
-            "a resident stays"
-        );
+        let resident = ui(false, true).idle_view(&[]);
+        assert_eq!(resident.busy, Some(Busy::Playing));
+        assert!(resident.open(), "a resident stays");
     }
 
     #[test]
