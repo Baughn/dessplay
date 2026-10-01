@@ -844,6 +844,7 @@ fn visiting_at(guest: &mut Guest, real: &Buffer, view: &IdleView, (x, y): (i32, 
         shown: Vec::new(),
         with: Vec::new(),
         made: Vec::new(),
+        reel: None,
         size: (real.area.width, real.area.height),
     }));
 }
@@ -880,6 +881,7 @@ fn she_pulls_a_chat_line_and_the_goodbye_puts_it_back() {
                     // A pull: three or more glyphs moved along their row
                     // (a sneeze pops them up; a swap is two).
                     if let State::Visiting(visit) = &guest.state
+                        && visit.osaka.reeling().is_none()
                         && visit.layer.entries().len() >= 3
                         && visit.layer.entries().iter().all(|d| d.at.1 == d.source.1)
                     {
@@ -2579,6 +2581,13 @@ proptest! {
             if next != focus {
                 focus = next;
                 landed = now;
+                // What differed from the real frame, and what she painted
+                // (a glyph she moved can land on its own twin, so a cell of
+                // hers needn't differ).
+                let painted: Vec<(u16, u16)> = match &guest.state {
+                    State::Visiting(visit) => visit.painted.iter().map(|f| (f.x, f.y)).collect(),
+                    _ => Vec::new(),
+                };
                 hers_there = focus.map_or_else(Vec::new, |rect| {
                     last.content
                         .iter()
@@ -2586,6 +2595,7 @@ proptest! {
                         .enumerate()
                         .filter(|(_, (a, b))| a != b)
                         .map(|(i, _)| ((i % usize::from(w)) as u16, (i / usize::from(w)) as u16))
+                        .chain(painted)
                         .filter(|&(x, y)| rect.contains((x, y).into()))
                         .collect()
                 });
@@ -3112,6 +3122,8 @@ fn in_line_art_she_passes_text_but_does_not_stay_over_it() {
 /// the walk to the line to sitting or lying on what she made of it.
 fn make(guest: &mut Guest, scene: Scene, real: &Buffer, view: &IdleView) -> (u64, Buffer) {
     use super::sprite::Pose;
+    // She reels the torn text in: it moves towards her hands.
+    let mut reeled = false;
     guest.cue(scene);
     paint(guest, real, view, 0);
     assert!(
@@ -3131,10 +3143,32 @@ fn make(guest: &mut Guest, scene: Scene, real: &Buffer, view: &IdleView) -> (u64
         let State::Visiting(visit) = &guest.state else {
             panic!("{scene:?}: still visiting");
         };
+        if let Some(build) = visit.osaka.reeling() {
+            let hand = i32::from(build.hand());
+            reeled |= visit.layer.entries().iter().any(|d| {
+                let (from, to) = (i32::from(d.source.0), i32::from(d.at.0));
+                (to - hand).abs() < (from - hand).abs()
+            });
+        }
+        // She crumples it standing over it.
+        if let Some(seat) = visit.osaka.seat()
+            && seat.what == super::room::Use::Crumple
+        {
+            let made = visit
+                .made
+                .iter()
+                .find(|m| m.piece.seat(seat.what, 0) == seat);
+            let rect = made.expect("crumpling what she made").piece.rect();
+            assert!(
+                rect.contains((visit.osaka.x as u16, rect.y).into()),
+                "{scene:?}: over it"
+            );
+        }
         let (pose, ..) = visit.osaka.appearance(now);
         let using = matches!(pose, Pose::Lounge | Pose::Sleep(_))
             && visit.osaka.seat().is_some_and(|seat| seat.makeshift);
         if using {
+            assert!(reeled, "{scene:?}: the torn text came to her hands");
             return (now, frame);
         }
     }
@@ -3335,6 +3369,59 @@ fn she_tears_wide_glyphs_whole() {
             guest.activity(now);
             let end = run(&mut guest, &real, &view, now, now + dissolve::DURATION_MS);
             assert_eq!(end, real, "{at}: the rain mends the line");
+        }
+    }
+}
+
+/// Interrupted while reeling torn text in (a chat message arrives), she
+/// lets it go and it all goes back: no holes are left without a piece.
+#[test]
+fn an_interrupted_reel_puts_the_text_back() {
+    for graphics in [false, true] {
+        let mut ui = stage_ui();
+        let (real, view) = real_frame(&mut ui, 100, 30);
+        let mut guest = Guest::new(1);
+        if graphics {
+            guest.set_picker(kitty());
+        }
+        guest.cue(Scene::MakeSofa);
+        let mut now = 0;
+        paint(&mut guest, &real, &view, now);
+        // Until she has some of it in her hands.
+        let build = loop {
+            assert!(now < 20_000, "graphics={graphics}: never reeled");
+            now += guest
+                .next_tick(now)
+                .map_or(100, |d| d.as_millis() as u64)
+                .clamp(1, 100);
+            guest.advance(now);
+            paint(&mut guest, &real, &view, now);
+            let State::Visiting(visit) = &guest.state else {
+                panic!("visiting");
+            };
+            if let Some(build) = visit.osaka.reeling()
+                && visit.layer.holes().count() > 2
+            {
+                break build.clone();
+            }
+        };
+        let mut chat = view.clone();
+        chat.chat_mark.synced += 1;
+        let frame = run(&mut guest, &real, &chat, now, now + 2_000);
+        let State::Visiting(visit) = &guest.state else {
+            panic!("visiting");
+        };
+        assert!(visit.made.is_empty(), "graphics={graphics}");
+        assert!(
+            visit.layer.is_empty(),
+            "graphics={graphics}: {:?}",
+            visit.layer.entries()
+        );
+        // The whole run it was moving along, as it was.
+        let (lo, hi) = (build.cells.iter().min().unwrap(), build.hand());
+        for x in *lo.min(&hi)..=*lo.max(&hi) {
+            let at = (x, build.row);
+            assert_eq!(frame[at], real[at], "graphics={graphics}: {at:?} back");
         }
     }
 }

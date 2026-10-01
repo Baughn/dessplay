@@ -2200,6 +2200,11 @@ means that when the whim lands she goes for the makeshift one; picking
 uniformly between it and the real one would have halved the rate (the
 first draft did: 2%).
 
+The text first reels in to her hands and vanishes there, and the piece
+is made where she stands (user review, 2026-10-01): she's crumpling it
+between her hands, so it shouldn't simply blink out of its line while
+the piece appears elsewhere.
+
 **Rejected:** A heap of real text glyphs she perches on top of (hops
 up a row; line art can't cover text, so it had to sit under her box,
 which needed a new perched state, hops, and a floor that isn't a line)
@@ -2228,7 +2233,10 @@ her floor out from under her, every poke; and a seat checked only her
 box, while the image she and the sofa share spans their bounding
 rectangle, which hid text for a whole nap. Moved-text cells also go into
 the solid set as row runs rather than single cells: the per-cell scans
-were ~40% of a long visit's time.
+were ~40% of a long visit's time. Later runs found a fourth of the
+kind: a wide glyph half inside a protected area, whose outer half she
+could draw on — and drawing beside half a wide glyph blanks all of it,
+protected or not; protected areas now take in such a glyph whole.
 
 ## Houseguest chooses by needs among the top few (2026-09-28)
 

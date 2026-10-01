@@ -139,7 +139,32 @@ struct Visit {
     fades: Vec<Dissolve>,
     /// Makeshift furniture she has made of text this visit.
     made: Vec<Made>,
+    /// The text she was reeling in at the last paint.
+    reel: Option<scenes::Build>,
     size: (u16, u16),
+}
+
+/// `view` with every protected rectangle widened to take in both halves
+/// of a wide glyph straddling its left or right edge: a wide glyph is
+/// one brick, and writing beside half of one blanks all of it.
+fn whole_glyphs(buf: &Buffer, mut view: IdleView) -> IdleView {
+    let wide = |x: u16, y: u16| buf.cell((x, y)).is_some_and(|c| cells::width(c) > 1);
+    for rect in &mut view.protected {
+        let rows = rect.top()..rect.bottom();
+        let left = rect
+            .x
+            .checked_sub(1)
+            .is_some_and(|x| rows.clone().any(|y| wide(x, y)));
+        let right = rect.width > 0 && rows.clone().any(|y| wide(rect.right() - 1, y));
+        if left {
+            rect.x -= 1;
+            rect.width += 1;
+        }
+        if right && rect.right() < buf.area.right() {
+            rect.width += 1;
+        }
+    }
+    view
 }
 
 /// `cells` as rectangles, a run of neighbours along a row making one:
@@ -521,7 +546,7 @@ impl Guest {
     /// just drawn (pane rectangles are measured during the draw).
     pub fn paint(&mut self, buf: &mut Buffer, view: &IdleView, now: u64) {
         self.observe(view, now);
-        let view = &self.gate(view, now);
+        let view = &whole_glyphs(buf, self.gate(view, now));
         let size = (buf.area.width, buf.area.height);
         self.errand_progress(view, now);
         self.nudge_due(buf, view, now);
@@ -704,13 +729,27 @@ impl Guest {
                         tracing::trace!(?op, "houseguest: the frame refused a layer change");
                         gripped &= !op.grips();
                         visit.osaka.refused(now, op);
-                    } else if let scenes::LayerOp::Tear { row, cells, piece } = &op {
+                    } else if let scenes::LayerOp::Make { row, cells, piece } = &op {
                         visit.made.push(made_of(buf, *row, cells, piece));
                     }
                 }
                 if !gripped {
                     visit.osaka.lost_grip(now);
                 }
+                // Text she was reeling in and never made anything of (she
+                // was interrupted, or lost her grip) goes back.
+                let reeling = visit.osaka.reeling().cloned();
+                if let Some(old) = visit.reel.take()
+                    && reeling.as_ref() != Some(&old)
+                {
+                    let sources: Vec<(u16, u16)> =
+                        old.cells.iter().map(|&c| (c, old.row)).collect();
+                    if !visit.made.iter().any(|m| m.torn == sources) {
+                        tracing::debug!("houseguest: dropped the text she was reeling in");
+                        visit.layer.unreel(&sources);
+                    }
+                }
+                visit.reel = reeling;
                 let mut protected = visit.solid(&view.protected);
                 visit.terrain = Terrain::read(buf, &protected, self.graphics.is_some());
                 visit.size = size;
@@ -887,6 +926,7 @@ impl Guest {
             with: Vec::new(),
             fades: Vec::new(),
             made: Vec::new(),
+            reel: None,
             size,
         }));
     }
@@ -1530,7 +1570,7 @@ fn builds(
             .filter(|seat| seat.what != room::Use::Crumple)
             .collect()
     };
-    scenes::builds(buf, &visit.terrain, pulls, &wanted, &clear, &then)
+    scenes::builds(buf, pulls, &wanted, &clear, &then)
 }
 
 /// Her furniture's colour as text (the ASCII drawings).

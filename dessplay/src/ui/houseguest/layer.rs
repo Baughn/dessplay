@@ -163,6 +163,32 @@ impl TextLayer {
         true
     }
 
+    /// The glyph from `source` is in her hands: torn off, whether she
+    /// had moved it (it stops showing where it was) or it's still home.
+    /// True if it's torn off now.
+    pub fn absorb(&mut self, buf: &Buffer, protected: &[Rect], source: (u16, u16)) -> bool {
+        if self.torn.iter().any(|t| t.source == source) {
+            return true;
+        }
+        match self.entries.iter().position(|d| d.source == source) {
+            Some(index) => {
+                let entry = self.entries.remove(index);
+                self.torn.push(Torn {
+                    source,
+                    expected: entry.expected,
+                });
+                true
+            }
+            None => self.tear(buf, protected, &[source]),
+        }
+    }
+
+    /// Put back every glyph from `sources`, moved or torn off.
+    pub fn unreel(&mut self, sources: &[(u16, u16)]) {
+        self.entries.retain(|d| !sources.contains(&d.source));
+        self.mend(sources);
+    }
+
     /// Whether every glyph torn from `sources` is still torn off (none
     /// has come back because its line changed).
     pub fn torn_intact(&self, sources: &[(u16, u16)]) -> bool {

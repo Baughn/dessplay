@@ -1359,7 +1359,8 @@ this section states what is built.
 - She **never covers** the chat input line and its frame, the Player
   Status block, the keybinding bar, or inline images (plus one cell of
   margin); never writes a protocol-image cell; and never leaves half of
-  a wide glyph on screen.
+  a wide glyph on screen. A wide glyph straddling the edge of a
+  protected area is protected whole.
 - **Terrain is read from the rendered frame**: a run of horizontal
   box-drawing glyphs is a floor wherever four rows of open cells sit
   above it; vertical borders let her climb between floors; a ledge's
@@ -1519,12 +1520,16 @@ this section states what is built.
 - **Makeshift furniture**: wanting to sit on a sofa (or watch the TV
   from one) or sleep in a bed and having none, she makes one of text.
   At a line that ends beside her box at chest height (as for a pull),
-  with room on the same floor within 14 columns for the piece, she
-  braces and tears off the end nearest her ("Rrrip!"): 5–10 glyphs,
-  leaving at least two, which become holes in their line (the text
-  layer keeps them, and they count towards its 60). At the piece's
-  spot she crumples them into shape over 4–6 s ("scrunch...",
-  "There!"), and goes straight to using it. A makeshift sofa is 7×3
+  where the piece fits centred under her, she braces and tears off the
+  end nearest her ("Rrrip!"): 5–10 glyphs, leaving at least two. Hand
+  over hand she reels them in, a cell every 220 ms; each glyph vanishes
+  into her hands as its near edge reaches the cell beside her box (a
+  wide glyph's second half never enters it), leaving a hole in its line
+  (the text layer keeps the holes, and they count towards its 60). With
+  all of it in her hands, the heap appears under her and she crumples
+  it into shape over 4–6 s ("scrunch...", "There!"), and goes straight
+  to using it. Interrupted while reeling (a chat line, losing her grip
+  when the text changes), she lets it go and it all goes back. A makeshift sofa is 7×3
   cells, a makeshift bed 7×2; each stands on a floor over blank cells
   like her real pieces (and is solid to text the same way), and is
   drawn as shreds of the alien glyphs her image derezzes text into, in

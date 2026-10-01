@@ -208,7 +208,8 @@ pub(super) const MUSINGS: [&str; 12] = [
 
 /// Tearing text off a line for furniture: bracing, then the rip.
 const BRACE_MS: u64 = 700;
-const RIP_MS: u64 = 900;
+/// Each step of reeling the torn text in to her hands.
+const REEL_MS: u64 = 220;
 const RIP: &str = "Rrrip!";
 const SCRUNCH: &str = "scrunch...";
 const THERE: &str = "There!";
@@ -332,10 +333,12 @@ enum Act {
         until: u64,
     },
     /// Tearing text off a line for furniture (the task is the build):
-    /// bracing, then (`ripped`) heaving it off.
+    /// bracing, then (`ripped`) reeling it in to her hands, `step` cells
+    /// so far, crumpling each glyph that gets there.
     Tear {
         since: u64,
         ripped: bool,
+        step: u16,
     },
     /// Using a piece of her furniture (the task is its seat). Watching
     /// the TV, `advert` is what the shopping channel is selling her.
@@ -932,7 +935,7 @@ impl Osaka {
             Act::Sneeze { since, knocked } => {
                 since + WINDUP_MS + if knocked { RECOIL_MS } else { 0 }
             }
-            Act::Tear { since, ripped } => since + if ripped { RIP_MS } else { BRACE_MS },
+            Act::Tear { since, ripped, .. } => since + if ripped { REEL_MS } else { BRACE_MS },
             Act::Idle { what, since, until } => next_frame(what, since, now).min(until),
             Act::Use { since, until, .. } => {
                 (since + (now.saturating_sub(since) / USE_FRAME_MS + 1) * USE_FRAME_MS).min(until)
@@ -1205,35 +1208,44 @@ impl Osaka {
                     self.act_due = frame.min(until);
                 }
             }
-            Act::Tear { ripped: false, .. } => {
+            Act::Tear { ripped, step, .. } => {
                 let Some(Job::Build(build)) = self.task.clone() else {
                     return self.decide(at, terrain, chances, rng);
                 };
-                tracing::debug!(
-                    row = build.row,
-                    glyphs = build.cells.len(),
-                    item = ?build.piece.item,
-                    "houseguest: tearing text off for furniture"
-                );
-                self.ops.push(LayerOp::Tear {
+                if !ripped {
+                    tracing::debug!(
+                        row = build.row,
+                        glyphs = build.cells.len(),
+                        item = ?build.piece.item,
+                        "houseguest: tearing text off for furniture"
+                    );
+                    self.say(RIP, at);
+                }
+                let step = if ripped { step + 1 } else { 1 };
+                if step <= build.steps() {
+                    // Hand over hand: in it comes, a cell at a time.
+                    self.ops.push(LayerOp::Reel {
+                        row: build.row,
+                        cells: build.cells.clone(),
+                        hand: build.hand(),
+                        step,
+                    });
+                    return self.set(
+                        Act::Tear {
+                            since: at,
+                            ripped: true,
+                            step,
+                        },
+                        at,
+                    );
+                }
+                // All in her hands: the heap, under her, to shape.
+                self.task = None;
+                self.ops.push(LayerOp::Make {
                     row: build.row,
                     cells: build.cells.clone(),
                     piece: build.piece,
                 });
-                self.say(RIP, at);
-                self.set(
-                    Act::Tear {
-                        since: at,
-                        ripped: true,
-                    },
-                    at,
-                );
-            }
-            Act::Tear { ripped: true, .. } => {
-                let Some(Job::Build(build)) = self.task.take() else {
-                    return self.decide(at, terrain, chances, rng);
-                };
-                // Over to the heap, to crumple it into shape.
                 let seat = build.piece.seat(Use::Crumple, 0);
                 self.making = Some(build);
                 self.pursue(Job::Use(seat), at);
@@ -1384,6 +1396,7 @@ impl Osaka {
                             Act::Tear {
                                 since: at,
                                 ripped: false,
+                                step: 0,
                             },
                             at,
                         );
@@ -1679,6 +1692,14 @@ impl Osaka {
                     tries: 0,
                 },
             );
+        }
+    }
+
+    /// The makeshift piece she's tearing text off for, while she is.
+    pub fn reeling(&self) -> Option<&Build> {
+        match (self.act, &self.task) {
+            (Act::Tear { .. }, Some(Job::Build(build))) => Some(build),
+            _ => None,
         }
     }
 
@@ -2703,9 +2724,9 @@ impl Osaka {
                 now.saturating_sub(since),
                 until.saturating_sub(since),
             ),
-            Act::Tear { ripped, .. } => (
+            Act::Tear { ripped, step, .. } => (
                 Pose::Pull {
-                    heaving: ripped,
+                    heaving: ripped && step % 2 == 1,
                     row: self.hands_row(),
                 },
                 if ripped { Face::Happy } else { Face::Curious },
