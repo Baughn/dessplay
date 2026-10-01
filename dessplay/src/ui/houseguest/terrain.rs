@@ -13,6 +13,57 @@ const HALF: i32 = WIDTH / 2;
 /// Platforms narrower than this many standing positions are ignored.
 const MIN_PLATFORM: i32 = 3;
 
+/// The one image she's drawn in, in line art, while she's centred on
+/// `x` with her feet on row `y`: her box and the floor under it, plus
+/// every piece of furniture it takes in — each piece whose cover (its
+/// footprint and the floor row under it) overlaps her, and then each the
+/// rectangle spanning them overlaps, since two images over the same
+/// cells would cut each other out.
+pub(super) struct Image {
+    /// The rectangle it spans: `left..right`, `top..bottom`.
+    pub left: i32,
+    pub top: i32,
+    pub right: i32,
+    pub bottom: i32,
+    /// For each of the covers given, whether that piece is in it.
+    pub with: Vec<bool>,
+}
+
+/// Her image at `(x, y)` among pieces covering `covers` (see [`Image`]).
+pub(super) fn image(x: i32, y: i32, covers: &[Rect]) -> Image {
+    let mut out = Image {
+        left: x - HALF,
+        top: y - HEIGHT,
+        right: x + HALF + 1,
+        bottom: y + 1,
+        with: vec![false; covers.len()],
+    };
+    loop {
+        let mut grew = false;
+        for (cover, with) in covers.iter().zip(&mut out.with) {
+            let (left, top) = (i32::from(cover.x), i32::from(cover.y));
+            let (right, bottom) = (i32::from(cover.right()), i32::from(cover.bottom()));
+            if *with
+                || left >= out.right
+                || out.left >= right
+                || top >= out.bottom
+                || out.top >= bottom
+            {
+                continue;
+            }
+            *with = true;
+            grew = true;
+            out.left = out.left.min(left);
+            out.top = out.top.min(top);
+            out.right = out.right.max(right);
+            out.bottom = out.bottom.max(bottom);
+        }
+        if !grew {
+            return out;
+        }
+    }
+}
+
 fn box_drawing(symbol: &str) -> Option<char> {
     let mut chars = symbol.chars();
     let c = chars.next()?;
@@ -136,6 +187,10 @@ pub(super) struct Terrain {
     /// Cells her body may stay on: open, and in line art blank or a line
     /// her image redraws (text she only passes).
     calm: Vec<bool>,
+    /// Line art: her image hides what it covers, and takes in furniture.
+    graphics: bool,
+    /// Her furniture's covers, in line art (see [`Image`]).
+    covers: Vec<Rect>,
     pub platforms: Vec<Platform>,
     pub links: Vec<Link>,
 }
@@ -190,6 +245,8 @@ impl Terrain {
             height,
             open,
             calm,
+            graphics,
+            covers: Vec::new(),
             platforms: Vec::new(),
             links: Vec::new(),
         };
@@ -255,11 +312,49 @@ impl Terrain {
         (1..=HEIGHT).all(|dy| (-HALF..=HALF).all(|dx| self.open(x + dx, y - dy)))
     }
 
-    /// Whether she may stay standing centred on `x` on row `y`: her whole
-    /// box is blank or lines (in line art; in ASCII, wherever she's
-    /// clear). Over text she only passes.
+    /// Her furniture: the pieces her image takes in, in line art, where
+    /// she meets them (their covers, see [`Image`]). In ASCII she's drawn
+    /// as text beside them, so they're no part of where she may stay.
+    pub fn furnish(&mut self, covers: impl IntoIterator<Item = Rect>) {
+        if self.graphics {
+            self.covers = covers.into_iter().collect();
+        }
+    }
+
+    /// Whether she may stay standing centred on `x` on row `y`: all the
+    /// one image she'd be drawn in ([`Image`]) hides is blank or lines (in
+    /// line art; in ASCII, wherever she's clear), less the floor rows it
+    /// stands on and the pieces in it. Over text she only passes.
     pub fn restful(&self, x: i32, y: i32) -> bool {
-        (1..=HEIGHT).all(|dy| (-HALF..=HALF).all(|dx| self.calm(x + dx, y - dy)))
+        if !(1..=HEIGHT).all(|dy| (-HALF..=HALF).all(|dx| self.calm(x + dx, y - dy))) {
+            return false;
+        }
+        let image = image(x, y, &self.covers);
+        let with: Vec<Rect> = self
+            .covers
+            .iter()
+            .zip(&image.with)
+            .filter_map(|(&cover, &with)| with.then_some(cover))
+            .collect();
+        // Alone, her image is her box (checked) and her floor.
+        if with.is_empty() {
+            return true;
+        }
+        let columns = |c: &Rect, cx: i32| (i32::from(c.x)..i32::from(c.right())).contains(&cx);
+        let floor = |cx: i32, cy: i32| {
+            (cy == y && (x - HALF..=x + HALF).contains(&cx))
+                || with
+                    .iter()
+                    .any(|c| cy == i32::from(c.bottom()) - 1 && columns(c, cx))
+        };
+        let piece = |cx: i32, cy: i32| {
+            with.iter().any(|c| {
+                columns(c, cx) && (i32::from(c.y)..i32::from(c.bottom()) - 1).contains(&cy)
+            })
+        };
+        (image.top..image.bottom).all(|cy| {
+            (image.left..image.right).all(|cx| self.calm(cx, cy) || floor(cx, cy) || piece(cx, cy))
+        })
     }
 
     /// Whether her body may stay on cell `(x, y)`.
@@ -466,6 +561,109 @@ mod tests {
 
     fn buffer(rows: &[&str]) -> Buffer {
         Buffer::with_lines(rows.iter().copied())
+    }
+
+    /// Beside a piece she overlaps, she's drawn in one image with it —
+    /// the rectangle spanning both — so text in its corners, over
+    /// neither her box nor the piece, would be hidden all the while.
+    #[test]
+    fn rest_counts_the_image_she_shares_with_a_piece() {
+        let buf = buffer(&[
+            "                ",
+            "          ab    ",
+            "                ",
+            "                ",
+            "                ",
+            "────────────────",
+        ]);
+        let bed = Rect::new(6, 3, 8, 3);
+        let mut terrain = Terrain::read(&buf, &[], true);
+        assert!(terrain.restful(4, 5), "her box alone is blank");
+        terrain.furnish([bed]);
+        assert_eq!(image(4, 5, &[bed]).with, [true]);
+        assert!(!terrain.restful(4, 5), "the shared image covers the text");
+        assert!(terrain.restful(2, 5), "clear of the piece, her box is all");
+        let buf = buffer(&[
+            "          ab    ",
+            "                ",
+            "                ",
+            "                ",
+            "                ",
+            "────────────────",
+        ]);
+        let mut terrain = Terrain::read(&buf, &[], true);
+        terrain.furnish([bed]);
+        assert!(terrain.restful(4, 5), "text above the shared image");
+    }
+
+    /// What the shared image may cover: the pieces in it and the floors
+    /// they stand on (her image draws both), even where the terrain calls
+    /// those cells unquiet — and nothing else.
+    #[test]
+    fn rest_spares_her_pieces_and_their_floors_only() {
+        let buf = buffer(&[
+            "                ",
+            "                ",
+            "                ",
+            "         xy     ",
+            "                ",
+            "────────────────",
+        ]);
+        let bed = Rect::new(6, 3, 8, 3);
+        // Text in the bed's footprint (a makeshift piece over holes), and
+        // the bed's floor protected beyond her box.
+        let mut terrain = Terrain::read(&buf, &[Rect::new(10, 5, 4, 1)], true);
+        terrain.furnish([bed]);
+        assert!(terrain.restful(4, 5));
+        // The same text with no piece there is hidden by nothing she owns.
+        let mut terrain = Terrain::read(&buf, &[], true);
+        terrain.furnish([Rect::new(6, 4, 8, 2)]);
+        assert!(!terrain.restful(4, 5), "text over a lower piece's span");
+    }
+
+    /// A piece that meets only the rectangle her image already spans goes
+    /// in it too (two images would cut each other out), and what it then
+    /// spans must be clear.
+    #[test]
+    fn her_image_takes_in_whatever_its_rectangle_meets() {
+        let shelf = Rect::new(4, 0, 4, 2);
+        // Clear of her box (columns 2..7), but meeting the shelf's span.
+        let cat = Rect::new(7, 2, 3, 2);
+        let picture = image(4, 5, &[shelf, cat]);
+        assert_eq!(picture.with, [true, true]);
+        assert_eq!(
+            (picture.left, picture.top, picture.right, picture.bottom),
+            (2, 0, 10, 6)
+        );
+        let buf = buffer(&[
+            "         z      ",
+            "                ",
+            "                ",
+            "                ",
+            "                ",
+            "────────────────",
+        ]);
+        let mut terrain = Terrain::read(&buf, &[], true);
+        terrain.furnish([shelf]);
+        assert!(terrain.restful(4, 5), "the shelf alone stops short of z");
+        terrain.furnish([shelf, cat]);
+        assert!(!terrain.restful(4, 5), "the cat bed widens it over z");
+    }
+
+    /// In ASCII she's text beside her furniture: it's no part of her rest.
+    #[test]
+    fn ascii_rest_ignores_furniture() {
+        let buf = buffer(&[
+            "                ",
+            "          ab    ",
+            "                ",
+            "                ",
+            "                ",
+            "────────────────",
+        ]);
+        let mut terrain = Terrain::read(&buf, &[], false);
+        terrain.furnish([Rect::new(6, 3, 8, 3)]);
+        assert!(terrain.restful(4, 5));
     }
 
     #[test]

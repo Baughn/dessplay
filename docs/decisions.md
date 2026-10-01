@@ -2219,8 +2219,10 @@ already carries the discouragement.
 **Rule:** Every terrain she's placed on is read from the real frame
 with the same solid set (protected cells plus the text she moved and
 its holes); her own overlays (the accordion's shake) are painted after
-every read; a seat is only offered where the whole image she'd be drawn
-in, with the pieces she overlaps, is clear of text. See
+every read; she only stays (a seat, a calm spot, anywhere she rests)
+where the whole image she'd be drawn in, with the pieces she overlaps,
+is clear of text — one definition of that image, in the terrain, which
+the drawing's choice of pieces shares. See
 [design.md](design.md#houseguest).
 
 **Why:** Three bugs found by a 256-case run of the property tests,
@@ -2237,6 +2239,22 @@ were ~40% of a long visit's time. Later runs found a fourth of the
 kind: a wide glyph half inside a protected area, whose outer half she
 could draw on — and drawing beside half a wide glyph blanks all of it,
 protected or not; protected areas now take in such a glyph whole.
+
+Post-mortem (same day): the seat fix was local — `stays_calm` gave
+seats the shared image's rectangle, while every other "may she stay
+here" (the calm spot she walks to off text, the spots scenes and the
+stage pick) still checked her box alone. A 24-case gate run found her
+spacing out, then lying down, beside her bed with text in the image's
+corner for 17 s. The class is the rules and the renderer each holding
+their own idea of what her image covers; the fix is one definition
+(`terrain::image`): the terrain carries her furniture's covers in line
+art, `restful` checks the whole image, `stays_calm` is gone, and the
+drawing picks the pieces that go in her image with the same function.
+An adversarial review of the fix found two more of the kind: the image
+takes in any piece its rectangle meets, not only those meeting her box
+(else a piece drawn apart inside it is overdrawn), and a makeshift
+piece she plans is judged with its own cover in her image, at the spot
+she'll crumple it as well as where she'll use it.
 
 ## Houseguest chooses by needs among the top few (2026-09-28)
 

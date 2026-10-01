@@ -297,7 +297,7 @@ fn kitty() -> ratatui_image::picker::Picker {
 /// Text her line art covers, and since when: she may pass in front of
 /// text (it's derezzed into alien glyphs), but never stay over it.
 #[derive(Default)]
-struct Hidden(std::collections::HashMap<(u16, u16), u64>);
+struct Hidden(std::collections::BTreeMap<(u16, u16), u64>);
 
 /// The longest any text stays hidden behind her image.
 const HIDDEN_MS: u64 = 10_000;
@@ -313,7 +313,7 @@ impl Hidden {
         now: u64,
     ) -> Result<(), TestCaseError> {
         let width = real.area.width as usize;
-        let mut hidden = std::collections::HashSet::new();
+        let mut hidden = std::collections::BTreeSet::new();
         for (index, (got, want)) in frame.content.iter().zip(&real.content).enumerate() {
             if got == want {
                 continue;

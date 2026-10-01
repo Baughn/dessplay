@@ -1624,8 +1624,10 @@ this section states what is built.
   alien glyphs: a block pattern in the text's colour, the same for the
   same character. She may **pass** in front of single-width text —
   walking, climbing, falling, a door, a startled look — but only
-  **stays** where her box is blank or lines: whenever she'd choose what
-  to do next over text, she first walks to the nearest calm spot on her
+  **stays** where the image she's drawn in is blank or lines — her box,
+  or with pieces of her furniture it overlaps, the whole rectangle
+  spanning her and them (less the floors they stand on and the pieces
+  themselves): whenever she'd choose what to do next over text, she first walks to the nearest calm spot on her
   floor, or takes a door to one; the spots she works at (pulls, swaps)
   and steps out of a door onto when leaving a focused pane are calm ones.
   Wide glyphs stay solid (never half of one hidden). Poking the scrollback

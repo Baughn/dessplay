@@ -34,7 +34,7 @@ mod terrain;
 use std::time::Duration;
 
 use tuirealm::ratatui::buffer::Buffer;
-use tuirealm::ratatui::layout::{Position, Rect};
+use tuirealm::ratatui::layout::Rect;
 use tuirealm::ratatui::style::{Color, Modifier};
 
 use cells::{Ink, put};
@@ -752,13 +752,14 @@ impl Guest {
                 visit.reel = reeling;
                 let mut protected = visit.solid(&view.protected);
                 visit.terrain = Terrain::read(buf, &protected, self.graphics.is_some());
+                visit.terrain.furnish(visit.shown.iter().map(Shown::cover));
                 visit.size = size;
                 let chat = view.resident.then_some(view.chat);
                 // Out of the focused pane, through her door.
                 // Text came up where she sat (under her, or under the
                 // image she's drawn in): she gets up.
                 if let Some((seat, ..)) = visit.osaka.use_span()
-                    && !stays_calm(&visit.terrain, &seat, &visit.shown)
+                    && !visit.terrain.restful(seat.x, seat.y)
                 {
                     visit.osaka.lost_seat(now);
                 }
@@ -834,16 +835,19 @@ impl Guest {
                 };
                 // In line art, pieces she overlaps go in her image: two
                 // images would cut each other out.
-                let her = Rect::new(
-                    (visit.osaka.x - sprite::WIDTH / 2).max(0) as u16,
-                    (visit.osaka.y - sprite::HEIGHT).max(0) as u16,
-                    sprite::WIDTH as u16,
-                    sprite::HEIGHT as u16 + 1,
-                );
-                let (with, apart): (Vec<Shown>, Vec<Shown>) = visit
-                    .shown
-                    .iter()
-                    .partition(|s| self.graphics.is_some() && s.cover().intersects(her));
+                let covers: Vec<Rect> = visit.shown.iter().map(Shown::cover).collect();
+                let drawn = match self.graphics {
+                    Some(_) => terrain::image(visit.osaka.x, visit.osaka.y, &covers).with,
+                    None => vec![false; covers.len()],
+                };
+                let (mut with, mut apart) = (Vec::new(), Vec::new());
+                for (&piece, drawn) in visit.shown.iter().zip(drawn) {
+                    if drawn {
+                        with.push(piece);
+                    } else {
+                        apart.push(piece);
+                    }
+                }
                 // She's watching: the TV is on. And the lamp, the fridge,
                 // the cat...
                 let cat = self.cat_now || cat_home(&self.ledger);
@@ -1391,39 +1395,8 @@ fn seats(shown: &[Shown], terrain: &Terrain, cat: bool) -> Vec<room::Seat> {
 /// clear of text).
 fn seats_of(piece: &Shown, shown: &[Shown], terrain: &Terrain, cat: bool) -> Vec<room::Seat> {
     let mut out = spots_for(piece, shown, terrain, cat);
-    out.retain(|seat| stays_calm(terrain, seat, shown));
+    out.retain(|seat| terrain.restful(seat.x, seat.y));
     out
-}
-
-/// Whether she may stay at `seat`: her box is restful, and so is the
-/// rest of the one image she and the pieces her box overlaps are drawn
-/// in — the rectangle spanning them all, above the floor — since that
-/// image hides whatever it covers.
-fn stays_calm(terrain: &Terrain, seat: &room::Seat, shown: &[Shown]) -> bool {
-    if !terrain.restful(seat.x, seat.y) {
-        return false;
-    }
-    let half = sprite::WIDTH / 2;
-    let (mut left, mut top) = (seat.x - half, seat.y - sprite::HEIGHT);
-    let (mut right, bottom) = (seat.x + half + 1, seat.y);
-    let her = Rect::new(
-        left.max(0) as u16,
-        top.max(0) as u16,
-        sprite::WIDTH as u16,
-        sprite::HEIGHT as u16 + 1,
-    );
-    for piece in shown.iter().filter(|p| p.cover().intersects(her)) {
-        let rect = piece.rect();
-        left = left.min(i32::from(rect.x));
-        top = top.min(i32::from(rect.y));
-        right = right.max(i32::from(rect.right()));
-    }
-    let inside = |x: i32, y: i32| {
-        shown
-            .iter()
-            .any(|p| p.rect().contains(Position::new(x as u16, y as u16)))
-    };
-    (top..bottom).all(|y| (left..right).all(|x| terrain.calm(x, y) || inside(x, y)))
 }
 
 fn spots_for(piece: &Shown, shown: &[Shown], terrain: &Terrain, cat: bool) -> Vec<room::Seat> {
@@ -1564,8 +1537,16 @@ fn builds(
         };
         !protected.iter().any(|r| r.contains((ux, uy).into()))
     };
+    // Where she'd stay once it's made, judged with it in her image: to
+    // crumple it, and then to use it.
     let then = |piece: &Shown| {
-        seats_of(piece, &visit.shown, &visit.terrain, false)
+        let mut terrain = visit.terrain.clone();
+        terrain.furnish(visit.shown.iter().chain([piece]).map(Shown::cover));
+        let crumple = piece.seat(room::Use::Crumple, 0);
+        if !terrain.restful(crumple.x, crumple.y) {
+            return Vec::new();
+        }
+        seats_of(piece, &visit.shown, &terrain, false)
             .into_iter()
             .filter(|seat| seat.what != room::Use::Crumple)
             .collect()
