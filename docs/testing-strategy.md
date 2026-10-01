@@ -1,6 +1,6 @@
 # Testing Strategy
 
-Last updated: 2026-09-26
+Last updated: 2026-10-01
 
 ## Table of Contents
 
@@ -319,6 +319,30 @@ override wins) so the stop hook can run a reduced-case fast gate
 run` get the full pinned counts. New proptest suites: use the default
 config (env-aware already) or `proptest_cases(N)` — never a bare
 `with_cases(N)`.
+
+Optimization: the dev profile (and so tests) builds at **`opt-level =
+2`**, with debug assertions, overflow checks and workspace debuginfo
+still on (`Cargo.toml`, `[profile.dev]`). Measured 2026-10-01 on a warm
+cache, 32 cores, one small code edit (UI crate or `dessplay-core`) and
+then the stop hook's clippy + test build + `PROPTEST_CASES=32` run,
+averaged over six edits per level:
+
+| opt-level | clippy | test build | test run | total |
+|---|---|---|---|---|
+| 0 | 5.0s | 22.1s | 49.6s | ~77s |
+| 1 | 4.8s | 21.7s | 8.2s | ~35s |
+| 2 | 4.9s | 20.0s | 7.4s | ~32s |
+| 3 | 4.9s | 20.7s | 6.7s | ~32s |
+
+The incremental rebuild cost the same at every level (optimized code is
+smaller for the backend to emit and link, which roughly pays for the
+optimizing); the suite's long houseguest simulations ran ~7x faster. A
+cold build takes ~2.5 min instead of ~1 min, once per cache. On fewer
+cores the rebuild column may grow with the level — re-measure before
+assuming this table holds elsewhere. The perf tests still only assert in
+`--release` (they key on `debug_assertions`, which stays on). Cranelift
+ignores most of `opt-level`, so the opt-in backend below gives up this
+speed-up.
 
 Linking: measured 2026-08-31 and **rejected** — mold 2.41 (via
 `clang --ld-path`, default and thread-capped) is 2.5–3x *slower* than

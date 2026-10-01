@@ -139,6 +139,14 @@ strip = false
 [profile.dev.build-override]
 strip = false
 
+# Dev builds (and tests) are optimized; debug assertions, overflow checks
+# and workspace debuginfo stay on. Measured 2026-10-01 on a warm cache,
+# one edit then the stop hook's clippy + build + tests: opt-level 0
+# ~77s, 1 ~35s, 2 ~32s, 3 ~32s. The incremental rebuild cost the same at
+# every level; the suite (long houseguest simulations) ran ~7x faster.
+[profile.dev]
+opt-level = 2
+
 # Dependencies compile once and are never stepped through incrementally;
 # their full DWARF was the bulk of a 50GB target/. Workspace crates keep
 # full debug info. Dep backtraces keep function names, lose line numbers.
