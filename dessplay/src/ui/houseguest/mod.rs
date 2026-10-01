@@ -756,13 +756,9 @@ impl Guest {
                 visit.size = size;
                 let chat = view.resident.then_some(view.chat);
                 // Out of the focused pane, through her door.
-                // Text came up where she sat (under her, or under the
+                // Text came up where she stays (under her, or under the
                 // image she's drawn in): she gets up.
-                if let Some((seat, ..)) = visit.osaka.use_span()
-                    && !visit.terrain.restful(seat.x, seat.y)
-                {
-                    visit.osaka.lost_seat(now);
-                }
+                visit.osaka.recheck(&visit.terrain, now);
                 let evicted = view.focus.is_some_and(|focus| {
                     !visit
                         .osaka

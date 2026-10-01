@@ -2256,6 +2256,30 @@ takes in any piece its rectangle meets, not only those meeting her box
 piece she plans is judged with its own cover in her image, at the spot
 she'll crumple it as well as where she'll use it.
 
+## Houseguest rechecks where she rests (2026-10-01)
+
+**Rule:** While she rests where she settled calm, uses a piece, or
+works at a job's spot (pull, tear, swap, and the giggle after), the
+spot is rechecked every frame against the image she's drawn in; when it
+stops being calm she's startled, lets go of the job, and moves on. If nowhere was calm when
+she chose, nothing is rechecked. See [design.md](design.md#houseguest).
+
+**Why:** "Never stays over text" was checked only when she chose, so
+text arriving under her mid-rest, or a piece of her furniture
+reappearing beside her (the text hiding its spot went back) and growing
+her image, stayed hidden for the rest of the act — up to 40 s lying
+down. Seats already had the per-frame check; the user chose to make it
+the invariant for every rest. The recheck is limited to spots that were
+calm at the choice, so a terminal with nowhere calm doesn't startle her
+over and over. The first cut left work on text alone, and the property
+test found her walking to a swap spot as text arrived there, then
+swapping, giggling and whistling over it for 10 s: job spots are chosen
+calm like rests, and letting go mid-job was already safe (a swap's undo
+is scheduled when it's made; a dropped tear's glyphs go back). The
+moments after a sneeze, a fall or a door are short and stay passing.
+The test models the trigger honestly — text coming up next to her at
+random times — and failed before the change.
+
 ## Houseguest chooses by needs among the top few (2026-09-28)
 
 **Rule:** Her next act is a weighted-random pick among the four

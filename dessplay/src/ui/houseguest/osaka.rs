@@ -760,6 +760,9 @@ pub(super) struct Osaka {
     /// The makeshift piece she tore text off for, and how she'll use it
     /// once it's crumpled into shape.
     making: Option<Build>,
+    /// Where she settled, choosing what to do, if it was calm then: while
+    /// she rests there, she keeps checking it is (see [`Osaka::recheck`]).
+    rest: Option<(i32, i32)>,
     /// Every choice she made (tests read it).
     #[cfg(test)]
     pub choices: Vec<Kind>,
@@ -794,6 +797,7 @@ impl Osaka {
             errand: None,
             poked: false,
             making: None,
+            rest: None,
             #[cfg(test)]
             choices: Vec::new(),
         };
@@ -1726,6 +1730,49 @@ impl Osaka {
         }
     }
 
+    /// Where she's staying stopped being calm — text came up under the
+    /// image she's drawn in, or a piece of her furniture joined it — so
+    /// she's startled off it, to move on somewhere calm. That's while she
+    /// works at a job's spot (pulling, tearing, swapping and hanging
+    /// about after) or uses a piece, all chosen calm, or rests (standing,
+    /// spacing out, an activity) where she settled calm. Passing
+    /// (walking, climbing, falling, a door, a startled look) and the
+    /// moments after a sneeze, a fall or a door, she carries on.
+    pub fn recheck(&mut self, terrain: &Terrain, now: u64) {
+        let here = (self.x, self.y);
+        let staying = match (self.act, &self.task) {
+            (
+                Act::Use { .. }
+                | Act::Pull { .. }
+                | Act::Tear { .. }
+                | Act::Swap { .. }
+                | Act::Giggle { .. }
+                | Act::Innocent { .. },
+                Some(job),
+            ) => Some(job.spot()).filter(|&at| at == here),
+            (Act::Stand { .. } | Act::SpaceOut { .. } | Act::Idle { .. }, _) => {
+                self.rest.filter(|&at| at == here)
+            }
+            _ => None,
+        };
+        let Some((x, y)) = staying else {
+            return;
+        };
+        if terrain.restful(x, y) {
+            return;
+        }
+        tracing::debug!(x, y, "houseguest: text came up where she stays");
+        self.task = None;
+        self.rest = None;
+        self.set(
+            Act::Look {
+                surprised_until: now + SURPRISED_MS,
+                until: now + LOOK_MS / 2,
+            },
+            now,
+        );
+    }
+
     /// Using a piece: where, and since and until when.
     pub fn use_span(&self) -> Option<(Seat, u64, u64)> {
         match (self.act, &self.task) {
@@ -1776,6 +1823,7 @@ impl Osaka {
     /// Choose what to do next, standing somewhere valid.
     fn decide(&mut self, at: u64, terrain: &Terrain, chances: &Chances, rng: &mut Rng) {
         self.task = None;
+        self.rest = None;
         if self.errand.is_some() {
             return self.head_for_errand(terrain, at);
         }
@@ -1787,6 +1835,9 @@ impl Osaka {
         if !terrain.restful(self.x, self.y) && self.find_rest(here, terrain, chances, at, rng) {
             return;
         }
+        // With nowhere calm to go, she stays as she is, and isn't startled
+        // off it again.
+        self.rest = terrain.restful(self.x, self.y).then_some((self.x, self.y));
         if at < self.watch_until {
             self.facing = toward(self.x, self.watch_x);
             return self.set(

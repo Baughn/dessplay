@@ -3425,3 +3425,81 @@ fn an_interrupted_reel_puts_the_text_back() {
         }
     }
 }
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(dessplay_core::test_support::proptest_cases(24)))]
+
+    /// Text that comes up near her after she's settled (a chat line, a
+    /// pane redrawn) — under her, or under the image she shares with her
+    /// furniture — is never hidden behind her for long: wherever she
+    /// stays, she gets up and moves on.
+    #[test]
+    fn text_arriving_where_she_rests_is_never_hidden_for_long(
+        seed in any::<u64>(),
+        size in (60u16..130, 18u16..45),
+        arrivals in proptest::collection::vec(
+            (0u64..150_000, -9i32..10, -6i32..1, "[a-z]{1,8}"),
+            1..12,
+        ),
+        owned in proptest::collection::vec((0usize..4, 0usize..3, 0u16..=1000, any::<bool>()), 0..5),
+    ) {
+        let (w, h) = size;
+        let mut guest = Guest::new(seed);
+        guest.set_picker(kitty());
+        let nook = [Nook::List, Nook::Users, Nook::Playlist];
+        for &(item, at, along, left) in &owned {
+            let _ = guest.ledger.home.add(
+                nook[at],
+                room::Prop {
+                    item: Furniture::ALL[item],
+                    at: along,
+                    facing: if left { sprite::Facing::Left } else { sprite::Facing::Right },
+                    boxed: false,
+                },
+            );
+        }
+        let protected = bottom_strip(w, h);
+        let view = IdleView {
+            nooks: nooks(w, h),
+            ..view(protected.clone())
+        };
+        let mut real = rooms(w, h);
+        let mut hidden = Hidden::default();
+        let mut now = 0;
+        let mut due = arrivals.clone();
+        due.sort_by_key(|a| a.0);
+        let mut due = due.into_iter().peekable();
+        while now < 180_000 {
+            let step = guest
+                .next_tick(now)
+                .map_or(1000, |d| d.as_millis() as u64)
+                .clamp(1, 1000);
+            now += step;
+            // Text comes up around her, where she is when it does, in
+            // blank cells clear of the protected strip.
+            while let Some((_, dx, dy, s)) = due.next_if(|a| a.0 <= now) {
+                if let State::Visiting(visit) = &guest.state {
+                    let (x, y) = (visit.osaka.x + dx, visit.osaka.y + dy);
+                    for (i, c) in s.chars().enumerate() {
+                        let at = (x + i as i32, y);
+                        let (Ok(ux), Ok(uy)) = (u16::try_from(at.0), u16::try_from(at.1)) else {
+                            continue;
+                        };
+                        let free = real.cell((ux, uy)).is_some_and(|cell| cell.symbol() == " ")
+                            && !protected.iter().any(|r| r.contains((ux, uy).into()));
+                        if free {
+                            real[(ux, uy)].set_char(c);
+                        }
+                    }
+                }
+            }
+            guest.advance(now);
+            let frame = paint(&mut guest, &real, &view, now);
+            let layer: Vec<(u16, u16)> = match &guest.state {
+                State::Visiting(visit) => visit.layer.cells().collect(),
+                _ => Vec::new(),
+            };
+            hidden.check(&frame, &real, &layer, now)?;
+        }
+    }
+}

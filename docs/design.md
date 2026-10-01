@@ -1626,10 +1626,17 @@ this section states what is built.
   walking, climbing, falling, a door, a startled look — but only
   **stays** where the image she's drawn in is blank or lines — her box,
   or with pieces of her furniture it overlaps, the whole rectangle
-  spanning her and them (less the floors they stand on and the pieces
-  themselves): whenever she'd choose what to do next over text, she first walks to the nearest calm spot on her
-  floor, or takes a door to one; the spots she works at (pulls, swaps)
-  and steps out of a door onto when leaving a focused pane are calm ones.
+  spanning her and them, and any further piece that rectangle meets
+  (less the floors they stand on and the pieces themselves): whenever
+  she'd choose what to do next over text, she first walks to the
+  nearest calm spot on her floor, or takes a door to one; the spots she
+  works at (pulls, swaps) and steps out of a door onto when leaving a
+  focused pane are calm ones. Where she settled calm, she keeps
+  checking: if text comes up in that image while she rests there
+  (standing, spacing out, an activity), uses a piece, or works at a
+  pull, a tear or a swap (and hangs about after it), or a piece joins
+  it, she's startled, lets go, and moves on to somewhere calm. With nowhere
+  calm to go when she chose, she stays put.
   Wide glyphs stay solid (never half of one hidden). Poking the scrollback
   accordion is the one time she stays over text (see below). Standing,
   the image grows one row to include the floor, so her feet rest on the

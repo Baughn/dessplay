@@ -24,6 +24,9 @@ Add new days at the top. Add new entries at the bottom of existing days.
   sometimes watches the TV from the sofa.
 - Fixed: The houseguest no longer idles or lies down right beside her
   furniture with nearby text hidden behind her picture.
+- Changed: If a chat message or other text appears where the houseguest
+  is resting, she's startled and moves somewhere clear instead of
+  covering it until she's done.
 
 ## 2026-09-30
 
