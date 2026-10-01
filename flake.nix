@@ -36,6 +36,7 @@
             || (lib.hasSuffix ".md" path)
             || (lib.hasSuffix ".xml" path)
             || (lib.hasSuffix ".css" path)
+            || (lib.hasSuffix ".svg" path)
             || (craneLib.filterCargoSources path type);
           name = "dessplay-source";
         };
