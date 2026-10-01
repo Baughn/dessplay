@@ -1,0 +1,6 @@
+# palette v2: lifted hair so the silhouette separates from a dark terminal; darker iris so eyes don't go hair-coloured
+set ol=#3e2a2c w=1.6 wi=0.9 skin=#fcdcc4 skinS=#eab89c hair=#6e4e3c hairS=#553a2d hairL=#8c6a52 top=#ea8278 topS=#cc6660 wht=#fbf8f4 whtS=#d9d5df red=#cf3540 skirt=#82343c skirtS=#622229 skirtL=#9a4650 sock=#fbf8f4 sockS=#d3d3de shoe=#8c5030 shoeS=#683a22 iris=#4a2e22 irisD=#1e100a tog=#f0c040
+rename-layer name=paint to=fig
+layer name=preview-bg visible=false below=fig
+fill in=canvas color=#1e2127
+layer name=fig

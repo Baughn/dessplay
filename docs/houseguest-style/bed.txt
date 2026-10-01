@@ -1,0 +1,37 @@
+# bed
+layer name=fig
+# headboard (left) and footboard (right)
+set hb=rrect(2,12,9,44,3.5) fb=rrect(79,26,9,30,3.5)
+fill in=$hb color=$wood
+fill in=rect(7.6,12,4,44) color=$woodS clip=fig
+stroke path=$hb width=$w color=$ol
+# side rail: one continuous rail under the whole mattress
+set rail=rect(10,41,70,5)
+fill in=$rail color=$wood
+fill in=rect(10,44,70,2) color=$woodS
+stroke path=$rail width=$w color=$ol
+# mattress: one continuous top line at y~30 from head to foot
+set mat=rrect(10,29.6,70,11.6,2)
+fill in=$mat color=$wht
+fill in=rect(11,38,20,2.6) color=$whtS
+stroke path=$mat width=$w color=$ol
+# pillow
+set pil=blob(12,26.5;14,22.6;20,21.8;26.5,22.8;28,26.5;26.6,30;19.5,30.6;13,30)
+fill in=$pil color=$wht
+stroke path=$pil width=$w color=$ol
+stroke path=16.5,25.2;19.6,26.4 width=$wi color=$whtS
+# blanket: a slab lying on the mattress, 2 px proud, draping down the side
+set bl=rrect(31,28,51,13.6,1.6)
+fill in=$bl color=$blank
+fill in=rect(32,38.2,49,2.6) color=$blankS
+# turned-down sheet: a flat white band at the blanket's head end, flush with its top
+fill in=rect(31.6,28.6,3.6,12.4) color=$wht
+fill in=rect(31.6,38.2,3.6,2.6) color=$whtS
+stroke path=35.6,28.6;35.6,41 width=$wi color=$ol cap=butt
+stroke path=$bl width=$w color=$ol
+stroke path=50,31;49.4,38 width=$wi color=$blankS
+stroke path=66,31;66.6,38 width=$wi color=$blankS
+# footboard in front of the blanket's end
+fill in=$fb color=$wood
+fill in=rect(84.6,26,4,30) color=$woodS clip=fig
+stroke path=$fb width=$w color=$ol

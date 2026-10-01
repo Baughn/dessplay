@@ -1,0 +1,37 @@
+# bed
+layer name=fig
+# headboard (left) and footboard (right)
+set hb=poly(7.50,12.00;8.41,12.12;9.25,12.47;9.97,13.03;10.53,13.75;10.88,14.59;11.00,15.50;11.00,52.50;10.88,53.41;10.53,54.25;9.97,54.97;9.25,55.53;8.41,55.88;7.50,56.00;5.50,56.00;4.59,55.88;3.75,55.53;3.03,54.97;2.47,54.25;2.12,53.41;2.00,52.50;2.00,15.50;2.12,14.59;2.47,13.75;3.03,13.03;3.75,12.47;4.59,12.12;5.50,12.00) fb=poly(84.50,26.00;85.41,26.12;86.25,26.47;86.97,27.03;87.53,27.75;87.88,28.59;88.00,29.50;88.00,52.50;87.88,53.41;87.53,54.25;86.97,54.97;86.25,55.53;85.41,55.88;84.50,56.00;82.50,56.00;81.59,55.88;80.75,55.53;80.03,54.97;79.47,54.25;79.12,53.41;79.00,52.50;79.00,29.50;79.12,28.59;79.47,27.75;80.03,27.03;80.75,26.47;81.59,26.12;82.50,26.00)
+fill in=$hb color=$wood
+fill in=rect(7.6,12,4,44) color=$woodS clip=fig
+stroke path=$hb width=$w color=$ol
+# side rail: one continuous rail under the whole mattress
+set rail=rect(10,41,70,5)
+fill in=$rail color=$wood
+fill in=rect(10,44,70,2) color=$woodS
+stroke path=$rail width=$w color=$ol
+# mattress: one continuous top line at y~30 from head to foot
+set mat=poly(78.00,29.60;78.52,29.67;79.00,29.87;79.41,30.19;79.73,30.60;79.93,31.08;80.00,31.60;80.00,39.20;79.93,39.72;79.73,40.20;79.41,40.61;79.00,40.93;78.52,41.13;78.00,41.20;12.00,41.20;11.48,41.13;11.00,40.93;10.59,40.61;10.27,40.20;10.07,39.72;10.00,39.20;10.00,31.60;10.07,31.08;10.27,30.60;10.59,30.19;11.00,29.87;11.48,29.67;12.00,29.60)
+fill in=$mat color=$wht
+fill in=rect(11,38,20,2.6) color=$whtS
+stroke path=$mat width=$w color=$ol
+# pillow
+set pil=blob(12,26.5;14,22.6;20,21.8;26.5,22.8;28,26.5;26.6,30;19.5,30.6;13,30)
+fill in=$pil color=$wht
+stroke path=$pil width=$w color=$ol
+stroke path=16.5,25.2;19.6,26.4 width=$wi color=$whtS
+# blanket: a slab lying on the mattress, 2 px proud, draping down the side
+set bl=poly(80.40,28.00;80.81,28.05;81.20,28.21;81.53,28.47;81.79,28.80;81.95,29.19;82.00,29.60;82.00,40.00;81.95,40.41;81.79,40.80;81.53,41.13;81.20,41.39;80.81,41.55;80.40,41.60;32.60,41.60;32.19,41.55;31.80,41.39;31.47,41.13;31.21,40.80;31.05,40.41;31.00,40.00;31.00,29.60;31.05,29.19;31.21,28.80;31.47,28.47;31.80,28.21;32.19,28.05;32.60,28.00)
+fill in=$bl color=$blank
+fill in=rect(32,38.2,49,2.6) color=$blankS
+# turned-down sheet: a flat white band at the blanket's head end, flush with its top
+fill in=rect(31.6,28.6,3.6,12.4) color=$wht
+fill in=rect(31.6,38.2,3.6,2.6) color=$whtS
+stroke path=35.6,28.6;35.6,41 width=$wi color=$ol cap=butt
+stroke path=$bl width=$w color=$ol
+stroke path=50,31;49.4,38 width=$wi color=$blankS
+stroke path=66,31;66.6,38 width=$wi color=$blankS
+# footboard in front of the blanket's end
+fill in=$fb color=$wood
+fill in=rect(84.6,26,4,30) color=$woodS clip=fig
+stroke path=$fb width=$w color=$ol

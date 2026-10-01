@@ -1,0 +1,6 @@
+# furniture palette
+set ol=#3e2a2c w=1.6 wi=0.9 wht=#fbf8f4 whtS=#d9d5df red=#cf3540 wood=#b37b4b woodS=#8c5a33 woodD=#5a3622 sofa=#6f9e90 sofaS=#557d72 case=#d2cdc4 caseS=#a9a399 scr=#3d6a82 scrL=#6aa3bd scrH=#b4e0ee blank=#86a8d8 blankS=#6587bb vcr=#40434b grn=#7fe08a tog=#f0c040
+rename-layer name=paint to=fig
+layer name=preview-bg visible=false below=fig
+fill in=canvas color=#1e2127
+layer name=fig

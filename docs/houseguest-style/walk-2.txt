@@ -1,0 +1,38 @@
+# walk head + near arm
+layer name=fig
+# hair mass: crown + hair hanging down the back (ends ~7 px below the shoulder, like stand)
+set hm=blob(11.4,12;14.6,6;19.8,3.2;25,2.7;30,3.5;34.2,6.2;36.6,10.4;36.4,16;31,21;27,25;25,33;23.6,40;22,45.4;19.4,46.4;16.4,45.8;14,46.4;12.4,45;11.6,36;11,22)
+fill in=$hm color=$hair
+layer name=hmask visible=false
+clear
+fill in=$hm color=#000
+layer name=fig
+# one hard shade: the hanging hair behind the ear
+fill in=poly(19,26;26,24;25,48;17,48) color=$hairS clip=hmask
+stroke path=arc(23.6,15.6,12.2,205,300) width=1.6 color=$hairL cap=butt
+stroke path=$hm width=$w color=$ol
+# face: skin from the hair curtain to the front, nose bump, chin
+set face=blob(25.4,13.6;30,11.6;34.6,12;36,15.6;36.2,22;37.4,25.4;37.4,26.8;36.2,27.8;36.4,30.4;35,33;32.4,35;28.6,35.4;25,33.6;24.4,24)
+fill in=$face color=$skin
+stroke path=$face width=$w color=$ol
+# bangs + curtain in front of the ear, clipped to the forehead
+set edge=34.6,19.4;33,17.8;32,20.4;30.4,18;29,20.8;27.6,18.6;25.6,22.4;25.4,28;24.8,33.6;23.4,38.6;22,42.4
+fill in=poly(19,4;30,4.3;34.6,7;36.4,11.6;35.8,16;$edge;18,30) color=$hair
+stroke path=$edge smooth=false width=1.1 color=$ol
+# eye: tall white oval, dark iris toward the front, catchlight, top lid
+fill in=ellipse(31.6,25.4,2.6,4.2) color=$wht
+fill in=ellipse(32.6,26.4,1.8,3) color=$iris
+fill in=ellipse(33,27,0.9,1.4) color=$irisD
+fill in=rect(31,24,1,1) color=#ffffff
+stroke path=28.8,22.4;31.4,20.9;34.2,21.8 width=1.2 color=$ol
+# mouth
+stroke path=34.6,31.2;36,31.4 width=0.8 color=$ol
+# near arm (swinging back), crosses the flap
+set na=23.6,40.4;21.4,45.2;18.8,49.2
+stroke path=$na width=6 color=$ol
+stroke path=$na width=3 color=$top
+stroke path=24.4,42;22.4,46.6 width=1 color=$topS
+stroke path=19.8,47.8;18.4,49.8 width=3 color=$wht cap=butt
+stroke path=19.4,48.1;18.3,49.7 width=0.8 color=$red cap=butt
+fill in=circle(17.6,51.4,1.9) color=$skin
+stroke path=circle(17.6,51.4,1.9) width=$w color=$ol

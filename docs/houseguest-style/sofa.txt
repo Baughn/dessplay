@@ -1,0 +1,39 @@
+# sofa
+layer name=fig
+# feet
+fill in=rect(8,49,4.5,6.4) color=$woodS
+fill in=rect(68.5,49,4.5,6.4) color=$woodS
+stroke path=rect(8,49,4.5,6.4) width=$w color=$ol
+stroke path=rect(68.5,49,4.5,6.4) width=$w color=$ol
+# backrest frame
+set back=rrect(7,7.5,67,32,5)
+fill in=$back color=$sofaS
+stroke path=$back width=$w color=$ol
+# back cushions
+set bc1=rrect(11.5,11,29,25,4.5) bc2=rrect(40.5,11,29,25,4.5)
+fill in=$bc1 color=$sofa
+fill in=$bc2 color=$sofa
+fill in=rect(11,28,59,6) color=$sofaS clip=fig
+stroke path=$bc1 width=$w color=$ol
+stroke path=$bc2 width=$w color=$ol
+# base front
+set base=rrect(5,37,71,13.5,2.5)
+fill in=$base color=$sofa
+fill in=rect(5,45.4,71,5.2) color=$sofaS clip=fig
+stroke path=$base width=$w color=$ol
+# seat cushions
+set sc1=rrect(11.5,32,29,8.5,2.5) sc2=rrect(40.5,32,29,8.5,2.5)
+fill in=$sc1 color=$sofa
+fill in=$sc2 color=$sofa
+stroke path=$sc1 width=$w color=$ol
+stroke path=$sc2 width=$w color=$ol
+# arms: rolled tops
+set la=rrect(2.5,21.5,11,29,5.2) ra=rrect(67.5,21.5,11,29,5.2)
+fill in=$la color=$sofa
+fill in=$ra color=$sofa
+fill in=rect(2,45.4,12,5.4) color=$sofaS clip=fig
+fill in=rect(67,45.4,12,5.4) color=$sofaS clip=fig
+stroke path=$la width=$w color=$ol
+stroke path=$ra width=$w color=$ol
+stroke path=arc(8,27.5,3,200,340) width=$wi color=$sofaS
+stroke path=arc(73,27.5,3,200,340) width=$wi color=$sofaS

@@ -1,0 +1,54 @@
+# tv
+layer name=fig
+# antenna
+stroke path=27,13;17.5,3.5 width=2.6 color=$ol
+stroke path=27,13;37.5,2.5 width=2.6 color=$ol
+stroke path=27,13;17.5,3.5 width=1 color=$caseS
+stroke path=27,13;37.5,2.5 width=1 color=$caseS
+fill in=circle(17.3,3.3,1.5) color=$caseS
+fill in=circle(37.7,2.4,1.5) color=$caseS
+stroke path=circle(17.3,3.3,1.5) width=1.1 color=$ol
+stroke path=circle(37.7,2.4,1.5) width=1.1 color=$ol
+set ab=ellipse(27,14,5.5,3)
+fill in=$ab color=$caseS
+fill in=rect(21,10.6,12,1.4) color=$case clip=fig
+stroke path=$ab width=$w color=$ol
+# stand: cabinet with open shelf + VCR
+set top=rrect(2,49.5,50,4,1.2) cab=rect(4.5,53,45,18.5)
+fill in=$cab color=$wood
+fill in=rect(4.5,66,45,5.5) color=$woodS
+fill in=rect(8.5,56,37,11) color=$woodD
+fill in=rect(12,60.5,30,6.5) color=#4a4e58
+fill in=rect(12,60.5,30,1.2) color=#62666f
+stroke path=15,63.2;27,63.2 width=0.8 color=#1c1d22 cap=butt
+fill in=circle(37.5,63.4,0.9) color=$grn
+stroke path=rect(12,60.5,30,6.5) width=$wi color=$ol
+stroke path=rect(8.5,56,37,11) width=$wi color=$ol
+stroke path=$cab width=$w color=$ol
+fill in=rect(6,71,4.5,3.8) color=$woodS
+fill in=rect(43.5,71,4.5,3.8) color=$woodS
+stroke path=rect(6,71,4.5,3.8) width=$w color=$ol
+stroke path=rect(43.5,71,4.5,3.8) width=$w color=$ol
+fill in=$top color=$wood
+stroke path=$top width=$w color=$ol
+# crt body
+set body=rrect(5,14.5,44,35.5,4)
+fill in=$body color=$case
+fill in=rrect(5,44.5,44,5.5,2) color=$caseS
+stroke path=$body width=$w color=$ol
+# screen (bulging glass, glowing)
+set scrn=rrect(8.6,18.2,30.4,24.6,5)
+fill in=$scrn color=$scr
+fill in=rrect(11,20.4,25.6,20.2,4) color=$scrL
+fill in=poly(13,22;21,22;14,32;12.4,32) color=$scrH
+stroke path=$scrn width=$w color=$ol
+# control column: knobs + grille + led
+fill in=circle(44,21.5,1.9) color=$caseS
+fill in=circle(44,27.4,1.9) color=$caseS
+stroke path=circle(44,21.5,1.9) width=$wi color=$ol
+stroke path=circle(44,27.4,1.9) width=$wi color=$ol
+stroke path=41.6,32.6;46.4,32.6 width=0.8 color=$ol cap=butt
+stroke path=41.6,35;46.4,35 width=0.8 color=$ol cap=butt
+stroke path=41.6,37.4;46.4,37.4 width=0.8 color=$ol cap=butt
+stroke path=41.6,39.8;46.4,39.8 width=0.8 color=$ol cap=butt
+fill in=circle(44,47.2,0.9) color=$red
