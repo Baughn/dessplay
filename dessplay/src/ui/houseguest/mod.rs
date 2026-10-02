@@ -433,6 +433,14 @@ impl Guest {
         }
     }
 
+    /// The stage: her next mood, for the rest of this visit.
+    pub fn next_mood(&mut self) {
+        if let State::Visiting(visit) = &mut self.state {
+            let mood = visit.osaka.mood().next();
+            visit.osaka.set_mood(mood);
+        }
+    }
+
     /// Her needs, while she's visiting (for the stage).
     pub fn mood(&self) -> Option<String> {
         match &self.state {

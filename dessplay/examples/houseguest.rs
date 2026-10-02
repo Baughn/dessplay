@@ -7,7 +7,7 @@
 //!
 //! ←/→ pick a scene · Enter play it · m a chat message arrives ·
 //! f give her the next piece of furniture · x show why she does what she
-//! does · g goodbye · n new seed ·
+//! does · v her next mood (lazy, busy, dreamy) · g goodbye · n new seed ·
 //! [ ] slower / faster · 1–5 make her sleepy,
 //! restless, keen to tidy, mischievous, or hungry · q quit. The bar shows her
 //! needs. Her decisions and their reasons are logged to
@@ -113,7 +113,7 @@ fn run(seed: &mut u64, picker: ratatui_image::picker::Picker) -> color_eyre::Res
             };
             let mood = guest.mood().unwrap_or_default();
             let menu = format!(
-                " ◀ {} ▶  Enter play · f furnish · m chat · x why · g bye · n seed {} · [ ] {}× · 1-5 needs · q │ {} │ {}",
+                " ◀ {} ▶  Enter play · f furnish · m chat · x why · v mood · g bye · n seed {} · [ ] {}× · 1-5 needs · q │ {} │ {}",
                 scene.name(),
                 seed,
                 SPEEDS[speed],
@@ -158,6 +158,7 @@ fn run(seed: &mut u64, picker: ratatui_image::picker::Picker) -> color_eyre::Res
             KeyCode::Enter | KeyCode::Char(' ') => guest.cue(Scene::ALL[selected]),
             KeyCode::Char('m') => chats += 1,
             KeyCode::Char('x') => explain = !explain,
+            KeyCode::Char('v') => guest.next_mood(),
             KeyCode::Char('f') => {
                 if let Some(item) = guest.wishlist() {
                     guest.give(item);

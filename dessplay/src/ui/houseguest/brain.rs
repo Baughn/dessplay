@@ -140,6 +140,16 @@ impl Mood {
         }
     }
 
+    /// The next mood round (the stage cycles them).
+    pub fn next(self) -> Self {
+        match self {
+            Self::Ordinary => Self::Lazy,
+            Self::Lazy => Self::Industrious,
+            Self::Industrious => Self::Dreamy,
+            Self::Dreamy => Self::Ordinary,
+        }
+    }
+
     /// What she says on first finding her feet: a hint at her mood.
     pub fn greeting(self) -> &'static str {
         match self {

@@ -2506,5 +2506,6 @@ only a little: when it reset it, sleepiness oscillated at the same level
 all visit and the "sleepier later" shape vanished. Only needs with both
 a driver and an answer today exist; `hungry` and `social` wait for food
 words and cameos. *(2026-10-02: needs are now eased by how much she does of what she
-chose, not the moment she chooses it; see
-[her mind is a table and a heading](#her-mind-is-a-table-and-a-heading-2026-10-02).)*
+chose, not the moment she chooses it; and comfort, fun and daydreams
+joined them, so every want but standing and sneezing answers a need;
+see [her mind is a table and a heading](#her-mind-is-a-table-and-a-heading-2026-10-02).)*
