@@ -433,6 +433,70 @@ enum Act {
     },
 }
 
+/// What kind of thing an act is, for whatever asks: one exhaustive
+/// match ([`Act::props`]), so a new act doesn't compile until it's
+/// classified.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ActProps {
+    stays: Stays,
+    on_chat: OnChat,
+}
+
+/// Where she stays while at an act, which [`Osaka::recheck`] keeps calm.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Stays {
+    /// At its job's spot, chosen calm.
+    Job,
+    /// Where she settled choosing, if it was calm then.
+    Rest,
+    /// Nowhere: she's passing, or it's a moment after a sneeze, a fall
+    /// or a door, and she carries on.
+    Pass,
+}
+
+/// What a chat line arriving does to an act.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OnChat {
+    /// She looks up at once, letting go of what she was at.
+    Look,
+    /// On a pole or in the air: whatever comes up runs its course
+    /// first, and she looks once she's on a floor.
+    Landed,
+    /// Out of sight, or between doors: she sees it when she's back
+    /// (and there's no floor here for her to fall off).
+    Back,
+}
+
+impl Act {
+    fn props(&self) -> ActProps {
+        let (stays, on_chat) = match self {
+            Self::Use { .. }
+            | Self::Pull { .. }
+            | Self::Tear { .. }
+            | Self::Swap { .. }
+            | Self::Giggle { .. }
+            | Self::Innocent { .. } => (Stays::Job, OnChat::Look),
+            Self::Stand { .. } | Self::SpaceOut { .. } | Self::Idle { .. } => {
+                (Stays::Rest, OnChat::Look)
+            }
+            Self::Walk { .. }
+            | Self::Peer { .. }
+            | Self::Dazed { .. }
+            | Self::Look { .. }
+            | Self::Admire { .. }
+            | Self::Sneeze { .. }
+            | Self::PutBack { .. }
+            | Self::Home { .. }
+            | Self::Poke { .. } => (Stays::Pass, OnChat::Look),
+            Self::Climb { .. } | Self::Fall { .. } | Self::Clamber { .. } => {
+                (Stays::Pass, OnChat::Landed)
+            }
+            Self::Out { .. } | Self::Away { .. } | Self::Door { .. } => (Stays::Pass, OnChat::Back),
+        };
+        ActProps { stays, on_chat }
+    }
+}
+
 /// One beat of going through a door: the door (if shown), whether she
 /// is, whether it's the far end yet, and for how long.
 struct DoorBeat {
@@ -1836,21 +1900,12 @@ impl Osaka {
     /// moments after a sneeze, a fall or a door, she carries on.
     pub fn recheck(&mut self, terrain: &Terrain, now: u64) {
         let here = (self.x, self.y);
-        let staying = match (self.act, &self.task) {
-            (
-                Act::Use { .. }
-                | Act::Pull { .. }
-                | Act::Tear { .. }
-                | Act::Swap { .. }
-                | Act::Giggle { .. }
-                | Act::Innocent { .. },
-                Some(job),
-            ) => Some(job.spot()).filter(|&at| at == here),
-            (Act::Stand { .. } | Act::SpaceOut { .. } | Act::Idle { .. }, _) => {
-                self.rest.filter(|&at| at == here)
-            }
-            _ => None,
-        };
+        let staying = match self.act.props().stays {
+            Stays::Job => self.task.as_ref().map(Job::spot),
+            Stays::Rest => self.rest,
+            Stays::Pass => None,
+        }
+        .filter(|&at| at == here);
         let Some((x, y)) = staying else {
             return;
         };
@@ -2418,10 +2473,7 @@ impl Osaka {
             *due = now;
         }
         // Out, or on her way: she'll see it when she's back.
-        if matches!(
-            self.act,
-            Act::Out { .. } | Act::Away { .. } | Act::Door { .. }
-        ) {
+        if self.act.props().on_chat == OnChat::Back {
             return;
         }
         if !self.aloft() {
@@ -2445,9 +2497,11 @@ impl Osaka {
     /// Re-anchor to a freshly read terrain (a resize, a scrolled day
     /// separator). Returns false when there's nowhere left to be.
     pub fn settle(&mut self, now: u64, terrain: &Terrain) -> bool {
+        // Off screen, or between doors: nothing here to fall off.
+        if self.act.props().on_chat == OnChat::Back {
+            return true;
+        }
         match self.act {
-            // Off screen, or between doors: nothing here to fall off.
-            Act::Out { .. } | Act::Away { .. } | Act::Door { .. } => return true,
             Act::Clamber { .. } => {
                 if terrain.clear(self.x, self.y) {
                     return true;
@@ -2559,10 +2613,7 @@ impl Osaka {
     /// On a pole or in the air (climbing, clambering, falling): whatever
     /// comes up runs its course first, until she's on a floor.
     fn aloft(&self) -> bool {
-        matches!(
-            self.act,
-            Act::Climb { .. } | Act::Fall { .. } | Act::Clamber { .. }
-        )
+        self.act.props().on_chat == OnChat::Landed
     }
 
     /// Whether she's out of sight (through a door, or stepped out).
