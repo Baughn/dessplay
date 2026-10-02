@@ -43,7 +43,7 @@ The user's answers to the [open questions](#open-questions-for-the-user), and wh
 - `Lounge` answers no need, while lying on the floor (`Idle(LieBack)`) answers sleepiness (brain.rs:176-196);
 - so a sleepy Osaka always prefers the floor to a sofa she built.
 
-Q2 is the real fix. Phase 0 patches it as data: the makeshift sofa offers `Nap`, which eases sleepiness more than the floor does.
+Q2 is the real fix. Phase 0 patches it as data: the makeshift sofa offers `Nap`, and a nap answers sleepiness without fitting below a neutral offer (as built: 0.1 a nap; see decisions.md, 2026-10-02).
 
 | Q | Answer | Consequence here |
 |---|---|---|
@@ -606,7 +606,7 @@ None is a protocol change, so `stable` stays put.
 
 | # | Content | Size | You'll see |
 |---|---|---|---|
-| **0** Fix the sofa class | Tests first. Then:<ul><li>`MadeId`, `PieceRef`, `Made { purpose, used }`, `Crumpled(MadeId)` and `Used`; `making` deleted</li><li>Continuation after the reflexes: finish her heap, or use her unused piece, until a use starts or 3 tries. This replaces osaka.rs:1204</li><li>The goal pre-empt (osaka.rs:1859) stays, but resolves by meaning and continues with the fresh job</li><li>Events drained in `leave()` and at every switch to Absent</li><li>The TV's beside-spot; `layout` re-lays in order; ×5 for build sites facing the TV</li><li>The makeshift sofa offers `Nap`, which eases sleepiness more than the floor (0.2 vs 0.15), so she sleeps on her sofa rather than the floor beside it</li></ul>`seed_7` re-pinned. | ≈ +300 test, ≈ +350/−150 code | She sits on what she made, even after chat interrupts her, and naps on it. Her sofa is built where she can watch TV. A TV at the far left works. Nothing bought is lost |
+| **0** Fix the sofa class | Tests first. Then:<ul><li>`MadeId`, `PieceRef`, `Made { purpose, used }`, `Crumpled(MadeId)` and `Used`; `making` deleted</li><li>Continuation after the reflexes: finish her heap, or use her unused piece, until a use starts or 3 tries. This replaces osaka.rs:1204</li><li>The goal pre-empt (osaka.rs:1859) stays, but resolves by meaning and continues with the fresh job</li><li>Events drained in `leave()` and at every switch to Absent</li><li>The TV's beside-spot; `layout` re-lays in order; ×5 for build sites facing the TV</li><li>The makeshift sofa offers `Nap`, which answers sleepiness, so she sleeps on her sofa rather than the floor beside it</li></ul>`seed_7` re-pinned. **Built 2026-10-02; what differs from this row is in plan.md, Phase 38.** | ≈ +300 test, ≈ +350/−150 code | She sits on what she made, even after chat interrupts her, and naps on it. Her sofa is built where she can watch TV. A TV at the far left works. Nothing bought is lost |
 | **1** Pure refactor | `ActProps`; the job in the act's payload (`task` deleted); `interrupt(Cause)`. Golden hashes unchanged | ≈ 650 touched, net negative | Nothing |
 | — | **Checkpoint:** re-run the 37 s-chat bench and a 256-case run, and record the result in plan.md | — | — |
 | **2** The mind as data | `Want`/`DesireDef`; the method table; the heading (replaces `goal`); beats at the loss sites; credit by fraction (Q4); the mind stream and whims; the explain log; lints. Then **needs for every want** (comfort, fun, daydreams; spot quality) and **her mood for the visit**, tuned in the headless simulator, which comes forward from phase 5 | ≈ 1,500 touched, ≈ +500 net | Glances and "...my sofa."; no dropped cross-floor jobs; she prefers her furniture to the floor; lazy and industrious visits; the stage shows why |
