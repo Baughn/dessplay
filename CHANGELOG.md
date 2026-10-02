@@ -14,6 +14,11 @@ Add new days at the top. Add new entries at the bottom of existing days.
 - Changed: The houseguest watches TV from her sofa only when the sofa is
   turned toward the TV. A sofa turned away is still for sitting and
   napping on.
+- Added: The houseguest notices when something in her home isn't right,
+  and grumbles about it while she's using it: "Can't see the telly..."
+  from a sofa turned away from the TV, "Too noisy to sleep..." in a bed
+  in the same room as the TV. She says it once a visit, and it stays on
+  her mind while it's still wrong.
 
 ## 2026-10-02
 

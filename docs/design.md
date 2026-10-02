@@ -1424,7 +1424,7 @@ this section states what is built.
 - **Choosing what to do**: each decision scores what's on offer where she
   stands (stand, space out, sneeze, walk, travel, each activity, a pull or
   swap in reach) as base × fit × cooldown and picks at random, weighted,
-  among the top four. Eight needs (0–1) set the fit: *sleepy* rises over a
+  among the top four. Nine needs (0–1) set the fit: *sleepy* rises over a
   visit, and a bed answers it best, a nap on a sofa well and a doze on the
   floor a little, so she dozes more as a visit goes on; *restless* starts
   high, rises steadily, and moving answers it; *tidy* rises while a line is
@@ -1436,18 +1436,22 @@ this section states what is built.
   a snack and a swap answer it, each wearing thin with use (its tolerance
   rises by 0.6 a whole use and wears off over ten minutes), so she varies
   what she enjoys; *daydreams* rise slowly and spacing out, gazing, lying
-  on her front and drifting off at her desk answer them. Every want
+  on her front and drifting off at her desk answer them; *nesting*
+  rises only while a rule of her home she has felt is broken (see *The
+  rules of her home*). Every want
   answers at least one need but standing (the filler) and sneezing (an
   accident). An offer's fit is 0.1 + Σ need² × amount × 2 × how well its
   spot answers that need (and how fresh, for fun) — 0.5 for an offer no
   need wants, and never below 0.5 for a parcel or her part-time job, which
   she takes whatever she feels. She arrives wide awake (sleepy 0), keen to
-  move (restless 0.7), mischief and hunger at 0.2, the rest at 0.5.
+  move (restless 0.7), mischief and hunger at 0.2, nesting at 0, the
+  rest at 0.5.
   **Her mood for the visit** is drawn from the visit's seed (as the cat's
   presence is): ordinary half the time, lazy and industrious a fifth
   each, dreamy a tenth. A mood is how fast her needs rise: lazy, comfort
   ×2, sleepy ×1.5, restless ×0.4, tidy ×0.7; industrious, tidy ×1.6,
-  restless ×1.5, comfort ×0.5, sleepy ×0.8, daydreams ×0.6; dreamy,
+  restless ×1.5, comfort ×0.5, sleepy ×0.8, daydreams ×0.6, nesting
+  ×1.6; dreamy,
   daydreams ×2.5, restless ×0.7. Her greeting hints at it: "Mm... lazy
   day.", "Okay! Let's tidy up!", "...hm? Oh, hello.". The stage's bar
   shows it.
@@ -1596,6 +1600,36 @@ this section states what is built.
   she's left blinking where it was. Her furniture shows only while she
   does, and the goodbye rain takes it along with her
   (why: [decisions](decisions.md#houseguest-furniture-is-pane-relative-and-leaves-with-her-2026-09-28)).
+- **The rules of her home** (phase 4): a table of how her pieces ought
+  to stand. Her sofa faces her TV (as above); her lamp stands on one
+  strip with her bed or her desk, at most 3 cells between them; her
+  fridge, and her bookshelf, stand within a cell of a wall of their
+  strip; her bed and her TV aren't in one room; and a piece she hasn't
+  settled doesn't spoil its room (without it the room is something, not
+  a den, and something else with it: a bed in a living room, a TV or a
+  fridge in a bedroom). A delivery is unsettled until she sets it down
+  herself; the stage's gifts are settled. Rules are **judged on where
+  her pieces stand, not on what shows**: on their layout on their
+  strips, so text closeting a piece neither breaks nor mends a rule. A
+  rule applies only to pieces laid out and out of their boxes. **She
+  feels a broken rule** while using a real piece it involves, for a use
+  it's felt on (the sofa: sitting or napping on it; the lamp: sleeping
+  or homework; the fridge: a snack; the bookshelf: reading; the bed and
+  TV: sleeping; an unsettled piece: any use): she cranes round and says
+  so ("Can't see the telly...", "Too dark in here...", "This wants a
+  wall...", "Wobbly... needs a wall.", "Too noisy to sleep...", "Hm...
+  not in here.") for two of the use's frames, from the first frame
+  after anything she was saying (nothing else she says cuts it short).
+  Once it has all shown she has felt it; a use cut short before then
+  doesn't count. **Each rule is felt once a visit**, the first broken
+  one of a use, and forgotten when she leaves (nothing is kept). It
+  doesn't draw on her beat lines. Watching the TV with a grievance due,
+  she has her home on her mind instead of the shopping channel's
+  advert, and buys nothing that time. *Nesting* rises (over three
+  minutes) **only while a rule she has felt is still broken**, and stops
+  once it's mended. What she sets right in a visit is capped by her
+  mood: lazy nothing, ordinary or dreamy one thing, industrious three
+  (why: [decisions](decisions.md#she-feels-whats-wrong-with-her-home-once-a-visit-2026-10-03)).
 - **Makeshift furniture**: wanting to sit on a sofa (or watch the TV
   from one) or sleep in a bed and having none, she makes one of text.
   At a line that ends beside her box at chest height (as for a pull),

@@ -37,10 +37,13 @@ pub(super) enum Need {
     Fun,
     /// Rises slowly; spacing out, gazing and drifting off answer it.
     Daydreams,
+    /// Rises only while a rule of her home she has felt is broken (see
+    /// [`Rising::grieved`]); putting it right will answer it.
+    Nesting,
 }
 
 impl Need {
-    pub const ALL: [Need; 8] = [
+    pub const ALL: [Need; 9] = [
         Self::Sleepy,
         Self::Restless,
         Self::Tidy,
@@ -49,10 +52,11 @@ impl Need {
         Self::Comfort,
         Self::Fun,
         Self::Daydreams,
+        Self::Nesting,
     ];
 
     /// Milliseconds to rise from 0 to 1 (tidy only while there's text on
-    /// offer to tidy).
+    /// offer to tidy, nesting only while a felt rule is broken).
     fn rise_ms(self) -> f64 {
         match self {
             Self::Sleepy => 15.0 * 60_000.0,
@@ -63,14 +67,17 @@ impl Need {
             Self::Comfort => 8.0 * 60_000.0,
             Self::Fun => 6.0 * 60_000.0,
             Self::Daydreams => 10.0 * 60_000.0,
+            // A starting value, to tune in the visit census.
+            Self::Nesting => 3.0 * 60_000.0,
         }
     }
 
     /// Where she starts a visit: wide awake, keen to move and to look
     /// around, the rest about halfway, so no want is starved at arrival.
+    /// Nothing about her home bothers her yet.
     fn arriving(self) -> f64 {
         match self {
-            Self::Sleepy => 0.0,
+            Self::Sleepy | Self::Nesting => 0.0,
             Self::Restless => 0.7,
             Self::Tidy | Self::Comfort | Self::Fun | Self::Daydreams => 0.5,
             Self::Mischief | Self::Hungry => 0.2,
@@ -87,6 +94,7 @@ impl Need {
             Self::Comfort => "comfort",
             Self::Fun => "fun",
             Self::Daydreams => "daydreams",
+            Self::Nesting => "nesting",
         }
     }
 }
@@ -98,7 +106,8 @@ pub(super) enum Mood {
     Ordinary,
     /// Comfort and sleep come quicker, restlessness slower.
     Lazy,
-    /// Tidying and moving about come quicker, comfort slower.
+    /// Tidying, moving about and putting her home right come quicker,
+    /// comfort slower.
     Industrious,
     /// Daydreams come quickly.
     Dreamy,
@@ -134,9 +143,22 @@ impl Mood {
             (Self::Industrious, Need::Comfort) => 0.5,
             (Self::Industrious, Need::Sleepy) => 0.8,
             (Self::Industrious, Need::Daydreams) => 0.6,
+            (Self::Industrious, Need::Nesting) => 1.6,
             (Self::Dreamy, Need::Daydreams) => 2.5,
             (Self::Dreamy, Need::Restless) => 0.7,
             _ => 1.0,
+        }
+    }
+
+    /// How many things about her home she sets right a visit, at most
+    /// (the user's call: lazy none, industrious a few).
+    // Read once she arranges her home (phase 4, step 6).
+    #[allow(dead_code)]
+    pub fn home_acts(self) -> u8 {
+        match self {
+            Self::Lazy => 0,
+            Self::Ordinary | Self::Dreamy => 1,
+            Self::Industrious => 3,
         }
     }
 
@@ -202,6 +224,26 @@ const TOLERANCE_PER_USE: f64 = 0.6;
 /// Milliseconds for a tolerance to wear off from 1 to 0.
 const TOLERANCE_MS: f64 = 10.0 * 60_000.0;
 
+/// What there was, over a stretch of her visit, for the needs that rise
+/// only with something to rise for.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct Rising {
+    /// There was text on offer to tidy ([`Need::Tidy`]).
+    pub mess: bool,
+    /// A rule of her home she has felt this visit was still broken
+    /// ([`Need::Nesting`]).
+    pub grieved: bool,
+}
+
+impl Rising {
+    /// Everything rising (tests).
+    #[cfg(test)]
+    pub const ALL: Self = Self {
+        mess: true,
+        grieved: true,
+    };
+}
+
 /// Her needs, each 0..=1, and how used she is to each source of fun.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct Needs {
@@ -236,11 +278,15 @@ impl Needs {
         self.levels[need as usize]
     }
 
-    /// `ms` have passed in `mood`; `mess` whether there was text on offer
-    /// to tidy.
-    pub fn pass(&mut self, ms: u64, mess: bool, mood: Mood) {
+    /// `ms` have passed in `mood`, with what was `rising` meanwhile.
+    pub fn pass(&mut self, ms: u64, rising: Rising, mood: Mood) {
         for need in Need::ALL {
-            if need != Need::Tidy || mess {
+            let rises = match need {
+                Need::Tidy => rising.mess,
+                Need::Nesting => rising.grieved,
+                _ => true,
+            };
+            if rises {
                 self.levels[need as usize] += ms as f64 * mood.rate(need) / need.rise_ms();
             }
         }
@@ -758,7 +804,7 @@ mod tests {
         needs.enjoyed(tv, 1.0);
         assert!(score(tv, Spot::Real(Furniture::Tv), &needs, &[]) < fresh * 0.5);
         assert_eq!(needs.fresh(book), 1.0);
-        needs.pass(10 * 60_000, false, Mood::Ordinary);
+        needs.pass(10 * 60_000, Rising::default(), Mood::Ordinary);
         assert_eq!(needs.fresh(tv), 1.0);
     }
 
@@ -783,9 +829,51 @@ mod tests {
     #[test]
     fn needs_stay_in_range() {
         let mut needs = Needs::default();
-        needs.pass(10 * 3_600_000, true, Mood::Ordinary);
+        needs.pass(10 * 3_600_000, Rising::ALL, Mood::Ordinary);
         assert!(Need::ALL.iter().all(|&need| needs.get(need) == 1.0));
         needs.serve(Need::Sleepy, 5.0);
         assert_eq!(needs.get(Need::Sleepy), 0.0);
+    }
+
+    /// Nothing about her home bothers her as she arrives; nesting rises
+    /// only while a rule she has felt is broken, and quicker when she's
+    /// industrious. Tidiness waits for a mess likewise.
+    #[test]
+    fn nesting_rises_only_while_grieved() {
+        let mut needs = Needs::default();
+        assert_eq!(needs.get(Need::Nesting), 0.0);
+        needs.pass(3_600_000, Rising::default(), Mood::Industrious);
+        assert_eq!(needs.get(Need::Nesting), 0.0);
+        let tidy = needs.get(Need::Tidy);
+        let grieved = Rising {
+            grieved: true,
+            ..Rising::default()
+        };
+        let minute = |mood: Mood| {
+            let mut needs = Needs::default();
+            needs.pass(60_000, grieved, mood);
+            needs.get(Need::Nesting)
+        };
+        assert!(minute(Mood::Ordinary) > 0.2, "{}", minute(Mood::Ordinary));
+        assert!(minute(Mood::Industrious) > minute(Mood::Ordinary) * 1.5);
+        needs.pass(60_000, grieved, Mood::Ordinary);
+        assert!(needs.get(Need::Nesting) > 0.0);
+        assert_eq!(needs.get(Need::Tidy), tidy, "no mess, no tidying");
+    }
+
+    /// How much of her home she sets right a visit, by mood (the
+    /// user's call): lazy none, ordinary or dreamy one, industrious three.
+    #[test]
+    fn home_acts_by_mood() {
+        let acts = Mood::ALL.map(|m| (m, m.home_acts()));
+        assert_eq!(
+            acts,
+            [
+                (Mood::Ordinary, 1),
+                (Mood::Lazy, 0),
+                (Mood::Industrious, 3),
+                (Mood::Dreamy, 1),
+            ]
+        );
     }
 }

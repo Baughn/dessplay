@@ -4520,5 +4520,362 @@ fn a_made_sofa_mostly_faces_the_tv() {
     );
 }
 
+/// A home on a playlist pane with chat-like text all around it (and on
+/// the pane's top rows), her `pieces` anchored on its floor as given:
+/// `(item, wall, offset, facing, settled)`.
+fn rule_home(
+    pieces: &[(Furniture, super::room::Side, u16, sprite::Facing, bool)],
+    graphics: bool,
+    seed: u64,
+) -> (Guest, Buffer, IdleView) {
+    use super::room::{Anchor, Prop};
+    let (width, height) = (100u16, 20u16);
+    let mut real = Buffer::empty(Rect::new(0, 0, width, height));
+    let playlist = Rect::new(20, 8, 50, 9);
+    tuirealm::ratatui::widgets::Widget::render(
+        tuirealm::ratatui::widgets::Block::bordered(),
+        playlist,
+        &mut real,
+    );
+    for (y, line) in [
+        (1, "alice: did anyone see the new episode yet"),
+        (3, "bob: not yet, downloading it now"),
+        (5, "carol: no spoilers please!!"),
+        (6, "dave: brb, dinner"),
+    ] {
+        real.set_string(2, y, line, Style::new());
+    }
+    for (y, line) in [(9, "01 Frieren ep 12"), (10, "02 Frieren ep 13")] {
+        real.set_string(playlist.x + 1, y, line, Style::new());
+    }
+    real.set_string(0, height - 2, "Tab Next pane | Enter Send", Style::new());
+    let view = IdleView {
+        nooks: vec![(Nook::Playlist, playlist)],
+        ..view(bottom_strip(width, height))
+    };
+    let mut guest = Guest::new(seed);
+    if graphics {
+        guest.set_picker(kitty());
+    }
+    for &(item, side, offset, facing, settled) in pieces {
+        assert!(guest.ledger.home.add(Prop {
+            anchor: Some(Anchor { side, offset }),
+            settled,
+            ..Prop::new(item, Nook::Playlist, 0, facing)
+        }));
+    }
+    (guest, real, view)
+}
+
+/// What she says, and how she looks, right now.
+fn look_now(guest: &Guest, now: u64) -> (sprite::Face, Option<osaka::Bubble>) {
+    let State::Visiting(visit) = &guest.state else {
+        panic!("visiting");
+    };
+    let (_, face, bubble) = visit.osaka.appearance(now);
+    (face, bubble)
+}
+
+fn nesting(guest: &Guest) -> f64 {
+    match &guest.state {
+        State::Visiting(visit) => visit.osaka.needs().get(super::brain::Need::Nesting),
+        _ => panic!("visiting"),
+    }
+}
+
+fn felt(guest: &Guest) -> Vec<rules::Grievance> {
+    match &guest.state {
+        State::Visiting(visit) => visit.osaka.felt().to_vec(),
+        _ => panic!("visiting"),
+    }
+}
+
+/// Step until `done` (checked after each painted tick), at most to
+/// `until`; the time it was done at.
+fn run_until(
+    guest: &mut Guest,
+    real: &Buffer,
+    view: &IdleView,
+    from: u64,
+    until: u64,
+    mut done: impl FnMut(&Guest, u64) -> bool,
+) -> Option<u64> {
+    let mut now = from;
+    while now < until {
+        now += guest
+            .next_tick(now)
+            .map_or(100, |d| d.as_millis() as u64)
+            .clamp(1, 100);
+        guest.advance(now);
+        paint(guest, real, view, now);
+        if done(guest, now) {
+            return Some(now);
+        }
+    }
+    None
+}
+
+/// Her sofa turned away from the TV: lounging on it, she cranes round
+/// and says so for two frames, and has felt it once that has shown.
+/// Nesting stays put until then, rises while the felt rule stays broken,
+/// and stops once the home is put right; what she felt is forgotten
+/// with the visit, and felt afresh on the next.
+#[test]
+fn she_feels_a_sofa_turned_away_from_the_tv() {
+    use super::room::{Side, Use};
+    use sprite::Facing;
+    let line = rules::RULES[0].grievance;
+    let grumbles = |guest: &Guest, now: u64| {
+        look_now(guest, now) == (sprite::Face::Curious, Some(osaka::Bubble::Say(line)))
+    };
+    for graphics in [false, true] {
+        let (mut guest, real, view) = rule_home(
+            &[
+                (Furniture::Tv, Side::Left, 0, Facing::Right, true),
+                (Furniture::Sofa, Side::Left, 12, Facing::Right, true),
+            ],
+            graphics,
+            1,
+        );
+        let mut now = 0;
+        for visit in 0..2 {
+            guest.cue(Scene::Lounge);
+            paint(&mut guest, &real, &view, now);
+            let note = guest.cue_note().cloned();
+            assert!(matches!(note, Some(Ok(_))), "graphics {graphics}: {note:?}");
+            assert!(felt(&guest).is_empty(), "visit {visit}: a fresh visit");
+            assert_eq!(guest.broken(), "faces(sofa,TV)");
+            // Not felt (and no nesting) until she's said it.
+            let from = run_until(&mut guest, &real, &view, now, now + 20_000, |guest, now| {
+                assert!(felt(guest).is_empty(), "{now}: felt before saying so");
+                assert_eq!(nesting(guest), 0.0, "{now}");
+                grumbles(guest, now)
+            })
+            .unwrap_or_else(|| panic!("graphics {graphics}, visit {visit}: never said it"));
+            let lounging = |guest: &Guest| match &guest.state {
+                State::Visiting(visit) => visit.osaka.use_span().map(|(seat, since, _)| {
+                    assert_eq!((seat.what, seat.item), (Use::Lounge, Furniture::Sofa));
+                    since
+                }),
+                _ => None,
+            };
+            let since = lounging(&guest).expect("lounging as she says it");
+            assert_eq!((from - since) % osaka::USE_FRAME_MS, 0, "on a frame");
+            let to = run_until(
+                &mut guest,
+                &real,
+                &view,
+                from,
+                from + 10_000,
+                |guest, now| {
+                    let grumbling = grumbles(guest, now);
+                    assert_eq!(felt(guest).is_empty(), grumbling, "{now}");
+                    !grumbling
+                },
+            )
+            .expect("stops saying it");
+            assert_eq!(to - from, osaka::GRIEVANCE_MS, "two frames");
+            assert_eq!(lounging(&guest), Some(since), "still lounging");
+            let key = rules::Grievance {
+                row: 0,
+                piece: Furniture::Sofa,
+            };
+            assert_eq!(felt(&guest), [key]);
+            assert_eq!(guest.broken(), "faces(sofa,TV)*");
+            assert_eq!(nesting(&guest), 0.0);
+            // Felt and still broken: nesting rises, as she chooses on.
+            now = run_until(&mut guest, &real, &view, to, to + 120_000, |guest, _| {
+                nesting(guest) > 0.0
+            })
+            .unwrap_or_else(|| panic!("graphics {graphics}: nesting never rose"));
+            // It isn't said again this visit: back on the sofa, she
+            // lounges without a word about it.
+            guest.cue(Scene::Lounge);
+            paint(&mut guest, &real, &view, now);
+            let note = guest.cue_note().cloned();
+            assert!(matches!(note, Some(Ok(_))), "graphics {graphics}: {note:?}");
+            let back = run_until(&mut guest, &real, &view, now, now + 20_000, |guest, now| {
+                assert!(!grumbles(guest, now), "{now}: said twice in a visit");
+                lounging(guest).is_some_and(|s| s != since)
+            })
+            .unwrap_or_else(|| panic!("graphics {graphics}: never lounged again"));
+            let State::Visiting(v) = &guest.state else {
+                panic!("visiting");
+            };
+            assert_eq!(v.osaka.grievance(), None, "graphics {graphics}: felt twice");
+            now = back + osaka::USE_FRAME_MS * 3;
+            let again = run_until(&mut guest, &real, &view, back, now, |guest, now| {
+                grumbles(guest, now)
+            });
+            assert_eq!(again, None, "said twice in a visit");
+            assert_eq!(felt(&guest), [key]);
+            if visit == 0 {
+                guest.activity(now);
+                let _ = run(&mut guest, &real, &view, now, now + dissolve::DURATION_MS);
+                now += dissolve::DURATION_MS;
+                assert!(!guest.present());
+            }
+        }
+        // Turned toward the TV, the sofa breaks nothing: nesting stops.
+        let sofa = guest
+            .ledger
+            .home
+            .props
+            .iter_mut()
+            .find(|p| p.item == Furniture::Sofa)
+            .unwrap();
+        sofa.facing = Facing::Left;
+        paint(&mut guest, &real, &view, now);
+        assert_eq!(guest.broken(), "", "graphics {graphics}");
+        let rose = nesting(&guest);
+        assert!(rose > 0.0);
+        let decided = |guest: &Guest| match &guest.state {
+            State::Visiting(visit) => visit.osaka.decisions.len(),
+            _ => panic!("visiting"),
+        };
+        let before = decided(&guest);
+        let _ = run(&mut guest, &real, &view, now, now + 90_000);
+        assert!(decided(&guest) > before + 2, "she chose on");
+        assert_eq!(nesting(&guest), rose, "graphics {graphics}");
+    }
+}
+
+/// Cut short before it has all shown — a chat line, as she says it —
+/// a grievance isn't felt: nesting stays put.
+#[test]
+fn a_grievance_cut_short_is_not_felt() {
+    use super::room::Side;
+    use sprite::Facing;
+    let line = rules::RULES[0].grievance;
+    for graphics in [false, true] {
+        let (mut guest, real, mut view) = rule_home(
+            &[
+                (Furniture::Tv, Side::Left, 0, Facing::Right, true),
+                (Furniture::Sofa, Side::Left, 12, Facing::Right, true),
+            ],
+            graphics,
+            2,
+        );
+        guest.cue(Scene::Lounge);
+        paint(&mut guest, &real, &view, 0);
+        let from = run_until(&mut guest, &real, &view, 0, 20_000, |guest, now| {
+            look_now(guest, now).1 == Some(osaka::Bubble::Say(line))
+        })
+        .unwrap_or_else(|| panic!("graphics {graphics}: never said it"));
+        let now = from + osaka::GRIEVANCE_MS / 2;
+        let _ = run(&mut guest, &real, &view, from, now);
+        view.chat_mark.synced += 1;
+        guest.advance(now + 1);
+        paint(&mut guest, &real, &view, now + 1);
+        let State::Visiting(visit) = &guest.state else {
+            panic!("visiting");
+        };
+        assert!(visit.osaka.use_span().is_none(), "she looked up");
+        assert!(felt(&guest).is_empty(), "graphics {graphics}");
+        assert_eq!(guest.broken(), "faces(sofa,TV)");
+        assert_ne!(look_now(&guest, now + 1).1, Some(osaka::Bubble::Say(line)));
+        let _ = run(&mut guest, &real, &view, now + 1, now + 3_000);
+        assert_eq!(nesting(&guest), 0.0, "graphics {graphics}");
+    }
+}
+
+/// A rule broken but not yet felt weighs nothing: with her sofa turned
+/// away from the TV, she chooses on (her other needs rising) and
+/// nesting stays put until she has felt it.
+#[test]
+fn an_unfelt_rule_raises_no_nesting() {
+    use super::brain::Need;
+    use super::room::Side;
+    use sprite::Facing;
+    for graphics in [false, true] {
+        let (mut guest, real, view) = rule_home(
+            &[
+                (Furniture::Tv, Side::Left, 0, Facing::Right, true),
+                (Furniture::Sofa, Side::Left, 12, Facing::Right, true),
+            ],
+            graphics,
+            4,
+        );
+        guest.cue(Scene::Stretch);
+        paint(&mut guest, &real, &view, 0);
+        let note = guest.cue_note().cloned();
+        assert!(matches!(note, Some(Ok(_))), "graphics {graphics}: {note:?}");
+        assert_eq!(guest.broken(), "faces(sofa,TV)");
+        let hungry = |guest: &Guest| match &guest.state {
+            State::Visiting(visit) => visit.osaka.needs().get(Need::Hungry),
+            _ => panic!("visiting"),
+        };
+        let start = hungry(&guest);
+        // Choices she makes before feeling it (her hunger rising shows
+        // her needs moved on).
+        let mut unfelt = 0;
+        let mut last = start;
+        let _ = run_until(&mut guest, &real, &view, 0, 60_000, |guest, now| {
+            if !felt(guest).is_empty() {
+                return true;
+            }
+            assert_eq!(nesting(guest), 0.0, "graphics {graphics}, {now}");
+            let h = hungry(guest);
+            if h > last {
+                unfelt += 1;
+                last = h;
+            }
+            false
+        });
+        assert!(
+            unfelt >= 2,
+            "graphics {graphics}: only {unfelt} choices before feeling it"
+        );
+    }
+}
+
+/// A TV she hasn't settled, in her bedroom: watching the shopping
+/// channel on it, she has her home on her mind, not the advert, and
+/// buys nothing.
+#[test]
+fn a_grievance_wins_over_the_shopping_channel() {
+    use super::room::Side;
+    use sprite::Facing;
+    let line = rules::RULES[5].grievance;
+    for graphics in [false, true] {
+        let (mut guest, real, view) = rule_home(
+            &[
+                (Furniture::Bed, Side::Left, 0, Facing::Right, true),
+                (Furniture::Tv, Side::Right, 0, Facing::Left, false),
+            ],
+            graphics,
+            3,
+        );
+        guest.cue(Scene::Shopping);
+        paint(&mut guest, &real, &view, 0);
+        let note = guest.cue_note().cloned();
+        assert!(matches!(note, Some(Ok(_))), "graphics {graphics}: {note:?}");
+        assert_eq!(guest.broken(), "apart(TV,bed), belongs(TV)");
+        let mut said = false;
+        let watched = run_until(&mut guest, &real, &view, 0, 30_000, |guest, now| {
+            let State::Visiting(visit) = &guest.state else {
+                panic!("visiting");
+            };
+            assert_eq!(guest.ledger.ordered, None, "graphics {graphics}: bought");
+            assert!(visit.chances.advert.is_some(), "the channel is on");
+            said |= look_now(guest, now).1 == Some(osaka::Bubble::Say(line));
+            visit.osaka.watching().is_some_and(|(since, advert)| {
+                assert_eq!(advert, None, "graphics {graphics}");
+                now >= since + osaka::GRIEVANCE_MS * 2
+            })
+        });
+        assert!(watched.is_some(), "graphics {graphics}: never watched");
+        assert!(said, "graphics {graphics}: never said it");
+        assert_eq!(guest.ledger.ordered, None, "graphics {graphics}: bought");
+        assert_eq!(
+            felt(&guest),
+            [rules::Grievance {
+                row: 5,
+                piece: Furniture::Tv
+            }]
+        );
+    }
+}
+
 mod census;
 mod golden;

@@ -4,10 +4,11 @@
 
 use super::Rng;
 use super::art::DoorFrame;
-use super::brain::{self, Factor, Mood, Need, Needs, Spot, Want};
+use super::brain::{self, Factor, Mood, Need, Needs, Rising, Spot, Want};
 use super::layer::Placed;
 use super::mind::{self, Beat, Bind, Ctx, Heading, Here, Lines, Loss, Whims};
 use super::room::{Furniture, MadeId, PieceRef, Seat, Use};
+use super::rules::Grievance;
 use super::scenes::{Build, Job, JobRef, LayerOp, Pull, Side, Swap};
 use super::sprite::{self, Face, Facing, HEIGHT, Pose, SpriteCell};
 use super::terrain::{Link, Platform, Route, Terrain};
@@ -36,8 +37,6 @@ pub(super) struct Chances {
     /// would take her into it is [`CHAT_FACTOR`] as likely.
     pub chat: Option<Rect>,
     /// The rules of her home broken now.
-    // Read once she feels rules (phase 4, step 4).
-    #[allow(dead_code)]
     pub broken: Vec<super::rules::Broken>,
 }
 
@@ -381,12 +380,15 @@ enum Act {
         step: u16,
     },
     /// Using a piece of her furniture, at `seat`. Watching the TV,
-    /// `advert` is what the shopping channel is selling her.
+    /// `advert` is what the shopping channel is selling her;
+    /// `grievance`, a rule of her home she feels is broken using it, and
+    /// when she starts to say so (see [`GRIEVANCE_MS`]).
     Use {
         seat: Seat,
         since: u64,
         until: u64,
         advert: Option<Furniture>,
+        grievance: Option<(Grievance, u64)>,
     },
 }
 
@@ -807,13 +809,28 @@ fn use_duration(what: Use) -> (u64, u64) {
 }
 
 /// Animation frame period for `what`.
-const USE_FRAME_MS: u64 = 1400;
+pub(super) const USE_FRAME_MS: u64 = 1400;
+
+/// How long she says what's wrong with her home, using a piece: two
+/// frames, from the first frame after anything she was saying (see
+/// [`grievance_from`]). Felt once it has all shown.
+pub(super) const GRIEVANCE_MS: u64 = 2 * USE_FRAME_MS;
+
+/// When a use begun at `since` has her say what's wrong with her home:
+/// on a frame, the first one after she's done saying anything else
+/// (`quiet`), and never on the first.
+fn grievance_from(since: u64, quiet: u64) -> u64 {
+    let frames = quiet.saturating_sub(since).div_ceil(USE_FRAME_MS).max(1);
+    since + frames * USE_FRAME_MS
+}
 
 /// How she looks `elapsed` ms into `what`, which lasts `length` ms
-/// (with `advert` on the TV; `sofa` when she's on one).
+/// (with `advert` on the TV; `sofa` when she's on one; `grievance`,
+/// what she says about her home and how far in she starts).
 fn use_look(
     what: Use,
     advert: Option<Furniture>,
+    grievance: Option<(&'static str, u64)>,
     sofa: bool,
     elapsed: u64,
     length: u64,
@@ -821,6 +838,14 @@ fn use_look(
     let frame = (elapsed / USE_FRAME_MS % 2) as u8;
     // Watching from a sofa, she sits on it.
     let watching = if sofa { Pose::Lounge } else { Pose::Sit };
+    // Something isn't right: she cranes round at it, at what she's
+    // doing, and says so.
+    if let Some((line, from)) = grievance
+        && (from..from + GRIEVANCE_MS).contains(&elapsed)
+    {
+        let (pose, ..) = use_look(what, advert, None, sofa, elapsed, length);
+        return (pose, Face::Curious, Some(Bubble::Say(line)));
+    }
     match what {
         Use::Lounge => (Pose::Lounge, Face::Vacant, None),
         Use::Nap => (Pose::Nap(frame), Face::Blink, Some(Bubble::Zzz)),
@@ -1035,6 +1060,9 @@ pub(super) struct Osaka {
     owed: Vec<Beat>,
     /// The beat lines she has said this visit.
     lines: Lines,
+    /// The rules of her home she has felt broken this visit (each felt
+    /// once; see [`GRIEVANCE_MS`]).
+    felt: Vec<Grievance>,
     /// Every beat she was owed (tests read it).
     #[cfg(test)]
     pub beats: Vec<Beat>,
@@ -1087,6 +1115,7 @@ impl Osaka {
             credit: None,
             owed: Vec::new(),
             lines: Lines::default(),
+            felt: Vec::new(),
             #[cfg(test)]
             beats: Vec::new(),
             #[cfg(test)]
@@ -1536,8 +1565,25 @@ impl Osaka {
                 }
             }
             Act::Use {
-                seat, since, until, ..
+                seat,
+                since,
+                until,
+                grievance,
+                ..
             } => {
+                // What she said about her home has all shown: she's felt
+                // it.
+                if let Some((grievance, from)) = grievance
+                    && at >= from + GRIEVANCE_MS
+                    && !self.felt.contains(&grievance)
+                {
+                    tracing::info!(
+                        rule = %grievance.label(),
+                        "houseguest: she felt {}",
+                        grievance.label()
+                    );
+                    self.felt.push(grievance);
+                }
                 if at >= until {
                     if seat.what == Use::Unpack {
                         tracing::info!(item = ?seat.item, "houseguest: unpacked");
@@ -1931,9 +1977,23 @@ impl Osaka {
                 self.facing = seat.facing;
                 let (lo, hi) = use_duration(seat.what);
                 tracing::debug!(?seat, "houseguest: using her furniture");
+                // Using a real piece, she may feel a rule of her home it
+                // breaks: the first she hasn't felt this visit.
+                let grievance = match seat.piece {
+                    PieceRef::Real(piece) => chances
+                        .broken
+                        .iter()
+                        .find(|b| b.felt_using(piece, seat.what) && !self.felt.contains(&b.key))
+                        .map(|b| b.key),
+                    PieceRef::Made(_) => None,
+                };
+                let quiet = self.speech.map_or(at, |(_, until)| until);
+                let grievance = grievance.map(|g| (g, grievance_from(at, quiet)));
                 // The shopping channel: she's bought it the moment it
-                // comes on.
-                let advert = chances.advert.filter(|_| seat.what == Use::Watch);
+                // comes on (unless she has her home on her mind).
+                let advert = chances
+                    .advert
+                    .filter(|_| seat.what == Use::Watch && grievance.is_none());
                 if let Some(item) = advert {
                     tracing::info!(?item, "houseguest: bought off the shopping channel");
                     self.events.push(HomeEvent::Bought(item));
@@ -1948,6 +2008,7 @@ impl Osaka {
                     since: at,
                     until: at + rng.range(lo, hi),
                     advert,
+                    grievance,
                 }
             }
             // At the line's end: brace to tear it.
@@ -2200,6 +2261,15 @@ impl Osaka {
         }
     }
 
+    /// Using a piece: the rule of her home she'll say it breaks.
+    #[cfg(test)]
+    pub fn grievance(&self) -> Option<Grievance> {
+        match self.act {
+            Act::Use { grievance, .. } => grievance.map(|(g, _)| g),
+            _ => None,
+        }
+    }
+
     /// The text she was pulling changed under her (someone scrolled the
     /// chat): she lets go and stares.
     pub fn lost_grip(&mut self, now: u64) {
@@ -2269,11 +2339,12 @@ impl Osaka {
             self.say(self.mood.greeting(), at);
         }
         // Her needs move on with the time since she last chose.
-        self.needs.pass(
-            at.saturating_sub(self.decided),
-            !chances.pulls.is_empty(),
-            self.mood,
-        );
+        let rising = Rising {
+            mess: !chances.pulls.is_empty(),
+            grieved: self.grieved(chances),
+        };
+        self.needs
+            .pass(at.saturating_sub(self.decided), rising, self.mood);
         self.decided = at;
         let heading = self.heading.as_ref().map(|h| h.want);
         let hopped = std::mem::take(&mut self.hopping);
@@ -2637,6 +2708,22 @@ impl Osaka {
     /// Her needs.
     pub fn needs(&self) -> &Needs {
         &self.needs
+    }
+
+    /// The rules of her home she has felt broken this visit.
+    pub fn felt(&self) -> &[Grievance] {
+        &self.felt
+    }
+
+    /// She's saying what's wrong with her home.
+    fn grumbling(&self, now: u64) -> bool {
+        matches!(self.act, Act::Use { grievance: Some((_, from)), .. }
+            if (from..from + GRIEVANCE_MS).contains(&now))
+    }
+
+    /// A rule of her home she has felt is broken still.
+    fn grieved(&self, chances: &Chances) -> bool {
+        chances.broken.iter().any(|b| self.felt.contains(&b.key))
     }
 
     /// Her mood this visit.
@@ -3215,7 +3302,9 @@ impl Osaka {
         let speech = self
             .speech
             .filter(|&(_, until)| now < until)
-            .map(|(text, _)| Bubble::Say(text));
+            .map(|(text, _)| Bubble::Say(text))
+            // What she says about her home isn't cut short.
+            .filter(|_| !self.grumbling(now));
         (pose, face, speech.or(bubble))
     }
 
@@ -3244,9 +3333,12 @@ impl Osaka {
                 since,
                 until,
                 advert,
+                grievance,
             } => use_look(
                 seat.what,
                 advert,
+                grievance
+                    .and_then(|(g, from)| Some((g.rule()?.grievance, from.saturating_sub(since)))),
                 seat.item == Furniture::Sofa,
                 now.saturating_sub(since),
                 until.saturating_sub(since),

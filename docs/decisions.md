@@ -2564,6 +2564,50 @@ no way round of its own, so it keeps that derivation. The TV is seen
 from the front from either side; turning it would only change its
 drawing.
 
+## She feels what's wrong with her home, once a visit (2026-10-03)
+
+**Rule:** The rules of her home are judged on her pieces' layout, not
+on what shows. Using a real piece a broken rule involves, for a use the
+rule is felt on, she says so for two frames, and has felt it once that
+has all shown. Each rule is felt at most once a visit, outside her beat
+lines' budget, and forgotten with the visit. Nesting rises only while a
+felt rule is broken. Home acts are capped by mood: lazy 0, ordinary 1,
+dreamy 1, industrious 3. See [design.md](design.md#houseguest).
+
+**Why:** *Once a visit, forgotten with it* is the user's call
+(2026-10-02, confirmed 2026-10-03). She grumbles about a wrong thing
+the first time she runs into it on a visit, which shows the player
+what's wrong without nagging, and grumbles again on the next visit if
+it's still wrong. Nothing is persisted: the ledger records her home,
+not her moods about it. A felt rule is what lets nesting rise (and
+later lets her arrange): she minds what she has noticed, not what an
+omniscient check knows.
+
+*Felt only once it has all shown*: feeling is what she said, so a line
+cut short by a chat message, or never seen, doesn't count. She feels
+it again on her next use of the piece. The window waits for anything
+she was already saying, and nothing she says later covers it, so an
+uninterrupted use always shows all of it.
+
+*Outside the beat lines' budget*: those lines are rationed (a budget
+and a cooldown) because a beat can recur all visit. A grievance can't:
+each rule is felt once a visit by construction. Rationing it would drop
+some silently, and a dropped grievance would never be felt, so nesting
+would never rise for a home that is plainly wrong.
+
+*Over the shopping channel's advert*: one bubble at a time, and an
+advert that comes on while she isn't looking would be a purchase the
+player never saw her make. The channel sells again on a later watch.
+
+*Judged on the layout*: text closets a piece frame by frame. Judged on
+what shows, a chat line over the sofa would make the room right or
+wrong at random. She would feel, and later mend, what the chat did
+rather than her home. The layout is hers: where the anchors put the
+pieces on the strips, closeted or not.
+
+*Caps by mood* are the user's call: a lazy visit leaves the home alone,
+and an industrious one sets several things right.
+
 ## Houseguest chooses by needs among the top few (2026-09-28)
 
 **Rule:** Her next act is a weighted-random pick among the four

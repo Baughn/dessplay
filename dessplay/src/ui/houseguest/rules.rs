@@ -36,11 +36,7 @@ pub(super) enum Rule {
 #[derive(Debug)]
 pub(super) struct RuleRow {
     pub rule: Rule,
-    // Read once she feels rules (phase 4, step 4).
-    #[allow(dead_code)]
     pub felt_on: &'static [Use],
-    // Said once she feels rules (phase 4, step 4).
-    #[allow(dead_code)]
     pub grievance: &'static str,
 }
 
@@ -104,6 +100,28 @@ pub(super) const RULES: [RuleRow; 6] = [
 /// How far from a wall a piece against it may stand, in cells.
 const WALL_GAP: i32 = 1;
 
+/// Which broken rule she feels: its row, and the piece it's judged on
+/// ([`Rule::Belongs`]: the piece that doesn't belong; otherwise the
+/// rule's first piece). It stays the same while the rule stays broken,
+/// whatever else changes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Grievance {
+    pub row: usize,
+    pub piece: Furniture,
+}
+
+impl Grievance {
+    /// Its row of the table.
+    pub fn rule(self) -> Option<&'static RuleRow> {
+        RULES.get(self.row)
+    }
+
+    /// A few words for logs: the rule, and the piece it's judged on.
+    pub fn label(self) -> String {
+        format!("{}({})", kind(self.row), self.piece.spec().name)
+    }
+}
+
 /// A rule broken this frame.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Broken {
@@ -112,10 +130,11 @@ pub(super) struct Broken {
     /// The pieces moving would mend it, in the rule's order (for
     /// [`Rule::Apart`], one she hasn't settled first).
     pub pieces: Vec<Furniture>,
-    /// Every piece it involves (using one, she may feel it).
-    // Read once she feels rules (phase 4, step 4).
-    #[allow(dead_code)]
+    /// Every piece it involves (using one, she may feel it), the piece
+    /// it's judged on first.
     pub involved: Vec<Furniture>,
+    /// What she feels, when she does.
+    pub key: Grievance,
 }
 
 impl Broken {
@@ -126,16 +145,25 @@ impl Broken {
 
     /// A few words for the stage: the rule, and the pieces it would move.
     pub fn label(&self) -> String {
-        let kind = match self.rule().map(|r| r.rule) {
-            Some(Rule::Faces { .. }) => "faces",
-            Some(Rule::Near { .. }) => "near",
-            Some(Rule::AgainstWall(_)) => "wall",
-            Some(Rule::Apart { .. }) => "apart",
-            Some(Rule::Belongs) => "belongs",
-            None => "?",
-        };
         let pieces: Vec<&str> = self.pieces.iter().map(|p| p.spec().name).collect();
-        format!("{kind}({})", pieces.join(","))
+        format!("{}({})", kind(self.row), pieces.join(","))
+    }
+
+    /// Whether using `piece` for `what` she'd feel it.
+    pub fn felt_using(&self, piece: Furniture, what: Use) -> bool {
+        self.involved.contains(&piece) && self.rule().is_some_and(|r| r.felt_on.contains(&what))
+    }
+}
+
+/// A word for the kind of rule on `row`.
+fn kind(row: usize) -> &'static str {
+    match RULES.get(row).map(|r| r.rule) {
+        Some(Rule::Faces { .. }) => "faces",
+        Some(Rule::Near { .. }) => "near",
+        Some(Rule::AgainstWall(_)) => "wall",
+        Some(Rule::Apart { .. }) => "apart",
+        Some(Rule::Belongs) => "belongs",
+        None => "?",
     }
 }
 
@@ -157,12 +185,16 @@ pub(super) fn broken(layout: &[Shown], strips: &[(Strip, Extent)], home: &Home) 
     };
     let mut out: Vec<Broken> = Vec::new();
     for (row, line) in RULES.iter().enumerate() {
+        // `involved` starts with the piece the rule is judged on.
         let mut push = |pieces: Vec<Furniture>, involved: Vec<Furniture>| {
-            out.push(Broken {
-                row,
-                pieces,
-                involved,
-            });
+            if let Some(&piece) = involved.first() {
+                out.push(Broken {
+                    row,
+                    pieces,
+                    key: Grievance { row, piece },
+                    involved,
+                });
+            }
         };
         match line.rule {
             Rule::Faces { seat, screen } => {

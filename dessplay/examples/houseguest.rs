@@ -123,7 +123,7 @@ fn run(seed: &mut u64, picker: ratatui_image::picker::Picker) -> color_eyre::Res
             let blank = " ".repeat(usize::from(area.width));
             // Why she's doing what she does, on the row above.
             // With her rooms, and what each is, and the rules of her
-            // home they break.
+            // home they break (`*`: she has felt it this visit).
             if explain && let Some(why) = guest.explain() {
                 let y = y.saturating_sub(1);
                 let mut why = format!("{why} │ rooms: {}", guest.rooms());

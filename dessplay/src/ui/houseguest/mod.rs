@@ -479,13 +479,20 @@ impl Guest {
     }
 
     /// The rules of her home broken now, while she's visiting (for the
-    /// stage).
+    /// stage): those she has felt marked `*`.
     pub fn broken(&self) -> String {
         match &self.state {
             State::Visiting(visit) => visit
                 .broken
                 .iter()
-                .map(rules::Broken::label)
+                .map(|b| {
+                    let felt = if visit.osaka.felt().contains(&b.key) {
+                        "*"
+                    } else {
+                        ""
+                    };
+                    format!("{}{felt}", b.label())
+                })
                 .collect::<Vec<_>>()
                 .join(", "),
             _ => String::new(),
