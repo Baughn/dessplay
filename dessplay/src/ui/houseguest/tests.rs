@@ -2057,43 +2057,52 @@ fn her_home_fills_up_over_visits() {
 /// A parcel comes in through a flap in the wall at the screen's edge
 /// and stands against it, boxed; the flap is open as it comes, then
 /// shut. The next comes through the same flap and pushes the first
-/// along.
+/// along. In both drawing modes.
 #[test]
 fn a_parcel_comes_in_through_a_flap_at_the_screens_edge() {
-    let (real, view) = home_screen();
-    let (_, users) = view.nooks[0];
-    let floor = i32::from(users.bottom()) - 1;
-    let wall = |frame: &Buffer| {
-        [floor - 2, floor - 1].map(|y| frame[(users.x, y as u16)].symbol().to_owned())
-    };
-    let mut guest = Guest::new(3);
-    guest.cue(Scene::Parcel);
-    let frame = paint(&mut guest, &real, &view, 0);
-    let parcel = guest.ledger.home.props[0];
-    assert_eq!(parcel.item, Furniture::Tv);
-    assert!(parcel.boxed);
-    assert_eq!(parcel.strip, room::Strip::Bottom(Nook::Users));
-    let shown = |guest: &Guest, item| match &guest.state {
-        State::Visiting(visit) => visit.shown.iter().find(|s| s.item == item).copied(),
-        _ => None,
-    };
-    let tv = shown(&guest, Furniture::Tv).expect("the parcel shows");
-    assert_eq!(tv.left, i32::from(users.x) + 1, "against the wall");
-    assert_eq!(wall(&frame), ["╲", "╲"], "the flap is open");
-    let now = FLAP_MS + 100;
-    assert!(guest.advance(now), "the flap shuts");
-    let frame = paint(&mut guest, &real, &view, now);
-    assert_eq!(wall(&frame), ["│", "│"]);
-    guest.send_parcel();
-    let frame = paint(&mut guest, &real, &view, now);
-    assert_eq!(wall(&frame), ["╲", "╲"]);
-    let sofa = shown(&guest, Furniture::Sofa).expect("the next parcel shows");
-    let tv = shown(&guest, Furniture::Tv).expect("the TV still shows");
-    assert_eq!(sofa.left, i32::from(users.x) + 1, "{sofa:?}");
-    assert!(
-        tv.left >= sofa.rect().right() as i32,
-        "pushed along: {tv:?}"
-    );
+    for graphics in [false, true] {
+        let (real, view) = home_screen();
+        let (_, users) = view.nooks[0];
+        let floor = i32::from(users.bottom()) - 1;
+        let wall = |frame: &Buffer| {
+            [floor - 2, floor - 1].map(|y| frame[(users.x, y as u16)].symbol().to_owned())
+        };
+        let mut guest = Guest::new(3);
+        if graphics {
+            guest.set_picker(kitty());
+        }
+        // Standing across the screen, out of the flap's way (arriving,
+        // she'd come in at that edge, in front of it).
+        visiting_at(&mut guest, &real, &view, (75, floor));
+        guest.ledger.visits = 1;
+        guest.send_parcel();
+        let frame = paint(&mut guest, &real, &view, 0);
+        let parcel = guest.ledger.home.props[0];
+        assert_eq!(parcel.item, Furniture::Tv);
+        assert!(parcel.boxed);
+        assert_eq!(parcel.strip, room::Strip::Bottom(Nook::Users));
+        let shown = |guest: &Guest, item| match &guest.state {
+            State::Visiting(visit) => visit.shown.iter().find(|s| s.item == item).copied(),
+            _ => None,
+        };
+        let tv = shown(&guest, Furniture::Tv).expect("the parcel shows");
+        assert_eq!(tv.left, i32::from(users.x) + 1, "against the wall");
+        assert_eq!(wall(&frame), ["╲", "╲"], "the flap is open");
+        let now = FLAP_MS + 100;
+        assert!(guest.advance(now), "the flap shuts");
+        let frame = paint(&mut guest, &real, &view, now);
+        assert_eq!(wall(&frame), ["│", "│"]);
+        guest.send_parcel();
+        let frame = paint(&mut guest, &real, &view, now);
+        assert_eq!(wall(&frame), ["╲", "╲"]);
+        let sofa = shown(&guest, Furniture::Sofa).expect("the next parcel shows");
+        let tv = shown(&guest, Furniture::Tv).expect("the TV still shows");
+        assert_eq!(sofa.left, i32::from(users.x) + 1, "{sofa:?}");
+        assert!(
+            tv.left >= sofa.rect().right() as i32,
+            "pushed along: {tv:?}"
+        );
+    }
 }
 
 /// A parcel she's interrupted unpacking is still boxed next visit, and
