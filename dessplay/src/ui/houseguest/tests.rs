@@ -844,6 +844,7 @@ fn visiting_at(guest: &mut Guest, real: &Buffer, view: &IdleView, (x, y): (i32, 
         shown: Vec::new(),
         with: Vec::new(),
         made: Vec::new(),
+        next_made: room::MadeId(0),
         reel: None,
         size: (real.area.width, real.area.height),
     }));
@@ -3172,7 +3173,7 @@ fn make(guest: &mut Guest, scene: Scene, real: &Buffer, view: &IdleView) -> (u64
         }
         let (pose, ..) = visit.osaka.appearance(now);
         let using = matches!(pose, Pose::Lounge | Pose::Nap(_) | Pose::Sleep(_))
-            && visit.osaka.seat().is_some_and(|seat| seat.makeshift);
+            && visit.osaka.seat().is_some_and(|seat| seat.makeshift());
         if using {
             assert!(reeled, "{scene:?}: the torn text came to her hands");
             return (now, frame);
@@ -3267,15 +3268,19 @@ fn focusing_the_pane_puts_torn_text_back() {
 #[test]
 fn a_real_piece_wins_nineteen_times_in_twenty() {
     use super::osaka::{Chances, Place};
-    use super::room::{Seat, Use};
+    use super::room::{MadeId, PieceRef, Seat, Use};
     use super::scenes::{Build, Side};
     let seat = |x: i32, makeshift: bool| Seat {
         what: Use::Lounge,
         item: Furniture::Sofa,
+        piece: if makeshift {
+            PieceRef::Made(MadeId(0))
+        } else {
+            PieceRef::Real(Furniture::Sofa)
+        },
         x,
         y: 20,
         facing: sprite::Facing::Right,
-        makeshift,
     };
     let piece = Shown {
         item: Furniture::Sofa,
@@ -3284,7 +3289,7 @@ fn a_real_piece_wins_nineteen_times_in_twenty() {
         nook: None,
         left: 40,
         floor: 20,
-        scrap: Some(scrap::Scrap::new(&[], 0)),
+        scrap: Some(scrap::Scrap::new(MadeId(1), &[], 0)),
     };
     let build = Build {
         x: 30,
@@ -3293,7 +3298,7 @@ fn a_real_piece_wins_nineteen_times_in_twenty() {
         side: Side::Left,
         cells: vec![20, 21, 22, 23, 24],
         piece,
-        then: seat(43, true),
+        then: Use::Lounge,
     };
     let osaka = Osaka::standing_at(10, 20, 0, &mut super::Rng(1));
     let mut rng = super::Rng(4);
@@ -3302,7 +3307,7 @@ fn a_real_piece_wins_nineteen_times_in_twenty() {
         for _ in 0..4000 {
             let places = osaka.places_for(Use::Lounge, chances, rng);
             let pick = places[rng.below(places.len() as u64) as usize];
-            makeshift += usize::from(!matches!(pick, Place::Seat(s) if !s.makeshift));
+            makeshift += usize::from(!matches!(pick, Place::Seat(s) if !s.makeshift()));
         }
         makeshift
     };
@@ -3590,4 +3595,256 @@ fn sleepy_she_naps_on_the_sofa_she_made() {
         nap > lie,
         "napped on her sofa {nap} times, on the floor {lie}"
     );
+}
+
+/// What she means to make a piece *for* survives her being interrupted
+/// while crumpling it: a chat line arrives mid-crumple (she looks up;
+/// the heap stays unfinished), then she makes a bed. Whenever she does
+/// finish the sofa, she sits on it within a few seconds.
+#[test]
+fn an_interrupted_crumple_keeps_its_purpose() {
+    use super::room::Use;
+    fn visit(guest: &Guest) -> &Visit {
+        match &guest.state {
+            State::Visiting(visit) => visit,
+            _ => panic!("visiting"),
+        }
+    }
+    for graphics in [false, true] {
+        for seed in 0..4u64 {
+            let at = format!("graphics={graphics} seed={seed}");
+            let mut ui = stage_ui();
+            let (real, mut view) = real_frame(&mut ui, 100, 30);
+            let mut guest = Guest::new(seed);
+            if graphics {
+                guest.set_picker(kitty());
+            }
+            let mut now = 0;
+            let step = |guest: &mut Guest, view: &IdleView, now: &mut u64| {
+                *now += guest
+                    .next_tick(*now)
+                    .map_or(100, |d| d.as_millis() as u64)
+                    .clamp(1, 100);
+                guest.advance(*now);
+                paint(guest, &real, view, *now);
+            };
+            guest.cue(Scene::MakeSofa);
+            paint(&mut guest, &real, &view, now);
+            while !visit(&guest)
+                .osaka
+                .seat()
+                .is_some_and(|s| s.what == Use::Crumple && s.item == Furniture::Sofa)
+            {
+                assert!(now < 60_000, "{at}: never crumpled the sofa");
+                step(&mut guest, &view, &mut now);
+            }
+            let until = now + 2_000;
+            while now < until {
+                step(&mut guest, &view, &mut now);
+            }
+            view.chat_mark.synced += 1;
+            step(&mut guest, &view, &mut now);
+            guest.cue(Scene::MakeBed);
+            paint(&mut guest, &real, &view, now);
+            // Live on until the sofa is finished, then give her 5 s.
+            let sofa_done = |guest: &Guest| {
+                visit(guest).made.iter().any(|m| {
+                    m.piece.item == Furniture::Sofa && m.piece.scrap.is_some_and(|s| s.done())
+                })
+            };
+            while !sofa_done(&guest) {
+                assert!(now < 900_000, "{at}: never finished the sofa");
+                step(&mut guest, &view, &mut now);
+            }
+            let finished = now;
+            let mut sat = false;
+            while now < finished + 5_000 && !sat {
+                step(&mut guest, &view, &mut now);
+                sat = visit(&guest).osaka.seat().is_some_and(|s| {
+                    s.item == Furniture::Sofa && s.makeshift() && s.what != Use::Crumple
+                });
+            }
+            assert!(
+                sat,
+                "{at}: finished the sofa at {finished} and didn't sit on it"
+            );
+        }
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(dessplay_core::test_support::proptest_cases(8)))]
+
+    /// Whatever interrupts her, a piece she made comes before anything
+    /// new she'd choose: while one waits that she can get to and hasn't
+    /// let be, she chooses nothing else; and while one waits, she keeps
+    /// at it (another try, or progress) until it's used, gone (its text
+    /// changed), or let be after a few tries. She makes a sofa, chat
+    /// keeps arriving every 20-40 s, and she may be sent to make a bed.
+    #[test]
+    fn every_made_piece_is_used_or_let_go(
+        seed in 0u64..1000,
+        graphics in any::<bool>(),
+        gaps in proptest::collection::vec(20_000u64..40_000, 12),
+        bed_at in proptest::option::of(0u64..90_000),
+    ) {
+        use super::room::{MadeId, PieceRef, Use};
+        // Between tries: a chat gap, the watch after it, and a walk.
+        const BOUND: u64 = 90_000;
+        let at = format!("seed {seed} graphics={graphics}");
+        let mut ui = stage_ui();
+        let (real, mut view) = real_frame(&mut ui, 100, 30);
+        let mut guest = Guest::new(seed);
+        if graphics {
+            guest.set_picker(kitty());
+        }
+        guest.cue(Scene::MakeSofa);
+        paint(&mut guest, &real, &view, 0);
+        let mut chats = gaps.iter().scan(0, |t, gap| {
+            *t += gap;
+            Some(*t)
+        }).peekable();
+        let mut bed_at = bed_at;
+        // Each piece she has made: where she is with it, and since when.
+        let mut made: Vec<(MadeId, (bool, u8), u64)> = Vec::new();
+        let mut now = 0;
+        while now < 180_000 {
+            now += guest
+                .next_tick(now)
+                .map_or(1000, |d| d.as_millis() as u64)
+                .clamp(1, 1000);
+            if chats.next_if(|&t| t <= now).is_some() {
+                view.chat_mark.synced += 1;
+            }
+            let chose = match &guest.state {
+                State::Visiting(visit) => visit.osaka.choices.len(),
+                _ => break,
+            };
+            guest.advance(now);
+            let State::Visiting(visit) = &guest.state else {
+                break;
+            };
+            // Chose something new: nothing she made was waiting that she
+            // could get to (by what this frame offered her).
+            if visit.osaka.choices.len() > chose {
+                let chances = &visit.chances;
+                for m in chances.mine.iter().filter(|m| !(m.done && m.used)) {
+                    let next = if m.done { m.purpose } else { Use::Crumple };
+                    let offered = chances
+                        .seats
+                        .iter()
+                        .any(|s| s.piece == PieceRef::Made(m.id) && s.what == next);
+                    prop_assert!(
+                        !offered || visit.osaka.gave_up(m.id),
+                        "{at}: at {now} chose {:?} over {m:?}",
+                        visit.osaka.choices.last()
+                    );
+                }
+            }
+            if bed_at.is_some_and(|t| t <= now) {
+                bed_at = None;
+                guest.cue(Scene::MakeBed);
+            }
+            paint(&mut guest, &real, &view, now);
+            let State::Visiting(visit) = &guest.state else {
+                break;
+            };
+            for m in visit.made.iter().filter_map(Made::mine) {
+                let state = (m.done, visit.osaka.tries_at(m.id));
+                match made.iter_mut().find(|(id, ..)| *id == m.id) {
+                    Some((_, was, since)) if *was != state => (*was, *since) = (state, now),
+                    Some(_) => {}
+                    None => made.push((m.id, state, now)),
+                }
+            }
+            for &(id, state, since) in &made {
+                let waiting = visit
+                    .made
+                    .iter()
+                    .filter_map(Made::mine)
+                    .any(|m| m.id == id && !m.used)
+                    && !visit.osaka.gave_up(id);
+                prop_assert!(
+                    !waiting || now - since <= BOUND,
+                    "{at}: {id:?} (done, tries) = {state:?} since {since}, still waiting at {now}"
+                );
+            }
+        }
+    }
+}
+
+/// A chat line while she's clambering over a divider, hanging on its
+/// pole, doesn't drop her: she gets over, and looks once she has, as
+/// when climbing. Over the stage room's tallest divider.
+#[test]
+fn chat_mid_clamber_doesnt_drop_her() {
+    use super::sprite::Pose;
+    use super::terrain::Link;
+    for graphics in [false, true] {
+        let at = format!("graphics={graphics}");
+        let mut ui = stage_ui();
+        let (real, mut view) = real_frame(&mut ui, 100, 30);
+        let mut guest = Guest::new(1);
+        if graphics {
+            guest.set_picker(kitty());
+        }
+        guest.cue(Scene::Arrive);
+        paint(&mut guest, &real, &view, 0);
+        let State::Visiting(visit) = &mut guest.state else {
+            panic!("{at}: visiting");
+        };
+        let floors = visit.terrain.platforms.clone();
+        let link: Link = *visit
+            .terrain
+            .links
+            .iter()
+            .filter(|l| matches!(l.route, Route::Clamber { .. }))
+            .max_by_key(|l| (floors[l.from].y - floors[l.to].y).abs())
+            .expect("a divider to clamber over");
+        let (from, to) = (floors[link.from], floors[link.to]);
+        assert!((from.y - to.y).abs() >= 4, "{at}: a tall one: {link:?}");
+        let start = if link.x > from.x0 {
+            link.x - 1
+        } else {
+            link.x + 1
+        };
+        visit.osaka.place(start, from.y, 0);
+        visit.osaka.travel(link, 0);
+        let her = |guest: &Guest, now: u64| match &guest.state {
+            State::Visiting(visit) => (visit.osaka.appearance(now).0, visit.osaka.x, visit.osaka.y),
+            _ => panic!("visiting"),
+        };
+        let mut now = 0;
+        // Halfway along the pole.
+        let halfway = |y: i32| 2 * (y - from.y).abs() >= (to.y - from.y).abs();
+        while !matches!(her(&guest, now), (Pose::Climb { .. }, _, y) if halfway(y)) {
+            assert!(now < 30_000, "{at}: never on the pole");
+            now += guest
+                .next_tick(now)
+                .map_or(100, |d| d.as_millis() as u64)
+                .clamp(1, 100);
+            guest.advance(now);
+            paint(&mut guest, &real, &view, now);
+        }
+        view.chat_mark.synced += 1;
+        let until = now + 10_000;
+        while now < until {
+            now += guest
+                .next_tick(now)
+                .map_or(100, |d| d.as_millis() as u64)
+                .clamp(1, 100);
+            guest.advance(now);
+            paint(&mut guest, &real, &view, now);
+            let (pose, ..) = her(&guest, now);
+            assert!(
+                !matches!(pose, Pose::Fall | Pose::Dazed),
+                "{at}: {pose:?} at {now}"
+            );
+        }
+        let (_, x, y) = her(&guest, now);
+        assert!(
+            y == to.y && (to.x0..=to.x1).contains(&x),
+            "{at}: over onto {to:?}, but at ({x}, {y})"
+        );
+    }
 }

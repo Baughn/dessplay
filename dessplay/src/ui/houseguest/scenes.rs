@@ -75,8 +75,7 @@ pub(super) struct Swap {
 /// Makeshift furniture she could make: standing at `x` on the floor at
 /// `y`, tear the glyphs at `cells` (nearest her first) off the line on
 /// `row` beside her box on `side`, reel them in to her hands, crumple
-/// them into `piece` — which stands centred under her — and then use it
-/// as `then`.
+/// them into `piece` — which stands centred under her — for `then`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Build {
     pub x: i32,
@@ -85,7 +84,8 @@ pub(super) struct Build {
     pub side: Side,
     pub cells: Vec<u16>,
     pub piece: super::room::Shown,
-    pub then: super::room::Seat,
+    /// What she makes it for.
+    pub then: super::room::Use,
 }
 
 impl Build {
@@ -188,12 +188,13 @@ pub(super) enum LayerOp {
         hand: u16,
         step: u16,
     },
-    /// Make `piece` of the glyphs torn from `cells` on `row` (refused
-    /// unless every one of them is still torn off).
+    /// Make `piece` of the glyphs torn from `cells` on `row`, for
+    /// `purpose` (refused unless every one of them is still torn off).
     Make {
         row: u16,
         cells: Vec<u16>,
         piece: super::room::Shown,
+        purpose: super::room::Use,
     },
 }
 
@@ -547,18 +548,19 @@ fn segment(buf: &Buffer, protected: &[Rect], start: u16, row: u16, dir: i32) -> 
     (cells.len() >= MIN_GLYPHS).then_some(cells)
 }
 
-/// Makeshift pieces she could make of `items`: at a line in `pulls` long
-/// enough to tear at least [`scrap::MIN_GLYPHS`] off and leave some,
-/// where the piece fits ([`room::fits`], clear by `clear`, with room for
-/// her to use it) centred under the spot she tears from — so she stands
-/// over it as she crumples. `then` says how she'd use the finished piece
-/// (a sofa may face a TV).
+/// Makeshift pieces she could make of `items`, the next being `id`: at
+/// a line in `pulls` long enough to tear at least [`scrap::MIN_GLYPHS`]
+/// off and leave some, where the piece fits ([`room::fits`], clear by
+/// `clear`, with room for her to use it) centred under the spot she
+/// tears from — so she stands over it as she crumples. `then` says what
+/// she could use the finished piece for there (a sofa may face a TV).
 pub(super) fn builds(
     buf: &Buffer,
     pulls: &[Pull],
     items: &[super::room::Furniture],
+    id: super::room::MadeId,
     clear: &dyn Fn(i32, i32) -> bool,
-    then: &dyn Fn(&super::room::Shown) -> Vec<super::room::Seat>,
+    then: &dyn Fn(&super::room::Shown) -> Vec<super::room::Use>,
 ) -> Vec<Build> {
     use super::room::{Shown, fits, roomy};
     use super::scrap::{self, Scrap};
@@ -571,7 +573,7 @@ pub(super) fn builds(
         for &item in items {
             let (cols, _) = scrap::footprint(item);
             for facing in [Facing::Right, Facing::Left] {
-                let mut done = Scrap::new(&[], 0);
+                let mut done = Scrap::new(id, &[], 0);
                 done.stage = scrap::STAGES;
                 let piece = Shown {
                     item,
@@ -591,7 +593,7 @@ pub(super) fn builds(
                     Side::Right => pull.cells.iter().take(count).copied().collect(),
                     Side::Left => pull.cells.iter().rev().take(count).copied().collect(),
                 };
-                for seat in then(&piece) {
+                for what in then(&piece) {
                     out.push(Build {
                         x: pull.x,
                         y: pull.y,
@@ -599,10 +601,10 @@ pub(super) fn builds(
                         side: pull.side,
                         cells: cells.clone(),
                         piece: Shown {
-                            scrap: Some(Scrap::new(&[], 0)),
+                            scrap: Some(Scrap::new(id, &[], 0)),
                             ..piece
                         },
-                        then: seat,
+                        then: what,
                     });
                 }
                 // One way round is plenty for a spot.

@@ -2280,6 +2280,48 @@ moments after a sneeze, a fall or a door are short and stay passing.
 The test models the trigger honestly — text coming up next to her at
 random times — and failed before the change.
 
+## What she makes a piece for stays on the piece (2026-10-02)
+
+**Rule:** A makeshift piece records what she made it for and whether
+she has started using it. Once the reflexes (an errand, watching the
+chat) let her, she goes back to a piece she hasn't finished with before
+choosing anything new, the nearest first, until she uses it; each
+setting-off, and each time she can't get to it, is a try, and after
+three without progress she lets it be. See
+[design.md](design.md#houseguest) and the
+[proposal](proposals/2026-10-02-houseguest-mind.md#interruption-and-intent).
+
+**Why:** The user watched her crumple text into a sofa and never sit on
+it. Her plan lived in one slot in her head (`making`): a second build
+overwrote it, an interrupted crumple left it stale, and a crumple
+finished later found no plan (16 of 16 cued runs; the
+[diagnosis](proposals/2026-10-02-houseguest-mind/sofa-diagnosis.md)).
+Purposes kept in the world (a parcel's box, a heap's stage) had always
+survived interruption; so the purpose moved onto the piece, and nothing
+she does can lose it. Pieces are told apart by an id, not by recomputing
+a seat on both sides. The tries keep it from becoming a chore list: a
+heap whose seat stays blocked, or chat that keeps interrupting, doesn't
+hold her forever. "Nearest first" because the property test found her
+walking away from the heap under her feet, to a sofa on another floor
+(and losing tries to it). A walk to a made piece on another floor is
+dropped when chat interrupts it, so coming back is a counted try; kept
+as a plain goal, it was resumed uncounted, and a chat line every 20 s
+caught her on the same tall divider again and again.
+
+That loop also exposed a body bug: a chat line while she clambered
+over a divider set her looking in mid-air, so she fell and lay dazed.
+Climbing and falling already finished first; clambering is now among
+them, through one `aloft` test that the look, her errand and her line
+art's floor all use. And what she does to her home (an order off the
+shopping channel, an unpacking) is recorded right after the tick that
+did it: it waited for the next paint, so a visit ending in between
+(a visitor's key press) lost it.
+
+**Rejected:** Re-validating a plan by struct equality against a fresh
+frame (it silently dropped jobs whenever chat scrolled); a planner or
+an intention stack in her head (the proposal's
+[alternatives](proposals/2026-10-02-houseguest-mind.md#alternatives-considered)).
+
 ## A made piece is for what the real one is; a nap is a doze (2026-10-02)
 
 **Rule:** A makeshift piece, once in shape, offers the real piece's

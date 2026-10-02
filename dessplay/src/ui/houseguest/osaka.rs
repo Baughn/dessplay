@@ -6,7 +6,7 @@ use super::Rng;
 use super::art::DoorFrame;
 use super::brain::{self, Kind, Need, Needs};
 use super::layer::Placed;
-use super::room::{Furniture, Seat, Use};
+use super::room::{Furniture, MadeId, PieceRef, Seat, Use};
 use super::scenes::{Build, Job, LayerOp, Side};
 use super::sprite::{self, Face, Facing, HEIGHT, Pose, SpriteCell};
 use super::terrain::{Link, Platform, Route, Terrain};
@@ -25,6 +25,8 @@ pub(super) struct Chances {
     pub seats: Vec<Seat>,
     /// Makeshift furniture she could make of text, for each use.
     pub builds: Vec<super::scenes::Build>,
+    /// The makeshift pieces she has made this visit.
+    pub mine: Vec<Mine>,
     /// What the shopping channel would sell her, were she to watch now.
     pub advert: Option<Furniture>,
     /// She has a home (to leave for work, and come back to).
@@ -33,6 +35,22 @@ pub(super) struct Chances {
     /// would take her into it is [`CHAT_FACTOR`] as likely.
     pub chat: Option<Rect>,
 }
+
+/// A makeshift piece she made this visit, and what she made it for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Mine {
+    pub id: MadeId,
+    pub purpose: Use,
+    /// Crumpled into shape.
+    pub done: bool,
+    /// She has started using it.
+    pub used: bool,
+}
+
+/// Times she sets off to finish or use a piece she made before she lets
+/// it be: each interruption on the way, or each time she can't get to it,
+/// is one.
+const TRIES: u8 = 3;
 
 /// How much less likely a resident is to do what takes her into the
 /// chat pane.
@@ -126,9 +144,10 @@ pub(super) enum HomeEvent {
     Bought(Furniture),
     /// Out of its box.
     Unpacked(Furniture),
-    /// A makeshift piece crumpled into shape: the one she'd use from
-    /// this seat.
-    Crumpled(Seat),
+    /// A makeshift piece crumpled into shape.
+    Crumpled(MadeId),
+    /// A makeshift piece she has started using.
+    Used(MadeId),
 }
 
 impl Chances {
@@ -137,13 +156,34 @@ impl Chances {
         self.chat.is_some_and(|chat| holds(chat, spot))
     }
 
-    fn offers(&self, job: &Job) -> bool {
+    /// `job` as this frame offers it, if it does: a use of the same
+    /// piece for the same thing, wherever it now stands; anything else,
+    /// exactly as planned.
+    fn offered(&self, job: Job) -> Option<Job> {
         match job {
-            Job::Pull(p) => self.pulls.contains(p),
-            Job::Swap(s) => self.swaps.contains(s),
-            Job::Build(b) => self.builds.contains(b),
-            Job::Use(seat) => self.seats.contains(seat),
+            Job::Pull(p) => self.pulls.contains(&p).then_some(Job::Pull(p)),
+            Job::Swap(s) => self.swaps.contains(&s).then_some(Job::Swap(s)),
+            Job::Build(b) => self.builds.contains(&b).then_some(Job::Build(b)),
+            Job::Use(seat) => self
+                .seats
+                .iter()
+                .find(|s| s.piece == seat.piece && s.what == seat.what)
+                .map(|&s| Job::Use(s)),
         }
+    }
+
+    /// Where she'd use a piece she made for its next step: crumpling it
+    /// while it's a heap, then what she made it for.
+    fn next_for(&self, mine: &Mine) -> Option<Seat> {
+        let what = if mine.done {
+            mine.purpose
+        } else {
+            Use::Crumple
+        };
+        self.seats
+            .iter()
+            .find(|s| s.piece == PieceRef::Made(mine.id) && s.what == what)
+            .copied()
     }
 }
 
@@ -757,9 +797,9 @@ pub(super) struct Osaka {
     /// She has just started poking (the guest takes it, and shakes the
     /// accordion).
     poked: bool,
-    /// The makeshift piece she tore text off for, and how she'll use it
-    /// once it's crumpled into shape.
-    making: Option<Build>,
+    /// How often she has set off to finish or use each piece she made
+    /// (what she made it for is kept on the piece).
+    tries: Vec<(MadeId, u8)>,
     /// Where she settled, choosing what to do, if it was calm then: while
     /// she rests there, she keeps checking it is (see [`Osaka::recheck`]).
     rest: Option<(i32, i32)>,
@@ -796,7 +836,7 @@ impl Osaka {
             decided: now,
             errand: None,
             poked: false,
-            making: None,
+            tries: Vec::new(),
             rest: None,
             #[cfg(test)]
             choices: Vec::new(),
@@ -1188,22 +1228,16 @@ impl Osaka {
                         tracing::info!(item = ?seat.item, "houseguest: unpacked");
                         self.events.push(HomeEvent::Unpacked(seat.item));
                     }
-                    if let (Use::Crumple, Some(Job::Use(seat))) = (what, self.task.clone()) {
+                    if let (Use::Crumple, Some(Job::Use(seat))) = (what, self.task.clone())
+                        && let PieceRef::Made(id) = seat.piece
+                    {
                         tracing::info!(item = ?seat.item, "houseguest: made a makeshift piece");
-                        self.events.push(HomeEvent::Crumpled(seat));
-                        // Made for something: she goes straight to it.
-                        let made = self.making.take().filter(|b| {
-                            b.piece.seat(Use::Crumple, 0)
-                                == Seat {
-                                    makeshift: true,
-                                    ..seat
-                                }
-                        });
-                        if let Some(build) = made {
-                            self.task = None;
-                            self.goal = Some(Job::Use(build.then));
-                            return self.set(Act::Admire { until: at + 1200 }, at);
-                        }
+                        self.events.push(HomeEvent::Crumpled(id));
+                        // Progress: getting to use it starts afresh. She
+                        // admires it, then goes to use it (see `decide`).
+                        self.tries.retain(|&(made, _)| made != id);
+                        self.task = None;
+                        return self.set(Act::Admire { until: at + 1200 }, at);
                     }
                     self.decide(at, terrain, chances, rng);
                 } else {
@@ -1249,9 +1283,9 @@ impl Osaka {
                     row: build.row,
                     cells: build.cells.clone(),
                     piece: build.piece,
+                    purpose: build.then,
                 });
                 let seat = build.piece.seat(Use::Crumple, 0);
-                self.making = Some(build);
                 self.pursue(Job::Use(seat), at);
             }
             Act::Dazed { .. } => {
@@ -1383,6 +1417,11 @@ impl Osaka {
                         if let Some(item) = advert {
                             tracing::info!(?item, "houseguest: bought off the shopping channel");
                             self.events.push(HomeEvent::Bought(item));
+                        }
+                        if let PieceRef::Made(id) = seat.piece
+                            && seat.what != Use::Crumple
+                        {
+                            self.events.push(HomeEvent::Used(id));
                         }
                         return self.set(
                             Act::Use {
@@ -1856,10 +1895,18 @@ impl Osaka {
             .pass(at.saturating_sub(self.decided), !chances.pulls.is_empty());
         self.decided = at;
         // Still making for a job on another floor, while it's on offer.
-        if let Some(job) = self.goal.take().filter(|g| chances.offers(g))
+        if let Some(job) = self.goal.take().and_then(|g| chances.offered(g))
             && self.go_to(job, here, terrain, at)
         {
             return;
+        }
+        // A piece she made and hasn't finished with: she finishes it, or
+        // uses it, before choosing anything new.
+        if let Some(job) = self.leftover(chances, terrain, here) {
+            tracing::debug!(?job, "houseguest: back to what she made");
+            if self.go_to(job, here, terrain, at) {
+                return;
+            }
         }
         let links: Vec<Link> = terrain
             .links
@@ -1878,7 +1925,7 @@ impl Osaka {
         if !chances.pulls.is_empty() {
             offers.push(Kind::Pull);
         }
-        let made = chances.builds.iter().map(|b| b.then.what);
+        let made = chances.builds.iter().map(|b| b.then);
         for what in chances.seats.iter().map(|s| s.what).chain(made) {
             let kind = Kind::Use(what);
             if !offers.contains(&kind) {
@@ -1920,7 +1967,7 @@ impl Osaka {
                     chances
                         .builds
                         .iter()
-                        .filter(|b| b.then.what == what)
+                        .filter(|b| b.then == what)
                         .map(|b| chances.in_chat((b.x, b.y))),
                 )
         };
@@ -2059,7 +2106,7 @@ impl Osaka {
                         let builds: Vec<&Build> = chances
                             .builds
                             .iter()
-                            .filter(|b| b.then.what == what && b.piece.item == item)
+                            .filter(|b| b.then == what && b.piece.item == item)
                             .collect();
                         let in_chat =
                             |i: usize| builds.get(i).is_some_and(|b| chances.in_chat((b.x, b.y)));
@@ -2107,6 +2154,54 @@ impl Osaka {
         true
     }
 
+    /// The next step for a piece she made this visit and hasn't finished
+    /// with, counting a try at it: the nearest first (the one she just
+    /// crumpled, or was crumpling, is under her), then any she can't get
+    /// to now, which is a try too. After [`TRIES`] she lets it be.
+    fn leftover(&mut self, chances: &Chances, terrain: &Terrain, here: usize) -> Option<Job> {
+        let near = |seat: &Seat| {
+            (
+                terrain.platform_at(seat.x, seat.y) != Some(here),
+                (seat.x - self.x).abs() + (seat.y - self.y).abs(),
+            )
+        };
+        let mut waiting: Vec<(MadeId, Option<Seat>)> = chances
+            .mine
+            .iter()
+            .filter(|m| !(m.done && m.used) && self.tries_at(m.id) < TRIES)
+            .map(|m| (m.id, chances.next_for(m)))
+            .collect();
+        waiting.sort_by_key(|(_, seat)| {
+            seat.as_ref()
+                .map_or((true, (true, i32::MAX)), |s| (false, near(s)))
+        });
+        for (id, seat) in waiting {
+            match self.tries.iter_mut().find(|(made, _)| *made == id) {
+                Some((_, tries)) => *tries += 1,
+                None => self.tries.push((id, 1)),
+            }
+            match seat {
+                Some(seat) => return Some(Job::Use(seat)),
+                None => tracing::debug!(?id, "houseguest: can't get to what she made"),
+            }
+        }
+        None
+    }
+
+    /// Times she has set off for piece `id` (since it was crumpled).
+    pub(super) fn tries_at(&self, id: MadeId) -> u8 {
+        self.tries
+            .iter()
+            .find(|(made, _)| *made == id)
+            .map_or(0, |&(_, tries)| tries)
+    }
+
+    /// She has let `id` be, having tried enough times.
+    #[cfg(test)]
+    pub fn gave_up(&self, id: MadeId) -> bool {
+        self.tries_at(id) >= TRIES
+    }
+
     /// Where she might go to `what`: every seat for it, except that a
     /// makeshift piece is only for when there's no real one of its kind
     /// on offer — else just one time in [`MAKESHIFT_ODDS`], and then it's
@@ -2115,13 +2210,13 @@ impl Osaka {
     pub(super) fn places_for(&self, what: Use, chances: &Chances, rng: &mut Rng) -> Vec<Place> {
         let seats = || chances.seats.iter().filter(|s| s.what == what);
         let mut makeshift: Vec<Furniture> = seats()
-            .filter(|s| s.makeshift)
+            .filter(|s| s.makeshift())
             .map(|s| s.item)
             .chain(
                 chances
                     .builds
                     .iter()
-                    .filter(|b| b.then.what == what)
+                    .filter(|b| b.then == what)
                     .map(|b| b.piece.item),
             )
             .collect();
@@ -2132,7 +2227,7 @@ impl Osaka {
         let mut whims = Vec::new();
         let mut allowed = Vec::new();
         for item in makeshift {
-            let real = seats().any(|s| !s.makeshift && s.item == item);
+            let real = seats().any(|s| !s.makeshift() && s.item == item);
             if !real {
                 allowed.push(item);
             } else if rng.below(MAKESHIFT_ODDS) == 0 {
@@ -2142,7 +2237,7 @@ impl Osaka {
         }
         let mut out: Vec<Place> = seats()
             .filter(|s| {
-                if s.makeshift {
+                if s.makeshift() {
                     allowed.contains(&s.item)
                 } else {
                     !whims.contains(&s.item)
@@ -2151,11 +2246,11 @@ impl Osaka {
             .map(|&s| Place::Seat(s))
             .collect();
         for item in allowed {
-            let made = seats().any(|s| s.makeshift && s.item == item);
+            let made = seats().any(|s| s.makeshift() && s.item == item);
             let can = chances
                 .builds
                 .iter()
-                .any(|b| b.then.what == what && b.piece.item == item);
+                .any(|b| b.then == what && b.piece.item == item);
             if !made && can {
                 out.push(Place::Make(item));
             }
@@ -2263,6 +2358,11 @@ impl Osaka {
     /// A chat message arrived: stop and look at it.
     pub fn look(&mut self, now: u64, chat_x: i32) {
         self.watch_until = now + WATCH_MS;
+        // On her way to a piece she made: what it's for is kept on the
+        // piece, and she comes back to it as another try (`leftover`).
+        if matches!(&self.goal, Some(Job::Use(seat)) if seat.makeshift()) {
+            self.goal = None;
+        }
         // Someone's here: whatever she knocked over or swapped goes back
         // at once, in order.
         self.pending.sort_by_key(|(due, _)| *due);
@@ -2276,12 +2376,12 @@ impl Osaka {
         ) {
             return;
         }
-        if !matches!(self.act, Act::Fall { .. } | Act::Climb { .. }) {
+        if !self.aloft() {
             // She lets go of whatever she was pulling.
             self.task = None;
         }
         self.watch_x = chat_x;
-        if matches!(self.act, Act::Fall { .. } | Act::Climb { .. }) {
+        if self.aloft() {
             return; // She looks once she has landed (decide watches).
         }
         self.facing = toward(self.x, chat_x);
@@ -2405,7 +2505,13 @@ impl Osaka {
     /// Whether she is standing on a floor (not climbing or falling), so
     /// her line art includes the floor under her feet.
     pub fn standing(&self) -> bool {
-        !matches!(
+        !self.aloft()
+    }
+
+    /// On a pole or in the air (climbing, clambering, falling): whatever
+    /// comes up runs its course first, until she's on a floor.
+    fn aloft(&self) -> bool {
+        matches!(
             self.act,
             Act::Climb { .. } | Act::Fall { .. } | Act::Clamber { .. }
         )
@@ -2465,8 +2571,10 @@ impl Osaka {
     pub fn errand(&mut self, spot: (i32, i32), terrain: &Terrain, at: u64) {
         tracing::debug!(?spot, "houseguest: off to poke the accordion");
         self.errand = Some(spot);
+        if self.aloft() {
+            return;
+        }
         match &mut self.act {
-            Act::Fall { .. } | Act::Climb { .. } | Act::Clamber { .. } => {}
             Act::Door { since, to, gap } => {
                 let there =
                     door_beat(at.saturating_sub(*since), *gap).is_none_or(|(beat, _)| beat.there);

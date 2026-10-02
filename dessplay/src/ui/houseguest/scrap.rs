@@ -11,7 +11,7 @@ use tuirealm::ratatui::style::Color;
 
 use super::art::{CELL_UNITS, rasterize};
 use super::graphics::{alien_bits, rgb};
-use super::room::Furniture;
+use super::room::{Furniture, MadeId};
 use super::sprite::Facing;
 
 /// Most glyphs a piece is made of.
@@ -21,9 +21,10 @@ pub(super) const MIN_GLYPHS: usize = 5;
 /// Crumpling goes through this many stages; at `STAGES` it's done.
 pub(super) const STAGES: u8 = 4;
 
-/// A makeshift piece: what it's made of, and how far along.
+/// A makeshift piece: which, what it's made of, and how far along.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) struct Scrap {
+    pub id: MadeId,
     /// The torn glyphs and their colours (the first `len`).
     pub glyphs: [(char, Color); GLYPHS],
     pub len: u8,
@@ -34,13 +35,14 @@ pub(super) struct Scrap {
 }
 
 impl Scrap {
-    /// A piece of `glyphs` (up to [`GLYPHS`]), not yet crumpled.
-    pub fn new(glyphs: &[(char, Color)], seed: u32) -> Self {
+    /// Piece `id`, of `glyphs` (up to [`GLYPHS`]), not yet crumpled.
+    pub fn new(id: MadeId, glyphs: &[(char, Color)], seed: u32) -> Self {
         let mut out = [(' ', Color::Reset); GLYPHS];
         for (slot, &g) in out.iter_mut().zip(glyphs) {
             *slot = g;
         }
         Self {
+            id,
             glyphs: out,
             len: glyphs.len().min(GLYPHS) as u8,
             stage: 0,
@@ -373,7 +375,7 @@ mod tests {
                 .cycle(),
             )
             .collect();
-        let mut scrap = Scrap::new(&glyphs, seed);
+        let mut scrap = Scrap::new(MadeId(0), &glyphs, seed);
         scrap.stage = STAGES;
         scrap
     }

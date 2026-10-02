@@ -1389,6 +1389,8 @@ this section states what is built.
   turns toward the chat pane with a `!` then a `?`, and keeps watching
   until chat has been quiet for 15 s, then carries on
   (why: [decisions](decisions.md#line-art-osaka-passes-text-and-watches-chat-briefly-2026-09-30)).
+  On a pole or in the air (climbing, clambering over a divider,
+  falling), she finishes getting onto a floor first and looks then.
 - The **newest chat or IRC message** is never touched: its painted text
   is part of the protected set.
 - **Moving text.** She keeps a text layer of glyphs she has moved and
@@ -1530,16 +1532,25 @@ this section states what is built.
   (the text layer keeps the holes, and they count towards its 60). With
   all of it in her hands, the heap appears under her and she crumples
   it into shape over 4–6 s ("scrunch...", "There!"), and goes straight
-  to using it. Interrupted while reeling (a chat line, losing her grip
-  when the text changes), she lets it go and it all goes back. A makeshift sofa is 7×3
+  to using it for what she made it for (any of the real piece's uses).
+  Interrupted while reeling (a chat line, losing her grip
+  when the text changes), she lets it go and it all goes back. **What
+  she made it for stays on the piece**: interrupted while crumpling it
+  or on her way to use it (a chat line, being startled), she comes back
+  to it, once nothing more pressing holds her (an errand, watching the
+  chat), before choosing anything new — the nearest such piece first —
+  until she has started using it. Each time she sets off for it, and
+  each time she can't get to it, is a try; after three without
+  progress (crumpling it into shape is progress) she lets it be, and
+  it's offered like any other piece. A makeshift sofa is 7×3
   cells, a makeshift bed 7×2; each stands on a floor over blank cells
   like her real pieces (and is solid to text the same way), and is
   drawn as shreds of the alien glyphs her image derezzes text into, in
   the torn text's own colours (in ASCII, its own letters, jumbled). Once
   in shape it's for whatever the real piece is: the sofa for sitting
   on, napping on and watching TV from; the bed, for sleeping in, under
-  a blanket of shreds. A heap she left half-crumpled is
-  offered for finishing. It lasts for the visit, while every glyph torn
+  a blanket of shreds. A heap she let be is offered for finishing.
+  It lasts for the visit, while every glyph torn
   for it is still torn off (its line unchanged, its pane not protected)
   and it still fits where she made it, clear of her real furniture; a
   resize, or its pane gaining focus, takes it, and its text goes back

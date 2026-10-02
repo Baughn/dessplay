@@ -139,6 +139,8 @@ struct Visit {
     fades: Vec<Dissolve>,
     /// Makeshift furniture she has made of text this visit.
     made: Vec<Made>,
+    /// The next piece she makes.
+    next_made: room::MadeId,
     /// The text she was reeling in at the last paint.
     reel: Option<scenes::Build>,
     size: (u16, u16),
@@ -194,12 +196,29 @@ impl Visit {
     }
 }
 
-/// A makeshift piece, and the glyphs torn off to make it (their holes
-/// stay while it does).
+/// A makeshift piece, the glyphs torn off to make it (their holes stay
+/// while it does), and what she made it for: what she means to do with
+/// it is kept on it, where nothing that interrupts her can lose it.
 #[derive(Clone, Debug)]
 struct Made {
     piece: Shown,
     torn: Vec<(u16, u16)>,
+    purpose: room::Use,
+    /// She has started using it (crumpling it into shape doesn't count).
+    used: bool,
+}
+
+impl Made {
+    /// As she sees it, choosing what to do.
+    fn mine(&self) -> Option<osaka::Mine> {
+        let scrap = self.piece.scrap?;
+        Some(osaka::Mine {
+            id: scrap.id,
+            purpose: self.purpose,
+            done: scrap.done(),
+            used: self.used,
+        })
+    }
 }
 
 struct Leaving {
@@ -696,10 +715,7 @@ impl Guest {
                 tend_made(visit, buf, &view.protected, size, now);
                 visit.shown.extend(visit.made.iter().map(|made| made.piece));
                 if let Some((seat, ..)) = visit.osaka.use_span()
-                    && !visit
-                        .shown
-                        .iter()
-                        .any(|s| s.item == seat.item && s.scrap.is_some() == seat.makeshift)
+                    && !visit.shown.iter().any(|s| s.piece() == seat.piece)
                 {
                     visit.osaka.lost_seat(now);
                 }
@@ -711,8 +727,17 @@ impl Guest {
                         tracing::trace!(?op, "houseguest: the frame refused a layer change");
                         gripped &= !op.grips();
                         visit.osaka.refused(now, op);
-                    } else if let scenes::LayerOp::Make { row, cells, piece } = &op {
-                        visit.made.push(made_of(buf, *row, cells, piece));
+                    } else if let scenes::LayerOp::Make {
+                        row,
+                        cells,
+                        piece,
+                        purpose,
+                    } = &op
+                    {
+                        if let Some(scrap) = piece.scrap {
+                            visit.next_made = room::MadeId(scrap.id.0 + 1);
+                        }
+                        visit.made.push(made_of(buf, *row, cells, piece, *purpose));
                     }
                 }
                 if !gripped {
@@ -778,6 +803,7 @@ impl Guest {
                             self.cat_now || cat_home(&self.ledger),
                         ),
                         builds: builds.clone(),
+                        mine: visit.made.iter().filter_map(Made::mine).collect(),
                         advert: advert(&self.ledger, self.shop_now),
                         furnished: !self.ledger.home.props.is_empty(),
                         chat,
@@ -807,6 +833,7 @@ impl Guest {
                         self.cat_now || cat_home(&self.ledger),
                     ),
                     builds,
+                    mine: visit.made.iter().filter_map(Made::mine).collect(),
                     advert: advert(&self.ledger, self.shop_now),
                     furnished: !self.ledger.home.props.is_empty(),
                     chat,
@@ -908,6 +935,7 @@ impl Guest {
             with: Vec::new(),
             fades: Vec::new(),
             made: Vec::new(),
+            next_made: room::MadeId(0),
             reel: None,
             size,
         }));
@@ -1079,7 +1107,7 @@ impl Guest {
 
 /// Record what she did to her home since last asked: the ledger's part
 /// (an order, an unpacking) and the visit's (a makeshift piece crumpled
-/// into shape). Returns whether the ledger changed.
+/// into shape, or used). Returns whether the ledger changed.
 fn record(ledger: &mut Ledger, shop_now: &mut bool, visit: &mut Visit) -> bool {
     let mut changed = false;
     for event in visit.osaka.take_events() {
@@ -1093,13 +1121,18 @@ fn record(ledger: &mut Ledger, shop_now: &mut bool, visit: &mut Visit) -> bool {
             osaka::HomeEvent::Unpacked(item) => {
                 changed |= ledger.home.unbox(item);
             }
-            osaka::HomeEvent::Crumpled(seat) => {
+            osaka::HomeEvent::Crumpled(id) => {
                 for made in &mut visit.made {
-                    if made.piece.seat(room::Use::Crumple, 0) == seat
-                        && let Some(scrap) = &mut made.piece.scrap
+                    if let Some(scrap) = &mut made.piece.scrap
+                        && scrap.id == id
                     {
                         scrap.stage = scrap::STAGES;
                     }
+                }
+            }
+            osaka::HomeEvent::Used(id) => {
+                for made in &mut visit.made {
+                    made.used |= made.piece.piece() == room::PieceRef::Made(id);
                 }
             }
         }
@@ -1487,7 +1520,7 @@ fn tend_made(visit: &mut Visit, buf: &Buffer, protected: &[Rect], size: (u16, u1
         let length = until.saturating_sub(since).max(1);
         let stage = 1 + now.saturating_sub(since) * u64::from(scrap::STAGES - 1) / length;
         for made in &mut visit.made {
-            if made.piece.seat(room::Use::Crumple, 0) == seat
+            if made.piece.piece() == seat.piece
                 && let Some(scrap) = &mut made.piece.scrap
                 && !scrap.done()
             {
@@ -1500,8 +1533,8 @@ fn tend_made(visit: &mut Visit, buf: &Buffer, protected: &[Rect], size: (u16, u1
 }
 
 /// A makeshift piece `piece` of the glyphs just torn off `row` at
-/// `cells` (read before anything of hers is painted).
-fn made_of(buf: &Buffer, row: u16, cells: &[u16], piece: &Shown) -> Made {
+/// `cells` (read before anything of hers is painted), for `purpose`.
+fn made_of(buf: &Buffer, row: u16, cells: &[u16], piece: &Shown, purpose: room::Use) -> Made {
     let glyphs: Vec<(char, Color)> = cells
         .iter()
         .filter_map(|&c| {
@@ -1517,10 +1550,12 @@ fn made_of(buf: &Buffer, row: u16, cells: &[u16], piece: &Shown) -> Made {
     tracing::info!(item = ?piece.item, glyphs = glyphs.len(), "houseguest: tore text off for furniture");
     Made {
         piece: Shown {
-            scrap: Some(scrap::Scrap::new(&glyphs, seed)),
+            scrap: piece.scrap.map(|s| scrap::Scrap::new(s.id, &glyphs, seed)),
             ..*piece
         },
         torn: cells.iter().map(|&c| (c, row)).collect(),
+        purpose,
+        used: false,
     }
 }
 
@@ -1556,10 +1591,11 @@ fn builds(
         }
         seats_of(piece, &visit.shown, &terrain, false)
             .into_iter()
-            .filter(|seat| seat.what != room::Use::Crumple)
+            .map(|seat| seat.what)
+            .filter(|&what| what != room::Use::Crumple)
             .collect()
     };
-    scenes::builds(buf, pulls, &wanted, &clear, &then)
+    scenes::builds(buf, pulls, &wanted, visit.next_made, &clear, &then)
 }
 
 /// Her furniture's colour as text (the ASCII drawings).
@@ -1848,7 +1884,7 @@ fn draw_art(
     let using = osaka.seat().filter(|seat| seat.what.inside());
     let part = |piece: &Shown, front: bool| {
         let what = using
-            .filter(|seat| seat.item == piece.item && seat.makeshift == piece.scrap.is_some())
+            .filter(|seat| seat.piece == piece.piece())
             .map(|s| s.what);
         let layer = match (what, front) {
             (Some(room::Use::Sleep), false) => art::Layer::Back,

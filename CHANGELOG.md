@@ -16,6 +16,12 @@ Add new days at the top. Add new entries at the bottom of existing days.
   moment and she leaves.
 - Fixed: The houseguest naps on a sofa she made of text, rather than
   lying down on the floor beside it.
+- Fixed: The houseguest uses what she makes. If a chat line interrupts
+  her while she's crumpling text into a sofa or a bed, or on her way to
+  it, she comes back to it afterwards, instead of leaving a finished
+  sofa she never sits on.
+- Fixed: A chat line no longer knocks the houseguest off a divider
+  she's clambering over.
 
 ## 2026-10-01
 

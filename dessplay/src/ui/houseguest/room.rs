@@ -224,17 +224,34 @@ impl Use {
     }
 }
 
+/// A makeshift piece, among those she makes in a visit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(super) struct MadeId(pub u32);
+
+/// Which piece: one she owns (one of each kind), or one she made.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(super) enum PieceRef {
+    Real(Furniture),
+    Made(MadeId),
+}
+
 /// Where she goes to use a piece: she walks to `x` on its floor (in
 /// front of it, or beside the TV) and faces `facing`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Seat {
     pub what: Use,
     pub item: Furniture,
+    pub piece: PieceRef,
     pub x: i32,
     pub y: i32,
     pub facing: Facing,
+}
+
+impl Seat {
     /// It's makeshift furniture she made of text.
-    pub makeshift: bool,
+    pub fn makeshift(&self) -> bool {
+        matches!(self.piece, PieceRef::Made(_))
+    }
 }
 
 /// Which room a piece belongs to. Panes are her rooms: all the pieces of
@@ -275,6 +292,14 @@ pub(super) struct Shown {
 }
 
 impl Shown {
+    /// Which piece it is.
+    pub fn piece(&self) -> PieceRef {
+        match self.scrap {
+            Some(scrap) => PieceRef::Made(scrap.id),
+            None => PieceRef::Real(self.item),
+        }
+    }
+
     /// Its size in cells (columns, rows).
     pub fn size(&self) -> (u16, u16) {
         match self.scrap {
@@ -347,10 +372,10 @@ impl Shown {
         Seat {
             what,
             item: self.item,
+            piece: self.piece(),
             x,
             y: self.floor,
             facing,
-            makeshift: self.scrap.is_some(),
         }
     }
 
