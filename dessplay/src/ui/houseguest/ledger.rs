@@ -7,7 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::room::{Furniture, Home, Nook, Prop, RoomKind};
+use super::room::{Furniture, Home, Nook, Prop, RoomKind, Strip};
 use super::sprite::Facing;
 
 /// The format this build writes.
@@ -56,16 +56,17 @@ impl Ledger {
         if raw.version != VERSION {
             return Err(format!("unsupported version {}", raw.version));
         }
-        let mut home = Home::default();
+        let mut rooms: Vec<(RoomKind, Nook)> = Vec::new();
         for (kind, nook) in raw
             .rooms
             .into_iter()
             .filter_map(|v| serde_json::from_value::<(RoomKind, Nook)>(v).ok())
         {
-            if home.nook_of(kind).is_none() && !home.rooms.iter().any(|&(_, n)| n == nook) {
-                home.rooms.push((kind, nook));
+            if !rooms.iter().any(|&(k, n)| k == kind || n == nook) {
+                rooms.push((kind, nook));
             }
         }
+        let mut home = Home::default();
         for prop in raw
             .props
             .into_iter()
@@ -73,12 +74,13 @@ impl Ledger {
         {
             // A piece whose room has no pane on record is dropped: it
             // could never be placed.
-            if home.nook_of(prop.item.room()).is_some() && !home.owns(prop.item) {
+            let room = rooms.iter().find(|&&(k, _)| k == prop.item.room());
+            if let Some(&(_, nook)) = room
+                && !home.owns(prop.item)
+            {
                 home.props.push(Prop {
-                    item: prop.item,
-                    at: prop.at.min(1000),
-                    facing: prop.facing,
                     boxed: prop.boxed,
+                    ..Prop::new(prop.item, nook, prop.at, prop.facing)
                 });
             }
         }
@@ -101,7 +103,7 @@ impl Ledger {
             version: VERSION,
             master_seed: self.master_seed,
             visits: self.visits,
-            rooms: &self.home.rooms,
+            rooms: rooms(&self.home),
             props: self
                 .home
                 .props
@@ -152,12 +154,34 @@ fn facing_right() -> Facing {
     Facing::Right
 }
 
+/// Which pane each room is in, as older builds read it: the pane of its
+/// first piece's strip, or, where another room has that pane, the first
+/// pane none has (each room needs a pane of its own there).
+fn rooms(home: &Home) -> Vec<(RoomKind, Nook)> {
+    let mut out: Vec<(RoomKind, Nook)> = Vec::new();
+    for prop in &home.props {
+        let kind = prop.item.room();
+        if out.iter().any(|&(k, _)| k == kind) {
+            continue;
+        }
+        let Strip::Bottom(nook) = prop.strip;
+        let taken = |n: Nook| out.iter().any(|&(_, t)| t == n);
+        let free = [nook, Nook::List, Nook::Users, Nook::Playlist]
+            .into_iter()
+            .find(|&n| !taken(n));
+        if let Some(nook) = free {
+            out.push((kind, nook));
+        }
+    }
+    out
+}
+
 #[derive(Serialize)]
-struct Saved<'a> {
+struct Saved {
     version: u32,
     master_seed: u64,
     visits: u64,
-    rooms: &'a [(RoomKind, Nook)],
+    rooms: Vec<(RoomKind, Nook)>,
     props: Vec<SavedProp>,
     ordered: Option<Furniture>,
     bought_on: u64,
@@ -192,25 +216,16 @@ mod tests {
         ledger.ordered = Some(Furniture::Desk);
         ledger.bought_on = 6;
         for (item, at) in [(Furniture::Sofa, 0), (Furniture::Tv, 900)] {
-            assert!(ledger.home.add(
-                Nook::Users,
-                Prop {
-                    item,
-                    at,
-                    facing: Facing::Left,
-                    boxed: false,
-                },
-            ));
+            assert!(
+                ledger
+                    .home
+                    .add(Prop::new(item, Nook::Users, at, Facing::Left))
+            );
         }
-        assert!(ledger.home.add(
-            Nook::Playlist,
-            Prop {
-                item: Furniture::Bed,
-                at: 500,
-                facing: Facing::Right,
-                boxed: true,
-            },
-        ));
+        assert!(ledger.home.add(Prop {
+            boxed: true,
+            ..Prop::new(Furniture::Bed, Nook::Playlist, 500, Facing::Right)
+        }));
         ledger
     }
 
@@ -242,9 +257,9 @@ mod tests {
             ]
         }"#;
         let ledger = Ledger::from_json(text).unwrap();
-        assert_eq!(ledger.home.rooms, [(RoomKind::Living, Nook::Users)]);
         // The bed's room has no pane on record: it's dropped.
         assert_eq!(ledger.home.props.len(), 1);
+        assert_eq!(ledger.home.props[0].strip, Strip::Bottom(Nook::Users));
         assert!(ledger.home.owns(Furniture::Sofa));
         assert_eq!((ledger.master_seed, ledger.visits), (5, 2));
     }

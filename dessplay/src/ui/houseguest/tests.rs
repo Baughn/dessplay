@@ -397,15 +397,12 @@ proptest! {
         let nook = [Nook::List, Nook::Users, Nook::Playlist];
         for &(item, at, along, left) in &owned {
             // A second room offered a taken pane is refused, as in play.
-            let _ = guest.ledger.home.add(
+            let _ = guest.ledger.home.add(room::Prop::new(
+                Furniture::ALL[item],
                 nook[at],
-                room::Prop {
-                    item: Furniture::ALL[item],
-                    at: along,
-                    facing: if left { sprite::Facing::Left } else { sprite::Facing::Right },
-                    boxed: false,
-                },
-            );
+                along,
+                if left { sprite::Facing::Left } else { sprite::Facing::Right },
+            ));
         }
         let mut hidden = Hidden::default();
         let mut now = 0;
@@ -445,14 +442,12 @@ proptest! {
                     State::Visiting(visit) => (visit.layer.cells().collect(), visit.shown.clone()),
                     _ => (Vec::new(), Vec::new()),
                 };
-                // A room's pieces share a pane, and a pane holds one room.
+                // A room's pieces share a strip.
                 for a in &shown {
                     for b in &shown {
-                        prop_assert_eq!(
-                            a.item.room() == b.item.room(),
-                            a.nook == b.nook,
-                            "{:?} and {:?}", a, b
-                        );
+                        if a.item.room() == b.item.room() {
+                            prop_assert_eq!(a.strip, b.strip, "{:?} and {:?}", a, b);
+                        }
                     }
                 }
                 // Her furniture stands on lines, over blank cells only,
@@ -2568,15 +2563,12 @@ proptest! {
         let panes = nooks(w, h);
         let quiet = [Nook::Users, Nook::Playlist];
         for &(item, at, along, left) in &owned {
-            let _ = guest.ledger.home.add(
+            let _ = guest.ledger.home.add(room::Prop::new(
+                Furniture::ALL[item],
                 quiet[at],
-                room::Prop {
-                    item: Furniture::ALL[item],
-                    at: along,
-                    facing: if left { sprite::Facing::Left } else { sprite::Facing::Right },
-                    boxed: false,
-                },
-            );
+                along,
+                if left { sprite::Facing::Left } else { sprite::Facing::Right },
+            ));
         }
         let mut real = rooms(w, h);
         scatter(&mut real, &text, &[]);
@@ -3308,7 +3300,7 @@ fn a_real_piece_wins_nineteen_times_in_twenty() {
         item: Furniture::Sofa,
         facing: sprite::Facing::Right,
         boxed: false,
-        nook: None,
+        strip: None,
         left: 40,
         floor: 20,
         scrap: Some(scrap::Scrap::new(MadeId(1), &[], 0)),
@@ -3481,15 +3473,12 @@ proptest! {
         guest.set_picker(kitty());
         let nook = [Nook::List, Nook::Users, Nook::Playlist];
         for &(item, at, along, left) in &owned {
-            let _ = guest.ledger.home.add(
+            let _ = guest.ledger.home.add(room::Prop::new(
+                Furniture::ALL[item],
                 nook[at],
-                room::Prop {
-                    item: Furniture::ALL[item],
-                    at: along,
-                    facing: if left { sprite::Facing::Left } else { sprite::Facing::Right },
-                    boxed: false,
-                },
-            );
+                along,
+                if left { sprite::Facing::Left } else { sprite::Facing::Right },
+            ));
         }
         let protected = bottom_strip(w, h);
         let view = IdleView {
@@ -4245,15 +4234,12 @@ fn a_tv_anywhere_on_the_sofas_floor_is_watched_from_it() {
             (Furniture::Tv, tv_at, sprite::Facing::Right),
             (Furniture::Sofa, sofa_at, sprite::Facing::Left),
         ] {
-            assert!(guest.ledger.home.add(
-                Nook::Playlist,
-                Prop {
-                    item,
-                    at,
-                    facing,
-                    boxed: false,
-                },
-            ));
+            assert!(
+                guest
+                    .ledger
+                    .home
+                    .add(Prop::new(item, Nook::Playlist, at, facing,))
+            );
         }
         guest.cue(Scene::Arrive);
         paint(&mut guest, &real, &view, 0);
@@ -4294,7 +4280,7 @@ fn a_made_sofa_mostly_faces_the_tv() {
             item: Furniture::Sofa,
             facing: sprite::Facing::Right,
             boxed: false,
-            nook: None,
+            strip: None,
             left: x - 3,
             floor: 20,
             scrap: Some(scrap::Scrap::new(MadeId(0), &[], 0)),

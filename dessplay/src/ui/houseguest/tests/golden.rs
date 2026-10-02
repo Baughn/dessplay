@@ -78,10 +78,10 @@ impl Trace {
         }
     }
 
-    /// The run's hash, with what she owns at the end; written out as
-    /// `name` when tracing.
+    /// The run's hash, with her record at the end, as it's saved;
+    /// written out as `name` when tracing.
     fn finish(mut self, guest: &Guest, name: &str) -> u64 {
-        let home = format!("{:?}", guest.ledger);
+        let home = guest.ledger.to_json();
         self.hash.bytes(home.as_bytes());
         if let (Some(lines), Some(dir)) = (self.lines, std::env::var_os("HOUSEGUEST_GOLDEN_TRACE"))
         {
@@ -194,15 +194,10 @@ fn resident(seed: u64, graphics: bool) -> u64 {
         (Furniture::Tv, Nook::Users, 700),
         (Furniture::Bed, Nook::Playlist, 500),
     ] {
-        let _ = guest.ledger.home.add(
-            nook,
-            room::Prop {
-                item,
-                at,
-                facing: sprite::Facing::Right,
-                boxed: false,
-            },
-        );
+        let _ = guest
+            .ledger
+            .home
+            .add(room::Prop::new(item, nook, at, sprite::Facing::Right));
     }
     let mut real = rooms(w, h);
     // Chat lines down the chat pane, the last few just above its floor.
@@ -343,10 +338,10 @@ fn golden_stage_room() {
         "stage",
         stage_room,
         &[
-            (0, 0x4dd8028b233057b5, 0x034f12ce7bea2539),
-            (1, 0x1d41b89d02d81a7e, 0x63e11d86c4ae643e),
-            (2, 0x95e6d5da086fb48a, 0x092bda8c628700a3),
-            (3, 0x0311cf8f9f46642f, 0xaee3b954296f64b3),
+            (0, 0xe213fb75733b5243, 0xbf27d6817cec5cab),
+            (1, 0x4487a6ccbf968e4a, 0xf61680bb71e351bc),
+            (2, 0x172c54cf4c08393a, 0xca5c51e69732dec5),
+            (3, 0x3c5614c576a8cc87, 0x99b37fb6b8a80ee5),
         ],
     );
 }
@@ -357,10 +352,10 @@ fn golden_resident() {
         "resident",
         resident,
         &[
-            (0, 0x9824aaef31dc2b47, 0xe24469bb1cd1096c),
-            (1, 0x2c941180530cff5c, 0xa16ec07f21a95002),
-            (2, 0x057932250302db2a, 0x7fb83a19711835b5),
-            (3, 0xd5ef19407fb50a68, 0xeff1c76b5ce46034),
+            (0, 0xbae4b9d2a92feb41, 0x0b65d38aa830563a),
+            (1, 0x6e6209581f56d324, 0xd13617469d10ceda),
+            (2, 0x6db38b6a9f364244, 0x5ab75d963a99ac8f),
+            (3, 0x35eb35f2f979bd90, 0x76aaac06c15f354c),
         ],
     );
 }
@@ -371,10 +366,10 @@ fn golden_furnished_home() {
         "furnished",
         furnished,
         &[
-            (0, 0x90b39df67fca4840, 0x251f0537f3d3d62b),
-            (1, 0xbcd9ea0409da5f7c, 0x53cb68f4290bcc1e),
-            (2, 0xe0ea7c279165a895, 0x0cc0d3706ad20816),
-            (3, 0x4dd40f837d0ee93f, 0xe2845a795860be6d),
+            (0, 0xcd63cfcb5c86af2d, 0x6f5a8e4ae3930c0c),
+            (1, 0x915c664417f6dd35, 0x8ffb6fa2e75e9e03),
+            (2, 0xde2bbff07d9c1b42, 0xcce87ea1dc7f970f),
+            (3, 0xb2df28c5f9044644, 0x212d598ff500714e),
         ],
     );
 }
@@ -385,10 +380,10 @@ fn golden_errand() {
         "errand",
         errand,
         &[
-            (0, 0x6428b549c8ec9e5d, 0x7e7cdb4206b175a5),
-            (1, 0xe3682f8a29616aef, 0x41e9fb5c27bcd081),
-            (2, 0xcc78942c574684ca, 0xc1be5ea954571609),
-            (3, 0x667e84f944f22fc7, 0x4a2fa3e9c9152275),
+            (0, 0x44b9d8f6b6149bee, 0x109d1e7aa98bc6b6),
+            (1, 0x7f72ed86bb7a2476, 0x1599d7fa0f39a6bc),
+            (2, 0xb5c916f0b92350d7, 0x28ee26027e4407be),
+            (3, 0xaa56dcc3374fb86e, 0x48f8650dc1af5ff0),
         ],
     );
 }

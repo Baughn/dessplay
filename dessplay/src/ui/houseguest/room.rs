@@ -302,14 +302,175 @@ pub(super) enum RoomKind {
     Kitchen,
 }
 
-/// A piece she owns, `at` thousandths of the way along its room's
-/// floor; `boxed` until she unpacks it.
+/// A floor her home can stand on: a quiet pane's bottom border, between
+/// its walls. Its identity holds across frames, unlike the live
+/// platforms, which text splits and renumbers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub(super) enum Strip {
+    Bottom(Nook),
+}
+
+/// Which wall of its strip an anchor counts from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub(super) enum Side {
+    Left,
+    Right,
+}
+
+/// Where a piece stands along its strip: its near edge `offset` cells
+/// from `side`'s wall. A resize keeps it that far from that wall.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(super) struct Anchor {
+    pub side: Side,
+    pub offset: u16,
+}
+
+/// A piece she owns, standing on `strip`; `boxed` until she unpacks it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Prop {
     pub item: Furniture,
+    pub strip: Strip,
+    /// Its place along the strip, once it has stood there (an older
+    /// record's piece has only `at` until its strip is first seen).
+    pub anchor: Option<Anchor>,
+    /// Thousandths of the way along its strip, as older builds read it;
+    /// set whenever the anchor is.
     pub at: u16,
     pub facing: Facing,
     pub boxed: bool,
+}
+
+impl Prop {
+    /// `item` `at` thousandths of the way along `nook`'s floor, not yet
+    /// anchored.
+    pub fn new(item: Furniture, nook: Nook, at: u16, facing: Facing) -> Self {
+        Self {
+            item,
+            strip: Strip::Bottom(nook),
+            anchor: None,
+            at: at.min(1000),
+            facing,
+            boxed: false,
+        }
+    }
+}
+
+/// A strip as it stands this frame: columns `from..to` between its
+/// walls, the floor row, and the rows clear above the floor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Extent {
+    pub from: i32,
+    pub to: i32,
+    pub floor: i32,
+    pub rows: u16,
+}
+
+impl Extent {
+    /// Whether a piece `cols × rows` fits between its walls at all.
+    fn holds(&self, (cols, rows): (u16, u16)) -> bool {
+        self.to - self.from >= i32::from(cols) && self.rows >= rows
+    }
+
+    /// The leftmost column a piece `cols` wide anchored at `anchor` would
+    /// like, kept between the walls.
+    fn left(&self, anchor: Anchor, cols: u16) -> i32 {
+        let cols = i32::from(cols);
+        let offset = i32::from(anchor.offset);
+        let want = match anchor.side {
+            Side::Left => self.from + offset,
+            Side::Right => self.to - offset - cols,
+        };
+        want.min(self.to - cols).max(self.from)
+    }
+
+    /// Where `at` thousandths of the way along puts a piece `cols` wide.
+    fn share(&self, at: u16, cols: u16) -> i32 {
+        let span = (self.to - self.from - i32::from(cols)).max(0);
+        self.from + span * i32::from(at.min(1000)) / 1000
+    }
+
+    /// The anchor that keeps a piece `cols` wide at `left`: from the
+    /// nearer wall, and its share of the way along.
+    fn pin(&self, left: i32, cols: u16) -> (Anchor, u16) {
+        let span = (self.to - self.from - i32::from(cols)).max(0);
+        let from_left = (left - self.from).clamp(0, span);
+        let at = if span == 0 {
+            0
+        } else {
+            (from_left * 1000 / span) as u16
+        };
+        let anchor = if 2 * from_left <= span {
+            Anchor {
+                side: Side::Left,
+                offset: from_left as u16,
+            }
+        } else {
+            Anchor {
+                side: Side::Right,
+                offset: (span - from_left) as u16,
+            }
+        };
+        (anchor, at)
+    }
+}
+
+/// The strips of the quiet panes this frame.
+pub(super) fn strips(nooks: &[(Nook, Rect)]) -> Vec<(Strip, Extent)> {
+    nooks
+        .iter()
+        .map(|&(nook, rect)| {
+            (
+                Strip::Bottom(nook),
+                Extent {
+                    from: i32::from(rect.x) + 1,
+                    to: i32::from(rect.right()) - 1,
+                    floor: i32::from(rect.bottom()) - 1,
+                    rows: rect.height.saturating_sub(2),
+                },
+            )
+        })
+        .collect()
+}
+
+/// Where the pieces `(index, anchor, size)` stand on `extent`, as
+/// `(index, left)`, if it holds them all: in anchor order along it
+/// (those from the left wall, nearest first, then those from the right,
+/// farthest first), each where its anchor puts it unless that collides,
+/// in which case the colliding ones stand side by side, still in order.
+/// The order doesn't depend on the strip's width, so a resize never
+/// reorders them, and a resize and back puts each where it was.
+fn pack(pieces: &[(usize, Anchor, (u16, u16))], extent: Extent) -> Option<Vec<(usize, i32)>> {
+    if !pieces.iter().all(|&(.., size)| extent.holds(size)) {
+        return None;
+    }
+    let mut order: Vec<(usize, Anchor, (u16, u16))> = pieces.to_vec();
+    order.sort_by_key(|&(index, anchor, _)| match anchor.side {
+        Side::Left => (0, i32::from(anchor.offset), index),
+        Side::Right => (1, -i32::from(anchor.offset), index),
+    });
+    let mut placed: Vec<(usize, i32)> = order
+        .iter()
+        .map(|&(index, anchor, (cols, _))| (index, extent.left(anchor, cols)))
+        .collect();
+    let cols = |index: usize| {
+        pieces
+            .iter()
+            .find(|&&(i, ..)| i == index)
+            .map_or(0, |&(.., (cols, _))| i32::from(cols))
+    };
+    // Left to right, each clear of the one before; then right to left,
+    // each back inside the far wall and clear of the one after.
+    let mut edge = extent.from;
+    for (index, left) in &mut placed {
+        *left = (*left).max(edge);
+        edge = *left + cols(*index);
+    }
+    let mut edge = extent.to;
+    for (index, left) in placed.iter_mut().rev() {
+        *left = (*left).min(edge - cols(*index));
+        edge = *left;
+    }
+    (edge >= extent.from).then_some(placed)
 }
 
 /// A prop as placed in this frame.
@@ -319,9 +480,9 @@ pub(super) struct Shown {
     pub facing: Facing,
     /// Still in its delivery box (drawn as the box).
     pub boxed: bool,
-    /// The pane its room is in (none for makeshift pieces, which belong
-    /// to no room).
-    pub nook: Option<Nook>,
+    /// The strip it stands on (none for makeshift pieces, which stand
+    /// where she made them).
+    pub strip: Option<Strip>,
     /// Its leftmost column.
     pub left: i32,
     /// The floor row it stands on (just below its footprint).
@@ -457,11 +618,10 @@ impl Shown {
     }
 }
 
-/// Everything she owns, and which pane each room is in.
+/// Everything she owns.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(super) struct Home {
     pub props: Vec<Prop>,
-    pub rooms: Vec<(RoomKind, Nook)>,
 }
 
 impl Home {
@@ -486,68 +646,143 @@ impl Home {
         self.props.iter().any(|p| p.boxed)
     }
 
-    /// The pane `kind` is in, if she has furnished it.
-    pub fn nook_of(&self, kind: RoomKind) -> Option<Nook> {
-        self.rooms
+    /// The strip `kind`'s pieces stand on, if she has furnished it.
+    pub fn strip_of(&self, kind: RoomKind) -> Option<Strip> {
+        self.props
             .iter()
-            .find(|&&(k, _)| k == kind)
-            .map(|&(_, nook)| nook)
+            .find(|p| p.item.room() == kind)
+            .map(|p| p.strip)
     }
 
-    /// Place her rooms in this frame. A room whose pane still holds all
-    /// its pieces stays, each piece showing if its cells are free (else
-    /// it's in the closet this frame). A room whose pane is gone or too
-    /// small moves, whole, to a free pane where every piece fits; with
-    /// none, the whole room is in the closet. `blocked` cells are never
+    /// The strips her pieces stand on, in the order she furnished them.
+    fn furnished(&self) -> Vec<Strip> {
+        let mut out: Vec<Strip> = Vec::new();
+        for prop in &self.props {
+            if !out.contains(&prop.strip) {
+                out.push(prop.strip);
+            }
+        }
+        out
+    }
+
+    /// Her pieces on `strip`, and `also`'s, as [`pack`] takes them, if
+    /// every one is anchored.
+    fn on(&self, strip: Strip, also: Option<Strip>) -> Vec<(usize, Anchor, (u16, u16))> {
+        self.props
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.strip == strip || Some(p.strip) == also)
+            .filter_map(|(i, p)| Some((i, p.anchor?, p.item.spec().footprint)))
+            .collect()
+    }
+
+    /// Where her pieces stand this frame. Each stands on its strip, in
+    /// anchor order (see [`pack`]), if its cells are free (else it's in
+    /// the closet this frame). A strip that's gone, or too small to hold
+    /// its pieces, has them all moved, together and in order, to the
+    /// first strip that holds them besides its own, every one of them on
+    /// free cells; with none, they're all in the closet. An older
+    /// record's piece is anchored where its share of the way along puts
+    /// it, the first time its strip is here. `blocked` cells are never
     /// covered by a piece (protected rectangles, moved text).
-    pub fn resolve(
+    pub fn project(
         &mut self,
         buf: &Buffer,
         nooks: &[(Nook, Rect)],
         blocked: &dyn Fn(i32, i32) -> bool,
     ) -> Vec<Shown> {
-        let mut shown: Vec<Shown> = Vec::new();
-        for index in 0..self.rooms.len() {
-            let Some(&(kind, home)) = self.rooms.get(index) else {
-                continue;
-            };
-            let pieces: Vec<Prop> = self
-                .props
-                .iter()
-                .filter(|p| p.item.room() == kind)
-                .copied()
-                .collect();
-            if let Some(layout) = layout(&pieces, home, nooks) {
-                for at in layout {
-                    if fits(buf, &at, &|x, y| free(&shown, blocked, x, y)) {
-                        shown.push(at);
-                    }
-                }
+        let strips = strips(nooks);
+        let extent = |strip: Strip| strips.iter().find(|(s, _)| *s == strip).map(|&(_, e)| e);
+        for prop in &mut self.props {
+            if prop.anchor.is_none()
+                && let Some(e) = extent(prop.strip)
+            {
+                let cols = prop.item.spec().footprint.0;
+                prop.anchor = Some(e.pin(e.share(prop.at, cols), cols).0);
+            }
+        }
+        for strip in self.furnished() {
+            if extent(strip).is_some_and(|e| pack(&self.on(strip, None), e).is_some()) {
                 continue;
             }
-            let moved = nooks
-                .iter()
-                .filter(|&&(nook, _)| !self.rooms.iter().any(|&(_, n)| n == nook))
-                .find_map(|&(nook, _)| {
-                    let layout = layout(&pieces, nook, nooks)?;
-                    layout
-                        .iter()
-                        .all(|at| fits(buf, at, &|x, y| free(&shown, blocked, x, y)))
-                        .then_some((nook, layout))
-                });
-            if let Some((nook, layout)) = moved {
-                tracing::info!(?kind, from = ?home, to = ?nook, "houseguest: a room moved");
-                if let Some(room) = self.rooms.get_mut(index) {
-                    room.1 = nook;
+            self.move_off(strip, buf, &strips, blocked);
+        }
+        let mut shown: Vec<Shown> = Vec::new();
+        for strip in self.furnished() {
+            let Some(e) = extent(strip) else {
+                continue;
+            };
+            let Some(mut packed) = pack(&self.on(strip, None), e) else {
+                continue;
+            };
+            packed.sort_unstable();
+            for (index, left) in packed {
+                let Some(prop) = self.props.get(index) else {
+                    continue;
+                };
+                let at = stand(prop, strip, e, left);
+                if fits(buf, &at, &|x, y| free(&shown, blocked, x, y)) {
+                    shown.push(at);
                 }
-                shown.extend(layout);
             }
         }
         shown
     }
 
-    /// Where `item` could go this frame: in its room's pane, or, for a
-    /// room she hasn't furnished yet, any pane no other room is in —
+    /// Move `strip`'s pieces, together, to the first other strip that
+    /// holds them with its own, each on free cells.
+    fn move_off(
+        &mut self,
+        strip: Strip,
+        buf: &Buffer,
+        strips: &[(Strip, Extent)],
+        blocked: &dyn Fn(i32, i32) -> bool,
+    ) {
+        let leaving: Vec<usize> = (0..self.props.len())
+            .filter(|&i| self.props.get(i).is_some_and(|p| p.strip == strip))
+            .collect();
+        let target = strips
+            .iter()
+            .filter(|&&(s, _)| s != strip)
+            .find_map(|&(to, e)| {
+                // Pieces never anchored are anchored by their share there.
+                let mut moved = self.clone();
+                for &i in &leaving {
+                    let prop = moved.props.get_mut(i)?;
+                    let cols = prop.item.spec().footprint.0;
+                    prop.anchor = prop
+                        .anchor
+                        .or_else(|| Some(e.pin(e.share(prop.at, cols), cols).0));
+                    prop.strip = to;
+                }
+                let packed = pack(&moved.on(to, None), e)?;
+                let all_free =
+                    packed
+                        .iter()
+                        .filter(|(i, _)| leaving.contains(i))
+                        .all(|&(i, left)| {
+                            moved.props.get(i).is_some_and(|p| {
+                                fits(buf, &stand(p, to, e, left), &|x, y| !blocked(x, y))
+                            })
+                        });
+                all_free.then_some((to, e, moved, packed))
+            });
+        let Some((to, e, mut moved, packed)) = target else {
+            return;
+        };
+        tracing::info!(from = ?strip, ?to, "houseguest: her pieces moved");
+        for (i, left) in packed {
+            if leaving.contains(&i)
+                && let Some(prop) = moved.props.get_mut(i)
+            {
+                prop.at = e.pin(left, prop.item.spec().footprint.0).1;
+            }
+        }
+        *self = moved;
+    }
+
+    /// Where `item` could go this frame: on its room's strip, or, for a
+    /// room she hasn't furnished yet, on a strip no piece stands on —
     /// chosen at random among spots that fit, clear of what's `shown`.
     pub fn spot(
         &self,
@@ -557,55 +792,72 @@ impl Home {
         blocked: &dyn Fn(i32, i32) -> bool,
         item: Furniture,
         rng: &mut Rng,
-    ) -> Option<(Nook, Prop)> {
+    ) -> Option<Prop> {
         let facing = if rng.below(2) == 0 {
             Facing::Right
         } else {
             Facing::Left
         };
-        let bound = self.nook_of(item.room());
-        let spots: Vec<(Nook, Prop)> = nooks
-            .iter()
-            .filter(|&&(nook, _)| match bound {
-                Some(home) => nook == home,
-                None => !self.rooms.iter().any(|&(_, n)| n == nook),
+        let bound = self.strip_of(item.room());
+        let cols = item.spec().footprint.0;
+        let spots: Vec<Prop> = strips(nooks)
+            .into_iter()
+            .filter(|&(strip, _)| match bound {
+                Some(home) => strip == home,
+                None => !self.props.iter().any(|p| p.strip == strip),
             })
-            .flat_map(|&(nook, _)| {
-                (0..=10).map(move |step| {
-                    (
-                        nook,
-                        Prop {
-                            item,
-                            at: step * 100,
-                            facing,
-                            boxed: false,
-                        },
-                    )
+            .flat_map(|(strip, e)| {
+                (0..=10).filter_map(move |step| {
+                    let at = step * 100;
+                    let prop = Prop {
+                        item,
+                        strip,
+                        anchor: Some(e.pin(e.share(at, cols), cols).0),
+                        at,
+                        facing,
+                        boxed: false,
+                    };
+                    e.holds(item.spec().footprint)
+                        .then(|| (prop, stand(&prop, strip, e, e.share(at, cols))))
                 })
             })
-            .filter(|&(nook, prop)| {
-                place(prop, nook, nooks).is_some_and(|at| {
-                    let clear = |x: i32, y: i32| free(shown, blocked, x, y);
-                    fits(buf, &at, &clear) && roomy(buf, &at, &clear)
-                })
+            .filter(|(_, at)| {
+                let clear = |x: i32, y: i32| free(shown, blocked, x, y);
+                fits(buf, at, &clear) && roomy(buf, at, &clear)
             })
+            .map(|(prop, _)| prop)
             .collect();
         spots.get(rng.below(spots.len() as u64) as usize).copied()
     }
 
-    /// Take ownership of `prop`: into its room, or, for a new room, into
-    /// `nook` — unless another room is already there (then she doesn't
-    /// take it, and this returns false).
-    pub fn add(&mut self, nook: Nook, prop: Prop) -> bool {
-        let kind = prop.item.room();
-        if self.nook_of(kind).is_none() {
-            if self.rooms.iter().any(|&(_, n)| n == nook) {
-                return false;
+    /// Take ownership of `prop`: onto its room's strip, or, for a new
+    /// room, its own — unless another room's pieces stand there (then she
+    /// doesn't take it, and this returns false).
+    pub fn add(&mut self, mut prop: Prop) -> bool {
+        match self.strip_of(prop.item.room()) {
+            Some(strip) if strip != prop.strip => {
+                prop.strip = strip;
+                prop.anchor = None;
             }
-            self.rooms.push((kind, nook));
+            Some(_) => {}
+            None if self.props.iter().any(|p| p.strip == prop.strip) => return false,
+            None => {}
         }
         self.props.push(prop);
         true
+    }
+}
+
+/// `prop` as it stands at `left` on `strip`.
+fn stand(prop: &Prop, strip: Strip, extent: Extent, left: i32) -> Shown {
+    Shown {
+        item: prop.item,
+        facing: prop.facing,
+        boxed: prop.boxed,
+        strip: Some(strip),
+        left,
+        floor: extent.floor,
+        scrap: None,
     }
 }
 
@@ -665,56 +917,6 @@ fn free(shown: &[Shown], blocked: &dyn Fn(i32, i32) -> bool, x: i32, y: i32) -> 
             .any(|s| s.rect().contains((x as u16, y as u16).into()))
 }
 
-/// Where `pieces` would stand in `nook`, if its pane is there and big
-/// enough to hold every one of them without overlapping: each at its
-/// place along the floor, except that pieces whose places collide stand
-/// side by side, in order along it.
-fn layout(pieces: &[Prop], nook: Nook, nooks: &[(Nook, Rect)]) -> Option<Vec<Shown>> {
-    let mut placed: Vec<Shown> = pieces
-        .iter()
-        .map(|&prop| place(prop, nook, nooks))
-        .collect::<Option<_>>()?;
-    let &(_, rect) = nooks.iter().find(|(n, _)| *n == nook)?;
-    let cols = |piece: &Shown| i32::from(piece.size().0);
-    let mut order: Vec<usize> = (0..placed.len()).collect();
-    order.sort_by_key(|&i| (pieces.get(i).map_or(0, |p| p.at.min(1000)), i));
-    // Left to right, each clear of the one before; then right to left,
-    // each back inside the far wall and clear of the one after.
-    let mut edge = i32::from(rect.x) + 1;
-    for &i in &order {
-        let piece = placed.get_mut(i)?;
-        piece.left = piece.left.max(edge);
-        edge = piece.left + cols(piece);
-    }
-    let mut edge = i32::from(rect.right()) - 1;
-    for &i in order.iter().rev() {
-        let piece = placed.get_mut(i)?;
-        piece.left = piece.left.min(edge - cols(piece));
-        edge = piece.left;
-    }
-    (edge > i32::from(rect.x)).then_some(placed)
-}
-
-/// Where `prop` would stand in `nook`, if its pane is there and wide and
-/// tall enough to hold it inside its border.
-fn place(prop: Prop, nook: Nook, nooks: &[(Nook, Rect)]) -> Option<Shown> {
-    let &(_, rect) = nooks.iter().find(|(n, _)| *n == nook)?;
-    let (cols, rows) = prop.item.spec().footprint;
-    if rect.width < cols + 2 || rect.height < rows + 2 {
-        return None;
-    }
-    let span = i32::from(rect.width - 2 - cols);
-    Some(Shown {
-        item: prop.item,
-        facing: prop.facing,
-        boxed: prop.boxed,
-        nook: Some(nook),
-        left: i32::from(rect.x) + 1 + span * i32::from(prop.at.min(1000)) / 1000,
-        floor: i32::from(rect.bottom()) - 1,
-        scrap: None,
-    })
-}
-
 /// Whether `at` stands on unbroken line glyphs with only blank, `clear`
 /// cells in its footprint (image cells and wide glyphs' halves are
 /// never blank).
@@ -771,20 +973,29 @@ mod tests {
     ];
 
     fn prop(item: Furniture, at: u16) -> Prop {
-        Prop {
-            item,
-            at,
-            facing: Facing::Right,
-            boxed: false,
-        }
+        Prop::new(item, Nook::Users, at, Facing::Right)
     }
 
     fn home(nook: Nook, props: &[Prop]) -> Home {
         let mut home = Home::default();
         for &p in props {
-            assert!(home.add(nook, p));
+            assert!(home.add(Prop {
+                strip: Strip::Bottom(nook),
+                ..p
+            }));
         }
         home
+    }
+
+    /// An empty pane `width × height` titled `title`, its rows.
+    fn empty(title: &str, width: usize, height: usize) -> Vec<String> {
+        let mut rows = vec![format!(
+            "┌{title}{}┐",
+            "─".repeat(width - 2 - title.chars().count())
+        )];
+        rows.extend((0..height - 2).map(|_| format!("│{}│", " ".repeat(width - 2))));
+        rows.push(format!("└{}┘", "─".repeat(width - 2)));
+        rows
     }
 
     #[test]
@@ -792,11 +1003,11 @@ mod tests {
         let buf = pane(&USERS);
         let nooks = [(Nook::Users, buf.area)];
         let shown =
-            home(Nook::Users, &[prop(Furniture::Sofa, 0)]).resolve(&buf, &nooks, &|_, _| false);
+            home(Nook::Users, &[prop(Furniture::Sofa, 0)]).project(&buf, &nooks, &|_, _| false);
         assert_eq!(shown.len(), 1);
         assert_eq!(shown[0].rect(), Rect::new(1, 2, 9, 3));
         let far =
-            home(Nook::Users, &[prop(Furniture::Sofa, 1000)]).resolve(&buf, &nooks, &|_, _| false);
+            home(Nook::Users, &[prop(Furniture::Sofa, 1000)]).project(&buf, &nooks, &|_, _| false);
         assert_eq!(far[0].rect().right(), 17);
     }
 
@@ -807,25 +1018,25 @@ mod tests {
         let buf = pane(&rows);
         let nooks = [(Nook::Users, buf.area)];
         let mut room = home(Nook::Users, &[prop(Furniture::Sofa, 0)]);
-        assert!(room.resolve(&buf, &nooks, &|_, _| false).is_empty());
+        assert!(room.project(&buf, &nooks, &|_, _| false).is_empty());
         let clean = pane(&USERS);
         assert!(
-            room.resolve(&clean, &nooks, &|x, y| (x, y) == (5, 4))
+            room.project(&clean, &nooks, &|x, y| (x, y) == (5, 4))
                 .is_empty()
         );
         assert!(
-            room.resolve(&clean, &[], &|_, _| false).is_empty(),
+            room.project(&clean, &[], &|_, _| false).is_empty(),
             "no pane"
         );
         assert_eq!(
-            room.nook_of(RoomKind::Living),
-            Some(Nook::Users),
-            "text doesn't move a room"
+            room.strip_of(RoomKind::Living),
+            Some(Strip::Bottom(Nook::Users)),
+            "text doesn't move a piece"
         );
     }
 
     #[test]
-    fn a_room_whose_pane_is_too_small_moves_whole_or_not_at_all() {
+    fn a_strip_too_small_moves_its_pieces_together_or_not_at_all() {
         // Two panes side by side: Users 18 wide, Playlist 30 wide.
         let mut rows: Vec<String> = Vec::new();
         for (i, row) in USERS.iter().enumerate() {
@@ -846,29 +1057,61 @@ mod tests {
             Nook::Users,
             &[prop(Furniture::Sofa, 0), prop(Furniture::Tv, 1000)],
         );
-        let big = pane(&[
-            "┌Users─────────────────────────────────────────┐",
-            "│                                              │",
-            "│                                              │",
-            "│                                              │",
-            "│                                              │",
-            "└──────────────────────────────────────────────┘",
-        ]);
+        let big = Buffer::with_lines(empty("Users", 48, 6).iter().map(String::as_str));
         assert_eq!(
-            room.resolve(&big, &[(Nook::Users, wide)], &|_, _| false)
+            room.project(&big, &[(Nook::Users, wide)], &|_, _| false)
                 .len(),
             2
         );
-        // Users shrinks: both no longer fit there, so the living room
-        // moves to the Playlist, together.
+        // Users shrinks: both no longer fit there, so they move to the
+        // Playlist, together, the sofa still left of the TV.
         let nooks = [(Nook::Users, users), (Nook::Playlist, playlist)];
-        let shown = room.resolve(&buf, &nooks, &|_, _| false);
+        let shown = room.project(&buf, &nooks, &|_, _| false);
         assert_eq!(shown.len(), 2, "{shown:?}");
-        assert!(shown.iter().all(|s| s.nook == Some(Nook::Playlist)));
-        assert_eq!(room.nook_of(RoomKind::Living), Some(Nook::Playlist));
-        // Nowhere holds both: the whole room is in the closet.
-        let shown = room.resolve(&buf, &[(Nook::Users, users)], &|_, _| false);
+        assert!(
+            shown
+                .iter()
+                .all(|s| s.strip == Some(Strip::Bottom(Nook::Playlist)))
+        );
+        assert!(shown[0].left < shown[1].left, "{shown:?}");
+        assert_eq!(
+            room.strip_of(RoomKind::Living),
+            Some(Strip::Bottom(Nook::Playlist))
+        );
+        // Nowhere holds both: they're all in the closet.
+        let shown = room.project(&buf, &[(Nook::Users, users)], &|_, _| false);
         assert!(shown.is_empty(), "{shown:?}");
+    }
+
+    /// A strip that's gone sends its pieces to one where other pieces
+    /// already stand, if it holds them all.
+    #[test]
+    fn moved_pieces_may_join_another_rooms_strip() {
+        let rows: Vec<String> = empty("Users", 40, 6)
+            .into_iter()
+            .zip(empty("Playlist", 40, 6))
+            .map(|(a, b)| a + &b)
+            .collect();
+        let buf = Buffer::with_lines(rows.iter().map(String::as_str));
+        let nooks = [
+            (Nook::Users, Rect::new(0, 0, 40, 6)),
+            (Nook::Playlist, Rect::new(40, 0, 40, 6)),
+        ];
+        let mut room = home(Nook::Users, &[prop(Furniture::Sofa, 0)]);
+        assert!(room.add(Prop::new(
+            Furniture::Bed,
+            Nook::Playlist,
+            1000,
+            Facing::Right
+        )));
+        assert_eq!(room.project(&buf, &nooks, &|_, _| false).len(), 2);
+        let shown = room.project(&buf, &nooks[1..], &|_, _| false);
+        assert_eq!(shown.len(), 2, "{shown:?}");
+        assert!(
+            room.props
+                .iter()
+                .all(|p| p.strip == Strip::Bottom(Nook::Playlist))
+        );
     }
 
     /// Pieces whose places along the floor collide stand side by side,
@@ -890,7 +1133,7 @@ mod tests {
                 Nook::Users,
                 &[prop(Furniture::Sofa, sofa), prop(Furniture::Tv, tv)],
             );
-            let shown = room.resolve(&buf, &nooks, &|_, _| false);
+            let shown = room.project(&buf, &nooks, &|_, _| false);
             assert_eq!(shown.len(), 2, "sofa {sofa}, tv {tv}: {shown:?}");
             assert!(!shown[0].rect().intersects(shown[1].rect()), "{shown:?}");
             let left = |item| shown.iter().find(|s| s.item == item).map(|s| s.left);
@@ -905,24 +1148,15 @@ mod tests {
             Nook::Users,
             &[prop(Furniture::Sofa, 0), prop(Furniture::Tv, 1000)],
         );
-        let shown = room.resolve(&buf, &nooks, &|_, _| false);
+        let shown = room.project(&buf, &nooks, &|_, _| false);
         assert_eq!(shown[0].left, 1);
         assert_eq!(shown[1].rect().right(), 29);
     }
 
     #[test]
     fn a_new_piece_joins_its_room_and_rooms_keep_to_their_own_panes() {
-        let big = |title: &str| {
-            let mut rows = vec![format!(
-                "┌{title}{}┐",
-                "─".repeat(38 - title.chars().count())
-            )];
-            rows.extend((0..5).map(|_| format!("│{}│", " ".repeat(38))));
-            rows.push(format!("└{}┘", "─".repeat(38)));
-            rows
-        };
-        let mut rows = big("Users");
-        for (row, other) in rows.iter_mut().zip(big("Playlist")) {
+        let mut rows = empty("Users", 40, 7);
+        for (row, other) in rows.iter_mut().zip(empty("Playlist", 40, 7)) {
             row.push_str(&other);
         }
         let buf = Buffer::with_lines(rows.iter().map(String::as_str));
@@ -934,12 +1168,16 @@ mod tests {
         let mut rng = Rng(5);
         for seed in 0..20 {
             rng.0 = seed;
-            let shown = room.resolve(&buf, &nooks, &|_, _| false);
-            let (nook, _) = room
+            let shown = room.project(&buf, &nooks, &|_, _| false);
+            let tv = room
                 .spot(&buf, &nooks, &shown, &|_, _| false, Furniture::Tv, &mut rng)
                 .expect("room for a TV");
-            assert_eq!(nook, Nook::Users, "the TV goes with the sofa");
-            let (nook, _) = room
+            assert_eq!(
+                tv.strip,
+                Strip::Bottom(Nook::Users),
+                "the TV goes with the sofa"
+            );
+            let bed = room
                 .spot(
                     &buf,
                     &nooks,
@@ -949,7 +1187,123 @@ mod tests {
                     &mut rng,
                 )
                 .expect("room for a bed");
-            assert_eq!(nook, Nook::Playlist, "the bedroom gets a pane of its own");
+            assert_eq!(
+                bed.strip,
+                Strip::Bottom(Nook::Playlist),
+                "the bedroom gets a pane of its own"
+            );
+        }
+    }
+
+    use proptest::prelude::*;
+
+    /// Some of her pieces, each anchored somewhere (or, from an older
+    /// record, only a share of the way along), facing either way.
+    fn pieces() -> impl Strategy<Value = Vec<Prop>> {
+        proptest::sample::subsequence(Furniture::ALL.to_vec(), 1..=5).prop_flat_map(|items| {
+            let n = items.len();
+            (
+                Just(items),
+                proptest::collection::vec(
+                    (
+                        any::<bool>(),
+                        0u16..40,
+                        proptest::option::of(0u16..=1000),
+                        any::<bool>(),
+                    ),
+                    n,
+                ),
+            )
+                .prop_map(|(items, places)| {
+                    items
+                        .into_iter()
+                        .zip(places)
+                        .map(|(item, (right, offset, share, left))| {
+                            let facing = if left { Facing::Left } else { Facing::Right };
+                            let mut prop = Prop::new(item, Nook::Users, share.unwrap_or(0), facing);
+                            if share.is_none() {
+                                prop.anchor = Some(Anchor {
+                                    side: if right { Side::Right } else { Side::Left },
+                                    offset,
+                                });
+                            }
+                            prop
+                        })
+                        .collect()
+                })
+        })
+    }
+
+    /// A Users pane `width` wide, six tall, with `text` cells along its
+    /// first row above the floor.
+    fn users(width: u16, text: &[u16]) -> (Buffer, [(Nook, Rect); 1]) {
+        let mut buf = Buffer::with_lines(
+            empty("Users", usize::from(width), 6)
+                .iter()
+                .map(String::as_str),
+        );
+        for &x in text {
+            if x > 0 && x + 1 < width {
+                buf[(x, 4)].set_symbol("x");
+            }
+        }
+        (buf, [(Nook::Users, Rect::new(0, 0, width, 6))])
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(dessplay_core::test_support::proptest_cases(256)))]
+
+        /// Packing keeps anchor order and the walls, and never overlaps;
+        /// a resize that still holds them all, and back, puts every
+        /// piece where it was; and a piece shows only over blank,
+        /// unblocked cells on an unbroken floor.
+        #[test]
+        fn packing_keeps_order_and_a_resize_and_back_restores(
+            props in pieces(),
+            wide in 30u16..90,
+            narrow in 20u16..90,
+            text in proptest::collection::vec(1u16..90, 0..4),
+            blocked in proptest::option::of(1u16..90),
+        ) {
+            let mut room = Home { props };
+            let (buf, nooks) = users(wide, &[]);
+            let first = room.project(&buf, &nooks, &|_, _| false);
+            let pinned = room.clone();
+            prop_assert!(room.props.iter().all(|p| p.anchor.is_some()));
+            // Shown in anchor order, inside the walls, apart.
+            let order = |s: &Shown| {
+                let prop = room.props.iter().find(|p| p.item == s.item).copied();
+                let anchor = prop.and_then(|p| p.anchor).map(|a| match a.side {
+                    Side::Left => (0, i32::from(a.offset)),
+                    Side::Right => (1, -i32::from(a.offset)),
+                });
+                let index = room.props.iter().position(|p| p.item == s.item);
+                (anchor, index)
+            };
+            let mut along = first.clone();
+            along.sort_by_key(|s| s.left);
+            for pair in along.windows(2) {
+                prop_assert!(pair[0].rect().right() <= pair[1].rect().x, "{:?}", along);
+                prop_assert!(order(&pair[0]) < order(&pair[1]), "{:?}", along);
+            }
+            for s in &first {
+                prop_assert!(s.left >= 1 && s.rect().right() < wide, "{:?}", s);
+            }
+            // A resize, and back.
+            let (small, at_small) = users(narrow, &[]);
+            let _ = room.project(&small, &at_small, &|_, _| false);
+            if room == pinned {
+                let again = room.project(&buf, &nooks, &|_, _| false);
+                prop_assert_eq!(&again, &first);
+            }
+            // Text and blocked cells only closet what they'd cover.
+            let mut room = pinned;
+            let (noisy, _) = users(wide, &text);
+            let block = |x: i32, _: i32| blocked.is_some_and(|b| i32::from(b) == x);
+            for s in room.project(&noisy, &nooks, &block) {
+                prop_assert!(fits(&noisy, &s, &|x, y| !block(x, y)), "{:?}", s);
+                prop_assert!(first.contains(&s), "text never moves a piece: {:?}", s);
+            }
         }
     }
 

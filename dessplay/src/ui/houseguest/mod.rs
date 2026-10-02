@@ -1409,7 +1409,7 @@ fn furnish(
         moved.contains(&(ux, uy)) || view.protected.iter().any(|r| r.contains((ux, uy).into()))
     };
     let home = &mut ledger.home;
-    let mut shown = home.resolve(buf, &view.nooks, &blocked);
+    let mut shown = home.project(buf, &view.nooks, &blocked);
     // A delivery: what she ordered on an earlier visit arrives boxed,
     // wherever it will fit. Her first TV is ordered for her, to arrive
     // on her second visit.
@@ -1419,19 +1419,16 @@ fn furnish(
     }
     if let Some(item) = ledger.ordered
         && ledger.bought_on < ledger.visits
-        && let Some((nook, prop)) = home.spot(buf, &view.nooks, &shown, &blocked, item, rng)
-        && home.add(
-            nook,
-            room::Prop {
-                boxed: true,
-                ..prop
-            },
-        )
+        && let Some(prop) = home.spot(buf, &view.nooks, &shown, &blocked, item, rng)
+        && home.add(room::Prop {
+            boxed: true,
+            ..prop
+        })
     {
-        tracing::info!(?item, ?nook, "houseguest: a parcel arrived");
+        tracing::info!(?item, strip = ?prop.strip, "houseguest: a parcel arrived");
         ledger.ordered = None;
         visit.osaka.say(PARCEL, now);
-        shown = home.resolve(buf, &view.nooks, &blocked);
+        shown = home.project(buf, &view.nooks, &blocked);
     }
     let Some(item) = gift.take() else {
         return shown;
@@ -1440,19 +1437,20 @@ fn furnish(
         Err(format!("she already has a {}", item.spec().name))
     } else {
         match home.spot(buf, &view.nooks, &shown, &blocked, item, rng) {
-            Some((nook, prop)) => {
-                tracing::info!(?item, ?nook, at = prop.at, "houseguest: new furniture");
-                if home.add(nook, prop) {
-                    Ok(format!("a {} in {:?}", item.spec().name, nook))
+            Some(prop) => {
+                let strip = prop.strip;
+                tracing::info!(?item, ?strip, at = prop.at, "houseguest: new furniture");
+                if home.add(prop) {
+                    Ok(format!("a {} on {strip:?}", item.spec().name))
                 } else {
-                    Err(format!("{nook:?} is another room"))
+                    Err(format!("{strip:?} is another room's"))
                 }
             }
             None => Err(format!("no room for a {}", item.spec().name)),
         }
     };
     *note = Some(result);
-    home.resolve(buf, &view.nooks, &blocked)
+    home.project(buf, &view.nooks, &blocked)
 }
 
 /// Where she could go to use each piece shown: in front of it on its

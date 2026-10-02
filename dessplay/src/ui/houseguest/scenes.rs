@@ -627,7 +627,7 @@ pub(super) fn builds(
                     item,
                     facing,
                     boxed: false,
-                    nook: None,
+                    strip: None,
                     left: pull.x - i32::from(cols) / 2,
                     floor: pull.y,
                     scrap: Some(done),
