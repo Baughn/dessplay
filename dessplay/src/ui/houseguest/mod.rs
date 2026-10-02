@@ -218,6 +218,10 @@ impl Made {
             purpose: self.purpose,
             done: scrap.done(),
             used: self.used,
+            at: (
+                self.piece.left + i32::from(self.piece.size().0) / 2,
+                self.piece.floor,
+            ),
         })
     }
 }
@@ -764,6 +768,10 @@ impl Guest {
                     if !visit.made.iter().any(|m| m.torn == sources) {
                         tracing::debug!("houseguest: dropped the text she was reeling in");
                         visit.layer.unreel(&sources);
+                        let middle = old.cells.get(old.cells.len() / 2).copied().unwrap_or(0);
+                        visit
+                            .osaka
+                            .owe(mind::Loss::Tear, (i32::from(middle), i32::from(old.row)));
                     }
                 }
                 visit.reel = reeling;
@@ -1521,13 +1529,19 @@ fn tend_made(visit: &mut Visit, buf: &Buffer, protected: &[Rect], size: (u16, u1
         let stands =
             !resized && layer.torn_intact(&made.torn) && room::fits(buf, &made.piece, &clear);
         if !stands {
-            gone.push(made.torn.clone());
+            gone.push((made.torn.clone(), made.used, made.mine(), made.piece.item));
         }
         stands
     });
-    for torn in gone {
+    for (torn, used, mine, item) in gone {
         tracing::debug!("houseguest: a makeshift piece fell apart");
         visit.layer.mend(&torn);
+        // Before she used it: "...my sofa."
+        if let Some(mine) = mine
+            && !used
+        {
+            visit.osaka.owe(mind::Loss::Piece(item), mine.at);
+        }
     }
     if let Some((seat, since, until)) = visit.osaka.use_span()
         && seat.what == room::Use::Crumple

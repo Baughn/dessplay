@@ -2433,6 +2433,14 @@ more pressing. A heading toward a piece she made stays certain: that
 purpose is on the piece, and continuation already counts her tries at
 it, which a roll per hop would double.
 
+Every loss owes a beat (a glance, sometimes a line) for the
+proposal's rule 5, "nothing ends silently": a lapse reads as hers when
+she looks at what she lost (Carlisle's gaze), and a dropped purpose
+that shows nothing reads as a bug. Beats wait behind the reflexes and
+stay owed if interrupted, so they're never lost themselves; lines have
+a cooldown and a budget because about a third of tears are abandoned
+under chat, and a line every time would nag.
+
 The method table is not a behaviour tree or a planner: methods hold no
 state, a decision makes one step, and the only memory is the heading
 and what's on her things. Trees were rejected (2026-09-28) for intent

@@ -3729,6 +3729,8 @@ proptest! {
         let mut bed_at = bed_at;
         // Each piece she has made: where she is with it, and since when.
         let mut made: Vec<(MadeId, (bool, u8), u64)> = Vec::new();
+        // Those she used, and those gone before she did.
+        let (mut used, mut lost): (Vec<MadeId>, Vec<MadeId>) = (Vec::new(), Vec::new());
         let mut now = 0;
         while now < 180_000 {
             now += guest
@@ -3779,6 +3781,28 @@ proptest! {
                     None => made.push((m.id, state, now)),
                 }
             }
+            // A piece gone before she used it is mourned (a beat owed).
+            for &(id, ..) in &made {
+                let here = visit.made.iter().filter_map(Made::mine).any(|m| m.id == id);
+                if !here && !lost.contains(&id) && !used.contains(&id) {
+                    lost.push(id);
+                }
+            }
+            for m in visit.made.iter().filter_map(Made::mine).filter(|m| m.used) {
+                if !used.contains(&m.id) {
+                    used.push(m.id);
+                }
+            }
+            let mourned = visit
+                .osaka
+                .beats
+                .iter()
+                .filter(|b| matches!(b.loss, super::mind::Loss::Piece(_)))
+                .count();
+            prop_assert!(
+                mourned >= lost.len(),
+                "{at}: lost {lost:?} unused, {mourned} mourned"
+            );
             for &(id, state, since) in &made {
                 let waiting = visit
                     .made
@@ -3839,6 +3863,51 @@ fn her_decisions_explain_themselves() {
     }
     let shown = guest.explain().expect("explained");
     assert_eq!(shown, decisions.last().unwrap().to_string());
+}
+
+/// A sofa she made, lost before she sat on it (a resize takes it), is
+/// mourned: once she's free, she glances toward where it stood and says
+/// "...my sofa.".
+#[test]
+fn a_lost_sofa_is_mourned() {
+    for graphics in [false, true] {
+        let mut ui = stage_ui();
+        let (real, view) = real_frame(&mut ui, 100, 30);
+        let mut guest = Guest::new(3);
+        if graphics {
+            guest.set_picker(kitty());
+        }
+        guest.cue(Scene::MakeSofa);
+        paint(&mut guest, &real, &view, 0);
+        // Run until the heap is there.
+        let mut now = 0;
+        loop {
+            now += 100;
+            guest.advance(now);
+            paint(&mut guest, &real, &view, now);
+            let State::Visiting(visit) = &guest.state else {
+                panic!("visiting");
+            };
+            if !visit.made.is_empty() {
+                break;
+            }
+            assert!(now < 60_000, "graphics={graphics}: never made it");
+        }
+        // The terminal grows: the heap is gone.
+        let (real, view) = real_frame(&mut ui, 110, 30);
+        let mut mourned = false;
+        while now < 90_000 && !mourned {
+            now += 100;
+            guest.advance(now);
+            paint(&mut guest, &real, &view, now);
+            let State::Visiting(visit) = &guest.state else {
+                panic!("visiting");
+            };
+            assert!(visit.made.is_empty(), "graphics={graphics}");
+            mourned = visit.osaka.appearance(now).2 == Some(osaka::Bubble::Say("...my sofa."));
+        }
+        assert!(mourned, "graphics={graphics}: never mourned it");
+    }
 }
 
 /// The sofa census (the migration's checkpoint bench): in the stage

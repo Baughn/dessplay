@@ -450,6 +450,83 @@ pub(super) fn pick_build(
         .and_then(|i| builds.get(i).copied())
 }
 
+/// What she loses, and owes a beat for: a glance toward it, and maybe
+/// a word.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Loss {
+    /// A piece she made, gone before she used it.
+    Piece(Furniture),
+    /// Text she was tearing off, put back.
+    Tear,
+    /// Where she was heading.
+    Heading,
+    /// A piece she made, let be after her tries.
+    LetBe,
+}
+
+impl Loss {
+    /// What she might say, from which pool, and how often (n in d).
+    pub fn says(self) -> Option<(&'static [&'static str], u64, u64)> {
+        match self {
+            Self::Piece(Furniture::Bed) => Some((&["...my bed."], 1, 1)),
+            Self::Piece(_) => Some((&["...my sofa."], 1, 1)),
+            Self::Tear => Some((&["...never mind."], 1, 4)),
+            Self::Heading => None,
+            Self::LetBe => Some((&["Nah."], 1, 2)),
+        }
+    }
+}
+
+/// What she sometimes says, going back to a piece she made after an
+/// interruption.
+pub(super) const AH_RIGHT: &[&str] = &["Ah, right!"];
+
+/// A beat she owes: a glance toward where `loss` happened.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Beat {
+    pub loss: Loss,
+    pub toward: (i32, i32),
+}
+
+/// A line waits this long before she says it again.
+const LINE_COOLDOWN_MS: u64 = 10 * 60_000;
+/// Beat lines a visit, at most.
+const LINE_BUDGET: usize = 8;
+
+/// The beat lines she has said this visit, and when.
+#[derive(Clone, Debug, Default)]
+pub(super) struct Lines {
+    said: Vec<(&'static str, u64)>,
+}
+
+impl Lines {
+    /// One of `pool`, `n` times in `d`, unless she said it lately or has
+    /// said enough this visit.
+    pub fn pick(
+        &mut self,
+        (pool, n, d): (&'static [&'static str], u64, u64),
+        w: Whims,
+        at: u64,
+    ) -> Option<&'static str> {
+        if self.said.len() >= LINE_BUDGET || !w.chance("line", 0, n, d) {
+            return None;
+        }
+        let fresh: Vec<&'static str> = pool
+            .iter()
+            .copied()
+            .filter(|line| {
+                !self
+                    .said
+                    .iter()
+                    .any(|&(said, when)| said == *line && at < when + LINE_COOLDOWN_MS)
+            })
+            .collect();
+        let line = *fresh.get(w.below("which-line", fresh.len() as u64) as usize)?;
+        self.said.push((line, at));
+        Some(line)
+    }
+}
+
 /// Rows a line may have scrolled up (chat scrolls up) and still be the
 /// one she set off for.
 pub(super) const SCROLLED: u16 = 4;
@@ -556,6 +633,43 @@ mod tests {
             pulls,
             ..Chances::default()
         }
+    }
+
+    /// Every line she says fits a bubble (24 characters).
+    #[test]
+    fn beat_lines_fit_a_bubble() {
+        let losses = [
+            Loss::Piece(Furniture::Sofa),
+            Loss::Piece(Furniture::Bed),
+            Loss::Tear,
+            Loss::Heading,
+            Loss::LetBe,
+        ];
+        let pools = losses
+            .iter()
+            .filter_map(|l| l.says())
+            .map(|(pool, ..)| pool);
+        for line in pools.flatten().chain(AH_RIGHT) {
+            assert!(line.chars().count() <= 24, "{line}");
+        }
+    }
+
+    /// A line isn't said twice within ten minutes, and a visit has a
+    /// budget of them.
+    #[test]
+    fn lines_cool_down_and_run_out() {
+        let mut lines = Lines::default();
+        let pool: (&'static [&'static str], u64, u64) = (&["a"], 1, 1);
+        assert_eq!(lines.pick(pool, Whims(1), 0), Some("a"));
+        assert_eq!(lines.pick(pool, Whims(2), 60_000), None);
+        assert_eq!(lines.pick(pool, Whims(3), LINE_COOLDOWN_MS), Some("a"));
+        let mut said = 2;
+        let mut at = 2 * LINE_COOLDOWN_MS;
+        while lines.pick(pool, Whims(at), at).is_some() {
+            said += 1;
+            at += LINE_COOLDOWN_MS;
+        }
+        assert_eq!(said, LINE_BUDGET);
     }
 
     /// A line she set off for is the same line when it has scrolled up a

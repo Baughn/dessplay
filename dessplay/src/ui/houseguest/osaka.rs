@@ -6,7 +6,7 @@ use super::Rng;
 use super::art::DoorFrame;
 use super::brain::{self, Factor, Need, Needs, Want};
 use super::layer::Placed;
-use super::mind::{self, Bind, Ctx, Heading, Here, Whims};
+use super::mind::{self, Beat, Bind, Ctx, Heading, Here, Lines, Loss, Whims};
 use super::room::{Furniture, MadeId, PieceRef, Seat, Use};
 use super::scenes::{Build, Job, JobRef, LayerOp, Pull, Side, Swap};
 use super::sprite::{self, Face, Facing, HEIGHT, Pose, SpriteCell};
@@ -46,7 +46,14 @@ pub(super) struct Mine {
     pub done: bool,
     /// She has started using it.
     pub used: bool,
+    /// Where it stands (its middle, on its floor).
+    pub at: (i32, i32),
 }
+
+/// Beats she keeps owing at most.
+const OWED: usize = 3;
+/// A glance at something lost.
+const GLANCE_MS: u64 = 900;
 
 /// Times she sets off to finish or use a piece she made before she lets
 /// it be: each interruption on the way, or each time she can't get to it,
@@ -281,6 +288,11 @@ enum Act {
     Admire {
         until: u64,
     },
+    /// A glance at something she lost (a beat she owes; see
+    /// [`Osaka::owe`]).
+    Glance {
+        until: u64,
+    },
     /// Reaching for the letters of `swap` (`back`: to undo it).
     Swap {
         swap: Swap,
@@ -459,6 +471,8 @@ enum Letting {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Bucket {
     Reflex,
+    /// A beat she owed.
+    Owed,
     Continuation,
     Normal,
 }
@@ -570,6 +584,7 @@ impl Act {
             | Self::Dazed { .. }
             | Self::Look { .. }
             | Self::Admire { .. }
+            | Self::Glance { .. }
             | Self::Sneeze { .. }
             | Self::PutBack { .. }
             | Self::Home { .. }
@@ -1002,6 +1017,13 @@ pub(super) struct Osaka {
     /// Her mind's own random stream: one draw a decision (see
     /// [`Whims`]).
     mind: Rng,
+    /// Beats she owes, oldest first (see [`Osaka::owe`]).
+    owed: Vec<Beat>,
+    /// The beat lines she has said this visit.
+    lines: Lines,
+    /// Every beat she was owed (tests read it).
+    #[cfg(test)]
+    pub beats: Vec<Beat>,
     /// Her last few decisions, and why (the stage shows them).
     log: std::collections::VecDeque<Decision>,
     /// Every choice she made (tests read it).
@@ -1042,6 +1064,10 @@ impl Osaka {
             tries: Vec::new(),
             rest: None,
             mind: Rng(rng.next() ^ mind::MIND_SALT),
+            owed: Vec::new(),
+            lines: Lines::default(),
+            #[cfg(test)]
+            beats: Vec::new(),
             log: std::collections::VecDeque::new(),
             #[cfg(test)]
             choices: Vec::new(),
@@ -1222,6 +1248,7 @@ impl Osaka {
             | Act::Peer { until, .. }
             | Act::Dazed { until }
             | Act::Admire { until }
+            | Act::Glance { until }
             | Act::Swap { until, .. }
             | Act::Giggle { until, .. }
             | Act::Innocent { until, .. }
@@ -1543,6 +1570,13 @@ impl Osaka {
                 self.decide(at, terrain, chances, rng)
             }
             Act::Stand { .. } | Act::SpaceOut { .. } | Act::Admire { .. } | Act::PutBack { .. } => {
+                self.decide(at, terrain, chances, rng)
+            }
+            Act::Glance { .. } => {
+                // Paid (an interrupted glance stays owed).
+                if !self.owed.is_empty() {
+                    self.owed.remove(0);
+                }
                 self.decide(at, terrain, chances, rng)
             }
             Act::Swap { back: true, .. } => {
@@ -2131,6 +2165,28 @@ impl Osaka {
             .pass(at.saturating_sub(self.decided), !chances.pulls.is_empty());
         self.decided = at;
         let heading = self.heading.as_ref().map(|h| h.want);
+        // Something she lost: a glance toward it (maybe a word) first.
+        if let Some(&beat) = self.owed.first() {
+            tracing::debug!(?beat, "houseguest: a beat she owed");
+            if beat.toward.0 != self.x {
+                self.facing = toward(self.x, beat.toward.0);
+            }
+            if let Some(says) = beat.loss.says()
+                && let Some(line) = self.lines.pick(says, whims, at)
+            {
+                self.say(line, at);
+            }
+            self.set(
+                Act::Glance {
+                    until: at + GLANCE_MS,
+                },
+                at,
+            );
+            return Decision {
+                heading,
+                ..Decision::of(Bucket::Owed, "beat")
+            };
+        }
         // Making for a piece she made, on another floor: the next hop of
         // the same trip.
         if let Some(mine) = self.heading.clone().filter(Heading::mine) {
@@ -2146,7 +2202,7 @@ impl Osaka {
         }
         // A piece she made and hasn't finished with: she finishes it, or
         // uses it, before choosing anything new.
-        if let Some((want, job)) = self.leftover(chances, terrain, here) {
+        if let Some((want, job)) = self.leftover(chances, terrain, here, whims, at) {
             tracing::debug!(?job, "houseguest: back to what she made");
             if self.go_to(want, job, here, terrain, at) {
                 return Decision {
@@ -2313,7 +2369,20 @@ impl Osaka {
         chances: &Chances,
         terrain: &Terrain,
         here: usize,
+        whims: Whims,
+        at: u64,
     ) -> Option<(Want, Job)> {
+        // Those she has tried enough: she lets them be, with a beat.
+        for m in &chances.mine {
+            if !(m.done && m.used)
+                && let Some((_, tries)) = self.tries.iter_mut().find(|(made, _)| *made == m.id)
+                && *tries == TRIES
+            {
+                *tries = TRIES + 1;
+                tracing::debug!(id = ?m.id, "houseguest: lets what she made be");
+                self.owe(Loss::LetBe, m.at);
+            }
+        }
         let near = |seat: &Seat| {
             (
                 terrain.platform_at(seat.x, seat.y) != Some(here),
@@ -2331,12 +2400,25 @@ impl Osaka {
                 .map_or((true, (true, i32::MAX)), |s| (false, near(s)))
         });
         for (id, purpose, seat) in waiting {
-            match self.tries.iter_mut().find(|(made, _)| *made == id) {
-                Some((_, tries)) => *tries += 1,
-                None => self.tries.push((id, 1)),
-            }
+            let again = match self.tries.iter_mut().find(|(made, _)| *made == id) {
+                Some((_, tries)) => {
+                    *tries += 1;
+                    true
+                }
+                None => {
+                    self.tries.push((id, 1));
+                    false
+                }
+            };
             match seat {
-                Some(seat) => return Some((Want::Use(purpose), Job::Use(seat))),
+                Some(seat) => {
+                    // Back to it after an interruption.
+                    if again && let Some(line) = self.lines.pick((mind::AH_RIGHT, 1, 3), whims, at)
+                    {
+                        self.say(line, at);
+                    }
+                    return Some((Want::Use(purpose), Job::Use(seat)));
+                }
                 None => tracing::debug!(?id, "houseguest: can't get to what she made"),
             }
         }
@@ -2390,7 +2472,24 @@ impl Osaka {
     fn drop_heading(&mut self, why: Letting) {
         if let Some(heading) = self.heading.take() {
             tracing::debug!(?why, want = ?heading.want, "houseguest: lets go of where she was heading");
+            if matches!(why, Letting::Gone | Letting::Other) {
+                self.owe(Loss::Heading, heading.job.spot());
+            }
         }
+    }
+
+    /// She lost something (`loss`, at `toward`): she owes a beat, played
+    /// once the reflexes let her, before anything else she'd choose. An
+    /// interrupted beat stays owed; past [`OWED`], the oldest goes.
+    pub fn owe(&mut self, loss: Loss, toward: (i32, i32)) {
+        tracing::debug!(?loss, ?toward, "houseguest: owes a beat");
+        let beat = Beat { loss, toward };
+        #[cfg(test)]
+        self.beats.push(beat);
+        if self.owed.len() == OWED {
+            self.owed.remove(0);
+        }
+        self.owed.push(beat);
     }
 
     /// Her needs.
@@ -3057,6 +3156,7 @@ impl Osaka {
                 (Pose::ToeTouch(frame), Face::Vacant, bubble)
             }
             Act::Admire { .. } => (Pose::Stand, Face::Pleased, Some(Bubble::Hehe)),
+            Act::Glance { .. } => (Pose::Side, Face::Vacant, None),
             Act::Poke { since, .. } => {
                 let frame = (now.saturating_sub(since) / POKE_FRAME_MS % 2) as u8;
                 (Pose::ToeTouch(frame), Face::Curious, None)

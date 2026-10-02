@@ -1446,6 +1446,17 @@ this section states what is built.
   this visit is the exception: on her way to it, each hop is the same
   trip, not a fresh choice
   (why: [decisions](decisions.md#her-mind-is-a-table-and-a-heading-2026-10-02)).
+  **Nothing she loses goes unremarked**: a piece she made, gone before
+  she used it ("...my sofa." / "...my bed."); text she was tearing
+  off, put back ("...never mind." one time in four); where she was
+  heading, gone or given up for something else; a piece she let be
+  after her tries ("Nah." one time in two). Each owes a beat: a glance
+  toward it (0.9 s), with its line if any, played once the reflexes let
+  her (an errand, watching chat) and before anything else she'd choose;
+  an interrupted beat stays owed, and she owes three at most (the
+  oldest goes). Going back to a piece she made after an interruption,
+  she says "Ah, right!" one time in three. A beat line isn't said again
+  within ten minutes, and a visit has eight at most.
 - **Bubbles and speech**: her bubbles are text in the first of several
   spots around her head, wherever the pose puts it (lying down, it's on
   the floor at one end) — up and to the side it's nearer (the side she

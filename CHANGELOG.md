@@ -30,6 +30,15 @@ Add new days at the top. Add new entries at the bottom of existing days.
   up around her, hiding it, when there was room to move on.
 - Fixed: Selecting a pane next to where the houseguest stands no longer
   flickers noise over its border.
+- Added: The houseguest notices what she loses. A sofa she made that
+  goes before she sat on it gets a glance and "...my sofa."; so does
+  text she was tearing off when she was interrupted ("...never mind.",
+  now and then), somewhere she was heading that's gone, and a piece she
+  gives up on ("Nah."). Going back to something after an interruption,
+  she sometimes says "Ah, right!".
+- Changed: The houseguest finds a line of chat she was heading for even
+  after it scrolls up a little, and may change her mind on the way
+  when something else matters more.
 
 ## 2026-10-01
 
