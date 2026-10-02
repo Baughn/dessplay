@@ -2105,7 +2105,7 @@ welcome; the only goal is "watching her is kind of fun".
 
 ## Phase 38: Houseguest mind and home
 
-**Status: phases 0–2 done (2026-10-02); phase 3 next.** Design: [the mind
+**Status: phases 0–3 done (2026-10-02); phase 4 next, before anything since phase 2 is pushed (the user: rooms may mix until then).** Design: [the mind
 and home proposal](proposals/2026-10-02-houseguest-mind.md) (direction
 agreed with the user; their answers are its *Decisions*). Its migration
 plan numbers its own phases 0–8; this section records them.
@@ -2319,27 +2319,117 @@ Then re-run `sofa_census` and the 256-case pass, and record them here.
   times in 16 half-hour stage visits, about once a minute; it should
   join a pool with a cooldown, as the proposal's Character section says.
 
-### Phase 3 — the home model (brief)
+### Phase 3 — the home model (done 2026-10-02)
 
-Proposal: *Home and structures* (*The model*, *Rooms from contents*) and
-the migration row. In order, each against the gate:
+Built as briefed, in six commits, with these differences:
 
-1. **The `Spec` table** first, as a refactor: one row per furniture kind
-   replacing the scattered `Furniture` matches (footprint, name, art,
-   ASCII, uses, seats), plus what a piece offers and its comfort (which
-   should then feed `brain::quality` instead of the Real/Made/Floor
-   constants). Golden hashes must stay unchanged through it.
-2. **Strips and per-piece anchors** (a new top-level ledger field; ledger
-   version 1 kept, `props[].at` still written, older records derive
-   anchors from `at`), and **`project()`** packing each strip in anchor
-   order, replacing `Home::{resolve, spot}`, `layout` and `place`.
-   Golden-file tests of the ledger both ways; "a resize and back
-   restores"; "projection uses only blank, unprotected cells; packing
-   keeps order".
-3. **Rooms and roles from contents** (`RoomKind` and `Home.rooms`
-   deleted), `Faces` on strips. The user chose this (Q7): panes are only
-   her starting home.
+- **`Spec`** (room.rs): name, pitch, footprint, ASCII, ink, uses, where
+  she sits (`sit`), offers, comfort (all 1.0; `Spot::Real` carries the
+  piece and `quality` reads it). `art_id` was unused and went; art.rs's
+  layer and state tables are composition and stayed. Golden hashes
+  unchanged.
+- **Strips, anchors, `project()`**: `Strip::Bottom(Nook)`, `Anchor { side,
+  offset }`, `Prop { strip, anchor: Option, at, .. }` (no anchor until
+  an older record's strip is first seen), `Extent`, `pack` in
+  `order_key` order. A strip that's gone or can't hold its pieces moves
+  them into any strip that holds them with its own (not only a free
+  pane). Every frame of all 32 golden runs was diffed against the
+  parent's traces: identical. The golden trace now hashes the record as
+  saved (JSON), not the in-memory `Debug`.
+- **The record**: `anchors` (item, strip, anchor) as a new top-level
+  field; `rooms` derived for older builds from a ledger-private copy of
+  the old kinds, a distinct pane each. Golden-file tests: the record as
+  written, an older record read, what an older build reads of ours, an
+  unknown strip.
+- **Rooms**: `Offer`, `Role`, `ROLES` (first row met; no `base` or
+  `min_width` yet, nothing needs them), `Home::rooms`; the stage's `x`
+  row shows them. `RoomKind`, `Furniture::room`, `Home.rooms`,
+  `strip_of` and room-bound placement are gone; `add` refuses only a
+  second of a kind.
+- **Deliveries** (the user's call, asked before step 3): through a
+  **flap** in a strip's wall at the screen's edge (`Home::doorstep`,
+  `Flap`, `draw_flap`, 800 ms), the parcel against the wall facing in,
+  the strip's pieces making way only where all that show still fit.
+  Anchor ties put the newer piece nearer its wall. The stage's gifts go
+  anywhere they fit, at random.
+- **`Faces`** (the user's call): same strip, gap 2–14 (`FACING_GAP`);
+  facing counts from phase 4. Made sofas keep the same-floor rule.
+  The test's split-floor case fails with the old condition put back.
+- **Tests moved**: `a_furnished_home_gets_used_and_stays_cheap` asks
+  that each piece is used (lounge *or* nap: naps were 5 in 8 twenty-
+  minute visits before, 3 after, too rare for two seeds);
+  `a_tv_anywhere_on_the_sofas_floor_is_watched_from_it` became
+  `a_sofa_facing_the_tv_is_watched_from` (gaps in and out of range,
+  both walls, a split floor). New: `packing_keeps_order_and_a_resize_and_back_restores`
+  (property), `moved_pieces_may_join_another_rooms_strip`,
+  `roles_come_from_contents`, `a_new_piece_goes_where_it_fits`,
+  `a_parcel_comes_in_through_a_flap_at_the_screens_edge`.
+- **Measured**: gate 1769 tests; 256 cases pass (172 tests); perf
+  passes. `sofa_census` as after phase 2 (no chat 120/120 and 104/104;
+  chat every 37 s 102 of 104, the two waiting, and 93/93; made → used
+  max 28 s). `visit_census`, forced moods (furniture / floor rest /
+  spacing out / moving, % of time):
 
-Re-run `visit_census` and `sofa_census` at the end and record them
-here; `at_home_her_furniture_beats_the_floor` and the furnished-home
-tests are the statistics most likely to move.
+  | Room | Ordinary | Lazy | Industrious | Dreamy |
+  |---|---|---|---|---|
+  | stage | 3.8 / 3.6 / 7.4 / 36.6 | 15.1 / 1.3 / 6.1 / 35.8 | 1.7 / 1.4 / 5.4 / 39.2 | 2.6 / 3.7 / 10.9 / 38.5 |
+  | home | 38.6 / 0 / 2.2 / 42.0 | 44.3 / 0 / 1.2 / 38.7 | 33.8 / 0 / 1.3 / 44.8 | 40.4 / 0 / 3.6 / 39.6 |
+  | resident | 24.5 / 0.8 / 5.1 / 41.7 | 32.4 / 0.5 / 5.1 / 37.1 | 19.8 / 0.4 / 4.4 / 44.0 | 24.3 / 1.8 / 8.1 / 39.8 |
+
+  The stage room owns nothing, so it's unchanged. The home is within a
+  point or so. The resident's furniture time fell (ordinary 28.8 →
+  24.5, lazy 42.3 → 32.4): its sofa and TV are gifts, which now land
+  anywhere, so they're often on different strips or too far apart to
+  watch from the sofa. Phase 4's repair is what should bring that back;
+  measure it there. With drawn moods, home choices: bed 15%, TV 10%,
+  books 10%, homework 8%, sofa 8% lounging and 4% napping; no want
+  over 24% of a home visit.
+
+### Phase 4 — organising (brief)
+
+Proposal: *Rules, not an objective*, *One repair a visit, prompted by a
+grievance*, the nesting and beauty rows of *Every want answers a need*,
+the mood's home-act cap, and the migration row. Phase 3 left these
+hooks: `room::faces` (turn on its facing check here), `Home::rooms`
+(roles), `order_key`/`pack`/`project` (a move is a new anchor,
+projected on a copy), `Home::doorstep` and `Flap`, the `Spec` row (add
+beauty and decor kinds there). In order, each against the gate:
+
+1. **Rules as a table** (`Rule`, `RuleRow` with its grievance line),
+   judged on the projection: `Faces` now with facing, `Near` (the lamp
+   by the bed or the desk), `AgainstWall` (fridge, bookshelf: offset
+   ≤ 1), `Apart { Bed, Tv }`. `Connected` waits for phase 6. A rule is
+   broken or not; a satisfied rule never moves anything. Property: no
+   move the repair makes breaks a satisfied rule.
+2. **Unplaced deliveries.** Phase 3 sets every parcel against a flap,
+   so rooms mix (a bed beside the TV, a sofa flush against it). Add a
+   rule, or a flag persisted per piece (a new top-level ledger field),
+   that a piece never yet set down by her is unsettled; the repair's
+   cost then prefers, in order, a room whose role the piece completes
+   (the TV joins the sofa), a room it doesn't spoil (no bed in a living
+   room), an empty strip. These are the role tiers proposed for phase 3
+   and set aside for the flap.
+3. **Feeling a rule**: using a piece a broken rule names plays its
+   grievance as an interlude ("Can't see the telly..."); a felt rule
+   is remembered for the visit (and across visits? decide, default:
+   the visit). **Nesting** rises only while a felt rule is broken.
+   `Want::Arrange` (base 6) is offered then; the mood's cap (0–3 home
+   acts a visit, by mood) gates it.
+4. **The repair search**: each piece the rule names, every anchor on
+   every strip, both facings, one piece at a time, on a copy projected
+   with `project`; qualifies if it satisfies the rule, breaks no
+   satisfied one, and fits blank cells snapshotted at paint; cheapest
+   (fewest cells moved, then a whim). Budget about 2,000 candidates,
+   ≤ 1 ms: measure in the perf test.
+5. **The pocket carry**: methods `arrange/lift`, `carry`, `set-down`,
+   `use-it`; `HomeEvent::SetDown { piece, anchor, facing }` committed
+   at paint if it fits (else the old anchor stands); dropped carry,
+   eviction and goodbye as the proposal says. Trials (up to three
+   spots, keep with exp(−Δ/T)).
+6. **Decor and beauty**: decor kinds as `Spec` rows (a potted plant, a
+   poster; the gremlin waits for shelves), beauty as a room's summed
+   decor, the channel selling decor.
+
+Re-run `visit_census` (add a row for how many rules stand broken at
+each visit's end, and home acts per visit by mood) and `sofa_census`,
+and record them here.

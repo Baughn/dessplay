@@ -1,6 +1,6 @@
 # Proposal: The Houseguest's mind and home
 
-Status: **DRAFT 2026-10-02 — direction agreed; the user's answers are in [Decisions](#decisions-2026-10-02); phases 0–2 implemented 2026-10-02** (notes: [plan.md, Phase 38](../plan.md#phase-38-houseguest-mind-and-home))
+Status: **DRAFT 2026-10-02 — direction agreed; the user's answers are in [Decisions](#decisions-2026-10-02); phases 0–3 implemented 2026-10-02** (notes: [plan.md, Phase 38](../plan.md#phase-38-houseguest-mind-and-home))
 
 Supporting notes: [the sofa diagnosis](2026-10-02-houseguest-mind/sofa-diagnosis.md) (with the phase-0 regression test), [character-AI survey](2026-10-02-houseguest-mind/research-character-ai.md), [layout survey](2026-10-02-houseguest-mind/research-layout.md), [the full home model](2026-10-02-houseguest-mind/alternative-full-home-model.md) (alternative C).
 
@@ -430,7 +430,7 @@ pub struct RuleRow { rule: Rule, grievance: ScriptId }        // what she shows 
   - That is a rule change: she will watch from the sofa across a floor split by text. `seats_of` forbids that today (mod.rs:1414-1436).
   - `Faces` replaces that special case, and the `tv.left` bug goes with it.
 - **A satisfied rule never moves anything.** With no target layout, no adoption and no hysteresis, nothing can thrash.
-- **Deliveries still land wherever the box fits.** Noticing that the sofa faces the wall is hers to do.
+- **Deliveries come through a flap at the screen's edge** (built in phase 3, the user's call: "it's a package, after all"), and stand against that wall. Noticing that the sofa faces the wall, or stands in the wrong room, is hers to do.
 
 ### One repair a visit, prompted by a grievance
 
@@ -610,7 +610,7 @@ None is a protocol change, so `stable` stays put.
 | **1** Pure refactor | `ActProps`; the job in the act's payload (`task` deleted); `interrupt(Cause)`. Golden hashes unchanged. **Built 2026-10-02; what differs from this row is in plan.md, Phase 38.** | ≈ 650 touched, net negative | Nothing |
 | — | **Checkpoint:** re-run the 37 s-chat bench and a 256-case run, and record the result in plan.md | — | — |
 | **2** The mind as data | `Want`/`DesireDef`; the method table; the heading (replaces `goal`); beats at the loss sites; credit by fraction (Q4); the mind stream and whims; the explain log; lints. Then **needs for every want** (comfort, fun, daydreams; spot quality) and **her mood for the visit**, tuned in the headless simulator, which comes forward from phase 5. **Built 2026-10-02; what differs from this row is in plan.md, Phase 38.** | ≈ 1,500 touched, ≈ +500 net | Glances and "...my sofa."; no dropped cross-floor jobs; she prefers her furniture to the floor; lazy and industrious visits; the stage shows why |
-| **3** The home model | Strips; per-piece anchors (a new ledger field); the packing `project()`; the `Spec` table (a refactor first, against golden hashes re-recorded after phase 2); rooms and roles from contents (`RoomKind` deleted); `Faces` on strips | ≈ 1,100 | Pieces stop vanishing on collisions. She watches from the sofa whenever it faces the TV |
+| **3** The home model | Strips; per-piece anchors (a new ledger field); the packing `project()`; the `Spec` table (a refactor first, against golden hashes re-recorded after phase 2); rooms and roles from contents (`RoomKind` deleted); `Faces` on strips. **Built 2026-10-02; deliveries come through a flap at the screen's edge, and `Faces` checks facing from phase 4 (the user's calls); what else differs is in plan.md, Phase 38.** | ≈ 1,100 | Pieces stop vanishing on collisions. She watches from the sofa whenever it faces the TV |
 | **4** Organising | Rules and grievances (incl. `Apart`); nesting; `Arrange`; the repair, across panes; the pocket carry; trials; decor pieces, beauty, and the channel selling decor | ≈ 900 + decor art | She notices the sofa faces the wall, moves it, and sits down to watch. She moves the bed out of the living room. A potted plant arrives |
 | **5** Vignettes and the clock | `Script`/`Key`/`PropOverride`; line pools; `Splice`/`Adverb`; the shopping channel converted; chopsticks; sata andagi; `LocalTime`; calendar, tiers, rarity and pity | ≈ 800 + art | Vignettes, calendar days, rarities |
 | **6** Structures | `read_ground`; shelf, partition, stepladder; partitions split rooms; `Connected`; staged `Assembled`; the pole check; the wishlist feeds the channel | ≈ 700 | She builds a shelf for the gremlin, walls off a bedroom, and builds a stepladder over two visits and climbs it |

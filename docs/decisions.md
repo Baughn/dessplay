@@ -2487,6 +2487,61 @@ planning against a hypothetical terrain, which would move the
 read-order bug class rather than remove it, for a catalogue of which
 about 70 of 90 entries gain nothing from search.
 
+## Her home stands on strips, and its rooms are what's in them (2026-10-02)
+
+**Rule:** Each piece stands on a strip (a quiet pane's bottom border)
+at an anchor of its own: a wall side and an offset. A strip's pieces
+are packed in anchor order, an order that doesn't depend on the
+strip's width. A strip that's gone or too small moves its pieces,
+together and in order, into the first strip that holds them with its
+own. A room is a strip, and its role comes from what's unboxed there,
+by a table. Parcels come in through a flap at the screen's edge. She
+watches from a sofa that faces the TV on its strip. The record keeps
+version 1 and adds the anchors as a new field. See
+[design.md](design.md#houseguest).
+
+**Why:** Phase 3 of the
+[mind proposal](proposals/2026-10-02-houseguest-mind.md#home-and-structures).
+A piece placed by its share of a pane's floor drifted with every
+resize. Live platforms can't be a home's floor either: text splits
+and renumbers them every frame. Anchors from a wall keep a fridge
+against its wall, which phase 4's rules measure in cells. The packing
+order runs left anchors, then right anchors, so it never depends on
+the width: a resize can't reorder pieces, and a resize and back
+restores them. Ties put the newer piece nearer its wall, since it came
+in through that wall's flap.
+
+Rooms from contents was the user's answer to Q7: panes are only her
+starting home. That deletes `RoomKind`, "one room per pane" and room
+binding; an older build still needs a pane per room kind, so the
+ledger keeps a private copy of the old kinds to write `rooms`.
+
+The user's 2026-09-28 rule that a room losing its pane "moves whole"
+stays, now per strip: the pieces move together. Any strip that holds
+them will do, not only a free pane.
+
+**Deliveries:** with no room binding a parcel, where should it land
+before phase 4 can tidy up? The user's call: at the edge of the screen,
+through a flap, "it's a package, after all". Rooms may mix until phase
+4, which lands before any of this is pushed. The pieces on that strip
+make way only where every one that shows still fits, so a delivery
+never closets furniture.
+
+**Faces** (the user's call, out of three): same strip and a 2–14 cell
+gap now. Which way the sofa faces counts from phase 4, when she can turn
+it, so no sofa loses watching before she could fix it. Judging on the
+strip fixes the split-floor case (a protected run or a wide glyph
+between sofa and TV). A sofa pushed flush against the TV (gap 0), as a
+second parcel through one flap can be, isn't for watching until phase
+4 moves it. Made pieces stand on no strip and keep the same-floor rule.
+
+Rejected:
+- **Re-anchoring a piece that merely doesn't fit, rather than one whose
+  strip can't hold the set.** Text over a piece closets that piece; it
+  must not send the room wandering (2026-09-28).
+- **A geometry-dependent order** (by where each anchor lands this
+  frame). It reorders pieces on a resize.
+
 ## Houseguest chooses by needs among the top few (2026-09-28)
 
 **Rule:** Her next act is a weighted-random pick among the four

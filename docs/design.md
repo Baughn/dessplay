@@ -1528,28 +1528,45 @@ this section states what is built.
   she lacks — sofa, bed, desk, lamp, bookshelf, fridge, cat bed, in that
   order — the moment it comes on,
   whatever happens next. What she buys arrives on a later visit as a
-  parcel ("A parcel!") where the piece will stand; she unpacks it (her
-  strongest wish while it's there) and it becomes the piece. A parcel
-  stays boxed, across visits, until she finishes unpacking it.
+  parcel ("A parcel!"), pushed in through a **flap** in a wall of one of
+  her strips (below), a wall at the screen's edge first: the wall's
+  line cells just above the floor show the flap swung in (`╱`/`╲`) for
+  800 ms, and the parcel stands against that wall, facing into the
+  room, where the piece will stand. The pieces already on that strip
+  make way (packed in order, the newcomer nearest the wall), but only
+  where every one that shows still fits, the parcel's cells are blank
+  and free, and she'd fit to unpack and use it; with no such wall it
+  waits. She unpacks it (her strongest wish while it's there) and it
+  becomes the piece. A parcel stays boxed, across visits, until she
+  finishes unpacking it.
 - **Furniture** (phase 3): a sofa (9×3 cells), TV (6×4), bed (10×3),
   desk (7×3), floor lamp (3×4), bookshelf (5×4), fridge (4×4) and cat
   bed (4×2), drawn in her style (outlined, soft fills) as line art, or as
-  ASCII without graphics. She owns her furniture across visits. **Panes
-  are rooms**: each piece belongs to a room (living room: sofa, TV, cat
-  bed; bedroom: bed, desk, lamp, bookshelf; kitchen: fridge), all of a
-  room's pieces stand in one quiet pane — Users,
-  Playlist, or The List, never the chat — and a pane holds one room. A
-  room's first piece picks a free pane; the rest follow it. Each piece
-  stands on its pane's bottom border at a fraction of the way along it,
-  so resizes and layout changes carry it along (pieces whose places
-  collide stand side by side, in order along the floor, while the pane
-  holds them all), and only on unbroken line
-  glyphs over blank cells, clear of protected cells, text she moved,
-  other pieces, and her box; a piece whose cells aren't free is in the
-  closet for that frame (hidden, still owned). When a room's pane is gone
-  or too small to hold all its pieces, the whole room moves to a free
-  pane where every piece fits, and stays there; with none, the whole
-  room is in the closet. A new piece is only set down where she also
+  ASCII without graphics. She owns her furniture across visits; each
+  kind is one row of a catalogue (name, footprint, drawing, ink, uses,
+  where she sits in it, what it offers a room, comfort). **Strips and
+  anchors**: a strip is a floor her home stands on — a quiet pane's
+  bottom border between its walls (Users, Playlist, or The List, never
+  the chat). Each piece stands on a strip at an anchor: a wall side and
+  an offset of its near edge from that wall, which a resize keeps. A
+  strip's pieces stand in anchor order (those from the left wall,
+  nearest first, then those from the right, farthest first; of two
+  level with one wall, the newer nearer it), each where its anchor puts
+  it unless that collides, and then side by side, in order — so a
+  resize never reorders them, and a resize and back puts each where it
+  was. A piece shows only on unbroken line glyphs over blank cells,
+  clear of protected cells, text she moved, other pieces, and her box;
+  a piece whose cells aren't free is in the closet for that frame
+  (hidden, still owned), and text never moves one. When a strip is
+  gone or too small to hold its pieces, they move, together and in
+  order, to the first other strip that holds them with its own pieces,
+  every moved piece on free cells, and stay there; with none, they're
+  all in the closet. **Rooms from contents**: her rooms are her strips,
+  and what each is comes from what's out of its box there, by the
+  first row of a table it meets: a living room needs a screen and a
+  seat and no bed; a bedroom a bed, and no screen or fridge; a study a
+  desk; a kitchen a fridge, and no bed; anything else is a den. Pieces
+  of any kind may share a strip. A new piece is only set down where she also
   fits on it. A placed piece and the floor beneath it are solid to text
   (nothing is moved onto it, and bubbles never go over it); she walks
   in front of it. In line art, the pieces her box overlaps are drawn in
@@ -1561,8 +1578,11 @@ this section states what is built.
   little off), sleeps in bed (answers *sleepy* far
   better than a doze on a border or a nap), does homework at the desk (nodding
   off onto the paper halfway through), or watches the TV from beside
-  it, or from a sofa on the TV's floor (the floor she'd stand on beside
-  it), turned towards it; she reads beside her bookshelf, gets a snack from her fridge (it
+  it, or from a sofa that **faces** it (the two on one strip, 2–14
+  cells between them, judged on the strip, so something splitting the
+  floor between them doesn't matter; which way the sofa is turned
+  doesn't count yet; a makeshift sofa, on no strip, faces a TV on its
+  floor), turned towards it; she reads beside her bookshelf, gets a snack from her fridge (it
   stands open as she looks in, then she eats a melon bread), and on
   about half her visits Kamineko is asleep in the cat bed — she pets
   him, and he bites ("Ow!"). Her lamp is lit, and dark while she sleeps
@@ -1674,10 +1694,14 @@ this section states what is built.
   on); *Osaka moved out* (asks first) wipes her record: her home goes,
   and the next visit is a first meeting.
 - **Her record** is local and never synced (the same tier as layout
-  sizes): her home (pieces, where each room is), the number of visits,
+  sizes): her home (each piece, its strip and anchor), the number of visits,
   and a master seed; each visit's randomness is drawn from the master
-  seed and the visit's number. It's saved whenever it changes. Pieces
-  or rooms a build doesn't know are skipped; a record that can't be read
+  seed and the visit's number. It's saved whenever it changes. It
+  stays version 1 for older builds: where pieces stand is a field they
+  ignore, and each piece's share of the way along and a pane per old
+  room kind are still written, so they keep every piece; a record they
+  saved since is anchored again from those. Pieces, rooms or strips a
+  build doesn't know are skipped; a record that can't be read
   at all (malformed, another version) is left as it is and never saved
   over — she starts afresh for that session
   (why: [decisions](decisions.md#houseguest-keeps-a-local-record-2026-09-29)).
