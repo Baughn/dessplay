@@ -7,7 +7,7 @@ use super::art::DoorFrame;
 use super::brain::{self, Kind, Need, Needs};
 use super::layer::Placed;
 use super::room::{Furniture, MadeId, PieceRef, Seat, Use};
-use super::scenes::{Build, Job, LayerOp, Side};
+use super::scenes::{Build, Job, JobRef, LayerOp, Pull, Side, Swap};
 use super::sprite::{self, Face, Facing, HEIGHT, Pose, SpriteCell};
 use super::terrain::{Link, Platform, Route, Terrain};
 use tuirealm::ratatui::layout::Rect;
@@ -305,7 +305,7 @@ fn speech_ms(text: &str) -> u64 {
     1200 + 60 * text.chars().count() as u64
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum Act {
     Stand {
         until: u64,
@@ -315,7 +315,7 @@ enum Act {
     },
     Walk {
         to: i32,
-        then: Option<Link>,
+        then: Then,
     },
     Peer {
         until: u64,
@@ -336,8 +336,9 @@ enum Act {
         surprised_until: u64,
         until: u64,
     },
-    /// Pulling `task`: bracing, or heaving (stepping back with the line).
+    /// Pulling `pull`: bracing, or heaving (stepping back with the line).
     Pull {
+        pull: Pull,
         offset: u16,
         goal: u16,
         heaving: bool,
@@ -346,18 +347,21 @@ enum Act {
     Admire {
         until: u64,
     },
-    /// Reaching for the letters of a swap (`back`: to undo it).
+    /// Reaching for the letters of `swap` (`back`: to undo it).
     Swap {
+        swap: Swap,
         until: u64,
         back: bool,
     },
-    /// Giggling at a swap she made; she undoes it at `revert`.
+    /// Giggling at `swap`, which she made; she undoes it at `revert`.
     Giggle {
+        swap: Swap,
         until: u64,
         revert: u64,
     },
-    /// Whistling, looking anywhere but at the swapped letters.
+    /// Whistling, looking anywhere but at the letters of `swap`.
     Innocent {
+        swap: Swap,
         until: u64,
         revert: u64,
     },
@@ -415,22 +419,35 @@ enum Act {
         since: u64,
         until: u64,
     },
-    /// Tearing text off a line for furniture (the task is the build):
-    /// bracing, then (`ripped`) reeling it in to her hands, `step` cells
-    /// so far, crumpling each glyph that gets there.
+    /// Tearing text off a line to `build` furniture: bracing, then
+    /// (`ripped`) reeling it in to her hands, `step` cells so far,
+    /// crumpling each glyph that gets there.
     Tear {
+        build: Build,
         since: u64,
         ripped: bool,
         step: u16,
     },
-    /// Using a piece of her furniture (the task is its seat). Watching
-    /// the TV, `advert` is what the shopping channel is selling her.
+    /// Using a piece of her furniture, at `seat`. Watching the TV,
+    /// `advert` is what the shopping channel is selling her.
     Use {
-        what: Use,
+        seat: Seat,
         since: u64,
         until: u64,
         advert: Option<Furniture>,
     },
+}
+
+/// What she does on getting where she walks.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Then {
+    /// Nothing in particular: she chooses again (or peers over the edge
+    /// she has come to).
+    Nothing,
+    /// Takes the link to another floor.
+    Link(Link),
+    /// Does the job, at its spot.
+    Job(Job),
 }
 
 /// What kind of thing an act is, for whatever asks: one exhaustive
@@ -468,6 +485,30 @@ enum OnChat {
 }
 
 impl Act {
+    /// The job she's at, at its spot.
+    fn at_job(&self) -> Option<JobRef<'_>> {
+        match self {
+            Self::Pull { pull, .. } => Some(JobRef::Pull(pull)),
+            Self::Swap { swap, .. } | Self::Giggle { swap, .. } | Self::Innocent { swap, .. } => {
+                Some(JobRef::Swap(swap))
+            }
+            Self::Tear { build, .. } => Some(JobRef::Build(build)),
+            Self::Use { seat, .. } => Some(JobRef::Use(seat)),
+            _ => None,
+        }
+    }
+
+    /// The job she's at, or walking to.
+    fn job(&self) -> Option<JobRef<'_>> {
+        match self {
+            Self::Walk {
+                then: Then::Job(job),
+                ..
+            } => Some(job.by_ref()),
+            _ => self.at_job(),
+        }
+    }
+
     fn props(&self) -> ActProps {
         let (stays, on_chat) = match self {
             Self::Use { .. }
@@ -873,8 +914,6 @@ pub(super) struct Osaka {
     /// While a chat conversation continues she stands watching it.
     watch_until: u64,
     watch_x: i32,
-    /// A job she's walking to on this floor, or doing.
-    task: Option<Job>,
     /// A job on another floor she's making her way towards.
     goal: Option<Job>,
     /// The pole she's climbing (column).
@@ -930,7 +969,6 @@ impl Osaka {
             blink_until: 0,
             watch_until: 0,
             watch_x: x,
-            task: None,
             goal: None,
             pole: x,
             ops: Vec::new(),
@@ -985,7 +1023,10 @@ impl Osaka {
                 x,
                 y,
                 facing,
-                Act::Walk { to, then: None },
+                Act::Walk {
+                    to,
+                    then: Then::Nothing,
+                },
                 now,
                 rng,
             ));
@@ -1009,7 +1050,10 @@ impl Osaka {
                 x,
                 y,
                 facing,
-                Act::Walk { to, then: None },
+                Act::Walk {
+                    to,
+                    then: Then::Nothing,
+                },
                 now,
                 rng,
             ));
@@ -1047,9 +1091,9 @@ impl Osaka {
     #[cfg(test)]
     pub fn swap_now(&mut self, swap: super::scenes::Swap, now: u64) {
         self.facing = side_facing(swap.side);
-        self.task = Some(Job::Swap(swap));
         self.set(
             Act::Swap {
+                swap,
                 until: now + FIDDLE_MS,
                 back: false,
             },
@@ -1124,13 +1168,7 @@ impl Osaka {
                 surprised_until, ..
             } => surprised_until,
             Act::Walk { .. } => now + WALK_MS,
-            Act::Pull { .. } => {
-                let glyphs = match &self.task {
-                    Some(Job::Pull(t)) => t.cells.len(),
-                    _ => 0,
-                };
-                now + heave_ms(glyphs) / 2
-            }
+            Act::Pull { ref pull, .. } => now + heave_ms(pull.cells.len()) / 2,
             Act::Climb { .. } => now + CLIMB_MS,
             Act::Fall { from_y, since, .. } => fall_time(since, (self.y - from_y + 1) as u64),
         }
@@ -1241,7 +1279,7 @@ impl Osaka {
     }
 
     fn fire(&mut self, at: u64, terrain: &Terrain, chances: &Chances, rng: &mut Rng) {
-        match self.act {
+        match self.act.clone() {
             Act::Idle { what, since, until } => {
                 if at >= until {
                     self.decide(at, terrain, chances, rng);
@@ -1300,7 +1338,7 @@ impl Osaka {
                 self.set(
                     Act::Walk {
                         to: to_x,
-                        then: None,
+                        then: Then::Nothing,
                     },
                     at,
                 );
@@ -1342,14 +1380,14 @@ impl Osaka {
                 }
             }
             Act::Use {
-                what, since, until, ..
+                seat, since, until, ..
             } => {
                 if at >= until {
-                    if let (Use::Unpack, Some(Job::Use(seat))) = (what, &self.task) {
+                    if seat.what == Use::Unpack {
                         tracing::info!(item = ?seat.item, "houseguest: unpacked");
                         self.events.push(HomeEvent::Unpacked(seat.item));
                     }
-                    if let (Use::Crumple, Some(Job::Use(seat))) = (what, self.task.clone())
+                    if seat.what == Use::Crumple
                         && let PieceRef::Made(id) = seat.piece
                     {
                         tracing::info!(item = ?seat.item, "houseguest: made a makeshift piece");
@@ -1357,7 +1395,6 @@ impl Osaka {
                         // Progress: getting to use it starts afresh. She
                         // admires it, then goes to use it (see `decide`).
                         self.tries.retain(|&(made, _)| made != id);
-                        self.task = None;
                         return self.set(Act::Admire { until: at + 1200 }, at);
                     }
                     self.decide(at, terrain, chances, rng);
@@ -1367,10 +1404,12 @@ impl Osaka {
                     self.act_due = frame.min(until);
                 }
             }
-            Act::Tear { ripped, step, .. } => {
-                let Some(Job::Build(build)) = self.task.clone() else {
-                    return self.decide(at, terrain, chances, rng);
-                };
+            Act::Tear {
+                build,
+                ripped,
+                step,
+                ..
+            } => {
                 if !ripped {
                     tracing::debug!(
                         row = build.row,
@@ -1391,6 +1430,7 @@ impl Osaka {
                     });
                     return self.set(
                         Act::Tear {
+                            build,
                             since: at,
                             ripped: true,
                             step,
@@ -1399,14 +1439,13 @@ impl Osaka {
                     );
                 }
                 // All in her hands: the heap, under her, to shape.
-                self.task = None;
+                let seat = build.piece.seat(Use::Crumple, 0);
                 self.ops.push(LayerOp::Make {
                     row: build.row,
-                    cells: build.cells.clone(),
+                    cells: build.cells,
                     piece: build.piece,
                     purpose: build.then,
                 });
-                let seat = build.piece.seat(Use::Crumple, 0);
                 self.pursue(Job::Use(seat), at);
             }
             Act::Dazed { .. } => {
@@ -1421,7 +1460,6 @@ impl Osaka {
                 self.decide(at, terrain, chances, rng)
             }
             Act::Swap { back: true, .. } => {
-                self.task = None;
                 self.set(
                     Act::SpaceOut {
                         until: at + rng.range(1500, 3000),
@@ -1429,10 +1467,9 @@ impl Osaka {
                     at,
                 );
             }
-            Act::Swap { back: false, .. } => {
-                let Some(Job::Swap(swap)) = self.task.clone() else {
-                    return self.decide(at, terrain, chances, rng);
-                };
+            Act::Swap {
+                swap, back: false, ..
+            } => {
                 let (a, b) = (swap.a, swap.b);
                 let revert = at + rng.range(SWAP_KEPT_MS.0, SWAP_KEPT_MS.1);
                 tracing::debug!(?a, ?b, "houseguest: swapping two letters");
@@ -1448,23 +1485,30 @@ impl Osaka {
                 );
                 self.set(
                     Act::Giggle {
+                        swap,
                         until: at + 1500,
                         revert,
                     },
                     at,
                 );
             }
-            Act::Giggle { revert, .. } => {
+            Act::Giggle { swap, revert, .. } => {
                 let until = revert.saturating_sub(FIDDLE_MS).max(at);
-                self.set(Act::Innocent { until, revert }, at);
+                self.set(
+                    Act::Innocent {
+                        swap,
+                        until,
+                        revert,
+                    },
+                    at,
+                );
             }
-            Act::Innocent { revert, .. } => {
+            Act::Innocent { swap, revert, .. } => {
                 // Nobody noticed. She quietly puts it right.
-                if let Some(task) = &self.task {
-                    self.facing = side_facing(task.side());
-                }
+                self.facing = side_facing(swap.side);
                 self.set(
                     Act::Swap {
+                        swap,
                         until: revert.max(at),
                         back: true,
                     },
@@ -1524,77 +1568,13 @@ impl Osaka {
                 if self.errand == Some((self.x, self.y)) {
                     return self.poke(at);
                 }
-                if let Some(job) = &self.task
-                    && job.spot() == (self.x, self.y)
-                {
-                    self.facing = side_facing(job.side());
-                    if let Job::Use(seat) = *job {
-                        self.facing = seat.facing;
-                        let (lo, hi) = use_duration(seat.what);
-                        tracing::debug!(?seat, "houseguest: using her furniture");
-                        // The shopping channel: she's bought it the moment
-                        // it comes on.
-                        let advert = chances.advert.filter(|_| seat.what == Use::Watch);
-                        if let Some(item) = advert {
-                            tracing::info!(?item, "houseguest: bought off the shopping channel");
-                            self.events.push(HomeEvent::Bought(item));
-                        }
-                        if let PieceRef::Made(id) = seat.piece
-                            && seat.what != Use::Crumple
-                        {
-                            self.events.push(HomeEvent::Used(id));
-                        }
-                        return self.set(
-                            Act::Use {
-                                what: seat.what,
-                                since: at,
-                                until: at + rng.range(lo, hi),
-                                advert,
-                            },
-                            at,
-                        );
+                let then = match then {
+                    Then::Job(job) if job.spot() == (self.x, self.y) => {
+                        return self.start_job(job, at, chances, rng);
                     }
-                    if let Job::Build(_) = job {
-                        // At the line's end: brace to tear it.
-                        return self.set(
-                            Act::Tear {
-                                since: at,
-                                ripped: false,
-                                step: 0,
-                            },
-                            at,
-                        );
-                    }
-                    let Job::Pull(task) = job else {
-                        // At the word: reach for the letters.
-                        return self.set(
-                            Act::Swap {
-                                until: at + FIDDLE_MS,
-                                back: false,
-                            },
-                            at,
-                        );
-                    };
-                    // At the line's end: brace. She reels in any slack
-                    // first, then heaves it 2–7 cells further.
-                    let goal = task.gap + rng.range(2, 8) as u16;
-                    tracing::debug!(
-                        row = task.row,
-                        glyphs = task.cells.len(),
-                        side = ?task.side,
-                        cells = goal,
-                        "houseguest: pulling a line"
-                    );
-                    return self.set(
-                        Act::Pull {
-                            offset: 0,
-                            goal,
-                            heaving: false,
-                        },
-                        at,
-                    );
-                }
-                self.task = None;
+                    Then::Job(_) | Then::Nothing => None,
+                    Then::Link(link) => Some(link),
+                };
                 match then {
                     Some(Link {
                         to,
@@ -1698,18 +1678,16 @@ impl Osaka {
                 }
             },
             Act::Pull {
+                pull,
                 offset,
                 goal,
                 heaving,
             } => {
-                let Some(Job::Pull(task)) = self.task.clone() else {
-                    return self.decide(at, terrain, chances, rng);
-                };
                 if !heaving {
                     // The heave: the line comes to her hands (reeling in
                     // the slack), then she steps back and it follows.
-                    let step = task.side.step();
-                    if offset >= task.gap {
+                    let step = pull.side.step();
+                    if offset >= pull.gap {
                         let next = self.x + step;
                         let room = terrain.platform_at(next, self.y).is_some()
                             && terrain.clear(next, self.y);
@@ -1721,12 +1699,13 @@ impl Osaka {
                     }
                     let offset = offset + 1;
                     self.ops.push(LayerOp::Pull {
-                        row: task.row,
-                        cells: task.cells.clone(),
+                        row: pull.row,
+                        cells: pull.cells.clone(),
                         offset: (i32::from(offset) * step) as i16,
                     });
                     self.set(
                         Act::Pull {
+                            pull,
                             offset,
                             goal,
                             heaving: true,
@@ -1738,6 +1717,7 @@ impl Osaka {
                 } else {
                     self.set(
                         Act::Pull {
+                            pull,
                             offset,
                             goal,
                             heaving: false,
@@ -1779,8 +1759,69 @@ impl Osaka {
         }
     }
 
+    /// At `job`'s spot: set about it.
+    fn start_job(&mut self, job: Job, at: u64, chances: &Chances, rng: &mut Rng) {
+        self.facing = side_facing(job.side());
+        let act = match job {
+            Job::Use(seat) => {
+                self.facing = seat.facing;
+                let (lo, hi) = use_duration(seat.what);
+                tracing::debug!(?seat, "houseguest: using her furniture");
+                // The shopping channel: she's bought it the moment it
+                // comes on.
+                let advert = chances.advert.filter(|_| seat.what == Use::Watch);
+                if let Some(item) = advert {
+                    tracing::info!(?item, "houseguest: bought off the shopping channel");
+                    self.events.push(HomeEvent::Bought(item));
+                }
+                if let PieceRef::Made(id) = seat.piece
+                    && seat.what != Use::Crumple
+                {
+                    self.events.push(HomeEvent::Used(id));
+                }
+                Act::Use {
+                    seat,
+                    since: at,
+                    until: at + rng.range(lo, hi),
+                    advert,
+                }
+            }
+            // At the line's end: brace to tear it.
+            Job::Build(build) => Act::Tear {
+                build,
+                since: at,
+                ripped: false,
+                step: 0,
+            },
+            // At the word: reach for the letters.
+            Job::Swap(swap) => Act::Swap {
+                swap,
+                until: at + FIDDLE_MS,
+                back: false,
+            },
+            Job::Pull(pull) => {
+                // At the line's end: brace. She reels in any slack first,
+                // then heaves it 2–7 cells further.
+                let goal = pull.gap + rng.range(2, 8) as u16;
+                tracing::debug!(
+                    row = pull.row,
+                    glyphs = pull.cells.len(),
+                    side = ?pull.side,
+                    cells = goal,
+                    "houseguest: pulling a line"
+                );
+                Act::Pull {
+                    pull,
+                    offset: 0,
+                    goal,
+                    heaving: false,
+                }
+            }
+        };
+        self.set(act, at);
+    }
+
     fn finish_pull(&mut self, at: u64) {
-        self.task = None;
         self.set(Act::Admire { until: at + 2000 }, at);
     }
 
@@ -1811,13 +1852,9 @@ impl Osaka {
                 let gone = op.sources();
                 self.pending
                     .retain(|(_, queued)| !queued.sources().iter().any(|c| gone.contains(c)));
-                let giggling = matches!(
-                    self.act,
-                    Act::Giggle { .. } | Act::Innocent { .. } | Act::Swap { .. }
-                );
+                let giggling = matches!(self.act.at_job(), Some(JobRef::Swap(_)));
                 if matches!(op, LayerOp::Swap { .. }) && giggling {
                     tracing::debug!("houseguest: the letters moved before she could swap them");
-                    self.task = None;
                     self.set(
                         Act::Look {
                             surprised_until: now,
@@ -1861,16 +1898,16 @@ impl Osaka {
 
     /// The makeshift piece she's tearing text off for, while she is.
     pub fn reeling(&self) -> Option<&Build> {
-        match (self.act, &self.task) {
-            (Act::Tear { .. }, Some(Job::Build(build))) => Some(build),
+        match &self.act {
+            Act::Tear { build, .. } => Some(build),
             _ => None,
         }
     }
 
     /// Where she's using a piece of her furniture, if she is.
     pub fn seat(&self) -> Option<Seat> {
-        match (self.act, &self.task) {
-            (Act::Use { .. }, Some(Job::Use(seat))) => Some(*seat),
+        match self.act {
+            Act::Use { seat, .. } => Some(seat),
             _ => None,
         }
     }
@@ -1878,7 +1915,7 @@ impl Osaka {
     /// The piece she was using went into the closet: she's back on her
     /// feet where it was, blinking.
     pub fn lost_seat(&mut self, now: u64) {
-        if let (Act::Use { .. }, Some(Job::Use(seat))) = (self.act, self.task.take()) {
+        if let Act::Use { seat, .. } = self.act {
             tracing::debug!(?seat, "houseguest: her furniture went away under her");
             self.set(
                 Act::Look {
@@ -1901,7 +1938,7 @@ impl Osaka {
     pub fn recheck(&mut self, terrain: &Terrain, now: u64) {
         let here = (self.x, self.y);
         let staying = match self.act.props().stays {
-            Stays::Job => self.task.as_ref().map(Job::spot),
+            Stays::Job => self.act.at_job().map(JobRef::spot),
             Stays::Rest => self.rest,
             Stays::Pass => None,
         }
@@ -1913,7 +1950,6 @@ impl Osaka {
             return;
         }
         tracing::debug!(x, y, "houseguest: text came up where she stays");
-        self.task = None;
         self.rest = None;
         self.set(
             Act::Look {
@@ -1926,8 +1962,10 @@ impl Osaka {
 
     /// Using a piece: where, and since and until when.
     pub fn use_span(&self) -> Option<(Seat, u64, u64)> {
-        match (self.act, &self.task) {
-            (Act::Use { since, until, .. }, Some(Job::Use(seat))) => Some((*seat, since, until)),
+        match self.act {
+            Act::Use {
+                seat, since, until, ..
+            } => Some((seat, since, until)),
             _ => None,
         }
     }
@@ -1937,11 +1975,11 @@ impl Osaka {
     pub fn watching(&self) -> Option<(u64, Option<Furniture>)> {
         match self.act {
             Act::Use {
-                what: Use::Watch,
+                seat,
                 since,
                 advert,
                 ..
-            } => Some((since, advert)),
+            } if seat.what == Use::Watch => Some((since, advert)),
             _ => None,
         }
     }
@@ -1949,8 +1987,8 @@ impl Osaka {
     /// Whether she's using `item` (inside it or beside it).
     #[cfg(test)]
     pub fn using(&self) -> Option<Furniture> {
-        match (self.act, &self.task) {
-            (Act::Use { .. }, Some(Job::Use(seat))) => Some(seat.item),
+        match self.act {
+            Act::Use { seat, .. } => Some(seat.item),
             _ => None,
         }
     }
@@ -1958,8 +1996,7 @@ impl Osaka {
     /// The text she was pulling changed under her (someone scrolled the
     /// chat): she lets go and stares.
     pub fn lost_grip(&mut self, now: u64) {
-        if matches!(self.task, Some(Job::Pull(_) | Job::Build(_))) {
-            self.task = None;
+        if matches!(self.act.job(), Some(JobRef::Pull(_) | JobRef::Build(_))) {
             tracing::trace!("houseguest lost her grip");
             self.set(
                 Act::Look {
@@ -1973,7 +2010,6 @@ impl Osaka {
 
     /// Choose what to do next, standing somewhere valid.
     fn decide(&mut self, at: u64, terrain: &Terrain, chances: &Chances, rng: &mut Rng) {
-        self.task = None;
         self.rest = None;
         if self.errand.is_some() {
             return self.head_for_errand(terrain, at);
@@ -2165,7 +2201,10 @@ impl Osaka {
                     return false;
                 }
                 self.facing = toward(self.x, to);
-                Act::Walk { to, then: None }
+                Act::Walk {
+                    to,
+                    then: Then::Nothing,
+                }
             }
             Kind::Work => {
                 // Home by a way that doesn't come in through the chat,
@@ -2404,8 +2443,13 @@ impl Osaka {
         if x != self.x {
             self.facing = toward(self.x, x);
         }
-        self.task = Some(job);
-        self.set(Act::Walk { to: x, then: None }, at);
+        self.set(
+            Act::Walk {
+                to: x,
+                then: Then::Job(job),
+            },
+            at,
+        );
     }
 
     /// Walk to `link` on this floor and take it (climb or drop).
@@ -2416,7 +2460,7 @@ impl Osaka {
         self.set(
             Act::Walk {
                 to: link.x,
-                then: Some(link),
+                then: Then::Link(link),
             },
             at,
         );
@@ -2450,7 +2494,6 @@ impl Osaka {
     pub fn place(&mut self, x: i32, y: i32, at: u64) {
         self.x = x;
         self.y = y;
-        self.task = None;
         self.goal = None;
         self.watch_until = 0;
         self.speech = None;
@@ -2475,10 +2518,6 @@ impl Osaka {
         // Out, or on her way: she'll see it when she's back.
         if self.act.props().on_chat == OnChat::Back {
             return;
-        }
-        if !self.aloft() {
-            // She lets go of whatever she was pulling.
-            self.task = None;
         }
         self.watch_x = chat_x;
         if self.aloft() {
@@ -2543,7 +2582,7 @@ impl Osaka {
                         && !p.contains(*to)
                     {
                         *to = p.clamp(*to);
-                        *then = None;
+                        *then = Then::Nothing;
                     }
                     return true;
                 }
@@ -2594,7 +2633,7 @@ impl Osaka {
 
     /// The box row her hands work at for the current job.
     fn hands_row(&self) -> u8 {
-        self.task.as_ref().map_or(1, Job::box_row)
+        self.act.at_job().map_or(1, JobRef::box_row)
     }
 
     fn facing_sign(&self) -> i32 {
@@ -2686,7 +2725,6 @@ impl Osaka {
             Act::Away { .. } | Act::Out { .. } => {
                 // Work can wait.
                 self.at_work = false;
-                self.task = None;
                 self.goal = None;
                 self.set(
                     Act::Door {
@@ -2736,7 +2774,13 @@ impl Osaka {
         if let Some(x) = terrain.nearest_rest(here, self.x) {
             tracing::debug!(from = self.x, to = x, "houseguest: off the text");
             self.facing = toward(self.x, x);
-            self.set(Act::Walk { to: x, then: None }, at);
+            self.set(
+                Act::Walk {
+                    to: x,
+                    then: Then::Nothing,
+                },
+                at,
+            );
             return true;
         }
         let calm = |(x, y): (i32, i32)| terrain.restful(x, y);
@@ -2753,7 +2797,6 @@ impl Osaka {
         let Some(spot) = self.errand else {
             return;
         };
-        self.task = None;
         self.goal = None;
         if (self.x, self.y) == spot {
             return self.poke(at);
@@ -2769,7 +2812,7 @@ impl Osaka {
             self.set(
                 Act::Walk {
                     to: spot.0,
-                    then: None,
+                    then: Then::Nothing,
                 },
                 at,
             );
@@ -2781,7 +2824,6 @@ impl Osaka {
     fn poke(&mut self, at: u64) {
         tracing::debug!("houseguest: poking the accordion");
         self.poked = true;
-        self.task = None;
         self.say(POKE, at);
         self.set(
             Act::Poke {
@@ -2847,7 +2889,7 @@ impl Osaka {
                 self.act,
                 Act::Out { .. }
                     | Act::Walk {
-                        then: Some(Link {
+                        then: Then::Link(Link {
                             route: Route::Around { .. },
                             ..
                         }),
@@ -2880,15 +2922,11 @@ impl Osaka {
                 .iter()
                 .any(|&(x, y)| chat.contains((x, y).into()))
         });
-        let busy_there = self.task.as_ref().is_some_and(|job| {
-            matches!(job, Job::Pull(_) | Job::Swap(_)) && holds(chat, job.spot())
-        }) && matches!(
-            self.act,
-            Act::Pull { .. } | Act::Swap { .. } | Act::Giggle { .. } | Act::Innocent { .. }
-        );
+        let busy_there = self.act.at_job().is_some_and(|job| {
+            matches!(job, JobRef::Pull(_) | JobRef::Swap(_)) && holds(chat, job.spot())
+        });
         if busy_there {
             tracing::debug!("houseguest: shaken off in the chat");
-            self.task = None;
             self.set(
                 Act::Look {
                     surprised_until: now + SURPRISED_MS,
@@ -2971,14 +3009,14 @@ impl Osaka {
                 what.look(frame)
             }
             Act::Use {
-                what,
+                seat,
                 since,
                 until,
                 advert,
             } => use_look(
-                what,
+                seat.what,
                 advert,
-                matches!(&self.task, Some(Job::Use(seat)) if seat.item == Furniture::Sofa),
+                seat.item == Furniture::Sofa,
                 now.saturating_sub(since),
                 until.saturating_sub(since),
             ),

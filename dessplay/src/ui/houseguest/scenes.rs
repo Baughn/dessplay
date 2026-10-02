@@ -123,8 +123,39 @@ pub(super) enum Job {
 }
 
 impl Job {
+    /// The job, borrowed.
+    pub fn by_ref(&self) -> JobRef<'_> {
+        match self {
+            Self::Pull(p) => JobRef::Pull(p),
+            Self::Swap(s) => JobRef::Swap(s),
+            Self::Build(b) => JobRef::Build(b),
+            Self::Use(seat) => JobRef::Use(seat),
+        }
+    }
+
     /// Where she stands to do it.
     pub fn spot(&self) -> (i32, i32) {
+        self.by_ref().spot()
+    }
+
+    pub fn side(&self) -> Side {
+        self.by_ref().side()
+    }
+}
+
+/// A job, borrowed from wherever it's kept (her act holds the one she's
+/// at).
+#[derive(Clone, Copy, Debug)]
+pub(super) enum JobRef<'a> {
+    Pull(&'a Pull),
+    Swap(&'a Swap),
+    Build(&'a Build),
+    Use(&'a super::room::Seat),
+}
+
+impl JobRef<'_> {
+    /// Where she stands to do it.
+    pub fn spot(self) -> (i32, i32) {
         match self {
             Self::Pull(p) => (p.x, p.y),
             Self::Swap(s) => (s.x, s.y),
@@ -133,7 +164,7 @@ impl Job {
         }
     }
 
-    pub fn side(&self) -> Side {
+    pub fn side(self) -> Side {
         match self {
             Self::Pull(p) => p.side,
             Self::Swap(s) => s.side,
@@ -146,7 +177,7 @@ impl Job {
     }
 
     /// Which of her box rows her hands work at (0 = top).
-    pub fn box_row(&self) -> u8 {
+    pub fn box_row(self) -> u8 {
         let (row, y) = match self {
             Self::Pull(p) => (p.row, p.y),
             Self::Swap(s) => (s.row, s.y),
@@ -641,7 +672,7 @@ mod tests {
         assert_eq!(pull.x, 10, "her box's left edge sits right after 'hi'");
         assert_eq!(pull.cells, vec![1, 2, 3, 4, 6, 7]);
         assert_eq!(pull.side, Side::Left);
-        assert_eq!(Job::Pull(pull.clone()).box_row(), 1);
+        assert_eq!(JobRef::Pull(pull).box_row(), 1);
     }
 
     /// A line ending a little way off is still in reach: she reels in
