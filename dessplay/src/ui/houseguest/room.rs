@@ -770,6 +770,48 @@ impl Home {
             .collect()
     }
 
+    /// Anchor every piece that has only a share of the way along (an
+    /// older record's) where that share puts it, if its strip is here.
+    fn pin_anchors(&mut self, strips: &[(Strip, Extent)]) {
+        for prop in &mut self.props {
+            if prop.anchor.is_none()
+                && let Some(&(_, e)) = strips.iter().find(|(s, _)| *s == prop.strip)
+            {
+                let cols = prop.item.spec().footprint.0;
+                prop.anchor = Some(e.pin(e.share(prop.at, cols), cols).0);
+            }
+        }
+    }
+
+    /// Where her pieces stand this frame, whether or not they show: each
+    /// on its strip, in anchor order (see [`pack`]), strip by strip in
+    /// the order she furnished them and by index within one. A strip
+    /// that's gone, or too small to hold its pieces, lays out none of
+    /// them (this never moves anything; [`Home::project`] does). Pure
+    /// geometry: text over a piece doesn't take it out of the layout.
+    /// An older record's piece is anchored where its share of the way
+    /// along puts it, the first time its strip is here.
+    pub fn layout(&mut self, nooks: &[(Nook, Rect)]) -> Vec<Shown> {
+        let strips = strips(nooks);
+        self.pin_anchors(&strips);
+        let mut out: Vec<Shown> = Vec::new();
+        for strip in self.furnished() {
+            let Some(&(_, e)) = strips.iter().find(|(s, _)| *s == strip) else {
+                continue;
+            };
+            let Some(mut packed) = pack(&self.on(strip, None), e) else {
+                continue;
+            };
+            packed.sort_unstable();
+            out.extend(
+                packed.into_iter().filter_map(|(index, left)| {
+                    Some(stand(self.props.get(index)?, strip, e, left))
+                }),
+            );
+        }
+        out
+    }
+
     /// Where her pieces stand this frame. Each stands on its strip, in
     /// anchor order (see [`pack`]), if its cells are free (else it's in
     /// the closet this frame). A strip that's gone, or too small to hold
@@ -778,7 +820,8 @@ impl Home {
     /// free cells; with none, they're all in the closet. An older
     /// record's piece is anchored where its share of the way along puts
     /// it, the first time its strip is here. `blocked` cells are never
-    /// covered by a piece (protected rectangles, moved text).
+    /// covered by a piece (protected rectangles, moved text). What shows
+    /// is [`Home::layout`] less what doesn't fit.
     pub fn project(
         &mut self,
         buf: &Buffer,
@@ -786,38 +829,20 @@ impl Home {
         blocked: &dyn Fn(i32, i32) -> bool,
     ) -> Vec<Shown> {
         let strips = strips(nooks);
-        let extent = |strip: Strip| strips.iter().find(|(s, _)| *s == strip).map(|&(_, e)| e);
-        for prop in &mut self.props {
-            if prop.anchor.is_none()
-                && let Some(e) = extent(prop.strip)
-            {
-                let cols = prop.item.spec().footprint.0;
-                prop.anchor = Some(e.pin(e.share(prop.at, cols), cols).0);
-            }
-        }
+        self.pin_anchors(&strips);
         for strip in self.furnished() {
-            if extent(strip).is_some_and(|e| pack(&self.on(strip, None), e).is_some()) {
-                continue;
+            let packs = strips
+                .iter()
+                .find(|(s, _)| *s == strip)
+                .is_some_and(|&(_, e)| pack(&self.on(strip, None), e).is_some());
+            if !packs {
+                self.move_off(strip, buf, &strips, blocked);
             }
-            self.move_off(strip, buf, &strips, blocked);
         }
         let mut shown: Vec<Shown> = Vec::new();
-        for strip in self.furnished() {
-            let Some(e) = extent(strip) else {
-                continue;
-            };
-            let Some(mut packed) = pack(&self.on(strip, None), e) else {
-                continue;
-            };
-            packed.sort_unstable();
-            for (index, left) in packed {
-                let Some(prop) = self.props.get(index) else {
-                    continue;
-                };
-                let at = stand(prop, strip, e, left);
-                if fits(buf, &at, &|x, y| free(&shown, blocked, x, y)) {
-                    shown.push(at);
-                }
+        for at in self.layout(nooks) {
+            if fits(buf, &at, &|x, y| free(&shown, blocked, x, y)) {
+                shown.push(at);
             }
         }
         shown
@@ -1221,6 +1246,27 @@ mod tests {
     }
 
     #[test]
+    fn text_over_a_piece_closets_it_but_leaves_it_laid_out() {
+        let mut rows = USERS;
+        rows[3] = "│   hi           │";
+        let buf = pane(&rows);
+        let nooks = [(Nook::Users, buf.area)];
+        let mut room = home(
+            Nook::Users,
+            &[prop(Furniture::Sofa, 0), prop(Furniture::Lamp, 1000)],
+        );
+        let shown = room.project(&buf, &nooks, &|_, _| false);
+        let items: Vec<Furniture> = shown.iter().map(|s| s.item).collect();
+        assert_eq!(items, [Furniture::Lamp], "the text closets the sofa");
+        let laid = room.layout(&nooks);
+        let items: Vec<Furniture> = laid.iter().map(|s| s.item).collect();
+        assert_eq!(items, [Furniture::Sofa, Furniture::Lamp]);
+        assert_eq!(laid[0].rect(), Rect::new(1, 2, 9, 3), "where it'd stand");
+        assert_eq!(laid[1], shown[0]);
+        assert!(room.layout(&[]).is_empty(), "no pane, no layout");
+    }
+
+    #[test]
     fn a_strip_too_small_moves_its_pieces_together_or_not_at_all() {
         // Two panes side by side: Users 18 wide, Playlist 30 wide.
         let mut rows: Vec<String> = Vec::new();
@@ -1495,6 +1541,21 @@ mod tests {
             let first = room.project(&buf, &nooks, &|_, _| false);
             let pinned = room.clone();
             prop_assert!(room.props.iter().all(|p| p.anchor.is_some()));
+            // What shows is the layout, in its order, less what doesn't
+            // fit; laying out moves nothing.
+            let laid = room.layout(&nooks);
+            prop_assert_eq!(&room, &pinned);
+            let subsequence = |shown: &[Shown], laid: &[Shown]| {
+                let mut rest = laid.iter();
+                shown.iter().all(|s| rest.any(|l| l == s))
+            };
+            prop_assert!(subsequence(&first, &laid), "{:?} / {:?}", first, laid);
+            // A resize and back lays every piece out where it was.
+            let (small, at_small) = users(narrow, &[]);
+            let mut resized = pinned.clone();
+            let _ = resized.layout(&at_small);
+            prop_assert_eq!(&resized, &pinned);
+            prop_assert_eq!(&resized.layout(&nooks), &laid);
             // Shown in anchor order, inside the walls, apart.
             let order = |s: &Shown| {
                 let index = room.props.iter().position(|p| p.item == s.item);
@@ -1510,7 +1571,6 @@ mod tests {
                 prop_assert!(s.left >= 1 && s.rect().right() < wide, "{:?}", s);
             }
             // A resize, and back.
-            let (small, at_small) = users(narrow, &[]);
             let _ = room.project(&small, &at_small, &|_, _| false);
             if room == pinned {
                 let again = room.project(&buf, &nooks, &|_, _| false);
@@ -1520,10 +1580,15 @@ mod tests {
             let mut room = pinned;
             let (noisy, _) = users(wide, &text);
             let block = |x: i32, _: i32| blocked.is_some_and(|b| i32::from(b) == x);
-            for s in room.project(&noisy, &nooks, &block) {
-                prop_assert!(fits(&noisy, &s, &|x, y| !block(x, y)), "{:?}", s);
-                prop_assert!(first.contains(&s), "text never moves a piece: {:?}", s);
+            let noisy_shown = room.project(&noisy, &nooks, &block);
+            for s in &noisy_shown {
+                prop_assert!(fits(&noisy, s, &|x, y| !block(x, y)), "{:?}", s);
+                prop_assert!(first.contains(s), "text never moves a piece: {:?}", s);
             }
+            // Text closets pieces from what shows, never from the layout.
+            let noisy_laid = room.layout(&nooks);
+            prop_assert_eq!(&noisy_laid, &laid);
+            prop_assert!(subsequence(&noisy_shown, &noisy_laid));
         }
     }
 
