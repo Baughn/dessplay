@@ -214,6 +214,10 @@ const RECENT: usize = 3;
 /// A refused put-back is retried this many times.
 const RETRIES: u8 = 5;
 
+/// Her fixed lines (the lints check each fits a bubble).
+#[cfg(test)]
+pub(super) const LINES: [&str; 8] = [GREETING, OK, RIP, SCRUNCH, THERE, HOME, THROUGH, POKE];
+
 /// What she says on first finding her feet.
 const GREETING: &str = "Nice to meet you.";
 /// After a hard landing.
@@ -1017,6 +1021,9 @@ pub(super) struct Osaka {
     /// Her mind's own random stream: one draw a decision (see
     /// [`Whims`]).
     mind: Rng,
+    /// What she chose and hasn't done yet: it eases her needs by how
+    /// much of it she does (see [`Osaka::credit_done`]).
+    credit: Option<Want>,
     /// Beats she owes, oldest first (see [`Osaka::owe`]).
     owed: Vec<Beat>,
     /// The beat lines she has said this visit.
@@ -1064,6 +1071,7 @@ impl Osaka {
             tries: Vec::new(),
             rest: None,
             mind: Rng(rng.next() ^ mind::MIND_SALT),
+            credit: None,
             owed: Vec::new(),
             lines: Lines::default(),
             #[cfg(test)]
@@ -1339,6 +1347,20 @@ impl Osaka {
         self.pending.push((due, op));
     }
 
+    /// Every piece of mischief queued has its undo scheduled with it
+    /// (a lint, checked after every step she takes in debug builds).
+    fn undoes_its_mischief(&self) -> bool {
+        self.ops
+            .iter()
+            .filter(|op| matches!(op, LayerOp::Swap { .. } | LayerOp::Knock { .. }))
+            .flat_map(LayerOp::sources)
+            .all(|source| {
+                self.pending.iter().any(|(_, op)| {
+                    matches!(op, LayerOp::Restore { .. }) && op.sources().contains(&source)
+                })
+            })
+    }
+
     /// Whether some mischief is still waiting to be undone.
     fn owes(&self) -> bool {
         !self.pending.is_empty()
@@ -1378,6 +1400,7 @@ impl Osaka {
                 continue;
             }
             self.fire(due, terrain, chances, rng);
+            debug_assert!(self.undoes_its_mischief(), "mischief without its undo");
         }
         // Far behind (a suspended laptop): resume from now.
         self.act_due = self.act_due.max(now);
@@ -1387,6 +1410,11 @@ impl Osaka {
 
     fn set(&mut self, act: Act, at: u64) {
         tracing::trace!(?act, x = self.x, y = self.y, "houseguest act");
+        // Leaving what she chose (pulling on is still pulling).
+        let pulling_on = matches!((&self.act, &act), (Act::Pull { .. }, Act::Pull { .. }));
+        if !pulling_on {
+            self.credit_done(at);
+        }
         self.act = act;
         self.act_due = self.first_due(at);
     }
@@ -1594,6 +1622,7 @@ impl Osaka {
                 let revert = at + rng.range(SWAP_KEPT_MS.0, SWAP_KEPT_MS.1);
                 tracing::debug!(?a, ?b, "houseguest: swapping two letters");
                 self.ops.push(LayerOp::Swap { a, b });
+                self.credit_whole(Want::Swap);
                 // Back where they were shown: home, or along a line she
                 // pulled.
                 self.schedule(
@@ -1942,7 +1971,54 @@ impl Osaka {
     }
 
     fn finish_pull(&mut self, at: u64) {
+        self.credit_whole(Want::Pull);
         self.set(Act::Admire { until: at + 2000 }, at);
+    }
+
+    /// What she chose eases her needs by how much of it she did: settled
+    /// as she leaves doing it, by the share done. Before she gets to it,
+    /// nothing is settled.
+    fn credit_done(&mut self, at: u64) {
+        let Some(want) = self.credit else {
+            return;
+        };
+        let span = |since: u64, until: u64| {
+            (at.saturating_sub(since) as f64 / until.saturating_sub(since).max(1) as f64)
+                .clamp(0.0, 1.0)
+        };
+        let done = match (&self.act, want) {
+            (Act::Idle { what, since, until }, Want::Idle(chose)) if *what == chose => {
+                span(*since, *until)
+            }
+            (
+                Act::Use {
+                    seat, since, until, ..
+                },
+                Want::Use(chose),
+            ) if seat.what == chose => span(*since, *until),
+            (Act::Pull { offset, goal, .. }, Want::Pull) => {
+                f64::from(*offset) / f64::from((*goal).max(1))
+            }
+            _ => return,
+        };
+        self.credit = None;
+        self.serve(want, done);
+    }
+
+    /// She did all of what she chose, `want`.
+    fn credit_whole(&mut self, want: Want) {
+        if self.credit == Some(want) {
+            self.credit = None;
+            self.serve(want, 1.0);
+        }
+    }
+
+    /// `want`'s needs eased by `share` of what it answers.
+    fn serve(&mut self, want: Want, share: f64) {
+        tracing::trace!(?want, share, "houseguest: eased by what she did");
+        for &(need, amount) in want.def().serves {
+            self.needs.serve(need, amount * share);
+        }
     }
 
     /// Layer changes queued since the last paint.
@@ -2129,6 +2205,8 @@ impl Osaka {
         rng: &mut Rng,
     ) -> Decision {
         let whims = Whims(self.mind.next());
+        // What she just finished counts before she chooses anew.
+        self.credit_done(at);
         self.rest = None;
         if self.errand.is_some() {
             self.head_for_errand(terrain, at);
@@ -2205,6 +2283,7 @@ impl Osaka {
         if let Some((want, job)) = self.leftover(chances, terrain, here, whims, at) {
             tracing::debug!(?job, "houseguest: back to what she made");
             if self.go_to(want, job, here, terrain, at) {
+                self.credit = Some(want);
                 return Decision {
                     heading,
                     ..Decision::of(Bucket::Continuation, "leftover")
@@ -2289,8 +2368,13 @@ impl Osaka {
                 if self.recent.len() > RECENT {
                     self.recent.remove(0);
                 }
-                for &(need, amount) in want.def().serves {
-                    self.needs.serve(need, amount);
+                // Moving is the point of moving: walking and travel are
+                // credited as she sets off. The rest, by what she does.
+                if matches!(want, Want::Walk | Want::Travel) {
+                    self.credit = None;
+                    self.serve(want, 1.0);
+                } else {
+                    self.credit = Some(want);
                 }
                 return Decision {
                     want: Some(want),

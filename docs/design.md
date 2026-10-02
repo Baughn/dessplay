@@ -1431,7 +1431,12 @@ this section states what is built.
   twenty minutes and a snack from her fridge answers it. Fit is 0.1 + need² (0.5
   for an offer no need wants, and never below 0.5 for a nap on a sofa,
   which she takes awake too); repeating one of her last three choices
-  multiplies by 0.4. Needs only weight choices: nothing is ever ruled out,
+  multiplies by 0.4. A need is eased by how much she does of what she
+  chose: an activity or a use by the share of its time she gets through
+  before it ends or is interrupted, a pull by how far she pulls it (all
+  of it when she runs out of floor), a swap once the letters swap;
+  walking and travel as she sets off. A choice she never gets to eases
+  nothing. Needs only weight choices: nothing is ever ruled out,
   and nothing bad happens when a need is high
   (why: [decisions](decisions.md#houseguest-chooses-by-needs-among-the-top-few-2026-09-28)).
   Something is on offer only when there's a way to do it from where she

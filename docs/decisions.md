@@ -2433,6 +2433,14 @@ more pressing. A heading toward a piece she made stays certain: that
 purpose is on the piece, and continuation already counts her tries at
 it, which a roll per hop would double.
 
+Needs are eased by the share she does of what she chose (Q4): an
+interrupted sleep took off all 0.7 of sleepiness at the choice, so she
+woke from five seconds of sleep as rested as from three minutes and
+didn't go back to bed. Zero credit for an interrupted act was rejected:
+it would bring back the doze oscillation (2026-09-28). Walking and
+travel stay credited at the choice, since setting off is already the
+moving.
+
 Every loss owes a beat (a glance, sometimes a line) for the
 proposal's rule 5, "nothing ends silently": a lapse reads as hers when
 she looks at what she lost (Carlisle's gaze), and a dropped purpose
@@ -2467,4 +2475,6 @@ Tamagotchi lesson: needs flavour, never punish). A doze eases sleepiness
 only a little: when it reset it, sleepiness oscillated at the same level
 all visit and the "sleepier later" shape vanished. Only needs with both
 a driver and an answer today exist; `hungry` and `social` wait for food
-words and cameos.
+words and cameos. *(2026-10-02: needs are now eased by how much she does of what she
+chose, not the moment she chooses it; see
+[her mind is a table and a heading](#her-mind-is-a-table-and-a-heading-2026-10-02).)*

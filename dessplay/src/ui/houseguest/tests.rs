@@ -3910,6 +3910,147 @@ fn a_lost_sofa_is_mourned() {
     }
 }
 
+/// What she chose eases her needs by how much of it she did: a sleep
+/// interrupted a few seconds in takes little off her sleepiness (she'll
+/// go back to bed sooner), where choosing it used to take it all.
+#[test]
+fn an_interrupted_sleep_eases_only_what_she_slept() {
+    use super::brain::Want;
+    use super::room::Use;
+    let (real, mut view) = home_screen();
+    let mut checked = 0;
+    for seed in 0..6u64 {
+        let mut guest = Guest::new(seed);
+        guest.cue(Scene::Arrive);
+        paint(&mut guest, &real, &view, 0);
+        guest.give(Furniture::Bed);
+        paint(&mut guest, &real, &view, 0);
+        let sleepy = |guest: &Guest| match &guest.state {
+            State::Visiting(visit) => visit.osaka.needs().sleepy,
+            _ => panic!("visiting"),
+        };
+        let mut now = 0;
+        // Sleepiness as she chose to sleep, and when she lay down.
+        let mut chose: Option<f64> = None;
+        let mut slept_since: Option<u64> = None;
+        while now < 10 * 60_000 {
+            if chose.is_none() {
+                guest.press(super::stage::Want::Sleepy);
+            }
+            let before = sleepy(&guest);
+            let decided = match &guest.state {
+                State::Visiting(visit) => visit.osaka.decisions.len(),
+                _ => 0,
+            };
+            now += guest
+                .next_tick(now)
+                .map_or(500, |d| d.as_millis() as u64)
+                .clamp(1, 500);
+            guest.advance(now);
+            paint(&mut guest, &real, &view, now);
+            let State::Visiting(visit) = &guest.state else {
+                panic!("visiting");
+            };
+            if chose.is_none()
+                && visit.osaka.decisions[decided..]
+                    .iter()
+                    .any(|d| d.want == Some(Want::Use(Use::Sleep)))
+            {
+                chose = Some(before);
+            }
+            let sleeping = visit
+                .osaka
+                .use_span()
+                .is_some_and(|(seat, ..)| seat.what == Use::Sleep);
+            if chose.is_some() && sleeping {
+                slept_since.get_or_insert(now);
+            }
+            // Five seconds in, a chat line wakes her.
+            if let (Some(base), Some(since)) = (chose, slept_since)
+                && now >= since + 5000
+            {
+                view.chat_mark.synced += 1;
+                guest.advance(now + 1);
+                paint(&mut guest, &real, &view, now + 1);
+                let after = sleepy(&guest);
+                assert!(
+                    after > base - 0.15,
+                    "seed {seed}: sleepy {base} at choosing, {after} after 5 s of sleep"
+                );
+                checked += 1;
+                break;
+            }
+        }
+    }
+    assert!(checked >= 3, "only {checked} seeds chose to sleep");
+}
+
+/// Lint: every fixed line she says fits a bubble (24 characters).
+#[test]
+fn every_fixed_line_fits_a_bubble() {
+    let pitches = Furniture::ALL.map(Furniture::pitch);
+    for line in osaka::LINES
+        .iter()
+        .chain(&osaka::MUSINGS)
+        .chain(&pitches)
+        .chain(&[PARCEL])
+    {
+        assert!(line.chars().count() <= 24, "{line:?}");
+    }
+}
+
+/// Lint: every want with a spot of its own can be cued from the stage,
+/// so it can be watched on demand. Standing and walking about are the
+/// fillers, with no spot; travel is each of its ways.
+#[test]
+fn every_want_can_be_cued() {
+    use super::brain::Want;
+    use super::osaka::Activity;
+    use super::room::Use;
+    for want in Want::ALL {
+        let scenes: &[Scene] = match want {
+            Want::Stand | Want::Walk => &[],
+            Want::SpaceOut => &[Scene::Muse],
+            Want::Sneeze => &[Scene::Sneeze],
+            Want::Idle(Activity::Sit) => &[Scene::Sit],
+            Want::Idle(Activity::LieBack) => &[Scene::LieBack],
+            Want::Idle(Activity::LieFront) => &[Scene::LieFront],
+            Want::Idle(Activity::Jacks) => &[Scene::Jacks],
+            Want::Idle(Activity::ToeTouch) => &[Scene::ToeTouch],
+            Want::Idle(Activity::Stretch) => &[Scene::Stretch],
+            Want::Idle(Activity::Gaze) => &[Scene::Gaze],
+            Want::Travel => &[
+                Scene::ClimbUp,
+                Scene::ClimbDown,
+                Scene::Drop,
+                Scene::Clamber,
+                Scene::StepOut,
+                Scene::Door,
+            ],
+            Want::Pull => &[Scene::Pull],
+            Want::Swap => &[Scene::Swap],
+            Want::Work => &[Scene::Work],
+            Want::Use(Use::Lounge) => &[Scene::Lounge],
+            Want::Use(Use::Nap) => &[Scene::Nap],
+            Want::Use(Use::Sleep) => &[Scene::Sleep],
+            Want::Use(Use::Homework) => &[Scene::Homework],
+            Want::Use(Use::Watch) => &[Scene::Watch, Scene::Shopping],
+            Want::Use(Use::Unpack) => &[Scene::Parcel],
+            Want::Use(Use::Read) => &[Scene::Read],
+            Want::Use(Use::Snack) => &[Scene::Snack],
+            Want::Use(Use::Pet) => &[Scene::Pet],
+            Want::Use(Use::Crumple) => &[Scene::MakeSofa, Scene::MakeBed],
+        };
+        assert!(
+            matches!(want, Want::Stand | Want::Walk) || !scenes.is_empty(),
+            "{want:?}"
+        );
+        for scene in scenes {
+            assert!(Scene::ALL.contains(scene), "{want:?}: {scene:?}");
+        }
+    }
+}
+
 /// The sofa census (the migration's checkpoint bench): in the stage
 /// room, cued to make a sofa, five-minute visits with chat every 37 s
 /// (in a phase that differs by seed) or none, what became of each piece she made — used (and how long after

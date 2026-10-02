@@ -2222,3 +2222,55 @@ Two steps, each its own commits:
    is re-pinned.
 
 Then re-run `sofa_census` and the 256-case pass, and record them here.
+
+### Phase 2, step 1 — the mind as data (done 2026-10-02)
+
+- **The want table** (`brain::Want::def`, `DesireDef`, `Factor::InChat`;
+  golden unchanged) and **the explain log** (`osaka::Decision`: bucket,
+  method, want, top four, act, heading; the stage's `x`; golden
+  unchanged).
+- **Methods** (`mind.rs`): named, pure guards per want, first that
+  binds; offers are what binds, so `start`, `places_for`, `Place` and
+  the "couldn't after all" re-rolls are gone. `use/finish-my-heap` and
+  `use/mine` come before real, made and new pieces (today's uniform pick
+  among those is kept, so a made sofa facing the TV is still watched
+  from). No method for `Use(Crumple)`. The mind's stream: one draw a
+  decision, `Whims` hashed by label (FNV-1a + splitmix). Found on the
+  way: `Want::ALL` lacked `Work` (now a test). Four tests assumed seed 7
+  shows her at 95 s; they now step on until she's on screen
+  (`run_until_seen`), and seed 7's snapshot is re-pinned. The statistics
+  tests passed unchanged, but `a_sleepy_osaka_mostly_lies_down`, whose
+  win was a tie broken by the old draws (now `..._mostly_dozes`).
+- **The heading** (`mind::Heading`): the want and the job as she set
+  off; text by glyphs in the same columns, up to `SCROLLED` = 4 rows
+  above; ×3 inertia (`brain::INERTIA`); `drop_heading` the one remover;
+  a heading toward a made piece stays a certain hop (continuation counts
+  tries). Errands no longer clear it.
+- **Beats** (`mind::{Loss, Beat, Lines}`, `Act::Glance`, `Osaka::owe`):
+  the owed bucket after the reflexes; lines with a ten-minute cooldown
+  and eight a visit. Loss sites: `tend_made` (an unused piece), the reel
+  put-back, `drop_heading` (gone or other), the let-be after `TRIES`.
+  "Ah, right!" on going back after an interruption.
+  `a_lost_sofa_is_mourned`; the made-pieces property requires every
+  unused loss to be mourned.
+- **Credit by fraction** (`Osaka::credit`, `credit_done`): idles and
+  uses by time share, pulls by offset/goal (whole when finished), swaps
+  when made; walking and travel at the choice; continuation carries its
+  purpose's credit. `an_interrupted_sleep_eases_only_what_she_slept`
+  (fails under credit-at-choice). No statistics test moved.
+- **Lints**: fixed lines fit a bubble; every want with a spot can be
+  cued from the stage (Stand and Walk are the fillers); a `debug_assert`
+  after every step that queued mischief has its undo scheduled (trips
+  when a swap's restore is removed). "Acts over 2 s declare Stay or
+  Pass" is `ActProps`' exhaustive match.
+- Golden hashes re-recorded at each behaviour-changing commit (methods,
+  heading, beats, credit). After credit: 256 cases pass (157 tests);
+  `sofa_census`: no chat 100/100 used (both modes); chat every 37 s
+  90/90 and 94/94 used, made → used median 7 s, max 28 s, none let be,
+  lost or waiting.
+
+**Step 2 next**: needs for every want (comfort, fun, daydreams; spot
+quality from the bound seat; fun's tolerance), the visit's mood, and
+the simulator (an ignored census of long visits across rooms) to tune
+them before any statistics test is re-pinned. Beauty and nesting wait
+for phase 4, as the proposal says.
