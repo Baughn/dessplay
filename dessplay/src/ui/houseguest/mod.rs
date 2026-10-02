@@ -26,6 +26,7 @@ mod mind;
 mod nudge;
 mod osaka;
 mod room;
+mod rules;
 mod scenes;
 mod scrap;
 mod sprite;
@@ -146,6 +147,8 @@ struct Visit {
     reel: Option<scenes::Build>,
     /// The flap a parcel just came in through, and when.
     flap: Option<(room::Flap, u64)>,
+    /// The rules of her home broken in the last frame.
+    broken: Vec<rules::Broken>,
     size: (u16, u16),
 }
 
@@ -473,6 +476,20 @@ impl Guest {
             .map(|&(room::Strip::Bottom(nook), role)| format!("{nook:?} {role:?}"))
             .collect::<Vec<_>>()
             .join(", ")
+    }
+
+    /// The rules of her home broken now, while she's visiting (for the
+    /// stage).
+    pub fn broken(&self) -> String {
+        match &self.state {
+            State::Visiting(visit) => visit
+                .broken
+                .iter()
+                .map(rules::Broken::label)
+                .collect::<Vec<_>>()
+                .join(", "),
+            _ => String::new(),
+        }
     }
 
     /// What came of the last cue: what she's doing, or why the room
@@ -855,6 +872,7 @@ impl Guest {
                         advert: advert(&self.ledger, self.shop_now),
                         furnished: !self.ledger.home.props.is_empty(),
                         chat,
+                        broken: visit.broken.clone(),
                     };
                     let note =
                         stage::direct(scene, buf, &protected, visit, &offered, now, &mut self.rng);
@@ -885,6 +903,7 @@ impl Guest {
                     advert: advert(&self.ledger, self.shop_now),
                     furnished: !self.ledger.home.props.is_empty(),
                     chat,
+                    broken: visit.broken.clone(),
                 };
                 // In line art, pieces she overlaps go in her image: two
                 // images would cut each other out.
@@ -998,6 +1017,7 @@ impl Guest {
             made: Vec::new(),
             next_made: room::MadeId(0),
             reel: None,
+            broken: Vec::new(),
             size,
         }));
     }
@@ -1455,13 +1475,40 @@ fn furnish(
         visit.osaka.say(PARCEL, now);
         shown = home.project(buf, &view.nooks, &blocked);
     }
-    let Some(item) = gift.take() else {
-        return shown;
-    };
+    if let Some(item) = gift.take() {
+        shown = place_gift(home, item, note, buf, view, &shown, &blocked, rng);
+    }
+    // The rules of her home, judged where her pieces are laid out (text
+    // closeting one doesn't count), once the frame's home is final.
+    let laid = home.layout(&view.nooks);
+    let broken = rules::broken(&laid, &room::strips(&view.nooks), home);
+    if broken != visit.broken {
+        tracing::trace!(
+            broken = ?broken.iter().map(rules::Broken::label).collect::<Vec<_>>(),
+            "houseguest: the rules of her home"
+        );
+        visit.broken = broken;
+    }
+    shown
+}
+
+/// Place the stage's gift `item` where it fits, noting how that went;
+/// where her furniture then stands.
+#[allow(clippy::too_many_arguments)]
+fn place_gift(
+    home: &mut room::Home,
+    item: Furniture,
+    note: &mut Option<Result<String, String>>,
+    buf: &Buffer,
+    view: &IdleView,
+    shown: &[Shown],
+    blocked: &dyn Fn(i32, i32) -> bool,
+    rng: &mut Rng,
+) -> Vec<Shown> {
     let result = if home.owns(item) {
         Err(format!("she already has a {}", item.spec().name))
     } else {
-        match home.spot(buf, &view.nooks, &shown, &blocked, item, rng) {
+        match home.spot(buf, &view.nooks, shown, blocked, item, rng) {
             Some(prop) => {
                 let strip = prop.strip;
                 tracing::info!(?item, ?strip, at = prop.at, "houseguest: new furniture");
@@ -1475,7 +1522,7 @@ fn furnish(
         }
     };
     *note = Some(result);
-    home.project(buf, &view.nooks, &blocked)
+    home.project(buf, &view.nooks, blocked)
 }
 
 /// Where she could go to use each piece shown: in front of it on its

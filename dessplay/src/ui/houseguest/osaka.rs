@@ -35,6 +35,10 @@ pub(super) struct Chances {
     /// The chat pane, when she's resident: people read there, so what
     /// would take her into it is [`CHAT_FACTOR`] as likely.
     pub chat: Option<Rect>,
+    /// The rules of her home broken now.
+    // Read once she feels rules (phase 4, step 4).
+    #[allow(dead_code)]
+    pub broken: Vec<super::rules::Broken>,
 }
 
 /// A makeshift piece she made this visit, and what she made it for.

@@ -11,6 +11,10 @@
 //! piece, placed by its share of the way along its room's pane. A record
 //! an older build saved has no `anchors`: its pieces are anchored from
 //! `rooms` and `at` again.
+//!
+//! The pieces she hasn't settled yet (deliveries, standing where they
+//! came in) are listed in `unsettled`, written only when there are any;
+//! a record without it has every piece settled.
 
 use serde::{Deserialize, Serialize};
 
@@ -78,6 +82,11 @@ impl Ledger {
             .into_iter()
             .filter_map(|v| serde_json::from_value::<SavedAnchor>(v).ok())
             .collect();
+        let unsettled: Vec<Furniture> = raw
+            .unsettled
+            .into_iter()
+            .filter_map(|v| serde_json::from_value::<Furniture>(v).ok())
+            .collect();
         let mut home = Home::default();
         for prop in raw
             .props
@@ -101,6 +110,7 @@ impl Ledger {
             };
             let mut piece = Prop {
                 boxed: prop.boxed,
+                settled: !unsettled.contains(&prop.item),
                 ..Prop::new(prop.item, nook, prop.at, prop.facing)
             };
             if let Some(a) = anchored {
@@ -152,6 +162,13 @@ impl Ledger {
                 .collect(),
             ordered: self.ordered,
             bought_on: self.bought_on,
+            unsettled: self
+                .home
+                .props
+                .iter()
+                .filter(|p| !p.settled)
+                .map(|p| p.item)
+                .collect(),
         };
         serde_json::to_string(&raw).unwrap_or_default()
     }
@@ -242,6 +259,10 @@ struct Saved {
     anchors: Vec<SavedAnchor>,
     ordered: Option<Furniture>,
     bought_on: u64,
+    /// Pieces she hasn't settled; left out when there are none, so a
+    /// record with none reads as before.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    unsettled: Vec<Furniture>,
 }
 
 /// Where a piece stands: its strip, and its anchor there once it has
@@ -272,6 +293,8 @@ struct Raw {
     ordered: Option<serde_json::Value>,
     #[serde(default)]
     bought_on: u64,
+    #[serde(default)]
+    unsettled: Vec<serde_json::Value>,
 }
 
 #[cfg(test)]
@@ -401,6 +424,66 @@ mod tests {
         let bed = ledger.home.props[2];
         assert_eq!(bed.strip, Strip::Bottom(Nook::Playlist));
         assert_eq!(bed.anchor, None);
+    }
+
+    /// A delivery she hasn't settled is listed after everything else; it
+    /// reads back unsettled, and the rest settled.
+    #[test]
+    fn unsettled_pieces_are_written_and_read_back() {
+        let mut ledger = furnished();
+        ledger.home.props[1].settled = false;
+        let text = ledger.to_json();
+        assert!(
+            text.ends_with(r#""ordered":"Desk","bought_on":6,"unsettled":["Tv"]}"#),
+            "{text}"
+        );
+        let read = Ledger::from_json(&text).unwrap();
+        assert_eq!(
+            read.home
+                .props
+                .iter()
+                .map(|p| (p.item, p.settled))
+                .collect::<Vec<_>>(),
+            [
+                (Furniture::Sofa, true),
+                (Furniture::Tv, false),
+                (Furniture::Bed, true),
+            ]
+        );
+        assert_eq!(read, ledger);
+    }
+
+    /// A record without the list (an older build's, or one with nothing
+    /// unsettled) has every piece settled.
+    #[test]
+    fn an_older_record_is_all_settled() {
+        let text = furnished().to_json();
+        assert!(!text.contains("unsettled"), "{text}");
+        let ledger = Ledger::from_json(&text).unwrap();
+        assert!(ledger.home.props.iter().all(|p| p.settled));
+    }
+
+    /// A later build's piece in the list is skipped; the rest still read.
+    #[test]
+    fn an_unknown_unsettled_piece_is_skipped() {
+        let text = furnished().to_json().replace(
+            r#""bought_on":6}"#,
+            r#""bought_on":6,"unsettled":["Piano",{"x":1},"Bed"]}"#,
+        );
+        let ledger = Ledger::from_json(&text).unwrap();
+        assert_eq!(
+            ledger
+                .home
+                .props
+                .iter()
+                .map(|p| (p.item, p.settled))
+                .collect::<Vec<_>>(),
+            [
+                (Furniture::Sofa, true),
+                (Furniture::Tv, true),
+                (Furniture::Bed, false),
+            ]
+        );
     }
 
     #[test]

@@ -862,6 +862,7 @@ fn visiting_at(guest: &mut Guest, real: &Buffer, view: &IdleView, (x, y): (i32, 
         next_made: room::MadeId(0),
         reel: None,
         flap: None,
+        broken: Vec::new(),
         size: (real.area.width, real.area.height),
     }));
 }
@@ -4036,11 +4037,13 @@ fn an_interrupted_sleep_eases_only_what_she_slept() {
 #[test]
 fn every_fixed_line_fits_a_bubble() {
     let pitches = Furniture::ALL.map(|f| f.spec().pitch);
+    let grievances = rules::RULES.map(|r| r.grievance);
     for line in osaka::LINES
         .iter()
         .chain(&osaka::MUSINGS)
         .chain(&pitches)
         .chain(&[PARCEL])
+        .chain(&grievances)
     {
         assert!(line.chars().count() <= 24, "{line:?}");
     }
@@ -4387,6 +4390,86 @@ fn a_sofa_facing_the_tv_is_watched_from() {
                 assert_eq!(seat.facing, toward_tv, "{at}: {seat:?}");
             }
         }
+    }
+}
+
+/// The rules her home breaks are judged each frame on where her pieces
+/// are laid out, and offered to her: text over a piece (which closets
+/// it) neither breaks nor mends one. The stage shows them.
+#[test]
+fn the_rules_she_breaks_are_judged_on_her_layout() {
+    use super::room::{Anchor, Prop, Side};
+    use sprite::Facing;
+    for graphics in [false, true] {
+        let (width, height) = (100u16, 20u16);
+        let mut real = Buffer::empty(Rect::new(0, 0, width, height));
+        let playlist = Rect::new(20, 8, 50, 9);
+        tuirealm::ratatui::widgets::Widget::render(
+            tuirealm::ratatui::widgets::Block::bordered(),
+            playlist,
+            &mut real,
+        );
+        real.set_string(0, height - 2, "Tab Next pane | Enter Send", Style::new());
+        let view = IdleView {
+            nooks: vec![(Nook::Playlist, playlist)],
+            ..view(bottom_strip(width, height))
+        };
+        let mut guest = Guest::new(1);
+        if graphics {
+            guest.set_picker(kitty());
+        }
+        // The TV against the left wall; the sofa 6 cells along, turned
+        // away from it.
+        for (item, offset, facing) in [
+            (Furniture::Tv, 0, Facing::Right),
+            (Furniture::Sofa, 12, Facing::Right),
+        ] {
+            assert!(guest.ledger.home.add(Prop {
+                anchor: Some(Anchor {
+                    side: Side::Left,
+                    offset,
+                }),
+                ..Prop::new(item, Nook::Playlist, 0, facing)
+            }));
+        }
+        guest.cue(Scene::Arrive);
+        paint(&mut guest, &real, &view, 0);
+        let _ = run(&mut guest, &real, &view, 0, 1000);
+        let judged = |guest: &Guest| {
+            let State::Visiting(visit) = &guest.state else {
+                panic!("visiting");
+            };
+            assert_eq!(visit.chances.broken, visit.broken);
+            (
+                visit.broken.clone(),
+                visit.shown.iter().map(|s| s.item).collect::<Vec<_>>(),
+            )
+        };
+        let (broken, shown) = judged(&guest);
+        assert_eq!(
+            shown,
+            [Furniture::Tv, Furniture::Sofa],
+            "graphics {graphics}"
+        );
+        let faces: Vec<_> = broken.iter().map(|b| b.pieces.clone()).collect();
+        assert_eq!(
+            faces,
+            [vec![Furniture::Sofa, Furniture::Tv]],
+            "graphics {graphics}"
+        );
+        assert_eq!(guest.broken(), "faces(sofa,TV)");
+        // Text over the sofa closets it; the rule is as broken as before.
+        let mut noisy = real.clone();
+        noisy.set_string(
+            playlist.x + 1 + 12 + 2,
+            playlist.bottom() - 2,
+            "hi",
+            Style::new(),
+        );
+        paint(&mut guest, &noisy, &view, 1000);
+        let (closeted, shown) = judged(&guest);
+        assert_eq!(shown, [Furniture::Tv], "graphics {graphics}");
+        assert_eq!(closeted, broken, "graphics {graphics}");
     }
 }
 

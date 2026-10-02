@@ -368,6 +368,27 @@ pub(super) fn role(offers: &[Offer]) -> Role {
         .map_or(Role::Den, |rule| rule.role)
 }
 
+/// The role `strip` has as laid out: from what's out of its box there.
+pub(super) fn role_of(layout: &[Shown], strip: Strip) -> Role {
+    role_among(layout, strip, None)
+}
+
+/// The role `strip` would have as laid out without `piece` (whether a
+/// piece completes its room, or spoils it).
+pub(super) fn role_without(layout: &[Shown], strip: Strip, piece: Furniture) -> Role {
+    role_among(layout, strip, Some(piece))
+}
+
+fn role_among(layout: &[Shown], strip: Strip, without: Option<Furniture>) -> Role {
+    let offers: Vec<Offer> = layout
+        .iter()
+        .filter(|s| s.strip == Some(strip) && !s.boxed && s.scrap.is_none())
+        .filter(|s| Some(s.item) != without)
+        .flat_map(|s| s.item.spec().offers.iter().copied())
+        .collect();
+    role(&offers)
+}
+
 /// A floor her home can stand on: a quiet pane's bottom border, between
 /// its walls. Its identity holds across frames, unlike the live
 /// platforms, which text splits and renumbers.
@@ -414,6 +435,9 @@ pub(super) struct Prop {
     pub at: u16,
     pub facing: Facing,
     pub boxed: bool,
+    /// She has set it where it stands (a delivery hasn't: it stands
+    /// where it came in, until she moves it).
+    pub settled: bool,
 }
 
 impl Prop {
@@ -427,6 +451,7 @@ impl Prop {
             at: at.min(1000),
             facing,
             boxed: false,
+            settled: true,
         }
     }
 }
@@ -901,7 +926,8 @@ impl Home {
     }
 
     /// Where `item` could go this frame: anywhere on a strip it fits,
-    /// clear of what's `shown`, chosen at random.
+    /// clear of what's `shown`, chosen at random (a stage gift: it
+    /// stands where it's settled).
     pub fn spot(
         &self,
         buf: &Buffer,
@@ -929,6 +955,7 @@ impl Home {
                         at,
                         facing,
                         boxed: false,
+                        settled: true,
                     };
                     e.holds(item.spec().footprint)
                         .then(|| (prop, stand(&prop, strip, e, e.share(at, cols))))
@@ -945,7 +972,8 @@ impl Home {
 
     /// Where a delivery of `item` comes in this frame: through a flap in
     /// one of her strips' walls, preferring a wall at the screen's edge,
-    /// to stand against it facing into the room. The pieces already on
+    /// to stand against it facing into the room, unsettled (she never
+    /// chose where it stands). The pieces already on
     /// that strip make way, packed in order, but only where every one of
     /// them that shows still fits, the piece fits on blank, free cells,
     /// and she'd fit to unpack and use it.
@@ -979,6 +1007,8 @@ impl Home {
                     Side::Right => Facing::Left,
                 },
                 boxed: false,
+                // She never chose where it stands.
+                settled: false,
             };
             let mut with = self.clone();
             with.props.push(prop);
