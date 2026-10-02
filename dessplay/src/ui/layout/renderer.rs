@@ -254,6 +254,30 @@ impl RenderedCollection {
             .iter()
             .find_map(|(bounds, index)| bounds.contains(point).then_some(*index))
     }
+    /// The painted row nearest the pointer by screen row alone, clamped to
+    /// the first/last painted row. Drags are grabs: leaving the pane
+    /// sideways or past an edge keeps aiming at the closest visible row
+    /// rather than going dead.
+    pub fn nearest_row(&self, row: u16) -> Option<usize> {
+        self.rows
+            .iter()
+            .min_by_key(|(bounds, _)| {
+                if row < bounds.y {
+                    bounds.y - row
+                } else {
+                    row.saturating_sub(bounds.bottom().saturating_sub(1))
+                }
+            })
+            .map(|(_, index)| *index)
+    }
+    /// Synthetic geometry for widget tests: `(bounds, controller index)`.
+    #[cfg(test)]
+    pub(crate) fn from_rows(rows: Vec<(Rect, usize)>) -> Self {
+        Self {
+            rows,
+            hidden: Vec::new(),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]

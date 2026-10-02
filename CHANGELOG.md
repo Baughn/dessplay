@@ -9,6 +9,14 @@ append-only; you cannot reword or remove existing entries.
 
 Add new days at the top. Add new entries at the bottom of existing days.
 
+## 2026-10-05
+
+- Added: You can drag playlist entries with the mouse to reorder them.
+  The entry follows the pointer and moves when you let go. J/K still
+  work, and still reach rows you would have to scroll to.
+- Added: In settings, you can drag media roots with the mouse to reorder
+  them (the top one is where downloads go), and clicking a row selects it.
+
 ## 2026-10-04
 
 - Fixed: The houseguest no longer forgets what happened just before you

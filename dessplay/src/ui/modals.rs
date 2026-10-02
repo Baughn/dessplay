@@ -1127,6 +1127,26 @@ impl SettingsModal {
         self.form.render_layout(frame, area, renderer);
     }
 
+    /// The one modal that takes the mouse (design.md, Mouse support): a
+    /// left press selects the row under the pointer, and dragging a
+    /// media root reorders it. Everything else is ignored.
+    pub(crate) fn mouse(&mut self, mouse: tuirealm::event::MouseEvent) {
+        use tuirealm::event::{MouseButton, MouseEventKind};
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                self.form.mouse_down(mouse.column, mouse.row)
+            }
+            MouseEventKind::Drag(MouseButton::Left) => self.form.mouse_drag(mouse.row),
+            MouseEventKind::Up(MouseButton::Left) => self.form.mouse_up(),
+            _ => {}
+        }
+    }
+
+    /// Drop a held drag (another modal covered this one).
+    pub(crate) fn cancel_drag(&mut self) {
+        self.form.cancel_drag();
+    }
+
     fn switch_category(&mut self, right: bool) {
         let current = self.form.model.category;
         self.selections[current.index()] = self.form.selected_row();
@@ -1447,6 +1467,29 @@ impl SettingsForm {
 impl FormModel for SettingsForm {
     type RowId = SettingId;
     type Out = Msg;
+
+    fn movable(&self, id: &SettingId) -> bool {
+        matches!(id, SettingId::MediaRoot(_))
+    }
+
+    fn move_row(&mut self, id: &SettingId, after: Option<&SettingId>) {
+        let SettingId::MediaRoot(path) = id else {
+            return;
+        };
+        let Some(from) = self.roots.iter().position(|root| root == path) else {
+            return;
+        };
+        let root = self.roots.remove(from);
+        let to = match after {
+            Some(SettingId::MediaRoot(anchor)) => self
+                .roots
+                .iter()
+                .position(|root| root == anchor)
+                .map_or(from, |index| index + 1),
+            _ => 0,
+        };
+        self.roots.insert(to, root);
+    }
 
     fn title(&self) -> String {
         format!("Settings — {}", self.category.title())
@@ -4618,6 +4661,88 @@ mod tests {
             vec![PathBuf::from("/a"), PathBuf::from("/b")]
         );
         assert_eq!(modal.form.selected_row(), Some(selected));
+    }
+
+    /// Dragging a media root with the mouse previews it at the pointer
+    /// and commits on release; the selection follows the root. Pressing
+    /// another row only selects it, and a key mid-drag abandons the
+    /// drag (design.md, Mouse support).
+    #[test]
+    fn media_roots_reorder_by_mouse_drag() {
+        use tuirealm::event::{MouseButton, MouseEvent, MouseEventKind};
+        let mouse = |kind, column, row| MouseEvent {
+            kind,
+            modifiers: KeyModifiers::NONE,
+            column,
+            row,
+        };
+        let render = |modal: &mut SettingsModal| {
+            let mut terminal = Terminal::new(TestBackend::new(80, 30)).unwrap();
+            terminal
+                .draw(|frame| modal.render(frame, frame.area()))
+                .unwrap()
+                .buffer
+                .clone()
+        };
+        let roots = |names: &[&str]| names.iter().map(PathBuf::from).collect::<Vec<_>>();
+        let mut modal = SettingsModal::new(Settings::default(), roots(&["/aa", "/bb", "/cc"]));
+        modal.switch_category(true);
+        modal.switch_category(true);
+        let buffer = render(&mut modal);
+        let (top, bottom) = (
+            row_y(&buffer, "/aa").unwrap(),
+            row_y(&buffer, "/cc").unwrap(),
+        );
+        let column = (0..buffer.area.width)
+            .find(|&x| buffer[(x, top)].symbol() == "/")
+            .unwrap();
+
+        // Grab /cc, drag it well above the list and off to the side: it
+        // clamps to the head of the roots, not onto the rows above them.
+        modal.mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            column,
+            bottom,
+        ));
+        modal.mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 0, 0));
+        let preview = render(&mut modal);
+        assert_eq!(row_y(&preview, "/cc"), Some(top), "preview at the pointer");
+        assert_eq!(
+            modal.form.model.roots,
+            roots(&["/aa", "/bb", "/cc"]),
+            "uncommitted"
+        );
+        modal.mouse(mouse(MouseEventKind::Up(MouseButton::Left), 0, 0));
+        assert_eq!(modal.form.model.roots, roots(&["/cc", "/aa", "/bb"]));
+        assert_eq!(
+            modal.form.selected_row(),
+            Some(SettingId::MediaRoot(PathBuf::from("/cc")))
+        );
+
+        // A press on a non-movable row just selects it.
+        let buffer = render(&mut modal);
+        let add = row_y(&buffer, "Add media root").unwrap();
+        modal.mouse(mouse(MouseEventKind::Down(MouseButton::Left), column, add));
+        modal.mouse(mouse(MouseEventKind::Drag(MouseButton::Left), column, top));
+        modal.mouse(mouse(MouseEventKind::Up(MouseButton::Left), column, top));
+        assert_eq!(modal.form.selected_row(), Some(SettingId::AddMediaRoot));
+        assert_eq!(modal.form.model.roots, roots(&["/cc", "/aa", "/bb"]));
+
+        // A key mid-drag abandons it.
+        render(&mut modal);
+        modal.mouse(mouse(MouseEventKind::Down(MouseButton::Left), column, top));
+        modal.mouse(mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            column,
+            top + 2,
+        ));
+        modal.on(&key(Key::Down, KeyModifiers::NONE));
+        modal.mouse(mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            column,
+            top + 2,
+        ));
+        assert_eq!(modal.form.model.roots, roots(&["/cc", "/aa", "/bb"]));
     }
 
     #[test]

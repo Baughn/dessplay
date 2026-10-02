@@ -1499,9 +1499,14 @@ impl Ui {
     }
 
     fn push_modal(&mut self, modal: Modal) {
+        // Mouse input stops reaching what the modal covers, so a release
+        // would never arrive to end a held grab.
+        self.cancel_layout_grabs();
         for previous in &mut self.modals {
-            if let Modal::Roguelike(dungeon) = previous {
-                dungeon.cancel_recovery();
+            match previous {
+                Modal::Roguelike(dungeon) => dungeon.cancel_recovery(),
+                Modal::Settings(settings) => settings.cancel_drag(),
+                _ => {}
             }
         }
         tracing::debug!(modal = modal.name(), "modal opened");
@@ -1535,10 +1540,22 @@ impl Ui {
     /// handler) and before the first draw (the stored rects are
     /// zero-sized, so every hit-test misses).
     fn handle_mouse(&mut self, mouse: MouseEvent) -> Vec<UserAction> {
+        if let Some(Modal::Settings(settings)) = self.modals.last_mut() {
+            settings.mouse(mouse);
+            self.refresh_keybar();
+            return Vec::new();
+        }
         if !self.modals.is_empty() {
             return Vec::new();
         }
         let position = Position::new(mouse.column, mouse.row);
+        let hit = self
+            .pointer_order
+            .iter()
+            .rev()
+            .find(|name| self.panes.bounds(name).contains(position))
+            .cloned();
+        let hit_pane = hit.as_deref().and_then(Focus::from_name);
         // Drag/release route to whichever drag is in progress — a
         // splitter resize or a chat selection — wherever the pointer
         // is: a grab, so leaving the pane mid-drag keeps going
@@ -1553,6 +1570,8 @@ impl Ui {
                     );
                 } else if self.chat.dragging() {
                     self.chat.mouse_drag(mouse.column, mouse.row);
+                } else if self.playlist.dragging() {
+                    self.playlist.mouse_drag(mouse.row);
                 }
                 return Vec::new();
             }
@@ -1568,6 +1587,18 @@ impl Ui {
                     tracing::info!(chars = text.chars().count(), "chat selection copied");
                     return vec![UserAction::CopyToClipboard(text)];
                 }
+                if let Some(msg) = self.playlist.mouse_up() {
+                    tracing::debug!(?msg, "user action: playlist entry dragged");
+                    let action = self.update(msg);
+                    if let Some(action) = &action {
+                        log_action(action);
+                    }
+                    return action.into_iter().collect();
+                }
+                return Vec::new();
+            }
+            // The wheel would scroll a viewport a drag has frozen.
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown if self.grab_held() => {
                 return Vec::new();
             }
             _ => {}
@@ -1575,6 +1606,14 @@ impl Ui {
         // Any fresh press dismisses a held selection highlight, even
         // when it lands outside the chat (same rule as unrelated keys).
         if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
+            // A press starts a new gesture: a grab whose release never
+            // arrived must not capture the next drag. (The playlist ends
+            // its own in `mouse_down`, mapping this press through the
+            // preview it left painted.)
+            self.splitter_drag = None;
+            if hit_pane != Some(Focus::Playlist) {
+                self.playlist.cancel_drag();
+            }
             self.chat.clear_selection();
             // A press on a pane boundary arms a resize drag instead of
             // a click: the border cells are misses for every pane's
@@ -1591,16 +1630,12 @@ impl Ui {
                     row = mouse.row,
                     "splitter grabbed"
                 );
+                self.playlist.cancel_drag();
                 self.splitter_drag = Some((splitter, self.layout_settings.clone()));
                 return Vec::new();
             }
         }
-        let hit = self
-            .pointer_order
-            .iter()
-            .rev()
-            .find(|name| self.panes.bounds(name).contains(position));
-        if hit.is_some_and(|name| name == "subtitles")
+        if hit.as_deref() == Some("subtitles")
             && matches!(
                 mouse.kind,
                 MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
@@ -1614,8 +1649,7 @@ impl Ui {
             }
             return Vec::new();
         }
-        let target = hit.and_then(|name| Focus::from_name(name));
-        let Some(target) = target else {
+        let Some(target) = hit_pane else {
             return Vec::new(); // status bar, keybar, or off-layout
         };
         match mouse.kind {
@@ -1642,7 +1676,7 @@ impl Ui {
                     Focus::Subtitles => {}
                     Focus::Series => self.series.click(mouse.column, mouse.row),
                     Focus::Users => self.users.click(mouse.column, mouse.row),
-                    Focus::Playlist => self.playlist.click(mouse.column, mouse.row),
+                    Focus::Playlist => self.playlist.mouse_down(mouse.column, mouse.row),
                 }
                 if self.focus != target {
                     self.focus = target;
@@ -1736,6 +1770,9 @@ impl Ui {
         if let Event::Mouse(mouse) = &ev {
             return self.handle_mouse(*mouse);
         }
+        // Any other input (keys, paste, resize) abandons a held reorder
+        // drag: its preview and frozen geometry would go stale.
+        self.playlist.cancel_drag();
         // A held chat drag-selection owns Shift-Up/Down (extend by one
         // whole line, re-copy); any other key dismisses the highlight
         // and then does its normal job. Deliberately no copy binding —
@@ -2480,23 +2517,11 @@ impl Ui {
                 )));
                 None
             }
-            Msg::MoveUp(hash) => {
-                let index = self.playlist_index(hash)?;
-                if index == 0 {
-                    return None;
-                }
-                let anchor = (index >= 2).then(|| self.snapshot.view.playlist[index - 2].hash);
+            Msg::MoveEntry { hash, after } => {
+                self.playlist_index(hash)?;
                 Some(UserAction::Mutate(Mutation::MovePlaylistAfter {
                     hash,
-                    anchor,
-                }))
-            }
-            Msg::MoveDown(hash) => {
-                let index = self.playlist_index(hash)?;
-                let anchor = self.snapshot.view.playlist.get(index + 1)?.hash;
-                Some(UserAction::Mutate(Mutation::MovePlaylistAfter {
-                    hash,
-                    anchor: Some(anchor),
+                    anchor: after,
                 }))
             }
             Msg::RemoveEntry(hash) => Some(UserAction::Mutate(Mutation::RemovePlaylist { hash })),
@@ -3345,11 +3370,20 @@ impl Ui {
         self.layout_options = Some(options);
     }
 
+    /// Drop every held mouse grab (splitter, chat selection, playlist
+    /// reorder) without committing it.
     pub(crate) fn cancel_layout_grabs(&mut self) {
         self.splitter_drag = None;
         if self.chat.dragging() {
             self.chat.clear_selection();
         }
+        self.playlist.cancel_drag();
+    }
+
+    /// A grab whose geometry the wheel would invalidate. (The chat
+    /// selection lives in text coordinates and tolerates scrolling.)
+    fn grab_held(&self) -> bool {
+        self.splitter_drag.is_some() || self.playlist.dragging()
     }
 
     /// The hashing progress overlay: visually modal (centered, on top
@@ -6307,6 +6341,223 @@ mod tests {
             column,
             row,
         })
+    }
+
+    // ---- Playlist drag-to-reorder (design.md, Mouse support) ----
+
+    /// A UI whose playlist holds `show-01` .. `show-0n`, drawn once.
+    fn playlist_ui(n: u8) -> (Ui, Vec<Ed2kHash>) {
+        let mut state = CrdtState::new();
+        let hashes: Vec<_> = (1..=n).map(|i| Ed2kHash([i; 16])).collect();
+        for (i, hash) in hashes.iter().enumerate() {
+            state.push_playlist_entry(
+                A,
+                SharedTimestamp(i as u64 + 1),
+                dessplay_core::playlist::NewPlaylistEntry {
+                    hash: *hash,
+                    added_by: me(),
+                    filename: format!("show-{:02}.mkv", i + 1),
+                    size_bytes: 1,
+                    duration_millis: None,
+                },
+            );
+        }
+        let mut ui = Ui::with_setup(me(), Settings::default(), vec![], false);
+        ui.apply_snapshot(UiSnapshot {
+            view: std::sync::Arc::new(state.view()),
+            ..Default::default()
+        });
+        render_test_buffer(&mut ui);
+        (ui, hashes)
+    }
+
+    /// The screen row showing `title` inside the playlist pane.
+    fn playlist_row(ui: &mut Ui, title: &str) -> u16 {
+        let buffer = render_test_buffer(ui);
+        let pane = ui.panes.playlist;
+        (pane.y..pane.bottom())
+            .find(|&y| {
+                (pane.x..pane.right())
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+                    .contains(title)
+            })
+            .unwrap_or_else(|| panic!("{title} not drawn"))
+    }
+
+    fn moves(actions: &[UserAction]) -> Vec<&Mutation> {
+        actions
+            .iter()
+            .filter_map(|action| match action {
+                UserAction::Mutate(mutation @ Mutation::MovePlaylistAfter { .. }) => Some(mutation),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A drag previews the entry under the pointer — even when the
+    /// pointer strays out of the pane — and the release commits exactly
+    /// one identity-anchored move; nothing is sent mid-drag.
+    #[test]
+    fn dragging_a_playlist_entry_commits_one_move_on_release() {
+        let (mut ui, h) = playlist_ui(4);
+        let column = ui.panes.playlist.x + 3;
+        let (first, third) = (
+            playlist_row(&mut ui, "show-01"),
+            playlist_row(&mut ui, "show-03"),
+        );
+        let press = ui.handle(mouse_at(
+            MouseEventKind::Down(MouseButton::Left),
+            column,
+            first,
+        ));
+        assert!(press.is_empty());
+        assert_eq!(ui.focus, Focus::Playlist);
+        assert!(
+            ui.handle(mouse_at(
+                MouseEventKind::Drag(MouseButton::Left),
+                column,
+                first + 1
+            ))
+            .is_empty()
+        );
+        assert!(
+            ui.handle(mouse_at(MouseEventKind::Drag(MouseButton::Left), 0, third))
+                .is_empty()
+        );
+        assert_eq!(
+            playlist_row(&mut ui, "show-01"),
+            third,
+            "previewed at the pointer"
+        );
+        assert_eq!(playlist_row(&mut ui, "show-03"), third - 1);
+        let actions = ui.handle(mouse_at(MouseEventKind::Up(MouseButton::Left), 0, third));
+        assert_eq!(
+            moves(&actions),
+            vec![&Mutation::MovePlaylistAfter {
+                hash: h[0],
+                anchor: Some(h[2]),
+            }]
+        );
+        // The cursor sits on the drop index, where the refreshed props
+        // will put the moved entry (as with `J`/`K`).
+        assert_eq!(ui.playlist.selected_hash(), Some(h[2]));
+    }
+
+    /// Clicking (press and release on the same row) selects and never
+    /// reorders, and dropping an entry back where it started is a click.
+    #[test]
+    fn a_playlist_click_or_round_trip_drag_moves_nothing() {
+        let (mut ui, h) = playlist_ui(3);
+        let column = ui.panes.playlist.x + 3;
+        let second = playlist_row(&mut ui, "show-02");
+        ui.handle(mouse_at(
+            MouseEventKind::Down(MouseButton::Left),
+            column,
+            second,
+        ));
+        assert!(
+            ui.handle(mouse_at(
+                MouseEventKind::Up(MouseButton::Left),
+                column,
+                second
+            ))
+            .is_empty()
+        );
+        assert_eq!(ui.playlist.selected_hash(), Some(h[1]));
+        render_test_buffer(&mut ui);
+        let second = playlist_row(&mut ui, "show-02");
+        ui.handle(mouse_at(
+            MouseEventKind::Down(MouseButton::Left),
+            column,
+            second,
+        ));
+        ui.handle(mouse_at(
+            MouseEventKind::Drag(MouseButton::Left),
+            column,
+            second + 1,
+        ));
+        ui.handle(mouse_at(
+            MouseEventKind::Drag(MouseButton::Left),
+            column,
+            second,
+        ));
+        assert!(
+            ui.handle(mouse_at(
+                MouseEventKind::Up(MouseButton::Left),
+                column,
+                second
+            ))
+            .is_empty()
+        );
+    }
+
+    /// Whatever interrupts a held drag abandons it without a commit: a
+    /// key, a modal covering the pane (whose release would never arrive),
+    /// or the next press after a lost release — which still does its
+    /// usual job, mapped through what was actually on screen.
+    #[test]
+    fn interrupted_playlist_drags_commit_nothing() {
+        let (mut ui, h) = playlist_ui(3);
+        let column = ui.panes.playlist.x + 3;
+        let first = playlist_row(&mut ui, "show-01");
+        let grab = |ui: &mut Ui| {
+            ui.handle(mouse_at(
+                MouseEventKind::Down(MouseButton::Left),
+                column,
+                first,
+            ));
+            ui.handle(mouse_at(
+                MouseEventKind::Drag(MouseButton::Left),
+                column,
+                first + 2,
+            ));
+            assert!(ui.playlist.dragging());
+        };
+        let release = |ui: &mut Ui| {
+            ui.handle(mouse_at(
+                MouseEventKind::Up(MouseButton::Left),
+                column,
+                first + 2,
+            ))
+        };
+
+        grab(&mut ui);
+        ui.handle(key(Key::Down));
+        assert!(moves(&release(&mut ui)).is_empty(), "key cancels");
+
+        grab(&mut ui);
+        ui.push_modal(Modal::Logs(super::super::modals::LogModal::new(
+            ui.logging.clone(),
+        )));
+        ui.pop_modal();
+        assert!(moves(&release(&mut ui)).is_empty(), "modal cancels");
+
+        // A lost release: a press elsewhere ends the grab and does its
+        // usual job.
+        grab(&mut ui);
+        let chat = ui.panes.chat;
+        ui.handle(mouse_at(
+            MouseEventKind::Down(MouseButton::Left),
+            chat.x + 2,
+            chat.y + 2,
+        ));
+        assert_eq!(ui.focus, Focus::Chat);
+        assert!(!ui.playlist.dragging());
+        assert!(moves(&release(&mut ui)).is_empty(), "lost release");
+        assert_eq!(playlist_row(&mut ui, "show-01"), first);
+
+        // A lost release, then a press on the playlist: it lands on the
+        // row the stale preview showed under the pointer.
+        grab(&mut ui);
+        assert_eq!(playlist_row(&mut ui, "show-01"), first + 2);
+        ui.handle(mouse_at(
+            MouseEventKind::Down(MouseButton::Left),
+            column,
+            first + 2,
+        ));
+        assert_eq!(ui.playlist.selected_hash(), Some(h[0]));
+        assert!(moves(&release(&mut ui)).is_empty());
     }
 
     /// Dragging the column splitter moves the chat/right boundary to

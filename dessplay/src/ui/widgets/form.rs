@@ -12,6 +12,7 @@ use tuirealm::ratatui::style::Style;
 use super::keys::{ctrl, plain, typed};
 use super::line::TextField;
 use super::list::ListCursor;
+use super::reorder::{DragReorder, Move};
 use crate::ui::theme;
 
 /// The centered overlay area: `percent` of the frame, clamped.
@@ -315,6 +316,16 @@ pub trait FormModel {
     fn layout_template(&self) -> &'static str {
         "settings-form"
     }
+
+    /// Whether the mouse may drag this row to reorder it among the
+    /// adjacent draggable rows (design.md, Mouse support).
+    fn movable(&self, _id: &Self::RowId) -> bool {
+        false
+    }
+
+    /// Commit a finished drag: `id` now directly follows `after`, or
+    /// heads its run of draggable rows when `after` is `None`.
+    fn move_row(&mut self, _id: &Self::RowId, _after: Option<&Self::RowId>) {}
 }
 
 /// What one event did to the form, for the modal wrapper to map onto the
@@ -349,6 +360,12 @@ pub struct Form<M: FormModel> {
     cursor: ListCursor,
     selection: Selection<M::RowId>,
     editor: Option<Editor<M::RowId>>,
+    /// Body rows as last painted, for mouse hit-testing.
+    rendered: crate::ui::layout::RenderedCollection,
+    /// The row the last paint centered on, so a drag can freeze it.
+    center: Option<usize>,
+    /// A held mouse drag reordering one row.
+    drag: Option<DragReorder<M::RowId>>,
 }
 
 impl<M: FormModel> Form<M> {
@@ -364,7 +381,63 @@ impl<M: FormModel> Form<M> {
             cursor: ListCursor::default(),
             selection,
             editor: None,
+            rendered: Default::default(),
+            center: None,
+            drag: None,
         }
+    }
+
+    /// A left press at (column, row): select the body row under the
+    /// pointer (never activating it — clicking only selects) and arm a
+    /// reorder drag when the model marks it movable. Ignored while a
+    /// text editor is open.
+    pub fn mouse_down(&mut self, column: u16, row: u16) {
+        if self.editor.is_some() {
+            return;
+        }
+        // Hit-test in the order last painted: a drag whose release never
+        // arrived left its preview on screen.
+        let mut rows = self.model.rows();
+        if let Some(stale) = self.drag.take() {
+            stale.preview(&mut rows, |row| row.id.clone());
+        }
+        let keys: Vec<_> = rows
+            .iter()
+            .map(|row| self.model.movable(&row.id).then(|| row.id.clone()))
+            .collect();
+        self.drag = DragReorder::grab(&self.rendered, column, row, self.center, &keys);
+        if let Some(row) = self
+            .rendered
+            .hit(column, row)
+            .and_then(|index| rows.get(index))
+        {
+            self.select_row(&row.id);
+        }
+    }
+
+    /// Follow a held drag to screen row `row` (preview only).
+    pub fn mouse_drag(&mut self, row: u16) {
+        if let Some(drag) = &mut self.drag {
+            drag.drag(row);
+        }
+    }
+
+    /// Release a held drag, committing the move to the model; the
+    /// selection follows the row by identity.
+    pub fn mouse_up(&mut self) {
+        let Some(drag) = self.drag.take() else {
+            return;
+        };
+        if let Some(Move { key, after }) = drag.release(&self.model.rows(), |row| row.id.clone()) {
+            tracing::debug!(row = ?key, after = ?after, "user action: form row dragged");
+            self.model.move_row(&key, after.as_ref());
+            self.restore_selection(&key);
+        }
+    }
+
+    /// Drop a held drag without committing.
+    pub fn cancel_drag(&mut self) {
+        self.drag = None;
     }
 
     fn row_count(&self) -> usize {
@@ -510,6 +583,8 @@ impl<M: FormModel> Form<M> {
 
     /// Route one event.
     pub fn on(&mut self, ev: &Event<NoUserEvent>) -> FormEvent<M::Out> {
+        // Keyboard input abandons a held drag (its preview would go stale).
+        self.drag = None;
         self.reconcile_selection();
         if self.editor.is_some() {
             return self.on_editor(ev);
@@ -689,7 +764,13 @@ impl<M: FormModel> Form<M> {
                 return;
             }
         };
-        let rows = self.model.rows();
+        let mut rows = self.model.rows();
+        // A held drag shows the row where it would land, highlighted,
+        // inside the viewport frozen at the press.
+        let dragged = self.drag.as_ref().and_then(|drag| {
+            drag.preview(&mut rows, |row| row.id.clone())
+                .map(|index| (index, drag.center()))
+        });
         let mut body_visible = false;
         let mut save_visible = false;
         let mut hidden = Vec::new();
@@ -776,16 +857,40 @@ impl<M: FormModel> Form<M> {
                         }
                     })
                     .collect::<Vec<_>>();
-                match renderer.paint_cursor_collection(
-                    frame,
-                    body_area,
-                    "form-row",
-                    &items,
-                    &mut self.cursor,
-                    rows.len() + 1,
-                    style,
-                ) {
-                    Ok(rendered) => hidden.extend_from_slice(rendered.hidden()),
+                let painted = match dragged {
+                    Some((index, center)) => {
+                        self.center = center;
+                        renderer.paint_collection(
+                            frame,
+                            body_area,
+                            "form-row",
+                            &items,
+                            Some(index),
+                            center,
+                            style,
+                        )
+                    }
+                    None => {
+                        self.center = Some(self.cursor.index());
+                        renderer.paint_cursor_collection(
+                            frame,
+                            body_area,
+                            "form-row",
+                            &items,
+                            &mut self.cursor,
+                            rows.len() + 1,
+                            style,
+                        )
+                    }
+                };
+                // In the drag arm `hidden` is in preview order, fed to a
+                // model-order cursor. That holds because a movable run
+                // shares one row template, so none of it is hidden.
+                match painted {
+                    Ok(rendered) => {
+                        hidden.extend_from_slice(rendered.hidden());
+                        self.rendered = rendered;
+                    }
                     Err(error) => tracing::error!(%error, "form row layout failed"),
                 }
             }
@@ -793,6 +898,7 @@ impl<M: FormModel> Form<M> {
         });
         if !body_visible {
             hidden.extend(0..rows.len());
+            self.rendered = Default::default();
         }
         if !save_visible {
             hidden.push(rows.len());

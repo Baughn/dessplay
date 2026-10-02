@@ -91,10 +91,14 @@ pub enum Msg {
         /// The value to set.
         watched: bool,
     },
-    /// Move the selected entry after its successor (down).
-    MoveDown(Ed2kHash),
-    /// Move the selected entry before its predecessor (up).
-    MoveUp(Ed2kHash),
+    /// Reorder a playlist entry to directly follow `after` (`None`: the
+    /// head) — `J`/`K` one step, or a finished mouse drag.
+    MoveEntry {
+        /// The entry being moved.
+        hash: Ed2kHash,
+        /// The entry it now follows.
+        after: Option<Ed2kHash>,
+    },
     /// Tombstone an entry.
     RemoveEntry(Ed2kHash),
     /// Open the manual-mapping browser for a playlist entry (`M`).
@@ -219,8 +223,7 @@ impl Msg {
             Msg::EpisodeChosen { .. } => "EpisodeChosen",
             Msg::ToggleEpisodeWatched { .. } => "ToggleEpisodeWatched",
             Msg::SetEpisodesWatched { .. } => "SetEpisodesWatched",
-            Msg::MoveDown(_) => "MoveDown",
-            Msg::MoveUp(_) => "MoveUp",
+            Msg::MoveEntry { .. } => "MoveEntry",
             Msg::RemoveEntry(_) => "RemoveEntry",
             Msg::MapFile(_) => "MapFile",
             Msg::ArchiveFile(_) => "ArchiveFile",

@@ -1100,6 +1100,38 @@ Sent history is append-only because the prompt cache matches on a byte-stable pr
 
 **Why:** Resizing is rare and not something keyboard speed matters for. Chat text selection is mouse-native and uncommon enough to need no keyboard path.
 
+### Drag to reorder previews and commits once
+
+**Rule:** Dragging a playlist entry or a media root shows the move
+locally, within a viewport frozen at the press, and commits one
+identity-anchored move on release. A drag reaches only the visible rows.
+The settings modal is the only modal that takes the mouse; see
+[design.md](design.md#tui-layout).
+
+**Why:** The playlist is synced state. Committing at every row crossed
+would broadcast a burst of CRDT ops for one gesture, and the playlist
+would jump at peers mid-drag. The move is recorded as "entry after
+entry" by identity, the shape `J`/`K` already sends
+(`MovePlaylistAfter`), because snapshots replace the rows about ten
+times a second during playback, and peers may add or remove entries
+mid-drag. An index-keyed grab would retarget onto a neighbour (the bug
+class behind the series pane's `ListAnchor`). For the same reason, a
+press that stays on its row never moves anything, even if the rows
+shift underneath it.
+
+The viewport freezes because focused lists center on the cursor. A
+press moves the cursor, so without freezing the next frame would recenter
+and slide the pressed row out from under the pointer. Hit-testing
+against press-time geometry while rendering the press-time center keeps
+the screen and the pointer mapping in agreement. Auto-scroll was
+rejected because terminals report drags only on motion, so there is no
+timer to scroll by, and `J`/`K` already covers long moves.
+
+The settings modal takes the mouse because media roots are the only
+other reorderable list. Click-to-select comes with it, under the
+existing rule that a click never activates a row. Other modals still
+ignore the mouse; nothing in them needs it.
+
 ### Chat selection copies on release with no copy key
 
 **Rule:** Drag-selecting chat text copies to the clipboard on release (CLIPBOARD and PRIMARY on X11), a hidden spoiler copies as its scramble, and cross-message selections snap to whole lines in irccloud log format; see [design.md](design.md#tui-layout).

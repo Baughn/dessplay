@@ -26,7 +26,7 @@ use super::props::{
     StatusProps, Tone, UsersProps,
 };
 use super::theme;
-use super::widgets::{Binding, KeyPattern, Keymap, ListCursor, TextField};
+use super::widgets::{Binding, DragReorder, KeyPattern, Keymap, ListCursor, Move, TextField};
 
 /// A key the pane responds to, for the keybinding bar.
 pub type Keybinding = (&'static str, &'static str);
@@ -2887,6 +2887,10 @@ pub struct PlaylistPane {
     focused: bool,
     /// The viewport of the last render, for mouse hit-testing.
     rendered: super::layout::RenderedCollection,
+    /// The row the last render centered on, so a drag can freeze it.
+    center: Option<usize>,
+    /// A held mouse drag reordering one entry (design.md, Mouse support).
+    drag: Option<DragReorder<dessplay_core::types::Ed2kHash>>,
 }
 
 impl PlaylistPane {
@@ -2959,22 +2963,21 @@ impl PlaylistPane {
     fn act_move_down(&mut self) -> Option<Msg> {
         let hash = self.selected_hash()?;
         let index = self.cursor.index();
-        if index + 1 >= self.props.rows.len() {
-            return None; // already the bottom row
-        }
+        let after = self.props.rows.get(index + 1)?.hash; // None: the bottom row
         self.cursor.set(index + 1);
-        Some(Msg::MoveDown(hash))
+        Some(Msg::MoveEntry {
+            hash,
+            after: Some(after),
+        })
     }
 
     /// `k`/`K`: move the selected entry up (see `act_move_down`).
     fn act_move_up(&mut self) -> Option<Msg> {
         let hash = self.selected_hash()?;
-        let index = self.cursor.index();
-        if index == 0 {
-            return None; // already the top row
-        }
-        self.cursor.set(index - 1);
-        Some(Msg::MoveUp(hash))
+        let index = self.cursor.index().checked_sub(1)?; // None: the top row
+        let after = index.checked_sub(1).map(|i| self.props.rows[i].hash);
+        self.cursor.set(index);
+        Some(Msg::MoveEntry { hash, after })
     }
 
     /// `M`: manually map the entry to a local file.
@@ -2982,14 +2985,61 @@ impl PlaylistPane {
         self.selected_hash().map(Msg::MapFile)
     }
 
-    /// A left-click at (column, row): select the row under the pointer
-    /// (the trailing [Add New] row included), per the recorded
-    /// last-render viewport — which already embodies the pane's
-    /// centering policy (now-playing while unfocused, the cursor while
-    /// focused).
-    pub(crate) fn click(&mut self, column: u16, row: u16) {
-        if let Some(index) = self.rendered.hit(column, row) {
+    /// A left press at (column, row): select the row under the pointer
+    /// (the trailing [Add New] row included) and, on an entry, arm a
+    /// reorder drag. Both hit-test the recorded last-render viewport —
+    /// which already embodies the centering policy (now-playing while
+    /// unfocused, the cursor while focused) — in the order it painted:
+    /// a drag whose release never arrived left its preview on screen.
+    pub(crate) fn mouse_down(&mut self, column: u16, row: u16) {
+        let mut painted: Vec<_> = self.props.rows.iter().map(|row| row.hash).collect();
+        if let Some(stale) = self.drag.take() {
+            stale.preview(&mut painted, |hash| *hash);
+        }
+        let keys: Vec<_> = painted.iter().copied().map(Some).collect();
+        self.drag = DragReorder::grab(&self.rendered, column, row, self.center, &keys);
+        let Some(index) = self.rendered.hit(column, row) else {
+            return;
+        };
+        let index = painted
+            .get(index)
+            .and_then(|hash| self.props.rows.iter().position(|row| row.hash == *hash))
+            .unwrap_or(index); // [Add New]
+        self.cursor.set(index);
+    }
+
+    /// Whether a reorder drag is held (drag/release route here by grab).
+    pub(crate) fn dragging(&self) -> bool {
+        self.drag.is_some()
+    }
+
+    /// Follow a held drag to screen row `row` (local preview only).
+    pub(crate) fn mouse_drag(&mut self, row: u16) {
+        if let Some(drag) = &mut self.drag
+            && drag.drag(row)
+        {
+            tracing::trace!(row, "playlist drag moved");
+        }
+    }
+
+    /// Release a held drag: the one move to commit, if the entry landed
+    /// somewhere new. The cursor follows the entry to where it was
+    /// dropped, as with `J`/`K`.
+    pub(crate) fn mouse_up(&mut self) -> Option<Msg> {
+        let drag = self.drag.take()?;
+        let mut order: Vec<_> = self.props.rows.iter().map(|row| row.hash).collect();
+        let landed = drag.preview(&mut order, |hash| *hash);
+        let Move { key, after } = drag.release(&self.props.rows, |row| row.hash)?;
+        if let Some(index) = landed {
             self.cursor.set(index);
+        }
+        Some(Msg::MoveEntry { hash: key, after })
+    }
+
+    /// Drop a held drag without committing (keys, resize, modals).
+    pub(crate) fn cancel_drag(&mut self) {
+        if self.drag.take().is_some() {
+            tracing::debug!("playlist drag cancelled");
         }
     }
 
@@ -3035,10 +3085,15 @@ impl PlaylistPane {
             .map(|row| watch_tag(row).len())
             .max()
             .unwrap_or(0) as u16;
-        let mut rows = self
-            .props
-            .rows
-            .iter()
+        // A held drag shows the entry where it would land, highlighted,
+        // inside the viewport frozen at the press.
+        let mut order: Vec<_> = self.props.rows.iter().collect();
+        let dragged = self
+            .drag
+            .as_ref()
+            .and_then(|drag| drag.preview(&mut order, |row| row.hash));
+        let mut rows = order
+            .into_iter()
             .map(|row| PresentedRow {
                 key: row.hash.to_string(),
                 data: Presentation::default()
@@ -3071,12 +3126,12 @@ impl PlaylistPane {
                 .style("title", theme::dim()),
             gap_after: false,
         });
-        let selected = self.focused.then(|| self.cursor.index());
-        let center = if self.focused {
-            Some(self.cursor.index())
-        } else {
-            self.props.now_index
+        let (selected, center) = match (&self.drag, dragged) {
+            (Some(drag), Some(index)) => (Some(index), drag.center()),
+            _ if self.focused => (Some(self.cursor.index()), Some(self.cursor.index())),
+            _ => (None, self.props.now_index),
         };
+        self.center = center;
         let data = data.collection("rows", &rows, selected, center);
         let Ok(scene) = renderer.arrange("playlist", area, &data) else {
             return;
@@ -4681,7 +4736,7 @@ mod playlist_pane_tests {
             .map(|x| frame.buffer[(x, second)].symbol())
             .collect();
         assert!(text.contains("second.mkv"));
-        pane.click(4, second);
+        pane.mouse_down(4, second);
         assert_eq!(pane.act_play(), Some(Msg::PlaySelected(hashes[1])));
         renderer.install(super::super::layout::LayoutBundle::builtin().unwrap());
         terminal
@@ -4802,11 +4857,23 @@ mod playlist_pane_tests {
     #[test]
     fn cursor_follows_moved_entry() {
         let (mut p, h) = pane_with_rows(3); // [0,1,2], sel=0
-        assert_eq!(p.on(&typed_char('J')), Some(Msg::MoveDown(h[0])));
+        assert_eq!(
+            p.on(&typed_char('J')),
+            Some(Msg::MoveEntry {
+                hash: h[0],
+                after: Some(h[1])
+            })
+        );
         apply_reorder(&mut p, h[0], 1); // -> [1,0,2]
         assert_eq!(p.cursor.index(), 1);
         assert_eq!(p.selected_hash(), Some(h[0])); // still on the moved entry
-        assert_eq!(p.on(&typed_char('J')), Some(Msg::MoveDown(h[0])));
+        assert_eq!(
+            p.on(&typed_char('J')),
+            Some(Msg::MoveEntry {
+                hash: h[0],
+                after: Some(h[2])
+            })
+        );
         apply_reorder(&mut p, h[0], 2); // -> [1,2,0]
         assert_eq!(p.cursor.index(), 2);
         assert_eq!(p.selected_hash(), Some(h[0]));

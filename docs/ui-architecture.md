@@ -64,7 +64,7 @@ automated roguelike recovery. See [ui-layouts.md](ui-layouts.md) for the
 current authoring contract and [plan.md](plan.md#phase-36-runtime-editable-display-layouts)
 for outstanding migration work.
 
-Last updated: 2026-09-16
+Last updated: 2026-10-03
 
 DessPlay uses **tui-realm** as its TUI framework, providing an Elm-style
 architecture on top of ratatui. This document covers the component structure,
@@ -593,6 +593,37 @@ the handler hit-tests against them:
   separators), so an identity-keyed hold follows its messages across
   rebuilds — or drops when they are gone — where a positional one
   would retarget or index out of bounds.
+- **Drag to reorder** (design.md, Drag to reorder): one widget,
+  `widgets::reorder::DragReorder<K>`, serves the playlist and the
+  settings media roots (through `Form`: `FormModel::movable` marks the
+  rows, and `FormModel::move_row` takes the result). A press arms it
+  from the owner's last `RenderedCollection` and its *render-recorded
+  center*. The grabbed row's run of adjacent movable rows bounds where it
+  can land. Drags hit-test that press-time geometry by screen row only
+  (`RenderedCollection::nearest_row`, clamped to the painted rows), and
+  the owner renders `preview()` of its *current* rows with the frozen
+  center. The pointer mapping and the screen therefore cannot disagree,
+  and a drag reaches only the visible rows. `release()` returns at most
+  one `Move { key, after }` anchored by identity, so snapshot churn can
+  neither retarget nor overflow it. A landing spot equal to the pressed
+  row previews and commits nothing, even if rows shift. The playlist
+  sends it as `Msg::MoveEntry` (which `J`/`K` also send) and becomes one
+  `MovePlaylistAfter`. The settings form applies it to its draft. Drag and
+  release route by grab, like the chat selection. Any non-mouse input
+  (only terminal events reach `Ui::handle`, nothing periodic) cancels a
+  drag.
+  `push_modal` calls `cancel_layout_grabs`, because a covered pane never
+  receives its release. That also fixes a splitter or chat grab left armed
+  under a modal. A press starts a new gesture: it clears a stale splitter
+  grab, and a pane whose release was lost maps the press through the
+  preview it left painted. The wheel is swallowed while a splitter or
+  reorder grab is held, because it would scroll a frozen viewport.
+- **Settings modal**: the one modal that takes the mouse.
+  `Ui::handle_mouse` forwards to `SettingsModal::mouse` before the
+  modal early-return. A left press selects the form row under the
+  pointer (`Form` stores the `RenderedCollection` it painted) and arms a
+  reorder drag on movable rows. Presses are ignored while a text editor
+  is open.
 - **Wheel**: scrolls the pane under the pointer **only when it is
   already focused** — the chat scrolls its log a few lines per tick,
   list panes move their cursor like Up/Down. Over an unfocused pane it
@@ -612,7 +643,8 @@ the handler hit-tests against them:
   chat geometry and exclude all other overlays. Its input capture precedes
   global shortcuts: every keyboard event or mouse press dismisses and consumes
   the input; release, drag, wheel, and paste are swallowed.
-- **Other modals**: mouse events are ignored while open; they capture all input.
+- **Other modals**: mouse events are ignored while open; they capture all
+  input. The settings modal is the exception (above).
 
 The production shell enables crossterm mouse capture at setup (non-fatal
 if the terminal refuses; the adapter's `restore()` disables it on exit)

@@ -19,6 +19,7 @@ pub mod keymap;
 pub mod keys;
 pub mod line;
 pub mod list;
+pub mod reorder;
 pub(crate) mod search;
 
 pub use form::{
@@ -29,6 +30,7 @@ pub use keymap::{BarEntry, Binding, KeyPattern, Keymap};
 pub(crate) use keys::{plain, typed};
 pub use line::{LineBuffer, TextField};
 pub use list::ListCursor;
+pub use reorder::{DragReorder, Move};
 
 #[cfg(test)]
 pub use form::overlay;

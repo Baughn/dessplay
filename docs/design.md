@@ -3006,11 +3006,27 @@ trades rows between those two only (the playlist boundary stays put),
 and the layout is persisted on release (`layout_sizes`, basis points)
 as a revision-keyed local display preference. The old `pane_layout` values
 are imported once for the bundled layout. There is no key equivalent for
-resizing. Mouse events are ignored while a modal is open.
+resizing. Mouse events are ignored while a modal is open, except in
+the settings modal, where a left-click selects the row under the pointer
+(again without activating it) and media roots can be dragged.
 Keyboard-only terminals lose nothing — every mouse action has a key
 equivalent, with one exception: chat text selection (below) is
 mouse-native.
 (why: [decisions](decisions.md#mouse-actions-have-key-equivalents-except-resize-and-selection))
+
+**Drag to reorder:** pressing on a playlist entry (not `[Add New]`) or
+a settings media root and dragging moves it, like repeated `J`/`K`. While
+the button is held, the list holds still and the entry is drawn,
+highlighted, at the row under the pointer. Moving the pointer out of the
+list sideways keeps the drag going, and moving past the top or bottom
+edge drops the entry at the first or last visible position. There is no
+auto-scroll, so a drag reaches only the rows visible at the press. On
+release the move is applied once: one playlist mutation, or one change
+to the settings draft. Releasing on the pressed row, or with the entry
+back where it started, changes nothing. Any other input during the drag
+(a key, paste, resize, or modal) cancels it. A media root moves only among the media
+roots. The cursor follows the dropped entry.
+(why: [decisions](decisions.md#drag-to-reorder-previews-and-commits-once))
 
 **Chat text selection:** click-and-drag over the chat log selects text
 for copying. Releasing the button **copies immediately** to the system
