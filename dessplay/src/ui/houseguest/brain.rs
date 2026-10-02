@@ -7,7 +7,8 @@
 //! single best (robotic), never flat random (a slot machine). An offer's
 //! `fit` is a floor plus its need squared — a need weighs little until
 //! it's pressing — and the floor keeps every offer possible whatever her
-//! needs say.
+//! needs say. One she'd do for its own sake too (a nap on the sofa)
+//! never fits worse than one that answers no need.
 
 use super::Rng;
 use super::osaka::Activity;
@@ -169,6 +170,14 @@ impl Kind {
         }
     }
 
+    /// Whether she does it for its own sake as well as for its need: its
+    /// fit never drops below that of an offer answering no need. A nap
+    /// on the sofa is lounging when she's awake, and a doze when she's
+    /// sleepy.
+    fn for_its_own_sake(self) -> bool {
+        matches!(self, Self::Use(Use::Nap))
+    }
+
     /// The need it answers, and by how much.
     pub fn serves(self) -> Option<(Need, f64)> {
         match self {
@@ -185,11 +194,12 @@ impl Kind {
             Self::Use(Use::Snack) => Some((Need::Hungry, 0.8)),
             // A proper bed answers sleepiness far better than a border.
             Self::Use(Use::Sleep) => Some((Need::Sleepy, 0.7)),
-            // A sofa nap is lounging, not bedtime: it would always lose
-            // to the bed if it answered the same need.
+            // A nap on a sofa (even one of her own making) draws her
+            // more than a border when she's sleepy, but she naps awake
+            // too: each takes a little off, or she'd never get to bed.
+            Self::Use(Use::Nap) => Some((Need::Sleepy, 0.1)),
             Self::Use(
                 Use::Lounge
-                | Use::Nap
                 | Use::Homework
                 | Use::Watch
                 | Use::Unpack
@@ -218,9 +228,11 @@ const TOP: usize = 4;
 /// An offer's score given her needs and what she did lately.
 pub(super) fn score(kind: Kind, needs: &Needs, recent: &[Kind]) -> f64 {
     // Squared: a need weighs little until it's pressing.
-    let fit = kind
-        .serves()
-        .map_or(NEUTRAL, |(need, _)| FLOOR + needs.get(need).powi(2));
+    let fit = match kind.serves() {
+        None => NEUTRAL,
+        Some((need, _)) if kind.for_its_own_sake() => NEUTRAL.max(FLOOR + needs.get(need).powi(2)),
+        Some((need, _)) => FLOOR + needs.get(need).powi(2),
+    };
     let repeats = recent.iter().filter(|&&k| k == kind).count();
     kind.base() * fit * COOLDOWN.powi(repeats as i32)
 }

@@ -1545,7 +1545,8 @@ fn her_needs_shape_long_visits() {
                 .clamp(1, 1000);
             if let State::Visiting(visit) = &guest.state {
                 let (pose, ..) = visit.osaka.appearance(now);
-                if matches!(pose, Pose::LieBack(_)) {
+                // Dozing: on the floor, or on something she's made.
+                if matches!(pose, Pose::LieBack(_) | Pose::Nap(_) | Pose::Sleep(_)) {
                     if now < half {
                         early += step;
                     } else {
@@ -1729,7 +1730,12 @@ fn a_furnished_home_gets_used_and_stays_cheap() {
         );
         choices.extend(&visit.osaka.choices);
         let cached = guest.graphics.as_ref().map_or(0, |g| g.cached());
-        assert!(cached < 200, "seed {seed}: {cached} distinct images");
+        // Headroom under the cache's limit (20 minutes here run to
+        // 174-204 images across seeds).
+        assert!(
+            cached < graphics::CACHE_LIMIT - 32,
+            "seed {seed}: {cached} distinct images"
+        );
     }
     let count = |kind: Kind| choices.iter().filter(|&&k| k == kind).count();
     for what in [Use::Lounge, Use::Nap, Use::Sleep, Use::Homework, Use::Watch] {
@@ -3165,7 +3171,7 @@ fn make(guest: &mut Guest, scene: Scene, real: &Buffer, view: &IdleView) -> (u64
             );
         }
         let (pose, ..) = visit.osaka.appearance(now);
-        let using = matches!(pose, Pose::Lounge | Pose::Sleep(_))
+        let using = matches!(pose, Pose::Lounge | Pose::Nap(_) | Pose::Sleep(_))
             && visit.osaka.seat().is_some_and(|seat| seat.makeshift);
         if using {
             assert!(reeled, "{scene:?}: the torn text came to her hands");
@@ -3542,4 +3548,46 @@ fn commits_survive_the_visit_ending() {
     guest.activity(now);
     let _ = run(&mut guest, &real, &view, now, now + dissolve::DURATION_MS);
     assert!(guest.ledger.ordered.is_some(), "the order was lost");
+}
+
+/// A sofa she made is a sofa: sleepy, she naps on it more often than
+/// she lies down on the floor beside it.
+#[test]
+fn sleepy_she_naps_on_the_sofa_she_made() {
+    use super::brain::{Kind, Need};
+    use super::osaka::Activity;
+    use super::room::Use;
+    let (mut nap, mut lie) = (0, 0);
+    for seed in 0..4 {
+        let mut ui = stage_ui();
+        let (real, view) = real_frame(&mut ui, 100, 30);
+        let mut guest = Guest::new(seed);
+        let (mut now, _) = make(&mut guest, Scene::MakeSofa, &real, &view);
+        let mut seen = 0;
+        let end = now + 20 * 60_000;
+        while now < end {
+            now += guest
+                .next_tick(now)
+                .map_or(1000, |d| d.as_millis() as u64)
+                .clamp(1, 1000);
+            guest.advance(now);
+            paint(&mut guest, &real, &view, now);
+            let State::Visiting(visit) = &mut guest.state else {
+                panic!("seed {seed}: visiting");
+            };
+            // Kept sleepy: whatever she chose, she's sleepy again.
+            if visit.osaka.choices.len() > seen {
+                for kind in &visit.osaka.choices[seen..] {
+                    nap += usize::from(*kind == Kind::Use(Use::Nap));
+                    lie += usize::from(*kind == Kind::Idle(Activity::LieBack));
+                }
+                seen = visit.osaka.choices.len();
+                visit.osaka.press(Need::Sleepy);
+            }
+        }
+    }
+    assert!(
+        nap > lie,
+        "napped on her sofa {nap} times, on the floor {lie}"
+    );
 }

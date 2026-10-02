@@ -438,6 +438,8 @@ mod tests {
         }
         rows.push((Furniture::Sofa, STAGES, Some(Pose::Lounge), Facing::Right));
         rows.push((Furniture::Sofa, STAGES, Some(Pose::Lounge), Facing::Left));
+        rows.push((Furniture::Sofa, STAGES, Some(Pose::Nap(0)), Facing::Right));
+        rows.push((Furniture::Sofa, STAGES, Some(Pose::Nap(1)), Facing::Left));
         rows.push((Furniture::Bed, STAGES, Some(Pose::Sleep(0)), Facing::Right));
         rows.push((Furniture::Bed, STAGES, Some(Pose::Sleep(1)), Facing::Left));
         let mut sheet = image::RgbaImage::from_pixel(

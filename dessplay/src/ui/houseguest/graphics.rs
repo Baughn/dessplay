@@ -28,7 +28,7 @@ use super::sprite::{Face, Facing, HEIGHT, Pose, WIDTH};
 /// Her outline colour: dark line art, read against the fills.
 const LINE: &str = "#1d1714";
 /// Distinct frames kept before the cache starts over.
-const CACHE_LIMIT: usize = 256;
+pub(super) const CACHE_LIMIT: usize = 256;
 
 /// What to draw.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

@@ -284,15 +284,13 @@ impl Shown {
     }
 
     /// What she can do with it: unpack it while it's boxed, crumple it
-    /// into shape while it's makeshift and still a heap; a makeshift sofa
-    /// is to sit on and a makeshift bed to sleep in.
+    /// into shape while it's makeshift and still a heap; once it's in
+    /// shape, a makeshift piece is for what the real one is.
     pub fn uses(&self) -> &'static [Use] {
         match (self.boxed, self.scrap) {
             (true, _) => &[Use::Unpack],
             (false, Some(scrap)) if !scrap.done() => &[Use::Crumple],
-            (false, Some(_)) if self.item == Furniture::Bed => &[Use::Sleep],
-            (false, Some(_)) => &[Use::Lounge],
-            (false, None) => Use::of(self.item),
+            (false, _) => Use::of(self.item),
         }
     }
 

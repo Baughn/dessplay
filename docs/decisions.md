@@ -1,6 +1,6 @@
 # DessPlay Decision Log
 
-Last updated: 2026-10-01
+Last updated: 2026-10-02
 
 The reasoning behind the rules in [design.md](design.md): the failure that
 motivated each one, the alternatives that were rejected, and the date it
@@ -2279,6 +2279,27 @@ is scheduled when it's made; a dropped tear's glyphs go back). The
 moments after a sneeze, a fall or a door are short and stay passing.
 The test models the trigger honestly — text coming up next to her at
 random times — and failed before the change.
+
+## A made piece is for what the real one is; a nap is a doze (2026-10-02)
+
+**Rule:** A makeshift piece, once in shape, offers the real piece's
+uses (the sofa: sitting, napping, and TV when it's on the TV's floor).
+A nap answers *sleepy* (0.1 a nap), but never fits below an offer that
+answers no need. See [design.md](design.md#houseguest).
+
+**Why:** The user watched her make a sofa, then lie down to sleep on
+a border of the List pane for the rest of the visit. A makeshift sofa
+offered only sitting, which answered no need, while a doze on a border
+answered *sleepy*, so a sleepy Osaka always preferred the floor to a
+sofa she'd built. With the nap offered and answering *sleepy* she
+naps on her sofa about three times as often as she lies on the floor
+(stage room, kept sleepy). A nap scored by sleepiness alone vanished
+from furnished homes (8 naps against HEAD's 30 in 8 × 30 minutes),
+since the bed wins whenever she's sleepy; the neutral floor keeps the
+casual nap. At 0.2 a nap those casual naps kept her from ever getting
+sleepy enough for bed (10 bedtimes against 18); at 0.1 it's 15. The
+proposal's needs model (comfort, spot quality) replaces this bridge
+([proposal](proposals/2026-10-02-houseguest-mind.md#every-want-answers-a-need)).
 
 ## Houseguest chooses by needs among the top few (2026-09-28)
 

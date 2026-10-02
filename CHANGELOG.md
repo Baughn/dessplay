@@ -14,6 +14,8 @@ Add new days at the top. Add new entries at the bottom of existing days.
 - Fixed: Something the houseguest bought off the shopping channel, or
   unpacked, is no longer forgotten when you press a key at that very
   moment and she leaves.
+- Fixed: The houseguest naps on a sofa she made of text, rather than
+  lying down on the floor beside it.
 
 ## 2026-10-01
 

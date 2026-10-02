@@ -1,6 +1,6 @@
 # DessPlay Design Document
 
-Last updated: 2026-10-01
+Last updated: 2026-10-02
 
 A synchronized video player for watch parties. Terminal-first, built for
 reliability over flaky connections. Server-coordinated, including relayed
@@ -1427,7 +1427,8 @@ this section states what is built.
   on; *restless* starts high, rises steadily, and moving answers it; *tidy* rises while a line is on offer and a pull answers it;
   *mischief* rises slowly and a swap answers it; *hungry* rises over
   twenty minutes and a snack from her fridge answers it. Fit is 0.1 + need² (0.5
-  for an offer no need wants); repeating one of her last three choices
+  for an offer no need wants, and never below 0.5 for a nap on a sofa,
+  which she takes awake too); repeating one of her last three choices
   multiplies by 0.4. Needs only weight choices: nothing is ever ruled out,
   and nothing bad happens when a need is high
   (why: [decisions](decisions.md#houseguest-chooses-by-needs-among-the-top-few-2026-09-28)).
@@ -1501,8 +1502,9 @@ this section states what is built.
   she sleeps; the sofa's cushion in her arms while she naps), since two
   images would cut each other out. **Using her furniture**: she walks to
   a piece and sits on the sofa, naps on it hugging the cushion
-  (lounging, not bedtime), sleeps in bed (answers *sleepy* far
-  better than a doze on a border), does homework at the desk (nodding
+  (something she does awake too, and more when she's sleepy, taking a
+  little off), sleeps in bed (answers *sleepy* far
+  better than a doze on a border or a nap), does homework at the desk (nodding
   off onto the paper halfway through), or watches the TV from beside
   it, or from a sofa on the TV's floor, turned towards it; she reads beside her bookshelf, gets a snack from her fridge (it
   stands open as she looks in, then she eats a melon bread), and on
@@ -1533,9 +1535,10 @@ this section states what is built.
   cells, a makeshift bed 7×2; each stands on a floor over blank cells
   like her real pieces (and is solid to text the same way), and is
   drawn as shreds of the alien glyphs her image derezzes text into, in
-  the torn text's own colours (in ASCII, its own letters, jumbled). The
-  sofa is for sitting on and watching TV from; the bed, for sleeping
-  in, under a blanket of shreds. A heap she left half-crumpled is
+  the torn text's own colours (in ASCII, its own letters, jumbled). Once
+  in shape it's for whatever the real piece is: the sofa for sitting
+  on, napping on and watching TV from; the bed, for sleeping in, under
+  a blanket of shreds. A heap she left half-crumpled is
   offered for finishing. It lasts for the visit, while every glyph torn
   for it is still torn off (its line unchanged, its pane not protected)
   and it still fits where she made it, clear of her real furniture; a
