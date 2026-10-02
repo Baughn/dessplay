@@ -1514,9 +1514,11 @@ fn spots_for(piece: &Shown, shown: &[Shown], terrain: &Terrain, cat: bool) -> Ve
         out.extend(seat);
     }
     // A sofa that faces the TV (see [`room::faces`]) is where to watch
-    // it from. A makeshift one stands on no strip: for it, the TV on
+    // it from, turned the way the sofa is (toward the TV). A makeshift
+    // one stands on no strip and has no way round: for it, the TV on
     // its floor, where she'd stand beside it to watch (its own columns
-    // may run up to a wall, past the floor's last standing spot).
+    // may run up to a wall, past the floor's last standing spot), and
+    // she turns toward it.
     if piece.uses().contains(&room::Use::Lounge) {
         let sofa = piece.seat(room::Use::Lounge, 0);
         let floor = terrain.platform_at(sofa.x, sofa.y);
@@ -1535,10 +1537,10 @@ fn spots_for(piece: &Shown, shown: &[Shown], terrain: &Terrain, cat: bool) -> Ve
                 }
         });
         if let Some(tv) = tv {
-            let facing = if tv.left > sofa.x {
-                sprite::Facing::Right
-            } else {
-                sprite::Facing::Left
+            let facing = match piece.strip {
+                Some(_) => piece.facing,
+                None if tv.left > sofa.x => sprite::Facing::Right,
+                None => sprite::Facing::Left,
             };
             out.push(room::Seat {
                 what: room::Use::Watch,

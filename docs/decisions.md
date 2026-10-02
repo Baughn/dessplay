@@ -1,6 +1,6 @@
 # DessPlay Decision Log
 
-Last updated: 2026-10-02
+Last updated: 2026-10-03
 
 The reasoning behind the rules in [design.md](design.md): the failure that
 motivated each one, the alternatives that were rejected, and the date it
@@ -2541,6 +2541,28 @@ Rejected:
   must not send the room wandering (2026-09-28).
 - **A geometry-dependent order** (by where each anchor lands this
   frame). It reorders pieces on a resize.
+
+## She watches from a sofa turned toward the TV (2026-10-03)
+
+**Rule:** A sofa faces the TV only when it is turned toward it, as well
+as on its strip and 2–14 cells away; watching from it, she sits the way
+the sofa is turned. The TV's own way round doesn't count. A makeshift
+sofa keeps the same-floor rule and turns her toward the TV. See
+[design.md](design.md#houseguest).
+
+**Why:** the [2026-10-02 Faces call](#her-home-stands-on-strips-and-its-rooms-are-whats-in-them-2026-10-02)
+left the sofa's way round out until she could turn it, so no sofa
+would lose watching before she could fix it. Phase 4 brings that fix
+(the Faces rule and its repair, a turn in place being the cheapest),
+and it lands as one push, so the promise holds. Watching from a sofa
+turned away was also a picture that made no sense: she sat facing the
+wall with the TV behind her, while the watch seat turned her round in
+place. The seat now takes the sofa's own facing, which is the TV's
+direction whenever Faces holds, instead of a second derivation from
+the two pieces' columns. A makeshift sofa stands on no strip and has
+no way round of its own, so it keeps that derivation. The TV is seen
+from the front from either side; turning it would only change its
+drawing.
 
 ## Houseguest chooses by needs among the top few (2026-09-28)
 

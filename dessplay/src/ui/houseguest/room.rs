@@ -1058,17 +1058,21 @@ fn stand(prop: &Prop, strip: Strip, extent: Extent, left: i32) -> Shown {
 pub(super) const FACING_GAP: std::ops::RangeInclusive<i32> = 2..=14;
 
 /// Whether `seat` faces `screen`, for watching: both on one strip, a
-/// [`FACING_GAP`] apart. Judged on the strip, not the live floor, so a
-/// name that splits the floor between them doesn't stop her. (Which way
-/// the seat is turned counts from phase 4, when she can turn it.)
+/// [`FACING_GAP`] apart, the seat turned toward the screen. Judged on the
+/// strip, not the live floor, so a name that splits the floor between
+/// them doesn't stop her. The screen is seen from the front, so which
+/// way it is turned doesn't count.
 pub(super) fn faces(seat: &Shown, screen: &Shown) -> bool {
     let (a, b) = (seat.rect(), screen.rect());
-    let gap = if a.x < b.x {
-        i32::from(b.x) - i32::from(a.right())
+    let (gap, toward) = if a.x < b.x {
+        (i32::from(b.x) - i32::from(a.right()), Facing::Right)
     } else {
-        i32::from(a.x) - i32::from(b.right())
+        (i32::from(a.x) - i32::from(b.right()), Facing::Left)
     };
-    seat.strip.is_some() && seat.strip == screen.strip && FACING_GAP.contains(&gap)
+    seat.strip.is_some()
+        && seat.strip == screen.strip
+        && FACING_GAP.contains(&gap)
+        && seat.facing == toward
 }
 
 /// Whether she'd fit to use `at` every way it's used (a new piece is

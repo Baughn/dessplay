@@ -9,6 +9,12 @@ append-only; you cannot reword or remove existing entries.
 
 Add new days at the top. Add new entries at the bottom of existing days.
 
+## 2026-10-03
+
+- Changed: The houseguest watches TV from her sofa only when the sofa is
+  turned toward the TV. A sofa turned away is still for sitting and
+  napping on.
+
 ## 2026-10-02
 
 - Fixed: Something the houseguest bought off the shopping channel, or

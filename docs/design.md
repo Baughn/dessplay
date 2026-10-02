@@ -1,6 +1,6 @@
 # DessPlay Design Document
 
-Last updated: 2026-10-02
+Last updated: 2026-10-03
 
 A synchronized video player for watch parties. Terminal-first, built for
 reliability over flaky connections. Server-coordinated, including relayed
@@ -1580,8 +1580,9 @@ this section states what is built.
   off onto the paper halfway through), or watches the TV from beside
   it, or from a sofa that **faces** it (the two on one strip, 2–14
   cells between them, judged on the strip, so something splitting the
-  floor between them doesn't matter; which way the sofa is turned
-  doesn't count yet; a makeshift sofa, on no strip, faces a TV on its
+  floor between them doesn't matter; the sofa turned toward the TV,
+  while the TV, seen from the front, may be turned either way; a
+  makeshift sofa, on no strip and turned no way, faces a TV on its
   floor), turned towards it; she reads beside her bookshelf, gets a snack from her fridge (it
   stands open as she looks in, then she eats a melon bread), and on
   about half her visits Kamineko is asleep in the cat bed — she pets
