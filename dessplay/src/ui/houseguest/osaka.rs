@@ -993,6 +993,17 @@ impl Osaka {
         );
     }
 
+    /// The name of what she's doing (the golden trajectories hash it).
+    #[cfg(test)]
+    pub fn act_name(&self) -> String {
+        let debug = format!("{:?}", self.act);
+        debug
+            .split([' ', '{', '('])
+            .next()
+            .unwrap_or_default()
+            .to_owned()
+    }
+
     /// Whether any layer change is still queued.
     #[cfg(test)]
     pub fn owes_anything(&self) -> bool {

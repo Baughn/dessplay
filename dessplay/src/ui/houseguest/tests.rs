@@ -3951,3 +3951,5 @@ fn a_made_sofa_mostly_faces_the_tv() {
         "{facing} of 6000 faced the TV"
     );
 }
+
+mod golden;
