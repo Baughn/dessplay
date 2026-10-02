@@ -319,7 +319,7 @@ pub(super) enum Side {
 
 /// Where a piece stands along its strip: its near edge `offset` cells
 /// from `side`'s wall. A resize keeps it that far from that wall.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub(super) struct Anchor {
     pub side: Side,
     pub offset: u16,

@@ -4,10 +4,17 @@
 //!
 //! JSON with a version; fields default when missing, and pieces or rooms
 //! this build doesn't know are skipped rather than failing the record.
+//!
+//! Where each piece stands is in `anchors` (its strip and anchor), a
+//! field older builds ignore; for them, `rooms` (a pane per old room
+//! kind) and each piece's `at` are still written, so they keep every
+//! piece, placed by its share of the way along its room's pane. A record
+//! an older build saved has no `anchors`: its pieces are anchored from
+//! `rooms` and `at` again.
 
 use serde::{Deserialize, Serialize};
 
-use super::room::{Furniture, Home, Nook, Prop, RoomKind, Strip};
+use super::room::{Anchor, Furniture, Home, Nook, Prop, RoomKind, Strip};
 use super::sprite::Facing;
 
 /// The format this build writes.
@@ -66,23 +73,41 @@ impl Ledger {
                 rooms.push((kind, nook));
             }
         }
+        let anchors: Vec<SavedAnchor> = raw
+            .anchors
+            .into_iter()
+            .filter_map(|v| serde_json::from_value::<SavedAnchor>(v).ok())
+            .collect();
         let mut home = Home::default();
         for prop in raw
             .props
             .into_iter()
             .filter_map(|v| serde_json::from_value::<SavedProp>(v).ok())
         {
-            // A piece whose room has no pane on record is dropped: it
-            // could never be placed.
-            let room = rooms.iter().find(|&&(k, _)| k == prop.item.room());
-            if let Some(&(_, nook)) = room
-                && !home.owns(prop.item)
-            {
-                home.props.push(Prop {
-                    boxed: prop.boxed,
-                    ..Prop::new(prop.item, nook, prop.at, prop.facing)
-                });
+            if home.owns(prop.item) {
+                continue;
             }
+            let anchored = anchors.iter().find(|a| a.item == prop.item);
+            let room = rooms.iter().find(|&&(k, _)| k == prop.item.room());
+            // A piece with neither a strip nor its room's pane on record
+            // is dropped: it could never be placed.
+            let Some(nook) = room.map(|&(_, nook)| nook).or_else(|| {
+                anchored.map(|a| {
+                    let Strip::Bottom(nook) = a.strip;
+                    nook
+                })
+            }) else {
+                continue;
+            };
+            let mut piece = Prop {
+                boxed: prop.boxed,
+                ..Prop::new(prop.item, nook, prop.at, prop.facing)
+            };
+            if let Some(a) = anchored {
+                piece.strip = a.strip;
+                piece.anchor = a.anchor;
+            }
+            home.props.push(piece);
         }
         let ordered = raw
             .ordered
@@ -113,6 +138,16 @@ impl Ledger {
                     at: p.at,
                     facing: p.facing,
                     boxed: p.boxed,
+                })
+                .collect(),
+            anchors: self
+                .home
+                .props
+                .iter()
+                .map(|p| SavedAnchor {
+                    item: p.item,
+                    strip: p.strip,
+                    anchor: p.anchor,
                 })
                 .collect(),
             ordered: self.ordered,
@@ -183,8 +218,19 @@ struct Saved {
     visits: u64,
     rooms: Vec<(RoomKind, Nook)>,
     props: Vec<SavedProp>,
+    anchors: Vec<SavedAnchor>,
     ordered: Option<Furniture>,
     bought_on: u64,
+}
+
+/// Where a piece stands: its strip, and its anchor there once it has
+/// stood there.
+#[derive(Serialize, Deserialize)]
+struct SavedAnchor {
+    item: Furniture,
+    strip: Strip,
+    #[serde(default)]
+    anchor: Option<Anchor>,
 }
 
 /// What's read, before the entries this build knows are picked out.
@@ -200,6 +246,8 @@ struct Raw {
     #[serde(default)]
     props: Vec<serde_json::Value>,
     #[serde(default)]
+    anchors: Vec<serde_json::Value>,
+    #[serde(default)]
     ordered: Option<serde_json::Value>,
     #[serde(default)]
     bought_on: u64,
@@ -208,6 +256,7 @@ struct Raw {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
+    use super::super::room::Side;
     use super::*;
 
     fn furnished() -> Ledger {
@@ -226,7 +275,111 @@ mod tests {
             boxed: true,
             ..Prop::new(Furniture::Bed, Nook::Playlist, 500, Facing::Right)
         }));
+        // The sofa and the bed have stood on their strips; the TV not yet.
+        ledger.home.props[0].anchor = Some(Anchor {
+            side: Side::Left,
+            offset: 0,
+        });
+        ledger.home.props[2].anchor = Some(Anchor {
+            side: Side::Right,
+            offset: 7,
+        });
         ledger
+    }
+
+    /// What an older build reads of a record: the pane of each room, and
+    /// each piece in its room's pane at its share of the way along (a
+    /// piece whose room has no pane is dropped, a second room in one pane
+    /// too).
+    fn as_an_older_build_reads(text: &str) -> Vec<(Furniture, Nook, u16)> {
+        let raw: serde_json::Value = serde_json::from_str(text).unwrap();
+        let mut rooms: Vec<(RoomKind, Nook)> = Vec::new();
+        for room in raw["rooms"].as_array().unwrap() {
+            let (kind, nook): (RoomKind, Nook) = serde_json::from_value(room.clone()).unwrap();
+            if !rooms.iter().any(|&(k, n)| k == kind || n == nook) {
+                rooms.push((kind, nook));
+            }
+        }
+        raw["props"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|prop| {
+                let item: Furniture = serde_json::from_value(prop["item"].clone()).unwrap();
+                let at = prop["at"].as_u64().unwrap() as u16;
+                let &(_, nook) = rooms.iter().find(|&&(k, _)| k == item.room())?;
+                Some((item, nook, at))
+            })
+            .collect()
+    }
+
+    /// The record as this build writes it, character for character: a
+    /// change here is a change to what's saved, and to what older builds
+    /// read.
+    #[test]
+    fn the_record_as_written() {
+        assert_eq!(
+            furnished().to_json(),
+            concat!(
+                r#"{"version":1,"master_seed":42,"visits":7,"#,
+                r#""rooms":[["Living","Users"],["Bedroom","Playlist"]],"#,
+                r#""props":[{"item":"Sofa","at":0,"facing":"Left","boxed":false},"#,
+                r#"{"item":"Tv","at":900,"facing":"Left","boxed":false},"#,
+                r#"{"item":"Bed","at":500,"facing":"Right","boxed":true}],"#,
+                r#""anchors":[{"item":"Sofa","strip":{"Bottom":"Users"},"anchor":{"side":"Left","offset":0}},"#,
+                r#"{"item":"Tv","strip":{"Bottom":"Users"},"anchor":null},"#,
+                r#"{"item":"Bed","strip":{"Bottom":"Playlist"},"anchor":{"side":"Right","offset":7}}],"#,
+                r#""ordered":"Desk","bought_on":6}"#,
+            )
+        );
+    }
+
+    /// A record from before anchors (or one an older build saved since)
+    /// reads with each piece on its room's pane, to be anchored by its
+    /// share of the way along when that pane is next seen.
+    #[test]
+    fn an_older_record_reads() {
+        let text = r#"{"version":1,"master_seed":42,"visits":7,"rooms":[["Living","Users"],["Bedroom","Playlist"]],"props":[{"item":"Sofa","at":0,"facing":"Left","boxed":false},{"item":"Tv","at":900,"facing":"Left","boxed":false},{"item":"Bed","at":500,"facing":"Right","boxed":true}],"ordered":"Desk","bought_on":6}"#;
+        let mut want = furnished();
+        for prop in &mut want.home.props {
+            prop.anchor = None;
+        }
+        assert_eq!(Ledger::from_json(text), Ok(want));
+    }
+
+    /// An older build keeps every piece, whichever strips they stand on:
+    /// rooms sharing a pane here get a pane each there.
+    #[test]
+    fn an_older_build_keeps_every_piece() {
+        let mut ledger = furnished();
+        assert_eq!(
+            as_an_older_build_reads(&ledger.to_json()),
+            [
+                (Furniture::Sofa, Nook::Users, 0),
+                (Furniture::Tv, Nook::Users, 900),
+                (Furniture::Bed, Nook::Playlist, 500),
+            ]
+        );
+        // The bed has moved onto the living room's strip.
+        ledger.home.props[2].strip = Strip::Bottom(Nook::Users);
+        let read = as_an_older_build_reads(&ledger.to_json());
+        assert_eq!(read.len(), 3, "{read:?}");
+        assert_ne!(read[2].1, Nook::Users, "{read:?}");
+        // And this build reads it back where it stands.
+        assert_eq!(Ledger::from_json(&ledger.to_json()), Ok(ledger));
+    }
+
+    /// A strip this build doesn't know (a later build's) falls back to
+    /// the piece's room's pane.
+    #[test]
+    fn an_unknown_strip_falls_back_to_the_rooms_pane() {
+        let text = furnished()
+            .to_json()
+            .replace(r#"{"Bottom":"Playlist"}"#, r#"{"Shelf":3}"#);
+        let ledger = Ledger::from_json(&text).unwrap();
+        let bed = ledger.home.props[2];
+        assert_eq!(bed.strip, Strip::Bottom(Nook::Playlist));
+        assert_eq!(bed.anchor, None);
     }
 
     #[test]
