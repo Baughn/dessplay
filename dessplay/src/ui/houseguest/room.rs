@@ -63,15 +63,6 @@ impl Furniture {
             Self::CatBed => &CAT_BED,
         }
     }
-
-    /// The room it belongs in.
-    pub(super) fn room(self) -> RoomKind {
-        match self {
-            Self::Sofa | Self::Tv | Self::CatBed => RoomKind::Living,
-            Self::Bed | Self::Desk | Self::Lamp | Self::Bookshelf => RoomKind::Bedroom,
-            Self::Fridge => RoomKind::Kitchen,
-        }
-    }
 }
 
 /// What a kind of piece is: one row of the catalogue.
@@ -91,6 +82,9 @@ pub(super) struct Spec {
     pub ink: (Color, Color),
     /// What it's for.
     pub uses: &'static [Use],
+    /// What it brings to a room (which, with the rest of the room's
+    /// pieces, says what the room is).
+    pub offers: &'static [Offer],
     /// Where she is, using it from in it: the column (facing right) her
     /// box is centred on, and whether she faces away from the piece's
     /// own facing (at the desk, on a stool past its front).
@@ -107,6 +101,7 @@ const SOFA: Spec = Spec {
     ascii: &[" .-----. ", "(|_____|)", " '     ' "],
     ink: (Color::Rgb(111, 161, 156), Color::Cyan),
     uses: &[Use::Lounge, Use::Nap],
+    offers: &[Offer::Seat],
     sit: Some((4, false)),
     comfort: 1.0,
 };
@@ -117,6 +112,7 @@ const TV: Spec = Spec {
     ascii: &["  \\/  ", ".----.", "|[  ]|", "|_::_|"],
     ink: (Color::Rgb(203, 191, 168), Color::Gray),
     uses: &[Use::Watch],
+    offers: &[Offer::Screen],
     sit: None,
     comfort: 1.0,
 };
@@ -128,6 +124,7 @@ const BED: Spec = Spec {
     ink: (Color::Rgb(143, 179, 217), Color::LightBlue),
     uses: &[Use::Sleep],
     // Head at the headboard end.
+    offers: &[Offer::Bed],
     sit: Some((3, false)),
     comfort: 1.0,
 };
@@ -139,6 +136,7 @@ const DESK: Spec = Spec {
     ink: (Color::Rgb(192, 150, 100), Color::Yellow),
     uses: &[Use::Homework],
     // On a stool just past the desk's front, facing it.
+    offers: &[Offer::Desk],
     sit: Some((7, true)),
     comfort: 1.0,
 };
@@ -149,6 +147,7 @@ const LAMP: Spec = Spec {
     ascii: &[" _ ", "/_\\", " | ", "_|_"],
     ink: (Color::Rgb(232, 195, 74), Color::LightYellow),
     uses: &[],
+    offers: &[Offer::Light],
     sit: None,
     comfort: 1.0,
 };
@@ -159,6 +158,7 @@ const BOOKSHELF: Spec = Spec {
     ascii: &["_____", "|IlI|", "|lII|", "|___|"],
     ink: (Color::Rgb(160, 120, 79), Color::Yellow),
     uses: &[Use::Read],
+    offers: &[Offer::Books],
     sit: None,
     comfort: 1.0,
 };
@@ -169,6 +169,7 @@ const FRIDGE: Spec = Spec {
     ascii: &["____", "| .|", "|--|", "|_.|"],
     ink: (Color::Rgb(231, 236, 239), Color::White),
     uses: &[Use::Snack],
+    offers: &[Offer::Cold],
     sit: None,
     comfort: 1.0,
 };
@@ -179,6 +180,7 @@ const CAT_BED: Spec = Spec {
     ascii: &["    ", "\\__/"],
     ink: (Color::Rgb(201, 69, 63), Color::Red),
     uses: &[Use::Pet],
+    offers: &[Offer::Cat],
     sit: None,
     comfort: 1.0,
 };
@@ -293,13 +295,77 @@ impl Seat {
     }
 }
 
-/// Which room a piece belongs to. Panes are her rooms: all the pieces of
-/// one room stand in the same pane, and each pane holds one room.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-pub(super) enum RoomKind {
+/// What a piece brings to a room.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(super) enum Offer {
+    Seat,
+    Screen,
+    Bed,
+    Desk,
+    Light,
+    Books,
+    Cold,
+    Cat,
+}
+
+/// What a room is, from what's in it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(super) enum Role {
     Living,
     Bedroom,
+    Study,
     Kitchen,
+    /// Whatever's left.
+    Den,
+}
+
+/// A room is `role` when its pieces offer everything `requires` and
+/// nothing `forbids`.
+struct RoleRule {
+    role: Role,
+    requires: &'static [Offer],
+    forbids: &'static [Offer],
+}
+
+/// Which role a room has: the first row it meets (RimWorld's and
+/// Oxygen Not Included's rooms, as a table).
+const ROLES: [RoleRule; 5] = [
+    RoleRule {
+        role: Role::Living,
+        requires: &[Offer::Screen, Offer::Seat],
+        forbids: &[Offer::Bed],
+    },
+    RoleRule {
+        role: Role::Bedroom,
+        requires: &[Offer::Bed],
+        forbids: &[Offer::Screen, Offer::Cold],
+    },
+    RoleRule {
+        role: Role::Study,
+        requires: &[Offer::Desk],
+        forbids: &[],
+    },
+    RoleRule {
+        role: Role::Kitchen,
+        requires: &[Offer::Cold],
+        forbids: &[Offer::Bed],
+    },
+    RoleRule {
+        role: Role::Den,
+        requires: &[],
+        forbids: &[],
+    },
+];
+
+/// The role of a room whose pieces offer `offers`.
+pub(super) fn role(offers: &[Offer]) -> Role {
+    ROLES
+        .iter()
+        .find(|rule| {
+            rule.requires.iter().all(|o| offers.contains(o))
+                && !rule.forbids.iter().any(|o| offers.contains(o))
+        })
+        .map_or(Role::Den, |rule| rule.role)
 }
 
 /// A floor her home can stand on: a quiet pane's bottom border, between
@@ -646,12 +712,21 @@ impl Home {
         self.props.iter().any(|p| p.boxed)
     }
 
-    /// The strip `kind`'s pieces stand on, if she has furnished it.
-    pub fn strip_of(&self, kind: RoomKind) -> Option<Strip> {
-        self.props
-            .iter()
-            .find(|p| p.item.room() == kind)
-            .map(|p| p.strip)
+    /// Her rooms: each strip her pieces stand on, and what it is from
+    /// what's out of its box there.
+    pub fn rooms(&self) -> Vec<(Strip, Role)> {
+        self.furnished()
+            .into_iter()
+            .map(|strip| {
+                let offers: Vec<Offer> = self
+                    .props
+                    .iter()
+                    .filter(|p| p.strip == strip && !p.boxed)
+                    .flat_map(|p| p.item.spec().offers.iter().copied())
+                    .collect();
+                (strip, role(&offers))
+            })
+            .collect()
     }
 
     /// The strips her pieces stand on, in the order she furnished them.
@@ -781,9 +856,8 @@ impl Home {
         *self = moved;
     }
 
-    /// Where `item` could go this frame: on its room's strip, or, for a
-    /// room she hasn't furnished yet, on a strip no piece stands on —
-    /// chosen at random among spots that fit, clear of what's `shown`.
+    /// Where `item` could go this frame: anywhere on a strip it fits,
+    /// clear of what's `shown`, chosen at random.
     pub fn spot(
         &self,
         buf: &Buffer,
@@ -798,14 +872,9 @@ impl Home {
         } else {
             Facing::Left
         };
-        let bound = self.strip_of(item.room());
         let cols = item.spec().footprint.0;
         let spots: Vec<Prop> = strips(nooks)
             .into_iter()
-            .filter(|&(strip, _)| match bound {
-                Some(home) => strip == home,
-                None => !self.props.iter().any(|p| p.strip == strip),
-            })
             .flat_map(|(strip, e)| {
                 (0..=10).filter_map(move |step| {
                     let at = step * 100;
@@ -830,18 +899,11 @@ impl Home {
         spots.get(rng.below(spots.len() as u64) as usize).copied()
     }
 
-    /// Take ownership of `prop`: onto its room's strip, or, for a new
-    /// room, its own — unless another room's pieces stand there (then she
-    /// doesn't take it, and this returns false).
-    pub fn add(&mut self, mut prop: Prop) -> bool {
-        match self.strip_of(prop.item.room()) {
-            Some(strip) if strip != prop.strip => {
-                prop.strip = strip;
-                prop.anchor = None;
-            }
-            Some(_) => {}
-            None if self.props.iter().any(|p| p.strip == prop.strip) => return false,
-            None => {}
+    /// Take ownership of `prop`, unless she already has one (then this
+    /// returns false: one of each).
+    pub fn add(&mut self, prop: Prop) -> bool {
+        if self.owns(prop.item) {
+            return false;
         }
         self.props.push(prop);
         true
@@ -1029,8 +1091,8 @@ mod tests {
             "no pane"
         );
         assert_eq!(
-            room.strip_of(RoomKind::Living),
-            Some(Strip::Bottom(Nook::Users)),
+            room.props[0].strip,
+            Strip::Bottom(Nook::Users),
             "text doesn't move a piece"
         );
     }
@@ -1074,9 +1136,10 @@ mod tests {
                 .all(|s| s.strip == Some(Strip::Bottom(Nook::Playlist)))
         );
         assert!(shown[0].left < shown[1].left, "{shown:?}");
-        assert_eq!(
-            room.strip_of(RoomKind::Living),
-            Some(Strip::Bottom(Nook::Playlist))
+        assert!(
+            room.props
+                .iter()
+                .all(|p| p.strip == Strip::Bottom(Nook::Playlist))
         );
         // Nowhere holds both: they're all in the closet.
         let shown = room.project(&buf, &[(Nook::Users, users)], &|_, _| false);
@@ -1153,8 +1216,10 @@ mod tests {
         assert_eq!(shown[1].rect().right(), 29);
     }
 
+    /// A new piece goes anywhere on a strip it fits, clear of what
+    /// stands, and where she'd fit to use it.
     #[test]
-    fn a_new_piece_joins_its_room_and_rooms_keep_to_their_own_panes() {
+    fn a_new_piece_goes_where_it_fits() {
         let mut rows = empty("Users", 40, 7);
         for (row, other) in rows.iter_mut().zip(empty("Playlist", 40, 7)) {
             row.push_str(&other);
@@ -1165,18 +1230,9 @@ mod tests {
             (Nook::Playlist, Rect::new(40, 0, 40, 7)),
         ];
         let mut room = home(Nook::Users, &[prop(Furniture::Sofa, 0)]);
-        let mut rng = Rng(5);
-        for seed in 0..20 {
-            rng.0 = seed;
-            let shown = room.project(&buf, &nooks, &|_, _| false);
-            let tv = room
-                .spot(&buf, &nooks, &shown, &|_, _| false, Furniture::Tv, &mut rng)
-                .expect("room for a TV");
-            assert_eq!(
-                tv.strip,
-                Strip::Bottom(Nook::Users),
-                "the TV goes with the sofa"
-            );
+        let shown = room.project(&buf, &nooks, &|_, _| false);
+        let mut strips = std::collections::HashSet::new();
+        for seed in 0..40 {
             let bed = room
                 .spot(
                     &buf,
@@ -1184,15 +1240,53 @@ mod tests {
                     &shown,
                     &|_, _| false,
                     Furniture::Bed,
-                    &mut rng,
+                    &mut Rng(seed),
                 )
                 .expect("room for a bed");
+            strips.insert(bed.strip);
+            let mut with = room.clone();
+            assert!(with.add(bed));
+            let both = with.project(&buf, &nooks, &|_, _| false);
+            assert_eq!(both.len(), 2, "{both:?}");
+            assert!(!both[0].rect().intersects(both[1].rect()));
+        }
+        assert_eq!(strips.len(), 2, "either pane");
+        assert!(!room.add(prop(Furniture::Sofa, 500)), "one of each");
+    }
+
+    /// A room is what its pieces make it, by the first row of the table
+    /// it meets; a piece still in its box doesn't count yet.
+    #[test]
+    fn roles_come_from_contents() {
+        use Furniture::*;
+        for (items, want) in [
+            (&[Sofa, Tv][..], Role::Living),
+            (&[Sofa, Tv, CatBed, Lamp, Desk], Role::Living),
+            (&[Bed], Role::Bedroom),
+            (&[Bed, Desk, Lamp, Bookshelf], Role::Bedroom),
+            (&[Desk, Bookshelf], Role::Study),
+            (&[Fridge], Role::Kitchen),
+            (&[Fridge, Desk], Role::Study),
+            (&[Sofa, Tv, Bed], Role::Den),
+            (&[Bed, Fridge], Role::Den),
+            (&[Sofa], Role::Den),
+            (&[Lamp, CatBed], Role::Den),
+        ] {
+            let pieces: Vec<Prop> = items.iter().map(|&item| prop(item, 0)).collect();
             assert_eq!(
-                bed.strip,
-                Strip::Bottom(Nook::Playlist),
-                "the bedroom gets a pane of its own"
+                home(Nook::Users, &pieces).rooms(),
+                [(Strip::Bottom(Nook::Users), want)],
+                "{items:?}"
             );
         }
+        let mut boxed = home(Nook::Users, &[prop(Sofa, 0)]);
+        assert!(boxed.add(Prop {
+            boxed: true,
+            ..prop(Tv, 1000)
+        }));
+        assert_eq!(boxed.rooms(), [(Strip::Bottom(Nook::Users), Role::Den)]);
+        assert!(boxed.unbox(Tv));
+        assert_eq!(boxed.rooms(), [(Strip::Bottom(Nook::Users), Role::Living)]);
     }
 
     use proptest::prelude::*;

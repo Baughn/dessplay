@@ -122,8 +122,10 @@ fn run(seed: &mut u64, picker: ratatui_image::picker::Picker) -> color_eyre::Res
             );
             let blank = " ".repeat(usize::from(area.width));
             // Why she's doing what she does, on the row above.
+            // With her rooms, and what each is.
             if explain && let Some(why) = guest.explain() {
                 let y = y.saturating_sub(1);
+                let why = format!("{why} │ rooms: {}", guest.rooms());
                 buf.set_string(0, y, &blank, Style::reset());
                 buf.set_stringn(0, y, &why, usize::from(area.width), Style::reset());
             }

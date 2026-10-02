@@ -47,6 +47,11 @@ Add new days at the top. Add new entries at the bottom of existing days.
 - Added: The houseguest arrives in a mood: some visits she's lazy
   ("Mm... lazy day.") and lounges about, some she's busy ("Okay! Let's
   tidy up!"), and now and then she's dreamy and spaces out a lot.
+- Changed: The houseguest's rooms are whatever her furniture makes
+  them, rather than one room per pane: a sofa and a TV make a living
+  room and a bed a bedroom, wherever they stand, and pieces can share a
+  pane. When a pane closes or gets too small, its furniture moves out
+  together, into any pane with room for all of it.
 
 ## 2026-10-01
 

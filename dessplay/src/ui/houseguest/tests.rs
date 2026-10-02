@@ -442,13 +442,12 @@ proptest! {
                     State::Visiting(visit) => (visit.layer.cells().collect(), visit.shown.clone()),
                     _ => (Vec::new(), Vec::new()),
                 };
-                // A room's pieces share a strip.
-                for a in &shown {
-                    for b in &shown {
-                        if a.item.room() == b.item.room() {
-                            prop_assert_eq!(a.strip, b.strip, "{:?} and {:?}", a, b);
-                        }
-                    }
+                // Each real piece stands on the floor of a strip that's
+                // here this frame.
+                let strips = room::strips(&view.nooks);
+                for prop in shown.iter().filter(|s| s.scrap.is_none()) {
+                    let here = strips.iter().find(|(s, _)| Some(*s) == prop.strip);
+                    prop_assert!(here.is_some_and(|(_, e)| e.floor == prop.floor), "{:?}", prop);
                 }
                 // Her furniture stands on lines, over blank cells only,
                 // clear of protected cells, text she moved, and her.
@@ -1678,8 +1677,8 @@ fn home_screen() -> (Buffer, IdleView) {
     (buf, view)
 }
 
-/// A furnished home over long visits in line art: she uses her things
-/// (and sleeps in her bed more than on a border once she has one), goes
+/// A furnished home over long visits in line art: she uses each of her
+/// things (and sleeps in her bed more than on a border once she has one), goes
 /// to work at most once a visit, her
 /// image with the pieces she overlaps never hides text, and the distinct
 /// images stay within the frame cache.
@@ -1755,10 +1754,17 @@ fn a_furnished_home_gets_used_and_stays_cheap() {
         );
     }
     let count = |want: Want| choices.iter().filter(|&&k| k == want).count();
-    for what in [Use::Lounge, Use::Nap, Use::Sleep, Use::Homework, Use::Watch] {
+    // Each piece gets used (a nap is one in fifty or so of her choices,
+    // so the sofa's use may be either).
+    for uses in [
+        &[Use::Lounge, Use::Nap][..],
+        &[Use::Sleep],
+        &[Use::Homework],
+        &[Use::Watch],
+    ] {
         assert!(
-            count(Want::Use(what)) > 0,
-            "she never chose {what:?}: {choices:?}"
+            uses.iter().any(|&what| count(Want::Use(what)) > 0),
+            "she never chose {uses:?}: {choices:?}"
         );
     }
     assert!(

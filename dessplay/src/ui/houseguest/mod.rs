@@ -462,6 +462,17 @@ impl Guest {
         }
     }
 
+    /// Her rooms, and what each is from what's in it (for the stage).
+    pub fn rooms(&self) -> String {
+        self.ledger
+            .home
+            .rooms()
+            .iter()
+            .map(|&(room::Strip::Bottom(nook), role)| format!("{nook:?} {role:?}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
     /// What came of the last cue: what she's doing, or why the room
     /// offers no spot for it.
     pub fn cue_note(&self) -> Option<&Result<String, String>> {

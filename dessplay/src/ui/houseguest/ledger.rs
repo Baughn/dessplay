@@ -14,7 +14,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::room::{Anchor, Furniture, Home, Nook, Prop, RoomKind, Strip};
+use super::room::{Anchor, Furniture, Home, Nook, Prop, Strip};
 use super::sprite::Facing;
 
 /// The format this build writes.
@@ -88,7 +88,7 @@ impl Ledger {
                 continue;
             }
             let anchored = anchors.iter().find(|a| a.item == prop.item);
-            let room = rooms.iter().find(|&&(k, _)| k == prop.item.room());
+            let room = rooms.iter().find(|&&(k, _)| k == RoomKind::of(prop.item));
             // A piece with neither a strip nor its room's pane on record
             // is dropped: it could never be placed.
             let Some(nook) = room.map(|&(_, nook)| nook).or_else(|| {
@@ -195,7 +195,7 @@ fn facing_right() -> Facing {
 fn rooms(home: &Home) -> Vec<(RoomKind, Nook)> {
     let mut out: Vec<(RoomKind, Nook)> = Vec::new();
     for prop in &home.props {
-        let kind = prop.item.room();
+        let kind = RoomKind::of(prop.item);
         if out.iter().any(|&(k, _)| k == kind) {
             continue;
         }
@@ -209,6 +209,27 @@ fn rooms(home: &Home) -> Vec<(RoomKind, Nook)> {
         }
     }
     out
+}
+
+/// The rooms older builds keep pieces in, one pane each.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+enum RoomKind {
+    Living,
+    Bedroom,
+    Kitchen,
+}
+
+impl RoomKind {
+    /// The room an older build keeps `item` in.
+    fn of(item: Furniture) -> Self {
+        match item {
+            Furniture::Sofa | Furniture::Tv | Furniture::CatBed => Self::Living,
+            Furniture::Bed | Furniture::Desk | Furniture::Lamp | Furniture::Bookshelf => {
+                Self::Bedroom
+            }
+            Furniture::Fridge => Self::Kitchen,
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -307,7 +328,7 @@ mod tests {
             .filter_map(|prop| {
                 let item: Furniture = serde_json::from_value(prop["item"].clone()).unwrap();
                 let at = prop["at"].as_u64().unwrap() as u16;
-                let &(_, nook) = rooms.iter().find(|&&(k, _)| k == item.room())?;
+                let &(_, nook) = rooms.iter().find(|&&(k, _)| k == RoomKind::of(item))?;
                 Some((item, nook, at))
             })
             .collect()
