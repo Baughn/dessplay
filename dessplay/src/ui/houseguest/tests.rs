@@ -614,7 +614,7 @@ fn osaka_at_home_seed_7() {
     let mut ui = real_ui();
     let (real, view) = real_frame(&mut ui, 100, 30);
     let mut guest = Guest::new(7);
-    let frame = run(&mut guest, &real, &view, 0, 95_000);
+    let (_, frame) = run_until_seen(&mut guest, &real, &view, 95_000);
     assert!(guest.present());
     let text: Vec<String> = (0..frame.area.height)
         .map(|y| {
@@ -695,13 +695,35 @@ fn a_frame_is_transmitted_once_then_only_placed() {
 }
 
 /// Standing on a floor, the floor row joins her image (feet on the line).
+/// Run a visit until `from`, then on until she's on screen and on her
+/// feet (not through a door, stepped out or in the air), well inside
+/// the screen's edges. Returns when, and the frame.
+fn run_until_seen(guest: &mut Guest, real: &Buffer, view: &IdleView, from: u64) -> (u64, Buffer) {
+    let mut now = from;
+    let mut frame = run(guest, real, view, 0, now);
+    loop {
+        let State::Visiting(visit) = &guest.state else {
+            panic!("visiting");
+        };
+        let osaka = &visit.osaka;
+        let width = i32::from(real.area.width);
+        let inside = osaka.x > 2 && osaka.x < width - 3 && osaka.y > 4;
+        if !osaka.hidden(now) && osaka.door(now).is_none() && osaka.standing() && inside {
+            return (now, frame);
+        }
+        assert!(now < from + 60_000, "never on screen");
+        frame = run(guest, real, view, now, now + 500);
+        now += 500;
+    }
+}
+
 #[test]
 fn standing_on_a_floor_draws_the_floor_row_into_the_image() {
     let mut ui = real_ui();
     let (real, view) = real_frame(&mut ui, 100, 30);
     let mut guest = Guest::new(7);
     guest.set_picker(kitty());
-    let frame = run(&mut guest, &real, &view, 0, 95_000);
+    let (_, frame) = run_until_seen(&mut guest, &real, &view, 95_000);
     let rows: Vec<u16> = (0..frame.area.height)
         .filter(|&y| {
             (0..frame.area.width).any(|x| {
@@ -737,15 +759,15 @@ fn the_goodbye_waves_as_line_art_but_never_over_new_content() {
     let (real, view) = real_frame(&mut ui, 100, 30);
     let mut guest = Guest::new(7);
     guest.set_picker(kitty());
-    let before = run(&mut guest, &real, &view, 0, 95_000);
+    let (now, before) = run_until_seen(&mut guest, &real, &view, 95_000);
     assert!(placeholder(&before), "she is line art before the key press");
     let State::Visiting(visit) = &guest.state else {
         panic!("visiting");
     };
     let (x, y) = (visit.osaka.x as u16, visit.osaka.y as u16);
-    guest.activity(95_000);
+    guest.activity(now);
 
-    let beat = paint(&mut guest, &real, &view, 95_100);
+    let beat = paint(&mut guest, &real, &view, now + 100);
     assert!(placeholder(&beat), "startled, still line art");
     // Moved text stays as it was until the rain; nothing else changes.
     for ((got, want), was) in beat.content.iter().zip(&real.content).zip(&before.content) {
@@ -759,7 +781,7 @@ fn the_goodbye_waves_as_line_art_but_never_over_new_content() {
 
     let mut changed = real.clone();
     changed.set_string(x, y - 2, "modal", Style::new());
-    let covered = paint(&mut guest, &changed, &view, 95_200);
+    let covered = paint(&mut guest, &changed, &view, now + 200);
     assert!(
         !placeholder(&covered),
         "the image is dropped over new content"
@@ -777,14 +799,13 @@ fn line_art_bursts_into_letters_that_rain_away() {
     let (real, view) = real_frame(&mut ui, 100, 30);
     let mut guest = Guest::new(7);
     guest.set_picker(kitty());
-    run(&mut guest, &real, &view, 0, 95_000);
+    let (mut now, _) = run_until_seen(&mut guest, &real, &view, 95_000);
     let State::Visiting(visit) = &guest.state else {
         panic!("visiting");
     };
     let (x, y) = (visit.osaka.x, visit.osaka.y);
-    guest.activity(95_000);
+    guest.activity(now);
     let mut rained = 0;
-    let mut now = 95_000;
     let end = now + dissolve::DURATION_MS;
     while now < end {
         let frame = paint(&mut guest, &real, &view, now);
@@ -3267,7 +3288,8 @@ fn focusing_the_pane_puts_torn_text_back() {
 /// doesn't make a second sofa while the first stands.
 #[test]
 fn a_real_piece_wins_nineteen_times_in_twenty() {
-    use super::osaka::{Chances, Place};
+    use super::mind::{Place, Whims, places};
+    use super::osaka::Chances;
     use super::room::{MadeId, PieceRef, Seat, Use};
     use super::scenes::{Build, Side};
     let seat = |x: i32, makeshift: bool| Seat {
@@ -3300,12 +3322,11 @@ fn a_real_piece_wins_nineteen_times_in_twenty() {
         piece,
         then: Use::Lounge,
     };
-    let osaka = Osaka::standing_at(10, 20, 0, &mut super::Rng(1));
     let mut rng = super::Rng(4);
     let tally = |chances: &Chances, rng: &mut super::Rng| {
         let mut makeshift = 0;
         for _ in 0..4000 {
-            let places = osaka.places_for(Use::Lounge, chances, rng);
+            let places = places(Use::Lounge, chances, Whims(rng.next()));
             let pick = places[rng.below(places.len() as u64) as usize];
             makeshift += usize::from(!matches!(pick, Place::Seat(s) if !s.makeshift()));
         }
@@ -3332,7 +3353,7 @@ fn a_real_piece_wins_nineteen_times_in_twenty() {
         ..Chances::default()
     };
     assert_eq!(
-        osaka.places_for(Use::Lounge, &only_build, &mut rng),
+        places(Use::Lounge, &only_build, Whims(rng.next())),
         vec![Place::Make(Furniture::Sofa)]
     );
     let made_and_build = Chances {
@@ -3341,7 +3362,7 @@ fn a_real_piece_wins_nineteen_times_in_twenty() {
         ..Chances::default()
     };
     assert_eq!(
-        osaka.places_for(Use::Lounge, &made_and_build, &mut rng),
+        places(Use::Lounge, &made_and_build, Whims(rng.next())),
         vec![Place::Seat(seat(43, true))]
     );
 }
@@ -4047,7 +4068,8 @@ fn a_tv_anywhere_on_the_sofas_floor_is_watched_from_it() {
 /// it there: five times as likely as a spot that doesn't.
 #[test]
 fn a_made_sofa_mostly_faces_the_tv() {
-    use super::osaka::{Chances, pick_build};
+    use super::mind::{Whims, pick_build};
+    use super::osaka::Chances;
     use super::room::{MadeId, Use};
     use super::scenes::{Build, Side};
     let build = |x: i32, then: Use| Build {
@@ -4078,7 +4100,8 @@ fn a_made_sofa_mostly_faces_the_tv() {
     let mut rng = super::Rng(7);
     let facing = (0..6000)
         .filter(|_| {
-            pick_build(Use::Lounge, Furniture::Sofa, &chances, &mut rng).is_some_and(|b| b.x == 30)
+            pick_build(Use::Lounge, Furniture::Sofa, &chances, Whims(rng.next()))
+                .is_some_and(|b| b.x == 30)
         })
         .count();
     assert!(

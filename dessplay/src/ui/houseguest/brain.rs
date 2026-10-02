@@ -11,7 +11,7 @@
 //! needs say. One she'd do for its own sake too (a nap on the sofa)
 //! never fits worse than one that answers no need.
 
-use super::Rng;
+use super::mind::Whims;
 use super::osaka::Activity;
 use super::room::Use;
 
@@ -184,9 +184,8 @@ const fn in_chat(def: DesireDef) -> DesireDef {
 }
 
 impl Want {
-    /// Every want there is.
-    #[cfg(test)]
-    pub const ALL: [Want; 24] = [
+    /// Every want there is (the order she considers them in).
+    pub const ALL: [Want; 25] = [
         Self::Stand,
         Self::SpaceOut,
         Self::Sneeze,
@@ -201,6 +200,7 @@ impl Want {
         Self::Travel,
         Self::Pull,
         Self::Swap,
+        Self::Work,
         Self::Use(Use::Lounge),
         Self::Use(Use::Nap),
         Self::Use(Use::Sleep),
@@ -284,14 +284,16 @@ pub(super) fn score(want: Want, needs: &Needs, recent: &[Want]) -> f64 {
 }
 
 /// Choose among `offers`: weighted by score, times the offer's `factor`
-/// (where it would take her), among the top few. Returns the chosen
+/// (where it would take her), among the top few, rolling with `whims`
+/// (the `attempt`th roll of this decision). Returns the chosen
 /// index and the scored top offers (for the log).
 pub(super) fn choose(
     offers: &[Want],
     needs: &Needs,
     recent: &[Want],
     factor: &dyn Fn(Want) -> f64,
-    rng: &mut Rng,
+    whims: Whims,
+    attempt: u64,
 ) -> Option<(usize, Vec<(Want, f64)>)> {
     let mut scored: Vec<(usize, f64)> = offers
         .iter()
@@ -305,7 +307,7 @@ pub(super) fn choose(
         return None;
     }
     // A 1/1000 grid is plenty for weighting a handful of offers.
-    let mut roll = rng.below(1000) as f64 / 1000.0 * total;
+    let mut roll = whims.below_at("roll", attempt, 1000) as f64 / 1000.0 * total;
     let mut pick = scored.first().map(|(i, _)| *i)?;
     for &(i, s) in &scored {
         if roll < s {
@@ -324,6 +326,7 @@ pub(super) fn choose(
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
+    use super::super::Rng;
     use super::*;
 
     fn all() -> Vec<Want> {
@@ -344,14 +347,17 @@ mod tests {
         let mut rng = Rng(9);
         let mut counts = std::collections::HashMap::new();
         for _ in 0..2000 {
-            let (i, _) = choose(offers, &needs, &[], &|_| 1.0, &mut rng).unwrap();
+            let (i, _) = choose(offers, &needs, &[], &|_| 1.0, Whims(rng.next()), 0).unwrap();
             *counts.entry(offers[i]).or_default() += 1;
         }
         counts
     }
 
+    /// Sleepy, she mostly dozes: lying back and sitting (which answer
+    /// sleepiness, and score the same) each come up more than anything
+    /// that doesn't.
     #[test]
-    fn a_sleepy_osaka_mostly_lies_down() {
+    fn a_sleepy_osaka_mostly_dozes() {
         let needs = Needs {
             sleepy: 1.0,
             restless: 0.0,
@@ -360,8 +366,16 @@ mod tests {
             hungry: 0.0,
         };
         let counts = tally(needs, &all());
-        let lie = counts[&Want::Idle(Activity::LieBack)];
-        assert!(counts.values().all(|&n| n <= lie), "{counts:?}");
+        for doze in [Want::Idle(Activity::LieBack), Want::Idle(Activity::Sit)] {
+            let n = counts[&doze];
+            assert!(
+                counts
+                    .iter()
+                    .filter(|(w, _)| w.def().serves.iter().all(|&(need, _)| need != Need::Sleepy))
+                    .all(|(_, &other)| other < n),
+                "{doze:?}: {counts:?}"
+            );
+        }
     }
 
     /// Over a visit she gets sleepier and lies down more: with the same
@@ -383,7 +397,8 @@ mod tests {
             let mut recent: Vec<Want> = Vec::new();
             let mut lie = 0;
             for _ in 0..4000 {
-                let (i, _) = choose(&offers, &needs, &recent, &|_| 1.0, &mut rng).unwrap();
+                let (i, _) =
+                    choose(&offers, &needs, &recent, &|_| 1.0, Whims(rng.next()), 0).unwrap();
                 let kind = offers[i];
                 lie += usize::from(kind == Want::Idle(Activity::LieBack));
                 recent.push(kind);
@@ -466,6 +481,39 @@ mod tests {
         let fresh = score(Want::Walk, &needs, &[]);
         let again = score(Want::Walk, &needs, &[Want::Walk, Want::Walk]);
         assert!(again < fresh * 0.2);
+    }
+
+    /// [`Want::ALL`] lists every want, once: each kind, every activity,
+    /// every use.
+    #[test]
+    fn all_lists_every_want() {
+        let kind = |want: Want| match want {
+            Want::Stand => 0,
+            Want::SpaceOut => 1,
+            Want::Sneeze => 2,
+            Want::Idle(_) => 3,
+            Want::Walk => 4,
+            Want::Travel => 5,
+            Want::Pull => 6,
+            Want::Swap => 7,
+            Want::Use(_) => 8,
+            Want::Work => 9,
+        };
+        for k in 0..10 {
+            assert!(Want::ALL.iter().any(|&w| kind(w) == k), "kind {k} missing");
+        }
+        for a in Activity::ALL {
+            assert!(Want::ALL.contains(&Want::Idle(a)), "{a:?}");
+        }
+        for furniture in super::super::room::Furniture::ALL {
+            for &what in Use::of(furniture) {
+                assert!(Want::ALL.contains(&Want::Use(what)), "{what:?}");
+            }
+        }
+        assert!(Want::ALL.contains(&Want::Use(Use::Crumple)));
+        for (i, a) in Want::ALL.iter().enumerate() {
+            assert!(!Want::ALL[..i].contains(a), "{a:?} twice");
+        }
     }
 
     /// Every row is sane: she likes everything a little, and what it

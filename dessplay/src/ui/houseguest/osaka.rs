@@ -6,6 +6,7 @@ use super::Rng;
 use super::art::DoorFrame;
 use super::brain::{self, Factor, Need, Needs, Want};
 use super::layer::Placed;
+use super::mind::{self, Bind, Ctx, Here, Whims};
 use super::room::{Furniture, MadeId, PieceRef, Seat, Use};
 use super::scenes::{Build, Job, JobRef, LayerOp, Pull, Side, Swap};
 use super::sprite::{self, Face, Facing, HEIGHT, Pose, SpriteCell};
@@ -74,17 +75,8 @@ pub(super) fn box_meets(rect: Rect, (x, y): (i32, i32)) -> bool {
     x - half < right && x + half >= left && y - HEIGHT < bottom && y > top
 }
 
-/// Whether there's at least one, and all are.
-fn all_of(mut each: impl Iterator<Item = bool>) -> bool {
-    let mut any = false;
-    each.all(|yes| {
-        any = true;
-        yes
-    }) && any
-}
-
 /// Where taking `link` puts her down.
-fn landing(link: &Link, terrain: &Terrain) -> Option<(i32, i32)> {
+pub(super) fn landing(link: &Link, terrain: &Terrain) -> Option<(i32, i32)> {
     let p = terrain.platforms.get(link.to)?;
     let x = match link.route {
         Route::Climb => link.x,
@@ -102,28 +94,36 @@ fn landing(link: &Link, terrain: &Terrain) -> Option<(i32, i32)> {
 }
 
 /// A spot on `p`'s floor, midway.
-fn middle(p: &Platform) -> (i32, i32) {
+pub(super) fn middle(p: &Platform) -> (i32, i32) {
     ((p.x0 + p.x1) / 2, p.y)
 }
 
-/// Pick one of `n` things, those `in_chat` weighing [`CHAT_FACTOR`].
-/// With none in the chat it's a plain uniform pick (the same draw as
-/// ever, so seeded visits replay).
-fn pick(n: usize, in_chat: impl Fn(usize) -> bool, rng: &mut Rng) -> Option<usize> {
-    pick_weighted(n, |i| if in_chat(i) { CHAT_FACTOR } else { 1.0 }, rng)
+/// Pick one of `n` things, those `in_chat` weighing [`CHAT_FACTOR`],
+/// with `below(k)` uniform in `0..k`. With none in the chat it's a plain
+/// uniform pick.
+pub(super) fn pick(
+    n: usize,
+    in_chat: impl Fn(usize) -> bool,
+    below: impl FnOnce(u64) -> u64,
+) -> Option<usize> {
+    pick_weighted(n, |i| if in_chat(i) { CHAT_FACTOR } else { 1.0 }, below)
 }
 
-/// Pick one of `n` things by `weight`; with all weighing 1, a plain
-/// uniform pick.
-fn pick_weighted(n: usize, weight: impl Fn(usize) -> f64, rng: &mut Rng) -> Option<usize> {
+/// Pick one of `n` things by `weight`, with `below(k)` uniform in
+/// `0..k`; with all weighing 1, a plain uniform pick.
+pub(super) fn pick_weighted(
+    n: usize,
+    weight: impl Fn(usize) -> f64,
+    below: impl FnOnce(u64) -> u64,
+) -> Option<usize> {
     if n == 0 {
         return None;
     }
     if (0..n).all(|i| weight(i) == 1.0) {
-        return Some(rng.below(n as u64) as usize);
+        return Some(below(n as u64) as usize);
     }
     let total: f64 = (0..n).map(&weight).sum();
-    let mut roll = rng.below(1_000_000) as f64 / 1_000_000.0 * total;
+    let mut roll = below(1_000_000) as f64 / 1_000_000.0 * total;
     for i in 0..n {
         if roll < weight(i) {
             return Some(i);
@@ -131,52 +131,6 @@ fn pick_weighted(n: usize, weight: impl Fn(usize) -> f64, rng: &mut Rng) -> Opti
         roll -= weight(i);
     }
     Some(n - 1)
-}
-
-/// How much likelier a makeshift sofa is made where she could also
-/// watch the TV from it.
-const FACING_TV: f64 = 5.0;
-
-/// Where she makes a makeshift `item` for `what`: anywhere it can be
-/// made, the chat a tenth as likely, and a sofa [`FACING_TV`] times as
-/// likely where it would face the TV too.
-pub(super) fn pick_build<'a>(
-    what: Use,
-    item: Furniture,
-    chances: &'a Chances,
-    rng: &mut Rng,
-) -> Option<&'a Build> {
-    let builds: Vec<&Build> = chances
-        .builds
-        .iter()
-        .filter(|b| b.then == what && b.piece.item == item)
-        .collect();
-    let watches = |b: &Build| {
-        chances
-            .builds
-            .iter()
-            .any(|o| o.then == Use::Watch && (o.x, o.y, o.piece) == (b.x, b.y, b.piece))
-    };
-    let weight = |i: usize| {
-        builds.get(i).map_or(1.0, |b| {
-            let chat = if chances.in_chat((b.x, b.y)) {
-                CHAT_FACTOR
-            } else {
-                1.0
-            };
-            let tv = if watches(b) { FACING_TV } else { 1.0 };
-            chat * tv
-        })
-    };
-    pick_weighted(builds.len(), weight, rng).and_then(|i| builds.get(i).copied())
-}
-
-/// Somewhere she could go to use something.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Place {
-    Seat(Seat),
-    /// Make a makeshift piece like this first.
-    Make(Furniture),
 }
 
 /// Something she did to her home (the guest keeps the record).
@@ -195,7 +149,7 @@ pub(super) enum HomeEvent {
 
 impl Chances {
     /// Whether `spot` is in the chat pane (and she's resident).
-    fn in_chat(&self, spot: (i32, i32)) -> bool {
+    pub(super) fn in_chat(&self, spot: (i32, i32)) -> bool {
         self.chat.is_some_and(|chat| holds(chat, spot))
     }
 
@@ -217,7 +171,7 @@ impl Chances {
 
     /// Where she'd use a piece she made for its next step: crumpling it
     /// while it's a heap, then what she made it for.
-    fn next_for(&self, mine: &Mine) -> Option<Seat> {
+    pub(super) fn next_for(&self, mine: &Mine) -> Option<Seat> {
         let what = if mine.done {
             mine.purpose
         } else {
@@ -296,10 +250,6 @@ const REEL_MS: u64 = 220;
 const RIP: &str = "Rrrip!";
 const SCRUNCH: &str = "scrunch...";
 const THERE: &str = "There!";
-/// A makeshift piece, when there's a real one she could use instead: one
-/// time in this many.
-const MAKESHIFT_ODDS: u64 = 20;
-
 /// How long she keeps saying `text`.
 fn speech_ms(text: &str) -> u64 {
     1200 + 60 * text.chars().count() as u64
@@ -772,7 +722,7 @@ fn elsewhere(
             .get(i)
             .is_some_and(|&spot| chat.is_some_and(|chat| holds(chat, spot)))
     };
-    pick(spots.len(), in_chat, rng).and_then(|i| spots.get(i).copied())
+    pick(spots.len(), in_chat, |n| rng.below(n)).and_then(|i| spots.get(i).copied())
 }
 
 /// [`elsewhere`], somewhere she can stay (clear of text) if there's such
@@ -905,6 +855,7 @@ pub(super) enum Activity {
 }
 
 impl Activity {
+    #[cfg(test)]
     pub const ALL: [Activity; 7] = [
         Self::Sit,
         Self::LieBack,
@@ -1043,6 +994,9 @@ pub(super) struct Osaka {
     /// Where she settled, choosing what to do, if it was calm then: while
     /// she rests there, she keeps checking it is (see [`Osaka::recheck`]).
     rest: Option<(i32, i32)>,
+    /// Her mind's own random stream: one draw a decision (see
+    /// [`Whims`]).
+    mind: Rng,
     /// Her last few decisions, and why (the stage shows them).
     log: std::collections::VecDeque<Decision>,
     /// Every choice she made (tests read it).
@@ -1082,6 +1036,7 @@ impl Osaka {
             poked: false,
             tries: Vec::new(),
             rest: None,
+            mind: Rng(rng.next() ^ mind::MIND_SALT),
             log: std::collections::VecDeque::new(),
             #[cfg(test)]
             choices: Vec::new(),
@@ -2134,6 +2089,7 @@ impl Osaka {
         chances: &Chances,
         rng: &mut Rng,
     ) -> Decision {
+        let whims = Whims(self.mind.next());
         self.rest = None;
         if self.errand.is_some() {
             self.head_for_errand(terrain, at);
@@ -2183,89 +2139,53 @@ impl Osaka {
                 return Decision::of(Bucket::Continuation, "leftover");
             }
         }
-        let links: Vec<Link> = terrain
-            .links
-            .iter()
-            .filter(|l| l.from == here)
-            .copied()
-            .collect();
-        let mut offers = vec![Want::Stand, Want::SpaceOut, Want::Sneeze, Want::Walk];
-        offers.extend(Activity::ALL.iter().map(|&a| Want::Idle(a)));
-        // With no way off this floor, travelling means a door in space.
-        offers.push(Want::Travel);
-        // A home to leave, a while into the visit, once.
-        if chances.furnished && !self.worked && at >= self.arrived + WORK_AFTER_MS {
-            offers.push(Want::Work);
-        }
-        if !chances.pulls.is_empty() {
-            offers.push(Want::Pull);
-        }
-        let made = chances.builds.iter().map(|b| b.then);
-        for what in chances.seats.iter().map(|s| s.what).chain(made) {
-            let want = Want::Use(what);
-            if !offers.contains(&want) {
-                offers.push(want);
-            }
-        }
-        // One piece of mischief at a time: no new swap while one is owed.
-        if !chances.swaps.is_empty() && !self.owes() {
-            offers.push(Want::Swap);
-        }
-        // Where each offer would take her: a resident mostly keeps out
-        // of the chat, where people are reading.
-        let floor_in_chat = |i: usize| {
-            terrain
-                .platforms
-                .get(i)
-                .is_some_and(|p| chances.in_chat(middle(p)))
-        };
-        let pulls_in_chat = all_of(chances.pulls.iter().map(|p| chances.in_chat((p.x, p.y))));
-        let swaps_in_chat = all_of(chances.swaps.iter().map(|s| chances.in_chat((s.x, s.y))));
-        let travel_in_chat = if links.is_empty() {
-            all_of(
-                (0..terrain.platforms.len())
-                    .filter(|&i| i != here)
-                    .map(floor_in_chat),
-            )
-        } else {
-            all_of(
-                links
-                    .iter()
-                    .map(|l| landing(l, terrain).is_some_and(|spot| chances.in_chat(spot))),
-            )
-        };
-        // With nothing to use for it, a use means making something, and
-        // making it in the chat is a tenth as likely too.
-        let builds_in_chat = |what: Use| {
-            !chances.seats.iter().any(|s| s.what == what)
-                && all_of(
-                    chances
-                        .builds
-                        .iter()
-                        .filter(|b| b.then == what)
-                        .map(|b| chances.in_chat((b.x, b.y))),
-                )
-        };
-        let factor = |want: Want| {
-            let into_chat = match want {
-                Want::Pull => pulls_in_chat,
-                Want::Swap => swaps_in_chat,
-                Want::Travel => travel_in_chat,
-                Want::Use(what) => builds_in_chat(what),
-                _ => false,
-            };
-            want.def()
-                .factors
+        let ctx = Ctx {
+            x: self.x,
+            y: self.y,
+            here,
+            links: terrain
+                .links
                 .iter()
-                .map(|&factor| match factor {
-                    Factor::InChat(times) if into_chat => times,
-                    Factor::InChat(_) => 1.0,
-                })
-                .product::<f64>()
+                .filter(|l| l.from == here)
+                .copied()
+                .collect(),
+            terrain,
+            chances,
+            may_work: chances.furnished && !self.worked && at >= self.arrived + WORK_AFTER_MS,
+            owes: self.owes(),
         };
-        while let Some((i, top)) = brain::choose(&offers, &self.needs, &self.recent, &factor, rng) {
-            let want = offers.remove(i);
-            if self.start(want, here, &links, terrain, chances, at, rng) {
+        // What's on offer: each want one of whose methods binds, with
+        // what it binds.
+        let mut offers: Vec<(Want, &'static str, Bind)> = Want::ALL
+            .iter()
+            .filter_map(|&want| {
+                mind::bind(&ctx, whims, want).map(|(name, bind)| (want, name, bind))
+            })
+            .collect();
+        for attempt in 0.. {
+            let wants: Vec<Want> = offers.iter().map(|(want, ..)| *want).collect();
+            // A resident mostly keeps out of the chat, where people read.
+            let factor = |want: Want| {
+                let into_chat = offers
+                    .iter()
+                    .find(|(w, ..)| *w == want)
+                    .is_some_and(|(_, _, bind)| bind.in_chat(&ctx));
+                want.def()
+                    .factors
+                    .iter()
+                    .map(|&factor| match factor {
+                        Factor::InChat(times) if into_chat => times,
+                        Factor::InChat(_) => 1.0,
+                    })
+                    .product::<f64>()
+            };
+            let Some((i, top)) =
+                brain::choose(&wants, &self.needs, &self.recent, &factor, whims, attempt)
+            else {
+                break;
+            };
+            let (want, method, bind) = offers.remove(i);
+            if self.plan(bind, here, terrain, at, rng) {
                 tracing::debug!(needs = %self.needs.summary(), "houseguest: her needs");
                 self.recent.push(want);
                 #[cfg(test)]
@@ -2279,7 +2199,7 @@ impl Osaka {
                 return Decision {
                     want: Some(want),
                     top,
-                    ..Decision::of(Bucket::Normal, "start")
+                    ..Decision::of(Bucket::Normal, method)
                 };
             }
             tracing::debug!(?want, "houseguest: couldn't after all");
@@ -2288,146 +2208,45 @@ impl Osaka {
         Decision::of(Bucket::Normal, "nothing bound")
     }
 
-    /// Start `want` from platform `here`. False when it turns out not to
-    /// be possible (nowhere else to walk, no way to the job).
-    #[allow(clippy::too_many_arguments)]
-    fn start(
-        &mut self,
-        want: Want,
-        here: usize,
-        links: &[Link],
-        terrain: &Terrain,
-        chances: &Chances,
-        at: u64,
-        rng: &mut Rng,
-    ) -> bool {
-        let act = match want {
-            Want::Stand => Act::Stand {
+    /// Set about what a method bound, from platform `here`. False when
+    /// there's no way there after all.
+    fn plan(&mut self, bind: Bind, here: usize, terrain: &Terrain, at: u64, rng: &mut Rng) -> bool {
+        let act = match bind {
+            Bind::Here(Here::Stand) => Act::Stand {
                 until: at + rng.range(2000, 5000),
             },
-            Want::SpaceOut => {
-                if rng.below(3) == 0 {
-                    self.muse(at, rng);
-                    return true;
-                }
-                Act::SpaceOut {
-                    until: at + rng.range(6000, 14_000),
-                }
+            Bind::Here(Here::SpaceOut) => Act::SpaceOut {
+                until: at + rng.range(6000, 14_000),
+            },
+            Bind::Here(Here::Muse) => {
+                self.muse(at, rng);
+                return true;
             }
-            Want::Sneeze => Act::Sneeze {
+            Bind::Here(Here::Sneeze) => Act::Sneeze {
                 since: at,
                 knocked: false,
             },
-            Want::Idle(what) => self.idle_act(what, at, rng),
-            Want::Walk => {
-                let Some(p) = terrain.platforms.get(here) else {
-                    return false;
-                };
-                // A floor running into the chat: the far end of it is a
-                // tenth as likely, from outside.
-                let into_chat =
-                    |x: i32| !chances.in_chat((self.x, self.y)) && chances.in_chat((x, p.y));
-                let to = p.x0
-                    + pick(
-                        (p.x1 - p.x0 + 1) as usize,
-                        |i| into_chat(p.x0 + i as i32),
-                        rng,
-                    )
-                    .unwrap_or(0) as i32;
-                if to == self.x {
-                    return false;
-                }
+            Bind::Here(Here::Idle(what)) => self.idle_act(what, at, rng),
+            Bind::WalkTo(to) => {
                 self.facing = toward(self.x, to);
                 Act::Walk {
                     to,
                     then: Then::Nothing,
                 }
             }
-            Want::Work => {
-                // Home by a way that doesn't come in through the chat,
-                // when there is one.
-                let around = || {
-                    links
-                        .iter()
-                        .filter(|l| matches!(l.route, Route::Around { .. }))
-                };
-                let out = around()
-                    .find(|l| !landing(l, terrain).is_some_and(|s| chances.in_chat(s)))
-                    .or_else(|| around().next())
-                    .copied();
+            Bind::Take(link) => {
+                self.travel(link, at);
+                return true;
+            }
+            Bind::Door(spot) => {
+                self.through_door(spot, at);
+                return true;
+            }
+            Bind::Work(out) => {
                 self.go_to_work(out, at, rng);
                 return true;
             }
-            Want::Travel => {
-                let into_chat = |l: &Link| landing(l, terrain).is_some_and(|s| chances.in_chat(s));
-                if let Some(&link) = pick(links.len(), |i| links.get(i).is_some_and(into_chat), rng)
-                    .and_then(|i| links.get(i))
-                {
-                    self.travel(link, at);
-                    return true;
-                }
-                // Stuck here: through a door to anywhere else.
-                let others: Vec<_> = terrain
-                    .platforms
-                    .iter()
-                    .enumerate()
-                    .filter(|&(i, _)| i != here)
-                    .map(|(_, p)| p)
-                    .collect();
-                let Some(p) = pick(
-                    others.len(),
-                    |i| others.get(i).is_some_and(|p| chances.in_chat(middle(p))),
-                    rng,
-                )
-                .and_then(|i| others.get(i)) else {
-                    return false;
-                };
-                let x = p.x0 + rng.below((p.x1 - p.x0 + 1) as u64) as i32;
-                self.through_door((x, p.y), at);
-                return true;
-            }
-            Want::Use(what) => {
-                let options = self.places_for(what, chances, rng);
-                return match options.get(rng.below(options.len() as u64) as usize) {
-                    Some(&Place::Seat(seat)) => self.go_to(Job::Use(seat), here, terrain, at),
-                    Some(&Place::Make(item)) => {
-                        let Some(build) = pick_build(what, item, chances, rng) else {
-                            return false;
-                        };
-                        self.go_to(Job::Build(build.clone()), here, terrain, at)
-                    }
-                    None => false,
-                };
-            }
-            Want::Pull | Want::Swap => {
-                // A few tries at one she can get to.
-                for _ in 0..8 {
-                    let job = if want == Want::Pull {
-                        let pulls = &chances.pulls;
-                        let in_chat =
-                            |i: usize| pulls.get(i).is_some_and(|p| chances.in_chat((p.x, p.y)));
-                        pick(pulls.len(), in_chat, rng)
-                            .and_then(|i| pulls.get(i))
-                            .cloned()
-                            .map(Job::Pull)
-                    } else {
-                        let swaps = &chances.swaps;
-                        let in_chat =
-                            |i: usize| swaps.get(i).is_some_and(|s| chances.in_chat((s.x, s.y)));
-                        pick(swaps.len(), in_chat, rng)
-                            .and_then(|i| swaps.get(i))
-                            .cloned()
-                            .map(Job::Swap)
-                    };
-                    let Some(job) = job else {
-                        return false;
-                    };
-                    if self.go_to(job, here, terrain, at) {
-                        return true;
-                    }
-                }
-                return false;
-            }
+            Bind::Job(job) => return self.go_to(job, here, terrain, at),
         };
         self.set(act, at);
         true
@@ -2479,62 +2298,6 @@ impl Osaka {
     #[cfg(test)]
     pub fn gave_up(&self, id: MadeId) -> bool {
         self.tries_at(id) >= TRIES
-    }
-
-    /// Where she might go to `what`: every seat for it, except that a
-    /// makeshift piece is only for when there's no real one of its kind
-    /// on offer — else just one time in [`MAKESHIFT_ODDS`], and then it's
-    /// the makeshift one she goes for. A piece she'd have to make is one
-    /// place, and only when she hasn't made one of its kind already.
-    pub(super) fn places_for(&self, what: Use, chances: &Chances, rng: &mut Rng) -> Vec<Place> {
-        let seats = || chances.seats.iter().filter(|s| s.what == what);
-        let mut makeshift: Vec<Furniture> = seats()
-            .filter(|s| s.makeshift())
-            .map(|s| s.item)
-            .chain(
-                chances
-                    .builds
-                    .iter()
-                    .filter(|b| b.then == what)
-                    .map(|b| b.piece.item),
-            )
-            .collect();
-        makeshift.sort_by_key(|&item| item as u8);
-        makeshift.dedup();
-        // For each kind with a makeshift option, whether she goes for it:
-        // always without a real one, on a whim with.
-        let mut whims = Vec::new();
-        let mut allowed = Vec::new();
-        for item in makeshift {
-            let real = seats().any(|s| !s.makeshift() && s.item == item);
-            if !real {
-                allowed.push(item);
-            } else if rng.below(MAKESHIFT_ODDS) == 0 {
-                allowed.push(item);
-                whims.push(item);
-            }
-        }
-        let mut out: Vec<Place> = seats()
-            .filter(|s| {
-                if s.makeshift() {
-                    allowed.contains(&s.item)
-                } else {
-                    !whims.contains(&s.item)
-                }
-            })
-            .map(|&s| Place::Seat(s))
-            .collect();
-        for item in allowed {
-            let made = seats().any(|s| s.makeshift() && s.item == item);
-            let can = chances
-                .builds
-                .iter()
-                .any(|b| b.then == what && b.piece.item == item);
-            if !made && can {
-                out.push(Place::Make(item));
-            }
-        }
-        out
     }
 
     /// Head for `job`: straight there on this floor, or along the first

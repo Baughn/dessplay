@@ -22,6 +22,7 @@ mod graphics;
 mod idle;
 mod layer;
 mod ledger;
+mod mind;
 mod nudge;
 mod osaka;
 mod room;
