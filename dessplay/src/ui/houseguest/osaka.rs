@@ -4,7 +4,7 @@
 
 use super::Rng;
 use super::art::DoorFrame;
-use super::brain::{self, Factor, Need, Needs, Spot, Want};
+use super::brain::{self, Factor, Mood, Need, Needs, Spot, Want};
 use super::layer::Placed;
 use super::mind::{self, Beat, Bind, Ctx, Heading, Here, Lines, Loss, Whims};
 use super::room::{Furniture, MadeId, PieceRef, Seat, Use};
@@ -216,10 +216,8 @@ const RETRIES: u8 = 5;
 
 /// Her fixed lines (the lints check each fits a bubble).
 #[cfg(test)]
-pub(super) const LINES: [&str; 8] = [GREETING, OK, RIP, SCRUNCH, THERE, HOME, THROUGH, POKE];
+pub(super) const LINES: [&str; 7] = [OK, RIP, SCRUNCH, THERE, HOME, THROUGH, POKE];
 
-/// What she says on first finding her feet.
-const GREETING: &str = "Nice to meet you.";
 /// After a hard landing.
 const OK: &str = "...I'm OK.";
 /// Things she says when spacing out (each ≤ 24 characters).
@@ -1005,6 +1003,8 @@ pub(super) struct Osaka {
     /// She's been to work this visit (once is plenty).
     worked: bool,
     needs: Needs,
+    /// Her mood this visit.
+    mood: Mood,
     /// Her last few choices (repeating herself is discouraged).
     recent: Vec<Want>,
     /// When she last chose.
@@ -1072,6 +1072,7 @@ impl Osaka {
             at_work: false,
             worked: false,
             needs: Needs::default(),
+            mood: Mood::Ordinary,
             recent: Vec::new(),
             decided: now,
             errand: None,
@@ -2261,11 +2262,14 @@ impl Osaka {
         }
         if !self.greeted {
             self.greeted = true;
-            self.say(GREETING, at);
+            self.say(self.mood.greeting(), at);
         }
         // Her needs move on with the time since she last chose.
-        self.needs
-            .pass(at.saturating_sub(self.decided), !chances.pulls.is_empty());
+        self.needs.pass(
+            at.saturating_sub(self.decided),
+            !chances.pulls.is_empty(),
+            self.mood,
+        );
         self.decided = at;
         let heading = self.heading.as_ref().map(|h| h.want);
         let hopped = std::mem::take(&mut self.hopping);
@@ -2629,6 +2633,18 @@ impl Osaka {
     /// Her needs.
     pub fn needs(&self) -> &Needs {
         &self.needs
+    }
+
+    /// Her mood this visit.
+    pub fn mood(&self) -> Mood {
+        self.mood
+    }
+
+    /// Set her mood for the visit (drawn as it begins; the stage and
+    /// tests may force one).
+    pub fn set_mood(&mut self, mood: Mood) {
+        tracing::info!(?mood, "houseguest: her mood this visit");
+        self.mood = mood;
     }
 
     /// Stage: make `need` pressing.

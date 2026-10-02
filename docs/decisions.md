@@ -2461,6 +2461,16 @@ choice. A parcel and her job keep a fit of at least 0.5, as a nap did.
 The new needs start at 0.5, so wants that scored a flat × 0.5 aren't
 cut to × 0.1 at arrival. Beauty and nesting wait for phase 4.
 
+Her mood for the visit (the user's Q10: "She has a life outside
+dessplay") is one row of need-rate multipliers, not new selection
+logic, drawn from the visit's seed so neither random stream shifts. Its
+greeting makes a lazy visit read as her choice rather than a broken
+feature. Tuned in the simulator (30-minute visits, 16 seeds, forced
+moods): for a resident, lazy spends 42% of her time on furniture and
+26% moving, industrious 24% and 41%; dreamy spaces out 10% against 5%.
+An industrious visit's faster tidying barely shows where text keeps
+tidy pinned high anyway; its home acts come with phase 4.
+
 Every loss owes a beat (a glance, sometimes a line) for the
 proposal's rule 5, "nothing ends silently": a lapse reads as hers when
 she looks at what she lost (Carlisle's gaze), and a dropped purpose

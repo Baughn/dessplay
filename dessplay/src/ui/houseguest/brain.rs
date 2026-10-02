@@ -91,6 +91,66 @@ impl Need {
     }
 }
 
+/// Her mood for the visit: she has a life outside dessplay. A mood is how
+/// fast her needs rise, and how she says hello.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Mood {
+    Ordinary,
+    /// Comfort and sleep come quicker, restlessness slower.
+    Lazy,
+    /// Tidying and moving about come quicker, comfort slower.
+    Industrious,
+    /// Daydreams come quickly.
+    Dreamy,
+}
+
+impl Mood {
+    #[cfg(test)]
+    pub const ALL: [Mood; 4] = [Self::Ordinary, Self::Lazy, Self::Industrious, Self::Dreamy];
+
+    /// The visit's mood, from its seed: ordinary half the time, lazy and
+    /// industrious a fifth each, dreamy a tenth.
+    pub fn of(seed: u64) -> Self {
+        let mut z = seed ^ 0x6d6f_6f64;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        match (z ^ (z >> 31)) % 10 {
+            0..=4 => Self::Ordinary,
+            5 | 6 => Self::Lazy,
+            7 | 8 => Self::Industrious,
+            _ => Self::Dreamy,
+        }
+    }
+
+    /// How fast `need` rises, against an ordinary visit.
+    pub fn rate(self, need: Need) -> f64 {
+        match (self, need) {
+            (Self::Lazy, Need::Comfort) => 2.0,
+            (Self::Lazy, Need::Sleepy) => 1.5,
+            (Self::Lazy, Need::Restless) => 0.4,
+            (Self::Lazy, Need::Tidy) => 0.7,
+            (Self::Industrious, Need::Tidy) => 1.6,
+            (Self::Industrious, Need::Restless) => 1.5,
+            (Self::Industrious, Need::Comfort) => 0.5,
+            (Self::Industrious, Need::Sleepy) => 0.8,
+            (Self::Industrious, Need::Daydreams) => 0.6,
+            (Self::Dreamy, Need::Daydreams) => 2.5,
+            (Self::Dreamy, Need::Restless) => 0.7,
+            _ => 1.0,
+        }
+    }
+
+    /// What she says on first finding her feet: a hint at her mood.
+    pub fn greeting(self) -> &'static str {
+        match self {
+            Self::Ordinary => "Nice to meet you.",
+            Self::Lazy => "Mm... lazy day.",
+            Self::Industrious => "Okay! Let's tidy up!",
+            Self::Dreamy => "...hm? Oh, hello.",
+        }
+    }
+}
+
 /// Where a want would have her, as far as her needs care.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Spot {
@@ -165,11 +225,12 @@ impl Needs {
         self.levels[need as usize]
     }
 
-    /// `ms` have passed; `mess` whether there was text on offer to tidy.
-    pub fn pass(&mut self, ms: u64, mess: bool) {
+    /// `ms` have passed in `mood`; `mess` whether there was text on offer
+    /// to tidy.
+    pub fn pass(&mut self, ms: u64, mess: bool, mood: Mood) {
         for need in Need::ALL {
             if need != Need::Tidy || mess {
-                self.levels[need as usize] += ms as f64 / need.rise_ms();
+                self.levels[need as usize] += ms as f64 * mood.rate(need) / need.rise_ms();
             }
         }
         for tolerance in &mut self.tolerance {
@@ -321,9 +382,9 @@ impl Want {
             // sleepier, and dozes more often. On the floor, it's a poor
             // answer to sleep or comfort, but an answer.
             Self::Idle(Activity::LieBack) => {
-                row(6.0, &[(Need::Sleepy, 0.15), (Need::Comfort, 0.3)])
+                row(4.0, &[(Need::Sleepy, 0.15), (Need::Comfort, 0.3)])
             }
-            Self::Idle(Activity::Sit) => row(6.0, &[(Need::Sleepy, 0.1), (Need::Comfort, 0.3)]),
+            Self::Idle(Activity::Sit) => row(4.0, &[(Need::Sleepy, 0.1), (Need::Comfort, 0.3)]),
             Self::Idle(Activity::Jacks | Activity::ToeTouch) => row(6.0, &[(Need::Restless, 0.5)]),
             // Kicking her feet, humming.
             Self::Idle(Activity::LieFront) => {
@@ -681,14 +742,32 @@ mod tests {
         needs.enjoyed(tv, 1.0);
         assert!(score(tv, Spot::Real, &needs, &[]) < fresh * 0.5);
         assert_eq!(needs.fresh(book), 1.0);
-        needs.pass(10 * 60_000, false);
+        needs.pass(10 * 60_000, false, Mood::Ordinary);
         assert_eq!(needs.fresh(tv), 1.0);
+    }
+
+    /// Moods come in the shares the table says, from the visit's seed.
+    #[test]
+    fn moods_come_in_their_shares() {
+        let mut counts = [0usize; 4];
+        for seed in 0..10_000u64 {
+            let mood = Mood::of(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+            counts[Mood::ALL.iter().position(|&m| m == mood).unwrap()] += 1;
+        }
+        let share = |i: usize| counts[i] as f64 / 10_000.0;
+        assert!((share(0) - 0.5).abs() < 0.03, "{counts:?}");
+        assert!((share(1) - 0.2).abs() < 0.03, "{counts:?}");
+        assert!((share(2) - 0.2).abs() < 0.03, "{counts:?}");
+        assert!((share(3) - 0.1).abs() < 0.03, "{counts:?}");
+        for mood in Mood::ALL {
+            assert!(mood.greeting().chars().count() <= 24, "{mood:?}");
+        }
     }
 
     #[test]
     fn needs_stay_in_range() {
         let mut needs = Needs::default();
-        needs.pass(10 * 3_600_000, true);
+        needs.pass(10 * 3_600_000, true, Mood::Ordinary);
         assert!(Need::ALL.iter().all(|&need| needs.get(need) == 1.0));
         needs.serve(Need::Sleepy, 5.0);
         assert_eq!(needs.get(Need::Sleepy), 0.0);

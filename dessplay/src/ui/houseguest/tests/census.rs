@@ -8,7 +8,7 @@
 //! ```
 
 use super::*;
-use crate::ui::houseguest::brain::Want;
+use crate::ui::houseguest::brain::{Mood, Want};
 use std::collections::BTreeMap;
 
 /// A room to visit: the frame and view at `now`, and whether a chat line
@@ -111,12 +111,16 @@ fn doing(osaka: &Osaka, now: u64) -> String {
     }
 }
 
-/// A visit of `minutes` in `room` from `seed`.
-pub(super) fn simulate(room: &Room, seed: u64, minutes: u64) -> Visit {
+/// A visit of `minutes` in `room` from `seed`, in `mood` if given (else
+/// the one the visit draws).
+pub(super) fn simulate(room: &Room, seed: u64, minutes: u64, mood: Option<Mood>) -> Visit {
     let mut guest = Guest::new(seed);
     guest.cue(Scene::Arrive);
     let mut view = room.view.clone();
     paint(&mut guest, &room.real, &view, 0);
+    if let (Some(mood), State::Visiting(visit)) = (mood, &mut guest.state) {
+        visit.osaka.set_mood(mood);
+    }
     for &item in room.owns {
         guest.give(item);
         paint(&mut guest, &room.real, &view, 0);
@@ -175,6 +179,23 @@ pub(super) fn simulate(room: &Room, seed: u64, minutes: u64) -> Visit {
     out
 }
 
+/// What a census act counts as.
+pub(super) fn group(doing: &str) -> &'static str {
+    match doing {
+        d if d.starts_with("use:") => "furniture",
+        "idle:Sit" | "idle:LieBack" | "idle:LieFront" => "floor rest",
+        "SpaceOut" | "idle:Gaze" => "spacing out",
+        "Walk" | "Climb" | "Clamber" | "Out" | "Away" | "Door" | "Fall" | "Peer" | "Dazed" => {
+            "moving"
+        }
+        "Pull" | "Swap" | "Giggle" | "Innocent" | "Tear" | "Sneeze" | "PutBack" | "Admire" => {
+            "mischief"
+        }
+        d if d.starts_with("idle:") => "exercise",
+        _ => "standing",
+    }
+}
+
 /// The share of `part` in `whole`, as a percentage.
 fn pct(part: u64, whole: u64) -> f64 {
     100.0 * part as f64 / whole.max(1) as f64
@@ -185,9 +206,19 @@ fn pct(part: u64, whole: u64) -> f64 {
 fn visit_census() {
     const SEEDS: u64 = 16;
     const MINUTES: u64 = 30;
-    for room in [stage_room(), furnished_room(), resident_room()] {
+    // With CENSUS_MOODS set, each room in each mood (forced).
+    let moods: Vec<Option<Mood>> = if std::env::var_os("CENSUS_MOODS").is_some() {
+        Mood::ALL.into_iter().map(Some).collect()
+    } else {
+        vec![None]
+    };
+    let rooms = [stage_room(), furnished_room(), resident_room()];
+    for (room, mood) in rooms
+        .iter()
+        .flat_map(|room| moods.iter().map(move |&mood| (room, mood)))
+    {
         let visits: Vec<Visit> = (0..SEEDS)
-            .map(|seed| simulate(&room, seed, MINUTES))
+            .map(|seed| simulate(room, seed, MINUTES, mood))
             .collect();
         let mut choices: BTreeMap<String, usize> = BTreeMap::new();
         let mut time: BTreeMap<String, u64> = BTreeMap::new();
@@ -231,9 +262,14 @@ fn visit_census() {
         }
         let n: usize = choices.values().sum();
         let total: u64 = time.values().sum();
+        let mut groups: BTreeMap<&str, u64> = BTreeMap::new();
+        for (k, v) in &time {
+            *groups.entry(group(k)).or_default() += v;
+        }
         eprintln!(
-            "\n== {} ({SEEDS} visits × {MINUTES} min): {} choices ({:.0} a visit)",
+            "\n== {} {} ({SEEDS} visits × {MINUTES} min): {} choices ({:.0} a visit)",
             room.name,
+            mood.map_or("(drawn)".to_owned(), |m| format!("{m:?}")),
             n,
             n as f64 / SEEDS as f64
         );
@@ -243,6 +279,14 @@ fn visit_census() {
             "  chose: {}",
             by.iter()
                 .map(|(k, v)| format!("{k} {:.1}%", pct(*v as u64, n as u64)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        eprintln!(
+            "  groups: {}",
+            groups
+                .iter()
+                .map(|(k, v)| format!("{k} {:.1}%", pct(*v, total)))
                 .collect::<Vec<_>>()
                 .join(", ")
         );
@@ -280,7 +324,7 @@ fn an_uninterrupted_trip_runs_its_course() {
     };
     let mut set_off = 0;
     for seed in 0..6 {
-        let visit = simulate(&room, seed, 10);
+        let visit = simulate(&room, seed, 10, None);
         set_off += visit.headings.get("set off").copied().unwrap_or(0);
         assert_eq!(
             visit.headings.get("let go: Other"),
@@ -290,4 +334,57 @@ fn an_uninterrupted_trip_runs_its_course() {
         );
     }
     assert!(set_off >= 8, "only {set_off} trips");
+}
+
+/// Milliseconds of `visits` in each census group.
+fn grouped(visits: &[Visit]) -> BTreeMap<&'static str, u64> {
+    let mut groups = BTreeMap::new();
+    for visit in visits {
+        for (k, v) in &visit.time {
+            *groups.entry(group(k)).or_default() += v;
+        }
+    }
+    groups
+}
+
+/// At home she rests on her furniture, not the floor: far more of her
+/// time is on her things than sitting or lying on the floor.
+#[test]
+fn at_home_her_furniture_beats_the_floor() {
+    let room = furnished_room();
+    let visits: Vec<Visit> = (0..4)
+        .map(|seed| simulate(&room, seed, 10, Some(Mood::Ordinary)))
+        .collect();
+    let groups = grouped(&visits);
+    let at = |g: &str| groups.get(g).copied().unwrap_or(0);
+    assert!(at("furniture") > 10 * at("floor rest").max(1), "{groups:?}");
+}
+
+/// Her mood shows: on a lazy visit she spends more of her time on her
+/// furniture and less moving about than on an industrious one, and a
+/// dreamy one spaces out more than an ordinary one.
+#[test]
+fn her_mood_shows() {
+    let room = resident_room();
+    let in_mood = |mood: Mood| {
+        let visits: Vec<Visit> = (0..4)
+            .map(|seed| simulate(&room, seed, 15, Some(mood)))
+            .collect();
+        grouped(&visits)
+    };
+    let (lazy, busy) = (in_mood(Mood::Lazy), in_mood(Mood::Industrious));
+    let at = |g: &BTreeMap<&str, u64>, k: &str| g.get(k).copied().unwrap_or(0);
+    assert!(
+        at(&lazy, "furniture") > at(&busy, "furniture"),
+        "lazy {lazy:?}, industrious {busy:?}"
+    );
+    assert!(
+        at(&lazy, "moving") < at(&busy, "moving"),
+        "lazy {lazy:?}, industrious {busy:?}"
+    );
+    let (dreamy, ordinary) = (in_mood(Mood::Dreamy), in_mood(Mood::Ordinary));
+    assert!(
+        at(&dreamy, "spacing out") > at(&ordinary, "spacing out"),
+        "dreamy {dreamy:?}, ordinary {ordinary:?}"
+    );
 }

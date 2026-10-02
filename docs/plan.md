@@ -2105,7 +2105,7 @@ welcome; the only goal is "watching her is kind of fun".
 
 ## Phase 38: Houseguest mind and home
 
-**Status: phases 0 and 1 done (2026-10-02); phase 2 next.** Design: [the mind
+**Status: phases 0–2 done (2026-10-02); phase 3 next.** Design: [the mind
 and home proposal](proposals/2026-10-02-houseguest-mind.md) (direction
 agreed with the user; their answers are its *Decisions*). Its migration
 plan numbers its own phases 0–8; this section records them.
@@ -2269,8 +2269,52 @@ Then re-run `sofa_census` and the 256-case pass, and record them here.
   90/90 and 94/94 used, made → used median 7 s, max 28 s, none let be,
   lost or waiting.
 
-**Step 2 next**: needs for every want (comfort, fun, daydreams; spot
-quality from the bound seat; fun's tolerance), the visit's mood, and
-the simulator (an ignored census of long visits across rooms) to tune
-them before any statistics test is re-pinned. Beauty and nesting wait
-for phase 4, as the proposal says.
+### Phase 2, step 2 — needs for every want, moods, the simulator (done 2026-10-02)
+
+- **The simulator** (`tests/census.rs`, `visit_census`, ignored,
+  release; `CENSUS_MOODS=1` forces each mood): 30-minute visits in the
+  stage room, a furnished home and a resident's room, 16 seeds: choices,
+  time by act and by group (furniture, floor rest, spacing out, moving,
+  mischief, exercise, standing), needs, beats, lines, headings. Its
+  first run found the heading rolling at every hop (22 of 135 trips
+  arrived at home): a landed hop now carries on
+  (`an_uninterrupted_trip_runs_its_course`).
+- **Needs**: comfort, fun (per-source tolerance, `Needs::fresh`,
+  `enjoyed`), daydreams; `Needs` is an array by `Need`; new needs start
+  at 0.5. Every want but Stand and Sneeze answers one. `brain::Spot`
+  (real, made, floor) goes with each offer to `score` and to credit;
+  `quality(need, spot)`. Fit = 0.1 + Σ need² × amount × 2 × quality
+  (× freshness for fun): the proposal's formula with amounts, scaled so
+  0.5 weighs a whole need, after the amount-free first cut let
+  two-need wants win (homework 15% of choices at home). Floor dozes
+  base 4. A parcel and work keep the 0.5 floor.
+- **Moods** (`brain::Mood`, drawn in `begin_visit` from the visit seed;
+  `Osaka::set_mood`; greeting by mood): shares 50/20/20/10 as proposed;
+  rates in design.md.
+- **Census, forced moods** (furniture / floor rest / spacing out /
+  moving, % of time):
+
+  | Room | Ordinary | Lazy | Industrious | Dreamy |
+  |---|---|---|---|---|
+  | stage | 3.8 / 3.6 / 7.4 / 36.6 | 15.1 / 1.3 / 6.1 / 35.8 | 1.7 / 1.4 / 5.4 / 39.2 | 2.6 / 3.7 / 10.9 / 38.5 |
+  | home | 37.8 / 0 / 2.1 / 42.8 | 43.2 / 0 / 1.1 / 39.9 | 33.1 / 0 / 1.6 / 46.0 | 38.3 / 0.1 / 3.3 / 41.7 |
+  | resident | 28.8 / 0.8 / 5.4 / 36.2 | 42.3 / 0.6 / 5.2 / 26.0 | 24.0 / 0.4 / 4.2 / 40.6 | 27.9 / 2.6 / 9.9 / 33.0 |
+
+  At home her choices spread across her things (bed 12%, TV 11%, books
+  10%, sofa 9%, homework 7%); no want takes more than 23% of a home visit
+  (45% in the text-heavy stage room, pulls). With drawn moods: 256 cases
+  pass (164 tests); `sofa_census`: no chat 120/120 and 104/104 used,
+  chat every 37 s 102 of 104 and 93/93 (the two were started in the
+  visit's last 15 s, still being crumpled), made → used max 28 s, none
+  let be or lost.
+- **Tests**: `at_home_her_furniture_beats_the_floor`, `her_mood_shows`
+  (fails with every rate 1), `fun_wears_thin_and_freshens`,
+  `moods_come_in_their_shares`, `a_sleepy_osaka_goes_to_bed` (was
+  `..._mostly_dozes`: the floor is a poor answer to sleep now). No other
+  statistics test needed re-pinning.
+- **Left for later**: beauty and nesting (phase 4, with decor and
+  rules); the mood's home-act cap (phase 4); the industrious mood's
+  tidying shows little where text keeps tidy high. **For phase 5's line
+  pools**: the simulator hears "Where was I?" (every door's end) 467
+  times in 16 half-hour stage visits, about once a minute; it should
+  join a pool with a cooldown, as the proposal's Character section says.

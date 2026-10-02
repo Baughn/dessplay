@@ -39,6 +39,14 @@ Add new days at the top. Add new entries at the bottom of existing days.
 - Changed: The houseguest finds a line of chat she was heading for even
   after it scrolls up a little, and may change her mind on the way
   when something else matters more.
+- Changed: The houseguest lives in her home more. Sitting on her sofa,
+  watching TV, reading and napping now answer how she feels (she gets
+  comfortable, she wants some fun, she drifts into daydreams), so she
+  uses her furniture rather than the floor, and varies what she enjoys
+  instead of watching TV every time.
+- Added: The houseguest arrives in a mood: some visits she's lazy
+  ("Mm... lazy day.") and lounges about, some she's busy ("Okay! Let's
+  tidy up!"), and now and then she's dreamy and spaces out a lot.
 
 ## 2026-10-01
 

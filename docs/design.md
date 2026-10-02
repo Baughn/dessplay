@@ -1443,6 +1443,14 @@ this section states what is built.
   need wants, and never below 0.5 for a parcel or her part-time job, which
   she takes whatever she feels. She arrives wide awake (sleepy 0), keen to
   move (restless 0.7), mischief and hunger at 0.2, the rest at 0.5.
+  **Her mood for the visit** is drawn from the visit's seed (as the cat's
+  presence is): ordinary half the time, lazy and industrious a fifth
+  each, dreamy a tenth. A mood is how fast her needs rise: lazy, comfort
+  ×2, sleepy ×1.5, restless ×0.4, tidy ×0.7; industrious, tidy ×1.6,
+  restless ×1.5, comfort ×0.5, sleepy ×0.8, daydreams ×0.6; dreamy,
+  daydreams ×2.5, restless ×0.7. Her greeting hints at it: "Mm... lazy
+  day.", "Okay! Let's tidy up!", "...hm? Oh, hello.". The stage's bar
+  shows it.
   Repeating one of her last three choices multiplies by 0.4. A need is
   eased by how much she does of what she chose: an activity or a use by the share of its time she gets through
   before it ends or is interrupted, a pull by how far she pulls it (all
@@ -1483,7 +1491,8 @@ this section states what is built.
   two rows up — never inside her box, and whose cells are all blank and
   open; with no such spot the bubble isn't shown. Things she *says*
   (≤ 24 characters) show for 1.2 s + 60 ms per character over her act's
-  own bubble: "Nice to meet you." on first finding her feet, "...I'm OK."
+  own bubble: a greeting on first finding her feet ("Nice to meet you.",
+  or her mood's), "...I'm OK."
   after a hard landing (always on her entrance, else half the time), and
   a musing ("I wish I were a bird.") on a third of her spacing-outs.
 - **Mischief undoes itself on a schedule**, fixed when it's made and kept

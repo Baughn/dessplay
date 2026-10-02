@@ -436,7 +436,11 @@ impl Guest {
     /// Her needs, while she's visiting (for the stage).
     pub fn mood(&self) -> Option<String> {
         match &self.state {
-            State::Visiting(visit) => Some(visit.osaka.needs().summary()),
+            State::Visiting(visit) => Some(format!(
+                "{:?}: {}",
+                visit.osaka.mood(),
+                visit.osaka.needs().summary()
+            )),
             _ => None,
         }
     }
@@ -938,10 +942,14 @@ impl Guest {
     }
 
     /// A new visit, with `osaka` just arrived.
-    fn begin_visit(&mut self, osaka: Osaka, terrain: Terrain, size: (u16, u16)) {
+    fn begin_visit(&mut self, mut osaka: Osaka, terrain: Terrain, size: (u16, u16)) {
         self.ledger.visits += 1;
         self.unsaved = true;
         tracing::info!(visit = self.ledger.visits, "houseguest arrived");
+        // Her mood, from this visit's seed (neither random stream).
+        osaka.set_mood(brain::Mood::of(
+            self.ledger.visit_seed(self.ledger.visits.saturating_sub(1)),
+        ));
         self.state = State::Visiting(Box::new(Visit {
             osaka,
             terrain,
