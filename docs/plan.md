@@ -2209,10 +2209,14 @@ Two steps, each its own commits:
    `interrupt(Cause)` is now the single site for those that stop her
    short; credit by completed fraction (Q4); the mind's own rng stream
    (`visit_seed ^ MIND_SALT`, one draw per decision) and whims; the
-   explain log; the lints. The golden hashes are expected to change:
-   re-record them once, deliberately, from the table the failure
-   prints, after this step, and say so in the commit. Statistics tests
-   shift only by credit moving to the fraction.
+   explain log; the lints. The golden hashes guard the behaviour-preserving
+   commits (the table, the explain log); each behaviour-changing commit
+   (methods and the mind stream, the heading, beats, credit by fraction)
+   re-records them from the table the failure prints, with the reason in
+   its message. Through the method table the statistics tests must pass
+   unchanged (a failure is a conversion bug); only credit by fraction
+   may move them, and a test that moves there waits for step 2's
+   simulator rather than a hand re-pin.
 2. **Needs for every want and the visit's mood**, tuned in the headless
    simulator (brought forward from phase 5) before any statistics test
    is re-pinned.

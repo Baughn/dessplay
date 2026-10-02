@@ -1,4 +1,5 @@
-//! Her needs, and choosing what to do next from what's on offer.
+//! Her needs, what she wants (a table: [`Want::def`]), and choosing what
+//! to do next from what's on offer.
 //!
 //! Needs rise slowly while she's around and fall when something serves
 //! them; they only *weight* her choices — she never sickens, starves or
@@ -121,9 +122,9 @@ impl Needs {
     }
 }
 
-/// What she could do next.
+/// What she could want to do next.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(super) enum Kind {
+pub(super) enum Want {
     /// Stand facing the viewer.
     Stand,
     /// Space out (sometimes musing aloud).
@@ -142,76 +143,114 @@ pub(super) enum Kind {
     Work,
 }
 
-impl Kind {
-    /// How much she likes it, all else equal.
-    fn base(self) -> f64 {
-        match self {
-            Self::Stand => 4.0,
-            Self::SpaceOut => 6.0,
-            Self::Sneeze => 2.0,
-            Self::Idle(Activity::Stretch) => 4.0,
-            // Weak while she's awake, a real contender once she's sleepy.
-            Self::Idle(Activity::LieBack) => 6.0,
-            Self::Idle(_) => 6.0,
-            Self::Walk => 14.0,
-            Self::Travel => 10.0,
-            Self::Pull => 16.0,
-            Self::Swap => 8.0,
-            // Once a visit at most (osaka.rs), so it can afford to compete.
-            Self::Work => 9.0,
-            // Her own things are what home is for.
-            Self::Use(Use::Watch) => 10.0,
-            Self::Use(Use::Sleep) => 10.0,
-            // A parcel! Nothing comes close.
-            Self::Use(Use::Unpack) => 40.0,
-            // A heap of torn text she meant to make something of.
-            Self::Use(Use::Crumple) => 12.0,
-            Self::Use(_) => 8.0,
-        }
-    }
+/// Something that makes a want more or less likely, beyond her needs.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum Factor {
+    /// Where it would take her is in the chat pane (she's resident, and
+    /// people read there): this much as likely.
+    InChat(f64),
+}
 
-    /// Whether she does it for its own sake as well as for its need: its
-    /// fit never drops below that of an offer answering no need. A nap
-    /// on the sofa is lounging when she's awake, and a doze when she's
-    /// sleepy.
-    fn for_its_own_sake(self) -> bool {
-        matches!(self, Self::Use(Use::Nap))
-    }
+/// A want, as data: how much she likes it all else equal, the needs it
+/// answers (and by how much), and what else weighs on it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct DesireDef {
+    pub base: f64,
+    pub serves: &'static [(Need, f64)],
+    /// She does it for its own sake as well as for its needs: its fit
+    /// never drops below that of a want answering none. A nap on the
+    /// sofa is lounging when she's awake, and a doze when she's sleepy.
+    pub own_sake: bool,
+    pub factors: &'static [Factor],
+}
 
-    /// The need it answers, and by how much.
-    pub fn serves(self) -> Option<(Need, f64)> {
+/// What takes her into the chat is a tenth as likely.
+const IN_CHAT: &[Factor] = &[Factor::InChat(super::osaka::CHAT_FACTOR)];
+
+const fn row(base: f64, serves: &'static [(Need, f64)]) -> DesireDef {
+    DesireDef {
+        base,
+        serves,
+        own_sake: false,
+        factors: &[],
+    }
+}
+
+const fn in_chat(def: DesireDef) -> DesireDef {
+    DesireDef {
+        factors: IN_CHAT,
+        ..def
+    }
+}
+
+impl Want {
+    /// Every want there is.
+    #[cfg(test)]
+    pub const ALL: [Want; 24] = [
+        Self::Stand,
+        Self::SpaceOut,
+        Self::Sneeze,
+        Self::Idle(Activity::Sit),
+        Self::Idle(Activity::LieBack),
+        Self::Idle(Activity::LieFront),
+        Self::Idle(Activity::Jacks),
+        Self::Idle(Activity::ToeTouch),
+        Self::Idle(Activity::Stretch),
+        Self::Idle(Activity::Gaze),
+        Self::Walk,
+        Self::Travel,
+        Self::Pull,
+        Self::Swap,
+        Self::Use(Use::Lounge),
+        Self::Use(Use::Nap),
+        Self::Use(Use::Sleep),
+        Self::Use(Use::Homework),
+        Self::Use(Use::Watch),
+        Self::Use(Use::Unpack),
+        Self::Use(Use::Read),
+        Self::Use(Use::Snack),
+        Self::Use(Use::Pet),
+        Self::Use(Use::Crumple),
+    ];
+
+    /// Its row of the table.
+    pub fn def(self) -> DesireDef {
         match self {
+            Self::Stand => row(4.0, &[]),
+            Self::SpaceOut => row(6.0, &[]),
+            Self::Sneeze => row(2.0, &[]),
+            Self::Idle(Activity::Stretch) => row(4.0, &[(Need::Restless, 0.5)]),
             // A doze only takes the edge off: over a visit she gets
-            // sleepier, and dozes more often.
-            Self::Idle(Activity::LieBack) => Some((Need::Sleepy, 0.15)),
-            Self::Idle(Activity::Sit) => Some((Need::Sleepy, 0.1)),
-            Self::Idle(Activity::Jacks | Activity::ToeTouch | Activity::Stretch) => {
-                Some((Need::Restless, 0.5))
-            }
-            Self::Walk | Self::Travel => Some((Need::Restless, 0.4)),
-            Self::Pull => Some((Need::Tidy, 0.6)),
-            Self::Swap => Some((Need::Mischief, 0.8)),
-            Self::Use(Use::Snack) => Some((Need::Hungry, 0.8)),
+            // sleepier, and dozes more often. Weak while she's awake, a
+            // real contender once she's sleepy.
+            Self::Idle(Activity::LieBack) => row(6.0, &[(Need::Sleepy, 0.15)]),
+            Self::Idle(Activity::Sit) => row(6.0, &[(Need::Sleepy, 0.1)]),
+            Self::Idle(Activity::Jacks | Activity::ToeTouch) => row(6.0, &[(Need::Restless, 0.5)]),
+            Self::Idle(Activity::LieFront | Activity::Gaze) => row(6.0, &[]),
+            Self::Walk => row(14.0, &[(Need::Restless, 0.4)]),
+            Self::Travel => in_chat(row(10.0, &[(Need::Restless, 0.4)])),
+            Self::Pull => in_chat(row(16.0, &[(Need::Tidy, 0.6)])),
+            Self::Swap => in_chat(row(8.0, &[(Need::Mischief, 0.8)])),
+            // Once a visit at most (osaka.rs), so it can afford to compete.
+            Self::Work => row(9.0, &[]),
+            // Her own things are what home is for (made of text in the
+            // chat, a tenth as likely too).
+            Self::Use(Use::Watch) => in_chat(row(10.0, &[])),
             // A proper bed answers sleepiness far better than a border.
-            Self::Use(Use::Sleep) => Some((Need::Sleepy, 0.7)),
-            // A nap on a sofa (even one of her own making) draws her
-            // more than a border when she's sleepy, but she naps awake
-            // too: each takes a little off, or she'd never get to bed.
-            Self::Use(Use::Nap) => Some((Need::Sleepy, 0.1)),
-            Self::Use(
-                Use::Lounge
-                | Use::Homework
-                | Use::Watch
-                | Use::Unpack
-                | Use::Crumple
-                | Use::Read
-                | Use::Pet,
-            ) => None,
-            Self::Stand
-            | Self::Work
-            | Self::SpaceOut
-            | Self::Sneeze
-            | Self::Idle(Activity::LieFront | Activity::Gaze) => None,
+            Self::Use(Use::Sleep) => in_chat(row(10.0, &[(Need::Sleepy, 0.7)])),
+            // A parcel! Nothing comes close.
+            Self::Use(Use::Unpack) => in_chat(row(40.0, &[])),
+            // A heap of torn text she meant to make something of.
+            Self::Use(Use::Crumple) => in_chat(row(12.0, &[])),
+            // A nap on a sofa (even one of her own making) draws her more
+            // than a border when she's sleepy, but she naps awake too:
+            // each takes a little off, or she'd never get to bed.
+            Self::Use(Use::Nap) => DesireDef {
+                own_sake: true,
+                ..in_chat(row(8.0, &[(Need::Sleepy, 0.1)]))
+            },
+            Self::Use(Use::Snack) => in_chat(row(8.0, &[(Need::Hungry, 0.8)])),
+            Self::Use(Use::Lounge | Use::Homework | Use::Read | Use::Pet) => in_chat(row(8.0, &[])),
         }
     }
 }
@@ -226,27 +265,34 @@ const COOLDOWN: f64 = 0.4;
 const TOP: usize = 4;
 
 /// An offer's score given her needs and what she did lately.
-pub(super) fn score(kind: Kind, needs: &Needs, recent: &[Kind]) -> f64 {
+pub(super) fn score(want: Want, needs: &Needs, recent: &[Want]) -> f64 {
+    let def = want.def();
     // Squared: a need weighs little until it's pressing.
-    let fit = match kind.serves() {
-        None => NEUTRAL,
-        Some((need, _)) if kind.for_its_own_sake() => NEUTRAL.max(FLOOR + needs.get(need).powi(2)),
-        Some((need, _)) => FLOOR + needs.get(need).powi(2),
+    let fit = if def.serves.is_empty() {
+        NEUTRAL
+    } else {
+        let fit = FLOOR
+            + def
+                .serves
+                .iter()
+                .map(|&(need, _)| needs.get(need).powi(2))
+                .sum::<f64>();
+        if def.own_sake { NEUTRAL.max(fit) } else { fit }
     };
-    let repeats = recent.iter().filter(|&&k| k == kind).count();
-    kind.base() * fit * COOLDOWN.powi(repeats as i32)
+    let repeats = recent.iter().filter(|&&w| w == want).count();
+    def.base * fit * COOLDOWN.powi(repeats as i32)
 }
 
 /// Choose among `offers`: weighted by score, times the offer's `factor`
 /// (where it would take her), among the top few. Returns the chosen
 /// index and the scored top offers (for the log).
 pub(super) fn choose(
-    offers: &[Kind],
+    offers: &[Want],
     needs: &Needs,
-    recent: &[Kind],
-    factor: &dyn Fn(Kind) -> f64,
+    recent: &[Want],
+    factor: &dyn Fn(Want) -> f64,
     rng: &mut Rng,
-) -> Option<(usize, Vec<(Kind, f64)>)> {
+) -> Option<(usize, Vec<(Want, f64)>)> {
     let mut scored: Vec<(usize, f64)> = offers
         .iter()
         .enumerate()
@@ -280,21 +326,21 @@ pub(super) fn choose(
 mod tests {
     use super::*;
 
-    fn all() -> Vec<Kind> {
+    fn all() -> Vec<Want> {
         let mut offers = vec![
-            Kind::Stand,
-            Kind::SpaceOut,
-            Kind::Sneeze,
-            Kind::Walk,
-            Kind::Travel,
-            Kind::Pull,
-            Kind::Swap,
+            Want::Stand,
+            Want::SpaceOut,
+            Want::Sneeze,
+            Want::Walk,
+            Want::Travel,
+            Want::Pull,
+            Want::Swap,
         ];
-        offers.extend(Activity::ALL.iter().map(|&a| Kind::Idle(a)));
+        offers.extend(Activity::ALL.iter().map(|&a| Want::Idle(a)));
         offers
     }
 
-    fn tally(needs: Needs, offers: &[Kind]) -> std::collections::HashMap<Kind, usize> {
+    fn tally(needs: Needs, offers: &[Want]) -> std::collections::HashMap<Want, usize> {
         let mut rng = Rng(9);
         let mut counts = std::collections::HashMap::new();
         for _ in 0..2000 {
@@ -314,7 +360,7 @@ mod tests {
             hungry: 0.0,
         };
         let counts = tally(needs, &all());
-        let lie = counts[&Kind::Idle(Activity::LieBack)];
+        let lie = counts[&Want::Idle(Activity::LieBack)];
         assert!(counts.values().all(|&n| n <= lie), "{counts:?}");
     }
 
@@ -334,12 +380,12 @@ mod tests {
             };
             let offers = all();
             let mut rng = Rng(3);
-            let mut recent: Vec<Kind> = Vec::new();
+            let mut recent: Vec<Want> = Vec::new();
             let mut lie = 0;
             for _ in 0..4000 {
                 let (i, _) = choose(&offers, &needs, &recent, &|_| 1.0, &mut rng).unwrap();
                 let kind = offers[i];
-                lie += usize::from(kind == Kind::Idle(Activity::LieBack));
+                lie += usize::from(kind == Want::Idle(Activity::LieBack));
                 recent.push(kind);
                 if recent.len() > 3 {
                     recent.remove(0);
@@ -365,9 +411,9 @@ mod tests {
             hungry: 1.0,
         };
         let mut offers = all();
-        offers.push(Kind::Use(Use::Snack));
+        offers.push(Want::Use(Use::Snack));
         let counts = tally(needs, &offers);
-        let snack = counts[&Kind::Use(Use::Snack)];
+        let snack = counts[&Want::Use(Use::Snack)];
         assert!(counts.values().all(|&n| n <= snack), "{counts:?}");
     }
 
@@ -381,7 +427,7 @@ mod tests {
             hungry: 0.0,
         };
         let counts = tally(needs, &all());
-        let moving: usize = [Kind::Walk, Kind::Travel]
+        let moving: usize = [Want::Walk, Want::Travel]
             .iter()
             .map(|k| counts.get(k).copied().unwrap_or(0))
             .sum();
@@ -417,9 +463,26 @@ mod tests {
     #[test]
     fn repeating_herself_is_discouraged() {
         let needs = Needs::default();
-        let fresh = score(Kind::Walk, &needs, &[]);
-        let again = score(Kind::Walk, &needs, &[Kind::Walk, Kind::Walk]);
+        let fresh = score(Want::Walk, &needs, &[]);
+        let again = score(Want::Walk, &needs, &[Want::Walk, Want::Walk]);
         assert!(again < fresh * 0.2);
+    }
+
+    /// Every row is sane: she likes everything a little, and what it
+    /// answers takes something off without wiping the need out.
+    #[test]
+    fn every_want_has_a_sane_row() {
+        for want in Want::ALL {
+            let def = want.def();
+            assert!(def.base > 0.0, "{want:?}");
+            for &(need, amount) in def.serves {
+                assert!(amount > 0.0 && amount <= 1.0, "{want:?} {need:?}");
+            }
+            for &Factor::InChat(times) in def.factors {
+                assert!(times > 0.0 && times < 1.0, "{want:?}");
+            }
+            assert!(!def.own_sake || !def.serves.is_empty(), "{want:?}");
+        }
     }
 
     #[test]

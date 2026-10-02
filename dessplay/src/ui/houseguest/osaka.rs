@@ -4,7 +4,7 @@
 
 use super::Rng;
 use super::art::DoorFrame;
-use super::brain::{self, Kind, Need, Needs};
+use super::brain::{self, Factor, Need, Needs, Want};
 use super::layer::Placed;
 use super::room::{Furniture, MadeId, PieceRef, Seat, Use};
 use super::scenes::{Build, Job, JobRef, LayerOp, Pull, Side, Swap};
@@ -959,7 +959,7 @@ pub(super) struct Osaka {
     worked: bool,
     needs: Needs,
     /// Her last few choices (repeating herself is discouraged).
-    recent: Vec<Kind>,
+    recent: Vec<Want>,
     /// When she last chose.
     decided: u64,
     /// Where she's going to poke the scrollback accordion (standing on
@@ -976,7 +976,7 @@ pub(super) struct Osaka {
     rest: Option<(i32, i32)>,
     /// Every choice she made (tests read it).
     #[cfg(test)]
-    pub choices: Vec<Kind>,
+    pub choices: Vec<Want>,
 }
 
 impl Osaka {
@@ -2059,27 +2059,27 @@ impl Osaka {
             .filter(|l| l.from == here)
             .copied()
             .collect();
-        let mut offers = vec![Kind::Stand, Kind::SpaceOut, Kind::Sneeze, Kind::Walk];
-        offers.extend(Activity::ALL.iter().map(|&a| Kind::Idle(a)));
+        let mut offers = vec![Want::Stand, Want::SpaceOut, Want::Sneeze, Want::Walk];
+        offers.extend(Activity::ALL.iter().map(|&a| Want::Idle(a)));
         // With no way off this floor, travelling means a door in space.
-        offers.push(Kind::Travel);
+        offers.push(Want::Travel);
         // A home to leave, a while into the visit, once.
         if chances.furnished && !self.worked && at >= self.arrived + WORK_AFTER_MS {
-            offers.push(Kind::Work);
+            offers.push(Want::Work);
         }
         if !chances.pulls.is_empty() {
-            offers.push(Kind::Pull);
+            offers.push(Want::Pull);
         }
         let made = chances.builds.iter().map(|b| b.then);
         for what in chances.seats.iter().map(|s| s.what).chain(made) {
-            let kind = Kind::Use(what);
-            if !offers.contains(&kind) {
-                offers.push(kind);
+            let want = Want::Use(what);
+            if !offers.contains(&want) {
+                offers.push(want);
             }
         }
         // One piece of mischief at a time: no new swap while one is owed.
         if !chances.swaps.is_empty() && !self.owes() {
-            offers.push(Kind::Swap);
+            offers.push(Want::Swap);
         }
         // Where each offer would take her: a resident mostly keeps out
         // of the chat, where people are reading.
@@ -2116,44 +2116,54 @@ impl Osaka {
                         .map(|b| chances.in_chat((b.x, b.y))),
                 )
         };
-        let factor = |kind: Kind| match kind {
-            Kind::Pull if pulls_in_chat => CHAT_FACTOR,
-            Kind::Swap if swaps_in_chat => CHAT_FACTOR,
-            Kind::Travel if travel_in_chat => CHAT_FACTOR,
-            Kind::Use(what) if builds_in_chat(what) => CHAT_FACTOR,
-            _ => 1.0,
+        let factor = |want: Want| {
+            let into_chat = match want {
+                Want::Pull => pulls_in_chat,
+                Want::Swap => swaps_in_chat,
+                Want::Travel => travel_in_chat,
+                Want::Use(what) => builds_in_chat(what),
+                _ => false,
+            };
+            want.def()
+                .factors
+                .iter()
+                .map(|&factor| match factor {
+                    Factor::InChat(times) if into_chat => times,
+                    Factor::InChat(_) => 1.0,
+                })
+                .product::<f64>()
         };
         while let Some((i, top)) = brain::choose(&offers, &self.needs, &self.recent, &factor, rng) {
-            let kind = offers.remove(i);
-            if self.start(kind, here, &links, terrain, chances, at, rng) {
+            let want = offers.remove(i);
+            if self.start(want, here, &links, terrain, chances, at, rng) {
                 tracing::debug!(
-                    ?kind,
+                    ?want,
                     needs = %self.needs.summary(),
                     ?top,
                     "houseguest: decided"
                 );
-                self.recent.push(kind);
+                self.recent.push(want);
                 #[cfg(test)]
-                self.choices.push(kind);
+                self.choices.push(want);
                 if self.recent.len() > RECENT {
                     self.recent.remove(0);
                 }
-                if let Some((need, amount)) = kind.serves() {
+                for &(need, amount) in want.def().serves {
                     self.needs.serve(need, amount);
                 }
                 return;
             }
-            tracing::debug!(?kind, "houseguest: couldn't after all");
+            tracing::debug!(?want, "houseguest: couldn't after all");
         }
         self.set(Act::Stand { until: at + 2000 }, at);
     }
 
-    /// Start `kind` from platform `here`. False when it turns out not to
+    /// Start `want` from platform `here`. False when it turns out not to
     /// be possible (nowhere else to walk, no way to the job).
     #[allow(clippy::too_many_arguments)]
     fn start(
         &mut self,
-        kind: Kind,
+        want: Want,
         here: usize,
         links: &[Link],
         terrain: &Terrain,
@@ -2161,11 +2171,11 @@ impl Osaka {
         at: u64,
         rng: &mut Rng,
     ) -> bool {
-        let act = match kind {
-            Kind::Stand => Act::Stand {
+        let act = match want {
+            Want::Stand => Act::Stand {
                 until: at + rng.range(2000, 5000),
             },
-            Kind::SpaceOut => {
+            Want::SpaceOut => {
                 if rng.below(3) == 0 {
                     self.muse(at, rng);
                     return true;
@@ -2174,12 +2184,12 @@ impl Osaka {
                     until: at + rng.range(6000, 14_000),
                 }
             }
-            Kind::Sneeze => Act::Sneeze {
+            Want::Sneeze => Act::Sneeze {
                 since: at,
                 knocked: false,
             },
-            Kind::Idle(what) => self.idle_act(what, at, rng),
-            Kind::Walk => {
+            Want::Idle(what) => self.idle_act(what, at, rng),
+            Want::Walk => {
                 let Some(p) = terrain.platforms.get(here) else {
                     return false;
                 };
@@ -2203,7 +2213,7 @@ impl Osaka {
                     then: Then::Nothing,
                 }
             }
-            Kind::Work => {
+            Want::Work => {
                 // Home by a way that doesn't come in through the chat,
                 // when there is one.
                 let around = || {
@@ -2218,7 +2228,7 @@ impl Osaka {
                 self.go_to_work(out, at, rng);
                 return true;
             }
-            Kind::Travel => {
+            Want::Travel => {
                 let into_chat = |l: &Link| landing(l, terrain).is_some_and(|s| chances.in_chat(s));
                 if let Some(&link) = pick(links.len(), |i| links.get(i).is_some_and(into_chat), rng)
                     .and_then(|i| links.get(i))
@@ -2246,7 +2256,7 @@ impl Osaka {
                 self.through_door((x, p.y), at);
                 return true;
             }
-            Kind::Use(what) => {
+            Want::Use(what) => {
                 let options = self.places_for(what, chances, rng);
                 return match options.get(rng.below(options.len() as u64) as usize) {
                     Some(&Place::Seat(seat)) => self.go_to(Job::Use(seat), here, terrain, at),
@@ -2259,10 +2269,10 @@ impl Osaka {
                     None => false,
                 };
             }
-            Kind::Pull | Kind::Swap => {
+            Want::Pull | Want::Swap => {
                 // A few tries at one she can get to.
                 for _ in 0..8 {
-                    let job = if kind == Kind::Pull {
+                    let job = if want == Want::Pull {
                         let pulls = &chances.pulls;
                         let in_chat =
                             |i: usize| pulls.get(i).is_some_and(|p| chances.in_chat((p.x, p.y)));

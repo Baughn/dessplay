@@ -1527,13 +1527,13 @@ fn she_says_a_line_and_then_stops() {
 /// half than its first, no one thing takes over, and she still tidies.
 #[test]
 fn her_needs_shape_long_visits() {
-    use super::brain::Kind;
+    use super::brain::Want;
     use super::sprite::Pose;
     let mut ui = stage_ui();
     let (real, view) = real_frame(&mut ui, 100, 30);
     let half = 10 * 60_000;
     let (mut early, mut late) = (0u64, 0u64);
-    let mut choices: Vec<Kind> = Vec::new();
+    let mut choices: Vec<Want> = Vec::new();
     for seed in 0..4u64 {
         let mut guest = Guest::new(seed);
         guest.cue(Scene::Arrive);
@@ -1578,7 +1578,7 @@ fn her_needs_shape_long_visits() {
         most * 2 < choices.len(),
         "one choice took over: {choices:?}"
     );
-    assert!(choices.contains(&Kind::Pull), "she tidied");
+    assert!(choices.contains(&Want::Pull), "she tidied");
 }
 
 // ---- Her room ----
@@ -1669,10 +1669,10 @@ fn home_screen() -> (Buffer, IdleView) {
 /// images stay within the frame cache.
 #[test]
 fn a_furnished_home_gets_used_and_stays_cheap() {
-    use super::brain::Kind;
+    use super::brain::Want;
     use super::room::Use;
     let (real, view) = home_screen();
-    let mut choices: Vec<Kind> = Vec::new();
+    let mut choices: Vec<Want> = Vec::new();
     for seed in 0..2u64 {
         let mut guest = Guest::new(seed);
         guest.set_picker(kitty());
@@ -1723,7 +1723,7 @@ fn a_furnished_home_gets_used_and_stays_cheap() {
             .osaka
             .choices
             .iter()
-            .filter(|&&k| k == Kind::Work)
+            .filter(|&&k| k == Want::Work)
             .count();
         assert!(
             shifts <= 1,
@@ -1738,18 +1738,18 @@ fn a_furnished_home_gets_used_and_stays_cheap() {
             "seed {seed}: {cached} distinct images"
         );
     }
-    let count = |kind: Kind| choices.iter().filter(|&&k| k == kind).count();
+    let count = |want: Want| choices.iter().filter(|&&k| k == want).count();
     for what in [Use::Lounge, Use::Nap, Use::Sleep, Use::Homework, Use::Watch] {
         assert!(
-            count(Kind::Use(what)) > 0,
+            count(Want::Use(what)) > 0,
             "she never chose {what:?}: {choices:?}"
         );
     }
     assert!(
-        count(Kind::Use(Use::Sleep)) >= count(Kind::Idle(osaka::Activity::LieBack)),
+        count(Want::Use(Use::Sleep)) >= count(Want::Idle(osaka::Activity::LieBack)),
         "the bed beats a border: {choices:?}"
     );
-    assert!(count(Kind::Work) > 0, "she never went to work: {choices:?}");
+    assert!(count(Want::Work) > 0, "she never went to work: {choices:?}");
 }
 
 /// A pit: a room whose walls are wide text to the ceiling on the left and
@@ -3559,7 +3559,7 @@ fn commits_survive_the_visit_ending() {
 /// she lies down on the floor beside it.
 #[test]
 fn sleepy_she_naps_on_the_sofa_she_made() {
-    use super::brain::{Kind, Need};
+    use super::brain::{Need, Want};
     use super::osaka::Activity;
     use super::room::Use;
     let (mut nap, mut lie) = (0, 0);
@@ -3583,8 +3583,8 @@ fn sleepy_she_naps_on_the_sofa_she_made() {
             // Kept sleepy: whatever she chose, she's sleepy again.
             if visit.osaka.choices.len() > seen {
                 for kind in &visit.osaka.choices[seen..] {
-                    nap += usize::from(*kind == Kind::Use(Use::Nap));
-                    lie += usize::from(*kind == Kind::Idle(Activity::LieBack));
+                    nap += usize::from(*kind == Want::Use(Use::Nap));
+                    lie += usize::from(*kind == Want::Idle(Activity::LieBack));
                 }
                 seen = visit.osaka.choices.len();
                 visit.osaka.press(Need::Sleepy);
