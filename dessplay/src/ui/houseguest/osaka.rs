@@ -6,7 +6,7 @@ use super::Rng;
 use super::art::DoorFrame;
 use super::brain::{self, Factor, Need, Needs, Want};
 use super::layer::Placed;
-use super::mind::{self, Bind, Ctx, Here, Whims};
+use super::mind::{self, Bind, Ctx, Heading, Here, Whims};
 use super::room::{Furniture, MadeId, PieceRef, Seat, Use};
 use super::scenes::{Build, Job, JobRef, LayerOp, Pull, Side, Swap};
 use super::sprite::{self, Face, Facing, HEIGHT, Pose, SpriteCell};
@@ -151,22 +151,6 @@ impl Chances {
     /// Whether `spot` is in the chat pane (and she's resident).
     pub(super) fn in_chat(&self, spot: (i32, i32)) -> bool {
         self.chat.is_some_and(|chat| holds(chat, spot))
-    }
-
-    /// `job` as this frame offers it, if it does: a use of the same
-    /// piece for the same thing, wherever it now stands; anything else,
-    /// exactly as planned.
-    fn offered(&self, job: Job) -> Option<Job> {
-        match job {
-            Job::Pull(p) => self.pulls.contains(&p).then_some(Job::Pull(p)),
-            Job::Swap(s) => self.swaps.contains(&s).then_some(Job::Swap(s)),
-            Job::Build(b) => self.builds.contains(&b).then_some(Job::Build(b)),
-            Job::Use(seat) => self
-                .seats
-                .iter()
-                .find(|s| s.piece == seat.piece && s.what == seat.what)
-                .map(|&s| Job::Use(s)),
-        }
     }
 
     /// Where she'd use a piece she made for its next step: crumpling it
@@ -456,6 +440,20 @@ enum Cause {
     Refused,
 }
 
+/// Why she lets go of where she was heading.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Letting {
+    /// It's gone (the text changed, the piece went away).
+    Gone,
+    /// She chose something else.
+    Other,
+    /// A chat line, on her way to a piece she made: she comes back to it
+    /// as another try (see [`Osaka::leftover`]).
+    Chat,
+    /// The stage put her somewhere.
+    Placed,
+}
+
 /// Which kind of decision it was: a pre-empt, carrying on with what she
 /// was about, or a roll among what's on offer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -482,6 +480,8 @@ pub(super) struct Decision {
     pub top: Vec<(Want, f64)>,
     /// Her act, and where it takes her.
     pub act: String,
+    /// What she was heading for, deciding.
+    pub heading: Option<Want>,
 }
 
 impl Decision {
@@ -493,6 +493,7 @@ impl Decision {
             want: None,
             top: Vec::new(),
             act: String::new(),
+            heading: None,
         }
     }
 
@@ -520,6 +521,9 @@ impl std::fmt::Display for Decision {
                 .map(|(want, score)| format!("{want:?} {score:.1}"))
                 .collect();
             write!(f, " of [{}]", top.join(", "))?;
+        }
+        if let Some(heading) = self.heading {
+            write!(f, " (heading for {heading:?})")?;
         }
         write!(f, " → {}", self.act)
     }
@@ -956,8 +960,9 @@ pub(super) struct Osaka {
     /// While a chat conversation continues she stands watching it.
     watch_until: u64,
     watch_x: i32,
-    /// A job on another floor she's making her way towards.
-    goal: Option<Job>,
+    /// A job on another floor she's making her way towards, and what
+    /// she wants there (see [`Osaka::drop_heading`]).
+    heading: Option<Heading>,
     /// The pole she's climbing (column).
     pole: i32,
     /// Layer changes for the next paint to apply.
@@ -1019,7 +1024,7 @@ impl Osaka {
             blink_until: 0,
             watch_until: 0,
             watch_x: x,
-            goal: None,
+            heading: None,
             pole: x,
             ops: Vec::new(),
             events: Vec::new(),
@@ -2125,18 +2130,29 @@ impl Osaka {
         self.needs
             .pass(at.saturating_sub(self.decided), !chances.pulls.is_empty());
         self.decided = at;
-        // Still making for a job on another floor, while it's on offer.
-        if let Some(job) = self.goal.take().and_then(|g| chances.offered(g))
-            && self.go_to(job, here, terrain, at)
-        {
-            return Decision::of(Bucket::Continuation, "heading");
+        let heading = self.heading.as_ref().map(|h| h.want);
+        // Making for a piece she made, on another floor: the next hop of
+        // the same trip.
+        if let Some(mine) = self.heading.clone().filter(Heading::mine) {
+            if let Some(job) = mine.find(chances)
+                && self.go_to(mine.want, job, here, terrain, at)
+            {
+                return Decision {
+                    heading,
+                    ..Decision::of(Bucket::Continuation, "heading/mine")
+                };
+            }
+            self.drop_heading(Letting::Gone);
         }
         // A piece she made and hasn't finished with: she finishes it, or
         // uses it, before choosing anything new.
-        if let Some(job) = self.leftover(chances, terrain, here) {
+        if let Some((want, job)) = self.leftover(chances, terrain, here) {
             tracing::debug!(?job, "houseguest: back to what she made");
-            if self.go_to(job, here, terrain, at) {
-                return Decision::of(Bucket::Continuation, "leftover");
+            if self.go_to(want, job, here, terrain, at) {
+                return Decision {
+                    heading,
+                    ..Decision::of(Bucket::Continuation, "leftover")
+                };
             }
         }
         let ctx = Ctx {
@@ -2162,6 +2178,20 @@ impl Osaka {
                 mind::bind(&ctx, whims, want).map(|(name, bind)| (want, name, bind))
             })
             .collect();
+        // Making for a job on another floor: where she finds it again, it's
+        // on offer as she set off for it, and [`brain::INERTIA`] times as
+        // likely.
+        let mut inert = None;
+        if let Some(heading) = self.heading.clone() {
+            match heading.find(chances) {
+                Some(job) => {
+                    offers.retain(|(want, ..)| *want != heading.want);
+                    offers.push((heading.want, "heading", Bind::Job(job)));
+                    inert = Some(heading.want);
+                }
+                None => self.drop_heading(Letting::Gone),
+            }
+        }
         for attempt in 0.. {
             let wants: Vec<Want> = offers.iter().map(|(want, ..)| *want).collect();
             // A resident mostly keeps out of the chat, where people read.
@@ -2170,6 +2200,11 @@ impl Osaka {
                     .iter()
                     .find(|(w, ..)| *w == want)
                     .is_some_and(|(_, _, bind)| bind.in_chat(&ctx));
+                let inertia = if inert == Some(want) {
+                    brain::INERTIA
+                } else {
+                    1.0
+                };
                 want.def()
                     .factors
                     .iter()
@@ -2178,6 +2213,7 @@ impl Osaka {
                         Factor::InChat(_) => 1.0,
                     })
                     .product::<f64>()
+                    * inertia
             };
             let Some((i, top)) =
                 brain::choose(&wants, &self.needs, &self.recent, &factor, whims, attempt)
@@ -2185,7 +2221,11 @@ impl Osaka {
                 break;
             };
             let (want, method, bind) = offers.remove(i);
-            if self.plan(bind, here, terrain, at, rng) {
+            if inert.is_some_and(|w| w != want) {
+                inert = None;
+                self.drop_heading(Letting::Other);
+            }
+            if self.plan(want, bind, here, terrain, at, rng) {
                 tracing::debug!(needs = %self.needs.summary(), "houseguest: her needs");
                 self.recent.push(want);
                 #[cfg(test)]
@@ -2199,18 +2239,30 @@ impl Osaka {
                 return Decision {
                     want: Some(want),
                     top,
+                    heading,
                     ..Decision::of(Bucket::Normal, method)
                 };
             }
             tracing::debug!(?want, "houseguest: couldn't after all");
         }
         self.set(Act::Stand { until: at + 2000 }, at);
-        Decision::of(Bucket::Normal, "nothing bound")
+        Decision {
+            heading,
+            ..Decision::of(Bucket::Normal, "nothing bound")
+        }
     }
 
     /// Set about what a method bound, from platform `here`. False when
     /// there's no way there after all.
-    fn plan(&mut self, bind: Bind, here: usize, terrain: &Terrain, at: u64, rng: &mut Rng) -> bool {
+    fn plan(
+        &mut self,
+        want: Want,
+        bind: Bind,
+        here: usize,
+        terrain: &Terrain,
+        at: u64,
+        rng: &mut Rng,
+    ) -> bool {
         let act = match bind {
             Bind::Here(Here::Stand) => Act::Stand {
                 until: at + rng.range(2000, 5000),
@@ -2246,7 +2298,7 @@ impl Osaka {
                 self.go_to_work(out, at, rng);
                 return true;
             }
-            Bind::Job(job) => return self.go_to(job, here, terrain, at),
+            Bind::Job(job) => return self.go_to(want, job, here, terrain, at),
         };
         self.set(act, at);
         true
@@ -2256,30 +2308,35 @@ impl Osaka {
     /// with, counting a try at it: the nearest first (the one she just
     /// crumpled, or was crumpling, is under her), then any she can't get
     /// to now, which is a try too. After [`TRIES`] she lets it be.
-    fn leftover(&mut self, chances: &Chances, terrain: &Terrain, here: usize) -> Option<Job> {
+    fn leftover(
+        &mut self,
+        chances: &Chances,
+        terrain: &Terrain,
+        here: usize,
+    ) -> Option<(Want, Job)> {
         let near = |seat: &Seat| {
             (
                 terrain.platform_at(seat.x, seat.y) != Some(here),
                 (seat.x - self.x).abs() + (seat.y - self.y).abs(),
             )
         };
-        let mut waiting: Vec<(MadeId, Option<Seat>)> = chances
+        let mut waiting: Vec<(MadeId, Use, Option<Seat>)> = chances
             .mine
             .iter()
             .filter(|m| !(m.done && m.used) && self.tries_at(m.id) < TRIES)
-            .map(|m| (m.id, chances.next_for(m)))
+            .map(|m| (m.id, m.purpose, chances.next_for(m)))
             .collect();
-        waiting.sort_by_key(|(_, seat)| {
+        waiting.sort_by_key(|(_, _, seat)| {
             seat.as_ref()
                 .map_or((true, (true, i32::MAX)), |s| (false, near(s)))
         });
-        for (id, seat) in waiting {
+        for (id, purpose, seat) in waiting {
             match self.tries.iter_mut().find(|(made, _)| *made == id) {
                 Some((_, tries)) => *tries += 1,
                 None => self.tries.push((id, 1)),
             }
             match seat {
-                Some(seat) => return Some(Job::Use(seat)),
+                Some(seat) => return Some((Want::Use(purpose), Job::Use(seat))),
                 None => tracing::debug!(?id, "houseguest: can't get to what she made"),
             }
         }
@@ -2300,30 +2357,39 @@ impl Osaka {
         self.tries_at(id) >= TRIES
     }
 
-    /// Head for `job`: straight there on this floor, or along the first
-    /// link of a route to its floor. False when there's no way there.
-    fn go_to(&mut self, job: Job, here: usize, terrain: &Terrain, at: u64) -> bool {
+    /// Head for `job`, for `want`: straight there on this floor (the
+    /// heading is done), or along the first link of a route to its floor,
+    /// heading for it. False when there's no way there.
+    fn go_to(&mut self, want: Want, job: Job, here: usize, terrain: &Terrain, at: u64) -> bool {
         let (x, y) = job.spot();
         let there = terrain.platform_at(x, y);
         if there == Some(here) {
             tracing::debug!(?job, "houseguest: walking to a job");
+            self.heading = None;
             self.pursue(job, at);
             return true;
         }
         match there.map(|there| route(terrain, here, there)) {
             Some(Some(link)) => {
                 tracing::debug!(?job, via = ?link.route, "houseguest: heading for a job on another floor");
-                self.goal = Some(job);
+                self.heading = Some(Heading { want, job });
                 self.travel(link, at);
                 true
             }
             // No way there: a door in space, straight to it.
             Some(None) => {
-                self.goal = Some(job);
+                self.heading = Some(Heading { want, job });
                 self.through_door((x, y), at);
                 true
             }
             None => false,
+        }
+    }
+
+    /// The one way she lets go of where she was heading.
+    fn drop_heading(&mut self, why: Letting) {
+        if let Some(heading) = self.heading.take() {
+            tracing::debug!(?why, want = ?heading.want, "houseguest: lets go of where she was heading");
         }
     }
 
@@ -2394,7 +2460,7 @@ impl Osaka {
     pub fn place(&mut self, x: i32, y: i32, at: u64) {
         self.x = x;
         self.y = y;
-        self.goal = None;
+        self.drop_heading(Letting::Placed);
         self.watch_until = 0;
         self.speech = None;
         self.at_work = false;
@@ -2406,8 +2472,8 @@ impl Osaka {
         self.watch_until = now + WATCH_MS;
         // On her way to a piece she made: what it's for is kept on the
         // piece, and she comes back to it as another try (`leftover`).
-        if matches!(&self.goal, Some(Job::Use(seat)) if seat.makeshift()) {
-            self.goal = None;
+        if self.heading.as_ref().is_some_and(Heading::mine) {
+            self.drop_heading(Letting::Chat);
         }
         // Someone's here: whatever she knocked over or swapped goes back
         // at once, in order.
@@ -2640,7 +2706,6 @@ impl Osaka {
             Act::Away { .. } | Act::Out { .. } => {
                 // Work can wait.
                 self.at_work = false;
-                self.goal = None;
                 self.set(
                     Act::Door {
                         since: at.saturating_sub(DOOR_THROUGH_MS),
@@ -2712,7 +2777,6 @@ impl Osaka {
         let Some(spot) = self.errand else {
             return;
         };
-        self.goal = None;
         if (self.x, self.y) == spot {
             return self.poke(at);
         }

@@ -2403,6 +2403,44 @@ keeps the broad check (any job in her act, a walk's included), because
 a tick far behind can re-pick a pull before the paint that reports the
 lost grip.
 
+## Her mind is a table and a heading (2026-10-02)
+
+**Rule:** What she wants is a table (base, needs answered, factors).
+How she sets about a want is a list of named methods with pure guards;
+a want is offered only when one of them binds, and she does what it
+bound. Her mind draws from its own random stream, once a decision.
+Heading for another floor, she finds the job again by meaning and
+weighs it three times as likely each time she chooses; choosing
+otherwise, or finding it gone, lets it go. See
+[design.md](design.md#houseguest).
+
+**Why:** Phase 2 of the
+[mind proposal](proposals/2026-10-02-houseguest-mind.md#choosing-what-and-how).
+Offers and plans were built by separate code (`decide`'s offer list,
+`start`'s arms, `places_for`), so a want could be offered and then turn
+out impossible ("couldn't after all", re-rolled), and adding a
+behaviour touched four to six places. With the guards also planning,
+the two can't disagree, and a behaviour is a row plus a method or
+three. Guards read whims hashed from one draw a decision, so they stay
+pure and the body's stream (durations, looks) no longer shifts with
+every choice. The heading replaces a goal that was found again by
+exact equality, so a line that scrolled one row was a different job
+(83 and 125 dropped pulls in two long runs with scrolling chat, in
+the [diagnosis](proposals/2026-10-02-houseguest-mind/sofa-diagnosis.md)).
+It was also a certain pre-empt; now it competes with inertia, as the
+proposal's rule 3 has it, so a long trip can be abandoned for something
+more pressing. A heading toward a piece she made stays certain: that
+purpose is on the piece, and continuation already counts her tries at
+it, which a roll per hop would double.
+
+The method table is not a behaviour tree or a planner: methods hold no
+state, a decision makes one step, and the only memory is the heading
+and what's on her things. Trees were rejected (2026-09-28) for intent
+living in a running node that every interrupt must unwind; GOAP for
+planning against a hypothetical terrain, which would move the
+read-order bug class rather than remove it, for a catalogue of which
+about 70 of 90 entries gain nothing from search.
+
 ## Houseguest chooses by needs among the top few (2026-09-28)
 
 **Rule:** Her next act is a weighted-random pick among the four

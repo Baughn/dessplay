@@ -343,10 +343,10 @@ fn golden_stage_room() {
         "stage",
         stage_room,
         &[
-            (0, 0x8a4fe5db633b5dba, 0xe5e2a3f0983c68f2),
-            (1, 0xe8c24a33767375b6, 0xe10b1a506a6a75a5),
-            (2, 0x33c3933a61830d3d, 0xb057beb4e61855e6),
-            (3, 0x690f0f5494825aa3, 0x4df8f57a2c5a0632),
+            (0, 0x9c9751d80c70894e, 0x02139ed6dc1d7ef8),
+            (1, 0xbe0054cd8f654cbb, 0xc804b154a6cf64a6),
+            (2, 0x3a9fe06df92c7a60, 0x56a1e9363df1a3ea),
+            (3, 0x690f0f5494825aa3, 0xac9786000a6eaa04),
         ],
     );
 }
@@ -357,10 +357,10 @@ fn golden_resident() {
         "resident",
         resident,
         &[
-            (0, 0x16800a9f405fe9d6, 0x9187eef44ac048f2),
-            (1, 0x4c924b76b292aad1, 0xd406fcbda2e6e945),
-            (2, 0x4f686048ade42792, 0x919694b20d11c5fb),
-            (3, 0xe0299587dfb459ec, 0x7a3cec709b3cff53),
+            (0, 0x16800a9f405fe9d6, 0x219b1de088b5778a),
+            (1, 0x8e93f8e7f24a3ce8, 0xf03ad0e90445d8a7),
+            (2, 0x3b081cf0de67e0cd, 0x16bbc923eaca6964),
+            (3, 0x98fa6f1dd440c54b, 0xf5f5f5bb4230d5c1),
         ],
     );
 }
@@ -371,10 +371,10 @@ fn golden_furnished_home() {
         "furnished",
         furnished,
         &[
-            (0, 0x2290316ce9cfa641, 0x6916a6c276caf2aa),
-            (1, 0x01dcde88e131e82d, 0xc6295f2f6d77df6e),
-            (2, 0x4fc6cd6270f50711, 0x8212a9b1f3d8eb82),
-            (3, 0xdb138ece3767448c, 0x2b88e3f9ce843696),
+            (0, 0x791fe064e4bda3bf, 0x472cc7b5f49e442e),
+            (1, 0x73beb4a04ee59805, 0xcc20a25aefb9429c),
+            (2, 0xdfc631642705ce0a, 0x7752d7cb364ad203),
+            (3, 0xf4f9e44565ca237c, 0xc8b71e87fb316682),
         ],
     );
 }

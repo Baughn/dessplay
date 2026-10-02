@@ -449,3 +449,137 @@ pub(super) fn pick_build(
     super::osaka::pick_weighted(builds.len(), weight, |n| w.below("build", n))
         .and_then(|i| builds.get(i).copied())
 }
+
+/// Rows a line may have scrolled up (chat scrolls up) and still be the
+/// one she set off for.
+pub(super) const SCROLLED: u16 = 4;
+
+/// Where she's heading off her floor: what she wants there, and the job
+/// as she set off for it, by which she knows it again.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct Heading {
+    pub want: Want,
+    pub job: Job,
+}
+
+impl Heading {
+    /// She's heading for a piece she made this visit (what she made it
+    /// for is on the piece, and she comes back to it anyway).
+    pub fn mine(&self) -> bool {
+        matches!(&self.job, Job::Use(seat) if seat.makeshift())
+    }
+
+    /// The job as this frame offers it, found by meaning: a use of the
+    /// same piece for the same thing, wherever it now stands; text by its
+    /// glyphs in the same columns, on its row or up to [`SCROLLED`] rows
+    /// above (the least scrolled first).
+    pub fn find(&self, chances: &Chances) -> Option<Job> {
+        let near = |row: u16| row <= self.row() && row + SCROLLED >= self.row();
+        match &self.job {
+            Job::Use(seat) => chances
+                .seats
+                .iter()
+                .find(|s| s.piece == seat.piece && s.what == seat.what)
+                .map(|&s| Job::Use(s)),
+            Job::Pull(was) => chances
+                .pulls
+                .iter()
+                .filter(|p| near(p.row) && p.cells == was.cells && p.glyphs == was.glyphs)
+                .max_by_key(|p| p.row)
+                .cloned()
+                .map(Job::Pull),
+            Job::Swap(was) => chances
+                .swaps
+                .iter()
+                .filter(|s| {
+                    near(s.row)
+                        && (s.a.at.0, s.b.at.0) == (was.a.at.0, was.b.at.0)
+                        && s.glyphs == was.glyphs
+                })
+                .max_by_key(|s| s.row)
+                .cloned()
+                .map(Job::Swap),
+            Job::Build(was) => chances
+                .builds
+                .iter()
+                .filter(|b| {
+                    near(b.row)
+                        && b.cells == was.cells
+                        && b.glyphs == was.glyphs
+                        && b.piece.item == was.piece.item
+                        && b.then == was.then
+                })
+                .max_by_key(|b| b.row)
+                .cloned()
+                .map(Job::Build),
+        }
+    }
+
+    /// The text row she set off for (0 for a piece).
+    fn row(&self) -> u16 {
+        match &self.job {
+            Job::Pull(p) => p.row,
+            Job::Swap(s) => s.row,
+            Job::Build(b) => b.row,
+            Job::Use(_) => 0,
+        }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::super::scenes::{Pull, Side};
+    use super::*;
+
+    fn pull(row: u16, glyphs: &str) -> Pull {
+        Pull {
+            x: 10,
+            y: i32::from(row) + 2,
+            row,
+            side: Side::Left,
+            cells: vec![2, 3, 4],
+            glyphs: glyphs.to_owned(),
+            gap: 0,
+        }
+    }
+
+    fn heading(job: Pull) -> Heading {
+        Heading {
+            want: Want::Pull,
+            job: Job::Pull(job),
+        }
+    }
+
+    fn offering(pulls: Vec<Pull>) -> Chances {
+        Chances {
+            pulls,
+            ..Chances::default()
+        }
+    }
+
+    /// A line she set off for is the same line when it has scrolled up a
+    /// row or few (chat scrolls up): the same glyphs in the same columns.
+    /// Changed text, or a line that moved down or scrolled too far, isn't.
+    #[test]
+    fn a_heading_finds_its_line_after_a_scroll() {
+        let set_off = heading(pull(20, "abc"));
+        let found = |pulls| set_off.find(&offering(pulls));
+        assert_eq!(
+            found(vec![pull(20, "abc")]),
+            Some(Job::Pull(pull(20, "abc")))
+        );
+        assert_eq!(
+            found(vec![pull(18, "abc")]),
+            Some(Job::Pull(pull(18, "abc")))
+        );
+        assert_eq!(found(vec![pull(20, "abd")]), None);
+        assert_eq!(found(vec![pull(21, "abc")]), None);
+        assert_eq!(found(vec![pull(20 - SCROLLED - 1, "abc")]), None);
+        // Of two that would do, the least scrolled.
+        assert_eq!(
+            found(vec![pull(17, "abc"), pull(19, "abc")]),
+            Some(Job::Pull(pull(19, "abc")))
+        );
+    }
+}

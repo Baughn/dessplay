@@ -3319,6 +3319,7 @@ fn a_real_piece_wins_nineteen_times_in_twenty() {
         row: 18,
         side: Side::Left,
         cells: vec![20, 21, 22, 23, 24],
+        glyphs: "hello".to_owned(),
         piece,
         then: Use::Lounge,
     };
@@ -4078,6 +4079,7 @@ fn a_made_sofa_mostly_faces_the_tv() {
         row: 18,
         side: Side::Left,
         cells: vec![20, 21, 22, 23, 24],
+        glyphs: "hello".to_owned(),
         piece: Shown {
             item: Furniture::Sofa,
             facing: sprite::Facing::Right,

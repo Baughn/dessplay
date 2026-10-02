@@ -255,6 +255,8 @@ impl Want {
     }
 }
 
+/// Where she's heading for is this much likelier to stay what she wants.
+pub(super) const INERTIA: f64 = 3.0;
 /// No offer's fit drops below this, whatever her needs.
 const FLOOR: f64 = 0.1;
 /// The fit of an offer that answers no need.

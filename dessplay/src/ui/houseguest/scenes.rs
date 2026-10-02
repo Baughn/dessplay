@@ -54,6 +54,8 @@ pub(super) struct Pull {
     pub side: Side,
     /// Columns of the line's glyphs, left to right.
     pub cells: Vec<u16>,
+    /// The glyphs there (how she knows the line again once it scrolls).
+    pub glyphs: String,
     /// Blank cells between her box and the line's end.
     pub gap: u16,
 }
@@ -70,6 +72,8 @@ pub(super) struct Swap {
     pub side: Side,
     pub a: Placed,
     pub b: Placed,
+    /// The two letters, as shown (how she knows them again).
+    pub glyphs: String,
 }
 
 /// Makeshift furniture she could make: standing at `x` on the floor at
@@ -83,6 +87,8 @@ pub(super) struct Build {
     pub row: u16,
     pub side: Side,
     pub cells: Vec<u16>,
+    /// The glyphs there (how she knows the line again once it scrolls).
+    pub glyphs: String,
     pub piece: super::room::Shown,
     /// What she makes it for.
     pub then: super::room::Use,
@@ -141,6 +147,14 @@ impl Job {
     pub fn side(&self) -> Side {
         self.by_ref().side()
     }
+}
+
+/// The glyphs shown at `cells` of `row`, in that order.
+fn glyphs_at(buf: &Buffer, row: u16, cells: &[u16]) -> String {
+    cells
+        .iter()
+        .filter_map(|&c| buf.cell((c, row)).map(|cell| cell.symbol().to_owned()))
+        .collect()
 }
 
 /// A job, borrowed from wherever it's kept (her act holds the one she's
@@ -362,12 +376,14 @@ pub(super) fn pulls(buf: &Buffer, terrain: &Terrain, protected: &[Rect]) -> Vec<
                         continue;
                     };
                     if let Some(cells) = segment(buf, protected, start, row, dir) {
+                        let glyphs = glyphs_at(buf, row, &cells);
                         out.push(Pull {
                             x,
                             y,
                             row,
                             side,
                             cells,
+                            glyphs,
                             gap,
                         });
                     }
@@ -440,6 +456,7 @@ pub(super) fn swaps(
                                 side,
                                 a: placed(a.min(b)),
                                 b: placed(a.max(b)),
+                                glyphs: glyphs_at(buf, row, &[a.min(b), a.max(b)]),
                             });
                         }
                     }
@@ -624,6 +641,7 @@ pub(super) fn builds(
                     Side::Right => pull.cells.iter().take(count).copied().collect(),
                     Side::Left => pull.cells.iter().rev().take(count).copied().collect(),
                 };
+                let glyphs = glyphs_at(buf, pull.row, &cells);
                 for what in then(&piece) {
                     out.push(Build {
                         x: pull.x,
@@ -631,6 +649,7 @@ pub(super) fn builds(
                         row: pull.row,
                         side: pull.side,
                         cells: cells.clone(),
+                        glyphs: glyphs.clone(),
                         piece: Shown {
                             scrap: Some(Scrap::new(id, &[], 0)),
                             ..piece

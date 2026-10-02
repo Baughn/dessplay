@@ -1434,6 +1434,18 @@ this section states what is built.
   multiplies by 0.4. Needs only weight choices: nothing is ever ruled out,
   and nothing bad happens when a need is high
   (why: [decisions](decisions.md#houseguest-chooses-by-needs-among-the-top-few-2026-09-28)).
+  Something is on offer only when there's a way to do it from where she
+  stands (a method that binds: a spot on her floor, a way off it, a
+  piece, text in reach), and she does it the way that bound.
+  **Heading for another floor**: she keeps in mind what she's making
+  for and finds it again by what it is — a piece by what she'd use it
+  for, text by its glyphs in the same columns, on its row or up to four
+  rows above (chat scrolls up). Each time she chooses on the way, it's
+  on offer as she set off for it and three times as likely; if she
+  chooses something else, or it's gone, she lets it go. A piece she made
+  this visit is the exception: on her way to it, each hop is the same
+  trip, not a fresh choice
+  (why: [decisions](decisions.md#her-mind-is-a-table-and-a-heading-2026-10-02)).
 - **Bubbles and speech**: her bubbles are text in the first of several
   spots around her head, wherever the pose puts it (lying down, it's on
   the floor at one end) — up and to the side it's nearer (the side she
