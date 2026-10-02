@@ -3848,3 +3848,106 @@ fn chat_mid_clamber_doesnt_drop_her() {
         );
     }
 }
+
+/// Her sofa on the TV's floor is where she watches it from, wherever on
+/// the floor the TV stands: against the pane's left wall too.
+#[test]
+fn a_tv_anywhere_on_the_sofas_floor_is_watched_from_it() {
+    use super::room::{PieceRef, Prop, Use};
+    // One pane, alone on its floor: nothing beyond its walls.
+    let screen = || {
+        let (width, height) = (100u16, 20u16);
+        let mut buf = Buffer::empty(Rect::new(0, 0, width, height));
+        let playlist = Rect::new(20, 8, 50, 9);
+        tuirealm::ratatui::widgets::Widget::render(
+            tuirealm::ratatui::widgets::Block::bordered(),
+            playlist,
+            &mut buf,
+        );
+        buf.set_string(0, height - 2, "Tab Next pane | Enter Send", Style::new());
+        let view = IdleView {
+            nooks: vec![(Nook::Playlist, playlist)],
+            ..view(bottom_strip(width, height))
+        };
+        (buf, view)
+    };
+    for (tv_at, sofa_at) in [(0, 1000), (1000, 0), (500, 0)] {
+        let (real, view) = screen();
+        let mut guest = Guest::new(1);
+        for (item, at, facing) in [
+            (Furniture::Tv, tv_at, sprite::Facing::Right),
+            (Furniture::Sofa, sofa_at, sprite::Facing::Left),
+        ] {
+            assert!(guest.ledger.home.add(
+                Nook::Playlist,
+                Prop {
+                    item,
+                    at,
+                    facing,
+                    boxed: false,
+                },
+            ));
+        }
+        guest.cue(Scene::Arrive);
+        paint(&mut guest, &real, &view, 0);
+        let _ = run(&mut guest, &real, &view, 0, 2000);
+        let State::Visiting(visit) = &guest.state else {
+            panic!("visiting");
+        };
+        let shown: Vec<_> = visit.shown.iter().map(|s| (s.item, s.left)).collect();
+        assert_eq!(shown.len(), 2, "tv at {tv_at}: both stand: {shown:?}");
+        assert!(
+            visit
+                .chances
+                .seats
+                .iter()
+                .any(|s| s.what == Use::Watch && s.piece == PieceRef::Real(Furniture::Sofa)),
+            "tv at {tv_at}, sofa at {sofa_at}: {shown:?}, seats {:?}",
+            visit.chances.seats
+        );
+    }
+}
+
+/// Where she could make a sofa that faces the TV too, she mostly makes
+/// it there: five times as likely as a spot that doesn't.
+#[test]
+fn a_made_sofa_mostly_faces_the_tv() {
+    use super::osaka::{Chances, pick_build};
+    use super::room::{MadeId, Use};
+    use super::scenes::{Build, Side};
+    let build = |x: i32, then: Use| Build {
+        x,
+        y: 20,
+        row: 18,
+        side: Side::Left,
+        cells: vec![20, 21, 22, 23, 24],
+        piece: Shown {
+            item: Furniture::Sofa,
+            facing: sprite::Facing::Right,
+            boxed: false,
+            nook: None,
+            left: x - 3,
+            floor: 20,
+            scrap: Some(scrap::Scrap::new(MadeId(0), &[], 0)),
+        },
+        then,
+    };
+    let chances = Chances {
+        builds: vec![
+            build(30, Use::Lounge),
+            build(30, Use::Watch),
+            build(60, Use::Lounge),
+        ],
+        ..Chances::default()
+    };
+    let mut rng = super::Rng(7);
+    let facing = (0..6000)
+        .filter(|_| {
+            pick_build(Use::Lounge, Furniture::Sofa, &chances, &mut rng).is_some_and(|b| b.x == 30)
+        })
+        .count();
+    assert!(
+        (4600..=5400).contains(&facing),
+        "{facing} of 6000 faced the TV"
+    );
+}

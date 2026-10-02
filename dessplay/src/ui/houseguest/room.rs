@@ -627,19 +627,33 @@ fn free(shown: &[Shown], blocked: &dyn Fn(i32, i32) -> bool, x: i32, y: i32) -> 
 }
 
 /// Where `pieces` would stand in `nook`, if its pane is there and big
-/// enough to hold every one of them without overlapping.
+/// enough to hold every one of them without overlapping: each at its
+/// place along the floor, except that pieces whose places collide stand
+/// side by side, in order along it.
 fn layout(pieces: &[Prop], nook: Nook, nooks: &[(Nook, Rect)]) -> Option<Vec<Shown>> {
-    let placed: Vec<Shown> = pieces
+    let mut placed: Vec<Shown> = pieces
         .iter()
         .map(|&prop| place(prop, nook, nooks))
         .collect::<Option<_>>()?;
-    let apart = placed.iter().enumerate().all(|(i, a)| {
-        placed
-            .iter()
-            .skip(i + 1)
-            .all(|b| !a.rect().intersects(b.rect()))
-    });
-    apart.then_some(placed)
+    let &(_, rect) = nooks.iter().find(|(n, _)| *n == nook)?;
+    let cols = |piece: &Shown| i32::from(piece.size().0);
+    let mut order: Vec<usize> = (0..placed.len()).collect();
+    order.sort_by_key(|&i| (pieces.get(i).map_or(0, |p| p.at.min(1000)), i));
+    // Left to right, each clear of the one before; then right to left,
+    // each back inside the far wall and clear of the one after.
+    let mut edge = i32::from(rect.x) + 1;
+    for &i in &order {
+        let piece = placed.get_mut(i)?;
+        piece.left = piece.left.max(edge);
+        edge = piece.left + cols(piece);
+    }
+    let mut edge = i32::from(rect.right()) - 1;
+    for &i in order.iter().rev() {
+        let piece = placed.get_mut(i)?;
+        piece.left = piece.left.min(edge - cols(piece));
+        edge = piece.left;
+    }
+    (edge > i32::from(rect.x)).then_some(placed)
 }
 
 /// Where `prop` would stand in `nook`, if its pane is there and wide and
@@ -816,6 +830,45 @@ mod tests {
         // Nowhere holds both: the whole room is in the closet.
         let shown = room.resolve(&buf, &[(Nook::Users, users)], &|_, _| false);
         assert!(shown.is_empty(), "{shown:?}");
+    }
+
+    /// Pieces whose places along the floor collide stand side by side,
+    /// in order along it, while the pane holds them all; and keep their
+    /// own places where they don't collide.
+    #[test]
+    fn colliding_pieces_stand_side_by_side() {
+        let buf = pane(&[
+            "┌Users───────────────────────┐",
+            "│                            │",
+            "│                            │",
+            "│                            │",
+            "│                            │",
+            "└────────────────────────────┘",
+        ]);
+        let nooks = [(Nook::Users, buf.area)];
+        for (sofa, tv) in [(500, 500), (400, 450), (1000, 900), (0, 0)] {
+            let mut room = home(
+                Nook::Users,
+                &[prop(Furniture::Sofa, sofa), prop(Furniture::Tv, tv)],
+            );
+            let shown = room.resolve(&buf, &nooks, &|_, _| false);
+            assert_eq!(shown.len(), 2, "sofa {sofa}, tv {tv}: {shown:?}");
+            assert!(!shown[0].rect().intersects(shown[1].rect()), "{shown:?}");
+            let left = |item| shown.iter().find(|s| s.item == item).map(|s| s.left);
+            assert_eq!(
+                left(Furniture::Sofa) < left(Furniture::Tv),
+                (sofa, 0) < (tv, 1),
+                "in order along the floor: {shown:?}"
+            );
+        }
+        // Apart, each keeps its own place.
+        let mut room = home(
+            Nook::Users,
+            &[prop(Furniture::Sofa, 0), prop(Furniture::Tv, 1000)],
+        );
+        let shown = room.resolve(&buf, &nooks, &|_, _| false);
+        assert_eq!(shown[0].left, 1);
+        assert_eq!(shown[1].rect().right(), 29);
     }
 
     #[test]

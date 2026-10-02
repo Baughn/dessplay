@@ -1,6 +1,6 @@
 # DessPlay Implementation Plan
 
-Last updated: 2026-09-28
+Last updated: 2026-10-02
 
 The initial 10 phases are bottom-up; later numbered phases capture feature
 batches. Each phase produces testable artifacts. The first
@@ -2102,3 +2102,54 @@ welcome; the only goal is "watching her is kind of fun".
   sheet and the stage; show them the sheet for any new art before wiring
   it in.
 
+
+## Phase 38: Houseguest mind and home
+
+**Status: phase 0 done (2026-10-02); phase 1 next.** Design: [the mind
+and home proposal](proposals/2026-10-02-houseguest-mind.md) (direction
+agreed with the user; their answers are its *Decisions*). Its migration
+plan numbers its own phases 0–8; this section records them.
+
+### Phase 0 — the sofa class (done 2026-10-02)
+
+- **Exit commits.** Home events are recorded right after the tick that
+  produced them (`record` in mod.rs, shared with paint), so a visit
+  ending before the next paint can't drop an order or an unpacking
+  (`commits_survive_the_visit_ending`).
+- **The nap.** A made piece in shape offers the real piece's uses; a
+  nap answers *sleepy* (0.1) with a neutral floor (`for_its_own_sake`),
+  a bridge until the proposal's comfort need
+  (`sleepy_she_naps_on_the_sofa_she_made`).
+- **Purposes on things.** `MadeId` (in `Scrap`), `PieceRef` on `Seat`
+  (no more `makeshift: bool`), `Made { purpose, used }`, `Build.then` is
+  a `Use`, `HomeEvent::{Crumpled, Used}(MadeId)`, `Chances.mine`;
+  `Osaka::making` is gone. Continuation (`Osaka::leftover`): after the
+  reflexes and the goal, nearest first, up to `TRIES` = 3 (a try per
+  setting-off or failure to bind; crumpling resets them). Goals for
+  another floor resolve by meaning (`Chances::offered`); `look()` drops
+  a goal for a made piece so the return is a counted try.
+  Tests: `an_interrupted_crumple_keeps_its_purpose`,
+  `every_made_piece_is_used_or_let_go` (property; ~11 s at the gate's 32
+  cases, the suite's long pole).
+- **Found on the way.** Chat mid-clamber dropped her off the pole
+  (`aloft()`; `chat_mid_clamber_doesnt_drop_her`). The 256-case runs
+  found two more (saved as proptest regressions): `elsewhere` sampled
+  one spot per floor and could miss every calm one; her frozen
+  composite listed box cells her clipped image never drew, so a focus
+  rain fell on a pane's border.
+- **TV and layout.** The TV's floor is where she'd stand beside it;
+  colliding pieces are laid side by side (`layout`); sofa build sites
+  facing the TV weigh 5 (`pick_build`).
+- **Not done from the phase-0 list.** The three pinned "37 s chat"
+  bench cases: the bench and its logs weren't kept (sofa-diagnosis.md),
+  so the property covers the class instead. `seed_7` needed no re-pin.
+
+### Phase 1 — pure refactor (brief)
+
+`ActProps` (`Stays`, `OnChat`) replacing the hand-kept act lists (look,
+recheck, `aloft`, `standing`); the job in the act's payload (`task`
+deleted); one `interrupt(Cause)`. **Record the golden trajectory hashes
+first** (proposal, *Determinism, cost, testing*: 4 seeds × {ASCII,
+kitty} × four scenarios) and keep them unchanged. Then the checkpoint:
+re-run a chat-heavy bench and a 256-case pass, and record the result
+here before phase 2.

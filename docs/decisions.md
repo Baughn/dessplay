@@ -2280,6 +2280,43 @@ moments after a sneeze, a fall or a door are short and stay passing.
 The test models the trigger honestly — text coming up next to her at
 random times — and failed before the change.
 
+## Two body bugs from the deep runs (2026-10-02)
+
+**Rule:** Somewhere calm elsewhere is chosen among the calm spots of
+each floor, so she never stays over text while a calm spot exists.
+What she painted (which the goodbye and a focused pane's rain fall
+over) is only what her image could cover. See
+[design.md](design.md#houseguest).
+
+**Why:** Both turned up in 256-case runs during phase 0 of the
+[mind proposal](proposals/2026-10-02-houseguest-mind.md). Off text with
+no calm spot on her own floor, she tried one random spot per floor and,
+when every one was on text, concluded there was nowhere calm and stayed,
+hiding text behind her for over ten seconds (a floor with 67 calm spots
+out of 77 still missed one time in eight). And when a pane was focused
+as she stood against its border, the next frame rained noise over the
+border: her image is clipped there and never drew on it, but her frozen
+composite listed every cell of her box.
+
+## Her sofa goes with her TV (2026-10-02)
+
+**Rule:** Pieces of a room whose places along the floor collide stand
+side by side in order, while the pane holds them all. A sofa on the
+TV's floor (the floor she'd stand on to watch it) is where she watches
+from. A makeshift sofa is five times as likely to be made where it
+would face the TV. See [design.md](design.md#houseguest).
+
+**Why:** The user saw her TV on one floor and her sofa on another. The
+watch-from-the-sofa check asked for the floor under the TV's leftmost
+column, which against a pane's wall is no standing spot, so a TV in a
+corner was never watched from the sofa. Two pieces at colliding places
+sent their whole room to another pane or the closet, though they'd fit
+side by side. And a makeshift sofa was built under whichever line she
+picked, uniformly, wherever the TV was. These are the phase-0 patches;
+the [proposal](proposals/2026-10-02-houseguest-mind.md#home-and-structures)
+replaces fixed places with anchors, rooms from contents, and rules
+she repairs.
+
 ## What she makes a piece for stays on the piece (2026-10-02)
 
 **Rule:** A makeshift piece records what she made it for and whether

@@ -22,6 +22,14 @@ Add new days at the top. Add new entries at the bottom of existing days.
   sofa she never sits on.
 - Fixed: A chat line no longer knocks the houseguest off a divider
   she's clambering over.
+- Changed: The houseguest prefers to make a sofa where she can watch her
+  TV from it, watches from her sofa even when the TV stands in a
+  corner, and her furniture no longer vanishes into the closet when two
+  pieces would overlap: they stand side by side.
+- Fixed: The houseguest no longer sometimes stands over text that came
+  up around her, hiding it, when there was room to move on.
+- Fixed: Selecting a pane next to where the houseguest stands no longer
+  flickers noise over its border.
 
 ## 2026-10-01
 

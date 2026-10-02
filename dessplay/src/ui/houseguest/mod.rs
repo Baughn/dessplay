@@ -1456,7 +1456,9 @@ fn spots_for(piece: &Shown, shown: &[Shown], terrain: &Terrain, cat: bool) -> Ve
             });
         out.extend(seat);
     }
-    // A sofa on the same floor as the TV is where to watch it from.
+    // A sofa on the same floor as the TV is where to watch it from: the
+    // floor she'd stand on beside the TV to watch it (its own columns
+    // may run up to a wall, past the floor's last standing spot).
     if piece.uses().contains(&room::Use::Lounge) {
         let sofa = piece.seat(room::Use::Lounge, 0);
         let floor = terrain.platform_at(sofa.x, sofa.y);
@@ -1464,7 +1466,10 @@ fn spots_for(piece: &Shown, shown: &[Shown], terrain: &Terrain, cat: bool) -> Ve
             tv.item == Furniture::Tv
                 && !tv.boxed
                 && floor.is_some()
-                && terrain.platform_at(tv.left, tv.floor) == floor
+                && tv
+                    .beside()
+                    .into_iter()
+                    .any(|x| terrain.platform_at(x, tv.floor) == floor)
         });
         if let Some(tv) = tv {
             let facing = if tv.left > sofa.x {
@@ -1857,6 +1862,11 @@ fn draw_art(
     for dy in -sprite::HEIGHT..0 {
         for dx in -(sprite::WIDTH / 2)..=(sprite::WIDTH / 2) {
             let (x, y) = (osaka.x + dx, osaka.y + dy);
+            // Only what the image can cover (it's clipped to the same
+            // cells): the rest she never drew, and mustn't rain over.
+            if !terrain.open(x, y) {
+                continue;
+            }
             let (Ok(ux), Ok(uy)) = (u16::try_from(x), u16::try_from(y)) else {
                 continue;
             };

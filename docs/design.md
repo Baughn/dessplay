@@ -1490,7 +1490,9 @@ this section states what is built.
   Playlist, or The List, never the chat — and a pane holds one room. A
   room's first piece picks a free pane; the rest follow it. Each piece
   stands on its pane's bottom border at a fraction of the way along it,
-  so resizes and layout changes carry it along, and only on unbroken line
+  so resizes and layout changes carry it along (pieces whose places
+  collide stand side by side, in order along the floor, while the pane
+  holds them all), and only on unbroken line
   glyphs over blank cells, clear of protected cells, text she moved,
   other pieces, and her box; a piece whose cells aren't free is in the
   closet for that frame (hidden, still owned). When a room's pane is gone
@@ -1508,7 +1510,8 @@ this section states what is built.
   little off), sleeps in bed (answers *sleepy* far
   better than a doze on a border or a nap), does homework at the desk (nodding
   off onto the paper halfway through), or watches the TV from beside
-  it, or from a sofa on the TV's floor, turned towards it; she reads beside her bookshelf, gets a snack from her fridge (it
+  it, or from a sofa on the TV's floor (the floor she'd stand on beside
+  it), turned towards it; she reads beside her bookshelf, gets a snack from her fridge (it
   stands open as she looks in, then she eats a melon bread), and on
   about half her visits Kamineko is asleep in the cat bed — she pets
   him, and he bites ("Ow!"). Her lamp is lit, and dark while she sleeps
@@ -1559,7 +1562,8 @@ this section states what is built.
   piece comes first**: when a real one of its kind is on offer for what
   she wants, she goes for the makeshift one (or makes one) only one
   time in twenty, and then that's where she goes. Making one in the
-  chat is a tenth as likely, like anything else there
+  chat is a tenth as likely, like anything else there, and a sofa is
+  five times as likely to be made where it would face her TV
   (why: [decisions](decisions.md#houseguest-makes-furniture-of-torn-off-text-2026-10-01)).
 
 - Playback starting (for a visitor) or an overlay opening mid-visit
@@ -1643,14 +1647,16 @@ this section states what is built.
   spanning her and them, and any further piece that rectangle meets
   (less the floors they stand on and the pieces themselves): whenever
   she'd choose what to do next over text, she first walks to the
-  nearest calm spot on her floor, or takes a door to one; the spots she
+  nearest calm spot on her floor, or takes a door to one (a calm spot
+  chosen at random among every floor's calm spots); the spots she
   works at (pulls, swaps) and steps out of a door onto when leaving a
   focused pane are calm ones. Where she settled calm, she keeps
   checking: if text comes up in that image while she rests there
   (standing, spacing out, an activity), uses a piece, or works at a
   pull, a tear or a swap (and hangs about after it), or a piece joins
   it, she's startled, lets go, and moves on to somewhere calm. With nowhere
-  calm to go when she chose, she stays put.
+  calm anywhere when she chose, she stays put. What the goodbye and a
+  focused pane's rain fall over is only what her image could cover.
   Wide glyphs stay solid (never half of one hidden). Poking the scrollback
   accordion is the one time she stays over text (see below). Standing,
   the image grows one row to include the floor, so her feet rest on the

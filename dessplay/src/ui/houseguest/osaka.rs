@@ -110,14 +110,19 @@ fn middle(p: &Platform) -> (i32, i32) {
 /// With none in the chat it's a plain uniform pick (the same draw as
 /// ever, so seeded visits replay).
 fn pick(n: usize, in_chat: impl Fn(usize) -> bool, rng: &mut Rng) -> Option<usize> {
+    pick_weighted(n, |i| if in_chat(i) { CHAT_FACTOR } else { 1.0 }, rng)
+}
+
+/// Pick one of `n` things by `weight`; with all weighing 1, a plain
+/// uniform pick.
+fn pick_weighted(n: usize, weight: impl Fn(usize) -> f64, rng: &mut Rng) -> Option<usize> {
     if n == 0 {
         return None;
     }
-    if !(0..n).any(&in_chat) {
+    if (0..n).all(|i| weight(i) == 1.0) {
         return Some(rng.below(n as u64) as usize);
     }
-    let weight = |i: usize| if in_chat(i) { CHAT_FACTOR } else { 1.0 };
-    let total: f64 = (0..n).map(weight).sum();
+    let total: f64 = (0..n).map(&weight).sum();
     let mut roll = rng.below(1_000_000) as f64 / 1_000_000.0 * total;
     for i in 0..n {
         if roll < weight(i) {
@@ -126,6 +131,44 @@ fn pick(n: usize, in_chat: impl Fn(usize) -> bool, rng: &mut Rng) -> Option<usiz
         roll -= weight(i);
     }
     Some(n - 1)
+}
+
+/// How much likelier a makeshift sofa is made where she could also
+/// watch the TV from it.
+const FACING_TV: f64 = 5.0;
+
+/// Where she makes a makeshift `item` for `what`: anywhere it can be
+/// made, the chat a tenth as likely, and a sofa [`FACING_TV`] times as
+/// likely where it would face the TV too.
+pub(super) fn pick_build<'a>(
+    what: Use,
+    item: Furniture,
+    chances: &'a Chances,
+    rng: &mut Rng,
+) -> Option<&'a Build> {
+    let builds: Vec<&Build> = chances
+        .builds
+        .iter()
+        .filter(|b| b.then == what && b.piece.item == item)
+        .collect();
+    let watches = |b: &Build| {
+        chances
+            .builds
+            .iter()
+            .any(|o| o.then == Use::Watch && (o.x, o.y, o.piece) == (b.x, b.y, b.piece))
+    };
+    let weight = |i: usize| {
+        builds.get(i).map_or(1.0, |b| {
+            let chat = if chances.in_chat((b.x, b.y)) {
+                CHAT_FACTOR
+            } else {
+                1.0
+            };
+            let tv = if watches(b) { FACING_TV } else { 1.0 };
+            chat * tv
+        })
+    };
+    pick_weighted(builds.len(), weight, rng).and_then(|i| builds.get(i).copied())
 }
 
 /// Somewhere she could go to use something.
@@ -516,13 +559,16 @@ fn elsewhere(
     chat: Option<Rect>,
     rng: &mut Rng,
 ) -> Option<(i32, i32)> {
+    // On each floor, one of its spots that are: a single random spot
+    // per floor could miss every one, and leave her standing over text
+    // with calm floor to spare.
     let spots: Vec<(i32, i32)> = terrain
         .platforms
         .iter()
         .filter_map(|p| {
-            let x = p.x0 + rng.below((p.x1 - p.x0 + 1) as u64) as i32;
-            let spot = (x, p.y);
-            clear(spot).then_some(spot)
+            let xs: Vec<i32> = (p.x0..=p.x1).filter(|&x| clear((x, p.y))).collect();
+            let x = *xs.get(rng.below(xs.len() as u64) as usize)?;
+            Some((x, p.y))
         })
         .collect();
     let in_chat = |i: usize| {
@@ -2103,16 +2149,7 @@ impl Osaka {
                 return match options.get(rng.below(options.len() as u64) as usize) {
                     Some(&Place::Seat(seat)) => self.go_to(Job::Use(seat), here, terrain, at),
                     Some(&Place::Make(item)) => {
-                        let builds: Vec<&Build> = chances
-                            .builds
-                            .iter()
-                            .filter(|b| b.then == what && b.piece.item == item)
-                            .collect();
-                        let in_chat =
-                            |i: usize| builds.get(i).is_some_and(|b| chances.in_chat((b.x, b.y)));
-                        let Some(&build) =
-                            pick(builds.len(), in_chat, rng).and_then(|i| builds.get(i))
-                        else {
+                        let Some(build) = pick_build(what, item, chances, rng) else {
                             return false;
                         };
                         self.go_to(Job::Build(build.clone()), here, terrain, at)

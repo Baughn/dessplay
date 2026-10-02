@@ -1,6 +1,6 @@
 # Proposal: The Houseguest's mind and home
 
-Status: **DRAFT 2026-10-02 — direction agreed; the user's answers are in [Decisions](#decisions-2026-10-02); phase 0 in progress** (purposes on made pieces, continuation, exit commits, the nap: done)
+Status: **DRAFT 2026-10-02 — direction agreed; the user's answers are in [Decisions](#decisions-2026-10-02); phase 0 implemented 2026-10-02** (notes: [plan.md, Phase 38](../plan.md#phase-38-houseguest-mind-and-home))
 
 Supporting notes: [the sofa diagnosis](2026-10-02-houseguest-mind/sofa-diagnosis.md) (with the phase-0 regression test), [character-AI survey](2026-10-02-houseguest-mind/research-character-ai.md), [layout survey](2026-10-02-houseguest-mind/research-layout.md), [the full home model](2026-10-02-houseguest-mind/alternative-full-home-model.md) (alternative C).
 
