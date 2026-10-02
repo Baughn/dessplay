@@ -2318,3 +2318,28 @@ Then re-run `sofa_census` and the 256-case pass, and record them here.
   pools**: the simulator hears "Where was I?" (every door's end) 467
   times in 16 half-hour stage visits, about once a minute; it should
   join a pool with a cooldown, as the proposal's Character section says.
+
+### Phase 3 — the home model (brief)
+
+Proposal: *Home and structures* (*The model*, *Rooms from contents*) and
+the migration row. In order, each against the gate:
+
+1. **The `Spec` table** first, as a refactor: one row per furniture kind
+   replacing the scattered `Furniture` matches (footprint, name, art,
+   ASCII, uses, seats), plus what a piece offers and its comfort (which
+   should then feed `brain::quality` instead of the Real/Made/Floor
+   constants). Golden hashes must stay unchanged through it.
+2. **Strips and per-piece anchors** (a new top-level ledger field; ledger
+   version 1 kept, `props[].at` still written, older records derive
+   anchors from `at`), and **`project()`** packing each strip in anchor
+   order, replacing `Home::{resolve, spot}`, `layout` and `place`.
+   Golden-file tests of the ledger both ways; "a resize and back
+   restores"; "projection uses only blank, unprotected cells; packing
+   keeps order".
+3. **Rooms and roles from contents** (`RoomKind` and `Home.rooms`
+   deleted), `Faces` on strips. The user chose this (Q7): panes are only
+   her starting home.
+
+Re-run `visit_census` and `sofa_census` at the end and record them
+here; `at_home_her_furniture_beats_the_floor` and the furnished-home
+tests are the statistics most likely to move.
