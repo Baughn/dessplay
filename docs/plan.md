@@ -2188,8 +2188,33 @@ sitting), or none.
 | 37 s | kitty | 93 | 93 | 7 / 24 / 28 s | 0 | 0 | 0 |
 
 The one waiting piece was started at 294.8 s and still being crumpled
-when the visit ended. Fewer than 100 made with chat: a tear interrupted
-mid-reel puts the text back, as designed. Waits of ~25 s are a look, the
+when the visit ended. Fewer than 100 made with chat is most likely a
+tear interrupted mid-reel, whose text goes back by design (not counted
+separately; a cue finding no site that frame is the other possibility). Waits of ~25 s are a look, the
 15 s watch and the walk back. The 256-case houseguest run passed (149
 tests, 40 s, release), and so did the perf test. **The sofa class no
 longer leaks; phase 2 needn't start by closing it.**
+
+### Phase 2 — the mind as data (brief)
+
+Proposal: *Choosing what, and how*, *Every want answers a need*, *Her
+mood for the visit*, *Interruption and intent*, and the migration row.
+Two steps, each its own commits:
+
+1. **The table conversion, with today's numbers.** `Want`/`DesireDef`
+   with named factors; the method table (ordered methods, pure guards,
+   first that binds); `Heading` replaces `goal`, the one intent field
+   still outside the act (×3 inertia in the roll; dropped with a
+   glance); beats at the loss sites of the proposal's table, where
+   `interrupt(Cause)` is now the single site for those that stop her
+   short; credit by completed fraction (Q4); the mind's own rng stream
+   (`visit_seed ^ MIND_SALT`, one draw per decision) and whims; the
+   explain log; the lints. The golden hashes are expected to change:
+   re-record them once, deliberately, from the table the failure
+   prints, after this step, and say so in the commit. Statistics tests
+   shift only by credit moving to the fraction.
+2. **Needs for every want and the visit's mood**, tuned in the headless
+   simulator (brought forward from phase 5) before any statistics test
+   is re-pinned.
+
+Then re-run `sofa_census` and the 256-case pass, and record them here.
