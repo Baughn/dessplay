@@ -13,7 +13,7 @@
 
 use super::mind::Whims;
 use super::osaka::Activity;
-use super::room::Use;
+use super::room::{Furniture, Use};
 
 /// Something she can want.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -165,7 +165,7 @@ impl Mood {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Spot {
     /// On (or at) a real piece of her furniture.
-    Real,
+    Real(Furniture),
     /// On a piece she made of text.
     Made,
     /// On the floor.
@@ -178,6 +178,7 @@ pub(super) enum Spot {
 /// furniture than the floor, and on the real thing than a makeshift one.
 pub(super) fn quality(need: Need, spot: Spot) -> f64 {
     match (need, spot) {
+        (Need::Comfort | Need::Sleepy, Spot::Real(item)) => item.spec().comfort,
         (Need::Comfort, Spot::Made) => 0.6,
         (Need::Comfort, Spot::Floor) => 0.1,
         (Need::Sleepy, Spot::Made) => 0.7,
@@ -552,7 +553,12 @@ mod tests {
             .map(|&want| {
                 let spot = match want {
                     Want::Idle(_) => Spot::Floor,
-                    Want::Use(_) => Spot::Real,
+                    Want::Use(what) => Spot::Real(
+                        Furniture::ALL
+                            .into_iter()
+                            .find(|f| f.spec().uses.contains(&what))
+                            .unwrap_or(Furniture::Sofa),
+                    ),
                     _ => Spot::Any,
                 };
                 (want, spot)
@@ -707,8 +713,8 @@ mod tests {
         for a in Activity::ALL {
             assert!(Want::ALL.contains(&Want::Idle(a)), "{a:?}");
         }
-        for furniture in super::super::room::Furniture::ALL {
-            for &what in Use::of(furniture) {
+        for furniture in Furniture::ALL {
+            for &what in furniture.spec().uses {
                 assert!(Want::ALL.contains(&Want::Use(what)), "{what:?}");
             }
         }
@@ -747,10 +753,10 @@ mod tests {
         let tv = Want::Use(Use::Watch);
         let book = Want::Use(Use::Read);
         let mut needs = Needs::with(&[(Need::Fun, 1.0)]);
-        let fresh = score(tv, Spot::Real, &needs, &[]);
+        let fresh = score(tv, Spot::Real(Furniture::Tv), &needs, &[]);
         needs.enjoyed(tv, 1.0);
         needs.enjoyed(tv, 1.0);
-        assert!(score(tv, Spot::Real, &needs, &[]) < fresh * 0.5);
+        assert!(score(tv, Spot::Real(Furniture::Tv), &needs, &[]) < fresh * 0.5);
         assert_eq!(needs.fresh(book), 1.0);
         needs.pass(10 * 60_000, false, Mood::Ordinary);
         assert_eq!(needs.fresh(tv), 1.0);

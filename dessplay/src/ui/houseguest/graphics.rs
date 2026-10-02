@@ -56,11 +56,11 @@ impl Look {
     fn size(self) -> (i32, i32) {
         match self {
             Self::Tv(_) => {
-                let (cols, rows) = Furniture::Tv.footprint();
+                let (cols, rows) = Furniture::Tv.spec().footprint;
                 (i32::from(cols), i32::from(rows))
             }
             Self::Prop(item, _) | Self::Parcel(item, _) | Self::Piece(item, _) => {
-                let (cols, rows) = item.footprint();
+                let (cols, rows) = item.spec().footprint;
                 (i32::from(cols), i32::from(rows))
             }
             Self::Scrap(item, ..) => {

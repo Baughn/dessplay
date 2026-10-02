@@ -122,7 +122,7 @@ impl Bind {
     pub fn on(&self) -> Spot {
         match self {
             Self::Job(Job::Use(seat)) if seat.makeshift() => Spot::Made,
-            Self::Job(Job::Use(_)) => Spot::Real,
+            Self::Job(Job::Use(seat)) => Spot::Real(seat.item),
             Self::Job(Job::Build(_)) => Spot::Made,
             Self::Here(Here::Idle(_)) => Spot::Floor,
             _ => Spot::Any,

@@ -413,7 +413,7 @@ impl Guest {
                 if let Some(what) = scene.furniture()
                     && let Some(&item) = Furniture::ALL
                         .iter()
-                        .find(|&&item| room::Use::of(item).contains(&what))
+                        .find(|&&item| item.spec().uses.contains(&what))
                     && !self.ledger.home.owns(item)
                 {
                     self.gift = Some(item);
@@ -1437,18 +1437,18 @@ fn furnish(
         return shown;
     };
     let result = if home.owns(item) {
-        Err(format!("she already has a {}", item.name()))
+        Err(format!("she already has a {}", item.spec().name))
     } else {
         match home.spot(buf, &view.nooks, &shown, &blocked, item, rng) {
             Some((nook, prop)) => {
                 tracing::info!(?item, ?nook, at = prop.at, "houseguest: new furniture");
                 if home.add(nook, prop) {
-                    Ok(format!("a {} in {:?}", item.name(), nook))
+                    Ok(format!("a {} in {:?}", item.spec().name, nook))
                 } else {
                     Err(format!("{nook:?} is another room"))
                 }
             }
-            None => Err(format!("no room for a {}", item.name())),
+            None => Err(format!("no room for a {}", item.spec().name)),
         }
     };
     *note = Some(result);
@@ -1645,24 +1645,8 @@ fn builds(
 
 /// Her furniture's colour as text (the ASCII drawings).
 fn prop_ink(item: Furniture, truecolor: bool) -> Ink {
-    let fg = match (item, truecolor) {
-        (Furniture::Sofa, true) => Color::Rgb(111, 161, 156),
-        (Furniture::Sofa, false) => Color::Cyan,
-        (Furniture::Tv, true) => Color::Rgb(203, 191, 168),
-        (Furniture::Tv, false) => Color::Gray,
-        (Furniture::Bed, true) => Color::Rgb(143, 179, 217),
-        (Furniture::Bed, false) => Color::LightBlue,
-        (Furniture::Desk, true) => Color::Rgb(192, 150, 100),
-        (Furniture::Desk, false) => Color::Yellow,
-        (Furniture::Lamp, true) => Color::Rgb(232, 195, 74),
-        (Furniture::Lamp, false) => Color::LightYellow,
-        (Furniture::Bookshelf, true) => Color::Rgb(160, 120, 79),
-        (Furniture::Bookshelf, false) => Color::Yellow,
-        (Furniture::Fridge, true) => Color::Rgb(231, 236, 239),
-        (Furniture::Fridge, false) => Color::White,
-        (Furniture::CatBed, true) => Color::Rgb(201, 69, 63),
-        (Furniture::CatBed, false) => Color::Red,
-    };
+    let (rgb, plain) = item.spec().ink;
+    let fg = if truecolor { rgb } else { plain };
     Ink::new(fg, Modifier::empty())
 }
 

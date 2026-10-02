@@ -3988,7 +3988,7 @@ fn an_interrupted_sleep_eases_only_what_she_slept() {
 /// Lint: every fixed line she says fits a bubble (24 characters).
 #[test]
 fn every_fixed_line_fits_a_bubble() {
-    let pitches = Furniture::ALL.map(Furniture::pitch);
+    let pitches = Furniture::ALL.map(|f| f.spec().pitch);
     for line in osaka::LINES
         .iter()
         .chain(&osaka::MUSINGS)

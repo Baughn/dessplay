@@ -1055,7 +1055,7 @@ pub(super) fn render_tv(
 
 /// A prop's frame in SVG units.
 fn prop_frame(prop: Furniture) -> (f32, f32) {
-    let (cols, rows) = prop.footprint();
+    let (cols, rows) = prop.spec().footprint;
     (
         f32::from(cols) * CELL_UNITS.0,
         f32::from(rows) * CELL_UNITS.1,
@@ -1211,7 +1211,7 @@ mod tests {
     #[test]
     fn every_new_piece_renders_inside_its_footprint_in_every_state() {
         for (item, state) in STATES {
-            let (cols, rows) = item.footprint();
+            let (cols, rows) = item.spec().footprint;
             let (w, h) = (u32::from(cols) * 9, u32::from(rows) * 19);
             for facing in [Facing::Left, Facing::Right] {
                 let image = render_piece(item, state, facing, LINE, w, h)
@@ -1291,7 +1291,7 @@ mod tests {
             let mut x0 = 0;
             for &s in &scales {
                 let (w, h) = (cw * s, ch * s);
-                let (cols, prows) = item.footprint();
+                let (cols, prows) = item.spec().footprint;
                 let (cols, prows) = (u32::from(cols), u32::from(prows));
                 let floor = row * row_h + row_h - h;
                 let line = floor + h / 2;
@@ -1335,7 +1335,7 @@ mod tests {
     fn every_parcel_and_channel_renders_inside_its_box() {
         for facing in [Facing::Left, Facing::Right] {
             for item in Furniture::ALL {
-                let (cols, rows) = item.footprint();
+                let (cols, rows) = item.spec().footprint;
                 let (w, h) = (u32::from(cols) * 9, u32::from(rows) * 19);
                 for open in [false, true] {
                     let image = render_parcel(item, open, facing, LINE, w, h).expect("renders");
@@ -1402,7 +1402,7 @@ mod tests {
                     Item::Parcel(item, _) => *item,
                     Item::Tv(_) | Item::Watching(_) => Furniture::Tv,
                 };
-                let (cols, rows) = piece.footprint();
+                let (cols, rows) = piece.spec().footprint;
                 let (cols, rows) = (u32::from(cols), u32::from(rows));
                 let floor = row * row_h + row_h - h;
                 let line = floor + h / 2;
@@ -1574,7 +1574,7 @@ mod tests {
     #[test]
     fn every_prop_renders_inside_its_footprint() {
         for prop in Furniture::ALL {
-            let (cols, rows) = prop.footprint();
+            let (cols, rows) = prop.spec().footprint;
             for facing in [Facing::Left, Facing::Right] {
                 let (w, h) = (u32::from(cols) * 9, u32::from(rows) * 19);
                 let image =
@@ -1640,7 +1640,7 @@ mod tests {
                 let mut x0 = 0;
                 for &s in &scales {
                     let (w, h) = (cw * s, ch * s);
-                    let (cols, prop_rows) = prop.footprint();
+                    let (cols, prop_rows) = prop.spec().footprint;
                     let (cols, prop_rows) = (u32::from(cols), u32::from(prop_rows));
                     // The floor line, half a row below the boxes.
                     let floor = row * row_h + row_h - h;
@@ -1748,7 +1748,7 @@ mod tests {
             image::Rgba([13, 17, 23, 255]),
         );
         for (row, (prop, back, rig, c, her_facing)) in uses.into_iter().enumerate() {
-            let (cols, rows) = prop.footprint();
+            let (cols, rows) = prop.spec().footprint;
             let (cols, rows) = (i32::from(cols), u32::from(rows));
             for (side, mirrored) in [false, true].into_iter().enumerate() {
                 let (facing, c, her) = if mirrored {

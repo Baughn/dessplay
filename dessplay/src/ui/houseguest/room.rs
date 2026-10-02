@@ -9,6 +9,7 @@
 
 use tuirealm::ratatui::buffer::Buffer;
 use tuirealm::ratatui::layout::Rect;
+use tuirealm::ratatui::style::Color;
 
 use super::Rng;
 use super::cells::{untouchable, width};
@@ -49,17 +50,17 @@ impl Furniture {
         Self::CatBed,
     ];
 
-    /// Its size in cells (columns, rows), standing on a floor.
-    pub fn footprint(self) -> (u16, u16) {
+    /// Its row of the catalogue.
+    pub(super) fn spec(self) -> &'static Spec {
         match self {
-            Self::Sofa => (9, 3),
-            Self::Tv => (6, 4),
-            Self::Bed => (10, 3),
-            Self::Desk => (7, 3),
-            Self::Lamp => (3, 4),
-            Self::Bookshelf => (5, 4),
-            Self::Fridge => (4, 4),
-            Self::CatBed => (4, 2),
+            Self::Sofa => &SOFA,
+            Self::Tv => &TV,
+            Self::Bed => &BED,
+            Self::Desk => &DESK,
+            Self::Lamp => &LAMP,
+            Self::Bookshelf => &BOOKSHELF,
+            Self::Fridge => &FRIDGE,
+            Self::CatBed => &CAT_BED,
         }
     }
 
@@ -71,71 +72,123 @@ impl Furniture {
             Self::Fridge => RoomKind::Kitchen,
         }
     }
+}
 
-    /// What she says buying it off the shopping channel.
-    pub fn pitch(self) -> &'static str {
-        match self {
-            Self::Sofa => "A sofa! I'll take it!",
-            Self::Tv => "A TV! I'll take it!",
-            Self::Bed => "A bed... yes please!",
-            Self::Desk => "A desk. For homework.",
-            Self::Lamp => "Ooh, a lamp!",
-            Self::Bookshelf => "Books! I'll take it!",
-            Self::Fridge => "A fridge... for snacks!",
-            Self::CatBed => "A cat bed! For a cat!",
-        }
-    }
-
+/// What a kind of piece is: one row of the catalogue.
+#[derive(Debug)]
+pub(super) struct Spec {
     /// A short name.
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::Sofa => "sofa",
-            Self::Tv => "TV",
-            Self::Bed => "bed",
-            Self::Desk => "desk",
-            Self::Lamp => "lamp",
-            Self::Bookshelf => "bookshelf",
-            Self::Fridge => "fridge",
-            Self::CatBed => "cat bed",
-        }
-    }
-
-    /// Its part in `art/props.svg`.
-    pub fn art_id(self) -> &'static str {
-        match self {
-            Self::Sofa => "sofa",
-            Self::Tv => "tv",
-            Self::Bed => "bed",
-            Self::Desk => "desk",
-            Self::Lamp => "lamp",
-            Self::Bookshelf => "bookshelf",
-            Self::Fridge => "fridge",
-            Self::CatBed => "cat-bed",
-        }
-    }
-
+    pub name: &'static str,
+    /// What she says buying it off the shopping channel.
+    pub pitch: &'static str,
+    /// Its size in cells (columns, rows), standing on a floor.
+    pub footprint: (u16, u16),
     /// The ASCII drawing, facing right: one string per row, each exactly
     /// as wide as the footprint. Also the noise her goodbye bursts the
     /// line art into.
-    fn ascii(self) -> &'static [&'static str] {
-        match self {
-            Self::Sofa => &[" .-----. ", "(|_____|)", " '     ' "],
-            Self::Tv => &["  \\/  ", ".----.", "|[  ]|", "|_::_|"],
-            Self::Bed => &["|__       ", "|oo~~~~~~|", "|========|"],
-            Self::Desk => &[" = u _/", "_______", "|   |=|"],
-            Self::Lamp => &[" _ ", "/_\\", " | ", "_|_"],
-            Self::Bookshelf => &["_____", "|IlI|", "|lII|", "|___|"],
-            Self::Fridge => &["____", "| .|", "|--|", "|_.|"],
-            Self::CatBed => &["    ", "\\__/"],
-        }
-    }
+    pub ascii: &'static [&'static str],
+    /// Its colour as text: in truecolor, and in the 16 colours.
+    pub ink: (Color, Color),
+    /// What it's for.
+    pub uses: &'static [Use],
+    /// Where she is, using it from in it: the column (facing right) her
+    /// box is centred on, and whether she faces away from the piece's
+    /// own facing (at the desk, on a stool past its front).
+    pub sit: Option<(i32, bool)>,
+    /// How well it rests her (sitting, napping, sleeping on it), against
+    /// a makeshift piece's or the floor's.
+    pub comfort: f64,
 }
+
+const SOFA: Spec = Spec {
+    name: "sofa",
+    pitch: "A sofa! I'll take it!",
+    footprint: (9, 3),
+    ascii: &[" .-----. ", "(|_____|)", " '     ' "],
+    ink: (Color::Rgb(111, 161, 156), Color::Cyan),
+    uses: &[Use::Lounge, Use::Nap],
+    sit: Some((4, false)),
+    comfort: 1.0,
+};
+const TV: Spec = Spec {
+    name: "TV",
+    pitch: "A TV! I'll take it!",
+    footprint: (6, 4),
+    ascii: &["  \\/  ", ".----.", "|[  ]|", "|_::_|"],
+    ink: (Color::Rgb(203, 191, 168), Color::Gray),
+    uses: &[Use::Watch],
+    sit: None,
+    comfort: 1.0,
+};
+const BED: Spec = Spec {
+    name: "bed",
+    pitch: "A bed... yes please!",
+    footprint: (10, 3),
+    ascii: &["|__       ", "|oo~~~~~~|", "|========|"],
+    ink: (Color::Rgb(143, 179, 217), Color::LightBlue),
+    uses: &[Use::Sleep],
+    // Head at the headboard end.
+    sit: Some((3, false)),
+    comfort: 1.0,
+};
+const DESK: Spec = Spec {
+    name: "desk",
+    pitch: "A desk. For homework.",
+    footprint: (7, 3),
+    ascii: &[" = u _/", "_______", "|   |=|"],
+    ink: (Color::Rgb(192, 150, 100), Color::Yellow),
+    uses: &[Use::Homework],
+    // On a stool just past the desk's front, facing it.
+    sit: Some((7, true)),
+    comfort: 1.0,
+};
+const LAMP: Spec = Spec {
+    name: "lamp",
+    pitch: "Ooh, a lamp!",
+    footprint: (3, 4),
+    ascii: &[" _ ", "/_\\", " | ", "_|_"],
+    ink: (Color::Rgb(232, 195, 74), Color::LightYellow),
+    uses: &[],
+    sit: None,
+    comfort: 1.0,
+};
+const BOOKSHELF: Spec = Spec {
+    name: "bookshelf",
+    pitch: "Books! I'll take it!",
+    footprint: (5, 4),
+    ascii: &["_____", "|IlI|", "|lII|", "|___|"],
+    ink: (Color::Rgb(160, 120, 79), Color::Yellow),
+    uses: &[Use::Read],
+    sit: None,
+    comfort: 1.0,
+};
+const FRIDGE: Spec = Spec {
+    name: "fridge",
+    pitch: "A fridge... for snacks!",
+    footprint: (4, 4),
+    ascii: &["____", "| .|", "|--|", "|_.|"],
+    ink: (Color::Rgb(231, 236, 239), Color::White),
+    uses: &[Use::Snack],
+    sit: None,
+    comfort: 1.0,
+};
+const CAT_BED: Spec = Spec {
+    name: "cat bed",
+    pitch: "A cat bed! For a cat!",
+    footprint: (4, 2),
+    ascii: &["    ", "\\__/"],
+    ink: (Color::Rgb(201, 69, 63), Color::Red),
+    uses: &[Use::Pet],
+    sit: None,
+    comfort: 1.0,
+};
 
 /// The glyph at `(dx, dy)` of `item`'s ASCII drawing facing `facing`, if
 /// that cell is drawn (spaces are not).
 pub(super) fn glyph(item: Furniture, facing: Facing, dx: u16, dy: u16) -> Option<char> {
-    let (cols, _) = item.footprint();
-    let row = item.ascii().get(usize::from(dy))?;
+    let spec = item.spec();
+    let (cols, _) = spec.footprint;
+    let row = spec.ascii.get(usize::from(dy))?;
     let c = match facing {
         Facing::Right => row.chars().nth(usize::from(dx))?,
         Facing::Left => mirror(row.chars().nth(usize::from(cols - 1 - dx))?),
@@ -203,20 +256,6 @@ pub(super) enum Use {
 }
 
 impl Use {
-    /// What each piece is for.
-    pub fn of(item: Furniture) -> &'static [Use] {
-        match item {
-            Furniture::Sofa => &[Use::Lounge, Use::Nap],
-            Furniture::Tv => &[Use::Watch],
-            Furniture::Bed => &[Use::Sleep],
-            Furniture::Desk => &[Use::Homework],
-            Furniture::Lamp => &[],
-            Furniture::Bookshelf => &[Use::Read],
-            Furniture::Fridge => &[Use::Snack],
-            Furniture::CatBed => &[Use::Pet],
-        }
-    }
-
     /// Whether she uses it from in it (sits on it, lies in it), rather
     /// than from beside it.
     pub fn inside(self) -> bool {
@@ -304,7 +343,7 @@ impl Shown {
     pub fn size(&self) -> (u16, u16) {
         match self.scrap {
             Some(_) => super::scrap::footprint(self.item),
-            None => self.item.footprint(),
+            None => self.item.spec().footprint,
         }
     }
 
@@ -315,7 +354,7 @@ impl Shown {
         match (self.boxed, self.scrap) {
             (true, _) => &[Use::Unpack],
             (false, Some(scrap)) if !scrap.done() => &[Use::Crumple],
-            (false, _) => Use::of(self.item),
+            (false, _) => self.item.spec().uses,
         }
     }
 
@@ -353,11 +392,11 @@ impl Shown {
         };
         let (x, facing) = match what {
             _ if self.scrap.is_some() => (mirrored(super::scrap::SEAT), self.facing),
-            Use::Lounge | Use::Nap => (mirrored(4), self.facing),
-            // Head at the headboard end.
-            Use::Sleep => (mirrored(3), self.facing),
-            // On a stool just past the desk's front, facing it.
-            Use::Homework => (mirrored(7), flip(self.facing)),
+            Use::Lounge | Use::Nap | Use::Sleep | Use::Homework => match self.item.spec().sit {
+                Some((col, false)) => (mirrored(col), self.facing),
+                Some((col, true)) => (mirrored(col), flip(self.facing)),
+                None => (self.left + cols / 2, self.facing),
+            },
             // In front of the box, bending over it.
             Use::Unpack | Use::Crumple => (self.left + cols / 2, self.facing),
             Use::Watch | Use::Read | Use::Snack | Use::Pet => (
@@ -660,7 +699,7 @@ fn layout(pieces: &[Prop], nook: Nook, nooks: &[(Nook, Rect)]) -> Option<Vec<Sho
 /// tall enough to hold it inside its border.
 fn place(prop: Prop, nook: Nook, nooks: &[(Nook, Rect)]) -> Option<Shown> {
     let &(_, rect) = nooks.iter().find(|(n, _)| *n == nook)?;
-    let (cols, rows) = prop.item.footprint();
+    let (cols, rows) = prop.item.spec().footprint;
     if rect.width < cols + 2 || rect.height < rows + 2 {
         return None;
     }
@@ -709,8 +748,8 @@ mod tests {
     #[test]
     fn every_ascii_drawing_fills_its_footprint_exactly() {
         for item in Furniture::ALL {
-            let (cols, rows) = item.footprint();
-            let art = item.ascii();
+            let (cols, rows) = item.spec().footprint;
+            let art = item.spec().ascii;
             assert_eq!(art.len(), usize::from(rows), "{item:?}");
             for row in art {
                 assert_eq!(row.chars().count(), usize::from(cols), "{item:?}: {row:?}");

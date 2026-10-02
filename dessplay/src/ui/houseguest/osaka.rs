@@ -835,7 +835,7 @@ fn use_look(
             // Hooked, then sold.
             Some(_) if elapsed < length * 2 / 5 => (watching, Face::Curious, Some(Bubble::Ooh)),
             Some(item) if elapsed < length * 3 / 5 => {
-                (watching, Face::Happy, Some(Bubble::Say(item.pitch())))
+                (watching, Face::Happy, Some(Bubble::Say(item.spec().pitch)))
             }
             _ => (watching, Face::Curious, None),
         },
@@ -2010,7 +2010,7 @@ impl Osaka {
                 let spot = if seat.makeshift() {
                     Spot::Made
                 } else {
-                    Spot::Real
+                    Spot::Real(seat.item)
                 };
                 (span(*since, *until), spot)
             }
