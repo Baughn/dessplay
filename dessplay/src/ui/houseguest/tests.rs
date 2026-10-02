@@ -4254,11 +4254,12 @@ fn chat_mid_clamber_doesnt_drop_her() {
     }
 }
 
-/// Her sofa on the TV's floor is where she watches it from, wherever on
-/// the floor the TV stands: against the pane's left wall too.
+/// Her sofa is where she watches the TV from when it faces it: on the
+/// same strip, a few cells away, even across a floor text splits;
+/// against either wall.
 #[test]
-fn a_tv_anywhere_on_the_sofas_floor_is_watched_from_it() {
-    use super::room::{PieceRef, Prop, Use};
+fn a_sofa_facing_the_tv_is_watched_from() {
+    use super::room::{Anchor, PieceRef, Prop, Side, Use};
     // One pane, alone on its floor: nothing beyond its walls.
     let screen = || {
         let (width, height) = (100u16, 20u16);
@@ -4276,19 +4277,43 @@ fn a_tv_anywhere_on_the_sofas_floor_is_watched_from_it() {
         };
         (buf, view)
     };
-    for (tv_at, sofa_at) in [(0, 1000), (1000, 0), (500, 0)] {
-        let (real, view) = screen();
+    // The TV against the left wall or the right, the sofa a gap of so
+    // many cells from it on the same strip: only within 2..=14 is it
+    // watched from (the sofa's way round counts from phase 4). Something
+    // protected between them splits the floor, but not the strip.
+    for (tv_side, gap, split, watched) in [
+        (Side::Left, 2, false, true),
+        (Side::Left, 8, true, true),
+        (Side::Left, 14, false, true),
+        (Side::Right, 8, true, true),
+        (Side::Left, 0, false, false),
+        (Side::Left, 1, false, false),
+        (Side::Right, 15, false, false),
+        (Side::Left, 30, false, false),
+    ] {
+        let (real, mut view) = screen();
+        let (_, pane) = view.nooks[0];
+        let (from, floor) = (pane.x + 1, pane.bottom() - 1);
         let mut guest = Guest::new(1);
-        for (item, at, facing) in [
-            (Furniture::Tv, tv_at, sprite::Facing::Right),
-            (Furniture::Sofa, sofa_at, sprite::Facing::Left),
+        for (item, offset, facing) in [
+            (Furniture::Tv, 0, sprite::Facing::Right),
+            (Furniture::Sofa, 6 + gap, sprite::Facing::Left),
         ] {
-            assert!(
-                guest
-                    .ledger
-                    .home
-                    .add(Prop::new(item, Nook::Playlist, at, facing,))
-            );
+            assert!(guest.ledger.home.add(Prop {
+                anchor: Some(Anchor {
+                    side: tv_side,
+                    offset,
+                }),
+                ..Prop::new(item, Nook::Playlist, 0, facing)
+            }));
+        }
+        if split {
+            let mid = match tv_side {
+                Side::Left => from + 6 + gap / 2,
+                Side::Right => pane.right() - 1 - 6 - gap / 2,
+            };
+            view.protected
+                .push(Rect::new(mid, floor.saturating_sub(4), 1, 4));
         }
         guest.cue(Scene::Arrive);
         paint(&mut guest, &real, &view, 0);
@@ -4297,14 +4322,15 @@ fn a_tv_anywhere_on_the_sofas_floor_is_watched_from_it() {
             panic!("visiting");
         };
         let shown: Vec<_> = visit.shown.iter().map(|s| (s.item, s.left)).collect();
-        assert_eq!(shown.len(), 2, "tv at {tv_at}: both stand: {shown:?}");
-        assert!(
+        assert_eq!(shown.len(), 2, "gap {gap}: both stand: {shown:?}");
+        assert_eq!(
             visit
                 .chances
                 .seats
                 .iter()
                 .any(|s| s.what == Use::Watch && s.piece == PieceRef::Real(Furniture::Sofa)),
-            "tv at {tv_at}, sofa at {sofa_at}: {shown:?}, seats {:?}",
+            watched,
+            "TV at the {tv_side:?} wall, gap {gap}: {shown:?}, seats {:?}",
             visit.chances.seats
         );
     }

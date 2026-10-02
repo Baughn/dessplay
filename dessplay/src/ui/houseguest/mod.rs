@@ -1513,8 +1513,9 @@ fn spots_for(piece: &Shown, shown: &[Shown], terrain: &Terrain, cat: bool) -> Ve
             });
         out.extend(seat);
     }
-    // A sofa on the same floor as the TV is where to watch it from: the
-    // floor she'd stand on beside the TV to watch it (its own columns
+    // A sofa that faces the TV (see [`room::faces`]) is where to watch
+    // it from. A makeshift one stands on no strip: for it, the TV on
+    // its floor, where she'd stand beside it to watch (its own columns
     // may run up to a wall, past the floor's last standing spot).
     if piece.uses().contains(&room::Use::Lounge) {
         let sofa = piece.seat(room::Use::Lounge, 0);
@@ -1522,11 +1523,16 @@ fn spots_for(piece: &Shown, shown: &[Shown], terrain: &Terrain, cat: bool) -> Ve
         let tv = shown.iter().find(|tv| {
             tv.item == Furniture::Tv
                 && !tv.boxed
-                && floor.is_some()
-                && tv
-                    .beside()
-                    .into_iter()
-                    .any(|x| terrain.platform_at(x, tv.floor) == floor)
+                && match piece.strip {
+                    Some(_) => room::faces(piece, tv),
+                    None => {
+                        floor.is_some()
+                            && tv
+                                .beside()
+                                .into_iter()
+                                .any(|x| terrain.platform_at(x, tv.floor) == floor)
+                    }
+                }
         });
         if let Some(tv) = tv {
             let facing = if tv.left > sofa.x {

@@ -1028,6 +1028,24 @@ fn stand(prop: &Prop, strip: Strip, extent: Extent, left: i32) -> Shown {
     }
 }
 
+/// How far apart a seat and a screen may be, in cells between them, for
+/// her to watch from the one.
+pub(super) const FACING_GAP: std::ops::RangeInclusive<i32> = 2..=14;
+
+/// Whether `seat` faces `screen`, for watching: both on one strip, a
+/// [`FACING_GAP`] apart. Judged on the strip, not the live floor, so a
+/// name that splits the floor between them doesn't stop her. (Which way
+/// the seat is turned counts from phase 4, when she can turn it.)
+pub(super) fn faces(seat: &Shown, screen: &Shown) -> bool {
+    let (a, b) = (seat.rect(), screen.rect());
+    let gap = if a.x < b.x {
+        i32::from(b.x) - i32::from(a.right())
+    } else {
+        i32::from(a.x) - i32::from(b.right())
+    };
+    seat.strip.is_some() && seat.strip == screen.strip && FACING_GAP.contains(&gap)
+}
+
 /// Whether she'd fit to use `at` every way it's used (a new piece is
 /// never set down where she couldn't): for a use in it, her box at its
 /// seat, beyond the piece itself; for a use beside it, her box at one of

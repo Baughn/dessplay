@@ -55,6 +55,10 @@ Add new days at the top. Add new entries at the bottom of existing days.
 - Added: The houseguest's parcels come in through a flap in the wall at
   the edge of the screen, pushing in beside it whatever already stands
   there.
+- Changed: The houseguest watches TV from her sofa when the two stand
+  a few cells apart in the same pane, even when something splits the
+  floor between them; not from a sofa far across the room or pushed
+  right up against the TV.
 
 ## 2026-10-01
 
