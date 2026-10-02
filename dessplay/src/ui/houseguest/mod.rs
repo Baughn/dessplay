@@ -144,6 +144,8 @@ struct Visit {
     next_made: room::MadeId,
     /// The text she was reeling in at the last paint.
     reel: Option<scenes::Build>,
+    /// The flap a parcel just came in through, and when.
+    flap: Option<(room::Flap, u64)>,
     size: (u16, u16),
 }
 
@@ -561,13 +563,17 @@ impl Guest {
             State::Visiting(visit) => {
                 visit.fades.retain(|fade| !fade.done(now));
                 let fading = !visit.fades.is_empty();
+                let flapped = visit
+                    .flap
+                    .take_if(|&mut (_, since)| now >= since + FLAP_MS)
+                    .is_some();
                 let changed = visit
                     .osaka
                     .tick(now, &visit.terrain, &visit.chances, &mut self.rng);
                 // Hers the moment she does it: whatever ends the visit
                 // before the next paint can't lose it.
                 self.unsaved |= record(&mut self.ledger, &mut self.shop_now, visit);
-                changed || fading
+                changed || fading || flapped
             }
             State::Leaving(leaving) => {
                 if leaving.dissolve.done(now) {
@@ -593,6 +599,7 @@ impl Guest {
                     .fades
                     .iter()
                     .map(|fade| fade.next_frame(now))
+                    .chain(visit.flap.map(|(_, since)| since + FLAP_MS))
                     .fold(visit.osaka.due(), u64::min),
             ),
             State::Leaving(leaving) => Some(leaving.dissolve.next_frame(now)),
@@ -912,6 +919,14 @@ impl Guest {
                         .collect(),
                 };
                 nudge.paint(buf, now);
+                if let Some((flap, since)) = visit.flap {
+                    layer.extend(draw_flap(
+                        buf,
+                        flap,
+                        now.saturating_sub(since),
+                        &view.protected,
+                    ));
+                }
                 layer.extend(draw_props(
                     buf,
                     self.graphics.as_mut(),
@@ -979,6 +994,7 @@ impl Guest {
             shown: Vec::new(),
             with: Vec::new(),
             fades: Vec::new(),
+            flap: None,
             made: Vec::new(),
             next_made: room::MadeId(0),
             reel: None,
@@ -1430,13 +1446,11 @@ fn furnish(
     }
     if let Some(item) = ledger.ordered
         && ledger.bought_on < ledger.visits
-        && let Some(prop) = home.spot(buf, &view.nooks, &shown, &blocked, item, rng)
-        && home.add(room::Prop {
-            boxed: true,
-            ..prop
-        })
+        && let Some((prop, flap)) = home.doorstep(buf, &view.nooks, &shown, &blocked, item)
+        && home.add(prop)
     {
         tracing::info!(?item, strip = ?prop.strip, "houseguest: a parcel arrived");
+        visit.flap = Some((flap, now));
         ledger.ordered = None;
         visit.osaka.say(PARCEL, now);
         shown = home.project(buf, &view.nooks, &blocked);
@@ -1777,6 +1791,50 @@ fn paint_prop_art(buf: &mut Buffer, graphics: &mut Graphics, prop: &Shown, looks
     graphics
         .paint_layers(buf, &[prop_layer(prop, look)], &|_, _| true)
         .is_some()
+}
+
+/// How long a delivery's flap stands open.
+const FLAP_MS: u64 = 800;
+
+/// The flap a parcel came in through, `age` ms ago: open, swung in on
+/// its hinge at the top, wherever the wall is a plain vertical line
+/// clear of protected cells.
+fn draw_flap(buf: &mut Buffer, flap: room::Flap, age: u64, protected: &[Rect]) -> Vec<Frozen> {
+    let mut painted = Vec::new();
+    if age >= FLAP_MS {
+        return painted;
+    }
+    let glyph = match flap.side {
+        room::Side::Left => '╲',
+        room::Side::Right => '╱',
+    };
+    for y in flap.rows.0..flap.rows.1 {
+        let (Ok(x), Ok(y)) = (u16::try_from(flap.x), u16::try_from(y)) else {
+            continue;
+        };
+        if protected.iter().any(|r| r.contains((x, y).into())) {
+            continue;
+        }
+        let Some(cell) = buf.cell_mut((x, y)) else {
+            continue;
+        };
+        if !matches!(cell.symbol(), "│" | "┃") {
+            continue;
+        }
+        let under = cell.clone();
+        let ink = Ink::new(cell.fg, Modifier::empty());
+        cell.set_char(glyph);
+        painted.push(Frozen {
+            x,
+            y,
+            glyph,
+            ink,
+            under,
+            face: None,
+            burst: false,
+        });
+    }
+    painted
 }
 
 /// Paint her furniture (as line art, or as ASCII without graphics),

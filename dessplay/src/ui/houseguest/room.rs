@@ -391,6 +391,16 @@ pub(super) struct Anchor {
     pub offset: u16,
 }
 
+/// The flap a delivery comes in through: wall column `x`, the rows
+/// `rows.0..rows.1` just above the floor, in the wall on `side` of the
+/// strip.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Flap {
+    pub x: i32,
+    pub rows: (i32, i32),
+    pub side: Side,
+}
+
 /// A piece she owns, standing on `strip`; `boxed` until she unpacks it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Prop {
@@ -498,10 +508,22 @@ pub(super) fn strips(nooks: &[(Nook, Rect)]) -> Vec<(Strip, Extent)> {
         .collect()
 }
 
+/// Where a piece anchored at `anchor`, `index`th among her pieces,
+/// comes along its strip: those from the left wall, nearest first, then
+/// those from the right, farthest first; of two the same distance from
+/// one wall, the newer is nearer it (it came in last, through that
+/// wall's flap, and pushed the other along).
+pub(super) fn order_key(anchor: Anchor, index: usize) -> (u8, i32, i64) {
+    let index = index as i64;
+    match anchor.side {
+        Side::Left => (0, i32::from(anchor.offset), -index),
+        Side::Right => (1, -i32::from(anchor.offset), index),
+    }
+}
+
 /// Where the pieces `(index, anchor, size)` stand on `extent`, as
-/// `(index, left)`, if it holds them all: in anchor order along it
-/// (those from the left wall, nearest first, then those from the right,
-/// farthest first), each where its anchor puts it unless that collides,
+/// `(index, left)`, if it holds them all: in anchor order along it (see
+/// [`order_key`]), each where its anchor puts it unless that collides,
 /// in which case the colliding ones stand side by side, still in order.
 /// The order doesn't depend on the strip's width, so a resize never
 /// reorders them, and a resize and back puts each where it was.
@@ -510,10 +532,7 @@ fn pack(pieces: &[(usize, Anchor, (u16, u16))], extent: Extent) -> Option<Vec<(u
         return None;
     }
     let mut order: Vec<(usize, Anchor, (u16, u16))> = pieces.to_vec();
-    order.sort_by_key(|&(index, anchor, _)| match anchor.side {
-        Side::Left => (0, i32::from(anchor.offset), index),
-        Side::Right => (1, -i32::from(anchor.offset), index),
-    });
+    order.sort_by_key(|&(index, anchor, _)| order_key(anchor, index));
     let mut placed: Vec<(usize, i32)> = order
         .iter()
         .map(|&(index, anchor, (cols, _))| (index, extent.left(anchor, cols)))
@@ -899,6 +918,92 @@ impl Home {
         spots.get(rng.below(spots.len() as u64) as usize).copied()
     }
 
+    /// Where a delivery of `item` comes in this frame: through a flap in
+    /// one of her strips' walls, preferring a wall at the screen's edge,
+    /// to stand against it facing into the room. The pieces already on
+    /// that strip make way, packed in order, but only where every one of
+    /// them that shows still fits, the piece fits on blank, free cells,
+    /// and she'd fit to unpack and use it.
+    pub fn doorstep(
+        &self,
+        buf: &Buffer,
+        nooks: &[(Nook, Rect)],
+        shown: &[Shown],
+        blocked: &dyn Fn(i32, i32) -> bool,
+        item: Furniture,
+    ) -> Option<(Prop, Flap)> {
+        let screen = buf.area;
+        let mut walls: Vec<(bool, Strip, Extent, Side)> = Vec::new();
+        for (&(_, rect), (strip, e)) in nooks.iter().zip(strips(nooks)) {
+            walls.push((rect.right() == screen.right(), strip, e, Side::Right));
+            walls.push((rect.x == screen.x, strip, e, Side::Left));
+        }
+        // The screen's edge first; otherwise in pane order.
+        walls.sort_by_key(|&(edge, ..)| !edge);
+        walls.into_iter().find_map(|(_, strip, e, side)| {
+            let prop = Prop {
+                item,
+                strip,
+                anchor: Some(Anchor { side, offset: 0 }),
+                at: match side {
+                    Side::Left => 0,
+                    Side::Right => 1000,
+                },
+                facing: match side {
+                    Side::Left => Facing::Right,
+                    Side::Right => Facing::Left,
+                },
+                boxed: false,
+            };
+            let mut with = self.clone();
+            with.props.push(prop);
+            let new = with.props.len() - 1;
+            let packed: Vec<(usize, Shown)> = pack(&with.on(strip, None), e)?
+                .into_iter()
+                .filter_map(|(i, left)| Some((i, stand(with.props.get(i)?, strip, e, left))))
+                .collect();
+            let others: Vec<Shown> = shown
+                .iter()
+                .filter(|s| s.strip != Some(strip))
+                .copied()
+                .collect();
+            let fits_here = |i: usize, at: &Shown| {
+                let clear = |x: i32, y: i32| {
+                    free(&others, blocked, x, y)
+                        && !packed
+                            .iter()
+                            .any(|(j, s)| *j != i && s.rect().contains((x as u16, y as u16).into()))
+                };
+                fits(buf, at, &clear) && (i != new || roomy(buf, at, &clear))
+            };
+            let all_fit = packed.iter().all(|(i, at)| {
+                let was = with.props.get(*i).map(|p| p.item);
+                let showing = shown
+                    .iter()
+                    .any(|s| Some(s.item) == was && s.scrap.is_none());
+                (*i != new && !showing) || fits_here(*i, at)
+            });
+            let at = packed.iter().find(|(i, _)| *i == new).map(|(_, at)| *at)?;
+            let x = match side {
+                Side::Left => e.from - 1,
+                Side::Right => e.to,
+            };
+            all_fit.then(|| {
+                (
+                    Prop {
+                        boxed: true,
+                        ..prop
+                    },
+                    Flap {
+                        x,
+                        rows: (at.floor - 2, at.floor),
+                        side,
+                    },
+                )
+            })
+        })
+    }
+
     /// Take ownership of `prop`, unless she already has one (then this
     /// returns false: one of each).
     pub fn add(&mut self, prop: Prop) -> bool {
@@ -1191,7 +1296,15 @@ mod tests {
             "└────────────────────────────┘",
         ]);
         let nooks = [(Nook::Users, buf.area)];
-        for (sofa, tv) in [(500, 500), (400, 450), (1000, 900), (0, 0)] {
+        // Shares of the way along, and whether the sofa comes first: each is
+        // anchored from its nearer wall; level with the sofa at a wall, the
+        // TV (the newer) is nearer it.
+        for (sofa, tv, first) in [
+            (500, 500, true),
+            (400, 450, true),
+            (1000, 900, false),
+            (0, 0, false),
+        ] {
             let mut room = home(
                 Nook::Users,
                 &[prop(Furniture::Sofa, sofa), prop(Furniture::Tv, tv)],
@@ -1202,7 +1315,7 @@ mod tests {
             let left = |item| shown.iter().find(|s| s.item == item).map(|s| s.left);
             assert_eq!(
                 left(Furniture::Sofa) < left(Furniture::Tv),
-                (sofa, 0) < (tv, 1),
+                first,
                 "in order along the floor: {shown:?}"
             );
         }
@@ -1366,13 +1479,8 @@ mod tests {
             prop_assert!(room.props.iter().all(|p| p.anchor.is_some()));
             // Shown in anchor order, inside the walls, apart.
             let order = |s: &Shown| {
-                let prop = room.props.iter().find(|p| p.item == s.item).copied();
-                let anchor = prop.and_then(|p| p.anchor).map(|a| match a.side {
-                    Side::Left => (0, i32::from(a.offset)),
-                    Side::Right => (1, -i32::from(a.offset)),
-                });
                 let index = room.props.iter().position(|p| p.item == s.item);
-                (anchor, index)
+                index.and_then(|i| Some(order_key(room.props.get(i)?.anchor?, i)))
             };
             let mut along = first.clone();
             along.sort_by_key(|s| s.left);

@@ -52,6 +52,9 @@ Add new days at the top. Add new entries at the bottom of existing days.
   room and a bed a bedroom, wherever they stand, and pieces can share a
   pane. When a pane closes or gets too small, its furniture moves out
   together, into any pane with room for all of it.
+- Added: The houseguest's parcels come in through a flap in the wall at
+  the edge of the screen, pushing in beside it whatever already stands
+  there.
 
 ## 2026-10-01
 

@@ -338,10 +338,10 @@ fn golden_stage_room() {
         "stage",
         stage_room,
         &[
-            (0, 0xf57017f53b431f67, 0x47e04fbe6d669dd7),
-            (1, 0x408f04f10f7bbdd3, 0xcbc3eafd016a9697),
-            (2, 0x22dac25b51c10eb8, 0x429efa188d27c725),
-            (3, 0x8db5b07befc1f979, 0xb461cd955bf06744),
+            (0, 0xc20e83024d2fecf6, 0x72a9fccef8a1d6f7),
+            (1, 0x66c42e6dbebb62ab, 0x8612113bb76bcb2d),
+            (2, 0x88674fb9abe5058f, 0xa198edc47c15c72e),
+            (3, 0x1b727dfa5cd68e44, 0xd9b869e1f3b627f2),
         ],
     );
 }
