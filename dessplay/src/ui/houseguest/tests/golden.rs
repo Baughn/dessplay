@@ -343,10 +343,10 @@ fn golden_stage_room() {
         "stage",
         stage_room,
         &[
-            (0, 0x0b032070d7db0524, 0xbd59fb810c5b1163),
-            (1, 0x6de0ca639e316ef0, 0x5e2349355312a1cc),
-            (2, 0x00da076b591a5d2d, 0x50c3cd83f6608c35),
-            (3, 0xa4cfa36601a51a4b, 0x228c1e645f39d071),
+            (0, 0x4dd8028b233057b5, 0x034f12ce7bea2539),
+            (1, 0x1d41b89d02d81a7e, 0x63e11d86c4ae643e),
+            (2, 0x4cde2597f3212ee6, 0x3c00291837a6f0ba),
+            (3, 0x20ffdb544d9c5c8c, 0x7499839f672383c2),
         ],
     );
 }
@@ -357,10 +357,10 @@ fn golden_resident() {
         "resident",
         resident,
         &[
-            (0, 0x0d82aa8823dc89c7, 0x4f6e2388b617d58c),
-            (1, 0x32f1e4a8d7029f69, 0x8dbeb838078def16),
-            (2, 0x2bf48026d6f51b59, 0xaff95aa92f62dafd),
-            (3, 0x367909ae28fb55a9, 0x95387d8b153c005f),
+            (0, 0x9824aaef31dc2b47, 0xe24469bb1cd1096c),
+            (1, 0x2c941180530cff5c, 0xa16ec07f21a95002),
+            (2, 0xa182f669e2a459b2, 0x23f67d52fa9abe8c),
+            (3, 0x68f0634f4f5cf654, 0xa505be8efb8192a4),
         ],
     );
 }
@@ -371,10 +371,10 @@ fn golden_furnished_home() {
         "furnished",
         furnished,
         &[
-            (0, 0xea251ae87cc0e35c, 0xd6b922eed0007f2a),
-            (1, 0x6ab3f2bb7120ef19, 0xc5da370d6e975e90),
-            (2, 0xd40605028d196343, 0x9ef2893bd0e00d9a),
-            (3, 0x856fbc18abe03d69, 0x3453c85ade741855),
+            (0, 0x90b39df67fca4840, 0x251f0537f3d3d62b),
+            (1, 0xbcd9ea0409da5f7c, 0x53cb68f4290bcc1e),
+            (2, 0x31c8c7c9dd6f7e55, 0x5aa9fb778e3d37f8),
+            (3, 0x489b37ce351e3768, 0x975498d933a1f94f),
         ],
     );
 }
@@ -386,9 +386,9 @@ fn golden_errand() {
         errand,
         &[
             (0, 0x6428b549c8ec9e5d, 0x7e7cdb4206b175a5),
-            (1, 0x20c26d8e4810a54e, 0x756cdaee4f50e3ba),
+            (1, 0xc948861ecb86c177, 0xe3660a3420111142),
             (2, 0xcc78942c574684ca, 0xc1be5ea954571609),
-            (3, 0x1a7ed7a402771b85, 0xbcb1a856ff96b141),
+            (3, 0xbe80777286a5a123, 0x545949ecebe1140e),
         ],
     );
 }

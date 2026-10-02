@@ -6,7 +6,7 @@
 //! from it ([`Whims`]): guards stay pure, every decision draws the same,
 //! and the body's stream (durations, how she looks) is its own.
 
-use super::brain::Want;
+use super::brain::{Spot, Want};
 use super::osaka::{Activity, CHAT_FACTOR, Chances, landing, middle, pick};
 use super::room::{Furniture, Seat, Use};
 use super::scenes::{Build, Job};
@@ -115,6 +115,17 @@ impl Bind {
             Self::Door(spot) => Some(*spot),
             Self::Job(job) => Some(job.spot()),
             Self::Here(_) | Self::WalkTo(_) | Self::Work(_) => None,
+        }
+    }
+
+    /// Where it would have her, as far as her needs care.
+    pub fn on(&self) -> Spot {
+        match self {
+            Self::Job(Job::Use(seat)) if seat.makeshift() => Spot::Made,
+            Self::Job(Job::Use(_)) => Spot::Real,
+            Self::Job(Job::Build(_)) => Spot::Made,
+            Self::Here(Here::Idle(_)) => Spot::Floor,
+            _ => Spot::Any,
         }
     }
 

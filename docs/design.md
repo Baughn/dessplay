@@ -1424,15 +1424,27 @@ this section states what is built.
 - **Choosing what to do**: each decision scores what's on offer where she
   stands (stand, space out, sneeze, walk, travel, each activity, a pull or
   swap in reach) as base × fit × cooldown and picks at random, weighted,
-  among the top four. Five needs (0–1) set the fit: *sleepy* rises over a
-  visit and a doze eases it a little, so she dozes more as a visit goes
-  on; *restless* starts high, rises steadily, and moving answers it; *tidy* rises while a line is on offer and a pull answers it;
-  *mischief* rises slowly and a swap answers it; *hungry* rises over
-  twenty minutes and a snack from her fridge answers it. Fit is 0.1 + need² (0.5
-  for an offer no need wants, and never below 0.5 for a nap on a sofa,
-  which she takes awake too); repeating one of her last three choices
-  multiplies by 0.4. A need is eased by how much she does of what she
-  chose: an activity or a use by the share of its time she gets through
+  among the top four. Eight needs (0–1) set the fit: *sleepy* rises over a
+  visit, and a bed answers it best, a nap on a sofa well and a doze on the
+  floor a little, so she dozes more as a visit goes on; *restless* starts
+  high, rises steadily, and moving answers it; *tidy* rises while a line is
+  on offer and a pull answers it; *mischief* rises slowly and a swap
+  answers it; *hungry* rises over twenty minutes and a snack from her
+  fridge answers it; *comfort* rises steadily and sitting or lying on
+  furniture answers it (a real piece fully, one she made 0.6 as well, the
+  floor 0.1); *fun* rises steadily and the TV, a book, the cat, a parcel,
+  a snack and a swap answer it, each wearing thin with use (its tolerance
+  rises by 0.6 a whole use and wears off over ten minutes), so she varies
+  what she enjoys; *daydreams* rise slowly and spacing out, gazing, lying
+  on her front and drifting off at her desk answer them. Every want
+  answers at least one need but standing (the filler) and sneezing (an
+  accident). An offer's fit is 0.1 + Σ need² × amount × 2 × how well its
+  spot answers that need (and how fresh, for fun) — 0.5 for an offer no
+  need wants, and never below 0.5 for a parcel or her part-time job, which
+  she takes whatever she feels. She arrives wide awake (sleepy 0), keen to
+  move (restless 0.7), mischief and hunger at 0.2, the rest at 0.5.
+  Repeating one of her last three choices multiplies by 0.4. A need is
+  eased by how much she does of what she chose: an activity or a use by the share of its time she gets through
   before it ends or is interrupted, a pull by how far she pulls it (all
   of it when she runs out of floor), a swap once the letters swap;
   walking and travel as she sets off. A choice she never gets to eases

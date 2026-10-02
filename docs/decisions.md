@@ -2445,6 +2445,22 @@ it would bring back the doze oscillation (2026-09-28). Walking and
 travel stay credited at the choice, since setting off is already the
 moving.
 
+Every want answers a need (the user's Q2), so her furniture is worth
+something to her: comfort, fun and daydreams are new, and the spot she'd
+use counts (a real piece fully, one she made 0.6, the floor 0.1 for
+comfort; 1, 0.7, 0.3 for sleep), which makes a sofa beat the floor
+without a special case. The fit weighs each need by how much the want
+answers it (× 2, so an answer of 0.5 weighs what a whole need did
+before): with every need counted fully, wants answering two needs won
+too easily (homework, which answers daydreams and comfort, rose from 5%
+to 15% of her choices at home in the simulator). Fun wears thin per
+source (RimWorld's joy tolerance), or the TV would answer it every time.
+Sneezing stays an accident with no need: mischief sits at 1 all visit in
+a room with nothing to swap, and would have her sneeze every other
+choice. A parcel and her job keep a fit of at least 0.5, as a nap did.
+The new needs start at 0.5, so wants that scored a flat × 0.5 aren't
+cut to × 0.1 at arrival. Beauty and nesting wait for phase 4.
+
 Every loss owes a beat (a glance, sometimes a line) for the
 proposal's rule 5, "nothing ends silently": a lapse reads as hers when
 she looks at what she lost (Carlisle's gaze), and a dropped purpose

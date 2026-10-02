@@ -4,7 +4,7 @@
 
 use super::Rng;
 use super::art::DoorFrame;
-use super::brain::{self, Factor, Need, Needs, Want};
+use super::brain::{self, Factor, Need, Needs, Spot, Want};
 use super::layer::Placed;
 use super::mind::{self, Beat, Bind, Ctx, Heading, Here, Lines, Loss, Whims};
 use super::room::{Furniture, MadeId, PieceRef, Seat, Use};
@@ -1996,39 +1996,54 @@ impl Osaka {
             (at.saturating_sub(since) as f64 / until.saturating_sub(since).max(1) as f64)
                 .clamp(0.0, 1.0)
         };
-        let done = match (&self.act, want) {
+        let (done, spot) = match (&self.act, want) {
             (Act::Idle { what, since, until }, Want::Idle(chose)) if *what == chose => {
-                span(*since, *until)
+                (span(*since, *until), Spot::Floor)
             }
             (
                 Act::Use {
                     seat, since, until, ..
                 },
                 Want::Use(chose),
-            ) if seat.what == chose => span(*since, *until),
+            ) if seat.what == chose => {
+                let spot = if seat.makeshift() {
+                    Spot::Made
+                } else {
+                    Spot::Real
+                };
+                (span(*since, *until), spot)
+            }
             (Act::Pull { offset, goal, .. }, Want::Pull) => {
-                f64::from(*offset) / f64::from((*goal).max(1))
+                (f64::from(*offset) / f64::from((*goal).max(1)), Spot::Any)
             }
             _ => return,
         };
         self.credit = None;
-        self.serve(want, done);
+        self.serve(want, done, spot);
     }
 
     /// She did all of what she chose, `want`.
     fn credit_whole(&mut self, want: Want) {
         if self.credit == Some(want) {
             self.credit = None;
-            self.serve(want, 1.0);
+            self.serve(want, 1.0, Spot::Any);
         }
     }
 
-    /// `want`'s needs eased by `share` of what it answers.
-    fn serve(&mut self, want: Want, share: f64) {
-        tracing::trace!(?want, share, "houseguest: eased by what she did");
+    /// `want`'s needs eased by `share` of what it answers, as well as
+    /// `spot` answers each.
+    fn serve(&mut self, want: Want, share: f64, spot: Spot) {
+        tracing::trace!(?want, share, ?spot, "houseguest: eased by what she did");
         for &(need, amount) in want.def().serves {
-            self.needs.serve(need, amount * share);
+            let fresh = if need == Need::Fun {
+                self.needs.fresh(want)
+            } else {
+                1.0
+            };
+            self.needs
+                .serve(need, amount * share * brain::quality(need, spot) * fresh);
         }
+        self.needs.enjoyed(want, share);
     }
 
     /// Layer changes queued since the last paint.
@@ -2344,7 +2359,10 @@ impl Osaka {
             }
         }
         for attempt in 0.. {
-            let wants: Vec<Want> = offers.iter().map(|(want, ..)| *want).collect();
+            let wants: Vec<(Want, Spot)> = offers
+                .iter()
+                .map(|(want, _, bind)| (*want, bind.on()))
+                .collect();
             // A resident mostly keeps out of the chat, where people read.
             let factor = |want: Want| {
                 let into_chat = offers
@@ -2388,7 +2406,7 @@ impl Osaka {
                 // credited as she sets off. The rest, by what she does.
                 if matches!(want, Want::Walk | Want::Travel) {
                     self.credit = None;
-                    self.serve(want, 1.0);
+                    self.serve(want, 1.0, Spot::Any);
                 } else {
                     self.credit = Some(want);
                 }

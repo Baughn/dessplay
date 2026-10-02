@@ -3926,7 +3926,7 @@ fn an_interrupted_sleep_eases_only_what_she_slept() {
         guest.give(Furniture::Bed);
         paint(&mut guest, &real, &view, 0);
         let sleepy = |guest: &Guest| match &guest.state {
-            State::Visiting(visit) => visit.osaka.needs().sleepy,
+            State::Visiting(visit) => visit.osaka.needs().get(super::brain::Need::Sleepy),
             _ => panic!("visiting"),
         };
         let mut now = 0;
