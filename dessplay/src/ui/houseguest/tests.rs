@@ -3773,6 +3773,95 @@ proptest! {
     }
 }
 
+/// The sofa census (the migration's checkpoint bench): in the stage
+/// room, cued to make a sofa, five-minute visits with chat every 37 s
+/// (in a phase that differs by seed) or none, what became of each piece she made — used (and how long after
+/// she made it), let be after her tries, lost (gone unused), or still
+/// waiting when the visit ended. Prints; run by hand in release.
+#[test]
+#[ignore]
+fn sofa_census() {
+    use super::room::MadeId;
+    const SEEDS: u64 = 100;
+    for chat in [None, Some(37_000u64)] {
+        for graphics in [false, true] {
+            let (mut used, mut let_be, mut lost, mut waiting) = (0, 0, 0, 0);
+            let mut waits: Vec<u64> = Vec::new();
+            for seed in 0..SEEDS {
+                let mut ui = stage_ui();
+                let (real, mut view) = real_frame(&mut ui, 100, 30);
+                let mut guest = Guest::new(seed);
+                if graphics {
+                    guest.set_picker(kitty());
+                }
+                guest.cue(Scene::MakeSofa);
+                paint(&mut guest, &real, &view, 0);
+                // Each piece: when it was made, and what became of it.
+                let mut made: Vec<(MadeId, u64, Option<u64>, bool)> = Vec::new();
+                let mut now = 0;
+                while now < 300_000 {
+                    let step = guest
+                        .next_tick(now)
+                        .map_or(1000, |d| d.as_millis() as u64)
+                        .clamp(1, 1000);
+                    now += step;
+                    // Each seed's chat in another phase, so the first
+                    // line lands anywhere from the tear to the sitting.
+                    let shifted = |t: u64| t + seed * 373;
+                    if chat.is_some_and(|every| shifted(now) / every != shifted(now - step) / every)
+                    {
+                        view.chat_mark.synced += 1;
+                    }
+                    guest.advance(now);
+                    paint(&mut guest, &real, &view, now);
+                    let State::Visiting(visit) = &guest.state else {
+                        break;
+                    };
+                    let mine: Vec<_> = visit.made.iter().filter_map(Made::mine).collect();
+                    for m in &mine {
+                        if !made.iter().any(|(id, ..)| *id == m.id) {
+                            made.push((m.id, now, None, false));
+                        }
+                    }
+                    for (id, _, used_at, gone) in &mut made {
+                        match mine.iter().find(|m| m.id == *id) {
+                            Some(m) if m.used => {
+                                used_at.get_or_insert(now);
+                            }
+                            Some(_) => {}
+                            None => *gone = true,
+                        }
+                    }
+                }
+                let osaka = match &guest.state {
+                    State::Visiting(visit) => Some(&visit.osaka),
+                    _ => None,
+                };
+                for &(id, at, used_at, gone) in &made {
+                    match used_at {
+                        Some(when) => {
+                            used += 1;
+                            waits.push(when - at);
+                        }
+                        None if gone => lost += 1,
+                        None if osaka.is_some_and(|o| o.gave_up(id)) => let_be += 1,
+                        None => waiting += 1,
+                    }
+                }
+            }
+            waits.sort_unstable();
+            let at = |q: usize| waits.get(waits.len() * q / 100).map_or(0, |ms| ms / 1000);
+            eprintln!(
+                "chat every {chat:?} graphics={graphics}: {} made, {used} used (made to used: median {} s, p90 {} s, max {} s), {let_be} let be, {lost} lost, {waiting} waiting at the end",
+                used + let_be + lost + waiting,
+                at(50),
+                at(90),
+                waits.last().map_or(0, |ms| ms / 1000),
+            );
+        }
+    }
+}
+
 /// A chat line while she's clambering over a divider, hanging on its
 /// pole, doesn't drop her: she gets over, and looks once she has, as
 /// when climbing. Over the stage room's tallest divider.

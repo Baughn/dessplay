@@ -2380,6 +2380,29 @@ sleepy enough for bed (10 bedtimes against 18); at 0.1 it's 15. The
 proposal's needs model (comfort, spot quality) replaces this bridge
 ([proposal](proposals/2026-10-02-houseguest-mind.md#every-want-answers-a-need)).
 
+## Her intent lives in her act (2026-10-02)
+
+**Rule:** The job she's at, or walking to, is part of her act (Walk
+carries what she does on arriving; each job's act carries its job), so
+it can't outlive the act or be missing from it. Every act is classified
+once (`ActProps`: where she stays, what a chat line does), and the
+queries that used to keep their own lists of acts read that. One
+`interrupt(Cause)` is where anything stops her short. This is
+implementation, not behaviour: [design.md](design.md#houseguest) is
+unchanged.
+
+**Why:** Phase 1 of the
+[mind proposal](proposals/2026-10-02-houseguest-mind.md#the-body-interface).
+Her plan was split across the act and a separate `task`, which some
+fifteen sites cleared by hand, and about nineteen `match` sites listed
+acts by kind; `recheck`'s first list was wrong (654dd11) and the sofa bugs were
+stranded intent of the same kind. Golden trajectory hashes (32 runs,
+recorded before the change) prove it changed nothing she does. The one
+reader of `task` that didn't go through its act was `lost_grip`; it
+keeps the broad check (any job in her act, a walk's included), because
+a tick far behind can re-pick a pull before the paint that reports the
+lost grip.
+
 ## Houseguest chooses by needs among the top few (2026-09-28)
 
 **Rule:** Her next act is a weighted-random pick among the four

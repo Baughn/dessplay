@@ -2105,7 +2105,7 @@ welcome; the only goal is "watching her is kind of fun".
 
 ## Phase 38: Houseguest mind and home
 
-**Status: phase 0 done (2026-10-02); phase 1 next.** Design: [the mind
+**Status: phases 0 and 1 done (2026-10-02); phase 2 next.** Design: [the mind
 and home proposal](proposals/2026-10-02-houseguest-mind.md) (direction
 agreed with the user; their answers are its *Decisions*). Its migration
 plan numbers its own phases 0–8; this section records them.
@@ -2144,12 +2144,52 @@ plan numbers its own phases 0–8; this section records them.
   bench cases: the bench and its logs weren't kept (sofa-diagnosis.md),
   so the property covers the class instead. `seed_7` needed no re-pin.
 
-### Phase 1 — pure refactor (brief)
+### Phase 1 — pure refactor (done 2026-10-02)
 
-`ActProps` (`Stays`, `OnChat`) replacing the hand-kept act lists (look,
-recheck, `aloft`, `standing`); the job in the act's payload (`task`
-deleted); one `interrupt(Cause)`. **Record the golden trajectory hashes
-first** (proposal, *Determinism, cost, testing*: 4 seeds × {ASCII,
-kitty} × four scenarios) and keep them unchanged. Then the checkpoint:
-re-run a chat-heavy bench and a 256-case pass, and record the result
-here before phase 2.
+- **Golden trajectories first** (`houseguest::tests::golden`): four
+  scenes × seeds 0–3 × {ASCII, kitty}, ~3 s at the gate. The scenes go
+  beyond the proposal's list where it covered too little: the stage room
+  is cued through swap, sneeze, pull, shopping, a bed and a parcel while
+  chat arrives (Sneeze and PutBack never came up naturally), and the
+  resident is cued at mischief in the chat and caught at it by a key
+  press. A kitty image's id is random, so image cells hash by position;
+  her appearance and image placement cover what they show.
+  `HOUSEGUEST_GOLDEN_TRACE=<dir>` writes per-frame traces to diff.
+- **`ActProps`** (`Stays`: job / rest / pass; `OnChat`: look / once
+  landed / once back): `recheck`, `look`, `settle`'s first arm and
+  `aloft` read it. `evict`, `errand`, `hidden`, `door` and the blink
+  stay per-act matches: they act on payloads, not classify.
+- **The job in the act.** `Walk { then: Then }` (`Nothing`, `Link`,
+  `Job`); Pull, Tear, Swap, Giggle, Innocent and Use carry their own
+  job type; `Use.what` is its seat's. `task` is gone, and with it the
+  "no job after all" fallbacks. `JobRef` borrows a job's spot, side and
+  hands row. `lost_grip` keeps the broad check (a walk's job too): a
+  tick far behind can re-pick a pull before the paint reporting the
+  lost grip.
+- **`interrupt(Cause)`**: chat, restless, seat gone, lost grip, shaken,
+  refused; the only builder of a Look. It clears `rest` for every cause
+  (only `recheck` did); a stale one is unreadable before the next
+  `decide` (commit d0f29db0 says why).
+- All three steps left every golden hash unchanged; the gate passed
+  after each.
+
+**Checkpoint (2026-10-02).** The 37 s-chat bench of the diagnosis wasn't
+kept, so `sofa_census` (ignored; `--release --ignored --nocapture`)
+stands in, kept for later checkpoints: the stage room cued to make a
+sofa, 100 seeds × {ASCII, kitty}, five-minute visits, chat every 37 s in
+a phase shifted per seed (so it lands anywhere from the tear to the
+sitting), or none.
+
+| Chat | Mode | Made | Used | Made → used (median / p90 / max) | Let be | Lost | Waiting at the end |
+|---|---|---|---|---|---|---|---|
+| none | ASCII | 100 | 100 | 6 / 7 / 7 s | 0 | 0 | 0 |
+| none | kitty | 100 | 100 | 6 / 7 / 7 s | 0 | 0 | 0 |
+| 37 s | ASCII | 99 | 98 | 6 / 24 / 27 s | 0 | 0 | 1 |
+| 37 s | kitty | 93 | 93 | 7 / 24 / 28 s | 0 | 0 | 0 |
+
+The one waiting piece was started at 294.8 s and still being crumpled
+when the visit ended. Fewer than 100 made with chat: a tear interrupted
+mid-reel puts the text back, as designed. Waits of ~25 s are a look, the
+15 s watch and the walk back. The 256-case houseguest run passed (149
+tests, 40 s, release), and so did the perf test. **The sofa class no
+longer leaks; phase 2 needn't start by closing it.**

@@ -1,6 +1,6 @@
 # Testing Strategy
 
-Last updated: 2026-10-01
+Last updated: 2026-10-02
 
 ## Table of Contents
 
@@ -757,6 +757,22 @@ fn test_playlist_rendering() {
 Application logic. Snapshot tests verify rendering only; input routing
 is covered by message/update tests; everything above that belongs to
 whole-app tests.
+
+### Golden Trajectories (houseguest)
+
+A refactor of the houseguest that means to change nothing she does is
+proven by `houseguest::tests::golden`: four scenes (the stage room cued
+through every job while chat arrives, a resident through focus changes,
+key presses and chat mischief, a furnished home over ten minutes, an
+errand), four seeds each, ASCII and line art. Every painted frame's act,
+position, appearance, image placement and changed cells are hashed with
+FNV-1a (stable across Rust versions); a kitty image's random id is left
+out. A deliberate behaviour change re-records the table the failure
+prints. To find where two versions part, set
+`HOUSEGUEST_GOLDEN_TRACE=<dir>` on both and diff the per-frame traces.
+The sofa census (`sofa_census`, ignored; run with `--release --ignored
+--nocapture`) is the migration's checkpoint bench: what became of every
+piece she made over 100 seeds, with and without chat every 37 s.
 
 ### Whole-App TUI Tests
 
