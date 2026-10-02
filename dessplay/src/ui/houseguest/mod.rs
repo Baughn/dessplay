@@ -505,10 +505,13 @@ impl Guest {
             State::Visiting(visit) => {
                 visit.fades.retain(|fade| !fade.done(now));
                 let fading = !visit.fades.is_empty();
-                visit
+                let changed = visit
                     .osaka
-                    .tick(now, &visit.terrain, &visit.chances, &mut self.rng)
-                    || fading
+                    .tick(now, &visit.terrain, &visit.chances, &mut self.rng);
+                // Hers the moment she does it: whatever ends the visit
+                // before the next paint can't lose it.
+                self.unsaved |= record(&mut self.ledger, &mut self.shop_now, visit);
+                changed || fading
             }
             State::Leaving(leaving) => {
                 if leaving.dissolve.done(now) {
@@ -675,28 +678,7 @@ impl Guest {
                 // closet this frame. Placed, it's solid to text; she walks
                 // in front of it.
                 let before = self.ledger.clone();
-                for event in visit.osaka.take_events() {
-                    match event {
-                        osaka::HomeEvent::Bought(item) => {
-                            self.ledger.ordered = Some(item);
-                            self.ledger.bought_on = self.ledger.visits;
-                            self.shop_now = false;
-                            self.unsaved = true;
-                        }
-                        osaka::HomeEvent::Unpacked(item) => {
-                            self.unsaved |= self.ledger.home.unbox(item);
-                        }
-                        osaka::HomeEvent::Crumpled(seat) => {
-                            for made in &mut visit.made {
-                                if made.piece.seat(room::Use::Crumple, 0) == seat
-                                    && let Some(scrap) = &mut made.piece.scrap
-                                {
-                                    scrap.stage = scrap::STAGES;
-                                }
-                            }
-                        }
-                    }
-                }
+                self.unsaved |= record(&mut self.ledger, &mut self.shop_now, visit);
                 let shown = furnish(
                     &mut self.ledger,
                     &mut self.gift,
@@ -1093,6 +1075,36 @@ impl Guest {
             }
         }
     }
+}
+
+/// Record what she did to her home since last asked: the ledger's part
+/// (an order, an unpacking) and the visit's (a makeshift piece crumpled
+/// into shape). Returns whether the ledger changed.
+fn record(ledger: &mut Ledger, shop_now: &mut bool, visit: &mut Visit) -> bool {
+    let mut changed = false;
+    for event in visit.osaka.take_events() {
+        match event {
+            osaka::HomeEvent::Bought(item) => {
+                ledger.ordered = Some(item);
+                ledger.bought_on = ledger.visits;
+                *shop_now = false;
+                changed = true;
+            }
+            osaka::HomeEvent::Unpacked(item) => {
+                changed |= ledger.home.unbox(item);
+            }
+            osaka::HomeEvent::Crumpled(seat) => {
+                for made in &mut visit.made {
+                    if made.piece.seat(room::Use::Crumple, 0) == seat
+                        && let Some(scrap) = &mut made.piece.scrap
+                    {
+                        scrap.stage = scrap::STAGES;
+                    }
+                }
+            }
+        }
+    }
+    changed
 }
 
 /// Where she stands to poke `accordion`: the spot on it where her box

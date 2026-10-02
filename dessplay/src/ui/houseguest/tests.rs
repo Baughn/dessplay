@@ -3503,3 +3503,43 @@ proptest! {
         }
     }
 }
+
+/// What she does to her home is hers the moment she does it: the visit
+/// ending before the next paint (a key pressed right after the shopping
+/// channel sold her something) doesn't lose the order.
+#[test]
+fn commits_survive_the_visit_ending() {
+    let (real, view) = home_screen();
+    let mut guest = Guest::new(3);
+    guest.cue(Scene::Shopping);
+    paint(&mut guest, &real, &view, 0);
+    assert!(
+        matches!(guest.cue_note(), Some(Ok(_))),
+        "{:?}",
+        guest.cue_note()
+    );
+    let mut now = 0;
+    loop {
+        assert!(now < 30_000, "never watched the shopping channel");
+        now += guest
+            .next_tick(now)
+            .map_or(100, |d| d.as_millis() as u64)
+            .clamp(1, 100);
+        guest.advance(now);
+        let State::Visiting(visit) = &guest.state else {
+            panic!("visiting");
+        };
+        if visit
+            .osaka
+            .watching()
+            .is_some_and(|(_, advert)| advert.is_some())
+        {
+            break;
+        }
+        paint(&mut guest, &real, &view, now);
+    }
+    // Before any paint sees the purchase, someone's at the keys.
+    guest.activity(now);
+    let _ = run(&mut guest, &real, &view, now, now + dissolve::DURATION_MS);
+    assert!(guest.ledger.ordered.is_some(), "the order was lost");
+}

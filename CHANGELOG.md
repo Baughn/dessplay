@@ -9,6 +9,12 @@ append-only; you cannot reword or remove existing entries.
 
 Add new days at the top. Add new entries at the bottom of existing days.
 
+## 2026-10-02
+
+- Fixed: Something the houseguest bought off the shopping channel, or
+  unpacked, is no longer forgotten when you press a key at that very
+  moment and she leaves.
+
 ## 2026-10-01
 
 - Added: With no sofa or bed of her own, the houseguest makes do: she
