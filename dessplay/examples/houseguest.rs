@@ -6,7 +6,8 @@
 //! ```
 //!
 //! ←/→ pick a scene · Enter play it · m a chat message arrives ·
-//! f give her the next piece of furniture · g goodbye · n new seed ·
+//! f give her the next piece of furniture · x show why she does what she
+//! does · g goodbye · n new seed ·
 //! [ ] slower / faster · 1–5 make her sleepy,
 //! restless, keen to tidy, mischievous, or hungry · q quit. The bar shows her
 //! needs. Her decisions and their reasons are logged to
@@ -85,6 +86,7 @@ fn run(seed: &mut u64, picker: ratatui_image::picker::Picker) -> color_eyre::Res
 
     let mut speed = 3; // 1×
     let mut chats = 0;
+    let mut explain = false;
     // Her clock runs at the chosen speed.
     let mut now_ms = 0.0f64;
     let mut last = Instant::now();
@@ -111,7 +113,7 @@ fn run(seed: &mut u64, picker: ratatui_image::picker::Picker) -> color_eyre::Res
             };
             let mood = guest.mood().unwrap_or_default();
             let menu = format!(
-                " ◀ {} ▶  Enter play · f furnish · m chat · g bye · n seed {} · [ ] {}× · 1-5 needs · q │ {} │ {}",
+                " ◀ {} ▶  Enter play · f furnish · m chat · x why · g bye · n seed {} · [ ] {}× · 1-5 needs · q │ {} │ {}",
                 scene.name(),
                 seed,
                 SPEEDS[speed],
@@ -119,6 +121,12 @@ fn run(seed: &mut u64, picker: ratatui_image::picker::Picker) -> color_eyre::Res
                 note
             );
             let blank = " ".repeat(usize::from(area.width));
+            // Why she's doing what she does, on the row above.
+            if explain && let Some(why) = guest.explain() {
+                let y = y.saturating_sub(1);
+                buf.set_string(0, y, &blank, Style::reset());
+                buf.set_stringn(0, y, &why, usize::from(area.width), Style::reset());
+            }
             buf.set_string(0, y, &blank, Style::reset());
             buf.set_stringn(
                 0,
@@ -149,6 +157,7 @@ fn run(seed: &mut u64, picker: ratatui_image::picker::Picker) -> color_eyre::Res
             KeyCode::Right => selected = (selected + 1) % Scene::ALL.len(),
             KeyCode::Enter | KeyCode::Char(' ') => guest.cue(Scene::ALL[selected]),
             KeyCode::Char('m') => chats += 1,
+            KeyCode::Char('x') => explain = !explain,
             KeyCode::Char('f') => {
                 if let Some(item) = guest.wishlist() {
                     guest.give(item);

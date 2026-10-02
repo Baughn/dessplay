@@ -3773,6 +3773,52 @@ proptest! {
     }
 }
 
+/// Every decision is explained: which kind it was, by what, what she
+/// set about, and — rolling — what she chose among (the choice one of
+/// the best few). The stage shows the latest.
+#[test]
+fn her_decisions_explain_themselves() {
+    use super::osaka::Bucket;
+    let mut ui = stage_ui();
+    let (real, mut view) = real_frame(&mut ui, 100, 30);
+    let mut guest = Guest::new(5);
+    guest.cue(Scene::Arrive);
+    paint(&mut guest, &real, &view, 0);
+    let mut now = 0;
+    while now < 180_000 {
+        now += guest
+            .next_tick(now)
+            .map_or(1000, |d| d.as_millis() as u64)
+            .clamp(1, 1000);
+        if now % 30_000 < 1000 {
+            view.chat_mark.synced += 1;
+        }
+        guest.advance(now);
+        paint(&mut guest, &real, &view, now);
+    }
+    let State::Visiting(visit) = &guest.state else {
+        panic!("still visiting");
+    };
+    let decisions = &visit.osaka.decisions;
+    assert!(decisions.len() > 20, "{} decisions", decisions.len());
+    for d in decisions {
+        assert!(!d.act.is_empty(), "{d}");
+        if let Some(want) = d.want {
+            assert_eq!(d.bucket, Bucket::Normal, "{d}");
+            assert!(d.top.iter().any(|&(w, _)| w == want), "{d}");
+            assert!(d.top.len() <= 4, "{d}");
+        }
+    }
+    for bucket in [Bucket::Reflex, Bucket::Normal] {
+        assert!(
+            decisions.iter().any(|d| d.bucket == bucket),
+            "no {bucket:?}"
+        );
+    }
+    let shown = guest.explain().expect("explained");
+    assert_eq!(shown, decisions.last().unwrap().to_string());
+}
+
 /// The sofa census (the migration's checkpoint bench): in the stage
 /// room, cued to make a sofa, five-minute visits with chat every 37 s
 /// (in a phase that differs by seed) or none, what became of each piece she made — used (and how long after

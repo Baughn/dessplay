@@ -506,6 +506,75 @@ enum Cause {
     Refused,
 }
 
+/// Which kind of decision it was: a pre-empt, carrying on with what she
+/// was about, or a roll among what's on offer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Bucket {
+    Reflex,
+    Continuation,
+    Normal,
+}
+
+/// Her latest decisions kept, for the stage.
+const LOG: usize = 16;
+
+/// One decision, as the explain log keeps it: what kind, by which
+/// reflex or method, what she chose and among what, and what she set
+/// about.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct Decision {
+    pub at: u64,
+    pub bucket: Bucket,
+    pub method: &'static str,
+    /// What she chose, rolling.
+    pub want: Option<Want>,
+    /// What she rolled among, best first, with their scores.
+    pub top: Vec<(Want, f64)>,
+    /// Her act, and where it takes her.
+    pub act: String,
+}
+
+impl Decision {
+    fn of(bucket: Bucket, method: &'static str) -> Self {
+        Self {
+            at: 0,
+            bucket,
+            method,
+            want: None,
+            top: Vec::new(),
+            act: String::new(),
+        }
+    }
+
+    fn reflex(method: &'static str) -> Self {
+        Self::of(Bucket::Reflex, method)
+    }
+}
+
+impl std::fmt::Display for Decision {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{:.1}s {:?}/{}",
+            self.at as f64 / 1000.0,
+            self.bucket,
+            self.method
+        )?;
+        if let Some(want) = self.want {
+            write!(f, " {want:?}")?;
+        }
+        if !self.top.is_empty() {
+            let top: Vec<String> = self
+                .top
+                .iter()
+                .map(|(want, score)| format!("{want:?} {score:.1}"))
+                .collect();
+            write!(f, " of [{}]", top.join(", "))?;
+        }
+        write!(f, " → {}", self.act)
+    }
+}
+
 impl Act {
     /// The job she's at, at its spot.
     fn at_job(&self) -> Option<JobRef<'_>> {
@@ -974,9 +1043,14 @@ pub(super) struct Osaka {
     /// Where she settled, choosing what to do, if it was calm then: while
     /// she rests there, she keeps checking it is (see [`Osaka::recheck`]).
     rest: Option<(i32, i32)>,
+    /// Her last few decisions, and why (the stage shows them).
+    log: std::collections::VecDeque<Decision>,
     /// Every choice she made (tests read it).
     #[cfg(test)]
     pub choices: Vec<Want>,
+    /// Every decision she made (tests read it).
+    #[cfg(test)]
+    pub decisions: Vec<Decision>,
 }
 
 impl Osaka {
@@ -1008,8 +1082,11 @@ impl Osaka {
             poked: false,
             tries: Vec::new(),
             rest: None,
+            log: std::collections::VecDeque::new(),
             #[cfg(test)]
             choices: Vec::new(),
+            #[cfg(test)]
+            decisions: Vec::new(),
         };
         osaka.act_due = osaka.first_due(now);
         osaka
@@ -1124,7 +1201,6 @@ impl Osaka {
     }
 
     /// The name of what she's doing (the golden trajectories hash it).
-    #[cfg(test)]
     pub fn act_name(&self) -> String {
         let debug = format!("{:?}", self.act);
         debug
@@ -1132,6 +1208,34 @@ impl Osaka {
             .next()
             .unwrap_or_default()
             .to_owned()
+    }
+
+    /// What she's set about, for the explain log: her act, and where
+    /// it takes her.
+    fn act_summary(&self) -> String {
+        let name = self.act_name();
+        match &self.act {
+            Act::Walk { to, then } => match then {
+                Then::Job(job) => {
+                    let what = match job.by_ref() {
+                        JobRef::Pull(_) => "a pull".to_owned(),
+                        JobRef::Swap(_) => "a swap".to_owned(),
+                        JobRef::Build(build) => format!("making a {:?}", build.piece.item),
+                        JobRef::Use(seat) => format!("{:?} ({:?})", seat.what, seat.item),
+                    };
+                    format!("{name} to {:?} for {what}", job.spot())
+                }
+                Then::Link(link) => format!("{name} to {to}, then {:?}", link.route),
+                Then::Nothing => format!("{name} to {to}"),
+            },
+            Act::Door { to, .. } => format!("{name} to {to:?}"),
+            _ => name,
+        }
+    }
+
+    /// Her latest decision, and why.
+    pub fn explain(&self) -> Option<&Decision> {
+        self.log.back()
     }
 
     /// Whether any layer change is still queued.
@@ -2007,29 +2111,55 @@ impl Osaka {
 
     /// Choose what to do next, standing somewhere valid.
     fn decide(&mut self, at: u64, terrain: &Terrain, chances: &Chances, rng: &mut Rng) {
+        let why = self.choose_next(at, terrain, chances, rng);
+        let decision = Decision {
+            at,
+            act: self.act_summary(),
+            ..why
+        };
+        tracing::debug!(%decision, "houseguest: decided");
+        #[cfg(test)]
+        self.decisions.push(decision.clone());
+        if self.log.len() == LOG {
+            self.log.pop_front();
+        }
+        self.log.push_back(decision);
+    }
+
+    /// Choose what to do next and set about it; returns why.
+    fn choose_next(
+        &mut self,
+        at: u64,
+        terrain: &Terrain,
+        chances: &Chances,
+        rng: &mut Rng,
+    ) -> Decision {
         self.rest = None;
         if self.errand.is_some() {
-            return self.head_for_errand(terrain, at);
+            self.head_for_errand(terrain, at);
+            return Decision::reflex("errand");
         }
         let Some(here) = terrain.platform_at(self.x, self.y) else {
-            return self.set(Act::Stand { until: at + 1000 }, at);
+            self.set(Act::Stand { until: at + 1000 }, at);
+            return Decision::reflex("no floor");
         };
         // Over text she only passes: on to the nearest calm spot, or by
         // door to one elsewhere.
         if !terrain.restful(self.x, self.y) && self.find_rest(here, terrain, chances, at, rng) {
-            return;
+            return Decision::reflex("off text");
         }
         // With nowhere calm to go, she stays as she is, and isn't startled
         // off it again.
         self.rest = terrain.restful(self.x, self.y).then_some((self.x, self.y));
         if at < self.watch_until {
             self.facing = toward(self.x, self.watch_x);
-            return self.set(
+            self.set(
                 Act::Stand {
                     until: self.watch_until.min(at + 5000),
                 },
                 at,
             );
+            return Decision::reflex("watching chat");
         }
         if !self.greeted {
             self.greeted = true;
@@ -2043,14 +2173,14 @@ impl Osaka {
         if let Some(job) = self.goal.take().and_then(|g| chances.offered(g))
             && self.go_to(job, here, terrain, at)
         {
-            return;
+            return Decision::of(Bucket::Continuation, "heading");
         }
         // A piece she made and hasn't finished with: she finishes it, or
         // uses it, before choosing anything new.
         if let Some(job) = self.leftover(chances, terrain, here) {
             tracing::debug!(?job, "houseguest: back to what she made");
             if self.go_to(job, here, terrain, at) {
-                return;
+                return Decision::of(Bucket::Continuation, "leftover");
             }
         }
         let links: Vec<Link> = terrain
@@ -2136,12 +2266,7 @@ impl Osaka {
         while let Some((i, top)) = brain::choose(&offers, &self.needs, &self.recent, &factor, rng) {
             let want = offers.remove(i);
             if self.start(want, here, &links, terrain, chances, at, rng) {
-                tracing::debug!(
-                    ?want,
-                    needs = %self.needs.summary(),
-                    ?top,
-                    "houseguest: decided"
-                );
+                tracing::debug!(needs = %self.needs.summary(), "houseguest: her needs");
                 self.recent.push(want);
                 #[cfg(test)]
                 self.choices.push(want);
@@ -2151,11 +2276,16 @@ impl Osaka {
                 for &(need, amount) in want.def().serves {
                     self.needs.serve(need, amount);
                 }
-                return;
+                return Decision {
+                    want: Some(want),
+                    top,
+                    ..Decision::of(Bucket::Normal, "start")
+                };
             }
             tracing::debug!(?want, "houseguest: couldn't after all");
         }
         self.set(Act::Stand { until: at + 2000 }, at);
+        Decision::of(Bucket::Normal, "nothing bound")
     }
 
     /// Start `want` from platform `here`. False when it turns out not to

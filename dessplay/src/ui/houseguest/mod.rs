@@ -436,6 +436,15 @@ impl Guest {
         }
     }
 
+    /// Her latest decision, and why, while she's visiting (for the
+    /// stage).
+    pub fn explain(&self) -> Option<String> {
+        match &self.state {
+            State::Visiting(visit) => visit.osaka.explain().map(ToString::to_string),
+            _ => None,
+        }
+    }
+
     /// What came of the last cue: what she's doing, or why the room
     /// offers no spot for it.
     pub fn cue_note(&self) -> Option<&Result<String, String>> {
