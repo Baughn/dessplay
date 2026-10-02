@@ -1,6 +1,6 @@
 # Proposal: The Houseguest's mind and home
 
-Status: **DRAFT 2026-10-02 — for discussion; nothing implemented**
+Status: **DRAFT 2026-10-02 — direction agreed; the user's answers are in [Decisions](#decisions-2026-10-02); nothing implemented**
 
 Supporting notes: [the sofa diagnosis](2026-10-02-houseguest-mind/sofa-diagnosis.md) (with the phase-0 regression test), [character-AI survey](2026-10-02-houseguest-mind/research-character-ai.md), [layout survey](2026-10-02-houseguest-mind/research-layout.md), [the full home model](2026-10-02-houseguest-mind/alternative-full-home-model.md) (alternative C).
 
@@ -23,14 +23,40 @@ Paths are relative to `dessplay/src/ui/houseguest/`, and line numbers are at `65
 - **Recommendation: keep the body, and move her memory into the world.**
   - **Things hold purposes.** A piece she made carries what she made it for. One slot holds the job she is heading for, found again by meaning, not by equality. Every way of losing a purpose shows a beat.
   - **Choosing.** The brain still chooses *what* she does. A table of named methods with pure guards chooses *how*, one step at a time, and holds no plan.
-  - **The home.** It gets anchors and a few relational rules ("the sofa faces the TV"). She makes at most one visible repair per visit, prompted by a grievance she shows.
+  - **The home.** It gets anchors and a few relational rules ("the sofa faces the TV"). Rooms and their roles come from what's in them. She repairs what she has noticed is wrong, a piece at a time, more or less often depending on her mood that visit.
   - **Structures** are drawn with the UI's own line glyphs.
 - **No search engine.** There is no MCTS, no annealing solver, no GOAP core, no rule engine and no new crate. The only search is one step of lookahead.
 - **Phases.**
   - Phase 0 (≈ 650 lines with tests) fixes the sofa class.
   - Phase 1 is a pure refactor, proven by golden trajectory hashes.
   - Then come the mind as data, the home, organising, vignettes, structures, cameos and the factory.
-- **Ten [open questions](#open-questions-for-the-user)** follow, each with a recommendation.
+- **[Decisions](#decisions-2026-10-02)** on the ten open questions are recorded below. Two of them reshape the design:
+  - every want answers a need, invented where necessary (comfort, fun, beauty);
+  - rooms are derived from their contents, so pieces move between panes and the panes are only her starting home.
+
+## Decisions (2026-10-02)
+
+The user's answers to the [open questions](#open-questions-for-the-user), and what each changes in this proposal.
+
+**What the user saw.** They probably missed her sitting on the sofa, then saw it standing unused for the rest of the visit, while she lay down to sleep on the List pane's floor. The code explains the second part:
+- a finished makeshift sofa offers only `Lounge`, never `Nap` (room.rs:294);
+- `Lounge` answers no need, while lying on the floor (`Idle(LieBack)`) answers sleepiness (brain.rs:176-196);
+- so a sleepy Osaka always prefers the floor to a sofa she built.
+
+Q2 is the real fix. Phase 0 patches it as data: the makeshift sofa offers `Nap`, which eases sleepiness more than the floor does.
+
+| Q | Answer | Consequence here |
+|---|---|---|
+| 1 | No. A real sofa is an upgrade; she might still use the makeshift one, but rarely | The one-in-twenty whim stays (`lounge/real-sofa`). Continuation makes her use a new made piece once |
+| 2 | Yes. Everything answers a need, inventing needs where necessary, as RimWorld has beauty and entertainment. That might show as buying a potted plant, or a gremlin for the mantelpiece | [Every want answers a need](#every-want-answers-a-need): new needs (comfort, fun, beauty, daydreams, nesting), uses scored by the quality of the spot, and decor pieces |
+| 3 | Agreed | As written |
+| 4 | Yes | Credit by completed fraction, phase 2 |
+| 5 | Yes. That she must *notice* a rule before it applies gives her a bit of random volition | As written |
+| 6 | (a) | Made pieces stay per visit, where she tore the text |
+| 7 | Derive rooms from contents. The panes are only the starting condition; people like it better the more she makes herself at home | [Rooms from contents](#rooms-from-contents): per-piece anchors on any strip, roles from a rule table, pieces moving between panes. `RoomKind` and "one room per pane" go |
+| 8 | Yes, to the degree that she's making her own "panes"; ladders aren't panes but are pane-adjacent | Shelves (new floors), partitions (new rooms) and ladders are all line glyphs |
+| 9 | Unsure, but a moving animation takes far longer than a magic pocket | The pocket, for now. A visible lug for short moves stays a possible later gag, once images are measured |
+| 10 | Random per visit: sometimes industrious, sometimes lazy. She has a life outside dessplay | [Her mood for the visit](#her-mood-for-the-visit) |
 
 ## What we have
 
@@ -92,7 +118,7 @@ A `Bought` on that tick is lost. It is rare, but it is exactly what decisions.md
 
 ```
  L5 CHARACTER  whims · beats (a glance first, line pools) · splices & adverbs · scripts · calendar
- L4 HOME       anchors on strips · projection · rules · one repair per visit · structures
+ L4 HOME       anchors on strips · rooms from contents · rules · repairs · structures
  L3 CHOICE     brain: what (top-four roll) · methods: how (first guard that binds) · explain log
  L2 MEMORY     purposes on things (made pieces, the carried piece) · one heading · owed beats
  ══════════ Offers, naming pieces ▲   ▼ an act + binding · LayerOps · HomeEvents ══════════
@@ -161,13 +187,13 @@ impl Osaka {
 ### Choosing what, and how
 
 ```rust
-pub struct DesireDef { want: Want, base: f64, serves: Option<(Need, f64)>, tier: Tier, factors: &'static [Factor] }
+pub struct DesireDef { want: Want, base: f64, serves: &'static [(Need, f64)], tier: Tier, factors: &'static [Factor] }  // see below
 pub enum Factor { InChat(f64), Inertia(f64), Clock(Window, f64), Season(Window, f64), Rarity }
 pub struct Method { want: Want, name: &'static str, guard: fn(&Ctx, &Whims) -> Option<Bind> }  // pure
 pub struct Bind { act: Prim, spot: (i32, i32), facing: Facing, piece: Option<PieceRef>, job: Option<Job> }
 ```
 
-- **`DesireDef` is `brain::Kind`**, with its tables unchanged.
+- **`DesireDef` is `brain::Kind`.** Its tables carry over, then gain the needs of [the next section](#every-want-answers-a-need).
 - **A want is offered when one of its methods binds.** That reproduces today's gated offers (osaka.rs:1875-1889).
 - **There are no fallback methods.**
   - Offering and planning see the same context, so a guard binds for both or for neither.
@@ -208,6 +234,45 @@ The `Use(Crumple)` want disappears, because a heap is crumpled as a step of its 
 | Furniture with a new use | 8–10 files, 25–35 match arms | 1 `Spec` row, 1 `DesireDef` row, methods; the art is irreducible |
 | A structure: another of a kind / a new kind | Impossible | 1 `Spec` row / plus a placement generator and usually a rule |
 | A layout preference | Impossible | 1 `Rule` row with its grievance |
+
+### Every want answers a need
+
+(Decision Q2.) Today a want that answers no need scores a flat `base × 0.5`. So lounging, napping and watching TV compete on equal terms with walking about, and a sofa is worth no more to her than the floor. Instead, every want answers at least one need, and how well it does depends on *where* she does it.
+
+| Need | Rises | Answered by (quality) |
+|---|---|---|
+| sleepy | over a visit (as now) | the bed (1.0), a sofa nap (0.7), the floor (0.3) |
+| restless | steadily (as now) | walking, travel, exercises (as now) |
+| tidy, mischief, hungry | as now | as now |
+| **comfort** | while she's on her feet or on the floor | sitting or lying on furniture: a real piece 1.0, a makeshift one 0.6, the floor 0.1 |
+| **fun** | steadily | TV, reading, petting the cat, mischief; each kind has a tolerance that rises with use and decays, so she varies (RimWorld's joy) |
+| **beauty** | while she rests in a plain room | resting in a room whose contents are pretty (passive). It also steers the shopping channel toward decor |
+| **daydreams** | slowly | spacing out, gazing, musing. Osaka's signature act becomes need-driven instead of filler |
+| **nesting** | only while a rule she has *felt* is broken (Q5) | a repair, or a build stage |
+
+```rust
+pub struct DesireDef { want: Want, base: f64, serves: &'static [(Need, f64)], tier: Tier, factors: &'static [Factor] }
+// fit = 0.1 + Σ need² × amount × quality(spot), quality from the bound seat (1.0 when the want has no spot)
+```
+
+- **The spot's quality comes from the seat.** `Bind` names the piece, and the piece's `Spec` row gives its comfort. The sofa beats the floor whenever she has one, without a special case: the floor sleep the user saw scores `0.3 + 0.1` (sleepy, comfort), a sofa nap `0.7 + 0.6`.
+- **Decor pieces** (a potted plant, a gremlin on a shelf, a poster) have no use at all. They make a room pretty, which answers beauty while she rests there. The shopping channel sells decor when beauty is her most pressing unmet need.
+- **Stand stays the one filler.** It is what she does when nothing binds.
+- **Tuning moves into the simulator.** With every score now depending on needs, the headless visit simulator (from search-mcts §5.3) comes forward to phase 2, so the shape of a visit can be measured before any statistics test is re-pinned. The squared fit means a pressing need dominates, and a quiet one barely registers. Most needs therefore start near the middle, so no want is starved at arrival.
+
+### Her mood for the visit
+
+(Decision Q10.) Each visit draws a mood from the visit seed, like the cat's presence (mod.rs:1617-1624), so it doesn't disturb the rng stream:
+
+| Mood | Share (est.) | Effect |
+|---|---|---|
+| ordinary | 50% | as tuned |
+| lazy | 20% | comfort and sleepy rise faster, restless slower; no unprompted home work |
+| industrious | 20% | tidy and nesting rise faster; up to three home acts a visit |
+| dreamy | 10% | daydreams rise fast; more musing |
+
+- **Mechanically**, a mood is one row of need-rate multipliers plus the home-act cap. There is no new selection logic.
+- **Legibility.** The arrival greeting hints at it ("Mm... lazy day." / "Okay! Let's tidy up!"), so a lazy visit reads as her choice, not as a broken feature.
 
 ### The body interface
 
@@ -278,7 +343,7 @@ The old failures are covered too:
    - At most two made pieces stand at once, one of each kind (mod.rs:1523-1526), and she carries one piece at most, so this never becomes a to-do list.
    - Each interruption without progress is a try, and so is each decision where its next step can't bind (its seat isn't calm, its TV is hidden). After three tries she gives up, with a beat. A blocked leftover can't wait forever.
 3. **A purpose that left nothing behind competes.** The heading enters the normal roll with ×3 inertia. If she picks something else, she lets it go with a glance.
-4. **Earlier visits never take the continuation bucket.** A half-built ladder or a broken rule reaches her only through the normal roll, unprompted at most once a visit.
+4. **Earlier visits never take the continuation bucket.** A half-built ladder or a broken rule reaches her only through the normal roll, unprompted, and only as often as her mood allows (0–3 home acts a visit).
 5. **Nothing ends silently.** Each loss has one site, and each site owes a beat.
 
 | Loss site | What is lost | Beat owed |
@@ -311,17 +376,42 @@ The old failures are covered too:
 
 ### The model
 
-- **Strips.** A strip is a pane's bottom border, between its walls: `(Nook, Bottom)`.
+- **Strips.** A strip is a floor her home can stand on: a pane's bottom border between its walls, `(Nook, Bottom)`, or a shelf she has built, `Shelf(id)`.
   - It is the stable floor identity a home needs.
   - Live platforms can't be that, because they are renumbered every frame and split wherever text comes near.
-- **Anchors.** Each real piece has a wall-relative anchor on its room's strip (a side and an offset), plus a facing.
+- **Anchors, per piece.** Each real piece has its own anchor: a strip, a wall side, an offset, and a facing. Any strip will do, not just its room's pane.
   - Anchors live in a new top-level ledger field, and `props[].at` is still written.
-  - An older record without anchors derives them from `at`.
+  - An older record without anchors derives them from `at` and the old room's pane.
 - **`project()`** replaces `Home::{resolve, spot}`, `layout` and `place`.
   - It packs each strip in anchor order: a collision pushes both groups inward, never reorders.
   - Pieces that fit side by side are therefore shown side by side, and a resize and back restores the same placement.
-- **One `Spec` row per kind** replaces the scattered `Furniture` matches (footprint, room, name, art, ASCII, uses, seats).
-- **Made pieces** stay out of the home. They are per-visit `Made`s, standing where she tore the text.
+- **One `Spec` row per kind** replaces the scattered `Furniture` matches (footprint, name, art, ASCII, uses, seats). It adds what a piece *offers* (seat, screen, bed, desk, light, cold, books, decor) and its comfort and beauty.
+- **Made pieces** stay out of the home. They are per-visit `Made`s, standing where she tore the text (Q6).
+
+### Rooms from contents
+
+(Decision Q7.) Panes are only her starting home.
+
+- **A room is a region of a strip** between walls. The walls are pane borders and the partitions she builds (Q8).
+- **Its role comes from what is in it.** A `RoleRule` table follows RimWorld and ONI: the highest score wins, and a tie goes to the earlier row.
+
+```rust
+pub struct RoleRule { role: Role, requires: &'static [Offer], forbids: &'static [Offer], min_width: u16, base: f32 }
+const ROLES: &[RoleRule] = &[
+    RoleRule { role: Living,  requires: &[Screen, Seat], forbids: &[Bed],         .. },
+    RoleRule { role: Bedroom, requires: &[Bed],          forbids: &[Screen, Cold], .. },
+    RoleRule { role: Study,   requires: &[Desk],         forbids: &[],            .. },
+    RoleRule { role: Kitchen, requires: &[Cold],         forbids: &[Bed],         .. },
+    RoleRule { role: Den,     requires: &[],             forbids: &[],            .. },  // whatever's left
+];
+```
+
+- **What goes.** `Furniture::room()`, `RoomKind`, `Home.rooms`, "one room per pane" and `Shown.nook`.
+- **What stays.** The user's earlier choice that a room losing its pane moves whole (decisions.md 2026-09-28) stays, re-expressed per piece. When a strip vanishes, its pieces are re-anchored *together*, in order, to the first strip where they all fit.
+  - This is a hard violation, done at once, because she can't carry a sofa out of a pane that no longer exists.
+  - Unlike today, they can come back. The strip's return breaks the rules they satisfied there, and she notices.
+- **Older builds degrade.** An older build reading the record puts every piece back in its default room's pane.
+- **Beauty** is a room's summed decor, read by the beauty need.
 
 ### Rules, not an objective
 
@@ -330,7 +420,8 @@ pub enum Rule {
     Faces { seat: Furniture, screen: Furniture },             // same strip, facing it, gap 2..=14
     Near { a: Furniture, b: &'static [Furniture], gap: u16 }, // the lamp by the bed or the desk
     AgainstWall(Furniture),                                   // the fridge, the bookshelf: offset ≤ 1
-    Connected { a: RoomKind, b: RoomKind },                   // a way between them besides her door (phase 6)
+    Apart { a: Furniture, b: Furniture },                     // not in one room: the bed and the TV ("too noisy...")
+    Connected { a: Role, b: Role },                           // a way between them besides her door (phase 6)
 }
 pub struct RuleRow { rule: Rule, grievance: ScriptId }        // what she shows while it is broken
 ```
@@ -344,12 +435,12 @@ pub struct RuleRow { rule: Rule, grievance: ScriptId }        // what she shows 
 ### One repair a visit, prompted by a grievance
 
 1. **She feels it.** Using a piece that a broken rule involves plays the rule's grievance as an interlude. She cranes toward the TV from the sofa ("Can't see the telly..."), or reaches for a lamp across the room. A rule she has never felt moves nothing.
-2. **She chooses it.** `Want::Arrange` (base 6) is offered while a rule she has felt is broken, unprompted at most once a visit.
-3. **She works it out.** The search covers each piece the rule names, at every anchor on its strip, in both facings.
+2. **She chooses it.** `Want::Arrange` (base 6) is offered while a rule she has felt is broken. It answers the nesting need, which rises only then; her mood caps home acts per visit (0–3).
+3. **She works it out.** The search covers each piece the rule names, at every anchor on every strip, in both facings. It moves one piece at a time, so it never becomes a combinatorial layout search.
    - Each move is applied to a copy of the home, and the strip is projected.
    - A move qualifies if it satisfies the rule, breaks no satisfied rule, and fits the strip's blank intervals (snapshotted at paint).
    - The cheapest qualifying move wins: fewest cells moved, then a whim.
-   - That is at most about 400 candidates, ≤ 0.5 ms (est.), run in `advance()`.
+   - That is at most about 2,000 candidates (a few strips × about 22 anchors × 2 facings, for up to two pieces), ≤ 1 ms (est.), run in `advance()`.
 4. **She does it, then uses it**, through the same method table:
 
 ```rust
@@ -376,14 +467,22 @@ M("arrange/lift",     |c, w| c.repair(w).map(|r| Bind::lift(r.piece))),         
 - This is the only place annealing appears: as something you watch, not as a solver.
 
 **Your literal case: a made sofa on another floor from the TV.**
-- Made pieces have no anchor, so no repair touches them.
+- Made pieces have no anchor, so no repair touches them, and they stay where she tore the text (Q6).
 - Phase 0 weights build sites ×5 when the sofa would also face the TV.
-- If no such site has text to tear, she still builds elsewhere.
-- Whether she may carry a made piece, or keep it, is Q6.
+- If no such site has text to tear, she still builds elsewhere. A real sofa, once she owns one, is the upgrade (Q1), and the repair can carry it to the TV's room.
 
 ### Structures from the UI's own lines
 
-**What a structure is.** A stepladder is rows of `│─│`, two rails and a rung, between two floors. A shelf is a run of `─` above one. They are line glyphs in text cells, like pane borders. She builds with the UI's own material, which the original proposal called "borrowed border segments".
+**What a structure is.** (Decision Q8: as far as she is making her own panes, they are line glyphs.) All three are line glyphs in text cells, like pane borders. She builds with the UI's own material, which the original proposal called "borrowed border segments".
+
+| Structure | Glyphs | What it makes |
+|---|---|---|
+| shelf | a run of `─` above a floor | a new strip: decor can stand on it (the gremlin), and with four clear rows above, so can she |
+| partition | a free-standing column of `│` on a strip | a wall: it splits the strip's room in two, so one pane can hold a living room and a bedroom |
+| stepladder | rows of `│─│`, two rails and a rung, between two floors | a climb between them |
+
+- **A partition is like a pane border.** She passes in front of it and can climb it, as she does the panes' own vertical borders.
+- **It never replaces a border glyph**, because structures only take blank cells. So it starts one row above the floor line and stops short of the top border.
 
 Only glyphs her image already redraws are used: solid light and heavy lines, corners and tees. Double and dashed lines aren't redrawn (graphics.rs:181-183), so `╫` or `┆` would each need a new `strokes` arm first.
 
@@ -411,11 +510,11 @@ Only glyphs her image already redraws are used: solid light and heavy lines, cor
 - It stands in a column blank between the floors, where both platforms reach. These are the existing Climb conditions (terrain.rs:511-532).
 - It is done when the live terrain shows the link.
 
+**Building a partition** works the same way. `Apart { Bed, Tv }` breaks when both share a room. She can repair it either by carrying one piece to another room, or, where the strip is wide enough, by raising a partition between them. The repair search weighs the two as alternatives, partition first when she is industrious.
+
 **Not now:**
-- partitions (a folding screen drawn as `│` would be a pole);
-- pieces moving between panes (Q7);
 - making space ("no space means the closet");
-- duplicates.
+- duplicates (one of each piece; decor kinds may come in several later).
 
 ## Character
 
@@ -456,7 +555,7 @@ Only glyphs her image already redraws are used: solid light and heavy lines, cor
 | Scoring, guards, `plan` | per decision | 10–50 µs (est.) |
 | Strip blank intervals | per paint, in the loop `Terrain::read` runs | ≈ 10 µs (est.) |
 | Writing structures | per paint | ≤ about 40 cells |
-| The repair search | at most once a visit, in `advance()` | ≤ 0.5 ms (est.) |
+| The repair search | at most a few times a visit, in `advance()` | ≤ 1 ms (est.) |
 | The pocket carry | per move | about 4 images |
 
 All of this fits the roughly 1 ms per decision the test suite can afford (`her_needs_shape_long_visits` makes about 360 decisions).
@@ -507,20 +606,20 @@ None is a protocol change, so `stable` stays put.
 
 | # | Content | Size | You'll see |
 |---|---|---|---|
-| **0** Fix the sofa class | Tests first. Then:<ul><li>`MadeId`, `PieceRef`, `Made { purpose, used }`, `Crumpled(MadeId)` and `Used`; `making` deleted</li><li>Continuation after the reflexes: finish her heap, or use her unused piece, until a use starts or 3 tries. This replaces osaka.rs:1204</li><li>The goal pre-empt (osaka.rs:1859) stays, but resolves by meaning and continues with the fresh job</li><li>Events drained in `leave()` and at every switch to Absent</li><li>The TV's beside-spot; `layout` re-lays in order; ×5 for build sites facing the TV</li></ul>`seed_7` re-pinned. | ≈ +300 test, ≈ +350/−150 code | She sits on what she made, even after chat interrupts her. Her sofa is built where she can watch TV. A TV at the far left works. Nothing bought is lost |
+| **0** Fix the sofa class | Tests first. Then:<ul><li>`MadeId`, `PieceRef`, `Made { purpose, used }`, `Crumpled(MadeId)` and `Used`; `making` deleted</li><li>Continuation after the reflexes: finish her heap, or use her unused piece, until a use starts or 3 tries. This replaces osaka.rs:1204</li><li>The goal pre-empt (osaka.rs:1859) stays, but resolves by meaning and continues with the fresh job</li><li>Events drained in `leave()` and at every switch to Absent</li><li>The TV's beside-spot; `layout` re-lays in order; ×5 for build sites facing the TV</li><li>The makeshift sofa offers `Nap`, which eases sleepiness more than the floor (0.2 vs 0.15), so she sleeps on her sofa rather than the floor beside it</li></ul>`seed_7` re-pinned. | ≈ +300 test, ≈ +350/−150 code | She sits on what she made, even after chat interrupts her, and naps on it. Her sofa is built where she can watch TV. A TV at the far left works. Nothing bought is lost |
 | **1** Pure refactor | `ActProps`; the job in the act's payload (`task` deleted); `interrupt(Cause)`. Golden hashes unchanged | ≈ 650 touched, net negative | Nothing |
 | — | **Checkpoint:** re-run the 37 s-chat bench and a 256-case run, and record the result in plan.md | — | — |
-| **2** The mind as data | `Want`/`DesireDef` (tables unchanged); the method table; the heading (replaces `goal`); beats at the loss sites; credit by fraction (Q4); the mind stream and whims; the explain log; lints | ≈ 1,100 touched, ≈ +200 net | Glances and "...my sofa."; no dropped cross-floor jobs; the stage shows why |
-| **3** The home model | Strips; anchors (a new ledger field); the packing `project()`; the `Spec` table (a refactor first, against golden hashes re-recorded after phase 2); `Faces` on strips | ≈ 800 | Pieces stop vanishing on collisions. She watches from the sofa whenever it faces the TV |
-| **4** Organising | Rules and grievances; `Arrange`; the repair; the pocket carry; trials | ≈ 600 | She notices the sofa faces the wall, moves it, and sits down to watch |
-| **5** Vignettes and the clock | `Script`/`Key`/`PropOverride`; line pools; `Splice`/`Adverb`; the shopping channel converted; chopsticks; sata andagi; `LocalTime`; calendar, tiers, rarity and pity; the simulator | ≈ 900 + art | Vignettes, calendar days, rarities |
-| **6** Structures | `read_ground`; stepladder and shelf; `Connected`; staged `Assembled`; the pole check; the wishlist feeds the channel | ≈ 500 | She buys a stepladder, builds it over two visits, and climbs it |
+| **2** The mind as data | `Want`/`DesireDef`; the method table; the heading (replaces `goal`); beats at the loss sites; credit by fraction (Q4); the mind stream and whims; the explain log; lints. Then **needs for every want** (comfort, fun, daydreams; spot quality) and **her mood for the visit**, tuned in the headless simulator, which comes forward from phase 5 | ≈ 1,500 touched, ≈ +500 net | Glances and "...my sofa."; no dropped cross-floor jobs; she prefers her furniture to the floor; lazy and industrious visits; the stage shows why |
+| **3** The home model | Strips; per-piece anchors (a new ledger field); the packing `project()`; the `Spec` table (a refactor first, against golden hashes re-recorded after phase 2); rooms and roles from contents (`RoomKind` deleted); `Faces` on strips | ≈ 1,100 | Pieces stop vanishing on collisions. She watches from the sofa whenever it faces the TV |
+| **4** Organising | Rules and grievances (incl. `Apart`); nesting; `Arrange`; the repair, across panes; the pocket carry; trials; decor pieces, beauty, and the channel selling decor | ≈ 900 + decor art | She notices the sofa faces the wall, moves it, and sits down to watch. She moves the bed out of the living room. A potted plant arrives |
+| **5** Vignettes and the clock | `Script`/`Key`/`PropOverride`; line pools; `Splice`/`Adverb`; the shopping channel converted; chopsticks; sata andagi; `LocalTime`; calendar, tiers, rarity and pity | ≈ 800 + art | Vignettes, calendar days, rarities |
+| **6** Structures | `read_ground`; shelf, partition, stepladder; partitions split rooms; `Connected`; staged `Assembled`; the pole check; the wishlist feeds the channel | ≈ 700 | She builds a shelf for the gremlin, walls off a bedroom, and builds a stepladder over two visits and climbs it |
 | **7** Effects and cameos | Effect sprites and `Key.motion`; a second figure in her image; cast scripts keyed by (date, master seed) | ≈ 800 + art | Moving vignettes; Chiyo, Tomo, Kagura… |
 | **8** The text factory | Materials as persisted things; a bounded planner behind one method, if crafting needs one | Sized then | The factory |
 
 **Phase 2 is justified by authoring, not by bugs.**
 - It makes every later behaviour a row rather than a set of match arms, and phases 4–7 are written against it.
-- "Tables unchanged" refers to the base and serves numbers. The statistics tests still shift once, because credit moves from the choice to the completed fraction.
+- It lands in two steps. First the table conversion with today's numbers, where the statistics tests shift only because credit moves to the completed fraction. Then the needs and moods, tuned in the simulator before any statistics test is re-pinned.
 - If the checkpoint shows the sofa class still leaking, phase 2 closes it first.
 
 **New types by phase.** This is the honest budget; most of these are small enums.
@@ -529,11 +628,11 @@ None is a protocol change, so `stable` stays put.
 |---|---|---|
 | 0 | `MadeId`, `PieceRef`, fields on `Made` and text jobs, `HomeEvent::Used` | `making`, seat-recompute matching |
 | 1 | `ActProps` (`Stays`, `OnChat`), `Then`, `Cause` | `task`, the hand-kept act lists |
-| 2 | `Want`, `DesireDef`, `Factor`, `Method`, `Bind`, `Whims`, `Heading`, `Hint`, `Beat`, `Line`, the explain log | `goal`, `places_for`, `Place`, `start`'s arms, `MAKESHIFT_ODDS` (now a guard), `choices` |
-| 3 | `Strip`, `Anchor`, `Spec`, `Projection` | `Home::{resolve, spot}`, `layout`, `place`, the watch-from-sofa case |
-| 4 | `Rule`, `Carry`, `SetDown`, `Turned` | — |
+| 2 | `Want`, `DesireDef`, `Factor`, `Method`, `Bind`, `Whims`, `Heading`, `Hint`, `Beat`, `Line`, the explain log, `Mood`, new `Need`s, the simulator | `goal`, `places_for`, `Place`, `start`'s arms, `MAKESHIFT_ODDS` (now a guard), `choices` |
+| 3 | `Strip`, `Anchor`, `Spec`, `Offer`, `Projection`, `Role`, `RoleRule` | `Home::{resolve, spot}`, `layout`, `place`, the watch-from-sofa case, `RoomKind`, `Home.rooms` |
+| 4 | `Rule`, `Carry`, `SetDown`, `Turned`, decor kinds | — |
 | 5 | `Script`, `Key`, `PropOverride`, `Splice`, `Adverb`, `Tier`, `LocalTime` | `Act::Use.advert` |
-| 6 | `Structure`, `Partial`, `Assembled` | — |
+| 6 | `Structure` (shelf, partition, ladder), `Partial`, `Assembled` | — |
 | 7 | `Effect`, `Motion`, `Cast` | — |
 
 ## Alternatives considered
@@ -580,7 +679,9 @@ Nothing from phases 0–1 is lost if you switch later.
 
 **Cost.** About 4,000 lines over six phases, more tuning surface (weights, adoption margins), and an objective whose moves a viewer can't always read.
 
-**Choose it if** the answer to Q7 is "derive rooms" and partitions, moves between panes and making space are wanted soon rather than someday. Phases 0–2 here are a prefix of it either way; phase 3's anchors and `Spec` table are shared.
+**Partly adopted** after Q7: rooms and roles from contents, per-piece anchors and moves between panes are now in phases 3–4. Still not adopted: the scalar objective with branch and bound (rules and grievances instead, Q5), SVG structures (line glyphs instead, Q8), persisted projects, and `Goal::Clear`.
+
+**Choose the rest if** making space, or a home that optimises itself rather than one she notices, is wanted. Phases 0–2 here are a prefix of it either way; phase 3's anchors and `Spec` table are shared.
 
 ### Why not …
 
@@ -604,6 +705,14 @@ Nothing from phases 0–1 is lost if you switch later.
   - Its ideas are taken anyway: lints, splices and the explain log.
 
 ## Open questions for the user
+
+All ten were answered on 2026-10-02 (see [Decisions](#decisions-2026-10-02)). They are kept here with their reasoning.
+
+**Still open**, raised by the answers. Each has a default, and none blocks phase 0 or 1:
+- **The new needs.** Is comfort, fun, beauty, daydreams and nesting the right set, and are those the right names? Default: as listed, added in phase 2; beauty waits for decor in phase 4.
+- **The decor catalogue.** Default: a potted plant, a gremlin (on a shelf she built, once shelves exist), a poster, all sold by the shopping channel.
+- **Moods.** Are the shares right, and should the greeting hint at the mood? Default: as in the table, with a hint.
+- **The pocket (Q9).** Revisit after watching her organise. A visible lug for short same-floor moves stays a possible gag if it measures cheaply in images.
 
 1. **"My new sofa" versus nineteen in twenty.** Continuation makes her use what she made, once. Should an unused made piece keep beating a real one after that? That would amend decisions.md 2026-10-01. **Recommended: no.** The first use answers "I'd want to use it", and after that your rule stands.
 2. **Should owning furniture answer a need, so she lives in her home rather than just owning it?**
