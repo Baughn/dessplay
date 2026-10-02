@@ -1445,11 +1445,13 @@ this section states what is built.
   **Heading for another floor**: she keeps in mind what she's making
   for and finds it again by what it is — a piece by what she'd use it
   for, text by its glyphs in the same columns, on its row or up to four
-  rows above (chat scrolls up). Each time she chooses on the way, it's
-  on offer as she set off for it and three times as likely; if she
-  chooses something else, or it's gone, she lets it go. A piece she made
-  this visit is the exception: on her way to it, each hop is the same
-  trip, not a fresh choice
+  rows above (chat scrolls up). Each hop she lands from carries on to
+  the next without choosing anew. Interrupted on the way (a chat line,
+  a startle), she chooses again afterwards, and it's on offer as she set
+  off for it and three times as likely; if she chooses something else,
+  or it's gone, she lets it go. A piece she made this visit is the
+  exception: on her way to it, even after an interruption, it's the
+  same trip, not a fresh choice
   (why: [decisions](decisions.md#her-mind-is-a-table-and-a-heading-2026-10-02)).
   **Nothing she loses goes unremarked**: a piece she made, gone before
   she used it ("...my sofa." / "...my bed."); text she was tearing

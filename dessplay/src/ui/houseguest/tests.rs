@@ -4322,4 +4322,5 @@ fn a_made_sofa_mostly_faces_the_tv() {
     );
 }
 
+mod census;
 mod golden;

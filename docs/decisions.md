@@ -2427,9 +2427,13 @@ every choice. The heading replaces a goal that was found again by
 exact equality, so a line that scrolled one row was a different job
 (83 and 125 dropped pulls in two long runs with scrolling chat, in
 the [diagnosis](proposals/2026-10-02-houseguest-mind/sofa-diagnosis.md)).
-It was also a certain pre-empt; now it competes with inertia, as the
-proposal's rule 3 has it, so a long trip can be abandoned for something
-more pressing. A heading toward a piece she made stays certain: that
+It was also a certain pre-empt; now, after an interruption, it competes
+with inertia, as the proposal's rule 3 has it, so a long trip can be
+abandoned for something more pressing. The first cut rolled again at
+every hop, and the visit simulator caught it: in a furnished home 22 of
+135 trips arrived (rule 1 says a landed hop is the next step of what
+just completed, not a choice); with hops carrying on, 103 of 128 do,
+the rest let go after chat. A heading toward a piece she made stays certain: that
 purpose is on the piece, and continuation already counts her tries at
 it, which a roll per hop would double.
 

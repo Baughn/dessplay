@@ -982,6 +982,9 @@ pub(super) struct Osaka {
     /// A job on another floor she's making her way towards, and what
     /// she wants there (see [`Osaka::drop_heading`]).
     heading: Option<Heading>,
+    /// She's on a hop of her way there, uninterrupted: landing, she
+    /// carries on without choosing anew.
+    hopping: bool,
     /// The pole she's climbing (column).
     pole: i32,
     /// Layer changes for the next paint to apply.
@@ -1031,6 +1034,10 @@ pub(super) struct Osaka {
     /// Every beat she was owed (tests read it).
     #[cfg(test)]
     pub beats: Vec<Beat>,
+    /// How each heading went: set off, arrived, or let go and why
+    /// (tests read it).
+    #[cfg(test)]
+    pub headings: Vec<String>,
     /// Her last few decisions, and why (the stage shows them).
     log: std::collections::VecDeque<Decision>,
     /// Every choice she made (tests read it).
@@ -1054,6 +1061,7 @@ impl Osaka {
             watch_until: 0,
             watch_x: x,
             heading: None,
+            hopping: false,
             pole: x,
             ops: Vec::new(),
             events: Vec::new(),
@@ -1076,6 +1084,8 @@ impl Osaka {
             lines: Lines::default(),
             #[cfg(test)]
             beats: Vec::new(),
+            #[cfg(test)]
+            headings: Vec::new(),
             log: std::collections::VecDeque::new(),
             #[cfg(test)]
             choices: Vec::new(),
@@ -2243,6 +2253,7 @@ impl Osaka {
             .pass(at.saturating_sub(self.decided), !chances.pulls.is_empty());
         self.decided = at;
         let heading = self.heading.as_ref().map(|h| h.want);
+        let hopped = std::mem::take(&mut self.hopping);
         // Something she lost: a glance toward it (maybe a word) first.
         if let Some(&beat) = self.owed.first() {
             tracing::debug!(?beat, "houseguest: a beat she owed");
@@ -2265,15 +2276,20 @@ impl Osaka {
                 ..Decision::of(Bucket::Owed, "beat")
             };
         }
-        // Making for a piece she made, on another floor: the next hop of
-        // the same trip.
-        if let Some(mine) = self.heading.clone().filter(Heading::mine) {
-            if let Some(job) = mine.find(chances)
-                && self.go_to(mine.want, job, here, terrain, at)
+        // Landed from a hop of her way somewhere, or making for a piece
+        // she made: the next hop of the same trip, without choosing anew.
+        if let Some(going) = self.heading.clone().filter(|h| hopped || h.mine()) {
+            if let Some(job) = going.find(chances)
+                && self.go_to(going.want, job, here, terrain, at)
             {
+                let method = if hopped {
+                    "heading/hop"
+                } else {
+                    "heading/mine"
+                };
                 return Decision {
                     heading,
-                    ..Decision::of(Bucket::Continuation, "heading/mine")
+                    ..Decision::of(Bucket::Continuation, method)
                 };
             }
             self.drop_heading(Letting::Gone);
@@ -2531,6 +2547,10 @@ impl Osaka {
         let there = terrain.platform_at(x, y);
         if there == Some(here) {
             tracing::debug!(?job, "houseguest: walking to a job");
+            #[cfg(test)]
+            if self.heading.is_some() {
+                self.headings.push("arrived".to_owned());
+            }
             self.heading = None;
             self.pursue(job, at);
             return true;
@@ -2538,12 +2558,22 @@ impl Osaka {
         match there.map(|there| route(terrain, here, there)) {
             Some(Some(link)) => {
                 tracing::debug!(?job, via = ?link.route, "houseguest: heading for a job on another floor");
+                self.hopping = true;
+                #[cfg(test)]
+                if self.heading.is_none() {
+                    self.headings.push("set off".to_owned());
+                }
                 self.heading = Some(Heading { want, job });
                 self.travel(link, at);
                 true
             }
             // No way there: a door in space, straight to it.
             Some(None) => {
+                self.hopping = true;
+                #[cfg(test)]
+                if self.heading.is_none() {
+                    self.headings.push("set off".to_owned());
+                }
                 self.heading = Some(Heading { want, job });
                 self.through_door((x, y), at);
                 true
@@ -2556,6 +2586,8 @@ impl Osaka {
     fn drop_heading(&mut self, why: Letting) {
         if let Some(heading) = self.heading.take() {
             tracing::debug!(?why, want = ?heading.want, "houseguest: lets go of where she was heading");
+            #[cfg(test)]
+            self.headings.push(format!("let go: {why:?}"));
             if matches!(why, Letting::Gone | Letting::Other) {
                 self.owe(Loss::Heading, heading.job.spot());
             }
@@ -2653,6 +2685,9 @@ impl Osaka {
     /// A chat message arrived: stop and look at it.
     pub fn look(&mut self, now: u64, chat_x: i32) {
         self.watch_until = now + WATCH_MS;
+        // Wherever she is on her way, chat interrupts the trip: where she
+        // was heading competes again once she's watched it.
+        self.hopping = false;
         // On her way to a piece she made: what it's for is kept on the
         // piece, and she comes back to it as another try (`leftover`).
         if self.heading.as_ref().is_some_and(Heading::mine) {
@@ -2688,6 +2723,8 @@ impl Osaka {
             Cause::LostGrip | Cause::Refused => (0, LOOK_MS / 2),
         };
         self.rest = None;
+        // Where she was heading now competes with what else she'd do.
+        self.hopping = false;
         self.set(
             Act::Look {
                 surprised_until: now + startled,
