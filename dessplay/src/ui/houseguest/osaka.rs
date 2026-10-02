@@ -484,6 +484,28 @@ enum OnChat {
     Back,
 }
 
+/// What stops her short (see [`Osaka::interrupt`]). Each is detected
+/// where it arises.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Cause {
+    /// A chat line arrived ([`Osaka::look`]).
+    Chat,
+    /// Text came up where she stays ([`Osaka::recheck`]).
+    Restless,
+    /// The piece she was using went into the closet
+    /// ([`Osaka::lost_seat`]).
+    SeatGone,
+    /// The text she was pulling or tearing changed under her
+    /// ([`Osaka::lost_grip`]).
+    LostGrip,
+    /// Someone at the keys put back what she was at in the chat
+    /// ([`Osaka::shaken`]).
+    Shaken,
+    /// The letters moved before she could swap them
+    /// ([`Osaka::refused`]).
+    Refused,
+}
+
 impl Act {
     /// The job she's at, at its spot.
     fn at_job(&self) -> Option<JobRef<'_>> {
@@ -1855,13 +1877,7 @@ impl Osaka {
                 let giggling = matches!(self.act.at_job(), Some(JobRef::Swap(_)));
                 if matches!(op, LayerOp::Swap { .. }) && giggling {
                     tracing::debug!("houseguest: the letters moved before she could swap them");
-                    self.set(
-                        Act::Look {
-                            surprised_until: now,
-                            until: now + LOOK_MS / 2,
-                        },
-                        now,
-                    );
+                    self.interrupt(Cause::Refused, now);
                 }
             }
             _ => {}
@@ -1917,13 +1933,7 @@ impl Osaka {
     pub fn lost_seat(&mut self, now: u64) {
         if let Act::Use { seat, .. } = self.act {
             tracing::debug!(?seat, "houseguest: her furniture went away under her");
-            self.set(
-                Act::Look {
-                    surprised_until: now + SURPRISED_MS,
-                    until: now + LOOK_MS / 2,
-                },
-                now,
-            );
+            self.interrupt(Cause::SeatGone, now);
         }
     }
 
@@ -1950,14 +1960,7 @@ impl Osaka {
             return;
         }
         tracing::debug!(x, y, "houseguest: text came up where she stays");
-        self.rest = None;
-        self.set(
-            Act::Look {
-                surprised_until: now + SURPRISED_MS,
-                until: now + LOOK_MS / 2,
-            },
-            now,
-        );
+        self.interrupt(Cause::Restless, now);
     }
 
     /// Using a piece: where, and since and until when.
@@ -1998,13 +2001,7 @@ impl Osaka {
     pub fn lost_grip(&mut self, now: u64) {
         if matches!(self.act.job(), Some(JobRef::Pull(_) | JobRef::Build(_))) {
             tracing::trace!("houseguest lost her grip");
-            self.set(
-                Act::Look {
-                    surprised_until: now,
-                    until: now + LOOK_MS / 2,
-                },
-                now,
-            );
+            self.interrupt(Cause::LostGrip, now);
         }
     }
 
@@ -2524,10 +2521,25 @@ impl Osaka {
             return; // She looks once she has landed (decide watches).
         }
         self.facing = toward(self.x, chat_x);
+        self.interrupt(Cause::Chat, now);
+    }
+
+    /// Whatever she was at, she stops and looks: startled first unless
+    /// it only puzzles her, and a full look only at the chat. The job
+    /// she was at goes with the act; what she made it for stays on the
+    /// piece (see [`Osaka::leftover`]). She's up from wherever she'd
+    /// settled, and settles again when she next chooses.
+    fn interrupt(&mut self, cause: Cause, now: u64) {
+        let (startled, look) = match cause {
+            Cause::Chat => (SURPRISED_MS, LOOK_MS),
+            Cause::Restless | Cause::SeatGone | Cause::Shaken => (SURPRISED_MS, LOOK_MS / 2),
+            Cause::LostGrip | Cause::Refused => (0, LOOK_MS / 2),
+        };
+        self.rest = None;
         self.set(
             Act::Look {
-                surprised_until: now + SURPRISED_MS,
-                until: now + LOOK_MS,
+                surprised_until: now + startled,
+                until: now + look,
             },
             now,
         );
@@ -2927,13 +2939,7 @@ impl Osaka {
         });
         if busy_there {
             tracing::debug!("houseguest: shaken off in the chat");
-            self.set(
-                Act::Look {
-                    surprised_until: now + SURPRISED_MS,
-                    until: now + LOOK_MS / 2,
-                },
-                now,
-            );
+            self.interrupt(Cause::Shaken, now);
         }
     }
 
