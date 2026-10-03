@@ -9,7 +9,7 @@
 //! `DESSPLAY_HOUSEGUEST_LINE=thickness[,offset]` (pixels) tunes the
 //! match without a rebuild.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use image::{DynamicImage, Rgba, RgbaImage};
 use ratatui_image::picker::{Picker, ProtocolType};
@@ -27,7 +27,9 @@ use super::sprite::{Face, Facing, HEIGHT, Pose, WIDTH};
 
 /// Her outline colour: dark line art, read against the fills.
 const LINE: &str = "#1d1714";
-/// Distinct frames kept before the cache starts over.
+/// Distinct frames kept; past it, the one shown longest ago is dropped
+/// (never the lot: her poses in use stay, while what she showed once
+/// over passing text goes).
 pub(super) const CACHE_LIMIT: usize = 256;
 
 /// What to draw.
@@ -341,20 +343,31 @@ fn draw_alien(
 pub(super) struct Graphics {
     picker: Picker,
     line: LineGeometry,
-    cache: HashMap<Key, Protocol>,
-    /// Times the cache has started over, and images encoded, so far.
+    /// Each image, and when it was last shown.
+    cache: HashMap<Key, (Protocol, u64)>,
+    /// The cache's images by when they were last shown, oldest first.
+    shown: BTreeMap<u64, Key>,
+    /// Images shown so far (each showing's stamp).
+    clock: u64,
+    /// What her images have cost so far.
     #[cfg(test)]
     counts: Counts,
+    /// Every image encoded so far (to tell one encoded again).
+    #[cfg(test)]
+    seen: std::collections::HashSet<Key>,
 }
 
 /// What her images have cost so far (tests measure the budget by it).
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct Counts {
-    /// Times the frame cache was full and started over.
-    pub clears: usize,
     /// Images composed and encoded.
     pub encoded: usize,
+    /// Images dropped from the full frame cache.
+    pub evicted: usize,
+    /// Images encoded again, having been dropped (her working set
+    /// thrashing).
+    pub reencoded: usize,
 }
 
 impl Graphics {
@@ -369,8 +382,12 @@ impl Graphics {
             picker,
             line: LineGeometry::for_cell(height),
             cache: HashMap::new(),
+            shown: BTreeMap::new(),
+            clock: 0,
             #[cfg(test)]
             counts: Counts::default(),
+            #[cfg(test)]
+            seen: std::collections::HashSet::new(),
         })
     }
 
@@ -460,28 +477,41 @@ impl Graphics {
             clip,
             cell: (cw as u16, ch as u16),
         };
-        if !self.cache.contains_key(&key) {
-            if self.cache.len() >= CACHE_LIMIT {
-                self.cache.clear();
+        self.clock += 1;
+        let stamp = self.clock;
+        if let Some((_, last)) = self.cache.get_mut(&key) {
+            let last = std::mem::replace(last, stamp);
+            if let Some(key) = self.shown.remove(&last) {
+                self.shown.insert(stamp, key);
+            }
+        } else {
+            let protocol = self.frame(&key)?;
+            if self.cache.len() >= CACHE_LIMIT
+                && let Some((_, stale)) = self.shown.pop_first()
+            {
+                self.cache.remove(&stale);
                 #[cfg(test)]
                 {
-                    self.counts.clears += 1;
+                    self.counts.evicted += 1;
                 }
             }
-            let protocol = self.frame(&key)?;
             #[cfg(test)]
             {
                 self.counts.encoded += 1;
+                if !self.seen.insert(key.clone()) {
+                    self.counts.reencoded += 1;
+                }
             }
-            self.cache.insert(key.clone(), protocol);
+            self.shown.insert(stamp, key.clone());
+            self.cache.insert(key.clone(), (protocol, stamp));
         }
-        let protocol = self.cache.get(&key)?;
+        let (protocol, _) = self.cache.get(&key)?;
         let rect = Rect::new(vx0 as u16, vy0 as u16, clip.2, clip.3);
         Image::new(protocol).render(rect, buf);
         Some(rect)
     }
 
-    /// Distinct images made so far (since the cache last started over).
+    /// Distinct images in the cache.
     #[cfg(test)]
     pub fn cached(&self) -> usize {
         self.cache.len()

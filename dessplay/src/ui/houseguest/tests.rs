@@ -1701,60 +1701,17 @@ fn home_screen() -> (Buffer, IdleView) {
 /// A furnished home over long visits in line art: she uses each of her
 /// things (and sleeps in her bed more than on a border once she has one), goes
 /// to work at most once a visit, her
-/// image with the pieces she overlaps never hides text, and the distinct
-/// images stay within the frame cache, which never fills and starts over.
+/// image with the pieces she overlaps never hides text, and her images
+/// stay within the frame cache: none she needs again was dropped.
 #[test]
 fn a_furnished_home_gets_used_and_stays_cheap() {
     use super::brain::Want;
     use super::room::Use;
-    let (real, view) = home_screen();
     let mut choices: Vec<Want> = Vec::new();
     for seed in 0..2u64 {
-        let mut guest = Guest::new(seed);
-        guest.set_picker(kitty());
-        guest.cue(Scene::Arrive);
-        paint(&mut guest, &real, &view, 0);
-        // Her living room and bedroom (the screen has two panes).
-        let pieces = [
-            Furniture::Sofa,
-            Furniture::Tv,
-            Furniture::Bed,
-            Furniture::Desk,
-        ];
-        for item in pieces {
-            guest.give(item);
-            paint(&mut guest, &real, &view, 0);
-        }
-        assert_eq!(
-            pieces
-                .iter()
-                .filter(|&&item| guest.ledger.home.owns(item))
-                .count(),
-            4,
-            "seed {seed}: {:?}",
-            guest.cue_note()
-        );
-        let mut hidden = Hidden::default();
-        let mut now = 0;
-        while now < 20 * 60_000 {
-            now += guest
-                .next_tick(now)
-                .map_or(1000, |d| d.as_millis() as u64)
-                .clamp(1, 1000);
-            if guest.advance(now) {
-                let frame = paint(&mut guest, &real, &view, now);
-                let State::Visiting(visit) = &guest.state else {
-                    panic!("seed {seed}: still visiting");
-                };
-                let layer: Vec<(u16, u16)> = visit.layer.cells().collect();
-                hidden
-                    .check(&frame, &real, &layer, now)
-                    .unwrap_or_else(|e| panic!("seed {seed} at {now}: {e}"));
-            }
-        }
-        let State::Visiting(visit) = &guest.state else {
-            panic!("seed {seed}: still visiting");
-        };
+        let (mut guest, real, view) = furnished_home(seed);
+        live_in(&mut guest, &real, &view, 20 * 60_000, seed);
+        let visit = visit_of(&guest);
         let shifts = visit
             .osaka
             .choices
@@ -1766,25 +1723,8 @@ fn a_furnished_home_gets_used_and_stays_cheap() {
             "seed {seed}: to work {shifts} times in one visit"
         );
         choices.extend(&visit.osaka.choices);
-        let graphics = guest.graphics.as_ref().unwrap();
-        let (cached, counts) = (graphics.cached(), graphics.counts());
-        eprintln!(
-            "seed {seed}: {cached} cached, {} encoded, {} clears, {} home acts",
-            counts.encoded,
-            counts.clears,
-            visit.osaka.home_acts()
-        );
-        // Headroom under the cache's limit (20 minutes here run to
-        // 174-204 images across seeds), and it never filled and started
-        // over (whatever she carried about).
-        assert!(
-            cached < graphics::CACHE_LIMIT - 32,
-            "seed {seed}: {cached} distinct images"
-        );
-        assert_eq!(
-            counts.clears, 0,
-            "seed {seed}: the frame cache started over"
-        );
+        let counts = guest.graphics.as_ref().unwrap().counts();
+        assert_eq!(counts.reencoded, 0, "seed {seed}: {counts:?}");
     }
     let count = |want: Want| choices.iter().filter(|&&k| k == want).count();
     // Each piece gets used (a nap is one in fifty or so of her choices,
@@ -1805,6 +1745,91 @@ fn a_furnished_home_gets_used_and_stays_cheap() {
         "the bed beats a border: {choices:?}"
     );
     assert!(count(Want::Work) > 0, "she never went to work: {choices:?}");
+}
+
+/// Busy about a furnished home, over long visits in line art: industrious
+/// (her sofa, given, sits turned from where the TV landed, and she
+/// arranges as she feels it), she walks and works and carries more than
+/// any other mood, and the frame cache, full, drops only images she no
+/// longer needs: each image she shows is encoded at most once, or nearly.
+/// What it costs is counted here (and recorded in plan.md, for trials).
+#[test]
+fn a_busy_furnished_home_stays_cheap() {
+    use super::brain::Mood;
+    let mut acts = 0;
+    for seed in 0..8u64 {
+        let (mut guest, real, view) = furnished_home(seed);
+        let State::Visiting(visit) = &mut guest.state else {
+            panic!("visiting");
+        };
+        visit.osaka.set_mood(Mood::Industrious);
+        live_in(&mut guest, &real, &view, 20 * 60_000, seed);
+        let graphics = guest.graphics.as_ref().unwrap();
+        let (cached, counts) = (graphics.cached(), graphics.counts());
+        let done = visit_of(&guest).osaka.home_acts();
+        acts += done;
+        eprintln!(
+            "seed {seed}: {cached} cached, {counts:?}, {done} home acts, broken {}",
+            guest.broken()
+        );
+        assert!(
+            counts.reencoded <= 4,
+            "seed {seed}: her working set thrashed: {counts:?}"
+        );
+    }
+    assert!(acts >= 1, "she never set anything down");
+}
+
+/// A furnished home on [`home_screen`] (her living room and bedroom, the
+/// sofa, TV, bed and desk given), in line art, she arrived at `seed`.
+fn furnished_home(seed: u64) -> (Guest, Buffer, IdleView) {
+    let (real, view) = home_screen();
+    let mut guest = Guest::new(seed);
+    guest.set_picker(kitty());
+    guest.cue(Scene::Arrive);
+    paint(&mut guest, &real, &view, 0);
+    let pieces = [
+        Furniture::Sofa,
+        Furniture::Tv,
+        Furniture::Bed,
+        Furniture::Desk,
+    ];
+    for item in pieces {
+        guest.give(item);
+        paint(&mut guest, &real, &view, 0);
+    }
+    assert_eq!(
+        pieces
+            .iter()
+            .filter(|&&item| guest.ledger.home.owns(item))
+            .count(),
+        4,
+        "seed {seed}: {:?}",
+        guest.cue_note()
+    );
+    (guest, real, view)
+}
+
+/// Her visit going on until `until`, her image never hiding text.
+fn live_in(guest: &mut Guest, real: &Buffer, view: &IdleView, until: u64, seed: u64) {
+    let mut hidden = Hidden::default();
+    let mut now = 0;
+    while now < until {
+        now += guest
+            .next_tick(now)
+            .map_or(1000, |d| d.as_millis() as u64)
+            .clamp(1, 1000);
+        if guest.advance(now) {
+            let frame = paint(guest, real, view, now);
+            let State::Visiting(visit) = &guest.state else {
+                panic!("seed {seed}: still visiting");
+            };
+            let layer: Vec<(u16, u16)> = visit.layer.cells().collect();
+            hidden
+                .check(&frame, real, &layer, now)
+                .unwrap_or_else(|e| panic!("seed {seed} at {now}: {e}"));
+        }
+    }
 }
 
 /// A pit: a room whose walls are wide text to the ceiling on the left and
@@ -5627,7 +5652,7 @@ fn a_piece_closeted_as_she_lifts_it_is_lifted_later() {
 /// The image budget with a carry: in line art, busy about her home (her
 /// sofa turned from the TV on a page of text; a TV she never settled in
 /// her bedroom, carried downstairs), she sets at least one piece down
-/// where it's right, and the frame cache never fills and starts over.
+/// where it's right, and no image she shows is encoded twice.
 /// Each piece pocketed and shown again is images encoded: what that
 /// costs is counted here (and recorded in plan.md, for trials).
 #[test]
@@ -5694,16 +5719,12 @@ fn a_carry_stays_within_the_image_budget() {
         let graphics = guest.graphics.as_ref().unwrap();
         let (counts, cached) = (graphics.counts(), graphics.cached());
         eprintln!(
-            "{home}: set down at {set} ms; images encoded: {} from feeling it ({carrying} from lifting it to 5 min after setting it down), {} in all; {cached} cached; {} clears",
+            "{home}: set down at {set} ms; images encoded: {} from feeling it ({carrying} from lifting it to 5 min after setting it down), {} in all; {cached} cached; {} evicted",
             counts.encoded - before.encoded,
             counts.encoded,
-            counts.clears
+            counts.evicted
         );
-        assert_eq!(counts.clears, 0, "{home}: the frame cache started over");
-        assert!(
-            cached < graphics::CACHE_LIMIT - 32,
-            "{home}: {cached} distinct images"
-        );
+        assert_eq!(counts.reencoded, 0, "{home}: {counts:?}");
     }
 }
 

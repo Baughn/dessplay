@@ -2448,7 +2448,8 @@ filled and started over (`Graphics::counts`, test-only).
 A carry costs some 30–40 distinct images (the piece hidden, then shown
 again, under her and the poses around it), well inside the cache with
 no clear: the budget holds for trials, which re-show the piece up to
-three times (some 100 more images at worst).
+three times (some 100 more images at worst). (Measured on sparse homes
+only; step 6b's review corrects it for a furnished one, below.)
 
 **The carry's promises (step 6b, 2026-10-03; design T3–T5).**
 `the_carry_keeps_every_promise` (both drawing modes, text-dense panes,
@@ -2469,14 +2470,38 @@ there it proves only that lazy never arranges;
 things wrong, both drawing modes) proves the other caps: ordinary and
 dreamy put one thing right and leave what else they felt for ten
 minutes, industrious goes on to a second. A cap of 3 for every mood but
-lazy fails it. Measured at the same time: 20 minutes of the furnished home
-(`a_furnished_home_gets_used_and_stays_cheap`) cache 195 and 190 images
-over seeds 0 and 1, with no clears and no home acts (its gifts are
-settled, and nothing she felt was broken). That is the realistic
-baseline, not the sparse homes' 116–130 above. One carry on top of it
-is about 235 of 256. Trials, at up to 100 more images, would be about
-295 and past the limit. So before trials ship, step 7 should measure a
-carry in the furnished home, or cap trials at two spots.
+lazy fails it.
+
+Measured at the same time, and corrected in review: the furnished home
+(`a_furnished_home_gets_used_and_stays_cheap`, ordinary, seeds 0 and 1)
+caches 195 and 190 images in 20 minutes with no home acts, but not
+because nothing she felt was broken: both end with `faces(sofa,TV)*`
+felt and broken; ordinary just never got round to it. Forced
+industrious over seeds 0–7 (`a_busy_furnished_home_stays_cheap`), she
+arranges in five of eight and the cache filled once: seed 2 encoded 385
+images, and the old cache, full, started over, so 120 of those were
+images she'd already had. The carry wasn't the cause. Its methods
+(lift, carry, use-it) cost some 15–25 images a time; the rest is her
+walking and travelling over text, where each spot is a new image
+(industrious walks more: 212–265 distinct images in 20 minutes, against
+178–195 ordinary). Any long session fills the cache that way, carry or
+not.
+
+So the cache now drops the image shown longest ago instead of
+starting over (`graphics.rs`, a stamp per image and a `BTreeMap` of
+them, oldest first). Seed 2 then encodes 265 with 9 stale images
+dropped and none encoded twice; the other seeds never fill it. The
+test-only counts are images encoded, dropped, and encoded again (her
+working set thrashing), and the budget tests assert none encoded
+again (the busy one allows 4). Memory is as before: 256 images of
+about 6,500 pixels each at 9×19 cells, some 8 MB of encoded data.
+
+For trials (step 7): a trial re-shows the piece at a new spot, some
+15–25 images each, against a walking baseline of about 200 in 20
+minutes. With the cache dropping only stale images, the question is
+no longer whether it fills (it will, in a long session) but whether her
+working set thrashes, and it doesn't: trials can ship on the image
+budget, with `a_busy_furnished_home_stays_cheap` extended to cover them.
 
 One move at a time can leave a home that no single move mends. Take a
 bed in the living room beside the TV the sofa faces, and a lamp
