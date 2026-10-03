@@ -1,5 +1,7 @@
 # Phase 4 (organising) — implementation design
 
+**Historical:** the plan as agreed and amended on 2026-10-03, kept for its reasoning. Where it differs from what was built, plan.md Phase 38's phase-4 record is authoritative.
+
 Brief: docs/plan.md "Phase 4 — organising (brief)". Proposal: docs/proposals/2026-10-02-houseguest-mind.md
 ("Rules, not an objective", "One repair a visit", "Every want answers a need", "Her mood").
 Code map (read it; file:line refs): scratchpad/map.md. Paths relative to dessplay/src/ui/houseguest/.

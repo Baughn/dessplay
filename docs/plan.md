@@ -2657,7 +2657,10 @@ then is in character, and the furniture comes on the next due visit.
   forbids an offer it makes (a bed in a living room, a screen or a
   fridge in a bedroom), and a room is *worse* only when it becomes a
   den. It would change `Belongs`, the tiers, the no-single-move fixture
-  and design.md, so it waits for the user's call.
+  and design.md, so it waits for the user's call. It would also even out an asymmetry in `Belongs` today
+  (it follows the role table's order): an unsettled desk in a kitchen
+  counts as spoiling it (fridge and desk read as a study), an unsettled
+  fridge in a study doesn't.
 - A felt rule no move mends keeps *nesting* at 1 for the rest of the
   visit. Nothing comes of it (only arranging answers it, and that isn't
   on offer without a way), but the stage shows her keen.
