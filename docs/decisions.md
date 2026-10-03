@@ -2754,6 +2754,33 @@ the closet alone, as text over it would leave it.
 she unpacks it, then hangs at the same anchor; checking only one would
 deliver a poster that can't be unpacked, or one that can't hang.
 
+## A bare room wants decor (2026-10-03)
+
+**Rule:** A potted plant and a poster (beauty 1 each, offering only
+Decor, which no room rule names) come after the furniture on the
+shopping channel, and first while *beauty* is her most pressing need.
+Beauty arrives at 0.3, rises over twenty minutes only while she's in a
+plain room (the strip she stands on shows nothing pretty, or she's on
+none), and is eased passively: resting or using her things in a pretty
+room, by the share done times the room's beauty (at most 1). See
+[design.md](design.md#houseguest).
+
+**Why:** *Decor answers the room, not an act*: there's nothing to do
+with a poster, so no want answers beauty and it isn't scored; it only
+steers what she buys, and is eased by living in a pretty room (sitting,
+sleeping, reading there), which is how a room feeling nice works.
+*Most pressing, ties counting*: needs clamp at 1, where restlessness
+often sits; a strict "highest" would let a saturated restless need
+block decor forever. A need at 0 is never pressing. *Then furniture,
+then decor*: decor never displaces the next piece of furniture unless
+the room's bareness is what bothers her most, so a home still fills up
+in the order the user chose, and decor still comes once there's no
+furniture left. *Older builds*: decor claims no room's pane in the
+record (a poster first on a strip would otherwise take the living
+room's pane from the sofa), and their reader skips it as an unknown
+piece. *Arriving 0.3*: a little bothered, so a long visit in a plain
+room can make it pressing, while a short one rarely does.
+
 ## Houseguest chooses by needs among the top few (2026-09-28)
 
 **Rule:** Her next act is a weighted-random pick among the four

@@ -1424,7 +1424,7 @@ this section states what is built.
 - **Choosing what to do**: each decision scores what's on offer where she
   stands (stand, space out, sneeze, walk, travel, each activity, a pull or
   swap in reach) as base × fit × cooldown and picks at random, weighted,
-  among the top four. Nine needs (0–1) set the fit: *sleepy* rises over a
+  among the top four. Ten needs (0–1) set the fit: *sleepy* rises over a
   visit, and a bed answers it best, a nap on a sofa well and a doze on the
   floor a little, so she dozes more as a visit goes on; *restless* starts
   high, rises steadily, and moving answers it; *tidy* rises while a line is
@@ -1438,14 +1438,19 @@ this section states what is built.
   what she enjoys; *daydreams* rise slowly and spacing out, gazing, lying
   on her front and drifting off at her desk answer them; *nesting*
   rises only while a rule of her home she has felt is broken (see *The
-  rules of her home*). Every want
+  rules of her home*); *beauty* rises (over twenty minutes) only while
+  she's in a plain room, on a strip where nothing pretty shows (or on
+  none), and no want answers it: resting or using her things in a
+  pretty room eases it as she does them (by the share done, times the
+  room's beauty up to 1; the plant and the poster are 1 each), and it
+  turns the shopping channel to decor (below). Every want
   answers at least one need but standing (the filler) and sneezing (an
   accident). An offer's fit is 0.1 + Σ need² × amount × 2 × how well its
   spot answers that need (and how fresh, for fun) — 0.5 for an offer no
   need wants, and never below 0.5 for a parcel or her part-time job, which
   she takes whatever she feels. She arrives wide awake (sleepy 0), keen to
-  move (restless 0.7), mischief and hunger at 0.2, nesting at 0, the
-  rest at 0.5.
+  move (restless 0.7), mischief and hunger at 0.2, nesting at 0, beauty
+  at 0.3, the rest at 0.5.
   **Her mood for the visit** is drawn from the visit's seed (as the cat's
   presence is): ordinary half the time, lazy and industrious a fifth
   each, dreamy a tenth. A mood is how fast her needs rise: lazy, comfort
@@ -1530,7 +1535,9 @@ this section states what is built.
   after her last purchase, with nothing on order or still boxed, the
   shopping channel comes on (Chiyo-chichi) and she buys the next piece
   she lacks — sofa, bed, desk, lamp, bookshelf, fridge, cat bed, in that
-  order — the moment it comes on,
+  order, then decor (a potted plant, a poster), but decor first while
+  beauty is the most pressing of her needs (none higher) — the moment
+  it comes on,
   whatever happens next. What she buys arrives on a later visit as a
   parcel ("A parcel!"), pushed in through a **flap** in a wall of one of
   her strips (below), a wall at the screen's edge first: the wall's

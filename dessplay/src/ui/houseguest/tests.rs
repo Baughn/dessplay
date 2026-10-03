@@ -2124,6 +2124,173 @@ fn moving_out_wipes_her_record_and_an_unreadable_one_is_kept() {
 
 // ---- Deliveries and the shopping channel ----
 
+/// The channel sells her furniture first; decor when her room feeling
+/// bare is what she needs most, or when there's no furniture left to
+/// sell her.
+#[test]
+fn the_channel_sells_decor_when_her_room_feels_bare() {
+    use super::brain::{Need, Needs};
+    let mut ledger = Ledger::new(1);
+    ledger.visits = 9;
+    for item in [Furniture::Tv, Furniture::Sofa] {
+        assert!(
+            ledger
+                .home
+                .add(room::Prop::new(item, Nook::Users, 0, sprite::Facing::Right))
+        );
+    }
+    let bare = Needs::with(&[(Need::Beauty, 0.9), (Need::Fun, 0.5)]);
+    let fun = Needs::with(&[(Need::Beauty, 0.5), (Need::Fun, 0.9)]);
+    assert_eq!(advert(&ledger, false, &fun), Some(Furniture::Bed));
+    assert_eq!(advert(&ledger, false, &bare), Some(Furniture::Plant));
+    assert!(ledger.home.add(room::Prop::new(
+        Furniture::Plant,
+        Nook::Users,
+        0,
+        sprite::Facing::Right
+    )));
+    assert_eq!(advert(&ledger, false, &bare), Some(Furniture::Poster));
+    for item in CATALOGUE.iter().filter(|i| !i.decor()) {
+        let _ = ledger.home.add(room::Prop::new(
+            *item,
+            Nook::Playlist,
+            0,
+            sprite::Facing::Right,
+        ));
+    }
+    assert_eq!(
+        advert(&ledger, false, &fun),
+        Some(Furniture::Poster),
+        "nothing else left"
+    );
+    assert!(ledger.home.add(room::Prop::new(
+        Furniture::Poster,
+        Nook::Users,
+        0,
+        sprite::Facing::Right
+    )));
+    assert_eq!(advert(&ledger, false, &bare), None, "she has it all");
+}
+
+/// [`home_screen`] with chat text above her panes.
+fn busy_home_screen() -> (Buffer, IdleView) {
+    let (mut real, view) = home_screen();
+    for y in 1..7u16 {
+        real.set_string(
+            2 + (y * 7) % 30,
+            y,
+            "so what did you think of it",
+            Style::new(),
+        );
+    }
+    (real, view)
+}
+
+/// Watching the shopping channel in a room that feels bare to her, she
+/// buys a potted plant (her room feeling bare is what she needs most);
+/// otherwise, the next piece of furniture. In both drawing modes.
+#[test]
+fn a_bare_room_has_her_buy_decor() {
+    use super::brain::Need;
+    for graphics in [false, true] {
+        for bare in [true, false] {
+            let at = format!("graphics={graphics} bare={bare}");
+            let (real, view) = busy_home_screen();
+            let mut guest = Guest::new(3);
+            if graphics {
+                guest.set_picker(kitty());
+            }
+            guest.cue(Scene::Shopping);
+            paint(&mut guest, &real, &view, 0);
+            assert!(
+                matches!(guest.cue_note(), Some(Ok(_))),
+                "{at}: {:?}",
+                guest.cue_note()
+            );
+            let mut now = 0;
+            let advert = loop {
+                assert!(now < 30_000, "{at}: never watched the shopping channel");
+                if bare && let State::Visiting(visit) = &mut guest.state {
+                    visit.osaka.press(Need::Beauty);
+                }
+                now += guest
+                    .next_tick(now)
+                    .map_or(100, |d| d.as_millis() as u64)
+                    .clamp(1, 100);
+                guest.advance(now);
+                let State::Visiting(visit) = &guest.state else {
+                    panic!("{at}: visiting");
+                };
+                if let Some((_, Some(item))) = visit.osaka.watching() {
+                    break item;
+                }
+                paint(&mut guest, &real, &view, now);
+            };
+            let want = if bare {
+                Furniture::Plant
+            } else {
+                Furniture::Sofa
+            };
+            assert_eq!(advert, want, "{at}");
+            assert_eq!(guest.ledger.ordered, Some(want), "{at}");
+        }
+    }
+}
+
+/// Her room feeling bare: it bothers her more and more while she's in a
+/// plain room, and resting and using her things in a pretty one (a
+/// poster in one room, a plant in the other) eases it. In both drawing
+/// modes, with chat text about.
+#[test]
+fn a_pretty_room_eases_her_want_of_beauty() {
+    use super::brain::Need;
+    for graphics in [false, true] {
+        let (real, view) = busy_home_screen();
+        let level = |pretty: bool| {
+            let mut guest = Guest::new(5);
+            if graphics {
+                guest.set_picker(kitty());
+            }
+            let mut pieces = vec![
+                (Furniture::Sofa, Nook::Users, 0),
+                (Furniture::Tv, Nook::Users, 600),
+                (Furniture::Bed, Nook::Playlist, 0),
+            ];
+            if pretty {
+                pieces.push((Furniture::Poster, Nook::Users, 300));
+                pieces.push((Furniture::Plant, Nook::Playlist, 1000));
+            }
+            for (item, nook, at) in pieces {
+                assert!(guest.ledger.home.add(room::Prop::new(
+                    item,
+                    nook,
+                    at,
+                    sprite::Facing::Right
+                )));
+            }
+            guest.cue(Scene::Arrive);
+            paint(&mut guest, &real, &view, 0);
+            if graphics {
+                live_in(&mut guest, &real, &view, 6 * 60_000, 5);
+            } else {
+                let _ = run(&mut guest, &real, &view, 0, 6 * 60_000);
+            }
+            let visit = visit_of(&guest);
+            if pretty {
+                assert!(
+                    visit.shown.iter().filter(|s| s.item.decor()).count() == 2,
+                    "graphics={graphics}: {:?}",
+                    visit.shown
+                );
+            }
+            visit.osaka.needs().get(Need::Beauty)
+        };
+        let (plain, pretty) = (level(false), level(true));
+        assert!(plain > 0.5, "graphics={graphics}: plain {plain}");
+        assert!(pretty < 0.3, "graphics={graphics}: pretty {pretty}");
+    }
+}
+
 /// One whole visit of `minutes`, ending with a key press and the goodbye.
 fn one_visit(guest: &mut Guest, real: &Buffer, view: &IdleView, from: u64, minutes: u64) -> u64 {
     guest.cue(Scene::Arrive);

@@ -51,8 +51,8 @@ use sprite::{Part, Pose};
 use terrain::Terrain;
 
 /// What the shopping channel sells, in order (the TV comes first, on
-/// its own).
-const CATALOGUE: [Furniture; 7] = [
+/// its own): furniture, then decor.
+const CATALOGUE: [Furniture; 9] = [
     Furniture::Sofa,
     Furniture::Bed,
     Furniture::Desk,
@@ -60,6 +60,8 @@ const CATALOGUE: [Furniture; 7] = [
     Furniture::Bookshelf,
     Furniture::Fridge,
     Furniture::CatBed,
+    Furniture::Plant,
+    Furniture::Poster,
 ];
 /// She buys at most once every this many visits.
 const SHOP_EVERY: u64 = 3;
@@ -71,16 +73,40 @@ const CHANNEL_FRAME_MS: u64 = 400;
 const PARCEL: &str = "A parcel!";
 
 /// What the shopping channel sells her if she watches now: the next
-/// piece she lacks, at most once every [`SHOP_EVERY`] visits (any time
+/// piece of furniture she lacks, or the next piece of decor when her
+/// room feeling bare is what she `needs` most (or there's no furniture
+/// left to sell), at most once every [`SHOP_EVERY`] visits (any time
 /// with the stage's `shop_now`), and never while something's on order
 /// or still boxed.
-fn advert(ledger: &Ledger, shop_now: bool) -> Option<Furniture> {
+fn advert(ledger: &Ledger, shop_now: bool, needs: &brain::Needs) -> Option<Furniture> {
     let due = shop_now || ledger.visits >= ledger.bought_on + SHOP_EVERY;
     let idle = ledger.ordered.is_none() && !ledger.home.boxed();
-    let item = CATALOGUE
-        .into_iter()
-        .find(|&item| !ledger.home.owns(item))?;
+    let next = |decor: bool| {
+        CATALOGUE
+            .into_iter()
+            .find(|&item| item.decor() == decor && !ledger.home.owns(item))
+    };
+    let item = if needs.pressing(brain::Need::Beauty) {
+        next(true).or_else(|| next(false))
+    } else {
+        next(false).or_else(|| next(true))
+    }?;
     (due && idle && ledger.home.owns(Furniture::Tv)).then_some(item)
+}
+
+/// How pretty the room she stands in at `(x, y)` is: the beauty of what
+/// shows on the strip whose floor that is (0 off any strip).
+fn beauty_at(shown: &[Shown], nooks: &[(Nook, Rect)], (x, y): (i32, i32)) -> f64 {
+    room::strips(nooks)
+        .into_iter()
+        .find(|(_, e)| e.floor == y && (e.from..e.to).contains(&x))
+        .map_or(0.0, |(strip, _)| {
+            shown
+                .iter()
+                .filter(|s| s.strip == Some(strip) && !s.boxed && s.scrap.is_none())
+                .map(|s| s.item.spec().beauty)
+                .sum()
+        })
 }
 
 /// Smallest terminal she visits.
@@ -921,6 +947,8 @@ impl Guest {
                 solid.extend(visit.ghost);
                 let builds = builds(buf, visit, &pulls, &solid);
                 let (lift_at, judged) = arranging(visit);
+                let beauty_here =
+                    beauty_at(&visit.shown, &view.nooks, (visit.osaka.x, visit.osaka.y));
                 if let Some(scene) = self.cue.take() {
                     let offered = osaka::Chances {
                         pulls: pulls.clone(),
@@ -933,13 +961,14 @@ impl Guest {
                         ),
                         builds: builds.clone(),
                         mine: visit.made.iter().filter_map(Made::mine).collect(),
-                        advert: advert(&self.ledger, self.shop_now),
+                        advert: advert(&self.ledger, self.shop_now, visit.osaka.needs()),
                         furnished: !self.ledger.home.props.is_empty(),
                         chat,
                         broken: visit.broken.clone(),
                         repairs: visit.repairs.clone(),
                         lift_at: lift_at.clone(),
                         judged,
+                        beauty_here,
                     };
                     let note =
                         stage::direct(scene, buf, &protected, visit, &offered, now, &mut self.rng);
@@ -967,13 +996,14 @@ impl Guest {
                     ),
                     builds,
                     mine: visit.made.iter().filter_map(Made::mine).collect(),
-                    advert: advert(&self.ledger, self.shop_now),
+                    advert: advert(&self.ledger, self.shop_now, visit.osaka.needs()),
                     furnished: !self.ledger.home.props.is_empty(),
                     chat,
                     broken: visit.broken.clone(),
                     repairs: visit.repairs.clone(),
                     lift_at,
                     judged,
+                    beauty_here,
                 };
                 // In line art, pieces she overlaps go in her image: two
                 // images would cut each other out.

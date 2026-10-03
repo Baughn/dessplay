@@ -109,6 +109,8 @@ pub(super) struct Spec {
     /// and its bottom row (none: it stands on the floor). Hung above the
     /// tallest piece that stands, it hangs over any of them.
     pub hang: Option<u16>,
+    /// How much prettier it makes a room (decor; nothing else does).
+    pub beauty: f64,
 }
 
 const SOFA: Spec = Spec {
@@ -122,6 +124,7 @@ const SOFA: Spec = Spec {
     sit: Some((4, false)),
     comfort: 1.0,
     hang: None,
+    beauty: 0.0,
 };
 const TV: Spec = Spec {
     name: "TV",
@@ -134,6 +137,7 @@ const TV: Spec = Spec {
     sit: None,
     comfort: 1.0,
     hang: None,
+    beauty: 0.0,
 };
 const BED: Spec = Spec {
     name: "bed",
@@ -147,6 +151,7 @@ const BED: Spec = Spec {
     sit: Some((3, false)),
     comfort: 1.0,
     hang: None,
+    beauty: 0.0,
 };
 const DESK: Spec = Spec {
     name: "desk",
@@ -160,6 +165,7 @@ const DESK: Spec = Spec {
     sit: Some((7, true)),
     comfort: 1.0,
     hang: None,
+    beauty: 0.0,
 };
 const LAMP: Spec = Spec {
     name: "lamp",
@@ -172,6 +178,7 @@ const LAMP: Spec = Spec {
     sit: None,
     comfort: 1.0,
     hang: None,
+    beauty: 0.0,
 };
 const BOOKSHELF: Spec = Spec {
     name: "bookshelf",
@@ -184,6 +191,7 @@ const BOOKSHELF: Spec = Spec {
     sit: None,
     comfort: 1.0,
     hang: None,
+    beauty: 0.0,
 };
 const FRIDGE: Spec = Spec {
     name: "fridge",
@@ -196,6 +204,7 @@ const FRIDGE: Spec = Spec {
     sit: None,
     comfort: 1.0,
     hang: None,
+    beauty: 0.0,
 };
 const CAT_BED: Spec = Spec {
     name: "cat bed",
@@ -208,6 +217,7 @@ const CAT_BED: Spec = Spec {
     sit: None,
     comfort: 1.0,
     hang: None,
+    beauty: 0.0,
 };
 const PLANT: Spec = Spec {
     name: "potted plant",
@@ -220,6 +230,7 @@ const PLANT: Spec = Spec {
     sit: None,
     comfort: 1.0,
     hang: None,
+    beauty: 1.0,
 };
 const POSTER: Spec = Spec {
     name: "poster",
@@ -233,6 +244,7 @@ const POSTER: Spec = Spec {
     comfort: 1.0,
     // Above her head and the tallest piece that stands (4 rows).
     hang: Some(4),
+    beauty: 1.0,
 };
 
 /// The glyph at `(dx, dy)` of `item`'s ASCII drawing facing `facing`, if

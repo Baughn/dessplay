@@ -46,6 +46,9 @@ pub(super) struct Chances {
     pub lift_at: Vec<LiftAt>,
     /// What the frame made of the piece she's moving, if she is.
     pub judged: Option<Judged>,
+    /// How pretty the room she's in is: what's pretty on the strip she
+    /// stands on (0 off any strip).
+    pub beauty_here: f64,
 }
 
 /// Where she'd stand to lift a piece (beside it, on its floor), and which
@@ -1178,6 +1181,9 @@ pub(super) struct Osaka {
     /// What she chose and hasn't done yet: it eases her needs by how
     /// much of it she does (see [`Osaka::credit_done`]).
     credit: Option<Want>,
+    /// How pretty the room she was in at the last tick is (see
+    /// [`Chances::beauty_here`]).
+    beauty_here: f64,
     /// Beats she owes, oldest first (see [`Osaka::owe`]).
     owed: Vec<Beat>,
     /// The beat lines she has said this visit.
@@ -1248,6 +1254,7 @@ impl Osaka {
             rest: None,
             mind: Rng(rng.next() ^ mind::MIND_SALT),
             credit: None,
+            beauty_here: 0.0,
             owed: Vec::new(),
             lines: Lines::default(),
             felt: Vec::new(),
@@ -1557,6 +1564,7 @@ impl Osaka {
 
     /// Run every event due by `now`. Returns whether her pose changed.
     pub fn tick(&mut self, now: u64, terrain: &Terrain, chances: &Chances, rng: &mut Rng) -> bool {
+        self.beauty_here = chances.beauty_here;
         let mut changed = false;
         for _ in 0..64 {
             let due = self.due();
@@ -2338,7 +2346,9 @@ impl Osaka {
 
     /// What she chose eases her needs by how much of it she did: settled
     /// as she leaves doing it, by the share done. Before she gets to it,
-    /// nothing is settled.
+    /// nothing is settled. Resting or using her things in a pretty room
+    /// eases her want of beauty too, by the share done (as much as one
+    /// pretty thing does, at most).
     fn credit_done(&mut self, at: u64) {
         let Some(want) = self.credit else {
             return;
@@ -2371,6 +2381,10 @@ impl Osaka {
         };
         self.credit = None;
         self.serve(want, done, spot);
+        if matches!(self.act, Act::Idle { .. } | Act::Use { .. }) {
+            self.needs
+                .serve(Need::Beauty, done * self.beauty_here.min(1.0));
+        }
     }
 
     /// She did all of what she chose, `want`.
@@ -2638,6 +2652,7 @@ impl Osaka {
         let rising = Rising {
             mess: !chances.pulls.is_empty(),
             grieved: self.grieved(chances),
+            plain: chances.beauty_here <= 0.0,
         };
         self.needs
             .pass(at.saturating_sub(self.decided), rising, self.mood);

@@ -29,6 +29,10 @@ Add new days at the top. Add new entries at the bottom of existing days.
   before she settles on one: she sets it down, sits on it with a
   thoughtful "hmm...", and keeps it there ("There!") or lifts it again
   ("Hup!") for the next spot. The calmer she is, the pickier.
+- Added: A potted plant and a poster (a sunset with a whale's tail) now
+  come on the houseguest's shopping channel once her room feels bare to
+  her, or once she has all the furniture. The poster hangs on the wall,
+  above her other things.
 
 ## 2026-10-02
 

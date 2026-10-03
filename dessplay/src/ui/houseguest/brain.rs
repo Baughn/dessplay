@@ -40,10 +40,13 @@ pub(super) enum Need {
     /// Rises only while a rule of her home she has felt is broken (see
     /// [`Rising::grieved`]); putting it right will answer it.
     Nesting,
+    /// Rises only while she's in a plain room (see [`Rising::plain`]);
+    /// resting and using her things in a pretty one ease it.
+    Beauty,
 }
 
 impl Need {
-    pub const ALL: [Need; 9] = [
+    pub const ALL: [Need; 10] = [
         Self::Sleepy,
         Self::Restless,
         Self::Tidy,
@@ -53,10 +56,12 @@ impl Need {
         Self::Fun,
         Self::Daydreams,
         Self::Nesting,
+        Self::Beauty,
     ];
 
     /// Milliseconds to rise from 0 to 1 (tidy only while there's text on
-    /// offer to tidy, nesting only while a felt rule is broken).
+    /// offer to tidy, nesting only while a felt rule is broken, beauty
+    /// only in a plain room).
     fn rise_ms(self) -> f64 {
         match self {
             Self::Sleepy => 15.0 * 60_000.0,
@@ -69,18 +74,21 @@ impl Need {
             Self::Daydreams => 10.0 * 60_000.0,
             // A starting value, to tune in the visit census.
             Self::Nesting => 3.0 * 60_000.0,
+            Self::Beauty => 20.0 * 60_000.0,
         }
     }
 
     /// Where she starts a visit: wide awake, keen to move and to look
     /// around, the rest about halfway, so no want is starved at arrival.
-    /// Nothing about her home bothers her yet.
+    /// Nothing about her home bothers her yet, though a plain room a
+    /// little.
     fn arriving(self) -> f64 {
         match self {
             Self::Sleepy | Self::Nesting => 0.0,
             Self::Restless => 0.7,
             Self::Tidy | Self::Comfort | Self::Fun | Self::Daydreams => 0.5,
             Self::Mischief | Self::Hungry => 0.2,
+            Self::Beauty => 0.3,
         }
     }
 
@@ -95,6 +103,7 @@ impl Need {
             Self::Fun => "fun",
             Self::Daydreams => "daydreams",
             Self::Nesting => "nesting",
+            Self::Beauty => "beauty",
         }
     }
 }
@@ -231,6 +240,9 @@ pub(super) struct Rising {
     /// A rule of her home she has felt this visit was still broken
     /// ([`Need::Nesting`]).
     pub grieved: bool,
+    /// She was in a plain room: on a strip with nothing pretty on it, or
+    /// on none ([`Need::Beauty`]).
+    pub plain: bool,
 }
 
 impl Rising {
@@ -239,6 +251,7 @@ impl Rising {
     pub const ALL: Self = Self {
         mess: true,
         grieved: true,
+        plain: true,
     };
 }
 
@@ -282,6 +295,7 @@ impl Needs {
             let rises = match need {
                 Need::Tidy => rising.mess,
                 Need::Nesting => rising.grieved,
+                Need::Beauty => rising.plain,
                 _ => true,
             };
             if rises {
@@ -292,6 +306,13 @@ impl Needs {
             *tolerance = (*tolerance - ms as f64 / TOLERANCE_MS).max(0.0);
         }
         self.clamp();
+    }
+
+    /// Whether `need` is the most pressing of her needs: felt, and none
+    /// higher (a tie with another at the top counts).
+    pub fn pressing(&self, need: Need) -> bool {
+        let level = self.get(need);
+        level > 0.0 && Need::ALL.iter().all(|&other| self.get(other) <= level)
     }
 
     /// How much fun `want` still is: 1 fresh, 0 worn out.
@@ -866,6 +887,40 @@ mod tests {
         needs.pass(60_000, grieved, Mood::Ordinary);
         assert!(needs.get(Need::Nesting) > 0.0);
         assert_eq!(needs.get(Need::Tidy), tidy, "no mess, no tidying");
+    }
+
+    /// A plain room bothers her a little as she arrives; her want of
+    /// beauty rises only while she's in one (over twenty minutes), and
+    /// no want answers it (resting in a pretty room does).
+    #[test]
+    fn beauty_rises_only_in_a_plain_room() {
+        let mut needs = Needs::default();
+        assert_eq!(needs.get(Need::Beauty), 0.3);
+        needs.pass(3_600_000, Rising::default(), Mood::Ordinary);
+        assert_eq!(needs.get(Need::Beauty), 0.3, "in a pretty room");
+        let plain = Rising {
+            plain: true,
+            ..Rising::default()
+        };
+        needs.pass(10 * 60_000, plain, Mood::Ordinary);
+        assert!((needs.get(Need::Beauty) - 0.8).abs() < 1e-9);
+        assert!(
+            Want::ALL
+                .iter()
+                .all(|w| w.def().serves.iter().all(|&(need, _)| need != Need::Beauty))
+        );
+    }
+
+    /// The most pressing need: felt, and none higher (a tie at the top
+    /// counts).
+    #[test]
+    fn the_most_pressing_need() {
+        let needs = Needs::with(&[(Need::Beauty, 0.6), (Need::Fun, 0.5)]);
+        assert!(needs.pressing(Need::Beauty));
+        assert!(!needs.pressing(Need::Fun));
+        let tie = Needs::with(&[(Need::Beauty, 1.0), (Need::Restless, 1.0)]);
+        assert!(tie.pressing(Need::Beauty) && tie.pressing(Need::Restless));
+        assert!(!Needs::with(&[]).pressing(Need::Beauty), "felt at all");
     }
 
     /// How much of her home she sets right a visit, by mood (the
