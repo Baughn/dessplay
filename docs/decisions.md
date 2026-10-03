@@ -1,6 +1,6 @@
 # DessPlay Decision Log
 
-Last updated: 2026-10-03
+Last updated: 2026-10-04
 
 The reasoning behind the rules in [design.md](design.md): the failure that
 motivated each one, the alternatives that were rejected, and the date it

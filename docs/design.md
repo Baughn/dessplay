@@ -1,6 +1,6 @@
 # DessPlay Design Document
 
-Last updated: 2026-10-03
+Last updated: 2026-10-04
 
 A synchronized video player for watch parties. Terminal-first, built for
 reliability over flaky connections. Server-coordinated, including relayed

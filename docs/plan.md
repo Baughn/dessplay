@@ -2834,6 +2834,25 @@ the rest. The census home starting broken is left alone for now; a later
 improvement would be unlimited repairs in the census home. The image
 cache is raised to suit Ghostty's capacity (measured; below).
 
+**The image cache (2026-10-04; `perf(houseguest): a frame cache sized
+for a long visit`).** `CACHE_LIMIT` 256 → 1024, sized by `image_census`
+(`#[ignore]`d; `cargo test --release -p dessplay --lib image_census --
+--ignored --nocapture`, about 40 s): on still screens (stage, home,
+resident; every mood, 16 seeds, two hours) the most distinct images in a
+visit were 421 by 20 minutes, 591 by 60 and 664 by 120, and the largest
+working set 603, so 1024 encodes nothing twice. A cached image costs
+about 36 KB of client memory (ratatui-image keeps its base64 RGBA
+transmit string), so a full cache is 30–43 MB by room; Ghostty's default
+`image-storage-limit` (320 MB a screen) holds 10,000–14,000 of her
+images. **A live chat has no working set a cache can cover:** on the
+client's own 200×50 layout with a line every 45 s she meets about 10 new
+images a minute (her image includes the lines under her), 1669 in two
+hours; 1024 encodes nothing twice for the first hour and 196 by two.
+2048 was rejected (60–87 MB full, and only an hour later). Making her
+image independent of the text under her is the real fix, if it matters.
+The busy tests now allow no re-encodes and bound images a visit at 512;
+an LRU property covers eviction at small test-only limits.
+
 **For 5b's brief** (written first thing in its session; the decisions
 are in the phase-5 brief above). Questions it must settle against the
 code:
