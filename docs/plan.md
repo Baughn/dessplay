@@ -2449,3 +2449,40 @@ A carry costs some 30–40 distinct images (the piece hidden, then shown
 again, under her and the poses around it), well inside the cache with
 no clear: the budget holds for trials, which re-show the piece up to
 three times (some 100 more images at worst).
+
+**The carry's promises (step 6b, 2026-10-03; design T3–T5).**
+`the_carry_keeps_every_promise` (both drawing modes, text-dense panes,
+six deterministic broken homes, any mood, chat, resizes, a resident's
+focus) checks every set-down against the rules on that frame (it mends
+its rule and breaks none that held), the mood's cap, the covering
+checks, and the goodbye. The design's "no piece returns within 3
+visits" property was dropped: there's no mechanism to test (a
+satisfied rule never moves anything and a move breaks none, so a piece
+could only return after its layout changed, which the exemption
+covers). In its place `moves_each_piece_once` (Industrious, no resize
+or delivery): no piece moves twice, and a mendable home ends with
+nothing broken. Cutting the "breaks none" check from the search makes
+both fail. The property's two minutes hold one home act at most
+(measured in review: 277 cases at 256, 210 with none, 67 with one), so
+there it proves only that lazy never arranges;
+`her_mood_caps_her_home_acts` (home 3, three
+things wrong, both drawing modes) proves the other caps: ordinary and
+dreamy put one thing right and leave what else they felt for ten
+minutes, industrious goes on to a second. A cap of 3 for every mood but
+lazy fails it. Measured at the same time: 20 minutes of the furnished home
+(`a_furnished_home_gets_used_and_stays_cheap`) cache 195 and 190 images
+over seeds 0 and 1, with no clears and no home acts (its gifts are
+settled, and nothing she felt was broken). That is the realistic
+baseline, not the sparse homes' 116–130 above. One carry on top of it
+is about 235 of 256. Trials, at up to 100 more images, would be about
+295 and past the limit. So before trials ship, step 7 should measure a
+carry in the furnished home, or cap trials at two spots.
+
+One move at a time can leave a home that no single move mends. Take a
+bed in the living room beside the TV the sofa faces, and a lamp
+upstairs. She feels the lamp first (Near comes before Apart in the
+table), so the lamp comes down beside the bed. After that, moving the
+bed breaks Near and moving the TV breaks Faces, so Apart stays broken
+and she leaves it. That's the design working as intended, not a bug.
+If it ever matters, a later phase could weigh paired moves, or feel
+Apart before Near.

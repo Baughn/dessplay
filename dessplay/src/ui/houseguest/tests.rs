@@ -1702,7 +1702,7 @@ fn home_screen() -> (Buffer, IdleView) {
 /// things (and sleeps in her bed more than on a border once she has one), goes
 /// to work at most once a visit, her
 /// image with the pieces she overlaps never hides text, and the distinct
-/// images stay within the frame cache.
+/// images stay within the frame cache, which never fills and starts over.
 #[test]
 fn a_furnished_home_gets_used_and_stays_cheap() {
     use super::brain::Want;
@@ -1766,12 +1766,24 @@ fn a_furnished_home_gets_used_and_stays_cheap() {
             "seed {seed}: to work {shifts} times in one visit"
         );
         choices.extend(&visit.osaka.choices);
-        let cached = guest.graphics.as_ref().map_or(0, |g| g.cached());
+        let graphics = guest.graphics.as_ref().unwrap();
+        let (cached, counts) = (graphics.cached(), graphics.counts());
+        eprintln!(
+            "seed {seed}: {cached} cached, {} encoded, {} clears, {} home acts",
+            counts.encoded,
+            counts.clears,
+            visit.osaka.home_acts()
+        );
         // Headroom under the cache's limit (20 minutes here run to
-        // 174-204 images across seeds).
+        // 174-204 images across seeds), and it never filled and started
+        // over (whatever she carried about).
         assert!(
             cached < graphics::CACHE_LIMIT - 32,
             "seed {seed}: {cached} distinct images"
+        );
+        assert_eq!(
+            counts.clears, 0,
+            "seed {seed}: the frame cache started over"
         );
     }
     let count = |want: Want| choices.iter().filter(|&&k| k == want).count();
@@ -5765,64 +5777,500 @@ fn a_piece_closeted_for_good_is_let_go() {
     }
 }
 
+/// Industrious, in [`wrong_home`] `home`, with nothing resized or
+/// delivered: she feels what's wrong (sent to use her pieces while
+/// something's unfelt and she's not busy about her home) and puts her
+/// home right a piece at a time, and never moves a piece twice (a move
+/// mends its rule and breaks none, so nothing she has set down needs
+/// moving again). Home 5 can't be mended without breaking another rule,
+/// or her study: she leaves it as it is.
+fn moves_each_piece_once(home: usize) {
+    use super::brain::Mood;
+    let mendable = home != 5;
+    for graphics in [false, true] {
+        for seed in 0..2 {
+            let until = if mendable { 900_000 } else { 300_000 };
+            let (guest, moved) = keen_on(home, Mood::Industrious, graphics, seed, until);
+            if mendable {
+                assert!(
+                    !moved.is_empty() && guest.broken().is_empty(),
+                    "home {home}, graphics {graphics}, seed {seed}: moved {moved:?}, broken {}: {:?}",
+                    guest.broken(),
+                    methods(&guest)
+                );
+            } else {
+                assert_eq!(moved, [], "home {home}, graphics {graphics}, seed {seed}");
+                assert_eq!(
+                    guest.broken(),
+                    "apart(bed,TV)*",
+                    "graphics {graphics}, seed {seed}"
+                );
+            }
+        }
+    }
+}
+
+/// In [`wrong_home`] `home`, in `mood`, with nothing resized or
+/// delivered, keen on her home (nesting pressed) and sent to use her
+/// pieces while something's unfelt and she's not busy about her home,
+/// until all's right or `until`: her, and the pieces she moved, in
+/// order, each once (checked as she goes).
+fn keen_on(
+    home: usize,
+    mood: super::brain::Mood,
+    graphics: bool,
+    seed: u64,
+    until: u64,
+) -> (Guest, Vec<Furniture>) {
+    use super::room::{Anchor, Prop};
+    let mut guest = Guest::new(seed);
+    if graphics {
+        guest.set_picker(kitty());
+    }
+    for (item, nook, side, offset, facing, settled) in wrong_home(home, 12) {
+        assert!(guest.ledger.home.add(Prop {
+            anchor: Some(Anchor { side, offset }),
+            settled,
+            ..Prop::new(item, nook, 0, facing)
+        }));
+    }
+    let real = wordy_rooms(100, 30);
+    let panes = nooks(100, 30);
+    let view = IdleView {
+        chat: panes[0].1,
+        nooks: panes[1..].to_vec(),
+        ..view(bottom_strip(100, 30))
+    };
+    let at = |guest: &Guest| -> Vec<(Furniture, room::Strip, Option<Anchor>, sprite::Facing)> {
+        guest
+            .ledger
+            .home
+            .props
+            .iter()
+            .map(|p| (p.item, p.strip, p.anchor, p.facing))
+            .collect()
+    };
+    // (Only uses of what she owns: the stage would bring the rest.)
+    let owns = |item| guest.ledger.home.owns(item);
+    let uses: Vec<Scene> = [
+        (Scene::Sleep, Furniture::Bed),
+        (Scene::Watch, Furniture::Tv),
+        (Scene::Lounge, Furniture::Sofa),
+        (Scene::Snack, Furniture::Fridge),
+    ]
+    .into_iter()
+    .filter(|&(_, item)| owns(item))
+    .map(|(scene, _)| scene)
+    .collect();
+    let mut scenes = uses.into_iter().cycle();
+    guest.cue(scenes.next().unwrap());
+    paint(&mut guest, &real, &view, 0);
+    let State::Visiting(visit) = &mut guest.state else {
+        panic!("visiting");
+    };
+    visit.osaka.set_mood(mood);
+    guest.press(stage::Want::Nesting);
+    let mut moved: Vec<Furniture> = Vec::new();
+    let mut was = at(&guest);
+    let mut now = 0;
+    let mut next_cue = 60_000;
+    while now < until && !guest.broken().is_empty() {
+        let unfelt = guest
+            .broken()
+            .split(", ")
+            .any(|b| !b.is_empty() && !b.ends_with('*'));
+        if unfelt && now >= next_cue && visit_of(&guest).osaka.episode().is_none() {
+            guest.cue(scenes.next().unwrap());
+            guest.press(stage::Want::Nesting);
+            next_cue = now + 60_000;
+        }
+        now = carry_until(&mut guest, &real, &view, now, now + 1, |_, _| true).unwrap_or(now + 1);
+        let is = at(&guest);
+        for (a, b) in was.iter().zip(&is) {
+            if a != b {
+                assert!(
+                    !moved.contains(&a.0),
+                    "home {home}, {mood:?}, graphics {graphics}, seed {seed}, {now}: {:?} moved twice: {a:?} → {b:?}",
+                    a.0
+                );
+                moved.push(a.0);
+            }
+        }
+        assert_eq!(was.len(), is.len(), "nothing delivered: {is:?}");
+        was = is;
+    }
+    (guest, moved)
+}
+
+/// Her lamp far from her bed, a TV she never settled in her bedroom,
+/// her sofa turned from where the TV goes: she moves the lamp and the
+/// TV once each, and all's right.
+#[test]
+fn no_piece_is_moved_twice() {
+    moves_each_piece_once(3);
+}
+
+/// A fridge she never settled, in her bedroom away from its walls: one
+/// move puts it against a wall where it makes a room.
+#[test]
+fn an_unsettled_fridge_is_moved_once() {
+    moves_each_piece_once(4);
+}
+
+/// Her bed beside the TV she watches from her sofa, her desk upstairs:
+/// feeling it, she still leaves it as it is.
+#[test]
+fn what_she_cant_mend_she_leaves() {
+    moves_each_piece_once(5);
+}
+
+/// Her mood caps what she does about her home in a visit: in a home
+/// with three things wrong with it (her lamp far from her bed, a TV she
+/// never settled in her bedroom, her sofa turned from where the TV
+/// goes), ordinary or dreamy she puts one right and leaves the rest for
+/// ten minutes, however keen, though she has felt it; industrious, she
+/// goes on to another (in [`keen_on`], nothing resized or delivered).
+fn her_mood_caps_her_home_acts(mood: super::brain::Mood) {
+    use super::brain::Mood;
+    for graphics in [false, true] {
+        for seed in 0..2 {
+            // (Industrious, the second act can take her twelve minutes.)
+            let until = if mood == Mood::Industrious {
+                900_000
+            } else {
+                600_000
+            };
+            let (guest, moved) = keen_on(3, mood, graphics, seed, until);
+            let acts = visit_of(&guest).osaka.home_acts();
+            let broken = guest.broken();
+            let case = format!(
+                "{mood:?}, graphics {graphics}, seed {seed}: moved {moved:?}, broken {broken}"
+            );
+            if mood == Mood::Industrious {
+                assert!(acts >= 2, "{case}: {acts} home acts");
+            } else {
+                assert_eq!(acts, 1, "{case}");
+                assert!(
+                    broken.split(", ").any(|b| b.ends_with('*')),
+                    "{case}: nothing she felt left broken"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn ordinary_she_puts_one_thing_right() {
+    her_mood_caps_her_home_acts(super::brain::Mood::Ordinary);
+}
+
+#[test]
+fn dreamy_she_puts_one_thing_right() {
+    her_mood_caps_her_home_acts(super::brain::Mood::Dreamy);
+}
+
+#[test]
+fn industrious_she_goes_on_to_another() {
+    her_mood_caps_her_home_acts(super::brain::Mood::Industrious);
+}
+
+/// A home with something wrong with it, on [`rooms`]' panes (her
+/// bedroom upstairs in Users, her living room downstairs in Playlist):
+/// 0, her sofa turned from the TV (`offset` along); 1, a TV she never
+/// settled in her bedroom ([`two_rooms`]); 2, her lamp far from her bed;
+/// 3, all of those at once; 4, a fridge she never settled, in her
+/// bedroom away from its walls; 5, her bed in the living room, where she
+/// watches the TV from her sofa, and her desk upstairs (no move mends
+/// that without breaking another rule, or her study). Each piece
+/// anchored, as she'd have left it.
+fn wrong_home(
+    home: usize,
+    offset: u16,
+) -> Vec<(Furniture, Nook, room::Side, u16, sprite::Facing, bool)> {
+    use super::room::Side::{Left, Right};
+    use sprite::Facing;
+    let bed = (Furniture::Bed, Nook::Users, Left, 1, Facing::Right, true);
+    match home {
+        0 => vec![
+            bed,
+            (Furniture::Tv, Nook::Playlist, Left, 0, Facing::Right, true),
+            (
+                Furniture::Sofa,
+                Nook::Playlist,
+                Left,
+                offset,
+                Facing::Right,
+                true,
+            ),
+        ],
+        1 => vec![
+            bed,
+            (Furniture::Tv, Nook::Users, Right, 1, Facing::Left, false),
+            (
+                Furniture::Sofa,
+                Nook::Playlist,
+                Left,
+                2,
+                Facing::Right,
+                true,
+            ),
+        ],
+        2 => vec![
+            bed,
+            (Furniture::Lamp, Nook::Users, Right, 1, Facing::Left, true),
+            (
+                Furniture::Sofa,
+                Nook::Playlist,
+                Left,
+                2,
+                Facing::Right,
+                true,
+            ),
+        ],
+        4 => vec![
+            bed,
+            (
+                Furniture::Fridge,
+                Nook::Users,
+                Left,
+                20,
+                Facing::Left,
+                false,
+            ),
+            (
+                Furniture::Sofa,
+                Nook::Playlist,
+                Left,
+                2,
+                Facing::Right,
+                true,
+            ),
+        ],
+        5 => vec![
+            (Furniture::Tv, Nook::Playlist, Left, 0, Facing::Right, true),
+            (
+                Furniture::Sofa,
+                Nook::Playlist,
+                Left,
+                offset,
+                Facing::Left,
+                true,
+            ),
+            (Furniture::Bed, Nook::Playlist, Right, 1, Facing::Left, true),
+            (Furniture::Desk, Nook::Users, Right, 1, Facing::Left, true),
+        ],
+        _ => vec![
+            bed,
+            (Furniture::Lamp, Nook::Users, Right, 1, Facing::Left, true),
+            (Furniture::Tv, Nook::Users, Right, 8, Facing::Left, false),
+            (
+                Furniture::Sofa,
+                Nook::Playlist,
+                Left,
+                offset,
+                Facing::Right,
+                true,
+            ),
+        ],
+    }
+}
+
+/// [`rooms`] at `w`×`h` with the chat full of text (as much as fits)
+/// and a line at the top of each quiet pane.
+fn wordy_rooms(w: u16, h: u16) -> Buffer {
+    let mut real = rooms(w, h);
+    let mut text: Vec<(u16, u16, String)> = (0..12)
+        .map(|i| {
+            (
+                2 + i * 5 % 20,
+                2 + i * 2,
+                "so what did you think of it".to_owned(),
+            )
+        })
+        .filter(|&(_, y, _)| y + 3 < h)
+        .collect();
+    for (_, pane) in &nooks(w, h)[1..] {
+        text.push((pane.x + 2, pane.y + 1, "01 Frieren ep 12".to_owned()));
+    }
+    scatter(&mut real, &text, &[]);
+    real
+}
+
+/// The rules of her home `home` breaks, laid out on `nooks`.
+fn breaks(home: &room::Home, nooks: &[(Nook, Rect)]) -> Vec<rules::Grievance> {
+    let mut home = home.clone();
+    let laid = home.layout(nooks);
+    rules::broken(&laid, &room::strips(nooks), &home)
+        .into_iter()
+        .map(|b| b.key)
+        .collect()
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(dessplay_core::test_support::proptest_cases(8)))]
 
-    /// Keen on her home from the start, with her sofa turned from the
-    /// TV and a pane full of text, over a few minutes in any mood: she
-    /// does no more about her home than her mood allows (lazy, nothing),
-    /// nothing she carries is drawn, and nothing she does touches what's
-    /// protected or stays over text.
+    /// Keen on her home from the start (nesting pressed), a home with
+    /// something wrong with it, in any mood, through chat, resizes and
+    /// (a resident) focus changes: she does no more about her home than
+    /// her mood allows (lazy, nothing); every piece she sets down mends
+    /// the rule she moved it for and breaks none that held; nothing she
+    /// carries is drawn; nothing she does touches what's protected or
+    /// stays over text; and a visitor's goodbye lands on the real frame.
+    /// (Two minutes rarely hold a second act: that no piece moves twice,
+    /// and that her mood's cap above none holds, are
+    /// `moves_each_piece_once`'s and `her_mood_caps_her_home_acts`'.)
     #[test]
-    fn she_arranges_only_as_her_mood_allows(
+    fn the_carry_keeps_every_promise(
         seed in any::<u64>(),
         graphics in any::<bool>(),
-        mood in 0usize..4,
+        home in 0usize..6,
         offset in 8u16..20,
+        mood in 0usize..4,
+        cue in any::<bool>(),
+        resident in any::<bool>(),
+        sizes in proptest::collection::vec(
+            proptest::sample::select(vec![(80u16, 24u16), (100, 30), (120, 36)]),
+            0..3,
+        ),
+        chats in proptest::collection::vec(0u64..120_000, 0..4),
+        focuses in proptest::collection::vec((0u64..120_000, proptest::option::of(0usize..3)), 0..4),
     ) {
         use super::brain::Mood;
-        use super::room::Side;
-        use sprite::Facing;
-        let (mut guest, real, view) = rule_home(
-            &[
-                (Furniture::Tv, Side::Left, 0, Facing::Right, true),
-                (Furniture::Sofa, Side::Left, offset, Facing::Right, true),
-            ],
-            graphics,
-            seed,
-        );
-        guest.cue(Scene::Lounge);
-        paint(&mut guest, &real, &view, 0);
+        use super::room::{Anchor, Prop};
+        let mut guest = Guest::new(seed);
+        if graphics {
+            guest.set_picker(kitty());
+        }
+        for (item, nook, side, offset, facing, settled) in wrong_home(home, offset) {
+            let added = guest.ledger.home.add(Prop {
+                anchor: Some(Anchor { side, offset }),
+                settled,
+                ..Prop::new(item, nook, 0, facing)
+            });
+            prop_assert!(added);
+        }
+        let sizes: Vec<(u16, u16)> = std::iter::once((100, 30)).chain(sizes).collect();
+        let mut focuses = focuses;
+        focuses.sort_unstable();
+        let view_of = |(w, h): (u16, u16), focus: Option<usize>, mark: ChatMark| {
+            let panes = nooks(w, h);
+            let focus = focus.map(|i| panes[i].1);
+            let view = if resident {
+                resident_view(w, h, focus)
+            } else {
+                IdleView {
+                    chat: panes[0].1,
+                    nooks: panes[1..].to_vec(),
+                    ..view(bottom_strip(w, h))
+                }
+            };
+            IdleView { chat_mark: mark, ..view }
+        };
+        // What she'd use to feel what's wrong, or just her arrival.
+        let scene = match (cue, home) {
+            (false, _) => Scene::Arrive,
+            (true, 0) => Scene::Lounge,
+            (true, 1) => Scene::Watch,
+            (true, 4) => Scene::Snack,
+            (true, _) => Scene::Sleep,
+        };
+        let mut mark = ChatMark::default();
+        let mut real = wordy_rooms(100, 30);
+        guest.cue(scene);
+        let _ = paint(&mut guest, &real, &view_of(sizes[0], None, mark), 0);
         let mood = Mood::ALL[mood];
         let State::Visiting(visit) = &mut guest.state else {
             panic!("visiting");
         };
         visit.osaka.set_mood(mood);
         guest.press(stage::Want::Nesting);
-        let sofa = prop_of(&guest, Furniture::Sofa);
         let mut hidden = Hidden::default();
         let mut now = 0;
-        while now < 150_000 {
-            now += guest
-                .next_tick(now)
-                .map_or(100, |d| d.as_millis() as u64)
-                .clamp(1, 1000);
-            guest.advance(now);
-            let frame = paint(&mut guest, &real, &view, now);
-            carried_unseen(&guest, &frame, &real, &view);
-            let visit = visit_of(&guest);
-            let feet = visit.image.filter(|i| i.standing).map(|i| (i.x, i.y));
-            assert_untouched_but_feet(&frame, &real, &view.protected, feet)?;
-            if graphics {
-                let layer: Vec<(u16, u16)> = visit.layer.cells().collect();
-                hidden.check(&frame, &real, &layer, now)?;
+        let span = 120_000 / sizes.len() as u64;
+        let mut last = sizes[0];
+        for (i, &size) in sizes.iter().enumerate() {
+            // The first frame at a new size moves pieces off strips gone
+            // too small before it takes a set-down: judged as it was,
+            // the piece set down might be on one of those.
+            let mut fresh = false;
+            if size != last {
+                real = wordy_rooms(size.0, size.1);
+                fresh = true;
+                last = size;
             }
-            prop_assert!(visit.osaka.home_acts() <= mood.home_acts(), "{:?}", mood);
+            let until = span * (i as u64 + 1);
+            while now < until {
+                let step = guest
+                    .next_tick(now)
+                    .map_or(100, |d| d.as_millis() as u64)
+                    .clamp(1, 1000.min(until - now));
+                now += step;
+                if chats.iter().any(|&c| c <= now && c > now - step) {
+                    mark.synced += 1;
+                }
+                let focus = focuses
+                    .iter()
+                    .rev()
+                    .find(|(at, _)| resident && *at <= now)
+                    .and_then(|&(_, pane)| pane);
+                let view = view_of(size, focus, mark);
+                guest.advance(now);
+                // A set-down the frame is about to take, and her home as
+                // it stands before it does.
+                let (acts, pending) = {
+                    let visit = visit_of(&guest);
+                    let key = visit.osaka.episode().map(|e| e.repair.key);
+                    (visit.osaka.home_acts(), visit.set_down.zip(key))
+                };
+                let before = guest.ledger.home.clone();
+                let frame = paint(&mut guest, &real, &view, now);
+                carried_unseen(&guest, &frame, &real, &view);
+                let visit = visit_of(&guest);
+                let feet = visit.image.filter(|i| i.standing).map(|i| (i.x, i.y));
+                assert_untouched_but_feet(&frame, &real, &view.protected, feet)?;
+                // (A pane just focused rains out what of hers was in it.)
+                if graphics && visit.fades.is_empty() {
+                    let layer: Vec<(u16, u16)> = visit.layer.cells().collect();
+                    hidden.check(&frame, &real, &layer, now)?;
+                }
+                prop_assert!(visit.osaka.home_acts() <= mood.home_acts(), "{:?}", mood);
+                let first = std::mem::take(&mut fresh);
+                if visit.osaka.home_acts() == acts || first {
+                    continue;
+                }
+                // She set a piece down: judged on this frame's home, with
+                // only that piece as it was, and as she set it.
+                let Some(((piece, _), key)) = pending else {
+                    return Err(TestCaseError::fail(format!("{now}: a home act with nothing set down")));
+                };
+                let after = guest.ledger.home.clone();
+                let mut was = after.clone();
+                was.props.retain(|p| before.props.iter().any(|b| b.item == p.item));
+                let is = was.clone();
+                if let (Some(p), Some(b)) = (
+                    was.props.iter_mut().find(|p| p.item == piece),
+                    before.props.iter().find(|b| b.item == piece),
+                ) {
+                    *p = *b;
+                }
+                let (then, now_broken) = (breaks(&was, &view.nooks), breaks(&is, &view.nooks));
+                prop_assert!(then.contains(&key), "{now}: {key:?} wasn't broken: {then:?}");
+                prop_assert!(!now_broken.contains(&key), "{now}: set down, {key:?} still broken");
+                for k in &now_broken {
+                    prop_assert!(then.contains(k), "{now}: setting {piece:?} down broke {k:?}");
+                }
+            }
         }
-        let ways = methods(&guest);
         if mood == Mood::Lazy {
+            let ways = methods(&guest);
             prop_assert!(!ways.iter().any(|m| m.starts_with("arrange/")), "{:?}", ways);
-            prop_assert_eq!(prop_of(&guest, Furniture::Sofa), sofa);
+        }
+        if !resident {
+            let view = view_of(last, None, mark);
+            guest.activity(now);
+            let end = run(&mut guest, &real, &view, now, now + dissolve::DURATION_MS);
+            prop_assert!(!guest.present());
+            prop_assert!(end == real, "the rain restores the frame");
         }
     }
 }
