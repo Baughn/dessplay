@@ -49,6 +49,10 @@ Add new days at the top. Add new entries at the bottom of existing days.
   each new chat line. In a lively chat that could keep the text behind
   her hidden for as long as people kept talking. Now she steps
   somewhere clear first and watches the chat from there.
+- Fixed: The houseguest's little moments land on cue. She nods off over
+  her homework, shuts the fridge to eat her snack, yelps when the cat
+  bites and says "There!" over a finished piece right when she gets to
+  it, rather than up to a second or so late.
 
 ## 2026-10-02
 

@@ -3006,6 +3006,131 @@ fn her_things_answer_what_she_does() {
     }
 }
 
+/// Through a plain watch, painted only when she says something changed
+/// (as the shell paints), the TV's screen keeps changing: what's on
+/// moves at paint time, so her wakeups are what carry it on, and they
+/// never leave it frozen. Its 400 ms frames sampled on the 1400 ms frame
+/// grid change every second frame, so the screen changes at least every
+/// two frames from the watch's start to its end. In both drawing modes,
+/// among text.
+#[test]
+fn the_tv_screen_alternates_through_a_plain_watch() {
+    use super::room::Use;
+    use art::Channel;
+    use script::{Prop, ScriptId};
+    /// The longest the screen may hold: two frames, and a step's slack.
+    const HOLD_MS: u64 = 2 * osaka::USE_FRAME_MS + 100;
+    for graphics in [false, true] {
+        let at = format!("graphics={graphics}");
+        let (real, view) = busy_home_screen();
+        let mut guest = Guest::new(3);
+        if graphics {
+            guest.set_picker(kitty());
+        }
+        guest.cue(Scene::Watch);
+        let mut now = 0;
+        paint(&mut guest, &real, &view, now);
+        assert!(
+            matches!(guest.cue_note(), Some(Ok(_))),
+            "{at}: {:?}",
+            guest.cue_note()
+        );
+        let mut channels = Vec::new();
+        // Each screen shown, and when it came on.
+        let mut screens: Vec<(u64, Vec<String>)> = Vec::new();
+        let mut watched = 0;
+        let mut ended = None;
+        while now < 90_000 {
+            now += guest
+                .next_tick(now)
+                .map_or(100, |d| d.as_millis() as u64)
+                .clamp(1, 100);
+            if !guest.advance(now) {
+                continue;
+            }
+            let frame = paint(&mut guest, &real, &view, now);
+            let State::Visiting(visit) = &guest.state else {
+                panic!("{at}: visiting");
+            };
+            let Some((.., play)) = visit
+                .osaka
+                .playing()
+                .filter(|(seat, ..)| seat.what == Use::Watch)
+            else {
+                if watched > 0 {
+                    ended = Some(now);
+                    break;
+                }
+                continue;
+            };
+            assert_eq!(
+                (play.own, play.bought),
+                (ScriptId::Watch, None),
+                "{at}: a plain watch"
+            );
+            watched += 1;
+            let prop = visit.osaka.prop(now);
+            assert!(
+                matches!(prop, Some(Prop::Tv(Channel::Snow(_)))),
+                "{at}: {prop:?}"
+            );
+            if !channels.contains(&prop) {
+                channels.push(prop);
+            }
+            let tv = visit
+                .shown
+                .iter()
+                .find(|s| s.item == Furniture::Tv)
+                .expect("the TV is shown");
+            // ASCII: the screen's two cells. Line art: the image placed
+            // over the TV (an image of another look is another image),
+            // without the image data sent with its first placement (the
+            // same image sent, then only placed, is one screen).
+            let cover = tv.cover();
+            let screen: Vec<String> = if graphics {
+                cover
+                    .positions()
+                    .filter_map(|p| frame.cell(p))
+                    .filter_map(|cell| {
+                        let symbol = cell.symbol();
+                        symbol.find("\x1b[s").map(|i| symbol[i..].to_owned())
+                    })
+                    .collect()
+            } else {
+                tv.screen()
+                    .expect("the TV has a screen")
+                    .iter()
+                    .filter_map(|&(x, y)| frame.cell((x as u16, y as u16)))
+                    .map(|cell| cell.symbol().to_owned())
+                    .collect()
+            };
+            assert!(!screen.is_empty(), "{at}: the TV isn't drawn");
+            assert!(
+                screen.iter().all(|s| !s.contains("\x1b_G")),
+                "{at}: image data left in {screen:?}"
+            );
+            if screens.last().is_none_or(|(_, last)| *last != screen) {
+                screens.push((now, screen));
+            }
+        }
+        assert!(watched > 5, "{at}: watched for {watched} frames");
+        assert_eq!(channels.len(), 2, "{at}: {channels:?}");
+        let ended = ended.expect("the watch ended");
+        let distinct: std::collections::HashSet<_> = screens.iter().map(|(_, s)| s).collect();
+        assert!(distinct.len() >= 2, "{at}: the screen froze: {screens:?}");
+        // Never held longer than two frames, to the watch's end.
+        let changes: Vec<u64> = screens.iter().map(|&(t, _)| t).chain([ended]).collect();
+        for pair in changes.windows(2) {
+            assert!(
+                pair[1] - pair[0] <= HOLD_MS,
+                "{at}: the screen held from {} to {}: {changes:?}",
+                pair[0],
+                pair[1]
+            );
+        }
+    }
+}
+
 // ---- Resident Osaka ----
 
 /// [`rooms`] as a resident sees it during playback: the tall left box is

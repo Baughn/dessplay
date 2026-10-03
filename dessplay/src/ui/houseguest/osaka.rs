@@ -1500,8 +1500,27 @@ impl Osaka {
             }
             Act::Tear { since, ripped, .. } => since + if ripped { REEL_MS } else { BRACE_MS },
             Act::Idle { what, since, until } => next_frame(what, since, now).min(until),
-            Act::Use { since, until, .. } => {
-                (since + (now.saturating_sub(since) / USE_FRAME_MS + 1) * USE_FRAME_MS).min(until)
+            // On the frame grid from the start of the part playing (the
+            // prelude, the body or the coda: what bobs and what's on TV
+            // move on, timed as the part times them), as each key ends,
+            // so the next one's look, line and prop come on on time, and
+            // as she starts and stops saying what's wrong with her home
+            // (felt the moment it has all shown).
+            Act::Use {
+                since,
+                until,
+                play,
+                grievance,
+                ..
+            } => {
+                let grid = play.next_frame(since, until, now, USE_FRAME_MS);
+                let key_end = play.next_end(since, until, now).unwrap_or(until);
+                let grumble = grievance
+                    .into_iter()
+                    .flat_map(|(_, from)| [from, from + GRIEVANCE_MS])
+                    .find(|&t| t > now)
+                    .unwrap_or(until);
+                grid.min(key_end).min(grumble).min(until)
             }
             Act::Poke { since, until } => {
                 (since + (now.saturating_sub(since) / POKE_FRAME_MS + 1) * POKE_FRAME_MS).min(until)
@@ -4593,6 +4612,17 @@ mod tests {
     /// How she looks, and what's on her furniture, `elapsed` ms into
     /// `use_` (begun at [`SINCE`]), as `start_job` would set it up.
     fn played(osaka: &mut Osaka, use_: Played, elapsed: u64) -> (script::Look, Option<Prop>) {
+        played_as(osaka, use_, Play::of(use_.what, use_.bought), elapsed)
+    }
+
+    /// [`played`], playing `play` (`use_.length` long in all, any
+    /// prelude and coda included).
+    fn played_as(
+        osaka: &mut Osaka,
+        use_: Played,
+        play: Play,
+        elapsed: u64,
+    ) -> (script::Look, Option<Prop>) {
         let item = if use_.sofa {
             Furniture::Sofa
         } else {
@@ -4610,7 +4640,7 @@ mod tests {
             since: SINCE,
             until: SINCE + use_.length,
             whole: use_.length,
-            play: Play::of(use_.what, use_.bought),
+            play,
             grievance: use_.grievance.map(|from| (FELT, SINCE + from)),
         };
         let now = SINCE + elapsed;
@@ -4722,11 +4752,18 @@ mod tests {
         let mut checked = 0_u64;
         for what in Use::ALL {
             let (lo, hi) = use_duration(what);
-            // Key ends on the 1400 ms frame grid: Homework's ½ (2800k),
-            // Pet's 7⁄10 (2000k), the channel's ⅖ (3500k) and ⅗
-            // (7000k), Crumple's ⅘ (1750k).
-            let on_grid =
-                (lo..=hi).filter(|l| [2800, 2000, 3500, 7000, 1750].iter().any(|m| l % m == 0));
+            // Where a key ends on the 1400 ms frame grid (Homework's ½,
+            // Pet's 7⁄10, the channel's ⅖ and ⅗, Crumple's ⅘...).
+            let scripts: &[ScriptId] = if what == Use::Watch {
+                &[ScriptId::Watch, ScriptId::Shopping]
+            } else {
+                &[what.script()]
+            };
+            let on_grid = (lo..=hi).filter(|&l| {
+                scripts
+                    .iter()
+                    .any(|id| a_key_ends_on_the_grid(id.keys(0), l))
+            });
             let lengths: Vec<u64> = (TRIAL_USE_MS.0..=TRIAL_USE_MS.1)
                 .chain((lo..=hi).step_by(97))
                 .chain([hi])
@@ -4743,11 +4780,7 @@ mod tests {
                         Some(_) => ScriptId::Shopping,
                         None => what.script(),
                     };
-                    let ends = own.keys(0).iter().map(|k| match k.span {
-                        script::Span::Ms(ms) => ms.min(length),
-                        script::Span::Upto(n, d) => length * n / d,
-                        script::Span::Rest => length,
-                    });
+                    let ends = own.keys(0).iter().map(|k| k.span.end(Some(length)));
                     let grid = (0..=length).step_by(USE_FRAME_MS as usize);
                     let tv = (0..=length)
                         .step_by(CHANNEL_FRAME_MS as usize)
@@ -4785,5 +4818,158 @@ mod tests {
             }
         }
         assert!(checked > 100_000, "{checked}");
+    }
+
+    /// Whether a key of `keys` ends on the frame grid strictly inside a
+    /// body `length` ms long (where a wakeup on the grid and at the key's
+    /// end coincide).
+    fn a_key_ends_on_the_grid(keys: &[script::Key], length: u64) -> bool {
+        keys.iter()
+            .map(|k| k.span.end(Some(length)))
+            .any(|end| end > 0 && end < length && end % USE_FRAME_MS == 0)
+    }
+
+    /// When a use from [`SINCE`] playing `play`, `length` ms in all,
+    /// should wake her, from the parts it plays in turn: on every frame
+    /// of each part (the prelude, the body, the coda), counted from that
+    /// part's start; as each of its keys ends (the part's end with its
+    /// last); as she starts and stops saying what's wrong with her home
+    /// (from `grievance` ms in); and at its end. Ascending, each once.
+    fn wakeups(play: Play, length: u64, grievance: Option<u64>) -> Vec<u64> {
+        let until = SINCE + length;
+        let start = play.body_start(SINCE);
+        let end = play.body_end(SINCE, until);
+        let parts = [
+            play.before
+                .map(|s| (s.splice.script().keys(s.branch), SINCE, start)),
+            Some((play.own.keys(play.branch), start, end)),
+            play.after
+                .map(|s| (s.splice.script().keys(s.branch), end, until)),
+        ];
+        let mut want: Vec<u64> = parts
+            .into_iter()
+            .flatten()
+            .flat_map(|(keys, from, to)| {
+                let frames = (1..)
+                    .map(move |k| from + k * USE_FRAME_MS)
+                    .take_while(move |&t| t < to);
+                let ends = keys.iter().map(move |k| from + k.span.end(Some(to - from)));
+                frames.chain(ends)
+            })
+            .chain(
+                grievance
+                    .into_iter()
+                    .flat_map(|g| [SINCE + g, SINCE + g + GRIEVANCE_MS]),
+            )
+            .chain([until])
+            .filter(|&t| t > SINCE && t <= until)
+            .collect();
+        want.sort_unstable();
+        want.dedup();
+        want
+    }
+
+    /// Keys change on time: a use wakes her on every frame of the part
+    /// playing (counted from its start), as each key ends and as a
+    /// grievance comes and goes, and at nothing else, each wakeup
+    /// strictly after the last; and how she looks, and what's on her
+    /// furniture (what's on TV aside, which moves at paint time), only
+    /// ever changes at a wakeup. Every use, the shopping channel too,
+    /// with no grievance, one on the frame grid and one off it, plain and
+    /// with every splice as a prelude, a coda or both (off the grid's
+    /// beat, so a part timed from the wrong start shows), at trial
+    /// lengths, through each use's lengths and where a key ends on the
+    /// frame grid.
+    #[test]
+    fn a_use_wakes_her_as_each_key_ends() {
+        let mut osaka = Osaka::standing_at(10, 10, 0, &mut Rng(1));
+        let splices: Vec<script::SpliceId> =
+            [script::SpliceId::TestSnack, script::SpliceId::TestPet]
+                .into_iter()
+                .chain(script::SpliceId::ALL)
+                .collect();
+        // Long enough to bob, and not a whole number of frames.
+        let spliced = |splice, len| script::Spliced {
+            splice,
+            len,
+            branch: 0,
+        };
+        let befores: Vec<_> = std::iter::once(None)
+            .chain(splices.iter().map(|&s| Some(spliced(s, 6123))))
+            .collect();
+        let afters: Vec<_> = std::iter::once(None)
+            .chain(splices.iter().map(|&s| Some(spliced(s, 6789))))
+            .collect();
+        let mut wrapped = 0;
+        for what in Use::ALL {
+            let (lo, hi) = use_duration(what);
+            let boughts: &[Option<Furniture>] = if what == Use::Watch {
+                &[None, Some(Furniture::Lamp)]
+            } else {
+                &[None]
+            };
+            for &bought in boughts {
+                let plain = Play::of(what, bought);
+                let keys = plain.own.keys(plain.branch);
+                let on_grid = (lo..=hi).find(|&l| a_key_ends_on_the_grid(keys, l));
+                let lengths: Vec<u64> = [TRIAL_USE_MS.0, TRIAL_USE_MS.1 - 1, lo, lo + 97, hi]
+                    .into_iter()
+                    .chain(on_grid)
+                    .collect();
+                for &length in &lengths {
+                    for &before in &befores {
+                        for &after in &afters {
+                            let play = Play {
+                                before,
+                                after,
+                                ..plain
+                            };
+                            // The body `length` long, the splices round it.
+                            let length =
+                                length + before.map_or(0, |s| s.len) + after.map_or(0, |s| s.len);
+                            wrapped += usize::from(before.is_some() || after.is_some());
+                            for grievance in [None, Some(USE_FRAME_MS), Some(USE_FRAME_MS + 333)] {
+                                let use_ = Played {
+                                    what,
+                                    sofa: false,
+                                    bought,
+                                    grievance,
+                                    length,
+                                };
+                                let at = format!(
+                                    "{what:?} bought {bought:?} before {before:?} after \
+                                     {after:?} grievance {grievance:?}: {length}"
+                                );
+                                played_as(&mut osaka, use_, play, 0);
+                                let until = SINCE + length;
+                                let mut woke = Vec::new();
+                                let mut now = SINCE;
+                                while now < until {
+                                    let due = osaka.first_due(now);
+                                    assert!(due > now, "{at}: due {due} at {now}");
+                                    woke.push(due);
+                                    now = due;
+                                }
+                                assert_eq!(woke, wakeups(play, length, grievance), "{at}");
+                                // Between wakeups, nothing she shows changes.
+                                let mut shown = |t: u64| {
+                                    let (look, prop) = played_as(&mut osaka, use_, play, t - SINCE);
+                                    (look, prop.map(|p| p.framed(0)))
+                                };
+                                let times = (SINCE..until)
+                                    .step_by(37)
+                                    .chain(woke.iter().map(|&w| w - 1));
+                                for t in times {
+                                    let last = woke.iter().rev().find(|&&w| w <= t).copied();
+                                    let last = last.unwrap_or(SINCE);
+                                    assert_eq!(shown(t), shown(last), "{at}: at {t}, woke {last}");
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(wrapped > 100, "{wrapped}");
     }
 }

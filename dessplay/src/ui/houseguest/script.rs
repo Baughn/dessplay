@@ -26,7 +26,7 @@ pub(super) enum Span {
 impl Span {
     /// Where this span ends, in a body `body` ms long (`None`: a body
     /// with no set length, where only [`Span::Ms`] ends).
-    fn end(self, body: Option<u64>) -> u64 {
+    pub fn end(self, body: Option<u64>) -> u64 {
         match (self, body) {
             (Self::Ms(ms), Some(body)) => ms.min(body),
             (Self::Ms(ms), None) => ms,
@@ -46,8 +46,11 @@ pub(super) enum Posed {
     /// Held still.
     Still(Pose),
     /// Bobbing between frames 0 and 1 of a pose every so many ms,
-    /// counted from the start of the body (not of the key), so a bob
-    /// running across keys keeps its beat.
+    /// counted from the start of the part it plays in (the prelude, the
+    /// body or the coda; not of the key), so a bob running across keys
+    /// keeps its beat. The period is a whole number of frames
+    /// ([`USE_FRAME_MS`]), so her wakeups on the frame grid catch every
+    /// bob.
     Bob(fn(u8) -> Pose, u64),
 }
 
@@ -330,13 +333,37 @@ impl Play {
             .max(self.body_start(since))
     }
 
-    /// The key playing at `now` in a use from `since` to `until`, and
-    /// how far `now` is into the part it plays in (the prelude, the
-    /// body or the coda).
-    pub fn key(&self, since: u64, until: u64, now: u64) -> Option<(&'static Key, u64)> {
+    /// The first time after `now` that a key of a use from `since` to
+    /// `until` ends (so the next one starts): in its prelude, its body
+    /// or its coda, each part's last key ending with the part. `None`
+    /// once every key is over.
+    pub fn next_end(&self, since: u64, until: u64, now: u64) -> Option<u64> {
         let start = self.body_start(since);
         let end = self.body_end(since, until);
-        let (keys, from, body) = match (self.before, self.after) {
+        let parts = [
+            self.before.map(|s| (s.keys(), since)),
+            Some(((self.own.keys(self.branch), Some(end - start)), start)),
+            self.after.map(|s| (s.keys(), end)),
+        ];
+        parts
+            .into_iter()
+            .flatten()
+            .flat_map(|((keys, body), from)| {
+                keys.iter()
+                    .map(move |key| from.saturating_add(key.span.end(body)))
+            })
+            .filter(|&end| end > now)
+            .min()
+    }
+
+    /// The part of a use from `since` to `until` playing at `now` (the
+    /// prelude, the body or the coda): its keys, when it starts, and how
+    /// long it is. Everything timed within a part (its keys, a bob, what's
+    /// on TV, the frame grid she wakes on) counts from its start.
+    fn part(&self, since: u64, until: u64, now: u64) -> (&'static [Key], u64, Option<u64>) {
+        let start = self.body_start(since);
+        let end = self.body_end(since, until);
+        match (self.before, self.after) {
             (Some(before), _) if now < start => {
                 let (keys, body) = before.keys();
                 (keys, since, body)
@@ -346,9 +373,26 @@ impl Play {
                 (keys, end, body)
             }
             _ => (self.own.keys(self.branch), start, Some(end - start)),
-        };
+        }
+    }
+
+    /// The key playing at `now` in a use from `since` to `until`, and
+    /// how far `now` is into the part it plays in (the prelude, the
+    /// body or the coda).
+    pub fn key(&self, since: u64, until: u64, now: u64) -> Option<(&'static Key, u64)> {
+        let (keys, from, body) = self.part(since, until, now);
         let elapsed = now.saturating_sub(from);
         key_at(keys, elapsed, body).map(|(_, key, _)| (key, elapsed))
+    }
+
+    /// The next frame after `now`, `period` ms apart, of the part of a
+    /// use from `since` to `until` playing at `now`: counted from that
+    /// part's start, as [`Play::key`] times it (so a bob, or what's on
+    /// TV, in a prelude or a coda moves on a frame too).
+    pub fn next_frame(&self, since: u64, until: u64, now: u64, period: u64) -> u64 {
+        let (_, from, _) = self.part(since, until, now);
+        let period = period.max(1);
+        from + (now.saturating_sub(from) / period + 1) * period
     }
 }
 
@@ -670,6 +714,23 @@ mod tests {
         }
     }
 
+    /// Every bob's period is a whole number of frames, so her wakeups on
+    /// the frame grid (counted from the same start) catch every change of
+    /// a bob: none is left frozen between wakeups, or shown late.
+    #[test]
+    fn every_bob_moves_on_the_frame_grid() {
+        for id in ScriptId::ALL {
+            for key in id.branches().iter().flat_map(|keys| keys.iter()) {
+                if let Posed::Bob(_, period) = key.pose {
+                    assert!(
+                        period > 0 && period % USE_FRAME_MS == 0,
+                        "{id:?}: a bob every {period} ms"
+                    );
+                }
+            }
+        }
+    }
+
     /// The player: half-open keys, cumulative ends clamped to the body,
     /// and the last key held past it.
     #[test]
@@ -775,6 +836,50 @@ mod tests {
         assert_eq!((which(key), elapsed), (which(&snack[1]), 5999));
         let (key, elapsed) = crowded.key(SINCE, UNTIL, start).unwrap();
         assert_eq!((which(key), elapsed), (which(&pet[0]), 0));
+    }
+
+    /// The next key end is the first one strictly after `now` (at a key's
+    /// end, the one after it), through the prelude, the body and the
+    /// coda in turn, and none once every key is over.
+    #[test]
+    fn the_next_key_end_is_strictly_ahead() {
+        const SINCE: u64 = 10_000;
+        const UNTIL: u64 = SINCE + 10_000;
+        let next = |play: Play, now| play.next_end(SINCE, UNTIL, now);
+        // Homework, 10 s: ends at ½, ¾ and the end.
+        let plain = Play::plain(ScriptId::Homework);
+        assert_eq!(next(plain, 0), Some(SINCE + 5000));
+        assert_eq!(next(plain, SINCE), Some(SINCE + 5000));
+        assert_eq!(next(plain, SINCE + 4999), Some(SINCE + 5000));
+        assert_eq!(next(plain, SINCE + 5000), Some(SINCE + 7500));
+        assert_eq!(next(plain, SINCE + 7500), Some(UNTIL));
+        assert_eq!(next(plain, UNTIL - 1), Some(UNTIL));
+        assert_eq!(next(plain, UNTIL), None);
+        // A snack's look in the fridge before, a petting after: its keys
+        // end where they would alone, from where each part starts.
+        let wrapped = Play {
+            before: Some(Spliced {
+                splice: SpliceId::TestSnack,
+                len: 2000,
+                branch: 0,
+            }),
+            after: Some(Spliced {
+                splice: SpliceId::TestPet,
+                len: 3000,
+                branch: 0,
+            }),
+            ..plain
+        };
+        let mut ends = Vec::new();
+        let mut now = SINCE;
+        while let Some(end) = next(wrapped, now) {
+            assert!(end > now, "{end} after {now}");
+            ends.push(end - SINCE);
+            now = end;
+        }
+        // Snack: 1500, the prelude's end; Homework over a 5 s body: ½,
+        // ¾, its end; Pet: 7/10 of 3 s, the coda's end.
+        assert_eq!(ends, [1500, 2000, 4500, 5750, 7000, 9100, 10_000]);
     }
 
     /// A plain use of anything but a watch plays its own script; a watch
