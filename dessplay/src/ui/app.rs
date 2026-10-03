@@ -448,6 +448,8 @@ pub struct Ui {
     /// merged into the chat log by timestamp. Never synced — each client
     /// runs its own bridge.
     irc_log: Vec<props::ChatLine>,
+    /// IRC lines received this session (the log keeps only the latest).
+    irc_received: usize,
     /// Image URLs newly seen in chat, awaiting a fetch dispatch. The
     /// shell drains this with [`Ui::take_image_fetches`] after every
     /// input and tick (`Ui` itself can't reach the network).
@@ -548,6 +550,7 @@ impl Ui {
             nyaa_history: Vec::new(),
             system_log: Vec::new(),
             irc_log: Vec::new(),
+            irc_received: 0,
             pending_image_fetches: Vec::new(),
             snapshot: UiSnapshot::default(),
             franchise_cache: franchise::FranchiseCache::default(),
@@ -583,7 +586,7 @@ impl Ui {
     /// (proposal 2026-09-28-houseguest). `images` are the renderer's
     /// protocol-image rectangles for that frame.
     pub fn idle_view(&self, images: &[Rect]) -> super::houseguest::IdleView {
-        use super::houseguest::{Busy, ChatMark, IdleView, Nook, grow};
+        use super::houseguest::{Busy, ChatMark, IdleView, Nook, asks, grow};
         let view = &self.snapshot.view;
         // The video actually running, as the status bar shows it: play
         // pressed or a ready mark latches the intent at once, but nothing
@@ -642,7 +645,9 @@ impl Ui {
             chat_mark: ChatMark {
                 synced: view.chat.len(),
                 newest: view.chat.last().map(|message| message.timestamp.0),
-                irc: self.irc_log.len(),
+                synced_asks: view.chat.last().is_some_and(|message| asks(&message.text)),
+                irc: self.irc_received,
+                irc_asks: self.irc_log.last().is_some_and(|line| asks(&line.text)),
             },
             chat: self.panes.chat,
             scrollback,
@@ -860,6 +865,9 @@ impl Ui {
     pub fn push_irc(&mut self, timestamp: u64, sender: String, text: String, action: bool) {
         self.irc_log
             .push(props::irc_line(timestamp, sender, text, action));
+        // Counted apart from the log, which keeps only the latest: the
+        // houseguest tells a new line by the count rising.
+        self.irc_received += 1;
         while self.irc_log.len() > 100 {
             self.irc_log.remove(0);
         }
@@ -5363,6 +5371,52 @@ mod tests {
         let resident = ui(false, true).idle_view(&[]);
         assert_eq!(resident.busy, Some(Busy::Playing));
         assert!(resident.open(), "a resident stays");
+    }
+
+    /// The houseguest hears a line ask her something when its source's
+    /// newest line ends in "?" (trailing whitespace aside), each source
+    /// on its own; and every IRC line arriving counts as one, the log
+    /// full or not.
+    #[test]
+    fn the_houseguest_hears_a_question_from_each_source() {
+        use crate::ui::houseguest::asks;
+        assert!(asks("what is that?"));
+        assert!(asks("really?  \n"));
+        assert!(!asks("what?!"));
+        assert!(!asks("? no"));
+        assert!(!asks(""));
+        let view = |texts: &[&str]| StateView {
+            chat: texts
+                .iter()
+                .enumerate()
+                .map(|(i, text)| dessplay_core::types::ChatMessage {
+                    timestamp: SharedTimestamp(1 + i as u64),
+                    sender: UserId::new("kim"),
+                    text: (*text).to_owned(),
+                })
+                .collect(),
+            ..Default::default()
+        };
+        let mark = ui_with_view(view(&["hi", "anyone there? "]))
+            .idle_view(&[])
+            .chat_mark;
+        assert!(mark.synced_asks && !mark.irc_asks, "{mark:?}");
+        let mark = ui_with_view(view(&["anyone there?", "no"]))
+            .idle_view(&[])
+            .chat_mark;
+        assert!(!mark.synced_asks, "only the newest line counts");
+        let mut ui = ui_with_view(view(&["anyone there?"]));
+        for i in 0..150u64 {
+            let before = ui.idle_view(&[]).chat_mark;
+            let question = i % 3 == 0;
+            let text = format!("line {i}{}", if question { "?" } else { "" });
+            ui.push_irc(i, "bob".into(), text, false);
+            let after = ui.idle_view(&[]).chat_mark;
+            assert_eq!(after.irc, before.irc + 1, "line {i}: counted");
+            assert!(after.synced_asks, "line {i}");
+            assert_eq!(after.irc_asks, question, "line {i}");
+            assert_eq!(after.asks_since(&before), question, "line {i}");
+        }
     }
 
     #[test]

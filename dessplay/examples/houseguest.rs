@@ -5,8 +5,9 @@
 //! cargo run -p dessplay --example houseguest [seed]
 //! ```
 //!
-//! ←/→ pick a scene · Enter play it · m a chat message arrives ·
-//! f give her the next piece of furniture · x show why she does what she
+//! ←/→ pick a scene · Enter play it · m a chat message arrives · ? a
+//! chat message asking her something arrives (as the sata andagi plays,
+//! she answers it) · f give her the next piece of furniture · x show why she does what she
 //! does · v her next mood (lazy, busy, dreamy) · g goodbye · n new seed ·
 //! [ ] slower / faster · 1–6 make her sleepy,
 //! restless, keen to tidy, mischievous, hungry, or keen to put right what
@@ -87,6 +88,8 @@ fn run(seed: &mut u64, picker: ratatui_image::picker::Picker) -> color_eyre::Res
 
     let mut speed = 3; // 1×
     let mut chats = 0;
+    // The newest of those asks her something.
+    let mut asked = false;
     let mut explain = false;
     // Her clock runs at the chosen speed.
     let mut now_ms = 0.0f64;
@@ -101,6 +104,9 @@ fn run(seed: &mut u64, picker: ratatui_image::picker::Picker) -> color_eyre::Res
             ui.draw_with_renderer(frame, &mut renderer);
             let mut view = ui.idle_view(renderer.image_regions());
             view.chat_mark.synced += chats;
+            if chats > 0 {
+                view.chat_mark.synced_asks = asked;
+            }
             let buf = frame.buffer_mut();
             guest.paint(buf, &view, now);
             // The menu goes on the keybinding bar: she never touches it.
@@ -118,7 +124,7 @@ fn run(seed: &mut u64, picker: ratatui_image::picker::Picker) -> color_eyre::Res
                 .playing(now)
                 .map_or_else(String::new, |p| format!(" │ ▶ {p}"));
             let menu = format!(
-                " ◀ {} ▶  Enter play · f furnish · m chat · x why · v mood · g bye · n seed {} · [ ] {}× · 1-6 needs · q │ {} │ {}{}",
+                " ◀ {} ▶  Enter play · f furnish · m chat · ? ask · x why · v mood · g bye · n seed {} · [ ] {}× · 1-6 needs · q │ {} │ {}{}",
                 scene.name(),
                 seed,
                 SPEEDS[speed],
@@ -174,7 +180,14 @@ fn run(seed: &mut u64, picker: ratatui_image::picker::Picker) -> color_eyre::Res
             KeyCode::Left => selected = (selected + Scene::ALL.len() - 1) % Scene::ALL.len(),
             KeyCode::Right => selected = (selected + 1) % Scene::ALL.len(),
             KeyCode::Enter | KeyCode::Char(' ') => guest.cue(Scene::ALL[selected]),
-            KeyCode::Char('m') => chats += 1,
+            KeyCode::Char('m') => {
+                chats += 1;
+                asked = false;
+            }
+            KeyCode::Char('?') => {
+                chats += 1;
+                asked = true;
+            }
             KeyCode::Char('x') => explain = !explain,
             KeyCode::Char('v') => guest.next_mood(),
             KeyCode::Char('f') => {

@@ -13,6 +13,8 @@ const PARTS: &str = include_str!("art/osaka.svg");
 const PROPS: &str = include_str!("art/props.svg");
 const DOOR: &str = include_str!("art/door.svg");
 const DELIVERY: &str = include_str!("art/delivery.svg");
+/// A sata andagi in her hand, whole and bitten (see [`Rig::eating_food`]).
+const ANDAGI: [&str; 2] = ["andagi", "andagi-bitten"];
 /// Prop units per cell (her scale at a 9 × 19 px cell), so her
 /// furniture shares her line weights.
 pub(super) const CELL_UNITS: (f32, f32) = (20.0, 42.0);
@@ -283,6 +285,10 @@ impl Rig {
             Pose::Carry(frame) => Self::carrying(frame, expression),
             Pose::Read(frame) => Self::reading(frame, expression),
             Pose::Eat(frame) => Self::eating(frame, expression),
+            // Once bitten, it stays bitten: chewing, she holds what's
+            // left of it where she held it whole.
+            Pose::EatAndagi(frame @ 0..=1) => Self::eating_food(frame, ANDAGI, expression),
+            Pose::EatAndagi(_) => Self::eating_food(0, [ANDAGI[1]; 2], expression),
             Pose::Pet(frame) => Self::petting(frame, expression),
             Pose::Chopsticks(frame) => Self::chopsticks(frame, expression),
             Pose::Gaze => Self {
@@ -1265,13 +1271,12 @@ mod tests {
             ("chopsticks", Rig::chopsticks(0, Expression::Vacant)),
             ("chopsticks", Rig::chopsticks(1, Expression::Happy)),
             ("chopsticks", Rig::chopsticks(2, Expression::Droop)),
-            ("eat andagi", Rig::eating_food(0, ANDAGI, Expression::Happy)),
-            ("eat andagi", Rig::eating_food(1, ANDAGI, Expression::Happy)),
+            ("eat andagi", Rig::for_pose(Pose::EatAndagi(0), Face::Happy)),
+            ("eat andagi", Rig::for_pose(Pose::EatAndagi(1), Face::Happy)),
+            ("eat andagi", Rig::for_pose(Pose::EatAndagi(2), Face::Happy)),
         ]);
         out
     }
-
-    const ANDAGI: [&str; 2] = ["andagi", "andagi-bitten"];
 
     /// The chopsticks, the droop face and the sata andagi for review,
     /// beside the art they join: `HOUSEGUEST_VIGNETTES=/dir cargo test
@@ -1456,6 +1461,35 @@ mod tests {
         render_sheet(3)
             .save(format!("{dir}/vignettes-3x.png"))
             .unwrap();
+    }
+
+    /// Lint: no two poses are drawn alike (at any one face), so a pose
+    /// wired to another's art (the andagi drawn as the melon bread)
+    /// can't pass for its own.
+    #[test]
+    fn every_pose_is_drawn_its_own_way() {
+        use super::super::sprite::ALL;
+        for face in [Face::Vacant, Face::Happy] {
+            for (i, &a) in ALL.iter().enumerate() {
+                for &b in &ALL[i + 1..] {
+                    // Frames line art draws as one: her nap (she
+                    // breathes in ASCII only), and writing (the pen moves
+                    // in ASCII only).
+                    let shared = matches!(
+                        (a, b),
+                        (Pose::Nap(_), Pose::Nap(_))
+                            | (Pose::Homework(0 | 1), Pose::Homework(0 | 1))
+                    );
+                    if !shared {
+                        assert_ne!(
+                            Rig::for_pose(a, face),
+                            Rig::for_pose(b, face),
+                            "{a:?} and {b:?} ({face:?})"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]

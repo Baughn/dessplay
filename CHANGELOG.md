@@ -66,6 +66,16 @@ Add new days at the top. Add new entries at the bottom of existing days.
 - Changed: Getting into bed, the houseguest lies a moment, thoughtful,
   before she drops off. With line-art graphics, her lamp stays on for
   that moment and goes off as she falls asleep.
+- Added: Before her homework, the houseguest sometimes splits a pair of
+  disposable chopsticks. A clean split earns a twinkle and a giggle; a
+  bad one leaves her glum: "Hold 'em by the ends!"
+- Added: After a snack, the houseguest sometimes finds a sata andagi in
+  the fridge. She holds it up and says "Sata andagi." a few times,
+  happier each time, then eats it. Ask her something in chat
+  meanwhile (end it with "?") and she turns to the chat and answers
+  "Sata andagi." without putting it down.
+- Fixed: The houseguest no longer stops noticing IRC lines after the
+  first hundred in a session.
 
 ## 2026-10-02
 

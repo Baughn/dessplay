@@ -10,7 +10,7 @@ use super::mind::{self, Beat, Bind, Ctx, Heading, Here, Lines, Loss, PoolId, RID
 use super::room::{Furniture, MadeId, PieceRef, Seat, Use};
 use super::rules::{Grievance, Placement, Repair, TIE_CELLS, Trials};
 use super::scenes::{Build, Job, JobRef, LayerOp, Lift, Pull, SetDown, Side, Swap};
-use super::script::{self, CHANNEL_FRAME_MS, Cue, Play, Prop, ScriptId, SpliceCtx, SpliceId};
+use super::script::{self, CHANNEL_FRAME_MS, Chat, Cue, Play, Prop, ScriptId, SpliceCtx, SpliceId};
 use super::sprite::{self, Face, Facing, HEIGHT, Pose, SpriteCell};
 use super::terrain::{Link, Platform, Route, Terrain};
 use tuirealm::ratatui::layout::Rect;
@@ -1033,6 +1033,8 @@ pub(super) enum Bubble {
     Ooh,
     Achoo,
     Chu,
+    /// A twinkle: something came out just right.
+    Sparkle,
     /// Something she says (≤ 24 characters).
     Say(&'static str),
 }
@@ -1051,6 +1053,7 @@ impl Bubble {
             Self::Ooh => "ooh",
             Self::Achoo => "a...",
             Self::Chu => "chu!",
+            Self::Sparkle => "*'*",
             Self::Say(text) => text,
         }
     }
@@ -1142,7 +1145,16 @@ pub(super) struct Osaka {
     /// The splice rows a use may be wrapped in: [`SpliceId::ALL`], or a
     /// test's own.
     #[cfg(test)]
-    splice_rows: &'static [SpliceId],
+    pub(super) splice_rows: &'static [SpliceId],
+    /// Every splice row that may wrap a use she starts does (a test's
+    /// busy harness, with her vignettes as often as they may).
+    #[cfg(test)]
+    pub(super) splices_sure: bool,
+    /// The use she answered the chat in as a splice played on (its
+    /// seat, start and end), and until when she beams (Happy) saying so
+    /// (see [`Osaka::look`]). Tied to that use: any other act has its
+    /// own look, however soon after.
+    answering: Option<((Seat, u64, u64), u64)>,
     /// What she chose and hasn't done yet: it eases her needs by how
     /// much of it she does (see [`Osaka::credit_done`]).
     credit: Option<Want>,
@@ -1231,6 +1243,9 @@ impl Osaka {
             cued: None,
             #[cfg(test)]
             splice_rows: &SpliceId::ALL,
+            #[cfg(test)]
+            splices_sure: false,
+            answering: None,
             credit: None,
             beauty_here: 0.0,
             owed: Vec::new(),
@@ -1429,6 +1444,19 @@ impl Osaka {
         #[cfg(not(test))]
         {
             &SpliceId::ALL
+        }
+    }
+
+    /// Whether every splice row that may wrap a use she starts does (only
+    /// ever in a test).
+    fn splices_sure(&self) -> bool {
+        #[cfg(test)]
+        {
+            self.splices_sure
+        }
+        #[cfg(not(test))]
+        {
+            false
         }
     }
 
@@ -2338,7 +2366,7 @@ impl Osaka {
                 // it would be without them; it starts after the prelude,
                 // and everything in it is timed from there.
                 let forced = match cued {
-                    Some(Cue::Splice(id)) => Some(id),
+                    Some(Cue::Splice(id, branch)) => Some((id, branch)),
                     Some(Cue::Script(_)) | None => None,
                 };
                 let ctx = SpliceCtx {
@@ -2350,6 +2378,7 @@ impl Osaka {
                     self.splice_rows(),
                     &ctx,
                     forced,
+                    self.splices_sure(),
                     self.whims,
                     &mut self.lines,
                     at,
@@ -2382,7 +2411,7 @@ impl Osaka {
                             true
                         }
                         Some(Cue::Script(_)) => false,
-                        Some(Cue::Splice(_)) | None => {
+                        Some(Cue::Splice(..)) | None => {
                             self.whims.chance("surf", 0, SURF.0, SURF.1)
                                 && self.lines.try_play(ScriptId::Surf, at)
                         }
@@ -3811,7 +3840,12 @@ impl Osaka {
     /// doesn't stop; she chooses at once, which takes her on to somewhere
     /// calm, and watches it from there. (Stopping for each line of a
     /// lively chat would keep her over text for as long as it went on.)
-    pub fn look(&mut self, now: u64, chat_x: i32, terrain: &Terrain) {
+    /// A line that `asks` her something, arriving as a splice that
+    /// answers plays (the andagi), gets its answer instead: she turns to
+    /// the chat and says it, beaming, and plays on, the splice neither
+    /// stopped nor cut short (and she watches the chat a while after it,
+    /// as after any line).
+    pub fn look(&mut self, now: u64, chat_x: i32, asks: bool, terrain: &Terrain) {
         self.watch_until = now + WATCH_MS;
         // Wherever she is on her way, chat interrupts the trip: where she
         // was heading competes again once she's watched it.
@@ -3836,6 +3870,12 @@ impl Osaka {
             return; // She looks once she has landed (decide watches).
         }
         self.facing = toward(self.x, chat_x);
+        if asks && let Some(answer) = self.answer(now) {
+            tracing::info!(answer, "houseguest: answers the chat, playing on");
+            self.say(answer, now);
+            self.answering = self.use_span().map(|span| (span, now + speech_ms(answer)));
+            return;
+        }
         if terrain.restful(self.x, self.y) {
             self.interrupt(Cause::Chat, now);
         } else {
@@ -3845,6 +3885,26 @@ impl Osaka {
                 "houseguest: chat over text; on somewhere calm"
             );
             self.interrupt(Cause::ChatPassing, now);
+        }
+    }
+
+    /// What she'd answer a line asking her something at `now`: the
+    /// answer of the splice playing then, if it has one.
+    fn answer(&self, now: u64) -> Option<&'static str> {
+        let Act::Use {
+            since, until, play, ..
+        } = self.act
+        else {
+            return None;
+        };
+        match play
+            .spliced_at(since, until, now)?
+            .splice
+            .script()
+            .on_chat()
+        {
+            Chat::Answer(answer) => Some(answer),
+            Chat::Look => None,
         }
     }
 
@@ -4360,6 +4420,11 @@ impl Osaka {
                     .map_or((host, Face::Vacant, None), |(key, elapsed)| {
                         key.look(elapsed, host, &play)
                     });
+                // Answering the chat, she beams.
+                let answering = self
+                    .answering
+                    .is_some_and(|(span, till)| span == (seat, since, until) && now < till);
+                let face = if answering { Face::Happy } else { face };
                 // Something isn't right: she cranes round at it, at what
                 // she's doing, and says so.
                 match grievance.and_then(|(g, from)| Some((g.rule()?.grievance, from))) {
@@ -5241,7 +5306,8 @@ mod tests {
 
     /// Her, starting a use of `seat` at `at` with `chances` (with `cue`
     /// cued, saying something till `talking` if set), from `rng`'s state:
-    /// her after, and the stream's state after.
+    /// her after, and the stream's state after. No splice row is rolled:
+    /// only what's cued wraps it.
     fn started(
         seat: Seat,
         at: u64,
@@ -5252,6 +5318,7 @@ mod tests {
     ) -> (Osaka, u64) {
         let mut rng = Rng(seed);
         let mut osaka = Osaka::standing_at(10, 10, 0, &mut rng);
+        osaka.splice_rows = &[];
         osaka.whims = Whims(seed ^ 0x5eed);
         if let Some(until) = talking {
             osaka.speech = Some((OK, until));
@@ -5305,10 +5372,12 @@ mod tests {
         /// the same on her furniture, wake her the same and credit her the
         /// same share, through the body, timed from its start. Every use a
         /// splice wraps, on a sofa or not, with a grievance or not, quiet
-        /// or (before a coda) talking, with the shopping channel on or not.
+        /// or (before a coda) talking, with the shopping channel on or not;
+        /// the tests' splices, and the rows.
         #[test]
         fn a_splice_never_changes_what_it_wraps(
             seed in proptest::prelude::any::<u64>(),
+            row in proptest::prelude::any::<bool>(),
             what in 0usize..8,
             sofa in proptest::prelude::any::<bool>(),
             grieve in proptest::prelude::any::<bool>(),
@@ -5317,7 +5386,12 @@ mod tests {
             coda in proptest::prelude::any::<bool>(),
             at in 1000u64..100_000,
         ) {
-            let splice = if coda { SpliceId::TestSleep } else { SpliceId::TestSnack };
+            let splice = match (coda, row) {
+                (true, false) => SpliceId::TestSleep,
+                (false, false) => SpliceId::TestSnack,
+                (true, true) => SpliceId::Andagi,
+                (false, true) => SpliceId::Chopsticks,
+            };
             let around = splice.row().around;
             let what = around[what % around.len()];
             let item = if sofa { Furniture::Sofa } else { Furniture::Tv };
@@ -5333,7 +5407,7 @@ mod tests {
             let talking = talking.filter(|_| coda).map(|t| at + t);
             let (mut plain, plain_rng) = started(seat, at, &chances, None, talking, seed);
             let (mut wrapped, wrapped_rng) =
-                started(seat, at, &chances, Some(Cue::Splice(splice)), talking, seed);
+                started(seat, at, &chances, Some(Cue::Splice(splice, None)), talking, seed);
             proptest::prop_assert_eq!(plain_rng, wrapped_rng, "the body's stream");
             let (p_since, p_until, p_whole, p_play) = begun(&plain);
             let (w_since, w_until, w_whole, w_play) = begun(&wrapped);
@@ -5406,12 +5480,15 @@ mod tests {
     /// a piece she's trying where it stands is all it is.
     #[test]
     fn a_trial_sit_is_never_spliced() {
-        for splice in [SpliceId::TestSnack, SpliceId::TestSleep] {
+        for splice in [SpliceId::TestSnack, SpliceId::TestSleep]
+            .into_iter()
+            .chain(SpliceId::ALL)
+        {
             for &what in splice.row().around {
                 let mut rng = Rng(3);
                 let mut osaka = Osaka::standing_at(10, 10, 0, &mut rng);
                 osaka.episode = Some(trial_episode());
-                osaka.cue(Some(Cue::Splice(splice)));
+                osaka.cue(Some(Cue::Splice(splice, None)));
                 osaka.start_job(
                     Job::Use(seat_for(what, Furniture::Sofa)),
                     1000,
@@ -5432,13 +5509,16 @@ mod tests {
     /// crumpling (what comes of those happens as the use ends).
     #[test]
     fn a_cued_splice_wraps_only_what_it_may() {
-        for splice in [SpliceId::TestSnack, SpliceId::TestSleep] {
+        for splice in [SpliceId::TestSnack, SpliceId::TestSleep]
+            .into_iter()
+            .chain(SpliceId::ALL)
+        {
             for what in Use::ALL {
                 let (osaka, _) = started(
                     seat_for(what, Furniture::Sofa),
                     1000,
                     &Chances::default(),
-                    Some(Cue::Splice(splice)),
+                    Some(Cue::Splice(splice, None)),
                     None,
                     9,
                 );
@@ -5447,6 +5527,129 @@ mod tests {
                 let may = splice.row().around.contains(&what);
                 assert_eq!(wrapped, may.then_some(splice), "{splice:?} {what:?}");
                 assert!(!may || !matches!(what, Use::Unpack | Use::Crumple));
+            }
+        }
+    }
+
+    /// Asked something as the andagi plays after her snack, she turns
+    /// to the chat and answers "Sata andagi.", beaming while she says it,
+    /// and plays on: the use neither stopped nor cut short, the coda's
+    /// own look back once she's said it. Told anything else then, or
+    /// asked anything in the snack itself, she stops and looks. Either
+    /// way she watches the chat a while, and mischief she owes goes back
+    /// at once.
+    #[test]
+    fn asked_as_the_andagi_plays_she_answers_and_plays_on() {
+        use super::super::scenes::LayerOp;
+        use super::super::script::{ANDAGI_FOUND_MS, SATA_ANDAGI};
+        use tuirealm::ratatui::buffer::Buffer;
+        use tuirealm::ratatui::layout::Rect;
+        let terrain = Terrain::read(&Buffer::empty(Rect::new(0, 0, 40, 20)), &[], false);
+        let seat = seat_for(Use::Snack, Furniture::Fridge);
+        for asks in [false, true] {
+            for in_coda in [false, true] {
+                let case = format!("asks {asks}, in the coda {in_coda}");
+                let (mut osaka, _) = started(
+                    seat,
+                    1000,
+                    &Chances::default(),
+                    Some(Cue::Splice(SpliceId::Andagi, Some(0))),
+                    None,
+                    5,
+                );
+                let owed = LayerOp::Pull {
+                    row: 3,
+                    cells: vec![4],
+                    offset: 1,
+                };
+                osaka.pending.push((900_000, owed));
+                let (_, since, until) = osaka.use_span().unwrap();
+                let play = begun(&osaka).3;
+                let end = play.body_end(since, until);
+                assert!(end < until, "a coda");
+                // In the coda: the first "Sata andagi." (blank), half
+                // a second in.
+                let now = if in_coda {
+                    end + ANDAGI_FOUND_MS + 500
+                } else {
+                    since + 500
+                };
+                assert_eq!(osaka.facing, Facing::Left, "{case}");
+                osaka.look(now, 30, asks, &terrain);
+                assert_eq!(osaka.facing, Facing::Right, "{case}: turned to the chat");
+                assert_eq!(osaka.watch_until, now + WATCH_MS, "{case}");
+                assert!(
+                    osaka.pending.iter().all(|&(due, _)| due == now),
+                    "{case}: the mischief goes back"
+                );
+                if !(asks && in_coda) {
+                    assert!(!matches!(osaka.act, Act::Use { .. }), "{case}: stopped");
+                    continue;
+                }
+                assert_eq!(osaka.use_span(), Some((seat, since, until)), "{case}");
+                let said = now + speech_ms(SATA_ANDAGI);
+                assert_eq!(
+                    osaka.appearance(now),
+                    (
+                        Pose::EatAndagi(0),
+                        Face::Happy,
+                        Some(Bubble::Say(SATA_ANDAGI))
+                    ),
+                    "{case}"
+                );
+                assert_eq!(osaka.appearance(said - 1).1, Face::Happy, "{case}");
+                // Said: the coda's own look again (its quiet beat).
+                assert_eq!(
+                    osaka.appearance(said),
+                    (Pose::EatAndagi(0), Face::Vacant, None),
+                    "{case}"
+                );
+                assert!(
+                    matches!(osaka.appearance(until - 1).0, Pose::EatAndagi(_)),
+                    "{case}: eating it at the end"
+                );
+                // Asked again as she finishes it, then on to her
+                // homework while she'd still be saying so: the homework
+                // has its own face, the beaming left with the andagi.
+                let late = until - 500;
+                osaka.look(late, 30, true, &terrain);
+                assert_eq!(osaka.use_span(), Some((seat, since, until)), "{case}");
+                assert!(late + speech_ms(SATA_ANDAGI) > until + 100);
+                let homework = seat_for(Use::Homework, Furniture::Desk);
+                osaka.start_job(Job::Use(homework), until, &Chances::default(), &mut Rng(1));
+                let (.., play) = begun(&osaka);
+                assert_eq!((play.own, play.before), (ScriptId::Homework, None));
+                assert_eq!(osaka.appearance(until + 100).1, Face::Vacant, "{case}");
+            }
+        }
+    }
+
+    /// Cued on a branch, a splice plays that branch, at its length,
+    /// whatever her whims would have drawn.
+    #[test]
+    fn a_cued_branch_is_the_branch_played() {
+        for splice in SpliceId::ALL {
+            let row = splice.row();
+            let what = row.around[0];
+            for (branch, &len) in row.lens.iter().enumerate() {
+                let branch = u8::try_from(branch).unwrap();
+                for seed in 0..16 {
+                    let (osaka, _) = started(
+                        seat_for(what, Furniture::Sofa),
+                        1000,
+                        &Chances::default(),
+                        Some(Cue::Splice(splice, Some(branch))),
+                        None,
+                        seed,
+                    );
+                    let (.., play) = begun(&osaka);
+                    let spliced = play.before.or(play.after).unwrap();
+                    assert_eq!(
+                        (spliced.splice, spliced.branch, spliced.len),
+                        (splice, branch, len),
+                        "seed {seed}"
+                    );
+                }
             }
         }
     }
@@ -5479,7 +5682,7 @@ mod tests {
             );
             begun(osaka).3
         };
-        let splice = Cue::Splice(SpliceId::TestSnack);
+        let splice = Cue::Splice(SpliceId::TestSnack, None);
         osaka.cue(Some(splice));
         for (what, trying) in [(Use::Unpack, false), (Use::Homework, true)] {
             let play = start(&mut osaka, what, trying, &plain);
@@ -5552,7 +5755,7 @@ mod tests {
     #[test]
     fn a_cued_prelude_hushes_her() {
         let seat = seat_for(Use::Homework, Furniture::Sofa);
-        let cue = Some(Cue::Splice(SpliceId::TestBedtime));
+        let cue = Some(Cue::Splice(SpliceId::TestBedtime, None));
         let chances = Chances::default();
         for seed in 0..16 {
             let (quiet, _) = started(seat, 1000, &chances, cue, None, seed);

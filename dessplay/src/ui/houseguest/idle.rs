@@ -19,15 +19,39 @@ pub enum Busy {
 }
 
 /// Changes whenever a chat or IRC line arrives (or history is compacted,
-/// which is equally worth a look). Compared for equality only.
+/// which is equally worth a look): any change is a look. A source's
+/// count rising is a line from it, which asks her something when its
+/// newest line does.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ChatMark {
     /// Synced chat messages.
     pub synced: usize,
     /// Shared-clock stamp of the newest synced message.
     pub newest: Option<u64>,
-    /// Local IRC lines.
+    /// The newest synced message asks something (see [`asks`]).
+    pub synced_asks: bool,
+    /// Local IRC lines received so far.
     pub irc: usize,
+    /// The newest IRC line asks something (see [`asks`]).
+    pub irc_asks: bool,
+}
+
+impl ChatMark {
+    /// Whether what arrived since `before` asks her something: some
+    /// source's count rose, and each that rose has a newest line that
+    /// asks (a compaction alone, or a question beside a plain line, is
+    /// only a look).
+    pub fn asks_since(&self, before: &ChatMark) -> bool {
+        let synced = self.synced > before.synced;
+        let irc = self.irc > before.irc;
+        (synced || irc) && (!synced || self.synced_asks) && (!irc || self.irc_asks)
+    }
+}
+
+/// Whether a chat line asks something: it ends in a question mark,
+/// trailing whitespace aside.
+pub fn asks(text: &str) -> bool {
+    text.trim_end().ends_with('?')
 }
 
 /// The chat log scrolled back from the newest line: its bottom border is
@@ -101,4 +125,41 @@ pub fn grow(rect: Rect, margin: u16) -> Rect {
         rect.right().saturating_add(margin) - x,
         rect.bottom().saturating_add(margin) - y,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// What arrived asks her something only when some source's count
+    /// rose and every source that rose has a question as its newest
+    /// line: a compaction alone (or the newest stamp changing) doesn't,
+    /// nor does a question beside a plain line from the other source.
+    #[test]
+    fn a_question_is_what_arrived_asking() {
+        let before = ChatMark {
+            synced: 5,
+            newest: Some(10),
+            synced_asks: true,
+            irc: 2,
+            irc_asks: true,
+        };
+        let mark = |synced, synced_asks, irc, irc_asks| ChatMark {
+            synced,
+            newest: Some(11),
+            synced_asks,
+            irc,
+            irc_asks,
+        };
+        assert!(mark(6, true, 2, false).asks_since(&before));
+        assert!(mark(5, false, 3, true).asks_since(&before));
+        assert!(mark(6, true, 3, true).asks_since(&before));
+        assert!(!mark(6, false, 2, true).asks_since(&before));
+        assert!(
+            !mark(6, true, 3, false).asks_since(&before),
+            "beside a plain line"
+        );
+        assert!(!mark(4, true, 2, true).asks_since(&before), "compacted");
+        assert!(!mark(5, true, 2, true).asks_since(&before), "nothing new");
+    }
 }

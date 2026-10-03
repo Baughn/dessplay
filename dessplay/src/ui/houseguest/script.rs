@@ -71,7 +71,7 @@ pub(super) enum Say {
 
 /// What a key shows on her furniture: on every shown piece of its kind
 /// ([`Prop::item`]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) enum Prop {
     /// The TV on, showing a channel (each key names it on frame 0; see
     /// [`Prop::framed`]).
@@ -218,11 +218,17 @@ pub(super) enum ScriptId {
     /// Flicking through the channels: snow, colour bars, snow, a
     /// sunrise (ooh!), then back on snow, pleased with herself.
     Surf,
+    /// Splitting disposable chopsticks before her homework: cleanly
+    /// (a twinkle, hehe) or badly (let down, and told off by herself).
+    Chopsticks,
+    /// After a snack, a sata andagi from the fridge: "Sata andagi." a
+    /// few times over, happier each time, then she eats it.
+    Andagi,
 }
 
 impl ScriptId {
     #[cfg(test)]
-    pub const ALL: [ScriptId; 13] = [
+    pub const ALL: [ScriptId; 15] = [
         Self::Lounge,
         Self::Nap,
         Self::Sleep,
@@ -236,6 +242,8 @@ impl ScriptId {
         Self::Unpack,
         Self::Riddle,
         Self::Surf,
+        Self::Chopsticks,
+        Self::Andagi,
     ];
 
     /// Its branches, each a run of keys.
@@ -254,6 +262,34 @@ impl ScriptId {
             Self::Unpack => UNPACK,
             Self::Riddle => RIDDLE,
             Self::Surf => SURF,
+            Self::Chopsticks => CHOPSTICKS,
+            Self::Andagi => ANDAGI,
+        }
+    }
+
+    /// What a chat line arriving while it plays does: what any does
+    /// (she stops and looks), or, a line asking her something, gets
+    /// this answer said toward the chat while she plays on. Only a
+    /// splice's script answers (see [`Osaka::look`]). Wildcard-free.
+    ///
+    /// [`Osaka::look`]: super::osaka::Osaka::look
+    pub fn on_chat(self) -> Chat {
+        match self {
+            Self::Andagi => Chat::Answer(SATA_ANDAGI),
+            Self::Lounge
+            | Self::Nap
+            | Self::Sleep
+            | Self::Homework
+            | Self::Watch
+            | Self::Shopping
+            | Self::Read
+            | Self::Snack
+            | Self::Pet
+            | Self::Crumple
+            | Self::Unpack
+            | Self::Riddle
+            | Self::Surf
+            | Self::Chopsticks => Chat::Look,
         }
     }
 
@@ -274,13 +310,16 @@ impl ScriptId {
             | Self::Crumple
             | Self::Unpack
             | Self::Riddle
-            | Self::Surf => 0,
+            | Self::Surf
+            | Self::Chopsticks
+            | Self::Andagi => 0,
         }
     }
 
-    /// The use it plays on (`None`: it plays spacing out). Wildcard-free,
-    /// so a new script doesn't compile until it says (the lints hold
-    /// each to its host).
+    /// The use it plays on as that use's own script (`None`: it plays
+    /// spacing out, or spliced round a use). Wildcard-free, so a new
+    /// script doesn't compile until it says (the lints hold each to its
+    /// host).
     pub fn played_on(self) -> Option<Use> {
         Some(match self {
             Self::Lounge => Use::Lounge,
@@ -293,27 +332,42 @@ impl ScriptId {
             Self::Pet => Use::Pet,
             Self::Crumple => Use::Crumple,
             Self::Unpack => Use::Unpack,
-            Self::Riddle => return None,
+            Self::Riddle | Self::Chopsticks | Self::Andagi => return None,
         })
     }
 
-    /// The act it plays on.
+    /// The act it plays on. Wildcard-free.
     #[cfg(test)]
     pub fn host(self) -> Host {
-        match self.played_on() {
-            Some(_) => Host::Use,
-            None => Host::SpaceOut,
+        match self {
+            Self::Riddle => Host::SpaceOut,
+            Self::Chopsticks | Self::Andagi => Host::Splice,
+            Self::Lounge
+            | Self::Nap
+            | Self::Sleep
+            | Self::Homework
+            | Self::Watch
+            | Self::Shopping
+            | Self::Read
+            | Self::Snack
+            | Self::Pet
+            | Self::Crumple
+            | Self::Unpack
+            | Self::Surf => Host::Use,
         }
     }
 
     /// The shortest body it can play over: a musing's, spacing out; a
     /// watch's, for what plays only on a watch she isn't trying (the
     /// shopping channel, surfing); else the shortest use there is (a
-    /// trial sit). Wildcard-free.
+    /// trial sit). `None`: a splice's, each of whose branches is as long
+    /// as its row says (the splice lint holds its keys to that).
+    /// Wildcard-free.
     #[cfg(test)]
-    pub fn shortest_body(self) -> u64 {
+    pub fn shortest_body(self) -> Option<u64> {
         use super::osaka::{SPACE_OUT_MS, shortest_use_ms, use_range};
-        match self {
+        Some(match self {
+            Self::Chopsticks | Self::Andagi => return None,
             Self::Riddle => SPACE_OUT_MS.0,
             Self::Shopping | Self::Surf => use_range(Use::Watch).0,
             Self::Lounge
@@ -326,7 +380,7 @@ impl ScriptId {
             | Self::Pet
             | Self::Crumple
             | Self::Unpack => shortest_use_ms(),
-        }
+        })
     }
 
     /// The stage scene that cues it. Wildcard-free, so a new script
@@ -348,6 +402,8 @@ impl ScriptId {
             Self::Unpack => Scene::Parcel,
             Self::Riddle => Scene::Riddle,
             Self::Surf => Scene::Surf,
+            Self::Chopsticks => Scene::ChopsticksClean,
+            Self::Andagi => Scene::Andagi,
         }
     }
 
@@ -374,19 +430,29 @@ pub(super) enum Host {
     /// short space-out after a swap, so its shortest body is a
     /// musing's.
     SpaceOut,
+    /// Spliced round a use, as its prelude or coda (see [`SpliceId`]).
+    Splice,
 }
 
-/// A script spliced before or after a use (a prelude or a coda). No
-/// rows yet: each comes with its art.
+/// What a chat line arriving while a script plays does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Chat {
+    /// She stops and looks, as at any.
+    Look,
+    /// A line asking her something gets this said toward the chat, and
+    /// she plays on; any other, she stops and looks.
+    Answer(&'static str),
+}
+
+/// A script spliced before or after a use (a prelude or a coda).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[cfg_attr(
-    test,
-    expect(
-        clippy::enum_variant_names,
-        reason = "only the tests' own splices until the first rows come with their art"
-    )
-)]
 pub(super) enum SpliceId {
+    /// Before homework, about one in three: she splits a pair of
+    /// disposable chopsticks, cleanly or badly (even odds).
+    Chopsticks,
+    /// After a snack, about one in four: a sata andagi, named a few
+    /// times over (four to six, its branch), then eaten.
+    Andagi,
     /// A test's prelude (the snack's look in the fridge, then eating):
     /// not a row.
     #[cfg(test)]
@@ -404,11 +470,30 @@ pub(super) enum SpliceId {
 impl SpliceId {
     /// Every row: what a use may be wrapped in (the tests' splices
     /// aren't rows, and are never rolled).
-    pub const ALL: [SpliceId; 0] = [];
+    pub const ALL: [SpliceId; 2] = [Self::Chopsticks, Self::Andagi];
 
     /// Its row.
     pub fn row(self) -> Splice {
         match self {
+            Self::Chopsticks => Splice {
+                name: "chopsticks",
+                salt: 1,
+                around: &[Use::Homework],
+                at: Part::Before,
+                chance: (1, 3),
+                when: |_| true,
+                // Clean, bad.
+                lens: &[CHOPSTICKS_MS, CHOPSTICKS_MS],
+            },
+            Self::Andagi => Splice {
+                name: "sata andagi",
+                salt: 2,
+                around: &[Use::Snack],
+                at: Part::After,
+                chance: (1, 4),
+                when: |_| true,
+                lens: ANDAGI_LENS,
+            },
             #[cfg(test)]
             Self::TestSnack => Splice {
                 name: "test snack",
@@ -445,6 +530,8 @@ impl SpliceId {
     /// The script it plays.
     pub fn script(self) -> ScriptId {
         match self {
+            Self::Chopsticks => ScriptId::Chopsticks,
+            Self::Andagi => ScriptId::Andagi,
             #[cfg(test)]
             Self::TestSnack => ScriptId::Snack,
             #[cfg(test)]
@@ -452,13 +539,17 @@ impl SpliceId {
         }
     }
 
-    /// The stage scene that cues it (`None`: the tests' splices, which
+    /// The stage scenes that cue it, each forcing one of its branches
+    /// or leaving it to her whims (none: the tests' splices, which
     /// aren't rows). Wildcard-free, so a new splice doesn't compile until
     /// it says.
     #[cfg(test)]
-    pub fn scene(self) -> Option<super::stage::Scene> {
+    pub fn scenes(self) -> &'static [super::stage::Scene] {
+        use super::stage::Scene;
         match self {
-            Self::TestSnack | Self::TestSleep | Self::TestBedtime => None,
+            Self::Chopsticks => &[Scene::ChopsticksClean, Scene::ChopsticksBad],
+            Self::Andagi => &[Scene::Andagi],
+            Self::TestSnack | Self::TestSleep | Self::TestBedtime => &[],
         }
     }
 }
@@ -479,10 +570,6 @@ const TEST_AROUND: &[Use] = &[
 
 /// Before the use it wraps (a prelude) or after it (a coda).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the first rows come with their art")
-)]
 pub(super) enum Part {
     Before,
     After,
@@ -538,12 +625,9 @@ pub(super) enum Cue {
     /// others (the advert still decides what's on the shopping
     /// channel).
     Script(ScriptId),
-    /// A splice round the next use it wraps.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the first rows come with their art")
-    )]
-    Splice(SpliceId),
+    /// A splice round the next use it wraps: on the branch given, or
+    /// (`None`) the one her whims draw.
+    Splice(SpliceId, Option<u8>),
 }
 
 impl Cue {
@@ -560,7 +644,7 @@ impl Cue {
                     id.played_on() == Some(what)
                         && !(grieved && matches!(id, ScriptId::Surf | ScriptId::Shopping))
                 }
-                Self::Splice(id) => id.row().around.contains(&what),
+                Self::Splice(id, _) => id.row().around.contains(&what),
             }
     }
 }
@@ -571,13 +655,16 @@ impl Cue {
 /// last while (`lines` keeps what she's played), at most one before and
 /// one after, its branch (so its length) drawn from `whims` too. Or, cued
 /// (`forced`), that splice alone, if it wraps the use, whether she's
-/// quiet or not (the caller hushes her for a cued prelude) and starting
-/// its cooldown as if rolled. Never round a trial sit. Draws nothing from
-/// her body's stream.
+/// quiet or not (the caller hushes her for a cued prelude), on the branch
+/// cued if any, and starting its cooldown as if rolled. `sure` (the
+/// tests': every vignette, as often as it may) has every row that may
+/// wrap the use roll as if certain. Never round a trial sit. Draws
+/// nothing from her body's stream.
 pub(super) fn splices(
     rows: &[SpliceId],
     ctx: &SpliceCtx,
-    forced: Option<SpliceId>,
+    forced: Option<(SpliceId, Option<u8>)>,
+    sure: bool,
     whims: Whims,
     lines: &mut Lines,
     at: u64,
@@ -586,7 +673,8 @@ pub(super) fn splices(
     if ctx.trying {
         return wrapped;
     }
-    let candidates: &[SpliceId] = match &forced {
+    let forced_id = forced.map(|(id, _)| id);
+    let candidates: &[SpliceId] = match &forced_id {
         Some(id) => std::slice::from_ref(id),
         None => rows,
     };
@@ -604,14 +692,16 @@ pub(super) fn splices(
             let may = (row.at == Part::After || ctx.quiet) && (row.when)(ctx);
             // The chance first: a splice that doesn't roll hasn't
             // played, so it doesn't cool.
-            if !may || !whims.chance(SPLICE, 2 * row.salt, n, d) || !lines.try_play(id.script(), at)
-            {
+            let rolled = sure || whims.chance(SPLICE, 2 * row.salt, n, d);
+            if !may || !rolled || !lines.try_play(id.script(), at) {
                 continue;
             }
         } else {
             lines.try_play(id.script(), at);
         }
-        let branch = whims.below_at(SPLICE, 2 * row.salt + 1, row.lens.len() as u64);
+        let cued = forced.and_then(|(_, branch)| branch).map(u64::from);
+        let branch =
+            cued.unwrap_or_else(|| whims.below_at(SPLICE, 2 * row.salt + 1, row.lens.len() as u64));
         let Some(&len) = row.lens.get(branch as usize) else {
             continue;
         };
@@ -724,6 +814,16 @@ impl Play {
             })
             .filter(|&end| end > now)
             .min()
+    }
+
+    /// The splice playing at `now` in a use from `since` to `until`
+    /// (its prelude, or its coda), if one is.
+    pub fn spliced_at(&self, since: u64, until: u64, now: u64) -> Option<Spliced> {
+        match (self.before, self.after) {
+            (Some(before), _) if now < self.body_start(since) => Some(before),
+            (_, Some(after)) if (self.body_end(since, until)..until).contains(&now) => Some(after),
+            _ => None,
+        }
     }
 
     /// The part of a use from `since` to `until` playing at `now` (the
@@ -1082,6 +1182,162 @@ const RIDDLE: &[&[Key]] = &[&[
     ),
 ]];
 
+/// The chopsticks stay joined this long, she splits them by this far
+/// in, and what came of it shows to this far (as long as she takes to
+/// say "Hold 'em by the ends!"); then she's pleased, or trails off, to
+/// the end.
+pub(super) const CHOPSTICKS_JOINED_MS: u64 = 1000;
+pub(super) const CHOPSTICKS_SPLIT_MS: u64 = CHOPSTICKS_JOINED_MS + 800;
+pub(super) const CHOPSTICKS_SHOWN_MS: u64 = CHOPSTICKS_SPLIT_MS + 2500;
+/// The whole of it, either way.
+pub(super) const CHOPSTICKS_MS: u64 = CHOPSTICKS_SHOWN_MS + 1400;
+
+/// What she says splitting them badly.
+pub(super) const HOLD_EM: &str = line!("Hold 'em by the ends!");
+
+/// Splitting a pair of disposable chopsticks: held joined (blank),
+/// pulled apart, then (clean) a twinkle and a giggle, or (bad) let down,
+/// telling herself off, then trailing off. Each split frame bakes in its
+/// face in ASCII, so the face matches it from the split on.
+const CHOPSTICKS: &[&[Key]] = &[
+    &[
+        key(
+            Span::Ms(CHOPSTICKS_JOINED_MS),
+            Posed::Still(Pose::Chopsticks(0)),
+            Face::Vacant,
+            None,
+        ),
+        key(
+            Span::Ms(CHOPSTICKS_SPLIT_MS),
+            Posed::Still(Pose::Chopsticks(1)),
+            Face::Happy,
+            None,
+        ),
+        key(
+            Span::Ms(CHOPSTICKS_SHOWN_MS),
+            Posed::Still(Pose::Chopsticks(1)),
+            Face::Happy,
+            bubble(Bubble::Sparkle),
+        ),
+        key(
+            Span::Rest,
+            Posed::Still(Pose::Chopsticks(1)),
+            Face::Happy,
+            bubble(Bubble::Hehe),
+        ),
+    ],
+    &[
+        key(
+            Span::Ms(CHOPSTICKS_JOINED_MS),
+            Posed::Still(Pose::Chopsticks(0)),
+            Face::Vacant,
+            None,
+        ),
+        key(
+            Span::Ms(CHOPSTICKS_SPLIT_MS),
+            Posed::Still(Pose::Chopsticks(2)),
+            Face::Droop,
+            None,
+        ),
+        key(
+            Span::Ms(CHOPSTICKS_SHOWN_MS),
+            Posed::Still(Pose::Chopsticks(2)),
+            Face::Droop,
+            bubble(Bubble::Say(HOLD_EM)),
+        ),
+        key(
+            Span::Rest,
+            Posed::Still(Pose::Chopsticks(2)),
+            Face::Droop,
+            bubble(Bubble::Dots),
+        ),
+    ],
+];
+
+/// What she says of the andagi (and to anyone asking her anything
+/// meanwhile).
+pub(super) const SATA_ANDAGI: &str = line!("Sata andagi.");
+/// She finds it in the fridge (standing open) this long.
+pub(super) const ANDAGI_FOUND_MS: u64 = 1000;
+/// Each "Sata andagi." shows this long (about as long as she takes to
+/// say it)...
+pub(super) const ANDAGI_SAID_MS: u64 = 1900;
+/// ...then a quiet beat, so the next reads as said again.
+pub(super) const ANDAGI_BEAT_MS: u64 = 600;
+/// The first bite.
+pub(super) const ANDAGI_BITE_MS: u64 = USE_FRAME_MS;
+/// Then eating it, two frames.
+pub(super) const ANDAGI_EAT_MS: u64 = 2 * USE_FRAME_MS;
+
+/// How long the andagi plays, said `count` times.
+pub(super) const fn andagi_ms(count: u64) -> u64 {
+    ANDAGI_FOUND_MS + count * (ANDAGI_SAID_MS + ANDAGI_BEAT_MS) + ANDAGI_BITE_MS + ANDAGI_EAT_MS
+}
+
+/// The andagi said `(N - 3) / 2` times: the fridge open as she finds
+/// it, then holding it up, "Sata andagi." and a quiet beat each time,
+/// blank, then pleased, then happy; then a bite, and she eats it.
+const fn andagi<const N: usize>() -> [Key; N] {
+    let count = (N - 3) / 2;
+    let held = Posed::Still(Pose::EatAndagi(0));
+    let mut keys = [key(Span::Rest, held, Face::Happy, None); N];
+    keys[0] = shows(
+        Span::Ms(ANDAGI_FOUND_MS),
+        Posed::Still(Pose::Side),
+        Face::Curious,
+        None,
+        Prop::FridgeOpen,
+    );
+    let mut i = 0;
+    while i < count {
+        let face = match i * 3 / count {
+            0 => Face::Vacant,
+            1 => Face::Pleased,
+            _ => Face::Happy,
+        };
+        let from = ANDAGI_FOUND_MS + i as u64 * (ANDAGI_SAID_MS + ANDAGI_BEAT_MS);
+        keys[1 + 2 * i] = key(
+            Span::Ms(from + ANDAGI_SAID_MS),
+            held,
+            face,
+            bubble(Bubble::Say(SATA_ANDAGI)),
+        );
+        keys[2 + 2 * i] = key(
+            Span::Ms(from + ANDAGI_SAID_MS + ANDAGI_BEAT_MS),
+            held,
+            face,
+            None,
+        );
+        i += 1;
+    }
+    keys[N - 2] = key(
+        Span::Ms(andagi_ms(count as u64) - ANDAGI_EAT_MS),
+        Posed::Still(Pose::EatAndagi(1)),
+        Face::Happy,
+        None,
+    );
+    keys[N - 1] = key(
+        Span::Rest,
+        Posed::Bob(chewing, USE_FRAME_MS),
+        Face::Happy,
+        None,
+    );
+    keys
+}
+
+/// Eating the andagi once she's bitten it: biting again (frame 1 of the
+/// bob), and chewing, what's left of it in her hand (frame 0), never
+/// whole again whichever frame the bob is on as the bite ends.
+fn chewing(frame: u8) -> Pose {
+    Pose::EatAndagi(if frame % 2 == 1 { 1 } else { 2 })
+}
+
+/// How long it plays, said four, five or six times.
+const ANDAGI_LENS: &[u64] = &[andagi_ms(4), andagi_ms(5), andagi_ms(6)];
+
+/// Said four, five or six times: a branch each.
+const ANDAGI: &[&[Key]] = &[&andagi::<11>(), &andagi::<13>(), &andagi::<15>()];
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
@@ -1117,13 +1373,16 @@ mod tests {
             ScriptId::Unpack => 10,
             ScriptId::Riddle => 11,
             ScriptId::Surf => 12,
+            ScriptId::Chopsticks => 13,
+            ScriptId::Andagi => 14,
         }
     }
 
     /// Lint: every script is listed in [`ScriptId::ALL`] (see
     /// [`listed_at`]), every splice that is a row in [`SpliceId::ALL`],
     /// and every use in [`Use::ALL`], each once; and every script is
-    /// some use's, or the shopping channel's: none goes unplayed.
+    /// some use's, the shopping channel's, a musing's or a splice row's:
+    /// none goes unplayed.
     #[test]
     fn every_script_is_listed() {
         for (i, id) in ScriptId::ALL.into_iter().enumerate() {
@@ -1132,6 +1391,7 @@ mod tests {
         // Wildcard-free: a new splice doesn't compile until it's said
         // here whether it's a row (and so listed).
         let row = |id: SpliceId| match id {
+            SpliceId::Chopsticks | SpliceId::Andagi => true,
             SpliceId::TestSnack | SpliceId::TestSleep | SpliceId::TestBedtime => false,
         };
         for id in SPLICES {
@@ -1157,7 +1417,17 @@ mod tests {
         }
         // And every script is played by something. Wildcard-free: a new
         // script doesn't compile until it says what plays it.
+        let spliced = |splice: SpliceId| Play {
+            after: Some(Spliced {
+                splice,
+                len: 1,
+                branch: 0,
+            }),
+            ..Play::of(Use::Homework, None)
+        };
         let player = |id: ScriptId| match id {
+            ScriptId::Chopsticks => spliced(SpliceId::Chopsticks),
+            ScriptId::Andagi => spliced(SpliceId::Andagi),
             ScriptId::Lounge => Play::of(Use::Lounge, None),
             ScriptId::Nap => Play::of(Use::Nap, None),
             ScriptId::Sleep => Play::of(Use::Sleep, None),
@@ -1173,7 +1443,16 @@ mod tests {
             ScriptId::Surf => Play::plain(ScriptId::Surf),
         };
         for id in ScriptId::ALL {
-            assert_eq!(player(id).own, id, "{id:?} isn't what plays it");
+            let play = player(id);
+            let plays = match id.host() {
+                Host::Use | Host::SpaceOut => play.own,
+                Host::Splice => {
+                    let splice = play.after.unwrap().splice;
+                    assert!(SpliceId::ALL.contains(&splice), "{id:?}: not a row's");
+                    splice.script()
+                }
+            };
+            assert_eq!(plays, id, "{id:?} isn't what plays it");
         }
     }
 
@@ -1202,11 +1481,15 @@ mod tests {
 
     /// A key that ends a set time in ends inside the shortest body its
     /// host can have (a trial sit, for a use; a musing, spacing out), or
-    /// it would be cut short there.
+    /// it would be cut short there. (A splice's keys end inside its
+    /// branch's length: see the splice lint.)
     #[test]
     fn every_set_time_fits_its_shortest_host() {
         for id in ScriptId::ALL {
-            let shortest = id.shortest_body();
+            let Some(shortest) = id.shortest_body() else {
+                assert_eq!(id.host(), Host::Splice, "{id:?}");
+                continue;
+            };
             for keys in id.branches() {
                 for key in *keys {
                     if let Span::Ms(ms) = key.span {
@@ -1330,10 +1613,8 @@ mod tests {
         let snack = ScriptId::Snack.keys(0);
         assert_eq!(key_at(snack, 999, Some(1000)).map(|(i, ..)| i), Some(0));
         assert_eq!(key_at(snack, 1000, Some(1000)).map(|(i, ..)| i), Some(0));
-        assert!(SpliceId::ALL.is_empty(), "no splice rows yet");
     }
 
-    /// Every splice, rows and the tests' alike.
     /// The tests' own splices (not rows).
     const SPLICES: [SpliceId; 3] = [
         SpliceId::TestSnack,
@@ -1408,7 +1689,7 @@ mod tests {
             trying,
             quiet,
         };
-        let (before, after) = splices(rows, &ctx, None, Whims(whims), lines, at);
+        let (before, after) = splices(rows, &ctx, None, false, Whims(whims), lines, at);
         (before.map(|s| s.splice), after.map(|s| s.splice))
     }
 
@@ -1480,10 +1761,260 @@ mod tests {
             quiet: true,
         };
         for id in SPLICES {
-            let (before, after) = splices(&[], &ctx, Some(id), Whims(1), &mut Lines::default(), 0);
+            let (before, after) = splices(
+                &[],
+                &ctx,
+                Some((id, None)),
+                false,
+                Whims(1),
+                &mut Lines::default(),
+                0,
+            );
             let s = before.or(after).unwrap();
             assert_eq!(s.splice, id);
             assert_eq!(Some(&s.len), id.row().lens.get(usize::from(s.branch)));
+        }
+    }
+
+    /// The rows: the chopsticks before about one homework in three (only
+    /// when she's quiet), split cleanly or badly evenly; the andagi
+    /// after about one snack in four, said four, five or six times
+    /// evenly; neither round anything else. (Whether a branch is drawn
+    /// apart from the chance is
+    /// [`the_first_splice_to_roll_wraps_it_on_a_branch_of_its_own`]'s to
+    /// tell: at these rows' odds, a branch drawn from the chance's own
+    /// roll would still come out even.)
+    #[test]
+    fn the_rows_wrap_their_uses_at_their_odds() {
+        let n = 3000u64;
+        let rolled = |what, quiet, w| {
+            let ctx = SpliceCtx {
+                what,
+                trying: false,
+                quiet,
+            };
+            splices(
+                &SpliceId::ALL,
+                &ctx,
+                None,
+                false,
+                Whims(w),
+                &mut Lines::default(),
+                0,
+            )
+        };
+        for (what, id, (num, den)) in [
+            (Use::Homework, SpliceId::Chopsticks, (1, 3)),
+            (Use::Snack, SpliceId::Andagi, (1, 4)),
+        ] {
+            let branches = id.row().lens.len();
+            let mut counts = vec![0u64; branches];
+            for w in 0..n {
+                let (before, after) = rolled(what, true, w);
+                assert!(before.is_none() || after.is_none(), "{what:?}");
+                if let Some(s) = before.or(after) {
+                    assert_eq!(s.splice, id);
+                    assert_eq!(Some(&s.len), id.row().lens.get(usize::from(s.branch)));
+                    counts[usize::from(s.branch)] += 1;
+                }
+            }
+            let total: u64 = counts.iter().sum();
+            let want = n * num / den;
+            assert!(
+                (want * 4 / 5..want * 6 / 5).contains(&total),
+                "{id:?}: {total} of {n}"
+            );
+            for &count in &counts {
+                let even = total / branches as u64;
+                assert!(
+                    (even * 3 / 4..even * 5 / 4).contains(&count),
+                    "{id:?}: {counts:?}"
+                );
+            }
+        }
+        for w in 0..400 {
+            // Talking, no chopsticks (they'd hide under what she says).
+            assert_eq!(rolled(Use::Homework, false, w).0, None);
+            for what in Use::ALL {
+                if !matches!(what, Use::Homework | Use::Snack) {
+                    assert_eq!(rolled(what, true, w), (None, None), "{what:?}");
+                }
+            }
+        }
+    }
+
+    /// The chopsticks: held joined (blank), then split, cleanly (happy, a
+    /// twinkle, then a giggle) or badly (let down, telling herself off
+    /// for as long as that takes to say, then trailing off), at the desk
+    /// throughout; the face the split frame bakes in (ASCII) from the
+    /// split on. Asked anything meanwhile, she only looks.
+    #[test]
+    fn the_chopsticks_split_cleanly_or_badly() {
+        use super::super::osaka::speech_ms;
+        let len = SpliceId::Chopsticks.row().lens;
+        assert_eq!(len, [CHOPSTICKS_MS, CHOPSTICKS_MS]);
+        assert!(CHOPSTICKS_SHOWN_MS - CHOPSTICKS_SPLIT_MS >= speech_ms(HOLD_EM));
+        let looks = |branch: u8| -> Vec<(Span, Pose, Face, Option<Say>)> {
+            ScriptId::Chopsticks
+                .keys(branch)
+                .iter()
+                .map(|k| match k.pose {
+                    Posed::Still(pose) => (k.span, pose, k.face, k.say),
+                    other => panic!("{other:?}"),
+                })
+                .collect()
+        };
+        let joined = (
+            Span::Ms(CHOPSTICKS_JOINED_MS),
+            Pose::Chopsticks(0),
+            Face::Vacant,
+            None,
+        );
+        let clean = |span, say| (span, Pose::Chopsticks(1), Face::Happy, say);
+        let bad = |span, say| (span, Pose::Chopsticks(2), Face::Droop, say);
+        let (split, shown) = (Span::Ms(CHOPSTICKS_SPLIT_MS), Span::Ms(CHOPSTICKS_SHOWN_MS));
+        assert_eq!(
+            looks(0),
+            [
+                joined,
+                clean(split, None),
+                clean(shown, bubble(Bubble::Sparkle)),
+                clean(Span::Rest, bubble(Bubble::Hehe))
+            ]
+        );
+        assert_eq!(
+            looks(1),
+            [
+                joined,
+                bad(split, None),
+                bad(shown, bubble(Bubble::Say(HOLD_EM))),
+                bad(Span::Rest, bubble(Bubble::Dots))
+            ]
+        );
+        // Joined about a second, split in under one, what came of it
+        // shown for as long as telling herself off takes (2.5 s or so),
+        // then a beat more.
+        let (joined, split, shown) = (
+            CHOPSTICKS_JOINED_MS,
+            CHOPSTICKS_SPLIT_MS - CHOPSTICKS_JOINED_MS,
+            CHOPSTICKS_SHOWN_MS - CHOPSTICKS_SPLIT_MS,
+        );
+        assert!((800..=1200).contains(&joined), "{joined}");
+        assert!((600..=1000).contains(&split), "{split}");
+        assert!((2000..=3000).contains(&shown), "{shown}");
+        assert_eq!(ScriptId::Chopsticks.on_chat(), Chat::Look);
+    }
+
+    /// Lint: a script that changes her face while her pose holds still
+    /// shows the change in both drawing modes (an ASCII profile keeps a
+    /// face of its own, so a ramp of faces there would go unseen).
+    #[test]
+    fn every_change_of_face_shows_in_both_modes() {
+        use super::super::art::Rig;
+        use super::super::sprite::{Facing, cells};
+        for id in ScriptId::ALL {
+            for (branch, keys) in id.branches().iter().enumerate() {
+                for pair in keys.windows(2) {
+                    let (Posed::Still(a), Posed::Still(b)) = (pair[0].pose, pair[1].pose) else {
+                        continue;
+                    };
+                    let (f, g) = (pair[0].face, pair[1].face);
+                    if a != b || f == g {
+                        continue;
+                    }
+                    let at = format!("{id:?} branch {branch}: {a:?}, {f:?} to {g:?}");
+                    for facing in [Facing::Left, Facing::Right] {
+                        assert_ne!(cells(a, facing, f), cells(a, facing, g), "ASCII, {at}");
+                    }
+                    assert_ne!(Rig::for_pose(a, f), Rig::for_pose(a, g), "line art, {at}");
+                }
+            }
+        }
+    }
+
+    /// Lint: only a splice's script answers a question (its own use's
+    /// script, or a musing's, is played where no answer is looked for).
+    #[test]
+    fn only_a_splice_answers() {
+        for id in ScriptId::ALL {
+            if id.host() != Host::Splice {
+                assert_eq!(id.on_chat(), Chat::Look, "{id:?}");
+            }
+        }
+    }
+
+    /// The andagi: the fridge open a moment as she finds it, then held
+    /// up: "Sata andagi." (about as long as it takes to say) and a quiet
+    /// beat, four to six times (its branch), blank at first, then
+    /// pleased, then happy; then a bite, and she eats it. Asked anything
+    /// meanwhile, she answers "Sata andagi.".
+    #[test]
+    fn the_andagi_is_named_happier_each_time_then_eaten() {
+        use super::super::osaka::speech_ms;
+        assert!(ANDAGI_SAID_MS.abs_diff(speech_ms(SATA_ANDAGI)) <= 100);
+        assert_eq!(ScriptId::Andagi.on_chat(), Chat::Answer(SATA_ANDAGI));
+        let lens = SpliceId::Andagi.row().lens;
+        assert_eq!(lens.len(), 3);
+        for (branch, &len) in lens.iter().enumerate() {
+            let count = branch + 4;
+            let keys = ScriptId::Andagi.keys(branch as u8);
+            assert_eq!(keys.len(), 2 * count + 3, "{count}");
+            assert_eq!(len, andagi_ms(count as u64));
+            let found = &keys[0];
+            assert_eq!(found.span, Span::Ms(ANDAGI_FOUND_MS));
+            assert_eq!(found.prop, Some(Prop::FridgeOpen));
+            let rank = |face| match face {
+                Face::Vacant => 0,
+                Face::Pleased => 1,
+                Face::Happy => 2,
+                other => panic!("{other:?}"),
+            };
+            let mut faces = Vec::new();
+            for i in 0..count {
+                let (said, beat) = (&keys[1 + 2 * i], &keys[2 + 2 * i]);
+                let from = ANDAGI_FOUND_MS + i as u64 * (ANDAGI_SAID_MS + ANDAGI_BEAT_MS);
+                assert_eq!(said.span, Span::Ms(from + ANDAGI_SAID_MS));
+                assert_eq!(said.say, bubble(Bubble::Say(SATA_ANDAGI)));
+                assert_eq!(beat.span, Span::Ms(from + ANDAGI_SAID_MS + ANDAGI_BEAT_MS));
+                assert_eq!(beat.say, None, "a quiet beat");
+                assert_eq!(said.face, beat.face);
+                for key in [said, beat] {
+                    assert!(matches!(key.pose, Posed::Still(Pose::EatAndagi(0))));
+                    assert_eq!(key.prop, None);
+                }
+                faces.push(rank(said.face));
+            }
+            assert!((500..=800).contains(&ANDAGI_BEAT_MS));
+            assert!(faces.windows(2).all(|w| w[0] <= w[1]), "{faces:?}");
+            assert_eq!((faces[0], faces[count - 1]), (0, 2), "{faces:?}");
+            assert!(faces.contains(&1), "{faces:?}");
+            let (bite, eat) = (&keys[2 * count + 1], &keys[2 * count + 2]);
+            assert!(matches!(bite.pose, Posed::Still(Pose::EatAndagi(1))));
+            let Posed::Bob(eating, _) = eat.pose else {
+                panic!("{:?}", eat.pose);
+            };
+            assert_eq!(
+                (eating(0), eating(1)),
+                (Pose::EatAndagi(2), Pose::EatAndagi(1))
+            );
+            // Bitten, it stays bitten.
+            let poses = |key: &Key| match key.pose {
+                Posed::Still(pose) => vec![pose],
+                Posed::Bob(pose, _) => vec![pose(0), pose(1)],
+                Posed::Host => vec![],
+            };
+            let bitten = keys
+                .iter()
+                .position(|k| poses(k).contains(&Pose::EatAndagi(1)))
+                .unwrap();
+            for key in &keys[bitten..] {
+                assert!(
+                    !poses(key).contains(&Pose::EatAndagi(0)),
+                    "{count}: whole again after the bite"
+                );
+            }
+            assert_eq!(eat.span, Span::Rest);
+            assert_eq!(bite.span, Span::Ms(len - ANDAGI_EAT_MS));
         }
     }
 
@@ -1502,7 +2033,8 @@ mod tests {
         let mut seen = [0u64; 2];
         let n = 400;
         for w in 0..n {
-            let (before, after) = splices(&rows, &ctx, None, Whims(w), &mut Lines::default(), 0);
+            let (before, after) =
+                splices(&rows, &ctx, None, false, Whims(w), &mut Lines::default(), 0);
             assert_eq!(after, None);
             let before = before.unwrap();
             // The bedtime one, one in two; else the snack (which always

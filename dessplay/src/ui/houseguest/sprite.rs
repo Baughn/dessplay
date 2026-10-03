@@ -70,12 +70,13 @@ pub(super) enum Pose {
     Read(u8),
     /// Eating a melon bread (frame 1 bites).
     Eat(u8),
+    /// A sata andagi: held up, whole (frame 0); biting it (1); chewing,
+    /// what's left of it in her hand (2).
+    EatAndagi(u8),
     /// Reaching out to pet the cat (frame 1: bitten, hand yanked back).
     Pet(u8),
     /// On her stool at the desk, splitting disposable chopsticks: frame
     /// 0 still joined, 1 split cleanly, 2 split badly (let down).
-    // Drawn for review; the chopstick vignette will construct it.
-    #[cfg_attr(not(test), allow(dead_code))]
     Chopsticks(u8),
 }
 
@@ -91,8 +92,6 @@ pub(super) enum Face {
     /// Looking up, a small "o".
     Curious,
     /// Let down: heavy lids, eyes cast down (a bad chopstick split).
-    // Drawn for review; the chopstick vignette will construct it.
-    #[cfg_attr(not(test), allow(dead_code))]
     Droop,
 }
 
@@ -174,6 +173,10 @@ const EAT: [[&str; 4]; 2] = [
     ["( ._)", " |Vo ", " /_\\ ", " / \\ "],
     ["( o_)", " |V| ", " /_\\ ", " / \\ "],
 ];
+// Held up to show (facing out, so her face shows how she feels about
+// it), then, bitten, a "c" in her hand.
+const ANDAGI_HELD: [&str; 4] = ["(._.)", "/|V|o", " /_\\ ", " / \\ "];
+const ANDAGI_BITTEN: [&str; 4] = ["( ._)", " |Vc ", " /_\\ ", " / \\ "];
 const PET: [[&str; 4]; 2] = [
     ["     ", "( ._)", " |V|-", " d b "],
     ["     ", "( o_)", "\\|V| ", " d b "],
@@ -214,6 +217,12 @@ fn rows(pose: Pose) -> ([&'static str; 4], bool) {
         Pose::Carry(frame) => (CARRY[usize::from(frame % 2)], true),
         Pose::Read(frame) => (READ[usize::from(frame % 2)], false),
         Pose::Eat(frame) => (EAT[usize::from(frame % 2)], false),
+        // Biting it, as she bites the melon bread.
+        Pose::EatAndagi(frame) => match frame {
+            0 => (ANDAGI_HELD, true),
+            1 => (EAT[1], false),
+            _ => (ANDAGI_BITTEN, false),
+        },
         Pose::Pet(frame) => (PET[usize::from(frame % 2)], false),
         Pose::Chopsticks(frame) => (CHOPSTICKS[usize::from(frame.min(2))], false),
     }
@@ -366,62 +375,67 @@ pub(super) fn cells(pose: Pose, facing: Facing, face: Face) -> Vec<SpriteCell> {
     out
 }
 
+/// Every pose (each frame of each), for the lints.
+#[cfg(test)]
+pub(super) const ALL: [Pose; 47] = [
+    Pose::Stand,
+    Pose::Walk(0),
+    Pose::Walk(1),
+    Pose::Walk(2),
+    Pose::Walk(3),
+    Pose::Climb { frame: 0, pole: 2 },
+    Pose::Climb { frame: 1, pole: 0 },
+    Pose::Fall,
+    Pose::Dazed,
+    Pose::Peer,
+    Pose::Pull {
+        heaving: false,
+        row: 1,
+    },
+    Pose::Pull {
+        heaving: true,
+        row: 2,
+    },
+    Pose::Sit,
+    Pose::LieBack(0),
+    Pose::LieBack(1),
+    Pose::LieFront(0),
+    Pose::LieFront(1),
+    Pose::Jack(0),
+    Pose::Jack(1),
+    Pose::ToeTouch(0),
+    Pose::ToeTouch(1),
+    Pose::Stretch,
+    Pose::Gaze,
+    Pose::Side,
+    Pose::Lounge,
+    Pose::Nap(0),
+    Pose::Nap(1),
+    Pose::Sleep(0),
+    Pose::Sleep(1),
+    Pose::Homework(0),
+    Pose::Homework(1),
+    Pose::Homework(2),
+    Pose::Homework(3),
+    Pose::Carry(0),
+    Pose::Carry(1),
+    Pose::Read(0),
+    Pose::Read(1),
+    Pose::Eat(0),
+    Pose::Eat(1),
+    Pose::EatAndagi(0),
+    Pose::EatAndagi(1),
+    Pose::EatAndagi(2),
+    Pose::Pet(0),
+    Pose::Pet(1),
+    Pose::Chopsticks(0),
+    Pose::Chopsticks(1),
+    Pose::Chopsticks(2),
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    const ALL: [Pose; 44] = [
-        Pose::Stand,
-        Pose::Walk(0),
-        Pose::Walk(1),
-        Pose::Walk(2),
-        Pose::Walk(3),
-        Pose::Climb { frame: 0, pole: 2 },
-        Pose::Climb { frame: 1, pole: 0 },
-        Pose::Fall,
-        Pose::Dazed,
-        Pose::Peer,
-        Pose::Pull {
-            heaving: false,
-            row: 1,
-        },
-        Pose::Pull {
-            heaving: true,
-            row: 2,
-        },
-        Pose::Sit,
-        Pose::LieBack(0),
-        Pose::LieBack(1),
-        Pose::LieFront(0),
-        Pose::LieFront(1),
-        Pose::Jack(0),
-        Pose::Jack(1),
-        Pose::ToeTouch(0),
-        Pose::ToeTouch(1),
-        Pose::Stretch,
-        Pose::Gaze,
-        Pose::Side,
-        Pose::Lounge,
-        Pose::Nap(0),
-        Pose::Nap(1),
-        Pose::Sleep(0),
-        Pose::Sleep(1),
-        Pose::Homework(0),
-        Pose::Homework(1),
-        Pose::Homework(2),
-        Pose::Homework(3),
-        Pose::Carry(0),
-        Pose::Carry(1),
-        Pose::Read(0),
-        Pose::Read(1),
-        Pose::Eat(0),
-        Pose::Eat(1),
-        Pose::Pet(0),
-        Pose::Pet(1),
-        Pose::Chopsticks(0),
-        Pose::Chopsticks(1),
-        Pose::Chopsticks(2),
-    ];
 
     /// Every pose has a head where her head is drawn: an "o" or
     /// parentheses, inside the box.

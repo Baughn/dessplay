@@ -192,7 +192,9 @@ fn a_chat_message_makes_her_look_not_leave() {
         chat_mark: ChatMark {
             synced: 1,
             newest: Some(42),
+            synced_asks: false,
             irc: 0,
+            irc_asks: false,
         },
         ..quiet.clone()
     };
@@ -1359,6 +1361,7 @@ fn a_refused_swap_leaves_nothing_owed() {
 #[test]
 fn every_scene_has_a_spot_in_the_stage_room() {
     use super::sprite::Pose;
+    use script::Cue;
     for (width, height) in [(100, 30), (80, 24)] {
         for graphics in [false, true] {
             let mut ui = stage_ui();
@@ -1467,6 +1470,20 @@ fn every_scene_has_a_spot_in_the_stage_room() {
                         Scene::Read => posed(Pose::Read(0)),
                         Scene::Snack => posed(Pose::Eat(0)),
                         Scene::Pet => posed(Pose::Pet(0)),
+                        // Chosen as the use starts (the andagi plays
+                        // after the snack, past the cap: see
+                        // her_vignettes_play_at_her_things).
+                        Scene::ChopsticksClean | Scene::ChopsticksBad | Scene::Andagi => {
+                            let Some(Cue::Splice(id, branch)) = scene.cue() else {
+                                panic!("{at}: {scene:?} cues no splice");
+                            };
+                            visit.osaka.plays().is_some_and(|p| {
+                                [p.before, p.after]
+                                    .into_iter()
+                                    .flatten()
+                                    .any(|s| s.splice == id && branch.is_none_or(|b| s.branch == b))
+                            })
+                        }
                         // Lifted, or (a turn) set down already.
                         Scene::Arrange => {
                             visit.osaka.carrying().is_some() || sofa(&guest) != sofa_was
@@ -1878,21 +1895,87 @@ fn a_busy_furnished_home_stays_cheap() {
     assert!(acts >= 1, "she never set anything down");
 }
 
+/// Her vignettes as often as they may be (every splice that may wrap a
+/// use she starts does, ten minutes apart) cost her frame cache next to
+/// nothing: busy about a furnished home with her fridge (industrious, as
+/// in [`a_busy_furnished_home_stays_cheap`]) for twenty minutes in line
+/// art, the chopsticks before her homework and the andagi after her
+/// snacks, the cache fills (so what it drops is tried) and drops scarcely
+/// more that she needs again than the same visit without them. (The two
+/// visits part ways at the first vignette, so this is the vignettes'
+/// cost give or take where she happens to go.)
+#[test]
+fn a_home_full_of_vignettes_stays_cheap() {
+    use super::brain::Mood;
+    use script::SpliceId;
+    let mut played = std::collections::HashSet::new();
+    for seed in [0u64, 2, 3] {
+        let mut reencoded = [0; 2];
+        for sure in [false, true] {
+            let (mut guest, real, view) = furnished_home_with(seed, &[Furniture::Fridge]);
+            let State::Visiting(visit) = &mut guest.state else {
+                panic!("visiting");
+            };
+            visit.osaka.set_mood(Mood::Industrious);
+            visit.osaka.splices_sure = sure;
+            live_in_watching(&mut guest, &real, &view, 20 * 60_000, seed, |guest, _| {
+                let plays = visit_of(guest).osaka.plays();
+                for s in plays
+                    .into_iter()
+                    .flat_map(|p| [p.before, p.after])
+                    .flatten()
+                {
+                    played.insert((sure, s.splice));
+                }
+            });
+            let graphics = guest.graphics.as_ref().unwrap();
+            let (cached, counts) = (graphics.cached(), graphics.counts());
+            eprintln!("seed {seed}, vignettes {sure}: {cached} cached, {counts:?}");
+            if sure {
+                assert!(
+                    counts.evicted > 0,
+                    "seed {seed}: the cache never filled, so its budget went untried: {counts:?}"
+                );
+            }
+            reencoded[usize::from(sure)] = counts.reencoded;
+        }
+        let [without, with] = reencoded;
+        assert!(
+            with <= without + 4,
+            "seed {seed}: her vignettes thrashed her working set: {with} images encoded again, {without} without them"
+        );
+    }
+    for want in [SpliceId::Chopsticks, SpliceId::Andagi] {
+        assert!(
+            played.contains(&(true, want)),
+            "{want:?} never played: {played:?}"
+        );
+    }
+}
+
 /// A furnished home on [`home_screen`] (her living room and bedroom, the
 /// sofa, TV, bed and desk given), in line art, she arrived at `seed`.
 fn furnished_home(seed: u64) -> (Guest, Buffer, IdleView) {
+    furnished_home_with(seed, &[])
+}
+
+/// [`furnished_home`], with `more` given too.
+fn furnished_home_with(seed: u64, more: &[Furniture]) -> (Guest, Buffer, IdleView) {
     let (real, view) = home_screen();
     let mut guest = Guest::new(seed);
     guest.set_picker(kitty());
     guest.cue(Scene::Arrive);
     paint(&mut guest, &real, &view, 0);
-    let pieces = [
+    let pieces: Vec<Furniture> = [
         Furniture::Sofa,
         Furniture::Tv,
         Furniture::Bed,
         Furniture::Desk,
-    ];
-    for item in pieces {
+    ]
+    .into_iter()
+    .chain(more.iter().copied())
+    .collect();
+    for &item in &pieces {
         guest.give(item);
         paint(&mut guest, &real, &view, 0);
     }
@@ -1901,7 +1984,7 @@ fn furnished_home(seed: u64) -> (Guest, Buffer, IdleView) {
             .iter()
             .filter(|&&item| guest.ledger.home.owns(item))
             .count(),
-        4,
+        pieces.len(),
         "seed {seed}: {:?}",
         guest.cue_note()
     );
@@ -1910,6 +1993,18 @@ fn furnished_home(seed: u64) -> (Guest, Buffer, IdleView) {
 
 /// Her visit going on until `until`, her image never hiding text.
 fn live_in(guest: &mut Guest, real: &Buffer, view: &IdleView, until: u64, seed: u64) {
+    live_in_watching(guest, real, view, until, seed, |_, _| {});
+}
+
+/// [`live_in`], `watch` seeing her after each step.
+fn live_in_watching(
+    guest: &mut Guest,
+    real: &Buffer,
+    view: &IdleView,
+    until: u64,
+    seed: u64,
+    mut watch: impl FnMut(&Guest, u64),
+) {
     let mut hidden = Hidden::default();
     let mut now = 0;
     while now < until {
@@ -1926,6 +2021,7 @@ fn live_in(guest: &mut Guest, real: &Buffer, view: &IdleView, until: u64, seed: 
             hidden
                 .check(&frame, real, &layer, now)
                 .unwrap_or_else(|e| panic!("seed {seed} at {now}: {e}"));
+            watch(guest, now);
         }
     }
 }
@@ -2885,16 +2981,27 @@ fn watch_scene(
     graphics: bool,
     until: impl Fn(&Visit, u64) -> bool,
 ) -> bool {
-    let (real, view) = home_screen();
+    watch_scene_in(&home_screen(), scene, pieces, graphics, until)
+}
+
+/// [`watch_scene`], on `screen`.
+fn watch_scene_in(
+    screen: &(Buffer, IdleView),
+    scene: Scene,
+    pieces: &[Furniture],
+    graphics: bool,
+    until: impl Fn(&Visit, u64) -> bool,
+) -> bool {
+    let (real, view) = screen;
     let mut guest = Guest::new(8);
     if graphics {
         guest.set_picker(kitty());
     }
     guest.cue(Scene::Arrive);
-    paint(&mut guest, &real, &view, 0);
+    paint(&mut guest, real, view, 0);
     for &item in pieces {
         guest.give(item);
-        paint(&mut guest, &real, &view, 0);
+        paint(&mut guest, real, view, 0);
         assert!(
             guest.ledger.home.owns(item),
             "{item:?}: {:?}",
@@ -2904,21 +3011,21 @@ fn watch_scene(
     guest.cue(scene);
     let mut hidden = Hidden::default();
     let mut now = 0;
-    paint(&mut guest, &real, &view, now);
+    paint(&mut guest, real, view, now);
     while now < 20_000 {
         now += guest
             .next_tick(now)
             .map_or(100, |d| d.as_millis() as u64)
             .clamp(1, 100);
         guest.advance(now);
-        let frame = paint(&mut guest, &real, &view, now);
+        let frame = paint(&mut guest, real, view, now);
         let State::Visiting(visit) = &guest.state else {
             panic!("{scene:?}: still visiting");
         };
         if graphics {
             let layer: Vec<(u16, u16)> = visit.layer.cells().collect();
             hidden
-                .check(&frame, &real, &layer, now)
+                .check(&frame, real, &layer, now)
                 .unwrap_or_else(|e| panic!("{scene:?} at {now}: {e}"));
         }
         if until(visit, now) {
@@ -3010,6 +3117,416 @@ fn her_things_answer_what_she_does() {
                     && bubble == Some(osaka::Bubble::Say("Ow!"))
             }),
             "graphics={graphics}: the cat bit"
+        );
+    }
+}
+
+/// [`home_screen`], its panes full of text as a client's are (the users
+/// and the playlist listed down them), so her image, held out or
+/// reaching, has text to keep off.
+fn wordy_home_screen() -> (Buffer, IdleView) {
+    let (mut real, view) = home_screen();
+    let users = [
+        "kim        ready   Frieren 12  01:14:03",
+        "bob        watching            00:24:10",
+        "svein      paused  Frieren 12  01:14:03",
+        "aoi        ready   Frieren 13  00:00:00",
+        "mika       away                00:03:51",
+        "ren        ready   Frieren 12  01:14:03",
+    ];
+    for (row, line) in (9u16..).zip(users) {
+        real.set_string(2, row, line, Style::new());
+    }
+    for (row, ep) in (9u16..15).zip(12..) {
+        let line = format!("{:02} Frieren ep {ep} [1080p]  23:40", row - 8);
+        real.set_string(52, row, line, Style::new());
+    }
+    (real, view)
+}
+
+/// The two-pane home, quiet and text-dense, by name.
+fn home_screens() -> [(&'static str, (Buffer, IdleView)); 2] {
+    [("quiet", home_screen()), ("wordy", wordy_home_screen())]
+}
+
+/// Her vignettes, cued: the chopsticks split cleanly (a twinkle) or
+/// badly (told off) at her desk before homework, and after a snack the
+/// sata andagi, held up and named — each in both drawing modes, quiet
+/// panes or text-dense, never hiding text.
+#[test]
+fn her_vignettes_play_at_her_things() {
+    use super::sprite::Pose;
+    use script::{HOLD_EM, SATA_ANDAGI};
+    for (name, screen) in home_screens() {
+        for graphics in [false, true] {
+            for (scene, pieces, pose, said) in [
+                (
+                    Scene::ChopsticksClean,
+                    &[Furniture::Desk][..],
+                    Pose::Chopsticks(1),
+                    osaka::Bubble::Sparkle,
+                ),
+                (
+                    Scene::ChopsticksBad,
+                    &[Furniture::Desk],
+                    Pose::Chopsticks(2),
+                    osaka::Bubble::Say(HOLD_EM),
+                ),
+                (
+                    Scene::Andagi,
+                    &[],
+                    Pose::EatAndagi(0),
+                    osaka::Bubble::Say(SATA_ANDAGI),
+                ),
+            ] {
+                assert!(
+                    watch_scene_in(&screen, scene, pieces, graphics, |v, now| {
+                        let (shown, _, bubble) = v.osaka.appearance(now);
+                        shown == pose && bubble == Some(said)
+                    }),
+                    "{name}, graphics={graphics}: {scene:?}"
+                );
+            }
+        }
+    }
+}
+
+/// A guest cued to the andagi after her snack on `screen` (graphics or
+/// not), what she's seen of the chat `seen`, run (her image never hiding
+/// text) until `at` holds of the use she plays (its play, since, until,
+/// and the time), at most 30 s in: the guest, the text she's hidden so
+/// far, and when.
+fn andagi_until(
+    screen: &(Buffer, IdleView),
+    graphics: bool,
+    seen: ChatMark,
+    at: impl Fn(script::Play, u64, u64, u64) -> bool,
+) -> (Guest, Hidden, u64) {
+    let (real, view) = screen;
+    let view = IdleView {
+        chat_mark: seen,
+        ..view.clone()
+    };
+    let mut guest = Guest::new(8);
+    if graphics {
+        guest.set_picker(kitty());
+    }
+    guest.cue(Scene::Arrive);
+    paint(&mut guest, real, &view, 0);
+    guest.cue(Scene::Andagi);
+    let mut hidden = Hidden::default();
+    let mut now = 0;
+    paint(&mut guest, real, &view, now);
+    while now < 30_000 {
+        now += guest
+            .next_tick(now)
+            .map_or(100, |d| d.as_millis() as u64)
+            .clamp(1, 100);
+        guest.advance(now);
+        let frame = paint(&mut guest, real, &view, now);
+        if graphics {
+            let layer: Vec<(u16, u16)> = visit_of(&guest).layer.cells().collect();
+            hidden
+                .check(&frame, real, &layer, now)
+                .unwrap_or_else(|e| panic!("graphics at {now}: {e}"));
+        }
+        let osaka = &visit_of(&guest).osaka;
+        if let (Some(play), Some((_, since, until))) = (osaka.plays(), osaka.use_span())
+            && at(play, since, until, now)
+        {
+            return (guest, hidden, now);
+        }
+    }
+    panic!("graphics={graphics}: never there by {now}");
+}
+
+/// A chat line asking her something (ending in "?"), in chat or on IRC,
+/// as the andagi plays after her snack: she turns to the chat and
+/// answers "Sata andagi.", beaming, and plays the andagi on to its end,
+/// neither stopped nor cut short, eating it at last (and, bitten, it
+/// stays bitten). A line that asks nothing then, history compacted
+/// while the newest line is a question, or a question during the snack
+/// itself, she stops and looks at, as at any. In both drawing modes,
+/// quiet panes or text-dense, never hiding text.
+#[test]
+fn asked_during_the_andagi_she_answers_and_plays_on() {
+    use super::sprite::{Face, Facing, Pose};
+    use script::{ANDAGI_FOUND_MS, SATA_ANDAGI, SpliceId};
+    // What she's seen of the chat: a question its newest line.
+    let seen = ChatMark {
+        synced: 5,
+        newest: Some(5),
+        synced_asks: true,
+        irc: 2,
+        irc_asks: false,
+    };
+    let asked = ChatMark {
+        synced: 6,
+        newest: Some(6),
+        ..seen
+    };
+    let cases = [
+        ("asked", asked, true, true),
+        (
+            "asked on IRC",
+            ChatMark {
+                irc: 3,
+                irc_asks: true,
+                ..seen
+            },
+            true,
+            true,
+        ),
+        (
+            "told",
+            ChatMark {
+                synced_asks: false,
+                ..asked
+            },
+            true,
+            false,
+        ),
+        ("compacted", ChatMark { synced: 3, ..seen }, true, false),
+        ("asked in the snack", asked, false, false),
+    ];
+    for (name, screen) in home_screens() {
+        let (real, view) = &screen;
+        for graphics in [false, true] {
+            for (what, mark, in_coda, answers) in cases {
+                let case = format!("{name}, graphics={graphics}, {what}");
+                let (mut guest, mut hidden, now) =
+                    andagi_until(&screen, graphics, seen, |play, since, until, now| {
+                        let spliced = play.after.is_some_and(|s| s.splice == SpliceId::Andagi);
+                        let end = play.body_end(since, until);
+                        spliced
+                            && if in_coda {
+                                now >= end + ANDAGI_FOUND_MS + 300
+                            } else {
+                                (play.body_start(since) + 300..end).contains(&now)
+                            }
+                    });
+                let span = visit_of(&guest).osaka.use_span();
+                let (_, _, until) = span.unwrap();
+                let chatty = IdleView {
+                    chat_mark: mark,
+                    ..view.clone()
+                };
+                let mut now = now + 1;
+                guest.advance(now);
+                paint(&mut guest, real, &chatty, now);
+                let osaka = &visit_of(&guest).osaka;
+                if !answers {
+                    assert_ne!(osaka.use_span(), span, "{case}: she stopped to look");
+                    continue;
+                }
+                assert_eq!(osaka.use_span(), span, "{case}: playing on");
+                let (_, face, bubble) = osaka.appearance(now);
+                assert_eq!(
+                    (face, bubble),
+                    (Face::Happy, Some(osaka::Bubble::Say(SATA_ANDAGI))),
+                    "{case}"
+                );
+                let chat_x = i32::from(view.chat.x) + i32::from(view.chat.width) / 2;
+                let facing = if chat_x < osaka.x {
+                    Facing::Left
+                } else {
+                    Facing::Right
+                };
+                assert_eq!(osaka.facing, facing, "{case}: turned to the chat");
+                // On to the end: the same use throughout, eating it at
+                // last, and never whole again once bitten.
+                let mut bitten = false;
+                while now + 1 < until {
+                    now += guest
+                        .next_tick(now)
+                        .map_or(100, |d| d.as_millis() as u64)
+                        .clamp(1, 100)
+                        .min(until - 1 - now);
+                    guest.advance(now);
+                    let frame = paint(&mut guest, real, &chatty, now);
+                    if graphics {
+                        let layer: Vec<(u16, u16)> = visit_of(&guest).layer.cells().collect();
+                        hidden
+                            .check(&frame, real, &layer, now)
+                            .unwrap_or_else(|e| panic!("{case} at {now}: {e}"));
+                    }
+                    let osaka = &visit_of(&guest).osaka;
+                    assert_eq!(osaka.use_span(), span, "{case} at {now}");
+                    assert_eq!(osaka.facing, facing, "{case} at {now}: still turned");
+                    let pose = osaka.appearance(now).0;
+                    assert!(
+                        !(bitten && pose == Pose::EatAndagi(0)),
+                        "{case} at {now}: whole again"
+                    );
+                    bitten |= pose == Pose::EatAndagi(1);
+                }
+                assert!(bitten, "{case}: never bit it");
+            }
+        }
+    }
+}
+
+/// One of her images as it's keyed: her pose and face, what she shows
+/// on her furniture, and the way she faces.
+type Seen = (
+    super::sprite::Pose,
+    super::sprite::Face,
+    Option<script::Prop>,
+    super::sprite::Facing,
+);
+
+/// The images the keys of a vignette `len` long can show her in from
+/// `from` to `to` ms into it, facing `facing`: each pose (a bob's two
+/// frames) with its face (or `face`, if given) and what it shows on her
+/// furniture.
+fn looks_of(
+    keys: &[script::Key],
+    len: u64,
+    (from, to): (u64, u64),
+    facing: super::sprite::Facing,
+    face: Option<super::sprite::Face>,
+) -> std::collections::HashSet<Seen> {
+    let mut start = 0;
+    let mut out = std::collections::HashSet::new();
+    for key in keys {
+        let end = key.span.end(Some(len));
+        if start < to && from < end {
+            let poses = match key.pose {
+                script::Posed::Still(pose) => vec![pose],
+                script::Posed::Bob(pose, _) => vec![pose(0), pose(1)],
+                script::Posed::Host => panic!("a vignette has no host's pose"),
+            };
+            for pose in poses {
+                out.insert((pose, face.unwrap_or(key.face), key.prop, facing));
+            }
+        }
+        start = end;
+    }
+    out
+}
+
+/// Each vignette, cued in the two-pane home in line art, costs no more
+/// images than its script has looks: those encoded from its first frame
+/// to its last are (exactly) the looks its keys can show her in (each pose and
+/// face, with what it shows on her furniture, the way she faces), less
+/// those she'd shown before it. Asked something as the andagi plays,
+/// she turns to answer: the keys up to then in the way she faced, the
+/// rest turned, and those she says it over beaming.
+#[test]
+fn a_vignette_stays_within_its_image_budget() {
+    use super::sprite::Face;
+    use script::{ANDAGI_FOUND_MS, Cue, SATA_ANDAGI};
+    for (scene, pieces, ask) in [
+        (Scene::ChopsticksClean, &[Furniture::Desk][..], false),
+        (Scene::ChopsticksBad, &[Furniture::Desk], false),
+        (Scene::Andagi, &[], false),
+        (Scene::Andagi, &[], true),
+    ] {
+        let Some(Cue::Splice(id, _)) = scene.cue() else {
+            panic!("{scene:?}");
+        };
+        let case = format!("{scene:?}, asked {ask}");
+        let (real, view) = home_screen();
+        let chatty = IdleView {
+            chat_mark: ChatMark {
+                synced: 1,
+                newest: Some(1),
+                synced_asks: true,
+                ..ChatMark::default()
+            },
+            ..view.clone()
+        };
+        let mut guest = Guest::new(8);
+        guest.set_picker(kitty());
+        guest.cue(Scene::Arrive);
+        paint(&mut guest, &real, &view, 0);
+        for &item in pieces {
+            guest.give(item);
+            paint(&mut guest, &real, &view, 0);
+        }
+        guest.cue(scene);
+        let encoded = |guest: &Guest| guest.graphics.as_ref().unwrap().counts().encoded;
+        // What she's shown before it; encoded before its first frame and
+        // by its last; its branch, length, start and facing; and when
+        // (into it) she turned to answer, and which way.
+        let mut shown = std::collections::HashSet::new();
+        let (mut from, mut to, mut over) = (None, None, false);
+        let mut played = None;
+        let mut answered = None;
+        let mut now = 0;
+        let mut on = &view;
+        paint(&mut guest, &real, on, now);
+        while now < 40_000 && !over {
+            let before = encoded(&guest);
+            now += guest
+                .next_tick(now)
+                .map_or(100, |d| d.as_millis() as u64)
+                .clamp(1, 100);
+            guest.advance(now);
+            paint(&mut guest, &real, on, now);
+            let osaka = &visit_of(&guest).osaka;
+            let playing =
+                osaka
+                    .plays()
+                    .zip(osaka.use_span())
+                    .and_then(|(play, (_, since, until))| {
+                        let s = play.spliced_at(since, until, now)?;
+                        let start = if play.before == Some(s) {
+                            since
+                        } else {
+                            play.body_end(since, until)
+                        };
+                        Some((s, start))
+                    });
+            match playing.filter(|(s, _)| s.splice == id) {
+                Some((s, start)) => {
+                    from.get_or_insert(before);
+                    to = Some(encoded(&guest));
+                    played.get_or_insert((s.branch, s.len, start, osaka.facing));
+                    if ask && answered.is_none() && now >= start + ANDAGI_FOUND_MS + 300 {
+                        on = &chatty;
+                        paint(&mut guest, &real, on, now);
+                        let osaka = &visit_of(&guest).osaka;
+                        assert_eq!(osaka.appearance(now).1, Face::Happy, "{case}: answered");
+                        answered = Some((now - start, osaka.facing));
+                        to = Some(encoded(&guest));
+                    }
+                }
+                None if from.is_none() => {
+                    let (pose, face, _) = osaka.appearance(now);
+                    shown.insert((pose, face, osaka.prop(now), osaka.facing));
+                }
+                None => over = true,
+            }
+        }
+        let (Some(from), Some(to), Some((branch, len, _, facing))) = (from, to, played) else {
+            panic!("{case}: never played");
+        };
+        let keys = id.script().keys(branch);
+        let looks = match answered {
+            None => looks_of(keys, len, (0, len), facing, None),
+            Some((at, turned)) => {
+                let mut looks = looks_of(keys, len, (0, at + 1), facing, None);
+                looks.extend(looks_of(keys, len, (at, len), turned, None));
+                let said = at + osaka::speech_ms(SATA_ANDAGI);
+                looks.extend(looks_of(keys, len, (at, said), turned, Some(Face::Happy)));
+                looks
+            }
+        };
+        assert_eq!(ask, answered.is_some(), "{case}");
+        let budget = looks.difference(&shown).count();
+        eprintln!("{case}: {} encoded, budget {budget}", to - from);
+        assert!(
+            to - from <= budget,
+            "{case}: {} images encoded over {budget} looks: {looks:?}",
+            to - from,
+        );
+        // And the budget is the looks it shows, none to spare (so one
+        // look more than its script has would be caught).
+        assert_eq!(
+            to - from,
+            budget,
+            "{case}: a look it never showed: {looks:?}"
         );
     }
 }
@@ -4960,6 +5477,17 @@ fn every_script_can_be_cued() {
         for id in ScriptId::ALL {
             let scene = id.scene();
             assert!(Scene::ALL.contains(&scene), "{id:?}: {scene:?}");
+            // A splice's script is never a use's own: see
+            // every_splice_can_be_cued.
+            if id.host() == script::Host::Splice {
+                assert!(
+                    script::SpliceId::ALL
+                        .iter()
+                        .any(|s| s.script() == id && s.scenes().contains(&scene)),
+                    "{id:?}: {scene:?}"
+                );
+                continue;
+            }
             let at = format!("{id:?} ({scene:?}) graphics={graphics}");
             let (played, now) = cue_until(scene, graphics, &real, &view, |plays| {
                 let played = plays.is_some_and(|p| p.own == id);
@@ -4979,45 +5507,53 @@ fn every_script_can_be_cued() {
 }
 
 /// Lint: every splice row can be cued from the stage, and plays when it
-/// is (in the stage room, in both drawing modes): its scene is on the
-/// stage's menu, and cueing it has her playing that very splice round
-/// the next use soon after. (The tests' own splices aren't rows, and
-/// have no scene.)
+/// is (in the stage room, in both drawing modes): each of its scenes is
+/// on the stage's menu and cues it, every branch of it is some scene's
+/// to force or left to her whims by one, and cueing it has her playing
+/// that very splice (on the branch cued) round the next use soon after.
+/// (The tests' own splices aren't rows, and have no scene.)
 #[test]
 fn every_splice_can_be_cued() {
-    use script::SpliceId;
+    use script::{Cue, SpliceId};
     for id in [
         SpliceId::TestSnack,
         SpliceId::TestSleep,
         SpliceId::TestBedtime,
     ] {
-        assert_eq!(id.scene(), None, "{id:?}");
+        assert!(id.scenes().is_empty(), "{id:?}");
     }
     let mut ui = stage_ui();
     let (real, view) = real_frame(&mut ui, 100, 30);
-    for graphics in [false, true] {
-        for id in SpliceId::ALL {
-            let scene = id.scene();
-            assert!(
-                scene.is_some_and(|s| Scene::ALL.contains(&s)),
-                "{id:?}: {scene:?}"
-            );
-            let Some(scene) = scene else {
-                continue;
+    for id in SpliceId::ALL {
+        assert!(!id.scenes().is_empty(), "{id:?}: no scene");
+        let branches = id.row().lens.len();
+        let mut forced = vec![false; branches];
+        for &scene in id.scenes() {
+            assert!(Scene::ALL.contains(&scene), "{id:?}: {scene:?}");
+            let Some(Cue::Splice(cued, branch)) = scene.cue() else {
+                panic!("{id:?}: {scene:?} doesn't cue it");
             };
-            let (played, now) = cue_until(scene, graphics, &real, &view, |plays| {
-                plays.is_some_and(|p| {
-                    [p.before, p.after]
-                        .into_iter()
-                        .flatten()
-                        .any(|s| s.splice == id)
-                })
-            });
-            assert!(
-                played,
-                "{id:?} ({scene:?}) graphics={graphics}: not played by {now}"
-            );
+            assert_eq!(cued, id, "{scene:?}");
+            match branch {
+                Some(b) => forced[usize::from(b)] = true,
+                None => forced.fill(true),
+            }
+            for graphics in [false, true] {
+                let (played, now) = cue_until(scene, graphics, &real, &view, |plays| {
+                    plays.is_some_and(|p| {
+                        [p.before, p.after]
+                            .into_iter()
+                            .flatten()
+                            .any(|s| s.splice == id && branch.is_none_or(|b| s.branch == b))
+                    })
+                });
+                assert!(
+                    played,
+                    "{id:?} ({scene:?}) graphics={graphics}: not played by {now}"
+                );
+            }
         }
+        assert!(forced.iter().all(|&f| f), "{id:?}: a branch no scene cues");
     }
 }
 
@@ -8286,7 +8822,7 @@ fn spliced_use(
     let State::Visiting(visit) = &mut guest.state else {
         panic!("visiting");
     };
-    visit.osaka.cue(Some(script::Cue::Splice(splice)));
+    visit.osaka.cue(Some(script::Cue::Splice(splice, None)));
     let mut now = 0;
     while now < 180_000 {
         let then = now;

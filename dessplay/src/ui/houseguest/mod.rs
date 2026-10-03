@@ -88,7 +88,7 @@ use tuirealm::ratatui::style::{Color, Modifier};
 use cells::{Ink, put};
 use dissolve::{Dissolve, Frozen};
 use graphics::{Graphics, Look};
-pub use idle::{Busy, ChatMark, IdleView, Scrollback, grow};
+pub use idle::{Busy, ChatMark, IdleView, Scrollback, asks, grow};
 pub use ledger::Ledger;
 use osaka::Osaka;
 use room::Shown;
@@ -1319,16 +1319,18 @@ impl Guest {
                 State::Absent | State::Leaving(_) => {}
             }
         }
-        let arrived = self.chat_mark.is_some_and(|mark| mark != view.chat_mark);
-        self.chat_mark = Some(view.chat_mark);
-        if arrived {
+        let before = self.chat_mark.replace(view.chat_mark);
+        let arrived = before.is_some_and(|mark| mark != view.chat_mark);
+        if let Some(before) = before.filter(|_| arrived) {
             match &mut self.state {
                 State::Visiting(visit) => {
-                    tracing::trace!("houseguest looks at chat");
+                    let asks = view.chat_mark.asks_since(&before);
+                    tracing::trace!(asks, "houseguest looks at chat");
                     let chat = view.chat;
                     visit.osaka.look(
                         now,
                         i32::from(chat.x) + i32::from(chat.width) / 2,
+                        asks,
                         &visit.terrain,
                     );
                 }

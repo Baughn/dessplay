@@ -15,7 +15,7 @@ use tuirealm::ratatui::layout::Rect;
 use super::osaka::{Activity, Chances};
 use super::room::{Furniture, Use};
 use super::scenes::{self, Job, Side};
-use super::script::{Cue, ScriptId};
+use super::script::{Cue, ScriptId, SpliceId};
 use super::sprite::WIDTH;
 use super::terrain::{Link, Route, Terrain};
 use super::{Rng, Visit};
@@ -88,6 +88,12 @@ pub enum Scene {
     Snack,
     /// Petting the cat in his bed (he's home for it).
     Pet,
+    /// Before her homework, she splits a pair of chopsticks cleanly.
+    ChopsticksClean,
+    /// Before her homework, she splits a pair of chopsticks badly.
+    ChopsticksBad,
+    /// After a snack, a sata andagi.
+    Andagi,
     /// Tear text off a line and crumple it into a makeshift sofa.
     MakeSofa,
     /// Tear text off a line and crumple it into a makeshift bed.
@@ -99,7 +105,7 @@ pub enum Scene {
 
 impl Scene {
     /// Every scene, in menu order.
-    pub const ALL: [Scene; 34] = [
+    pub const ALL: [Scene; 37] = [
         Self::Arrive,
         Self::Pull,
         Self::Swap,
@@ -131,6 +137,9 @@ impl Scene {
         Self::Read,
         Self::Snack,
         Self::Pet,
+        Self::ChopsticksClean,
+        Self::ChopsticksBad,
+        Self::Andagi,
         Self::MakeSofa,
         Self::MakeBed,
         Self::Arrange,
@@ -170,6 +179,9 @@ impl Scene {
             Self::Read => "read",
             Self::Snack => "snack",
             Self::Pet => "pet the cat",
+            Self::ChopsticksClean => "chopsticks, clean split",
+            Self::ChopsticksBad => "chopsticks, bad split",
+            Self::Andagi => "sata andagi",
             Self::MakeSofa => "make a sofa of text",
             Self::MakeBed => "make a bed of text",
             Self::Arrange => "turn the sofa round",
@@ -182,11 +194,11 @@ impl Scene {
             Self::Lounge => Use::Lounge,
             Self::Nap => Use::Nap,
             Self::Sleep => Use::Sleep,
-            Self::Homework => Use::Homework,
+            Self::Homework | Self::ChopsticksClean | Self::ChopsticksBad => Use::Homework,
             Self::Watch | Self::Shopping | Self::Surf => Use::Watch,
             Self::Parcel => Use::Unpack,
             Self::Read => Use::Read,
-            Self::Snack => Use::Snack,
+            Self::Snack | Self::Andagi => Use::Snack,
             Self::Pet => Use::Pet,
             _ => return None,
         })
@@ -194,11 +206,15 @@ impl Scene {
 
     /// What it has her play, forced rather than rolled: each script
     /// that shares its piece with another (a plain watch, surfing, the
-    /// shopping channel: cued to one, she plays none of the others),
-    /// and a riddle (musing, she might not tell one). Wildcard-free, so a
-    /// new scene says.
+    /// shopping channel: cued to one, she plays none of the others), a
+    /// riddle (musing, she might not tell one), and each splice (the
+    /// chopsticks on the branch named). Wildcard-free, so a new scene
+    /// says.
     pub(super) fn cue(self) -> Option<Cue> {
         match self {
+            Self::ChopsticksClean => Some(Cue::Splice(SpliceId::Chopsticks, Some(0))),
+            Self::ChopsticksBad => Some(Cue::Splice(SpliceId::Chopsticks, Some(1))),
+            Self::Andagi => Some(Cue::Splice(SpliceId::Andagi, None)),
             Self::Watch => Some(Cue::Script(ScriptId::Watch)),
             Self::Shopping => Some(Cue::Script(ScriptId::Shopping)),
             Self::Surf => Some(Cue::Script(ScriptId::Surf)),
