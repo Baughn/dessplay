@@ -2173,14 +2173,16 @@ fn piece_state(piece: &Shown, osaka: &Osaka, cat: bool, now: u64) -> art::PieceS
 }
 
 /// A piece of furniture as an image layer that `look`s so, standing on
-/// its floor.
+/// its floor, or hung on the wall above it (its box ends on the row
+/// above `at`'s).
 fn prop_layer(prop: &Shown, look: Look) -> graphics::Layer {
     let (cols, _) = prop.size();
+    let lift = i32::from(prop.lift());
     graphics::Layer {
         look,
         facing: prop.facing,
-        at: (prop.left + i32::from(cols) / 2, prop.floor),
-        standing: true,
+        at: (prop.left + i32::from(cols) / 2, prop.floor - lift),
+        standing: lift == 0,
     }
 }
 

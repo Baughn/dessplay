@@ -390,136 +390,225 @@ proptest! {
         protect in (0u16..40, 0u16..10, 1u16..20, 1u16..6),
         owned in proptest::collection::vec((0usize..4, 0usize..3, 0u16..=1000, any::<bool>()), 0..5),
     ) {
-        let mut guest = Guest::new(seed);
-        if graphics {
-            guest.set_picker(kitty());
-        }
-        let nook = [Nook::List, Nook::Users, Nook::Playlist];
-        for &(item, at, along, left) in &owned {
-            // A second room offered a taken pane is refused, as in play.
-            let _ = guest.ledger.home.add(room::Prop::new(
-                Furniture::ALL[item],
-                nook[at],
-                along,
-                if left { sprite::Facing::Left } else { sprite::Facing::Right },
-            ));
-        }
-        let mut hidden = Hidden::default();
-        let mut now = 0;
-        let span = 200_000 / sizes.len() as u64;
-        let mut mark = ChatMark::default();
-        for &(w, h) in &sizes {
-            let mut real = rooms(w, h);
-            scatter(&mut real, &text, &skips);
-            let (px, py, pw, ph) = protect;
-            let mut protected = bottom_strip(w, h);
-            protected.push(Rect::new(px, py, pw, ph).intersection(real.area));
-            let until = now + span;
-            while now < until {
-                let step = guest
-                    .next_tick(now)
-                    .map_or(until - now, |d| d.as_millis() as u64)
-                    .clamp(1, until - now);
-                now += step;
-                if chats.iter().any(|&c| c <= now && c > now - step) {
-                    mark.synced += 1;
-                }
-                let view = IdleView {
-                    chat_mark: mark,
-                    nooks: nooks(w, h),
-                    ..view(protected.clone())
-                };
-                guest.advance(now);
-                let frame = paint(&mut guest, &real, &view, now);
-                let feet = match &guest.state {
-                    State::Visiting(visit) if graphics && visit.image.is_some_and(|i| i.standing) => {
-                        visit.image.map(|i| (i.x, i.y))
-                    }
-                    _ => None,
-                };
-                assert_untouched_but_feet(&frame, &real, &protected, feet)?;
-                let (layer, shown): (Vec<(u16, u16)>, Vec<Shown>) = match &guest.state {
-                    State::Visiting(visit) => (visit.layer.cells().collect(), visit.shown.clone()),
-                    _ => (Vec::new(), Vec::new()),
-                };
-                // Each real piece stands on the floor of a strip that's
-                // here this frame.
-                let strips = room::strips(&view.nooks);
-                for prop in shown.iter().filter(|s| s.scrap.is_none()) {
-                    let here = strips.iter().find(|(s, _)| Some(*s) == prop.strip);
-                    prop_assert!(here.is_some_and(|(_, e)| e.floor == prop.floor), "{:?}", prop);
-                }
-                // Her furniture stands on lines, over blank cells only,
-                // clear of protected cells, text she moved, and her.
-                for prop in &shown {
-                    let (cols, _) = prop.size();
-                    let floor = (prop.left..prop.left + i32::from(cols)).map(|x| (x, prop.floor, None));
-                    for (x, y, _) in prop.cells().chain(floor) {
-                        let at = (x as u16, y as u16);
-                        let want = real.cell(at).unwrap();
-                        prop_assert!(!cells::untouchable(want));
-                        prop_assert!(!protected.iter().any(|r| r.contains(at.into())), "{:?} protected", at);
-                        prop_assert!(!layer.contains(&at), "{:?} over moved text", at);
-                        if y < prop.floor {
-                            prop_assert!(want.symbol().trim().is_empty(), "{:?} over {:?}", at, want.symbol());
-                        } else {
-                            prop_assert!(want.symbol().chars().next().is_some_and(|c| graphics::strokes(c).is_some()));
-                        }
-                    }
-                }
-                if graphics {
-                    hidden.check(&frame, &real, &layer, now)?;
-                }
-                // Besides text she moved: her box and the floor row
-                // under it, and one bubble of at most 24 characters.
-                let width = usize::from(frame.area.width);
-                let changed = frame
-                    .content
-                    .iter()
-                    .zip(&real.content)
-                    .enumerate()
-                    .filter(|(i, (a, b))| {
-                        let at = ((i % width) as u16, (i / width) as u16);
-                        a != b && !layer.contains(&at)
-                    })
-                    .count();
-                // Her box (with its floor row), a bubble, her furniture,
-                // and the blank cells an image of her with the pieces she
-                // overlaps spans beyond them.
-                let (furniture, spanned) = match &guest.state {
-                    State::Visiting(visit) => {
-                        let area = |r: Rect| usize::from(r.width) * usize::from(r.height);
-                        let furniture: usize = shown.iter().map(|p| area(p.cover())).sum();
-                        let her = Rect::new(
-                            (visit.osaka.x - sprite::WIDTH / 2).max(0) as u16,
-                            (visit.osaka.y - sprite::HEIGHT).max(0) as u16,
-                            sprite::WIDTH as u16,
-                            sprite::HEIGHT as u16 + 1,
-                        );
-                        let union = visit.with.iter().fold(her, |r, p| r.union(p.cover()));
-                        (furniture, area(union))
-                    }
-                    _ => (0, 0),
-                };
-                let most = (sprite::WIDTH * (sprite::HEIGHT + 1)) as usize + 24 + furniture + spanned;
-                let debug = match &guest.state {
-                    State::Visiting(visit) => format!("{:?} with {:?} at ({}, {})", visit.shown, visit.with, visit.osaka.x, visit.osaka.y),
-                    _ => String::new(),
-                };
-                prop_assert!(changed <= most, "{} cells changed (most {}): {}", changed, most, debug);
-            }
-        }
-        let &(w, h) = sizes.last().unwrap();
-        let mut real = rooms(w, h);
-        scatter(&mut real, &text, &skips);
-        let view = IdleView {
-            nooks: nooks(w, h),
-            ..view(bottom_strip(w, h))
-        };
-        guest.activity(now);
-        let end = run(&mut guest, &real, &view, now, now + dissolve::DURATION_MS);
-        prop_assert_eq!(end, real);
+        let owned: Vec<(Furniture, usize, u16, bool)> = owned
+            .into_iter()
+            .map(|(item, at, along, left)| (Furniture::ALL[item], at, along, left))
+            .collect();
+        long_visit(seed, graphics, &sizes, &text, &skips, &chats, protect, &owned, 200_000)?;
     }
+
+    /// [`long_visits_never_touch_what_is_protected`], shorter, with decor
+    /// among her pieces (a poster hung over what stands, a plant beside
+    /// it), owned before or after the rest.
+    #[test]
+    fn long_visits_with_decor_never_touch_what_is_protected(
+        seed in any::<u64>(),
+        graphics in any::<bool>(),
+        sizes in proptest::collection::vec((60u16..130, 18u16..45), 1..3),
+        text in proptest::collection::vec((0u16..60, 0u16..18, "[a-z漢─│ ]{1,6}"), 0..20),
+        skips in proptest::collection::vec((0u16..60, 0u16..18), 0..6),
+        chats in proptest::collection::vec(0u64..60_000, 0..3),
+        protect in (0u16..40, 0u16..10, 1u16..20, 1u16..6),
+        owned in proptest::collection::vec((0usize..4, 0usize..3, 0u16..=1000, any::<bool>()), 0..4),
+        decor in proptest::collection::vec((any::<bool>(), 0usize..3, 0u16..=1000, any::<bool>()), 1..3),
+        decor_first in any::<bool>(),
+    ) {
+        let mut owned: Vec<(Furniture, usize, u16, bool)> = owned
+            .into_iter()
+            .map(|(item, at, along, left)| (Furniture::ALL[item], at, along, left))
+            .collect();
+        let decor = decor.into_iter().map(|(poster, at, along, left)| {
+            let item = if poster { Furniture::Poster } else { Furniture::Plant };
+            (item, at, along, left)
+        });
+        if decor_first {
+            owned.splice(0..0, decor);
+        } else {
+            owned.extend(decor);
+        }
+        long_visit(seed, graphics, &sizes, &text, &skips, &chats, protect, &owned, 60_000)?;
+    }
+}
+
+/// One long visit, `span` ms over `sizes` in turn (see
+/// [`long_visits_never_touch_what_is_protected`]), with her pieces
+/// `owned` (each: what, which pane, how far along, facing left).
+#[allow(clippy::too_many_arguments)]
+fn long_visit(
+    seed: u64,
+    graphics: bool,
+    sizes: &[(u16, u16)],
+    text: &[(u16, u16, String)],
+    skips: &[(u16, u16)],
+    chats: &[u64],
+    protect: (u16, u16, u16, u16),
+    owned: &[(Furniture, usize, u16, bool)],
+    span: u64,
+) -> Result<(), TestCaseError> {
+    let mut guest = Guest::new(seed);
+    if graphics {
+        guest.set_picker(kitty());
+    }
+    let nook = [Nook::List, Nook::Users, Nook::Playlist];
+    for &(item, at, along, left) in owned {
+        // A second room offered a taken pane is refused, as in play.
+        let _ = guest.ledger.home.add(room::Prop::new(
+            item,
+            nook[at],
+            along,
+            if left {
+                sprite::Facing::Left
+            } else {
+                sprite::Facing::Right
+            },
+        ));
+    }
+    let mut hidden = Hidden::default();
+    let mut now = 0;
+    let span = span / sizes.len() as u64;
+    let mut mark = ChatMark::default();
+    for &(w, h) in sizes {
+        let mut real = rooms(w, h);
+        scatter(&mut real, text, skips);
+        let (px, py, pw, ph) = protect;
+        let mut protected = bottom_strip(w, h);
+        protected.push(Rect::new(px, py, pw, ph).intersection(real.area));
+        let until = now + span;
+        while now < until {
+            let step = guest
+                .next_tick(now)
+                .map_or(until - now, |d| d.as_millis() as u64)
+                .clamp(1, until - now);
+            now += step;
+            if chats.iter().any(|&c| c <= now && c > now - step) {
+                mark.synced += 1;
+            }
+            let view = IdleView {
+                chat_mark: mark,
+                nooks: nooks(w, h),
+                ..view(protected.clone())
+            };
+            guest.advance(now);
+            let frame = paint(&mut guest, &real, &view, now);
+            let feet = match &guest.state {
+                State::Visiting(visit) if graphics && visit.image.is_some_and(|i| i.standing) => {
+                    visit.image.map(|i| (i.x, i.y))
+                }
+                _ => None,
+            };
+            assert_untouched_but_feet(&frame, &real, &protected, feet)?;
+            let (layer, shown): (Vec<(u16, u16)>, Vec<Shown>) = match &guest.state {
+                State::Visiting(visit) => (visit.layer.cells().collect(), visit.shown.clone()),
+                _ => (Vec::new(), Vec::new()),
+            };
+            // Each real piece stands on the floor of a strip that's
+            // here this frame.
+            let strips = room::strips(&view.nooks);
+            for prop in shown.iter().filter(|s| s.scrap.is_none()) {
+                let here = strips.iter().find(|(s, _)| Some(*s) == prop.strip);
+                prop_assert!(
+                    here.is_some_and(|(_, e)| e.floor == prop.floor),
+                    "{:?}",
+                    prop
+                );
+            }
+            // Her furniture stands on lines (or hangs above them), over
+            // blank cells only, clear of protected cells, text she
+            // moved, and her.
+            for prop in &shown {
+                let (cols, _) = prop.size();
+                let floor = (prop.left..prop.left + i32::from(cols))
+                    .filter(|_| prop.lift() == 0)
+                    .map(|x| (x, prop.floor, None));
+                for (x, y, _) in prop.cells().chain(floor) {
+                    let at = (x as u16, y as u16);
+                    let want = real.cell(at).unwrap();
+                    prop_assert!(!cells::untouchable(want));
+                    prop_assert!(
+                        !protected.iter().any(|r| r.contains(at.into())),
+                        "{:?} protected",
+                        at
+                    );
+                    prop_assert!(!layer.contains(&at), "{:?} over moved text", at);
+                    if y < prop.floor {
+                        prop_assert!(
+                            want.symbol().trim().is_empty(),
+                            "{:?} over {:?}",
+                            at,
+                            want.symbol()
+                        );
+                    } else {
+                        prop_assert!(
+                            want.symbol()
+                                .chars()
+                                .next()
+                                .is_some_and(|c| graphics::strokes(c).is_some())
+                        );
+                    }
+                }
+            }
+            if graphics {
+                hidden.check(&frame, &real, &layer, now)?;
+            }
+            // Besides text she moved: her box and the floor row
+            // under it, and one bubble of at most 24 characters.
+            let width = usize::from(frame.area.width);
+            let changed = frame
+                .content
+                .iter()
+                .zip(&real.content)
+                .enumerate()
+                .filter(|(i, (a, b))| {
+                    let at = ((i % width) as u16, (i / width) as u16);
+                    a != b && !layer.contains(&at)
+                })
+                .count();
+            // Her box (with its floor row), a bubble, her furniture,
+            // and the blank cells an image of her with the pieces she
+            // overlaps spans beyond them.
+            let (furniture, spanned) = match &guest.state {
+                State::Visiting(visit) => {
+                    let area = |r: Rect| usize::from(r.width) * usize::from(r.height);
+                    let furniture: usize = shown.iter().map(|p| area(p.cover())).sum();
+                    let her = Rect::new(
+                        (visit.osaka.x - sprite::WIDTH / 2).max(0) as u16,
+                        (visit.osaka.y - sprite::HEIGHT).max(0) as u16,
+                        sprite::WIDTH as u16,
+                        sprite::HEIGHT as u16 + 1,
+                    );
+                    let union = visit.with.iter().fold(her, |r, p| r.union(p.cover()));
+                    (furniture, area(union))
+                }
+                _ => (0, 0),
+            };
+            let most = (sprite::WIDTH * (sprite::HEIGHT + 1)) as usize + 24 + furniture + spanned;
+            let debug = match &guest.state {
+                State::Visiting(visit) => format!(
+                    "{:?} with {:?} at ({}, {})",
+                    visit.shown, visit.with, visit.osaka.x, visit.osaka.y
+                ),
+                _ => String::new(),
+            };
+            prop_assert!(
+                changed <= most,
+                "{} cells changed (most {}): {}",
+                changed,
+                most,
+                debug
+            );
+        }
+    }
+    let &(w, h) = sizes.last().unwrap();
+    let mut real = rooms(w, h);
+    scatter(&mut real, text, skips);
+    let view = IdleView {
+        nooks: nooks(w, h),
+        ..view(bottom_strip(w, h))
+    };
+    guest.activity(now);
+    let end = run(&mut guest, &real, &view, now, now + dissolve::DURATION_MS);
+    prop_assert_eq!(end, real);
+    Ok(())
 }
 
 // ---- Against the real default layout ----
@@ -2161,6 +2250,198 @@ fn a_parcel_comes_in_through_a_flap_at_the_screens_edge() {
             "pushed along: {tv:?}"
         );
     }
+}
+
+/// The piece `item` as shown this frame, if it is.
+fn shown_piece(guest: &Guest, item: Furniture) -> Option<Shown> {
+    match &guest.state {
+        State::Visiting(visit) => visit.shown.iter().find(|s| s.item == item).copied(),
+        _ => None,
+    }
+}
+
+/// Whether `piece` is drawn in `frame` (its glyphs, or an image over it).
+fn drawn(frame: &Buffer, real: &Buffer, piece: &Shown) -> bool {
+    let r = piece.rect();
+    (r.x..r.right()).any(|x| (r.y..r.bottom()).any(|y| frame[(x, y)] != real[(x, y)]))
+}
+
+/// Decor delivered: its parcel stands on the floor where it came in, she
+/// unpacks it, and the plant stands there while the poster hangs on the
+/// wall above, both drawn. In both drawing modes.
+#[test]
+fn she_unpacks_delivered_decor() {
+    for item in [Furniture::Plant, Furniture::Poster] {
+        for graphics in [false, true] {
+            let at = format!("{item:?} graphics={graphics}");
+            let (real, view) = home_screen();
+            let (_, users) = view.nooks[0];
+            let floor = i32::from(users.bottom()) - 1;
+            let mut guest = Guest::new(3);
+            if graphics {
+                guest.set_picker(kitty());
+            }
+            visiting_at(&mut guest, &real, &view, (75, floor));
+            guest.ledger.visits = 1;
+            guest.ledger.ordered = Some(item);
+            guest.ledger.bought_on = 0;
+            paint(&mut guest, &real, &view, 0);
+            let parcel = shown_piece(&guest, item).unwrap_or_else(|| panic!("{at}: delivered"));
+            assert!(parcel.boxed, "{at}");
+            assert_eq!(parcel.lane(), room::Lane::Floor, "{at}");
+            let mut now = 0;
+            while now < 10 * 60_000 && guest.ledger.home.boxed() {
+                now += guest
+                    .next_tick(now)
+                    .map_or(1000, |d| d.as_millis() as u64)
+                    .clamp(1, 1000);
+                guest.advance(now);
+                paint(&mut guest, &real, &view, now);
+            }
+            assert!(!guest.ledger.home.boxed(), "{at}: never unpacked");
+            let frame = paint(&mut guest, &real, &view, now);
+            let piece = shown_piece(&guest, item).unwrap_or_else(|| panic!("{at}: shown"));
+            assert_eq!(piece.left, parcel.left, "{at}: where its parcel stood");
+            let lane = match item {
+                Furniture::Poster => room::Lane::Wall,
+                _ => room::Lane::Floor,
+            };
+            assert_eq!(piece.lane(), lane, "{at}");
+            assert!(drawn(&frame, &real, &piece), "{at}: drawn");
+        }
+    }
+}
+
+/// A poster hung over her sofa: it shows, drawn, while she goes about
+/// her visit (she passes under it, and lounges under it), and nothing
+/// hides text or touches what's protected. In both drawing modes.
+#[test]
+fn a_poster_hangs_over_her_sofa() {
+    for graphics in [false, true] {
+        let (real, view) = home_screen();
+        let mut under = false;
+        for seed in 0..3u64 {
+            let at = format!("graphics={graphics} seed {seed}");
+            let mut guest = Guest::new(seed);
+            if graphics {
+                guest.set_picker(kitty());
+            }
+            for item in [Furniture::Sofa, Furniture::Poster] {
+                assert!(guest.ledger.home.add(room::Prop {
+                    anchor: Some(room::Anchor {
+                        side: room::Side::Left,
+                        offset: 10,
+                    }),
+                    ..room::Prop::new(item, Nook::Users, 0, sprite::Facing::Right)
+                }));
+            }
+            let mut hidden = Hidden::default();
+            let mut now = 0;
+            while now < 4 * 60_000 {
+                now += guest
+                    .next_tick(now)
+                    .map_or(1000, |d| d.as_millis() as u64)
+                    .clamp(1, 1000);
+                guest.advance(now);
+                let frame = paint(&mut guest, &real, &view, now);
+                let State::Visiting(visit) = &guest.state else {
+                    continue;
+                };
+                let poster = shown_piece(&guest, Furniture::Poster)
+                    .unwrap_or_else(|| panic!("{at} {now}: the poster shows"));
+                let sofa = shown_piece(&guest, Furniture::Sofa)
+                    .unwrap_or_else(|| panic!("{at} {now}: the sofa shows"));
+                assert_eq!(poster.left, sofa.left, "{at}: over the sofa");
+                // In line art: its box ends on the row above where the
+                // layer is placed (see `graphics::Layer`), off the floor.
+                let layer = prop_layer(
+                    &poster,
+                    graphics::Look::Prop(Furniture::Poster, art::Layer::Whole),
+                );
+                assert!(!layer.standing, "{at}");
+                assert_eq!(layer.at.1, i32::from(poster.rect().bottom()), "{at}");
+                assert!(drawn(&frame, &real, &poster), "{at} {now}: drawn");
+                let r = poster.rect();
+                let (x, y) = (visit.osaka.x, visit.osaka.y);
+                let half = sprite::WIDTH / 2;
+                if y == poster.floor
+                    && x + half >= i32::from(r.x)
+                    && x - half < i32::from(r.right())
+                {
+                    under = true;
+                }
+                let layer: Vec<(u16, u16)> = visit.layer.cells().collect();
+                assert_untouched(&frame, &real, &view.protected)
+                    .unwrap_or_else(|e| panic!("{at} {now}: {e}"));
+                if graphics {
+                    hidden
+                        .check(&frame, &real, &layer, now)
+                        .unwrap_or_else(|e| panic!("{at} {now}: {e}"));
+                }
+            }
+        }
+        assert!(under, "graphics={graphics}: she never went under it");
+    }
+}
+
+/// A poster hung over her sofa, her beside it, as her line art draws
+/// them, for review: `HOUSEGUEST_HUNG=/tmp/hung.png cargo test -p
+/// dessplay --lib hung_poster_sheet -- --ignored`. At 9×19 px cells, then
+/// HiDPI 18×38. (In play each piece is its own image; here they're
+/// composed into one.)
+#[test]
+#[ignore = "writes a PNG for review"]
+#[allow(deprecated)]
+fn hung_poster_sheet() {
+    use super::graphics::{Layer, Look};
+    let path = std::env::var("HOUSEGUEST_HUNG").expect("HOUSEGUEST_HUNG");
+    let (real, view) = home_screen();
+    let mut images = Vec::new();
+    for cell in [(9u16, 19u16), (18, 38)] {
+        let mut picker = ratatui_image::picker::Picker::from_fontsize(cell.into());
+        picker.set_protocol_type(ratatui_image::picker::ProtocolType::Kitty);
+        let mut guest = Guest::new(0);
+        guest.set_picker(picker);
+        for item in [Furniture::Sofa, Furniture::Poster] {
+            assert!(guest.ledger.home.add(room::Prop {
+                anchor: Some(room::Anchor {
+                    side: room::Side::Left,
+                    offset: 10,
+                }),
+                ..room::Prop::new(item, Nook::Users, 0, sprite::Facing::Right)
+            }));
+        }
+        visiting_at(&mut guest, &real, &view, (40, 16));
+        paint(&mut guest, &real, &view, 0);
+        let sofa = shown_piece(&guest, Furniture::Sofa).unwrap();
+        let poster = shown_piece(&guest, Furniture::Poster).unwrap();
+        let layers = [
+            prop_layer(&sofa, Look::Prop(Furniture::Sofa, art::Layer::Whole)),
+            prop_layer(&poster, Look::Prop(Furniture::Poster, art::Layer::Whole)),
+            Layer {
+                look: Look::Pose(Pose::Stand, sprite::Face::Vacant),
+                facing: sprite::Facing::Left,
+                at: (sofa.left + 13, sofa.floor),
+                standing: true,
+            },
+        ];
+        let graphics = guest.graphics.as_ref().unwrap();
+        images.push(
+            graphics
+                .canvas(&real, &layers, &|_, _| true)
+                .expect("composes"),
+        );
+    }
+    let pad = 18;
+    let width = images.iter().map(|i| i.width()).max().unwrap() + 2 * pad;
+    let height = images.iter().map(|i| i.height() + pad).sum::<u32>() + pad;
+    let mut sheet = image::RgbaImage::from_pixel(width, height, image::Rgba([30, 33, 39, 255]));
+    let mut y = pad;
+    for image in &images {
+        image::imageops::overlay(&mut sheet, image, i64::from(pad), i64::from(y));
+        y += image.height() + pad;
+    }
+    sheet.save(path).unwrap();
 }
 
 /// A parcel she's interrupted unpacking is still boxed next visit, and

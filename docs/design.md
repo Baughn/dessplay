@@ -1545,7 +1545,8 @@ this section states what is built.
   finishes unpacking it.
 - **Furniture** (phase 3): a sofa (9×3 cells), TV (6×4), bed (10×3),
   desk (7×3), floor lamp (3×4), bookshelf (5×4), fridge (4×4) and cat
-  bed (4×2), drawn in her style (outlined, soft fills) as line art, or as
+  bed (4×2), and, just for looks, a potted plant (3×3) and a poster
+  (4×2, hung on the wall), drawn in her style (outlined, soft fills) as line art, or as
   ASCII without graphics. She owns her furniture across visits; each
   kind is one row of a catalogue (name, footprint, drawing, ink, uses,
   where she sits in it, what it offers a room, comfort). **Strips and
@@ -1565,14 +1566,25 @@ this section states what is built.
   gone or too small to hold its pieces, they move, together and in
   order, to the first other strip that holds them with its own pieces,
   every moved piece on free cells, and stay there; with none, they're
-  all in the closet. **Rooms from contents**: her rooms are her strips,
+  all in the closet. **Wall pieces**: a piece that hangs (the poster)
+  hangs on its strip's wall, its bottom row 4 rows above the floor
+  (above the tallest piece that stands, and her head), in a lane of its
+  own: hung pieces stand in anchor order among themselves, by the same
+  rules, and may hang over pieces that stand. It needs no floor beneath
+  it, and the wall never moves a room: a hung piece its wall doesn't
+  hold (too low, or crowded) is in the closet alone, while a strip too
+  small for the pieces that stand on it takes those hung along (each
+  where its share of the way along puts it there). Boxed, it's a parcel
+  on the floor; a delivery comes in only where both the parcel and the
+  hung piece fit. **Rooms from contents**: her rooms are her strips,
   and what each is comes from what's out of its box there, by the
   first row of a table it meets: a living room needs a screen and a
   seat and no bed; a bedroom a bed, and no screen or fridge; a study a
   desk; a kitchen a fridge, and no bed; anything else is a den. Pieces
   of any kind may share a strip. A new piece is only set down where she also
-  fits on it. A placed piece and the floor beneath it are solid to text
-  (nothing is moved onto it, and bubbles never go over it); she walks
+  fits on it. A placed piece and the floor beneath it (if it stands)
+  are solid to text (nothing is moved onto it, and bubbles never go
+  over it); she walks
   in front of it. In line art, the pieces her box overlaps are drawn in
   **one image with her**, back to front (the bed's quilt over her while
   she sleeps; the sofa's cushion in her arms while she naps), since two

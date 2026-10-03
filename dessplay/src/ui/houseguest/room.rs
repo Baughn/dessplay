@@ -35,11 +35,15 @@ pub enum Furniture {
     Fridge,
     /// A cat bed (sometimes a cat is in it).
     CatBed,
+    /// A potted plant (just for looks).
+    Plant,
+    /// A poster on the wall (just for looks).
+    Poster,
 }
 
 impl Furniture {
     /// Every piece, in catalogue order.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 10] = [
         Self::Sofa,
         Self::Tv,
         Self::Bed,
@@ -48,7 +52,14 @@ impl Furniture {
         Self::Bookshelf,
         Self::Fridge,
         Self::CatBed,
+        Self::Plant,
+        Self::Poster,
     ];
+
+    /// Whether it's just for looks.
+    pub(super) fn decor(self) -> bool {
+        self.spec().offers.contains(&Offer::Decor)
+    }
 
     /// Its row of the catalogue.
     pub(super) fn spec(self) -> &'static Spec {
@@ -61,6 +72,8 @@ impl Furniture {
             Self::Bookshelf => &BOOKSHELF,
             Self::Fridge => &FRIDGE,
             Self::CatBed => &CAT_BED,
+            Self::Plant => &PLANT,
+            Self::Poster => &POSTER,
         }
     }
 }
@@ -92,6 +105,10 @@ pub(super) struct Spec {
     /// How well it rests her (sitting, napping, sleeping on it), against
     /// a makeshift piece's or the floor's.
     pub comfort: f64,
+    /// Out of its box, it hangs on the wall: the rows between the floor
+    /// and its bottom row (none: it stands on the floor). Hung above the
+    /// tallest piece that stands, it hangs over any of them.
+    pub hang: Option<u16>,
 }
 
 const SOFA: Spec = Spec {
@@ -104,6 +121,7 @@ const SOFA: Spec = Spec {
     offers: &[Offer::Seat],
     sit: Some((4, false)),
     comfort: 1.0,
+    hang: None,
 };
 const TV: Spec = Spec {
     name: "TV",
@@ -115,6 +133,7 @@ const TV: Spec = Spec {
     offers: &[Offer::Screen],
     sit: None,
     comfort: 1.0,
+    hang: None,
 };
 const BED: Spec = Spec {
     name: "bed",
@@ -127,6 +146,7 @@ const BED: Spec = Spec {
     offers: &[Offer::Bed],
     sit: Some((3, false)),
     comfort: 1.0,
+    hang: None,
 };
 const DESK: Spec = Spec {
     name: "desk",
@@ -139,6 +159,7 @@ const DESK: Spec = Spec {
     offers: &[Offer::Desk],
     sit: Some((7, true)),
     comfort: 1.0,
+    hang: None,
 };
 const LAMP: Spec = Spec {
     name: "lamp",
@@ -150,6 +171,7 @@ const LAMP: Spec = Spec {
     offers: &[Offer::Light],
     sit: None,
     comfort: 1.0,
+    hang: None,
 };
 const BOOKSHELF: Spec = Spec {
     name: "bookshelf",
@@ -161,6 +183,7 @@ const BOOKSHELF: Spec = Spec {
     offers: &[Offer::Books],
     sit: None,
     comfort: 1.0,
+    hang: None,
 };
 const FRIDGE: Spec = Spec {
     name: "fridge",
@@ -172,6 +195,7 @@ const FRIDGE: Spec = Spec {
     offers: &[Offer::Cold],
     sit: None,
     comfort: 1.0,
+    hang: None,
 };
 const CAT_BED: Spec = Spec {
     name: "cat bed",
@@ -183,6 +207,32 @@ const CAT_BED: Spec = Spec {
     offers: &[Offer::Cat],
     sit: None,
     comfort: 1.0,
+    hang: None,
+};
+const PLANT: Spec = Spec {
+    name: "potted plant",
+    pitch: "So green and leafy!",
+    footprint: (3, 3),
+    ascii: &["\\|/", "~Y~", "\\_/"],
+    ink: (Color::Rgb(122, 166, 106), Color::Green),
+    uses: &[],
+    offers: &[Offer::Decor],
+    sit: None,
+    comfort: 1.0,
+    hang: None,
+};
+const POSTER: Spec = Spec {
+    name: "poster",
+    pitch: "It'd look nice up!",
+    footprint: (4, 2),
+    ascii: &[".--.", "|~~|"],
+    ink: (Color::Rgb(247, 184, 154), Color::LightRed),
+    uses: &[],
+    offers: &[Offer::Decor],
+    sit: None,
+    comfort: 1.0,
+    // Above her head and the tallest piece that stands (4 rows).
+    hang: Some(4),
 };
 
 /// The glyph at `(dx, dy)` of `item`'s ASCII drawing facing `facing`, if
@@ -306,6 +356,8 @@ pub(super) enum Offer {
     Books,
     Cold,
     Cat,
+    /// Just for looks (no room is named by it).
+    Decor,
 }
 
 /// What a room is, from what's in it.
@@ -440,7 +492,45 @@ pub(super) struct Prop {
     pub settled: bool,
 }
 
+/// Where along its strip a piece is: standing on the floor, or hung on
+/// the wall above it. Each lane is packed on its own (a hung piece may
+/// hang over a standing one); the floor lane is the room's, and only it
+/// moves the room (see [`Home::project`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Lane {
+    Floor,
+    Wall,
+}
+
+/// The rows between the floor and the bottom row of `item`, out of its
+/// box or not: its hang, once it's out of a box (a parcel stands on the
+/// floor); 0 for a piece that stands.
+fn lift(item: Furniture, boxed: bool) -> u16 {
+    if boxed {
+        0
+    } else {
+        item.spec().hang.unwrap_or(0)
+    }
+}
+
 impl Prop {
+    /// Which lane of its strip it's in: a piece that hangs is on the
+    /// wall once it's out of its box.
+    pub fn lane(&self) -> Lane {
+        if lift(self.item, self.boxed) > 0 {
+            Lane::Wall
+        } else {
+            Lane::Floor
+        }
+    }
+
+    /// The columns it takes along its strip, and the rows above the floor
+    /// it needs clear (up to its top, hung or standing).
+    fn needs(&self) -> (u16, u16) {
+        let (cols, rows) = self.item.spec().footprint;
+        (cols, rows + lift(self.item, self.boxed))
+    }
+
     /// `item` `at` thousandths of the way along `nook`'s floor, not yet
     /// anchored.
     pub fn new(item: Furniture, nook: Nook, at: u16, facing: Facing) -> Self {
@@ -467,7 +557,9 @@ pub(super) struct Extent {
 }
 
 impl Extent {
-    /// Whether a piece `cols × rows` fits between its walls at all.
+    /// Whether a piece `cols` wide that needs `rows` clear above the
+    /// floor (its own, and any it hangs above the floor) fits between
+    /// its walls at all.
     pub(super) fn holds(&self, (cols, rows): (u16, u16)) -> bool {
         self.to - self.from >= i32::from(cols) && self.rows >= rows
     }
@@ -629,22 +721,44 @@ impl Shown {
         }
     }
 
-    /// Its footprint, above the floor.
-    pub fn rect(&self) -> Rect {
-        let (cols, rows) = self.size();
-        Rect::new(
-            self.left as u16,
-            (self.floor - i32::from(rows)) as u16,
-            cols,
-            rows,
-        )
+    /// The rows between the floor and its bottom row: its hang, while
+    /// it's hung on the wall; 0 standing on the floor (and while it's
+    /// boxed, or makeshift).
+    pub fn lift(&self) -> u16 {
+        match self.scrap {
+            Some(_) => 0,
+            None => lift(self.item, self.boxed),
+        }
     }
 
-    /// Its footprint and the floor beneath it: nothing else may cover
-    /// either.
+    /// Which lane of its strip it's in.
+    pub fn lane(&self) -> Lane {
+        if self.lift() > 0 {
+            Lane::Wall
+        } else {
+            Lane::Floor
+        }
+    }
+
+    /// Its top row.
+    fn top(&self) -> i32 {
+        self.floor - i32::from(self.lift()) - i32::from(self.size().1)
+    }
+
+    /// Its footprint, above the floor (hung, as high as it hangs).
+    pub fn rect(&self) -> Rect {
+        let (cols, rows) = self.size();
+        Rect::new(self.left as u16, self.top() as u16, cols, rows)
+    }
+
+    /// Its footprint and the floor beneath it, if it stands on the floor:
+    /// nothing else may cover either. A hung piece's is its footprint.
     pub fn cover(&self) -> Rect {
         let rect = self.rect();
-        Rect::new(rect.x, rect.y, rect.width, rect.height + 1)
+        match self.lane() {
+            Lane::Floor => Rect::new(rect.x, rect.y, rect.width, rect.height + 1),
+            Lane::Wall => rect,
+        }
     }
 
     /// Where she'd be to use this piece for `what`: her anchor column and
@@ -701,6 +815,7 @@ impl Shown {
     /// while it's boxed).
     pub fn cells(&self) -> impl Iterator<Item = (i32, i32, Option<char>)> + '_ {
         let (cols, rows) = self.size();
+        let top = self.top();
         (0..rows).flat_map(move |dy| {
             (0..cols).map(move |dx| {
                 let glyph = if let Some(scrap) = self.scrap {
@@ -710,11 +825,7 @@ impl Shown {
                 } else {
                     glyph(self.item, self.facing, dx, dy)
                 };
-                (
-                    self.left + i32::from(dx),
-                    self.floor - i32::from(rows) + i32::from(dy),
-                    glyph,
-                )
+                (self.left + i32::from(dx), top + i32::from(dy), glyph)
             })
         })
     }
@@ -784,14 +895,14 @@ impl Home {
         out
     }
 
-    /// Her pieces on `strip`, and `also`'s, as [`pack`] takes them, if
-    /// every one is anchored.
-    fn on(&self, strip: Strip, also: Option<Strip>) -> Vec<(usize, Anchor, (u16, u16))> {
+    /// Her pieces in `lane` of `strip`, as [`pack`] takes them (with the
+    /// rows each needs clear above the floor), those that are anchored.
+    fn on(&self, strip: Strip, lane: Lane) -> Vec<(usize, Anchor, (u16, u16))> {
         self.props
             .iter()
             .enumerate()
-            .filter(|(_, p)| p.strip == strip || Some(p.strip) == also)
-            .filter_map(|(i, p)| Some((i, p.anchor?, p.item.spec().footprint)))
+            .filter(|(_, p)| p.strip == strip && p.lane() == lane)
+            .filter_map(|(i, p)| Some((i, p.anchor?, p.needs())))
             .collect()
     }
 
@@ -809,10 +920,13 @@ impl Home {
     }
 
     /// Where her pieces stand this frame, whether or not they show: each
-    /// on its strip, in anchor order (see [`pack`]), strip by strip in
-    /// the order she furnished them and by index within one. A strip
-    /// that's gone, or too small to hold its pieces, lays out none of
-    /// them (this never moves anything; [`Home::project`] does). Pure
+    /// on its strip, in anchor order (see [`pack`]) in its lane, strip by
+    /// strip in the order she furnished them and by index within one. A
+    /// strip that's gone, or whose floor is too small to hold the pieces
+    /// that stand on it, lays out none of them (this never moves
+    /// anything; [`Home::project`] does); a piece its wall doesn't hold
+    /// (too low, or too narrow beside the others hung there) is left out
+    /// alone. Pure
     /// geometry: text over a piece doesn't take it out of the layout.
     /// An older record's piece is anchored where its share of the way
     /// along puts it, the first time its strip is here.
@@ -830,9 +944,15 @@ impl Home {
             let Some(&(_, e)) = strips.iter().find(|(s, _)| *s == strip) else {
                 continue;
             };
-            let Some(mut packed) = pack(&self.on(strip, None), e) else {
+            let Some(mut packed) = pack(&self.on(strip, Lane::Floor), e) else {
                 continue;
             };
+            let wall: Vec<(usize, Anchor, (u16, u16))> = self
+                .on(strip, Lane::Wall)
+                .into_iter()
+                .filter(|&(.., needs)| e.holds(needs))
+                .collect();
+            packed.extend(pack(&wall, e).unwrap_or_default());
             packed.sort_unstable();
             out.extend(
                 packed.into_iter().filter_map(|(index, left)| {
@@ -845,10 +965,13 @@ impl Home {
 
     /// Where her pieces stand this frame. Each stands on its strip, in
     /// anchor order (see [`pack`]), if its cells are free (else it's in
-    /// the closet this frame). A strip that's gone, or too small to hold
-    /// its pieces, has them all moved, together and in order, to the
-    /// first strip that holds them besides its own, every one of them on
-    /// free cells; with none, they're all in the closet. An older
+    /// the closet this frame). A strip that's gone, or whose floor is too
+    /// small to hold the pieces standing on it, has them all moved,
+    /// together and in order, to the first strip whose floor holds them
+    /// besides its own, every one of them on free cells, its hung pieces
+    /// with them (where their share of the way along puts them there);
+    /// with none, they're all in the closet. Its wall never moves a room:
+    /// a hung piece it doesn't hold is in the closet alone. An older
     /// record's piece is anchored where its share of the way along puts
     /// it, the first time its strip is here. `blocked` cells are never
     /// covered by a piece (protected rectangles, moved text). What shows
@@ -865,7 +988,7 @@ impl Home {
             let packs = strips
                 .iter()
                 .find(|(s, _)| *s == strip)
-                .is_some_and(|&(_, e)| pack(&self.on(strip, None), e).is_some());
+                .is_some_and(|&(_, e)| pack(&self.on(strip, Lane::Floor), e).is_some());
             if !packs {
                 self.move_off(strip, buf, &strips, blocked);
             }
@@ -879,8 +1002,9 @@ impl Home {
         shown
     }
 
-    /// Move `strip`'s pieces, together, to the first other strip that
-    /// holds them with its own, each on free cells.
+    /// Move `strip`'s pieces, together, to the first other strip whose
+    /// floor holds those that stand with its own, each on free cells;
+    /// those hung go along, where their share of the way puts them.
     fn move_off(
         &mut self,
         strip: Strip,
@@ -895,17 +1019,20 @@ impl Home {
             .iter()
             .filter(|&&(s, _)| s != strip)
             .find_map(|&(to, e)| {
-                // Pieces never anchored are anchored by their share there.
+                // Pieces never anchored, and hung ones, are anchored by
+                // their share there.
                 let mut moved = self.clone();
                 for &i in &leaving {
                     let prop = moved.props.get_mut(i)?;
                     let cols = prop.item.spec().footprint.0;
-                    prop.anchor = prop
-                        .anchor
-                        .or_else(|| Some(e.pin(e.share(prop.at, cols), cols).0));
+                    let share = Some(e.pin(e.share(prop.at, cols), cols).0);
+                    prop.anchor = match prop.lane() {
+                        Lane::Floor => prop.anchor.or(share),
+                        Lane::Wall => share,
+                    };
                     prop.strip = to;
                 }
-                let packed = pack(&moved.on(to, None), e)?;
+                let packed = pack(&moved.on(to, Lane::Floor), e)?;
                 let all_free =
                     packed
                         .iter()
@@ -963,7 +1090,7 @@ impl Home {
                         boxed: false,
                         settled: true,
                     };
-                    e.holds(item.spec().footprint)
+                    e.holds(prop.needs())
                         .then(|| (prop, stand(&prop, strip, e, e.share(at, cols))))
                 })
             })
@@ -982,7 +1109,9 @@ impl Home {
     /// chose where it stands). The pieces already on
     /// that strip make way, packed in order, but only where every one of
     /// them that shows still fits, the piece fits on blank, free cells,
-    /// and she'd fit to unpack and use it.
+    /// and she'd fit to unpack and use it. A piece that hangs must fit
+    /// both ways: boxed, standing on the floor to be unpacked, and
+    /// hung on the wall above.
     pub fn doorstep(
         &self,
         buf: &Buffer,
@@ -1016,53 +1145,81 @@ impl Home {
                 // She never chose where it stands.
                 settled: false,
             };
-            let mut with = self.clone();
-            with.props.push(prop);
-            let new = with.props.len() - 1;
-            let packed: Vec<(usize, Shown)> = pack(&with.on(strip, None), e)?
-                .into_iter()
-                .filter_map(|(i, left)| Some((i, stand(with.props.get(i)?, strip, e, left))))
-                .collect();
-            let others: Vec<Shown> = shown
-                .iter()
-                .filter(|s| s.strip != Some(strip))
-                .copied()
-                .collect();
-            let fits_here = |i: usize, at: &Shown| {
-                let clear = |x: i32, y: i32| {
-                    free(&others, blocked, x, y)
-                        && !packed
-                            .iter()
-                            .any(|(j, s)| *j != i && s.rect().contains((x as u16, y as u16).into()))
-                };
-                fits(buf, at, &clear) && (i != new || roomy(buf, at, &clear))
+            let at = match item.spec().hang {
+                None => self.admits(buf, shown, blocked, e, prop)?,
+                Some(_) => {
+                    let parcel = Prop {
+                        boxed: true,
+                        ..prop
+                    };
+                    let at = self.admits(buf, shown, blocked, e, parcel)?;
+                    self.admits(buf, shown, blocked, e, prop)?;
+                    at
+                }
             };
-            let all_fit = packed.iter().all(|(i, at)| {
-                let was = with.props.get(*i).map(|p| p.item);
-                let showing = shown
-                    .iter()
-                    .any(|s| Some(s.item) == was && s.scrap.is_none());
-                (*i != new && !showing) || fits_here(*i, at)
-            });
-            let at = packed.iter().find(|(i, _)| *i == new).map(|(_, at)| *at)?;
             let x = match side {
                 Side::Left => e.from - 1,
                 Side::Right => e.to,
             };
-            all_fit.then(|| {
-                (
-                    Prop {
-                        boxed: true,
-                        ..prop
-                    },
-                    Flap {
-                        x,
-                        rows: (at.floor - 2, at.floor),
-                        side,
-                    },
-                )
-            })
+            Some((
+                Prop {
+                    boxed: true,
+                    ..prop
+                },
+                Flap {
+                    x,
+                    rows: (at.floor - 2, at.floor),
+                    side,
+                },
+            ))
         })
+    }
+
+    /// Where `prop`, new, would stand on its strip (`e` this frame), if
+    /// the pieces in its lane there make way for it, packed in order:
+    /// every one of them that shows still fits, and it fits on blank,
+    /// free cells where she'd fit to use it.
+    fn admits(
+        &self,
+        buf: &Buffer,
+        shown: &[Shown],
+        blocked: &dyn Fn(i32, i32) -> bool,
+        e: Extent,
+        prop: Prop,
+    ) -> Option<Shown> {
+        let (strip, lane) = (prop.strip, prop.lane());
+        let mut with = self.clone();
+        with.props.push(prop);
+        let new = with.props.len() - 1;
+        let packed: Vec<(usize, Shown)> = pack(&with.on(strip, lane), e)?
+            .into_iter()
+            .filter_map(|(i, left)| Some((i, stand(with.props.get(i)?, strip, e, left))))
+            .collect();
+        // What shows anywhere else stays where it is: on other strips, and
+        // in the strip's other lane.
+        let others: Vec<Shown> = shown
+            .iter()
+            .filter(|s| s.strip != Some(strip) || s.lane() != lane)
+            .copied()
+            .collect();
+        let fits_here = |i: usize, at: &Shown| {
+            let clear = |x: i32, y: i32| {
+                free(&others, blocked, x, y)
+                    && !packed
+                        .iter()
+                        .any(|(j, s)| *j != i && s.rect().contains((x as u16, y as u16).into()))
+            };
+            fits(buf, at, &clear) && (i != new || roomy(buf, at, &clear))
+        };
+        let all_fit = packed.iter().all(|(i, at)| {
+            let was = with.props.get(*i).map(|p| p.item);
+            let showing = shown
+                .iter()
+                .any(|s| Some(s.item) == was && s.scrap.is_none());
+            (*i != new && !showing) || fits_here(*i, at)
+        });
+        let at = packed.iter().find(|(i, _)| *i == new).map(|(_, at)| *at)?;
+        all_fit.then_some(at)
     }
 
     /// Take ownership of `prop`, unless she already has one (then this
@@ -1167,9 +1324,9 @@ fn free(shown: &[Shown], blocked: &dyn Fn(i32, i32) -> bool, x: i32, y: i32) -> 
             .any(|s| s.rect().contains((x as u16, y as u16).into()))
 }
 
-/// Whether `at` stands on unbroken line glyphs with only blank, `clear`
-/// cells in its footprint (image cells and wide glyphs' halves are
-/// never blank).
+/// Whether `at` stands on unbroken line glyphs (hung, it needs none)
+/// with only blank, `clear` cells in its footprint (image cells and wide
+/// glyphs' halves are never blank).
 pub(super) fn fits(buf: &Buffer, at: &Shown, clear: &dyn Fn(i32, i32) -> bool) -> bool {
     let cell = |x: i32, y: i32| {
         let (Ok(x), Ok(y)) = (u16::try_from(x), u16::try_from(y)) else {
@@ -1183,12 +1340,14 @@ pub(super) fn fits(buf: &Buffer, at: &Shown, clear: &dyn Fn(i32, i32) -> bool) -
             && cell(x - 1, y).is_none_or(|c| width(c) < 2)
     });
     let (cols, _) = at.size();
-    let floor = (at.left..at.left + i32::from(cols)).all(|x| {
-        clear(x, at.floor)
-            && cell(x, at.floor)
-                .and_then(|c| c.symbol().chars().next())
-                .is_some_and(|c| strokes(c).is_some())
-    });
+    // Hung, it needs no floor beneath it.
+    let floor = at.lane() == Lane::Wall
+        || (at.left..at.left + i32::from(cols)).all(|x| {
+            clear(x, at.floor)
+                && cell(x, at.floor)
+                    .and_then(|c| c.symbol().chars().next())
+                    .is_some_and(|c| strokes(c).is_some())
+        });
     body && floor
 }
 
@@ -1488,6 +1647,11 @@ mod tests {
             (&[Bed, Fridge], Role::Den),
             (&[Sofa], Role::Den),
             (&[Lamp, CatBed], Role::Den),
+            // Decor names no room, and changes none.
+            (&[Sofa, Tv, Plant, Poster], Role::Living),
+            (&[Bed, Poster], Role::Bedroom),
+            (&[Fridge, Plant], Role::Kitchen),
+            (&[Plant, Poster], Role::Den),
         ] {
             let pieces: Vec<Prop> = items.iter().map(|&item| prop(item, 0)).collect();
             assert_eq!(
@@ -1508,10 +1672,38 @@ mod tests {
 
     use proptest::prelude::*;
 
-    /// Some of her pieces, each anchored somewhere (or, from an older
-    /// record, only a share of the way along), facing either way.
+    /// The pieces that stand on the floor.
+    fn standing() -> Vec<Furniture> {
+        Furniture::ALL
+            .into_iter()
+            .filter(|f| f.spec().hang.is_none())
+            .collect()
+    }
+
+    /// Some of her pieces that stand on the floor, each anchored
+    /// somewhere (or, from an older record, only a share of the way
+    /// along), facing either way.
     fn pieces() -> impl Strategy<Value = Vec<Prop>> {
-        proptest::sample::subsequence(Furniture::ALL.to_vec(), 1..=5).prop_flat_map(|items| {
+        proptest::sample::subsequence(standing(), 1..=5).prop_flat_map(placed)
+    }
+
+    /// Some of her pieces that stand, and a poster hung among them
+    /// (newer or older than any of them), each placed as [`pieces`].
+    fn decorated() -> impl Strategy<Value = Vec<Prop>> {
+        (
+            proptest::sample::subsequence(standing(), 0..=4),
+            any::<proptest::sample::Index>(),
+        )
+            .prop_flat_map(|(mut items, at)| {
+                items.insert(at.index(items.len() + 1), Furniture::Poster);
+                placed(items)
+            })
+    }
+
+    /// `items`, each anchored somewhere (or only a share of the way
+    /// along), facing either way.
+    fn placed(items: Vec<Furniture>) -> impl Strategy<Value = Vec<Prop>> {
+        {
             let n = items.len();
             (
                 Just(items),
@@ -1542,7 +1734,7 @@ mod tests {
                         })
                         .collect()
                 })
-        })
+        }
     }
 
     /// A Users pane `width` wide, six tall, with `text` cells along its
@@ -1629,6 +1821,288 @@ mod tests {
             let noisy_laid = room.layout(&nooks);
             prop_assert_eq!(&noisy_laid, &laid);
             prop_assert!(subsequence(&noisy_shown, &noisy_laid));
+        }
+    }
+
+    /// Two panes side by side: Users `width × height` and a Playlist 40
+    /// wide and 12 tall, with `text` cells inside Users.
+    fn two_panes(width: u16, height: u16, text: &[(u16, u16)]) -> (Buffer, [(Nook, Rect); 2]) {
+        let tall = height.max(12);
+        let mut rows = Vec::new();
+        let users = empty("Users", usize::from(width), usize::from(height));
+        let playlist = empty("Playlist", 40, 12);
+        for y in 0..usize::from(tall) {
+            let a = users
+                .get(y)
+                .cloned()
+                .unwrap_or_else(|| " ".repeat(usize::from(width)));
+            let b = playlist.get(y).cloned().unwrap_or_else(|| " ".repeat(40));
+            rows.push(a + &b);
+        }
+        let mut buf = Buffer::with_lines(rows.iter().map(String::as_str));
+        for &(x, y) in text {
+            if x > 0 && x + 1 < width && y > 0 && y + 1 < height {
+                buf[(x, y)].set_symbol("x");
+            }
+        }
+        (
+            buf,
+            [
+                (Nook::Users, Rect::new(0, 0, width, height)),
+                (Nook::Playlist, Rect::new(width, 0, 40, 12)),
+            ],
+        )
+    }
+
+    /// Every piece that hangs hangs above the tallest piece that stands
+    /// (and so above any it hangs over), and above her head.
+    #[test]
+    fn hung_pieces_clear_every_standing_piece() {
+        let tallest = standing()
+            .into_iter()
+            .map(|f| f.spec().footprint.1)
+            .max()
+            .unwrap();
+        assert!(tallest >= super::super::sprite::HEIGHT as u16);
+        for item in Furniture::ALL {
+            if let Some(hang) = item.spec().hang {
+                assert!(hang >= tallest, "{item:?} hangs {hang}, under {tallest}");
+                assert!(item.spec().uses.is_empty(), "{item:?} is out of reach");
+            }
+        }
+    }
+
+    /// A poster hangs on the wall, over the sofa: above it, apart from
+    /// it, with nothing beneath it but the wall.
+    #[test]
+    fn a_poster_hangs_over_the_sofa() {
+        let rows = empty("Users", 20, 9);
+        let buf = Buffer::with_lines(rows.iter().map(String::as_str));
+        let nooks = [(Nook::Users, buf.area)];
+        let mut room = home(
+            Nook::Users,
+            &[prop(Furniture::Sofa, 0), prop(Furniture::Poster, 0)],
+        );
+        let shown = room.project(&buf, &nooks, &|_, _| false);
+        assert_eq!(shown.len(), 2, "{shown:?}");
+        let (sofa, poster) = (shown[0], shown[1]);
+        assert_eq!(poster.item, Furniture::Poster);
+        assert_eq!((sofa.lane(), poster.lane()), (Lane::Floor, Lane::Wall));
+        assert_eq!((sofa.left, poster.left), (1, 1), "each against the wall");
+        assert_eq!(poster.rect(), Rect::new(1, 2, 4, 2));
+        assert_eq!(poster.cover(), poster.rect(), "no floor beneath it");
+        assert!(!poster.cover().intersects(sofa.cover()));
+        assert!(
+            poster
+                .cells()
+                .all(|(x, y, _)| poster.rect().contains((x as u16, y as u16).into()))
+        );
+        // Boxed, it's a parcel on the floor.
+        let parcel = Shown {
+            boxed: true,
+            ..poster
+        };
+        assert_eq!(
+            (parcel.lane(), parcel.rect()),
+            (Lane::Floor, Rect::new(1, 6, 4, 2))
+        );
+        // Too low a wall for it: it's in the closet alone, and nothing
+        // moves.
+        let low = empty("Users", 20, 7);
+        let low = Buffer::with_lines(low.iter().map(String::as_str));
+        let before = room.clone();
+        let shown = room.project(&low, &[(Nook::Users, low.area)], &|_, _| false);
+        assert_eq!(shown.len(), 1, "{shown:?}");
+        assert_eq!(shown[0].item, Furniture::Sofa);
+        assert_eq!(room, before);
+    }
+
+    /// The wall never moves a room, however little of it there is; when
+    /// the floor does, what hangs goes along.
+    #[test]
+    fn what_hangs_goes_where_the_room_goes() {
+        let mut room = home(
+            Nook::Users,
+            &[prop(Furniture::Sofa, 0), prop(Furniture::Poster, 1000)],
+        );
+        let (buf, nooks) = two_panes(30, 9, &[]);
+        assert_eq!(room.project(&buf, &nooks, &|_, _| false).len(), 2);
+        // Too low to hang it: it's in the closet, the sofa stays.
+        let (buf, nooks) = two_panes(30, 6, &[]);
+        let shown = room.project(&buf, &nooks, &|_, _| false);
+        assert_eq!(shown.len(), 1, "{shown:?}");
+        assert!(
+            room.props
+                .iter()
+                .all(|p| p.strip == Strip::Bottom(Nook::Users))
+        );
+        // Too low for the sofa: both go to the Playlist, the poster where
+        // its share of the way along puts it.
+        let (buf, nooks) = two_panes(30, 4, &[]);
+        let shown = room.project(&buf, &nooks, &|_, _| false);
+        assert_eq!(shown.len(), 2, "{shown:?}");
+        assert!(
+            room.props
+                .iter()
+                .all(|p| p.strip == Strip::Bottom(Nook::Playlist))
+        );
+        let poster = shown.iter().find(|s| s.item == Furniture::Poster).unwrap();
+        assert_eq!(poster.rect().right(), 30 + 39, "against the far wall");
+        // A hung piece alone on a strip that's gone goes too.
+        let mut alone = home(Nook::Users, &[prop(Furniture::Poster, 0)]);
+        let (buf, nooks) = two_panes(30, 9, &[]);
+        let shown = alone.project(&buf, &nooks[1..], &|_, _| false);
+        assert_eq!(shown.len(), 1, "{shown:?}");
+        assert_eq!(alone.props[0].strip, Strip::Bottom(Nook::Playlist));
+    }
+
+    /// A delivery that hangs comes in only where it fits both ways: its
+    /// parcel on the floor (with room to unpack it), and hung above.
+    #[test]
+    fn a_poster_is_delivered_where_it_fits_boxed_and_hung() {
+        let room = home(Nook::Users, &[prop(Furniture::Sofa, 500)]);
+        let rows = empty("Users", 30, 9);
+        let clean = Buffer::with_lines(rows.iter().map(String::as_str));
+        let nooks = [(Nook::Users, clean.area)];
+        let mut projected = room.clone();
+        let shown = projected.project(&clean, &nooks, &|_, _| false);
+        let (prop, flap) = projected
+            .doorstep(&clean, &nooks, &shown, &|_, _| false, Furniture::Poster)
+            .expect("room for it");
+        assert!(prop.boxed);
+        assert_eq!(prop.lane(), Lane::Floor);
+        assert_eq!(flap.rows, (6, 8), "the flap is at the floor");
+        // Text where it would hang, at the screen's edge (the right
+        // wall): it comes in at the left wall instead.
+        let mut hung_over = clean.clone();
+        hung_over[(27, 2)].set_symbol("x");
+        let (prop, _) = projected
+            .doorstep(&hung_over, &nooks, &shown, &|_, _| false, Furniture::Poster)
+            .expect("the other wall");
+        assert_eq!(prop.anchor.map(|a| a.side), Some(Side::Left));
+        // Text where it would hang at either wall: no delivery.
+        hung_over[(2, 2)].set_symbol("x");
+        assert_eq!(
+            projected.doorstep(&hung_over, &nooks, &shown, &|_, _| false, Furniture::Poster),
+            None
+        );
+        // Text where the parcel would stand at either wall: none either.
+        let mut floored = clean.clone();
+        floored[(27, 7)].set_symbol("x");
+        floored[(2, 7)].set_symbol("x");
+        assert_eq!(
+            projected.doorstep(&floored, &nooks, &shown, &|_, _| false, Furniture::Poster),
+            None
+        );
+        // Too low to hang it: none.
+        let low = Buffer::with_lines(empty("Users", 30, 7).iter().map(String::as_str));
+        let low_nooks = [(Nook::Users, low.area)];
+        let shown = projected.project(&low, &low_nooks, &|_, _| false);
+        assert_eq!(
+            projected.doorstep(&low, &low_nooks, &shown, &|_, _| false, Furniture::Poster),
+            None
+        );
+        assert!(
+            projected
+                .doorstep(&low, &low_nooks, &shown, &|_, _| false, Furniture::Plant)
+                .is_some(),
+            "a plant stands"
+        );
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(dessplay_core::test_support::proptest_cases(128)))]
+
+        /// With a poster hung among her pieces: each lane keeps its
+        /// anchor order and its walls, and never overlaps; what hangs
+        /// never overlaps what stands; a resize and back puts every piece
+        /// where it was; a wall too low for what hangs never moves the
+        /// room; and text closets only the pieces it would cover.
+        #[test]
+        fn the_wall_lane_keeps_order_and_never_moves_the_room(
+            props in decorated(),
+            wide in 30u16..90,
+            tall in 8u16..14,
+            narrow in 20u16..90,
+            low in 4u16..8,
+            text in proptest::collection::vec((1u16..90, 1u16..13), 0..5),
+        ) {
+            let mut room = Home { props };
+            let (buf, nooks) = two_panes(wide, tall, &[]);
+            let first = room.project(&buf, &nooks, &|_, _| false);
+            let pinned = room.clone();
+            let laid = room.layout(&nooks);
+            prop_assert_eq!(&room, &pinned);
+            let order = |s: &Shown| {
+                let index = room.props.iter().position(|p| p.item == s.item);
+                index.and_then(|i| Some(order_key(room.props.get(i)?.anchor?, i)))
+            };
+            for lane in [Lane::Floor, Lane::Wall] {
+                for strip in [Strip::Bottom(Nook::Users), Strip::Bottom(Nook::Playlist)] {
+                    let mut along: Vec<Shown> = laid
+                        .iter()
+                        .filter(|s| s.lane() == lane && s.strip == Some(strip))
+                        .copied()
+                        .collect();
+                    along.sort_by_key(|s| s.left);
+                    for pair in along.windows(2) {
+                        prop_assert!(pair[0].rect().right() <= pair[1].rect().x, "{:?}", along);
+                        prop_assert!(order(&pair[0]) < order(&pair[1]), "{:?}", along);
+                    }
+                }
+            }
+            for s in &laid {
+                let &(_, e) = strips(&nooks).iter().find(|(t, _)| Some(*t) == s.strip).unwrap();
+                let r = s.rect();
+                prop_assert!(i32::from(r.x) >= e.from && i32::from(r.right()) <= e.to, "{:?}", s);
+                prop_assert!(i32::from(r.y) > e.floor - i32::from(e.rows) - 1, "inside: {:?}", s);
+                for t in &laid {
+                    if s.lane() == Lane::Wall && t.lane() == Lane::Floor {
+                        prop_assert!(!s.cover().intersects(t.cover()), "{:?} over {:?}", s, t);
+                    }
+                }
+            }
+            // A resize and back lays every piece out where it was.
+            let (small, at_small) = two_panes(narrow, tall, &[]);
+            let mut resized = pinned.clone();
+            let _ = resized.layout(&at_small);
+            prop_assert_eq!(&resized.layout(&nooks), &laid);
+            let _ = room.project(&small, &at_small, &|_, _| false);
+            if room == pinned {
+                prop_assert_eq!(&room.project(&buf, &nooks, &|_, _| false), &first);
+            }
+            // A wall too low for what hangs: it's in the closet, and
+            // nothing moves unless the floor's too low too.
+            let mut lowered = pinned.clone();
+            let (short, at_short) = two_panes(wide, low, &[]);
+            let shown = lowered.project(&short, &at_short, &|_, _| false);
+            let floor_holds = pinned
+                .props
+                .iter()
+                .filter(|p| p.strip == Strip::Bottom(Nook::Users) && p.lane() == Lane::Floor)
+                .all(|p| p.item.spec().footprint.1 + 2 <= low);
+            let users = |s: &&Shown| s.strip == Some(Strip::Bottom(Nook::Users));
+            if floor_holds {
+                prop_assert_eq!(&lowered, &pinned, "the wall moved the room");
+                prop_assert!(!shown.iter().filter(users).any(|s| s.lane() == Lane::Wall));
+                let standing = |v: &[Shown]| -> Vec<(Furniture, i32)> {
+                    v.iter().filter(users).filter(|s| s.lane() == Lane::Floor).map(|s| (s.item, s.left)).collect()
+                };
+                prop_assert_eq!(standing(&shown), standing(&first));
+            }
+            // Text closets only the pieces it would cover.
+            let mut room = pinned.clone();
+            let (noisy, _) = two_panes(wide, tall, &text);
+            let noisy_shown = room.project(&noisy, &nooks, &|_, _| false);
+            prop_assert_eq!(&room, &pinned, "text never moves a piece");
+            prop_assert_eq!(&room.layout(&nooks), &laid);
+            for s in &first {
+                let covered = s.cover().intersection(noisy.area);
+                let hit = (covered.x..covered.right()).any(|x| {
+                    (covered.y..covered.bottom()).any(|y| noisy[(x, y)] != buf[(x, y)])
+                });
+                prop_assert_eq!(noisy_shown.contains(s), !hit, "{:?}", s);
+            }
         }
     }
 

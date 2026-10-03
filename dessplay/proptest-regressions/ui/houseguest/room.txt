@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc b211feb9fd11e4b6162f25eae016a1274cc6e6da5c220d7178d7967e3efbd26b # shrinks to props = [Prop { item: Poster, strip: Bottom(Users), anchor: None, at: 922, facing: Left, boxed: false, settled: true }], wide = 78, tall = 9, narrow = 67, low = 6, text = [(14, 8)]

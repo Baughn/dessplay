@@ -211,7 +211,8 @@ fn facing_right() -> Facing {
 /// pane none has (each room needs a pane of its own there).
 fn rooms(home: &Home) -> Vec<(RoomKind, Nook)> {
     let mut out: Vec<(RoomKind, Nook)> = Vec::new();
-    for prop in &home.props {
+    // Decor claims no room's pane: older builds don't know it.
+    for prop in home.props.iter().filter(|p| !p.item.decor()) {
         let kind = RoomKind::of(prop.item);
         if out.iter().any(|&(k, _)| k == kind) {
             continue;
@@ -240,7 +241,11 @@ impl RoomKind {
     /// The room an older build keeps `item` in.
     fn of(item: Furniture) -> Self {
         match item {
-            Furniture::Sofa | Furniture::Tv | Furniture::CatBed => Self::Living,
+            Furniture::Sofa
+            | Furniture::Tv
+            | Furniture::CatBed
+            | Furniture::Plant
+            | Furniture::Poster => Self::Living,
             Furniture::Bed | Furniture::Desk | Furniture::Lamp | Furniture::Bookshelf => {
                 Self::Bedroom
             }
@@ -349,7 +354,10 @@ mod tests {
             .unwrap()
             .iter()
             .filter_map(|prop| {
-                let item: Furniture = serde_json::from_value(prop["item"].clone()).unwrap();
+                // It knows no decor: an unknown piece is skipped.
+                let item = serde_json::from_value::<Furniture>(prop["item"].clone())
+                    .ok()
+                    .filter(|item| !item.decor())?;
                 let at = prop["at"].as_u64().unwrap() as u16;
                 let &(_, nook) = rooms.iter().find(|&&(k, _)| k == RoomKind::of(item))?;
                 Some((item, nook, at))
@@ -411,6 +419,37 @@ mod tests {
         assert_ne!(read[2].1, Nook::Users, "{read:?}");
         // And this build reads it back where it stands.
         assert_eq!(Ledger::from_json(&ledger.to_json()), Ok(ledger));
+    }
+
+    /// Decor is a piece older builds don't know: they skip it, and it
+    /// claims no room's pane there, so every piece they do know keeps
+    /// its room's.
+    #[test]
+    fn an_older_build_skips_decor() {
+        let mut ledger = Ledger::new(3);
+        for (item, nook, at) in [
+            (Furniture::Poster, Nook::Users, 0),
+            (Furniture::Plant, Nook::List, 1000),
+            (Furniture::Sofa, Nook::Playlist, 0),
+            (Furniture::Tv, Nook::Playlist, 1000),
+        ] {
+            assert!(ledger.home.add(Prop {
+                anchor: Some(Anchor {
+                    side: Side::Left,
+                    offset: at / 100,
+                }),
+                ..Prop::new(item, nook, at, Facing::Right)
+            }));
+        }
+        let text = ledger.to_json();
+        assert_eq!(
+            as_an_older_build_reads(&text),
+            [
+                (Furniture::Sofa, Nook::Playlist, 0),
+                (Furniture::Tv, Nook::Playlist, 1000),
+            ]
+        );
+        assert_eq!(Ledger::from_json(&text), Ok(ledger));
     }
 
     /// A strip this build doesn't know (a later build's) falls back to

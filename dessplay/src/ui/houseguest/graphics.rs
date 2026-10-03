@@ -407,6 +407,63 @@ impl Graphics {
         layers: &[Layer],
         open: &dyn Fn(i32, i32) -> bool,
     ) -> Option<Rect> {
+        let (key, (vx0, vy0)) = self.key(buf, layers, open)?;
+        let clip = key.clip;
+        self.clock += 1;
+        let stamp = self.clock;
+        if let Some((_, last)) = self.cache.get_mut(&key) {
+            let last = std::mem::replace(last, stamp);
+            if let Some(key) = self.shown.remove(&last) {
+                self.shown.insert(stamp, key);
+            }
+        } else {
+            let protocol = self.frame(&key)?;
+            if self.cache.len() >= CACHE_LIMIT
+                && let Some((_, stale)) = self.shown.pop_first()
+            {
+                self.cache.remove(&stale);
+                #[cfg(test)]
+                {
+                    self.counts.evicted += 1;
+                }
+            }
+            #[cfg(test)]
+            {
+                self.counts.encoded += 1;
+                if !self.seen.insert(key.clone()) {
+                    self.counts.reencoded += 1;
+                }
+            }
+            self.shown.insert(stamp, key.clone());
+            self.cache.insert(key.clone(), (protocol, stamp));
+        }
+        let (protocol, _) = self.cache.get(&key)?;
+        let rect = Rect::new(vx0 as u16, vy0 as u16, clip.2, clip.3);
+        Image::new(protocol).render(rect, buf);
+        Some(rect)
+    }
+
+    /// The image of `layers` over `buf` this frame, as composed (cropped
+    /// to the screen), for review.
+    #[cfg(test)]
+    pub fn canvas(
+        &self,
+        buf: &Buffer,
+        layers: &[Layer],
+        open: &dyn Fn(i32, i32) -> bool,
+    ) -> Option<RgbaImage> {
+        let (key, _) = self.key(buf, layers, open)?;
+        self.compose(&key)
+    }
+
+    /// What [`Graphics::paint_layers`] would paint: the image's key, and
+    /// its top-left cell on screen.
+    fn key(
+        &self,
+        buf: &Buffer,
+        layers: &[Layer],
+        open: &dyn Fn(i32, i32) -> bool,
+    ) -> Option<(Key, (i32, i32))> {
         let (cw, ch) = self.cell();
         if cw == 0 || ch == 0 {
             return None;
@@ -477,38 +534,7 @@ impl Graphics {
             clip,
             cell: (cw as u16, ch as u16),
         };
-        self.clock += 1;
-        let stamp = self.clock;
-        if let Some((_, last)) = self.cache.get_mut(&key) {
-            let last = std::mem::replace(last, stamp);
-            if let Some(key) = self.shown.remove(&last) {
-                self.shown.insert(stamp, key);
-            }
-        } else {
-            let protocol = self.frame(&key)?;
-            if self.cache.len() >= CACHE_LIMIT
-                && let Some((_, stale)) = self.shown.pop_first()
-            {
-                self.cache.remove(&stale);
-                #[cfg(test)]
-                {
-                    self.counts.evicted += 1;
-                }
-            }
-            #[cfg(test)]
-            {
-                self.counts.encoded += 1;
-                if !self.seen.insert(key.clone()) {
-                    self.counts.reencoded += 1;
-                }
-            }
-            self.shown.insert(stamp, key.clone());
-            self.cache.insert(key.clone(), (protocol, stamp));
-        }
-        let (protocol, _) = self.cache.get(&key)?;
-        let rect = Rect::new(vx0 as u16, vy0 as u16, clip.2, clip.3);
-        Image::new(protocol).render(rect, buf);
-        Some(rect)
+        Some((key, (vx0, vy0)))
     }
 
     /// Distinct images in the cache.
@@ -525,6 +551,19 @@ impl Graphics {
 
     /// Compose and encode one frame.
     fn frame(&self, key: &Key) -> Option<Protocol> {
+        let image = self.compose(key)?;
+        self.picker
+            .new_protocol(
+                DynamicImage::ImageRgba8(image),
+                Size::new(key.clip.2, key.clip.3),
+                Resize::Fit(None),
+            )
+            .ok()
+    }
+
+    /// Compose one frame: its lines, then its layers, cropped to what
+    /// shows.
+    fn compose(&self, key: &Key) -> Option<RgbaImage> {
         let (cw, ch) = self.cell();
         let (w, h) = (cw * u32::from(key.size.0), ch * u32::from(key.size.1));
         let mut canvas = RgbaImage::new(w, h);
@@ -554,21 +593,16 @@ impl Graphics {
             );
         }
         let (cx, cy, cwn, chn) = key.clip;
-        let cropped = image::imageops::crop_imm(
-            &canvas,
-            u32::from(cx) * cw,
-            u32::from(cy) * ch,
-            u32::from(cwn) * cw,
-            u32::from(chn) * ch,
-        )
-        .to_image();
-        self.picker
-            .new_protocol(
-                DynamicImage::ImageRgba8(cropped),
-                Size::new(cwn, chn),
-                Resize::Fit(None),
+        Some(
+            image::imageops::crop_imm(
+                &canvas,
+                u32::from(cx) * cw,
+                u32::from(cy) * ch,
+                u32::from(cwn) * cw,
+                u32::from(chn) * ch,
             )
-            .ok()
+            .to_image(),
+        )
     }
 }
 

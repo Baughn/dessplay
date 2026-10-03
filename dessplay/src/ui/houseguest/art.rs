@@ -821,6 +821,8 @@ fn parts(prop: Furniture, layer: Layer) -> &'static [&'static str] {
         (Furniture::Bookshelf, _) => &["bookshelf"],
         (Furniture::Fridge, _) => &["fridge"],
         (Furniture::CatBed, _) => &["cat-bed", "cat-bed-front"],
+        (Furniture::Plant, _) => &["plant"],
+        (Furniture::Poster, _) => &["poster"],
     }
 }
 

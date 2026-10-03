@@ -2719,6 +2719,41 @@ turned where it stood.)
 measured before they shipped (plan.md, Phase 38), the carry costs some
 30–40 distinct images and the cache didn't thrash.
 
+## Pieces hang on the wall (2026-10-03)
+
+**Rule:** A piece that hangs (the poster) hangs 4 rows above its
+strip's floor, in a wall lane of its own: packed in anchor order among
+hung pieces only, over any piece that stands. Only the floor lane moves
+a room; a hung piece its wall doesn't hold is in the closet alone, and
+goes along when the floor moves. Boxed, it's a parcel on the floor, and
+a delivery checks both. See [design.md](design.md#houseguest).
+
+**Why:** *The user's call*, reversing 2026-09-29's "props only stand on
+floors" (the window was rejected for it): a poster above the sofa is
+what a lived-in room looks like, and the floors are crowded enough
+without decor taking a slot of them.
+
+*A lane of its own*: hung pieces overlap standing ones' columns by
+design, so packing them with the floor would push the sofa along for a
+poster. Packing each lane on its own keeps every floor rule (anchor
+order, a resize and back restores) for both, with no new layout.
+
+*Hang ≥ the tallest standing piece*: at 4 rows (the TV, bookshelf,
+fridge and lamp are 4 tall, and so is she) a hung piece never overlaps
+a standing one, her box or her image as she passes under it, so none
+of the overlap rules (one image, covers, her rest) need a wall case. A
+lint asserts it against the table. 4, not 5: the poster then needs 6
+clear rows, and the home screen's Users pane has 7.
+
+*The wall never moves a room*: a strip moves its pieces only when its
+floor fails; letting a poster that doesn't fit the wall's height move
+the sofa and TV would trade a room for a picture. The hung piece is in
+the closet alone, as text over it would leave it.
+
+*Delivery checks both states*: the parcel stands on the floor until
+she unpacks it, then hangs at the same anchor; checking only one would
+deliver a poster that can't be unpacked, or one that can't hang.
+
 ## Houseguest chooses by needs among the top few (2026-09-28)
 
 **Rule:** Her next act is a weighted-random pick among the four
