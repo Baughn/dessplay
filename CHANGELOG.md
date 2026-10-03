@@ -33,6 +33,10 @@ Add new days at the top. Add new entries at the bottom of existing days.
   come on the houseguest's shopping channel once her room feels bare to
   her, or once she has all the furniture. The poster hangs on the wall,
   above her other things.
+- Fixed: When the houseguest tries a lamp, a fridge or a TV in a few
+  spots, they're different spots, not the same spot turned round; and
+  when the other spot she meant to try turns out to be taken, she keeps
+  the piece where it is with a "There!" instead of falling silent.
 
 ## 2026-10-02
 

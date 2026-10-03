@@ -6819,6 +6819,73 @@ fn a_carry_whose_spot_is_gone_goes_elsewhere_or_is_let_go() {
     }
 }
 
+/// Set down in the first of two spots she means to try, she'd lift it
+/// for the other; but that one's gone (text came there): she keeps it
+/// where it is, as she would have chosen to ("There!"), and owes no
+/// glance.
+#[test]
+fn every_other_spot_gone_she_keeps_it_where_it_is() {
+    for graphics in [false, true] {
+        let (mut osaka, terrain, repair, others, mut rng) = pocket_on_a_floor(graphics);
+        // The dearer first (a whim's order), the cheapest after.
+        let repair = rules::Repair {
+            cost: others[0].cost + rules::TIE_CELLS,
+            ..repair
+        };
+        let second = others[0];
+        osaka.lift(
+            scenes::Lift {
+                repair,
+                trials: rules::Trials::of(&[repair, second]),
+                x: 10,
+                y: 10,
+                side: scenes::Side::Right,
+            },
+            0,
+        );
+        // Calm: the dearer spot she'd seldom keep it in.
+        osaka.needs_mut().serve(super::brain::Need::Restless, 1.0);
+        let judged = |osaka: &Osaka| osaka::Chances {
+            judged: osaka.episode().map(|ep| osaka::Judged {
+                piece: ep.repair.piece,
+                to: ep.repair.to,
+                pocket: ep.pocket,
+                // Only the first spot (to lift it, and set it down there).
+                holds: ep.tried == 0,
+                spot: Some(((10, 10), scenes::Side::Right)),
+                home: Some((35, 10)),
+            }),
+            ..osaka::Chances::default()
+        };
+        let mut now = 0;
+        let mut set = false;
+        let kept = loop {
+            assert!(now < 60_000, "graphics {graphics}: still at it");
+            now += 50;
+            osaka.tick(now, &terrain, &judged(&osaka), &mut rng);
+            if !set && osaka.episode().is_some_and(|e| e.set_down) {
+                // The frame takes it.
+                osaka.set_down_done(Furniture::Sofa, now);
+                set = true;
+            }
+            if set && osaka.episode().is_none() {
+                break now;
+            }
+        };
+        assert_eq!(
+            osaka.retried, 1,
+            "graphics {graphics}: meant to try another"
+        );
+        assert_eq!(
+            osaka.appearance(kept).2,
+            Some(osaka::Bubble::Say("There!")),
+            "graphics {graphics}"
+        );
+        assert_eq!(osaka.beats, [], "graphics {graphics}");
+        assert_eq!(osaka.home_acts(), 1);
+    }
+}
+
 /// Text comes up over the sofa as she bends to lift it, and stays: she
 /// can't get to it, and after a few tries she lets the move go, with a
 /// glance. Let go, it stays as it is this visit: she doesn't set about

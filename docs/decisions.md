@@ -2715,11 +2715,25 @@ rule first holds); a lifted-again piece is carried past the cap. Being
 let go of mid-trial (refused, tries spent, a goodbye) leaves the piece
 where she last set it down, which already mends the rule.
 
-*A turn is no other spot*: the search offers a piece both ways round;
-two ways that differ only by which way it faces (a lamp) would be a
-trial no one could see, so each spot appears once, the cheaper way
-round. (Found by `no_piece_is_moved_twice`: the lamp was lifted to be
-turned where it stood.)
+*A turn is no other spot*: two ways that differ only by which way the
+piece faces would be a trial no one could see, so each spot appears
+once, the cheaper way round. (Found by `no_piece_is_moved_twice`: the
+lamp was lifted to be turned where it stood.) And the search turns a
+piece only where its rule looks at which way it faces (the sofa, to
+face the TV): turning a lamp, a fridge or a TV mends nothing, and its
+turned copies (+1 each) crowded the three ways kept with the same
+spots, so a lamp had fewer real spots to try (2026-10-03, review).
+
+*A spot with nothing left to try is kept*: when every other spot she
+meant to try fails its re-check, the piece stays where she last set it
+down, which already mends the rule; she says "There!" as for a spot she
+chose to keep, rather than going quiet after "hmm..." (an episode that
+ended without a word looked like she'd forgotten it).
+
+*A trial sit is a moment of a use*: she's eased by the share of a whole
+use of the piece she did (a few seconds of a lounge is a little of
+one), as for any use cut short; crediting it as a whole use would make
+trying a sofa as restful as lounging on it.
 
 *The image budget held*: trials re-show the piece up to three times;
 measured before they shipped (plan.md, Phase 38), the carry costs some
@@ -2785,13 +2799,19 @@ shopping channel, and first while *beauty* is her most pressing need.
 Beauty arrives at 0.3, rises over twenty minutes only while she's in a
 plain room (the strip she stands on shows nothing pretty, or she's on
 none), and is eased passively: resting or using her things in a pretty
-room, by the share done times the room's beauty (at most 1). See
+room, by the share done times the room's beauty (at most 1); exercise
+(jumping jacks, touching her toes, stretching) and chores (unpacking a
+parcel, crumpling text) don't. See
 [design.md](design.md#houseguest).
 
 **Why:** *Decor answers the room, not an act*: there's nothing to do
 with a poster, so no want answers beauty and it isn't scored; it only
 steers what she buys, and is eased by living in a pretty room (sitting,
-sleeping, reading there), which is how a room feeling nice works.
+sleeping, reading there), which is how a room feeling nice works. Rest,
+not exercise: jumping jacks in a pretty room is no more taking it in
+than in a bare one (the first cut eased it on any idle act). Nor is
+bending over a box to unpack it, or crumpling torn-off text: a parcel
+isn't one of her things yet, and both are chores (review 2026-10-03).
 *Most pressing, ties counting*: needs clamp at 1, where restlessness
 often sits; a strict "highest" would let a saturated restless need
 block decor forever. A need at 0 is never pressing. *Then furniture,

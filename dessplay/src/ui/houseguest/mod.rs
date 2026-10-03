@@ -1615,7 +1615,7 @@ fn furnish(
                     .into_iter()
                     .find(|s| s.item == piece)
                     .map_or((visit.osaka.x, visit.osaka.y), |s| middle_of(&s));
-                visit.osaka.set_down_refused(back);
+                visit.osaka.set_down_refused(back, now);
             }
             // Not hers to set down any more (the stage put her somewhere).
             None => {}

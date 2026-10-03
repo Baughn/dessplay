@@ -367,7 +367,7 @@ fn golden_furnished_home() {
         furnished,
         &[
             (0, 0x6f8973ffc7314291, 0xf618bef6e9988ebe),
-            (1, 0x2fe9d952955ecd53, 0xc22f4009ce926820),
+            (1, 0x4e3ff498e02ac44f, 0xf50eebc6cc63fa77),
             (2, 0xcc9d7971533dd44b, 0x986500a32e192818),
             (3, 0x671dd90054d079f0, 0xd33b8122506f7025),
         ],

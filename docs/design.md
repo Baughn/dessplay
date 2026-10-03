@@ -1440,7 +1440,9 @@ this section states what is built.
   rises only while a rule of her home she has felt is broken (see *The
   rules of her home*); *beauty* rises (over twenty minutes) only while
   she's in a plain room, on a strip where nothing pretty shows (or on
-  none), and no want answers it: resting or using her things in a
+  none), and no want answers it: resting (sitting, lying, gazing; not
+  exercise) or using her things (not the chores of unpacking a parcel
+  or crumpling text) in a
   pretty room eases it as she does them (by the share done, times the
   room's beauty up to 1; the plant and the poster are 1 each), and it
   turns the shopping channel to decor (below). Every want
@@ -1662,7 +1664,8 @@ this section states what is built.
   otherwise. A way is one of the rule's movable pieces (the sofa, then
   the TV; the lamp; the fridge or bookshelf; of a bed and TV in one
   room, one she hasn't settled first; a piece that doesn't belong) set
-  down at a place on a strip, either way round, where the rule holds, no
+  down at a place on a strip (either way round only where the rule
+  looks at which way it faces: the sofa; else as it is), where the rule holds, no
   rule that held is broken, no room is worse for it (and a piece she
   hasn't settled spoils none), every strip that held its pieces still
   does, and it fits this frame (on blank free cells where she'd fit to
@@ -1708,7 +1711,8 @@ this section states what is built.
   whim picks, and lifts the piece for the first. Set down there and
   taken (the rule holds), she says nothing yet: she sits back down on it
   for a moment (3.5–5 s) with a thoughtful "hmm..." (no shopping channel
-  on that watch), and at her next choice keeps it there with
+  on that watch; it eases her by its share of a whole use), and at her
+  next choice keeps it there with
   probability e^(−Δ/T): Δ how much dearer the spot is than the cheapest
   of them, in 4-cell units (0–1), T her restlessness (at least 0.05), so
   the cheapest she always keeps, and a calm Osaka is pickier than a
@@ -1716,7 +1720,7 @@ this section states what is built.
   ("Hup!") and carries it to the next spot that still puts the rule
   right with it moved from where it stands (judged on the frame then;
   spots that no longer do are skipped, and with none left it stays where
-  it is), past her mood's cap; the last she tries she keeps. However
+  it is: "There!"), past her mood's cap; the last she tries she keeps. However
   many spots, it's one thing about her home, counted (and nesting eased)
   when it's first taken. A lifted-again piece is carried as any other
   (interruptions, tries, being let go); let go, or at a goodbye, it

@@ -481,6 +481,9 @@ enum Act {
         seat: Seat,
         since: u64,
         until: u64,
+        /// How long a whole use of it is (ms): what she's eased by is the
+        /// share of this she did (a trial sit is a moment of one).
+        whole: u64,
         advert: Option<Furniture>,
         grievance: Option<(Grievance, u64)>,
     },
@@ -1029,6 +1032,16 @@ impl Activity {
         Self::Stretch,
         Self::Gaze,
     ];
+
+    /// Whether it's rest (sitting, lying, gazing), not exercise: what
+    /// doesn't answer restlessness. Resting in a pretty room eases her
+    /// want of beauty.
+    pub fn restful(self) -> bool {
+        match self {
+            Self::Sit | Self::LieBack | Self::LieFront | Self::Gaze => true,
+            Self::Jacks | Self::ToeTouch | Self::Stretch => false,
+        }
+    }
 
     /// How long she keeps at it (ms range).
     fn duration(self) -> (u64, u64) {
@@ -2260,10 +2273,18 @@ impl Osaka {
                 {
                     self.events.push(HomeEvent::Used(id));
                 }
+                let length = rng.range(lo, hi);
+                let whole = if trying {
+                    let (lo, hi) = use_duration(seat.what);
+                    lo.midpoint(hi)
+                } else {
+                    length
+                };
                 Act::Use {
                     seat,
                     since: at,
-                    until: at + rng.range(lo, hi),
+                    until: at + length,
+                    whole,
                     advert,
                     grievance,
                 }
@@ -2345,10 +2366,12 @@ impl Osaka {
     }
 
     /// What she chose eases her needs by how much of it she did: settled
-    /// as she leaves doing it, by the share done. Before she gets to it,
-    /// nothing is settled. Resting or using her things in a pretty room
-    /// eases her want of beauty too, by the share done (as much as one
-    /// pretty thing does, at most).
+    /// as she leaves doing it, by the share done (of a use, the share of
+    /// a whole one: a moment's trial sit is a little of one). Before she
+    /// gets to it, nothing is settled. Resting (not exercising: see
+    /// [`Activity::restful`]) or using her things in a pretty room eases
+    /// her want of beauty too, by the share done (as much as one pretty
+    /// thing does, at most).
     fn credit_done(&mut self, at: u64) {
         let Some(want) = self.credit else {
             return;
@@ -2363,7 +2386,7 @@ impl Osaka {
             }
             (
                 Act::Use {
-                    seat, since, until, ..
+                    seat, since, whole, ..
                 },
                 Want::Use(chose),
             ) if seat.what == chose => {
@@ -2372,7 +2395,7 @@ impl Osaka {
                 } else {
                     Spot::Real(seat.item)
                 };
-                (span(*since, *until), spot)
+                (span(*since, since + whole), spot)
             }
             (Act::Pull { offset, goal, .. }, Want::Pull) => {
                 (f64::from(*offset) / f64::from((*goal).max(1)), Spot::Any)
@@ -2381,7 +2404,14 @@ impl Osaka {
         };
         self.credit = None;
         self.serve(want, done, spot);
-        if matches!(self.act, Act::Idle { .. } | Act::Use { .. }) {
+        let restful = match self.act {
+            Act::Idle { what, .. } => what.restful(),
+            // Unpacking a parcel and crumpling text are chores, not using
+            // her things.
+            Act::Use { seat, .. } => !matches!(seat.what, Use::Unpack | Use::Crumple),
+            _ => false,
+        };
+        if restful {
             self.needs
                 .serve(Need::Beauty, done * self.beauty_here.min(1.0));
         }
@@ -3214,18 +3244,20 @@ impl Osaka {
     /// The frame wouldn't take the piece she set down (it no longer fits
     /// where it goes, or the rule's right without it): she lets it go,
     /// it's back where it stood, and she glances at it there (`toward`).
-    pub fn set_down_refused(&mut self, toward: (i32, i32)) {
+    pub fn set_down_refused(&mut self, toward: (i32, i32), now: u64) {
         if self.episode.is_some_and(|e| e.set_down) {
             tracing::debug!("houseguest: the frame refused what she set down");
-            self.drop_episode(Some(toward));
+            self.drop_episode(Some(toward), now);
         }
     }
 
     /// She lets go of moving the piece: it's back where it stood (if she
     /// had lifted it) and she owes a glance at it there (`toward`, else
     /// where she is); or, still on her way to lift it, at where she was
-    /// heading.
-    fn drop_episode(&mut self, toward: Option<(i32, i32)>) {
+    /// heading. Set down where it's right already (trying it in another
+    /// spot), and not lifted again, she keeps it there, as pleased as if
+    /// she'd chosen to ("There!").
+    fn drop_episode(&mut self, toward: Option<(i32, i32)>, at: u64) {
         let Some(ep) = self.episode.take() else {
             return;
         };
@@ -3240,6 +3272,7 @@ impl Osaka {
                 "houseguest: leaves her {} where she tried it",
                 ep.repair.piece.spec().name
             );
+            self.say(THERE, at);
             return;
         }
         tracing::info!(
@@ -3252,13 +3285,13 @@ impl Osaka {
         for felt in self.felt.iter_mut().filter(|f| f.key == ep.repair.key) {
             felt.let_go = true;
         }
-        let at = toward.unwrap_or((self.x, self.y));
+        let toward = toward.unwrap_or((self.x, self.y));
         let loss = if ep.pocket {
             Loss::Moved(ep.repair.piece)
         } else {
             Loss::Heading
         };
-        self.owe(loss, at);
+        self.owe(loss, toward);
     }
 
     /// Moving a piece of her home comes before anything new: lifting the
@@ -3374,11 +3407,11 @@ impl Osaka {
                 self.episode = Some(ep);
                 return wait(self);
             }
-            self.drop_episode(judged.home);
+            self.drop_episode(judged.home, at);
             return None;
         }
         if ep.tries >= TRIES {
-            self.drop_episode(judged.home);
+            self.drop_episode(judged.home, at);
             return None;
         }
         let bound = mind::bind(ctx, whims, Want::Arrange)
@@ -4044,6 +4077,7 @@ impl Osaka {
                 until,
                 advert,
                 grievance,
+                ..
             } => use_look(
                 seat.what,
                 advert,
@@ -4210,4 +4244,148 @@ fn next_frame(what: Activity, since: u64, now: u64) -> u64 {
         return u64::MAX;
     }
     since + (now.saturating_sub(since) / period + 1) * period
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+
+    /// Her, standing, with `need` pressing.
+    fn pressed(need: Need) -> (Osaka, Rng) {
+        let mut rng = Rng(1);
+        let mut osaka = Osaka::standing_at(10, 10, 0, &mut rng);
+        osaka.needs.serve(need, -1.0);
+        (osaka, rng)
+    }
+
+    /// In a pretty room, resting (sitting, lying, gazing) and using her
+    /// things ease her want of beauty; exercising (jumping jacks, touching
+    /// her toes, stretching: what answers restlessness) and chores
+    /// (unpacking a parcel, crumpling text) don't.
+    #[test]
+    fn only_rest_in_a_pretty_room_eases_her_want_of_beauty() {
+        for what in Activity::ALL {
+            let (mut osaka, _) = pressed(Need::Beauty);
+            let before = osaka.needs.get(Need::Beauty);
+            osaka.beauty_here = 1.0;
+            osaka.credit = Some(Want::Idle(what));
+            osaka.act = Act::Idle {
+                what,
+                since: 0,
+                until: 1000,
+            };
+            osaka.credit_done(1000);
+            let eased = osaka.needs.get(Need::Beauty) < before;
+            let exercise = Want::Idle(what)
+                .def()
+                .serves
+                .iter()
+                .any(|&(need, _)| need == Need::Restless);
+            assert_eq!(eased, !exercise, "{what:?}");
+        }
+        for what in [
+            Use::Lounge,
+            Use::Nap,
+            Use::Sleep,
+            Use::Homework,
+            Use::Watch,
+            Use::Unpack,
+            Use::Read,
+            Use::Snack,
+            Use::Pet,
+            Use::Crumple,
+        ] {
+            let (mut osaka, _) = pressed(Need::Beauty);
+            let before = osaka.needs.get(Need::Beauty);
+            osaka.beauty_here = 1.0;
+            osaka.credit = Some(Want::Use(what));
+            osaka.act = Act::Use {
+                seat: Seat {
+                    what,
+                    item: Furniture::Sofa,
+                    piece: PieceRef::Real(Furniture::Sofa),
+                    x: 10,
+                    y: 10,
+                    facing: Facing::Left,
+                },
+                since: 0,
+                until: 1000,
+                whole: 1000,
+                advert: None,
+                grievance: None,
+            };
+            osaka.credit_done(1000);
+            let eased = osaka.needs.get(Need::Beauty) < before;
+            let chore = matches!(what, Use::Unpack | Use::Crumple);
+            assert_eq!(eased, !chore, "{what:?}");
+        }
+    }
+
+    /// Sitting on a piece a moment to try it where she's set it down
+    /// eases her by its share of a whole use of it, not as a whole use.
+    #[test]
+    fn a_trial_sit_eases_her_by_its_share_of_a_use() {
+        use super::super::room::Strip;
+        let eased = |trying: bool| {
+            let (mut osaka, mut rng) = pressed(Need::Comfort);
+            let before = osaka.needs.get(Need::Comfort);
+            if trying {
+                let at = super::super::room::Shown {
+                    item: Furniture::Sofa,
+                    facing: Facing::Left,
+                    boxed: false,
+                    strip: Some(Strip::Bottom(super::super::room::Nook::Users)),
+                    left: 6,
+                    floor: 10,
+                    scrap: None,
+                };
+                osaka.episode = Some(Episode {
+                    repair: Repair {
+                        key: Grievance {
+                            row: 0,
+                            piece: Furniture::Sofa,
+                        },
+                        piece: Furniture::Sofa,
+                        to: Placement {
+                            strip: Strip::Bottom(super::super::room::Nook::Users),
+                            anchor: super::super::room::Anchor {
+                                side: super::super::room::Side::Left,
+                                offset: 5,
+                            },
+                            facing: Facing::Left,
+                        },
+                        at,
+                        cost: 1,
+                        tier: 0,
+                    },
+                    pocket: false,
+                    set_down: false,
+                    tries: 0,
+                    trials: Trials::default(),
+                    tried: 1,
+                    trying: true,
+                });
+            }
+            let seat = Seat {
+                what: Use::Lounge,
+                item: Furniture::Sofa,
+                piece: PieceRef::Real(Furniture::Sofa),
+                x: 10,
+                y: 10,
+                facing: Facing::Left,
+            };
+            osaka.credit = Some(Want::Use(Use::Lounge));
+            osaka.start_job(Job::Use(seat), 0, &Chances::default(), &mut rng);
+            let Act::Use { until, .. } = osaka.act else {
+                panic!("{:?}", osaka.act);
+            };
+            osaka.credit_done(until);
+            before - osaka.needs.get(Need::Comfort)
+        };
+        let (whole, trial) = (eased(false), eased(true));
+        assert!(whole > 0.1, "{whole}");
+        // A trial sit is at most 5 s; a lounge at least 15.
+        assert!(trial > 0.0 && trial <= whole / 3.0, "{trial} of {whole}");
+    }
 }

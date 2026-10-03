@@ -618,6 +618,11 @@ struct Places {
     here: Option<i32>,
     /// The pieces it keeps company with there.
     partners: Vec<Shown>,
+    /// The ways round it could be set down: either, where the rule
+    /// judges which way it faces (a sofa, to watch the TV from); else
+    /// only as it is (turning it would mend nothing, and only crowd out
+    /// other places).
+    facings: Vec<Facing>,
 }
 
 /// Up to [`REPAIRS`] ways to mend `target` on `frame`, cheapest first
@@ -636,6 +641,17 @@ pub(super) fn search(home: &Home, frame: &Frame, target: &Broken) -> Search {
     for (order, &piece) in target.pieces.iter().enumerate() {
         let Some(now) = before.laid.iter().find(|s| s.item == piece) else {
             continue;
+        };
+        let Some(old) = before.home.props.iter().find(|q| q.item == piece) else {
+            continue;
+        };
+        let flip = match old.facing {
+            Facing::Left => Facing::Right,
+            Facing::Right => Facing::Left,
+        };
+        let facings = match rule {
+            Rule::Faces { seat, .. } if seat == piece => vec![old.facing, flip],
+            _ => vec![old.facing],
         };
         let (cols, rows) = piece.spec().footprint;
         let with = partners(rule, piece);
@@ -658,6 +674,7 @@ pub(super) fn search(home: &Home, frame: &Frame, target: &Broken) -> Search {
                     hi: e.to - i32::from(cols),
                     here: (now.strip == Some(strip)).then_some(now.left),
                     partners: before.laid.iter().filter(beside).copied().collect(),
+                    facings: facings.clone(),
                 });
             }
         }
@@ -673,7 +690,7 @@ pub(super) fn search(home: &Home, frame: &Frame, target: &Broken) -> Search {
     let count = |stride: usize| {
         places
             .iter()
-            .map(|p| 2 * lefts(stride, p).len())
+            .map(|p| p.facings.len() * lefts(stride, p).len())
             .sum::<usize>()
     };
     let mut stride = 1;
@@ -711,11 +728,7 @@ pub(super) fn search(home: &Home, frame: &Frame, target: &Broken) -> Search {
                 },
                 _ => p.e.pin(left, cols).0,
             };
-            let flip = match old.facing {
-                Facing::Left => Facing::Right,
-                Facing::Right => Facing::Left,
-            };
-            for facing in [old.facing, flip] {
+            for &facing in &p.facings {
                 examined += 1;
                 let to = Placement {
                     strip: p.strip,
@@ -1371,6 +1384,50 @@ mod tests {
         assert!(costs.is_sorted(), "{costs:?}");
     }
 
+    /// Only a rule that looks at which way a piece faces turns it: the
+    /// sofa (to face the TV) may be set down either way round; the lamp,
+    /// the fridge and a TV that joins the sofa (seen from the front) keep
+    /// theirs, so their repairs are each another place, not the same
+    /// place turned.
+    #[test]
+    fn a_piece_is_turned_only_where_its_rule_looks_at_that() {
+        let near = Rule::Near {
+            a: Lamp,
+            b: &[Bed, Desk],
+            gap: 3,
+        };
+        let bed = at(Bed, Nook::Users, Side::Left, 0, Facing::Right);
+        let lamp = at(Lamp, Nook::Users, Side::Right, 0, Facing::Right);
+        let fridge = at(Fridge, Nook::Users, Side::Left, 15, Facing::Right);
+        let sofa = at(Sofa, Nook::Users, Side::Right, 0, Facing::Left);
+        let tv = unsettled(at(Tv, Nook::Playlist, Side::Left, 0, Facing::Right));
+        for (props, rule, piece) in [
+            (vec![bed, lamp], near, Lamp),
+            (vec![fridge], Rule::AgainstWall(Fridge), Fridge),
+            (vec![sofa, tv], FACES, Tv),
+        ] {
+            let (_, repairs) = mend(40, &props, &[], rule);
+            assert_eq!(repairs.len(), REPAIRS, "{rule:?}: {repairs:?}");
+            let facing = props.iter().find(|p| p.item == piece).unwrap().facing;
+            for (i, r) in repairs.iter().enumerate() {
+                assert_eq!((r.piece, r.to.facing), (piece, facing), "{r:?}");
+                assert!(
+                    repairs[..i].iter().all(|q| q.at.left != r.at.left),
+                    "the same place twice: {repairs:?}"
+                );
+            }
+        }
+        // The sofa turned away is turned round.
+        let tv = at(Tv, Nook::Users, Side::Right, 0, Facing::Left);
+        let away = at(Sofa, Nook::Users, Side::Right, 10, Facing::Left);
+        let (_, repairs) = mend(40, &[tv, away], &[], FACES);
+        assert!(
+            repairs
+                .iter()
+                .any(|r| r.piece == Sofa && r.to.facing == Facing::Right)
+        );
+    }
+
     /// The lamp goes to stand beside the bed.
     #[test]
     fn the_lamp_moves_beside_the_bed() {
@@ -1392,7 +1449,7 @@ mod tests {
     }
 
     /// The spots she'd try a piece in: the cheapest repair's piece, at
-    /// its tier, within [`TIE_CELLS`] of it, one a spot (the lamp turned
+    /// its tier, within [`TIE_CELLS`] of it, one a spot (the sofa turned
     /// the other way where it would stand is no other spot). Set down in
     /// the first, each other still holds as a move from there
     /// ([`check_again`]), though there's nothing left to mend
@@ -1408,7 +1465,7 @@ mod tests {
             b: &[Bed, Desk],
             gap: 3,
         };
-        for (props, rule, spots) in [(vec![tv, sofa], FACES, 3), (vec![bed, lamp], near, 2)] {
+        for (props, rule, spots) in [(vec![tv, sofa], FACES, 3), (vec![bed, lamp], near, 3)] {
             let (home, repairs) = mend(40, &props, &[], rule);
             let ties = Trials::ties(&repairs);
             assert_eq!(ties.len(), spots, "{repairs:?}");
@@ -1682,14 +1739,17 @@ mod tests {
             .collect()
     }
 
-    /// Searching the worst case — every piece, three strips 200 wide,
-    /// and a sofa and a TV that can each move to the other — weighs no
-    /// more than [`CANDIDATES`] moves, in under a millisecond (in a
-    /// release build).
+    /// Searching the worst case — every piece, three strips so wide the
+    /// places along them are strided, a sofa and a TV that can each move
+    /// to the other, and text along every floor so that no move fits (so
+    /// every one that passes the geometry is fit-checked) — weighs no
+    /// more than [`CANDIDATES`] moves (and more than half as many: the
+    /// stride is no coarser than it needs to be), in under a millisecond
+    /// (in a release build). Without the text, it finds its repairs.
     #[test]
     fn repair_search_is_cheap() {
-        let nooks = three(200, 20, 3);
-        let buf = screen(&nooks, 200, 60, &[]);
+        let (width, rows) = (400, 20);
+        let nooks = three(width, rows, 3);
         let place = |item, nook, side, offset| at(item, nook, side, offset, Facing::Right);
         let props = [
             place(Sofa, Nook::Users, Side::Left, 40),
@@ -1701,30 +1761,41 @@ mod tests {
             place(Fridge, Nook::Users, Side::Left, 0),
             place(CatBed, Nook::List, Side::Left, 80),
         ];
-        let (home, shown, broken) = broken_at(&props, &buf, &nooks, FACES);
-        assert_eq!(broken.pieces, [Sofa, Tv]);
-        let frame = Frame {
-            buf: &buf,
-            nooks: &nooks,
-            blocked: &|_, _| false,
-            shown: &shown,
-            made: &[],
-        };
-        let found = search(&home, &frame, &broken);
-        assert!(found.examined <= CANDIDATES, "{}", found.examined);
-        assert!(found.examined > 500, "{}", found.examined);
-        assert_eq!(found.repairs.len(), REPAIRS);
-        let started = std::time::Instant::now();
-        for _ in 0..20 {
-            std::hint::black_box(search(&home, &frame, &broken));
-        }
-        let per_search = started.elapsed() / 20;
-        eprintln!("repair search: {per_search:?}, {} moves", found.examined);
-        if !cfg!(debug_assertions) {
-            assert!(
-                per_search < std::time::Duration::from_millis(1),
-                "{per_search:?}"
+        let floors: Vec<(u16, u16)> = (0..3)
+            .flat_map(|i| (1..width - 1).map(move |x| (x, i * rows + rows - 2)))
+            .collect();
+        for dense in [false, true] {
+            let text = if dense { floors.clone() } else { Vec::new() };
+            let buf = screen(&nooks, width, 3 * rows, &text);
+            let (home, shown, broken) = broken_at(&props, &buf, &nooks, FACES);
+            assert_eq!(broken.pieces, [Sofa, Tv]);
+            let frame = Frame {
+                buf: &buf,
+                nooks: &nooks,
+                blocked: &|_, _| false,
+                shown: &shown,
+                made: &[],
+            };
+            let found = search(&home, &frame, &broken);
+            assert!(found.examined <= CANDIDATES, "{}", found.examined);
+            assert!(found.examined > CANDIDATES / 2, "{}", found.examined);
+            let want = if dense { 0 } else { REPAIRS };
+            assert_eq!(found.repairs.len(), want, "dense {dense}");
+            let started = std::time::Instant::now();
+            for _ in 0..20 {
+                std::hint::black_box(search(&home, &frame, &broken));
+            }
+            let per_search = started.elapsed() / 20;
+            eprintln!(
+                "repair search (dense {dense}): {per_search:?}, {} moves",
+                found.examined
             );
+            if !cfg!(debug_assertions) {
+                assert!(
+                    per_search < std::time::Duration::from_millis(1),
+                    "dense {dense}: {per_search:?}"
+                );
+            }
         }
     }
 
