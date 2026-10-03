@@ -53,6 +53,13 @@ Add new days at the top. Add new entries at the bottom of existing days.
   her homework, shuts the fridge to eat her snack, yelps when the cat
   bites and says "There!" over a finished piece right when she gets to
   it, rather than up to a second or so late.
+- Changed: Coming out of a door, the houseguest no longer always asks
+  "Where was I?". Most times she says nothing; now and then she
+  wonders how she got there, or that she's forgotten what she forgot.
+- Added: Spacing out, the houseguest sometimes tells a riddle and
+  answers it herself straight away, pleased with it: "Bread ya can't
+  eat?" "A fryin' pan!" Within a visit, she doesn't tell the same one
+  twice in ten minutes.
 
 ## 2026-10-02
 

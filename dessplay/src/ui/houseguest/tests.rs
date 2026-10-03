@@ -3219,7 +3219,7 @@ fn a_key_press_shakes_off_what_she_moved_in_the_chat() {
 
 /// Focusing the pane she's in: what of her was there rains away at once
 /// (no startled beat), the pane is itself again once the rain is done,
-/// and she steps out of her door somewhere else ("Where was I?").
+/// and she steps out of her door somewhere else.
 #[test]
 fn focusing_her_pane_rains_her_out_and_she_steps_out_elsewhere() {
     for graphics in [false, true] {

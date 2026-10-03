@@ -7,6 +7,7 @@
 //! is a pure function of the act.
 
 use super::art::Channel;
+use super::mind::RIDDLES;
 use super::osaka::{Bubble, SCRUNCH, THERE, USE_FRAME_MS};
 use super::room::{Furniture, Use};
 use super::sprite::{Face, Pose};
@@ -61,6 +62,11 @@ pub(super) enum Say {
     Bubble(Bubble),
     /// The shopping channel's pitch for what it's selling her.
     Pitch,
+    /// The question of the riddle drawn for her (its place in
+    /// [`RIDDLES`] the first of [`Play::drawn`]).
+    Riddle,
+    /// That riddle's answer.
+    Answer,
 }
 
 /// What a key shows on her furniture: on every shown piece of its kind
@@ -122,9 +128,9 @@ pub(super) struct Key {
 
 impl Key {
     /// How she looks `elapsed` ms into the body this key plays in: in
-    /// `host`'s pose where the key leaves it to the host, pitching what
-    /// she `bought`.
-    pub fn look(&self, elapsed: u64, host: Pose, bought: Option<Furniture>) -> Look {
+    /// `host`'s pose where the key leaves it to the host, saying what
+    /// `play` drew for her or pitching what it sold her.
+    pub fn look(&self, elapsed: u64, host: Pose, play: &Play) -> Look {
         let pose = match self.pose {
             Posed::Host => host,
             Posed::Still(pose) => pose,
@@ -134,7 +140,15 @@ impl Key {
         };
         let bubble = self.say.and_then(|say| match say {
             Say::Bubble(bubble) => Some(bubble),
-            Say::Pitch => bought.map(|item| Bubble::Say(item.spec().pitch)),
+            Say::Pitch => play.bought.map(|item| Bubble::Say(item.spec().pitch)),
+            Say::Riddle | Say::Answer => {
+                let (question, answer) = *RIDDLES.get(usize::from(play.drawn[0]))?;
+                Some(Bubble::Say(if say == Say::Riddle {
+                    question
+                } else {
+                    answer
+                }))
+            }
         });
         (pose, self.face, bubble)
     }
@@ -168,6 +182,12 @@ pub(super) fn key_at(keys: &[Key], elapsed: u64, body: Option<u64>) -> Option<(u
     })
 }
 
+/// A riddle's question shows this long, from the start of her spacing
+/// out.
+pub(super) const RIDDLE_ASKED_MS: u64 = 3000;
+/// Her answer shows from the question's end to this far in.
+pub(super) const RIDDLE_ANSWERED_MS: u64 = 5500;
+
 /// A script: each of its branches a run of keys.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) enum ScriptId {
@@ -189,11 +209,14 @@ pub(super) enum ScriptId {
     Crumple,
     /// Bent over the box, rummaging.
     Unpack,
+    /// Spacing out, she tells a riddle and answers it herself at once,
+    /// pleased with it.
+    Riddle,
 }
 
 impl ScriptId {
     #[cfg(test)]
-    pub const ALL: [ScriptId; 11] = [
+    pub const ALL: [ScriptId; 12] = [
         Self::Lounge,
         Self::Nap,
         Self::Sleep,
@@ -205,6 +228,7 @@ impl ScriptId {
         Self::Pet,
         Self::Crumple,
         Self::Unpack,
+        Self::Riddle,
     ];
 
     /// Its branches, each a run of keys.
@@ -221,6 +245,27 @@ impl ScriptId {
             Self::Pet => PET,
             Self::Crumple => CRUMPLE,
             Self::Unpack => UNPACK,
+            Self::Riddle => RIDDLE,
+        }
+    }
+
+    /// The act it plays on. Wildcard-free, so a new script doesn't
+    /// compile until it says (the lints hold each to its host).
+    #[cfg(test)]
+    pub fn host(self) -> Host {
+        match self {
+            Self::Lounge
+            | Self::Nap
+            | Self::Sleep
+            | Self::Homework
+            | Self::Watch
+            | Self::Shopping
+            | Self::Read
+            | Self::Snack
+            | Self::Pet
+            | Self::Crumple
+            | Self::Unpack => Host::Use,
+            Self::Riddle => Host::SpaceOut,
         }
     }
 
@@ -234,6 +279,19 @@ impl ScriptId {
             .copied()
             .unwrap_or_default()
     }
+}
+
+/// The act a script plays on.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Host {
+    /// Using a piece of her furniture (a use's own script, or one
+    /// spliced around it).
+    Use,
+    /// Spacing out, musing: only a musing carries a script, never the
+    /// short space-out after a swap, so its shortest body is a
+    /// musing's.
+    SpaceOut,
 }
 
 /// A script spliced before or after a use (a prelude or a coda). No
@@ -304,6 +362,14 @@ impl Play {
             after: None,
             drawn: [0; 2],
             bought: None,
+        }
+    }
+
+    /// Riddle `which` of [`RIDDLES`], told spacing out.
+    pub fn riddle(which: u8) -> Self {
+        Self {
+            drawn: [which, 0],
+            ..Self::plain(ScriptId::Riddle)
         }
     }
 
@@ -589,6 +655,29 @@ const UNPACK: &[&[Key]] = &[&[
     ),
 ]];
 
+/// The question (Curious), her answer at once (Happy), then pleased
+/// with it.
+const RIDDLE: &[&[Key]] = &[&[
+    key(
+        Span::Ms(RIDDLE_ASKED_MS),
+        Posed::Still(Pose::Stand),
+        Face::Curious,
+        Some(Say::Riddle),
+    ),
+    key(
+        Span::Ms(RIDDLE_ANSWERED_MS),
+        Posed::Still(Pose::Stand),
+        Face::Happy,
+        Some(Say::Answer),
+    ),
+    key(
+        Span::Rest,
+        Posed::Still(Pose::Stand),
+        Face::Happy,
+        bubble(Bubble::Hehe),
+    ),
+]];
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
@@ -621,6 +710,7 @@ mod tests {
             ScriptId::Pet => 8,
             ScriptId::Crumple => 9,
             ScriptId::Unpack => 10,
+            ScriptId::Riddle => 11,
         }
     }
 
@@ -673,6 +763,7 @@ mod tests {
             ScriptId::Pet => Play::of(Use::Pet, None),
             ScriptId::Crumple => Play::of(Use::Crumple, None),
             ScriptId::Unpack => Play::of(Use::Unpack, None),
+            ScriptId::Riddle => Play::riddle(0),
         };
         for id in ScriptId::ALL {
             assert_eq!(player(id).own, id, "{id:?} isn't what plays it");
@@ -702,19 +793,87 @@ mod tests {
         }
     }
 
-    /// A key that ends a set time in ends inside the shortest body there
-    /// is (a trial sit), or it would be cut short there.
+    /// A key that ends a set time in ends inside the shortest body its
+    /// host can have (a trial sit, for a use; a musing, spacing out), or
+    /// it would be cut short there.
     #[test]
-    fn every_set_time_fits_the_shortest_use() {
+    fn every_set_time_fits_its_shortest_host() {
         for id in ScriptId::ALL {
+            let shortest = match id.host() {
+                Host::Use => super::super::osaka::shortest_use_ms(),
+                Host::SpaceOut => super::super::osaka::SPACE_OUT_MS.0,
+            };
             for keys in id.branches() {
                 for key in *keys {
                     if let Span::Ms(ms) = key.span {
-                        let shortest = super::super::osaka::shortest_use_ms();
                         assert!(ms <= shortest, "{id:?}: {ms} > {shortest}");
                     }
                 }
             }
+        }
+    }
+
+    /// Spacing out, she wakes only as a key ends (no frame grid, as a
+    /// use has), and nothing shows on her furniture: so a script played
+    /// spacing out neither bobs (it would freeze) nor shows a prop.
+    #[test]
+    fn spacing_out_neither_bobs_nor_shows_a_prop() {
+        for id in ScriptId::ALL {
+            if id.host() != Host::SpaceOut {
+                continue;
+            }
+            for key in id.branches().iter().flat_map(|keys| keys.iter()) {
+                assert!(matches!(key.pose, Posed::Still(_)), "{id:?}: {key:?}");
+                assert_eq!(key.prop, None, "{id:?}");
+            }
+        }
+    }
+
+    /// A riddle says its question (Curious), then its answer (Happy),
+    /// then is pleased with it (Happy, Hehe), standing throughout: each
+    /// riddle's own, and both ends of a key half-open.
+    #[test]
+    fn a_riddle_asks_then_answers() {
+        for (i, &(question, answer)) in RIDDLES.iter().enumerate() {
+            let play = Play::riddle(u8::try_from(i).unwrap());
+            let (since, until) = (1000, 1000 + super::super::osaka::SPACE_OUT_MS.0);
+            let look = |now| {
+                let (key, elapsed) = play.key(since, until, now).unwrap();
+                key.look(elapsed, Pose::Stand, &play)
+            };
+            let said = |now| look(now).2;
+            // Standing throughout.
+            for now in (since..until).step_by(250).chain([until - 1]) {
+                assert_eq!(look(now).0, Pose::Stand, "{now}");
+            }
+            assert_eq!(look(since).1, Face::Curious);
+            assert_eq!(said(since), Some(Bubble::Say(question)));
+            assert_eq!(
+                said(since + RIDDLE_ASKED_MS - 1),
+                Some(Bubble::Say(question))
+            );
+            assert_eq!(look(since + RIDDLE_ASKED_MS).1, Face::Happy);
+            assert_eq!(said(since + RIDDLE_ASKED_MS), Some(Bubble::Say(answer)));
+            assert_eq!(
+                said(since + RIDDLE_ANSWERED_MS - 1),
+                Some(Bubble::Say(answer))
+            );
+            assert_eq!(said(since + RIDDLE_ANSWERED_MS), Some(Bubble::Hehe));
+            assert_eq!(look(since + RIDDLE_ANSWERED_MS).1, Face::Happy);
+            assert_eq!(said(until - 1), Some(Bubble::Hehe));
+            assert_eq!(look(until - 1).1, Face::Happy);
+            let ends: Vec<u64> =
+                std::iter::successors(Some(since), |&now| play.next_end(since, until, now))
+                    .collect();
+            assert_eq!(
+                ends,
+                [
+                    since,
+                    since + RIDDLE_ASKED_MS,
+                    since + RIDDLE_ANSWERED_MS,
+                    until
+                ]
+            );
         }
     }
 

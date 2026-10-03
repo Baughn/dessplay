@@ -6,7 +6,7 @@ use super::Rng;
 use super::art::DoorFrame;
 use super::brain::{self, Factor, Mood, Need, Needs, Rising, Spot, Want};
 use super::layer::Placed;
-use super::mind::{self, Beat, Bind, Ctx, Heading, Here, Lines, Loss, Whims};
+use super::mind::{self, Beat, Bind, Ctx, Heading, Here, Lines, Loss, PoolId, RIDDLES, Whims};
 use super::room::{Furniture, MadeId, PieceRef, Seat, Use};
 use super::rules::{Grievance, Placement, Repair, TIE_CELLS, Trials};
 use super::scenes::{Build, Job, JobRef, LayerOp, Lift, Pull, SetDown, Side, Swap};
@@ -314,21 +314,8 @@ const RETRIES: u8 = 5;
 
 /// After a hard landing.
 const OK: &str = line!("...I'm OK.");
-/// Things she says when spacing out.
-pub(super) const MUSINGS: [&str; 12] = [
-    line!("I wish I were a bird."),
-    line!("Why is the sky blue?"),
-    line!("Sata andagi!"),
-    line!("Melon bread..."),
-    line!("Black spots on white?"),
-    line!("Or white on black..."),
-    line!("Escalator? Elevator?"),
-    line!("Feels like I could fly."),
-    line!("Which hand's left..."),
-    line!("Chiyo-chan's dad..."),
-    line!("Nanja-kora."),
-    line!("Oh my gah."),
-];
+/// Spacing out, musing or not (ms range).
+pub(super) const SPACE_OUT_MS: (u64, u64) = (6000, 14_000);
 
 /// Tearing text off a line for furniture: bracing, then the rip.
 const BRACE_MS: u64 = 700;
@@ -338,7 +325,7 @@ const RIP: &str = line!("Rrrip!");
 pub(super) const SCRUNCH: &str = line!("scrunch...");
 pub(super) const THERE: &str = line!("There!");
 /// How long she keeps saying `text`.
-fn speech_ms(text: &str) -> u64 {
+pub(super) fn speech_ms(text: &str) -> u64 {
     1200 + 60 * text.chars().count() as u64
 }
 
@@ -347,8 +334,11 @@ enum Act {
     Stand {
         until: u64,
     },
+    /// Spacing out, maybe telling a riddle (a musing only).
     SpaceOut {
+        since: u64,
         until: u64,
+        play: Option<Play>,
     },
     Walk {
         to: i32,
@@ -891,9 +881,6 @@ const HOME_MS: u64 = 3000;
 /// What she says, back from work.
 const HOME: &str = line!("I'm home!");
 
-/// What she says stepping out of a door.
-const THROUGH: &str = line!("Where was I?");
-
 /// How long she pokes the scrollback accordion, and each poke.
 const POKE_MS: u64 = 2000;
 const POKE_FRAME_MS: u64 = 250;
@@ -1126,6 +1113,11 @@ pub(super) struct Osaka {
     /// Her mind's own random stream: one draw a decision (see
     /// [`Whims`]).
     mind: Rng,
+    /// Her latest decision's whims: what she says or plays starting an
+    /// act outside a decision (out of a door, or a musing) is drawn from
+    /// them, each choice with its own label. Before her first decision,
+    /// her mind's seed, salted (no draw).
+    whims: Whims,
     /// What she chose and hasn't done yet: it eases her needs by how
     /// much of it she does (see [`Osaka::credit_done`]).
     credit: Option<Want>,
@@ -1134,7 +1126,8 @@ pub(super) struct Osaka {
     beauty_here: f64,
     /// Beats she owes, oldest first (see [`Osaka::owe`]).
     owed: Vec<Beat>,
-    /// The beat lines she has said this visit.
+    /// The pooled lines she has said this visit, and the scripts she
+    /// has played.
     lines: Lines,
     /// The rules of her home she has felt broken this visit (each felt
     /// once; see [`GRIEVANCE_MS`]), and the piece and use she felt each
@@ -1204,6 +1197,8 @@ impl Osaka {
             tries: Vec::new(),
             rest: None,
             mind: Rng(rng.next() ^ mind::MIND_SALT),
+            // Set from her mind's seed below.
+            whims: Whims(0),
             credit: None,
             beauty_here: 0.0,
             owed: Vec::new(),
@@ -1226,6 +1221,7 @@ impl Osaka {
             #[cfg(test)]
             decisions: Vec::new(),
         };
+        osaka.whims = Whims(osaka.mind.0 ^ mind::WHIMS_SALT);
         osaka.act_due = osaka.first_due(now);
         osaka
     }
@@ -1398,7 +1394,6 @@ impl Osaka {
     fn first_due(&self, now: u64) -> u64 {
         match self.act {
             Act::Stand { until }
-            | Act::SpaceOut { until }
             | Act::Peer { until, .. }
             | Act::Dazed { until }
             | Act::Admire { until }
@@ -1413,6 +1408,11 @@ impl Osaka {
             }
             Act::Tear { since, ripped, .. } => since + if ripped { REEL_MS } else { BRACE_MS },
             Act::Idle { what, since, until } => next_frame(what, since, now).min(until),
+            // As each key of a riddle ends.
+            Act::SpaceOut { since, until, play } => play
+                .and_then(|play| play.next_end(since, until, now))
+                .unwrap_or(until)
+                .min(until),
             // On the frame grid from the start of the part playing (the
             // prelude, the body or the coda: what bobs and what's on TV
             // move on, timed as the part times them), as each key ends,
@@ -1469,21 +1469,56 @@ impl Osaka {
         self.pose_due().min(self.pending_due()).min(hush)
     }
 
-    /// Say `text` for a while, over whatever bubble her act shows.
+    /// Say `text` for a while, over whatever bubble her act shows (and
+    /// over what she was saying: see [`Osaka::hush`]).
     pub fn say(&mut self, text: &'static str, now: u64) {
         tracing::debug!(text, "houseguest says");
+        self.hush(now);
         self.speech = Some((text, now + speech_ms(text)));
     }
 
-    /// Space out, maybe saying one of her musings first.
-    pub fn muse(&mut self, now: u64, rng: &mut Rng) {
-        let line = MUSINGS.get(rng.below(MUSINGS.len() as u64) as usize);
-        if let Some(line) = line {
-            self.say(line, now);
+    /// Stop saying what she's saying. A pooled line she started saying
+    /// this very instant never showed (nothing is drawn between), so it
+    /// isn't said: its record goes, and it doesn't cool. (A door line
+    /// the decision after the door speaks over, say.)
+    fn hush(&mut self, now: u64) {
+        if let Some((text, until)) = self.speech.take()
+            && until == now + speech_ms(text)
+        {
+            self.lines.unsay(text, now);
         }
+    }
+
+    /// Space out, telling a riddle (one musing in three) or saying one
+    /// of her musings, each drawn from her latest decision's whims. A
+    /// riddle only when she isn't saying something already, which would
+    /// hide its question.
+    pub fn muse(&mut self, now: u64, rng: &mut Rng) {
+        let quiet = self.speech.is_none_or(|(_, until)| until <= now);
+        let riddle = quiet
+            .then(|| self.lines.pick(mind::RIDDLE, self.whims, now))
+            .flatten()
+            .and_then(mind::riddle_of);
+        let play = match riddle.and_then(|i| Some((u8::try_from(i).ok()?, RIDDLES.get(i)?))) {
+            Some((which, &(question, answer))) => {
+                tracing::debug!(question, answer, "houseguest tells a riddle");
+                // Said as it shows, after the question.
+                self.lines
+                    .note(PoolId::Riddle, answer, now + script::RIDDLE_ASKED_MS);
+                Some(Play::riddle(which))
+            }
+            None => {
+                if let Some(line) = self.lines.pick(mind::MUSINGS, self.whims, now) {
+                    self.say(line, now);
+                }
+                None
+            }
+        };
         self.set(
             Act::SpaceOut {
-                until: now + rng.range(6000, 14_000),
+                since: now,
+                until: now + rng.range(SPACE_OUT_MS.0, SPACE_OUT_MS.1),
+                play,
             },
             now,
         );
@@ -1665,7 +1700,15 @@ impl Osaka {
                     if self.errand == Some(to) {
                         self.poke(at);
                     } else if !self.home_from_work(at) {
-                        self.say(THROUGH, at);
+                        // Drawn from the decision that sent her through
+                        // (deciding draws anew); most doors, she says
+                        // nothing. Said before deciding, so what she
+                        // starts waits for it (a riddle, a grievance);
+                        // if the decision speaks over it at once, it was
+                        // never said (see `hush`).
+                        if let Some(line) = self.lines.pick(mind::DOOR, self.whims, at) {
+                            self.say(line, at);
+                        }
                         self.decide(at, terrain, chances, rng);
                     }
                 }
@@ -1831,6 +1874,8 @@ impl Osaka {
                 }
                 self.decide(at, terrain, chances, rng)
             }
+            // On to the next key of her riddle.
+            Act::SpaceOut { until, .. } if at < until => self.act_due = self.first_due(at),
             Act::Stand { .. } | Act::SpaceOut { .. } | Act::Admire { .. } | Act::PutBack { .. } => {
                 self.decide(at, terrain, chances, rng)
             }
@@ -1844,7 +1889,9 @@ impl Osaka {
             Act::Swap { back: true, .. } => {
                 self.set(
                     Act::SpaceOut {
+                        since: at,
                         until: at + rng.range(1500, 3000),
+                        play: None,
                     },
                     at,
                 );
@@ -2567,6 +2614,13 @@ impl Osaka {
         matches!(self.act, Act::Look { .. })
     }
 
+    /// Every pooled line she has said this visit: from which pool, and
+    /// from when (tests read it).
+    #[cfg(test)]
+    pub fn said_lines(&self) -> &[(mind::PoolId, &'static str, u64)] {
+        self.lines.said()
+    }
+
     /// Whether she's using `item` (inside it or beside it).
     #[cfg(test)]
     pub fn using(&self) -> Option<Furniture> {
@@ -2620,6 +2674,7 @@ impl Osaka {
         rng: &mut Rng,
     ) -> Decision {
         let whims = Whims(self.mind.next());
+        self.whims = whims;
         // What she just finished counts before she chooses anew.
         self.credit_done(at);
         self.rest = None;
@@ -2875,7 +2930,9 @@ impl Osaka {
                 until: at + rng.range(2000, 5000),
             },
             Bind::Here(Here::SpaceOut) => Act::SpaceOut {
-                until: at + rng.range(6000, 14_000),
+                since: at,
+                until: at + rng.range(SPACE_OUT_MS.0, SPACE_OUT_MS.1),
+                play: None,
             },
             Bind::Here(Here::Muse) => {
                 self.muse(at, rng);
@@ -3532,7 +3589,7 @@ impl Osaka {
         }
         self.just_set = None;
         self.watch_until = 0;
-        self.speech = None;
+        self.hush(at);
         self.at_work = false;
         self.set(Act::Stand { until: at + 1000 }, at);
     }
@@ -4090,7 +4147,7 @@ impl Osaka {
                 let (pose, face, bubble) = play
                     .key(since, until, now)
                     .map_or((host, Face::Vacant, None), |(key, elapsed)| {
-                        key.look(elapsed, host, play.bought)
+                        key.look(elapsed, host, &play)
                     });
                 // Something isn't right: she cranes round at it, at what
                 // she's doing, and says so.
@@ -4114,7 +4171,15 @@ impl Osaka {
                 if ripped { Face::Happy } else { Face::Curious },
                 None,
             ),
-            Act::SpaceOut { .. } => (Pose::Stand, Face::Vacant, Some(Bubble::Dots)),
+            Act::SpaceOut {
+                since,
+                until,
+                play: Some(play),
+            } => play.key(since, until, now).map_or(
+                (Pose::Stand, Face::Vacant, Some(Bubble::Dots)),
+                |(key, elapsed)| key.look(elapsed, Pose::Stand, &play),
+            ),
+            Act::SpaceOut { play: None, .. } => (Pose::Stand, Face::Vacant, Some(Bubble::Dots)),
             Act::Home { until } => {
                 let frame = (until.saturating_sub(now) / 700 % 2) as u8;
                 (Pose::Carry(frame), Face::Pleased, None)
@@ -4264,6 +4329,101 @@ fn next_frame(what: Activity, since: u64, now: u64) -> u64 {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    /// Musing, she tells a riddle about one time in three, drawn from
+    /// her latest decision's whims, and never while she's saying
+    /// something (it would hide the question): then she says a musing.
+    /// A riddle's question is said as she starts, its answer as it
+    /// shows; she says nothing over it. The body's only draw is how long
+    /// she spaces out.
+    /// A pooled line spoken over in the instant it's said (another line
+    /// said, or she's put somewhere) never showed: it isn't said, so it
+    /// doesn't cool. Spoken over any later, it showed, and is.
+    #[test]
+    fn a_line_spoken_over_as_it_is_said_was_never_said() {
+        let line = mind::DOOR.lines[0];
+        // Drawn (so recorded), then spoken over in the same instant
+        // (another line, or put somewhere): it never showed, so it
+        // isn't said and doesn't cool.
+        for placed in [false, true] {
+            let mut rng = Rng(1);
+            let mut osaka = Osaka::standing_at(10, 10, 0, &mut rng);
+            let w = (0..)
+                .map(Whims)
+                .find(|&w| Lines::default().pick(mind::DOOR, w, 0) == Some(line))
+                .unwrap();
+            assert_eq!(osaka.lines.pick(mind::DOOR, w, 1000), Some(line));
+            osaka.say(line, 1000);
+            if placed {
+                osaka.place(5, 5, 1000);
+            } else {
+                osaka.say(OK, 1000);
+            }
+            assert_eq!(osaka.lines.said(), [], "placed {placed}");
+            assert_eq!(osaka.lines.pick(mind::DOOR, w, 1000), Some(line));
+            // Spoken over a moment later: it showed, so it's said.
+            osaka.say(line, 1000);
+            if placed {
+                osaka.place(5, 5, 1001);
+            } else {
+                osaka.say(OK, 1001);
+            }
+            assert_eq!(
+                osaka.lines.said(),
+                [(PoolId::Door, line, 1000)],
+                "placed {placed}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_riddle_is_told_one_musing_in_three_and_only_when_quiet() {
+        let mut riddles = 0;
+        for seed in 0..120 {
+            for talking in [false, true] {
+                let mut rng = Rng(seed);
+                let mut osaka = Osaka::standing_at(10, 10, 0, &mut rng);
+                osaka.whims = Whims(seed);
+                if talking {
+                    osaka.say(OK, 0);
+                }
+                let mut alone = rng.clone();
+                osaka.muse(0, &mut rng);
+                let span = alone.range(SPACE_OUT_MS.0, SPACE_OUT_MS.1);
+                assert_eq!(rng.0, alone.0, "seed {seed}: one body draw");
+                let Act::SpaceOut { since, until, play } = osaka.act else {
+                    panic!("seed {seed}: spacing out");
+                };
+                assert_eq!((since, until), (0, span), "seed {seed}");
+                match play {
+                    Some(play) => {
+                        assert!(!talking, "seed {seed}: a riddle over speech");
+                        riddles += 1;
+                        let (question, answer) = RIDDLES[usize::from(play.drawn[0])];
+                        assert_eq!(osaka.speech, None, "seed {seed}");
+                        assert_eq!(
+                            osaka.lines.said(),
+                            [
+                                (PoolId::Riddle, question, 0),
+                                (PoolId::Riddle, answer, script::RIDDLE_ASKED_MS),
+                            ],
+                            "seed {seed}"
+                        );
+                        assert_eq!(osaka.act_due, script::RIDDLE_ASKED_MS, "seed {seed}");
+                    }
+                    None => {
+                        let (said, _) = osaka.speech.unwrap();
+                        assert!(mind::MUSINGS.lines.contains(&said), "seed {seed}: {said}");
+                        assert_eq!(osaka.act_due, until, "seed {seed}");
+                    }
+                }
+            }
+        }
+        assert!(
+            (25..=55).contains(&riddles),
+            "{riddles} riddles in 120 musings"
+        );
+    }
 
     /// Her, standing, with `need` pressing.
     fn pressed(need: Need) -> (Osaka, Rng) {

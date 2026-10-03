@@ -142,7 +142,23 @@ fn doing(osaka: &Osaka, now: u64) -> String {
 /// A visit of `minutes` in `room` from `seed`, in `mood` if given (else
 /// the one the visit draws).
 pub(super) fn simulate(room: &Room, seed: u64, minutes: u64, mood: Option<Mood>) -> Visit {
+    simulate_with(room, seed, minutes, mood, false, |_, _| {})
+}
+
+/// [`simulate`], drawn in line art if `graphics`, showing `watch` her at
+/// every step (before it).
+fn simulate_with(
+    room: &Room,
+    seed: u64,
+    minutes: u64,
+    mood: Option<Mood>,
+    graphics: bool,
+    mut watch: impl FnMut(&Osaka, u64),
+) -> Visit {
     let mut guest = Guest::new(seed);
+    if graphics {
+        guest.set_picker(kitty());
+    }
     guest.cue(Scene::Arrive);
     let mut view = room.view.clone();
     paint(&mut guest, &room.real, &view, 0);
@@ -166,6 +182,7 @@ pub(super) fn simulate(room: &Room, seed: u64, minutes: u64, mood: Option<Mood>)
             .map_or(1000, |d| d.as_millis() as u64)
             .clamp(1, 1000);
         if let State::Visiting(visit) = &guest.state {
+            watch(&visit.osaka, now);
             *out.time.entry(doing(&visit.osaka, now)).or_default() += step;
             let speech = match visit.osaka.appearance(now).2 {
                 Some(osaka::Bubble::Say(text)) => Some(text),
@@ -542,8 +559,10 @@ fn at_home_her_furniture_beats_the_floor() {
 }
 
 /// Her mood shows: on a lazy visit she spends more of her time on her
-/// furniture and less moving about than on an industrious one, and a
-/// dreamy one spaces out more than an ordinary one.
+/// furniture and less of it exercising than on an industrious one, and
+/// a dreamy one spaces out more than an ordinary one. (Time spent moving
+/// about is no measure: in this room it's within a few percent either
+/// way, seed set to seed set.)
 #[test]
 fn her_mood_shows() {
     let room = resident_room();
@@ -560,7 +579,7 @@ fn her_mood_shows() {
         "lazy {lazy:?}, industrious {busy:?}"
     );
     assert!(
-        at(&lazy, "moving") < at(&busy, "moving"),
+        at(&lazy, "exercise") < at(&busy, "exercise"),
         "lazy {lazy:?}, industrious {busy:?}"
     );
     let (dreamy, ordinary) = (in_mood(Mood::Dreamy), in_mood(Mood::Ordinary));
@@ -568,4 +587,155 @@ fn her_mood_shows() {
         at(&dreamy, "spacing out") > at(&ordinary, "spacing out"),
         "dreamy {dreamy:?}, ordinary {ordinary:?}"
     );
+}
+
+/// Every pooled line she shows is one she drew from its pool: the
+/// [`Lines`](crate::ui::houseguest::mind::Lines) store has it, from that
+/// pool, said no longer ago than it shows (spoken, or a riddle's key), so
+/// its cooldown counts it and none is said around the store (as the door
+/// once said "Where was I?"). And every line she speaks from a pool shows
+/// (none is drawn, then spoken over before it could show, cooling for
+/// nothing). Two seeds in each of the three rooms, twelve minutes each;
+/// musings are rare there, so then a dozen cued on the stage, where some
+/// are riddles: every question shown is answered after it, and then she's
+/// pleased with it. All in ASCII and in line art.
+#[test]
+fn every_pooled_line_shown_was_drawn_from_its_pool() {
+    use crate::ui::houseguest::mind::{PoolId, RIDDLES};
+    let pooled = mind::all_lines();
+    // How long a pooled line shows: a riddle's half for its key, any
+    // other as it's said aloud.
+    let shows = |pool: PoolId, line: &str| {
+        if pool != PoolId::Riddle {
+            osaka::speech_ms(line)
+        } else if mind::riddle_of(line).is_some() {
+            script::RIDDLE_ASKED_MS
+        } else {
+            script::RIDDLE_ANSWERED_MS - script::RIDDLE_ASKED_MS
+        }
+    };
+    /// One run's watch: what showed when, and what she had said by the
+    /// last step watched.
+    #[derive(Default)]
+    struct Watched {
+        shown: Vec<(Option<osaka::Bubble>, u64)>,
+        said: Vec<(PoolId, &'static str, u64)>,
+        last: u64,
+    }
+    let watch = |seen: &mut Watched, osaka: &Osaka, now: u64| {
+        seen.shown.push((osaka.appearance(now).2, now));
+        seen.said = osaka.said_lines().to_vec();
+        seen.last = now;
+    };
+    let mut kinds: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut check = |seen: &Watched, run: &str, cued: bool| {
+        for &(bubble, now) in &seen.shown {
+            let Some(osaka::Bubble::Say(text)) = bubble else {
+                continue;
+            };
+            let Some(&(pool, _)) = pooled.iter().find(|&&(_, line)| line == text) else {
+                continue;
+            };
+            let kind = match pool {
+                PoolId::Riddle if mind::riddle_of(text).is_some() => "question",
+                PoolId::Riddle => "answer",
+                PoolId::Door => "door",
+                PoolId::Musing => "musing",
+                _ => "other",
+            };
+            *kinds.entry(kind).or_default() += 1;
+            assert!(
+                seen.said.iter().any(|&(said, line, when)| said == pool
+                    && line == text
+                    && (when..when + shows(pool, line)).contains(&now)),
+                "{run} at {now}: {text:?} ({pool:?}) shown, never drawn: {:?}",
+                seen.said
+            );
+        }
+        // Every line spoken from a pool showed (a riddle's halves are
+        // keys, checked below).
+        for &(pool, line, when) in &seen.said {
+            if pool == PoolId::Riddle || when > seen.last {
+                continue;
+            }
+            assert!(
+                seen.shown
+                    .iter()
+                    .any(|&(bubble, now)| bubble == Some(osaka::Bubble::Say(line))
+                        && (when..when + shows(pool, line)).contains(&now)),
+                "{run}: {line:?} ({pool:?}) said at {when}, never shown"
+            );
+        }
+        // A riddle's answer follows its own question; cued (nothing to
+        // interrupt her), every riddle asked is answered, then she's
+        // pleased with it, and none is asked over another.
+        let mut pending: Option<(usize, bool)> = None;
+        for &(bubble, now) in &seen.shown {
+            match bubble {
+                Some(osaka::Bubble::Say(text)) => {
+                    if let Some(i) = mind::riddle_of(text) {
+                        assert!(
+                            !cued || pending.is_none_or(|p| p == (i, false)),
+                            "{run} at {now}: {text:?} asked over {pending:?}"
+                        );
+                        pending = Some((i, false));
+                    } else if let Some(i) = RIDDLES.iter().position(|&(_, a)| a == text) {
+                        assert!(
+                            matches!(pending, Some((p, _)) if p == i),
+                            "{run} at {now}: {text:?} answers {pending:?}"
+                        );
+                        pending = Some((i, true));
+                    }
+                }
+                Some(osaka::Bubble::Hehe) if matches!(pending, Some((_, true))) => {
+                    *kinds.entry("hehe").or_default() += 1;
+                    pending = None;
+                }
+                _ => {}
+            }
+        }
+        assert!(
+            !cued || pending.is_none(),
+            "{run}: a riddle left unfinished: {pending:?}"
+        );
+    };
+    for graphics in [false, true] {
+        for room in [stage_room(), furnished_room(), resident_room()] {
+            for seed in [3, 11] {
+                let run = format!("{}/{seed}/{graphics}", room.name);
+                let mut seen = Watched::default();
+                simulate_with(&room, seed, 12, None, graphics, |osaka, now| {
+                    watch(&mut seen, osaka, now)
+                });
+                check(&seen, &run, false);
+            }
+        }
+        let room = stage_room();
+        for seed in 0..12 {
+            let mut guest = Guest::new(seed);
+            if graphics {
+                guest.set_picker(kitty());
+            }
+            guest.cue(Scene::Muse);
+            let mut now = 0;
+            paint(&mut guest, &room.real, &room.view, now);
+            let mut seen = Watched::default();
+            while now < osaka::SPACE_OUT_MS.0 {
+                if let State::Visiting(visit) = &guest.state {
+                    watch(&mut seen, &visit.osaka, now);
+                }
+                now += guest
+                    .next_tick(now)
+                    .map_or(100, |d| d.as_millis() as u64)
+                    .clamp(1, 100);
+                if guest.advance(now) {
+                    paint(&mut guest, &room.real, &room.view, now);
+                }
+            }
+            check(&seen, &format!("muse/{seed}/{graphics}"), true);
+        }
+    }
+    for kind in ["door", "musing", "question", "answer", "hehe"] {
+        assert!(kinds.contains_key(kind), "no {kind} shown: {kinds:?}");
+    }
 }

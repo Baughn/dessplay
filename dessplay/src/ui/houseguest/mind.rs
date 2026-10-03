@@ -16,6 +16,8 @@ use super::terrain::{Link, Route, Terrain};
 
 /// Her mind's stream is seeded from the body's first draw, salted.
 pub(super) const MIND_SALT: u64 = 0x6d69_6e64_5f6f_6661;
+/// Her whims before her first decision are her mind's seed, salted.
+pub(super) const WHIMS_SALT: u64 = 0x7768_696d_735f_3021;
 
 /// A makeshift piece, when there's a real one she could use instead: one
 /// time in this many.
@@ -102,7 +104,8 @@ pub(super) struct Ctx<'a> {
 pub(super) enum Here {
     Stand,
     SpaceOut,
-    /// Space out, saying one of her musings first.
+    /// Space out musing: saying one of her musings first, or now and
+    /// then telling a riddle (or nothing, if every musing is cooling).
     Muse,
     Sneeze,
     Idle(Activity),
@@ -207,7 +210,8 @@ pub(super) fn methods(want: Want) -> &'static [Method] {
     }
 }
 
-/// Space out, saying one of her musings first: one time in three.
+/// Space out musing (saying a musing, or now and then telling a
+/// riddle): one time in three.
 fn muse(_: &Ctx, w: Whims, _: Want) -> Option<Bind> {
     w.chance("muse", 0, 1, 3).then_some(Bind::Here(Here::Muse))
 }
@@ -639,6 +643,85 @@ const OH_WELL: Pool = Pool::beat(&[line!("Oh well...")], 1, 2);
 /// interruption.
 pub(super) const AH_RIGHT: Pool = Pool::beat(&[line!("Ah, right!")], 1, 3);
 
+/// What she sometimes says, out of a door somewhere new (one door in
+/// three: the rest she comes through quietly).
+pub(super) const DOOR: Pool = Pool {
+    id: PoolId::Door,
+    lines: &[
+        line!("Where was I?"),
+        line!("Huh? How'd I get here?"),
+        line!("...What was I doin'?"),
+        line!("I forgot what I forgot."),
+        line!("Handy, these doors."),
+    ],
+    n: 1,
+    d: 3,
+};
+
+/// Things she says when spacing out (when she isn't telling a riddle).
+pub(super) const MUSINGS: Pool = Pool {
+    id: PoolId::Musing,
+    lines: &[
+        line!("I wish I were a bird."),
+        line!("Why is the sky blue?"),
+        line!("Melon bread..."),
+        line!("Black spots on white?"),
+        line!("Or white on black..."),
+        line!("Escalator? Elevator?"),
+        line!("Feels like I could fly."),
+        line!("Which hand's left..."),
+        line!("Chiyo-chan's dad..."),
+        line!("Nanja-kora."),
+        line!("Oh my gah."),
+    ],
+    n: 1,
+    d: 1,
+};
+
+/// The riddles she tells, spacing out: each question, and the answer
+/// she gives at once herself. Drawn whole (by its question).
+pub(super) const RIDDLES: [(&str, &str); 6] = [
+    (line!("Bread ya can't eat?"), line!("A fryin' pan!")),
+    (line!("What has keys, no locks?"), line!("A keyboard!")),
+    (line!("Has a neck but no head?"), line!("A bottle!")),
+    (line!("All holes, holds water?"), line!("A sponge!")),
+    (line!("Goes up, never down?"), line!("Yer age!")),
+    (line!("What never comes today?"), line!("Tomorrow!")),
+];
+
+/// One half of each of `pairs`: the first, or the second.
+const fn halves<const N: usize>(
+    pairs: [(&'static str, &'static str); N],
+    second: bool,
+) -> [&'static str; N] {
+    let mut out = [""; N];
+    let mut i = 0;
+    while i < N {
+        out[i] = if second { pairs[i].1 } else { pairs[i].0 };
+        i += 1;
+    }
+    out
+}
+
+/// The riddles' questions.
+const QUESTIONS: [&str; RIDDLES.len()] = halves(RIDDLES, false);
+/// The riddles' answers.
+#[cfg(test)]
+const ANSWERS: [&str; RIDDLES.len()] = halves(RIDDLES, true);
+
+/// A riddle (by its question), on one musing in three.
+pub(super) const RIDDLE: Pool = Pool {
+    id: PoolId::Riddle,
+    lines: &QUESTIONS,
+    n: 1,
+    d: 3,
+};
+
+/// Riddle `question`'s place in [`RIDDLES`].
+pub(super) fn riddle_of(question: &str) -> Option<usize> {
+    RIDDLES.iter().position(|&(q, _)| q == question)
+}
+
 /// A beat she owes: a glance toward where `loss` happened.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Beat {
@@ -662,6 +745,13 @@ pub(super) enum PoolId {
     /// she made (id 0: these were the only lines drawn before pools had
     /// ids, so they keep their rolls).
     Beat,
+    /// What she says out of a door ([`DOOR`]).
+    Door,
+    /// What she says spacing out ([`MUSINGS`]).
+    Musing,
+    /// The riddles she tells spacing out ([`RIDDLES`]): questions and
+    /// answers both.
+    Riddle,
     /// A test's pool, with no budget: not a pool she draws from.
     #[cfg(test)]
     Test,
@@ -670,12 +760,21 @@ pub(super) enum PoolId {
 impl PoolId {
     /// Every pool there is.
     #[cfg(test)]
-    pub const ALL: [PoolId; 2] = [Self::Beat, Self::Test];
+    pub const ALL: [PoolId; 5] = [
+        Self::Beat,
+        Self::Door,
+        Self::Musing,
+        Self::Riddle,
+        Self::Test,
+    ];
 
     /// The salt of its rolls.
     fn id(self) -> u64 {
         match self {
             Self::Beat => 0,
+            Self::Door => 1,
+            Self::Musing => 2,
+            Self::Riddle => 3,
             // Out of the way of every pool she draws from.
             #[cfg(test)]
             Self::Test => u64::MAX,
@@ -686,6 +785,7 @@ impl PoolId {
     fn budgeted(self) -> bool {
         match self {
             Self::Beat => true,
+            Self::Door | Self::Musing | Self::Riddle => false,
             #[cfg(test)]
             Self::Test => false,
         }
@@ -705,7 +805,21 @@ impl PoolId {
                     .chain([AH_RIGHT])
                     .collect(),
             ),
-            Self::Test => (1, Vec::new()),
+            Self::Door => (1, vec![DOOR]),
+            Self::Musing => (2, vec![MUSINGS]),
+            // The answers aren't drawn (each comes with its question),
+            // but they're said, so they're listed.
+            Self::Riddle => (
+                3,
+                vec![
+                    RIDDLE,
+                    Pool {
+                        lines: &ANSWERS,
+                        ..RIDDLE
+                    },
+                ],
+            ),
+            Self::Test => (4, Vec::new()),
         }
     }
 }
@@ -753,7 +867,8 @@ pub(super) struct Lines {
 impl Lines {
     /// One of `pool`'s lines, `n` times in `d`, unless she said it lately
     /// or (a beat line) has said enough this visit. Said is said, whether
-    /// or not it shows.
+    /// or not it shows, unless it's spoken over the instant it's said
+    /// (see [`Lines::unsay`]): then it never could show.
     pub fn pick(&mut self, pool: Pool, w: Whims, at: u64) -> Option<&'static str> {
         let spent = || self.said.iter().filter(|&&(id, ..)| id.budgeted()).count() >= LINE_BUDGET;
         if pool.id.budgeted() && spent() || !w.chance("line", pool.id.id(), pool.n, pool.d) {
@@ -774,6 +889,26 @@ impl Lines {
         let line = *fresh.get(which as usize)?;
         self.said.push((pool.id, line, at));
         Some(line)
+    }
+
+    /// `line`, from `pool`, said at `at` (drawn with another of the
+    /// pool's lines, as a riddle's answer is with its question, and
+    /// recorded as said from when it's shown).
+    pub fn note(&mut self, pool: PoolId, line: &'static str, at: u64) {
+        self.said.push((pool, line, at));
+    }
+
+    /// `line`, said at `at`, was spoken over in that same instant: it
+    /// never showed, so it isn't said after all.
+    pub fn unsay(&mut self, line: &str, at: u64) {
+        self.said
+            .retain(|&(_, said, when)| !(said == line && when == at));
+    }
+
+    /// Every line she has said: from which pool, and from when.
+    #[cfg(test)]
+    pub fn said(&self) -> &[(PoolId, &'static str, u64)] {
+        &self.said
     }
 
     /// Whether she may play `script` at `at` (she hasn't in the last ten
@@ -955,7 +1090,24 @@ mod tests {
                 "Oh well...",
             ]
         );
+        assert_eq!(distinct(PoolId::Door).len(), DOOR.lines.len());
+        assert_eq!(distinct(PoolId::Musing).len(), MUSINGS.lines.len());
+        // The andagi is a vignette now, not a musing.
+        assert!(!MUSINGS.lines.iter().any(|l| l.contains("andagi")));
+        // Both halves of every riddle, each once.
+        assert_eq!(distinct(PoolId::Riddle).len(), 2 * RIDDLES.len());
+        for (question, answer) in RIDDLES {
+            assert!(distinct(PoolId::Riddle).contains(&question));
+            assert!(distinct(PoolId::Riddle).contains(&answer));
+        }
         assert!(distinct(PoolId::Test).is_empty());
+        // No line is in two pools, so a line said is said from one.
+        let mut pool_of: std::collections::BTreeMap<&str, PoolId> = Default::default();
+        for (pool, line) in all_lines() {
+            if let Some(other) = pool_of.insert(line, pool) {
+                assert_eq!(other, pool, "{line:?} in two pools");
+            }
+        }
         // Characters, not bytes.
         assert!(super::super::fits_a_bubble(&"…".repeat(24)));
         assert!(!super::super::fits_a_bubble(&"a".repeat(25)));
@@ -1086,22 +1238,63 @@ mod tests {
             at += LINE_COOLDOWN_MS;
         }
         assert_eq!(said, LINE_BUDGET);
-        // Beats spent, another pool still has its say.
-        assert_eq!(
-            lines.pick(pool(PoolId::Test, &["b"]), Whims(at), at),
-            Some("b")
-        );
-        // And another pool's lines don't spend the beats'.
-        let mut lines = Lines::default();
-        for i in 0..2 * LINE_BUDGET as u64 {
-            let at = i * LINE_COOLDOWN_MS;
+        // Every pool but the beats', each by its own id.
+        for id in PoolId::ALL.into_iter().filter(|&id| id != PoolId::Beat) {
+            // Beats spent, another pool still has its say.
+            let mut spent = lines.clone();
             assert_eq!(
-                lines.pick(pool(PoolId::Test, &["b"]), Whims(i), at),
-                Some("b")
+                spent.pick(pool(id, &["b"]), Whims(at), at),
+                Some("b"),
+                "{id:?}"
+            );
+            // And another pool's lines don't spend the beats'.
+            let mut other = Lines::default();
+            for i in 0..2 * LINE_BUDGET as u64 {
+                let at = i * LINE_COOLDOWN_MS;
+                assert_eq!(
+                    other.pick(pool(id, &["b"]), Whims(i), at),
+                    Some("b"),
+                    "{id:?}"
+                );
+            }
+            let at = 2 * LINE_BUDGET as u64 * LINE_COOLDOWN_MS;
+            assert_eq!(other.pick(beat(&["a"]), Whims(at), at), Some("a"), "{id:?}");
+        }
+    }
+
+    /// Each pool she draws from speaks as often as it's meant to (of the
+    /// times she might): the door one time in three (most doors are
+    /// quiet), a musing always, a riddle on one musing in three, "Ah,
+    /// right!" one time in three. Each as its own salt rolls.
+    #[test]
+    fn each_pool_speaks_as_often_as_it_should() {
+        for (pool, n, d) in [
+            (DOOR, 1, 3),
+            (MUSINGS, 1, 1),
+            (RIDDLE, 1, 3),
+            (AH_RIGHT, 1, 3),
+        ] {
+            let mut said = 0_u64;
+            let tries = 600_u64;
+            for seed in 0..tries {
+                let w = Whims(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+                let line = Lines::default().pick(pool, w, 0);
+                assert_eq!(
+                    line.is_some(),
+                    w.chance("line", pool.id.id(), n, d),
+                    "{:?} {seed}",
+                    pool.id
+                );
+                said += u64::from(line.is_some());
+            }
+            // Within a fifth of the rate either way.
+            let expected = tries * n / d;
+            assert!(
+                said * 5 >= expected * 4 && said * 5 <= expected * 6,
+                "{:?}: {said} of {tries}, {n} in {d}",
+                pool.id
             );
         }
-        let at = 2 * LINE_BUDGET as u64 * LINE_COOLDOWN_MS;
-        assert_eq!(lines.pick(beat(&["a"]), Whims(at), at), Some("a"));
     }
 
     /// Which line she says is drawn from the lines she hasn't said
