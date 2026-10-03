@@ -1630,9 +1630,11 @@ this section states what is built.
   strip with her bed or her desk, at most 3 cells between them; her
   fridge, and her bookshelf, stand within a cell of a wall of their
   strip; her bed and her TV aren't in one room; and a piece she hasn't
-  settled doesn't spoil its room (without it the room is something, not
-  a den, and something else with it: a bed in a living room, a TV or a
-  fridge in a bedroom). A delivery is unsettled until she sets it down
+  settled doesn't spoil its room. A piece **spoils** a room when what
+  the room is without it forbids something it brings, by the rooms
+  table's "no" columns: a bed in a living room or a kitchen, a TV or a
+  fridge in a bedroom (a desk spoils nothing: a study forbids nothing,
+  and a den is whatever's left). A delivery is unsettled until she sets it down
   herself; the stage's gifts are settled. Rules are **judged on where
   her pieces stand, not on what shows**: on their layout on their
   strips, so text closeting a piece neither breaks nor mends a rule. A
@@ -1669,8 +1671,13 @@ this section states what is built.
   room, one she hasn't settled first; a piece that doesn't belong) set
   down at a place on a strip (either way round only where the rule
   looks at which way it faces: the sofa; else as it is), where the rule holds, no
-  rule that held is broken, no room is worse for it (and a piece she
-  hasn't settled spoils none), every strip that held its pieces still
+  rule that held is broken, no room that was something becomes a den
+  (a room may become something else: a study becomes a living room
+  when the sofa joins the TV that stands with a desk), no piece spoils
+  a room it didn't (the moved piece the room it comes into, nor any
+  other its own room as the moved piece comes or goes; and the moved
+  piece, one she hasn't settled, not the room it's set down in), every
+  strip that held its pieces still
   does, and it fits this frame (on blank free cells where she'd fit to
   use it; every other piece that showed still showing, clear of
   makeshift pieces). Cheapest first: a piece she hasn't settled goes to

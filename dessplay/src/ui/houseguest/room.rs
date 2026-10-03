@@ -432,6 +432,14 @@ pub(super) fn role(offers: &[Offer]) -> Role {
         .map_or(Role::Den, |rule| rule.role)
 }
 
+/// What a room that is `role` may not have in it (a den: anything).
+pub(super) fn forbids(role: Role) -> &'static [Offer] {
+    ROLES
+        .iter()
+        .find(|rule| rule.role == role)
+        .map_or(&[], |rule| rule.forbids)
+}
+
 /// The role `strip` has as laid out: from what's out of its box there.
 pub(super) fn role_of(layout: &[Shown], strip: Strip) -> Role {
     role_among(layout, strip, None)

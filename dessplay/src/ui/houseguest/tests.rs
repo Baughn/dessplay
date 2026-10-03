@@ -6961,8 +6961,8 @@ fn a_piece_closeted_for_good_is_let_go() {
 /// something's unfelt and she's not busy about her home) and puts her
 /// home right a piece at a time, and never moves a piece twice (a move
 /// mends its rule and breaks none, so nothing she has set down needs
-/// moving again). Home 5 can't be mended without breaking another rule,
-/// or her study: she leaves it as it is.
+/// moving again). Home 5 can't be mended without breaking another rule:
+/// she leaves it as it is.
 fn moves_each_piece_once(home: usize) {
     use super::brain::Mood;
     let mendable = home != 5;
@@ -7105,11 +7105,30 @@ fn an_unsettled_fridge_is_moved_once() {
     moves_each_piece_once(4);
 }
 
-/// Her bed beside the TV she watches from her sofa, her desk upstairs:
-/// feeling it, she still leaves it as it is.
+/// Her bed beside the TV she watches from her sofa, with her lamp by
+/// it, her desk upstairs: feeling it, she still leaves it as it is (the
+/// bed would go up to the desk, a bedroom then, but not from its lamp).
 #[test]
 fn what_she_cant_mend_she_leaves() {
     moves_each_piece_once(5);
+}
+
+/// Her sofa upstairs in her bedroom, her TV downstairs with her desk:
+/// she takes the sofa down to the TV, and the study becomes her living
+/// room (the TV can't come up: a bed and a TV make a den).
+#[test]
+fn the_sofa_joins_the_tv_in_her_study() {
+    use super::brain::Mood;
+    for graphics in [false, true] {
+        for seed in 0..2 {
+            let (guest, moved) = keen_on(7, Mood::Industrious, graphics, seed, 900_000);
+            let case = format!("graphics {graphics}, seed {seed}");
+            assert_eq!(moved, [Furniture::Sofa], "{case}: {:?}", methods(&guest));
+            assert_eq!(guest.broken(), "", "{case}");
+            let sofa = prop_of(&guest, Furniture::Sofa);
+            assert_eq!(sofa.strip, room::Strip::Bottom(Nook::Playlist), "{case}");
+        }
+    }
 }
 
 /// A rule she can't mend doesn't keep her from one she can: her bed in
@@ -7191,9 +7210,11 @@ fn industrious_she_goes_on_to_another() {
 /// settled in her bedroom ([`two_rooms`]); 2, her lamp far from her bed;
 /// 3, all of those at once; 4, a fridge she never settled, in her
 /// bedroom away from its walls; 5, her bed in the living room, where she
-/// watches the TV from her sofa, and her desk upstairs (no move mends
-/// that without breaking another rule, or her study); 6, that, and her
-/// bookshelf upstairs away from its walls. Each piece anchored, as she'd
+/// watches the TV from her sofa, with her lamp beside it, and her desk
+/// upstairs (no move mends that without breaking another rule: the bed
+/// leaves its lamp, the TV her sofa); 6, that, and her bookshelf
+/// upstairs away from its walls; 7, her sofa upstairs in her bedroom,
+/// and her TV downstairs with her desk. Each piece anchored, as she'd
 /// have left it.
 fn wrong_home(
     home: usize,
@@ -7269,6 +7290,14 @@ fn wrong_home(
                 true,
             ),
             (Furniture::Bed, Nook::Playlist, Right, 1, Facing::Left, true),
+            (
+                Furniture::Lamp,
+                Nook::Playlist,
+                Right,
+                11,
+                Facing::Left,
+                true,
+            ),
             (Furniture::Desk, Nook::Users, Right, 1, Facing::Left, true),
         ],
         6 => {
@@ -7283,6 +7312,19 @@ fn wrong_home(
             ));
             home
         }
+        7 => vec![
+            bed,
+            (Furniture::Sofa, Nook::Users, Right, 2, Facing::Right, true),
+            (Furniture::Tv, Nook::Playlist, Left, 0, Facing::Right, true),
+            (
+                Furniture::Desk,
+                Nook::Playlist,
+                Right,
+                1,
+                Facing::Left,
+                true,
+            ),
+        ],
         _ => vec![
             bed,
             (Furniture::Lamp, Nook::Users, Right, 1, Facing::Left, true),
@@ -7601,7 +7643,7 @@ proptest! {
     fn the_carry_keeps_every_promise(
         seed in any::<u64>(),
         graphics in any::<bool>(),
-        home in 0usize..6,
+        home in 0usize..8,
         offset in 8u16..20,
         mood in 0usize..4,
         cue in any::<bool>(),
@@ -7640,7 +7682,7 @@ proptest! {
         // What she'd use to feel what's wrong, or just her arrival.
         let scene = match (cue, home) {
             (false, _) => Scene::Arrive,
-            (true, 0) => Scene::Lounge,
+            (true, 0 | 7) => Scene::Lounge,
             (true, 1) => Scene::Watch,
             (true, 4) => Scene::Snack,
             (true, _) => Scene::Sleep,

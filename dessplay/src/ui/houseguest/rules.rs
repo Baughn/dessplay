@@ -30,9 +30,9 @@ pub(super) enum Rule {
     AgainstWall(Furniture),
     /// `a` and `b` aren't in one room (a room is a strip, for now).
     Apart { a: Furniture, b: Furniture },
-    /// A piece she hasn't settled doesn't spoil its room: without it the
-    /// room is something (not a den), and it's something else with it
-    /// (a bed in a living room; a TV or a fridge in a bedroom).
+    /// A piece she hasn't settled doesn't spoil its room: what the room
+    /// is without it doesn't forbid anything it brings (a bed in a
+    /// living room or a kitchen; a TV or a fridge in a bedroom).
     Belongs,
 }
 
@@ -272,11 +272,45 @@ fn judge(
     }
 }
 
-/// Whether `piece` spoils `strip`'s room as `layout` has it: without it
-/// the room is something (not a den), and it's something else with it.
+/// Whether `piece` spoils `strip`'s room as `layout` has it: what the
+/// room is without it forbids something it brings (the role table's
+/// `forbids`; a den forbids nothing).
 fn spoils(layout: &[Shown], strip: Strip, piece: Furniture) -> bool {
-    let without = room::role_without(layout, strip, piece);
-    without != Role::Den && without != room::role_of(layout, strip)
+    let forbidden = room::forbids(room::role_without(layout, strip, piece));
+    piece.spec().offers.iter().any(|o| forbidden.contains(o))
+}
+
+/// Every piece out of its box that spoils its room as `layout` has it,
+/// and the room (whether a piece spoils a room hangs only on what's in
+/// it, so the same pair before and after a move is the same spoiling).
+fn spoilt(layout: &[Shown]) -> Vec<(Strip, Furniture)> {
+    layout
+        .iter()
+        .filter(|s| !s.boxed && s.scrap.is_none())
+        .filter_map(|s| Some((s.strip?, s.item)))
+        .filter(|&(strip, item)| spoils(layout, strip, item))
+        .collect()
+}
+
+/// Whether, her pieces laid out as `after` with one moved from `from`
+/// to `to`, a piece spoils a room it didn't (`was`, [`spoilt`] before
+/// the move): the moved piece the room it comes into, or another the
+/// room it stands in as that one comes or goes. Only those two rooms
+/// hold other pieces than before; a move along its own strip changes
+/// none.
+fn newly_spoilt(
+    was: &[(Strip, Furniture)],
+    after: &[Shown],
+    from: Option<Strip>,
+    to: Strip,
+) -> bool {
+    from != Some(to)
+        && after
+            .iter()
+            .filter(|s| !s.boxed && s.scrap.is_none())
+            .filter_map(|s| Some((s.strip?, s.item)))
+            .filter(|&(strip, _)| strip == to || Some(strip) == from)
+            .any(|pair| !was.contains(&pair) && spoils(after, pair.0, pair.1))
 }
 
 /// The cells between two pieces along a floor (0 when they touch).
@@ -400,6 +434,8 @@ struct Before {
     broken: Vec<Broken>,
     /// Every strip with a piece out of its box on it, and its role.
     roles: Vec<(Strip, Role)>,
+    /// Every piece that spoils its room, and the room.
+    spoilt: Vec<(Strip, Furniture)>,
     /// Her pieces that show, and whether she'd fit to use each.
     showing: Vec<(Shown, bool)>,
 }
@@ -415,6 +451,7 @@ impl Before {
             .filter(|&&(strip, _)| has_room(&laid, strip))
             .map(|&(strip, _)| (strip, room::role_of(&laid, strip)))
             .collect();
+        let spoilt = spoilt(&laid);
         let showing = frame
             .shown
             .iter()
@@ -430,9 +467,18 @@ impl Before {
             laid,
             broken,
             roles,
+            spoilt,
             showing,
         }
     }
+}
+
+/// Whether, her pieces laid out as `laid`, a room that was something
+/// (in `roles`, as it was) is a den (one that's gone is no worse).
+fn becomes_den(roles: &[(Strip, Role)], laid: &[Shown]) -> bool {
+    roles.iter().any(|&(strip, role)| {
+        role != Role::Den && has_room(laid, strip) && room::role_of(laid, strip) == Role::Den
+    })
 }
 
 /// Whether `strip` has a piece out of its box on it (a room).
@@ -444,8 +490,9 @@ fn has_room(laid: &[Shown], strip: Strip) -> bool {
 /// `piece` set down at `to`: the repair of `key` it would be and her
 /// pieces' layout then, if it passes the geometry (no frame needed):
 /// `key` is broken, every piece laid out before still is, `key` holds,
-/// no room is worse for it (and a piece she hasn't settled spoils
-/// none), and no rule that held is broken. `scratch` is `before`'s
+/// no room that was something becomes a den, no piece spoils a room it
+/// didn't (nor the piece, one she hasn't settled, the room it's set
+/// down in), and no rule that held is broken. `scratch` is `before`'s
 /// home, and is left so.
 fn evaluate(
     before: &Before,
@@ -498,15 +545,21 @@ fn evaluate(
     if target.iter().any(|b| b.key == key) {
         return None;
     }
-    // No room is worse for it; set down, a piece is settled, so one she
-    // hasn't settled may not spoil where it goes.
-    if !old.settled && spoils(&laid, to.strip, piece) {
+    // No room is worse for it: none that was something becomes a den (a
+    // room may become something else: a study a living room, when the
+    // sofa joins a TV that stands with a desk). Nor does any piece spoil
+    // a room it didn't: the piece the room it comes into, nor another
+    // its own room when this one comes or goes (a fridge with a desk
+    // spoilt by a bed joining them, as by its joining a bed and a desk).
+    // And set down, a piece is settled, so one she hasn't settled may
+    // not spoil the room it's set down in either.
+    let was = before.laid.iter().find(|s| s.item == piece)?;
+    if (!old.settled && spoils(&laid, to.strip, piece))
+        || newly_spoilt(&before.spoilt, &laid, was.strip, to.strip)
+    {
         return None;
     }
-    let worse = before.roles.iter().any(|&(strip, role)| {
-        role != Role::Den && has_room(&laid, strip) && room::role_of(&laid, strip) != role
-    });
-    if worse {
+    if becomes_den(&before.roles, &laid) {
         return None;
     }
     // No rule that held is broken.
@@ -519,7 +572,6 @@ fn evaluate(
     // Of a piece she has settled and one she hasn't, she moves the one
     // she never chose a place for, wherever it can go; but turning the
     // settled one round where it stands is the cheapest of all.
-    let was = before.laid.iter().find(|s| s.item == piece)?;
     let in_place = (at.strip, at.left, at.floor) == (was.strip, was.left, was.floor);
     let rival = mending.is_some_and(|m| {
         m.pieces
@@ -1075,6 +1127,17 @@ mod tests {
             [(belongs, vec![Fridge])]
         );
         assert_eq!(judge(60, &[bed, unsettled(in_bedroom(Desk))]), []);
+        // A bed spoils a kitchen; a desk doesn't (a kitchen forbids only
+        // a bed, though a fridge and a desk read as a study), nor a
+        // fridge a study (a study forbids nothing).
+        let fridge = at(Fridge, Nook::Users, Side::Right, 0, Facing::Left);
+        let desk = at(Desk, Nook::Users, Side::Right, 0, Facing::Left);
+        assert_eq!(
+            judge(60, &[fridge, unsettled(in_bedroom(Bed))]),
+            [(belongs, vec![Bed])]
+        );
+        assert_eq!(judge(60, &[fridge, unsettled(in_bedroom(Desk))]), []);
+        assert_eq!(judge(60, &[desk, unsettled(in_bedroom(Fridge))]), []);
         // A TV that makes a living room of a sofa's room completes it.
         assert_eq!(judge(60, &[sofa, unsettled(tv)]), []);
         // Alone on its strip, or still boxed, it spoils nothing.
@@ -1305,8 +1368,13 @@ mod tests {
     /// The repairs of `rule`, broken by `props` on [`panes`] `width`
     /// wide with text at `text` along the row above each floor.
     fn mend(width: u16, props: &[Prop], text: &[u16], rule: Rule) -> (Home, Vec<Repair>) {
+        mend_on(&frame(width, text), width, props, rule)
+    }
+
+    /// [`mend`] over `buf`, [`panes`] `width` wide.
+    fn mend_on(buf: &Buffer, width: u16, props: &[Prop], rule: Rule) -> (Home, Vec<Repair>) {
         let nooks = panes(width);
-        let buf = frame(width, text);
+        let buf = buf.clone();
         let (home, shown, broken) = broken_at(props, &buf, &nooks, rule);
         let frame = Frame {
             buf: &buf,
@@ -1364,9 +1432,9 @@ mod tests {
 
     /// A TV delivered to a kitchen goes to the sofa's strip, where she
     /// can watch it from the sofa, anchored from the sofa's wall (the
-    /// sofa going to it would make the kitchen a living room, besides
-    /// being a settled piece; see `a_delivered_tv_comes_to_the_sofa`
-    /// for the plain case).
+    /// sofa she has settled could go to it, making the kitchen a living
+    /// room, but only behind every move of the TV; see
+    /// `a_delivered_tv_comes_to_the_sofa` for the plain case).
     #[test]
     fn an_unsettled_tv_joins_the_sofa() {
         let sofa = at(Sofa, Nook::Users, Side::Right, 0, Facing::Left);
@@ -1382,6 +1450,111 @@ mod tests {
         }
         let costs: Vec<u32> = repairs.iter().map(|r| r.cost).collect();
         assert!(costs.is_sorted(), "{costs:?}");
+    }
+
+    /// A sofa in the bedroom joins the TV that stands with a desk, and
+    /// the study becomes a living room (a room changing what it is isn't
+    /// worse for it, so long as it's something; the TV can't come to the
+    /// sofa, where a bed and a TV make a den).
+    #[test]
+    fn a_sofa_joins_a_tv_that_stands_with_a_desk() {
+        let tv = at(Tv, Nook::Users, Side::Right, 0, Facing::Left);
+        let desk = at(Desk, Nook::Users, Side::Left, 0, Facing::Right);
+        let bed = at(Bed, Nook::Playlist, Side::Left, 0, Facing::Right);
+        let sofa = at(Sofa, Nook::Playlist, Side::Right, 0, Facing::Left);
+        let (home, repairs) = mend(60, &[tv, desk, bed, sofa], &[], FACES);
+        let best = repairs.first().expect("a repair");
+        assert_eq!((best.piece, best.to.strip), (Sofa, tv.strip), "{best:?}");
+        let after = made(&home, best, &panes(60));
+        assert!(room::faces(&laid(&after, Sofa), &laid(&after, Tv)));
+        assert_eq!(room::role_of(&after, tv.strip), Role::Living);
+        assert_eq!(room::role_of(&after, bed.strip), Role::Bedroom);
+    }
+
+    /// A fridge she has settled in the middle of the floor, with text
+    /// along both walls of its room (and its neighbours' cells clear):
+    /// the other room's wall is the only place for it.
+    fn fridge_walled_in(width: u16, with: &[Prop], downstairs: &[Prop]) -> Vec<Repair> {
+        let fridge = at(Fridge, Nook::Users, Side::Left, 15, Facing::Right);
+        let mut buf = frame(width, &[]);
+        let mut clear: Vec<(i32, i32)> = vec![(16, 20)];
+        if with.iter().any(|p| p.item == CatBed) {
+            clear.push((1, 5));
+        }
+        for x in 1..width - 1 {
+            let x32 = i32::from(x);
+            if !clear.iter().any(|&(a, b)| (a..b).contains(&x32)) {
+                buf[(x, 6)].set_symbol("x");
+            }
+        }
+        let mut props = vec![fridge];
+        props.extend_from_slice(with);
+        props.extend_from_slice(downstairs);
+        let (_, repairs) = mend_on(&buf, width, &props, Rule::AgainstWall(Fridge));
+        repairs
+    }
+
+    /// A move may leave a room something else, but never a den: a
+    /// fridge leaving its kitchen with a cat bed in it leaves a den, so
+    /// it stays (alone, it goes downstairs). Nor may a piece she has
+    /// settled spoil the room it comes into: a fridge in a bedroom with
+    /// a desk in it (a study, then, but spoilt), though into a study
+    /// it may go.
+    #[test]
+    fn a_move_may_leave_no_den_and_spoil_no_room() {
+        let downstairs = Strip::Bottom(Nook::Playlist);
+        let alone = fridge_walled_in(40, &[], &[]);
+        assert!(
+            alone.iter().all(|r| r.to.strip == downstairs) && !alone.is_empty(),
+            "{alone:?}"
+        );
+        let cat = at(CatBed, Nook::Users, Side::Left, 0, Facing::Right);
+        assert_eq!(fridge_walled_in(40, &[cat], &[]), []);
+        let bed = at(Bed, Nook::Playlist, Side::Left, 0, Facing::Right);
+        let desk = at(Desk, Nook::Playlist, Side::Left, 11, Facing::Right);
+        assert_eq!(fridge_walled_in(40, &[], &[bed, desk]), []);
+        let study = fridge_walled_in(40, &[], &[desk]);
+        assert!(
+            study.iter().all(|r| r.to.strip == downstairs) && !study.is_empty(),
+            "{study:?}"
+        );
+    }
+
+    /// Nor may a move leave a piece she has settled spoiling its room
+    /// where it didn't: the bed may not join a fridge and a desk (the
+    /// same room as the fridge joining a bed and a desk), nor the TV
+    /// leave a bed, a fridge and a desk (whose fridge, the TV gone,
+    /// stands in a bedroom). The other piece goes instead.
+    #[test]
+    fn a_move_leaves_no_settled_piece_spoiling_its_room() {
+        let tv = at(Tv, Nook::Users, Side::Right, 0, Facing::Left);
+        let bed = at(Bed, Nook::Users, Side::Left, 0, Facing::Right);
+        let fridge = at(Fridge, Nook::Playlist, Side::Left, 0, Facing::Right);
+        let desk = at(Desk, Nook::Playlist, Side::Right, 0, Facing::Right);
+        let joins = [tv, bed, fridge, desk];
+        let fridge_up = at(Fridge, Nook::Users, Side::Left, 12, Facing::Right);
+        let desk_up = at(Desk, Nook::Users, Side::Right, 8, Facing::Right);
+        let leaves = [tv, bed, fridge_up, desk_up];
+        for (props, piece) in [(&joins[..], Bed), (&leaves[..], Tv)] {
+            let (home, repairs) = mend(60, props, &[], APART);
+            assert!(!repairs.is_empty(), "{props:?}");
+            for r in &repairs {
+                assert_ne!(r.piece, piece, "{r:?}");
+                let after = made(&home, r, &panes(60));
+                let at = laid(&after, Fridge);
+                assert!(!spoils(&after, at.strip.unwrap(), Fridge), "{r:?}");
+            }
+        }
+        // As laid out before, the fridge doesn't spoil its room.
+        for props in [joins, leaves] {
+            let mut home = Home::default();
+            for p in props {
+                assert!(home.add(p));
+            }
+            let laid = home.layout(&panes(60));
+            assert_eq!(laid.len(), props.len());
+            assert!(spoilt(&laid).iter().all(|&(_, p)| p != Fridge), "{laid:?}");
+        }
     }
 
     /// Only a rule that looks at which way a piece faces turns it: the
@@ -1854,8 +2027,9 @@ mod tests {
     /// That `r`, judged on `buf` over `nooks` with `home`'s pieces showing
     /// as `shown` and makeshift pieces at `made`, mends a rule broken
     /// there and breaks none that held; every strip that held its
-    /// pieces still does; no room is worse for it (and a piece she
-    /// hasn't settled spoils none); the piece stands on blank cells
+    /// pieces still does; no room that was something becomes a den, and
+    /// no piece spoils a room it didn't (nor the piece, unsettled, the
+    /// one it's set down in); the piece stands on blank cells
     /// clear of everything, where she'd fit to use it; and every other
     /// piece that showed still fits (where she'd fit to use it, if she
     /// did). Returns where the piece would stand.
@@ -1896,15 +2070,21 @@ mod tests {
         for b in &now {
             prop_assert!(keys.contains(&b.key), "{:?} newly broken by {:?}", b, r);
         }
-        // No room worse; an unsettled piece spoils none.
+        // No room that was something becomes a den; no piece spoils a
+        // room it didn't, nor the piece, unsettled, the one it's set
+        // down in.
         for &(strip, _) in &all {
             let (old, new) = (room::role_of(&laid, strip), room::role_of(&after, strip));
             if has_room(&laid, strip) && old != Role::Den && has_room(&after, strip) {
-                prop_assert_eq!(old, new, "{:?} by {:?}", strip, r);
+                prop_assert_ne!(new, Role::Den, "{:?} {:?} by {:?}", strip, old, r);
             }
         }
         let settled = home.props.iter().any(|p| p.item == r.piece && p.settled);
         prop_assert!(settled || !spoils(&after, r.to.strip, r.piece), "{:?}", r);
+        let was = spoilt(&laid);
+        for s in spoilt(&after) {
+            prop_assert!(was.contains(&s), "{:?} newly spoilt by {:?}", s, r);
+        }
         // Fits, clear of everything, where she'd use it.
         let mine = clear(&after, r.piece);
         prop_assert!(room::fits(buf, &at, &mine), "{:?}", r);

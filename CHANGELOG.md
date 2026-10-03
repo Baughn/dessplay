@@ -40,6 +40,11 @@ Add new days at the top. Add new entries at the bottom of existing days.
 - Fixed: When something in the houseguest's home can't be put right by
   moving one piece, she gets on with the next thing she noticed instead
   of leaving everything as it is.
+- Changed: The houseguest is less fussy about what makes a room. She'll
+  move her sofa over to the TV even when her desk stands there too
+  (the study becomes a living room), and a desk in her kitchen no
+  longer bothers her. A bed beside the TV, or a fridge in her bedroom,
+  still does.
 
 ## 2026-10-02
 

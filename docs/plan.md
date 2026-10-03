@@ -2618,7 +2618,8 @@ one move in 11 of 16, dreamy in 9, and industrious did nothing about
 their home in 3 (9 made one move, 4 two), each stuck on a first felt
 rule no move mends. What's still broken at the
 end at home is her cap (ordinary, dreamy: one move) or a rule no move
-mends (industrious; see the known limits).
+mends (industrious; see the known limits, and rooms by what they
+forbid below).
 
 **Beauty and decor.** Of 160 visits in rooms with a TV (forced and
 drawn), 159 bought the next piece of furniture at her first watch
@@ -2632,35 +2633,59 @@ watches early; in play it's as often as her first watch of a due visit
 comes after a quarter of an hour in a plain room. Not tuned: a plant
 then is in character, and the furniture comes on the next due visit.
 
+**Rooms by what they forbid (after the phase, the user's call,
+2026-10-03; `feat(houseguest): a room is spoilt only by what it
+forbids`).** The phase shipped with *no room is worse* counting any
+change of role: a sofa couldn't join a TV that stands with a desk (a
+study would become a living room), nor a bed a desk, and `Belongs`
+followed the role table's order (an unsettled desk in a kitchen spoilt
+it, a fridge in a study didn't). Now a piece *spoils* a room when the
+room's role without it forbids an offer it makes (`room::forbids`, the
+table's `forbids` lists: a bed in a living room or a kitchen, a screen
+or a fridge in a bedroom), for `Belongs` and the tiers alike; a move
+makes a room *worse* only when it turns one that wasn't a den into a
+den; and no piece may spoil a room it didn't, settled or not: the
+moved piece the room it comes into, nor any other piece its own room
+as the moved one comes or goes (design G7: the den test alone would let
+a settled fridge join a bed and a desk, a study then, and the same room
+comes of a bed joining a fridge and a desk, or a TV leaving all three;
+`newly_spoilt` compares every piece's spoiling before and after), nor
+the moved piece, unsettled, the room it's set down in. `wrong_home(5)` became mendable (the bed went up to the desk, a
+bedroom then), so its bed now has its lamp beside it: moving the bed
+breaks `Near`, the TV `Faces`. Forced moods, her home, 16 half-hour
+visits:
+
+| | Ordinary | Lazy | Industrious | Dreamy |
+|---|---|---|---|---|
+| home acts a visit (visits with 0 / 1 / 2 / 3) | 0 / 16 / 0 / 0 | 16 / 0 / 0 / 0 | 0 / 4 / 10 / 2 | 0 / 16 / 0 / 0 |
+| set down / lifted again / dropped | 19 / 3 / 0 | 0 | 41 / 11 / 0 | 20 / 4 / 0 |
+| felt → mended, median / p90 | 159 / 521 s | — | 195 / 477 s | 193 / 276 s |
+| broken at the end (all felt) | faces 10, wall 7 | faces 15, wall 13, apart 5 | faces 3 | faces 10, wall 6, apart 1 |
+| visits ending with nothing broken | 1 | 0 | 13 | 1 |
+| furniture / floor rest / spacing out / moving, % | 37.2 / 0 / 1.7 / 43.4 | 44.3 / 0 / 1.2 / 38.8 | 32.3 / 0 / 1.1 / 46.5 | 36.1 / 0 / 3.6 / 43.5 |
+
+Industrious visits ending with something broken: **3 of 16** (was 11).
+Each of the 3 made one move and then felt `Faces` she couldn't mend;
+the room rules don't refuse the move that would mend any of them (in
+each the sofa could join the TV's room, or turn where it stands); what
+does hasn't been looked into. Ordinary and dreamy
+still end at their cap of one move. The stage and the resident's room
+are unchanged; the furnished-home golden's seed 0 re-recorded (the sofa
+now joins the TV and desk downstairs, lifted at 6.8 minutes, where
+she used to give up; `the_sofa_joins_the_tv_in_her_study`, `wrong_home(7)`, has it
+in both drawing modes). Gate 1852 tests; the 256-case houseguest pass
+is clean (256 tests, 43 s, release).
+
 **Known limits.**
 - *One move at a time* can leave a home that no single move mends. Take
   a bed in the living room beside the TV the sofa faces, and a lamp
   upstairs. She feels the lamp first (Near comes before Apart in the
   table), so the lamp comes down beside the bed. After that, moving the
   bed breaks Near and moving the TV breaks Faces, so Apart stays broken
-  and she leaves it. That's the design working as intended, not a bug.
+  and she leaves it (`wrong_home(5)` is that home, the lamp already
+  down). That's the design working as intended, not a bug.
   If it ever matters, a later phase could weigh paired moves, or feel
   Apart before Near.
-- *"No room is worse" counts any change of role* (for the user to
-  decide). A move may not change the role of a room that has one, so a
-  sofa can't join a TV that stands with a desk (a study would become a
-  living room), and a bed can't join a desk (a study would become a
-  bedroom), though a living room with a desk or a bedroom with a desk is
-  an ordinary home. In the census's furnished home, 11 of the 16
-  industrious visits end with something broken; taking *worse* to mean
-  only a room that becomes a den (an experiment, not committed) leaves
-  3 (not looked into). The census overstates it: its gifts land
-  anywhere, settled, while in play a parcel comes in alone (her TV
-  first, so the sofa completes its room), and a piece that would spoil
-  a room is unsettled and moved by `Belongs`. A table-driven
-  alternative: a piece *spoils* a room when the room's role without it
-  forbids an offer it makes (a bed in a living room, a screen or a
-  fridge in a bedroom), and a room is *worse* only when it becomes a
-  den. It would change `Belongs`, the tiers, the no-single-move fixture
-  and design.md, so it waits for the user's call. It would also even out an asymmetry in `Belongs` today
-  (it follows the role table's order): an unsettled desk in a kitchen
-  counts as spoiling it (fridge and desk read as a study), an unsettled
-  fridge in a study doesn't.
 - A felt rule no move mends keeps *nesting* at 1 for the rest of the
   visit. Nothing comes of it (only arranging answers it, and that isn't
   on offer without a way), but the stage shows her keen.

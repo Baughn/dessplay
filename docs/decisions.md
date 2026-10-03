@@ -2876,6 +2876,50 @@ was last shown picks it, so the choice never depends on hash order.
 Memory is bounded as before (some 8 MB with 9×19-pixel cells).
 Rejected: a bigger cache, which only moves the cliff.
 
+## A room is spoilt only by what it forbids (2026-10-03)
+
+**Rule:** A piece spoils a room when what the room is without it
+forbids something it brings (the rooms table's "no" columns: a bed in
+a living room or a kitchen, a TV or a fridge in a bedroom). `Belongs`
+and the repair search's tiers use that. A move may change what a room
+is, but not make a den of a room that was something; and it may leave
+no piece spoiling a room it didn't: the piece it moves the room it
+comes into, nor another piece its own room as that one comes or goes
+(nor the piece, one she hasn't settled, the room it's set down in).
+See [design.md](design.md#houseguest).
+
+**Why:** the user's call (2026-10-03), after the phase-4 census. The
+first cut counted any change of role as a room made worse, and a piece
+as spoiling a room whenever the room was something without it and
+something else with it. That was stricter than any home: a sofa
+couldn't join a TV that stands with a desk (the study would become a
+living room), nor a bed a desk (a study, a bedroom), though a living
+room or a bedroom with a desk is an ordinary home. In the census's
+furnished home 11 of 16 industrious visits ended with a rule felt and
+broken that her cap left her free to mend; now 3 do (all the sofa not
+facing the TV). The room rules don't refuse the move that would mend
+any of them; what does hasn't been looked into.
+
+*The table, not the order*: the old test followed the table's order,
+so it was lopsided. A desk she hadn't settled in a kitchen spoilt it
+(a fridge and a desk read as a study, the row above), while a fridge
+in a study didn't. What a room *forbids* is the table's judgement of
+what doesn't belong there; which row it happens to meet first is not.
+
+*Only a den is worse*: a den is a room that is nothing in particular,
+so turning a room into one undoes it; a room becoming another room is
+just the home changing. *No piece may come to spoil its room*, settled
+or not, whichever piece moves: the den test alone doesn't cover it (a
+fridge joining a bed and a desk makes a study, not a den, but a
+bedroom with a fridge in it), and the same room comes of a bed joining
+a fridge and a desk, or of a TV leaving a bed, a fridge and a desk.
+So the search compares every piece's spoiling before and after the
+move, not only the moved piece's (a first cut checked only that one,
+and let the other two through). Whether a piece spoils a room hangs
+only on what's in it, so a piece shifting inside its own room changes
+nothing: a settled piece already there may still move along it (a
+fridge to its wall in a room it spoils).
+
 ## Houseguest chooses by needs among the top few (2026-09-28)
 
 **Rule:** Her next act is a weighted-random pick among the four
