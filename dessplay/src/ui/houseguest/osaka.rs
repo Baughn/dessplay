@@ -38,6 +38,9 @@ pub(super) struct Chances {
     pub chat: Option<Rect>,
     /// The rules of her home broken now.
     pub broken: Vec<super::rules::Broken>,
+    /// How she would put right the rule of her home she would mend (see
+    /// [`Osaka::would_mend`]), cheapest first.
+    pub repairs: Vec<super::rules::Repair>,
 }
 
 /// A makeshift piece she made this visit, and what she made it for.
@@ -1063,6 +1066,9 @@ pub(super) struct Osaka {
     /// The rules of her home she has felt broken this visit (each felt
     /// once; see [`GRIEVANCE_MS`]).
     felt: Vec<Grievance>,
+    /// The things she has done about her home this visit (see
+    /// [`Mood::home_acts`]).
+    home_acts: u8,
     /// Every beat she was owed (tests read it).
     #[cfg(test)]
     pub beats: Vec<Beat>,
@@ -1116,6 +1122,7 @@ impl Osaka {
             owed: Vec::new(),
             lines: Lines::default(),
             felt: Vec::new(),
+            home_acts: 0,
             #[cfg(test)]
             beats: Vec::new(),
             #[cfg(test)]
@@ -2713,6 +2720,19 @@ impl Osaka {
     /// The rules of her home she has felt broken this visit.
     pub fn felt(&self) -> &[Grievance] {
         &self.felt
+    }
+
+    /// The rule of her home she would put right, of those `broken`: the
+    /// first she felt that is broken still, while her mood leaves her
+    /// more to do about her home this visit.
+    pub fn would_mend(&self, broken: &[super::rules::Broken]) -> Option<Grievance> {
+        if self.home_acts >= self.mood.home_acts() {
+            return None;
+        }
+        self.felt
+            .iter()
+            .copied()
+            .find(|&key| broken.iter().any(|b| b.key == key))
     }
 
     /// She's saying what's wrong with her home.

@@ -7,7 +7,12 @@
 //! yet). Each has a grievance: what she says while using a piece it
 //! involves, while it's broken.
 
-use super::room::{self, Extent, Furniture, Home, Role, Shown, Strip, Use};
+use super::room::{
+    self, Anchor, Extent, Furniture, Home, Nook, Prop, Role, Shown, Side, Strip, Use,
+};
+use super::sprite::Facing;
+use tuirealm::ratatui::buffer::Buffer;
+use tuirealm::ratatui::layout::Rect;
 
 /// How some of her pieces ought to stand.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -104,7 +109,7 @@ const WALL_GAP: i32 = 1;
 /// ([`Rule::Belongs`]: the piece that doesn't belong; otherwise the
 /// rule's first piece). It stays the same while the rule stays broken,
 /// whatever else changes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) struct Grievance {
     pub row: usize,
     pub piece: Furniture,
@@ -172,6 +177,23 @@ fn kind(row: usize) -> &'static str {
 /// [`RULES`] order (and [`Rule::Belongs`] piece by piece in layout
 /// order).
 pub(super) fn broken(layout: &[Shown], strips: &[(Strip, Extent)], home: &Home) -> Vec<Broken> {
+    let mut out: Vec<Broken> = Vec::new();
+    for row in 0..RULES.len() {
+        judge(row, layout, strips, home, &mut out);
+    }
+    out
+}
+
+/// Push how the rule on `row` is broken by her pieces as `layout` has
+/// them on `strips` (see [`broken`]).
+fn judge(
+    row: usize,
+    layout: &[Shown],
+    strips: &[(Strip, Extent)],
+    home: &Home,
+    out: &mut Vec<Broken>,
+) {
+    let Some(line) = RULES.get(row) else { return };
     let here = |item: Furniture| {
         layout
             .iter()
@@ -183,73 +205,75 @@ pub(super) fn broken(layout: &[Shown], strips: &[(Strip, Extent)], home: &Home) 
             .find(|p| p.item == item)
             .is_none_or(|p| p.settled)
     };
-    let mut out: Vec<Broken> = Vec::new();
-    for (row, line) in RULES.iter().enumerate() {
-        // `involved` starts with the piece the rule is judged on.
-        let mut push = |pieces: Vec<Furniture>, involved: Vec<Furniture>| {
-            if let Some(&piece) = involved.first() {
-                out.push(Broken {
-                    row,
-                    pieces,
-                    key: Grievance { row, piece },
-                    involved,
-                });
+    // `involved` starts with the piece the rule is judged on.
+    let mut push = |pieces: Vec<Furniture>, involved: Vec<Furniture>| {
+        if let Some(&piece) = involved.first() {
+            out.push(Broken {
+                row,
+                pieces,
+                key: Grievance { row, piece },
+                involved,
+            });
+        }
+    };
+    match line.rule {
+        Rule::Faces { seat, screen } => {
+            if let (Some(a), Some(b)) = (here(seat), here(screen))
+                && !room::faces(a, b)
+            {
+                push(vec![seat, screen], vec![seat, screen]);
             }
-        };
-        match line.rule {
-            Rule::Faces { seat, screen } => {
-                if let (Some(a), Some(b)) = (here(seat), here(screen))
-                    && !room::faces(a, b)
-                {
-                    push(vec![seat, screen], vec![seat, screen]);
+        }
+        Rule::Near { a, b, gap } => {
+            let Some(at) = here(a) else { return };
+            let partners: Vec<&Shown> = b.iter().filter_map(|&item| here(item)).collect();
+            if !partners.is_empty()
+                && !partners
+                    .iter()
+                    .any(|p| p.strip == at.strip && between(at, p) <= gap)
+            {
+                let mut involved = vec![a];
+                involved.extend(partners.iter().map(|p| p.item));
+                push(vec![a], involved);
+            }
+        }
+        Rule::AgainstWall(item) => {
+            if let Some(at) = here(item)
+                && let Some(&(_, e)) = strips.iter().find(|(s, _)| Some(*s) == at.strip)
+                && !against_wall(at, e)
+            {
+                push(vec![item], vec![item]);
+            }
+        }
+        Rule::Apart { a, b } => {
+            if let (Some(x), Some(y)) = (here(a), here(b))
+                && x.strip == y.strip
+            {
+                let mut pieces = vec![a, b];
+                // Unsettled first; otherwise in the rule's order.
+                pieces.sort_by_key(|&p| settled(p));
+                push(pieces, vec![a, b]);
+            }
+        }
+        Rule::Belongs => {
+            for s in layout {
+                let Some(strip) = s.strip else { continue };
+                if s.scrap.is_some() || s.boxed || settled(s.item) {
+                    continue;
                 }
-            }
-            Rule::Near { a, b, gap } => {
-                let Some(at) = here(a) else { continue };
-                let partners: Vec<&Shown> = b.iter().filter_map(|&item| here(item)).collect();
-                if !partners.is_empty()
-                    && !partners
-                        .iter()
-                        .any(|p| p.strip == at.strip && between(at, p) <= gap)
-                {
-                    let mut involved = vec![a];
-                    involved.extend(partners.iter().map(|p| p.item));
-                    push(vec![a], involved);
-                }
-            }
-            Rule::AgainstWall(item) => {
-                if let Some(at) = here(item)
-                    && let Some(&(_, e)) = strips.iter().find(|(s, _)| Some(*s) == at.strip)
-                    && !against_wall(at, e)
-                {
-                    push(vec![item], vec![item]);
-                }
-            }
-            Rule::Apart { a, b } => {
-                if let (Some(x), Some(y)) = (here(a), here(b))
-                    && x.strip == y.strip
-                {
-                    let mut pieces = vec![a, b];
-                    // Unsettled first; otherwise in the rule's order.
-                    pieces.sort_by_key(|&p| settled(p));
-                    push(pieces, vec![a, b]);
-                }
-            }
-            Rule::Belongs => {
-                for s in layout {
-                    let Some(strip) = s.strip else { continue };
-                    if s.scrap.is_some() || s.boxed || settled(s.item) {
-                        continue;
-                    }
-                    let without = room::role_without(layout, strip, s.item);
-                    if without != Role::Den && without != room::role_of(layout, strip) {
-                        push(vec![s.item], vec![s.item]);
-                    }
+                if spoils(layout, strip, s.item) {
+                    push(vec![s.item], vec![s.item]);
                 }
             }
         }
     }
-    out
+}
+
+/// Whether `piece` spoils `strip`'s room as `layout` has it: without it
+/// the room is something (not a den), and it's something else with it.
+fn spoils(layout: &[Shown], strip: Strip, piece: Furniture) -> bool {
+    let without = room::role_without(layout, strip, piece);
+    without != Role::Den && without != room::role_of(layout, strip)
 }
 
 /// The cells between two pieces along a floor (0 when they touch).
@@ -262,6 +286,467 @@ fn between(a: &Shown, b: &Shown) -> i32 {
 fn against_wall(at: &Shown, e: Extent) -> bool {
     let (cols, _) = at.size();
     at.left - e.from <= WALL_GAP || e.to - (at.left + i32::from(cols)) <= WALL_GAP
+}
+
+/// Where a piece would stand: on `strip`, `anchor` along it, turned
+/// `facing`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(super) struct Placement {
+    pub strip: Strip,
+    pub anchor: Anchor,
+    pub facing: Facing,
+}
+
+/// One of her pieces moved, or turned, so a broken rule holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Repair {
+    /// The rule it mends.
+    pub key: Grievance,
+    /// The piece she moves.
+    pub piece: Furniture,
+    /// Where she sets it down.
+    pub to: Placement,
+    /// Where it would stand this frame.
+    pub at: Shown,
+    /// The cells her pieces would move (the piece and any it pushes
+    /// along: across and up or down), and one for a turn.
+    pub cost: u32,
+    /// For a piece she hasn't settled: 0 a room it completes, 1 a room
+    /// it doesn't spoil, 2 a strip with nothing on it. For one she has:
+    /// 0, or [`SETTLED_BEHIND`] when the rule would move one she hasn't
+    /// too and this isn't a turn where it stands.
+    pub tier: u8,
+}
+
+impl Repair {
+    /// A few words for the stage: what she'd move where.
+    pub fn label(&self) -> String {
+        let Strip::Bottom(nook) = self.to.strip;
+        let side = match self.to.anchor.side {
+            Side::Left => "L",
+            Side::Right => "R",
+        };
+        let facing = match self.to.facing {
+            Facing::Left => "<",
+            Facing::Right => ">",
+        };
+        format!(
+            "{} to {nook:?} {side}{} {facing} (tier {}, {} cells)",
+            self.piece.spec().name,
+            self.to.anchor.offset,
+            self.tier,
+            self.cost
+        )
+    }
+}
+
+/// What a repair search found: up to [`REPAIRS`], cheapest first, and
+/// how many moves it weighed.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(super) struct Search {
+    pub repairs: Vec<Repair>,
+    pub examined: usize,
+}
+
+/// The tier of moving a piece she has settled when the rule would move
+/// one she hasn't as well: after anything that one can do (she never
+/// chose where a delivery stands; she did choose this). A turn where it
+/// stands is exempt (tier 0): it's the cheapest repair of all.
+pub(super) const SETTLED_BEHIND: u8 = 3;
+
+/// The repairs a search keeps at most.
+pub(super) const REPAIRS: usize = 3;
+/// The moves a search weighs at most (the places along a very wide
+/// strip are strided to keep within it).
+pub(super) const CANDIDATES: usize = 2_000;
+
+/// The frame a repair is judged on: the screen, her quiet panes, the
+/// cells nothing of hers may cover, her pieces that show, and the
+/// makeshift pieces' footprints (which nothing moves onto).
+pub(super) struct Frame<'a> {
+    pub buf: &'a Buffer,
+    pub nooks: &'a [(Nook, Rect)],
+    pub blocked: &'a dyn Fn(i32, i32) -> bool,
+    pub shown: &'a [Shown],
+    pub made: &'a [Rect],
+}
+
+impl Frame<'_> {
+    /// Whether `(x, y)` is free for `who` with her pieces where `laid`
+    /// has them: not blocked, not under a makeshift piece or another of
+    /// hers.
+    fn clear(&self, laid: &[Shown], who: Furniture, x: i32, y: i32) -> bool {
+        let (Ok(ux), Ok(uy)) = (u16::try_from(x), u16::try_from(y)) else {
+            return false;
+        };
+        let cell = (ux, uy).into();
+        !(self.blocked)(x, y)
+            && !self.made.iter().any(|r| r.contains(cell))
+            && !laid
+                .iter()
+                .any(|s| s.item != who && s.rect().contains(cell))
+    }
+}
+
+/// Her home as it stands before a repair.
+struct Before {
+    /// Anchored wherever its strip is here.
+    home: Home,
+    strips: Vec<(Strip, Extent)>,
+    laid: Vec<Shown>,
+    broken: Vec<Broken>,
+    /// Every strip with a piece out of its box on it, and its role.
+    roles: Vec<(Strip, Role)>,
+    /// Her pieces that show, and whether she'd fit to use each.
+    showing: Vec<(Shown, bool)>,
+}
+
+impl Before {
+    fn new(home: &Home, frame: &Frame) -> Self {
+        let mut home = home.clone();
+        let laid = home.layout(frame.nooks);
+        let strips = room::strips(frame.nooks);
+        let broken = broken(&laid, &strips, &home);
+        let roles = strips
+            .iter()
+            .filter(|&&(strip, _)| has_room(&laid, strip))
+            .map(|&(strip, _)| (strip, room::role_of(&laid, strip)))
+            .collect();
+        let showing = frame
+            .shown
+            .iter()
+            .filter(|s| s.scrap.is_none())
+            .map(|s| {
+                let clear = |x: i32, y: i32| frame.clear(&laid, s.item, x, y);
+                (*s, room::roomy(frame.buf, s, &clear))
+            })
+            .collect();
+        Self {
+            home,
+            strips,
+            laid,
+            broken,
+            roles,
+            showing,
+        }
+    }
+}
+
+/// Whether `strip` has a piece out of its box on it (a room).
+fn has_room(laid: &[Shown], strip: Strip) -> bool {
+    laid.iter()
+        .any(|s| s.strip == Some(strip) && !s.boxed && s.scrap.is_none())
+}
+
+/// `piece` set down at `to`: the repair of `key` it would be and her
+/// pieces' layout then, if it passes the geometry (no frame needed):
+/// `key` is broken, every piece laid out before still is, `key` holds,
+/// no room is worse for it (and a piece she hasn't settled spoils
+/// none), and no rule that held is broken. `scratch` is `before`'s
+/// home, and is left so.
+fn evaluate(
+    before: &Before,
+    scratch: &mut Home,
+    key: Grievance,
+    piece: Furniture,
+    to: Placement,
+) -> Option<(Repair, Vec<Shown>)> {
+    // A rule that holds has nothing to mend (another move mended it,
+    // or a resize did).
+    let mending = before.broken.iter().find(|b| b.key == key)?;
+    let i = before.home.props.iter().position(|p| p.item == piece)?;
+    let old = *before.home.props.get(i)?;
+    let &(_, e) = before.strips.iter().find(|(s, _)| *s == to.strip)?;
+    if old.boxed || (old.strip, old.anchor, old.facing) == (to.strip, Some(to.anchor), to.facing) {
+        return None;
+    }
+    let cols = piece.spec().footprint.0;
+    let moved = Prop {
+        strip: to.strip,
+        anchor: Some(to.anchor),
+        at: e.pin(e.left(to.anchor, cols), cols).1,
+        facing: to.facing,
+        ..old
+    };
+    let slot = scratch.props.get_mut(i)?;
+    *slot = moved;
+    let laid = scratch.laid_on(&before.strips);
+    if let Some(slot) = scratch.props.get_mut(i) {
+        *slot = old;
+    }
+    // Every strip that packed still packs: the same pieces laid out.
+    if laid.len() != before.laid.len()
+        || !before
+            .laid
+            .iter()
+            .all(|b| laid.iter().any(|a| a.item == b.item))
+    {
+        return None;
+    }
+    let at = *laid.iter().find(|s| s.item == piece)?;
+    // It mends the rule (the settled flags are unchanged by a move).
+    let mut target = Vec::new();
+    judge(key.row, &laid, &before.strips, &before.home, &mut target);
+    if target.iter().any(|b| b.key == key) {
+        return None;
+    }
+    // No room is worse for it; set down, a piece is settled, so one she
+    // hasn't settled may not spoil where it goes.
+    if !old.settled && spoils(&laid, to.strip, piece) {
+        return None;
+    }
+    let worse = before.roles.iter().any(|&(strip, role)| {
+        role != Role::Den && has_room(&laid, strip) && room::role_of(&laid, strip) != role
+    });
+    if worse {
+        return None;
+    }
+    // No rule that held is broken.
+    if broken(&laid, &before.strips, &before.home)
+        .iter()
+        .any(|b| !before.broken.iter().any(|w| w.key == b.key))
+    {
+        return None;
+    }
+    // Of a piece she has settled and one she hasn't, she moves the one
+    // she never chose a place for, wherever it can go; but turning the
+    // settled one round where it stands is the cheapest of all.
+    let was = before.laid.iter().find(|s| s.item == piece)?;
+    let in_place = (at.strip, at.left, at.floor) == (was.strip, was.left, was.floor);
+    let rival = mending
+        .pieces
+        .iter()
+        .any(|&p| p != piece && before.home.props.iter().any(|q| q.item == p && !q.settled));
+    let tier = if old.settled {
+        if rival && !in_place {
+            SETTLED_BEHIND
+        } else {
+            0
+        }
+    } else if !laid
+        .iter()
+        .any(|s| s.strip == Some(to.strip) && s.item != piece)
+    {
+        2
+    } else if room::role_without(&laid, to.strip, piece) == Role::Den
+        && room::role_of(&laid, to.strip) != Role::Den
+    {
+        0
+    } else {
+        1
+    };
+    let shifted: u32 = laid
+        .iter()
+        .filter_map(|a| {
+            let b = before.laid.iter().find(|b| b.item == a.item)?;
+            ((a.strip, a.left, a.floor) != (b.strip, b.left, b.floor))
+                .then(|| (a.left - b.left).unsigned_abs() + (a.floor - b.floor).unsigned_abs())
+        })
+        .sum();
+    let cost = shifted + u32::from(to.facing != old.facing);
+    let repair = Repair {
+        key,
+        piece,
+        to,
+        at,
+        cost,
+        tier,
+    };
+    Some((repair, laid))
+}
+
+/// Whether, her pieces laid out as `laid` with `piece` moved, `piece`
+/// stands on blank, free cells where she'd fit to use it, and every
+/// other piece that showed still fits (and she'd still fit to use those
+/// she would before).
+fn fits_now(frame: &Frame, before: &Before, laid: &[Shown], piece: Furniture) -> bool {
+    let fit = |at: &Shown| {
+        let clear = |x: i32, y: i32| frame.clear(laid, at.item, x, y);
+        room::fits(frame.buf, at, &clear)
+    };
+    let room = |at: &Shown| {
+        let clear = |x: i32, y: i32| frame.clear(laid, at.item, x, y);
+        room::roomy(frame.buf, at, &clear)
+    };
+    let Some(at) = laid.iter().find(|s| s.item == piece) else {
+        return false;
+    };
+    fit(at)
+        && room(at)
+        && before
+            .showing
+            .iter()
+            .filter(|(was, _)| was.item != piece)
+            .all(|(was, roomy)| {
+                laid.iter().find(|s| s.item == was.item).is_some_and(|now| {
+                    // Where it stood, it still fits: nothing moved onto it.
+                    (now == was || fit(now)) && (!roomy || room(now))
+                })
+            })
+}
+
+/// The pieces `piece` keeps company with under `rule` (to stand near or
+/// face): a move to a strip without one of them can't mend it.
+fn partners(rule: Rule, piece: Furniture) -> Vec<Furniture> {
+    match rule {
+        Rule::Faces { seat, screen } if seat == piece => vec![screen],
+        Rule::Faces { seat, screen } if screen == piece => vec![seat],
+        Rule::Near { a, b, .. } if a == piece => b.to_vec(),
+        _ => Vec::new(),
+    }
+}
+
+/// Where on one strip a search would set one piece down.
+struct Places {
+    /// The piece's place among the rule's pieces.
+    order: usize,
+    piece: Furniture,
+    strip: Strip,
+    e: Extent,
+    /// Its leftmost place (against the far wall).
+    hi: i32,
+    /// Where it stands now, if on this strip.
+    here: Option<i32>,
+    /// The pieces it keeps company with there.
+    partners: Vec<Shown>,
+}
+
+/// Up to [`REPAIRS`] ways to mend `target` on `frame`, cheapest first
+/// (by tier, then cells, then the rule's order of pieces): each moves
+/// one of the pieces it would move (or turns it) to a place on a strip
+/// that passes the geometry ([`evaluate`]) and fits there this frame.
+pub(super) fn search(home: &Home, frame: &Frame, target: &Broken) -> Search {
+    let before = Before::new(home, frame);
+    let Some(rule) = target.rule().map(|r| r.rule) else {
+        return Search::default();
+    };
+    // Each piece it would move, each strip it could mend it on, and the
+    // places along that strip (with where it stands now, and the far
+    // wall).
+    let mut places: Vec<Places> = Vec::new();
+    for (order, &piece) in target.pieces.iter().enumerate() {
+        let Some(now) = before.laid.iter().find(|s| s.item == piece) else {
+            continue;
+        };
+        let (cols, rows) = piece.spec().footprint;
+        let with = partners(rule, piece);
+        for &(strip, e) in &before.strips {
+            let beside = |s: &&Shown| with.contains(&s.item) && s.strip == Some(strip) && !s.boxed;
+            let keeps_company = with.is_empty() || before.laid.iter().any(|s| beside(&s));
+            // Apart: never on the strip the other one stands on.
+            let apart_from = match rule {
+                Rule::Apart { a, b } => before.laid.iter().any(|s| {
+                    (s.item == a || s.item == b) && s.item != piece && s.strip == Some(strip)
+                }),
+                _ => false,
+            };
+            if e.holds((cols, rows)) && keeps_company && !apart_from {
+                places.push(Places {
+                    order,
+                    piece,
+                    strip,
+                    e,
+                    hi: e.to - i32::from(cols),
+                    here: (now.strip == Some(strip)).then_some(now.left),
+                    partners: before.laid.iter().filter(beside).copied().collect(),
+                });
+            }
+        }
+    }
+    let lefts = |stride: usize, p: &Places| {
+        let mut out: Vec<i32> = (p.e.from..=p.hi).step_by(stride).collect();
+        out.push(p.hi);
+        out.extend(p.here);
+        out.sort_unstable();
+        out.dedup();
+        out
+    };
+    let count = |stride: usize| {
+        places
+            .iter()
+            .map(|p| 2 * lefts(stride, p).len())
+            .sum::<usize>()
+    };
+    let mut stride = 1;
+    while count(stride) > CANDIDATES {
+        stride += 1;
+    }
+    let mut scratch = before.home.clone();
+    let mut examined = 0;
+    let mut passed: Vec<(u8, u32, usize, usize, Repair, Vec<Shown>)> = Vec::new();
+    for p in &places {
+        let Some(old) = before.home.props.iter().find(|q| q.item == p.piece) else {
+            continue;
+        };
+        let cols = p.piece.spec().footprint.0;
+        for left in lefts(stride, p) {
+            // Where it stands now, it keeps its anchor (a turn); beside a
+            // partner, it's anchored from that partner's wall, so the
+            // two keep together across a resize; elsewhere, from the
+            // nearer wall.
+            let partner = p
+                .partners
+                .iter()
+                .min_by_key(|s| (s.left - left).abs())
+                .and_then(|s| before.home.props.iter().find(|q| q.item == s.item))
+                .and_then(|q| q.anchor);
+            let anchor = match (p.here == Some(left), old.anchor, partner) {
+                (true, Some(anchor), _) => anchor,
+                (_, _, Some(Anchor { side, .. })) => Anchor {
+                    side,
+                    offset: match side {
+                        Side::Left => left - p.e.from,
+                        Side::Right => p.e.to - left - i32::from(cols),
+                    }
+                    .clamp(0, i32::from(u16::MAX)) as u16,
+                },
+                _ => p.e.pin(left, cols).0,
+            };
+            let flip = match old.facing {
+                Facing::Left => Facing::Right,
+                Facing::Right => Facing::Left,
+            };
+            for facing in [old.facing, flip] {
+                examined += 1;
+                let to = Placement {
+                    strip: p.strip,
+                    anchor,
+                    facing,
+                };
+                let Some((repair, laid)) = evaluate(&before, &mut scratch, target.key, p.piece, to)
+                else {
+                    continue;
+                };
+                // Pushed along by its neighbours, it would stand where
+                // another place puts it: that one is weighed there.
+                let same = |(.., r, _): &(u8, u32, usize, usize, Repair, Vec<Shown>)| {
+                    r.piece == repair.piece && r.at == repair.at && r.to == repair.to
+                };
+                if repair.at.left == left && !passed.iter().any(same) {
+                    let generated = passed.len();
+                    passed.push((repair.tier, repair.cost, p.order, generated, repair, laid));
+                }
+            }
+        }
+    }
+    passed.sort_by_key(|&(tier, cost, order, generated, ..)| (tier, cost, order, generated));
+    let repairs = passed
+        .into_iter()
+        .filter(|(.., repair, laid)| fits_now(frame, &before, laid, repair.piece))
+        .map(|(.., repair, _)| repair)
+        .take(REPAIRS)
+        .collect();
+    Search { repairs, examined }
+}
+
+/// Whether `repair` still mends its rule on `frame`, as [`search`] would
+/// judge it there (where the piece would stand may have moved with a
+/// resize).
+pub(super) fn check(home: &Home, frame: &Frame, repair: &Repair) -> bool {
+    let before = Before::new(home, frame);
+    let mut scratch = before.home.clone();
+    evaluate(&before, &mut scratch, repair.key, repair.piece, repair.to)
+        .is_some_and(|(_, laid)| fits_now(frame, &before, &laid, repair.piece))
 }
 
 #[cfg(test)]
@@ -617,5 +1102,642 @@ mod tests {
             let _ = home.project(&frame(wide, &text), &big, &|_, _| false);
             prop_assert_eq!(&judged(&mut home, &big), &first);
         }
+    }
+
+    // The repair search.
+
+    /// Bordered panes at `nooks` on a `width × height` screen, with text
+    /// at `text`.
+    fn screen(nooks: &[(Nook, Rect)], width: u16, height: u16, text: &[(u16, u16)]) -> Buffer {
+        let mut buf = Buffer::empty(Rect::new(0, 0, width, height));
+        for &(_, rect) in nooks {
+            tuirealm::ratatui::widgets::Widget::render(
+                tuirealm::ratatui::widgets::Block::bordered(),
+                rect,
+                &mut buf,
+            );
+        }
+        for &(x, y) in text {
+            if let Some(cell) = buf.cell_mut((x, y)) {
+                cell.set_symbol("x");
+            }
+        }
+        buf
+    }
+
+    /// Her home of `props` on `nooks` over `buf`, projected; what shows,
+    /// and how `rule` is broken (it must be).
+    fn broken_at(
+        props: &[Prop],
+        buf: &Buffer,
+        nooks: &[(Nook, Rect)],
+        rule: Rule,
+    ) -> (Home, Vec<Shown>, Broken) {
+        let mut home = Home::default();
+        for &p in props {
+            assert!(home.add(p));
+        }
+        let shown = home.project(buf, nooks, &|_, _| false);
+        let broken = judged(&mut home, nooks)
+            .into_iter()
+            .find(|b| b.row == row(rule))
+            .unwrap_or_else(|| panic!("{rule:?} isn't broken"));
+        (home, shown, broken)
+    }
+
+    /// The repairs of `rule`, broken by `props` on [`panes`] `width`
+    /// wide with text at `text` along the row above each floor.
+    fn mend(width: u16, props: &[Prop], text: &[u16], rule: Rule) -> (Home, Vec<Repair>) {
+        let nooks = panes(width);
+        let buf = frame(width, text);
+        let (home, shown, broken) = broken_at(props, &buf, &nooks, rule);
+        let frame = Frame {
+            buf: &buf,
+            nooks: &nooks,
+            blocked: &|_, _| false,
+            shown: &shown,
+            made: &[],
+        };
+        let found = search(&home, &frame, &broken);
+        assert!(found.examined <= CANDIDATES, "{}", found.examined);
+        for r in &found.repairs {
+            assert!(check(&home, &frame, r), "{r:?}");
+        }
+        (home, found.repairs)
+    }
+
+    /// `home` with `repair` made, laid out on `nooks`.
+    fn made(home: &Home, repair: &Repair, nooks: &[(Nook, Rect)]) -> Vec<Shown> {
+        let mut after = home.clone();
+        let prop = after
+            .props
+            .iter_mut()
+            .find(|p| p.item == repair.piece)
+            .unwrap();
+        prop.strip = repair.to.strip;
+        prop.anchor = Some(repair.to.anchor);
+        prop.facing = repair.to.facing;
+        after.layout(nooks)
+    }
+
+    fn laid(at: &[Shown], item: Furniture) -> Shown {
+        *at.iter().find(|s| s.item == item).unwrap()
+    }
+
+    /// A sofa turned away from the TV it's in range of is turned round,
+    /// where it stands: one cell's worth, its anchor kept. Also in a
+    /// study the sofa makes a living room of (it's settled there: the
+    /// room is no worse for a turn).
+    #[test]
+    fn a_sofa_turned_away_is_turned_round() {
+        let tv = at(Tv, Nook::Users, Side::Right, 0, Facing::Left);
+        let sofa = at(Sofa, Nook::Users, Side::Right, 10, Facing::Left);
+        let desk = at(Desk, Nook::Users, Side::Left, 0, Facing::Right);
+        for (width, props) in [(40, vec![tv, sofa]), (60, vec![tv, sofa, desk])] {
+            let (_, repairs) = mend(width, &props, &[], FACES);
+            let best = repairs.first().unwrap_or_else(|| panic!("{props:?}"));
+            assert_eq!(best.piece, Sofa);
+            assert_eq!(best.cost, 1, "{best:?}");
+            assert_eq!(best.tier, 0);
+            assert_eq!(best.to.anchor, sofa.anchor.unwrap(), "same anchor");
+            assert_eq!(best.to.facing, Facing::Right);
+            assert_eq!(best.to.strip, sofa.strip);
+        }
+    }
+
+    /// A TV delivered to a kitchen goes to the sofa's strip, where she
+    /// can watch it from the sofa, anchored from the sofa's wall (the
+    /// sofa going to it would make the kitchen a living room, besides
+    /// being a settled piece; see `a_delivered_tv_comes_to_the_sofa`
+    /// for the plain case).
+    #[test]
+    fn an_unsettled_tv_joins_the_sofa() {
+        let sofa = at(Sofa, Nook::Users, Side::Right, 0, Facing::Left);
+        let fridge = at(Fridge, Nook::Playlist, Side::Right, 0, Facing::Left);
+        let tv = unsettled(at(Tv, Nook::Playlist, Side::Left, 0, Facing::Right));
+        let (home, repairs) = mend(40, &[sofa, fridge, tv], &[], FACES);
+        assert!(!repairs.is_empty());
+        for r in &repairs {
+            assert_eq!((r.piece, r.to.strip, r.tier), (Tv, sofa.strip, 0), "{r:?}");
+            assert_eq!(r.to.anchor.side, Side::Right, "from the sofa's wall");
+            let after = made(&home, r, &panes(40));
+            assert!(room::faces(&laid(&after, Sofa), &laid(&after, Tv)));
+        }
+        let costs: Vec<u32> = repairs.iter().map(|r| r.cost).collect();
+        assert!(costs.is_sorted(), "{costs:?}");
+    }
+
+    /// The lamp goes to stand beside the bed.
+    #[test]
+    fn the_lamp_moves_beside_the_bed() {
+        let bed = at(Bed, Nook::Users, Side::Left, 0, Facing::Right);
+        let lamp = at(Lamp, Nook::Users, Side::Right, 0, Facing::Right);
+        let near = Rule::Near {
+            a: Lamp,
+            b: &[Bed, Desk],
+            gap: 3,
+        };
+        let (home, repairs) = mend(40, &[bed, lamp], &[], near);
+        let best = repairs.first().expect("a repair");
+        assert_eq!(best.piece, Lamp);
+        // From column 36 to 3 cells past the bed's end (column 11).
+        assert_eq!(best.cost, 36 - 14, "{best:?}");
+        assert_eq!(best.to.anchor.side, Side::Left, "from the bed's wall");
+        let after = made(&home, best, &panes(40));
+        assert!(between(&laid(&after, Lamp), &laid(&after, Bed)) <= 3);
+    }
+
+    /// The fridge goes to the nearer wall; with text along that one, to
+    /// the other; with text everywhere it isn't, nowhere.
+    #[test]
+    fn the_fridge_goes_to_a_wall_clear_of_text() {
+        let rule = Rule::AgainstWall(Fridge);
+        let fridge = at(Fridge, Nook::Users, Side::Left, 15, Facing::Right);
+        let e = strips(&panes(40))[0].1;
+        let (_, repairs) = mend(40, &[fridge], &[], rule);
+        let best = repairs.first().expect("a repair");
+        assert_eq!(best.cost, 16 - 2, "{best:?}");
+        assert!(against_wall(&best.at, e));
+        // Text by the left wall (on both strips).
+        let (_, repairs) = mend(40, &[fridge], &[2, 3], rule);
+        let best = repairs.first().expect("a repair");
+        assert!(best.at.left > 20, "{best:?}");
+        assert!(against_wall(&best.at, e));
+        // Text everywhere but under the fridge.
+        let dense: Vec<u16> = (1..39).filter(|x| !(16..20).contains(x)).collect();
+        let (_, repairs) = mend(40, &[fridge], &dense, rule);
+        assert_eq!(repairs, []);
+    }
+
+    /// Of a bed and a TV in one room, the TV she hasn't settled moves,
+    /// to make a living room of the sofa's when there's one (see
+    /// `a_delivered_tv_leaves_the_bedroom_and_the_bed_stays` for an
+    /// empty strip).
+    #[test]
+    fn of_the_bed_and_the_tv_the_unsettled_one_moves() {
+        let bed = at(Bed, Nook::Users, Side::Left, 0, Facing::Right);
+        let tv = unsettled(at(Tv, Nook::Users, Side::Left, 12, Facing::Left));
+        let sofa = at(Sofa, Nook::Playlist, Side::Left, 0, Facing::Right);
+        let (home, repairs) = mend(40, &[bed, tv, sofa], &[], APART);
+        let best = repairs.first().expect("a repair");
+        assert_eq!((best.piece, best.tier), (Tv, 0), "{best:?}");
+        assert_eq!(best.to.strip, sofa.strip);
+        let after = made(&home, best, &panes(40));
+        assert_eq!(room::role_of(&after, sofa.strip), Role::Living, "{after:?}");
+    }
+
+    /// A TV just delivered to her bedroom is what goes, to the empty
+    /// strip, not the bed she chose a place for (though the bed's move
+    /// is as cheap).
+    #[test]
+    fn a_delivered_tv_leaves_the_bedroom_and_the_bed_stays() {
+        let bed = at(Bed, Nook::Users, Side::Left, 0, Facing::Right);
+        let tv = unsettled(at(Tv, Nook::Users, Side::Left, 12, Facing::Left));
+        let (_, repairs) = mend(40, &[bed, tv], &[], APART);
+        assert!(!repairs.is_empty());
+        for r in &repairs {
+            assert_eq!(
+                (r.piece, r.to.strip, r.tier),
+                (Tv, Strip::Bottom(Nook::Playlist), 2)
+            );
+        }
+    }
+
+    /// A TV delivered to a strip of its own comes to the sofa she has
+    /// settled, not the sofa to it, anchored from the sofa's wall.
+    #[test]
+    fn a_delivered_tv_comes_to_the_sofa() {
+        let sofa = at(Sofa, Nook::Users, Side::Right, 0, Facing::Left);
+        let tv = unsettled(at(Tv, Nook::Playlist, Side::Left, 0, Facing::Right));
+        let (home, repairs) = mend(40, &[sofa, tv], &[], FACES);
+        assert!(!repairs.is_empty());
+        for r in &repairs {
+            assert_eq!((r.piece, r.to.strip, r.tier), (Tv, sofa.strip, 0), "{r:?}");
+            assert_eq!(r.to.anchor.side, Side::Right, "from the sofa's wall");
+            let after = made(&home, r, &panes(40));
+            assert!(room::faces(&laid(&after, Sofa), &laid(&after, Tv)));
+        }
+    }
+
+    /// With a delivered TV in the room, turning the settled sofa round
+    /// where it stands is still the cheapest repair.
+    #[test]
+    fn a_turn_in_place_beats_moving_a_delivered_tv() {
+        let tv = unsettled(at(Tv, Nook::Users, Side::Right, 0, Facing::Left));
+        let sofa = at(Sofa, Nook::Users, Side::Right, 10, Facing::Left);
+        let (_, repairs) = mend(40, &[tv, sofa], &[], FACES);
+        let best = repairs.first().expect("a repair");
+        assert_eq!((best.piece, best.cost, best.tier), (Sofa, 1, 0), "{best:?}");
+        assert_eq!(best.to.anchor, sofa.anchor.unwrap());
+    }
+
+    /// `props` with `repair` made.
+    fn moved(props: &[Prop], repair: &Repair) -> Vec<Prop> {
+        props
+            .iter()
+            .map(|&p| {
+                if p.item == repair.piece {
+                    Prop {
+                        strip: repair.to.strip,
+                        anchor: Some(repair.to.anchor),
+                        facing: repair.to.facing,
+                        settled: true,
+                        ..p
+                    }
+                } else {
+                    p
+                }
+            })
+            .collect()
+    }
+
+    /// Whether `repair` checks out with `props` on [`panes`] `width`
+    /// wide, text at `text` and makeshift pieces at `made`.
+    fn checks(width: u16, props: &[Prop], text: &[(u16, u16)], made: &[Rect], r: &Repair) -> bool {
+        let nooks = panes(width);
+        let buf = screen(&nooks, width, 16, text);
+        let mut home = Home::default();
+        for &p in props {
+            assert!(home.add(p));
+        }
+        let shown = home.project(&buf, &nooks, &|_, _| false);
+        let frame = Frame {
+            buf: &buf,
+            nooks: &nooks,
+            blocked: &|_, _| false,
+            shown: &shown,
+            made,
+        };
+        check(&home, &frame, r)
+    }
+
+    /// The cells under `at`.
+    fn under(at: &Shown) -> Vec<(u16, u16)> {
+        let rect = at.rect();
+        rect.positions().map(|p| (p.x, p.y)).collect()
+    }
+
+    /// A repair found on one frame stops checking out when text comes
+    /// where the piece would stand, a makeshift piece is built there,
+    /// the rule is mended another way, or the panes shrink so the move
+    /// no longer packs; it still does on a wider frame, and there the
+    /// pair it keeps together still are.
+    #[test]
+    fn a_repair_checks_out_only_while_it_would_still_mend() {
+        let bed = at(Bed, Nook::Users, Side::Left, 0, Facing::Right);
+        let lamp = at(Lamp, Nook::Users, Side::Right, 0, Facing::Right);
+        let near = Rule::Near {
+            a: Lamp,
+            b: &[Bed, Desk],
+            gap: 3,
+        };
+        let props = [bed, lamp];
+        let (_, repairs) = mend(40, &props, &[], near);
+        let [first, second, ..] = repairs.as_slice() else {
+            panic!("two repairs: {repairs:?}");
+        };
+        assert!(
+            checks(40, &props, &[], &[], first),
+            "the frame it was found on"
+        );
+        assert!(
+            !checks(40, &props, &under(&first.at), &[], first),
+            "text there"
+        );
+        assert!(
+            !checks(40, &props, &[], &[first.at.rect()], first),
+            "built there"
+        );
+        assert!(
+            !checks(40, &moved(&props, second), &[], &[], first),
+            "mended"
+        );
+        assert!(!checks(40, &moved(&props, first), &[], &[], first), "made");
+        for width in [60, 120] {
+            assert!(checks(width, &props, &[], &[], first), "{width} wide");
+            let after = moved(&props, first);
+            let mut home = Home::default();
+            for p in after {
+                assert!(home.add(p));
+            }
+            let laid = home.layout(&panes(width));
+            assert!(
+                between(&laid_of(&laid, Lamp), &laid_of(&laid, Bed)) <= 3,
+                "{laid:?}"
+            );
+        }
+        // A TV that would join the sofa: on panes too narrow for both on
+        // one strip, it can't.
+        let sofa = at(Sofa, Nook::Users, Side::Right, 0, Facing::Left);
+        let tv = unsettled(at(Tv, Nook::Playlist, Side::Left, 0, Facing::Right));
+        let props = [sofa, tv];
+        let (_, repairs) = mend(40, &props, &[], FACES);
+        let first = repairs.first().expect("a repair");
+        assert!(checks(40, &props, &[], &[], first));
+        assert!(!checks(16, &props, &[], &[], first), "too narrow");
+        for width in [60, 120] {
+            assert!(checks(width, &props, &[], &[], first), "{width} wide");
+            let mut home = Home::default();
+            for p in moved(&props, first) {
+                assert!(home.add(p));
+            }
+            let laid = home.layout(&panes(width));
+            assert!(
+                room::faces(&laid_of(&laid, Sofa), &laid_of(&laid, Tv)),
+                "{laid:?}"
+            );
+        }
+    }
+
+    /// A rule that holds offers nothing to mend; and nothing she does to
+    /// mend one breaks it.
+    #[test]
+    fn a_home_whose_rules_hold_has_nothing_to_mend() {
+        let tv = at(Tv, Nook::Users, Side::Right, 0, Facing::Left);
+        let sofa = at(Sofa, Nook::Users, Side::Right, 10, Facing::Right);
+        let bed = at(Bed, Nook::Playlist, Side::Left, 0, Facing::Right);
+        let lamp = at(Lamp, Nook::Playlist, Side::Left, 11, Facing::Right);
+        assert_eq!(judge(40, &[tv, sofa, bed, lamp]), []);
+    }
+
+    /// Three strips `width` wide, each `rows` tall, one above another;
+    /// the first `n` of them.
+    fn three(width: u16, rows: u16, n: usize) -> Vec<(Nook, Rect)> {
+        [Nook::Users, Nook::Playlist, Nook::List]
+            .into_iter()
+            .enumerate()
+            .take(n)
+            .map(|(i, nook)| (nook, Rect::new(0, i as u16 * rows, width, rows)))
+            .collect()
+    }
+
+    /// Searching the worst case — every piece, three strips 200 wide,
+    /// and a sofa and a TV that can each move to the other — weighs no
+    /// more than [`CANDIDATES`] moves, in under a millisecond (in a
+    /// release build).
+    #[test]
+    fn repair_search_is_cheap() {
+        let nooks = three(200, 20, 3);
+        let buf = screen(&nooks, 200, 60, &[]);
+        let place = |item, nook, side, offset| at(item, nook, side, offset, Facing::Right);
+        let props = [
+            place(Sofa, Nook::Users, Side::Left, 40),
+            place(Tv, Nook::Playlist, Side::Right, 60),
+            place(Bed, Nook::List, Side::Left, 0),
+            place(Desk, Nook::Users, Side::Right, 0),
+            place(Lamp, Nook::List, Side::Right, 0),
+            place(Bookshelf, Nook::Playlist, Side::Left, 0),
+            place(Fridge, Nook::Users, Side::Left, 0),
+            place(CatBed, Nook::List, Side::Left, 80),
+        ];
+        let (home, shown, broken) = broken_at(&props, &buf, &nooks, FACES);
+        assert_eq!(broken.pieces, [Sofa, Tv]);
+        let frame = Frame {
+            buf: &buf,
+            nooks: &nooks,
+            blocked: &|_, _| false,
+            shown: &shown,
+            made: &[],
+        };
+        let found = search(&home, &frame, &broken);
+        assert!(found.examined <= CANDIDATES, "{}", found.examined);
+        assert!(found.examined > 500, "{}", found.examined);
+        assert_eq!(found.repairs.len(), REPAIRS);
+        let started = std::time::Instant::now();
+        for _ in 0..20 {
+            std::hint::black_box(search(&home, &frame, &broken));
+        }
+        let per_search = started.elapsed() / 20;
+        eprintln!("repair search: {per_search:?}, {} moves", found.examined);
+        if !cfg!(debug_assertions) {
+            assert!(
+                per_search < std::time::Duration::from_millis(1),
+                "{per_search:?}"
+            );
+        }
+    }
+
+    /// Some of her pieces, each anchored on one of three strips, either
+    /// way round, settled or not, boxed or not.
+    fn pieces3() -> impl Strategy<Value = Vec<Prop>> {
+        proptest::sample::subsequence(Furniture::ALL.to_vec(), 2..=8).prop_flat_map(|items| {
+            let n = items.len();
+            (
+                Just(items),
+                proptest::collection::vec(
+                    (
+                        0usize..3,
+                        any::<bool>(),
+                        0u16..60,
+                        any::<bool>(),
+                        any::<bool>(),
+                        proptest::bool::weighted(0.1),
+                    ),
+                    n,
+                ),
+            )
+                .prop_map(|(items, places)| {
+                    items
+                        .into_iter()
+                        .zip(places)
+                        .map(|(item, (nook, right, offset, left, settled, boxed))| {
+                            let nook = [Nook::Users, Nook::Playlist, Nook::List][nook];
+                            let side = if right { Side::Right } else { Side::Left };
+                            let facing = if left { Facing::Left } else { Facing::Right };
+                            Prop {
+                                settled,
+                                boxed,
+                                ..at(item, nook, side, offset, facing)
+                            }
+                        })
+                        .collect()
+                })
+        })
+    }
+
+    /// Makeshift pieces at `makeshift` (x, y, w, h) on `buf`, clear of
+    /// hers (see `tend_made`).
+    fn makeshift_on(
+        buf: &Buffer,
+        shown: &[Shown],
+        makeshift: &[(u16, u16, u16, u16)],
+    ) -> Vec<Rect> {
+        makeshift
+            .iter()
+            .map(|&(x, y, w, h)| Rect::new(x, y, w, h).intersection(buf.area))
+            .filter(|r| !shown.iter().any(|s| s.cover().intersects(*r)))
+            .collect()
+    }
+
+    /// That `r`, judged on `buf` over `nooks` with `home`'s pieces showing
+    /// as `shown` and makeshift pieces at `made`, mends a rule broken
+    /// there and breaks none that held; every strip that held its
+    /// pieces still does; no room is worse for it (and a piece she
+    /// hasn't settled spoils none); the piece stands on blank cells
+    /// clear of everything, where she'd fit to use it; and every other
+    /// piece that showed still fits (where she'd fit to use it, if she
+    /// did). Returns where the piece would stand.
+    fn mends(
+        home: &Home,
+        nooks: &[(Nook, Rect)],
+        buf: &Buffer,
+        shown: &[Shown],
+        made: &[Rect],
+        r: &Repair,
+    ) -> Result<Shown, TestCaseError> {
+        let all = strips(nooks);
+        let laid = home.clone().layout(nooks);
+        let keys: Vec<Grievance> = broken(&laid, &all, home).iter().map(|b| b.key).collect();
+        prop_assert!(keys.contains(&r.key), "{:?} mends what holds", r);
+        let clear = |at: &[Shown], who: Furniture| {
+            let at = at.to_vec();
+            move |x: i32, y: i32| {
+                let cell = (x as u16, y as u16).into();
+                x >= 0
+                    && y >= 0
+                    && !made.iter().any(|r| r.contains(cell))
+                    && !at.iter().any(|s| s.item != who && s.rect().contains(cell))
+            }
+        };
+        let after = made_on(home, r, nooks);
+        // The same pieces laid out: every strip still packs.
+        prop_assert_eq!(after.len(), laid.len());
+        for s in &laid {
+            prop_assert!(after.iter().any(|a| a.item == s.item), "{:?}", s);
+        }
+        let at = laid_of(&after, r.piece);
+        // Mends it; breaks nothing that held.
+        let now = broken(&after, &all, home);
+        prop_assert!(!now.iter().any(|b| b.key == r.key), "{:?} {:?}", r, now);
+        for b in &now {
+            prop_assert!(keys.contains(&b.key), "{:?} newly broken by {:?}", b, r);
+        }
+        // No room worse; an unsettled piece spoils none.
+        for &(strip, _) in &all {
+            let (old, new) = (room::role_of(&laid, strip), room::role_of(&after, strip));
+            if has_room(&laid, strip) && old != Role::Den && has_room(&after, strip) {
+                prop_assert_eq!(old, new, "{:?} by {:?}", strip, r);
+            }
+        }
+        let settled = home.props.iter().any(|p| p.item == r.piece && p.settled);
+        prop_assert!(settled || !spoils(&after, r.to.strip, r.piece), "{:?}", r);
+        // Fits, clear of everything, where she'd use it.
+        let mine = clear(&after, r.piece);
+        prop_assert!(room::fits(buf, &at, &mine), "{:?}", r);
+        prop_assert!(room::roomy(buf, &at, &mine), "{:?}", r);
+        prop_assert!(!made.iter().any(|m| m.intersects(at.rect())), "{:?}", r);
+        // Every other piece that showed still fits.
+        for s in shown
+            .iter()
+            .filter(|s| s.item != r.piece && s.scrap.is_none())
+        {
+            let now = laid_of(&after, s.item);
+            let theirs = clear(&after, s.item);
+            prop_assert!(room::fits(buf, &now, &theirs), "{:?} by {:?}", s, r);
+            let before = clear(&laid, s.item);
+            if room::roomy(buf, s, &before) {
+                prop_assert!(room::roomy(buf, &now, &theirs), "{:?} by {:?}", s, r);
+            }
+        }
+        Ok(at)
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(dessplay_core::test_support::proptest_cases(64)))]
+
+        /// Every repair found mends its rule and breaks nothing (see
+        /// [`mends`]); a turn keeps its anchor; a piece she has settled
+        /// moves only after every move of one she hasn't (but for a turn
+        /// where it stands); no search weighs more than [`CANDIDATES`]
+        /// moves. And on another frame — wider or narrower, more text,
+        /// more makeshift pieces — a repair that still checks out mends
+        /// and breaks nothing there.
+        #[test]
+        fn every_repair_mends_and_breaks_nothing(
+            props in pieces3(),
+            width in 24u16..120,
+            n in 2usize..=3,
+            text in proptest::collection::vec((1u16..120, 0u16..24), 0..40),
+            makeshift in proptest::collection::vec((1u16..120, 0u16..24, 2u16..6, 1u16..3), 0..3),
+            later_width in 24u16..120,
+            later_text in proptest::collection::vec((1u16..120, 0u16..24), 0..40),
+            later_makeshift in proptest::collection::vec((1u16..120, 0u16..24, 2u16..6, 1u16..3), 0..3),
+        ) {
+            let nooks = three(width, 8, n);
+            let buf = screen(&nooks, width, 24, &text);
+            let mut home = Home::default();
+            for p in props {
+                prop_assert!(home.add(p));
+            }
+            let shown = home.project(&buf, &nooks, &|_, _| false);
+            let made = makeshift_on(&buf, &shown, &makeshift);
+            let frame = Frame {
+                buf: &buf,
+                nooks: &nooks,
+                blocked: &|_, _| false,
+                shown: &shown,
+                made: &made,
+            };
+            // The same home, later: resized, with more text and more
+            // makeshift pieces.
+            let later_nooks = three(later_width, 8, n);
+            let mut later_text = later_text;
+            later_text.extend(text.iter().copied());
+            let later_buf = screen(&later_nooks, later_width, 24, &later_text);
+            let mut later_home = home.clone();
+            let later_shown = later_home.project(&later_buf, &later_nooks, &|_, _| false);
+            let later_made = makeshift_on(&later_buf, &later_shown, &later_makeshift);
+            let later = Frame {
+                buf: &later_buf,
+                nooks: &later_nooks,
+                blocked: &|_, _| false,
+                shown: &later_shown,
+                made: &later_made,
+            };
+            let laid = home.clone().layout(&nooks);
+            let was = broken(&laid, &strips(&nooks), &home);
+            for target in &was {
+                let found = search(&home, &frame, target);
+                prop_assert!(found.examined <= CANDIDATES, "{}", found.examined);
+                prop_assert!(found.repairs.len() <= REPAIRS);
+                let order: Vec<(u8, u32)> = found.repairs.iter().map(|r| (r.tier, r.cost)).collect();
+                prop_assert!(order.is_sorted(), "{:?}", order);
+                let settled = |piece: Furniture| home.props.iter().any(|p| p.item == piece && p.settled);
+                let mut delivered = false;
+                for r in found.repairs.iter().rev() {
+                    prop_assert_eq!(r.key, target.key);
+                    prop_assert!(target.pieces.contains(&r.piece));
+                    prop_assert!(check(&home, &frame, r), "{:?}", r);
+                    let at = mends(&home, &nooks, &buf, &shown, &made, r)?;
+                    prop_assert_eq!(at, r.at);
+                    // A turn where it stands keeps its anchor.
+                    let old = home.props.iter().find(|p| p.item == r.piece).unwrap();
+                    let then = laid_of(&laid, r.piece);
+                    let in_place = (then.strip, then.left) == (at.strip, at.left);
+                    if in_place {
+                        prop_assert_eq!(Some(r.to.anchor), old.anchor, "{:?}", r);
+                        prop_assert_eq!(r.cost, 1, "{:?}", r);
+                    }
+                    // (Walking from the dearest:) a settled piece moved
+                    // ahead of a delivery only by a turn.
+                    if !settled(r.piece) {
+                        delivered = true;
+                    } else if delivered {
+                        prop_assert!(in_place, "{:?} ahead of a delivery's move", r);
+                    }
+                    if check(&later_home, &later, r) {
+                        mends(&later_home, &later_nooks, &later_buf, &later_shown, &later_made, r)?;
+                    }
+                }
+            }
+        }
+    }
+
+    fn made_on(home: &Home, repair: &Repair, nooks: &[(Nook, Rect)]) -> Vec<Shown> {
+        made(home, repair, nooks)
+    }
+
+    fn laid_of(at: &[Shown], item: Furniture) -> Shown {
+        laid(at, item)
     }
 }

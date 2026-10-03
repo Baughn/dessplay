@@ -149,6 +149,11 @@ struct Visit {
     flap: Option<(room::Flap, u64)>,
     /// The rules of her home broken in the last frame.
     broken: Vec<rules::Broken>,
+    /// How she'd put right the rule she would mend, as last worked out.
+    repairs: Vec<rules::Repair>,
+    /// What that was worked out from (a hash of her home, the panes,
+    /// the rule, and the text she's moved), and when.
+    mending: Option<(u64, u64)>,
     size: (u16, u16),
 }
 
@@ -495,6 +500,20 @@ impl Guest {
                 })
                 .collect::<Vec<_>>()
                 .join(", "),
+            _ => String::new(),
+        }
+    }
+
+    /// How she'd put right the rule of her home she would mend, while
+    /// she's visiting (for the stage): the cheapest way, if any.
+    pub fn repair(&self) -> String {
+        match &self.state {
+            State::Visiting(visit) => visit
+                .chances
+                .repairs
+                .first()
+                .map(|r| format!("{}: {}", r.key.label(), r.label()))
+                .unwrap_or_default(),
             _ => String::new(),
         }
     }
@@ -880,6 +899,7 @@ impl Guest {
                         furnished: !self.ledger.home.props.is_empty(),
                         chat,
                         broken: visit.broken.clone(),
+                        repairs: visit.repairs.clone(),
                     };
                     let note =
                         stage::direct(scene, buf, &protected, visit, &offered, now, &mut self.rng);
@@ -911,6 +931,7 @@ impl Guest {
                     furnished: !self.ledger.home.props.is_empty(),
                     chat,
                     broken: visit.broken.clone(),
+                    repairs: visit.repairs.clone(),
                 };
                 // In line art, pieces she overlaps go in her image: two
                 // images would cut each other out.
@@ -1025,6 +1046,8 @@ impl Guest {
             next_made: room::MadeId(0),
             reel: None,
             broken: Vec::new(),
+            repairs: Vec::new(),
+            mending: None,
             size,
         }));
     }
@@ -1496,7 +1519,70 @@ fn furnish(
         );
         visit.broken = broken;
     }
+    mend(home, buf, view, visit, &shown, &blocked, now);
     shown
+}
+
+/// How often she works out again how to put her home right, when
+/// nothing it depends on has changed.
+const MEND_MS: u64 = 1000;
+
+/// Work out how she'd put right the rule of her home she would mend
+/// (see [`Osaka::would_mend`]), on this frame: again when her home, the
+/// panes, that rule or the text she has moved changes, and at most
+/// every [`MEND_MS`] otherwise (text comes and goes).
+fn mend(
+    home: &room::Home,
+    buf: &Buffer,
+    view: &IdleView,
+    visit: &mut Visit,
+    shown: &[Shown],
+    blocked: &dyn Fn(i32, i32) -> bool,
+    now: u64,
+) {
+    use std::hash::{Hash, Hasher};
+    let wanted = visit.osaka.would_mend(&visit.broken);
+    let Some(target) = visit.broken.iter().find(|b| Some(b.key) == wanted).cloned() else {
+        visit.repairs.clear();
+        visit.mending = None;
+        return;
+    };
+    let mut moved: Vec<(u16, u16)> = visit.layer.cells().collect();
+    moved.sort_unstable();
+    moved.dedup();
+    let mut hasher = std::hash::DefaultHasher::new();
+    (home, &view.nooks, target.key, &moved).hash(&mut hasher);
+    let basis = hasher.finish();
+    let due = visit
+        .mending
+        .is_none_or(|(was, at)| was != basis || now >= at.saturating_add(MEND_MS));
+    if !due {
+        return;
+    }
+    let made: Vec<Rect> = visit.made.iter().map(|m| m.piece.cover()).collect();
+    let frame = rules::Frame {
+        buf,
+        nooks: &view.nooks,
+        blocked,
+        shown,
+        made: &made,
+    };
+    let found = rules::search(home, &frame, &target);
+    debug_assert!(
+        found.repairs.iter().all(|r| rules::check(home, &frame, r)),
+        "a repair found that doesn't hold up: {:?}",
+        found.repairs
+    );
+    if found.repairs != visit.repairs {
+        tracing::trace!(
+            rule = %target.key.label(),
+            examined = found.examined,
+            repairs = ?found.repairs.iter().map(rules::Repair::label).collect::<Vec<_>>(),
+            "houseguest: how she'd put her home right"
+        );
+    }
+    visit.repairs = found.repairs;
+    visit.mending = Some((basis, now));
 }
 
 /// Place the stage's gift `item` where it fits, noting how that went;

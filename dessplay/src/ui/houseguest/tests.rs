@@ -863,6 +863,8 @@ fn visiting_at(guest: &mut Guest, real: &Buffer, view: &IdleView, (x, y): (i32, 
         reel: None,
         flap: None,
         broken: Vec::new(),
+        repairs: Vec::new(),
+        mending: None,
         size: (real.area.width, real.area.height),
     }));
 }
@@ -4737,6 +4739,89 @@ fn she_feels_a_sofa_turned_away_from_the_tv() {
         let _ = run(&mut guest, &real, &view, now, now + 90_000);
         assert!(decided(&guest) > before + 2, "she chose on");
         assert_eq!(nesting(&guest), rose, "graphics {graphics}");
+    }
+}
+
+/// Once she has felt her sofa turned away from the TV, she works out
+/// how she'd put it right: turn it round where it stands. Not before
+/// she's felt it, not when her mood leaves her nothing to do about her
+/// home, and not once it's right.
+#[test]
+fn she_works_out_how_to_turn_the_sofa_round() {
+    use super::brain::Mood;
+    use super::room::{Anchor, Side, Strip};
+    use sprite::Facing;
+    for graphics in [false, true] {
+        for mood in [Mood::Ordinary, Mood::Industrious, Mood::Lazy] {
+            let (mut guest, real, view) = rule_home(
+                &[
+                    (Furniture::Tv, Side::Left, 0, Facing::Right, true),
+                    (Furniture::Sofa, Side::Left, 12, Facing::Right, true),
+                ],
+                graphics,
+                1,
+            );
+            guest.cue(Scene::Lounge);
+            paint(&mut guest, &real, &view, 0);
+            let State::Visiting(visit) = &mut guest.state else {
+                panic!("visiting");
+            };
+            visit.osaka.set_mood(mood);
+            let repairs = |guest: &Guest| match &guest.state {
+                State::Visiting(visit) => visit.chances.repairs.clone(),
+                _ => panic!("visiting"),
+            };
+            let at = run_until(&mut guest, &real, &view, 0, 30_000, |guest, now| {
+                let felt = !felt(guest).is_empty();
+                assert!(
+                    felt || repairs(guest).is_empty(),
+                    "{now}: before she felt it"
+                );
+                felt
+            })
+            .unwrap_or_else(|| panic!("graphics {graphics}, {mood:?}: never felt it"));
+            paint(&mut guest, &real, &view, at);
+            let found = repairs(&guest);
+            if mood == Mood::Lazy {
+                assert_eq!(found, [], "graphics {graphics}: lazy");
+                assert_eq!(guest.repair(), "");
+                continue;
+            }
+            let best = found
+                .first()
+                .unwrap_or_else(|| panic!("graphics {graphics}, {mood:?}"));
+            assert_eq!(
+                (best.piece, best.cost, best.tier),
+                (Furniture::Sofa, 1, 0),
+                "{best:?}"
+            );
+            assert_eq!(
+                best.to,
+                rules::Placement {
+                    strip: Strip::Bottom(Nook::Playlist),
+                    anchor: Anchor {
+                        side: Side::Left,
+                        offset: 12
+                    },
+                    facing: Facing::Left,
+                }
+            );
+            assert_eq!(
+                guest.repair(),
+                "faces(sofa): sofa to Playlist L12 < (tier 0, 1 cells)"
+            );
+            // Turned round, there's nothing to put right.
+            let sofa = guest
+                .ledger
+                .home
+                .props
+                .iter_mut()
+                .find(|p| p.item == Furniture::Sofa)
+                .unwrap();
+            sofa.facing = Facing::Left;
+            paint(&mut guest, &real, &view, at + 1);
+            assert_eq!(repairs(&guest), [], "graphics {graphics}");
+        }
     }
 }
 

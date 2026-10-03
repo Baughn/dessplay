@@ -131,6 +131,11 @@ fn run(seed: &mut u64, picker: ratatui_image::picker::Picker) -> color_eyre::Res
                 if !broken.is_empty() {
                     why.push_str(&format!(" │ broken: {broken}"));
                 }
+                // And how she'd put right the one she would mend.
+                let repair = guest.repair();
+                if !repair.is_empty() {
+                    why.push_str(&format!(" │ mend: {repair}"));
+                }
                 buf.set_string(0, y, &blank, Style::reset());
                 buf.set_stringn(0, y, &why, usize::from(area.width), Style::reset());
             }

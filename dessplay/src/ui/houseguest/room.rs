@@ -423,7 +423,7 @@ pub(super) struct Flap {
 }
 
 /// A piece she owns, standing on `strip`; `boxed` until she unpacks it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) struct Prop {
     pub item: Furniture,
     pub strip: Strip,
@@ -468,13 +468,13 @@ pub(super) struct Extent {
 
 impl Extent {
     /// Whether a piece `cols × rows` fits between its walls at all.
-    fn holds(&self, (cols, rows): (u16, u16)) -> bool {
+    pub(super) fn holds(&self, (cols, rows): (u16, u16)) -> bool {
         self.to - self.from >= i32::from(cols) && self.rows >= rows
     }
 
     /// The leftmost column a piece `cols` wide anchored at `anchor` would
     /// like, kept between the walls.
-    fn left(&self, anchor: Anchor, cols: u16) -> i32 {
+    pub(super) fn left(&self, anchor: Anchor, cols: u16) -> i32 {
         let cols = i32::from(cols);
         let offset = i32::from(anchor.offset);
         let want = match anchor.side {
@@ -492,7 +492,7 @@ impl Extent {
 
     /// The anchor that keeps a piece `cols` wide at `left`: from the
     /// nearer wall, and its share of the way along.
-    fn pin(&self, left: i32, cols: u16) -> (Anchor, u16) {
+    pub(super) fn pin(&self, left: i32, cols: u16) -> (Anchor, u16) {
         let span = (self.to - self.from - i32::from(cols)).max(0);
         let from_left = (left - self.from).clamp(0, span);
         let at = if span == 0 {
@@ -729,7 +729,7 @@ impl Shown {
 }
 
 /// Everything she owns.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Hash)]
 pub(super) struct Home {
     pub props: Vec<Prop>,
 }
@@ -819,6 +819,12 @@ impl Home {
     pub fn layout(&mut self, nooks: &[(Nook, Rect)]) -> Vec<Shown> {
         let strips = strips(nooks);
         self.pin_anchors(&strips);
+        self.laid_on(&strips)
+    }
+
+    /// [`Home::layout`] on `strips`, once every piece whose strip is
+    /// there is anchored (a piece that isn't is left out).
+    pub(super) fn laid_on(&self, strips: &[(Strip, Extent)]) -> Vec<Shown> {
         let mut out: Vec<Shown> = Vec::new();
         for strip in self.furnished() {
             let Some(&(_, e)) = strips.iter().find(|(s, _)| *s == strip) else {
