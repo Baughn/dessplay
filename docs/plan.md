@@ -2827,3 +2827,23 @@ the start" row shows it).
   19 images encoded twice in 20 minutes, vignettes on or off;
   pre-existing). Her walk and exercise frames are the working set; the
   vignettes push it over 256 a little sooner.
+
+**For 5b's brief** (written first thing in its session; the decisions
+are in the phase-5 brief above). Questions it must settle against the
+code:
+- **The clock in the ledger**: accumulated game minutes (never an
+  absolute `now`, which restarts per process), accrued while the client
+  runs, flushed in batches (each dirtying is a sqlite write), and drained
+  on quit (the quit path skips the last `ledger_to_save()`; map d14).
+- **"Away" against today's rules** (map d20): the idle delay alone brings
+  her, a resident stays, an errand fetches her whatever the gate says.
+  What does an errand do while she's at school, and what is a dash-in as
+  an act (in, grab, out)?
+- **Calendar content**: on the real date (`LocalTime` on `IdleView`,
+  set in the shell after `idle_view`, `None` disables it), owed once on
+  the first visit of the day; whether it needs a free-standing
+  `Act::Script` (5a deferred it).
+- **Rarity and pity** gate *offering* (above); pity from ledger counters
+  of idle minutes; at most one unseen rare a visit. Ledger fields lenient
+  and skipped when empty; an older build drops them on save.
+- **Art**: a window piece and a wall-clock piece (model sheets first).
