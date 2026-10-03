@@ -1,5 +1,7 @@
 # Phase 5a (vignettes) — implementation design
 
+**Historical:** the plan as agreed and amended on 2026-10-03, kept for its reasoning. Where it differs from what was built, plan.md Phase 38's phase-5a record is authoritative.
+
 **Working design, 2026-10-03.** Brief: docs/plan.md, Phase 38, "Phase 5a — vignettes (brief)".
 Proposal: docs/proposals/2026-10-02-houseguest-mind.md (*Vignettes*, *Character*, migration row 5).
 Code map with file:line refs: [phase5a/map.md](phase5a/map.md) (critique: [phase5a/critique.md](phase5a/critique.md)) (summarised where it matters below).

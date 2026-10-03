@@ -2105,7 +2105,7 @@ welcome; the only goal is "watching her is kind of fun".
 
 ## Phase 38: Houseguest mind and home
 
-**Status: phases 0–4 done (2026-10-02 and 2026-10-03); phase 5 split into 5a (vignettes, in progress) and 5b (the clock). Nothing since phase 2 is pushed yet.** Design: [the mind
+**Status: phases 0–4 done (2026-10-02 and 2026-10-03); phase 5 split into 5a (vignettes, done 2026-10-03) and 5b (the clock, next). Nothing since phase 2 is pushed yet.** Design: [the mind
 and home proposal](proposals/2026-10-02-houseguest-mind.md) (direction
 agreed with the user; their answers are its *Decisions*). Its migration
 plan numbers its own phases 0–8; this section records them.
@@ -2738,3 +2738,92 @@ Deviations from the proposal's row 5 (mine, told to the user):
   others outscore it. Rarity and pity must gate *offering*, at the offer
   filter or in `mind::bind`
   ([map](proposals/2026-10-02-houseguest-mind/phase5a/map.md), A6).
+
+### Phase 5a — vignettes (done 2026-10-03)
+
+Built as the [working design](proposals/2026-10-02-houseguest-mind/phase5a-design.md)
+and its round-1 amendments say (the code map and the three critiques are
+in its `phase5a/` dir; the approved art, its review sheets and wiring
+notes in `vignettes/`), in eleven commits: the design; Crumple's and
+Unpack's switches made inclusive; scripts as data (goldens unchanged);
+keys change on time; lines by pool; door lines, musings and riddles;
+the splice machinery with channel surfing and the lamp; the art;
+chopsticks and sata andagi; the census; design.md and decisions.md.
+Each step was implemented, reviewed twice (correctness, and tests proven
+by mutants) and fixed, minors included. Differences from the design:
+
+- **The grid and bobs count from the start of the part that's playing**
+  (prelude, body or coda), not `body_start`: only then is what shows in
+  the body the same with or without a splice (the B2 property).
+- **A pooled line spoken over in the same instant it's said** is taken
+  back and doesn't cool: nothing was drawn in between.
+- **No script cooldown for riddles, the shopping channel or bedtime.**
+  Only splices and surfing consult it; a riddle is paced by its pool's
+  chance and its question's line cooldown.
+- **`Key.face` is a plain `Face`**, not `Option<Face>`: every key names
+  its face.
+- **`Pose::EatAndagi(0..=2)`** beside `Pose::Eat` (melon bread's hashed
+  Debug unchanged): held up (in ASCII facing out, so the face ramp
+  shows), bitten, and chewing, so the andagi never looks whole again
+  after the bite. The ASCII frames and the chewing composition (the
+  approved bitten piece in the held pose) weren't on the review sheet.
+- **IRC lines past the first 100 went unseen**: `ChatMark.irc` was the
+  trimmed log's length, so she stopped noticing IRC after 100 lines in a
+  session. It's a counter that only rises now (fixed in the andagi
+  commit, with a CHANGELOG entry).
+- Cfg(test) splice rows (`TestSnack`, `TestSleep`, `TestBedtime`) stay
+  beside the real ones for the tests that check proportions. Stage cues
+  force a splice's branch; the example's `?` sends a chat line that asks.
+- The stale commit messages: the splice commit's "taken by the next use"
+  cue wording, and the census/docs commits' phrases predating their
+  fixes, are superseded by this record.
+
+**Measured (2026-10-03).** Gate 1914 tests. The 256-case houseguest pass
+(313 tests, release) found no product bug: two wall-clock tests
+(`repair_search_is_cheap`, `terrain_read_is_cheap`) failed under load
+and now take their fastest run, and `every_made_piece_is_used_or_let_go`
+takes 46–49 s at 256 cases (40 s before 5a: more steps from key-end
+wakeups and vignettes), so it has its own nextest slow-timeout (killed
+at 120 s). Then clean twice, about 46 s. Perf: a visit 0.00–0.33% of a
+core (one 10 ms tick in 3 s is 0.33%). `sofa_census` as before: no chat
+119/119 and 103/103 used; chat every 37 s 102 of 104 (2 waiting) and
+93/93; made → used max 28 s.
+
+`visit_census`'s home now owns a fridge and a lamp (so snacks and
+lamp-lit bedtimes happen; it buys the cat bed first now), and every
+other census chat line asks something. Drawn moods, per visit (visits
+with any):
+
+| Room | Scripts | Splices | Pooled lines |
+|---|---|---|---|
+| stage | riddle 0.69 (10 of 16) | none | door 8.2, musing 2.4, riddle 1.4 |
+| home | bedtime 5.06, shopping 1, surf 0.62 (8), riddle 0.25 (3) | chopsticks clean 0.62 (9), bad 0.19 (2); andagi 0.12 (2) | musing 0.56, riddle 0.50 |
+| resident | shopping 1, surf 1.25 (12), riddle 0.56 (7) | none | musing 0.88, riddle 1.12 |
+
+All five door lines are heard about equally (25–29 each in 16 stage
+visits). Forced moods, furniture / floor rest / spacing out / moving, %
+of time:
+
+| Room | Ordinary | Lazy | Industrious | Dreamy |
+|---|---|---|---|---|
+| stage | 4.7 / 3.1 / 6.3 / 38.1 | 16.7 / 1.5 / 6.1 / 34.3 | 2.2 / 1.0 / 5.7 / 39.6 | 6.5 / 2.0 / 11.3 / 36.4 |
+| home | 37.9 / 0 / 1.5 / 43.4 | 41.8 / 0 / 1.1 / 41.1 | 33.6 / 0 / 1.0 / 45.9 | 37.5 / 0 / 2.5 / 43.8 |
+| resident | 28.5 / 0.5 / 4.8 / 38.0 | 31.1 / 0.5 / 5.1 / 38.7 | 24.1 / 0.3 / 3.5 / 41.1 | 27.3 / 2.8 / 8.1 / 35.4 |
+
+The home row isn't comparable with phase 4's: the census home gained two
+pieces, and its gifts land breaking rules (the fridge off its wall in 14
+of 16 visits, the lamp away from bed and desk in about 7), so most home
+visits end with 3–4 felt rules broken and nesting at 1 (a new "broken at
+the start" row shows it).
+
+**Open, for the user.**
+- **The sata andagi is rare:** 2 of 16 drawn home visits (forced moods
+  0.2–0.4 a visit). Snacks are about 5% of her home choices, the odds are
+  1 in 4, and the 10-minute cooldown applies. An answer to a question
+  happened in 3 of 64 forced visits with chat every 90 s: a question must
+  land in a coda of about 15 s. The chopsticks wrap about 1 homework in 7
+  (the speech gate and the cooldown thin the 1 in 3).
+- **Industrious with a fridge thrashes the image cache** (seed 2: about
+  19 images encoded twice in 20 minutes, vignettes on or off;
+  pre-existing). Her walk and exercise frames are the working set; the
+  vignettes push it over 256 a little sooner.

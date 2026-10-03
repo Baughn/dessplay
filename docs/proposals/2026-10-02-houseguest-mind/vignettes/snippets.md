@@ -1,4 +1,4 @@
-# Houseguest vignette art: chopsticks, droop face, sata andagi (for review, not wired in)
+# Houseguest vignette art: chopsticks, droop face, sata andagi (approved and wired in, 2026-10-03; see plan.md Phase 38, phase 5a)
 
 Last updated: 2026-10-03
 
