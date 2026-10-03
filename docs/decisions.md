@@ -2944,6 +2944,179 @@ and she watches from the calm spot. The trip she was on still ends, as
 the chat rule says. She still stops briefly over text when text comes
 up under her, because that is what sends her on.
 
+## Vignettes are scripts on the act that hosts them (2026-10-03)
+
+**Rule:** A vignette is a script (a run of keys: pose, face, what she
+says, what shows on her furniture) played on the act that hosts it: a
+use of a piece, or spacing out. Every use's look is its own script; a
+key ends at a fixed time or at a share of the use's drawn length,
+counted from the start of the part playing (a prelude, the use, a coda).
+She wakes as each key ends as well as on the use's frame grid, which is
+kept, anchored at the playing part's start. What a script plays (its
+branch, any splice, the lines it draws) is chosen when its act starts,
+hashed from the whims of her latest decision, each choice under its own
+label. See [design.md](design.md#houseguest).
+
+**Why:** *Hosted, no free-standing act yet*: every phase-5a vignette
+happens at a piece or while spacing out, and a use is already right at
+the dozen places that ask what she's doing there (where she sits,
+losing her seat, how much of it she has done, the census's groups). A
+free-standing `Act::Script` would have had to learn each of them for
+nothing 5a needs. 5b decides whether the calendar or the dash-ins need
+one.
+
+*Every use's look a script*: one player instead of a hand-kept match
+per use beside a second mechanism for vignettes. Spans are *cumulative
+shares* of the drawn length (a key ends at length × n/d), not
+durations summed: summing rounds differently (a watch of 20,004 ms
+would have switched at 12,001 instead of 12,002), and shares draw
+nothing new. That made the conversion provable: every golden
+trajectory and the seed-7 snapshot came through it unchanged, checked
+against the old look as an oracle at every grid time and key end.
+Rejected: a span computed by a function, kept only for the two looks
+that switched one millisecond late (a strict `>`); those two were made
+inclusive instead, so the player is uniformly half-open.
+
+*Keys on time, the grid kept*: during a use she woke only on the
+1.4 s frame grid, so a key ending off it came late (the snack's
+fridge, due to close at 1.5 s, closed at 2.8 s). The grid stays: the
+TV's static and every bob move on it, and dropping it for still keys
+froze the TV. Both are anchored at the start of the part playing, so a
+prelude never shifts the use's own bob or channel. That changed the
+trajectories, and was re-recorded on its own, for that reason alone.
+
+*Choices hashed from her latest decision's whims*: arrival (starting
+the use she walked to, coming out of a door) runs in the tick with
+only the body's random stream, and a draw added there would shift
+everything she does after it. So she keeps the whims of her latest
+decision, and each choice at an act's start hashes them with its own
+label: no body draw is added or removed. Rejected: threading the
+choice through the job or the heading she's on: finding a heading
+again rebuilds its job from what it's for, which would lose the
+choice, and an act started again would roll its splice twice. A use
+she resumes after an interruption goes through a new decision, so it
+may be spliced again; "never twice" holds within one act. Before her
+first decision her whims are her mind's seed, salted (an errand can
+bring her out of a door first), and a stage cue forces a script
+rather than rolling it, since the whims it would roll are the last
+decision's.
+
+## A splice never changes what it wraps (2026-10-03)
+
+**Rule:** A prelude or coda (a splice) wrapped round a use changes
+nothing about the use itself: its keys, length, credit, events and
+what the shopping channel sold her are the same with or without it;
+only when the use starts (after a prelude) and when the act ends
+(after a coda) move. Only the use is credited. No splice wraps
+unpacking or crumpling. The shopping channel's purchase is still made
+the moment the channel comes on. See [design.md](design.md#houseguest).
+
+**Why:** a vignette is decoration: adding one must not retune her
+needs, her credit or her home. So the body is drawn exactly as it
+would be without the splice, and timed (keys, bob, grid, grievance,
+credit) from where the prelude ends. Credit is by the share of the use
+itself done: interrupted in a prelude, none (she hadn't started); in a
+coda, all of it. The property tested is the unit one, a use started
+with a splice forced on and off from the same state: the random
+stream after it, the use's length, purchase and events, what she does
+and shows at every moment of the use, when she wakes, and the credit
+at sampled times are all equal. Rejected: comparing whole visits with
+and without splices, which can't hold: her needs rise with time, chat
+arrives at fixed times, and visits diverge after the first wrapped
+use. Unpacking and crumpling fire their events (the piece out of its
+box, admiring what she made) at the act's end, so a coda would delay
+them; no splice may name them.
+
+*The purchase at the start*: the proposal moved it to the advert's
+first key. Kept at the moment the channel comes on (the rule since
+phase 3): a purchase at a key would be lost to a chat line arriving
+before it, so what she buys would depend on when people talk, and
+nothing a vignette adds needs it later.
+
+## Many of her lines come from pools, and only beats have a budget (2026-10-03)
+
+**Rule:** Many of her lines are drawn from pools (beat lines, door
+lines, musings, riddles), each pool's rolls salted by its own id. A
+pooled line isn't said again within ten minutes, whichever pool it's
+from, and counts as said whether or not it showed, except one spoken
+over in the same instant it's said, which isn't said at all and doesn't
+cool. Her fixed lines (greetings, "Ow!", "Sata andagi." and the like)
+are in no pool and have no cooldown. A visit has eight beat lines at
+most; the other pools have no budget. No splice plays again within ten
+minutes, and no channel surf. A door line comes one door in three.
+See [design.md](design.md#houseguest).
+
+**Why:** *A budget for beats only*: the budget is there so the beats
+she owes for what she lost don't nag. Vignette pools are paced by
+their own chances and cooldowns; one budget shared with them would let
+a chatty visit's musings and door lines silence her beats, or the
+reverse. *Salted by pool*: two picks in one decision (a door line, then
+"Ah, right!") would otherwise share a roll. Beat lines keep id 0, so
+their rolls didn't change.
+
+*A cooldown per script*: the line cooldown can't pace a script whose
+lines are fixed (surfing says nothing; the andagi says the same line
+every time), so the store keeps a ten-minute cooldown per script, and
+the splices and surfing consult it, which bounds surfing, the
+chopsticks and the andagi alike. A splice or surf that doesn't roll its
+chance hasn't played, so it doesn't cool. The other scripts don't need
+it: each riddle's question is a pooled line, so it cools, and the
+pool's chance paces them; the shopping channel comes on only on a
+visit it's due; and bedtime is how every sleep looks, so cooling it
+would only make some sleeps plain. Rejected: a script cooldown for
+riddles as well: one musing in three on a third of her spacing-outs
+already makes them rare, and the line cooldown keeps any one riddle
+from coming round again.
+
+*Spoken over in the same instant*: said is said, as with her
+grievances, so a pool doesn't repeat a line just because its bubble
+had no room. But a line drawn and spoken over in that same instant
+(the door's line, then the decision she makes coming through) never
+could show: nothing is drawn between. Cooling it would spend one of
+the pool's few lines on nothing.
+
+*One door in three*: the simulator heard "Where was I?" 467 times in
+16 half-hour stage visits. Five lines on ten-minute cooldowns without a
+gate come in bursts: five doors talk, then the rest are silent until
+the cooldowns pass. Gated, a stage visit hears about eight, and the
+door may now be silent. Rejected: a line at every door (one in one),
+and no gate, with the bursts accepted (five doors talk, then silence
+until the cooldowns pass).
+
+## She answers a question with a sata andagi (2026-10-03)
+
+**Rule:** While she names a sata andagi after a snack, a chat or IRC
+line that asks her something (ends in `?`) gets "Sata andagi." said
+toward the chat, and she plays on; any other line, or one during the
+snack itself, stops her as any line does. A line asks only when the
+count of its source rose and that source's newest line ends in `?`.
+See [design.md](design.md#houseguest).
+
+**Why:** the user's call (2026-10-03): it's the joke. The coda carries
+on and isn't shortened, so the answer is part of it, not an
+interruption. *Per source*: arrival is seen as the chat mark changing,
+and a compaction changes it too, so one "newest line asks" level would
+have answered a compaction while the newest line was a question; and
+"the newest synced or IRC line" has no defined order between the two.
+So each source carries its own level, and only a source whose count
+rose is asked.
+
+## Deferred from the vignettes: Adverb, and rarity (2026-10-03)
+
+**Rule:** Phase 5a has no `Adverb` (a manner a vignette is played in).
+For 5b: a want's tier or rarity must gate whether it's *offered*, not
+scale its score. See the
+[proposal](proposals/2026-10-02-houseguest-mind.md#vignettes) (its
+migration row 5).
+
+**Why:** *Adverb*: her moods already carry her traits as rates (lazy,
+industrious, dreamy), and no 5a vignette needs a manner of its own.
+*Rarity gates offering*: a choice multiplies an offer's factors,
+truncates to the top four, then rolls. A factor below 1 doesn't make a
+want rare; it removes it whenever four others outscore it, and does
+nothing when fewer are on offer. So rarity and pity must decide whether
+it's offered at all (at the offer filter, or when her mind binds it).
+
 ## Houseguest chooses by needs among the top few (2026-09-28)
 
 **Rule:** Her next act is a weighted-random pick among the four

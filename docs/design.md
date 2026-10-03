@@ -1373,8 +1373,11 @@ this section states what is built.
 - **A door in space** is her way out when there's no other: when what
   she wants is on a floor no route reaches, or her floor has no way off,
   a pink door appears in her box, she steps through, and it opens
-  again wherever she's going (a floor where she fits) and she steps out
-  ("Where was I?"). The door stays within her box, so it never covers
+  again wherever she's going (a floor where she fits) and she steps out,
+  one time in three saying a door line ("Where was I?", "Huh? How'd I
+  get here?", "...What was I doin'?", "I forgot what I forgot.",
+  "Handy, these doors."; the rest she comes through quietly). The door
+  stays within her box, so it never covers
   anything; what it ignores is the terrain in between
   (why: [decisions](decisions.md#houseguest-has-a-door-in-space-2026-09-28)).
 - **Local key, mouse, or paste input** ends a visit (unless she's
@@ -1389,6 +1392,15 @@ this section states what is built.
   turns toward the chat pane with a `!` then a `?`, and keeps watching
   until chat has been quiet for 15 s, then carries on
   (why: [decisions](decisions.md#line-art-osaka-passes-text-and-watches-chat-briefly-2026-09-30)).
+  **The one exception** is the sata andagi after a snack (see Using her
+  furniture): a line that asks her something (it ends in `?`, trailing
+  whitespace aside; of each source whose count rose, chat or IRC, its
+  newest line does) gets "Sata andagi." said toward the chat, beaming,
+  and she plays on, turned to the chat for the rest of it (it isn't
+  shortened); once it's over she watches the chat as after any line. Any
+  other line then, or any line during the snack itself, stops her as
+  usual
+  (why: [decisions](decisions.md#she-answers-a-question-with-a-sata-andagi-2026-10-03)).
   On a pole or in the air (climbing, clambering over a divider,
   falling), she finishes getting onto a floor first and looks then.
   Where her image hides text (see Line art), she doesn't stop: the
@@ -1497,8 +1509,22 @@ this section states what is built.
   her (an errand, watching chat) and before anything else she'd choose;
   an interrupted beat stays owed, and she owes three at most (the
   oldest goes). Going back to a piece she made after an interruption,
-  she says "Ah, right!" one time in three. A beat line isn't said again
-  within ten minutes, and a visit has eight at most.
+  she says "Ah, right!" one time in three.
+  **Many of her lines come from pools** (beat lines, door lines,
+  musings, riddles), each pool's rolls its own. No pooled line is said
+  again within ten minutes of being said, whichever pool it's from; a
+  line counts as said whether or not its bubble found room to show,
+  except one spoken over in the same instant it's said (another line,
+  or the stage putting her somewhere), which never could show: it isn't
+  said, and doesn't cool. Her fixed lines (a greeting, "...I'm OK.",
+  "Ow!", "Hold 'em by the ends!", "Sata andagi." and the like) are no
+  pool's and have no cooldown of their own. A visit has eight beat lines at most; the
+  other pools have no budget (their chances pace them). No splice (the
+  chopsticks, the sata andagi) plays again within ten minutes, nor does
+  channel surfing; a riddle is paced by its pool's chance and its
+  question's cooldown, the shopping channel by the visits it's due on,
+  and the lamp's moment as she settles comes with every sleep in her bed
+  (why: [decisions](decisions.md#many-of-her-lines-come-from-pools-and-only-beats-have-a-budget-2026-10-03)).
 - **Bubbles and speech**: her bubbles are text in the first of several
   spots around her head, wherever the pose puts it (lying down, it's on
   the floor at one end) — up and to the side it's nearer (the side she
@@ -1509,7 +1535,11 @@ this section states what is built.
   own bubble: a greeting on first finding her feet ("Nice to meet you.",
   or her mood's), "...I'm OK."
   after a hard landing (always on her entrance, else half the time), and
-  a musing ("I wish I were a bird.") on a third of her spacing-outs.
+  on a third of her spacing-outs a musing ("I wish I were a bird."), or,
+  one time in three when she isn't already saying something (it would
+  hide the question), a riddle: the question, curious (3 s), her own
+  answer at once, pleased ("Bread ya can't eat?" "A fryin' pan!"), then
+  "hehe".
 - **Mischief undoes itself on a schedule**, fixed when it's made and kept
   apart from whatever she is doing by then, so no interruption can
   strand it; a chat or IRC line arriving undoes all of it at once. One
@@ -1610,17 +1640,27 @@ this section states what is built.
   (something she does awake too, and more when she's sleepy, taking a
   little off), sleeps in bed (answers *sleepy* far
   better than a doze on a border or a nap), does homework at the desk (nodding
-  off onto the paper halfway through), or watches the TV from beside
+  off onto the paper halfway through; one time in three she splits a
+  pair of disposable chopsticks first, cleanly, a twinkle and "hehe", or
+  badly, crestfallen: "Hold 'em by the ends!", even odds), or watches the TV from beside
   it, or from a sofa that **faces** it (the two on one strip, 2–14
   cells between them, judged on the strip, so something splitting the
   floor between them doesn't matter; the sofa turned toward the TV,
   while the TV, seen from the front, may be turned either way; a
   makeshift sofa, on no strip and turned no way, faces a TV on its
-  floor), turned towards it; she reads beside her bookshelf, gets a snack from her fridge (it
-  stands open as she looks in, then she eats a melon bread), and on
+  floor), turned towards it (one plain watch in five, with no shopping
+  channel on, nothing about her home on her mind and not just trying
+  the spot, she flicks through the channels: static, colour bars,
+  static, a sunrise, "ooh", then back to static, pleased with herself);
+  she reads beside her bookshelf, gets a snack from her fridge (it
+  stands open as she looks in, then she eats a melon bread; one snack in
+  four ends in a sata andagi: the fridge open a moment, she holds it up
+  and names it, "Sata andagi.", four to six times, happier each time,
+  then eats it), and on
   about half her visits Kamineko is asleep in the cat bed — she pets
   him, and he bites ("Ow!"). Her lamp is lit, and dark while she sleeps
-  in her bed. Each use is an offer to the brain while the piece is placed
+  in her bed, from 2 s in (she settles with it on, blinking; trying the
+  bed, it's dark at once). Each use is an offer to the brain while the piece is placed
   and she can get there and stay: her box, and the whole of the one
   image she and the pieces it overlaps are drawn in (the rectangle
   spanning them, above the floor), clear of text; if text comes up
@@ -1629,6 +1669,29 @@ this section states what is built.
   she's left blinking where it was. Her furniture shows only while she
   does, and the goodbye rain takes it along with her
   (why: [decisions](decisions.md#houseguest-furniture-is-pane-relative-and-leaves-with-her-2026-09-28)).
+- **Scripts and splices** (phase 5a): how a use looks (her pose and
+  face, what she says, and what shows on her furniture: the TV's
+  channel, the lamp, the fridge door, the cat biting) is its own
+  script, a run of keys, each ending at a fixed time or at a share of
+  the use's drawn length, so nothing new is drawn; a spacing-out may
+  play one too (a riddle). She wakes as each key ends, so the next
+  key's look, line and prop come on on time, as well as on the use's
+  frame grid (what bobs and what's on TV moves on it). A use may be
+  wrapped in a **splice**: a prelude before it (the chopsticks) or a
+  coda after it (the sata andagi), a script of its own length rolled as
+  the use starts: never round a trial, a prelude only while she isn't
+  saying something (it would hide its first key), at most one of each,
+  and each not again within ten minutes. **A splice never changes what
+  it wraps**: the use itself (its keys, length, credit, events, and
+  what the shopping channel sold her) is the same with or without it,
+  timed from where the prelude ends, and only that is credited
+  (interrupted in a prelude, nothing; in a coda, all of it). No splice
+  wraps unpacking a parcel or crumpling text. Everything a script
+  plays (its branch, the splices, the lines it says) is chosen when its
+  act starts. The shopping channel's purchase is still made the moment
+  the channel comes on
+  (why: [decisions](decisions.md#vignettes-are-scripts-on-the-act-that-hosts-them-2026-10-03),
+  [decisions](decisions.md#a-splice-never-changes-what-it-wraps-2026-10-03)).
 - **The rules of her home** (phase 4): a table of how her pieces ought
   to stand. Her sofa faces her TV (as above); her lamp stands on one
   strip with her bed or her desk, at most 3 cells between them; her
@@ -1800,7 +1863,7 @@ this section states what is built.
     everything of hers in it — her, her furniture, text she moved — rains
     out at once (the goodbye rain without the startled beat), and she is
     already through her door: it opens on a floor clear of that pane, and
-    she steps out ("Where was I?"). Her furniture there is in the closet
+    she steps out (perhaps with a door line, as above). Her furniture there is in the closet
     until focus moves on. She may still stand on the focused pane's top
     border with her body in the pane above, as on any protected line.
     Headed out to work, she still goes; on her way home, the door is how
