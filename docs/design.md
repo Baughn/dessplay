@@ -1658,8 +1658,10 @@ this section states what is built.
 - **Putting her home right** (phase 4). **A satisfied rule never moves
   anything.** While a rule she has felt is still broken and her mood
   leaves her something to do about her home, she works out how she'd put
-  it right (the first such rule she felt; one fix per felt rule), on the
-  frame as it's painted: again whenever her home, the panes, that rule
+  it right (of the rules she felt, in the order she felt them, the
+  first a move mends: one no move mends doesn't keep her from the next;
+  one fix per felt rule), on the frame as it's painted: again whenever
+  her home, the panes, those rules
   or the text she has moved changes, and at most once a second
   otherwise. A way is one of the rule's movable pieces (the sofa, then
   the TV; the lamp; the fridge or bookshelf; of a bed and TV in one

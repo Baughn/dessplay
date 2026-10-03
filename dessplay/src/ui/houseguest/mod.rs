@@ -1824,11 +1824,12 @@ fn stage_arrange(
 /// nothing it depends on has changed.
 const MEND_MS: u64 = 1000;
 
-/// Work out how she'd put right the rule of her home she would mend
-/// (see [`Osaka::would_mend`]; the stage may `force` one), on this
-/// frame: again when her home, the panes, that rule or the text she has
-/// moved changes, and at most every [`MEND_MS`] otherwise (text comes
-/// and goes).
+/// Work out how she'd put right a rule of her home she would mend (see
+/// [`Osaka::to_mend`]; the stage may `force` one), on this frame: each in
+/// turn, keeping the first a move mends (one no move mends doesn't keep
+/// her from the next). Again when her home, the panes, those rules or
+/// the text she has moved changes, and at most every [`MEND_MS`]
+/// otherwise (text comes and goes).
 #[allow(clippy::too_many_arguments)]
 fn mend(
     home: &room::Home,
@@ -1841,17 +1842,24 @@ fn mend(
     now: u64,
 ) {
     use std::hash::{Hash, Hasher};
-    let wanted = force.or_else(|| visit.osaka.would_mend(&visit.broken));
-    let Some(target) = visit.broken.iter().find(|b| Some(b.key) == wanted).cloned() else {
+    let wanted = match force {
+        Some(key) => vec![key],
+        None => visit.osaka.to_mend(&visit.broken),
+    };
+    let targets: Vec<rules::Broken> = wanted
+        .iter()
+        .filter_map(|&key| visit.broken.iter().find(|b| b.key == key).cloned())
+        .collect();
+    if targets.is_empty() {
         visit.repairs.clear();
         visit.mending = None;
         return;
-    };
+    }
     let mut moved: Vec<(u16, u16)> = visit.layer.cells().collect();
     moved.sort_unstable();
     moved.dedup();
     let mut hasher = std::hash::DefaultHasher::new();
-    (home, &view.nooks, target.key, &moved).hash(&mut hasher);
+    (home, &view.nooks, &wanted, &moved).hash(&mut hasher);
     let basis = hasher.finish();
     let due = force.is_some()
         || visit
@@ -1868,7 +1876,16 @@ fn mend(
         shown,
         made: &made,
     };
-    let found = rules::search(home, &frame, &target);
+    let mut examined = 0;
+    let found = targets
+        .iter()
+        .map(|target| {
+            let found = rules::search(home, &frame, target);
+            examined += found.examined;
+            found
+        })
+        .find(|found| !found.repairs.is_empty())
+        .unwrap_or_default();
     debug_assert!(
         found
             .repairs
@@ -1879,8 +1896,8 @@ fn mend(
     );
     if found.repairs != visit.repairs {
         tracing::trace!(
-            rule = %target.key.label(),
-            examined = found.examined,
+            rules = ?wanted.iter().map(|k| k.label()).collect::<Vec<_>>(),
+            examined,
             repairs = ?found.repairs.iter().map(rules::Repair::label).collect::<Vec<_>>(),
             "houseguest: how she'd put her home right"
         );

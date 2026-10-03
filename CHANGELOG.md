@@ -37,6 +37,9 @@ Add new days at the top. Add new entries at the bottom of existing days.
   spots, they're different spots, not the same spot turned round; and
   when the other spot she meant to try turns out to be taken, she keeps
   the piece where it is with a "There!" instead of falling silent.
+- Fixed: When something in the houseguest's home can't be put right by
+  moving one piece, she gets on with the next thing she noticed instead
+  of leaving everything as it is.
 
 ## 2026-10-02
 

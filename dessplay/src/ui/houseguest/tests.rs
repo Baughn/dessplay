@@ -7037,6 +7037,7 @@ fn keen_on(
         (Scene::Watch, Furniture::Tv),
         (Scene::Lounge, Furniture::Sofa),
         (Scene::Snack, Furniture::Fridge),
+        (Scene::Read, Furniture::Bookshelf),
     ]
     .into_iter()
     .filter(|&(_, item)| owns(item))
@@ -7111,6 +7112,29 @@ fn what_she_cant_mend_she_leaves() {
     moves_each_piece_once(5);
 }
 
+/// A rule she can't mend doesn't keep her from one she can: her bed in
+/// the living room, felt first (no move mends it), and her bookshelf
+/// upstairs away from its walls, felt after: she puts the bookshelf
+/// against a wall, and leaves the bed as it is.
+#[test]
+fn what_she_cant_mend_doesnt_stop_what_she_can() {
+    use super::brain::Mood;
+    for graphics in [false, true] {
+        for seed in 0..2 {
+            let (guest, moved) = keen_on(6, Mood::Industrious, graphics, seed, 600_000);
+            let case = format!("graphics {graphics}, seed {seed}");
+            let felt: Vec<String> = felt(&guest).iter().map(|g| g.label()).collect();
+            assert_eq!(
+                felt,
+                ["apart(bed)", "wall(bookshelf)"],
+                "{case}: what she felt, in order"
+            );
+            assert_eq!(moved, [Furniture::Bookshelf], "{case}");
+            assert_eq!(guest.broken(), "apart(bed,TV)*", "{case}");
+        }
+    }
+}
+
 /// Her mood caps what she does about her home in a visit: in a home
 /// with three things wrong with it (her lamp far from her bed, a TV she
 /// never settled in her bedroom, her sofa turned from where the TV
@@ -7168,8 +7192,9 @@ fn industrious_she_goes_on_to_another() {
 /// 3, all of those at once; 4, a fridge she never settled, in her
 /// bedroom away from its walls; 5, her bed in the living room, where she
 /// watches the TV from her sofa, and her desk upstairs (no move mends
-/// that without breaking another rule, or her study). Each piece
-/// anchored, as she'd have left it.
+/// that without breaking another rule, or her study); 6, that, and her
+/// bookshelf upstairs away from its walls. Each piece anchored, as she'd
+/// have left it.
 fn wrong_home(
     home: usize,
     offset: u16,
@@ -7246,6 +7271,18 @@ fn wrong_home(
             (Furniture::Bed, Nook::Playlist, Right, 1, Facing::Left, true),
             (Furniture::Desk, Nook::Users, Right, 1, Facing::Left, true),
         ],
+        6 => {
+            let mut home = wrong_home(5, offset);
+            home.push((
+                Furniture::Bookshelf,
+                Nook::Users,
+                Left,
+                12,
+                Facing::Right,
+                true,
+            ));
+            home
+        }
         _ => vec![
             bed,
             (Furniture::Lamp, Nook::Users, Right, 1, Facing::Left, true),

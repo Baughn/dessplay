@@ -2672,6 +2672,21 @@ the same move, refused again for the same reason, would play "Hup!" …
 "Oh well..." over and over, and the rule would keep her keen on a home
 she can't put right.
 
+*A rule no move mends doesn't block the next* (the phase-4 census,
+2026-10-03): the search first ran only for the first rule she felt that
+was still broken. When no single move mended that one (the sofa and TV
+in two rooms where joining them would change a room's role, say), she
+never got to the bookshelf she felt next, which one move would have
+put right: in the census's furnished home, 3 of 16 industrious visits
+did nothing about their home all half hour, and 11 ended with a rule
+felt and broken though her cap left her more to do. Now the frame
+works out each felt rule in the order she felt it and keeps the first
+a move mends; while she's moving a piece, only that piece's rule.
+After the fix every ordinary and dreamy visit there makes its one move,
+and industrious ones make one or two. A rule no move mends still keeps
+nesting high for the visit; nothing comes of it, since no way to
+arrange is on offer.
+
 ## She tries a piece in a spot or two (2026-10-03)
 
 **Rule:** When a few spots (up to three, the same piece, the same tier,

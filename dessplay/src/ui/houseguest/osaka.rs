@@ -38,8 +38,8 @@ pub(super) struct Chances {
     pub chat: Option<Rect>,
     /// The rules of her home broken now.
     pub broken: Vec<super::rules::Broken>,
-    /// How she would put right the rule of her home she would mend (see
-    /// [`Osaka::would_mend`]), cheapest first.
+    /// How she would put right the first rule of her home she would mend
+    /// that any move mends (see [`Osaka::to_mend`]), cheapest first.
     pub repairs: Vec<super::rules::Repair>,
     /// Where she'd stand to lift each piece those repairs move (beside
     /// it, on its floor), and which way she'd face it.
@@ -2730,7 +2730,7 @@ impl Osaka {
             owes: self.owes(),
             episode: self.episode,
             just_set: self.just_set,
-            may_arrange: self.would_mend(&chances.broken).is_some(),
+            may_arrange: !self.to_mend(&chances.broken).is_empty(),
         };
         // Landed from a hop of her way somewhere, or making for a piece
         // she made: the next hop of the same trip, without choosing anew.
@@ -3434,19 +3434,28 @@ impl Osaka {
         Some(Decision::reflex("can't get to it"))
     }
 
-    /// The rule of her home she would put right, of those `broken`: the
-    /// first she felt that is broken still (and she hasn't let go of
-    /// putting right), while her mood leaves her more to do about her
-    /// home this visit.
-    pub fn would_mend(&self, broken: &[super::rules::Broken]) -> Option<Grievance> {
+    /// The rules of her home she would put right, of those `broken`, in
+    /// the order she'd go about them: those she felt that are broken
+    /// still (and she hasn't let go of putting right), in the order she
+    /// felt them, while her mood leaves her more to do about her home this
+    /// visit; moving a piece, only the rule she's moving it for. The frame
+    /// works out how she'd mend each in turn and keeps the first it finds
+    /// a way for, so a rule no move mends doesn't keep her from the next.
+    pub fn to_mend(&self, broken: &[super::rules::Broken]) -> Vec<Grievance> {
         if self.home_acts >= self.mood.home_acts() {
-            return None;
+            return Vec::new();
         }
-        self.felt
+        let felt: Vec<Grievance> = self
+            .felt
             .iter()
             .filter(|f| !f.let_go)
             .map(|f| f.key)
-            .find(|&key| broken.iter().any(|b| b.key == key))
+            .filter(|&key| broken.iter().any(|b| b.key == key))
+            .collect();
+        match self.episode {
+            Some(ep) if felt.contains(&ep.repair.key) => vec![ep.repair.key],
+            _ => felt,
+        }
     }
 
     /// She's saying what's wrong with her home.
