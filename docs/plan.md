@@ -2828,6 +2828,12 @@ the start" row shows it).
   pre-existing). Her walk and exercise frames are the working set; the
   vignettes push it over 256 a little sooner.
 
+**The user's answers (2026-10-03).** The andagi's rate is right: 2
+visits in 16 is fine, since as events multiply any more would crowd
+the rest. The census home starting broken is left alone for now; a later
+improvement would be unlimited repairs in the census home. The image
+cache is raised to suit Ghostty's capacity (measured; below).
+
 **For 5b's brief** (written first thing in its session; the decisions
 are in the phase-5 brief above). Questions it must settle against the
 code:
