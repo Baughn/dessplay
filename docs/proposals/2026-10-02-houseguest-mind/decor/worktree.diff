@@ -1,0 +1,238 @@
+diff --git a/dessplay/src/ui/houseguest/art.rs b/dessplay/src/ui/houseguest/art.rs
+index e974f94..d7f2433 100644
+--- a/dessplay/src/ui/houseguest/art.rs
++++ b/dessplay/src/ui/houseguest/art.rs
+@@ -821,6 +821,8 @@ fn parts(prop: Furniture, layer: Layer) -> &'static [&'static str] {
+         (Furniture::Bookshelf, _) => &["bookshelf"],
+         (Furniture::Fridge, _) => &["fridge"],
+         (Furniture::CatBed, _) => &["cat-bed", "cat-bed-front"],
++        (Furniture::Plant, _) => &["plant"],
++        (Furniture::Poster, _) => &["poster"],
+     }
+ }
+ 
+@@ -1284,7 +1286,7 @@ mod tests {
+         let mut sheet = image::RgbaImage::from_pixel(
+             scales.iter().map(|&s| span(s)).sum(),
+             row_h * rows.len() as u32,
+-            image::Rgba([13, 17, 23, 255]),
++            image::Rgba([30, 33, 39, 255]),
+         );
+         for (row, (item, state, her)) in rows.iter().enumerate() {
+             let row = row as u32;
+@@ -1390,7 +1392,7 @@ mod tests {
+         let mut sheet = image::RgbaImage::from_pixel(
+             scales.iter().map(|&s| span(s)).sum(),
+             row_h * items.len() as u32,
+-            image::Rgba([13, 17, 23, 255]),
++            image::Rgba([30, 33, 39, 255]),
+         );
+         let sitting = Rig::for_pose(Pose::Sit, Face::Curious);
+         for (row, item) in items.iter().enumerate() {
+@@ -1482,7 +1484,7 @@ mod tests {
+         let mut sheet = image::RgbaImage::from_pixel(
+             col_w * 2,
+             row_h * rows.len() as u32,
+-            image::Rgba([13, 17, 23, 255]),
++            image::Rgba([30, 33, 39, 255]),
+         );
+         for (row, (frame, her)) in rows.iter().enumerate() {
+             for (col, facing) in [(0u32, Facing::Right), (1, Facing::Left)] {
+@@ -1537,7 +1539,7 @@ mod tests {
+         let mut sheet = image::RgbaImage::from_pixel(
+             col_w * 2,
+             row_h * poses.len() as u32,
+-            image::Rgba([13, 17, 23, 255]),
++            image::Rgba([30, 33, 39, 255]),
+         );
+         // Each pose facing right (left column) and left (right column).
+         for (index, (_, rig)) in poses.iter().enumerate() {
+@@ -1613,6 +1615,31 @@ mod tests {
+         out
+     }
+ 
++    /// The new decor at its exact footprint (as the game rasterizes a
++    /// piece that isn't standing on the floor line), over the dark
++    /// terminal, at 1x and HiDPI 2x.
++    #[test]
++    #[ignore = "writes PNGs for review"]
++    fn decor_exact() {
++        let dir = std::env::var("HOUSEGUEST_DECOR").expect("HOUSEGUEST_DECOR");
++        for (prop, name) in [(Furniture::Plant, "plant"), (Furniture::Poster, "poster")] {
++            for s in [1u32, 2] {
++                let (cols, rows) = prop.spec().footprint;
++                let (w, h) = (u32::from(cols) * 9 * s, u32::from(rows) * 19 * s);
++                let pad = 9 * s;
++                let mut sheet = image::RgbaImage::from_pixel(
++                    w + 2 * pad,
++                    h + 2 * pad,
++                    image::Rgba([30, 33, 39, 255]),
++                );
++                let image =
++                    render_prop_layer(prop, Layer::Whole, Facing::Right, LINE, w, h).unwrap();
++                image::imageops::overlay(&mut sheet, &image, i64::from(pad), i64::from(pad));
++                sheet.save(format!("{dir}/{name}-exact-{s}x.png")).unwrap();
++            }
++        }
++    }
++
+     /// Her furniture for review, beside her for scale:
+     /// `HOUSEGUEST_PROPS=/tmp/props.png cargo test props_sheet -- --ignored`.
+     /// Each piece filled (top) and as coloured outlines (below), at 1×,
+@@ -1631,7 +1658,7 @@ mod tests {
+         let mut sheet = image::RgbaImage::from_pixel(
+             scales.iter().map(|&s| span(s)).sum(),
+             row_h * rows,
+-            image::Rgba([13, 17, 23, 255]),
++            image::Rgba([30, 33, 39, 255]),
+         );
+         let her = Rig::for_pose(Pose::Stand, Face::Vacant);
+         for (index, prop) in Furniture::ALL.into_iter().enumerate() {
+@@ -1745,7 +1772,7 @@ mod tests {
+         let mut sheet = image::RgbaImage::from_pixel(
+             half * 2,
+             row_h * uses.len() as u32,
+-            image::Rgba([13, 17, 23, 255]),
++            image::Rgba([30, 33, 39, 255]),
+         );
+         for (row, (prop, back, rig, c, her_facing)) in uses.into_iter().enumerate() {
+             let (cols, rows) = prop.spec().footprint;
+diff --git a/dessplay/src/ui/houseguest/art/props.svg b/dessplay/src/ui/houseguest/art/props.svg
+index 5e9a087..7cea78b 100644
+--- a/dessplay/src/ui/houseguest/art/props.svg
++++ b/dessplay/src/ui/houseguest/art/props.svg
+@@ -290,4 +290,49 @@
+     <path d="M 12 38 L 3 36 M 12 41 L 3 42 M 42 38 L 51 36 M 42 41 L 51 42" fill="none" stroke="currentColor" stroke-width="0.9" stroke-linecap="round"/>
+     <path d="M 58 16 L 60 26 M 64 18 L 62 27 M 52 20 L 57 27" fill="none" stroke="#c9453f" stroke-width="2" stroke-linecap="round"/>
+   </g>
++  <!-- decor:start -->
++  <!-- A leafy pot plant on the floor, in a tapered terracotta pot
++       on a saucer: back leaves darker, front leaves lighter. -->
++  <g id="plant">
++    <path d="M 28 84 C 42.2 72.5 22.2 41.3 8 36 C 1.8 49.8 9.8 86 28 84 Z" fill="#608a58" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
++    <path d="M 25.6 78.2 L 12.4 46.6" fill="none" stroke="#4a7346" stroke-width="1.1" stroke-linecap="round"/>
++    <path d="M 32 84 C 50.3 85.5 58.3 48.1 52 34 C 37.7 39.9 17.7 72.5 32 84 Z" fill="#608a58" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
++    <path d="M 34.4 78 L 47.6 45" fill="none" stroke="#4a7346" stroke-width="1.1" stroke-linecap="round"/>
++    <path d="M 30 82 C 47.5 74.8 41 24.4 30 10 C 19 24.4 12.4 74.8 30 82 Z" fill="#608a58" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
++    <path d="M 30 73.4 L 30 25.8" fill="none" stroke="#4a7346" stroke-width="1.1" stroke-linecap="round"/>
++    <path d="M 28 86 C 42.6 75.8 25.4 38.3 12 30 C 5 44.1 10.2 85 28 86 Z" fill="#7aa66a" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
++    <path d="M 26.1 79.3 L 15.5 42.3" fill="none" stroke="#557f4e" stroke-width="1.1" stroke-linecap="round"/>
++    <path d="M 32 86 C 49.6 87.7 57.8 51.7 52 38 C 38.2 43.5 18.4 74.7 32 86 Z" fill="#7aa66a" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
++    <path d="M 34.4 80.2 L 47.6 48.6" fill="none" stroke="#557f4e" stroke-width="1.1" stroke-linecap="round"/>
++    <path d="M 27 88 C 34.8 75 15.7 65.1 5 68 C 3.1 78.9 14.8 97 27 88 Z" fill="#7aa66a" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
++    <path d="M 24.4 85.6 L 9.8 72.4" fill="none" stroke="#557f4e" stroke-width="1.1" stroke-linecap="round"/>
++    <path d="M 33 88 C 45.7 96.3 57.2 77 55 66 C 44 63.8 24.7 75.3 33 88 Z" fill="#7aa66a" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
++    <path d="M 35.6 85.4 L 50.2 70.8" fill="none" stroke="#557f4e" stroke-width="1.1" stroke-linecap="round"/>
++    <rect x="19" y="120" width="22" height="6" rx="2" fill="#a8552f" stroke="currentColor" stroke-width="1.6"/>
++    <path d="M 17 92 L 43 92 L 38.5 121 L 21.5 121 Z" fill="#c96f45" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
++    <path d="M 17.6 96 L 42.4 96" fill="none" stroke="#a8552f" stroke-width="2.4"/>
++    <rect x="14" y="84" width="32" height="10" rx="2" fill="#d9845a" stroke="currentColor" stroke-width="2"/>
++  </g>
++
++  <!-- A paper poster taped to the wall: a sunset over the sea, a
++       whale's tail, and a title band in no language. Edges sit on
++       whole pixels at a 9 x 19 cell (x in 20/9 steps; y in the same
++       steps from -0.44, where a plain 4 x 2 frame starts). -->
++  <g id="poster">
++    <rect x="12.22" y="9.56" width="55.56" height="71.11" fill="#f3ead8" stroke="currentColor" stroke-width="2"/>
++    <rect x="15.56" y="12.89" width="48.89" height="15.56" fill="#f7b89a"/>
++    <rect x="15.56" y="28.44" width="48.89" height="11.11" fill="#fbd38f"/>
++    <path d="M 39 39.56 A 11 11 0 0 1 61 39.56 Z" fill="#f59a4a" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
++    <rect x="15.56" y="39.56" width="48.89" height="22.22" fill="#3d6a82"/>
++    <path d="M 37.78 45.11 L 46.67 45.11 M 46.67 51.78 L 57.78 51.78 M 17.78 56.22 L 26.67 56.22" fill="none" stroke="#8fc3dc" stroke-width="2.2"/>
++    <g transform="translate(0.5 -4.44)">
++      <path d="M 25 52 L 26 45 C 23 44 20 41 18.5 36.5 C 22 37.5 25 39 27 41 C 29 39 32 37.5 35.5 36.5 C 34 41 31 44 28 45 L 29 52 Z" fill="#23374a" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round"/>
++      <path d="M 20.5 52.5 Q 27 49.5 33.5 52.5" fill="none" stroke="#cfe6ee" stroke-width="1.2" stroke-linecap="round"/>
++    </g>
++    <rect x="15.56" y="64" width="48.89" height="13.33" fill="#d9655b"/>
++    <path d="M 22.22 67.33 L 57.78 67.33 M 28.89 71.78 L 51.11 71.78" fill="none" stroke="#f3ead8" stroke-width="2.2"/>
++    <rect x="6.22" y="7.06" width="12" height="5" fill="#f3e7b0" fill-opacity="0.85" stroke="currentColor" stroke-width="0.9" transform="rotate(-30 12.22 9.56)"/>
++    <rect x="61.78" y="7.06" width="12" height="5" fill="#f3e7b0" fill-opacity="0.85" stroke="currentColor" stroke-width="0.9" transform="rotate(30 67.78 9.56)"/>
++  </g>
++  <!-- decor:end -->
+ </defs>
+diff --git a/dessplay/src/ui/houseguest/ledger.rs b/dessplay/src/ui/houseguest/ledger.rs
+index 0e4f03f..dd2faf0 100644
+--- a/dessplay/src/ui/houseguest/ledger.rs
++++ b/dessplay/src/ui/houseguest/ledger.rs
+@@ -223,7 +223,11 @@ impl RoomKind {
+     /// The room an older build keeps `item` in.
+     fn of(item: Furniture) -> Self {
+         match item {
+-            Furniture::Sofa | Furniture::Tv | Furniture::CatBed => Self::Living,
++            Furniture::Sofa
++            | Furniture::Tv
++            | Furniture::CatBed
++            | Furniture::Plant
++            | Furniture::Poster => Self::Living,
+             Furniture::Bed | Furniture::Desk | Furniture::Lamp | Furniture::Bookshelf => {
+                 Self::Bedroom
+             }
+diff --git a/dessplay/src/ui/houseguest/room.rs b/dessplay/src/ui/houseguest/room.rs
+index 1671015..4cbdc1c 100644
+--- a/dessplay/src/ui/houseguest/room.rs
++++ b/dessplay/src/ui/houseguest/room.rs
+@@ -35,11 +35,15 @@ pub enum Furniture {
+     Fridge,
+     /// A cat bed (sometimes a cat is in it).
+     CatBed,
++    /// A potted plant (just for looks).
++    Plant,
++    /// A poster on the wall (just for looks).
++    Poster,
+ }
+ 
+ impl Furniture {
+     /// Every piece, in catalogue order.
+-    pub const ALL: [Self; 8] = [
++    pub const ALL: [Self; 10] = [
+         Self::Sofa,
+         Self::Tv,
+         Self::Bed,
+@@ -48,6 +52,8 @@ impl Furniture {
+         Self::Bookshelf,
+         Self::Fridge,
+         Self::CatBed,
++        Self::Plant,
++        Self::Poster,
+     ];
+ 
+     /// Its row of the catalogue.
+@@ -61,6 +67,8 @@ impl Furniture {
+             Self::Bookshelf => &BOOKSHELF,
+             Self::Fridge => &FRIDGE,
+             Self::CatBed => &CAT_BED,
++            Self::Plant => &PLANT,
++            Self::Poster => &POSTER,
+         }
+     }
+ }
+@@ -184,6 +192,28 @@ const CAT_BED: Spec = Spec {
+     sit: None,
+     comfort: 1.0,
+ };
++const PLANT: Spec = Spec {
++    name: "potted plant",
++    pitch: "So green and leafy!",
++    footprint: (3, 3),
++    ascii: &["\\|/", "~Y~", "\\_/"],
++    ink: (Color::Rgb(122, 166, 106), Color::Green),
++    uses: &[],
++    offers: &[],
++    sit: None,
++    comfort: 1.0,
++};
++const POSTER: Spec = Spec {
++    name: "poster",
++    pitch: "It'd look nice up!",
++    footprint: (4, 2),
++    ascii: &[".--.", "|~~|"],
++    ink: (Color::Rgb(247, 184, 154), Color::LightRed),
++    uses: &[],
++    offers: &[],
++    sit: None,
++    comfort: 1.0,
++};
+ 
+ /// The glyph at `(dx, dy)` of `item`'s ASCII drawing facing `facing`, if
+ /// that cell is drawn (spaces are not).

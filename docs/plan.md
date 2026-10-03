@@ -2105,7 +2105,7 @@ welcome; the only goal is "watching her is kind of fun".
 
 ## Phase 38: Houseguest mind and home
 
-**Status: phases 0–3 done (2026-10-02); phase 4 next, before anything since phase 2 is pushed (the user: rooms may mix until then).** Design: [the mind
+**Status: phases 0–3 done (2026-10-02); phase 4 in progress (steps 1–5 of 9 committed 2026-10-03; the working design, with its amendments and the commit plan, is [phase4-design.md](proposals/2026-10-02-houseguest-mind/phase4-design.md); approved decor art in its `decor/` dir), before anything since phase 2 is pushed (the user: rooms may mix until then).** Design: [the mind
 and home proposal](proposals/2026-10-02-houseguest-mind.md) (direction
 agreed with the user; their answers are its *Decisions*). Its migration
 plan numbers its own phases 0–8; this section records them.
