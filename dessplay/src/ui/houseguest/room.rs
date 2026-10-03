@@ -320,6 +320,21 @@ pub(super) enum Use {
 }
 
 impl Use {
+    /// Every use.
+    #[cfg(test)]
+    pub const ALL: [Self; 10] = [
+        Self::Lounge,
+        Self::Nap,
+        Self::Sleep,
+        Self::Homework,
+        Self::Watch,
+        Self::Unpack,
+        Self::Read,
+        Self::Snack,
+        Self::Pet,
+        Self::Crumple,
+    ];
+
     /// Whether she uses it from in it (sits on it, lies in it), rather
     /// than from beside it.
     pub fn inside(self) -> bool {

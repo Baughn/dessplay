@@ -2221,7 +2221,19 @@ fn a_bare_room_has_her_buy_decor() {
                 let State::Visiting(visit) = &guest.state else {
                     panic!("{at}: visiting");
                 };
-                if let Some((_, Some(item))) = visit.osaka.watching() {
+                if let Some((.., play)) = visit.osaka.playing()
+                    && let Some(item) = play.bought
+                {
+                    // Sold: she watches the channel that sold it.
+                    assert_eq!(play.own, script::ScriptId::Shopping, "{at}");
+                    assert!(
+                        matches!(
+                            visit.osaka.prop(now),
+                            Some(script::Prop::Tv(art::Channel::Shopping(_)))
+                        ),
+                        "{at}: {:?}",
+                        visit.osaka.prop(now)
+                    );
                     break item;
                 }
                 paint(&mut guest, &real, &view, now);
@@ -2911,7 +2923,53 @@ fn watch_scene(
 /// The state `item` is in right now, as drawn.
 fn state_of(visit: &Visit, item: Furniture, cat: bool, now: u64) -> Option<art::PieceState> {
     let piece = visit.shown.iter().find(|s| s.item == item)?;
-    Some(piece_state(piece, &visit.osaka, cat, now))
+    Some(piece_state(piece, visit.osaka.prop(now), cat))
+}
+
+/// What each piece shows for each thing her script can show on her
+/// furniture, cat home or not: the lamp off, the fridge open and the cat
+/// biting each only on their own piece, the cat biting only when he's
+/// home, and in his bed when nothing's going on; everything else plain
+/// (what's on TV is drawn on its screen, not as a state).
+#[test]
+fn every_piece_shows_what_her_script_shows_on_it() {
+    use art::{Channel, PieceState};
+    use script::Prop;
+    let props = [
+        None,
+        Some(Prop::LampOff),
+        Some(Prop::FridgeOpen),
+        Some(Prop::CatBiting),
+        Some(Prop::Tv(Channel::Snow(0))),
+        Some(Prop::Tv(Channel::Shopping(1))),
+    ];
+    for item in Furniture::ALL {
+        let piece = Shown {
+            item,
+            facing: sprite::Facing::Right,
+            boxed: false,
+            strip: None,
+            left: 40,
+            floor: 20,
+            scrap: None,
+        };
+        for prop in props {
+            for cat in [false, true] {
+                let want = match (item, prop) {
+                    (Furniture::Lamp, Some(Prop::LampOff)) => PieceState::LampOff,
+                    (Furniture::Fridge, Some(Prop::FridgeOpen)) => PieceState::FridgeOpen,
+                    (Furniture::CatBed, Some(Prop::CatBiting)) if cat => PieceState::CatBiting,
+                    (Furniture::CatBed, _) if cat => PieceState::Cat,
+                    _ => PieceState::Plain,
+                };
+                assert_eq!(
+                    piece_state(&piece, prop, cat),
+                    want,
+                    "{item:?} {prop:?} cat {cat}"
+                );
+            }
+        }
+    }
 }
 
 /// Her lamp goes dark while she sleeps in her bed, the fridge stands open
@@ -4240,8 +4298,8 @@ fn commits_survive_the_visit_ending() {
         };
         if visit
             .osaka
-            .watching()
-            .is_some_and(|(_, advert)| advert.is_some())
+            .playing()
+            .is_some_and(|(.., play)| play.bought.is_some())
         {
             break;
         }
@@ -5684,10 +5742,14 @@ fn a_grievance_wins_over_the_shopping_channel() {
             assert_eq!(guest.ledger.ordered, None, "graphics {graphics}: bought");
             assert!(visit.chances.advert.is_some(), "the channel is on");
             said |= look_now(guest, now).1 == Some(osaka::Bubble::Say(line));
-            visit.osaka.watching().is_some_and(|(since, advert)| {
-                assert_eq!(advert, None, "graphics {graphics}");
-                now >= since + osaka::GRIEVANCE_MS * 2
-            })
+            visit
+                .osaka
+                .playing()
+                .filter(|(seat, ..)| seat.what == room::Use::Watch)
+                .is_some_and(|(_, since, play)| {
+                    assert_eq!(play.bought, None, "graphics {graphics}");
+                    now >= since + osaka::GRIEVANCE_MS * 2
+                })
         });
         assert!(watched.is_some(), "graphics {graphics}: never watched");
         assert!(said, "graphics {graphics}: never said it");

@@ -29,6 +29,7 @@ mod room;
 mod rules;
 mod scenes;
 mod scrap;
+mod script;
 mod sprite;
 pub mod stage;
 mod terrain;
@@ -67,8 +68,6 @@ const CATALOGUE: [Furniture; 9] = [
 const SHOP_EVERY: u64 = 3;
 /// The visit her TV arrives on (the first is a first meeting).
 const FIRST_TV_VISIT: u64 = 2;
-/// How long each frame of what's on TV lasts.
-const CHANNEL_FRAME_MS: u64 = 400;
 /// What she says when a parcel arrives.
 const PARCEL: &str = "A parcel!";
 
@@ -1023,18 +1022,13 @@ impl Guest {
                 // She's watching: the TV is on. And the lamp, the fridge,
                 // the cat...
                 let cat = self.cat_now || cat_home(&self.ledger);
+                let prop = visit.osaka.prop(now);
                 let looks = Looks {
-                    tv: visit.osaka.watching().map(|(since, advert)| {
-                        let frame = (now.saturating_sub(since) / CHANNEL_FRAME_MS % 2) as u8;
-                        match advert {
-                            Some(_) => art::Channel::Shopping(frame),
-                            None => art::Channel::Snow(frame),
-                        }
-                    }),
+                    tv: prop.and_then(script::Prop::channel),
                     states: visit
                         .shown
                         .iter()
-                        .map(|p| (p.item, piece_state(p, &visit.osaka, cat, now)))
+                        .map(|p| (p.item, piece_state(p, prop, cat)))
                         .collect(),
                 };
                 nudge.paint(buf, now);
@@ -2194,30 +2188,25 @@ fn cat_home(ledger: &Ledger) -> bool {
     owns && ledger.visit_seed(ledger.visits.saturating_sub(1)) >> 17 & 1 == 1
 }
 
-/// What state `piece` is in, given what she's doing at `now`: the lamp is
-/// off while she sleeps, the fridge open as she looks in, the cat in his
-/// bed (`cat`), biting at the end of a petting.
-fn piece_state(piece: &Shown, osaka: &Osaka, cat: bool, now: u64) -> art::PieceState {
+/// What state `piece` is in, given what the script she's playing shows
+/// on her furniture (`prop`; see [`Osaka::prop`]): the lamp off while
+/// she sleeps, the fridge open as she looks in, the cat in his bed
+/// (`cat`), biting at the end of a petting.
+fn piece_state(piece: &Shown, prop: Option<script::Prop>, cat: bool) -> art::PieceState {
     use art::PieceState;
-    let span = osaka.use_span();
-    let doing = |what: room::Use| span.filter(|(seat, ..)| seat.what == what);
-    match piece.item {
-        Furniture::Lamp if doing(room::Use::Sleep).is_some() => PieceState::LampOff,
-        Furniture::Fridge
-            if doing(room::Use::Snack)
-                .is_some_and(|(_, since, _)| now < since + osaka::FRIDGE_OPEN_MS) =>
-        {
-            PieceState::FridgeOpen
-        }
-        Furniture::CatBed if cat => match doing(room::Use::Pet) {
-            Some((_, since, until))
-                if now.saturating_sub(since) >= osaka::bite_at(until.saturating_sub(since)) =>
-            {
-                PieceState::CatBiting
-            }
-            _ => PieceState::Cat,
-        },
-        _ => PieceState::Plain,
+    use script::Prop;
+    let state = match prop.filter(|p| p.item() == piece.item) {
+        Some(Prop::LampOff) => Some(PieceState::LampOff),
+        Some(Prop::FridgeOpen) => Some(PieceState::FridgeOpen),
+        Some(Prop::CatBiting) => Some(PieceState::CatBiting),
+        // What's on TV is on its screen (see `Looks::tv`).
+        Some(Prop::Tv(_)) | None => None,
+    };
+    match (piece.item, state) {
+        // Nobody's home to bite.
+        (Furniture::CatBed, _) if !cat => PieceState::Plain,
+        (Furniture::CatBed, None) => PieceState::Cat,
+        (_, state) => state.unwrap_or(PieceState::Plain),
     }
 }
 
@@ -2326,7 +2315,9 @@ fn draw_props(
         let cat = match looks.state(prop.item) {
             art::PieceState::Cat => Some([' ', '^', '^', ' ']),
             art::PieceState::CatBiting => Some(['!', '^', '^', '!']),
-            _ => None,
+            // Line art only: in ASCII the lamp and the fridge look the
+            // same off or on, shut or open.
+            art::PieceState::Plain | art::PieceState::LampOff | art::PieceState::FridgeOpen => None,
         };
         let screen = prop.screen().zip(looks.tv).map(|(cells, channel)| {
             let glyphs = match channel {

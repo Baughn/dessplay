@@ -10,6 +10,7 @@ use super::mind::{self, Beat, Bind, Ctx, Heading, Here, Lines, Loss, Whims};
 use super::room::{Furniture, MadeId, PieceRef, Seat, Use};
 use super::rules::{Grievance, Placement, Repair, TIE_CELLS, Trials};
 use super::scenes::{Build, Job, JobRef, LayerOp, Lift, Pull, SetDown, Side, Swap};
+use super::script::{self, CHANNEL_FRAME_MS, Play, Prop};
 use super::sprite::{self, Face, Facing, HEIGHT, Pose, SpriteCell};
 use super::terrain::{Link, Platform, Route, Terrain};
 use tuirealm::ratatui::layout::Rect;
@@ -338,8 +339,8 @@ const BRACE_MS: u64 = 700;
 /// Each step of reeling the torn text in to her hands.
 const REEL_MS: u64 = 220;
 const RIP: &str = "Rrrip!";
-const SCRUNCH: &str = "scrunch...";
-const THERE: &str = "There!";
+pub(super) const SCRUNCH: &str = "scrunch...";
+pub(super) const THERE: &str = "There!";
 /// How long she keeps saying `text`.
 fn speech_ms(text: &str) -> u64 {
     1200 + 60 * text.chars().count() as u64
@@ -473,10 +474,10 @@ enum Act {
         ripped: bool,
         step: u16,
     },
-    /// Using a piece of her furniture, at `seat`. Watching the TV,
-    /// `advert` is what the shopping channel is selling her;
-    /// `grievance`, a rule of her home she feels is broken using it, and
-    /// when she starts to say so (see [`GRIEVANCE_MS`]).
+    /// Using a piece of her furniture, at `seat`, playing `play` (its
+    /// own script, or the shopping channel's on a watch, and what that
+    /// sold her); `grievance`, a rule of her home she feels is broken
+    /// using it, and when she starts to say so (see [`GRIEVANCE_MS`]).
     Use {
         seat: Seat,
         since: u64,
@@ -484,7 +485,7 @@ enum Act {
         /// How long a whole use of it is (ms): what she's eased by is the
         /// share of this she did (a trial sit is a moment of one).
         whole: u64,
-        advert: Option<Furniture>,
+        play: Play,
         grievance: Option<(Grievance, u64)>,
     },
     /// Bent to a piece of her furniture, lifting it into her pocket
@@ -822,14 +823,15 @@ const DOOR: [DoorBeat; 13] = [
 /// it's over. `gap` stretches the time between the doors (she's away).
 fn door_beat(elapsed: u64, gap: u64) -> Option<(&'static DoorBeat, u64)> {
     let mut end = 0;
-    DOOR.iter().find_map(|beat| {
+    script::at(&DOOR, elapsed, |beat| {
         end += if beat.door.is_none() {
             beat.ms.max(gap)
         } else {
             beat.ms
         };
-        (elapsed < end).then_some((beat, end))
+        end
     })
+    .map(|(_, beat, end)| (beat, end))
 }
 
 /// How long a door takes to let her through and close behind her: the
@@ -904,12 +906,26 @@ const ERRAND_WALK: i32 = 2 * sprite::WIDTH;
 /// What she says, poking it.
 pub(super) const POKE: &str = "Somebody said something.";
 
-/// The fridge stands open this long at the start of a snack.
-pub(super) const FRIDGE_OPEN_MS: u64 = 1500;
+/// The fridge stands open this long at the start of a snack (the
+/// [`use_look`] oracle's; the snack's script says so itself).
+#[cfg(test)]
+const FRIDGE_OPEN_MS: u64 = 1500;
 
-/// When the cat bites, into a petting that lasts `length` ms.
-pub(super) fn bite_at(length: u64) -> u64 {
+/// When the cat bites, into a petting that lasts `length` ms (the
+/// [`use_look`] oracle's; the petting's script says so itself).
+#[cfg(test)]
+fn bite_at(length: u64) -> u64 {
     length * 7 / 10
+}
+
+/// The shortest use there is: a trial sit, or the shortest use of
+/// any piece.
+#[cfg(test)]
+pub(super) fn shortest_use_ms() -> u64 {
+    Use::ALL
+        .iter()
+        .map(|&u| use_duration(u).0)
+        .fold(TRIAL_USE_MS.0, u64::min)
 }
 
 /// How long she keeps at `what` (ms range).
@@ -944,9 +960,12 @@ fn grievance_from(since: u64, quiet: u64) -> u64 {
     since + frames * USE_FRAME_MS
 }
 
-/// How she looks `elapsed` ms into `what`, which lasts `length` ms
+/// How she looked `elapsed` ms into `what`, which lasts `length` ms
 /// (with `advert` on the TV; `sofa` when she's on one; `grievance`,
-/// what she says about her home and how far in she starts).
+/// what she says about her home and how far in she starts), before
+/// each use played a script: the oracle the scripts are checked
+/// against.
+#[cfg(test)]
 fn use_look(
     what: Use,
     advert: Option<Furniture>,
@@ -1639,11 +1658,11 @@ impl Osaka {
 
     fn fire(&mut self, at: u64, terrain: &Terrain, chances: &Chances, rng: &mut Rng) {
         match self.act.clone() {
-            Act::Idle { what, since, until } => {
+            Act::Idle { until, .. } => {
                 if at >= until {
                     self.decide(at, terrain, chances, rng);
                 } else {
-                    self.act_due = next_frame(what, since, at).min(until);
+                    self.act_due = self.first_due(at);
                 }
             }
             Act::Clamber { column, to_y, to_x } => {
@@ -1684,7 +1703,7 @@ impl Osaka {
                         at,
                     );
                 } else {
-                    self.act_due = at + WALK_MS;
+                    self.act_due = self.first_due(at);
                 }
             }
             Act::Away {
@@ -1703,11 +1722,11 @@ impl Osaka {
                 );
             }
             Act::Door { since, to, gap } => match door_beat(at.saturating_sub(since), gap) {
-                Some((beat, end)) => {
+                Some((beat, _)) => {
                     if beat.there && (self.x, self.y) != to {
                         (self.x, self.y) = to;
                     }
-                    self.act_due = since + end;
+                    self.act_due = self.first_due(at);
                 }
                 None => {
                     (self.x, self.y) = to;
@@ -1720,7 +1739,7 @@ impl Osaka {
                 }
             },
             Act::Home { .. } => self.decide(at, terrain, chances, rng),
-            Act::Poke { since, until } => {
+            Act::Poke { until, .. } => {
                 if at >= until {
                     tracing::debug!("houseguest: errand done");
                     self.errand = None;
@@ -1733,14 +1752,11 @@ impl Osaka {
                     }
                     self.decide(at, terrain, chances, rng);
                 } else {
-                    self.act_due = (since
-                        + (at.saturating_sub(since) / POKE_FRAME_MS + 1) * POKE_FRAME_MS)
-                        .min(until);
+                    self.act_due = self.first_due(at);
                 }
             }
             Act::Use {
                 seat,
-                since,
                 until,
                 grievance,
                 ..
@@ -1779,9 +1795,7 @@ impl Osaka {
                     }
                     self.decide(at, terrain, chances, rng);
                 } else {
-                    let frame =
-                        since + (at.saturating_sub(since) / USE_FRAME_MS + 1) * USE_FRAME_MS;
-                    self.act_due = frame.min(until);
+                    self.act_due = self.first_due(at);
                 }
             }
             Act::Lift { lift, until, .. } => {
@@ -1982,6 +1996,8 @@ impl Osaka {
                 until,
             } => {
                 if at <= surprised_until && until > at {
+                    // Not `first_due` (the startle's end): over, she
+                    // looks on until `until`.
                     self.act_due = until;
                 } else {
                     self.decide(at, terrain, chances, rng);
@@ -2000,7 +2016,7 @@ impl Osaka {
                     self.x = next;
                 }
                 if self.x != to {
-                    self.act_due = at + WALK_MS;
+                    self.act_due = self.first_due(at);
                     return;
                 }
                 if self.errand == Some((self.x, self.y)) {
@@ -2177,7 +2193,7 @@ impl Osaka {
                 if self.y == to_y {
                     self.set(Act::Stand { until: at + 800 }, at);
                 } else {
-                    self.act_due = at + CLIMB_MS;
+                    self.act_due = self.first_due(at);
                 }
             }
             Act::Fall {
@@ -2199,7 +2215,7 @@ impl Osaka {
                         self.set(Act::Stand { until: at + 600 }, at);
                     }
                 } else {
-                    self.act_due = fall_time(since, (self.y - from_y + 1) as u64);
+                    self.act_due = self.first_due(at);
                 }
             }
         }
@@ -2269,10 +2285,10 @@ impl Osaka {
                 let grievance = grievance.map(|g| (g, grievance_from(at, quiet)));
                 // The shopping channel: she's bought it the moment it
                 // comes on (unless she has her home on her mind).
-                let advert = chances
+                let bought = chances
                     .advert
                     .filter(|_| seat.what == Use::Watch && grievance.is_none() && !trying);
-                if let Some(item) = advert {
+                if let Some(item) = bought {
                     tracing::info!(?item, "houseguest: bought off the shopping channel");
                     self.events.push(HomeEvent::Bought(item));
                 }
@@ -2293,7 +2309,7 @@ impl Osaka {
                     since: at,
                     until: at + length,
                     whole,
-                    advert,
+                    play: Play::of(seat.what, bought),
                     grievance,
                 }
             }
@@ -2586,16 +2602,29 @@ impl Osaka {
         }
     }
 
-    /// Watching the TV: since when, and what the shopping channel is
-    /// selling (for what's on screen).
-    pub fn watching(&self) -> Option<(u64, Option<Furniture>)> {
+    /// What the script she's playing shows on her furniture at `now`
+    /// (what's on TV moving every [`CHANNEL_FRAME_MS`] from the start of
+    /// the part it plays in: the prelude, the body or the coda, so a
+    /// splice never shifts the body's frames).
+    pub fn prop(&self, now: u64) -> Option<Prop> {
+        let Act::Use {
+            since, until, play, ..
+        } = self.act
+        else {
+            return None;
+        };
+        let (key, elapsed) = play.key(since, until, now)?;
+        let frame = (elapsed / CHANNEL_FRAME_MS % 2) as u8;
+        key.prop.map(|prop| prop.framed(frame))
+    }
+
+    /// Using a piece: where, since when, and what it plays.
+    #[cfg(test)]
+    pub fn playing(&self) -> Option<(Seat, u64, Play)> {
         match self.act {
             Act::Use {
-                seat,
-                since,
-                advert,
-                ..
-            } if seat.what == Use::Watch => Some((since, advert)),
+                seat, since, play, ..
+            } => Some((seat, since, play)),
             _ => None,
         }
     }
@@ -4117,18 +4146,30 @@ impl Osaka {
                 seat,
                 since,
                 until,
-                advert,
+                play,
                 grievance,
                 ..
-            } => use_look(
-                seat.what,
-                advert,
-                grievance
-                    .and_then(|(g, from)| Some((g.rule()?.grievance, from.saturating_sub(since)))),
-                seat.item == Furniture::Sofa,
-                now.saturating_sub(since),
-                until.saturating_sub(since),
-            ),
+            } => {
+                // Watching from a sofa, she sits on it.
+                let host = if seat.item == Furniture::Sofa {
+                    Pose::Lounge
+                } else {
+                    Pose::Sit
+                };
+                let (pose, face, bubble) = play
+                    .key(since, until, now)
+                    .map_or((host, Face::Vacant, None), |(key, elapsed)| {
+                        key.look(elapsed, host, play.bought)
+                    });
+                // Something isn't right: she cranes round at it, at what
+                // she's doing, and says so.
+                match grievance.and_then(|(g, from)| Some((g.rule()?.grievance, from))) {
+                    Some((line, from)) if (from..from + GRIEVANCE_MS).contains(&now) => {
+                        (pose, Face::Curious, Some(Bubble::Say(line)))
+                    }
+                    _ => (pose, face, bubble),
+                }
+            }
             // Bent to the piece, bobbing.
             Act::Lift { since, .. } | Act::SetDown { since, .. } => {
                 let frame = (now.saturating_sub(since) / LIFT_FRAME_MS % 2) as u8;
@@ -4291,6 +4332,7 @@ fn next_frame(what: Activity, since: u64, now: u64) -> u64 {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
+    use super::script::ScriptId;
     use super::*;
 
     /// Her, standing, with `need` pressing.
@@ -4354,7 +4396,7 @@ mod tests {
                 since: 0,
                 until: 1000,
                 whole: 1000,
-                advert: None,
+                play: Play::plain(what.script()),
                 grievance: None,
             };
             osaka.credit_done(1000);
@@ -4434,8 +4476,7 @@ mod tests {
     /// Every look a use switches between holds a half-open span,
     /// `[start, end)`: it is on at its first ms and still on at its last,
     /// and the next look takes over exactly at its share (Crumple's
-    /// "There!" at ⅘ and Unpack's `Ooh` at ⅗ included). Commit 1's
-    /// script player is checked against this.
+    /// "There!" at ⅘ and Unpack's `Ooh` at ⅗ included), as played.
     #[test]
     fn every_use_look_span_is_half_open() {
         type Look = (Face, Option<Bubble>);
@@ -4502,8 +4543,19 @@ mod tests {
                 if !starts.windows(2).all(|w| w[0] < w[1]) || starts.last() >= Some(&length) {
                     continue;
                 }
-                let look = |elapsed| {
-                    let (_, face, bubble) = use_look(what, advert, None, false, elapsed, length);
+                let mut osaka = Osaka::standing_at(10, 10, 0, &mut Rng(1));
+                let mut look = |elapsed| {
+                    let ((_, face, bubble), _) = played(
+                        &mut osaka,
+                        Played {
+                            what,
+                            sofa: false,
+                            bought: advert,
+                            grievance: None,
+                            length,
+                        },
+                        elapsed,
+                    );
                     (face, bubble)
                 };
                 for (i, &(start, expected)) in spans.iter().enumerate() {
@@ -4514,5 +4566,224 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// When the uses the oracle tests start: not 0, so a look timed from
+    /// the wrong start shows.
+    const SINCE: u64 = 10_000;
+
+    /// A use to play: of `what`, on a sofa or not, with what the shopping
+    /// channel `bought` her, a grievance she starts saying how far in,
+    /// lasting `length` ms.
+    #[derive(Clone, Copy)]
+    struct Played {
+        what: Use,
+        sofa: bool,
+        bought: Option<Furniture>,
+        grievance: Option<u64>,
+        length: u64,
+    }
+
+    /// The grievance the oracle tests have her say.
+    const FELT: Grievance = Grievance {
+        row: 5,
+        piece: Furniture::Tv,
+    };
+
+    /// How she looks, and what's on her furniture, `elapsed` ms into
+    /// `use_` (begun at [`SINCE`]), as `start_job` would set it up.
+    fn played(osaka: &mut Osaka, use_: Played, elapsed: u64) -> (script::Look, Option<Prop>) {
+        let item = if use_.sofa {
+            Furniture::Sofa
+        } else {
+            Furniture::Tv
+        };
+        osaka.act = Act::Use {
+            seat: Seat {
+                what: use_.what,
+                item,
+                piece: PieceRef::Real(item),
+                x: 10,
+                y: 10,
+                facing: Facing::Left,
+            },
+            since: SINCE,
+            until: SINCE + use_.length,
+            whole: use_.length,
+            play: Play::of(use_.what, use_.bought),
+            grievance: use_.grievance.map(|from| (FELT, SINCE + from)),
+        };
+        let now = SINCE + elapsed;
+        (osaka.acting(now), osaka.prop(now))
+    }
+
+    /// How she looked, and what was on her furniture, before uses played
+    /// scripts: [`use_look`], and what `piece_state` and the TV read off
+    /// her use.
+    fn oracle(use_: Played, elapsed: u64) -> (script::Look, Option<Prop>) {
+        let Played {
+            what,
+            sofa,
+            bought,
+            grievance,
+            length,
+        } = use_;
+        let line = FELT.rule().map(|r| r.grievance);
+        let look = use_look(
+            what,
+            bought,
+            grievance.and_then(|from| Some((line?, from))),
+            sofa,
+            elapsed,
+            length,
+        );
+        let frame = (elapsed / CHANNEL_FRAME_MS % 2) as u8;
+        let prop = match what {
+            Use::Watch => Some(Prop::Tv(match bought {
+                Some(_) => super::super::art::Channel::Shopping(frame),
+                None => super::super::art::Channel::Snow(frame),
+            })),
+            Use::Sleep => Some(Prop::LampOff),
+            Use::Snack if elapsed < FRIDGE_OPEN_MS => Some(Prop::FridgeOpen),
+            Use::Pet if elapsed >= bite_at(length) => Some(Prop::CatBiting),
+            _ => None,
+        };
+        (look, prop)
+    }
+
+    /// A prelude shifts the body whole: what's on TV `t` into the body
+    /// (its frame too) is the same with one or without, whatever the
+    /// prelude's length.
+    #[test]
+    fn a_prelude_never_shifts_what_is_on_tv() {
+        let mut osaka = Osaka::standing_at(10, 10, 0, &mut Rng(1));
+        let mut on_tv = |play: Play, length: u64, t: u64| {
+            played(
+                &mut osaka,
+                Played {
+                    what: Use::Watch,
+                    sofa: false,
+                    bought: play.bought,
+                    grievance: None,
+                    length,
+                },
+                0,
+            );
+            let Act::Use { play: p, .. } = &mut osaka.act else {
+                panic!("using");
+            };
+            *p = play;
+            osaka.prop(play.body_start(SINCE) + t)
+        };
+        for bought in [None, Some(Furniture::Lamp)] {
+            let plain = Play::of(Use::Watch, bought);
+            for len in [1, 399, 400, 401, 1234] {
+                let before = script::Spliced {
+                    splice: script::SpliceId::TestSnack,
+                    len,
+                    branch: 0,
+                };
+                let wrapped = Play {
+                    before: Some(before),
+                    ..plain
+                };
+                for t in (0..6000).step_by(97) {
+                    assert_eq!(
+                        on_tv(wrapped, 6000 + len, t),
+                        on_tv(plain, 6000, t),
+                        "bought {bought:?} prelude {len}: {t}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Every use's script plays exactly as its look did before scripts
+    /// (the refactor's proof): pose, face, bubble, the grievance over
+    /// it, and what's on her furniture, on a sofa or not, on the shopping
+    /// channel or not, at every length a trial sit can be, through each
+    /// use's range of lengths, and at lengths where a key ends on an
+    /// animation frame; at every frame, every key's end and the ms
+    /// before it, and (watching) every frame of what's on TV.
+    #[test]
+    fn every_use_plays_as_it_looked() {
+        // Every use has its own script, listed (so the script lints see
+        // it), and each script is some use's (or the shopping channel's).
+        for u in Use::ALL {
+            assert!(ScriptId::ALL.contains(&u.script()), "{u:?}'s isn't listed");
+        }
+        for id in ScriptId::ALL {
+            assert!(
+                id == ScriptId::Shopping || Use::ALL.iter().any(|u| u.script() == id),
+                "{id:?} is no use's"
+            );
+        }
+        let mut osaka = Osaka::standing_at(10, 10, 0, &mut Rng(1));
+        let mut checked = 0_u64;
+        for what in Use::ALL {
+            let (lo, hi) = use_duration(what);
+            // Key ends on the 1400 ms frame grid: Homework's ½ (2800k),
+            // Pet's 7⁄10 (2000k), the channel's ⅖ (3500k) and ⅗
+            // (7000k), Crumple's ⅘ (1750k).
+            let on_grid =
+                (lo..=hi).filter(|l| [2800, 2000, 3500, 7000, 1750].iter().any(|m| l % m == 0));
+            let lengths: Vec<u64> = (TRIAL_USE_MS.0..=TRIAL_USE_MS.1)
+                .chain((lo..=hi).step_by(97))
+                .chain([hi])
+                .chain(on_grid)
+                .collect();
+            let boughts: &[Option<Furniture>] = if what == Use::Watch {
+                &[None, Some(Furniture::Lamp)]
+            } else {
+                &[None]
+            };
+            for &length in &lengths {
+                for &bought in boughts {
+                    let own = match bought {
+                        Some(_) => ScriptId::Shopping,
+                        None => what.script(),
+                    };
+                    let ends = own.keys(0).iter().map(|k| match k.span {
+                        script::Span::Ms(ms) => ms.min(length),
+                        script::Span::Upto(n, d) => length * n / d,
+                        script::Span::Rest => length,
+                    });
+                    let grid = (0..=length).step_by(USE_FRAME_MS as usize);
+                    let tv = (0..=length)
+                        .step_by(CHANNEL_FRAME_MS as usize)
+                        .filter(|_| what == Use::Watch)
+                        .flat_map(|t| [t.saturating_sub(1), t]);
+                    // Past the end, before the act is over: the last
+                    // key holds, still moving.
+                    let past = [length + 1, length + USE_FRAME_MS, length + 2 * USE_FRAME_MS];
+                    let times: Vec<u64> = grid
+                        .chain(ends.flat_map(|e| [e.saturating_sub(1), e]))
+                        .chain(tv)
+                        .chain(past)
+                        .collect();
+                    for sofa in [false, true] {
+                        for grievance in [None, Some(USE_FRAME_MS), Some(3 * USE_FRAME_MS)] {
+                            let use_ = Played {
+                                what,
+                                sofa,
+                                bought,
+                                grievance,
+                                length,
+                            };
+                            for &elapsed in &times {
+                                assert_eq!(
+                                    played(&mut osaka, use_, elapsed),
+                                    oracle(use_, elapsed),
+                                    "{what:?} bought {bought:?} sofa {sofa} grievance \
+                                     {grievance:?}: {elapsed}/{length}"
+                                );
+                                checked += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(checked > 100_000, "{checked}");
     }
 }
