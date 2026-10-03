@@ -997,7 +997,7 @@ fn use_look(
         Use::Pet => (Pose::Pet(1), Face::Surprised, Some(Bubble::Say("Ow!"))),
         // Scrunching the torn text into shape, pleased with it at the end.
         Use::Crumple => {
-            let bubble = if elapsed > length * 4 / 5 {
+            let bubble = if elapsed >= length * 4 / 5 {
                 Some(Bubble::Say(THERE))
             } else {
                 Some(Bubble::Say(SCRUNCH))
@@ -1006,7 +1006,7 @@ fn use_look(
         }
         // Bent over the box, rummaging.
         Use::Unpack => {
-            let bubble = (elapsed > length * 3 / 5).then_some(Bubble::Ooh);
+            let bubble = (elapsed >= length * 3 / 5).then_some(Bubble::Ooh);
             (Pose::ToeTouch(frame), Face::Happy, bubble)
         }
     }
@@ -4429,5 +4429,90 @@ mod tests {
         assert!(whole > 0.1, "{whole}");
         // A trial sit is at most 5 s; a lounge at least 15.
         assert!(trial > 0.0 && trial <= whole / 3.0, "{trial} of {whole}");
+    }
+
+    /// Every look a use switches between holds a half-open span,
+    /// `[start, end)`: it is on at its first ms and still on at its last,
+    /// and the next look takes over exactly at its share (Crumple's
+    /// "There!" at ⅘ and Unpack's `Ooh` at ⅗ included). Commit 1's
+    /// script player is checked against this.
+    #[test]
+    fn every_use_look_span_is_half_open() {
+        type Look = (Face, Option<Bubble>);
+        /// A use, its advert, and each span's start with its look.
+        type Case = (Use, Option<Furniture>, Vec<(u64, Look)>);
+        let pitch = Furniture::Lamp.spec().pitch;
+        for length in [7, 5000, 5250, 12_345] {
+            let cases: [Case; 6] = [
+                (
+                    Use::Homework,
+                    None,
+                    vec![
+                        (0, (Face::Vacant, None)),
+                        (length / 2, (Face::Blink, Some(Bubble::Dots))),
+                        (length * 3 / 4, (Face::Blink, Some(Bubble::Zzz))),
+                    ],
+                ),
+                (
+                    Use::Watch,
+                    Some(Furniture::Lamp),
+                    vec![
+                        (0, (Face::Curious, Some(Bubble::Ooh))),
+                        (length * 2 / 5, (Face::Happy, Some(Bubble::Say(pitch)))),
+                        (length * 3 / 5, (Face::Curious, None)),
+                    ],
+                ),
+                (
+                    Use::Snack,
+                    None,
+                    vec![
+                        (0, (Face::Curious, None)),
+                        (FRIDGE_OPEN_MS, (Face::Happy, None)),
+                    ],
+                ),
+                (
+                    Use::Pet,
+                    None,
+                    vec![
+                        (0, (Face::Happy, Some(Bubble::Hum))),
+                        (bite_at(length), (Face::Surprised, Some(Bubble::Say("Ow!")))),
+                    ],
+                ),
+                (
+                    Use::Crumple,
+                    None,
+                    vec![
+                        (0, (Face::Happy, Some(Bubble::Say(SCRUNCH)))),
+                        (length * 4 / 5, (Face::Happy, Some(Bubble::Say(THERE)))),
+                    ],
+                ),
+                (
+                    Use::Unpack,
+                    None,
+                    vec![
+                        (0, (Face::Happy, None)),
+                        (length * 3 / 5, (Face::Happy, Some(Bubble::Ooh))),
+                    ],
+                ),
+            ];
+            for (what, advert, spans) in cases {
+                let starts: Vec<u64> = spans.iter().map(|&(start, _)| start).collect();
+                // A use too short for every span to have a ms of its own
+                // (a snack shorter than the fridge) has nothing to check.
+                if !starts.windows(2).all(|w| w[0] < w[1]) || starts.last() >= Some(&length) {
+                    continue;
+                }
+                let look = |elapsed| {
+                    let (_, face, bubble) = use_look(what, advert, None, false, elapsed, length);
+                    (face, bubble)
+                };
+                for (i, &(start, expected)) in spans.iter().enumerate() {
+                    let end = spans.get(i + 1).map_or(length, |&(next, _)| next);
+                    for elapsed in [start, end - 1] {
+                        assert_eq!(look(elapsed), expected, "{what:?} {elapsed}/{length}");
+                    }
+                }
+            }
+        }
     }
 }
