@@ -1277,9 +1277,11 @@ impl Guest {
                 State::Visiting(visit) => {
                     tracing::trace!("houseguest looks at chat");
                     let chat = view.chat;
-                    visit
-                        .osaka
-                        .look(now, i32::from(chat.x) + i32::from(chat.width) / 2);
+                    visit.osaka.look(
+                        now,
+                        i32::from(chat.x) + i32::from(chat.width) / 2,
+                        &visit.terrain,
+                    );
                 }
                 State::Absent | State::Arriving => {
                     self.quiet_since = now;

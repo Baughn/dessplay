@@ -1391,6 +1391,10 @@ this section states what is built.
   (why: [decisions](decisions.md#line-art-osaka-passes-text-and-watches-chat-briefly-2026-09-30)).
   On a pole or in the air (climbing, clambering over a divider,
   falling), she finishes getting onto a floor first and looks then.
+  Where her image hides text (see Line art), she doesn't stop: the
+  chat still interrupts what she was at, but she goes on to somewhere
+  calm first and watches from there
+  (why: [decisions](decisions.md#a-chat-line-over-text-doesnt-stop-her-there-2026-10-03)).
 - The **newest chat or IRC message** is never touched: its painted text
   is part of the protected set.
 - **Moving text.** She keeps a text layer of glyphs she has moved and
@@ -1860,7 +1864,8 @@ this section states what is built.
   chat's scrollback accordion) and **derezzes** the text it covers into
   alien glyphs: a block pattern in the text's colour, the same for the
   same character. She may **pass** in front of single-width text —
-  walking, climbing, falling, a door, a startled look — but only
+  walking, climbing, falling, a door, a startled look (at text coming
+  up under her; a chat line there doesn't stop her) — but only
   **stays** where the image she's drawn in is blank or lines — her box,
   or with pieces of her furniture it overlaps, the whole rectangle
   spanning her and them, and any further piece that rectangle meets

@@ -5731,7 +5731,10 @@ fn prop_of(guest: &Guest, item: Furniture) -> room::Prop {
 
 /// Nothing she carries is drawn: the piece in her pocket is in none of
 /// the lists a frame's furniture is drawn from (nor the goodbye's), and
-/// in ASCII none of its glyphs is where it stood (but where she is).
+/// in ASCII none of its glyphs is where it stood (but where she is, or
+/// where a pane's rain still shows an earlier frame: a pane focused the
+/// moment she lifts it rains out the frame it stood in, as it was on
+/// screen).
 fn carried_unseen(guest: &Guest, frame: &Buffer, real: &Buffer, view: &IdleView) {
     let State::Visiting(visit) = &guest.state else {
         return;
@@ -5760,6 +5763,9 @@ fn carried_unseen(guest: &Guest, frame: &Buffer, real: &Buffer, view: &IdleView)
             continue;
         };
         let cell = (cx as u16, cy as u16);
+        if visit.fades.iter().any(|f| f.painting(cell.0, cell.1)) {
+            continue;
+        }
         let got = frame.cell(cell).unwrap().symbol();
         assert!(
             got == real.cell(cell).unwrap().symbol() || got == "." || !got.starts_with(glyph),
@@ -7620,6 +7626,77 @@ fn sofa_tried_to(
         }
     }
     panic!("graphics {graphics}: no seed from {seed} reached {stage:?}");
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(dessplay_core::test_support::proptest_cases(8)))]
+
+    /// A lively chat (a line every four or five seconds) while she's out
+    /// on text-dense floors never keeps her over text: where her image
+    /// hides text she doesn't stop to look (only text coming up under her
+    /// startles her there, and briefly), and no text stays hidden behind
+    /// her for long; she goes on somewhere calm and watches it from there.
+    #[test]
+    fn a_lively_chat_never_keeps_her_over_text(
+        seed in any::<u64>(),
+        first in 0u64..6_000,
+        gap in 4_000u64..5_000,
+        resident in any::<bool>(),
+    ) {
+        for graphics in [false, true] {
+            let mut guest = Guest::new(seed);
+            if graphics {
+                guest.set_picker(kitty());
+            }
+            let weather = Weather {
+                resident,
+                sizes: vec![(0, (100, 30))],
+                chats: (first..40_000).step_by(gap as usize).collect(),
+                focuses: Vec::new(),
+            };
+            let real = wordy_rooms(100, 30);
+            guest.cue(Scene::Arrive);
+            let _ = paint(&mut guest, &real, &weather.view((100, 30), None, ChatMark::default()), 0);
+            let mut over: Option<((i32, i32), u64)> = None;
+            let mut watched = false;
+            keep_promises(
+                &mut guest,
+                &weather,
+                graphics,
+                ChatMark::default(),
+                0,
+                45_000,
+                |guest, now, _| {
+                    let visit = visit_of(guest);
+                    let osaka = &visit.osaka;
+                    let here = (osaka.x, osaka.y);
+                    if osaka.looking() && !visit.terrain.restful(here.0, here.1) {
+                        let since = match over {
+                            Some((at, since)) if at == here => since,
+                            _ => now,
+                        };
+                        over = Some((here, since));
+                        prop_assert!(
+                            now - since <= super::osaka::LOOK_MS / 2,
+                            "graphics {}: looking over text at {:?} since {} (now {})",
+                            graphics,
+                            here,
+                            since,
+                            now
+                        );
+                    } else {
+                        over = None;
+                    }
+                    watched |= osaka
+                        .decisions
+                        .iter()
+                        .any(|d| d.method == "watching chat");
+                    Ok(true)
+                },
+            )?;
+            prop_assert!(watched, "graphics {}: she never watched the chat", graphics);
+        }
+    }
 }
 
 proptest! {

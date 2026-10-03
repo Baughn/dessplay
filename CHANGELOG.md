@@ -45,6 +45,10 @@ Add new days at the top. Add new entries at the bottom of existing days.
   (the study becomes a living room), and a desk in her kitchen no
   longer bothers her. A bed beside the TV, or a fridge in her bedroom,
   still does.
+- Fixed: The houseguest no longer stops in front of text to look at
+  each new chat line. In a lively chat that could keep the text behind
+  her hidden for as long as people kept talking. Now she steps
+  somewhere clear first and watches the chat from there.
 
 ## 2026-10-02
 

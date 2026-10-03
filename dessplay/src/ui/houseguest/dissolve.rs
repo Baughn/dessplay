@@ -195,6 +195,16 @@ impl Dissolve {
         self.size
     }
 
+    /// Whether the last paint drew this cell from the frozen frame (its
+    /// glyph or rain over it): not yet settled, and the real UI beneath
+    /// unchanged (a changed cell settles at once).
+    #[cfg(test)]
+    pub fn painting(&self, x: u16, y: u16) -> bool {
+        self.at
+            .get(&(x, y))
+            .is_some_and(|&index| !self.settled.get(index).copied().unwrap_or(true))
+    }
+
     fn phase(&self, cell: &Frozen, t: u64) -> Phase {
         if t >= SETTLE_BY_MS {
             return Phase::Settled;

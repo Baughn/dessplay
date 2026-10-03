@@ -266,7 +266,7 @@ const DAZED_MS: u64 = 1500;
 const PEER_MS: u64 = 1200;
 /// "!" then "?" when a chat message arrives.
 const SURPRISED_MS: u64 = 1200;
-const LOOK_MS: u64 = 4000;
+pub(super) const LOOK_MS: u64 = 4000;
 /// A conversation keeps her watching until it's been quiet this long.
 const WATCH_MS: u64 = 15_000;
 const BLINK_MS: u64 = 150;
@@ -554,6 +554,9 @@ enum OnChat {
 enum Cause {
     /// A chat line arrived ([`Osaka::look`]).
     Chat,
+    /// A chat line arrived where her image hides text: she passes on
+    /// without stopping ([`Osaka::look`]).
+    ChatPassing,
     /// Text came up where she stays ([`Osaka::recheck`]).
     Restless,
     /// The piece she was using went into the closet
@@ -2597,6 +2600,12 @@ impl Osaka {
         }
     }
 
+    /// Whether she's stopped to look (at the chat, or startled).
+    #[cfg(test)]
+    pub fn looking(&self) -> bool {
+        matches!(self.act, Act::Look { .. })
+    }
+
     /// Whether she's using `item` (inside it or beside it).
     #[cfg(test)]
     pub fn using(&self) -> Option<Furniture> {
@@ -3568,8 +3577,13 @@ impl Osaka {
         self.set(Act::Stand { until: at + 1000 }, at);
     }
 
-    /// A chat message arrived: stop and look at it.
-    pub fn look(&mut self, now: u64, chat_x: i32) {
+    /// A chat message arrived: stop and look at it — unless where she is
+    /// her image hides text (`terrain`, as last read), where she only
+    /// passes: there the chat still interrupts what she was at, but she
+    /// doesn't stop; she chooses at once, which takes her on to somewhere
+    /// calm, and watches it from there. (Stopping for each line of a
+    /// lively chat would keep her over text for as long as it went on.)
+    pub fn look(&mut self, now: u64, chat_x: i32, terrain: &Terrain) {
         self.watch_until = now + WATCH_MS;
         // Wherever she is on her way, chat interrupts the trip: where she
         // was heading competes again once she's watched it.
@@ -3594,7 +3608,16 @@ impl Osaka {
             return; // She looks once she has landed (decide watches).
         }
         self.facing = toward(self.x, chat_x);
-        self.interrupt(Cause::Chat, now);
+        if terrain.restful(self.x, self.y) {
+            self.interrupt(Cause::Chat, now);
+        } else {
+            tracing::trace!(
+                x = self.x,
+                y = self.y,
+                "houseguest: chat over text; on somewhere calm"
+            );
+            self.interrupt(Cause::ChatPassing, now);
+        }
     }
 
     /// Whatever she was at, she stops and looks: startled first unless
@@ -3607,6 +3630,7 @@ impl Osaka {
             Cause::Chat => (SURPRISED_MS, LOOK_MS),
             Cause::Restless | Cause::SeatGone | Cause::Shaken => (SURPRISED_MS, LOOK_MS / 2),
             Cause::LostGrip | Cause::Refused => (0, LOOK_MS / 2),
+            Cause::ChatPassing => (0, 0),
         };
         self.rest = None;
         // Where she was heading now competes with what else she'd do.

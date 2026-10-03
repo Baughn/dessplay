@@ -2920,6 +2920,30 @@ only on what's in it, so a piece shifting inside its own room changes
 nothing: a settled piece already there may still move along it (a
 fridge to its wall in a room it spoils).
 
+## A chat line over text doesn't stop her there (2026-10-03)
+
+**Rule:** A chat line arriving while her image hides text interrupts
+what she was at, but she doesn't stop to look there: she goes on to
+somewhere calm first and watches the chat from there. Elsewhere she
+stops and looks as before. See [design.md](design.md#houseguest).
+
+**Why:** The 4 s look at each chat line counted as "passing" text,
+like walking, so nothing bounded a chain of them. Two lines about 4.5 s
+apart, while she was walking across the chat log, kept the same text
+derezzed behind her for over 10 s: a look, two steps, a second look.
+A lively chat could keep her there for as long as it went on, and the
+text she hid was most likely the chat she was looking at. This is the
+same problem the 15 s watch fixed
+([2026-09-30](#line-art-osaka-passes-text-and-watches-chat-briefly-2026-09-30)),
+"frozen by a lively chat", but over text. A shorter look per line
+(just the startle) still isn't bounded. A walk step lands only after
+its full stride, so lines closer together than that would keep
+restarting her. So over text the chat makes her choose at once. That
+takes her off the text first, the same as any choice made over text,
+and she watches from the calm spot. The trip she was on still ends, as
+the chat rule says. She still stops briefly over text when text comes
+up under her, because that is what sends her on.
+
 ## Houseguest chooses by needs among the top few (2026-09-28)
 
 **Rule:** Her next act is a weighted-random pick among the four
