@@ -115,7 +115,7 @@ pub(super) struct Spec {
 
 const SOFA: Spec = Spec {
     name: "sofa",
-    pitch: "A sofa! I'll take it!",
+    pitch: line!("A sofa! I'll take it!"),
     footprint: (9, 3),
     ascii: &[" .-----. ", "(|_____|)", " '     ' "],
     ink: (Color::Rgb(111, 161, 156), Color::Cyan),
@@ -128,7 +128,7 @@ const SOFA: Spec = Spec {
 };
 const TV: Spec = Spec {
     name: "TV",
-    pitch: "A TV! I'll take it!",
+    pitch: line!("A TV! I'll take it!"),
     footprint: (6, 4),
     ascii: &["  \\/  ", ".----.", "|[  ]|", "|_::_|"],
     ink: (Color::Rgb(203, 191, 168), Color::Gray),
@@ -141,7 +141,7 @@ const TV: Spec = Spec {
 };
 const BED: Spec = Spec {
     name: "bed",
-    pitch: "A bed... yes please!",
+    pitch: line!("A bed... yes please!"),
     footprint: (10, 3),
     ascii: &["|__       ", "|oo~~~~~~|", "|========|"],
     ink: (Color::Rgb(143, 179, 217), Color::LightBlue),
@@ -155,7 +155,7 @@ const BED: Spec = Spec {
 };
 const DESK: Spec = Spec {
     name: "desk",
-    pitch: "A desk. For homework.",
+    pitch: line!("A desk. For homework."),
     footprint: (7, 3),
     ascii: &[" = u _/", "_______", "|   |=|"],
     ink: (Color::Rgb(192, 150, 100), Color::Yellow),
@@ -169,7 +169,7 @@ const DESK: Spec = Spec {
 };
 const LAMP: Spec = Spec {
     name: "lamp",
-    pitch: "Ooh, a lamp!",
+    pitch: line!("Ooh, a lamp!"),
     footprint: (3, 4),
     ascii: &[" _ ", "/_\\", " | ", "_|_"],
     ink: (Color::Rgb(232, 195, 74), Color::LightYellow),
@@ -182,7 +182,7 @@ const LAMP: Spec = Spec {
 };
 const BOOKSHELF: Spec = Spec {
     name: "bookshelf",
-    pitch: "Books! I'll take it!",
+    pitch: line!("Books! I'll take it!"),
     footprint: (5, 4),
     ascii: &["_____", "|IlI|", "|lII|", "|___|"],
     ink: (Color::Rgb(160, 120, 79), Color::Yellow),
@@ -195,7 +195,7 @@ const BOOKSHELF: Spec = Spec {
 };
 const FRIDGE: Spec = Spec {
     name: "fridge",
-    pitch: "A fridge... for snacks!",
+    pitch: line!("A fridge... for snacks!"),
     footprint: (4, 4),
     ascii: &["____", "| .|", "|--|", "|_.|"],
     ink: (Color::Rgb(231, 236, 239), Color::White),
@@ -208,7 +208,7 @@ const FRIDGE: Spec = Spec {
 };
 const CAT_BED: Spec = Spec {
     name: "cat bed",
-    pitch: "A cat bed! For a cat!",
+    pitch: line!("A cat bed! For a cat!"),
     footprint: (4, 2),
     ascii: &["    ", "\\__/"],
     ink: (Color::Rgb(201, 69, 63), Color::Red),
@@ -221,7 +221,7 @@ const CAT_BED: Spec = Spec {
 };
 const PLANT: Spec = Spec {
     name: "potted plant",
-    pitch: "So green and leafy!",
+    pitch: line!("So green and leafy!"),
     footprint: (3, 3),
     ascii: &["\\|/", "~Y~", "\\_/"],
     ink: (Color::Rgb(122, 166, 106), Color::Green),
@@ -234,7 +234,7 @@ const PLANT: Spec = Spec {
 };
 const POSTER: Spec = Spec {
     name: "poster",
-    pitch: "It'd look nice up!",
+    pitch: line!("It'd look nice up!"),
     footprint: (4, 2),
     ascii: &[".--.", "|~~|"],
     ink: (Color::Rgb(247, 184, 154), Color::LightRed),

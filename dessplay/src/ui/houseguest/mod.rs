@@ -14,6 +14,51 @@
 //! All timing is in the shell's monotonic millis and all randomness
 //! comes from a seeded generator, so tests reproduce exactly.
 
+/// The most characters a line she says may have: what a bubble holds.
+const BUBBLE_CHARS: usize = 24;
+
+/// How many characters `text` has (its UTF-8 lead bytes), at compile
+/// time.
+const fn chars(text: &str) -> usize {
+    let bytes = text.as_bytes();
+    let (mut i, mut n) = (0, 0);
+    while i < bytes.len() {
+        if bytes[i] & 0xC0 != 0x80 {
+            n += 1;
+        }
+        i += 1;
+    }
+    n
+}
+
+/// Whether `text` fits a bubble ([`BUBBLE_CHARS`]).
+const fn fits_a_bubble(text: &str) -> bool {
+    chars(text) <= BUBBLE_CHARS
+}
+
+/// A fixed line she says: a compile error if it doesn't fit a bubble.
+/// Every line she says is written with it, pooled or not
+/// (`mind::all_lines` lists the pooled ones).
+///
+/// It shadows std's `line!()` in the houseguest, so with no argument it
+/// is std's: a bare `line!()` here, or one a macro expands to, still
+/// gives the source line.
+macro_rules! line {
+    () => {
+        ::core::line!()
+    };
+    ($text:expr) => {{
+        // Items, not an inline `const { }`: those are checked only once
+        // the function holding them is built, these by `cargo check` too.
+        const TEXT: &str = $text;
+        const _: () = assert!(
+            $crate::ui::houseguest::fits_a_bubble(TEXT),
+            "a line longer than a bubble"
+        );
+        TEXT
+    }};
+}
+
 mod art;
 mod brain;
 mod cells;
@@ -69,7 +114,7 @@ const SHOP_EVERY: u64 = 3;
 /// The visit her TV arrives on (the first is a first meeting).
 const FIRST_TV_VISIT: u64 = 2;
 /// What she says when a parcel arrives.
-const PARCEL: &str = "A parcel!";
+const PARCEL: &str = line!("A parcel!");
 
 /// What the shopping channel sells her if she watches now: the next
 /// piece of furniture she lacks, or the next piece of decor when her

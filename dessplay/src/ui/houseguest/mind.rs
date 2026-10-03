@@ -11,6 +11,7 @@ use super::osaka::{Activity, CHAT_FACTOR, Chances, Episode, landing, middle, pic
 use super::room::{Furniture, PieceRef, Seat, Use};
 use super::rules::Trials;
 use super::scenes::{Build, Job, Lift, SetDown};
+use super::script::ScriptId;
 use super::terrain::{Link, Route, Terrain};
 
 /// Her mind's stream is seeded from the body's first draw, salted.
@@ -579,22 +580,64 @@ pub(super) enum Loss {
 }
 
 impl Loss {
-    /// What she might say, from which pool, and how often (n in d).
-    pub fn says(self) -> Option<(&'static [&'static str], u64, u64)> {
+    /// What she might say: lines from the beat pool, and how often.
+    pub fn says(self) -> Option<Pool> {
         match self {
-            Self::Piece(Furniture::Bed) => Some((&["...my bed."], 1, 1)),
-            Self::Piece(_) => Some((&["...my sofa."], 1, 1)),
-            Self::Tear => Some((&["...never mind."], 1, 4)),
+            Self::Piece(Furniture::Bed) => Some(MY_BED),
+            Self::Piece(_) => Some(MY_SOFA),
+            Self::Tear => Some(NEVER_MIND),
             Self::Heading => None,
-            Self::LetBe => Some((&["Nah."], 1, 2)),
-            Self::Moved(_) => Some((&["Oh well..."], 1, 2)),
+            Self::LetBe => Some(NAH),
+            Self::Moved(_) => Some(OH_WELL),
         }
+    }
+
+    /// Which kind of loss it is: its place among the kinds
+    /// [`Loss::all`] lists. Wildcard-free, so a new loss doesn't compile
+    /// until it's given a kind here, and `every_loss_is_listed` holds
+    /// [`Loss::all`] to listing every kind (a kind never given a place
+    /// here can't be caught: Rust can't list an enum's variants).
+    #[cfg(test)]
+    fn kind(self) -> usize {
+        match self {
+            Self::Piece(_) => 0,
+            Self::Tear => 1,
+            Self::Heading => 2,
+            Self::LetBe => 3,
+            Self::Moved(_) => 4,
+        }
+    }
+
+    /// How many kinds of loss there are (see [`Loss::kind`]).
+    #[cfg(test)]
+    const KINDS: usize = 5;
+
+    /// Every loss there is, each piece of furniture for those that
+    /// name one.
+    #[cfg(test)]
+    fn all() -> Vec<Loss> {
+        Furniture::ALL
+            .into_iter()
+            .flat_map(|f| [Self::Piece(f), Self::Moved(f)])
+            .chain([Self::Tear, Self::Heading, Self::LetBe])
+            .collect()
     }
 }
 
+/// Her bed, gone before she slept in it.
+const MY_BED: Pool = Pool::beat(&[line!("...my bed.")], 1, 1);
+/// Her sofa (or any other piece), gone before she used it.
+const MY_SOFA: Pool = Pool::beat(&[line!("...my sofa.")], 1, 1);
+/// Text she was tearing off, put back.
+const NEVER_MIND: Pool = Pool::beat(&[line!("...never mind.")], 1, 4);
+/// A piece she made, let be.
+const NAH: Pool = Pool::beat(&[line!("Nah.")], 1, 2);
+/// A piece she was moving, put back.
+const OH_WELL: Pool = Pool::beat(&[line!("Oh well...")], 1, 2);
+
 /// What she sometimes says, going back to a piece she made after an
 /// interruption.
-pub(super) const AH_RIGHT: &[&str] = &["Ah, right!"];
+pub(super) const AH_RIGHT: Pool = Pool::beat(&[line!("Ah, right!")], 1, 3);
 
 /// A beat she owes: a glance toward where `loss` happened.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -605,40 +648,149 @@ pub(super) struct Beat {
 
 /// A line waits this long before she says it again.
 const LINE_COOLDOWN_MS: u64 = 10 * 60_000;
-/// Beat lines a visit, at most.
+/// Beat lines a visit, at most (lines from other pools aren't counted).
 const LINE_BUDGET: usize = 8;
+/// A script waits this long before she plays it again.
+const SCRIPT_COOLDOWN_MS: u64 = 10 * 60_000;
 
-/// The beat lines she has said this visit, and when.
+/// Which pool a line is drawn from. Its id salts the rolls drawing from
+/// it, so two picks in one decision don't share a roll; only beat lines
+/// count toward a visit's [`LINE_BUDGET`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum PoolId {
+    /// What she says over a beat she owes, or going back to something
+    /// she made (id 0: these were the only lines drawn before pools had
+    /// ids, so they keep their rolls).
+    Beat,
+    /// A test's pool, with no budget: not a pool she draws from.
+    #[cfg(test)]
+    Test,
+}
+
+impl PoolId {
+    /// Every pool there is.
+    #[cfg(test)]
+    pub const ALL: [PoolId; 2] = [Self::Beat, Self::Test];
+
+    /// The salt of its rolls.
+    fn id(self) -> u64 {
+        match self {
+            Self::Beat => 0,
+            // Out of the way of every pool she draws from.
+            #[cfg(test)]
+            Self::Test => u64::MAX,
+        }
+    }
+
+    /// Whether its lines count toward a visit's [`LINE_BUDGET`].
+    fn budgeted(self) -> bool {
+        match self {
+            Self::Beat => true,
+            #[cfg(test)]
+            Self::Test => false,
+        }
+    }
+
+    /// Its place in [`PoolId::ALL`], and every pool it draws lines from.
+    /// Wildcard-free, so a new pool doesn't compile until it's listed
+    /// and says what it holds (for [`all_lines`]).
+    #[cfg(test)]
+    fn listed(self) -> (usize, Vec<Pool>) {
+        match self {
+            Self::Beat => (
+                0,
+                Loss::all()
+                    .into_iter()
+                    .filter_map(Loss::says)
+                    .chain([AH_RIGHT])
+                    .collect(),
+            ),
+            Self::Test => (1, Vec::new()),
+        }
+    }
+}
+
+/// Lines she might say, from a pool, `n` times in `d`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Pool {
+    pub id: PoolId,
+    pub lines: &'static [&'static str],
+    pub n: u64,
+    pub d: u64,
+}
+
+impl Pool {
+    /// `lines`, from the beat pool.
+    const fn beat(lines: &'static [&'static str], n: u64, d: u64) -> Self {
+        Self {
+            id: PoolId::Beat,
+            lines,
+            n,
+            d,
+        }
+    }
+}
+
+/// Every pooled line she might say, with its pool (each is checked as
+/// it's written, by `line!`).
+#[cfg(test)]
+pub(super) fn all_lines() -> Vec<(PoolId, &'static str)> {
+    PoolId::ALL
+        .into_iter()
+        .flat_map(|id| id.listed().1)
+        .flat_map(|pool| pool.lines.iter().map(move |&line| (pool.id, line)))
+        .collect()
+}
+
+/// The lines she has said this visit (from which pool, and when), and
+/// the scripts she has played.
 #[derive(Clone, Debug, Default)]
 pub(super) struct Lines {
-    said: Vec<(&'static str, u64)>,
+    said: Vec<(PoolId, &'static str, u64)>,
+    played: Vec<(ScriptId, u64)>,
 }
 
 impl Lines {
-    /// One of `pool`, `n` times in `d`, unless she said it lately or has
-    /// said enough this visit.
-    pub fn pick(
-        &mut self,
-        (pool, n, d): (&'static [&'static str], u64, u64),
-        w: Whims,
-        at: u64,
-    ) -> Option<&'static str> {
-        if self.said.len() >= LINE_BUDGET || !w.chance("line", 0, n, d) {
+    /// One of `pool`'s lines, `n` times in `d`, unless she said it lately
+    /// or (a beat line) has said enough this visit. Said is said, whether
+    /// or not it shows.
+    pub fn pick(&mut self, pool: Pool, w: Whims, at: u64) -> Option<&'static str> {
+        let spent = || self.said.iter().filter(|&&(id, ..)| id.budgeted()).count() >= LINE_BUDGET;
+        if pool.id.budgeted() && spent() || !w.chance("line", pool.id.id(), pool.n, pool.d) {
             return None;
         }
         let fresh: Vec<&'static str> = pool
+            .lines
             .iter()
             .copied()
             .filter(|line| {
                 !self
                     .said
                     .iter()
-                    .any(|&(said, when)| said == *line && at < when + LINE_COOLDOWN_MS)
+                    .any(|&(_, said, when)| said == *line && at < when + LINE_COOLDOWN_MS)
             })
             .collect();
-        let line = *fresh.get(w.below("which-line", fresh.len() as u64) as usize)?;
-        self.said.push((line, at));
+        let which = w.below_at("which-line", pool.id.id(), fresh.len() as u64);
+        let line = *fresh.get(which as usize)?;
+        self.said.push((pool.id, line, at));
         Some(line)
+    }
+
+    /// Whether she may play `script` at `at` (she hasn't in the last ten
+    /// minutes), and if so, she does.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "phase 5a's splices and surfing take it up")
+    )]
+    pub fn try_play(&mut self, script: ScriptId, at: u64) -> bool {
+        let lately = self
+            .played
+            .iter()
+            .any(|&(played, when)| played == script && at < when + SCRIPT_COOLDOWN_MS);
+        if !lately {
+            self.played.push((script, at));
+        }
+        !lately
     }
 }
 
@@ -765,42 +917,236 @@ mod tests {
         }
     }
 
-    /// Every line she says fits a bubble (24 characters).
+    /// Lint: every pooled line fits a bubble (`line!` already makes an
+    /// over-long one a compile error), and every pool has a line to say.
+    /// Every pool lists its own lines, all of them: the beat pool's six.
     #[test]
-    fn beat_lines_fit_a_bubble() {
-        let losses = [
-            Loss::Piece(Furniture::Sofa),
-            Loss::Piece(Furniture::Bed),
-            Loss::Tear,
-            Loss::Heading,
-            Loss::LetBe,
-            Loss::Moved(Furniture::Sofa),
-        ];
-        let pools = losses
-            .iter()
-            .filter_map(|l| l.says())
-            .map(|(pool, ..)| pool);
-        for line in pools.flatten().chain(AH_RIGHT) {
-            assert!(line.chars().count() <= 24, "{line}");
+    fn every_pooled_line_fits_a_bubble() {
+        for (pool, line) in all_lines() {
+            assert!(super::super::fits_a_bubble(line), "{pool:?}: {line:?}");
+            assert!(!line.is_empty(), "{pool:?}");
+        }
+        for (i, id) in PoolId::ALL.into_iter().enumerate() {
+            let (at, pools) = id.listed();
+            assert_eq!(at, i, "{id:?}");
+            for pool in pools {
+                assert_eq!(pool.id, id, "{pool:?}");
+                assert!(!pool.lines.is_empty(), "{pool:?}");
+            }
+        }
+        let distinct = |id: PoolId| {
+            let mut lines: Vec<&str> = all_lines()
+                .into_iter()
+                .filter(|&(pool, _)| pool == id)
+                .map(|(_, line)| line)
+                .collect();
+            lines.sort_unstable();
+            lines.dedup();
+            lines
+        };
+        assert_eq!(
+            distinct(PoolId::Beat),
+            [
+                "...my bed.",
+                "...my sofa.",
+                "...never mind.",
+                "Ah, right!",
+                "Nah.",
+                "Oh well...",
+            ]
+        );
+        assert!(distinct(PoolId::Test).is_empty());
+        // Characters, not bytes.
+        assert!(super::super::fits_a_bubble(&"…".repeat(24)));
+        assert!(!super::super::fits_a_bubble(&"a".repeat(25)));
+    }
+
+    /// [`Loss::all`] lists every kind of loss (see [`Loss::kind`]), each
+    /// piece of furniture for those that name one, and nothing twice.
+    #[test]
+    fn every_loss_is_listed() {
+        let all = Loss::all();
+        for kind in 0..Loss::KINDS {
+            assert!(all.iter().any(|l| l.kind() == kind), "kind {kind}");
+        }
+        assert!(all.iter().all(|l| l.kind() < Loss::KINDS));
+        for f in Furniture::ALL {
+            assert!(all.contains(&Loss::Piece(f)), "{f:?}");
+            assert!(all.contains(&Loss::Moved(f)), "{f:?}");
+        }
+        for (i, loss) in all.iter().enumerate() {
+            assert!(!all[..i].contains(loss), "{loss:?} twice");
         }
     }
 
-    /// A line isn't said twice within ten minutes, and a visit has a
-    /// budget of them.
+    /// A pool of the lines `lines`, `id`, always said.
+    fn pool(id: PoolId, lines: &'static [&'static str]) -> Pool {
+        Pool {
+            id,
+            lines,
+            n: 1,
+            d: 1,
+        }
+    }
+
+    /// The beat pool keeps the salt its lines were drawn with before
+    /// pools had ids (0), so the existing beats keep their rolls; every
+    /// pool has a salt of its own, so two picks in one decision don't
+    /// share a roll.
     #[test]
-    fn lines_cool_down_and_run_out() {
+    fn every_pool_has_its_own_salt() {
+        assert_eq!(PoolId::Beat.id(), 0);
+        for (i, a) in PoolId::ALL.into_iter().enumerate() {
+            for b in &PoolId::ALL[..i] {
+                assert_ne!(a.id(), b.id(), "{a:?} and {b:?}");
+            }
+        }
+    }
+
+    /// Going back to a piece she made, she says "Ah, right!" one time in
+    /// three, as the beat pool rolls (the roll it always had).
+    #[test]
+    fn ah_right_is_said_one_time_in_three() {
+        assert_eq!(AH_RIGHT.id, PoolId::Beat);
+        let mut said = 0;
+        for seed in 0..300_u64 {
+            let w = Whims(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+            let line = Lines::default().pick(AH_RIGHT, w, 0);
+            let rolled = w.below_at("line", 0, 3) < 1;
+            assert_eq!(line, rolled.then_some("Ah, right!"), "{seed}");
+            said += usize::from(rolled);
+        }
+        assert!((60..140).contains(&said), "{said}");
+    }
+
+    /// Each pool's rolls (whether she says anything, and which line) are
+    /// salted by its id: a pick is the line its own salt chooses, and two
+    /// pools in one decision don't share a roll.
+    #[test]
+    fn a_pool_rolls_with_its_own_salt() {
+        const LINES: &[&str] = &["a", "b", "c", "d", "e", "f", "g"];
+        let mut differ = (0, 0);
+        for id in [PoolId::Beat, PoolId::Test] {
+            for seed in 0..200_u64 {
+                let w = Whims(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+                // Which line: the one its salt chooses.
+                let mut lines = Lines::default();
+                let which = w.below_at("which-line", id.id(), LINES.len() as u64);
+                assert_eq!(
+                    lines.pick(pool(id, LINES), w, 0),
+                    Some(LINES[which as usize]),
+                    "{id:?} {seed}"
+                );
+                // Whether she says one at all: as its salt rolls.
+                let mut lines = Lines::default();
+                let sometimes = Pool {
+                    n: 1,
+                    d: 3,
+                    ..pool(id, LINES)
+                };
+                assert_eq!(
+                    lines.pick(sometimes, w, 0).is_some(),
+                    w.chance("line", id.id(), 1, 3),
+                    "{id:?} {seed}"
+                );
+            }
+        }
+        for seed in 0..200 {
+            let w = Whims(seed);
+            let pick = |id| Lines::default().pick(pool(id, LINES), w, 0);
+            differ.0 += usize::from(pick(PoolId::Beat) != pick(PoolId::Test));
+            differ.1 += 1;
+        }
+        // Seven lines: the same pick by chance about one time in seven.
+        assert!(differ.0 * 2 > differ.1, "{differ:?}");
+    }
+
+    /// A line isn't said twice within ten minutes (from any pool), and a
+    /// visit has a budget of beat lines, which other pools neither spend
+    /// nor are held to.
+    #[test]
+    fn lines_cool_down_and_only_beats_run_out() {
+        let beat = |lines: &'static [&'static str]| pool(PoolId::Beat, lines);
         let mut lines = Lines::default();
-        let pool: (&'static [&'static str], u64, u64) = (&["a"], 1, 1);
-        assert_eq!(lines.pick(pool, Whims(1), 0), Some("a"));
-        assert_eq!(lines.pick(pool, Whims(2), 60_000), None);
-        assert_eq!(lines.pick(pool, Whims(3), LINE_COOLDOWN_MS), Some("a"));
+        assert_eq!(lines.pick(beat(&["a"]), Whims(1), 0), Some("a"));
+        assert_eq!(lines.pick(beat(&["a"]), Whims(2), 60_000), None);
+        // Cooling down whichever pool said it.
+        assert_eq!(
+            lines.pick(pool(PoolId::Test, &["a"]), Whims(2), 60_000),
+            None
+        );
+        assert_eq!(
+            lines.pick(beat(&["a"]), Whims(3), LINE_COOLDOWN_MS),
+            Some("a")
+        );
         let mut said = 2;
         let mut at = 2 * LINE_COOLDOWN_MS;
-        while lines.pick(pool, Whims(at), at).is_some() {
+        while lines.pick(beat(&["a"]), Whims(at), at).is_some() {
             said += 1;
             at += LINE_COOLDOWN_MS;
         }
         assert_eq!(said, LINE_BUDGET);
+        // Beats spent, another pool still has its say.
+        assert_eq!(
+            lines.pick(pool(PoolId::Test, &["b"]), Whims(at), at),
+            Some("b")
+        );
+        // And another pool's lines don't spend the beats'.
+        let mut lines = Lines::default();
+        for i in 0..2 * LINE_BUDGET as u64 {
+            let at = i * LINE_COOLDOWN_MS;
+            assert_eq!(
+                lines.pick(pool(PoolId::Test, &["b"]), Whims(i), at),
+                Some("b")
+            );
+        }
+        let at = 2 * LINE_BUDGET as u64 * LINE_COOLDOWN_MS;
+        assert_eq!(lines.pick(beat(&["a"]), Whims(at), at), Some("a"));
+    }
+
+    /// Which line she says is drawn from the lines she hasn't said
+    /// lately: with four of five cooling, always the fifth; with all
+    /// five, none.
+    #[test]
+    fn a_line_is_drawn_from_those_not_cooling() {
+        const FIVE: &[&str] = &["a", "b", "c", "d", "e"];
+        let at = LINE_COOLDOWN_MS / 2;
+        let mut lines = Lines::default();
+        for (i, &line) in FIVE.iter().enumerate().filter(|&(i, _)| i != 2) {
+            lines.said.push((PoolId::Test, line, i as u64 * 1000));
+        }
+        for seed in 0..200 {
+            assert_eq!(
+                lines
+                    .clone()
+                    .pick(pool(PoolId::Test, FIVE), Whims(seed), at),
+                Some("c"),
+                "{seed}"
+            );
+        }
+        lines.said.push((PoolId::Test, "c", 0));
+        for seed in 0..200 {
+            assert_eq!(
+                lines
+                    .clone()
+                    .pick(pool(PoolId::Test, FIVE), Whims(seed), at),
+                None,
+                "{seed}"
+            );
+        }
+    }
+
+    /// No script twice in ten minutes; each script cools down on its own.
+    #[test]
+    fn scripts_cool_down() {
+        let mut lines = Lines::default();
+        assert!(lines.try_play(ScriptId::Shopping, 0));
+        assert!(!lines.try_play(ScriptId::Shopping, 5 * 60_000));
+        assert!(lines.try_play(ScriptId::Snack, 5 * 60_000));
+        assert!(!lines.try_play(ScriptId::Shopping, SCRIPT_COOLDOWN_MS - 1));
+        assert!(lines.try_play(ScriptId::Shopping, SCRIPT_COOLDOWN_MS));
+        assert!(!lines.try_play(ScriptId::Snack, SCRIPT_COOLDOWN_MS));
+        assert!(lines.try_play(ScriptId::Snack, 15 * 60_000));
     }
 
     /// A line she set off for is the same line when it has scrolled up a

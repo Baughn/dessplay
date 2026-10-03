@@ -554,7 +554,7 @@ const PET: &[&[Key]] = &[&[
         Span::Rest,
         Posed::Still(Pose::Pet(1)),
         Face::Surprised,
-        bubble(Bubble::Say("Ow!")),
+        bubble(Bubble::Say(line!("Ow!"))),
         Prop::CatBiting,
     ),
 ]];
@@ -626,7 +626,8 @@ mod tests {
 
     /// Lint: every script is listed in [`ScriptId::ALL`] (see
     /// [`listed_at`]), every splice that is a row in [`SpliceId::ALL`],
-    /// and every use in [`Use::ALL`], each once.
+    /// and every use in [`Use::ALL`], each once; and every script is
+    /// some use's, or the shopping channel's: none goes unplayed.
     #[test]
     fn every_script_is_listed() {
         for (i, id) in ScriptId::ALL.into_iter().enumerate() {
@@ -657,6 +658,24 @@ mod tests {
         for (i, u) in Use::ALL.into_iter().enumerate() {
             assert_eq!(use_at(u), i, "{u:?}");
             assert!(ScriptId::ALL.contains(&u.script()), "{u:?}");
+        }
+        // And every script is played by something. Wildcard-free: a new
+        // script doesn't compile until it says what plays it.
+        let player = |id: ScriptId| match id {
+            ScriptId::Lounge => Play::of(Use::Lounge, None),
+            ScriptId::Nap => Play::of(Use::Nap, None),
+            ScriptId::Sleep => Play::of(Use::Sleep, None),
+            ScriptId::Homework => Play::of(Use::Homework, None),
+            ScriptId::Watch => Play::of(Use::Watch, None),
+            ScriptId::Shopping => Play::of(Use::Watch, Some(Furniture::Lamp)),
+            ScriptId::Read => Play::of(Use::Read, None),
+            ScriptId::Snack => Play::of(Use::Snack, None),
+            ScriptId::Pet => Play::of(Use::Pet, None),
+            ScriptId::Crumple => Play::of(Use::Crumple, None),
+            ScriptId::Unpack => Play::of(Use::Unpack, None),
+        };
+        for id in ScriptId::ALL {
+            assert_eq!(player(id).own, id, "{id:?} isn't what plays it");
         }
     }
 

@@ -4844,22 +4844,6 @@ fn an_interrupted_sleep_eases_only_what_she_slept() {
     assert!(checked >= 3, "only {checked} seeds chose to sleep");
 }
 
-/// Lint: every fixed line she says fits a bubble (24 characters).
-#[test]
-fn every_fixed_line_fits_a_bubble() {
-    let pitches = Furniture::ALL.map(|f| f.spec().pitch);
-    let grievances = rules::RULES.map(|r| r.grievance);
-    for line in osaka::LINES
-        .iter()
-        .chain(&osaka::MUSINGS)
-        .chain(&pitches)
-        .chain(&[PARCEL])
-        .chain(&grievances)
-    {
-        assert!(line.chars().count() <= 24, "{line:?}");
-    }
-}
-
 /// Lint: every want with a spot of its own can be cued from the stage,
 /// so it can be watched on demand. Standing and walking about are the
 /// fillers, with no spot; travel is each of its ways.

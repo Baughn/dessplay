@@ -66,7 +66,7 @@ pub(super) const RULES: [RuleRow; 6] = [
             screen: Furniture::Tv,
         },
         felt_on: &[Use::Lounge, Use::Nap],
-        grievance: "Can't see the telly...",
+        grievance: line!("Can't see the telly..."),
     },
     RuleRow {
         rule: Rule::Near {
@@ -75,17 +75,17 @@ pub(super) const RULES: [RuleRow; 6] = [
             gap: 3,
         },
         felt_on: &[Use::Sleep, Use::Homework],
-        grievance: "Too dark in here...",
+        grievance: line!("Too dark in here..."),
     },
     RuleRow {
         rule: Rule::AgainstWall(Furniture::Fridge),
         felt_on: &[Use::Snack],
-        grievance: "This wants a wall...",
+        grievance: line!("This wants a wall..."),
     },
     RuleRow {
         rule: Rule::AgainstWall(Furniture::Bookshelf),
         felt_on: &[Use::Read],
-        grievance: "Wobbly... needs a wall.",
+        grievance: line!("Wobbly... needs a wall."),
     },
     RuleRow {
         rule: Rule::Apart {
@@ -93,12 +93,12 @@ pub(super) const RULES: [RuleRow; 6] = [
             b: Furniture::Tv,
         },
         felt_on: &[Use::Sleep],
-        grievance: "Too noisy to sleep...",
+        grievance: line!("Too noisy to sleep..."),
     },
     RuleRow {
         rule: Rule::Belongs,
         felt_on: ANY_USE,
-        grievance: "Hm... not in here.",
+        grievance: line!("Hm... not in here."),
     },
 ];
 

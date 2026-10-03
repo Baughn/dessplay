@@ -298,9 +298,9 @@ const WAIT_MS: u64 = 300;
 /// now (a try spent), before she sets off again.
 const UNREACHED_MS: u64 = 2000;
 /// Lifting a piece.
-const HUP: &str = "Hup!";
+const HUP: &str = line!("Hup!");
 /// Trying a piece where she has set it down.
-const HMM: &str = "hmm...";
+const HMM: &str = line!("hmm...");
 /// Using a piece she's trying where it stands: a moment.
 const TRIAL_USE_MS: (u64, u64) = (3500, 5000);
 /// The lowest her restlessness counts for, weighing whether to keep a
@@ -312,35 +312,31 @@ const RECENT: usize = 3;
 /// A refused put-back is retried this many times.
 const RETRIES: u8 = 5;
 
-/// Her fixed lines (the lints check each fits a bubble).
-#[cfg(test)]
-pub(super) const LINES: [&str; 9] = [OK, RIP, SCRUNCH, THERE, HOME, THROUGH, POKE, HUP, HMM];
-
 /// After a hard landing.
-const OK: &str = "...I'm OK.";
-/// Things she says when spacing out (each ≤ 24 characters).
+const OK: &str = line!("...I'm OK.");
+/// Things she says when spacing out.
 pub(super) const MUSINGS: [&str; 12] = [
-    "I wish I were a bird.",
-    "Why is the sky blue?",
-    "Sata andagi!",
-    "Melon bread...",
-    "Black spots on white?",
-    "Or white on black...",
-    "Escalator? Elevator?",
-    "Feels like I could fly.",
-    "Which hand's left...",
-    "Chiyo-chan's dad...",
-    "Nanja-kora.",
-    "Oh my gah.",
+    line!("I wish I were a bird."),
+    line!("Why is the sky blue?"),
+    line!("Sata andagi!"),
+    line!("Melon bread..."),
+    line!("Black spots on white?"),
+    line!("Or white on black..."),
+    line!("Escalator? Elevator?"),
+    line!("Feels like I could fly."),
+    line!("Which hand's left..."),
+    line!("Chiyo-chan's dad..."),
+    line!("Nanja-kora."),
+    line!("Oh my gah."),
 ];
 
 /// Tearing text off a line for furniture: bracing, then the rip.
 const BRACE_MS: u64 = 700;
 /// Each step of reeling the torn text in to her hands.
 const REEL_MS: u64 = 220;
-const RIP: &str = "Rrrip!";
-pub(super) const SCRUNCH: &str = "scrunch...";
-pub(super) const THERE: &str = "There!";
+const RIP: &str = line!("Rrrip!");
+pub(super) const SCRUNCH: &str = line!("scrunch...");
+pub(super) const THERE: &str = line!("There!");
 /// How long she keeps saying `text`.
 fn speech_ms(text: &str) -> u64 {
     1200 + 60 * text.chars().count() as u64
@@ -893,10 +889,10 @@ const SHIFT_MS: (u64, u64) = (60_000, 180_000);
 /// Back from work, showing what she brought.
 const HOME_MS: u64 = 3000;
 /// What she says, back from work.
-const HOME: &str = "I'm home!";
+const HOME: &str = line!("I'm home!");
 
 /// What she says stepping out of a door.
-const THROUGH: &str = "Where was I?";
+const THROUGH: &str = line!("Where was I?");
 
 /// How long she pokes the scrollback accordion, and each poke.
 const POKE_MS: u64 = 2000;
@@ -904,19 +900,7 @@ const POKE_FRAME_MS: u64 = 250;
 /// Farther than this along her floor, she takes a door to the accordion.
 const ERRAND_WALK: i32 = 2 * sprite::WIDTH;
 /// What she says, poking it.
-pub(super) const POKE: &str = "Somebody said something.";
-
-/// The fridge stands open this long at the start of a snack (the
-/// [`use_look`] oracle's; the snack's script says so itself).
-#[cfg(test)]
-const FRIDGE_OPEN_MS: u64 = 1500;
-
-/// When the cat bites, into a petting that lasts `length` ms (the
-/// [`use_look`] oracle's; the petting's script says so itself).
-#[cfg(test)]
-fn bite_at(length: u64) -> u64 {
-    length * 7 / 10
-}
+pub(super) const POKE: &str = line!("Somebody said something.");
 
 /// The shortest use there is: a trial sit, or the shortest use of
 /// any piece.
@@ -958,77 +942,6 @@ pub(super) const GRIEVANCE_MS: u64 = 2 * USE_FRAME_MS;
 fn grievance_from(since: u64, quiet: u64) -> u64 {
     let frames = quiet.saturating_sub(since).div_ceil(USE_FRAME_MS).max(1);
     since + frames * USE_FRAME_MS
-}
-
-/// How she looked `elapsed` ms into `what`, which lasts `length` ms
-/// (with `advert` on the TV; `sofa` when she's on one; `grievance`,
-/// what she says about her home and how far in she starts), before
-/// each use played a script: the oracle the scripts are checked
-/// against.
-#[cfg(test)]
-fn use_look(
-    what: Use,
-    advert: Option<Furniture>,
-    grievance: Option<(&'static str, u64)>,
-    sofa: bool,
-    elapsed: u64,
-    length: u64,
-) -> (Pose, Face, Option<Bubble>) {
-    let frame = (elapsed / USE_FRAME_MS % 2) as u8;
-    // Watching from a sofa, she sits on it.
-    let watching = if sofa { Pose::Lounge } else { Pose::Sit };
-    // Something isn't right: she cranes round at it, at what she's
-    // doing, and says so.
-    if let Some((line, from)) = grievance
-        && (from..from + GRIEVANCE_MS).contains(&elapsed)
-    {
-        let (pose, ..) = use_look(what, advert, None, sofa, elapsed, length);
-        return (pose, Face::Curious, Some(Bubble::Say(line)));
-    }
-    match what {
-        Use::Lounge => (Pose::Lounge, Face::Vacant, None),
-        Use::Nap => (Pose::Nap(frame), Face::Blink, Some(Bubble::Zzz)),
-        Use::Sleep => (Pose::Sleep(frame), Face::Blink, Some(Bubble::Zzz)),
-        // Writing for the first half, then nodding off onto the paper.
-        Use::Homework => {
-            if elapsed < length / 2 {
-                (Pose::Homework(frame), Face::Vacant, None)
-            } else if elapsed < length * 3 / 4 {
-                (Pose::Homework(2), Face::Blink, Some(Bubble::Dots))
-            } else {
-                (Pose::Homework(3), Face::Blink, Some(Bubble::Zzz))
-            }
-        }
-        Use::Watch => match advert {
-            // Hooked, then sold.
-            Some(_) if elapsed < length * 2 / 5 => (watching, Face::Curious, Some(Bubble::Ooh)),
-            Some(item) if elapsed < length * 3 / 5 => {
-                (watching, Face::Happy, Some(Bubble::Say(item.spec().pitch)))
-            }
-            _ => (watching, Face::Curious, None),
-        },
-        Use::Read => (Pose::Read(frame), Face::Vacant, None),
-        // A look in the fridge, then the melon bread.
-        Use::Snack if elapsed < FRIDGE_OPEN_MS => (Pose::Side, Face::Curious, None),
-        Use::Snack => (Pose::Eat(frame), Face::Happy, None),
-        // Petting the cat, who has had quite enough.
-        Use::Pet if elapsed < bite_at(length) => (Pose::Pet(0), Face::Happy, Some(Bubble::Hum)),
-        Use::Pet => (Pose::Pet(1), Face::Surprised, Some(Bubble::Say("Ow!"))),
-        // Scrunching the torn text into shape, pleased with it at the end.
-        Use::Crumple => {
-            let bubble = if elapsed >= length * 4 / 5 {
-                Some(Bubble::Say(THERE))
-            } else {
-                Some(Bubble::Say(SCRUNCH))
-            };
-            (Pose::ToeTouch(frame), Face::Happy, bubble)
-        }
-        // Bent over the box, rummaging.
-        Use::Unpack => {
-            let bubble = (elapsed >= length * 3 / 5).then_some(Bubble::Ooh);
-            (Pose::ToeTouch(frame), Face::Happy, bubble)
-        }
-    }
 }
 
 /// Something to do on the spot that isn't staring at the viewer.
@@ -3065,8 +2978,7 @@ impl Osaka {
             match seat {
                 Some(seat) => {
                     // Back to it after an interruption.
-                    if again && let Some(line) = self.lines.pick((mind::AH_RIGHT, 1, 3), whims, at)
-                    {
+                    if again && let Some(line) = self.lines.pick(mind::AH_RIGHT, whims, at) {
                         self.say(line, at);
                     }
                     return Some((Want::Use(purpose), Job::Use(seat)));
@@ -4351,7 +4263,6 @@ fn next_frame(what: Activity, since: u64, now: u64) -> u64 {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
-    use super::script::ScriptId;
     use super::*;
 
     /// Her, standing, with `need` pressing.
@@ -4495,68 +4406,169 @@ mod tests {
     /// Every look a use switches between holds a half-open span,
     /// `[start, end)`: it is on at its first ms and still on at its last,
     /// and the next look takes over exactly at its share (Crumple's
-    /// "There!" at ⅘ and Unpack's `Ooh` at ⅗ included), as played.
+    /// "There!" at ⅘ and Unpack's `Ooh` at ⅗ included), as played: her
+    /// pose (bobbing on its frames), face and bubble, and what's on her
+    /// furniture (the TV's frames, the lamp, the fridge, the cat), on a
+    /// sofa or not, for every use.
     #[test]
     fn every_use_look_span_is_half_open() {
-        type Look = (Face, Option<Bubble>);
-        /// A use, its advert, and each span's start with its look.
-        type Case = (Use, Option<Furniture>, Vec<(u64, Look)>);
+        use super::super::art::Channel;
+        /// Her bob's frame, `t` ms in.
+        fn bob(t: u64) -> u8 {
+            (t / USE_FRAME_MS % 2) as u8
+        }
+        /// The TV's frame, `t` ms in.
+        fn tv(t: u64) -> u8 {
+            (t / CHANNEL_FRAME_MS % 2) as u8
+        }
+        /// Her pose and what's on her furniture, `t` ms in.
+        type Body = fn(u64) -> (Pose, Option<Prop>);
+        /// A span's start, her face and bubble, and her body.
+        type Span = (u64, Face, Option<Bubble>, Body);
+        /// A use, on a sofa or not, its advert, and its spans.
+        type Case = (Use, bool, Option<Furniture>, Vec<Span>);
         let pitch = Furniture::Lamp.spec().pitch;
+        let snow: Body = |t| (Pose::Sit, Some(Prop::Tv(Channel::Snow(tv(t)))));
+        let snow_on_sofa: Body = |t| (Pose::Lounge, Some(Prop::Tv(Channel::Snow(tv(t)))));
+        let selling: Body = |t| (Pose::Sit, Some(Prop::Tv(Channel::Shopping(tv(t)))));
+        let selling_on_sofa: Body = |t| (Pose::Lounge, Some(Prop::Tv(Channel::Shopping(tv(t)))));
+        let sold = |body: Body, length: u64| {
+            vec![
+                (0, Face::Curious, Some(Bubble::Ooh), body),
+                (length * 2 / 5, Face::Happy, Some(Bubble::Say(pitch)), body),
+                (length * 3 / 5, Face::Curious, None, body),
+            ]
+        };
         for length in [7, 5000, 5250, 12_345] {
-            let cases: [Case; 6] = [
+            let cases: Vec<Case> = vec![
+                (
+                    Use::Lounge,
+                    false,
+                    None,
+                    vec![(0, Face::Vacant, None, |_| (Pose::Lounge, None))],
+                ),
+                (
+                    Use::Lounge,
+                    true,
+                    None,
+                    vec![(0, Face::Vacant, None, |_| (Pose::Lounge, None))],
+                ),
+                (
+                    Use::Nap,
+                    true,
+                    None,
+                    vec![(0, Face::Blink, Some(Bubble::Zzz), |t| {
+                        (Pose::Nap(bob(t)), None)
+                    })],
+                ),
+                (
+                    Use::Sleep,
+                    false,
+                    None,
+                    vec![(0, Face::Blink, Some(Bubble::Zzz), |t| {
+                        (Pose::Sleep(bob(t)), Some(Prop::LampOff))
+                    })],
+                ),
                 (
                     Use::Homework,
+                    false,
                     None,
                     vec![
-                        (0, (Face::Vacant, None)),
-                        (length / 2, (Face::Blink, Some(Bubble::Dots))),
-                        (length * 3 / 4, (Face::Blink, Some(Bubble::Zzz))),
+                        (0, Face::Vacant, None, |t| (Pose::Homework(bob(t)), None)),
+                        (length / 2, Face::Blink, Some(Bubble::Dots), |_| {
+                            (Pose::Homework(2), None)
+                        }),
+                        (length * 3 / 4, Face::Blink, Some(Bubble::Zzz), |_| {
+                            (Pose::Homework(3), None)
+                        }),
                     ],
                 ),
                 (
                     Use::Watch,
+                    false,
+                    None,
+                    vec![(0, Face::Curious, None, snow)],
+                ),
+                (
+                    Use::Watch,
+                    true,
+                    None,
+                    vec![(0, Face::Curious, None, snow_on_sofa)],
+                ),
+                (
+                    Use::Watch,
+                    false,
                     Some(Furniture::Lamp),
-                    vec![
-                        (0, (Face::Curious, Some(Bubble::Ooh))),
-                        (length * 2 / 5, (Face::Happy, Some(Bubble::Say(pitch)))),
-                        (length * 3 / 5, (Face::Curious, None)),
-                    ],
+                    sold(selling, length),
+                ),
+                (
+                    Use::Watch,
+                    true,
+                    Some(Furniture::Lamp),
+                    sold(selling_on_sofa, length),
+                ),
+                (
+                    Use::Read,
+                    false,
+                    None,
+                    vec![(0, Face::Vacant, None, |t| (Pose::Read(bob(t)), None))],
                 ),
                 (
                     Use::Snack,
+                    false,
                     None,
                     vec![
-                        (0, (Face::Curious, None)),
-                        (FRIDGE_OPEN_MS, (Face::Happy, None)),
+                        (0, Face::Curious, None, |_| {
+                            (Pose::Side, Some(Prop::FridgeOpen))
+                        }),
+                        (1500, Face::Happy, None, |t| (Pose::Eat(bob(t)), None)),
                     ],
                 ),
                 (
                     Use::Pet,
+                    false,
                     None,
                     vec![
-                        (0, (Face::Happy, Some(Bubble::Hum))),
-                        (bite_at(length), (Face::Surprised, Some(Bubble::Say("Ow!")))),
+                        (0, Face::Happy, Some(Bubble::Hum), |_| (Pose::Pet(0), None)),
+                        (
+                            length * 7 / 10,
+                            Face::Surprised,
+                            Some(Bubble::Say("Ow!")),
+                            |_| (Pose::Pet(1), Some(Prop::CatBiting)),
+                        ),
                     ],
                 ),
                 (
                     Use::Crumple,
+                    false,
                     None,
                     vec![
-                        (0, (Face::Happy, Some(Bubble::Say(SCRUNCH)))),
-                        (length * 4 / 5, (Face::Happy, Some(Bubble::Say(THERE)))),
+                        (0, Face::Happy, Some(Bubble::Say(SCRUNCH)), |t| {
+                            (Pose::ToeTouch(bob(t)), None)
+                        }),
+                        (length * 4 / 5, Face::Happy, Some(Bubble::Say(THERE)), |t| {
+                            (Pose::ToeTouch(bob(t)), None)
+                        }),
                     ],
                 ),
                 (
                     Use::Unpack,
+                    false,
                     None,
                     vec![
-                        (0, (Face::Happy, None)),
-                        (length * 3 / 5, (Face::Happy, Some(Bubble::Ooh))),
+                        (0, Face::Happy, None, |t| (Pose::ToeTouch(bob(t)), None)),
+                        (length * 3 / 5, Face::Happy, Some(Bubble::Ooh), |t| {
+                            (Pose::ToeTouch(bob(t)), None)
+                        }),
                     ],
                 ),
             ];
-            for (what, advert, spans) in cases {
-                let starts: Vec<u64> = spans.iter().map(|&(start, _)| start).collect();
+            // Every use, and every use a sofa changes, has its case.
+            for u in Use::ALL {
+                assert!(cases.iter().any(|c| c.0 == u), "{u:?}");
+            }
+            for (what, sofa, advert, spans) in cases {
+                let starts: Vec<u64> = spans.iter().map(|&(start, ..)| start).collect();
                 // A use too short for every span to have a ms of its own
                 // (a snack shorter than the fridge) has nothing to check.
                 if !starts.windows(2).all(|w| w[0] < w[1]) || starts.last() >= Some(&length) {
@@ -4564,30 +4576,34 @@ mod tests {
                 }
                 let mut osaka = Osaka::standing_at(10, 10, 0, &mut Rng(1));
                 let mut look = |elapsed| {
-                    let ((_, face, bubble), _) = played(
+                    played(
                         &mut osaka,
                         Played {
                             what,
-                            sofa: false,
+                            sofa,
                             bought: advert,
                             grievance: None,
                             length,
                         },
                         elapsed,
-                    );
-                    (face, bubble)
+                    )
                 };
-                for (i, &(start, expected)) in spans.iter().enumerate() {
-                    let end = spans.get(i + 1).map_or(length, |&(next, _)| next);
-                    for elapsed in [start, end - 1] {
-                        assert_eq!(look(elapsed), expected, "{what:?} {elapsed}/{length}");
+                for (i, &(start, face, bubble, body)) in spans.iter().enumerate() {
+                    let end = spans.get(i + 1).map_or(length, |&(next, ..)| next);
+                    for elapsed in [start, (start + end) / 2, end - 1] {
+                        let (pose, prop) = body(elapsed);
+                        assert_eq!(
+                            look(elapsed),
+                            ((pose, face, bubble), prop),
+                            "{what:?} sofa {sofa} advert {advert:?}: {elapsed}/{length}"
+                        );
                     }
                 }
             }
         }
     }
 
-    /// When the uses the oracle tests start: not 0, so a look timed from
+    /// When the uses these tests play start: not 0, so a look timed from
     /// the wrong start shows.
     const SINCE: u64 = 10_000;
 
@@ -4603,7 +4619,7 @@ mod tests {
         length: u64,
     }
 
-    /// The grievance the oracle tests have her say.
+    /// The grievance these tests have her say.
     const FELT: Grievance = Grievance {
         row: 5,
         piece: Furniture::Tv,
@@ -4645,40 +4661,6 @@ mod tests {
         };
         let now = SINCE + elapsed;
         (osaka.acting(now), osaka.prop(now))
-    }
-
-    /// How she looked, and what was on her furniture, before uses played
-    /// scripts: [`use_look`], and what `piece_state` and the TV read off
-    /// her use.
-    fn oracle(use_: Played, elapsed: u64) -> (script::Look, Option<Prop>) {
-        let Played {
-            what,
-            sofa,
-            bought,
-            grievance,
-            length,
-        } = use_;
-        let line = FELT.rule().map(|r| r.grievance);
-        let look = use_look(
-            what,
-            bought,
-            grievance.and_then(|from| Some((line?, from))),
-            sofa,
-            elapsed,
-            length,
-        );
-        let frame = (elapsed / CHANNEL_FRAME_MS % 2) as u8;
-        let prop = match what {
-            Use::Watch => Some(Prop::Tv(match bought {
-                Some(_) => super::super::art::Channel::Shopping(frame),
-                None => super::super::art::Channel::Snow(frame),
-            })),
-            Use::Sleep => Some(Prop::LampOff),
-            Use::Snack if elapsed < FRIDGE_OPEN_MS => Some(Prop::FridgeOpen),
-            Use::Pet if elapsed >= bite_at(length) => Some(Prop::CatBiting),
-            _ => None,
-        };
-        (look, prop)
     }
 
     /// A prelude shifts the body whole: what's on TV `t` into the body
@@ -4728,96 +4710,52 @@ mod tests {
         }
     }
 
-    /// Every use's script plays exactly as its look did before scripts
-    /// (the refactor's proof): pose, face, bubble, the grievance over
-    /// it, and what's on her furniture, on a sofa or not, on the shopping
-    /// channel or not, at every length a trial sit can be, through each
-    /// use's range of lengths, and at lengths where a key ends on an
-    /// animation frame; at every frame, every key's end and the ms
-    /// before it, and (watching) every frame of what's on TV.
+    /// What's wrong with her home overlays whatever key is playing, for
+    /// [`GRIEVANCE_MS`] from when she starts saying it: her pose and
+    /// what's on her furniture stay the key's, her face is Curious and
+    /// she says the rule's line; before and after, the key's own look.
     #[test]
-    fn every_use_plays_as_it_looked() {
-        // Every use has its own script, listed (so the script lints see
-        // it), and each script is some use's (or the shopping channel's).
-        for u in Use::ALL {
-            assert!(ScriptId::ALL.contains(&u.script()), "{u:?}'s isn't listed");
-        }
-        for id in ScriptId::ALL {
-            assert!(
-                id == ScriptId::Shopping || Use::ALL.iter().any(|u| u.script() == id),
-                "{id:?} is no use's"
-            );
-        }
+    fn a_grievance_overlays_the_playing_key() {
+        let line = FELT.rule().map(|r| r.grievance).unwrap();
         let mut osaka = Osaka::standing_at(10, 10, 0, &mut Rng(1));
-        let mut checked = 0_u64;
+        let length = 20_000;
         for what in Use::ALL {
-            let (lo, hi) = use_duration(what);
-            // Where a key ends on the 1400 ms frame grid (Homework's ½,
-            // Pet's 7⁄10, the channel's ⅖ and ⅗, Crumple's ⅘...).
-            let scripts: &[ScriptId] = if what == Use::Watch {
-                &[ScriptId::Watch, ScriptId::Shopping]
-            } else {
-                &[what.script()]
-            };
-            let on_grid = (lo..=hi).filter(|&l| {
-                scripts
-                    .iter()
-                    .any(|id| a_key_ends_on_the_grid(id.keys(0), l))
-            });
-            let lengths: Vec<u64> = (TRIAL_USE_MS.0..=TRIAL_USE_MS.1)
-                .chain((lo..=hi).step_by(97))
-                .chain([hi])
-                .chain(on_grid)
-                .collect();
             let boughts: &[Option<Furniture>] = if what == Use::Watch {
                 &[None, Some(Furniture::Lamp)]
             } else {
                 &[None]
             };
-            for &length in &lengths {
-                for &bought in boughts {
-                    let own = match bought {
-                        Some(_) => ScriptId::Shopping,
-                        None => what.script(),
+            for (&bought, sofa) in boughts.iter().flat_map(|b| [(b, false), (b, true)]) {
+                for from in [USE_FRAME_MS, 3 * USE_FRAME_MS, 11 * USE_FRAME_MS] {
+                    let plain = Played {
+                        what,
+                        sofa,
+                        bought,
+                        grievance: None,
+                        length,
                     };
-                    let ends = own.keys(0).iter().map(|k| k.span.end(Some(length)));
-                    let grid = (0..=length).step_by(USE_FRAME_MS as usize);
-                    let tv = (0..=length)
-                        .step_by(CHANNEL_FRAME_MS as usize)
-                        .filter(|_| what == Use::Watch)
-                        .flat_map(|t| [t.saturating_sub(1), t]);
-                    // Past the end, before the act is over: the last
-                    // key holds, still moving.
-                    let past = [length + 1, length + USE_FRAME_MS, length + 2 * USE_FRAME_MS];
-                    let times: Vec<u64> = grid
-                        .chain(ends.flat_map(|e| [e.saturating_sub(1), e]))
-                        .chain(tv)
-                        .chain(past)
-                        .collect();
-                    for sofa in [false, true] {
-                        for grievance in [None, Some(USE_FRAME_MS), Some(3 * USE_FRAME_MS)] {
-                            let use_ = Played {
-                                what,
-                                sofa,
-                                bought,
-                                grievance,
-                                length,
-                            };
-                            for &elapsed in &times {
-                                assert_eq!(
-                                    played(&mut osaka, use_, elapsed),
-                                    oracle(use_, elapsed),
-                                    "{what:?} bought {bought:?} sofa {sofa} grievance \
-                                     {grievance:?}: {elapsed}/{length}"
-                                );
-                                checked += 1;
-                            }
-                        }
+                    let felt = Played {
+                        grievance: Some(from),
+                        ..plain
+                    };
+                    let edges = [from - 1, from, from + GRIEVANCE_MS - 1, from + GRIEVANCE_MS];
+                    for elapsed in (0..length).step_by(97).chain(edges) {
+                        let (look, prop) = played(&mut osaka, plain, elapsed);
+                        let over = (from..from + GRIEVANCE_MS).contains(&elapsed);
+                        let expected = if over {
+                            (look.0, Face::Curious, Some(Bubble::Say(line)))
+                        } else {
+                            look
+                        };
+                        assert_eq!(
+                            played(&mut osaka, felt, elapsed),
+                            (expected, prop),
+                            "{what:?} bought {bought:?} sofa {sofa} from {from}: {elapsed}"
+                        );
                     }
                 }
             }
         }
-        assert!(checked > 100_000, "{checked}");
     }
 
     /// Whether a key of `keys` ends on the frame grid strictly inside a
