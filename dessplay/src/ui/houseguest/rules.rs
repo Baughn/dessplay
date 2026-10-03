@@ -1213,12 +1213,33 @@ mod tests {
                 }
                 prop_assert!(b.pieces.iter().all(|p| b.involved.contains(p)), "{:?}", b);
             }
-            // A resize, and back (where it moved nothing off its strip).
+            // A resize, and back. Where every piece that stands is laid
+            // out at the narrower size too (no strip too small for its
+            // pieces), nothing moves, and back at the wider size the
+            // same rules are broken; otherwise a strip's pieces moved to
+            // another floor that holds them, or nothing moved.
+            let standing = |at: &[Shown]| -> Vec<usize> {
+                let mut v: Vec<usize> = at
+                    .iter()
+                    .filter(|s| s.lane() == room::Lane::Floor)
+                    .map(|s| s.item as usize)
+                    .collect();
+                v.sort_unstable();
+                v
+            };
+            let narrow_laid = before.clone().layout(&small);
+            let holds = standing(&narrow_laid) == standing(&laid);
             let _ = home.project(&frame(narrow, &[]), &small, &|_, _| false);
-            let _ = judged(&mut home, &small);
-            if home == before {
+            if holds {
+                prop_assert_eq!(&home, &before, "a resize that holds them moved a piece");
                 let _ = home.project(&clean, &big, &|_, _| false);
                 prop_assert_eq!(&judged(&mut home, &big), &first);
+            } else if home != before {
+                let moved = home.clone().layout(&small);
+                prop_assert!(
+                    standing(&moved).len() > standing(&narrow_laid).len(),
+                    "moved, and no more laid out: {:?} / {:?}", moved, narrow_laid
+                );
             }
             // Text closets what it covers; the rules don't see it.
             let mut home = before;
@@ -1773,6 +1794,7 @@ mod tests {
         buf: &Buffer,
         shown: &[Shown],
         made: &[Rect],
+        blocked: &[Rect],
         r: &Repair,
     ) -> Result<Shown, TestCaseError> {
         let all = strips(nooks);
@@ -1786,6 +1808,7 @@ mod tests {
                 x >= 0
                     && y >= 0
                     && !made.iter().any(|r| r.contains(cell))
+                    && !blocked.iter().any(|r| r.contains(cell))
                     && !at.iter().any(|s| s.item != who && s.rect().contains(cell))
             }
         };
@@ -1816,6 +1839,7 @@ mod tests {
         prop_assert!(room::fits(buf, &at, &mine), "{:?}", r);
         prop_assert!(room::roomy(buf, &at, &mine), "{:?}", r);
         prop_assert!(!made.iter().any(|m| m.intersects(at.rect())), "{:?}", r);
+        prop_assert!(!blocked.iter().any(|b| b.intersects(at.rect())), "{:?}", r);
         // Every other piece that showed still fits.
         for s in shown
             .iter()
@@ -1836,7 +1860,8 @@ mod tests {
         #![proptest_config(ProptestConfig::with_cases(dessplay_core::test_support::proptest_cases(64)))]
 
         /// Every repair found mends its rule and breaks nothing (see
-        /// [`mends`]); a turn keeps its anchor; a piece she has settled
+        /// [`mends`]: nor covers a blocked cell, protected or moved
+        /// text); a turn keeps its anchor; a piece she has settled
         /// moves only after every move of one she hasn't (but for a turn
         /// where it stands); no search weighs more than [`CANDIDATES`]
         /// moves. And on another frame — wider or narrower, more text,
@@ -1852,6 +1877,7 @@ mod tests {
             later_width in 24u16..120,
             later_text in proptest::collection::vec((1u16..120, 0u16..24), 0..40),
             later_makeshift in proptest::collection::vec((1u16..120, 0u16..24, 2u16..6, 1u16..3), 0..3),
+            blocked in proptest::collection::vec((1u16..120, 0u16..24, 1u16..8, 1u16..4), 0..3),
         ) {
             let nooks = three(width, 8, n);
             let buf = screen(&nooks, width, 24, &text);
@@ -1859,12 +1885,24 @@ mod tests {
             for p in props {
                 prop_assert!(home.add(p));
             }
-            let shown = home.project(&buf, &nooks, &|_, _| false);
+            // Protected cells, and text she has moved: nothing of hers
+            // covers them, now or later.
+            let blocked: Vec<Rect> = blocked
+                .iter()
+                .map(|&(x, y, w, h)| Rect::new(x, y, w, h))
+                .collect();
+            let block = |x: i32, y: i32| {
+                let (Ok(x), Ok(y)) = (u16::try_from(x), u16::try_from(y)) else {
+                    return true;
+                };
+                blocked.iter().any(|r| r.contains((x, y).into()))
+            };
+            let shown = home.project(&buf, &nooks, &block);
             let made = makeshift_on(&buf, &shown, &makeshift);
             let frame = Frame {
                 buf: &buf,
                 nooks: &nooks,
-                blocked: &|_, _| false,
+                blocked: &block,
                 shown: &shown,
                 made: &made,
             };
@@ -1875,12 +1913,12 @@ mod tests {
             later_text.extend(text.iter().copied());
             let later_buf = screen(&later_nooks, later_width, 24, &later_text);
             let mut later_home = home.clone();
-            let later_shown = later_home.project(&later_buf, &later_nooks, &|_, _| false);
+            let later_shown = later_home.project(&later_buf, &later_nooks, &block);
             let later_made = makeshift_on(&later_buf, &later_shown, &later_makeshift);
             let later = Frame {
                 buf: &later_buf,
                 nooks: &later_nooks,
-                blocked: &|_, _| false,
+                blocked: &block,
                 shown: &later_shown,
                 made: &later_made,
             };
@@ -1898,7 +1936,7 @@ mod tests {
                     prop_assert_eq!(r.key, target.key);
                     prop_assert!(target.pieces.contains(&r.piece));
                     prop_assert!(check(&home, &frame, r).is_some(), "{:?}", r);
-                    let at = mends(&home, &nooks, &buf, &shown, &made, r)?;
+                    let at = mends(&home, &nooks, &buf, &shown, &made, &blocked, r)?;
                     prop_assert_eq!(at, r.at);
                     // A turn where it stands keeps its anchor.
                     let old = home.props.iter().find(|p| p.item == r.piece).unwrap();
@@ -1916,7 +1954,7 @@ mod tests {
                         prop_assert!(in_place, "{:?} ahead of a delivery's move", r);
                     }
                     if check(&later_home, &later, r).is_some() {
-                        mends(&later_home, &later_nooks, &later_buf, &later_shown, &later_made, r)?;
+                        mends(&later_home, &later_nooks, &later_buf, &later_shown, &later_made, &blocked, r)?;
                     }
                 }
             }

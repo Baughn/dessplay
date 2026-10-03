@@ -2584,10 +2584,16 @@ later lets her arrange): she minds what she has noticed, not what an
 omniscient check knows.
 
 *Felt only once it has all shown*: feeling is what she said, so a line
-cut short by a chat message, or never seen, doesn't count. She feels
-it again on her next use of the piece. The window waits for anything
-she was already saying, and nothing she says later covers it, so an
-uninterrupted use always shows all of it.
+cut short (a chat message, a startle, the use ending) doesn't count.
+She feels it again on her next use of the piece. The window waits for
+anything she was already saying, and nothing she says later covers it,
+so an uninterrupted use always says all of it. It is marked on the
+window's time passing while she's still on the piece, not on the
+bubble having been drawn: a line that found no room on a crowded
+screen, or that she said hidden behind text, still counts. She said it;
+tying felt to the paint would make what she minds depend on where the
+text happened to be, and the player sees the consequence (her setting
+about it) either way.
 
 *Outside the beat lines' budget*: those lines are rationed (a budget
 and a cooldown) because a beat can recur all visit. A grievance can't:
@@ -2725,8 +2731,12 @@ measured before they shipped (plan.md, Phase 38), the carry costs some
 strip's floor, in a wall lane of its own: packed in anchor order among
 hung pieces only, over any piece that stands. Only the floor lane moves
 a room; a hung piece its wall doesn't hold is in the closet alone, and
-goes along when the floor moves. Boxed, it's a parcel on the floor, and
-a delivery checks both. See [design.md](design.md#houseguest).
+goes along when the floor moves. A crowded wall hangs, in anchor order,
+each piece that fits beside those before it; the rest are in the closet.
+A strip that's gone with only hung pieces moves them to the first other
+wall that holds them all on free cells, else they're in the closet.
+Boxed, it's a parcel on the floor, and a delivery checks both. See
+[design.md](design.md#houseguest).
 
 **Why:** *The user's call*, reversing 2026-09-29's "props only stand on
 floors" (the window was rejected for it): a poster above the sofa is
@@ -2749,6 +2759,19 @@ clear rows, and the home screen's Users pane has 7.
 floor fails; letting a poster that doesn't fit the wall's height move
 the sofa and TV would trade a room for a picture. The hung piece is in
 the closet alone, as text over it would leave it.
+
+*Crowded, each that fits*: the first cut packed the wall lane all or
+nothing, so one poster too many closeted every picture on the wall.
+Keeping, in anchor order, each piece that fits beside those before it
+closets only what the wall can't hold, as A1 says, and stays
+deterministic (review 2026-10-03).
+
+*A gone wall's pictures move only where they show*: the first cut
+moved a strip's hung-only pieces to the first other strip whatever its
+wall could hold (its floor test was vacuous with no standing pieces),
+which only traded one closet for another while a wall that could show
+them went unused. They move to the first wall that holds them all on
+free cells, else stay in the closet (review 2026-10-03).
 
 *Delivery checks both states*: the parcel stands on the floor until
 she unpacks it, then hangs at the same anchor; checking only one would

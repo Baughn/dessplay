@@ -2466,6 +2466,10 @@ fn she_unpacks_delivered_decor() {
                 paint(&mut guest, &real, &view, now);
             }
             assert!(!guest.ledger.home.boxed(), "{at}: never unpacked");
+            assert!(
+                !prop_of(&guest, item).settled,
+                "{at}: unpacking settles nothing"
+            );
             let frame = paint(&mut guest, &real, &view, now);
             let piece = shown_piece(&guest, item).unwrap_or_else(|| panic!("{at}: shown"));
             assert_eq!(piece.left, parcel.left, "{at}: where its parcel stood");
@@ -2476,6 +2480,46 @@ fn she_unpacks_delivered_decor() {
             assert_eq!(piece.lane(), lane, "{at}");
             assert!(drawn(&frame, &real, &piece), "{at}: drawn");
         }
+    }
+}
+
+/// A delivery stands where it came in, which she never chose: it's
+/// unsettled (until she sets it down herself). A gift the stage gives
+/// her is settled where it lands. In both drawing modes.
+#[test]
+fn deliveries_are_unsettled_and_stage_gifts_settled() {
+    for graphics in [false, true] {
+        let (real, view) = home_screen();
+        let (_, users) = view.nooks[0];
+        let floor = i32::from(users.bottom()) - 1;
+        let mut guest = Guest::new(3);
+        if graphics {
+            guest.set_picker(kitty());
+        }
+        visiting_at(&mut guest, &real, &view, (75, floor));
+        guest.ledger.visits = 1;
+        guest.ledger.ordered = Some(Furniture::Tv);
+        guest.ledger.bought_on = 0;
+        paint(&mut guest, &real, &view, 0);
+        let tv = prop_of(&guest, Furniture::Tv);
+        assert!(tv.boxed && !tv.settled, "graphics {graphics}: {tv:?}");
+        guest.give(Furniture::Lamp);
+        paint(&mut guest, &real, &view, 100);
+        let lamp = prop_of(&guest, Furniture::Lamp);
+        assert!(!lamp.boxed && lamp.settled, "graphics {graphics}: {lamp:?}");
+        // Saved and read back, each is as it was.
+        let back = ledger::Ledger::from_json(&guest.ledger.to_json()).unwrap();
+        let settled: Vec<(Furniture, bool)> = back
+            .home
+            .props
+            .iter()
+            .map(|p| (p.item, p.settled))
+            .collect();
+        assert_eq!(
+            settled,
+            [(Furniture::Tv, false), (Furniture::Lamp, true)],
+            "graphics {graphics}"
+        );
     }
 }
 
@@ -2548,6 +2592,85 @@ fn a_poster_hangs_over_her_sofa() {
             }
         }
         assert!(under, "graphics={graphics}: she never went under it");
+    }
+}
+
+/// Text in the pane around a poster hung over her sofa — beside it, just
+/// above it, just below it — leaves it hanging (and
+/// the sofa standing) all visit; text over one cell of it closets the
+/// poster alone. Either way nothing of hers hides text or touches what's
+/// protected. In both drawing modes.
+#[test]
+fn text_near_a_hung_poster_closets_only_what_it_covers() {
+    for graphics in [false, true] {
+        for over in [false, true] {
+            let at = format!("graphics={graphics} over={over}");
+            let (mut real, view) = home_screen();
+            // The poster's cells: columns 11..15, rows 10 and 11 (four
+            // rows clear between it and the floor at 16); the sofa's
+            // 11..20, rows 13..16.
+            let mut text = vec![
+                (11, 9, "top!".to_owned()),
+                (6, 10, "ab".to_owned()),
+                (15, 11, "zz".to_owned()),
+                (24, 11, "and on".to_owned()),
+                (11, 12, "low".to_owned()),
+            ];
+            if over {
+                text.push((12, 10, "x".to_owned()));
+            }
+            scatter(&mut real, &text, &[]);
+            let mut guest = Guest::new(2);
+            if graphics {
+                guest.set_picker(kitty());
+            }
+            for item in [Furniture::Sofa, Furniture::Poster] {
+                assert!(guest.ledger.home.add(room::Prop {
+                    anchor: Some(room::Anchor {
+                        side: room::Side::Left,
+                        offset: 10,
+                    }),
+                    ..room::Prop::new(item, Nook::Users, 0, sprite::Facing::Right)
+                }));
+            }
+            let mut hidden = Hidden::default();
+            let mut now = 0;
+            let mut visited = false;
+            while now < 3 * 60_000 {
+                now += guest
+                    .next_tick(now)
+                    .map_or(1000, |d| d.as_millis() as u64)
+                    .clamp(1, 1000);
+                guest.advance(now);
+                let frame = paint(&mut guest, &real, &view, now);
+                let State::Visiting(visit) = &guest.state else {
+                    continue;
+                };
+                visited = true;
+                let layer: Vec<(u16, u16)> = visit.layer.cells().collect();
+                let moved_into = |r: Rect| layer.iter().any(|&c| r.contains(c.into()));
+                let poster = Rect::new(11, 10, 4, 2);
+                let sofa = Rect::new(11, 13, 9, 3);
+                let shows = |item| shown_piece(&guest, item).is_some();
+                if !moved_into(poster) {
+                    assert_eq!(shows(Furniture::Poster), !over, "{at} {now}: the poster");
+                }
+                if !moved_into(sofa) {
+                    assert!(shows(Furniture::Sofa), "{at} {now}: the sofa");
+                }
+                if let Some(p) = shown_piece(&guest, Furniture::Poster) {
+                    assert_eq!(p.rect(), poster, "{at}");
+                }
+                assert_untouched(&frame, &real, &view.protected)
+                    .unwrap_or_else(|e| panic!("{at} {now}: {e}"));
+                if graphics {
+                    hidden
+                        .check(&frame, &real, &layer, now)
+                        .unwrap_or_else(|e| panic!("{at} {now}: {e}"));
+                }
+            }
+            assert!(visited, "{at}: she never came");
+        }
     }
 }
 
@@ -4803,25 +4926,29 @@ fn a_sofa_facing_the_tv_is_watched_from() {
     // count). Something protected between them splits the floor, but
     // not the strip.
     for graphics in [false, true] {
-        for (tv_side, gap, toward, split, watched) in [
-            (Side::Left, 2, true, false, true),
-            (Side::Left, 8, true, true, true),
-            (Side::Left, 14, true, false, true),
-            (Side::Right, 2, true, false, true),
-            (Side::Right, 8, true, true, true),
-            (Side::Right, 14, true, false, true),
-            (Side::Left, 2, false, false, false),
-            (Side::Left, 8, false, true, false),
-            (Side::Left, 14, false, false, false),
-            (Side::Right, 2, false, false, false),
-            (Side::Right, 8, false, true, false),
-            (Side::Right, 14, false, false, false),
-            (Side::Left, 0, true, false, false),
-            (Side::Left, 1, true, false, false),
-            (Side::Right, 15, true, false, false),
-            (Side::Left, 30, true, false, false),
-            (Side::Right, 15, false, false, false),
-            (Side::Left, 30, false, false, false),
+        // (`tv_back`: the TV turned toward the sofa, its back to its
+        // wall; else turned to its wall.)
+        for (tv_side, gap, toward, tv_back, split, watched) in [
+            (Side::Left, 2, true, true, false, true),
+            (Side::Left, 2, true, false, false, true),
+            (Side::Left, 8, true, false, true, true),
+            (Side::Left, 14, true, true, false, true),
+            (Side::Right, 2, true, false, false, true),
+            (Side::Right, 8, true, true, true, true),
+            (Side::Right, 8, true, false, true, true),
+            (Side::Right, 14, true, false, false, true),
+            (Side::Left, 2, false, false, false, false),
+            (Side::Left, 8, false, true, true, false),
+            (Side::Left, 14, false, false, false, false),
+            (Side::Right, 2, false, true, false, false),
+            (Side::Right, 8, false, false, true, false),
+            (Side::Right, 14, false, true, false, false),
+            (Side::Left, 0, true, true, false, false),
+            (Side::Left, 1, true, false, false, false),
+            (Side::Right, 15, true, true, false, false),
+            (Side::Left, 30, true, false, false, false),
+            (Side::Right, 15, false, false, false, false),
+            (Side::Left, 30, false, true, false, false),
         ] {
             let (real, mut view) = screen();
             let (_, pane) = view.nooks[0];
@@ -4844,14 +4971,13 @@ fn a_sofa_facing_the_tv_is_watched_from() {
                 guest.set_picker(kitty());
             }
             // The TV turned either way: it doesn't count.
-            for (item, offset, facing) in [
-                (
-                    Furniture::Tv,
-                    0,
-                    if gap % 2 == 0 { sofa } else { toward_tv },
-                ),
-                (Furniture::Sofa, 6 + gap, sofa),
-            ] {
+            let tv = match (tv_back, toward_tv) {
+                (false, way) => way,
+                (true, Facing::Left) => Facing::Right,
+                (true, Facing::Right) => Facing::Left,
+            };
+            for (item, offset, facing) in [(Furniture::Tv, 0, tv), (Furniture::Sofa, 6 + gap, sofa)]
+            {
                 assert!(guest.ledger.home.add(Prop {
                     anchor: Some(Anchor {
                         side: tv_side,
@@ -4875,7 +5001,7 @@ fn a_sofa_facing_the_tv_is_watched_from() {
                 panic!("visiting");
             };
             let at = format!(
-                "graphics {graphics}, TV at the {tv_side:?} wall, gap {gap}, sofa turned {sofa:?}"
+                "graphics {graphics}, TV at the {tv_side:?} wall turned {tv:?}, gap {gap}, sofa turned {sofa:?}"
             );
             let shown: Vec<_> = visit.shown.iter().map(|s| (s.item, s.left)).collect();
             assert_eq!(shown.len(), 2, "{at}: both stand: {shown:?}");
@@ -5326,6 +5452,116 @@ fn she_works_out_how_to_turn_the_sofa_round() {
             paint(&mut guest, &real, &view, at + 1);
             assert_eq!(repairs(&guest), [], "graphics {graphics}");
         }
+    }
+}
+
+/// How she'd put her home right is worked out again when anything it
+/// depends on changes — her home, the panes, the text she has moved,
+/// which rule she'd put right — and otherwise at most once a second (text comes and goes), never on
+/// every frame.
+#[test]
+fn the_repair_is_worked_out_again_only_when_it_may_have_changed() {
+    use super::brain::Mood;
+    use super::room::{Anchor, Prop, Side};
+    use sprite::Facing;
+    for graphics in [false, true] {
+        let (mut guest, real, view) = rule_home(
+            &[
+                (Furniture::Tv, Side::Left, 0, Facing::Right, true),
+                (Furniture::Sofa, Side::Left, 12, Facing::Right, true),
+                (Furniture::Fridge, Side::Left, 26, Facing::Right, true),
+            ],
+            graphics,
+            1,
+        );
+        guest.cue(Scene::Arrive);
+        paint(&mut guest, &real, &view, 0);
+        let mending = |guest: &Guest| visit_of(guest).mending.map(|(_, at)| at);
+        assert_eq!(mending(&guest), None, "nothing felt yet");
+        let State::Visiting(visit) = &mut guest.state else {
+            panic!("visiting");
+        };
+        visit.osaka.set_mood(Mood::Ordinary);
+        let faces = rules::Grievance {
+            row: rules::FACES_ROW,
+            piece: Furniture::Sofa,
+        };
+        let wall = rules::Grievance {
+            row: 2,
+            piece: Furniture::Fridge,
+        };
+        assert!(matches!(
+            wall.rule().map(|r| r.rule),
+            Some(rules::Rule::AgainstWall(Furniture::Fridge))
+        ));
+        visit
+            .osaka
+            .feel(faces, (Furniture::Sofa, room::Use::Lounge));
+        visit
+            .osaka
+            .feel(wall, (Furniture::Fridge, room::Use::Snack));
+        let case = format!("graphics {graphics}");
+        paint(&mut guest, &real, &view, 10);
+        assert_eq!(mending(&guest), Some(10), "{case}: once felt");
+        assert!(!visit_of(&guest).repairs.is_empty(), "{case}");
+        assert!(
+            visit_of(&guest).repairs.iter().all(|r| r.key == faces),
+            "{case}"
+        );
+        // Nothing changed: not again within the second...
+        paint(&mut guest, &real, &view, 500);
+        paint(&mut guest, &real, &view, 1009);
+        assert_eq!(mending(&guest), Some(10), "{case}: every frame");
+        // ...and again once it's passed.
+        paint(&mut guest, &real, &view, 1010);
+        assert_eq!(mending(&guest), Some(1010), "{case}: the second passed");
+        // Her home changed.
+        assert!(guest.ledger.home.add(Prop {
+            anchor: Some(Anchor {
+                side: Side::Right,
+                offset: 12,
+            }),
+            ..Prop::new(Furniture::Lamp, Nook::Playlist, 0, Facing::Left)
+        }));
+        paint(&mut guest, &real, &view, 1100);
+        assert_eq!(mending(&guest), Some(1100), "{case}: her home");
+        paint(&mut guest, &real, &view, 1150);
+        assert_eq!(mending(&guest), Some(1100), "{case}");
+        // The panes changed.
+        let mut moved_pane = view.clone();
+        moved_pane.nooks[0].1.width -= 1;
+        paint(&mut guest, &real, &moved_pane, 1200);
+        assert_eq!(mending(&guest), Some(1200), "{case}: the panes");
+        paint(&mut guest, &real, &moved_pane, 1250);
+        assert_eq!(mending(&guest), Some(1200), "{case}");
+        // Text she has moved.
+        let State::Visiting(visit) = &mut guest.state else {
+            panic!("visiting");
+        };
+        assert!(visit.layer.take(&real, &view.protected, (2, 1), (60, 2)));
+        paint(&mut guest, &real, &moved_pane, 1300);
+        assert_eq!(mending(&guest), Some(1300), "{case}: the text she moved");
+        paint(&mut guest, &real, &moved_pane, 1350);
+        assert_eq!(mending(&guest), Some(1300), "{case}");
+        // The rule she'd put right: she lets go of the sofa, and would put
+        // the fridge right instead.
+        assert!(
+            guest.broken().contains("wall(fridge)"),
+            "{case}: {}",
+            guest.broken()
+        );
+        let State::Visiting(visit) = &mut guest.state else {
+            panic!("visiting");
+        };
+        visit.osaka.let_go_of(faces);
+        paint(&mut guest, &real, &moved_pane, 1400);
+        assert_eq!(mending(&guest), Some(1400), "{case}: the rule she'd mend");
+        let repairs = &visit_of(&guest).repairs;
+        assert!(
+            !repairs.is_empty(),
+            "{case}: the fridge has somewhere to go"
+        );
+        assert!(repairs.iter().all(|r| r.key == wall), "{case}: {repairs:?}");
     }
 }
 
@@ -5969,12 +6205,39 @@ fn an_unsettled_tv_joins_the_sofas_room() {
     }
 }
 
+/// Whether the TV is downstairs, set down; until it is, it's in her
+/// pocket, every frame (never let go, or put back and lifted again).
+fn tv_set_down_or_carried(guest: &Guest, now: u64, case: &str) -> bool {
+    use super::room::Strip;
+    if prop_of(guest, Furniture::Tv).strip == Strip::Bottom(Nook::Playlist) {
+        return true;
+    }
+    assert_eq!(
+        carried(guest),
+        Some(Furniture::Tv),
+        "{case}: let go at {now}"
+    );
+    assert!(
+        visit_of(guest).osaka.episode().is_some_and(|e| e.pocket),
+        "{case}: {now}"
+    );
+    false
+}
+
+/// She lifted a piece only the once.
+fn lifted_once(guest: &Guest, case: &str) {
+    let lifts = methods(guest)
+        .iter()
+        .filter(|&&m| m == "arrange/lift")
+        .count();
+    assert_eq!(lifts, 1, "{case}: {:?}", methods(guest));
+}
+
 /// Chat comes while the TV's in her pocket on its way downstairs: she
 /// looks up at it, and then carries on with the TV, which shows nowhere
 /// meanwhile.
 #[test]
 fn chat_mid_carry_and_she_carries_on() {
-    use super::room::Strip;
     for graphics in [false, true] {
         let (mut guest, real) = two_rooms(graphics, 5);
         let mut view = two_rooms_view(false, None);
@@ -5992,10 +6255,12 @@ fn chat_mid_carry_and_she_carries_on() {
             "graphics {graphics}"
         );
         assert_eq!(carried(&guest), Some(Furniture::Tv), "still in her pocket");
-        let set = carry_until(&mut guest, &real, &view, walking, 600_000, |guest, _| {
-            prop_of(guest, Furniture::Tv).strip == Strip::Bottom(Nook::Playlist)
+        let case = format!("graphics {graphics}");
+        let set = carry_until(&mut guest, &real, &view, walking, 600_000, |guest, now| {
+            tv_set_down_or_carried(guest, now, &case)
         });
         assert!(set.is_some(), "graphics {graphics}: {:?}", methods(&guest));
+        lifted_once(&guest, &case);
         let after = &methods(&guest)[before..];
         assert_eq!(
             after.first(),
@@ -6014,13 +6279,13 @@ fn chat_mid_carry_and_she_carries_on() {
 /// stops her a moment; none costs her the TV, and it gets downstairs.
 #[test]
 fn a_busy_chat_never_costs_her_the_piece() {
-    use super::room::Strip;
     for graphics in [false, true] {
         let (mut guest, real) = two_rooms(graphics, 5);
         let mut view = two_rooms_view(false, None);
         let from = feel_the_tv(&mut guest, &real, &view);
         let mut lines = 0;
         let mut now = from;
+        let mut lifted = false;
         let set = loop {
             assert!(
                 now < from + 600_000,
@@ -6039,10 +6304,14 @@ fn a_busy_chat_never_costs_her_the_piece() {
             }
             let frame = paint(&mut guest, &real, &view, now);
             carried_unseen(&guest, &frame, &real, &view);
-            if prop_of(&guest, Furniture::Tv).strip == Strip::Bottom(Nook::Playlist) {
+            if carried(&guest).is_some() {
+                lifted = true;
+            }
+            if lifted && tv_set_down_or_carried(&guest, now, &format!("graphics {graphics}")) {
                 break now;
             }
         };
+        lifted_once(&guest, &format!("graphics {graphics}"));
         assert!(lines > 3, "graphics {graphics}: only {lines} lines");
         let osaka = &visit_of(&guest).osaka;
         assert!(
@@ -6061,7 +6330,6 @@ fn a_busy_chat_never_costs_her_the_piece() {
 /// she's through her door with it, and carries on downstairs.
 #[test]
 fn evicted_mid_carry_she_carries_on() {
-    use super::room::Strip;
     for graphics in [false, true] {
         let (mut guest, real) = two_rooms(graphics, 5);
         let view = two_rooms_view(true, None);
@@ -6085,15 +6353,17 @@ fn evicted_mid_carry_she_carries_on() {
             Some(Furniture::Tv),
             "through her door with it"
         );
+        let case = format!("graphics {graphics}");
         let set = carry_until(
             &mut guest,
             &real,
             &focused,
             upstairs,
             600_000,
-            |guest, _| prop_of(guest, Furniture::Tv).strip == Strip::Bottom(Nook::Playlist),
+            |guest, now| tv_set_down_or_carried(guest, now, &case),
         );
         assert!(set.is_some(), "graphics {graphics}: {:?}", methods(&guest));
+        lifted_once(&guest, &case);
     }
 }
 
@@ -6338,6 +6608,214 @@ fn a_carry_stays_within_the_image_budget() {
             counts.evicted
         );
         assert_eq!(counts.reencoded, 0, "{home}: {counts:?}");
+    }
+}
+
+/// Her alone on a floor, with the stage's lift of a sofa from where she
+/// stands to `to` (or `others` for it); her, the floor, the move.
+fn pocket_on_a_floor(
+    graphics: bool,
+) -> (
+    Osaka,
+    Terrain,
+    rules::Repair,
+    Vec<rules::Repair>,
+    super::Rng,
+) {
+    use super::room::{Anchor, Side, Strip};
+    let mut buf = Buffer::empty(Rect::new(0, 0, 60, 12));
+    buf.set_string(0, 10, "─".repeat(60), Style::new());
+    let terrain = Terrain::read(&buf, &[], graphics);
+    let mut rng = Rng(7);
+    let osaka = Osaka::standing_at(10, 10, 0, &mut rng);
+    let repair = |offset: u16, left: i32| rules::Repair {
+        key: rules::Grievance {
+            row: rules::FACES_ROW,
+            piece: Furniture::Sofa,
+        },
+        piece: Furniture::Sofa,
+        to: rules::Placement {
+            strip: Strip::Bottom(Nook::Users),
+            anchor: Anchor {
+                side: Side::Left,
+                offset,
+            },
+            facing: sprite::Facing::Left,
+        },
+        at: Shown {
+            item: Furniture::Sofa,
+            facing: sprite::Facing::Left,
+            boxed: false,
+            strip: Some(Strip::Bottom(Nook::Users)),
+            left,
+            floor: 10,
+            scrap: None,
+        },
+        cost: 1,
+        tier: 0,
+    };
+    (osaka, terrain, repair(30, 31), vec![repair(40, 41)], rng)
+}
+
+/// Run `osaka` on `terrain` from `from` to `until` with `chances` as
+/// `judge` makes them each tick (from the episode, if any); when `done`.
+fn tick_pocket(
+    osaka: &mut Osaka,
+    terrain: &Terrain,
+    rng: &mut super::Rng,
+    from: u64,
+    until: u64,
+    mut judge: impl FnMut(&Osaka) -> osaka::Chances,
+    mut done: impl FnMut(&Osaka) -> bool,
+) -> Option<u64> {
+    let mut now = from;
+    while now < until {
+        now += 50;
+        let chances = judge(osaka);
+        osaka.tick(now, terrain, &chances, rng);
+        if done(osaka) {
+            return Some(now);
+        }
+    }
+    None
+}
+
+/// With the piece in her pocket and its move still right, but nowhere
+/// she can get to to set it down, each setting off is a try: after
+/// [`TRIES`](osaka) she lets it go (it's back where it stood), with a
+/// glance at it there. Never before, however long she waits on a frame
+/// that hasn't judged it.
+#[test]
+fn a_carry_she_cant_get_to_is_let_go_after_three_tries() {
+    for graphics in [false, true] {
+        let (mut osaka, terrain, repair, _, mut rng) = pocket_on_a_floor(graphics);
+        osaka.lift(
+            scenes::Lift {
+                repair,
+                trials: rules::Trials::default(),
+                x: 10,
+                y: 10,
+                side: scenes::Side::Right,
+            },
+            0,
+        );
+        let home = (35, 10);
+        let judged = |osaka: &Osaka| osaka::Chances {
+            judged: osaka.episode().map(|ep| osaka::Judged {
+                piece: ep.repair.piece,
+                to: ep.repair.to,
+                pocket: ep.pocket,
+                holds: true,
+                // Nowhere to stand: beside it or over it.
+                spot: (!ep.pocket).then_some(((10, 10), scenes::Side::Right)),
+                home: Some(home),
+            }),
+            ..osaka::Chances::default()
+        };
+        let lifted = tick_pocket(&mut osaka, &terrain, &mut rng, 0, 10_000, judged, |o| {
+            o.carrying().is_some()
+        })
+        .unwrap_or_else(|| panic!("graphics {graphics}: never lifted it"));
+        let tries = |osaka: &Osaka| {
+            osaka
+                .decisions
+                .iter()
+                .filter(|d| d.method == "can't get to it")
+                .count()
+        };
+        let let_go = tick_pocket(
+            &mut osaka,
+            &terrain,
+            &mut rng,
+            lifted,
+            lifted + 60_000,
+            judged,
+            |o| o.episode().is_none(),
+        )
+        .unwrap_or_else(|| panic!("graphics {graphics}: still carrying it"));
+        assert_eq!(tries(&osaka), 3, "graphics {graphics}");
+        assert_eq!(osaka.carrying(), None);
+        assert!(
+            let_go >= lifted + 3 * 2000,
+            "{let_go}: a wait between tries"
+        );
+        assert_eq!(
+            osaka.beats.last(),
+            Some(&mind::Beat {
+                loss: mind::Loss::Moved(Furniture::Sofa),
+                toward: home
+            }),
+            "graphics {graphics}"
+        );
+    }
+}
+
+/// With the piece in her pocket, where it goes no longer right (text
+/// came there), she sets it down another way the frame has for it: no
+/// loss, no try spent, the piece in her pocket all along; with no other
+/// way, she lets it go, with a glance at where it stood.
+#[test]
+fn a_carry_whose_spot_is_gone_goes_elsewhere_or_is_let_go() {
+    for graphics in [false, true] {
+        for other in [true, false] {
+            let case = format!("graphics {graphics}, another way {other}");
+            let (mut osaka, terrain, repair, others, mut rng) = pocket_on_a_floor(graphics);
+            let first = repair.to;
+            osaka.lift(
+                scenes::Lift {
+                    repair,
+                    trials: rules::Trials::default(),
+                    x: 10,
+                    y: 10,
+                    side: scenes::Side::Right,
+                },
+                0,
+            );
+            let home = (35, 10);
+            // Lifted, the first spot is gone; the other holds (where
+            // there is one).
+            let others = if other { others } else { Vec::new() };
+            let judged = |osaka: &Osaka| osaka::Chances {
+                judged: osaka.episode().map(|ep| osaka::Judged {
+                    piece: ep.repair.piece,
+                    to: ep.repair.to,
+                    pocket: ep.pocket,
+                    holds: !ep.pocket || ep.repair.to != first,
+                    spot: Some(((10, 10), scenes::Side::Right)),
+                    home: Some(home),
+                }),
+                repairs: others.clone(),
+                ..osaka::Chances::default()
+            };
+            let mut lifted = false;
+            let ended = tick_pocket(&mut osaka, &terrain, &mut rng, 0, 60_000, judged, |o| {
+                // In her pocket from the lift until it's set down (or let
+                // go): never dropped and lifted again.
+                if lifted && o.episode().is_some() {
+                    assert_eq!(o.carrying(), Some(Furniture::Sofa), "{case}");
+                }
+                lifted |= o.carrying().is_some();
+                o.episode().is_none_or(|ep| ep.set_down)
+            })
+            .unwrap_or_else(|| panic!("{case}: neither set down nor let go"));
+            if other {
+                let ep = osaka.episode().copied().unwrap_or_else(|| panic!("{case}"));
+                assert!(ep.set_down, "{case}: set down at {ended}");
+                assert_eq!(ep.repair.to, others[0].to, "{case}");
+                assert_eq!(ep.tries, 0, "{case}");
+                assert!(osaka.beats.is_empty(), "{case}: {:?}", osaka.beats);
+            } else {
+                assert_eq!(osaka.carrying(), None, "{case}");
+                assert_eq!(
+                    osaka.beats.last(),
+                    Some(&mind::Beat {
+                        loss: mind::Loss::Moved(Furniture::Sofa),
+                        toward: home
+                    }),
+                    "{case}"
+                );
+            }
+        }
     }
 }
 

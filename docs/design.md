@@ -1579,9 +1579,12 @@ this section states what is built.
   own: hung pieces stand in anchor order among themselves, by the same
   rules, and may hang over pieces that stand. It needs no floor beneath
   it, and the wall never moves a room: a hung piece its wall doesn't
-  hold (too low, or crowded) is in the closet alone, while a strip too
+  hold (too low, or crowded: in anchor order, each that fits beside
+  those before it hangs) is in the closet alone, while a strip too
   small for the pieces that stand on it takes those hung along (each
-  where its share of the way along puts it there). Boxed, it's a parcel
+  where its share of the way along puts it there). A strip that's gone
+  with only hung pieces moves them to the first other wall that holds
+  them all on free cells, else they're in the closet. Boxed, it's a parcel
   on the floor; a delivery comes in only where both the parcel and the
   hung piece fit. **Rooms from contents**: her rooms are her strips,
   and what each is comes from what's out of its box there, by the
@@ -1639,8 +1642,9 @@ this section states what is built.
   wall...", "Wobbly... needs a wall.", "Too noisy to sleep...", "Hm...
   not in here.") for two of the use's frames, from the first frame
   after anything she was saying (nothing else she says cuts it short).
-  Once it has all shown she has felt it; a use cut short before then
-  doesn't count. **Each rule is felt once a visit**, the first broken
+  Once its two frames have passed with her still on the piece she has
+  felt it (said, whether or not the bubble found room to show); a use
+  cut short before then doesn't count. **Each rule is felt once a visit**, the first broken
   one of a use, and forgotten when she leaves (nothing is kept). It
   doesn't draw on her beat lines. Watching the TV with a grievance due,
   she has her home on her mind instead of the shopping channel's

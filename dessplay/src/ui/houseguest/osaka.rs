@@ -2993,6 +2993,15 @@ impl Osaka {
             .map_or(0, |&(_, tries)| tries)
     }
 
+    /// She lets go of putting `key` right, as when she can't get to it
+    /// (tests use it).
+    #[cfg(test)]
+    pub fn let_go_of(&mut self, key: Grievance) {
+        for felt in self.felt.iter_mut().filter(|f| f.key == key) {
+            felt.let_go = true;
+        }
+    }
+
     /// She has let `id` be, having tried enough times.
     #[cfg(test)]
     pub fn gave_up(&self, id: MadeId) -> bool {
