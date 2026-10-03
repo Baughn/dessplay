@@ -152,8 +152,6 @@ impl Mood {
 
     /// How many things about her home she sets right a visit, at most
     /// (the user's call: lazy none, industrious a few).
-    // Read once she arranges her home (phase 4, step 6).
-    #[allow(dead_code)]
     pub fn home_acts(self) -> u8 {
         match self {
             Self::Lazy => 0,
@@ -353,6 +351,9 @@ pub(super) enum Want {
     Use(Use),
     /// Off to her part-time job for a while.
     Work,
+    /// Put right a rule of her home she has felt broken: lift a piece,
+    /// carry it, and set it down where it's right.
+    Arrange,
 }
 
 /// Something that makes a want more or less likely, beyond her needs.
@@ -397,7 +398,7 @@ const fn in_chat(def: DesireDef) -> DesireDef {
 
 impl Want {
     /// Every want there is (the order she considers them in).
-    pub const ALL: [Want; 25] = [
+    pub const ALL: [Want; 26] = [
         Self::Stand,
         Self::SpaceOut,
         Self::Sneeze,
@@ -423,6 +424,7 @@ impl Want {
         Self::Use(Use::Snack),
         Self::Use(Use::Pet),
         Self::Use(Use::Crumple),
+        Self::Arrange,
     ];
 
     /// Its row of the table.
@@ -485,6 +487,10 @@ impl Want {
             Self::Use(Use::Read) => in_chat(row(8.0, &[(Need::Fun, 0.5), (Need::Daydreams, 0.2)])),
             Self::Use(Use::Snack) => in_chat(row(8.0, &[(Need::Hungry, 0.8), (Need::Fun, 0.1)])),
             Self::Use(Use::Pet) => in_chat(row(8.0, &[(Need::Fun, 0.6)])),
+            // Only on offer while a rule she has felt is broken and her
+            // mood leaves her something to do about it: nesting is all
+            // it answers.
+            Self::Arrange => row(6.0, &[(Need::Nesting, 1.0)]),
         }
     }
 }
@@ -752,8 +758,9 @@ mod tests {
             Want::Swap => 7,
             Want::Use(_) => 8,
             Want::Work => 9,
+            Want::Arrange => 10,
         };
-        for k in 0..10 {
+        for k in 0..11 {
             assert!(Want::ALL.iter().any(|&w| kind(w) == k), "kind {k} missing");
         }
         for a in Activity::ALL {

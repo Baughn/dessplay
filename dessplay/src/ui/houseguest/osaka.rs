@@ -8,8 +8,8 @@ use super::brain::{self, Factor, Mood, Need, Needs, Rising, Spot, Want};
 use super::layer::Placed;
 use super::mind::{self, Beat, Bind, Ctx, Heading, Here, Lines, Loss, Whims};
 use super::room::{Furniture, MadeId, PieceRef, Seat, Use};
-use super::rules::Grievance;
-use super::scenes::{Build, Job, JobRef, LayerOp, Pull, Side, Swap};
+use super::rules::{Grievance, Placement, Repair};
+use super::scenes::{Build, Job, JobRef, LayerOp, Lift, Pull, SetDown, Side, Swap};
 use super::sprite::{self, Face, Facing, HEIGHT, Pose, SpriteCell};
 use super::terrain::{Link, Platform, Route, Terrain};
 use tuirealm::ratatui::layout::Rect;
@@ -41,6 +41,57 @@ pub(super) struct Chances {
     /// How she would put right the rule of her home she would mend (see
     /// [`Osaka::would_mend`]), cheapest first.
     pub repairs: Vec<super::rules::Repair>,
+    /// Where she'd stand to lift each piece those repairs move (beside
+    /// it, on its floor), and which way she'd face it.
+    pub lift_at: Vec<LiftAt>,
+    /// What the frame made of the piece she's moving, if she is.
+    pub judged: Option<Judged>,
+}
+
+/// Where she'd stand to lift a piece (beside it, on its floor), and which
+/// way she'd face it.
+pub(super) type LiftAt = (Furniture, (i32, i32), Side);
+
+/// Moving a piece of her home to put a rule of it right: from the moment
+/// she sets off to lift it until it's set down where it's right, or she
+/// lets it go (see [`Osaka::arrange_next`]). It's hers, not her act's:
+/// whatever she's startled into, sent off to or carried through her door
+/// by, the piece stays in her pocket.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Episode {
+    /// The move she means to make.
+    pub repair: Repair,
+    /// Lifted: the piece is in her pocket (shown nowhere, its place kept).
+    pub pocket: bool,
+    /// Set down, and not yet taken (or refused) by the frame.
+    pub set_down: bool,
+    /// The times setting off for this step of it has come to nothing
+    /// (no way there, or her walk toward it ended short of it).
+    /// Interruptions on the way cost none.
+    pub tries: u8,
+}
+
+/// What the last frame made of the move she's making: the move it
+/// judged (lifted or not), whether it still puts the rule right and
+/// fits, where she'd stand for its next step (beside the piece to lift
+/// it; beside where it goes to set it down) and which way she'd face,
+/// and where the piece stands at its anchor (what she glances back at,
+/// letting it go).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Judged {
+    pub piece: Furniture,
+    pub to: Placement,
+    pub pocket: bool,
+    pub holds: bool,
+    pub spot: Option<((i32, i32), Side)>,
+    pub home: Option<(i32, i32)>,
+}
+
+impl Judged {
+    /// Whether it's the step `ep` is at.
+    pub fn of(&self, ep: &Episode) -> bool {
+        (self.piece, self.to, self.pocket) == (ep.repair.piece, ep.repair.to, ep.pocket)
+    }
 }
 
 /// A makeshift piece she made this visit, and what she made it for.
@@ -63,7 +114,9 @@ const GLANCE_MS: u64 = 900;
 
 /// Times she sets off to finish or use a piece she made before she lets
 /// it be: each interruption on the way, or each time she can't get to it,
-/// is one.
+/// is one. And the times setting off for a step of moving a piece of her
+/// home may come to nothing (interruptions aren't counted there: the
+/// piece is hers through them) before she lets the move go.
 const TRIES: u8 = 3;
 
 /// How much less likely a resident is to do what takes her into the
@@ -158,6 +211,9 @@ pub(super) enum HomeEvent {
     Crumpled(MadeId),
     /// A makeshift piece she has started using.
     Used(MadeId),
+    /// A piece of hers set down at `to`: hers once the frame takes it
+    /// (it must fit there then; see `Guest::paint`).
+    SetDown { piece: Furniture, to: Placement },
 }
 
 impl Chances {
@@ -215,6 +271,22 @@ const FALL_ROWS: u64 = 4;
 /// After a sneeze: a moment's "...", then one glyph back per beat.
 const OOPS_MS: u64 = 900;
 const PUT_BACK_MS: u64 = 400;
+/// Lifting a piece into her pocket, and setting it down.
+const LIFT_MS: u64 = 900;
+const SET_DOWN_MS: u64 = 900;
+/// Each bob, bent to the piece.
+const LIFT_FRAME_MS: u64 = 450;
+/// A moment after lifting or setting down (the frame judges it before
+/// she chooses again).
+const AFTER_CARRY_MS: u64 = 500;
+/// Waiting for the frame to judge a step of moving a piece.
+const WAIT_MS: u64 = 300;
+/// Waiting when she can't get to the next step of moving a piece just
+/// now (a try spent), before she sets off again.
+const UNREACHED_MS: u64 = 2000;
+/// Lifting a piece.
+const HUP: &str = "Hup!";
+
 /// Choices remembered for the cooldown.
 const RECENT: usize = 3;
 /// A refused put-back is retried this many times.
@@ -222,7 +294,7 @@ const RETRIES: u8 = 5;
 
 /// Her fixed lines (the lints check each fits a bubble).
 #[cfg(test)]
-pub(super) const LINES: [&str; 7] = [OK, RIP, SCRUNCH, THERE, HOME, THROUGH, POKE];
+pub(super) const LINES: [&str; 8] = [OK, RIP, SCRUNCH, THERE, HOME, THROUGH, POKE, HUP];
 
 /// After a hard landing.
 const OK: &str = "...I'm OK.";
@@ -393,6 +465,19 @@ enum Act {
         advert: Option<Furniture>,
         grievance: Option<(Grievance, u64)>,
     },
+    /// Bent to a piece of her furniture, lifting it into her pocket
+    /// ("Hup!").
+    Lift {
+        lift: Lift,
+        since: u64,
+        until: u64,
+    },
+    /// Setting the piece in her pocket down where it's right.
+    SetDown {
+        set: SetDown,
+        since: u64,
+        until: u64,
+    },
 }
 
 /// What she does on getting where she walks.
@@ -475,6 +560,9 @@ enum Letting {
     Chat,
     /// The stage put her somewhere.
     Placed,
+    /// A step of moving a piece of her home: the piece she's moving owns
+    /// what's lost (see [`Osaka::drop_episode`]).
+    Carry,
 }
 
 /// Which kind of decision it was: a pre-empt, carrying on with what she
@@ -564,6 +652,8 @@ impl Act {
             }
             Self::Tear { build, .. } => Some(JobRef::Build(build)),
             Self::Use { seat, .. } => Some(JobRef::Use(seat)),
+            Self::Lift { lift, .. } => Some(JobRef::Lift(lift)),
+            Self::SetDown { set, .. } => Some(JobRef::SetDown(set)),
             _ => None,
         }
     }
@@ -582,6 +672,8 @@ impl Act {
     fn props(&self) -> ActProps {
         let (stays, on_chat) = match self {
             Self::Use { .. }
+            | Self::Lift { .. }
+            | Self::SetDown { .. }
             | Self::Pull { .. }
             | Self::Tear { .. }
             | Self::Swap { .. }
@@ -993,6 +1085,17 @@ impl Bubble {
     }
 }
 
+/// A rule of her home she has felt broken, and the piece and use she
+/// felt it on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Felt {
+    key: Grievance,
+    on: (Furniture, Use),
+    /// She set about putting it right and let it go: it stays as it is
+    /// this visit.
+    let_go: bool,
+}
+
 /// The houseguest.
 #[derive(Clone, Debug)]
 pub(super) struct Osaka {
@@ -1064,8 +1167,14 @@ pub(super) struct Osaka {
     /// The beat lines she has said this visit.
     lines: Lines,
     /// The rules of her home she has felt broken this visit (each felt
-    /// once; see [`GRIEVANCE_MS`]).
-    felt: Vec<Grievance>,
+    /// once; see [`GRIEVANCE_MS`]), and the piece and use she felt each
+    /// on.
+    felt: Vec<Felt>,
+    /// The piece of her home she's moving, if she is.
+    episode: Option<Episode>,
+    /// The piece she just set down, and what she felt was wrong using
+    /// it: she sits back down to it (once).
+    just_set: Option<(Furniture, Use)>,
     /// The things she has done about her home this visit (see
     /// [`Mood::home_acts`]).
     home_acts: u8,
@@ -1122,6 +1231,8 @@ impl Osaka {
             owed: Vec::new(),
             lines: Lines::default(),
             felt: Vec::new(),
+            episode: None,
+            just_set: None,
             home_acts: 0,
             #[cfg(test)]
             beats: Vec::new(),
@@ -1267,6 +1378,8 @@ impl Osaka {
                         JobRef::Swap(_) => "a swap".to_owned(),
                         JobRef::Build(build) => format!("making a {:?}", build.piece.item),
                         JobRef::Use(seat) => format!("{:?} ({:?})", seat.what, seat.item),
+                        JobRef::Lift(l) => format!("lifting the {}", l.repair.piece.spec().name),
+                        JobRef::SetDown(s) => format!("setting the {} down", s.piece.spec().name),
                     };
                     format!("{name} to {:?} for {what}", job.spot())
                 }
@@ -1323,6 +1436,9 @@ impl Osaka {
             }
             Act::Poke { since, until } => {
                 (since + (now.saturating_sub(since) / POKE_FRAME_MS + 1) * POKE_FRAME_MS).min(until)
+            }
+            Act::Lift { since, until, .. } | Act::SetDown { since, until, .. } => {
+                (since + (now.saturating_sub(since) / LIFT_FRAME_MS + 1) * LIFT_FRAME_MS).min(until)
             }
             Act::Clamber { column, to_y, .. } => {
                 if self.x == column && self.y != to_y {
@@ -1582,14 +1698,18 @@ impl Osaka {
                 // it.
                 if let Some((grievance, from)) = grievance
                     && at >= from + GRIEVANCE_MS
-                    && !self.felt.contains(&grievance)
+                    && !self.has_felt(grievance)
                 {
                     tracing::info!(
                         rule = %grievance.label(),
                         "houseguest: she felt {}",
                         grievance.label()
                     );
-                    self.felt.push(grievance);
+                    self.felt.push(Felt {
+                        key: grievance,
+                        on: (seat.item, seat.what),
+                        let_go: false,
+                    });
                 }
                 if at >= until {
                     if seat.what == Use::Unpack {
@@ -1612,6 +1732,55 @@ impl Osaka {
                         since + (at.saturating_sub(since) / USE_FRAME_MS + 1) * USE_FRAME_MS;
                     self.act_due = frame.min(until);
                 }
+            }
+            Act::Lift { lift, until, .. } => {
+                if at < until {
+                    self.act_due = self.first_due(at);
+                    return;
+                }
+                if let Some(ep) = &mut self.episode
+                    && !ep.pocket
+                    && ep.repair.piece == lift.repair.piece
+                {
+                    tracing::info!(
+                        piece = ?ep.repair.piece,
+                        "houseguest: her {} in her pocket",
+                        ep.repair.piece.spec().name
+                    );
+                    ep.pocket = true;
+                    // Progress: getting it where it goes starts afresh.
+                    ep.tries = 0;
+                }
+                self.set(
+                    Act::Stand {
+                        until: at + AFTER_CARRY_MS,
+                    },
+                    at,
+                );
+            }
+            Act::SetDown { set, until, .. } => {
+                if at < until {
+                    self.act_due = self.first_due(at);
+                    return;
+                }
+                if let Some(ep) = &mut self.episode
+                    && ep.pocket
+                    && !ep.set_down
+                    && (ep.repair.piece, ep.repair.to) == (set.piece, set.to)
+                {
+                    tracing::debug!(piece = ?set.piece, to = ?set.to, "houseguest: set it down");
+                    ep.set_down = true;
+                    self.events.push(HomeEvent::SetDown {
+                        piece: set.piece,
+                        to: set.to,
+                    });
+                }
+                self.set(
+                    Act::Stand {
+                        until: at + AFTER_CARRY_MS,
+                    },
+                    at,
+                );
             }
             Act::Tear {
                 build,
@@ -1774,6 +1943,7 @@ impl Osaka {
                     let inside = terrain.platform_at(next, self.y).is_some();
                     let entering = terrain.platform_at(self.x, self.y).is_none() && !inside;
                     if !inside && !entering {
+                        self.came_to_nothing(&then);
                         return self.decide(at, terrain, chances, rng);
                     }
                     self.x = next;
@@ -1789,7 +1959,13 @@ impl Osaka {
                     Then::Job(job) if job.spot() == (self.x, self.y) => {
                         return self.start_job(job, at, chances, rng);
                     }
-                    Then::Job(_) | Then::Nothing => None,
+                    Then::Job(job) => {
+                        // Arrived somewhere else (the floor changed under
+                        // her on the way).
+                        self.came_to_nothing(&Then::Job(job));
+                        None
+                    }
+                    Then::Nothing => None,
                     Then::Link(link) => Some(link),
                 };
                 match then {
@@ -1800,6 +1976,7 @@ impl Osaka {
                         ..
                     }) => {
                         let Some(target) = terrain.platforms.get(to) else {
+                            self.hop_came_to_nothing();
                             return self.decide(at, terrain, chances, rng);
                         };
                         self.pole = pole;
@@ -1820,6 +1997,7 @@ impl Osaka {
                         ..
                     }) => {
                         let Some(target) = terrain.platforms.get(to) else {
+                            self.hop_came_to_nothing();
                             return self.decide(at, terrain, chances, rng);
                         };
                         // In at the end nearest where she comes back.
@@ -1976,6 +2154,38 @@ impl Osaka {
         }
     }
 
+    /// Her walk for `then` ended short of it. If it was for a step of the
+    /// move she's making, that setting off came to nothing: a try spent.
+    fn came_to_nothing(&mut self, then: &Then) {
+        match then {
+            Then::Job(job) if job.carry() => self.spend_try(),
+            Then::Link(_) => self.hop_came_to_nothing(),
+            Then::Job(_) | Then::Nothing => {}
+        }
+    }
+
+    /// A hop of her way somewhere came to nothing: a try spent, if it was
+    /// toward a step of the move she's making.
+    fn hop_came_to_nothing(&mut self) {
+        if self.heading.as_ref().is_some_and(|h| h.job.carry()) {
+            self.spend_try();
+        }
+    }
+
+    /// Setting off for the step of the move she's at came to nothing.
+    /// Only that costs a try: an interruption on the way (chat, a
+    /// startle, an errand, her door) costs none, and she sets off again.
+    fn spend_try(&mut self) {
+        if let Some(ep) = &mut self.episode {
+            ep.tries = ep.tries.saturating_add(1);
+            tracing::debug!(
+                piece = ?ep.repair.piece,
+                tries = ep.tries,
+                "houseguest: couldn't get to the next step of moving a piece"
+            );
+        }
+    }
+
     /// At `job`'s spot: set about it.
     fn start_job(&mut self, job: Job, at: u64, chances: &Chances, rng: &mut Rng) {
         self.facing = side_facing(job.side());
@@ -1990,7 +2200,7 @@ impl Osaka {
                     PieceRef::Real(piece) => chances
                         .broken
                         .iter()
-                        .find(|b| b.felt_using(piece, seat.what) && !self.felt.contains(&b.key))
+                        .find(|b| b.felt_using(piece, seat.what) && !self.has_felt(b.key))
                         .map(|b| b.key),
                     PieceRef::Made(_) => None,
                 };
@@ -2016,6 +2226,42 @@ impl Osaka {
                     until: at + rng.range(lo, hi),
                     advert,
                     grievance,
+                }
+            }
+            // Beside the piece she means to move: "Hup!", into her
+            // pocket.
+            Job::Lift(lift) => {
+                if self
+                    .episode
+                    .is_some_and(|e| !e.pocket && e.repair.piece == lift.repair.piece)
+                {
+                    tracing::debug!(piece = ?lift.repair.piece, "houseguest: lifting a piece");
+                    self.say(HUP, at);
+                    Act::Lift {
+                        lift,
+                        since: at,
+                        until: at + LIFT_MS,
+                    }
+                } else {
+                    Act::Stand {
+                        until: at + WAIT_MS,
+                    }
+                }
+            }
+            // Where it goes: down it goes.
+            Job::SetDown(set) => {
+                if self.episode.is_some_and(|e| {
+                    e.pocket && !e.set_down && (e.repair.piece, e.repair.to) == (set.piece, set.to)
+                }) {
+                    Act::SetDown {
+                        set,
+                        since: at,
+                        until: at + SET_DOWN_MS,
+                    }
+                } else {
+                    Act::Stand {
+                        until: at + WAIT_MS,
+                    }
                 }
             }
             // At the line's end: brace to tear it.
@@ -2203,9 +2449,20 @@ impl Osaka {
     /// The piece she was using went into the closet: she's back on her
     /// feet where it was, blinking.
     pub fn lost_seat(&mut self, now: u64) {
-        if let Act::Use { seat, .. } = self.act {
-            tracing::debug!(?seat, "houseguest: her furniture went away under her");
-            self.interrupt(Cause::SeatGone, now);
+        let piece = match self.act {
+            Act::Use { seat, .. } => seat.piece,
+            Act::Lift { lift, .. } => PieceRef::Real(lift.repair.piece),
+            _ => return,
+        };
+        tracing::debug!(?piece, "houseguest: her furniture went away under her");
+        self.interrupt(Cause::SeatGone, now);
+    }
+
+    /// The piece she's lifting, while she is.
+    pub fn lifting(&self) -> Option<Furniture> {
+        match self.act {
+            Act::Lift { lift, .. } => Some(lift.repair.piece),
+            _ => None,
         }
     }
 
@@ -2377,9 +2634,36 @@ impl Osaka {
                 ..Decision::of(Bucket::Owed, "beat")
             };
         }
+        let mut ctx = Ctx {
+            x: self.x,
+            y: self.y,
+            here,
+            links: terrain
+                .links
+                .iter()
+                .filter(|l| l.from == here)
+                .copied()
+                .collect(),
+            terrain,
+            chances,
+            may_work: chances.furnished
+                && !self.worked
+                && self.episode.is_none()
+                && at >= self.arrived + WORK_AFTER_MS,
+            owes: self.owes(),
+            episode: self.episode,
+            just_set: self.just_set,
+            may_arrange: self.would_mend(&chances.broken).is_some(),
+        };
         // Landed from a hop of her way somewhere, or making for a piece
         // she made: the next hop of the same trip, without choosing anew.
-        if let Some(going) = self.heading.clone().filter(|h| hopped || h.mine()) {
+        // (Not a step of a move whose tries are spent: that's let go below.)
+        let spent = self.episode.is_some_and(|e| e.tries >= TRIES);
+        if let Some(going) = self
+            .heading
+            .clone()
+            .filter(|h| (hopped || h.mine()) && !(h.job.carry() && spent))
+        {
             if let Some(job) = going.find(chances)
                 && self.go_to(going.want, job, here, terrain, at)
             {
@@ -2393,7 +2677,33 @@ impl Osaka {
                     ..Decision::of(Bucket::Continuation, method)
                 };
             }
+            // A step of the move, judged and still holding, and no way
+            // there: a try spent. (Not judged yet, or no longer holding,
+            // is for `arrange_next`: a wait, or another way.)
+            let judged = self
+                .episode
+                .is_some_and(|ep| chances.judged.is_some_and(|j| j.of(&ep) && j.holds));
+            if going.job.carry() && judged {
+                self.spend_try();
+            }
             self.drop_heading(Letting::Gone);
+        }
+        // The piece she's moving (or has just set down) comes before
+        // anything new.
+        if self.episode.is_some() || self.just_set.is_some() {
+            if let Some(decision) = self.arrange_next(&ctx, whims, here, terrain, at, rng) {
+                return Decision {
+                    heading,
+                    ..decision
+                };
+            }
+            // She let it go: what's on offer is as if she never had it.
+            ctx.episode = self.episode;
+            ctx.just_set = self.just_set;
+            ctx.may_work = chances.furnished
+                && !self.worked
+                && self.episode.is_none()
+                && at >= self.arrived + WORK_AFTER_MS;
         }
         // A piece she made and hasn't finished with: she finishes it, or
         // uses it, before choosing anything new.
@@ -2407,21 +2717,6 @@ impl Osaka {
                 };
             }
         }
-        let ctx = Ctx {
-            x: self.x,
-            y: self.y,
-            here,
-            links: terrain
-                .links
-                .iter()
-                .filter(|l| l.from == here)
-                .copied()
-                .collect(),
-            terrain,
-            chances,
-            may_work: chances.furnished && !self.worked && at >= self.arrived + WORK_AFTER_MS,
-            owes: self.owes(),
-        };
         // What's on offer: each want one of whose methods binds, with
         // what it binds.
         let mut offers: Vec<(Want, &'static str, Bind)> = Want::ALL
@@ -2558,7 +2853,21 @@ impl Osaka {
                 self.go_to_work(out, at, rng);
                 return true;
             }
-            Bind::Job(job) => return self.go_to(want, job, here, terrain, at),
+            Bind::Job(job) => {
+                let lift = match &job {
+                    Job::Lift(lift) => Some(lift.repair),
+                    _ => None,
+                };
+                let went = self.go_to(want, job, here, terrain, at);
+                // Setting off to lift a piece, she's moving it.
+                if went
+                    && let Some(repair) = lift
+                    && self.episode.is_none()
+                {
+                    self.begin_episode(repair);
+                }
+                return went;
+            }
         };
         self.set(act, at);
         true
@@ -2689,6 +2998,12 @@ impl Osaka {
     /// The one way she lets go of where she was heading.
     fn drop_heading(&mut self, why: Letting) {
         if let Some(heading) = self.heading.take() {
+            // A step of moving a piece: the piece owns what's lost.
+            let why = if heading.job.carry() {
+                Letting::Carry
+            } else {
+                why
+            };
             tracing::debug!(?why, want = ?heading.want, "houseguest: lets go of where she was heading");
             #[cfg(test)]
             self.headings.push(format!("let go: {why:?}"));
@@ -2718,20 +3033,234 @@ impl Osaka {
     }
 
     /// The rules of her home she has felt broken this visit.
-    pub fn felt(&self) -> &[Grievance] {
-        &self.felt
+    pub fn felt(&self) -> Vec<Grievance> {
+        self.felt.iter().map(|f| f.key).collect()
+    }
+
+    /// Whether she has felt `key` broken this visit.
+    fn has_felt(&self, key: Grievance) -> bool {
+        self.felt.iter().any(|f| f.key == key)
+    }
+
+    /// The stage: she has felt `key` broken, using `on` (a piece, for a
+    /// use).
+    pub fn feel(&mut self, key: Grievance, on: (Furniture, Use)) {
+        if !self.has_felt(key) {
+            tracing::info!(rule = %key.label(), "houseguest: she felt {} (cued)", key.label());
+            self.felt.push(Felt {
+                key,
+                on,
+                let_go: false,
+            });
+        }
+    }
+
+    /// The piece of her home she's moving, if she is.
+    pub fn episode(&self) -> Option<&Episode> {
+        self.episode.as_ref()
+    }
+
+    /// The piece in her pocket, if one is: it shows nowhere.
+    pub fn carrying(&self) -> Option<Furniture> {
+        self.episode.filter(|e| e.pocket).map(|e| e.repair.piece)
+    }
+
+    /// The things she has done about her home this visit.
+    #[cfg(test)]
+    pub fn home_acts(&self) -> u8 {
+        self.home_acts
+    }
+
+    /// She sets about moving a piece, as `repair` says.
+    fn begin_episode(&mut self, repair: Repair) {
+        tracing::info!(
+            rule = %repair.key.label(),
+            repair = %repair.label(),
+            "houseguest: she means to put her home right"
+        );
+        self.episode = Some(Episode {
+            repair,
+            pocket: false,
+            set_down: false,
+            tries: 0,
+        });
+    }
+
+    /// The stage: lift `lift`'s piece (she must be on its floor), to move
+    /// it as its repair says.
+    pub fn lift(&mut self, lift: Lift, at: u64) {
+        self.begin_episode(lift.repair);
+        self.credit = Some(Want::Arrange);
+        self.pursue(Job::Lift(lift), at);
+    }
+
+    /// The frame took the piece she set down, `piece`: it stands where
+    /// it's right, and she's pleased ("There!"). It's one thing done
+    /// about her home, and nesting eases; next she sits back down where
+    /// she felt it was wrong.
+    pub fn set_down_done(&mut self, piece: Furniture, now: u64) {
+        let Some(ep) = self
+            .episode
+            .take_if(|e| e.pocket && e.repair.piece == piece)
+        else {
+            return;
+        };
+        tracing::info!(
+            ?piece,
+            repair = %ep.repair.label(),
+            "houseguest: set her {} down where it's right",
+            piece.spec().name
+        );
+        if self.heading.as_ref().is_some_and(|h| h.job.carry()) {
+            self.drop_heading(Letting::Carry);
+        }
+        self.home_acts = self.home_acts.saturating_add(1);
+        self.just_set = self
+            .felt
+            .iter()
+            .find(|f| f.key == ep.repair.key)
+            .map(|f| f.on);
+        // Done: nesting eases, whatever she was at when the frame took it.
+        if self.credit == Some(Want::Arrange) {
+            self.credit = None;
+        }
+        self.serve(Want::Arrange, 1.0, Spot::Any);
+        self.say(THERE, now);
+    }
+
+    /// The frame wouldn't take the piece she set down (it no longer fits
+    /// where it goes, or the rule's right without it): she lets it go,
+    /// it's back where it stood, and she glances at it there (`toward`).
+    pub fn set_down_refused(&mut self, toward: (i32, i32)) {
+        if self.episode.is_some_and(|e| e.set_down) {
+            tracing::debug!("houseguest: the frame refused what she set down");
+            self.drop_episode(Some(toward));
+        }
+    }
+
+    /// She lets go of moving the piece: it's back where it stood (if she
+    /// had lifted it) and she owes a glance at it there (`toward`, else
+    /// where she is); or, still on her way to lift it, at where she was
+    /// heading.
+    fn drop_episode(&mut self, toward: Option<(i32, i32)>) {
+        let Some(ep) = self.episode.take() else {
+            return;
+        };
+        tracing::info!(
+            piece = ?ep.repair.piece,
+            lifted = ep.pocket,
+            "houseguest: let go of moving her {}",
+            ep.repair.piece.spec().name
+        );
+        if self.heading.as_ref().is_some_and(|h| h.job.carry()) {
+            self.drop_heading(Letting::Carry);
+        }
+        // One go at each rule she felt: let go, it stays as it is.
+        for felt in self.felt.iter_mut().filter(|f| f.key == ep.repair.key) {
+            felt.let_go = true;
+        }
+        let at = toward.unwrap_or((self.x, self.y));
+        let loss = if ep.pocket {
+            Loss::Moved(ep.repair.piece)
+        } else {
+            Loss::Heading
+        };
+        self.owe(loss, at);
+    }
+
+    /// Moving a piece of her home comes before anything new: lifting the
+    /// one she set off for, carrying it to where it goes, then (once the
+    /// frame has taken it) sitting back down where she felt it was wrong.
+    /// While the frame has yet to judge the step she's at (she has just
+    /// lifted it, or set it down), she waits a moment. A move the frame
+    /// no longer allows is made another way if there's one for the same
+    /// piece, else she lets it go; so too once setting off for a step has
+    /// come to nothing [`TRIES`] times (interruptions cost none). `None`
+    /// when she's let go of it (she chooses anew).
+    fn arrange_next(
+        &mut self,
+        ctx: &Ctx,
+        whims: Whims,
+        here: usize,
+        terrain: &Terrain,
+        at: u64,
+        rng: &mut Rng,
+    ) -> Option<Decision> {
+        if self.just_set.take().is_some() {
+            if let Some(("arrange/use-it", Bind::Job(Job::Use(seat)))) =
+                mind::bind(ctx, whims, Want::Arrange)
+                && self.go_to(Want::Use(seat.what), Job::Use(seat), here, terrain, at)
+            {
+                self.credit = Some(Want::Use(seat.what));
+                return Some(Decision::of(Bucket::Continuation, "arrange/use-it"));
+            }
+            return None;
+        }
+        let mut ep = self.episode?;
+        let wait = |osaka: &mut Self| {
+            osaka.set(
+                Act::Stand {
+                    until: at + WAIT_MS,
+                },
+                at,
+            );
+            Some(Decision::reflex("waiting"))
+        };
+        let Some(judged) = ctx.chances.judged.filter(|j| j.of(&ep) && !ep.set_down) else {
+            return wait(self);
+        };
+        if !judged.holds {
+            // Another way to set it down, if the last frame had one.
+            let other = ctx.chances.repairs.iter().find(|r| {
+                ep.pocket
+                    && (r.key, r.piece) == (ep.repair.key, ep.repair.piece)
+                    && r.to != ep.repair.to
+            });
+            if let Some(&repair) = other {
+                tracing::debug!(repair = %repair.label(), "houseguest: somewhere else for it");
+                ep.repair = repair;
+                self.episode = Some(ep);
+                return wait(self);
+            }
+            self.drop_episode(judged.home);
+            return None;
+        }
+        if ep.tries >= TRIES {
+            self.drop_episode(judged.home);
+            return None;
+        }
+        let bound = mind::bind(ctx, whims, Want::Arrange)
+            .filter(|(_, bind)| matches!(bind, Bind::Job(job) if job.carry()));
+        if let Some((method, bind)) = bound
+            && self.plan(Want::Arrange, bind, here, terrain, at, rng)
+        {
+            self.credit = Some(Want::Arrange);
+            return Some(Decision::of(Bucket::Continuation, method));
+        }
+        // She can't get to it just now: a try spent, and a while before
+        // she sets off again.
+        self.spend_try();
+        self.set(
+            Act::Stand {
+                until: at + UNREACHED_MS,
+            },
+            at,
+        );
+        Some(Decision::reflex("can't get to it"))
     }
 
     /// The rule of her home she would put right, of those `broken`: the
-    /// first she felt that is broken still, while her mood leaves her
-    /// more to do about her home this visit.
+    /// first she felt that is broken still (and she hasn't let go of
+    /// putting right), while her mood leaves her more to do about her
+    /// home this visit.
     pub fn would_mend(&self, broken: &[super::rules::Broken]) -> Option<Grievance> {
         if self.home_acts >= self.mood.home_acts() {
             return None;
         }
         self.felt
             .iter()
-            .copied()
+            .filter(|f| !f.let_go)
+            .map(|f| f.key)
             .find(|&key| broken.iter().any(|b| b.key == key))
     }
 
@@ -2741,9 +3270,13 @@ impl Osaka {
             if (from..from + GRIEVANCE_MS).contains(&now))
     }
 
-    /// A rule of her home she has felt is broken still.
+    /// A rule of her home she has felt is broken still (and she hasn't
+    /// let it go).
     fn grieved(&self, chances: &Chances) -> bool {
-        chances.broken.iter().any(|b| self.felt.contains(&b.key))
+        chances
+            .broken
+            .iter()
+            .any(|b| self.felt.iter().any(|f| f.key == b.key && !f.let_go))
     }
 
     /// Her mood this visit.
@@ -2821,6 +3354,11 @@ impl Osaka {
         self.x = x;
         self.y = y;
         self.drop_heading(Letting::Placed);
+        // A piece she was moving is back where it stood, unremarked.
+        if let Some(ep) = self.episode.take() {
+            tracing::debug!(piece = ?ep.repair.piece, "houseguest: placed; the piece she was moving is put back");
+        }
+        self.just_set = None;
         self.watch_until = 0;
         self.speech = None;
         self.at_work = false;
@@ -3363,6 +3901,11 @@ impl Osaka {
                 now.saturating_sub(since),
                 until.saturating_sub(since),
             ),
+            // Bent to the piece, bobbing.
+            Act::Lift { since, .. } | Act::SetDown { since, .. } => {
+                let frame = (now.saturating_sub(since) / LIFT_FRAME_MS % 2) as u8;
+                (Pose::ToeTouch(frame), Face::Happy, None)
+            }
             Act::Tear { ripped, step, .. } => (
                 Pose::Pull {
                     heaving: ripped && step % 2 == 1,

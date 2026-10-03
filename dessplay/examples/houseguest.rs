@@ -8,8 +8,9 @@
 //! ←/→ pick a scene · Enter play it · m a chat message arrives ·
 //! f give her the next piece of furniture · x show why she does what she
 //! does · v her next mood (lazy, busy, dreamy) · g goodbye · n new seed ·
-//! [ ] slower / faster · 1–5 make her sleepy,
-//! restless, keen to tidy, mischievous, or hungry · q quit. The bar shows her
+//! [ ] slower / faster · 1–6 make her sleepy,
+//! restless, keen to tidy, mischievous, hungry, or keen to put right what
+//! she's felt is wrong with her home · q quit. The bar shows her
 //! needs. Her decisions and their reasons are logged to
 //! `houseguest-stage.log` in the working directory (`tail -f` it beside
 //! the stage).
@@ -113,7 +114,7 @@ fn run(seed: &mut u64, picker: ratatui_image::picker::Picker) -> color_eyre::Res
             };
             let mood = guest.mood().unwrap_or_default();
             let menu = format!(
-                " ◀ {} ▶  Enter play · f furnish · m chat · x why · v mood · g bye · n seed {} · [ ] {}× · 1-5 needs · q │ {} │ {}",
+                " ◀ {} ▶  Enter play · f furnish · m chat · x why · v mood · g bye · n seed {} · [ ] {}× · 1-6 needs · q │ {} │ {}",
                 scene.name(),
                 seed,
                 SPEEDS[speed],
@@ -187,6 +188,7 @@ fn run(seed: &mut u64, picker: ratatui_image::picker::Picker) -> color_eyre::Res
             KeyCode::Char('3') => guest.press(Want::Tidy),
             KeyCode::Char('4') => guest.press(Want::Mischief),
             KeyCode::Char('5') => guest.press(Want::Hungry),
+            KeyCode::Char('6') => guest.press(Want::Nesting),
             KeyCode::Char('[') => speed = speed.saturating_sub(1),
             KeyCode::Char(']') => speed = (speed + 1).min(SPEEDS.len() - 1),
             _ => {}

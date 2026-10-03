@@ -1630,6 +1630,54 @@ this section states what is built.
   once it's mended. What she sets right in a visit is capped by her
   mood: lazy nothing, ordinary or dreamy one thing, industrious three
   (why: [decisions](decisions.md#she-feels-whats-wrong-with-her-home-once-a-visit-2026-10-03)).
+- **Putting her home right** (phase 4). **A satisfied rule never moves
+  anything.** While a rule she has felt is still broken and her mood
+  leaves her something to do about her home, she works out how she'd put
+  it right (the first such rule she felt; one fix per felt rule), on the
+  frame as it's painted: again whenever her home, the panes, that rule
+  or the text she has moved changes, and at most once a second
+  otherwise. A way is one of the rule's movable pieces (the sofa, then
+  the TV; the lamp; the fridge or bookshelf; of a bed and TV in one
+  room, one she hasn't settled first; a piece that doesn't belong) set
+  down at a place on a strip, either way round, where the rule holds, no
+  rule that held is broken, no room is worse for it (and a piece she
+  hasn't settled spoils none), every strip that held its pieces still
+  does, and it fits this frame (on blank free cells where she'd fit to
+  use it; every other piece that showed still showing, clear of
+  makeshift pieces). Cheapest first: a piece she hasn't settled goes to
+  a room it completes, else one it doesn't spoil, else an empty strip,
+  and is moved before a settled piece the same rule would move (but a
+  turn where it stands is cheapest of all); then by the cells her
+  pieces move, one for a turn. She weighs at most 2,000 ways. Keen on
+  her home (*nesting*), she sets off to lift the piece: beside it on its
+  floor she bends to it ("Hup!", under a second) and **it's in her
+  pocket**: it shows nowhere (not drawn, not solid, no seats, not in her
+  goodbye), and its place on its strip is kept for it (nothing moves
+  into it, and nothing she makes or moves goes there). She carries it
+  where it goes, on any floor as on any trip, and sets it down (under a
+  second); the next paint takes it if the move still puts the rule
+  right and fits (judged with the piece moved, so its own old place is
+  free). Taken, it stands there, settled; she says "There!", nesting
+  eases, it's her one thing about her home done (of her mood's cap),
+  and she sits back down where she felt it was wrong (from a sofa now
+  facing the TV, she watches). **The piece is hers, not her act's**: a
+  chat line, a startle, an errand, being rained out of a focused pane
+  through her door, or a resize, and she carries on with it after;
+  until she has decided what else, she chooses nothing new. Text
+  closeting the piece as she bends to lift it startles her off it, and
+  she tries again. Interruptions cost her nothing; setting off for a
+  step (to lift it, to set it down) that comes to nothing (no way there,
+  or her walk ending short of it) is a try, and after three she lets the
+  move go (she waits a couple of seconds between them). A move the frame
+  no longer allows is made another way for the same piece if there is
+  one, else she lets it go too. Let go, the piece is back where it
+  stood, she glances back at it ("Oh well..."), and that rule stays as
+  it is this visit: she doesn't set about it again, and it no longer
+  makes her keen on her home. While the frame hasn't yet judged the step she's at, she
+  waits a moment. A goodbye leaves the piece where it stood (her record
+  changes only when it's set down and taken), and the stage putting her
+  somewhere puts it back, unremarked
+  (why: [decisions](decisions.md#she-puts-her-home-right-with-the-piece-in-her-pocket-2026-10-03)).
 - **Makeshift furniture**: wanting to sit on a sofa (or watch the TV
   from one) or sleep in a bed and having none, she makes one of text.
   At a line that ends beside her box at chest height (as for a pull),

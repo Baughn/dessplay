@@ -191,6 +191,7 @@ pub(super) fn group(doing: &str) -> &'static str {
         "Pull" | "Swap" | "Giggle" | "Innocent" | "Tear" | "Sneeze" | "PutBack" | "Admire" => {
             "mischief"
         }
+        "Lift" | "SetDown" => "home",
         d if d.starts_with("idle:") => "exercise",
         _ => "standing",
     }

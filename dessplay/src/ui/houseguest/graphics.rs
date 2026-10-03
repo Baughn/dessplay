@@ -342,6 +342,19 @@ pub(super) struct Graphics {
     picker: Picker,
     line: LineGeometry,
     cache: HashMap<Key, Protocol>,
+    /// Times the cache has started over, and images encoded, so far.
+    #[cfg(test)]
+    counts: Counts,
+}
+
+/// What her images have cost so far (tests measure the budget by it).
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct Counts {
+    /// Times the frame cache was full and started over.
+    pub clears: usize,
+    /// Images composed and encoded.
+    pub encoded: usize,
 }
 
 impl Graphics {
@@ -356,6 +369,8 @@ impl Graphics {
             picker,
             line: LineGeometry::for_cell(height),
             cache: HashMap::new(),
+            #[cfg(test)]
+            counts: Counts::default(),
         })
     }
 
@@ -448,8 +463,16 @@ impl Graphics {
         if !self.cache.contains_key(&key) {
             if self.cache.len() >= CACHE_LIMIT {
                 self.cache.clear();
+                #[cfg(test)]
+                {
+                    self.counts.clears += 1;
+                }
             }
             let protocol = self.frame(&key)?;
+            #[cfg(test)]
+            {
+                self.counts.encoded += 1;
+            }
             self.cache.insert(key.clone(), protocol);
         }
         let protocol = self.cache.get(&key)?;
@@ -462,6 +485,12 @@ impl Graphics {
     #[cfg(test)]
     pub fn cached(&self) -> usize {
         self.cache.len()
+    }
+
+    /// What her images have cost so far.
+    #[cfg(test)]
+    pub fn counts(&self) -> Counts {
+        self.counts
     }
 
     /// Compose and encode one frame.

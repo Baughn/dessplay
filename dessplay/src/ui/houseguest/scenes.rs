@@ -126,6 +126,31 @@ pub(super) enum Job {
     Build(Build),
     /// Use a piece of her furniture.
     Use(super::room::Seat),
+    /// Lift a piece of her furniture into her pocket, to move it.
+    Lift(Lift),
+    /// Set the piece in her pocket down where it's right.
+    SetDown(SetDown),
+}
+
+/// Lifting `repair.piece`, standing at `(x, y)` (beside it on its
+/// floor) facing `side`, to move it as `repair` says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Lift {
+    pub repair: super::rules::Repair,
+    pub x: i32,
+    pub y: i32,
+    pub side: Side,
+}
+
+/// Setting `piece` down at `to`, standing at `(x, y)` (beside where it
+/// goes, on that floor) facing `side`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct SetDown {
+    pub piece: super::room::Furniture,
+    pub to: super::rules::Placement,
+    pub x: i32,
+    pub y: i32,
+    pub side: Side,
 }
 
 impl Job {
@@ -136,12 +161,20 @@ impl Job {
             Self::Swap(s) => JobRef::Swap(s),
             Self::Build(b) => JobRef::Build(b),
             Self::Use(seat) => JobRef::Use(seat),
+            Self::Lift(lift) => JobRef::Lift(lift),
+            Self::SetDown(set) => JobRef::SetDown(set),
         }
     }
 
     /// Where she stands to do it.
     pub fn spot(&self) -> (i32, i32) {
         self.by_ref().spot()
+    }
+
+    /// A step of moving a piece of her home (the piece in her pocket
+    /// owns what's lost if it's let go; see `Osaka::drop_heading`).
+    pub fn carry(&self) -> bool {
+        matches!(self, Self::Lift(_) | Self::SetDown(_))
     }
 
     pub fn side(&self) -> Side {
@@ -165,6 +198,8 @@ pub(super) enum JobRef<'a> {
     Swap(&'a Swap),
     Build(&'a Build),
     Use(&'a super::room::Seat),
+    Lift(&'a Lift),
+    SetDown(&'a SetDown),
 }
 
 impl JobRef<'_> {
@@ -175,6 +210,8 @@ impl JobRef<'_> {
             Self::Swap(s) => (s.x, s.y),
             Self::Build(b) => (b.x, b.y),
             Self::Use(seat) => (seat.x, seat.y),
+            Self::Lift(l) => (l.x, l.y),
+            Self::SetDown(s) => (s.x, s.y),
         }
     }
 
@@ -187,6 +224,8 @@ impl JobRef<'_> {
                 super::sprite::Facing::Left => Side::Left,
                 super::sprite::Facing::Right => Side::Right,
             },
+            Self::Lift(l) => l.side,
+            Self::SetDown(s) => s.side,
         }
     }
 
@@ -197,6 +236,8 @@ impl JobRef<'_> {
             Self::Swap(s) => (s.row, s.y),
             Self::Build(b) => (b.row, b.y),
             Self::Use(_) => return 1,
+            // Bent down to the piece at her feet.
+            Self::Lift(_) | Self::SetDown(_) => return (HEIGHT - 1) as u8,
         };
         (i32::from(row) - (y - HEIGHT)).clamp(0, HEIGHT - 1) as u8
     }

@@ -2105,7 +2105,7 @@ welcome; the only goal is "watching her is kind of fun".
 
 ## Phase 38: Houseguest mind and home
 
-**Status: phases 0–3 done (2026-10-02); phase 4 in progress (steps 1–5 of 9 committed 2026-10-03; the working design, with its amendments and the commit plan, is [phase4-design.md](proposals/2026-10-02-houseguest-mind/phase4-design.md); approved decor art in its `decor/` dir), before anything since phase 2 is pushed (the user: rooms may mix until then).** Design: [the mind
+**Status: phases 0–3 done (2026-10-02); phase 4 in progress (steps 1–6 of 9 committed 2026-10-03; the working design, with its amendments and the commit plan, is [phase4-design.md](proposals/2026-10-02-houseguest-mind/phase4-design.md); approved decor art in its `decor/` dir), before anything since phase 2 is pushed (the user: rooms may mix until then).** Design: [the mind
 and home proposal](proposals/2026-10-02-houseguest-mind.md) (direction
 agreed with the user; their answers are its *Decisions*). Its migration
 plan numbers its own phases 0–8; this section records them.
@@ -2433,3 +2433,19 @@ beauty and decor kinds there). In order, each against the gate:
 Re-run `visit_census` (add a row for how many rules stand broken at
 each visit's end, and home acts per visit by mood) and `sofa_census`,
 and record them here.
+
+**Image budget with a carry (step 6, 2026-10-03; design T4).** Before
+trials (step 7) are decided: `a_carry_stays_within_the_image_budget`
+(line art, Industrious, nesting pressed, text-dense panes) counts the
+images encoded and the times the frame cache (`CACHE_LIMIT` = 256)
+filled and started over (`Graphics::counts`, test-only).
+
+| Home | Set down at | Encoded from feeling it | Lift → 5 min after set-down | Cached | Clears |
+|---|---|---|---|---|---|
+| sofa turned from the TV (turn in place) | 152.6 s | 107 | 32 | 116 | 0 |
+| unsettled TV carried downstairs | 139.0 s | 120 | 41 | 130 | 0 |
+
+A carry costs some 30–40 distinct images (the piece hidden, then shown
+again, under her and the poses around it), well inside the cache with
+no clear: the budget holds for trials, which re-show the piece up to
+three times (some 100 more images at worst).

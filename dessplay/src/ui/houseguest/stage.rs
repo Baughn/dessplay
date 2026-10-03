@@ -87,11 +87,14 @@ pub enum Scene {
     MakeSofa,
     /// Tear text off a line and crumple it into a makeshift bed.
     MakeBed,
+    /// Her sofa turned away from her TV (she gets both if she hasn't
+    /// them): she's felt it, and turns it round.
+    Arrange,
 }
 
 impl Scene {
     /// Every scene, in menu order.
-    pub const ALL: [Scene; 31] = [
+    pub const ALL: [Scene; 32] = [
         Self::Arrive,
         Self::Pull,
         Self::Swap,
@@ -123,6 +126,7 @@ impl Scene {
         Self::Pet,
         Self::MakeSofa,
         Self::MakeBed,
+        Self::Arrange,
     ];
 
     /// A short menu label.
@@ -159,6 +163,7 @@ impl Scene {
             Self::Pet => "pet the cat",
             Self::MakeSofa => "make a sofa of text",
             Self::MakeBed => "make a bed of text",
+            Self::Arrange => "turn the sofa round",
         }
     }
 
@@ -205,6 +210,8 @@ pub enum Want {
     Mischief,
     /// She gets peckish.
     Hungry,
+    /// She wants her home right (what she's felt is wrong with it).
+    Nesting,
 }
 
 impl Want {
@@ -216,6 +223,7 @@ impl Want {
             Self::Tidy => Need::Tidy,
             Self::Mischief => Need::Mischief,
             Self::Hungry => Need::Hungry,
+            Self::Nesting => Need::Nesting,
         }
     }
 }
@@ -238,6 +246,29 @@ pub(super) fn direct(
     let name = scene.name();
     match scene {
         Scene::Arrive => Ok("arriving".into()),
+        // The sofa was set up turned from the TV as the frame was read,
+        // and she's felt it: she sets off to lift it.
+        Scene::Arrange => {
+            let repair = *chances
+                .repairs
+                .first()
+                .ok_or_else(|| format!("{name}: no way to put it right here"))?;
+            let at = visit
+                .shown
+                .iter()
+                .find(|s| s.item == repair.piece && s.scrap.is_none())
+                .ok_or_else(|| format!("{name}: her {} isn't out", repair.piece.spec().name))?;
+            let ((x, y), side) = super::reach(at, terrain, osaka.x)
+                .ok_or_else(|| format!("{name}: nowhere to stand to lift it"))?;
+            let away = match side {
+                Side::Left => 1,
+                Side::Right => -1,
+            };
+            let start = approach(terrain, x, y, away);
+            osaka.place(start, y, now);
+            osaka.lift(scenes::Lift { repair, x, y, side }, now);
+            Ok(format!("{name}: {}", repair.label()))
+        }
         Scene::Pull | Scene::Swap => {
             let jobs: Vec<Job> = if scene == Scene::Pull {
                 chances.pulls.iter().cloned().map(Job::Pull).collect()

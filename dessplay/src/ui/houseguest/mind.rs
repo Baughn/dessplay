@@ -7,9 +7,9 @@
 //! and the body's stream (durations, how she looks) is its own.
 
 use super::brain::{Spot, Want};
-use super::osaka::{Activity, CHAT_FACTOR, Chances, landing, middle, pick};
-use super::room::{Furniture, Seat, Use};
-use super::scenes::{Build, Job};
+use super::osaka::{Activity, CHAT_FACTOR, Chances, Episode, landing, middle, pick};
+use super::room::{Furniture, PieceRef, Seat, Use};
+use super::scenes::{Build, Job, Lift, SetDown};
 use super::terrain::{Link, Route, Terrain};
 
 /// Her mind's stream is seeded from the body's first draw, salted.
@@ -78,6 +78,14 @@ pub(super) struct Ctx<'a> {
     pub may_work: bool,
     /// Mischief she still owes an undo for (one at a time).
     pub owes: bool,
+    /// The piece of her home she's moving, if she is.
+    pub episode: Option<Episode>,
+    /// The piece she just set down where it's right, and the use she
+    /// felt was wrong on it (she sits back down to it).
+    pub just_set: Option<(Furniture, Use)>,
+    /// She'd put a rule of her home right: one she felt is broken
+    /// still, and her mood leaves her something to do about her home.
+    pub may_arrange: bool,
 }
 
 /// What she does on the spot.
@@ -156,6 +164,13 @@ const TRAVEL: &[Method] = &[m("travel/link", take_link), m("travel/door", door_a
 const WORK: &[Method] = &[m("work", work)];
 const PULL: &[Method] = &[m("pull", pull)];
 const SWAP: &[Method] = &[m("swap", swap)];
+/// The most progressed step first: what she's carrying comes before
+/// lifting anything.
+const ARRANGE: &[Method] = &[
+    m("arrange/use-it", use_it),
+    m("arrange/carry", carry),
+    m("arrange/lift", lift),
+];
 const USE: &[Method] = &[
     m("use/finish-my-heap", finish_my_heap),
     m("use/mine", use_mine),
@@ -179,6 +194,7 @@ pub(super) fn methods(want: Want) -> &'static [Method] {
         // A heap is crumpled as a step of what she made it for.
         Want::Use(Use::Crumple) => &[],
         Want::Use(_) => USE,
+        Want::Arrange => ARRANGE,
     }
 }
 
@@ -426,6 +442,76 @@ fn use_make(c: &Ctx, w: Whims, want: Want) -> Option<Bind> {
     }
 }
 
+/// Just set down where it's right: back to where she felt it was wrong
+/// (a sofa she'd watch from, if it faces the TV now; else lounge on).
+fn use_it(c: &Ctx, _: Whims, _: Want) -> Option<Bind> {
+    let (piece, what) = c.just_set?;
+    let wants: &[Use] = if piece == Furniture::Sofa {
+        &[Use::Watch, Use::Lounge, what]
+    } else {
+        &[what]
+    };
+    wants
+        .iter()
+        .find_map(|&w| {
+            c.chances
+                .seats
+                .iter()
+                .find(|s| s.piece == PieceRef::Real(piece) && s.what == w)
+        })
+        .map(|&seat| Bind::Job(Job::Use(seat)))
+}
+
+/// The piece in her pocket, to where it goes, as the last frame judged
+/// it (and it still holds).
+fn carry(c: &Ctx, _: Whims, _: Want) -> Option<Bind> {
+    let ep = c.episode.filter(|e| e.pocket && !e.set_down)?;
+    let judged = c.chances.judged.filter(|j| j.of(&ep) && j.holds)?;
+    let ((x, y), side) = judged.spot?;
+    Some(Bind::Job(Job::SetDown(SetDown {
+        piece: ep.repair.piece,
+        to: ep.repair.to,
+        x,
+        y,
+        side,
+    })))
+}
+
+/// The piece she means to move, to lift: the one she set off for, while
+/// the last frame judged its move still holds; or, setting about it, one
+/// of the cheapest ways to put the rule right (the first piece of the
+/// rule's order among them; a whim among its places).
+fn lift(c: &Ctx, w: Whims, _: Want) -> Option<Bind> {
+    let (repair, (x, y), side) = match c.episode {
+        Some(ep) if !ep.pocket => {
+            let judged = c.chances.judged.filter(|j| j.of(&ep) && j.holds)?;
+            let (spot, side) = judged.spot?;
+            (ep.repair, spot, side)
+        }
+        Some(_) => return None,
+        None => {
+            if !c.may_arrange {
+                return None;
+            }
+            let first = c.chances.repairs.first()?;
+            let tied: Vec<_> = c
+                .chances
+                .repairs
+                .iter()
+                .filter(|r| (r.tier, r.cost, r.piece) == (first.tier, first.cost, first.piece))
+                .collect();
+            let repair = **tied.get(w.below("repair", tied.len() as u64) as usize)?;
+            let &(_, spot, side) = c
+                .chances
+                .lift_at
+                .iter()
+                .find(|(p, ..)| *p == repair.piece)?;
+            (repair, spot, side)
+        }
+    };
+    Some(Bind::Job(Job::Lift(Lift { repair, x, y, side })))
+}
+
 /// Where she makes a makeshift `item` for `what`: anywhere it can be
 /// made, the chat a tenth as likely, and a sofa [`FACING_TV`] times as
 /// likely where it would face the TV too.
@@ -473,6 +559,8 @@ pub(super) enum Loss {
     Heading,
     /// A piece she made, let be after her tries.
     LetBe,
+    /// A piece she was moving, put back where it stood.
+    Moved(Furniture),
 }
 
 impl Loss {
@@ -484,6 +572,7 @@ impl Loss {
             Self::Tear => Some((&["...never mind."], 1, 4)),
             Self::Heading => None,
             Self::LetBe => Some((&["Nah."], 1, 2)),
+            Self::Moved(_) => Some((&["Oh well..."], 1, 2)),
         }
     }
 }
@@ -600,6 +689,21 @@ impl Heading {
                 .max_by_key(|b| b.row)
                 .cloned()
                 .map(Job::Build),
+            // The move she's making, as the last frame judged it.
+            Job::Lift(was) => {
+                let judged = chances.judged.filter(|j| {
+                    !j.pocket && j.holds && (j.piece, j.to) == (was.repair.piece, was.repair.to)
+                })?;
+                let ((x, y), side) = judged.spot?;
+                Some(Job::Lift(Lift { x, y, side, ..*was }))
+            }
+            Job::SetDown(was) => {
+                let judged = chances
+                    .judged
+                    .filter(|j| j.pocket && j.holds && (j.piece, j.to) == (was.piece, was.to))?;
+                let ((x, y), side) = judged.spot?;
+                Some(Job::SetDown(SetDown { x, y, side, ..*was }))
+            }
         }
     }
 
@@ -609,7 +713,7 @@ impl Heading {
             Job::Pull(p) => p.row,
             Job::Swap(s) => s.row,
             Job::Build(b) => b.row,
-            Job::Use(_) => 0,
+            Job::Use(_) | Job::Lift(_) | Job::SetDown(_) => 0,
         }
     }
 }
@@ -655,6 +759,7 @@ mod tests {
             Loss::Tear,
             Loss::Heading,
             Loss::LetBe,
+            Loss::Moved(Furniture::Sofa),
         ];
         let pools = losses
             .iter()

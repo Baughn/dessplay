@@ -102,6 +102,9 @@ pub(super) const RULES: [RuleRow; 6] = [
     },
 ];
 
+/// The row of [`RULES`] for a sofa facing the TV.
+pub(super) const FACES_ROW: usize = 0;
+
 /// How far from a wall a piece against it may stand, in cells.
 const WALL_GAP: i32 = 1;
 
@@ -739,14 +742,15 @@ pub(super) fn search(home: &Home, frame: &Frame, target: &Broken) -> Search {
     Search { repairs, examined }
 }
 
-/// Whether `repair` still mends its rule on `frame`, as [`search`] would
-/// judge it there (where the piece would stand may have moved with a
-/// resize).
-pub(super) fn check(home: &Home, frame: &Frame, repair: &Repair) -> bool {
+/// Where `repair`'s piece would stand on `frame`, if the move still
+/// mends its rule there as [`search`] would judge it (where it would
+/// stand may have moved with a resize). Judged with the move applied:
+/// the piece's own place, which it keeps until set down, is free.
+pub(super) fn check(home: &Home, frame: &Frame, repair: &Repair) -> Option<Shown> {
     let before = Before::new(home, frame);
     let mut scratch = before.home.clone();
-    evaluate(&before, &mut scratch, repair.key, repair.piece, repair.to)
-        .is_some_and(|(_, laid)| fits_now(frame, &before, &laid, repair.piece))
+    let (moved, laid) = evaluate(&before, &mut scratch, repair.key, repair.piece, repair.to)?;
+    fits_now(frame, &before, &laid, repair.piece).then_some(moved.at)
 }
 
 #[cfg(test)]
@@ -814,6 +818,11 @@ mod tests {
         screen: Tv,
     };
     const APART: Rule = Rule::Apart { a: Bed, b: Tv };
+
+    #[test]
+    fn the_faces_row_is_the_sofa_and_the_tv() {
+        assert_eq!(RULES[FACES_ROW].rule, FACES);
+    }
 
     #[test]
     fn a_sofa_turned_toward_the_tv_faces_it() {
@@ -1161,7 +1170,7 @@ mod tests {
         let found = search(&home, &frame, &broken);
         assert!(found.examined <= CANDIDATES, "{}", found.examined);
         for r in &found.repairs {
-            assert!(check(&home, &frame, r), "{r:?}");
+            assert!(check(&home, &frame, r).is_some(), "{r:?}");
         }
         (home, found.repairs)
     }
@@ -1368,7 +1377,7 @@ mod tests {
             shown: &shown,
             made,
         };
-        check(&home, &frame, r)
+        check(&home, &frame, r).is_some()
     }
 
     /// The cells under `at`.
@@ -1707,7 +1716,7 @@ mod tests {
                 for r in found.repairs.iter().rev() {
                     prop_assert_eq!(r.key, target.key);
                     prop_assert!(target.pieces.contains(&r.piece));
-                    prop_assert!(check(&home, &frame, r), "{:?}", r);
+                    prop_assert!(check(&home, &frame, r).is_some(), "{:?}", r);
                     let at = mends(&home, &nooks, &buf, &shown, &made, r)?;
                     prop_assert_eq!(at, r.at);
                     // A turn where it stands keeps its anchor.
@@ -1725,7 +1734,7 @@ mod tests {
                     } else if delivered {
                         prop_assert!(in_place, "{:?} ahead of a delivery's move", r);
                     }
-                    if check(&later_home, &later, r) {
+                    if check(&later_home, &later, r).is_some() {
                         mends(&later_home, &later_nooks, &later_buf, &later_shown, &later_made, r)?;
                     }
                 }

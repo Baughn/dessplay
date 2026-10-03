@@ -19,6 +19,12 @@ Add new days at the top. Add new entries at the bottom of existing days.
   from a sofa turned away from the TV, "Too noisy to sleep..." in a bed
   in the same room as the TV. She says it once a visit, and it stays on
   her mind while it's still wrong.
+- Added: The houseguest puts right what she grumbled about. "Hup!", and
+  the piece is in her pocket; she carries it where it belongs (upstairs
+  or down, if need be), sets it down ("There!"), and sits back down to
+  enjoy it, watching the TV from a sofa she has turned toward it. She
+  does it once a visit, a few times when she's feeling busy, and never
+  when she's feeling lazy.
 
 ## 2026-10-02
 

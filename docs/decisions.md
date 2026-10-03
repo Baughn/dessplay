@@ -2608,6 +2608,64 @@ pieces on the strips, closeted or not.
 *Caps by mood* are the user's call: a lazy visit leaves the home alone,
 and an industrious one sets several things right.
 
+## She puts her home right, with the piece in her pocket (2026-10-03)
+
+**Rule:** A rule she has felt is mended by moving one of its pieces,
+the cheapest way that holds this frame, worked out at paint. She lifts
+the piece into her pocket (shown nowhere, its place kept), carries it
+and sets it down; the next paint takes it if the move still holds and
+fits, else she lets it go and it's back where it stood. The piece is
+hers until then, through every interruption; she doesn't choose anything
+new meanwhile. See [design.md](design.md#houseguest).
+
+**Why:** *The pocket over a lug* is the user's call (proposal Q9,
+2026-10-02): a carrying animation for every piece and pose costs far
+more than a magic pocket, and the pocket is in character. A visible lug
+for short moves stays a possible gag once the image budget is measured.
+
+*Worked out at paint, not as she decides* (a deviation from the
+proposal, which ran the search in her decision with a snapshot of the
+frame's blank cells): whether a piece fits is one definition, the one
+her pieces are shown by ([one definition of where she
+stays](#houseguest-reads-the-frame-she-stands-on-2026-10-01)). A second,
+snapshotted copy of it would drift from the first, and a move judged on
+one would be refused by the other. The paint already has the frame, so
+the search runs there, throttled, and her decision reads its result.
+For the same reason the set-down is committed at paint, judged again
+with the piece moved; a goodbye before that paint loses nothing of her
+record.
+
+*Unsettled pieces move first*: she never chose where a delivery stands,
+so moving it is putting it where it goes; moving a piece she has
+settled undoes a choice she made. A turn where it stands is cheapest
+of all, whoever chose it.
+
+*The carry is certain*: a half-done move is a piece missing from her
+home, so she never rolls away from it as she would from a heading.
+What ends it is setting it down, the frame refusing it, or her tries
+running out, and then she glances back at it where it stands again.
+While a step waits for the frame (just lifted, or set down) she waits
+too, rather than read an old frame's judgement as a refusal.
+
+*Tries count failures, not settings-off*: the piece is hers through
+every interruption, so a chat line, a startle, an errand or her door
+must not cost her one; otherwise a busy chat (three lines during one
+carry) made her drop a piece she was carrying fine (review of the first
+cut, 2026-10-03). A try is a setting-off that comes to nothing (no way
+there, or her walk ending short of it, which the walk itself reports),
+so a blocked step can't loop forever, and interruptions, which come
+from outside her, can't use her tries up. Unreachable, she waits a
+couple of seconds between tries, so a spot that's busy for a moment
+doesn't cost her the move.
+
+*One fix per felt rule, capped by mood*: she mends what she noticed,
+once, and only as much as her mood allows (lazy, nothing). A satisfied
+rule never moves anything, so she never rearranges a home that's right.
+One go means one: a move she lets go of stays let go that visit, else
+the same move, refused again for the same reason, would play "Hup!" …
+"Oh well..." over and over, and the rule would keep her keen on a home
+she can't put right.
+
 ## Houseguest chooses by needs among the top few (2026-09-28)
 
 **Rule:** Her next act is a weighted-random pick among the four

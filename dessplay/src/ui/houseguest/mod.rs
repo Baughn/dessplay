@@ -154,7 +154,29 @@ struct Visit {
     /// What that was worked out from (a hash of her home, the panes,
     /// the rule, and the text she's moved), and when.
     mending: Option<(u64, u64)>,
+    /// A piece she set down, for the next paint to take where it goes
+    /// (if it still fits there) or refuse.
+    set_down: Option<(Furniture, rules::Placement)>,
+    /// What the last paint made of the move she's making.
+    judging: Option<Judging>,
+    /// Where the piece in her pocket stood (its place is kept for it:
+    /// nothing she makes or moves goes there).
+    ghost: Option<Rect>,
     size: (u16, u16),
+}
+
+/// What a paint makes of the move she's making (the `osaka::Judged`
+/// she sees, once the terrain is read): where the piece would stand set
+/// down, if the move still puts its rule right and fits; where it shows
+/// now (to lift it); and where it stands at its anchor, shown or not.
+#[derive(Clone, Copy, Debug)]
+struct Judging {
+    piece: Furniture,
+    to: rules::Placement,
+    pocket: bool,
+    target: Option<Shown>,
+    showing: Option<Shown>,
+    laid: Option<Shown>,
 }
 
 /// `view` with every protected rectangle widened to take in both halves
@@ -301,6 +323,9 @@ pub struct Guest {
     shop_now: bool,
     /// The stage: the cat is home this visit.
     cat_now: bool,
+    /// The stage: at the next paint, a sofa turned away from her TV (see
+    /// [`stage::Scene::Arrange`]).
+    arranging: bool,
     /// When to poke the scrollback accordion, and its shake.
     nudge: nudge::Nudge,
     errand: Option<Errand>,
@@ -334,6 +359,7 @@ impl Guest {
             gift: None,
             shop_now: false,
             cat_now: false,
+            arranging: false,
             nudge: nudge::Nudge::default(),
             errand: None,
         }
@@ -419,6 +445,9 @@ impl Guest {
                     self.gift = Some(Furniture::Tv);
                 }
             }
+            // A sofa and a TV, set up at the next paint (it needs the
+            // frame).
+            stage::Scene::Arrange => self.arranging = true,
             _ => {
                 if let Some(what) = scene.furniture()
                     && let Some(&item) = Furniture::ALL
@@ -788,6 +817,7 @@ impl Guest {
                 let shown = furnish(
                     &mut self.ledger,
                     &mut self.gift,
+                    &mut self.arranging,
                     &mut self.note,
                     buf,
                     view,
@@ -799,15 +829,20 @@ impl Guest {
                 if self.ledger != before {
                     self.unsaved = true;
                 }
-                tend_made(visit, buf, &view.protected, size, now);
+                // The place of the piece in her pocket is kept for it.
+                let mut kept = view.protected.clone();
+                kept.extend(visit.ghost);
+                tend_made(visit, buf, &kept, size, now);
                 visit.shown.extend(visit.made.iter().map(|made| made.piece));
-                if let Some((seat, ..)) = visit.osaka.use_span()
-                    && !visit.shown.iter().any(|s| s.piece() == seat.piece)
-                {
+                let gone = |piece: room::PieceRef| !visit.shown.iter().any(|s| s.piece() == piece);
+                let using = visit.osaka.use_span().map(|(seat, ..)| seat.piece);
+                let lifting = visit.osaka.lifting().map(room::PieceRef::Real);
+                if using.or(lifting).is_some_and(gone) {
                     visit.osaka.lost_seat(now);
                 }
                 let mut base = view.protected.clone();
                 base.extend(visit.shown.iter().map(Shown::cover));
+                base.extend(visit.ghost);
                 let mut gripped = true;
                 for op in visit.osaka.take_ops() {
                     if !scenes::apply(&op, &mut visit.layer, buf, &base) {
@@ -882,7 +917,10 @@ impl Guest {
                 let mut holes = base;
                 holes.extend(runs(visit.layer.holes()));
                 let swaps = scenes::swaps(buf, &visit.terrain, &holes, &visit.layer);
-                let builds = builds(buf, visit, &pulls, &protected);
+                let mut solid = protected.clone();
+                solid.extend(visit.ghost);
+                let builds = builds(buf, visit, &pulls, &solid);
+                let (lift_at, judged) = arranging(visit);
                 if let Some(scene) = self.cue.take() {
                     let offered = osaka::Chances {
                         pulls: pulls.clone(),
@@ -900,6 +938,8 @@ impl Guest {
                         chat,
                         broken: visit.broken.clone(),
                         repairs: visit.repairs.clone(),
+                        lift_at: lift_at.clone(),
+                        judged,
                     };
                     let note =
                         stage::direct(scene, buf, &protected, visit, &offered, now, &mut self.rng);
@@ -932,6 +972,8 @@ impl Guest {
                     chat,
                     broken: visit.broken.clone(),
                     repairs: visit.repairs.clone(),
+                    lift_at,
+                    judged,
                 };
                 // In line art, pieces she overlaps go in her image: two
                 // images would cut each other out.
@@ -1048,6 +1090,9 @@ impl Guest {
             broken: Vec::new(),
             repairs: Vec::new(),
             mending: None,
+            set_down: None,
+            judging: None,
+            ghost: None,
             size,
         }));
     }
@@ -1246,6 +1291,9 @@ fn record(ledger: &mut Ledger, shop_now: &mut bool, visit: &mut Visit) -> bool {
                     made.used |= made.piece.piece() == room::PieceRef::Made(id);
                 }
             }
+            // Hers once the frame takes it: at the paint (it must fit
+            // where it goes then).
+            osaka::HomeEvent::SetDown { piece, to } => visit.set_down = Some((piece, to)),
         }
     }
     changed
@@ -1465,12 +1513,17 @@ fn bubble_spot(
         .find(|&(start, row)| (start..start + len).all(|x| blank(x, row)))
 }
 
-/// Where her furniture stands this frame, placing the stage's gift
-/// first if there is one. Nothing covers protected cells or moved text.
+/// Where her furniture stands this frame: the piece she set down taken
+/// where it goes (if it fits there), then any delivery, then the stage's
+/// gift; the rules of her home judged, how she'd put one right worked
+/// out, and the move she's making judged on what's final. The piece in
+/// her pocket shows nowhere (its place is kept). Nothing covers
+/// protected cells or moved text.
 #[allow(clippy::too_many_arguments)]
 fn furnish(
     ledger: &mut Ledger,
     gift: &mut Option<Furniture>,
+    arranging: &mut bool,
     note: &mut Option<Result<String, String>>,
     buf: &Buffer,
     view: &IdleView,
@@ -1487,6 +1540,57 @@ fn furnish(
     };
     let home = &mut ledger.home;
     let mut shown = home.project(buf, &view.nooks, &blocked);
+    // The stage: a sofa turned away from her TV.
+    let cued = std::mem::take(arranging) && stage_arrange(home, buf, view, &blocked);
+    if cued {
+        shown = home.project(buf, &view.nooks, &blocked);
+    }
+    let made: Vec<Rect> = visit.made.iter().map(|m| m.piece.cover()).collect();
+    // The piece she set down: where it goes if it fits there and puts
+    // its rule right still (judged with the move made: its own place is
+    // free), else she lets it go.
+    if let Some((piece, to)) = visit.set_down.take() {
+        let frame = rules::Frame {
+            buf,
+            nooks: &view.nooks,
+            blocked: &blocked,
+            shown: &shown,
+            made: &made,
+        };
+        let repair = visit
+            .osaka
+            .episode()
+            .filter(|e| e.set_down && (e.repair.piece, e.repair.to) == (piece, to))
+            .map(|e| e.repair)
+            .filter(|_| visit.osaka.carrying() == Some(piece));
+        match repair.map(|r| rules::check(home, &frame, &r)) {
+            Some(Some(_)) => {
+                let strips = room::strips(&view.nooks);
+                if let Some(&(_, e)) = strips.iter().find(|(s, _)| *s == to.strip)
+                    && let Some(prop) = home.props.iter_mut().find(|p| p.item == piece)
+                {
+                    let cols = piece.spec().footprint.0;
+                    prop.strip = to.strip;
+                    prop.anchor = Some(to.anchor);
+                    prop.at = e.pin(e.left(to.anchor, cols), cols).1;
+                    prop.facing = to.facing;
+                    prop.settled = true;
+                }
+                visit.osaka.set_down_done(piece, now);
+                shown = home.project(buf, &view.nooks, &blocked);
+            }
+            Some(None) => {
+                let back = home
+                    .layout(&view.nooks)
+                    .into_iter()
+                    .find(|s| s.item == piece)
+                    .map_or((visit.osaka.x, visit.osaka.y), |s| middle_of(&s));
+                visit.osaka.set_down_refused(back);
+            }
+            // Not hers to set down any more (the stage put her somewhere).
+            None => {}
+        }
+    }
     // A delivery: what she ordered on an earlier visit arrives boxed,
     // wherever it will fit. Her first TV is ordered for her, to arrive
     // on her second visit.
@@ -1519,8 +1623,159 @@ fn furnish(
         );
         visit.broken = broken;
     }
-    mend(home, buf, view, visit, &shown, &blocked, now);
+    // The stage: she has felt the sofa's wrong way round, and works out
+    // at once how to put it right, whatever her mood.
+    let faces = rules::Grievance {
+        row: rules::FACES_ROW,
+        piece: Furniture::Sofa,
+    };
+    let force = (cued && visit.broken.iter().any(|b| b.key == faces)).then_some(faces);
+    if let Some(key) = force {
+        visit.osaka.feel(key, (Furniture::Sofa, room::Use::Lounge));
+    }
+    mend(home, buf, view, visit, &shown, &blocked, force, now);
+    let frame = rules::Frame {
+        buf,
+        nooks: &view.nooks,
+        blocked: &blocked,
+        shown: &shown,
+        made: &made,
+    };
+    visit.judging = visit.osaka.episode().map(|ep| Judging {
+        piece: ep.repair.piece,
+        to: ep.repair.to,
+        pocket: ep.pocket,
+        target: rules::check(home, &frame, &ep.repair),
+        showing: shown.iter().find(|s| s.item == ep.repair.piece).copied(),
+        laid: laid.iter().find(|s| s.item == ep.repair.piece).copied(),
+    });
+    // The piece in her pocket shows nowhere; its place is kept.
+    let carried = visit.osaka.carrying();
+    visit.ghost = carried
+        .and_then(|piece| laid.iter().find(|s| s.item == piece))
+        .map(Shown::cover);
+    shown.retain(|s| Some(s.item) != carried);
     shown
+}
+
+/// The middle of `at`, on its floor.
+fn middle_of(at: &Shown) -> (i32, i32) {
+    (at.left + i32::from(at.size().0) / 2, at.floor)
+}
+
+/// Where she'd stand to lift `at`, or set it down there: beside it on
+/// its floor where she may stay (the side nearer `near` first), else
+/// over its middle; and which way she'd face it.
+fn reach(at: &Shown, terrain: &Terrain, near: i32) -> Option<((i32, i32), scenes::Side)> {
+    let (middle, floor) = middle_of(at);
+    let mut xs = at.beside().to_vec();
+    xs.sort_by_key(|&x| ((x - near).abs(), x));
+    xs.push(middle);
+    let x = xs
+        .into_iter()
+        .find(|&x| terrain.platform_at(x, floor).is_some() && terrain.restful(x, floor))?;
+    let side = if x > middle {
+        scenes::Side::Left
+    } else {
+        scenes::Side::Right
+    };
+    Some(((x, floor), side))
+}
+
+/// What she sees of moving her pieces this frame (her terrain read):
+/// where she'd stand to lift each piece the repairs move, and what the
+/// paint made of the move she's making.
+fn arranging(visit: &Visit) -> (Vec<osaka::LiftAt>, Option<osaka::Judged>) {
+    let near = visit.osaka.x;
+    let mut lift_at: Vec<osaka::LiftAt> = Vec::new();
+    for repair in &visit.repairs {
+        if lift_at.iter().any(|(p, ..)| *p == repair.piece) {
+            continue;
+        }
+        if let Some(at) = visit
+            .shown
+            .iter()
+            .find(|s| s.item == repair.piece && s.scrap.is_none())
+            && let Some((spot, side)) = reach(at, &visit.terrain, near)
+        {
+            lift_at.push((repair.piece, spot, side));
+        }
+    }
+    let judged = visit.judging.map(|j| {
+        let to = if j.pocket { j.target } else { j.showing };
+        osaka::Judged {
+            piece: j.piece,
+            to: j.to,
+            pocket: j.pocket,
+            holds: j.target.is_some(),
+            spot: to.and_then(|at| reach(&at, &visit.terrain, near)),
+            home: j.laid.as_ref().map(middle_of),
+        }
+    });
+    (lift_at, judged)
+}
+
+/// The stage: her sofa turned away from her TV, both settled on one
+/// strip a few cells apart (the TV against a wall, the sofa further in,
+/// facing on into the room): a turn where it stands puts it right.
+/// Pieces she owns are moved (and unpacked); others are added. Tried on
+/// each strip, from each wall, until both show (and everything that
+/// showed still does). False when there's nowhere for them.
+fn stage_arrange(
+    home: &mut room::Home,
+    buf: &Buffer,
+    view: &IdleView,
+    blocked: &dyn Fn(i32, i32) -> bool,
+) -> bool {
+    use room::{Anchor, Side};
+    use sprite::Facing;
+    let before = home.clone().project(buf, &view.nooks, blocked);
+    let tv_cols = Furniture::Tv.spec().footprint.0;
+    for (strip, e) in room::strips(&view.nooks) {
+        let room::Strip::Bottom(nook) = strip;
+        for side in [Side::Left, Side::Right] {
+            // Both face into the room: the sofa, past the TV, away from
+            // it.
+            let facing = match side {
+                Side::Left => Facing::Right,
+                Side::Right => Facing::Left,
+            };
+            let mut tried = home.clone();
+            for (item, offset, facing) in [
+                (Furniture::Tv, 0, facing),
+                (Furniture::Sofa, tv_cols + 4, facing),
+            ] {
+                let anchor = Anchor { side, offset };
+                let cols = item.spec().footprint.0;
+                let at = e.pin(e.left(anchor, cols), cols).1;
+                let prop = room::Prop {
+                    anchor: Some(anchor),
+                    ..room::Prop::new(item, nook, at, facing)
+                };
+                match tried.props.iter_mut().find(|p| p.item == item) {
+                    Some(owned) => *owned = prop,
+                    None => {
+                        tried.add(prop);
+                    }
+                }
+            }
+            let shown = tried.project(buf, &view.nooks, blocked);
+            let shows = |item: Furniture| shown.iter().any(|s| s.item == item);
+            if shows(Furniture::Tv)
+                && shows(Furniture::Sofa)
+                && before.iter().all(|b| shows(b.item))
+            {
+                tracing::info!(
+                    ?strip,
+                    ?side,
+                    "houseguest: (stage) a sofa turned from the TV"
+                );
+                *home = tried;
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// How often she works out again how to put her home right, when
@@ -1528,9 +1783,11 @@ fn furnish(
 const MEND_MS: u64 = 1000;
 
 /// Work out how she'd put right the rule of her home she would mend
-/// (see [`Osaka::would_mend`]), on this frame: again when her home, the
-/// panes, that rule or the text she has moved changes, and at most
-/// every [`MEND_MS`] otherwise (text comes and goes).
+/// (see [`Osaka::would_mend`]; the stage may `force` one), on this
+/// frame: again when her home, the panes, that rule or the text she has
+/// moved changes, and at most every [`MEND_MS`] otherwise (text comes
+/// and goes).
+#[allow(clippy::too_many_arguments)]
 fn mend(
     home: &room::Home,
     buf: &Buffer,
@@ -1538,10 +1795,11 @@ fn mend(
     visit: &mut Visit,
     shown: &[Shown],
     blocked: &dyn Fn(i32, i32) -> bool,
+    force: Option<rules::Grievance>,
     now: u64,
 ) {
     use std::hash::{Hash, Hasher};
-    let wanted = visit.osaka.would_mend(&visit.broken);
+    let wanted = force.or_else(|| visit.osaka.would_mend(&visit.broken));
     let Some(target) = visit.broken.iter().find(|b| Some(b.key) == wanted).cloned() else {
         visit.repairs.clear();
         visit.mending = None;
@@ -1553,9 +1811,10 @@ fn mend(
     let mut hasher = std::hash::DefaultHasher::new();
     (home, &view.nooks, target.key, &moved).hash(&mut hasher);
     let basis = hasher.finish();
-    let due = visit
-        .mending
-        .is_none_or(|(was, at)| was != basis || now >= at.saturating_add(MEND_MS));
+    let due = force.is_some()
+        || visit
+            .mending
+            .is_none_or(|(was, at)| was != basis || now >= at.saturating_add(MEND_MS));
     if !due {
         return;
     }
@@ -1569,7 +1828,10 @@ fn mend(
     };
     let found = rules::search(home, &frame, &target);
     debug_assert!(
-        found.repairs.iter().all(|r| rules::check(home, &frame, r)),
+        found
+            .repairs
+            .iter()
+            .all(|r| rules::check(home, &frame, r).is_some()),
         "a repair found that doesn't hold up: {:?}",
         found.repairs
     );
