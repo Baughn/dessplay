@@ -2859,7 +2859,7 @@ room can make it pressing, while a short one rarely does.
 ## Her image cache drops what she showed longest ago (2026-10-03)
 
 **Rule:** Each distinct image of her (with the pieces drawn in it) is
-transmitted once and cached, up to 256; a full cache drops the image
+transmitted once and cached, up to 1024; a full cache drops the image
 shown longest ago, one at a time. See [design.md](design.md#houseguest).
 
 **Why:** the cache used to start over when it filled, so the next
@@ -2870,11 +2870,68 @@ distinct images in 20 industrious minutes in the furnished home). In
 the phase-4 measurement one such visit encoded 385 images, 120 of them
 ones it had already had, though the carry it was measuring cost only
 15–25. Dropping the one shown longest ago keeps her working set (the
-poses and pieces around her now): that visit encodes 265, drops 9
-stale images and encodes none twice. A `BTreeMap` keyed by when each
+poses and pieces around her now): at the 256 then in force, that
+visit encoded 265, dropped 9 stale images and encoded none twice. A `BTreeMap` keyed by when each
 was last shown picks it, so the choice never depends on hash order.
-Memory is bounded as before (some 8 MB with 9×19-pixel cells).
-Rejected: a bigger cache, which only moves the cliff.
+
+*Sized for a long visit (the user's call, 2026-10-03, having seen
+Ghostty hold far more images than she used).* At 256 the cache still
+filled within 20 minutes on busy visits (industrious in the furnished
+home with a fridge: seed 2 dropped 111 and encoded 19 again, seed 0
+dropped 16), and every image encoded again is sent again and stored
+again in the terminal. The image census (`image_census` in the
+houseguest's tests/census.rs: every mood forced, 16 two-hour visits
+each, a cache that never drops, at 10×20-pixel cells) measured two
+kinds of screen. On a still one (the stage, her furnished home and
+the resident's room, at 100×20 and 100×30 cells) the most images any
+visit showed was 421 by 20 minutes, 591 by an hour and 664 by two
+hours, and the largest working set (the smallest cache that would drop
+nothing she shows again) 603. Growth slows as a visit goes on (her
+poses and pieces repeat; what's new is mostly where she passes over
+text), to one or two a minute. In a live chat (200×50, a line every 45
+seconds scrolling the rest up) it doesn't slow: each line puts new
+text under her, some ten new images a minute for as long as the chat
+runs, so the working set grows with the visit (1663 by two hours) and
+isn't the measure there; what is, is how many a cache would encode
+again. The census counts that for 256, 512, 1024 and 2048 from each
+showing's reuse distance (the images shown since it last was).
+
+1024 keeps every image of every still visit, with some 70% to spare
+(none encoded again where 256 encoded up to 500 again in a two-hour
+stage visit, and 512 up to 5), so the busy-visit tests now hold her to
+no image dropped and none encoded twice; past it, the stalest goes
+first as before. In the live chat it encodes nothing again for the
+first hour, and by two hours at most 196 again in a visit, where the
+busiest showed 1669 new ones: the terminal's store grows with the new
+ones, which no cache can spare it, and the re-encodes add about a
+tenth. The cost is client memory: ratatui-image keeps each image's
+kitty transmission (raw RGBA in base64) for its whole life, 30–43 KB
+an image by room at 10×20-pixel cells (33 KB across the census), so a
+full cache is some 30 to 43 MB (the still two-hour visits held at most
+22 MB). The limit counts images, not bytes, so that grows with the
+cell's area: perhaps four times as much if a terminal reports cells in
+device pixels on a 2× display (unmeasured), where a full cache would
+approach the client's whole footprint (some 150 MiB, see
+[the memory profile](memory-profile-2026-09-19.md)). The terminal stores the raw
+RGBA of what it was sent (three quarters of the transmission) until
+its own limit evicts it: Ghostty 1.3's `image-storage-limit` defaults
+to 320 MB a screen (from `ghostty +show-config --default --docs`),
+some 10,000 to 14,000 of her images by room, which a live chat would
+take most of a day to fill, so the client, not the terminal, is the
+limit.
+
+Rejected: keeping 256, which drops images she shows again within 20
+minutes; 2048, which holds a two-hour live chat with nothing encoded
+again but then does as 1024 does an hour later (a bigger cache only
+moves the cliff), for twice the memory (60–87 MB full, close to half
+the client's footprint); an unlimited cache, which a live chat grows
+without bound; a budget in bytes (summing each transmission's size)
+rather than images, which wouldn't grow with the cell's area: worth
+having if a HiDPI terminal proves the image count too loose, not
+before it's measured; and deleting an image from the terminal (`a=d`)
+as the cache drops it, since ratatui-image picks each image's id at
+random and keeps it private (deleting would mean our own kitty
+encoder), and on a still screen nothing is dropped to delete.
 
 ## A room is spoilt only by what it forbids (2026-10-03)
 

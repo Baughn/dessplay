@@ -287,11 +287,16 @@ fn assert_untouched_but_feet(
     Ok(())
 }
 
-/// A Ghostty-like picker: kitty protocol, 9×19 px cells. (The fixed
+/// A Ghostty-like picker: kitty protocol, 9×19 px cells.
+fn kitty() -> ratatui_image::picker::Picker {
+    kitty_cells(9, 19)
+}
+
+/// A kitty-protocol picker with `width`×`height`-pixel cells. (The fixed
 /// font size constructor is the only deterministic one.)
 #[allow(deprecated)]
-fn kitty() -> ratatui_image::picker::Picker {
-    let mut picker = ratatui_image::picker::Picker::from_fontsize((9, 19).into());
+fn kitty_cells(width: u16, height: u16) -> ratatui_image::picker::Picker {
+    let mut picker = ratatui_image::picker::Picker::from_fontsize((width, height).into());
     picker.set_protocol_type(ratatui_image::picker::ProtocolType::Kitty);
     picker
 }
@@ -1819,11 +1824,22 @@ fn home_screen() -> (Buffer, IdleView) {
     (buf, view)
 }
 
+/// The most distinct images a 20-minute visit to her furnished home may
+/// encode in line art (9×19-pixel cells). The frame cache is sized for
+/// visits far longer, so it bounds nothing here: this does. The most any
+/// such visit encodes is 350 (busy, with her vignettes every chance),
+/// and this is close to half again that, so a change that costs her
+/// half as many images again (each encoded in two variants comes to
+/// some 530) fails; and half the cache, so a visit this busy leaves the
+/// other half free.
+const VISIT_IMAGES: usize = 512;
+
 /// A furnished home over long visits in line art: she uses each of her
 /// things (and sleeps in her bed more than on a border once she has one), goes
 /// to work at most once a visit, her
 /// image with the pieces she overlaps never hides text, and her images
-/// stay within the frame cache: none she needs again was dropped.
+/// stay within the frame cache and [`VISIT_IMAGES`]: none she needs
+/// again was dropped.
 #[test]
 fn a_furnished_home_gets_used_and_stays_cheap() {
     use super::brain::Want;
@@ -1846,6 +1862,10 @@ fn a_furnished_home_gets_used_and_stays_cheap() {
         choices.extend(&visit.osaka.choices);
         let counts = guest.graphics.as_ref().unwrap().counts();
         assert_eq!(counts.reencoded, 0, "seed {seed}: {counts:?}");
+        assert!(
+            counts.encoded <= VISIT_IMAGES,
+            "seed {seed}: her images cost more: {counts:?}"
+        );
     }
     let count = |want: Want| choices.iter().filter(|&&k| k == want).count();
     // Each piece gets used (a nap is one in fifty or so of her choices,
@@ -1871,8 +1891,9 @@ fn a_furnished_home_gets_used_and_stays_cheap() {
 /// Busy about a furnished home, over long visits in line art: industrious
 /// (her sofa, given, sits turned from where the TV landed, and she
 /// arranges as she feels it), she walks and works and carries more than
-/// any other mood, and the frame cache, full, drops only images she no
-/// longer needs: each image she shows is encoded at most once, or nearly.
+/// any other mood, and the frame cache, sized for a visit far longer,
+/// never fills: each image she shows is encoded once, and they come to
+/// no more than [`VISIT_IMAGES`].
 /// What it costs is counted here (and recorded in plan.md, for trials).
 #[test]
 fn a_busy_furnished_home_stays_cheap() {
@@ -1894,30 +1915,39 @@ fn a_busy_furnished_home_stays_cheap() {
             visit_of(&guest).osaka.retried,
             guest.broken()
         );
+        assert_eq!(
+            (counts.evicted, counts.reencoded),
+            (0, 0),
+            "seed {seed}: her frame cache filled: {counts:?}"
+        );
         assert!(
-            counts.reencoded <= 4,
-            "seed {seed}: her working set thrashed: {counts:?}"
+            counts.encoded <= VISIT_IMAGES,
+            "seed {seed}: her images cost more: {counts:?}"
         );
     }
     assert!(acts >= 1, "she never set anything down");
 }
 
 /// Her vignettes as often as they may be (every splice that may wrap a
-/// use she starts does, ten minutes apart) cost her frame cache next to
-/// nothing: busy about a furnished home with her fridge (industrious, as
-/// in [`a_busy_furnished_home_stays_cheap`]) for twenty minutes in line
-/// art, the chopsticks before her homework and the andagi after her
-/// snacks, the cache fills (so what it drops is tried) and drops scarcely
-/// more that she needs again than the same visit without them. (The two
-/// visits part ways at the first vignette, so this is the vignettes'
-/// cost give or take where she happens to go.)
+/// use she starts does, ten minutes apart) cost next to nothing and fit
+/// in her frame cache with the rest of a busy visit: about a furnished
+/// home with her fridge (industrious, as in
+/// [`a_busy_furnished_home_stays_cheap`]; seeds 0 and 2 once outgrew the
+/// old cache of 256, seed 2 dropping 111 images) for twenty minutes in
+/// line art, the chopsticks before her homework and the andagi after
+/// her snacks, the cache drops nothing and encodes no image twice, with
+/// them or without, the visit stays within [`VISIT_IMAGES`], and the
+/// vignettes add scarcely any images to it. (The two visits part ways
+/// at the first vignette, so that is their cost give or take where she
+/// happens to go. How the cache drops what it must is
+/// `graphics::tests::a_full_cache_drops_what_she_showed_longest_ago`.)
 #[test]
 fn a_home_full_of_vignettes_stays_cheap() {
     use super::brain::Mood;
     use script::SpliceId;
     let mut played = std::collections::HashSet::new();
     for seed in [0u64, 2, 3] {
-        let mut reencoded = [0; 2];
+        let mut encoded = [0; 2];
         for sure in [false, true] {
             let (mut guest, real, view) = furnished_home_with(seed, &[Furniture::Fridge]);
             let State::Visiting(visit) = &mut guest.state else {
@@ -1938,18 +1968,22 @@ fn a_home_full_of_vignettes_stays_cheap() {
             let graphics = guest.graphics.as_ref().unwrap();
             let (cached, counts) = (graphics.cached(), graphics.counts());
             eprintln!("seed {seed}, vignettes {sure}: {cached} cached, {counts:?}");
-            if sure {
-                assert!(
-                    counts.evicted > 0,
-                    "seed {seed}: the cache never filled, so its budget went untried: {counts:?}"
-                );
-            }
-            reencoded[usize::from(sure)] = counts.reencoded;
+            assert_eq!(
+                (counts.evicted, counts.reencoded),
+                (0, 0),
+                "seed {seed}, vignettes {sure}: her frame cache filled: {counts:?}"
+            );
+            assert!(
+                counts.encoded <= VISIT_IMAGES,
+                "seed {seed}, vignettes {sure}: her images cost more: {counts:?}"
+            );
+            encoded[usize::from(sure)] = counts.encoded;
         }
-        let [without, with] = reencoded;
+        // Seen: 13 more, 2 more, 4 fewer.
+        let [without, with] = encoded;
         assert!(
-            with <= without + 4,
-            "seed {seed}: her vignettes thrashed her working set: {with} images encoded again, {without} without them"
+            with <= without + 32,
+            "seed {seed}: her vignettes cost {with} images, {without} without them"
         );
     }
     for want in [SpliceId::Chopsticks, SpliceId::Andagi] {

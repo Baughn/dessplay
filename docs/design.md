@@ -1951,7 +1951,8 @@ this section states what is built.
   The redrawn lines follow the terminal's geometry (thickness ≈ cell
   height / 16, centred); `DESSPLAY_HOUSEGUEST_LINE=thickness[,offset]`
   overrides it. Each distinct frame is transmitted once and cached (up
-  to 256; when full, the one shown longest ago is dropped)
+  to 1024, more than any two-hour visit to a still screen measured
+  shows; when full, the one shown longest ago is dropped)
   (why: [decisions](decisions.md#her-image-cache-drops-what-she-showed-longest-ago-2026-10-03)).
   Without kitty graphics she is the ASCII sprite. Her goodbye in line
   art: startled, a wave, then she bursts into letters that rain away

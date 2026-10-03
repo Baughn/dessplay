@@ -29,6 +29,9 @@ pub(super) struct Room {
     pub owns: &'static [Furniture],
     /// A chat line every this often (ms), if at all.
     pub chat_every: Option<u64>,
+    /// The frame and view once this many chat lines have arrived, where
+    /// each one changes the screen (else the frame stays `real`).
+    pub live: Option<fn(u64) -> (Buffer, IdleView)>,
 }
 
 /// The stage room: an evening's chat, a visitor, nothing owned.
@@ -41,6 +44,7 @@ pub(super) fn stage_room() -> Room {
         view,
         owns: &[],
         chat_every: Some(45_000),
+        live: None,
     }
 }
 
@@ -67,6 +71,7 @@ pub(super) fn furnished_room() -> Room {
             Furniture::Lamp,
         ],
         chat_every: Some(90_000),
+        live: None,
     }
 }
 
@@ -90,7 +95,41 @@ pub(super) fn resident_room() -> Room {
         view: resident_view(w, h, None),
         owns: &[Furniture::Sofa, Furniture::Tv],
         chat_every: Some(60_000),
+        live: None,
     }
+}
+
+/// A big live chat: the client's own layout at 200×50, its chat pane
+/// full, and a line arriving every 45 seconds that scrolls the rest up
+/// (each line its own, so the text under her keeps changing, as on a
+/// real evening). The image census's hardest room: more text to pass
+/// over, and none of it still.
+pub(super) fn live_room() -> Room {
+    let (real, view) = live_frame(0);
+    Room {
+        name: "live",
+        real,
+        view,
+        owns: &[],
+        chat_every: Some(45_000),
+        live: Some(live_frame),
+    }
+}
+
+/// [`live_room`]'s screen once `arrived` lines have come.
+fn live_frame(arrived: u64) -> (Buffer, IdleView) {
+    const WORDS: [&str; 16] = [
+        "so", "what", "did", "you", "think", "of", "the", "ending", "osaka", "snacks", "episode",
+        "next", "wait", "lol", "really", "same",
+    ];
+    let line = |i: u64| {
+        (0..1 + i * 7 % 6)
+            .map(|k| WORDS[((i * 5 + k * 3 + i / 16) % 16) as usize])
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let mut ui = crate::ui::houseguest::stage::chat_ui((arrived..arrived + 40).map(line));
+    real_frame(&mut ui, 200, 50)
 }
 
 /// What one visit came to.
@@ -220,10 +259,22 @@ fn named(play: Play, lamp: bool) -> Vec<(bool, String)> {
 /// in `mood` if given, and given what she owns there, each where it
 /// fits.
 fn arrive_in(room: &Room, seed: u64, graphics: bool, mood: Option<Mood>) -> Guest {
+    arrive_drawn(room, seed, mood, |guest| {
+        if graphics {
+            guest.set_picker(kitty());
+        }
+    })
+}
+
+/// [`arrive_in`], `draw` setting up how she's drawn before she comes.
+fn arrive_drawn(
+    room: &Room,
+    seed: u64,
+    mood: Option<Mood>,
+    draw: impl FnOnce(&mut Guest),
+) -> Guest {
     let mut guest = Guest::new(seed);
-    if graphics {
-        guest.set_picker(kitty());
-    }
+    draw(&mut guest);
     guest.cue(Scene::Arrive);
     paint(&mut guest, &room.real, &room.view, 0);
     if let (Some(mood), State::Visiting(visit)) = (mood, &mut guest.state) {
@@ -246,8 +297,26 @@ fn simulate_with(
     graphics: bool,
     mut watch: impl FnMut(&Osaka, u64),
 ) -> Visit {
-    let mut guest = arrive_in(room, seed, graphics, mood);
-    let mut view = room.view.clone();
+    let guest = arrive_in(room, seed, graphics, mood);
+    let (visit, _) = visit_from(room, guest, minutes, |guest, now| {
+        if let State::Visiting(visit) = &guest.state {
+            watch(&visit.osaka, now);
+        }
+    });
+    visit
+}
+
+/// The visit `guest`, just arrived in `room`, goes on to have for
+/// `minutes`, showing `watch` her at every step (before it); and her at
+/// its end.
+fn visit_from(
+    room: &Room,
+    mut guest: Guest,
+    minutes: u64,
+    mut watch: impl FnMut(&Guest, u64),
+) -> (Visit, Guest) {
+    let (mut real, mut view) = (room.real.clone(), room.view.clone());
+    let mut arrived = 0;
     // The shopping channel is on at her first watch, as on any visit
     // it's due: what she buys, and when, shows whether decor comes
     // before the furniture she lacks.
@@ -265,8 +334,8 @@ fn simulate_with(
             .next_tick(now)
             .map_or(1000, |d| d.as_millis() as u64)
             .clamp(1, 1000);
+        watch(&guest, now);
         if let State::Visiting(visit) = &guest.state {
-            watch(&visit.osaka, now);
             let doing = doing(&visit.osaka, now);
             out.groups.insert(doing.clone(), visit.osaka.census_group());
             *out.time.entry(doing).or_default() += step;
@@ -310,16 +379,25 @@ fn simulate_with(
             out.needs.push(visit.osaka.needs().summary());
         }
         now += step;
+        let mut changed = false;
         if room
             .chat_every
             .is_some_and(|every| now / every != (now - step) / every)
         {
+            if let Some(live) = room.live {
+                arrived += 1;
+                let mark = view.chat_mark;
+                (real, view) = live(arrived);
+                view.chat_mark = mark;
+                // The client draws the line as it comes.
+                changed = true;
+            }
             // Every other line asks her something.
             view.chat_mark.synced += 1;
             view.chat_mark.synced_asks = view.chat_mark.synced.is_multiple_of(2);
         }
-        if guest.advance(now) {
-            paint(&mut guest, &room.real, &view, now);
+        if guest.advance(now) || changed {
+            paint(&mut guest, &real, &view, now);
         }
         if let State::Visiting(visit) = &guest.state {
             home_census(&guest, visit, now, &mut out);
@@ -364,7 +442,7 @@ fn simulate_with(
             *out.pooled.entry(format!("{pool:?}")).or_default() += 1;
         }
     }
-    out
+    (out, guest)
 }
 
 /// The census of her home, after the step at `now`: rules she has just
@@ -657,6 +735,121 @@ fn visit_census() {
         home_summary(&visits);
         for (i, needs) in visits[0].needs.iter().enumerate() {
             eprintln!("  seed 0 at {:>2} min: {needs}", (i + 1) * 5);
+        }
+    }
+}
+
+/// Her images over long visits: each room in each mood (forced), drawn
+/// in line art at 10×20-pixel cells (a common Ghostty cell) with a frame
+/// cache that never drops an image, measuring at 20, 40, 60 and 120
+/// minutes the distinct images encoded so far (every one the terminal
+/// has been sent), her working set (the smallest cache that would never
+/// have dropped one she showed again), the images a cache of each size
+/// in [`LIMITS`] would have encoded again, and what the images hold on
+/// the client. It's how the frame cache's limit is sized. Ignored; run
+/// by hand:
+///
+/// ```text
+/// cargo test --release -p dessplay --lib image_census -- --ignored --nocapture
+/// ```
+#[test]
+#[ignore = "the image census: run by hand in release with --nocapture"]
+fn image_census() {
+    const MARKS: [u64; 4] = [20, 40, 60, 120];
+    /// Cache sizes weighed.
+    const LIMITS: [usize; 4] = [256, 512, 1024, 2048];
+    /// At a mark: distinct images, working set, cached bytes, and the
+    /// images each of [`LIMITS`] would have encoded again.
+    type Sample = (usize, usize, usize, [usize; LIMITS.len()]);
+    let measure = |room: &Room, seed: u64, mood: Mood| -> Vec<Sample> {
+        let guest = arrive_drawn(room, seed, Some(mood), |guest| {
+            guest.set_picker(kitty_cells(10, 20));
+            if let Some(graphics) = guest.graphics.as_mut() {
+                graphics.set_limit(usize::MAX);
+                graphics.measure();
+            }
+        });
+        let sample = |guest: &Guest| {
+            let graphics = guest.graphics.as_ref().expect("line art");
+            let counts = graphics.counts();
+            assert_eq!(counts.evicted, 0, "the cache never drops one here");
+            let reuses = graphics.reuses();
+            (
+                counts.encoded,
+                reuses.iter().max().map_or(0, |&d| d + 1),
+                graphics.cached_bytes(),
+                LIMITS.map(|limit| reuses.iter().filter(|&&d| d >= limit).count()),
+            )
+        };
+        let mut marks = Vec::new();
+        let last = MARKS[MARKS.len() - 1];
+        let (_, guest) = visit_from(room, guest, last, |guest, now| {
+            if let Some(&mark) = MARKS.get(marks.len())
+                && mark < last
+                && now >= mark * 60_000
+            {
+                marks.push(sample(guest));
+            }
+        });
+        marks.push(sample(&guest));
+        marks
+    };
+    let max = |v: &[usize]| v.iter().copied().max().unwrap_or(0);
+    let mean = |v: &[usize]| v.iter().sum::<usize>() as f64 / v.len().max(1) as f64;
+    for room in [stage_room(), furnished_room(), resident_room(), live_room()] {
+        let mut most: Vec<Sample> = vec![(0, 0, 0, [0; LIMITS.len()]); MARKS.len()];
+        let mut per_image = (0usize, 0usize);
+        for mood in Mood::ALL {
+            let room = &room;
+            let runs: Vec<Vec<Sample>> = std::thread::scope(|scope| {
+                let runs: Vec<_> = (0..SEEDS)
+                    .map(|seed| scope.spawn(move || measure(room, seed, mood)))
+                    .collect();
+                runs.into_iter()
+                    .map(|run| run.join().expect("a visit"))
+                    .collect()
+            });
+            eprintln!("\n== {} {mood:?} ({SEEDS} visits)", room.name);
+            for (i, minutes) in MARKS.iter().enumerate() {
+                let at: Vec<Sample> = runs.iter().map(|run| run[i]).collect();
+                let distinct: Vec<usize> = at.iter().map(|s| s.0).collect();
+                let working: Vec<usize> = at.iter().map(|s| s.1).collect();
+                let bytes: usize = at.iter().map(|s| s.2).sum();
+                let again: Vec<usize> = (0..LIMITS.len())
+                    .map(|l| at.iter().map(|s| s.3[l]).max().unwrap_or(0))
+                    .collect();
+                let images: usize = distinct.iter().sum();
+                eprintln!(
+                    "  {minutes:>3} min: distinct mean {:.0} max {}; working set mean {:.0} max {}; encoded again at most {again:?} by {LIMITS:?}; {:.1} KB an image",
+                    mean(&distinct),
+                    max(&distinct),
+                    mean(&working),
+                    max(&working),
+                    bytes as f64 / images.max(1) as f64 / 1024.0,
+                );
+                let most = &mut most[i];
+                most.0 = most.0.max(max(&distinct));
+                most.1 = most.1.max(max(&working));
+                most.2 = most.2.max(at.iter().map(|s| s.2).max().unwrap_or(0));
+                for (m, a) in most.3.iter_mut().zip(&again) {
+                    *m = (*m).max(*a);
+                }
+                if i == MARKS.len() - 1 {
+                    per_image.0 += bytes;
+                    per_image.1 += images;
+                }
+            }
+        }
+        eprintln!(
+            "\n== {}: {:.1} KB an image at 10×20-pixel cells",
+            room.name,
+            per_image.0 as f64 / per_image.1.max(1) as f64 / 1024.0
+        );
+        for (minutes, (distinct, working, bytes, again)) in MARKS.iter().zip(&most) {
+            eprintln!(
+                "  {minutes:>3} min: most distinct {distinct}, largest working set {working}, most held {:.1} MB, most encoded again {again:?} by {LIMITS:?}",
+                *bytes as f64 / 1024.0 / 1024.0
+            );
         }
     }
 }

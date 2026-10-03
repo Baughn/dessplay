@@ -30,7 +30,33 @@ const LINE: &str = "#1d1714";
 /// Distinct frames kept; past it, the one shown longest ago is dropped
 /// (never the lot: her poses in use stay, while what she showed once
 /// over passing text goes).
-pub(super) const CACHE_LIMIT: usize = 256;
+///
+/// Sized for a long visit by `image_census` (tests/census.rs: every mood,
+/// 16 two-hour visits each, in four rooms). On a still screen (the
+/// stage, her furnished home and the resident's room, 100×20 and 100×30
+/// cells) the most images a visit showed was 421 by 20 minutes, 591 by
+/// an hour and 664 by two hours, and the largest working set (the
+/// smallest cache that drops nothing she shows again) 603: 1024 keeps
+/// every image of those visits, with some 70% to spare. A live chat
+/// (200×50, a line every 45 seconds scrolling the rest up) has no
+/// working set to cover: each line puts new text under her, so she
+/// gains some ten images a minute for as long as it runs, and those
+/// one-off images push the ones she shows again down the list. There
+/// 1024 drops nothing she needs again for the first hour, and by two
+/// hours a visit has encoded at most 196 again, where the busiest showed
+/// 1669 new ones that no cache could spare the terminal; 2048 would hold
+/// two hours and then do the same.
+///
+/// Each kept image holds its kitty transmission (raw RGBA in base64,
+/// which ratatui-image keeps for the image's life): 30 to 43 KB by room
+/// at 10×20-pixel cells, so a full cache is some 30 to 43 MB of client
+/// memory. The limit counts images, not bytes, so that grows with the
+/// cell's area: perhaps four times as much if a terminal reports cells
+/// in device pixels on a 2× display (unmeasured). The terminal keeps
+/// what it was sent until its own limit evicts it (Ghostty 1.3:
+/// `image-storage-limit`, 320 MB a screen by default), so an image never
+/// encoded twice is never stored twice.
+pub(super) const CACHE_LIMIT: usize = 1024;
 
 /// What to draw.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -349,6 +375,12 @@ pub(super) struct Graphics {
     shown: BTreeMap<u64, Key>,
     /// Images shown so far (each showing's stamp).
     clock: u64,
+    /// Distinct images kept ([`CACHE_LIMIT`]; tests change it).
+    limit: usize,
+    /// While measuring, each showing of a kept image's reuse distance
+    /// (see [`Graphics::reuses`]).
+    #[cfg(test)]
+    reuses: Option<Vec<usize>>,
     /// What her images have cost so far.
     #[cfg(test)]
     counts: Counts,
@@ -384,6 +416,9 @@ impl Graphics {
             cache: HashMap::new(),
             shown: BTreeMap::new(),
             clock: 0,
+            limit: CACHE_LIMIT,
+            #[cfg(test)]
+            reuses: None,
             #[cfg(test)]
             counts: Counts::default(),
             #[cfg(test)]
@@ -413,12 +448,16 @@ impl Graphics {
         let stamp = self.clock;
         if let Some((_, last)) = self.cache.get_mut(&key) {
             let last = std::mem::replace(last, stamp);
+            #[cfg(test)]
+            if let Some(reuses) = self.reuses.as_mut() {
+                reuses.push(self.shown.range(last + 1..).count());
+            }
             if let Some(key) = self.shown.remove(&last) {
                 self.shown.insert(stamp, key);
             }
         } else {
             let protocol = self.frame(&key)?;
-            if self.cache.len() >= CACHE_LIMIT
+            if self.cache.len() >= self.limit
                 && let Some((_, stale)) = self.shown.pop_first()
             {
                 self.cache.remove(&stale);
@@ -549,6 +588,50 @@ impl Graphics {
         self.counts
     }
 
+    /// Keep at most `limit` distinct images from now on.
+    #[cfg(test)]
+    pub fn set_limit(&mut self, limit: usize) {
+        self.limit = limit;
+    }
+
+    /// Measure her working set from now on (see [`Graphics::reuses`];
+    /// each showing then costs a walk of the images shown since).
+    #[cfg(test)]
+    pub fn measure(&mut self) {
+        self.reuses = Some(Vec::new());
+    }
+
+    /// While measuring, for each showing of a kept image, how many other
+    /// images were shown since it last was: its reuse distance. With no
+    /// limit (so nothing dropped), a cache of `n` would have dropped and
+    /// encoded again just the showings whose distance is `n` or more, so
+    /// one more than the largest is her working set, the smallest cache
+    /// that drops nothing she shows again.
+    #[cfg(test)]
+    pub fn reuses(&self) -> &[usize] {
+        self.reuses.as_deref().unwrap_or_default()
+    }
+
+    /// What the cached images hold on the client: each one's kitty
+    /// transmission (raw RGBA in base64, in escape-wrapped chunks of 4096
+    /// characters), which ratatui-image keeps for the image's life. This
+    /// is the string's allocation as ratatui-image 11 reserves it outside
+    /// tmux (whose wrapping escapes are longer): 4109 bytes a chunk of
+    /// 3072 raw bytes, and 46 for the first chunk's header. Each entry's
+    /// key (held twice, with the text under her) isn't counted: it is
+    /// small beside the transmission.
+    #[cfg(test)]
+    pub fn cached_bytes(&self) -> usize {
+        self.cache
+            .keys()
+            .map(|key| {
+                let (cw, ch) = (usize::from(key.cell.0), usize::from(key.cell.1));
+                let raw = usize::from(key.clip.2) * cw * usize::from(key.clip.3) * ch * 4;
+                raw.div_ceil(3072) * 4109 + 46
+            })
+            .sum()
+    }
+
     /// Compose and encode one frame.
     fn frame(&self, key: &Key) -> Option<Protocol> {
         let image = self.compose(key)?;
@@ -610,6 +693,7 @@ impl Graphics {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+    use tuirealm::ratatui::style::Style;
 
     #[test]
     fn line_geometry_follows_the_cell_height() {
@@ -648,5 +732,77 @@ mod tests {
         draw_glyph(&mut tee, '┬', [1, 2, 3], (0, 0), (9, 19), line);
         assert_eq!(tee.get_pixel(4, 18).0[3], 255, "the stem goes down");
         assert_eq!(tee.get_pixel(4, 5).0[3], 0, "and not up");
+    }
+
+    /// Her over a screen blank but for the letter `c` in her box's corner
+    /// (derezzed in her image): one distinct image a letter.
+    fn her_over(c: char) -> (Buffer, [Layer; 1]) {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 20, 10));
+        buf.set_string(0, 0, c.to_string(), Style::new());
+        let her = Layer {
+            look: Look::Pose(Pose::Stand, Face::Vacant),
+            facing: Facing::Right,
+            at: (WIDTH / 2, HEIGHT),
+            standing: false,
+        };
+        (buf, [her])
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(
+            dessplay_core::test_support::proptest_cases(64)
+        ))]
+
+        /// Whatever she shows, in whatever order, a full cache drops the
+        /// image shown longest ago, one at a time, as a plain list in
+        /// order of last showing would: each image is encoded when it
+        /// isn't kept, and only then; it counts as encoded again when it
+        /// was kept once before; and each reuse distance measured is how
+        /// far down the list the image shown again was.
+        #[test]
+        #[allow(deprecated)] // the fixed font size picker is the deterministic one
+        fn a_full_cache_drops_what_she_showed_longest_ago(
+            limit in 1usize..6,
+            shows in proptest::collection::vec(proptest::char::range('a', 'j'), 0..80),
+        ) {
+            let mut picker = Picker::from_fontsize((9, 19).into());
+            picker.set_protocol_type(ProtocolType::Kitty);
+            let mut graphics = Graphics::new(picker).unwrap();
+            graphics.set_limit(limit);
+            graphics.measure();
+            // Most recently shown last.
+            let mut model: Vec<char> = Vec::new();
+            let mut seen = std::collections::HashSet::new();
+            let (mut encoded, mut evicted, mut reencoded) = (0, 0, 0);
+            let mut reuses = Vec::new();
+            for &c in &shows {
+                // Each frame over the screen afresh, as the client paints.
+                let (mut buf, her) = her_over(c);
+                let painted = graphics.paint_layers(&mut buf, &her, &|_, _| true);
+                proptest::prop_assert!(painted.is_some());
+                if let Some(i) = model.iter().position(|&kept| kept == c) {
+                    // The images shown since this one last was.
+                    reuses.push(model.len() - 1 - i);
+                    model.remove(i);
+                } else {
+                    encoded += 1;
+                    if !seen.insert(c) {
+                        reencoded += 1;
+                    }
+                    if model.len() >= limit {
+                        model.remove(0);
+                        evicted += 1;
+                    }
+                }
+                model.push(c);
+                let counts = graphics.counts();
+                proptest::prop_assert_eq!(
+                    (counts.encoded, counts.evicted, counts.reencoded),
+                    (encoded, evicted, reencoded)
+                );
+                proptest::prop_assert_eq!(graphics.reuses(), &reuses[..]);
+                proptest::prop_assert_eq!(graphics.cached(), model.len());
+            }
+        }
     }
 }
