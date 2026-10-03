@@ -954,12 +954,15 @@ pub(super) fn render_parcel(
     )
 }
 
-/// What's on her TV: static, or Chiyo-chichi's shopping channel; each
-/// with animation frames 0–1.
+/// What's on her TV: static, or Chiyo-chichi's shopping channel, each
+/// with animation frames 0–1; or, flicking through the channels, colour
+/// bars and a sunrise (both still).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) enum Channel {
     Snow(u8),
     Shopping(u8),
+    ColourBars,
+    Sunrise,
 }
 
 /// The TV's glass, in its frame.
@@ -987,6 +990,48 @@ fn snow(frame: u8) -> String {
         y += step;
     }
     out
+}
+
+/// A test card's colour bars: seven tall bars over a strip of short
+/// ones.
+fn colour_bars() -> String {
+    const TALL: [&str; 7] = [
+        "#c0c0c0", "#c0c000", "#00c0c0", "#00c000", "#c000c0", "#c00000", "#0000c0",
+    ];
+    const SHORT: [&str; 7] = [
+        "#0000c0", "#131313", "#c000c0", "#131313", "#00c0c0", "#131313", "#c0c0c0",
+    ];
+    let (x0, y0, w, h) = GLASS;
+    let bar = w / TALL.len() as f32;
+    let tall = h * 0.75;
+    let mut out = String::new();
+    for (i, (top, bottom)) in TALL.iter().zip(SHORT).enumerate() {
+        let x = x0 + bar * i as f32;
+        out.push_str(&format!(
+            r#"<rect x="{x}" y="{y0}" width="{bar}" height="{tall}" fill="{top}"/><rect x="{x}" y="{}" width="{bar}" height="{}" fill="{bottom}"/>"#,
+            y0 + tall,
+            h - tall,
+        ));
+    }
+    out
+}
+
+/// A sunrise: the sun half up over the sea, under a dawn sky.
+fn sunrise() -> String {
+    let (x0, y0, w, h) = GLASS;
+    let horizon = y0 + h * 0.62;
+    let (cx, r) = (x0 + w / 2.0, h * 0.24);
+    format!(
+        r##"<rect x="{x0}" y="{y0}" width="{w}" height="{h}" fill="#ffb26b"/><rect x="{x0}" y="{y0}" width="{w}" height="{}" fill="#ff8a8a"/><circle cx="{cx}" cy="{horizon}" r="{r}" fill="#fff1a8"/><rect x="{x0}" y="{horizon}" width="{w}" height="{}" fill="#3d6fa8"/><path d="M {} {} h {} M {} {} h {}" stroke="#fff1a8" stroke-width="1.6"/>"##,
+        h * 0.3,
+        y0 + h - horizon,
+        cx - r * 0.8,
+        horizon + 4.0,
+        r * 1.6,
+        cx - r * 0.5,
+        horizon + 9.0,
+        r,
+    )
 }
 
 /// The shopping channel's studio: a pink-and-yellow sunburst behind him.
@@ -1020,6 +1065,8 @@ fn tv_scene(channel: Channel, facing: Facing, line: &str) -> String {
     let (x0, y0, gw, gh) = GLASS;
     let picture = match channel {
         Channel::Snow(frame) => snow(frame),
+        Channel::ColourBars => colour_bars(),
+        Channel::Sunrise => sunrise(),
         Channel::Shopping(frame) => {
             // He bobs, and talks on the up-beat.
             let (bob, mouth) = if frame % 2 == 0 {
@@ -1190,11 +1237,13 @@ mod tests {
         }
     }
 
-    const CHANNELS: [Channel; 4] = [
+    const CHANNELS: [Channel; 6] = [
         Channel::Snow(0),
         Channel::Snow(1),
         Channel::Shopping(0),
         Channel::Shopping(1),
+        Channel::ColourBars,
+        Channel::Sunrise,
     ];
 
     /// Every state that applies to each of the second half of the

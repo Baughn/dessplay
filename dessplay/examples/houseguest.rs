@@ -113,13 +113,18 @@ fn run(seed: &mut u64, picker: ratatui_image::picker::Picker) -> color_eyre::Res
                 None => String::new(),
             };
             let mood = guest.mood().unwrap_or_default();
+            // What she's playing, and which key of it.
+            let playing = guest
+                .playing(now)
+                .map_or_else(String::new, |p| format!(" │ ▶ {p}"));
             let menu = format!(
-                " ◀ {} ▶  Enter play · f furnish · m chat · x why · v mood · g bye · n seed {} · [ ] {}× · 1-6 needs · q │ {} │ {}",
+                " ◀ {} ▶  Enter play · f furnish · m chat · x why · v mood · g bye · n seed {} · [ ] {}× · 1-6 needs · q │ {} │ {}{}",
                 scene.name(),
                 seed,
                 SPEEDS[speed],
                 mood,
-                note
+                note,
+                playing
             );
             let blank = " ".repeat(usize::from(area.width));
             // Why she's doing what she does, on the row above.

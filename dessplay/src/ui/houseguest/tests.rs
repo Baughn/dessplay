@@ -1442,6 +1442,14 @@ fn every_scene_has_a_spot_in_the_stage_room() {
                         Scene::Stretch => posed(Pose::Stretch),
                         Scene::Gaze => posed(Pose::Gaze),
                         Scene::Muse => said,
+                        Scene::Riddle => visit
+                            .osaka
+                            .plays()
+                            .is_some_and(|p| p.own == script::ScriptId::Riddle),
+                        Scene::Surf => visit
+                            .osaka
+                            .plays()
+                            .is_some_and(|p| p.own == script::ScriptId::Surf),
                         Scene::Lounge => posed(Pose::Lounge),
                         Scene::Nap => posed(Pose::Nap(0)),
                         Scene::Sleep => posed(Pose::Sleep(0)),
@@ -4897,6 +4905,203 @@ fn every_want_can_be_cued() {
     }
 }
 
+/// `scene` cued on a fresh guest in the stage room (graphics or not),
+/// run until `done` says what she plays is what was wanted, for at
+/// most 20 s: whether it did, and when it stopped.
+fn cue_until(
+    scene: Scene,
+    graphics: bool,
+    real: &Buffer,
+    view: &IdleView,
+    mut done: impl FnMut(Option<script::Play>) -> bool,
+) -> (bool, u64) {
+    let mut guest = Guest::new(1);
+    if graphics {
+        guest.set_picker(kitty());
+    }
+    guest.cue(scene);
+    paint(&mut guest, real, view, 0);
+    let mut now = 0;
+    while now < 20_000 {
+        now += guest
+            .next_tick(now)
+            .map_or(100, |d| d.as_millis() as u64)
+            .clamp(1, 100);
+        guest.advance(now);
+        paint(&mut guest, real, view, now);
+        if done(visit_of(&guest).osaka.plays()) {
+            return (true, now);
+        }
+    }
+    (false, now)
+}
+
+/// Lint: every script can be cued from the stage, and plays when it is
+/// (in the stage room, in both drawing modes): its scene is on the
+/// stage's menu, and cueing it has her playing that very script (not
+/// another of the same piece's: a plain watch, not surfing) soon after.
+/// Every script that shares its piece with another is forced by its
+/// scene's cue, not left to her whims (which one guest's might happen
+/// to match).
+#[test]
+fn every_script_can_be_cued() {
+    use script::{Cue, ScriptId};
+    for id in ScriptId::ALL {
+        let shared = ScriptId::ALL
+            .iter()
+            .any(|&other| other != id && other.played_on() == id.played_on());
+        if shared && id.played_on().is_some() {
+            assert_eq!(id.scene().cue(), Some(Cue::Script(id)), "{id:?}");
+        }
+    }
+    let mut ui = stage_ui();
+    let (real, view) = real_frame(&mut ui, 100, 30);
+    for graphics in [false, true] {
+        for id in ScriptId::ALL {
+            let scene = id.scene();
+            assert!(Scene::ALL.contains(&scene), "{id:?}: {scene:?}");
+            let at = format!("{id:?} ({scene:?}) graphics={graphics}");
+            let (played, now) = cue_until(scene, graphics, &real, &view, |plays| {
+                let played = plays.is_some_and(|p| p.own == id);
+                // Another script of the piece she was cued to use: not
+                // the one cued.
+                if let Some(p) = plays
+                    && !played
+                    && scene.furniture().is_some()
+                {
+                    panic!("{at}: played {:?}", p.own);
+                }
+                played
+            });
+            assert!(played, "{at}: not played by {now}");
+        }
+    }
+}
+
+/// Lint: every splice row can be cued from the stage, and plays when it
+/// is (in the stage room, in both drawing modes): its scene is on the
+/// stage's menu, and cueing it has her playing that very splice round
+/// the next use soon after. (The tests' own splices aren't rows, and
+/// have no scene.)
+#[test]
+fn every_splice_can_be_cued() {
+    use script::SpliceId;
+    for id in [
+        SpliceId::TestSnack,
+        SpliceId::TestSleep,
+        SpliceId::TestBedtime,
+    ] {
+        assert_eq!(id.scene(), None, "{id:?}");
+    }
+    let mut ui = stage_ui();
+    let (real, view) = real_frame(&mut ui, 100, 30);
+    for graphics in [false, true] {
+        for id in SpliceId::ALL {
+            let scene = id.scene();
+            assert!(
+                scene.is_some_and(|s| Scene::ALL.contains(&s)),
+                "{id:?}: {scene:?}"
+            );
+            let Some(scene) = scene else {
+                continue;
+            };
+            let (played, now) = cue_until(scene, graphics, &real, &view, |plays| {
+                plays.is_some_and(|p| {
+                    [p.before, p.after]
+                        .into_iter()
+                        .flatten()
+                        .any(|s| s.splice == id)
+                })
+            });
+            assert!(
+                played,
+                "{id:?} ({scene:?}) graphics={graphics}: not played by {now}"
+            );
+        }
+    }
+}
+
+/// What's on the TV looks different on each channel in each drawing
+/// mode (in ASCII its two screen cells; in line art its image), and so
+/// do the cat's, the lamp's and the fridge's states from plain in line
+/// art, and the cat's from each other; in ASCII, the cat curled up,
+/// biting, and not there (ASCII draws the cat only: the lamp and the
+/// fridge look the same off or on, shut or open).
+#[test]
+fn each_prop_looks_distinct_in_each_mode() {
+    use art::{Channel, PieceState};
+    let channels = [
+        vec![Channel::Snow(0), Channel::Snow(1)],
+        vec![Channel::Shopping(0), Channel::Shopping(1)],
+        vec![Channel::ColourBars],
+        vec![Channel::Sunrise],
+    ];
+    let glyphs =
+        |c: &[Channel]| -> Vec<[char; 2]> { c.iter().map(|&c| screen_glyphs(c)).collect() };
+    let image = |c: Channel| {
+        art::render_tv(c, sprite::Facing::Right, "#c9d1d9", 64, 48)
+            .map(|i| i.into_raw())
+            .unwrap()
+    };
+    for (i, a) in channels.iter().enumerate() {
+        for b in &channels[i + 1..] {
+            for ga in glyphs(a) {
+                assert!(!glyphs(b).contains(&ga), "{a:?} and {b:?} in ASCII");
+            }
+            for &ca in a {
+                for &cb in b {
+                    assert_ne!(image(ca), image(cb), "{ca:?} and {cb:?} in line art");
+                }
+            }
+        }
+    }
+    for (item, state) in [
+        (Furniture::Lamp, PieceState::LampOff),
+        (Furniture::Fridge, PieceState::FridgeOpen),
+        (Furniture::CatBed, PieceState::Cat),
+        (Furniture::CatBed, PieceState::CatBiting),
+    ] {
+        let render = |state| {
+            art::render_piece(item, state, sprite::Facing::Right, "#c9d1d9", 64, 48)
+                .map(|i| i.into_raw())
+                .unwrap()
+        };
+        assert_ne!(
+            render(state),
+            render(PieceState::Plain),
+            "{item:?} {state:?}"
+        );
+    }
+    let cat = |state| {
+        art::render_piece(
+            Furniture::CatBed,
+            state,
+            sprite::Facing::Right,
+            "#c9d1d9",
+            64,
+            48,
+        )
+        .map(|i| i.into_raw())
+        .unwrap()
+    };
+    assert_ne!(
+        cat(PieceState::Cat),
+        cat(PieceState::CatBiting),
+        "in line art"
+    );
+    // In ASCII, the cat curled up, biting, and not there.
+    let ascii = [
+        cat_glyphs(PieceState::Plain),
+        cat_glyphs(PieceState::Cat),
+        cat_glyphs(PieceState::CatBiting),
+    ];
+    for (i, a) in ascii.iter().enumerate() {
+        for b in &ascii[i + 1..] {
+            assert_ne!(a, b, "the cat in ASCII");
+        }
+    }
+}
+
 /// The sofa census (the migration's checkpoint bench): in the stage
 /// room, cued to make a sofa, five-minute visits with chat every 37 s
 /// (in a phase that differs by seed) or none, what became of each piece she made — used (and how long after
@@ -8042,6 +8247,149 @@ proptest! {
             prop_assert!(!guest.present());
             prop_assert!(last == real, "the rain restores the frame");
             prop_assert_eq!(prop_of(&guest, Furniture::Sofa), set);
+        }
+    }
+}
+
+/// Her, arrived in `weather`'s first view with a sofa, a TV, a bed and
+/// a desk, `splice` cued, run (calm) until she's seen in the first use
+/// of her own choosing it wraps (the cue waits through any it can't),
+/// within three minutes: the guest, when, and the use's span (since,
+/// the body's start and end, until); `None` if she started no use it
+/// wraps. (The frame never changes, so it's painted once a second
+/// until she's using something, which is all she needs to see it, and
+/// keeps this cheap: painting every tick was most of the property's
+/// time.)
+fn spliced_use(
+    graphics: bool,
+    seed: u64,
+    weather: &Weather,
+    splice: script::SpliceId,
+) -> Option<(Guest, u64, room::Use, [u64; 4])> {
+    let view = weather.view(weather.sizes[0].1, None, ChatMark::default());
+    let real = wordy_rooms(100, 30);
+    let mut guest = Guest::new(seed);
+    if graphics {
+        guest.set_picker(kitty());
+    }
+    guest.cue(Scene::Arrive);
+    paint(&mut guest, &real, &view, 0);
+    for item in [
+        Furniture::Sofa,
+        Furniture::Tv,
+        Furniture::Bed,
+        Furniture::Desk,
+    ] {
+        guest.give(item);
+        paint(&mut guest, &real, &view, 0);
+    }
+    let State::Visiting(visit) = &mut guest.state else {
+        panic!("visiting");
+    };
+    visit.osaka.cue(Some(script::Cue::Splice(splice)));
+    let mut now = 0;
+    while now < 180_000 {
+        let then = now;
+        now += guest
+            .next_tick(now)
+            .map_or(100, |d| d.as_millis() as u64)
+            .clamp(1, 1000);
+        guest.advance(now);
+        if visit_of(&guest).osaka.use_span().is_some() || now / 1000 != then / 1000 {
+            paint(&mut guest, &real, &view, now);
+        }
+        let osaka = &visit_of(&guest).osaka;
+        if let Some((seat, since, until)) = osaka.use_span()
+            && let Some(play) = osaka.plays()
+            && play.before.or(play.after).is_some()
+        {
+            let span = [
+                since,
+                play.body_start(since),
+                play.body_end(since, until),
+                until,
+            ];
+            return Some((guest, now, seat.what, span));
+        }
+    }
+    None
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(dessplay_core::test_support::proptest_cases(8)))]
+
+    /// A use of her own choosing wrapped in a prelude or a coda, and
+    /// chat, resizes and (a resident) focus changes landing inside it:
+    /// she's credited the share of the body she did, so nothing at all
+    /// for a use left in its prelude and the whole of it for one left in
+    /// its coda; and every promise a frame keeps holds throughout, till
+    /// a while after the splice ([`promised_frame`]: nothing she does
+    /// touches what's protected or stays over text). Budgeted for the
+    /// deep pass: about 4 s at 32 cases (most of it the warm-up to a
+    /// use), so 256 stay well inside the gate's minute.
+    #[test]
+    fn weather_in_a_splice_credits_only_the_body(
+        seed in 0u64..64,
+        graphics in any::<bool>(),
+        coda in any::<bool>(),
+        resident in any::<bool>(),
+        size in proptest::option::of(
+            (0.0f64..1.0, proptest::sample::select(vec![(80u16, 24u16), (120, 36)])),
+        ),
+        chats in proptest::collection::vec(0.0f64..1.0, 0..3),
+        focuses in proptest::collection::vec((0.0f64..1.0, proptest::option::of(0usize..3)), 0..3),
+    ) {
+        use script::SpliceId;
+        let splice = if coda { SpliceId::TestSleep } else { SpliceId::TestSnack };
+        let mut weather = Weather {
+            resident,
+            sizes: vec![(0, (100, 30))],
+            chats: Vec::new(),
+            focuses: Vec::new(),
+        };
+        let found = spliced_use(graphics, seed, &weather, splice);
+        prop_assume!(found.is_some());
+        let Some((mut guest, start, what, [since, body_start, body_end, until])) = found else {
+            unreachable!();
+        };
+        // Inside the splice (from the frame she was seen starting it).
+        let (from, to) = if coda { (body_end, until) } else { (start + 1, body_start) };
+        prop_assume!(from < to);
+        let inside = |f: f64| from + ((to - from) as f64 * f) as u64;
+        weather.sizes.extend(size.map(|(f, s)| (inside(f), s)));
+        weather.chats = chats.iter().map(|&f| inside(f)).collect();
+        let mut focuses: Vec<(u64, Option<usize>)> =
+            focuses.iter().map(|&(f, pane)| (inside(f), pane)).collect();
+        focuses.sort_unstable();
+        weather.focuses = focuses;
+        keep_promises(
+            &mut guest,
+            &weather,
+            graphics,
+            ChatMark::default(),
+            start,
+            to + 5_000,
+            |_, _, _| Ok(true),
+        )?;
+        let whole = body_end - body_start;
+        let credited: Vec<(f64, u64)> = visit_of(&guest)
+            .osaka
+            .credited
+            .iter()
+            .filter(|&&(want, _, at)| want == brain::Want::Use(what) && at >= since)
+            .map(|&(_, share, at)| (share, at))
+            .collect();
+        // The first since it began is this use's (left in its prelude,
+        // she may choose the piece again, and that use is a new one).
+        if let Some(&(share, at)) = credited.first() {
+            let want = if at < body_start {
+                0.0
+            } else if at >= body_end {
+                1.0
+            } else {
+                (at - body_start) as f64 / whole as f64
+            };
+            prop_assert_eq!(share, want, "left {:?} at {} of {:?}", what, at, [since, body_start, body_end, until]);
         }
     }
 }

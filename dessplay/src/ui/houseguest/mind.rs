@@ -913,10 +913,6 @@ impl Lines {
 
     /// Whether she may play `script` at `at` (she hasn't in the last ten
     /// minutes), and if so, she does.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "phase 5a's splices and surfing take it up")
-    )]
     pub fn try_play(&mut self, script: ScriptId, at: u64) -> bool {
         let lately = self
             .played

@@ -15,6 +15,7 @@ use tuirealm::ratatui::layout::Rect;
 use super::osaka::{Activity, Chances};
 use super::room::{Furniture, Use};
 use super::scenes::{self, Job, Side};
+use super::script::{Cue, ScriptId};
 use super::sprite::WIDTH;
 use super::terrain::{Link, Route, Terrain};
 use super::{Rng, Visit};
@@ -61,6 +62,8 @@ pub enum Scene {
     Gaze,
     /// Space out, saying something first.
     Muse,
+    /// Space out, telling a riddle (and answering it herself).
+    Riddle,
     /// Sit on her sofa (she gets one if she has none).
     Lounge,
     /// Nap on her sofa, hugging the cushion.
@@ -75,6 +78,8 @@ pub enum Scene {
     Parcel,
     /// The shopping channel comes on while she watches, and she buys.
     Shopping,
+    /// Watching her TV, she flicks through the channels.
+    Surf,
     /// Off to her part-time job (she gets a sofa if her home is empty).
     Work,
     /// Reading beside her bookshelf.
@@ -94,7 +99,7 @@ pub enum Scene {
 
 impl Scene {
     /// Every scene, in menu order.
-    pub const ALL: [Scene; 32] = [
+    pub const ALL: [Scene; 34] = [
         Self::Arrive,
         Self::Pull,
         Self::Swap,
@@ -113,6 +118,7 @@ impl Scene {
         Self::Stretch,
         Self::Gaze,
         Self::Muse,
+        Self::Riddle,
         Self::Lounge,
         Self::Nap,
         Self::Sleep,
@@ -120,6 +126,7 @@ impl Scene {
         Self::Watch,
         Self::Parcel,
         Self::Shopping,
+        Self::Surf,
         Self::Work,
         Self::Read,
         Self::Snack,
@@ -150,6 +157,7 @@ impl Scene {
             Self::Stretch => "stretch",
             Self::Gaze => "gaze",
             Self::Muse => "muse",
+            Self::Riddle => "tell a riddle",
             Self::Lounge => "sit on the sofa",
             Self::Nap => "nap on the sofa",
             Self::Sleep => "sleep in bed",
@@ -157,6 +165,7 @@ impl Scene {
             Self::Watch => "watch TV",
             Self::Parcel => "a parcel",
             Self::Shopping => "shopping channel",
+            Self::Surf => "channel surfing",
             Self::Work => "part-time job",
             Self::Read => "read",
             Self::Snack => "snack",
@@ -174,13 +183,57 @@ impl Scene {
             Self::Nap => Use::Nap,
             Self::Sleep => Use::Sleep,
             Self::Homework => Use::Homework,
-            Self::Watch | Self::Shopping => Use::Watch,
+            Self::Watch | Self::Shopping | Self::Surf => Use::Watch,
             Self::Parcel => Use::Unpack,
             Self::Read => Use::Read,
             Self::Snack => Use::Snack,
             Self::Pet => Use::Pet,
             _ => return None,
         })
+    }
+
+    /// What it has her play, forced rather than rolled: each script
+    /// that shares its piece with another (a plain watch, surfing, the
+    /// shopping channel: cued to one, she plays none of the others),
+    /// and a riddle (musing, she might not tell one). Wildcard-free, so a
+    /// new scene says.
+    pub(super) fn cue(self) -> Option<Cue> {
+        match self {
+            Self::Watch => Some(Cue::Script(ScriptId::Watch)),
+            Self::Shopping => Some(Cue::Script(ScriptId::Shopping)),
+            Self::Surf => Some(Cue::Script(ScriptId::Surf)),
+            Self::Riddle => Some(Cue::Script(ScriptId::Riddle)),
+            Self::Arrive
+            | Self::Pull
+            | Self::Swap
+            | Self::Sneeze
+            | Self::ClimbUp
+            | Self::ClimbDown
+            | Self::Drop
+            | Self::Clamber
+            | Self::StepOut
+            | Self::Door
+            | Self::Sit
+            | Self::LieBack
+            | Self::LieFront
+            | Self::Jacks
+            | Self::ToeTouch
+            | Self::Stretch
+            | Self::Gaze
+            | Self::Muse
+            | Self::Lounge
+            | Self::Nap
+            | Self::Sleep
+            | Self::Homework
+            | Self::Parcel
+            | Self::Work
+            | Self::Read
+            | Self::Snack
+            | Self::Pet
+            | Self::MakeSofa
+            | Self::MakeBed
+            | Self::Arrange => None,
+        }
     }
 
     fn activity(self) -> Option<Activity> {
@@ -244,6 +297,7 @@ pub(super) fn direct(
 ) -> Result<String, String> {
     let (terrain, osaka) = (&visit.terrain, &mut visit.osaka);
     let name = scene.name();
+    osaka.cue(scene.cue());
     match scene {
         Scene::Arrive => Ok("arriving".into()),
         // The sofa was set up turned from the TV as the frame was read,

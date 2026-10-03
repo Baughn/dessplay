@@ -88,6 +88,8 @@ pub(super) struct Visit {
     pub choices: Vec<Want>,
     /// Milliseconds in each kind of act ("use:Sleep", "idle:LieBack"...).
     pub time: BTreeMap<String, u64>,
+    /// The census group each kind of act counts in.
+    pub groups: BTreeMap<String, &'static str>,
     /// Her needs every five minutes.
     pub needs: Vec<String>,
     /// Beats she was owed, by loss.
@@ -183,7 +185,9 @@ fn simulate_with(
             .clamp(1, 1000);
         if let State::Visiting(visit) = &guest.state {
             watch(&visit.osaka, now);
-            *out.time.entry(doing(&visit.osaka, now)).or_default() += step;
+            let doing = doing(&visit.osaka, now);
+            out.groups.insert(doing.clone(), visit.osaka.census_group());
+            *out.time.entry(doing).or_default() += step;
             let speech = match visit.osaka.appearance(now).2 {
                 Some(osaka::Bubble::Say(text)) => Some(text),
                 _ => None,
@@ -280,22 +284,10 @@ fn home_census(guest: &Guest, visit: &super::super::Visit, now: u64, out: &mut V
     }
 }
 
-/// What a census act counts as.
-pub(super) fn group(doing: &str) -> &'static str {
-    match doing {
-        d if d.starts_with("use:") => "furniture",
-        "idle:Sit" | "idle:LieBack" | "idle:LieFront" => "floor rest",
-        "SpaceOut" | "idle:Gaze" => "spacing out",
-        "Walk" | "Climb" | "Clamber" | "Out" | "Away" | "Door" | "Fall" | "Peer" | "Dazed" => {
-            "moving"
-        }
-        "Pull" | "Swap" | "Giggle" | "Innocent" | "Tear" | "Sneeze" | "PutBack" | "Admire" => {
-            "mischief"
-        }
-        "Lift" | "SetDown" => "home",
-        d if d.starts_with("idle:") => "exercise",
-        _ => "standing",
-    }
+/// The census group a kind of act counts in, as `groups` recorded it
+/// (see [`Osaka::census_group`]: every act is in one).
+fn group(groups: &BTreeMap<String, &'static str>, doing: &str) -> &'static str {
+    groups.get(doing).copied().unwrap_or("unrecorded")
 }
 
 /// The share of `part` in `whole`, as a percentage.
@@ -419,6 +411,7 @@ fn visit_census() {
             .collect();
         let mut choices: BTreeMap<String, usize> = BTreeMap::new();
         let mut time: BTreeMap<String, u64> = BTreeMap::new();
+        let mut kinds: BTreeMap<String, &'static str> = BTreeMap::new();
         let mut beats: BTreeMap<String, usize> = BTreeMap::new();
         let mut said: BTreeMap<String, usize> = BTreeMap::new();
         let mut headings: BTreeMap<String, usize> = BTreeMap::new();
@@ -431,6 +424,7 @@ fn visit_census() {
             for (k, v) in &visit.time {
                 *time.entry(k.clone()).or_default() += v;
             }
+            kinds.extend(visit.groups.iter().map(|(k, &g)| (k.clone(), g)));
             for (k, v) in &visit.beats {
                 *beats.entry(k.clone()).or_default() += v;
             }
@@ -461,7 +455,7 @@ fn visit_census() {
         let total: u64 = time.values().sum();
         let mut groups: BTreeMap<&str, u64> = BTreeMap::new();
         for (k, v) in &time {
-            *groups.entry(group(k)).or_default() += v;
+            *groups.entry(group(&kinds, k)).or_default() += v;
         }
         eprintln!(
             "\n== {} {} ({SEEDS} visits × {MINUTES} min): {} choices ({:.0} a visit)",
@@ -539,7 +533,7 @@ fn grouped(visits: &[Visit]) -> BTreeMap<&'static str, u64> {
     let mut groups = BTreeMap::new();
     for visit in visits {
         for (k, v) in &visit.time {
-            *groups.entry(group(k)).or_default() += v;
+            *groups.entry(group(&visit.groups, k)).or_default() += v;
         }
     }
     groups

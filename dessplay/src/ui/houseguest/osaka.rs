@@ -10,7 +10,7 @@ use super::mind::{self, Beat, Bind, Ctx, Heading, Here, Lines, Loss, PoolId, RID
 use super::room::{Furniture, MadeId, PieceRef, Seat, Use};
 use super::rules::{Grievance, Placement, Repair, TIE_CELLS, Trials};
 use super::scenes::{Build, Job, JobRef, LayerOp, Lift, Pull, SetDown, Side, Swap};
-use super::script::{self, CHANNEL_FRAME_MS, Play, Prop};
+use super::script::{self, CHANNEL_FRAME_MS, Cue, Play, Prop, ScriptId, SpliceCtx, SpliceId};
 use super::sprite::{self, Face, Facing, HEIGHT, Pose, SpriteCell};
 use super::terrain::{Link, Platform, Route, Terrain};
 use tuirealm::ratatui::layout::Rect;
@@ -461,15 +461,21 @@ enum Act {
         step: u16,
     },
     /// Using a piece of her furniture, at `seat`, playing `play` (its
-    /// own script, or the shopping channel's on a watch, and what that
-    /// sold her); `grievance`, a rule of her home she feels is broken
-    /// using it, and when she starts to say so (see [`GRIEVANCE_MS`]).
+    /// own script, or on a watch the shopping channel's, with what that
+    /// sold her, or surfing; and any prelude and coda spliced round it).
+    /// `since..until` spans it all, prelude, body and coda: the body
+    /// runs from [`Play::body_start`] to [`Play::body_end`], and its
+    /// look, wakeups and grievance are timed from its start.
+    /// `grievance`: a rule of her home she feels is broken using it,
+    /// and when she starts to say so (see [`GRIEVANCE_MS`]).
     Use {
         seat: Seat,
         since: u64,
         until: u64,
-        /// How long a whole use of it is (ms): what she's eased by is the
-        /// share of this she did (a trial sit is a moment of one).
+        /// How long a whole use of it is (ms): the body's length (a
+        /// trial sit's, a moment of a whole use's). What she's eased by
+        /// is the share of this she did, counted from the body's start:
+        /// none in a prelude, all of it in a coda.
         whole: u64,
         play: Play,
         grievance: Option<(Grievance, u64)>,
@@ -900,6 +906,12 @@ pub(super) fn shortest_use_ms() -> u64 {
 }
 
 /// How long she keeps at `what` (ms range).
+#[cfg(test)]
+pub(super) fn use_range(what: Use) -> (u64, u64) {
+    use_duration(what)
+}
+
+/// How long she keeps at `what` (ms range).
 fn use_duration(what: Use) -> (u64, u64) {
     match what {
         Use::Lounge => (15_000, 30_000),
@@ -917,6 +929,11 @@ fn use_duration(what: Use) -> (u64, u64) {
 
 /// Animation frame period for `what`.
 pub(super) const USE_FRAME_MS: u64 = 1400;
+
+/// `n` watches in `d` (with nothing on the shopping channel, her home
+/// not on her mind, and not trying the piece) she flicks through the
+/// channels, unless she has lately.
+const SURF: (u64, u64) = (1, 5);
 
 /// How long she says what's wrong with her home, using a piece: two
 /// frames, from the first frame after anything she was saying (see
@@ -1118,6 +1135,14 @@ pub(super) struct Osaka {
     /// them, each choice with its own label. Before her first decision,
     /// her mind's seed, salted (no draw).
     whims: Whims,
+    /// What the stage cued her to play next, forced rather than rolled:
+    /// it waits through anything else she does, and the first use it
+    /// plays on ([`Cue::plays_on`]), or musing (a riddle), takes it.
+    cued: Option<Cue>,
+    /// The splice rows a use may be wrapped in: [`SpliceId::ALL`], or a
+    /// test's own.
+    #[cfg(test)]
+    splice_rows: &'static [SpliceId],
     /// What she chose and hasn't done yet: it eases her needs by how
     /// much of it she does (see [`Osaka::credit_done`]).
     credit: Option<Want>,
@@ -1163,6 +1188,10 @@ pub(super) struct Osaka {
     /// Every decision she made (tests read it).
     #[cfg(test)]
     pub decisions: Vec<Decision>,
+    /// Each share of what she chose she was credited with as she left
+    /// doing it (see [`Osaka::credit_done`]), and when (tests read it).
+    #[cfg(test)]
+    pub credited: Vec<(Want, f64, u64)>,
 }
 
 impl Osaka {
@@ -1199,6 +1228,9 @@ impl Osaka {
             mind: Rng(rng.next() ^ mind::MIND_SALT),
             // Set from her mind's seed below.
             whims: Whims(0),
+            cued: None,
+            #[cfg(test)]
+            splice_rows: &SpliceId::ALL,
             credit: None,
             beauty_here: 0.0,
             owed: Vec::new(),
@@ -1220,6 +1252,8 @@ impl Osaka {
             choices: Vec::new(),
             #[cfg(test)]
             decisions: Vec::new(),
+            #[cfg(test)]
+            credited: Vec::new(),
         };
         osaka.whims = Whims(osaka.mind.0 ^ mind::WHIMS_SALT);
         osaka.act_due = osaka.first_due(now);
@@ -1380,6 +1414,24 @@ impl Osaka {
         self.owes()
     }
 
+    /// The stage: play `cue` (if any) the next time it can, forced
+    /// rather than rolled; `None` lets her roll again.
+    pub fn cue(&mut self, cue: Option<Cue>) {
+        self.cued = cue;
+    }
+
+    /// The splice rows a use she starts may be wrapped in.
+    fn splice_rows(&self) -> &'static [SpliceId] {
+        #[cfg(test)]
+        {
+            self.splice_rows
+        }
+        #[cfg(not(test))]
+        {
+            &SpliceId::ALL
+        }
+    }
+
     /// Start a sneeze now.
     pub fn sneeze_now(&mut self, now: u64) {
         self.set(
@@ -1494,9 +1546,24 @@ impl Osaka {
     /// riddle only when she isn't saying something already, which would
     /// hide its question.
     pub fn muse(&mut self, now: u64, rng: &mut Rng) {
+        // Cued, a riddle: whatever she was saying stops for it.
+        let cued = self.cued == Some(Cue::Script(ScriptId::Riddle));
+        if cued {
+            self.cued = None;
+            self.hush(now);
+        }
         let quiet = self.speech.is_none_or(|(_, until)| until <= now);
+        let pool = if cued {
+            mind::Pool {
+                n: 1,
+                d: 1,
+                ..mind::RIDDLE
+            }
+        } else {
+            mind::RIDDLE
+        };
         let riddle = quiet
-            .then(|| self.lines.pick(mind::RIDDLE, self.whims, now))
+            .then(|| self.lines.pick(pool, self.whims, now))
             .flatten()
             .and_then(mind::riddle_of);
         let play = match riddle.and_then(|i| Some((u8::try_from(i).ok()?, RIDDLES.get(i)?))) {
@@ -2260,13 +2327,69 @@ impl Osaka {
                         .map(|b| b.key),
                     PieceRef::Made(_) => None,
                 };
-                let quiet = self.speech.map_or(at, |(_, until)| until);
-                let grievance = grievance.map(|g| (g, grievance_from(at, quiet)));
+                // What the stage cued, if it plays on this use (else it
+                // waits for one it does).
+                let cued = self
+                    .cued
+                    .take_if(|cue| cue.plays_on(seat.what, trying, grievance.is_some()));
+                let mut quiet = self.speech.map_or(at, |(_, until)| until);
+                // A prelude, a coda: drawn from her latest decision's
+                // whims (never round a trial), so the body is drawn as
+                // it would be without them; it starts after the prelude,
+                // and everything in it is timed from there.
+                let forced = match cued {
+                    Some(Cue::Splice(id)) => Some(id),
+                    Some(Cue::Script(_)) | None => None,
+                };
+                let ctx = SpliceCtx {
+                    what: seat.what,
+                    trying,
+                    quiet: quiet <= at,
+                };
+                let (before, after) = script::splices(
+                    self.splice_rows(),
+                    &ctx,
+                    forced,
+                    self.whims,
+                    &mut self.lines,
+                    at,
+                );
+                // Cued, a prelude plays whether she's quiet or not:
+                // whatever she was saying stops for it, or it would hide
+                // its first key.
+                if forced.is_some() && before.is_some() && quiet > at {
+                    self.hush(at);
+                    quiet = at;
+                }
+                let body_start = at + before.map_or(0, |s| s.len);
+                let grievance = grievance.map(|g| (g, grievance_from(body_start, quiet)));
                 // The shopping channel: she's bought it the moment it
-                // comes on (unless she has her home on her mind).
-                let bought = chances
-                    .advert
-                    .filter(|_| seat.what == Use::Watch && grievance.is_none() && !trying);
+                // comes on (unless she has her home on her mind, or the
+                // stage has her flick through the channels).
+                let surf_cued = cued == Some(Cue::Script(ScriptId::Surf));
+                let watching = seat.what == Use::Watch && grievance.is_none() && !trying;
+                let bought = chances.advert.filter(|_| watching && !surf_cued);
+                // Else, now and then, she flicks through the channels:
+                // cued to, always (and it cools as if rolled); cued to
+                // play anything else on the watch, never; else by the
+                // chance first, so a surf that doesn't roll doesn't
+                // cool.
+                let surf = bought.is_none()
+                    && watching
+                    && match cued {
+                        Some(Cue::Script(ScriptId::Surf)) => {
+                            self.lines.try_play(ScriptId::Surf, at);
+                            true
+                        }
+                        Some(Cue::Script(_)) => false,
+                        Some(Cue::Splice(_)) | None => {
+                            self.whims.chance("surf", 0, SURF.0, SURF.1)
+                                && self.lines.try_play(ScriptId::Surf, at)
+                        }
+                    };
+                if surf {
+                    tracing::info!("houseguest: flicking through the channels");
+                }
                 if let Some(item) = bought {
                     tracing::info!(?item, "houseguest: bought off the shopping channel");
                     self.events.push(HomeEvent::Bought(item));
@@ -2283,12 +2406,21 @@ impl Osaka {
                 } else {
                     length
                 };
+                let plain = Play::of(seat.what, bought);
+                let own = if surf { ScriptId::Surf } else { plain.own };
+                let play = Play {
+                    own,
+                    branch: if trying { own.trial_branch() } else { 0 },
+                    before,
+                    after,
+                    ..plain
+                };
                 Act::Use {
                     seat,
                     since: at,
-                    until: at + length,
+                    until: body_start + length + after.map_or(0, |s| s.len),
                     whole,
-                    play: Play::of(seat.what, bought),
+                    play,
                     grievance,
                 }
             }
@@ -2387,9 +2519,15 @@ impl Osaka {
             (Act::Idle { what, since, until }, Want::Idle(chose)) if *what == chose => {
                 (span(*since, *until), Spot::Floor)
             }
+            // By the share of its body done: none of it in a prelude,
+            // all of it in a coda.
             (
                 Act::Use {
-                    seat, since, whole, ..
+                    seat,
+                    since,
+                    whole,
+                    play,
+                    ..
                 },
                 Want::Use(chose),
             ) if seat.what == chose => {
@@ -2398,7 +2536,8 @@ impl Osaka {
                 } else {
                     Spot::Real(seat.item)
                 };
-                (span(*since, since + whole), spot)
+                let start = play.body_start(*since);
+                (span(start, start + whole), spot)
             }
             (Act::Pull { offset, goal, .. }, Want::Pull) => {
                 (f64::from(*offset) / f64::from((*goal).max(1)), Spot::Any)
@@ -2406,6 +2545,8 @@ impl Osaka {
             _ => return,
         };
         self.credit = None;
+        #[cfg(test)]
+        self.credited.push((want, done, at));
         self.serve(want, done, spot);
         let restful = match self.act {
             Act::Idle { what, .. } => what.restful(),
@@ -2571,7 +2712,10 @@ impl Osaka {
         self.interrupt(Cause::Restless, now);
     }
 
-    /// Using a piece: where, and since and until when.
+    /// Using a piece: where, and since and until when, across any
+    /// prelude and coda as well as the body (safe for what reads it: no
+    /// splice wraps crumpling or unpacking, whose scraps and parcels
+    /// follow the whole span).
     pub fn use_span(&self) -> Option<(Seat, u64, u64)> {
         match self.act {
             Act::Use {
@@ -2597,6 +2741,22 @@ impl Osaka {
         key.prop.map(|prop| prop.framed(frame))
     }
 
+    /// What she's playing at `now`, for the stage: each part of it by
+    /// name, the one playing with which of its keys (see [`Play::note`]).
+    pub fn playing_note(&self, now: u64) -> Option<String> {
+        match self.act {
+            Act::Use {
+                since, until, play, ..
+            }
+            | Act::SpaceOut {
+                since,
+                until,
+                play: Some(play),
+            } => Some(play.note(since, until, now)),
+            _ => None,
+        }
+    }
+
     /// Using a piece: where, since when, and what it plays.
     #[cfg(test)]
     pub fn playing(&self) -> Option<(Seat, u64, Play)> {
@@ -2604,6 +2764,57 @@ impl Osaka {
             Act::Use {
                 seat, since, play, ..
             } => Some((seat, since, play)),
+            _ => None,
+        }
+    }
+
+    /// The census group what she's doing counts in. Wildcard-free, so a
+    /// new act doesn't compile until it's put in one (nothing falls into
+    /// "standing" unseen).
+    #[cfg(test)]
+    pub fn census_group(&self) -> &'static str {
+        match self.act {
+            Act::Use { .. } => "furniture",
+            Act::Idle { what, .. } => match what {
+                Activity::Sit | Activity::LieBack | Activity::LieFront => "floor rest",
+                Activity::Gaze => "spacing out",
+                Activity::Jacks | Activity::ToeTouch | Activity::Stretch => "exercise",
+            },
+            Act::SpaceOut { .. } => "spacing out",
+            Act::Walk { .. }
+            | Act::Climb { .. }
+            | Act::Clamber { .. }
+            | Act::Out { .. }
+            | Act::Away { .. }
+            | Act::Door { .. }
+            | Act::Fall { .. }
+            | Act::Peer { .. }
+            | Act::Dazed { .. } => "moving",
+            Act::Pull { .. }
+            | Act::Swap { .. }
+            | Act::Giggle { .. }
+            | Act::Innocent { .. }
+            | Act::Tear { .. }
+            | Act::Sneeze { .. }
+            | Act::PutBack { .. }
+            | Act::Admire { .. } => "mischief",
+            Act::Lift { .. } | Act::SetDown { .. } => "home",
+            Act::Stand { .. }
+            | Act::Look { .. }
+            | Act::Glance { .. }
+            | Act::Home { .. }
+            | Act::Poke { .. } => "standing",
+        }
+    }
+
+    /// What she's playing: using a piece (its own script, or the
+    /// shopping channel, or surfing, any prelude or coda), or spacing out
+    /// (a riddle).
+    #[cfg(test)]
+    pub fn plays(&self) -> Option<Play> {
+        match self.act {
+            Act::Use { play, .. } => Some(play),
+            Act::SpaceOut { play, .. } => play,
             _ => None,
         }
     }
@@ -4496,50 +4707,56 @@ mod tests {
         }
     }
 
+    /// Her, trying the sofa where she's set it down (sitting on it a
+    /// moment, to make up her mind).
+    fn trial_episode() -> Episode {
+        use super::super::room::Strip;
+        let at = super::super::room::Shown {
+            item: Furniture::Sofa,
+            facing: Facing::Left,
+            boxed: false,
+            strip: Some(Strip::Bottom(super::super::room::Nook::Users)),
+            left: 6,
+            floor: 10,
+            scrap: None,
+        };
+        Episode {
+            repair: Repair {
+                key: Grievance {
+                    row: 0,
+                    piece: Furniture::Sofa,
+                },
+                piece: Furniture::Sofa,
+                to: Placement {
+                    strip: Strip::Bottom(super::super::room::Nook::Users),
+                    anchor: super::super::room::Anchor {
+                        side: super::super::room::Side::Left,
+                        offset: 5,
+                    },
+                    facing: Facing::Left,
+                },
+                at,
+                cost: 1,
+                tier: 0,
+            },
+            pocket: false,
+            set_down: false,
+            tries: 0,
+            trials: Trials::default(),
+            tried: 1,
+            trying: true,
+        }
+    }
+
     /// Sitting on a piece a moment to try it where she's set it down
     /// eases her by its share of a whole use of it, not as a whole use.
     #[test]
     fn a_trial_sit_eases_her_by_its_share_of_a_use() {
-        use super::super::room::Strip;
         let eased = |trying: bool| {
             let (mut osaka, mut rng) = pressed(Need::Comfort);
             let before = osaka.needs.get(Need::Comfort);
             if trying {
-                let at = super::super::room::Shown {
-                    item: Furniture::Sofa,
-                    facing: Facing::Left,
-                    boxed: false,
-                    strip: Some(Strip::Bottom(super::super::room::Nook::Users)),
-                    left: 6,
-                    floor: 10,
-                    scrap: None,
-                };
-                osaka.episode = Some(Episode {
-                    repair: Repair {
-                        key: Grievance {
-                            row: 0,
-                            piece: Furniture::Sofa,
-                        },
-                        piece: Furniture::Sofa,
-                        to: Placement {
-                            strip: Strip::Bottom(super::super::room::Nook::Users),
-                            anchor: super::super::room::Anchor {
-                                side: super::super::room::Side::Left,
-                                offset: 5,
-                            },
-                            facing: Facing::Left,
-                        },
-                        at,
-                        cost: 1,
-                        tier: 0,
-                    },
-                    pocket: false,
-                    set_down: false,
-                    tries: 0,
-                    trials: Trials::default(),
-                    tried: 1,
-                    trying: true,
-                });
+                osaka.episode = Some(trial_episode());
             }
             let seat = Seat {
                 what: Use::Lounge,
@@ -4625,9 +4842,14 @@ mod tests {
                     Use::Sleep,
                     false,
                     None,
-                    vec![(0, Face::Blink, Some(Bubble::Zzz), |t| {
-                        (Pose::Sleep(bob(t)), Some(Prop::LampOff))
-                    })],
+                    vec![
+                        (0, Face::Blink, Some(Bubble::Dots), |t| {
+                            (Pose::Sleep(bob(t)), None)
+                        }),
+                        (script::LAMP_ON_MS, Face::Blink, Some(Bubble::Zzz), |t| {
+                            (Pose::Sleep(bob(t)), Some(Prop::LampOff))
+                        }),
+                    ],
                 ),
                 (
                     Use::Homework,
@@ -4815,7 +5037,8 @@ mod tests {
             },
             since: SINCE,
             until: SINCE + use_.length,
-            whole: use_.length,
+            // The body, as `start_job` has it.
+            whole: play.body_end(SINCE, SINCE + use_.length) - play.body_start(SINCE),
             play,
             grievance: use_.grievance.map(|from| (FELT, SINCE + from)),
         };
@@ -4918,6 +5141,646 @@ mod tests {
         }
     }
 
+    /// A use wrapped in a prelude and a coda is credited by the share of
+    /// its body done: nothing at all if she's interrupted in the prelude
+    /// (before the body starts), the whole of it if in the coda (the body
+    /// done), and the share of the body between. Every use, prelude,
+    /// coda or both.
+    #[test]
+    fn a_splice_is_never_credited() {
+        let before = script::Spliced {
+            splice: script::SpliceId::TestSnack,
+            len: 4000,
+            branch: 0,
+        };
+        let after = script::Spliced {
+            splice: script::SpliceId::TestSleep,
+            len: 5000,
+            branch: 0,
+        };
+        let body = 20_000;
+        for what in Use::ALL {
+            for (before, after) in [
+                (Some(before), None),
+                (None, Some(after)),
+                (Some(before), Some(after)),
+            ] {
+                let play = Play {
+                    before,
+                    after,
+                    ..Play::of(what, None)
+                };
+                let start = play.body_start(SINCE);
+                let length = body + before.map_or(0, |s| s.len) + after.map_or(0, |s| s.len);
+                let end = play.body_end(SINCE, SINCE + length);
+                assert_eq!(end - start, body);
+                let mut times = vec![start + body / 4, start + body / 2];
+                if before.is_some() {
+                    times.extend([SINCE, SINCE + 1, start - 1]);
+                }
+                if after.is_some() {
+                    times.extend([end, end + 1, SINCE + length - 1]);
+                }
+                for t in times {
+                    let mut osaka = Osaka::standing_at(10, 10, 0, &mut Rng(1));
+                    played_as(
+                        &mut osaka,
+                        Played {
+                            what,
+                            sofa: false,
+                            bought: None,
+                            grievance: None,
+                            length,
+                        },
+                        play,
+                        0,
+                    );
+                    osaka.credit = Some(Want::Use(what));
+                    osaka.interrupt(Cause::Chat, t);
+                    let want = if t < start {
+                        0.0
+                    } else if t >= end {
+                        1.0
+                    } else {
+                        (t - start) as f64 / body as f64
+                    };
+                    assert_eq!(
+                        osaka.credited,
+                        [(Want::Use(what), want, t)],
+                        "{what:?} before {before:?} after {after:?} at {t}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A seat for `what` on `item`, as the frame would offer it.
+    fn seat_for(what: Use, item: Furniture) -> Seat {
+        Seat {
+            what,
+            item,
+            piece: PieceRef::Real(item),
+            x: 10,
+            y: 10,
+            facing: Facing::Left,
+        }
+    }
+
+    /// A broken rule of her home she'd feel using `item` for `what`, if
+    /// there's one to feel there.
+    fn broken_for(what: Use, item: Furniture) -> Option<super::super::rules::Broken> {
+        use super::super::rules::{Broken, RULES};
+        let row = RULES.iter().position(|r| r.felt_on.contains(&what))?;
+        Some(Broken {
+            row,
+            pieces: vec![item],
+            involved: vec![item],
+            key: Grievance { row, piece: item },
+        })
+    }
+
+    /// Her, starting a use of `seat` at `at` with `chances` (with `cue`
+    /// cued, saying something till `talking` if set), from `rng`'s state:
+    /// her after, and the stream's state after.
+    fn started(
+        seat: Seat,
+        at: u64,
+        chances: &Chances,
+        cue: Option<Cue>,
+        talking: Option<u64>,
+        seed: u64,
+    ) -> (Osaka, u64) {
+        let mut rng = Rng(seed);
+        let mut osaka = Osaka::standing_at(10, 10, 0, &mut rng);
+        osaka.whims = Whims(seed ^ 0x5eed);
+        if let Some(until) = talking {
+            osaka.speech = Some((OK, until));
+        }
+        osaka.credit = Some(Want::Use(seat.what));
+        osaka.cue(cue);
+        osaka.start_job(Job::Use(seat), at, chances, &mut rng);
+        (osaka, rng.0)
+    }
+
+    /// The use she's started: since and until when, how much of a whole
+    /// use it is, and what it plays.
+    fn begun(osaka: &Osaka) -> (u64, u64, u64, Play) {
+        let Act::Use {
+            since,
+            until,
+            whole,
+            play,
+            ..
+        } = osaka.act
+        else {
+            panic!("using: {:?}", osaka.act);
+        };
+        (since, until, whole, play)
+    }
+
+    /// Her wakeups from `from` until `to` (each strictly after the last),
+    /// as offsets from `from`.
+    fn schedule(osaka: &Osaka, from: u64, to: u64) -> Vec<u64> {
+        let mut woke = Vec::new();
+        let mut now = from;
+        while now < to {
+            let due = osaka.first_due(now).min(to);
+            assert!(due > now, "due {due} at {now}");
+            woke.push(due - from);
+            now = due;
+        }
+        woke
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(
+            dessplay_core::test_support::proptest_cases(64)
+        ))]
+
+        /// Splices never change what they wrap: a use started with a
+        /// splice forced on (a prelude or a coda) and the same use started
+        /// without, from the same state, leave her body's stream in the
+        /// same state; are as much of a whole use and have bodies as
+        /// long; buy the same and record the same; look the same and show
+        /// the same on her furniture, wake her the same and credit her the
+        /// same share, through the body, timed from its start. Every use a
+        /// splice wraps, on a sofa or not, with a grievance or not, quiet
+        /// or (before a coda) talking, with the shopping channel on or not.
+        #[test]
+        fn a_splice_never_changes_what_it_wraps(
+            seed in proptest::prelude::any::<u64>(),
+            what in 0usize..8,
+            sofa in proptest::prelude::any::<bool>(),
+            grieve in proptest::prelude::any::<bool>(),
+            talking in proptest::option::of(0u64..6000),
+            advert in proptest::prelude::any::<bool>(),
+            coda in proptest::prelude::any::<bool>(),
+            at in 1000u64..100_000,
+        ) {
+            let splice = if coda { SpliceId::TestSleep } else { SpliceId::TestSnack };
+            let around = splice.row().around;
+            let what = around[what % around.len()];
+            let item = if sofa { Furniture::Sofa } else { Furniture::Tv };
+            let seat = seat_for(what, item);
+            let chances = Chances {
+                advert: advert.then_some(Furniture::Lamp),
+                broken: broken_for(what, item).filter(|_| grieve).into_iter().collect(),
+                ..Chances::default()
+            };
+            // (Talking as a cued prelude starts, she's hushed for it, and
+            // so quiet as the body starts: what she says about her home
+            // comes on its first frame, not the first she's quiet on.)
+            let talking = talking.filter(|_| coda).map(|t| at + t);
+            let (mut plain, plain_rng) = started(seat, at, &chances, None, talking, seed);
+            let (mut wrapped, wrapped_rng) =
+                started(seat, at, &chances, Some(Cue::Splice(splice)), talking, seed);
+            proptest::prop_assert_eq!(plain_rng, wrapped_rng, "the body's stream");
+            let (p_since, p_until, p_whole, p_play) = begun(&plain);
+            let (w_since, w_until, w_whole, w_play) = begun(&wrapped);
+            proptest::prop_assert!(p_play.before.is_none() && p_play.after.is_none());
+            let spliced = if coda { w_play.after } else { w_play.before };
+            proptest::prop_assert_eq!(spliced.map(|s| s.splice), Some(splice));
+            proptest::prop_assert_eq!(p_since, w_since);
+            proptest::prop_assert_eq!(p_whole, w_whole);
+            let (p_start, p_end) = (p_play.body_start(p_since), p_play.body_end(p_since, p_until));
+            let (w_start, w_end) = (w_play.body_start(w_since), w_play.body_end(w_since, w_until));
+            let body = p_end - p_start;
+            proptest::prop_assert_eq!(body, w_end - w_start);
+            proptest::prop_assert_eq!(
+                Play { before: None, after: None, ..w_play },
+                p_play,
+                "what it plays"
+            );
+            let events = |osaka: &mut Osaka| {
+                let mut e: Vec<String> =
+                    osaka.take_events().iter().map(|e| format!("{e:?}")).collect();
+                e.sort();
+                e
+            };
+            proptest::prop_assert_eq!(events(&mut plain), events(&mut wrapped));
+            let grievance = |osaka: &Osaka, start: u64| match osaka.act {
+                Act::Use { grievance, .. } => grievance.map(|(g, from)| (g, from - start)),
+                _ => None,
+            };
+            proptest::prop_assert_eq!(grievance(&plain, p_start), grievance(&wrapped, w_start));
+            // Wakeups through the body, from its start (its end the
+            // coda's start, or the use's).
+            let woke = schedule(&plain, p_start, p_end);
+            proptest::prop_assert_eq!(&woke, &schedule(&wrapped, w_start, w_end));
+            let times: Vec<u64> = (0..body)
+                .step_by(97)
+                .chain(woke.iter().flat_map(|&w| [w.saturating_sub(1), w]))
+                .filter(|&t| t < body)
+                .collect();
+            for t in times {
+                proptest::prop_assert_eq!(
+                    plain.acting(p_start + t),
+                    wrapped.acting(w_start + t),
+                    "{} into the body",
+                    t
+                );
+                proptest::prop_assert_eq!(
+                    plain.prop(p_start + t),
+                    wrapped.prop(w_start + t),
+                    "{} into the body",
+                    t
+                );
+            }
+            for t in [0, 1, body / 3, body / 2, body - 1] {
+                let credit = |osaka: &Osaka, at: u64| {
+                    let mut osaka = osaka.clone();
+                    osaka.credit_done(at);
+                    osaka.credited.last().map(|&(want, share, _)| (want, share))
+                };
+                proptest::prop_assert_eq!(
+                    credit(&plain, p_start + t),
+                    credit(&wrapped, w_start + t),
+                    "credited {} into the body",
+                    t
+                );
+            }
+        }
+    }
+
+    /// A trial sit is never wrapped in a splice, cued or not: a moment on
+    /// a piece she's trying where it stands is all it is.
+    #[test]
+    fn a_trial_sit_is_never_spliced() {
+        for splice in [SpliceId::TestSnack, SpliceId::TestSleep] {
+            for &what in splice.row().around {
+                let mut rng = Rng(3);
+                let mut osaka = Osaka::standing_at(10, 10, 0, &mut rng);
+                osaka.episode = Some(trial_episode());
+                osaka.cue(Some(Cue::Splice(splice)));
+                osaka.start_job(
+                    Job::Use(seat_for(what, Furniture::Sofa)),
+                    1000,
+                    &Chances::default(),
+                    &mut rng,
+                );
+                let (.., play) = begun(&osaka);
+                assert_eq!(
+                    (play.before, play.after),
+                    (None, None),
+                    "{splice:?} {what:?}"
+                );
+            }
+        }
+    }
+
+    /// Cued, a splice wraps only what it may: never unpacking or
+    /// crumpling (what comes of those happens as the use ends).
+    #[test]
+    fn a_cued_splice_wraps_only_what_it_may() {
+        for splice in [SpliceId::TestSnack, SpliceId::TestSleep] {
+            for what in Use::ALL {
+                let (osaka, _) = started(
+                    seat_for(what, Furniture::Sofa),
+                    1000,
+                    &Chances::default(),
+                    Some(Cue::Splice(splice)),
+                    None,
+                    9,
+                );
+                let (.., play) = begun(&osaka);
+                let wrapped = play.before.or(play.after).map(|s| s.splice);
+                let may = splice.row().around.contains(&what);
+                assert_eq!(wrapped, may.then_some(splice), "{splice:?} {what:?}");
+                assert!(!may || !matches!(what, Use::Unpack | Use::Crumple));
+            }
+        }
+    }
+
+    /// A cue waits for a use it plays on: a splice, through a use it
+    /// can't wrap and a trial sit, then round the next it can; surfing,
+    /// through a use of another piece, a watch with her home on her mind
+    /// (which would show over the channels) and a trial, then the next
+    /// watch; a plain watch, through the others, then the next watch,
+    /// her home on her mind or not. Each is taken by the use it plays
+    /// on, and no other; a cued surf cools as a rolled one does.
+    #[test]
+    fn a_cue_waits_for_a_use_it_plays_on() {
+        let mut rng = Rng(5);
+        let mut osaka = Osaka::standing_at(10, 10, 0, &mut rng);
+        let plain = Chances::default();
+        let broken = Chances {
+            broken: broken_for(Use::Watch, Furniture::Tv).into_iter().collect(),
+            ..Chances::default()
+        };
+        let mut at = 1000;
+        let mut start = |osaka: &mut Osaka, what: Use, trying: bool, chances: &Chances| {
+            osaka.episode = trying.then(trial_episode);
+            at += 60_000;
+            osaka.start_job(
+                Job::Use(seat_for(what, Furniture::Tv)),
+                at,
+                chances,
+                &mut rng,
+            );
+            begun(osaka).3
+        };
+        let splice = Cue::Splice(SpliceId::TestSnack);
+        osaka.cue(Some(splice));
+        for (what, trying) in [(Use::Unpack, false), (Use::Homework, true)] {
+            let play = start(&mut osaka, what, trying, &plain);
+            assert_eq!((play.before, play.after), (None, None), "{what:?}");
+            assert_eq!(osaka.cued, Some(splice), "kept through {what:?}");
+        }
+        let play = start(&mut osaka, Use::Homework, false, &plain);
+        assert_eq!(play.before.map(|s| s.splice), Some(SpliceId::TestSnack));
+        assert_eq!(osaka.cued, None, "taken");
+        for cue in [ScriptId::Surf, ScriptId::Watch] {
+            osaka.cue(Some(Cue::Script(cue)));
+            start(&mut osaka, Use::Lounge, false, &plain);
+            assert_eq!(
+                osaka.cued,
+                Some(Cue::Script(cue)),
+                "{cue:?}: kept through a lounge"
+            );
+            // A plain watch plays with her home on her mind; surfing
+            // waits for the next.
+            let play = start(&mut osaka, Use::Watch, false, &broken);
+            if cue == ScriptId::Surf {
+                assert_eq!(play.own, ScriptId::Watch);
+                assert_eq!(
+                    osaka.cued,
+                    Some(Cue::Script(cue)),
+                    "surf: kept through a grievance"
+                );
+            } else {
+                assert_eq!(osaka.cued, None, "watch: taken");
+                osaka.cue(Some(Cue::Script(cue)));
+            }
+            start(&mut osaka, Use::Watch, true, &plain);
+            assert_eq!(
+                osaka.cued,
+                Some(Cue::Script(cue)),
+                "{cue:?}: kept through a trial"
+            );
+            let play = start(&mut osaka, Use::Watch, false, &plain);
+            assert_eq!(play.own, cue, "{cue:?}");
+            assert_eq!(osaka.cued, None, "{cue:?}: taken");
+        }
+        // A cued surf cools as a rolled one does: not again on its own
+        // within ten minutes, whatever the whims.
+        let surfing = (0..)
+            .find(|&seed| {
+                let seat = seat_for(Use::Watch, Furniture::Tv);
+                begun(&started(seat, 1000, &plain, None, None, seed).0)
+                    .3
+                    .own
+                    == ScriptId::Surf
+            })
+            .unwrap_or_default();
+        osaka.cue(Some(Cue::Script(ScriptId::Surf)));
+        assert_eq!(
+            start(&mut osaka, Use::Watch, false, &plain).own,
+            ScriptId::Surf
+        );
+        osaka.whims = Whims(surfing ^ 0x5eed);
+        // A minute on.
+        assert_eq!(
+            start(&mut osaka, Use::Watch, false, &plain).own,
+            ScriptId::Watch
+        );
+    }
+
+    /// Cued, a prelude plays though she's talking: what she was saying
+    /// stops for it, so its first key shows (the lamp on a moment,
+    /// thoughtful), and she looks as she would have, quiet. Rolled, a
+    /// prelude waits for her to be quiet, and she goes on talking.
+    #[test]
+    fn a_cued_prelude_hushes_her() {
+        let seat = seat_for(Use::Homework, Furniture::Sofa);
+        let cue = Some(Cue::Splice(SpliceId::TestBedtime));
+        let chances = Chances::default();
+        for seed in 0..16 {
+            let (quiet, _) = started(seat, 1000, &chances, cue, None, seed);
+            let (talking, _) = started(seat, 1000, &chances, cue, Some(5000), seed);
+            assert_eq!(talking.speech, None, "seed {seed}");
+            // Settling for bed with the lamp on a moment, or off at once.
+            let first = match begun(&talking).3.before.map(|s| s.branch) {
+                Some(0) => Bubble::Dots,
+                Some(_) => Bubble::Zzz,
+                None => panic!("seed {seed}: no prelude"),
+            };
+            assert_eq!(talking.appearance(1000).2, Some(first), "seed {seed}");
+            for t in [1000, 2000, 4999, 5000, 9000] {
+                assert_eq!(
+                    talking.appearance(t),
+                    quiet.appearance(t),
+                    "seed {seed} at {t}"
+                );
+            }
+        }
+    }
+
+    /// Rolled from her rows as a use starts: a prelude only when she's
+    /// quiet (talking, she goes on and the use plays bare in front), a
+    /// coda by its chance, and neither round a trial sit.
+    #[test]
+    fn a_use_rolls_its_splices_as_it_starts() {
+        let seat = seat_for(Use::Homework, Furniture::Sofa);
+        let mut codas = 0;
+        for seed in 0..64 {
+            let start = |talking: bool, trying: bool| {
+                let mut rng = Rng(seed);
+                let mut osaka = Osaka::standing_at(10, 10, 0, &mut rng);
+                osaka.splice_rows = &[SpliceId::TestSnack, SpliceId::TestSleep];
+                osaka.whims = Whims(seed ^ 0x5eed);
+                if talking {
+                    osaka.speech = Some((OK, 5000));
+                }
+                osaka.episode = trying.then(trial_episode);
+                osaka.start_job(Job::Use(seat), 1000, &Chances::default(), &mut rng);
+                let play = begun(&osaka).3;
+                (
+                    play.before.map(|s| s.splice),
+                    play.after.map(|s| s.splice),
+                    osaka.speech.is_some(),
+                )
+            };
+            let (before, after, _) = start(false, false);
+            assert_eq!(before, Some(SpliceId::TestSnack), "seed {seed}");
+            codas += usize::from(after.is_some());
+            assert_eq!(start(true, false), (None, after, true), "seed {seed}");
+            let (before, after, _) = start(false, true);
+            assert_eq!((before, after), (None, None), "seed {seed}");
+        }
+        assert!((16..48).contains(&codas), "{codas} codas in 64");
+    }
+
+    /// About one plain watch in five she flicks through the channels,
+    /// drawn from her latest decision's whims (her body's stream draws
+    /// the same either way): never on the shopping channel, with her
+    /// home on her mind or trying the piece, nor twice in ten minutes
+    /// (a watch she didn't flick through doesn't count: the next whims
+    /// to roll it, she does); cued, always (the shopping channel too
+    /// waits), and never cued to watch plainly.
+    #[test]
+    fn she_flicks_through_the_channels_one_watch_in_five() {
+        let seat = seat_for(Use::Watch, Furniture::Tv);
+        let own = |osaka: &Osaka| begun(osaka).3.own;
+        let surfs_on = |seed: u64| {
+            own(&started(seat, 1000, &Chances::default(), None, None, seed).0) == ScriptId::Surf
+        };
+        let surfing = (0..).find(|&seed| surfs_on(seed)).unwrap_or_default();
+        let mut surfs = 0u64;
+        let n = 2400u64;
+        for seed in 0..n {
+            let plain = Chances::default();
+            let (osaka, rng) = started(seat, 1000, &plain, None, None, seed);
+            let mut alone = Rng(seed);
+            let _ = Osaka::standing_at(10, 10, 0, &mut alone);
+            let span = alone.range(use_duration(Use::Watch).0, use_duration(Use::Watch).1);
+            assert_eq!(rng, alone.0, "seed {seed}: one body draw");
+            assert_eq!(begun(&osaka).1 - begun(&osaka).0, span, "seed {seed}");
+            let surfed = own(&osaka) == ScriptId::Surf;
+            surfs += u64::from(surfed);
+            if surfed {
+                // Not again within ten minutes.
+                let mut again = osaka.clone();
+                for (at, may) in [(600_999, false), (601_000, true)] {
+                    again.start_job(Job::Use(seat), at, &plain, &mut Rng(seed));
+                    assert_eq!(own(&again) == ScriptId::Surf, may, "seed {seed} at {at}");
+                }
+            } else {
+                // Didn't, so it didn't cool: whims that roll it, a few
+                // minutes on, and she does.
+                let mut again = osaka.clone();
+                again.whims = Whims(surfing ^ 0x5eed);
+                again.start_job(Job::Use(seat), 300_000, &plain, &mut Rng(seed));
+                assert_eq!(own(&again), ScriptId::Surf, "seed {seed}, then {surfing}");
+            }
+            // Never on the shopping channel, her home on her mind, or a
+            // trial; cued to watch plainly, never; cued to surf, always.
+            let advert = Chances {
+                advert: Some(Furniture::Lamp),
+                ..Chances::default()
+            };
+            let (osaka, _) = started(seat, 1000, &advert, None, None, seed);
+            assert_eq!(own(&osaka), ScriptId::Shopping, "seed {seed}");
+            let broken = Chances {
+                broken: broken_for(Use::Watch, Furniture::Tv).into_iter().collect(),
+                ..Chances::default()
+            };
+            let (osaka, _) = started(seat, 1000, &broken, None, None, seed);
+            assert_eq!(own(&osaka), ScriptId::Watch, "seed {seed}");
+            let mut rng = Rng(seed);
+            let mut trying = Osaka::standing_at(10, 10, 0, &mut rng);
+            trying.whims = Whims(seed ^ 0x5eed);
+            trying.episode = Some(trial_episode());
+            trying.start_job(Job::Use(seat), 1000, &plain, &mut rng);
+            assert_eq!(own(&trying), ScriptId::Watch, "seed {seed}");
+            let cue = Some(Cue::Script(ScriptId::Watch));
+            let (osaka, _) = started(seat, 1000, &plain, cue, None, seed);
+            assert_eq!(own(&osaka), ScriptId::Watch, "seed {seed}");
+            let cue = Some(Cue::Script(ScriptId::Surf));
+            let (osaka, _) = started(seat, 1000, &advert, cue, None, seed);
+            assert_eq!(own(&osaka), ScriptId::Surf, "seed {seed}");
+            assert_eq!(osaka.events, [], "seed {seed}: nothing bought");
+        }
+        // One in five: 480 ± 20 or so (one in four or six falls out).
+        assert!(
+            (n * 7 / 40..n * 9 / 40).contains(&surfs),
+            "{surfs} surfs in {n} watches"
+        );
+    }
+
+    /// Surfing: snow, colour bars, snow, the sunrise (ooh!), then snow
+    /// to the end, humming, pleased; in her watching pose throughout.
+    #[test]
+    fn surfing_flicks_through_the_channels_in_turn() {
+        use super::super::art::Channel;
+        use script::SURF_MS;
+        let mut osaka = Osaka::standing_at(10, 10, 0, &mut Rng(1));
+        let length = use_duration(Use::Watch).0;
+        let play = Play::plain(ScriptId::Surf);
+        for sofa in [false, true] {
+            let host = if sofa { Pose::Lounge } else { Pose::Sit };
+            let mut at = |t| {
+                let use_ = Played {
+                    what: Use::Watch,
+                    sofa,
+                    bought: None,
+                    grievance: None,
+                    length,
+                };
+                let ((pose, face, bubble), prop) = played_as(&mut osaka, use_, play, t);
+                assert_eq!(pose, host, "{t}");
+                (
+                    face,
+                    bubble,
+                    prop.and_then(Prop::channel)
+                        .map(|c| c != Channel::Snow(0) && c != Channel::Snow(1)),
+                    prop.map(|p| p.framed(0)),
+                )
+            };
+            let snow = Some(Prop::Tv(Channel::Snow(0)));
+            assert_eq!(at(0), (Face::Curious, None, Some(false), snow));
+            assert_eq!(at(SURF_MS - 1).3, snow);
+            assert_eq!(
+                at(SURF_MS),
+                (
+                    Face::Vacant,
+                    None,
+                    Some(true),
+                    Some(Prop::Tv(Channel::ColourBars))
+                )
+            );
+            assert_eq!(at(2 * SURF_MS).3, snow);
+            assert_eq!(
+                at(3 * SURF_MS),
+                (
+                    Face::Curious,
+                    Some(Bubble::Ooh),
+                    Some(true),
+                    Some(Prop::Tv(Channel::Sunrise))
+                )
+            );
+            assert_eq!(
+                at(4 * SURF_MS),
+                (Face::Happy, Some(Bubble::Hum), Some(false), snow)
+            );
+            assert_eq!(
+                at(length - 1),
+                (Face::Happy, Some(Bubble::Hum), Some(false), snow)
+            );
+        }
+    }
+
+    /// The lamp stays on a moment as she settles into bed (blinking,
+    /// thoughtful), then goes off while she sleeps; trying the bed where
+    /// she's set it down, off at once (it would flicker).
+    #[test]
+    fn the_lamp_goes_off_a_moment_after_she_lies_down() {
+        let seat = seat_for(Use::Sleep, Furniture::Bed);
+        let (osaka, _) = started(seat, 1000, &Chances::default(), None, None, 4);
+        let (since, until, ..) = begun(&osaka);
+        let shown = |osaka: &Osaka, t| (osaka.acting(t).2, osaka.prop(t));
+        assert_eq!(shown(&osaka, since), (Some(Bubble::Dots), None));
+        let lamp_on = since + script::LAMP_ON_MS;
+        assert_eq!(shown(&osaka, lamp_on - 1), (Some(Bubble::Dots), None));
+        assert_eq!(
+            shown(&osaka, lamp_on),
+            (Some(Bubble::Zzz), Some(Prop::LampOff))
+        );
+        assert_eq!(
+            shown(&osaka, until - 1),
+            (Some(Bubble::Zzz), Some(Prop::LampOff))
+        );
+        let mut rng = Rng(4);
+        let mut trying = Osaka::standing_at(10, 10, 0, &mut rng);
+        trying.episode = Some(trial_episode());
+        trying.start_job(Job::Use(seat), 1000, &Chances::default(), &mut rng);
+        let (since, until, ..) = begun(&trying);
+        let lamp_on = since + script::LAMP_ON_MS;
+        for t in [since, since + 1, lamp_on - 1, lamp_on, until - 1] {
+            assert_eq!(trying.prop(t), Some(Prop::LampOff), "trying, {t}");
+            assert_eq!(trying.acting(t).2, Some(Bubble::Zzz), "trying, {t}");
+        }
+    }
+
     /// Whether a key of `keys` ends on the frame grid strictly inside a
     /// body `length` ms long (where a wakeup on the grid and at the key's
     /// end coincide).
@@ -4982,7 +5845,7 @@ mod tests {
     fn a_use_wakes_her_as_each_key_ends() {
         let mut osaka = Osaka::standing_at(10, 10, 0, &mut Rng(1));
         let splices: Vec<script::SpliceId> =
-            [script::SpliceId::TestSnack, script::SpliceId::TestPet]
+            [script::SpliceId::TestSnack, script::SpliceId::TestSleep]
                 .into_iter()
                 .chain(script::SpliceId::ALL)
                 .collect();

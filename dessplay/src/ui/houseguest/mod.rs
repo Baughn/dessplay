@@ -550,6 +550,16 @@ impl Guest {
         }
     }
 
+    /// What she's playing at `now`, while she's visiting (for the
+    /// stage): any prelude, her own script and any coda, the one playing
+    /// with which of its keys.
+    pub fn playing(&self, now: u64) -> Option<String> {
+        match &self.state {
+            State::Visiting(visit) => visit.osaka.playing_note(now),
+            _ => None,
+        }
+    }
+
     /// Her needs, while she's visiting (for the stage).
     pub fn mood(&self) -> Option<String> {
         match &self.state {
@@ -2344,6 +2354,30 @@ fn draw_flap(buf: &mut Buffer, flap: room::Flap, age: u64, protected: &[Rect]) -
     painted
 }
 
+/// The cat in his bed in ASCII, if he's there (its inside row), curled
+/// up or biting. Line art only: in ASCII the lamp and the fridge look
+/// the same off or on, shut or open. Wildcard-free, so a new state
+/// says.
+fn cat_glyphs(state: art::PieceState) -> Option<[char; 4]> {
+    match state {
+        art::PieceState::Cat => Some([' ', '^', '^', ' ']),
+        art::PieceState::CatBiting => Some(['!', '^', '^', '!']),
+        art::PieceState::Plain | art::PieceState::LampOff | art::PieceState::FridgeOpen => None,
+    }
+}
+
+/// What's on the TV's two-cell screen in ASCII: static, the shopping
+/// channel's sunburst, colour bars, a sunrise.
+fn screen_glyphs(channel: art::Channel) -> [char; 2] {
+    match channel {
+        art::Channel::Snow(0) => [':', '.'],
+        art::Channel::Snow(_) => ['.', ':'],
+        art::Channel::Shopping(_) => ['^', '^'],
+        art::Channel::ColourBars => ['|', '|'],
+        art::Channel::Sunrise => ['o', '_'],
+    }
+}
+
 /// Paint her furniture (as line art, or as ASCII without graphics),
 /// returning what was painted over what.
 fn draw_props(
@@ -2357,21 +2391,11 @@ fn draw_props(
     for prop in shown {
         let ink = prop_ink(prop.item, truecolor);
         // On, the TV's screen shows what's on; the cat curls in his bed.
-        let cat = match looks.state(prop.item) {
-            art::PieceState::Cat => Some([' ', '^', '^', ' ']),
-            art::PieceState::CatBiting => Some(['!', '^', '^', '!']),
-            // Line art only: in ASCII the lamp and the fridge look the
-            // same off or on, shut or open.
-            art::PieceState::Plain | art::PieceState::LampOff | art::PieceState::FridgeOpen => None,
-        };
-        let screen = prop.screen().zip(looks.tv).map(|(cells, channel)| {
-            let glyphs = match channel {
-                art::Channel::Snow(0) => [':', '.'],
-                art::Channel::Snow(_) => ['.', ':'],
-                art::Channel::Shopping(_) => ['^', '^'],
-            };
-            (cells, glyphs)
-        });
+        let cat = cat_glyphs(looks.state(prop.item));
+        let screen = prop
+            .screen()
+            .zip(looks.tv)
+            .map(|(cells, channel)| (cells, screen_glyphs(channel)));
         let unders: Vec<_> = prop
             .cells()
             .filter_map(|(x, y, glyph)| {

@@ -7,7 +7,7 @@
 //! is a pure function of the act.
 
 use super::art::Channel;
-use super::mind::RIDDLES;
+use super::mind::{Lines, RIDDLES, Whims};
 use super::osaka::{Bubble, SCRUNCH, THERE, USE_FRAME_MS};
 use super::room::{Furniture, Use};
 use super::sprite::{Face, Pose};
@@ -111,7 +111,10 @@ impl Prop {
         match self {
             Self::Tv(Channel::Snow(_)) => Self::Tv(Channel::Snow(frame)),
             Self::Tv(Channel::Shopping(_)) => Self::Tv(Channel::Shopping(frame)),
-            Self::LampOff | Self::FridgeOpen | Self::CatBiting => self,
+            Self::Tv(Channel::ColourBars | Channel::Sunrise)
+            | Self::LampOff
+            | Self::FridgeOpen
+            | Self::CatBiting => self,
         }
     }
 }
@@ -212,11 +215,14 @@ pub(super) enum ScriptId {
     /// Spacing out, she tells a riddle and answers it herself at once,
     /// pleased with it.
     Riddle,
+    /// Flicking through the channels: snow, colour bars, snow, a
+    /// sunrise (ooh!), then back on snow, pleased with herself.
+    Surf,
 }
 
 impl ScriptId {
     #[cfg(test)]
-    pub const ALL: [ScriptId; 12] = [
+    pub const ALL: [ScriptId; 13] = [
         Self::Lounge,
         Self::Nap,
         Self::Sleep,
@@ -229,6 +235,7 @@ impl ScriptId {
         Self::Crumple,
         Self::Unpack,
         Self::Riddle,
+        Self::Surf,
     ];
 
     /// Its branches, each a run of keys.
@@ -246,17 +253,18 @@ impl ScriptId {
             Self::Crumple => CRUMPLE,
             Self::Unpack => UNPACK,
             Self::Riddle => RIDDLE,
+            Self::Surf => SURF,
         }
     }
 
-    /// The act it plays on. Wildcard-free, so a new script doesn't
-    /// compile until it says (the lints hold each to its host).
-    #[cfg(test)]
-    pub fn host(self) -> Host {
+    /// The branch it plays on a trial sit (a moment on a piece she's
+    /// trying where it stands): in bed, the lamp goes off at once, or it
+    /// would flicker. Wildcard-free, so a new script says.
+    pub fn trial_branch(self) -> u8 {
         match self {
+            Self::Sleep => 1,
             Self::Lounge
             | Self::Nap
-            | Self::Sleep
             | Self::Homework
             | Self::Watch
             | Self::Shopping
@@ -264,8 +272,82 @@ impl ScriptId {
             | Self::Snack
             | Self::Pet
             | Self::Crumple
-            | Self::Unpack => Host::Use,
-            Self::Riddle => Host::SpaceOut,
+            | Self::Unpack
+            | Self::Riddle
+            | Self::Surf => 0,
+        }
+    }
+
+    /// The use it plays on (`None`: it plays spacing out). Wildcard-free,
+    /// so a new script doesn't compile until it says (the lints hold
+    /// each to its host).
+    pub fn played_on(self) -> Option<Use> {
+        Some(match self {
+            Self::Lounge => Use::Lounge,
+            Self::Nap => Use::Nap,
+            Self::Sleep => Use::Sleep,
+            Self::Homework => Use::Homework,
+            Self::Watch | Self::Shopping | Self::Surf => Use::Watch,
+            Self::Read => Use::Read,
+            Self::Snack => Use::Snack,
+            Self::Pet => Use::Pet,
+            Self::Crumple => Use::Crumple,
+            Self::Unpack => Use::Unpack,
+            Self::Riddle => return None,
+        })
+    }
+
+    /// The act it plays on.
+    #[cfg(test)]
+    pub fn host(self) -> Host {
+        match self.played_on() {
+            Some(_) => Host::Use,
+            None => Host::SpaceOut,
+        }
+    }
+
+    /// The shortest body it can play over: a musing's, spacing out; a
+    /// watch's, for what plays only on a watch she isn't trying (the
+    /// shopping channel, surfing); else the shortest use there is (a
+    /// trial sit). Wildcard-free.
+    #[cfg(test)]
+    pub fn shortest_body(self) -> u64 {
+        use super::osaka::{SPACE_OUT_MS, shortest_use_ms, use_range};
+        match self {
+            Self::Riddle => SPACE_OUT_MS.0,
+            Self::Shopping | Self::Surf => use_range(Use::Watch).0,
+            Self::Lounge
+            | Self::Nap
+            | Self::Sleep
+            | Self::Homework
+            | Self::Watch
+            | Self::Read
+            | Self::Snack
+            | Self::Pet
+            | Self::Crumple
+            | Self::Unpack => shortest_use_ms(),
+        }
+    }
+
+    /// The stage scene that cues it. Wildcard-free, so a new script
+    /// doesn't compile until it can be cued.
+    #[cfg(test)]
+    pub fn scene(self) -> super::stage::Scene {
+        use super::stage::Scene;
+        match self {
+            Self::Lounge => Scene::Lounge,
+            Self::Nap => Scene::Nap,
+            Self::Sleep => Scene::Sleep,
+            Self::Homework => Scene::Homework,
+            Self::Watch => Scene::Watch,
+            Self::Shopping => Scene::Shopping,
+            Self::Read => Scene::Read,
+            Self::Snack => Scene::Snack,
+            Self::Pet => Scene::Pet,
+            Self::Crumple => Scene::MakeSofa,
+            Self::Unpack => Scene::Parcel,
+            Self::Riddle => Scene::Riddle,
+            Self::Surf => Scene::Surf,
         }
     }
 
@@ -297,21 +379,68 @@ pub(super) enum Host {
 /// A script spliced before or after a use (a prelude or a coda). No
 /// rows yet: each comes with its art.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(
+    test,
+    expect(
+        clippy::enum_variant_names,
+        reason = "only the tests' own splices until the first rows come with their art"
+    )
+)]
 pub(super) enum SpliceId {
-    /// A test's prelude or coda (the snack's look in the fridge, then
-    /// eating): not a row.
+    /// A test's prelude (the snack's look in the fridge, then eating):
+    /// not a row.
     #[cfg(test)]
     TestSnack,
-    /// A test's prelude or coda (petting the cat, until he bites): not a
-    /// row.
+    /// A test's coda (the lamp on a moment, then off as she sleeps): not
+    /// a row.
     #[cfg(test)]
-    TestPet,
+    TestSleep,
+    /// A test's second prelude (settling as if for bed, the lamp on a
+    /// moment or off at once, each its own length): not a row.
+    #[cfg(test)]
+    TestBedtime,
 }
 
 impl SpliceId {
-    /// Every row (the tests' splices aren't rows).
-    #[cfg(test)]
+    /// Every row: what a use may be wrapped in (the tests' splices
+    /// aren't rows, and are never rolled).
     pub const ALL: [SpliceId; 0] = [];
+
+    /// Its row.
+    pub fn row(self) -> Splice {
+        match self {
+            #[cfg(test)]
+            Self::TestSnack => Splice {
+                name: "test snack",
+                salt: 100,
+                around: TEST_AROUND,
+                at: Part::Before,
+                chance: (1, 1),
+                when: |_| true,
+                lens: &[4000],
+            },
+            #[cfg(test)]
+            Self::TestSleep => Splice {
+                name: "test sleep",
+                salt: 101,
+                around: TEST_AROUND,
+                at: Part::After,
+                chance: (1, 2),
+                when: |_| true,
+                lens: &[5000],
+            },
+            #[cfg(test)]
+            Self::TestBedtime => Splice {
+                name: "test bedtime",
+                salt: 102,
+                around: TEST_AROUND,
+                at: Part::Before,
+                chance: (1, 2),
+                when: |_| true,
+                lens: &[3000, 4500],
+            },
+        }
+    }
 
     /// The script it plays.
     pub fn script(self) -> ScriptId {
@@ -319,10 +448,185 @@ impl SpliceId {
             #[cfg(test)]
             Self::TestSnack => ScriptId::Snack,
             #[cfg(test)]
-            Self::TestPet => ScriptId::Pet,
+            Self::TestSleep | Self::TestBedtime => ScriptId::Sleep,
+        }
+    }
+
+    /// The stage scene that cues it (`None`: the tests' splices, which
+    /// aren't rows). Wildcard-free, so a new splice doesn't compile until
+    /// it says.
+    #[cfg(test)]
+    pub fn scene(self) -> Option<super::stage::Scene> {
+        match self {
+            Self::TestSnack | Self::TestSleep | Self::TestBedtime => None,
         }
     }
 }
+
+/// What the tests' splices wrap: every use a splice may (not unpacking
+/// or crumpling: see [`Splice::around`]).
+#[cfg(test)]
+const TEST_AROUND: &[Use] = &[
+    Use::Lounge,
+    Use::Nap,
+    Use::Sleep,
+    Use::Homework,
+    Use::Watch,
+    Use::Read,
+    Use::Snack,
+    Use::Pet,
+];
+
+/// Before the use it wraps (a prelude) or after it (a coda).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the first rows come with their art")
+)]
+pub(super) enum Part {
+    Before,
+    After,
+}
+
+/// A splice's row: what it wraps, and how likely.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Splice {
+    /// What it's called (the log and the stage say).
+    pub name: &'static str,
+    /// Its own salt for its rolls (all labelled `"splice"`, so no row's
+    /// can be another whim's): its chance rolls at twice it, its branch
+    /// at one more. Every row's differs (a lint holds it), and stays put
+    /// as rows come and go, so no row's rolls change with another's.
+    pub salt: u64,
+    /// The uses it may wrap. Never unpacking or crumpling: what comes of
+    /// those happens as the use ends, after any coda (a lint holds it).
+    pub around: &'static [Use],
+    /// Before or after.
+    pub at: Part,
+    /// `n` uses in `d` it wraps (of those `when` allows).
+    pub chance: (u64, u64),
+    /// Whether it may wrap a use as it starts.
+    pub when: fn(&SpliceCtx) -> bool,
+    /// How long it plays in each of its branches (drawn evenly). Its
+    /// script's keys end at set times (never a share: it has no body to
+    /// take one of), each inside its branch's length.
+    pub lens: &'static [u64],
+}
+
+/// What a splice row sees as the use it would wrap starts.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct SpliceCtx {
+    /// What she's using it for.
+    pub what: Use,
+    /// She's only trying the piece where it stands: no splice.
+    pub trying: bool,
+    /// She has stopped saying anything (a prelude's first key would be
+    /// hidden under it otherwise, so none is rolled).
+    pub quiet: bool,
+}
+
+/// A cue from the stage: what she's to play, forced rather than rolled,
+/// the next time it can be. It waits, through anything else she does,
+/// for the first use it plays on ([`Cue::plays_on`]), or (a riddle) the
+/// first musing; that takes it, and it plays (and starts its script's
+/// cooldown, as if rolled).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Cue {
+    /// A script, on the next use of its piece it can play on (or the
+    /// next musing, a riddle). A plain watch, surfing and the shopping
+    /// channel all play on a watch: cued to one, she plays none of the
+    /// others (the advert still decides what's on the shopping
+    /// channel).
+    Script(ScriptId),
+    /// A splice round the next use it wraps.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the first rows come with their art")
+    )]
+    Splice(SpliceId),
+}
+
+impl Cue {
+    /// Whether it plays on a use of `what` as it starts: never a trial
+    /// sit (a moment on a piece she's trying where it stands is all
+    /// that is); a splice round a use it wraps; a script on a use of its
+    /// piece, and surfing or the shopping channel only with nothing
+    /// about her home on her mind (`grieved`), which would show over
+    /// them. A riddle never: it waits for her to muse.
+    pub fn plays_on(self, what: Use, trying: bool, grieved: bool) -> bool {
+        !trying
+            && match self {
+                Self::Script(id) => {
+                    id.played_on() == Some(what)
+                        && !(grieved && matches!(id, ScriptId::Surf | ScriptId::Shopping))
+                }
+                Self::Splice(id) => id.row().around.contains(&what),
+            }
+    }
+}
+
+/// The prelude and coda a use is wrapped in as it starts (`ctx`): of
+/// `rows`, each that wraps it, may (`when`, and a prelude only when
+/// she's quiet), rolls its chance from `whims` and hasn't played in the
+/// last while (`lines` keeps what she's played), at most one before and
+/// one after, its branch (so its length) drawn from `whims` too. Or, cued
+/// (`forced`), that splice alone, if it wraps the use, whether she's
+/// quiet or not (the caller hushes her for a cued prelude) and starting
+/// its cooldown as if rolled. Never round a trial sit. Draws nothing from
+/// her body's stream.
+pub(super) fn splices(
+    rows: &[SpliceId],
+    ctx: &SpliceCtx,
+    forced: Option<SpliceId>,
+    whims: Whims,
+    lines: &mut Lines,
+    at: u64,
+) -> (Option<Spliced>, Option<Spliced>) {
+    let mut wrapped = (None, None);
+    if ctx.trying {
+        return wrapped;
+    }
+    let candidates: &[SpliceId] = match &forced {
+        Some(id) => std::slice::from_ref(id),
+        None => rows,
+    };
+    for &id in candidates {
+        let row = id.row();
+        let slot = match row.at {
+            Part::Before => &mut wrapped.0,
+            Part::After => &mut wrapped.1,
+        };
+        if slot.is_some() || !row.around.contains(&ctx.what) {
+            continue;
+        }
+        if forced.is_none() {
+            let (n, d) = row.chance;
+            let may = (row.at == Part::After || ctx.quiet) && (row.when)(ctx);
+            // The chance first: a splice that doesn't roll hasn't
+            // played, so it doesn't cool.
+            if !may || !whims.chance(SPLICE, 2 * row.salt, n, d) || !lines.try_play(id.script(), at)
+            {
+                continue;
+            }
+        } else {
+            lines.try_play(id.script(), at);
+        }
+        let branch = whims.below_at(SPLICE, 2 * row.salt + 1, row.lens.len() as u64);
+        let Some(&len) = row.lens.get(branch as usize) else {
+            continue;
+        };
+        tracing::info!(splice = row.name, what = ?ctx.what, "houseguest: a splice round her use");
+        *slot = Some(Spliced {
+            splice: id,
+            len,
+            branch: u8::try_from(branch).unwrap_or(0),
+        });
+    }
+    wrapped
+}
+
+/// What every splice's rolls are labelled (each salted by its row).
+const SPLICE: &str = "splice";
 
 /// A splice chosen for a use: which, how long it plays, and its branch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -451,6 +755,42 @@ impl Play {
         key_at(keys, elapsed, body).map(|(_, key, _)| (key, elapsed))
     }
 
+    /// What it plays at `now` in a use (or musing) from `since` to
+    /// `until`, for the stage: each part by name in turn (any prelude,
+    /// its own script, any coda), the one playing with which of its keys
+    /// ("test snack 2/2 › homework › test sleep").
+    pub fn note(&self, since: u64, until: u64, now: u64) -> String {
+        let start = self.body_start(since);
+        let end = self.body_end(since, until);
+        let playing = if self.before.is_some() && now < start {
+            0
+        } else if self.after.is_some() && now >= end {
+            2
+        } else {
+            1
+        };
+        let (keys, from, body) = self.part(since, until, now);
+        let key = key_at(keys, now.saturating_sub(from), body).map_or(0, |(i, ..)| i + 1);
+        let name = |s: Spliced| s.splice.row().name.to_owned();
+        [
+            self.before.map(name),
+            Some(format!("{:?}", self.own).to_lowercase()),
+            self.after.map(name),
+        ]
+        .into_iter()
+        .enumerate()
+        .filter_map(|(i, part)| {
+            let part = part?;
+            Some(if i == playing {
+                format!("{part} {key}/{}", keys.len())
+            } else {
+                part
+            })
+        })
+        .collect::<Vec<_>>()
+        .join(" › ")
+    }
+
     /// The next frame after `now`, `period` ms apart, of the part of a
     /// use from `since` to `until` playing at `now`: counted from that
     /// part's start, as [`Play::key`] times it (so a bob, or what's on
@@ -520,14 +860,35 @@ const NAP: &[&[Key]] = &[&[key(
     bubble(Bubble::Zzz),
 )]];
 
-/// The lamp off while she sleeps.
-const SLEEP: &[&[Key]] = &[&[shows(
-    Span::Rest,
-    Posed::Bob(Pose::Sleep, USE_FRAME_MS),
-    Face::Blink,
-    bubble(Bubble::Zzz),
-    Prop::LampOff,
-)]];
+/// How long the lamp stays on as she settles into bed.
+pub(super) const LAMP_ON_MS: u64 = 2000;
+
+/// The lamp on a moment as she settles (blinking, thoughtful), then off
+/// while she sleeps; trying the bed (the second branch), off at once.
+const SLEEP: &[&[Key]] = &[
+    &[
+        key(
+            Span::Ms(LAMP_ON_MS),
+            Posed::Bob(Pose::Sleep, USE_FRAME_MS),
+            Face::Blink,
+            bubble(Bubble::Dots),
+        ),
+        shows(
+            Span::Rest,
+            Posed::Bob(Pose::Sleep, USE_FRAME_MS),
+            Face::Blink,
+            bubble(Bubble::Zzz),
+            Prop::LampOff,
+        ),
+    ],
+    &[shows(
+        Span::Rest,
+        Posed::Bob(Pose::Sleep, USE_FRAME_MS),
+        Face::Blink,
+        bubble(Bubble::Zzz),
+        Prop::LampOff,
+    )],
+];
 
 /// Writing for the first half, then nodding off onto the paper.
 const HOMEWORK: &[&[Key]] = &[&[
@@ -558,6 +919,49 @@ const WATCH: &[&[Key]] = &[&[shows(
     None,
     Prop::Tv(Channel::Snow(0)),
 )]];
+
+/// How long each channel she flicks to before the sunrise stays on.
+pub(super) const SURF_MS: u64 = 2 * USE_FRAME_MS;
+
+/// Snow, colour bars, snow, a sunrise (ooh!), then back on snow,
+/// humming, pleased with herself.
+const SURF: &[&[Key]] = &[&[
+    shows(
+        Span::Ms(SURF_MS),
+        Posed::Host,
+        Face::Curious,
+        None,
+        Prop::Tv(Channel::Snow(0)),
+    ),
+    shows(
+        Span::Ms(2 * SURF_MS),
+        Posed::Host,
+        Face::Vacant,
+        None,
+        Prop::Tv(Channel::ColourBars),
+    ),
+    shows(
+        Span::Ms(3 * SURF_MS),
+        Posed::Host,
+        Face::Curious,
+        None,
+        Prop::Tv(Channel::Snow(0)),
+    ),
+    shows(
+        Span::Ms(4 * SURF_MS),
+        Posed::Host,
+        Face::Curious,
+        bubble(Bubble::Ooh),
+        Prop::Tv(Channel::Sunrise),
+    ),
+    shows(
+        Span::Rest,
+        Posed::Host,
+        Face::Happy,
+        bubble(Bubble::Hum),
+        Prop::Tv(Channel::Snow(0)),
+    ),
+]];
 
 /// Hooked, then sold, then watching on.
 const SHOPPING: &[&[Key]] = &[&[
@@ -682,6 +1086,7 @@ const RIDDLE: &[&[Key]] = &[&[
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+    use crate::ui::houseguest::mind::Lines;
 
     /// The bodies the lints try spans in: the shortest use there is (a
     /// trial sit), and lengths either side of every share's rounding.
@@ -711,6 +1116,7 @@ mod tests {
             ScriptId::Crumple => 9,
             ScriptId::Unpack => 10,
             ScriptId::Riddle => 11,
+            ScriptId::Surf => 12,
         }
     }
 
@@ -726,9 +1132,9 @@ mod tests {
         // Wildcard-free: a new splice doesn't compile until it's said
         // here whether it's a row (and so listed).
         let row = |id: SpliceId| match id {
-            SpliceId::TestSnack | SpliceId::TestPet => false,
+            SpliceId::TestSnack | SpliceId::TestSleep | SpliceId::TestBedtime => false,
         };
-        for id in [SpliceId::TestSnack, SpliceId::TestPet] {
+        for id in SPLICES {
             assert_eq!(row(id), SpliceId::ALL.contains(&id), "{id:?}");
         }
         assert!(SpliceId::ALL.iter().all(|&id| row(id)));
@@ -764,6 +1170,7 @@ mod tests {
             ScriptId::Crumple => Play::of(Use::Crumple, None),
             ScriptId::Unpack => Play::of(Use::Unpack, None),
             ScriptId::Riddle => Play::riddle(0),
+            ScriptId::Surf => Play::plain(ScriptId::Surf),
         };
         for id in ScriptId::ALL {
             assert_eq!(player(id).own, id, "{id:?} isn't what plays it");
@@ -799,10 +1206,7 @@ mod tests {
     #[test]
     fn every_set_time_fits_its_shortest_host() {
         for id in ScriptId::ALL {
-            let shortest = match id.host() {
-                Host::Use => super::super::osaka::shortest_use_ms(),
-                Host::SpaceOut => super::super::osaka::SPACE_OUT_MS.0,
-            };
+            let shortest = id.shortest_body();
             for keys in id.branches() {
                 for key in *keys {
                     if let Span::Ms(ms) = key.span {
@@ -887,7 +1291,7 @@ mod tests {
                 .iter()
                 .flat_map(|keys| keys.iter())
                 .any(|k| matches!(k.pose, Posed::Host));
-            let watch = matches!(id, ScriptId::Watch | ScriptId::Shopping);
+            let watch = matches!(id, ScriptId::Watch | ScriptId::Shopping | ScriptId::Surf);
             assert!(!hosted || watch, "{id:?}");
         }
     }
@@ -929,6 +1333,199 @@ mod tests {
         assert!(SpliceId::ALL.is_empty(), "no splice rows yet");
     }
 
+    /// Every splice, rows and the tests' alike.
+    /// The tests' own splices (not rows).
+    const SPLICES: [SpliceId; 3] = [
+        SpliceId::TestSnack,
+        SpliceId::TestSleep,
+        SpliceId::TestBedtime,
+    ];
+
+    /// Whether every key of `keys` ends at a set time, the last with the
+    /// rest of its part: what a splice's script must do (a share of a
+    /// splice would be a share of nothing in particular).
+    fn at_set_times(keys: &[Key]) -> bool {
+        let (last, rest) = keys
+            .split_last()
+            .map_or((None, keys), |(l, r)| (Some(l), r));
+        rest.iter().all(|k| matches!(k.span, Span::Ms(_)))
+            && last.is_some_and(|k| k.span == Span::Rest)
+    }
+
+    /// Lint, over every splice: its script's keys end at set times (the
+    /// lint bites: a petting's bite comes at a share), each inside the
+    /// shortest of its lengths; it has a length per branch it plays
+    /// (some); it never leaves her pose to a host (it has none); it
+    /// never wraps unpacking or crumpling; and its rolls are salted apart
+    /// from every other's.
+    #[test]
+    fn every_splice_plays_at_set_times_and_wraps_what_it_may() {
+        assert!(!at_set_times(ScriptId::Pet.keys(0)), "the lint bites");
+        let mut salts = std::collections::HashSet::new();
+        for id in SPLICES.into_iter().chain(SpliceId::ALL) {
+            assert!(salts.insert(id.row().salt), "{id:?}: its salt is another's");
+            let row = id.row();
+            let branches = id.script().branches();
+            assert!(
+                !row.lens.is_empty() && row.lens.len() <= branches.len(),
+                "{id:?}"
+            );
+            for (branch, &len) in row.lens.iter().enumerate() {
+                let keys = id.script().keys(branch as u8);
+                assert!(at_set_times(keys), "{id:?}/{branch}");
+                for key in keys {
+                    if let Span::Ms(ms) = key.span {
+                        assert!(ms <= len, "{id:?}/{branch}: {ms} > {len}");
+                    }
+                    assert!(!matches!(key.pose, Posed::Host), "{id:?}/{branch}");
+                }
+            }
+            assert!(!row.around.is_empty(), "{id:?}");
+            for what in row.around {
+                assert!(
+                    !matches!(what, Use::Unpack | Use::Crumple),
+                    "{id:?}: {what:?}"
+                );
+            }
+            let (n, d) = row.chance;
+            assert!(n <= d && d > 0, "{id:?}");
+        }
+    }
+
+    /// What `rows` wrap a use of `what` in, from `whims` (quiet or not,
+    /// trying it or not), with `lines` keeping what she's played.
+    fn rolled(
+        rows: &[SpliceId],
+        what: Use,
+        quiet: bool,
+        trying: bool,
+        whims: u64,
+        lines: &mut Lines,
+        at: u64,
+    ) -> (Option<SpliceId>, Option<SpliceId>) {
+        let ctx = SpliceCtx {
+            what,
+            trying,
+            quiet,
+        };
+        let (before, after) = splices(rows, &ctx, None, Whims(whims), lines, at);
+        (before.map(|s| s.splice), after.map(|s| s.splice))
+    }
+
+    /// Rolled: a splice wraps only a use it may (and never a trial sit),
+    /// a prelude only when she's quiet; each by its chance, and not
+    /// again within ten minutes of playing (a splice that didn't roll
+    /// didn't play, and doesn't cool: one that rolls a moment later
+    /// plays); each its row's length.
+    #[test]
+    fn splices_roll_by_their_rows() {
+        let rows = [SpliceId::TestSnack, SpliceId::TestSleep];
+        // Whims the coda rolls on, round a homework (the coda's roll
+        // doesn't depend on the use).
+        let rolls = |w: u64| {
+            rolled(
+                &rows,
+                Use::Homework,
+                true,
+                false,
+                w,
+                &mut Lines::default(),
+                0,
+            )
+            .1 == Some(SpliceId::TestSleep)
+        };
+        let coda = (0..).find(|&w| rolls(w)).unwrap();
+        let mut afters = 0;
+        for w in 0..400 {
+            for &what in &Use::ALL {
+                let may = TEST_AROUND.contains(&what);
+                let mut lines = Lines::default();
+                let (before, after) = rolled(&rows, what, true, false, w, &mut lines, 0);
+                assert_eq!(before, may.then_some(SpliceId::TestSnack), "{what:?}");
+                assert!(after.is_none() || may, "{what:?}");
+                afters += usize::from(after.is_some());
+                // Not a trial sit, nor (a prelude) while she talks.
+                let mut fresh = Lines::default();
+                assert_eq!(
+                    rolled(&rows, what, true, true, w, &mut fresh, 0),
+                    (None, None)
+                );
+                let (before, _) = rolled(&rows, what, false, false, w, &mut fresh, 0);
+                assert_eq!(before, None, "{what:?}: a prelude over her talking");
+                if !may {
+                    continue;
+                }
+                // Cooling: not again within ten minutes of playing; and a
+                // coda that didn't roll didn't play, so one that rolls a
+                // moment later does.
+                let (before, again) = rolled(&rows, what, true, false, coda, &mut lines, 599_999);
+                assert_eq!(before, None, "{what:?}");
+                let cooling = after.is_some();
+                assert_eq!(
+                    again,
+                    (!cooling).then_some(SpliceId::TestSleep),
+                    "{what:?}, whims {w}"
+                );
+                let (before, _) = rolled(&rows, what, true, false, w, &mut lines, 600_000);
+                assert_eq!(before, Some(SpliceId::TestSnack), "{what:?}");
+            }
+        }
+        // The coda, one in two.
+        let n = 400 * TEST_AROUND.len();
+        assert!((n * 2 / 5..n * 3 / 5).contains(&afters), "{afters} of {n}");
+        // Each its row's length.
+        let ctx = SpliceCtx {
+            what: Use::Homework,
+            trying: false,
+            quiet: true,
+        };
+        for id in SPLICES {
+            let (before, after) = splices(&[], &ctx, Some(id), Whims(1), &mut Lines::default(), 0);
+            let s = before.or(after).unwrap();
+            assert_eq!(s.splice, id);
+            assert_eq!(Some(&s.len), id.row().lens.get(usize::from(s.branch)));
+        }
+    }
+
+    /// Of several preludes (or codas) that would wrap a use, only the
+    /// first that rolls does; each's branch, and so its length, is drawn
+    /// evenly from the whims.
+    #[test]
+    fn the_first_splice_to_roll_wraps_it_on_a_branch_of_its_own() {
+        let rows = [SpliceId::TestBedtime, SpliceId::TestSnack];
+        let ctx = SpliceCtx {
+            what: Use::Homework,
+            trying: false,
+            quiet: true,
+        };
+        let lens = SpliceId::TestBedtime.row().lens;
+        let mut seen = [0u64; 2];
+        let n = 400;
+        for w in 0..n {
+            let (before, after) = splices(&rows, &ctx, None, Whims(w), &mut Lines::default(), 0);
+            assert_eq!(after, None);
+            let before = before.unwrap();
+            // The bedtime one, one in two; else the snack (which always
+            // rolls), never both.
+            match before.splice {
+                SpliceId::TestBedtime => {
+                    let branch = usize::from(before.branch);
+                    assert_eq!(Some(&before.len), lens.get(branch), "whims {w}");
+                    seen[branch] += 1;
+                }
+                other => assert_eq!(other, SpliceId::TestSnack, "whims {w}"),
+            }
+        }
+        let bedtimes = seen[0] + seen[1];
+        assert!((n * 2 / 5..n * 3 / 5).contains(&bedtimes), "{seen:?}");
+        for count in seen {
+            assert!(
+                (bedtimes * 2 / 5..bedtimes * 3 / 5).contains(&count),
+                "{seen:?}"
+            );
+        }
+    }
+
     /// Which key it is, as far as the tests can tell them apart.
     fn which(key: &Key) -> (Span, Face, Option<Say>, Option<Prop>) {
         (key.span, key.face, key.say, key.prop)
@@ -947,12 +1544,12 @@ mod tests {
             branch: 0,
         };
         let after = Spliced {
-            splice: SpliceId::TestPet,
+            splice: SpliceId::TestSleep,
             len: 3000,
             branch: 0,
         };
         let snack = ScriptId::Snack.keys(0);
-        let pet = ScriptId::Pet.keys(0);
+        let sleep = ScriptId::Sleep.keys(0);
         let homework = ScriptId::Homework.keys(0);
         for (before, after) in [
             (None, None),
@@ -989,11 +1586,11 @@ mod tests {
             );
             assert_eq!(at(end - 1), (which(&homework[2]), body - 1), "{case}");
             if after.is_some() {
-                assert_eq!(at(end), (which(&pet[0]), 0), "{case}");
-                assert_eq!(at(end + 2099), (which(&pet[0]), 2099), "{case}");
-                assert_eq!(at(end + 2100), (which(&pet[1]), 2100), "{case}");
-                assert_eq!(at(UNTIL - 1), (which(&pet[1]), 2999), "{case}");
-                assert_eq!(at(UNTIL + 500), (which(&pet[1]), 3500), "{case}");
+                assert_eq!(at(end), (which(&sleep[0]), 0), "{case}");
+                assert_eq!(at(end + 1999), (which(&sleep[0]), 1999), "{case}");
+                assert_eq!(at(end + 2000), (which(&sleep[1]), 2000), "{case}");
+                assert_eq!(at(UNTIL - 1), (which(&sleep[1]), 2999), "{case}");
+                assert_eq!(at(UNTIL + 500), (which(&sleep[1]), 3500), "{case}");
             } else {
                 assert_eq!(at(UNTIL + 500), (which(&homework[2]), body + 500), "{case}");
             }
@@ -1013,7 +1610,38 @@ mod tests {
         let (key, elapsed) = crowded.key(SINCE, UNTIL, start - 1).unwrap();
         assert_eq!((which(key), elapsed), (which(&snack[1]), 5999));
         let (key, elapsed) = crowded.key(SINCE, UNTIL, start).unwrap();
-        assert_eq!((which(key), elapsed), (which(&pet[0]), 0));
+        assert_eq!((which(key), elapsed), (which(&sleep[0]), 0));
+    }
+
+    /// The stage's note names each part in turn, the one playing with
+    /// which of its keys.
+    #[test]
+    fn the_stage_says_what_part_and_key_she_plays() {
+        const SINCE: u64 = 10_000;
+        const UNTIL: u64 = SINCE + 10_000;
+        let plain = Play::plain(ScriptId::Homework);
+        assert_eq!(plain.note(SINCE, UNTIL, SINCE), "homework 1/3");
+        assert_eq!(plain.note(SINCE, UNTIL, UNTIL + 500), "homework 3/3");
+        let wrapped = Play {
+            before: Some(Spliced {
+                splice: SpliceId::TestSnack,
+                len: 2000,
+                branch: 0,
+            }),
+            after: Some(Spliced {
+                splice: SpliceId::TestSleep,
+                len: 3000,
+                branch: 0,
+            }),
+            ..plain
+        };
+        let note = |now| wrapped.note(SINCE, UNTIL, now);
+        assert_eq!(note(SINCE), "test snack 1/2 › homework › test sleep");
+        assert_eq!(note(SINCE + 1500), "test snack 2/2 › homework › test sleep");
+        assert_eq!(note(SINCE + 2000), "test snack › homework 1/3 › test sleep");
+        assert_eq!(note(UNTIL - 3001), "test snack › homework 3/3 › test sleep");
+        assert_eq!(note(UNTIL - 3000), "test snack › homework › test sleep 1/2");
+        assert_eq!(note(UNTIL), "test snack › homework › test sleep 2/2");
     }
 
     /// The next key end is the first one strictly after `now` (at a key's
@@ -1033,7 +1661,7 @@ mod tests {
         assert_eq!(next(plain, SINCE + 7500), Some(UNTIL));
         assert_eq!(next(plain, UNTIL - 1), Some(UNTIL));
         assert_eq!(next(plain, UNTIL), None);
-        // A snack's look in the fridge before, a petting after: its keys
+        // A snack's look in the fridge before, a sleep after: its keys
         // end where they would alone, from where each part starts.
         let wrapped = Play {
             before: Some(Spliced {
@@ -1042,7 +1670,7 @@ mod tests {
                 branch: 0,
             }),
             after: Some(Spliced {
-                splice: SpliceId::TestPet,
+                splice: SpliceId::TestSleep,
                 len: 3000,
                 branch: 0,
             }),
@@ -1056,8 +1684,8 @@ mod tests {
             now = end;
         }
         // Snack: 1500, the prelude's end; Homework over a 5 s body: ½,
-        // ¾, its end; Pet: 7/10 of 3 s, the coda's end.
-        assert_eq!(ends, [1500, 2000, 4500, 5750, 7000, 9100, 10_000]);
+        // ¾, its end; Sleep: the lamp off at 2 s, the coda's end.
+        assert_eq!(ends, [1500, 2000, 4500, 5750, 7000, 9000, 10_000]);
     }
 
     /// A plain use of anything but a watch plays its own script; a watch

@@ -60,6 +60,12 @@ Add new days at the top. Add new entries at the bottom of existing days.
   answers it herself straight away, pleased with it: "Bread ya can't
   eat?" "A fryin' pan!" Within a visit, she doesn't tell the same one
   twice in ten minutes.
+- Added: Now and then the houseguest flicks through the channels while
+  she watches TV: snow, colour bars, snow, then a sunrise ("Ooh!"),
+  and back to snow, humming, pleased with herself.
+- Changed: Getting into bed, the houseguest lies a moment, thoughtful,
+  before she drops off. With line-art graphics, her lamp stays on for
+  that moment and goes off as she falls asleep.
 
 ## 2026-10-02
 
