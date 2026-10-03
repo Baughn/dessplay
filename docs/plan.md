@@ -2105,7 +2105,7 @@ welcome; the only goal is "watching her is kind of fun".
 
 ## Phase 38: Houseguest mind and home
 
-**Status: phases 0–3 done (2026-10-02); phase 4 in progress (steps 1–6 of 9 committed 2026-10-03; the working design, with its amendments and the commit plan, is [phase4-design.md](proposals/2026-10-02-houseguest-mind/phase4-design.md); approved decor art in its `decor/` dir), before anything since phase 2 is pushed (the user: rooms may mix until then).** Design: [the mind
+**Status: phases 0–3 done (2026-10-02); phase 4 in progress (steps 1–7 of 9 committed 2026-10-03; the working design, with its amendments and the commit plan, is [phase4-design.md](proposals/2026-10-02-houseguest-mind/phase4-design.md); approved decor art in its `decor/` dir), before anything since phase 2 is pushed (the user: rooms may mix until then).** Design: [the mind
 and home proposal](proposals/2026-10-02-houseguest-mind.md) (direction
 agreed with the user; their answers are its *Decisions*). Its migration
 plan numbers its own phases 0–8; this section records them.
@@ -2502,6 +2502,32 @@ minutes. With the cache dropping only stale images, the question is
 no longer whether it fills (it will, in a long session) but whether her
 working set thrashes, and it doesn't: trials can ship on the image
 budget, with `a_busy_furnished_home_stays_cheap` extended to cover them.
+
+**Trials (step 7, 2026-10-03; design D6, A3, T1).** Shipped: the ties
+are the cheapest repair's piece and tier within `TIE_CELLS` = 4, one per
+spot (the search offers each place both ways round; a lamp turned where
+it would stand was a "trial" nobody could see, caught by
+`no_piece_is_moved_twice`), tried in a whim's order (the design left
+"the next" open; in search order the second spot was always the
+cheapest, kept outright, so a third was never tried). The keep roll is
+e^(−Δ/T) with T her restlessness, which in practice sits near 1, so she
+keeps a dearer spot about four times in five: on the sofa turned from
+the TV (three spots, costs 1, 2, 2) she tries a second spot about one
+move in seven. The line is "hmm..." (ASCII dots like all her lines,
+not the design's "…"). In `a_busy_furnished_home_stays_cheap` none of
+the 8 twenty-minute industrious visits happened to try a second spot
+(the counts print `spots tried again`), so the budget with trials is
+asserted where they're certain: `she_tries_it_in_a_spot_or_two` (calm,
+so picky; two- and three-spot visits in line art) asserts no image is
+encoded twice. Likewise `the_carry_keeps_every_promise` reaches a
+second spot in only about 3% of its cases, so interruptions mid-trial
+have their own property, `a_trial_keeps_every_promise`: it starts each
+case already trying the sofa (sitting on it in the first spot, or
+lifted again for another) and sends chat, resizes and focus changes
+in the next 20 s. Both properties check every frame with the same
+`promised_frame`. About half the cases lift it again after the first
+interruption. On these panes no resize makes a spot stop holding, so
+the paths that skip such a spot are not reached.
 
 One move at a time can leave a home that no single move mends. Take a
 bed in the living room beside the TV the sofa faces, and a lamp

@@ -453,10 +453,15 @@ fn evaluate(
     key: Grievance,
     piece: Furniture,
     to: Placement,
+    again: bool,
 ) -> Option<(Repair, Vec<Shown>)> {
     // A rule that holds has nothing to mend (another move mended it,
-    // or a resize did).
-    let mending = before.broken.iter().find(|b| b.key == key)?;
+    // or a resize did); unless she's trying the piece in another spot
+    // (`again`): she mended it herself, setting it down where it stands.
+    let mending = before.broken.iter().find(|b| b.key == key);
+    if mending.is_none() && !again {
+        return None;
+    }
     let i = before.home.props.iter().position(|p| p.item == piece)?;
     let old = *before.home.props.get(i)?;
     let &(_, e) = before.strips.iter().find(|(s, _)| *s == to.strip)?;
@@ -516,10 +521,11 @@ fn evaluate(
     // settled one round where it stands is the cheapest of all.
     let was = before.laid.iter().find(|s| s.item == piece)?;
     let in_place = (at.strip, at.left, at.floor) == (was.strip, was.left, was.floor);
-    let rival = mending
-        .pieces
-        .iter()
-        .any(|&p| p != piece && before.home.props.iter().any(|q| q.item == p && !q.settled));
+    let rival = mending.is_some_and(|m| {
+        m.pieces
+            .iter()
+            .any(|&p| p != piece && before.home.props.iter().any(|q| q.item == p && !q.settled))
+    });
     let tier = if old.settled {
         if rival && !in_place {
             SETTLED_BEHIND
@@ -716,7 +722,8 @@ pub(super) fn search(home: &Home, frame: &Frame, target: &Broken) -> Search {
                     anchor,
                     facing,
                 };
-                let Some((repair, laid)) = evaluate(&before, &mut scratch, target.key, p.piece, to)
+                let Some((repair, laid)) =
+                    evaluate(&before, &mut scratch, target.key, p.piece, to, false)
                 else {
                     continue;
                 };
@@ -747,10 +754,117 @@ pub(super) fn search(home: &Home, frame: &Frame, target: &Broken) -> Search {
 /// stand may have moved with a resize). Judged with the move applied:
 /// the piece's own place, which it keeps until set down, is free.
 pub(super) fn check(home: &Home, frame: &Frame, repair: &Repair) -> Option<Shown> {
+    judge_move(home, frame, repair, false)
+}
+
+/// [`check`], for a spot she'd try a piece in that she has already set
+/// down where it mends `repair`'s rule: the rule may hold now (by her
+/// own doing), and must still hold with the piece moved, breaking none
+/// that holds.
+pub(super) fn check_again(home: &Home, frame: &Frame, repair: &Repair) -> Option<Shown> {
+    judge_move(home, frame, repair, true)
+}
+
+fn judge_move(home: &Home, frame: &Frame, repair: &Repair, again: bool) -> Option<Shown> {
     let before = Before::new(home, frame);
     let mut scratch = before.home.clone();
-    let (moved, laid) = evaluate(&before, &mut scratch, repair.key, repair.piece, repair.to)?;
+    let (moved, laid) = evaluate(
+        &before,
+        &mut scratch,
+        repair.key,
+        repair.piece,
+        repair.to,
+        again,
+    )?;
     fits_now(frame, &before, &laid, repair.piece).then_some(moved.at)
+}
+
+/// Repairs this many cells dearer than the cheapest (at its tier, of
+/// its piece) are as good to her: she may try the piece in each.
+pub(super) const TIE_CELLS: u32 = 4;
+
+/// The spots she'd try a piece in after the one she sets it down in
+/// first, in order, and the cost of the cheapest of them all (what each
+/// is weighed against). Empty when there's only the one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct Trials {
+    rest: [Option<Spot>; REPAIRS - 1],
+    pub min: u32,
+}
+
+/// One more spot to try a piece in: where it's set down, what that
+/// costs, and where it would stand (all a [`Repair`] of the same piece
+/// differs by).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Spot {
+    to: Placement,
+    cost: u32,
+    left: i32,
+    floor: i32,
+}
+
+impl Trials {
+    /// Of `repairs` (a search's, cheapest first), those as good as the
+    /// first: of its piece, at its tier, within [`TIE_CELLS`] of it; one
+    /// a spot (the cheaper way round: a piece turned where another
+    /// repair sets it isn't another spot to try).
+    pub fn ties(repairs: &[Repair]) -> Vec<Repair> {
+        let Some(first) = repairs.first() else {
+            return Vec::new();
+        };
+        let mut ties: Vec<Repair> = Vec::new();
+        for r in repairs {
+            let spot = |t: &Repair| (t.at.strip, t.at.left, t.at.floor);
+            if (r.piece, r.tier) == (first.piece, first.tier)
+                && r.cost <= first.cost.saturating_add(TIE_CELLS)
+                && !ties.iter().any(|t| spot(t) == spot(r))
+            {
+                ties.push(*r);
+            }
+        }
+        ties
+    }
+
+    /// The spots after the first of `ties` (in the order she'd try
+    /// them), as many as she'd try.
+    pub fn of(ties: &[Repair]) -> Self {
+        let mut trials = Self {
+            min: ties.iter().map(|r| r.cost).min().unwrap_or(0),
+            ..Self::default()
+        };
+        for (slot, r) in trials.rest.iter_mut().zip(ties.iter().skip(1)) {
+            *slot = Some(Spot {
+                to: r.to,
+                cost: r.cost,
+                left: r.at.left,
+                floor: r.at.floor,
+            });
+        }
+        trials
+    }
+
+    /// Whether a spot is left to try.
+    pub fn remain(&self) -> bool {
+        self.rest.iter().any(Option::is_some)
+    }
+
+    /// The next spot to try, if one is left: `like` (a repair of the same
+    /// rule, by the same piece) set down there.
+    pub fn next(&mut self, like: &Repair) -> Option<Repair> {
+        let spot = self.rest.iter_mut().find_map(Option::take)?;
+        Some(Repair {
+            to: spot.to,
+            cost: spot.cost,
+            at: Shown {
+                strip: Some(spot.to.strip),
+                facing: spot.to.facing,
+                left: spot.left,
+                floor: spot.floor,
+                ..like.at
+            },
+            ..*like
+        })
+    }
 }
 
 #[cfg(test)]
@@ -1254,6 +1368,73 @@ mod tests {
         assert_eq!(best.to.anchor.side, Side::Left, "from the bed's wall");
         let after = made(&home, best, &panes(40));
         assert!(between(&laid(&after, Lamp), &laid(&after, Bed)) <= 3);
+    }
+
+    /// The spots she'd try a piece in: the cheapest repair's piece, at
+    /// its tier, within [`TIE_CELLS`] of it, one a spot (the lamp turned
+    /// the other way where it would stand is no other spot). Set down in
+    /// the first, each other still holds as a move from there
+    /// ([`check_again`]), though there's nothing left to mend
+    /// ([`check`]).
+    #[test]
+    fn trials_are_spots_as_good_as_the_cheapest() {
+        let tv = at(Tv, Nook::Users, Side::Right, 0, Facing::Left);
+        let sofa = at(Sofa, Nook::Users, Side::Right, 10, Facing::Left);
+        let bed = at(Bed, Nook::Users, Side::Left, 0, Facing::Right);
+        let lamp = at(Lamp, Nook::Users, Side::Right, 0, Facing::Right);
+        let near = Rule::Near {
+            a: Lamp,
+            b: &[Bed, Desk],
+            gap: 3,
+        };
+        for (props, rule, spots) in [(vec![tv, sofa], FACES, 3), (vec![bed, lamp], near, 2)] {
+            let (home, repairs) = mend(40, &props, &[], rule);
+            let ties = Trials::ties(&repairs);
+            assert_eq!(ties.len(), spots, "{repairs:?}");
+            let first = ties[0];
+            assert_eq!(first, repairs[0]);
+            for (i, t) in ties.iter().enumerate() {
+                assert_eq!((t.piece, t.tier), (first.piece, first.tier));
+                assert!(t.cost <= first.cost + TIE_CELLS, "{t:?}");
+                assert!(
+                    ties[..i].iter().all(|u| u.at.left != t.at.left),
+                    "one a spot: {ties:?}"
+                );
+            }
+            let mut trials = Trials::of(&ties);
+            assert_eq!(trials.min, first.cost);
+            let mut rest = Vec::new();
+            while let Some(r) = trials.next(&first) {
+                rest.push(r);
+            }
+            assert_eq!(rest, ties[1..]);
+            assert!(!trials.remain());
+            // Set down in the first spot: the rule holds, and each other
+            // spot keeps it so.
+            let mut after = home.clone();
+            let p = after
+                .props
+                .iter_mut()
+                .find(|p| p.item == first.piece)
+                .unwrap();
+            (p.strip, p.anchor, p.facing) =
+                (first.to.strip, Some(first.to.anchor), first.to.facing);
+            let nooks = panes(40);
+            let buf = frame(40, &[]);
+            let shown = after.clone().project(&buf, &nooks, &|_, _| false);
+            let frame = Frame {
+                buf: &buf,
+                nooks: &nooks,
+                blocked: &|_, _| false,
+                shown: &shown,
+                made: &[],
+            };
+            for r in &ties[1..] {
+                assert!(check(&after, &frame, r).is_none(), "nothing to mend: {r:?}");
+                let at = check_again(&after, &frame, r).unwrap_or_else(|| panic!("{r:?}"));
+                assert_eq!(at.left, r.at.left);
+            }
+        }
     }
 
     /// The fridge goes to the nearer wall; with text along that one, to

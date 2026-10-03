@@ -8,7 +8,7 @@ use super::brain::{self, Factor, Mood, Need, Needs, Rising, Spot, Want};
 use super::layer::Placed;
 use super::mind::{self, Beat, Bind, Ctx, Heading, Here, Lines, Loss, Whims};
 use super::room::{Furniture, MadeId, PieceRef, Seat, Use};
-use super::rules::{Grievance, Placement, Repair};
+use super::rules::{Grievance, Placement, Repair, TIE_CELLS, Trials};
 use super::scenes::{Build, Job, JobRef, LayerOp, Lift, Pull, SetDown, Side, Swap};
 use super::sprite::{self, Face, Facing, HEIGHT, Pose, SpriteCell};
 use super::terrain::{Link, Platform, Route, Terrain};
@@ -69,6 +69,15 @@ pub(super) struct Episode {
     /// (no way there, or her walk toward it ended short of it).
     /// Interruptions on the way cost none.
     pub tries: u8,
+    /// The other spots she means to try it in, if the one she sets it
+    /// down in doesn't feel right.
+    pub trials: Trials,
+    /// The spots she has set it down in (the first was her one thing
+    /// about her home: the rule's been right since).
+    pub tried: u8,
+    /// Set down in a spot she's trying it in: she sits on it a moment,
+    /// then keeps it there or tries the next (see [`Osaka::arrange_next`]).
+    pub trying: bool,
 }
 
 /// What the last frame made of the move she's making: the move it
@@ -286,6 +295,13 @@ const WAIT_MS: u64 = 300;
 const UNREACHED_MS: u64 = 2000;
 /// Lifting a piece.
 const HUP: &str = "Hup!";
+/// Trying a piece where she has set it down.
+const HMM: &str = "hmm...";
+/// Using a piece she's trying where it stands: a moment.
+const TRIAL_USE_MS: (u64, u64) = (3500, 5000);
+/// The lowest her restlessness counts for, weighing whether to keep a
+/// piece where she's trying it (see [`Osaka::arrange_next`]).
+const KEEP_T_MIN: f64 = 0.05;
 
 /// Choices remembered for the cooldown.
 const RECENT: usize = 3;
@@ -294,7 +310,7 @@ const RETRIES: u8 = 5;
 
 /// Her fixed lines (the lints check each fits a bubble).
 #[cfg(test)]
-pub(super) const LINES: [&str; 8] = [OK, RIP, SCRUNCH, THERE, HOME, THROUGH, POKE, HUP];
+pub(super) const LINES: [&str; 9] = [OK, RIP, SCRUNCH, THERE, HOME, THROUGH, POKE, HUP, HMM];
 
 /// After a hard landing.
 const OK: &str = "...I'm OK.";
@@ -1181,6 +1197,10 @@ pub(super) struct Osaka {
     /// Every beat she was owed (tests read it).
     #[cfg(test)]
     pub beats: Vec<Beat>,
+    /// The times she set off to try a piece in another spot (tests read
+    /// it).
+    #[cfg(test)]
+    pub retried: u32,
     /// How each heading went: set off, arrived, or let go and why
     /// (tests read it).
     #[cfg(test)]
@@ -1236,6 +1256,8 @@ impl Osaka {
             home_acts: 0,
             #[cfg(test)]
             beats: Vec::new(),
+            #[cfg(test)]
+            retried: 0,
             #[cfg(test)]
             headings: Vec::new(),
             log: std::collections::VecDeque::new(),
@@ -2192,8 +2214,18 @@ impl Osaka {
         let act = match job {
             Job::Use(seat) => {
                 self.facing = seat.facing;
-                let (lo, hi) = use_duration(seat.what);
-                tracing::debug!(?seat, "houseguest: using her furniture");
+                // Trying a piece where she has just set it down: a moment
+                // on it, thoughtful.
+                let trying = self.episode.is_some_and(|e| e.trying);
+                let (lo, hi) = if trying {
+                    TRIAL_USE_MS
+                } else {
+                    use_duration(seat.what)
+                };
+                if trying {
+                    self.say(HMM, at);
+                }
+                tracing::debug!(?seat, trying, "houseguest: using her furniture");
                 // Using a real piece, she may feel a rule of her home it
                 // breaks: the first she hasn't felt this visit.
                 let grievance = match seat.piece {
@@ -2210,7 +2242,7 @@ impl Osaka {
                 // comes on (unless she has her home on her mind).
                 let advert = chances
                     .advert
-                    .filter(|_| seat.what == Use::Watch && grievance.is_none());
+                    .filter(|_| seat.what == Use::Watch && grievance.is_none() && !trying);
                 if let Some(item) = advert {
                     tracing::info!(?item, "houseguest: bought off the shopping channel");
                     self.events.push(HomeEvent::Bought(item));
@@ -2855,16 +2887,16 @@ impl Osaka {
             }
             Bind::Job(job) => {
                 let lift = match &job {
-                    Job::Lift(lift) => Some(lift.repair),
+                    Job::Lift(lift) => Some(*lift),
                     _ => None,
                 };
                 let went = self.go_to(want, job, here, terrain, at);
                 // Setting off to lift a piece, she's moving it.
                 if went
-                    && let Some(repair) = lift
+                    && let Some(lift) = lift
                     && self.episode.is_none()
                 {
-                    self.begin_episode(repair);
+                    self.begin_episode(lift.repair, lift.trials);
                 }
                 return went;
             }
@@ -3032,6 +3064,12 @@ impl Osaka {
         &self.needs
     }
 
+    /// Her needs, to set (tests).
+    #[cfg(test)]
+    pub fn needs_mut(&mut self) -> &mut Needs {
+        &mut self.needs
+    }
+
     /// The rules of her home she has felt broken this visit.
     pub fn felt(&self) -> Vec<Grievance> {
         self.felt.iter().map(|f| f.key).collect()
@@ -3071,11 +3109,13 @@ impl Osaka {
         self.home_acts
     }
 
-    /// She sets about moving a piece, as `repair` says.
-    fn begin_episode(&mut self, repair: Repair) {
+    /// She sets about moving a piece, as `repair` says (and to try it in
+    /// `trials`' spots after, if that one doesn't feel right).
+    fn begin_episode(&mut self, repair: Repair, trials: Trials) {
         tracing::info!(
             rule = %repair.key.label(),
             repair = %repair.label(),
+            trials = trials.remain(),
             "houseguest: she means to put her home right"
         );
         self.episode = Some(Episode {
@@ -3083,23 +3123,27 @@ impl Osaka {
             pocket: false,
             set_down: false,
             tries: 0,
+            trials,
+            tried: 0,
+            trying: false,
         });
     }
 
     /// The stage: lift `lift`'s piece (she must be on its floor), to move
     /// it as its repair says.
     pub fn lift(&mut self, lift: Lift, at: u64) {
-        self.begin_episode(lift.repair);
+        self.begin_episode(lift.repair, lift.trials);
         self.credit = Some(Want::Arrange);
         self.pursue(Job::Lift(lift), at);
     }
 
     /// The frame took the piece she set down, `piece`: it stands where
-    /// it's right, and she's pleased ("There!"). It's one thing done
-    /// about her home, and nesting eases; next she sits back down where
-    /// she felt it was wrong.
+    /// it's right. The first time, it's one thing done about her home,
+    /// and nesting eases. Next she sits back down where she felt it was
+    /// wrong: pleased ("There!"), or, with another spot she means to try
+    /// it in, a moment's thought first (see [`Osaka::arrange_next`]).
     pub fn set_down_done(&mut self, piece: Furniture, now: u64) {
-        let Some(ep) = self
+        let Some(mut ep) = self
             .episode
             .take_if(|e| e.pocket && e.repair.piece == piece)
         else {
@@ -3108,24 +3152,39 @@ impl Osaka {
         tracing::info!(
             ?piece,
             repair = %ep.repair.label(),
+            trying = ep.trials.remain(),
             "houseguest: set her {} down where it's right",
             piece.spec().name
         );
         if self.heading.as_ref().is_some_and(|h| h.job.carry()) {
             self.drop_heading(Letting::Carry);
         }
-        self.home_acts = self.home_acts.saturating_add(1);
+        // However many spots she tries it in, it's the one thing.
+        if ep.tried == 0 {
+            self.home_acts = self.home_acts.saturating_add(1);
+            self.serve(Want::Arrange, 1.0, Spot::Any);
+        }
+        ep.tried = ep.tried.saturating_add(1);
         self.just_set = self
             .felt
             .iter()
             .find(|f| f.key == ep.repair.key)
             .map(|f| f.on);
-        // Done: nesting eases, whatever she was at when the frame took it.
+        // Done: nesting eased, whatever she was at when the frame took it.
         if self.credit == Some(Want::Arrange) {
             self.credit = None;
         }
-        self.serve(Want::Arrange, 1.0, Spot::Any);
-        self.say(THERE, now);
+        if ep.trials.remain() {
+            self.episode = Some(Episode {
+                pocket: false,
+                set_down: false,
+                tries: 0,
+                trying: true,
+                ..ep
+            });
+        } else {
+            self.say(THERE, now);
+        }
     }
 
     /// The frame wouldn't take the piece she set down (it no longer fits
@@ -3146,15 +3205,25 @@ impl Osaka {
         let Some(ep) = self.episode.take() else {
             return;
         };
+        if self.heading.as_ref().is_some_and(|h| h.job.carry()) {
+            self.drop_heading(Letting::Carry);
+        }
+        // Set down where it's right already, and not lifted again: it
+        // stays there, as if she'd kept it there.
+        if ep.tried > 0 && !ep.pocket {
+            tracing::info!(
+                piece = ?ep.repair.piece,
+                "houseguest: leaves her {} where she tried it",
+                ep.repair.piece.spec().name
+            );
+            return;
+        }
         tracing::info!(
             piece = ?ep.repair.piece,
             lifted = ep.pocket,
             "houseguest: let go of moving her {}",
             ep.repair.piece.spec().name
         );
-        if self.heading.as_ref().is_some_and(|h| h.job.carry()) {
-            self.drop_heading(Letting::Carry);
-        }
         // One go at each rule she felt: let go, it stays as it is.
         for felt in self.felt.iter_mut().filter(|f| f.key == ep.repair.key) {
             felt.let_go = true;
@@ -3177,6 +3246,13 @@ impl Osaka {
     /// piece, else she lets it go; so too once setting off for a step has
     /// come to nothing [`TRIES`] times (interruptions cost none). `None`
     /// when she's let go of it (she chooses anew).
+    ///
+    /// Trying it in a spot (one of a few as good as each other), once
+    /// she has sat on it a moment she keeps it there with probability
+    /// e^(−Δ/T): Δ how much dearer the spot is than the cheapest, in
+    /// [`TIE_CELLS`], and T her restlessness (at least [`KEEP_T_MIN`]).
+    /// Else she lifts it again, for the next spot she'd try that still
+    /// puts the rule right; the last she keeps.
     fn arrange_next(
         &mut self,
         ctx: &Ctx,
@@ -3194,7 +3270,11 @@ impl Osaka {
                 self.credit = Some(Want::Use(seat.what));
                 return Some(Decision::of(Bucket::Continuation, "arrange/use-it"));
             }
-            return None;
+            // Nowhere to sit on it: trying it, she makes up her mind
+            // now.
+            if !self.episode.is_some_and(|e| e.trying) {
+                return None;
+            }
         }
         let mut ep = self.episode?;
         let wait = |osaka: &mut Self| {
@@ -3206,17 +3286,65 @@ impl Osaka {
             );
             Some(Decision::reflex("waiting"))
         };
+        if ep.trying {
+            let delta =
+                f64::from(ep.repair.cost.saturating_sub(ep.trials.min)) / f64::from(TIE_CELLS);
+            let t = self.needs.get(Need::Restless).max(KEEP_T_MIN);
+            let keep = whims.odds("keep", u64::from(ep.tried), (-delta / t).exp());
+            let next = if keep {
+                None
+            } else {
+                ep.trials.next(&ep.repair)
+            };
+            let Some(next) = next else {
+                tracing::info!(
+                    piece = ?ep.repair.piece,
+                    repair = %ep.repair.label(),
+                    "houseguest: keeps her {} where it is",
+                    ep.repair.piece.spec().name
+                );
+                self.episode = None;
+                self.say(THERE, at);
+                return None;
+            };
+            tracing::info!(
+                piece = ?ep.repair.piece,
+                repair = %next.label(),
+                "houseguest: tries her {} somewhere else",
+                ep.repair.piece.spec().name
+            );
+            self.episode = Some(Episode {
+                repair: next,
+                trying: false,
+                tries: 0,
+                ..ep
+            });
+            #[cfg(test)]
+            {
+                self.retried += 1;
+            }
+            return wait(self);
+        }
         let Some(judged) = ctx.chances.judged.filter(|j| j.of(&ep) && !ep.set_down) else {
             return wait(self);
         };
         if !judged.holds {
-            // Another way to set it down, if the last frame had one.
-            let other = ctx.chances.repairs.iter().find(|r| {
-                ep.pocket
-                    && (r.key, r.piece) == (ep.repair.key, ep.repair.piece)
-                    && r.to != ep.repair.to
+            // The next spot she means to try it in, else another way to
+            // set it down, if the last frame had one. (Set down where
+            // it's right already, the rule holds: no other way is
+            // worked out, and it stays where she tried it.)
+            let other = ep.trials.next(&ep.repair).or_else(|| {
+                ctx.chances
+                    .repairs
+                    .iter()
+                    .find(|r| {
+                        ep.pocket
+                            && (r.key, r.piece) == (ep.repair.key, ep.repair.piece)
+                            && r.to != ep.repair.to
+                    })
+                    .copied()
             });
-            if let Some(&repair) = other {
+            if let Some(repair) = other {
                 tracing::debug!(repair = %repair.label(), "houseguest: somewhere else for it");
                 ep.repair = repair;
                 self.episode = Some(ep);

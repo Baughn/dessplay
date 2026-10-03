@@ -1769,7 +1769,8 @@ fn a_busy_furnished_home_stays_cheap() {
         let done = visit_of(&guest).osaka.home_acts();
         acts += done;
         eprintln!(
-            "seed {seed}: {cached} cached, {counts:?}, {done} home acts, broken {}",
+            "seed {seed}: {cached} cached, {counts:?}, {done} home acts ({} spots tried again), broken {}",
+            visit_of(&guest).osaka.retried,
             guest.broken()
         );
         assert!(
@@ -5147,24 +5148,32 @@ fn she_turns_her_sofa_round_and_watches_from_it() {
         assert_eq!(visit_of(&guest).osaka.mood(), super::brain::Mood::Ordinary);
         guest.press(stage::Want::Nesting);
         let mut hup = false;
+        // (Turned where it stands, or tried a cell or so along first:
+        // `she_tries_it_in_a_spot_or_two`.)
+        let watches = |guest: &Guest| {
+            visit_of(guest)
+                .osaka
+                .use_span()
+                .is_some_and(|(seat, ..)| (seat.what, seat.item) == (Use::Watch, Furniture::Sofa))
+        };
+        let (mut turned, mut watched) = (false, false);
         let set = carry_until(&mut guest, &real, &view, felt_at, 600_000, |guest, now| {
             let (_, bubble) = look_now(guest, now);
             hup |= carried(guest).is_some() && bubble == Some(osaka::Bubble::Say("Hup!"));
-            prop_of(guest, Furniture::Sofa).facing == Facing::Left
+            turned |= prop_of(guest, Furniture::Sofa).facing == Facing::Left;
+            watched |= turned && watches(guest);
+            turned && visit_of(guest).osaka.episode().is_none()
         })
         .unwrap_or_else(|| panic!("graphics {graphics}: never turned it round"));
         assert!(hup, "graphics {graphics}: lifted without a word");
         let sofa = prop_of(&guest, Furniture::Sofa);
         assert_eq!(
-            (sofa.anchor, sofa.settled),
-            (
-                Some(room::Anchor {
-                    side: Side::Left,
-                    offset: 12
-                }),
-                true
-            ),
-            "turned where it stands"
+            (sofa.anchor.map(|a| a.side), sofa.strip, sofa.settled),
+            (Some(Side::Left), room::Strip::Bottom(Nook::Playlist), true),
+        );
+        assert!(
+            sofa.anchor.unwrap().offset.abs_diff(12) <= rules::TIE_CELLS as u16,
+            "{sofa:?}"
         );
         assert_eq!(guest.broken(), "", "graphics {graphics}");
         assert_eq!(carried(&guest), None);
@@ -5188,23 +5197,179 @@ fn she_turns_her_sofa_round_and_watches_from_it() {
             .find(|d| d.method == "arrange/lift")
             .unwrap();
         assert_eq!(lifted.bucket, osaka::Bucket::Normal, "chosen, not cued");
-        // Sitting back down: to watch, from the sofa turned toward it.
-        let watching = run_until(&mut guest, &real, &view, set, set + 30_000, |guest, _| {
-            visit_of(guest)
-                .osaka
-                .use_span()
-                .is_some_and(|(seat, ..)| (seat.what, seat.item) == (Use::Watch, Furniture::Sofa))
-        });
-        assert!(
-            watching.is_some(),
-            "graphics {graphics}: {:?}",
-            methods(&guest)
-        );
+        // Sitting back down: to watch, from the sofa turned toward it
+        // (trying it there, before she kept it; or after).
+        let watching = watched
+            || run_until(&mut guest, &real, &view, set, set + 30_000, |g, _| {
+                watches(g)
+            })
+            .is_some();
+        assert!(watching, "graphics {graphics}: {:?}", methods(&guest));
         assert!(methods(&guest).contains(&"arrange/use-it"));
         // The rule's right, and her mood's done its bit: no more.
         let _ = run(&mut guest, &real, &view, set + 30_000, set + 300_000);
         assert_eq!(visit_of(&guest).osaka.home_acts(), 1, "graphics {graphics}");
         assert_eq!(prop_of(&guest, Furniture::Sofa), sofa);
+    }
+}
+
+/// Her sofa turned from the TV on a page of text (a few spots along its
+/// strip as good as each other, turned round: [`wrong_home`] 0), having
+/// felt it, keen on her home, in an ordinary mood.
+fn sofa_to_try(graphics: bool, seed: u64) -> (Guest, Buffer, IdleView) {
+    let (w, h) = (100, 30);
+    let panes = nooks(w, h);
+    let view = IdleView {
+        chat: panes[0].1,
+        nooks: panes[1..].to_vec(),
+        ..view(bottom_strip(w, h))
+    };
+    let (guest, real) = sofa_to_try_in(graphics, seed, &view);
+    (guest, real, view)
+}
+
+/// [`sofa_to_try`] on `view` (of [`nooks`] at 100×30).
+fn sofa_to_try_in(graphics: bool, seed: u64, view: &IdleView) -> (Guest, Buffer) {
+    use super::brain::Mood;
+    use super::room::{Anchor, Prop};
+    let real = wordy_rooms(100, 30);
+    let mut guest = Guest::new(seed);
+    if graphics {
+        guest.set_picker(kitty());
+    }
+    for (item, nook, side, offset, facing, settled) in wrong_home(0, 12) {
+        assert!(guest.ledger.home.add(Prop {
+            anchor: Some(Anchor { side, offset }),
+            settled,
+            ..Prop::new(item, nook, 0, facing)
+        }));
+    }
+    let faces = rules::Grievance {
+        row: rules::FACES_ROW,
+        piece: Furniture::Sofa,
+    };
+    assert_eq!(breaks(&guest.ledger.home, &view.nooks), vec![faces]);
+    guest.cue(Scene::Lounge);
+    paint(&mut guest, &real, view, 0);
+    let State::Visiting(visit) = &mut guest.state else {
+        panic!("visiting");
+    };
+    visit.osaka.set_mood(Mood::Ordinary);
+    guest.press(stage::Want::Nesting);
+    (guest, real)
+}
+
+/// One tick as the shell would ([`carry_until`]) from `now`, with her
+/// calm (so picky: a spot dearer than the cheapest she seldom keeps);
+/// when it was.
+fn calm_tick(guest: &mut Guest, real: &Buffer, view: &IdleView, now: u64) -> u64 {
+    let State::Visiting(visit) = &mut guest.state else {
+        panic!("visiting");
+    };
+    visit
+        .osaka
+        .needs_mut()
+        .serve(super::brain::Need::Restless, 1.0);
+    carry_until(guest, real, view, now, now + 1, |_, _| true).unwrap_or(now + 1)
+}
+
+/// [`sofa_to_try`], with her calm: she lifts the sofa, sets it down in
+/// one spot ("hmm..." as she sits on it), and keeps it there or tries
+/// the next, up to three, keeping the last; for some visits two spots,
+/// for some three. Every spot she sets it down in puts the rule right
+/// and breaks nothing; however many, it's one thing about her home; and
+/// in line art, no image she shows is encoded twice.
+#[test]
+fn she_tries_it_in_a_spot_or_two() {
+    for graphics in [false, true] {
+        let mut tried = std::collections::BTreeSet::new();
+        for seed in 0..12 {
+            let (mut guest, real, view) = sofa_to_try(graphics, seed);
+            let case = format!("graphics {graphics}, seed {seed}");
+            let mut spots: Vec<room::Prop> = Vec::new();
+            let mut hmm = false;
+            let mut was = prop_of(&guest, Furniture::Sofa);
+            let mut now = 0;
+            loop {
+                assert!(now < 600_000, "{case}: never settled on a spot: {spots:?}");
+                now = calm_tick(&mut guest, &real, &view, now);
+                let is = prop_of(&guest, Furniture::Sofa);
+                if is != was {
+                    // Each spot puts it right, and breaks nothing else.
+                    let now_broken = breaks(&guest.ledger.home, &view.nooks);
+                    assert!(now_broken.is_empty(), "{case}: {now_broken:?} at {is:?}");
+                    spots.push(is);
+                    was = is;
+                }
+                hmm |= look_now(&guest, now).1 == Some(osaka::Bubble::Say("hmm..."));
+                let osaka = &visit_of(&guest).osaka;
+                assert!(osaka.home_acts() <= 1, "{case}");
+                if osaka.home_acts() == 1 && osaka.episode().is_none() {
+                    break;
+                }
+            }
+            assert!((1..=3).contains(&spots.len()), "{case}: {spots:?}");
+            if spots.len() >= 2 {
+                assert!(hmm, "{case}: tried it without a thought");
+            }
+            // Kept where she last set it down: nothing more about her
+            // home this visit.
+            let _ = carry_until(&mut guest, &real, &view, now, now + 60_000, |_, _| false);
+            assert_eq!(visit_of(&guest).osaka.home_acts(), 1, "{case}");
+            assert_eq!(
+                spots.last(),
+                Some(&prop_of(&guest, Furniture::Sofa)),
+                "{case}"
+            );
+            assert_eq!(
+                visit_of(&guest).osaka.retried as usize + 1,
+                spots.len(),
+                "{case}"
+            );
+            // Each spot shows the piece anew: no image is encoded twice.
+            if let Some(graphics) = &guest.graphics {
+                let counts = graphics.counts();
+                assert_eq!(counts.reencoded, 0, "{case}: {counts:?}");
+            }
+            tried.insert(spots.len());
+            if tried.contains(&2) && tried.contains(&3) {
+                break;
+            }
+        }
+        assert!(
+            tried.contains(&2) && tried.contains(&3),
+            "graphics {graphics}: spots tried {tried:?}"
+        );
+    }
+}
+
+/// Lifted again to try in another spot, the sofa stays where she last
+/// set it down if she says goodbye with it in her pocket.
+#[test]
+fn goodbye_mid_trial_leaves_the_last_spot() {
+    for graphics in [false, true] {
+        // (Seed 1 tries three spots: `she_tries_it_in_a_spot_or_two`.)
+        let (mut guest, real, view) = sofa_to_try(graphics, 1);
+        let mut now = 0;
+        loop {
+            assert!(now < 600_000, "graphics {graphics}: never lifted it again");
+            now = calm_tick(&mut guest, &real, &view, now);
+            let osaka = &visit_of(&guest).osaka;
+            if osaka.episode().is_some_and(|e| e.tried > 0 && e.pocket) {
+                break;
+            }
+        }
+        let set = prop_of(&guest, Furniture::Sofa);
+        assert_eq!(set.facing, sprite::Facing::Left, "set down turned round");
+        guest.activity(now);
+        let end = run(&mut guest, &real, &view, now, now + dissolve::DURATION_MS);
+        assert!(!guest.present());
+        assert!(
+            end == real,
+            "graphics {graphics}: the rain restores the frame"
+        );
+        assert_eq!(prop_of(&guest, Furniture::Sofa), set, "graphics {graphics}");
+        assert!(breaks(&guest.ledger.home, &view.nooks).is_empty());
     }
 }
 
@@ -5835,7 +6000,8 @@ fn moves_each_piece_once(home: usize) {
 /// delivered, keen on her home (nesting pressed) and sent to use her
 /// pieces while something's unfelt and she's not busy about her home,
 /// until all's right or `until`: her, and the pieces she moved, in
-/// order, each once (checked as she goes).
+/// order, each once (checked as she goes; trying one in another spot is
+/// moving it as the same one thing).
 fn keen_on(
     home: usize,
     mood: super::brain::Mood,
@@ -5905,16 +6071,23 @@ fn keen_on(
             guest.press(stage::Want::Nesting);
             next_cue = now + 60_000;
         }
+        let acts = visit_of(&guest).osaka.home_acts();
         now = carry_until(&mut guest, &real, &view, now, now + 1, |_, _| true).unwrap_or(now + 1);
         let is = at(&guest);
+        let new_act = visit_of(&guest).osaka.home_acts() > acts;
         for (a, b) in was.iter().zip(&is) {
             if a != b {
+                // Trying it in another spot is the same one thing (no
+                // new home act), and the piece she moved last.
+                let trial = !new_act && moved.last() == Some(&a.0);
                 assert!(
-                    !moved.contains(&a.0),
+                    trial || !moved.contains(&a.0),
                     "home {home}, {mood:?}, graphics {graphics}, seed {seed}, {now}: {:?} moved twice: {a:?} → {b:?}",
                     a.0
                 );
-                moved.push(a.0);
+                if !trial {
+                    moved.push(a.0);
+                }
             }
         }
         assert_eq!(was.len(), is.len(), "nothing delivered: {is:?}");
@@ -6127,19 +6300,273 @@ fn breaks(home: &room::Home, nooks: &[(Nook, Rect)]) -> Vec<rules::Grievance> {
         .collect()
 }
 
+/// What goes on around her in a promise run: the sizes the terminal
+/// takes, each from when (the first from the start, at its size), chat
+/// lines landing, and (a resident) the pane focused, from when.
+struct Weather {
+    resident: bool,
+    sizes: Vec<(u64, (u16, u16))>,
+    chats: Vec<u64>,
+    focuses: Vec<(u64, Option<usize>)>,
+}
+
+impl Weather {
+    /// The view at `size` with `focus` (resident only) and `mark`.
+    fn view(&self, (w, h): (u16, u16), focus: Option<usize>, mark: ChatMark) -> IdleView {
+        let panes = nooks(w, h);
+        let view = if self.resident {
+            resident_view(w, h, focus.map(|i| panes[i].1))
+        } else {
+            IdleView {
+                chat: panes[0].1,
+                nooks: panes[1..].to_vec(),
+                ..view(bottom_strip(w, h))
+            }
+        };
+        IdleView {
+            chat_mark: mark,
+            ..view
+        }
+    }
+
+    /// The size the terminal has at `now` (from the size whose time has
+    /// passed), and the next time it changes.
+    fn size(&self, now: u64) -> ((u16, u16), Option<u64>) {
+        let at = self
+            .sizes
+            .iter()
+            .rposition(|&(from, _)| from < now)
+            .unwrap_or(0);
+        (
+            self.sizes[at].1,
+            self.sizes.get(at + 1).map(|&(from, _)| from),
+        )
+    }
+}
+
+/// Her run from `from` to `until` as the shell would, through
+/// `weather`, each frame held to every promise a carry keeps
+/// ([`promised_frame`]) and to `each` after it (with the piece a
+/// set-down that frame committed; false ends the run there). Where the
+/// run ended up: when, its frame, the view, and the chat's mark.
+fn keep_promises(
+    guest: &mut Guest,
+    weather: &Weather,
+    graphics: bool,
+    mut mark: ChatMark,
+    from: u64,
+    until: u64,
+    mut each: impl FnMut(&mut Guest, u64, Option<Furniture>) -> Result<bool, TestCaseError>,
+) -> Result<(u64, Buffer, IdleView, ChatMark), TestCaseError> {
+    let mut hidden = Hidden::default();
+    let mut last = weather.size(from).0;
+    let mut real = wordy_rooms(last.0, last.1);
+    let mut view = weather.view(last, None, mark);
+    let mut now = from;
+    while now < until {
+        // (No tick runs past a change of size.)
+        let (_, change) = weather.size(now + 1);
+        let bound = change.filter(|&c| c > now).unwrap_or(until).min(until);
+        let step = guest
+            .next_tick(now)
+            .map_or(100, |d| d.as_millis() as u64)
+            .clamp(1, 1000.min(bound - now));
+        now += step;
+        // The first frame at a new size moves pieces off strips gone
+        // too small before it takes a set-down: judged as it was, the
+        // piece set down might be on one of those.
+        let (size, _) = weather.size(now);
+        let fresh = size != last;
+        if fresh {
+            real = wordy_rooms(size.0, size.1);
+            last = size;
+        }
+        if weather.chats.iter().any(|&c| c <= now && c > now - step) {
+            mark.synced += 1;
+        }
+        let focus = weather
+            .focuses
+            .iter()
+            .rev()
+            .find(|(at, _)| weather.resident && *at <= now)
+            .and_then(|&(_, pane)| pane);
+        view = weather.view(size, focus, mark);
+        let committed = promised_frame(guest, &real, &view, now, fresh, graphics, &mut hidden)?;
+        if !each(guest, now, committed)? {
+            break;
+        }
+    }
+    Ok((now, real, view, mark))
+}
+
+/// One frame as the shell would at `now` (`fresh`: the first at a new
+/// size), held to every promise a carry keeps: nothing she carries is
+/// drawn; nothing she does touches what's protected or stays over text;
+/// a home act comes only with a set-down; and a piece she sets down
+/// mends the rule she moved it for (from broken, for a new home act;
+/// tried in another spot, it keeps it mended) and breaks none that
+/// held. The piece a set-down committed, if one did.
+fn promised_frame(
+    guest: &mut Guest,
+    real: &Buffer,
+    view: &IdleView,
+    now: u64,
+    fresh: bool,
+    graphics: bool,
+    hidden: &mut Hidden,
+) -> Result<Option<Furniture>, TestCaseError> {
+    guest.advance(now);
+    // A set-down the frame is about to take, and her home as it stands
+    // before it does.
+    let (acts, pending) = {
+        let visit = visit_of(guest);
+        let key = visit.osaka.episode().map(|e| e.repair.key);
+        (visit.osaka.home_acts(), visit.set_down.zip(key))
+    };
+    let before = guest.ledger.home.clone();
+    let frame = paint(guest, real, view, now);
+    carried_unseen(guest, &frame, real, view);
+    let visit = visit_of(guest);
+    let feet = visit.image.filter(|i| i.standing).map(|i| (i.x, i.y));
+    assert_untouched_but_feet(&frame, real, &view.protected, feet)?;
+    // (A pane just focused rains out what of hers was in it.)
+    if graphics && visit.fades.is_empty() {
+        let layer: Vec<(u16, u16)> = visit.layer.cells().collect();
+        hidden.check(&frame, real, &layer, now)?;
+    }
+    let new_act = visit.osaka.home_acts() > acts;
+    let after = guest.ledger.home.clone();
+    // A set-down the frame took: the piece stands elsewhere. (Trying it
+    // in another spot is no new home act.)
+    let prop = |home: &room::Home, item| home.props.iter().find(|p| p.item == item).copied();
+    let committed = pending.filter(|&((piece, _), _)| prop(&before, piece) != prop(&after, piece));
+    if fresh {
+        return Ok(None);
+    }
+    prop_assert!(
+        !new_act || committed.is_some(),
+        "{}: a home act with nothing set down",
+        now
+    );
+    // She set a piece down: judged on this frame's home, with only that
+    // piece as it was, and as she set it.
+    let Some(((piece, _), key)) = committed else {
+        return Ok(None);
+    };
+    let mut was = after.clone();
+    was.props
+        .retain(|p| before.props.iter().any(|b| b.item == p.item));
+    let is = was.clone();
+    if let (Some(p), Some(b)) = (
+        was.props.iter_mut().find(|p| p.item == piece),
+        before.props.iter().find(|b| b.item == piece),
+    ) {
+        *p = *b;
+    }
+    let (then, now_broken) = (breaks(&was, &view.nooks), breaks(&is, &view.nooks));
+    // (Tried in another spot, it was right where it stood.)
+    prop_assert!(
+        !new_act || then.contains(&key),
+        "{now}: {key:?} wasn't broken: {then:?}"
+    );
+    prop_assert!(
+        !now_broken.contains(&key),
+        "{now}: set down, {key:?} still broken"
+    );
+    for k in &now_broken {
+        prop_assert!(
+            then.contains(k),
+            "{now}: setting {piece:?} down broke {k:?}"
+        );
+    }
+    Ok(Some(piece))
+}
+
+/// Where in trying the sofa a trial run starts its weather.
+#[derive(Clone, Copy, Debug)]
+enum TrialStage {
+    /// Set down in the first spot she tries, before she's made up her
+    /// mind about it: sitting on it, then keeping it or not.
+    Sitting,
+    /// Lifted again for another spot: carrying it there and setting it
+    /// down.
+    Relifted,
+}
+
+impl TrialStage {
+    fn reached(self, ep: &osaka::Episode) -> bool {
+        match self {
+            TrialStage::Sitting => ep.trying && ep.tried == 1,
+            TrialStage::Relifted => ep.tried > 0 && ep.pocket,
+        }
+    }
+}
+
+/// [`sofa_to_try`] in `weather`'s first view, her calm, run to `stage`
+/// of trying it: the first of `seed..` that gets there in ten minutes,
+/// and then; how many spots she's set it down in so far. (Every seed
+/// she doesn't try it in another spot for, she keeps it in the first.)
+fn sofa_tried_to(
+    graphics: bool,
+    seed: u64,
+    weather: &Weather,
+    stage: TrialStage,
+) -> (Guest, u64, usize) {
+    let view = weather.view(weather.sizes[0].1, None, ChatMark::default());
+    for seed in seed..seed + 16 {
+        let (mut guest, real) = sofa_to_try_in(graphics, seed, &view);
+        let mut spots = 0;
+        let mut was = prop_of(&guest, Furniture::Sofa);
+        let mut now = 0;
+        while now < 600_000 {
+            // (As the shell would, its ticks unclamped: quicker than
+            // [`calm_tick`].)
+            let State::Visiting(visit) = &mut guest.state else {
+                panic!("visiting");
+            };
+            visit
+                .osaka
+                .needs_mut()
+                .serve(super::brain::Need::Restless, 1.0);
+            now += guest
+                .next_tick(now)
+                .map_or(100, |d| d.as_millis() as u64)
+                .clamp(1, 1000);
+            guest.advance(now);
+            paint(&mut guest, &real, &view, now);
+            if prop_of(&guest, Furniture::Sofa) != was {
+                was = prop_of(&guest, Furniture::Sofa);
+                spots += 1;
+            }
+            let osaka = &visit_of(&guest).osaka;
+            if osaka.episode().is_some_and(|e| stage.reached(e)) {
+                return (guest, now, spots);
+            }
+            if osaka.home_acts() > 0 && osaka.episode().is_none() {
+                break;
+            }
+        }
+    }
+    panic!("graphics {graphics}: no seed from {seed} reached {stage:?}");
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(dessplay_core::test_support::proptest_cases(8)))]
 
     /// Keen on her home from the start (nesting pressed), a home with
     /// something wrong with it, in any mood, through chat, resizes and
     /// (a resident) focus changes: she does no more about her home than
-    /// her mood allows (lazy, nothing); every piece she sets down mends
-    /// the rule she moved it for and breaks none that held; nothing she
-    /// carries is drawn; nothing she does touches what's protected or
-    /// stays over text; and a visitor's goodbye lands on the real frame.
-    /// (Two minutes rarely hold a second act: that no piece moves twice,
-    /// and that her mood's cap above none holds, are
-    /// `moves_each_piece_once`'s and `her_mood_caps_her_home_acts`'.)
+    /// her mood allows (lazy, nothing; a piece tried in a few spots is
+    /// one thing); every piece she sets down mends the rule she moved it
+    /// for (or, tried elsewhere, keeps it mended) and breaks none that
+    /// held; nothing she carries is drawn; nothing she does touches
+    /// what's protected or stays over text; and a visitor's goodbye
+    /// lands on the real frame. (Two minutes rarely hold a second act:
+    /// that no piece moves twice, and that her mood's cap above none
+    /// holds, are `moves_each_piece_once`'s and
+    /// `her_mood_caps_her_home_acts`'. Few of these visits try a piece
+    /// in a second spot: `a_trial_keeps_every_promise` starts each in
+    /// the middle of one.)
     #[test]
     fn the_carry_keeps_every_promise(
         seed in any::<u64>(),
@@ -6171,21 +6598,14 @@ proptest! {
             prop_assert!(added);
         }
         let sizes: Vec<(u16, u16)> = std::iter::once((100, 30)).chain(sizes).collect();
+        let span = 120_000 / sizes.len() as u64;
         let mut focuses = focuses;
         focuses.sort_unstable();
-        let view_of = |(w, h): (u16, u16), focus: Option<usize>, mark: ChatMark| {
-            let panes = nooks(w, h);
-            let focus = focus.map(|i| panes[i].1);
-            let view = if resident {
-                resident_view(w, h, focus)
-            } else {
-                IdleView {
-                    chat: panes[0].1,
-                    nooks: panes[1..].to_vec(),
-                    ..view(bottom_strip(w, h))
-                }
-            };
-            IdleView { chat_mark: mark, ..view }
+        let weather = Weather {
+            resident,
+            sizes: sizes.iter().enumerate().map(|(i, &s)| (span * i as u64, s)).collect(),
+            chats,
+            focuses,
         };
         // What she'd use to feel what's wrong, or just her arrival.
         let scene = match (cue, home) {
@@ -6195,103 +6615,113 @@ proptest! {
             (true, 4) => Scene::Snack,
             (true, _) => Scene::Sleep,
         };
-        let mut mark = ChatMark::default();
-        let mut real = wordy_rooms(100, 30);
+        let real = wordy_rooms(100, 30);
         guest.cue(scene);
-        let _ = paint(&mut guest, &real, &view_of(sizes[0], None, mark), 0);
+        let _ = paint(&mut guest, &real, &weather.view(sizes[0], None, ChatMark::default()), 0);
         let mood = Mood::ALL[mood];
         let State::Visiting(visit) = &mut guest.state else {
             panic!("visiting");
         };
         visit.osaka.set_mood(mood);
         guest.press(stage::Want::Nesting);
-        let mut hidden = Hidden::default();
-        let mut now = 0;
-        let span = 120_000 / sizes.len() as u64;
-        let mut last = sizes[0];
-        for (i, &size) in sizes.iter().enumerate() {
-            // The first frame at a new size moves pieces off strips gone
-            // too small before it takes a set-down: judged as it was,
-            // the piece set down might be on one of those.
-            let mut fresh = false;
-            if size != last {
-                real = wordy_rooms(size.0, size.1);
-                fresh = true;
-                last = size;
-            }
-            let until = span * (i as u64 + 1);
-            while now < until {
-                let step = guest
-                    .next_tick(now)
-                    .map_or(100, |d| d.as_millis() as u64)
-                    .clamp(1, 1000.min(until - now));
-                now += step;
-                if chats.iter().any(|&c| c <= now && c > now - step) {
-                    mark.synced += 1;
-                }
-                let focus = focuses
-                    .iter()
-                    .rev()
-                    .find(|(at, _)| resident && *at <= now)
-                    .and_then(|&(_, pane)| pane);
-                let view = view_of(size, focus, mark);
-                guest.advance(now);
-                // A set-down the frame is about to take, and her home as
-                // it stands before it does.
-                let (acts, pending) = {
-                    let visit = visit_of(&guest);
-                    let key = visit.osaka.episode().map(|e| e.repair.key);
-                    (visit.osaka.home_acts(), visit.set_down.zip(key))
-                };
-                let before = guest.ledger.home.clone();
-                let frame = paint(&mut guest, &real, &view, now);
-                carried_unseen(&guest, &frame, &real, &view);
-                let visit = visit_of(&guest);
-                let feet = visit.image.filter(|i| i.standing).map(|i| (i.x, i.y));
-                assert_untouched_but_feet(&frame, &real, &view.protected, feet)?;
-                // (A pane just focused rains out what of hers was in it.)
-                if graphics && visit.fades.is_empty() {
-                    let layer: Vec<(u16, u16)> = visit.layer.cells().collect();
-                    hidden.check(&frame, &real, &layer, now)?;
-                }
-                prop_assert!(visit.osaka.home_acts() <= mood.home_acts(), "{:?}", mood);
-                let first = std::mem::take(&mut fresh);
-                if visit.osaka.home_acts() == acts || first {
-                    continue;
-                }
-                // She set a piece down: judged on this frame's home, with
-                // only that piece as it was, and as she set it.
-                let Some(((piece, _), key)) = pending else {
-                    return Err(TestCaseError::fail(format!("{now}: a home act with nothing set down")));
-                };
-                let after = guest.ledger.home.clone();
-                let mut was = after.clone();
-                was.props.retain(|p| before.props.iter().any(|b| b.item == p.item));
-                let is = was.clone();
-                if let (Some(p), Some(b)) = (
-                    was.props.iter_mut().find(|p| p.item == piece),
-                    before.props.iter().find(|b| b.item == piece),
-                ) {
-                    *p = *b;
-                }
-                let (then, now_broken) = (breaks(&was, &view.nooks), breaks(&is, &view.nooks));
-                prop_assert!(then.contains(&key), "{now}: {key:?} wasn't broken: {then:?}");
-                prop_assert!(!now_broken.contains(&key), "{now}: set down, {key:?} still broken");
-                for k in &now_broken {
-                    prop_assert!(then.contains(k), "{now}: setting {piece:?} down broke {k:?}");
-                }
-            }
-        }
+        let (now, real, _, mark) = keep_promises(
+            &mut guest,
+            &weather,
+            graphics,
+            ChatMark::default(),
+            0,
+            120_000,
+            |guest, _, _| {
+                let acts = visit_of(guest).osaka.home_acts();
+                prop_assert!(acts <= mood.home_acts(), "{:?}", mood);
+                Ok(true)
+            },
+        )?;
         if mood == Mood::Lazy {
             let ways = methods(&guest);
             prop_assert!(!ways.iter().any(|m| m.starts_with("arrange/")), "{:?}", ways);
         }
         if !resident {
-            let view = view_of(last, None, mark);
+            let view = weather.view(*sizes.last().unwrap(), None, mark);
             guest.activity(now);
             let end = run(&mut guest, &real, &view, now, now + dissolve::DURATION_MS);
             prop_assert!(!guest.present());
             prop_assert!(end == real, "the rain restores the frame");
+        }
+    }
+
+    /// [`sofa_to_try`], her calm, caught trying the sofa in a spot
+    /// (sitting on it, before she's made up her mind) or lifted again for
+    /// another, and then, within the moments it takes, chat, resizes and
+    /// (a resident) focus changes: every promise a carry keeps holds
+    /// ([`promised_frame`]); however many spots she sets it down in (three
+    /// at most), it's one thing about her home; once she's kept it, it
+    /// doesn't move again; and a visitor's goodbye lands on the real
+    /// frame, the sofa where she last set it down.
+    #[test]
+    fn a_trial_keeps_every_promise(
+        seed in 0u64..64,
+        graphics in any::<bool>(),
+        relifted in any::<bool>(),
+        resident in any::<bool>(),
+        sizes in proptest::collection::vec(
+            (0u64..20_000, proptest::sample::select(vec![(80u16, 24u16), (100, 30), (120, 36)])),
+            0..3,
+        ),
+        chats in proptest::collection::vec(0u64..20_000, 0..4),
+        focuses in proptest::collection::vec((0u64..20_000, proptest::option::of(0usize..3)), 0..4),
+    ) {
+        let stage = if relifted { TrialStage::Relifted } else { TrialStage::Sitting };
+        let mut sizes = sizes;
+        sizes.sort_unstable();
+        let mut focuses = focuses;
+        focuses.sort_unstable();
+        // Its weather as from the start, to run her there; then as from
+        // when she got there.
+        let mut weather = Weather {
+            resident,
+            sizes: std::iter::once((0, (100, 30))).chain(sizes).collect(),
+            chats,
+            focuses,
+        };
+        let (mut guest, start, mut spots) = sofa_tried_to(graphics, seed, &weather, stage);
+        weather.sizes[1..].iter_mut().for_each(|(at, _)| *at += start + 1);
+        weather.chats.iter_mut().for_each(|at| *at += start + 1);
+        weather.focuses.iter_mut().for_each(|(at, _)| *at += start + 1);
+        // Run on through the weather, and a while once she's kept it.
+        let mut kept = None;
+        let (end, real, view, _) = keep_promises(
+            &mut guest,
+            &weather,
+            graphics,
+            ChatMark::default(),
+            start,
+            start + 120_000,
+            |guest, now, committed| {
+                if committed == Some(Furniture::Sofa) {
+                    prop_assert!(kept.is_none(), "{}: moved again once kept", now);
+                    spots += 1;
+                }
+                let State::Visiting(visit) = &mut guest.state else {
+                    panic!("visiting");
+                };
+                visit.osaka.needs_mut().serve(super::brain::Need::Restless, 1.0);
+                prop_assert_eq!(visit.osaka.home_acts(), 1, "{}", now);
+                if visit.osaka.episode().is_none() {
+                    kept.get_or_insert(now);
+                }
+                Ok(kept.is_none_or(|at| now < (at + 15_000).max(start + 20_000)))
+            },
+        )?;
+        prop_assert!((1..=3).contains(&spots), "spots {}", spots);
+        prop_assert!(kept.is_some(), "{:?} still trying it two minutes on", stage);
+        if !resident {
+            let set = prop_of(&guest, Furniture::Sofa);
+            guest.activity(end);
+            let last = run(&mut guest, &real, &view, end, end + dissolve::DURATION_MS);
+            prop_assert!(!guest.present());
+            prop_assert!(last == real, "the rain restores the frame");
+            prop_assert_eq!(prop_of(&guest, Furniture::Sofa), set);
         }
     }
 }

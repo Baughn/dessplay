@@ -2666,6 +2666,59 @@ the same move, refused again for the same reason, would play "Hup!" …
 "Oh well..." over and over, and the rule would keep her keen on a home
 she can't put right.
 
+## She tries a piece in a spot or two (2026-10-03)
+
+**Rule:** When a few spots (up to three, the same piece, the same tier,
+within 4 cells of the cheapest; one per spot) are as good as each other,
+she tries the piece in them in a whim's order: set down and taken, she
+sits on it a moment ("hmm..."), then keeps it with probability
+e^(−Δ/T) (Δ how much dearer than the cheapest, in 4-cell units; T her
+restlessness, at least 0.05) or lifts it again for the next spot that
+still holds; the last she keeps. One home act, however many spots. See
+[design.md](design.md#houseguest).
+
+**Why:** *Trials are behaviour, not search.* A person putting a sofa
+right doesn't compute the optimum; she shoves it, sits, frowns, shoves
+it again. The search already finds the cheapest way, so the trial only
+ever settles between ways that are nearly as good, and it costs nothing
+in correctness: every spot tried puts the rule right and breaks none
+(each is re-checked, from where the piece stands, on the frame of the
+moment). It's the only annealing in her home: everywhere else she takes
+the cheapest way, so the home a visit leaves is still the one the rules
+say, give or take a few cells.
+
+*The keep probability*: e^(−Δ/T) keeps the cheapest spot always (Δ 0),
+so trials end where she would have gone anyway unless she happens on a
+dearer spot first. T is her restlessness: keen to be up and about, she
+doesn't fuss over a cell or two; calm, she's picky. Δ is capped at 1 by
+the 4-cell window, so even a calm Osaka doesn't fuss over a far worse
+spot (there are none in the window), and the last spot is kept outright
+so trials always end. With whim order and restlessness near its usual
+high, she tries a second spot about one move in seven where three
+spots are as good (measured on the sofa turned from the TV), a third
+rarely.
+
+*Whim order, mind stream*: the order and the keep roll are drawn from
+her mind's stream (salted by the spot's place in the order), never the
+body's, so trials don't shift her durations or looks, and decisions
+stay replayable.
+
+*One home act*: the trials are one change of mind about one rule, so
+they count once against her mood's cap (at the first set-down, when the
+rule first holds); a lifted-again piece is carried past the cap. Being
+let go of mid-trial (refused, tries spent, a goodbye) leaves the piece
+where she last set it down, which already mends the rule.
+
+*A turn is no other spot*: the search offers a piece both ways round;
+two ways that differ only by which way it faces (a lamp) would be a
+trial no one could see, so each spot appears once, the cheaper way
+round. (Found by `no_piece_is_moved_twice`: the lamp was lifted to be
+turned where it stood.)
+
+*The image budget held*: trials re-show the piece up to three times;
+measured before they shipped (plan.md, Phase 38), the carry costs some
+30–40 distinct images and the cache didn't thrash.
+
 ## Houseguest chooses by needs among the top few (2026-09-28)
 
 **Rule:** Her next act is a weighted-random pick among the four

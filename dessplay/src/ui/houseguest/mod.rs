@@ -1557,13 +1557,13 @@ fn furnish(
             shown: &shown,
             made: &made,
         };
-        let repair = visit
+        let episode = visit
             .osaka
             .episode()
             .filter(|e| e.set_down && (e.repair.piece, e.repair.to) == (piece, to))
-            .map(|e| e.repair)
+            .copied()
             .filter(|_| visit.osaka.carrying() == Some(piece));
-        match repair.map(|r| rules::check(home, &frame, &r)) {
+        match episode.map(|ep| judge_move(home, &frame, &ep)) {
             Some(Some(_)) => {
                 let strips = room::strips(&view.nooks);
                 if let Some(&(_, e)) = strips.iter().find(|(s, _)| *s == to.strip)
@@ -1645,7 +1645,7 @@ fn furnish(
         piece: ep.repair.piece,
         to: ep.repair.to,
         pocket: ep.pocket,
-        target: rules::check(home, &frame, &ep.repair),
+        target: judge_move(home, &frame, ep),
         showing: shown.iter().find(|s| s.item == ep.repair.piece).copied(),
         laid: laid.iter().find(|s| s.item == ep.repair.piece).copied(),
     });
@@ -1656,6 +1656,18 @@ fn furnish(
         .map(Shown::cover);
     shown.retain(|s| Some(s.item) != carried);
     shown
+}
+
+/// Where the piece of the move she's making would stand on `frame`, if
+/// the move still puts its rule right ([`rules::check`]); once she has
+/// set it down where it does and is trying it elsewhere, if the rule
+/// still holds with it moved ([`rules::check_again`]).
+fn judge_move(home: &room::Home, frame: &rules::Frame, ep: &osaka::Episode) -> Option<Shown> {
+    if ep.tried > 0 {
+        rules::check_again(home, frame, &ep.repair)
+    } else {
+        rules::check(home, frame, &ep.repair)
+    }
 }
 
 /// The middle of `at`, on its floor.

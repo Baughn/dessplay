@@ -9,6 +9,7 @@
 use super::brain::{Spot, Want};
 use super::osaka::{Activity, CHAT_FACTOR, Chances, Episode, landing, middle, pick};
 use super::room::{Furniture, PieceRef, Seat, Use};
+use super::rules::Trials;
 use super::scenes::{Build, Job, Lift, SetDown};
 use super::terrain::{Link, Route, Terrain};
 
@@ -61,6 +62,13 @@ impl Whims {
     /// `n` times in `d`.
     pub fn chance(self, label: &str, salt: u64, n: u64, d: u64) -> bool {
         self.below_at(label, salt, d) < n
+    }
+
+    /// With probability `p` (0 never, 1 always).
+    pub fn odds(self, label: &str, salt: u64, p: f64) -> bool {
+        const D: u64 = 1 << 20;
+        let n = (p.clamp(0.0, 1.0) * D as f64).round() as u64;
+        self.chance(label, salt, n, D)
     }
 }
 
@@ -477,39 +485,46 @@ fn carry(c: &Ctx, _: Whims, _: Want) -> Option<Bind> {
     })))
 }
 
-/// The piece she means to move, to lift: the one she set off for, while
-/// the last frame judged its move still holds; or, setting about it, one
-/// of the cheapest ways to put the rule right (the first piece of the
-/// rule's order among them; a whim among its places).
+/// The piece she means to move, to lift: the one she set off for (or
+/// will try in another spot), while the last frame judged its move
+/// still holds; or, setting about it, one of the cheapest ways to put
+/// the rule right (the first piece of the rule's order among them; a
+/// whim among its places as good as the cheapest, the others kept to
+/// try it in after: [`Trials`]).
 fn lift(c: &Ctx, w: Whims, _: Want) -> Option<Bind> {
-    let (repair, (x, y), side) = match c.episode {
-        Some(ep) if !ep.pocket => {
+    let (repair, trials, (x, y), side) = match c.episode {
+        Some(ep) if !ep.pocket && !ep.trying => {
             let judged = c.chances.judged.filter(|j| j.of(&ep) && j.holds)?;
             let (spot, side) = judged.spot?;
-            (ep.repair, spot, side)
+            (ep.repair, ep.trials, spot, side)
         }
         Some(_) => return None,
         None => {
             if !c.may_arrange {
                 return None;
             }
-            let first = c.chances.repairs.first()?;
-            let tied: Vec<_> = c
-                .chances
-                .repairs
-                .iter()
-                .filter(|r| (r.tier, r.cost, r.piece) == (first.tier, first.cost, first.piece))
-                .collect();
-            let repair = **tied.get(w.below("repair", tied.len() as u64) as usize)?;
+            // The order she'd try them in: a whim's.
+            let mut ties = Trials::ties(&c.chances.repairs);
+            for i in 0..ties.len() {
+                let j = i + w.below_at("repair", i as u64, (ties.len() - i) as u64) as usize;
+                ties.swap(i, j);
+            }
+            let repair = *ties.first()?;
             let &(_, spot, side) = c
                 .chances
                 .lift_at
                 .iter()
                 .find(|(p, ..)| *p == repair.piece)?;
-            (repair, spot, side)
+            (repair, Trials::of(&ties), spot, side)
         }
     };
-    Some(Bind::Job(Job::Lift(Lift { repair, x, y, side })))
+    Some(Bind::Job(Job::Lift(Lift {
+        repair,
+        trials,
+        x,
+        y,
+        side,
+    })))
 }
 
 /// Where she makes a makeshift `item` for `what`: anywhere it can be

@@ -1678,6 +1678,29 @@ this section states what is built.
   changes only when it's set down and taken), and the stage putting her
   somewhere puts it back, unremarked
   (why: [decisions](decisions.md#she-puts-her-home-right-with-the-piece-in-her-pocket-2026-10-03)).
+- **Trying a piece in a spot or two**: when the ways she worked out to
+  put a rule right hold at least two spots for the cheapest way's piece,
+  at its tier, within 4 cells of it (one way a spot: the same spot
+  turned is no other), she keeps up to three of them, in an order her
+  whim picks, and lifts the piece for the first. Set down there and
+  taken (the rule holds), she says nothing yet: she sits back down on it
+  for a moment (3.5–5 s) with a thoughtful "hmm..." (no shopping channel
+  on that watch), and at her next choice keeps it there with
+  probability e^(−Δ/T): Δ how much dearer the spot is than the cheapest
+  of them, in 4-cell units (0–1), T her restlessness (at least 0.05), so
+  the cheapest she always keeps, and a calm Osaka is pickier than a
+  restless one. Kept, she says "There!". Else she lifts it again
+  ("Hup!") and carries it to the next spot that still puts the rule
+  right with it moved from where it stands (judged on the frame then;
+  spots that no longer do are skipped, and with none left it stays where
+  it is), past her mood's cap; the last she tries she keeps. However
+  many spots, it's one thing about her home, counted (and nesting eased)
+  when it's first taken. A lifted-again piece is carried as any other
+  (interruptions, tries, being let go); let go, or at a goodbye, it
+  stands where she last set it down. It is the only place she weighs a
+  worse spot against a better one: everything else she does about her
+  home takes the cheapest way
+  (why: [decisions](decisions.md#she-tries-a-piece-in-a-spot-or-two-2026-10-03)).
 - **Makeshift furniture**: wanting to sit on a sofa (or watch the TV
   from one) or sleep in a bed and having none, she makes one of text.
   At a line that ends beside her box at chest height (as for a pull),

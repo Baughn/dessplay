@@ -266,7 +266,16 @@ pub(super) fn direct(
             };
             let start = approach(terrain, x, y, away);
             osaka.place(start, y, now);
-            osaka.lift(scenes::Lift { repair, x, y, side }, now);
+            osaka.lift(
+                scenes::Lift {
+                    repair,
+                    trials: super::rules::Trials::default(),
+                    x,
+                    y,
+                    side,
+                },
+                now,
+            );
             Ok(format!("{name}: {}", repair.label()))
         }
         Scene::Pull | Scene::Swap => {

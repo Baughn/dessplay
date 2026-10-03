@@ -25,6 +25,10 @@ Add new days at the top. Add new entries at the bottom of existing days.
   enjoy it, watching the TV from a sofa she has turned toward it. She
   does it once a visit, a few times when she's feeling busy, and never
   when she's feeling lazy.
+- Added: Now and then the houseguest tries a piece in a couple of spots
+  before she settles on one: she sets it down, sits on it with a
+  thoughtful "hmm...", and keeps it there ("There!") or lifts it again
+  ("Hup!") for the next spot. The calmer she is, the pickier.
 
 ## 2026-10-02
 

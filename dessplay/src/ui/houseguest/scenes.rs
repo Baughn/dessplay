@@ -133,10 +133,12 @@ pub(super) enum Job {
 }
 
 /// Lifting `repair.piece`, standing at `(x, y)` (beside it on its
-/// floor) facing `side`, to move it as `repair` says.
+/// floor) facing `side`, to move it as `repair` says (and, setting about
+/// it, the spots she'd try it in after that one: `trials`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Lift {
     pub repair: super::rules::Repair,
+    pub trials: super::rules::Trials,
     pub x: i32,
     pub y: i32,
     pub side: Side,
