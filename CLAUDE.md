@@ -17,7 +17,8 @@
 - Implemented franchise-granularity List (one row per franchise, franchise commitment, season tree): docs/proposals/2026-08-28-franchise-list.md
 - Implemented local-copy offer modal (missing now-playing with auto-download off offers same-episode / near-name local files for mapping): docs/proposals/2026-08-31-local-copy-offer.md
 - Houseguest proposal, phases 1–3d + line art implemented (idle Osaka overlay: seam, covering rules, line art, behaviour catalogue, makeshift furniture, goodbye dissolve, phased plan): docs/proposals/2026-09-28-houseguest.md; scene stage: `cargo run -p dessplay --example houseguest`
-- Houseguest mind-and-home proposal, phases 0–3 implemented (purposes on things, method table, home rules and repairs, line-glyph structures, phased migration; sofa diagnosis and research surveys alongside; progress in plan.md Phase 38): docs/proposals/2026-10-02-houseguest-mind.md
+- Houseguest mind-and-home proposal, phases 0–4 implemented (purposes on things, method table, home rules and repairs, line-glyph structures, phased migration; sofa diagnosis and research surveys alongside; progress in plan.md Phase 38): docs/proposals/2026-10-02-houseguest-mind.md
+- Houseguest phase-4 (organising) working design, with its amendments, and the approved decor art (plant, poster) in its `decor/` dir: docs/proposals/2026-10-02-houseguest-mind/phase4-design.md
 - Chosen houseguest art style (bold-outline chibi "sticker" study: easel documents, exports, brief, critique, open pose-box issue): docs/houseguest-style/README.md
 
 Read the design docs before any planning phase. Update the docs after any design change (the rule in design.md, the reason in decisions.md), and update CLAUDE.md if a document is added.

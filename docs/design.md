@@ -1558,7 +1558,8 @@ this section states what is built.
   (4×2, hung on the wall), drawn in her style (outlined, soft fills) as line art, or as
   ASCII without graphics. She owns her furniture across visits; each
   kind is one row of a catalogue (name, footprint, drawing, ink, uses,
-  where she sits in it, what it offers a room, comfort). **Strips and
+  where she sits in it, what it offers a room, comfort, beauty, and how
+  high it hangs if it does). **Strips and
   anchors**: a strip is a floor her home stands on — a quiet pane's
   bottom border between its walls (Users, Playlist, or The List, never
   the chat). Each piece stands on a strip at an anchor: a wall side and
@@ -1829,7 +1830,8 @@ this section states what is built.
   on); *Osaka moved out* (asks first) wipes her record: her home goes,
   and the next visit is a first meeting.
 - **Her record** is local and never synced (the same tier as layout
-  sizes): her home (each piece, its strip and anchor), the number of visits,
+  sizes): her home (each piece, its strip and anchor, and which she
+  hasn't settled yet), the number of visits,
   and a master seed; each visit's randomness is drawn from the master
   seed and the visit's number. It's saved whenever it changes. It
   stays version 1 for older builds: where pieces stand is a field they
@@ -1873,7 +1875,9 @@ this section states what is built.
   line.
   The redrawn lines follow the terminal's geometry (thickness ≈ cell
   height / 16, centred); `DESSPLAY_HOUSEGUEST_LINE=thickness[,offset]`
-  overrides it. Each distinct frame is transmitted once and cached.
+  overrides it. Each distinct frame is transmitted once and cached (up
+  to 256; when full, the one shown longest ago is dropped)
+  (why: [decisions](decisions.md#her-image-cache-drops-what-she-showed-longest-ago-2026-10-03)).
   Without kitty graphics she is the ASCII sprite. Her goodbye in line
   art: startled, a wave, then she bursts into letters that rain away
   through the same dissolve

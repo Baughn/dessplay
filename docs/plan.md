@@ -1,6 +1,6 @@
 # DessPlay Implementation Plan
 
-Last updated: 2026-10-02
+Last updated: 2026-10-03
 
 The initial 10 phases are bottom-up; later numbered phases capture feature
 batches. Each phase produces testable artifacts. The first
@@ -2105,7 +2105,7 @@ welcome; the only goal is "watching her is kind of fun".
 
 ## Phase 38: Houseguest mind and home
 
-**Status: phases 0–3 done (2026-10-02); phase 4 in progress (steps 1–7 of 9 committed 2026-10-03; the working design, with its amendments and the commit plan, is [phase4-design.md](proposals/2026-10-02-houseguest-mind/phase4-design.md); approved decor art in its `decor/` dir), before anything since phase 2 is pushed (the user: rooms may mix until then).** Design: [the mind
+**Status: phases 0–4 done (2026-10-02 and 2026-10-03); phase 5 next. Nothing since phase 2 is pushed yet.** Design: [the mind
 and home proposal](proposals/2026-10-02-houseguest-mind.md) (direction
 agreed with the user; their answers are its *Decisions*). Its migration
 plan numbers its own phases 0–8; this section records them.
@@ -2434,11 +2434,61 @@ Re-run `visit_census` (add a row for how many rules stand broken at
 each visit's end, and home acts per visit by mood) and `sofa_census`,
 and record them here.
 
-**Image budget with a carry (step 6, 2026-10-03; design T4).** Before
-trials (step 7) are decided: `a_carry_stays_within_the_image_budget`
-(line art, Industrious, nesting pressed, text-dense panes) counts the
-images encoded and the times the frame cache (`CACHE_LIMIT` = 256)
-filled and started over (`Graphics::counts`, test-only).
+### Phase 4 — organising (done 2026-10-03)
+
+Built as briefed, in 15 commits (and two of docs), with these
+differences. The working design, with its two rounds of amendments, is
+[phase4-design.md](proposals/2026-10-02-houseguest-mind/phase4-design.md);
+the approved decor art is in its `decor/` dir.
+
+- **Layout apart from what fits** (`Home::layout`, a refactor first,
+  goldens unchanged): the rules are judged on where her pieces are laid
+  out on their strips, not on what shows, so text closeting a piece
+  neither breaks nor mends one.
+- **Faces with facing** (its own commit, before the rules): the watch
+  seat takes the sofa's way round; a made sofa keeps the derivation.
+- **The rules** (`rules.rs`): `Faces`, `Near` (lamp by bed or desk, ≤ 3
+  cells), `AgainstWall` (fridge, bookshelf, ≤ 1 cell), `Apart { Bed, Tv }`
+  and `Belongs` (an unsettled piece that spoils its room). Felt on the
+  piece's own uses only: Faces on lounging and napping (not on watching
+  from beside the TV), Apart on sleeping.
+- **Unsettled deliveries**: a top-level ledger field `unsettled`, written
+  only when non-empty and read leniently. Only doorstep parcels are
+  unsettled; the stage's gifts (and so the census's homes) are settled.
+  The brief's ranking became role tiers (a room the piece completes 0,
+  one it doesn't spoil 1, an empty strip 2) and, where the rule would
+  move an unsettled piece too, a settled piece behind them all (tier 3,
+  `SETTLED_BEHIND`); a turn where it stands is exempt and cheapest.
+- **The search runs at paint, not in her decision** (a deviation from
+  the proposal): one definition of what fits, the frame's, throttled
+  (again when her home, the panes, the rules she'd mend or the text she
+  moved change, else once a second). The set-down is committed at paint
+  too, judged again with the piece moved. Lift and set-down end in
+  short timed acts, and each step waits while the frame hasn't judged it.
+- **The carry**: tries count failures, not settings-off (a busy chat
+  made her drop a piece she was carrying fine); one go per felt rule.
+- **`Want::Arrange`** landed with `Scene::Arrange` (step 6), not with
+  the feeling (step 4), for the exhaustive cue lint.
+- **The image cache** drops the image shown longest ago instead of
+  starting over (below).
+- **Trials** shipped (below): whim order, a turn isn't another spot, the
+  line is "hmm..." in ASCII dots.
+- **Wall pieces** hang 4 rows up (the design's HEIGHT + 1 needed 7 clear
+  rows; the home screen's Users pane has 7); a crowded wall hangs each
+  piece that fits.
+- **Beauty** is eased by rest and use in a pretty room, not exercise or
+  chores; the channel sells decor first on a tie at the top of her
+  needs (needs clamp at 1, where restlessness often sits).
+- **Found by the census** (below): the search ran only for the first
+  felt rule, so one no move mends blocked the rest of the visit
+  (`fix(houseguest): what she can't mend doesn't stop her mending the
+  next thing`).
+
+**Image budget with a carry (step 6; design T4).** Before trials were
+decided, `a_carry_stays_within_the_image_budget` (line art, Industrious,
+nesting pressed, text-dense panes) counted the images encoded and the
+times the frame cache (`CACHE_LIMIT` = 256) filled and started over
+(`Graphics::counts`, test-only).
 
 | Home | Set down at | Encoded from feeling it | Lift → 5 min after set-down | Cached | Clears |
 |---|---|---|---|---|---|
@@ -2446,12 +2496,29 @@ filled and started over (`Graphics::counts`, test-only).
 | unsettled TV carried downstairs | 139.0 s | 120 | 41 | 130 | 0 |
 
 A carry costs some 30–40 distinct images (the piece hidden, then shown
-again, under her and the poses around it), well inside the cache with
-no clear: the budget holds for trials, which re-show the piece up to
-three times (some 100 more images at worst). (Measured on sparse homes
-only; step 6b's review corrects it for a furnished one, below.)
+again, under her and the poses around it). With trials and the trial
+sit (measured again at the end), the same two homes encode 136 and 129
+from feeling it, 61 and 50 from the lift on, with nothing dropped.
 
-**The carry's promises (step 6b, 2026-10-03; design T3–T5).**
+**The cache (step 6b review).** The furnished home
+(`a_furnished_home_gets_used_and_stays_cheap`, ordinary, seeds 0 and 1)
+caches 195 and 190 images in 20 minutes. Forced industrious over seeds
+0–7 (`a_busy_furnished_home_stays_cheap`), seed 2 encoded 385 images:
+the old cache, full, started over, so 120 were images she'd already
+had. The carry wasn't the cause (lift, carry and use-it cost some
+15–25 images a time); her walking and travelling over text is, where
+each spot is a new image (industrious: 212–265 distinct images in 20
+minutes, against 178–195 ordinary). So the cache now drops the image
+shown longest ago (`graphics.rs`, a stamp per image and a `BTreeMap` of
+them). Seed 2 then encodes 265 with 9 stale images dropped and none
+encoded twice; the other seeds never fill it (189–242 encoded), and at
+the end of the phase that still holds. The
+test-only counts are images encoded, dropped, and encoded again; the
+budget tests assert none encoded again (the busy one allows 4). Memory
+is as before: 256 images of about 6,500 pixels each at 9×19 cells,
+some 8 MB of encoded data.
+
+**The carry's promises (step 6b; design T3–T5).**
 `the_carry_keeps_every_promise` (both drawing modes, text-dense panes,
 six deterministic broken homes, any mood, chat, resizes, a resident's
 focus) checks every set-down against the rules on that frame (it mends
@@ -2463,77 +2530,138 @@ could only return after its layout changed, which the exemption
 covers). In its place `moves_each_piece_once` (Industrious, no resize
 or delivery): no piece moves twice, and a mendable home ends with
 nothing broken. Cutting the "breaks none" check from the search makes
-both fail. The property's two minutes hold one home act at most
-(measured in review: 277 cases at 256, 210 with none, 67 with one), so
-there it proves only that lazy never arranges;
-`her_mood_caps_her_home_acts` (home 3, three
+both fail. The property's two minutes hold one home act at most (277
+cases at 256: 210 with none, 67 with one), so there it proves only that
+lazy never arranges; `her_mood_caps_her_home_acts` (home 3, three
 things wrong, both drawing modes) proves the other caps: ordinary and
 dreamy put one thing right and leave what else they felt for ten
 minutes, industrious goes on to a second. A cap of 3 for every mood but
 lazy fails it.
 
-Measured at the same time, and corrected in review: the furnished home
-(`a_furnished_home_gets_used_and_stays_cheap`, ordinary, seeds 0 and 1)
-caches 195 and 190 images in 20 minutes with no home acts, but not
-because nothing she felt was broken: both end with `faces(sofa,TV)*`
-felt and broken; ordinary just never got round to it. Forced
-industrious over seeds 0–7 (`a_busy_furnished_home_stays_cheap`), she
-arranges in five of eight and the cache filled once: seed 2 encoded 385
-images, and the old cache, full, started over, so 120 of those were
-images she'd already had. The carry wasn't the cause. Its methods
-(lift, carry, use-it) cost some 15–25 images a time; the rest is her
-walking and travelling over text, where each spot is a new image
-(industrious walks more: 212–265 distinct images in 20 minutes, against
-178–195 ordinary). Any long session fills the cache that way, carry or
-not.
+**Trials (step 7; design D6, A3, T1).** The ties are the cheapest
+repair's piece and tier within `TIE_CELLS` = 4, one per spot (the
+search offers the sofa both ways round, the only piece whose rule looks
+at its facing; a lamp turned where it would stand was a "trial" nobody
+could see, caught by `no_piece_is_moved_twice`), tried in a whim's order
+(in search order the second spot was always the cheapest, kept
+outright, so a third was never tried). The keep roll is e^(−Δ/T) with T
+her restlessness, which in practice sits near 1, so she keeps a dearer
+spot about four times in five: on the sofa turned from the TV (three
+spots, costs 1, 2, 2) she tries a second spot about one move in seven.
+In the census she lifts a piece again 1–6 times in 16 half-hour visits
+a mood. `she_tries_it_in_a_spot_or_two` (calm, so picky; two- and
+three-spot visits in line art) asserts no image is encoded twice.
+`the_carry_keeps_every_promise` reaches a second spot in only about 3%
+of its cases, so interruptions mid-trial have their own property,
+`a_trial_keeps_every_promise`: it starts each case already trying the
+sofa (sitting on it in the first spot, or lifted again for another)
+and sends chat, resizes and focus changes in the next 20 s, checked
+per frame by the same `promised_frame`. About half the cases lift it
+again after the first interruption. On these panes no resize makes a
+spot stop holding, so the paths that skip such a spot are not reached.
 
-So the cache now drops the image shown longest ago instead of
-starting over (`graphics.rs`, a stamp per image and a `BTreeMap` of
-them, oldest first). Seed 2 then encodes 265 with 9 stale images
-dropped and none encoded twice; the other seeds never fill it. The
-test-only counts are images encoded, dropped, and encoded again (her
-working set thrashing), and the budget tests assert none encoded
-again (the busy one allows 4). Memory is as before: 256 images of
-about 6,500 pixels each at 9×19 cells, some 8 MB of encoded data.
+**Measured (2026-10-03).** Gate 1848 tests; the 256-case
+houseguest pass is clean (252 tests, 42 s, release); the perf test
+passes (a visit: 0.00% of one core), and the search's forced-stride
+worst case (three 400-wide strips, 1,173 moves) takes 0.44–0.46 ms in
+release. `sofa_census` as after phases 2 and 3: no chat 120/120 and
+104/104 used; chat every 37 s 102 of 104 (the two still waiting at the
+end) and 93/93; made → used max 28 s; none let be or lost.
 
-For trials (step 7): a trial re-shows the piece at a new spot, some
-15–25 images each, against a walking baseline of about 200 in 20
-minutes. With the cache dropping only stale images, the question is
-no longer whether it fills (it will, in a long session) but whether her
-working set thrashes, and it doesn't: trials can ship on the image
-budget, with `a_busy_furnished_home_stays_cheap` extended to cover them.
+`visit_census` gained rows for her home (`test(houseguest): the census
+counts what she does about her home`), and puts the shopping channel on
+at the start of each visit, as on any visit it's due (it changes
+nothing she chooses or how long anything takes; only the advert's lines
+join what she says). Forced moods, furniture / floor rest / spacing out
+/ moving, % of time:
 
-**Trials (step 7, 2026-10-03; design D6, A3, T1).** Shipped: the ties
-are the cheapest repair's piece and tier within `TIE_CELLS` = 4, one per
-spot (the search offers each place both ways round; a lamp turned where
-it would stand was a "trial" nobody could see, caught by
-`no_piece_is_moved_twice`), tried in a whim's order (the design left
-"the next" open; in search order the second spot was always the
-cheapest, kept outright, so a third was never tried). The keep roll is
-e^(−Δ/T) with T her restlessness, which in practice sits near 1, so she
-keeps a dearer spot about four times in five: on the sofa turned from
-the TV (three spots, costs 1, 2, 2) she tries a second spot about one
-move in seven. The line is "hmm..." (ASCII dots like all her lines,
-not the design's "…"). In `a_busy_furnished_home_stays_cheap` none of
-the 8 twenty-minute industrious visits happened to try a second spot
-(the counts print `spots tried again`), so the budget with trials is
-asserted where they're certain: `she_tries_it_in_a_spot_or_two` (calm,
-so picky; two- and three-spot visits in line art) asserts no image is
-encoded twice. Likewise `the_carry_keeps_every_promise` reaches a
-second spot in only about 3% of its cases, so interruptions mid-trial
-have their own property, `a_trial_keeps_every_promise`: it starts each
-case already trying the sofa (sitting on it in the first spot, or
-lifted again for another) and sends chat, resizes and focus changes
-in the next 20 s. Both properties check every frame with the same
-`promised_frame`. About half the cases lift it again after the first
-interruption. On these panes no resize makes a spot stop holding, so
-the paths that skip such a spot are not reached.
+| Room | Ordinary | Lazy | Industrious | Dreamy |
+|---|---|---|---|---|
+| stage | 3.8 / 3.6 / 7.4 / 36.6 | 15.1 / 1.3 / 6.1 / 35.8 | 1.7 / 1.4 / 5.4 / 39.2 | 2.6 / 3.7 / 10.9 / 38.5 |
+| home | 38.0 / 0 / 1.8 / 42.3 | 44.3 / 0 / 1.2 / 38.8 | 33.5 / 0.1 / 1.3 / 45.3 | 36.4 / 0 / 3.4 / 43.5 |
+| resident | 29.2 / 0.6 / 4.9 / 36.4 | 31.7 / 0.5 / 5.2 / 37.6 | 22.1 / 0.1 / 3.8 / 43.2 | 26.8 / 2.3 / 8.3 / 36.5 |
 
-One move at a time can leave a home that no single move mends. Take a
-bed in the living room beside the TV the sofa faces, and a lamp
-upstairs. She feels the lamp first (Near comes before Apart in the
-table), so the lamp comes down beside the bed. After that, moving the
-bed breaks Near and moving the TV breaks Faces, so Apart stays broken
-and she leaves it. That's the design working as intended, not a bug.
-If it ever matters, a later phase could weigh paired moves, or feel
-Apart before Near.
+The resident's furniture time is back (ordinary 24.5 → 29.2, industrious
+19.8 → 22.1, dreamy 24.3 → 26.8; lazy, who never arranges, 32.4 → 31.7):
+its sofa, landed apart from the TV or turned from it, is moved or
+turned in every visit but a lazy one, and she watches from it. The
+stage room owns nothing and is unchanged. At home, dreamy lost 4
+points of furniture time to moving; the carries themselves are small
+(Lift and SetDown are 0.1–0.2% of her time), so most of it is visits
+diverging after a move. Not investigated further.
+
+Her home, 16 half-hour visits a mood (the home census's five pieces are
+stage gifts, settled, scattered over two strips; the resident owns a
+sofa and a TV):
+
+| Room | | Ordinary | Lazy | Industrious | Dreamy |
+|---|---|---|---|---|---|
+| home | home acts a visit (visits with 0 / 1 / 2) | 0 / 16 / 0 | 16 / 0 / 0 | 0 / 10 / 6 | 0 / 16 / 0 |
+| | set down / lifted again / dropped | 19 / 3 / 0 | 0 | 28 / 6 / 0 | 19 / 3 / 0 |
+| | felt → mended, median / p90 | 159 / 311 s | — | 181 / 274 s | 129 / 214 s |
+| | broken at the end (all felt) | faces 8, wall 5, apart 4 | faces 15, wall 13, apart 5 | faces 7, apart 4 | faces 9, wall 3, apart 5 |
+| | visits ending with nothing broken | 1 | 0 | 5 | 1 |
+| resident | home acts a visit | 16 × 1 | 16 × 0 | 16 × 1 | 16 × 1 |
+| | set down / lifted again / dropped | 20 / 4 / 0 | 0 | 17 / 1 / 0 | 18 / 2 / 0 |
+| | felt → mended, median / p90 | 198 / 429 s | — | 154 / 287 s | 190 / 326 s |
+| | broken at the end | none | faces 16 | none | none |
+
+She first feels a rule some 1–3½ minutes into a visit (median), and
+mends it a median 2–3½ minutes after (p90 at most about 7), so nesting's
+three-minute rise needs no tuning. No carry was dropped in any census
+visit. With drawn moods, home choices: bed 14%, TV 11%, books 10%,
+lounging 8%, homework 6%, napping 4%, arranging 1.5%; no want over 24%
+of a home visit (resident 22%).
+
+Before the fix the census found, the home's ordinary visits made their
+one move in 11 of 16, dreamy in 9, and industrious did nothing about
+their home in 3 (9 made one move, 4 two), each stuck on a first felt
+rule no move mends. What's still broken at the
+end at home is her cap (ordinary, dreamy: one move) or a rule no move
+mends (industrious; see the known limits).
+
+**Beauty and decor.** Of 160 visits in rooms with a TV (forced and
+drawn), 159 bought the next piece of furniture at her first watch
+(minute 0–13); one, lazy in the resident's room, watched first at 16
+minutes and bought a plant, beauty then at 1 and tied at the top. In a
+plain home beauty reaches 1 within about a quarter of an hour (it ends
+every census visit at 1.00: no census room has decor), so once it has,
+any watch the channel is due on buys decor before the next furniture
+unless another need is higher. The 1 in 160 is the census's, where she
+watches early; in play it's as often as her first watch of a due visit
+comes after a quarter of an hour in a plain room. Not tuned: a plant
+then is in character, and the furniture comes on the next due visit.
+
+**Known limits.**
+- *One move at a time* can leave a home that no single move mends. Take
+  a bed in the living room beside the TV the sofa faces, and a lamp
+  upstairs. She feels the lamp first (Near comes before Apart in the
+  table), so the lamp comes down beside the bed. After that, moving the
+  bed breaks Near and moving the TV breaks Faces, so Apart stays broken
+  and she leaves it. That's the design working as intended, not a bug.
+  If it ever matters, a later phase could weigh paired moves, or feel
+  Apart before Near.
+- *"No room is worse" counts any change of role* (for the user to
+  decide). A move may not change the role of a room that has one, so a
+  sofa can't join a TV that stands with a desk (a study would become a
+  living room), and a bed can't join a desk (a study would become a
+  bedroom), though a living room with a desk or a bedroom with a desk is
+  an ordinary home. In the census's furnished home, 11 of the 16
+  industrious visits end with something broken; taking *worse* to mean
+  only a room that becomes a den (an experiment, not committed) leaves
+  3 (not looked into). The census overstates it: its gifts land
+  anywhere, settled, while in play a parcel comes in alone (her TV
+  first, so the sofa completes its room), and a piece that would spoil
+  a room is unsettled and moved by `Belongs`. A table-driven
+  alternative: a piece *spoils* a room when the room's role without it
+  forbids an offer it makes (a bed in a living room, a screen or a
+  fridge in a bedroom), and a room is *worse* only when it becomes a
+  den. It would change `Belongs`, the tiers, the no-single-move fixture
+  and design.md, so it waits for the user's call.
+- A felt rule no move mends keeps *nesting* at 1 for the rest of the
+  visit. Nothing comes of it (only arranging answers it, and that isn't
+  on offer without a way), but the stage shows her keen.
+
+**Later** (the user, 2026-10-03; not now): posters delivered in
+cardboard tubes; more posters, paintings and plant varieties; perhaps a
+greenhouse or solarium she builds.

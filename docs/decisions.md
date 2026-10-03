@@ -1985,6 +1985,13 @@ waiting in the closet one by one); text over a piece doesn't move the
 room, only closets that piece, so a user joining the Users pane doesn't
 send her living room wandering. Later, she should be able to *make*
 space for her things; until then, no space means the closet.
+*(2026-10-03: superseded. Rooms come from contents since
+[2026-10-02](#her-home-stands-on-strips-and-its-rooms-are-whats-in-them-2026-10-02):
+a strip's role is what's unboxed there, and pieces carry no room tag.
+Keeping the sofa with the TV and the bed out of the living room is
+phase 4's rules and repairs
+([2026-10-03](#she-puts-her-home-right-with-the-piece-in-her-pocket-2026-10-03)).
+What stays is the moving whole, now per strip.)*
 Rejected: the chat as a room (new lines would send pieces to the closet
 constantly); putting her "room" in a fixed screen corner (layouts
 differ, and the corner is often text).
@@ -2644,7 +2651,17 @@ record.
 *Unsettled pieces move first*: she never chose where a delivery stands,
 so moving it is putting it where it goes; moving a piece she has
 settled undoes a choice she made. A turn where it stands is cheapest
-of all, whoever chose it.
+of all, whoever chose it. The ranking is by tier, then by cells moved:
+a delivery goes first to a room it completes (the TV joining the sofa
+makes a living room of a den), else one it doesn't spoil, else an
+empty strip; where the rule would move an unsettled piece too, moving
+the settled one comes after all of those. Tiers before cells because a
+far room the piece belongs in beats a near one it merely fits: by
+cells alone, the TV would go to the nearest room it doesn't spoil
+rather than to the sofa it's for.
+These are the role tiers proposed for phase 3 and set aside for the
+flap (phase 4's brief brought them back). A delivery that would spoil
+a room isn't a way at all: it would only break `Belongs` again.
 
 *The carry is certain*: a half-done move is a piece missing from her
 home, so she never rolls away from it as she would from a heading.
@@ -2838,6 +2855,26 @@ record (a poster first on a strip would otherwise take the living
 room's pane from the sofa), and their reader skips it as an unknown
 piece. *Arriving 0.3*: a little bothered, so a long visit in a plain
 room can make it pressing, while a short one rarely does.
+
+## Her image cache drops what she showed longest ago (2026-10-03)
+
+**Rule:** Each distinct image of her (with the pieces drawn in it) is
+transmitted once and cached, up to 256; a full cache drops the image
+shown longest ago, one at a time. See [design.md](design.md#houseguest).
+
+**Why:** the cache used to start over when it filled, so the next
+frames encoded again every pose she was in the middle of using. A
+long, busy visit fills it however it's spent: she walks and travels
+over text, and every spot she passes is a new image (some 210–265
+distinct images in 20 industrious minutes in the furnished home). In
+the phase-4 measurement one such visit encoded 385 images, 120 of them
+ones it had already had, though the carry it was measuring cost only
+15–25. Dropping the one shown longest ago keeps her working set (the
+poses and pieces around her now): that visit encodes 265, drops 9
+stale images and encodes none twice. A `BTreeMap` keyed by when each
+was last shown picks it, so the choice never depends on hash order.
+Memory is bounded as before (some 8 MB with 9×19-pixel cells).
+Rejected: a bigger cache, which only moves the cliff.
 
 ## Houseguest chooses by needs among the top few (2026-09-28)
 
