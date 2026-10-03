@@ -1220,6 +1220,9 @@ pub(super) struct Osaka {
     /// it).
     #[cfg(test)]
     pub retried: u32,
+    /// The times the frame took a piece she set down (tests read it).
+    #[cfg(test)]
+    pub set_downs: u32,
     /// How each heading went: set off, arrived, or let go and why
     /// (tests read it).
     #[cfg(test)]
@@ -1278,6 +1281,8 @@ impl Osaka {
             beats: Vec::new(),
             #[cfg(test)]
             retried: 0,
+            #[cfg(test)]
+            set_downs: 0,
             #[cfg(test)]
             headings: Vec::new(),
             log: std::collections::VecDeque::new(),
@@ -3210,6 +3215,10 @@ impl Osaka {
             "houseguest: set her {} down where it's right",
             piece.spec().name
         );
+        #[cfg(test)]
+        {
+            self.set_downs += 1;
+        }
         if self.heading.as_ref().is_some_and(|h| h.job.carry()) {
             self.drop_heading(Letting::Carry);
         }

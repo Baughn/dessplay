@@ -1,14 +1,18 @@
 //! The visit simulator: long visits in a few rooms over many seeds, in
 //! ASCII, summarised — what she chose, where her time went, how her needs
-//! moved, what she lost and said. It's how her needs and moods are tuned
-//! before any statistics test is re-pinned. Ignored; run by hand:
+//! moved, what she lost and said, and what she did about her home (home
+//! acts by mood, set-downs, trials, how soon felt rules were mended, the
+//! rules broken at the end, what she bought). It's how her needs and
+//! moods are tuned before any statistics test is re-pinned. Ignored; run
+//! by hand:
 //!
 //! ```text
 //! cargo test --release -p dessplay --lib visit_census -- --ignored --nocapture
 //! ```
 
 use super::*;
-use crate::ui::houseguest::brain::{Mood, Want};
+use crate::ui::houseguest::brain::{Mood, Need, Want};
+use crate::ui::houseguest::mind::Loss;
 use std::collections::BTreeMap;
 
 /// A room to visit: the frame and view at `now`, and whether a chat line
@@ -92,6 +96,30 @@ pub(super) struct Visit {
     pub said: BTreeMap<String, usize>,
     /// How her headings went.
     pub headings: BTreeMap<String, usize>,
+    /// Her mood for the visit.
+    pub mood: Option<Mood>,
+    /// The things she did about her home (her mood's cap counts them).
+    pub home_acts: u8,
+    /// The pieces she set down that the frame took (a trial's every spot).
+    pub set_downs: u32,
+    /// The times she lifted a piece again, to try it in another spot.
+    pub retried: u32,
+    /// The moves she let go of with the piece in her pocket.
+    pub dropped: usize,
+    /// Each rule she felt: when, and when it was mended, if it was.
+    pub felt: Vec<(String, u64, Option<u64>)>,
+    /// The rules of her home broken at the visit's end (`*` felt).
+    pub broken: Vec<String>,
+    /// What she bought off the shopping channel, when, with her beauty
+    /// need then and whether it was her most pressing.
+    pub bought: Option<(Furniture, u64, f64, bool)>,
+    /// Her beauty need at the visit's end.
+    pub beauty: f64,
+    /// How she'd put her home right at the visit's end, as last worked
+    /// out (empty: no way, or nothing she'd mend).
+    pub repairs: Vec<String>,
+    /// Her nesting need at the visit's end.
+    pub nesting: f64,
 }
 
 /// What she's doing, as the census counts it.
@@ -125,6 +153,10 @@ pub(super) fn simulate(room: &Room, seed: u64, minutes: u64, mood: Option<Mood>)
         guest.give(item);
         paint(&mut guest, &room.real, &view, 0);
     }
+    // The shopping channel is on at her first watch, as on any visit
+    // it's due: what she buys, and when, shows whether decor comes
+    // before the furniture she lacks.
+    guest.shop();
     let mut out = Visit::default();
     let mut now = 0;
     let mut said: Option<&'static str> = None;
@@ -161,8 +193,33 @@ pub(super) fn simulate(room: &Room, seed: u64, minutes: u64, mood: Option<Mood>)
         if guest.advance(now) {
             paint(&mut guest, &room.real, &view, now);
         }
+        if let State::Visiting(visit) = &guest.state {
+            home_census(&guest, visit, now, &mut out);
+        }
     }
     if let State::Visiting(visit) = &guest.state {
+        out.mood = Some(visit.osaka.mood());
+        out.home_acts = visit.osaka.home_acts();
+        out.set_downs = visit.osaka.set_downs;
+        out.retried = visit.osaka.retried;
+        out.dropped = visit
+            .osaka
+            .beats
+            .iter()
+            .filter(|b| matches!(b.loss, Loss::Moved(_)))
+            .count();
+        let felt = visit.osaka.felt();
+        out.broken = visit
+            .broken
+            .iter()
+            .map(|b| {
+                let star = if felt.contains(&b.key) { "*" } else { "" };
+                format!("{}{star}", b.key.label())
+            })
+            .collect();
+        out.beauty = visit.osaka.needs().get(Need::Beauty);
+        out.nesting = visit.osaka.needs().get(Need::Nesting);
+        out.repairs = visit.repairs.iter().map(|r| r.label()).collect();
         out.choices = visit
             .osaka
             .decisions
@@ -177,6 +234,33 @@ pub(super) fn simulate(room: &Room, seed: u64, minutes: u64, mood: Option<Mood>)
         }
     }
     out
+}
+
+/// The census of her home, after the step at `now`: rules she has just
+/// felt, felt rules now mended, and what she has just bought.
+fn home_census(guest: &Guest, visit: &super::super::Visit, now: u64, out: &mut Visit) {
+    for key in visit.osaka.felt() {
+        let label = key.label();
+        if !out.felt.iter().any(|(l, ..)| *l == label) {
+            out.felt.push((label, now, None));
+        }
+    }
+    for (label, _, mended) in &mut out.felt {
+        if mended.is_none() && !visit.broken.iter().any(|b| b.key.label() == *label) {
+            *mended = Some(now);
+        }
+    }
+    if out.bought.is_none()
+        && let Some(item) = guest.ledger.ordered
+    {
+        let needs = visit.osaka.needs();
+        out.bought = Some((
+            item,
+            now,
+            needs.get(Need::Beauty),
+            needs.pressing(Need::Beauty),
+        ));
+    }
 }
 
 /// What a census act counts as.
@@ -200,6 +284,101 @@ pub(super) fn group(doing: &str) -> &'static str {
 /// The share of `part` in `whole`, as a percentage.
 fn pct(part: u64, whole: u64) -> f64 {
     100.0 * part as f64 / whole.max(1) as f64
+}
+
+/// Prints what `visits` did about her home: home acts by mood, set-downs,
+/// trials and dropped carries, how soon felt rules were mended, the rules
+/// still broken at the end, what she bought, and her beauty need.
+fn home_summary(visits: &[Visit]) {
+    let mut by_mood: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+    for visit in visits {
+        by_mood
+            .entry(visit.mood.map_or("?".to_owned(), |m| format!("{m:?}")))
+            .or_default()
+            .push(visit.home_acts);
+    }
+    eprintln!(
+        "  home acts a visit by mood: {}",
+        by_mood
+            .iter()
+            .map(|(mood, acts)| {
+                let mut hist = [0usize; 4];
+                for &a in acts {
+                    hist[usize::from(a).min(3)] += 1;
+                }
+                let mean = acts.iter().map(|&a| f64::from(a)).sum::<f64>() / acts.len() as f64;
+                format!("{mood} {mean:.2} (of {}: 0/1/2/3 = {hist:?})", acts.len())
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    let sum = |f: fn(&Visit) -> u64| visits.iter().map(f).sum::<u64>();
+    eprintln!(
+        "  set down {}, spots tried again {}, carries dropped {}",
+        sum(|v| u64::from(v.set_downs)),
+        sum(|v| u64::from(v.retried)),
+        sum(|v| v.dropped as u64)
+    );
+    let felt: Vec<&(String, u64, Option<u64>)> = visits.iter().flat_map(|v| &v.felt).collect();
+    let mut took: Vec<u64> = felt
+        .iter()
+        .filter_map(|(_, at, mended)| mended.map(|m| (m - at) / 1000))
+        .collect();
+    took.sort_unstable();
+    let at = |q: f64| took.get(((took.len() as f64 - 1.0) * q).round() as usize);
+    let mut first: Vec<u64> = felt.iter().map(|(_, at, _)| at / 1000).collect();
+    first.sort_unstable();
+    eprintln!(
+        "  felt {} (first felt median {:?} s), mended {} (felt -> mended median {:?} / p90 {:?} / max {:?} s)",
+        felt.len(),
+        first.get(first.len() / 2),
+        took.len(),
+        at(0.5),
+        at(0.9),
+        took.last()
+    );
+    let mut broken: BTreeMap<&str, usize> = BTreeMap::new();
+    for label in visits.iter().flat_map(|v| &v.broken) {
+        *broken.entry(label).or_default() += 1;
+    }
+    eprintln!(
+        "  broken at the end: {} visits of {} with none; {broken:?}",
+        visits.iter().filter(|v| v.broken.is_empty()).count(),
+        visits.len()
+    );
+    // Keen on her home at the end, a felt rule broken, and no way to
+    // mend it worked out (none, or her mood's cap reached).
+    eprintln!(
+        "  keen at the end with no way to mend: {} (nesting at the end: median {:.2})",
+        visits
+            .iter()
+            .filter(|v| v.nesting > 0.5
+                && v.repairs.is_empty()
+                && v.broken.iter().any(|b| b.ends_with('*')))
+            .count(),
+        {
+            let mut n: Vec<f64> = visits.iter().map(|v| v.nesting).collect();
+            n.sort_by(f64::total_cmp);
+            n[n.len() / 2]
+        }
+    );
+    let bought: Vec<String> = visits
+        .iter()
+        .filter_map(|v| v.bought)
+        .map(|(item, at, beauty, pressing)| {
+            let why = if pressing { ", most pressing" } else { "" };
+            format!("{item:?} at {} min (beauty {beauty:.2}{why})", at / 60_000)
+        })
+        .collect();
+    eprintln!("  bought: {}", bought.join("; "));
+    let mut beauty: Vec<f64> = visits.iter().map(|v| v.beauty).collect();
+    beauty.sort_by(f64::total_cmp);
+    eprintln!(
+        "  beauty at the end: min {:.2}, median {:.2}, max {:.2}",
+        beauty[0],
+        beauty[beauty.len() / 2],
+        beauty[beauty.len() - 1]
+    );
 }
 
 #[test]
@@ -308,6 +487,7 @@ fn visit_census() {
         eprintln!("  headings: {headings:?}");
         eprintln!("  beats: {beats:?}");
         eprintln!("  said: {said:?}");
+        home_summary(&visits);
         for (i, needs) in visits[0].needs.iter().enumerate() {
             eprintln!("  seed 0 at {:>2} min: {needs}", (i + 1) * 5);
         }
