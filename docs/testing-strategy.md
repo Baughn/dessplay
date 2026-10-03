@@ -1,6 +1,6 @@
 # Testing Strategy
 
-Last updated: 2026-10-02
+Last updated: 2026-10-03
 
 ## Table of Contents
 
@@ -302,7 +302,10 @@ warm cache vs ~4s under nextest (measured 2026-08-31, 32 cores).
   tests via `default-filter` (they only assert in release builds — in a
   debug gate they cost ~4s and verify nothing) and flags any test slower
   than 30s as SLOW, killing it at 60s. A SLOW flag usually means an
-  accidental real (non-paused) sleep.
+  accidental real (non-paused) sleep. A test that legitimately takes
+  longer at a deep pass's case count gets a named `overrides` entry
+  with its reason (today `every_made_piece_is_used_or_let_go`: ~50 s
+  at 256 cases in release, killed at 120 s).
 - **full**: includes release perf tests:
   `cargo nextest run --profile full --release`. Ignored tests still require
   explicit `--run-ignored` selection.

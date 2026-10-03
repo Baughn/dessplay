@@ -10,8 +10,17 @@
 default-filter = "not binary(perf)"
 # No test legitimately takes >30s (paused-time tokio; worst real-time test
 # ~4s): flag anything slower as SLOW — usually an accidental real sleep —
-# and kill it at 60s so the blocking gate is bounded.
+# and kill it at 60s so the blocking gate is bounded. The exceptions are
+# overridden below, by name, each with its reason.
 slow-timeout = { period = "30s", terminate-after = 2 }
+
+# The houseguest's made-piece property simulates a 1.5-minute-plus visit
+# per case: ~13 s at the gate's 32 cases, but ~50 s at the deep pass's
+# 256 (PROPTEST_CASES=256, release), which a loaded machine pushed past
+# the 60 s kill. Kill it at 120 s instead.
+[[profile.default.overrides]]
+filter = 'test(every_made_piece_is_used_or_let_go)'
+slow-timeout = { period = "60s", terminate-after = 2 }
 
 [profile.full]
 # Include perf regression tests; ignored tests still need --run-ignored.

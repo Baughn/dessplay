@@ -723,16 +723,23 @@ fn the_real_ui_reports_idle_and_protects_input_status_and_keybar() {
     assert!(view.protected.iter().all(|r| !r.is_empty()));
 }
 
-/// Reading the terrain runs on every frame she is on screen.
+/// Reading the terrain runs on every frame she is on screen: under 2 ms
+/// (the fastest of 100, in a release build).
 #[test]
 fn terrain_read_is_cheap() {
     let mut ui = real_ui();
     let (buf, view) = real_frame(&mut ui, 200, 60);
-    let started = std::time::Instant::now();
-    for _ in 0..100 {
-        std::hint::black_box(Terrain::read(&buf, &view.protected, true));
-    }
-    let per_read = started.elapsed() / 100;
+    // The fastest of 100: what a read costs. Tests running alongside (a
+    // deep pass loads every core) only ever make a run slower, so a mean
+    // would measure the machine.
+    let per_read = (0..100)
+        .map(|_| {
+            let started = std::time::Instant::now();
+            std::hint::black_box(Terrain::read(&buf, &view.protected, true));
+            started.elapsed()
+        })
+        .min()
+        .unwrap_or_default();
     eprintln!("terrain read: {per_read:?}");
     if !cfg!(debug_assertions) {
         assert!(per_read < Duration::from_millis(2), "{per_read:?}");

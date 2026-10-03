@@ -2848,6 +2848,30 @@ impl Osaka {
         }
     }
 
+    /// What she's playing, as [`Osaka::plays`], and since when (its act's
+    /// start): two plays alike are told apart by it (the census counts
+    /// each once).
+    #[cfg(test)]
+    pub fn plays_since(&self) -> Option<(u64, Play)> {
+        match self.act {
+            Act::Use { since, play, .. } => Some((since, play)),
+            Act::SpaceOut {
+                since,
+                play: Some(play),
+                ..
+            } => Some((since, play)),
+            _ => None,
+        }
+    }
+
+    /// Until when she beams saying her answer to the chat, if she has
+    /// answered it in the use she's at (each answer its own time).
+    #[cfg(test)]
+    pub fn answered_until(&self) -> Option<u64> {
+        let (span, until) = self.answering?;
+        (self.use_span() == Some(span)).then_some(until)
+    }
+
     /// Whether she's stopped to look (at the chat, or startled).
     #[cfg(test)]
     pub fn looking(&self) -> bool {
@@ -5575,6 +5599,7 @@ mod tests {
                     since + 500
                 };
                 assert_eq!(osaka.facing, Facing::Left, "{case}");
+                assert_eq!(osaka.answered_until(), None, "{case}: not asked yet");
                 osaka.look(now, 30, asks, &terrain);
                 assert_eq!(osaka.facing, Facing::Right, "{case}: turned to the chat");
                 assert_eq!(osaka.watch_until, now + WATCH_MS, "{case}");
@@ -5584,10 +5609,12 @@ mod tests {
                 );
                 if !(asks && in_coda) {
                     assert!(!matches!(osaka.act, Act::Use { .. }), "{case}: stopped");
+                    assert_eq!(osaka.answered_until(), None, "{case}: not answered");
                     continue;
                 }
                 assert_eq!(osaka.use_span(), Some((seat, since, until)), "{case}");
                 let said = now + speech_ms(SATA_ANDAGI);
+                assert_eq!(osaka.answered_until(), Some(said), "{case}");
                 assert_eq!(
                     osaka.appearance(now),
                     (
@@ -5615,11 +5642,21 @@ mod tests {
                 osaka.look(late, 30, true, &terrain);
                 assert_eq!(osaka.use_span(), Some((seat, since, until)), "{case}");
                 assert!(late + speech_ms(SATA_ANDAGI) > until + 100);
+                assert_eq!(
+                    osaka.answered_until(),
+                    Some(late + speech_ms(SATA_ANDAGI)),
+                    "{case}: answered again, its own time"
+                );
                 let homework = seat_for(Use::Homework, Furniture::Desk);
                 osaka.start_job(Job::Use(homework), until, &Chances::default(), &mut Rng(1));
                 let (.., play) = begun(&osaka);
                 assert_eq!((play.own, play.before), (ScriptId::Homework, None));
                 assert_eq!(osaka.appearance(until + 100).1, Face::Vacant, "{case}");
+                assert_eq!(
+                    osaka.answered_until(),
+                    None,
+                    "{case}: the answer left with it"
+                );
             }
         }
     }

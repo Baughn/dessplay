@@ -1918,7 +1918,8 @@ mod tests {
     /// every one that passes the geometry is fit-checked) — weighs no
     /// more than [`CANDIDATES`] moves (and more than half as many: the
     /// stride is no coarser than it needs to be), in under a millisecond
-    /// (in a release build). Without the text, it finds its repairs.
+    /// (the fastest of 20, in a release build). Without the text, it
+    /// finds its repairs.
     #[test]
     fn repair_search_is_cheap() {
         let (width, rows) = (400, 20);
@@ -1954,11 +1955,17 @@ mod tests {
             assert!(found.examined > CANDIDATES / 2, "{}", found.examined);
             let want = if dense { 0 } else { REPAIRS };
             assert_eq!(found.repairs.len(), want, "dense {dense}");
-            let started = std::time::Instant::now();
-            for _ in 0..20 {
-                std::hint::black_box(search(&home, &frame, &broken));
-            }
-            let per_search = started.elapsed() / 20;
+            // The fastest of 20: what a search costs. Tests running
+            // alongside (a deep pass loads every core) only ever make
+            // a run slower, so a mean would measure the machine.
+            let per_search = (0..20)
+                .map(|_| {
+                    let started = std::time::Instant::now();
+                    std::hint::black_box(search(&home, &frame, &broken));
+                    started.elapsed()
+                })
+                .min()
+                .unwrap_or_default();
             eprintln!(
                 "repair search (dense {dense}): {per_search:?}, {} moves",
                 found.examined

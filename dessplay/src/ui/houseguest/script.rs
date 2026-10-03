@@ -1332,11 +1332,22 @@ fn chewing(frame: u8) -> Pose {
     Pose::EatAndagi(if frame % 2 == 1 { 1 } else { 2 })
 }
 
-/// How long it plays, said four, five or six times.
-const ANDAGI_LENS: &[u64] = &[andagi_ms(4), andagi_ms(5), andagi_ms(6)];
+/// How many times she names it, by branch: four, five or six.
+pub(super) const ANDAGI_COUNTS: [u64; 3] = [4, 5, 6];
 
-/// Said four, five or six times: a branch each.
-const ANDAGI: &[&[Key]] = &[&andagi::<11>(), &andagi::<13>(), &andagi::<15>()];
+/// How long it plays, by branch.
+const ANDAGI_LENS: &[u64] = &[
+    andagi_ms(ANDAGI_COUNTS[0]),
+    andagi_ms(ANDAGI_COUNTS[1]),
+    andagi_ms(ANDAGI_COUNTS[2]),
+];
+
+/// Its keys, by branch (two a naming, and three more).
+const ANDAGI: &[&[Key]] = &[
+    &andagi::<{ 2 * ANDAGI_COUNTS[0] as usize + 3 }>(),
+    &andagi::<{ 2 * ANDAGI_COUNTS[1] as usize + 3 }>(),
+    &andagi::<{ 2 * ANDAGI_COUNTS[2] as usize + 3 }>(),
+];
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -1954,9 +1965,10 @@ mod tests {
         assert!(ANDAGI_SAID_MS.abs_diff(speech_ms(SATA_ANDAGI)) <= 100);
         assert_eq!(ScriptId::Andagi.on_chat(), Chat::Answer(SATA_ANDAGI));
         let lens = SpliceId::Andagi.row().lens;
-        assert_eq!(lens.len(), 3);
+        assert_eq!(lens.len(), ANDAGI_COUNTS.len());
+        assert_eq!(ANDAGI_COUNTS, [4, 5, 6], "a few times");
         for (branch, &len) in lens.iter().enumerate() {
-            let count = branch + 4;
+            let count = ANDAGI_COUNTS[branch] as usize;
             let keys = ScriptId::Andagi.keys(branch as u8);
             assert_eq!(keys.len(), 2 * count + 3, "{count}");
             assert_eq!(len, andagi_ms(count as u64));

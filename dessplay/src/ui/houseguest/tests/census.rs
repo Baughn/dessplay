@@ -13,7 +13,11 @@
 use super::*;
 use crate::ui::houseguest::brain::{Mood, Need, Want};
 use crate::ui::houseguest::mind::Loss;
+use crate::ui::houseguest::script::{ANDAGI_COUNTS, Play, ScriptId, SpliceId};
 use std::collections::BTreeMap;
+
+/// The census's visits to each room: one a seed, from 0.
+const SEEDS: u64 = 16;
 
 /// A room to visit: the frame and view at `now`, and whether a chat line
 /// arrives on this step.
@@ -40,7 +44,13 @@ pub(super) fn stage_room() -> Room {
     }
 }
 
-/// Her home: a living room and a bedroom, furnished.
+/// Her home: a living room and a bedroom, furnished, with a fridge (so
+/// she snacks) and a lamp (so it goes dark as she sleeps). Each piece
+/// stands where [`Guest::give`] puts it, wherever it fits, so the home
+/// starts broken (the sofa not facing the TV, the bookshelf or fridge
+/// off a wall, the lamp far from her bed and desk; the census's "broken
+/// at the start" row counts it): its home rows measure her mending a
+/// home she was handed, not keeping a tidy one.
 pub(super) fn furnished_room() -> Room {
     let (real, view) = home_screen();
     Room {
@@ -53,6 +63,8 @@ pub(super) fn furnished_room() -> Room {
             Furniture::Bed,
             Furniture::Desk,
             Furniture::Bookshelf,
+            Furniture::Fridge,
+            Furniture::Lamp,
         ],
         chat_every: Some(90_000),
     }
@@ -108,6 +120,8 @@ pub(super) struct Visit {
     pub retried: u32,
     /// The moves she let go of with the piece in her pocket.
     pub dropped: usize,
+    /// The rules of her home broken as the visit began.
+    pub broken_at_start: Vec<String>,
     /// Each rule she felt: when, and when it was mended, if it was.
     pub felt: Vec<(String, u64, Option<u64>)>,
     /// The rules of her home broken at the visit's end (`*` felt).
@@ -122,6 +136,18 @@ pub(super) struct Visit {
     pub repairs: Vec<String>,
     /// Her nesting need at the visit's end.
     pub nesting: f64,
+    /// The vignettes she played as a use's or a spacing-out's own
+    /// script, by name: "shopping", "surf", "riddle", and "bedtime" (a
+    /// sleep's own script, not a trial's, with a lamp shown: on a
+    /// moment, then off).
+    pub scripts: BTreeMap<String, usize>,
+    /// The splices that wrapped her uses, by name and branch.
+    pub splices: BTreeMap<String, usize>,
+    /// The chat lines asking her something that she answered, playing
+    /// on (the sata andagi's).
+    pub answers: usize,
+    /// The pooled lines she said, by pool.
+    pub pooled: BTreeMap<String, usize>,
 }
 
 /// What she's doing, as the census counts it.
@@ -147,6 +173,69 @@ pub(super) fn simulate(room: &Room, seed: u64, minutes: u64, mood: Option<Mood>)
     simulate_with(room, seed, minutes, mood, false, |_, _| {})
 }
 
+/// The census's names for the vignettes `play` plays: its own script,
+/// if it's one (a sleep's own script is "bedtime" where a `lamp` shows:
+/// on a moment, then off; trying the bed, off at once, or a sleep with
+/// no lamp, is plain), and each splice round it, by branch.
+fn named(play: Play, lamp: bool) -> Vec<(bool, String)> {
+    let own = match play.own {
+        ScriptId::Shopping => Some("shopping".to_owned()),
+        ScriptId::Surf => Some("surf".to_owned()),
+        ScriptId::Riddle => Some("riddle".to_owned()),
+        ScriptId::Sleep if play.branch == 0 && lamp => Some("bedtime".to_owned()),
+        ScriptId::Sleep
+        | ScriptId::Lounge
+        | ScriptId::Nap
+        | ScriptId::Homework
+        | ScriptId::Watch
+        | ScriptId::Read
+        | ScriptId::Snack
+        | ScriptId::Pet
+        | ScriptId::Crumple
+        | ScriptId::Unpack
+        | ScriptId::Chopsticks
+        | ScriptId::Andagi => None,
+    };
+    let splices = [play.before, play.after]
+        .into_iter()
+        .flatten()
+        .map(|s| match s.splice {
+            SpliceId::Chopsticks if s.branch == 0 => "chopsticks, clean".to_owned(),
+            SpliceId::Chopsticks => "chopsticks, bad".to_owned(),
+            SpliceId::Andagi => match ANDAGI_COUNTS.get(usize::from(s.branch)) {
+                Some(count) => format!("sata andagi ×{count}"),
+                None => format!("sata andagi, branch {}", s.branch),
+            },
+            SpliceId::TestSnack | SpliceId::TestSleep | SpliceId::TestBedtime => {
+                format!("{:?}", s.splice)
+            }
+        });
+    own.map(|own| (false, own))
+        .into_iter()
+        .chain(splices.map(|s| (true, s)))
+        .collect()
+}
+
+/// Her arrival in `room` from `seed`, drawn in line art if `graphics`:
+/// in `mood` if given, and given what she owns there, each where it
+/// fits.
+fn arrive_in(room: &Room, seed: u64, graphics: bool, mood: Option<Mood>) -> Guest {
+    let mut guest = Guest::new(seed);
+    if graphics {
+        guest.set_picker(kitty());
+    }
+    guest.cue(Scene::Arrive);
+    paint(&mut guest, &room.real, &room.view, 0);
+    if let (Some(mood), State::Visiting(visit)) = (mood, &mut guest.state) {
+        visit.osaka.set_mood(mood);
+    }
+    for &item in room.owns {
+        guest.give(item);
+        paint(&mut guest, &room.real, &room.view, 0);
+    }
+    guest
+}
+
 /// [`simulate`], drawn in line art if `graphics`, showing `watch` her at
 /// every step (before it).
 fn simulate_with(
@@ -157,27 +246,20 @@ fn simulate_with(
     graphics: bool,
     mut watch: impl FnMut(&Osaka, u64),
 ) -> Visit {
-    let mut guest = Guest::new(seed);
-    if graphics {
-        guest.set_picker(kitty());
-    }
-    guest.cue(Scene::Arrive);
+    let mut guest = arrive_in(room, seed, graphics, mood);
     let mut view = room.view.clone();
-    paint(&mut guest, &room.real, &view, 0);
-    if let (Some(mood), State::Visiting(visit)) = (mood, &mut guest.state) {
-        visit.osaka.set_mood(mood);
-    }
-    for &item in room.owns {
-        guest.give(item);
-        paint(&mut guest, &room.real, &view, 0);
-    }
     // The shopping channel is on at her first watch, as on any visit
     // it's due: what she buys, and when, shows whether decor comes
     // before the furniture she lacks.
     guest.shop();
     let mut out = Visit::default();
+    if let State::Visiting(visit) = &guest.state {
+        out.broken_at_start = visit.broken.iter().map(|b| b.key.label()).collect();
+    }
     let mut now = 0;
     let mut said: Option<&'static str> = None;
+    let mut playing: Option<u64> = None;
+    let mut answered: Option<u64> = None;
     while now < minutes * 60_000 {
         let step = guest
             .next_tick(now)
@@ -198,6 +280,29 @@ fn simulate_with(
                 *out.said.entry(text.to_owned()).or_default() += 1;
             }
             said = speech;
+            let plays = visit.osaka.plays_since();
+            if let Some((since, play)) = plays
+                && playing != Some(since)
+            {
+                let lamp = visit
+                    .shown
+                    .iter()
+                    .any(|s| s.item == Furniture::Lamp && !s.boxed);
+                for (splice, name) in named(play, lamp) {
+                    let row = if splice {
+                        &mut out.splices
+                    } else {
+                        &mut out.scripts
+                    };
+                    *row.entry(name).or_default() += 1;
+                }
+            }
+            playing = plays.map(|(since, _)| since);
+            let answer = visit.osaka.answered_until();
+            if answer.is_some() && answer != answered {
+                out.answers += 1;
+            }
+            answered = answer;
         }
         if (now + step) / 300_000 != now / 300_000
             && let State::Visiting(visit) = &guest.state
@@ -209,7 +314,9 @@ fn simulate_with(
             .chat_every
             .is_some_and(|every| now / every != (now - step) / every)
         {
+            // Every other line asks her something.
             view.chat_mark.synced += 1;
+            view.chat_mark.synced_asks = view.chat_mark.synced.is_multiple_of(2);
         }
         if guest.advance(now) {
             paint(&mut guest, &room.real, &view, now);
@@ -253,6 +360,9 @@ fn simulate_with(
         for beat in &visit.osaka.beats {
             *out.beats.entry(format!("{:?}", beat.loss)).or_default() += 1;
         }
+        for (pool, ..) in visit.osaka.said_lines() {
+            *out.pooled.entry(format!("{pool:?}")).or_default() += 1;
+        }
     }
     out
 }
@@ -293,6 +403,40 @@ fn group(groups: &BTreeMap<String, &'static str>, doing: &str) -> &'static str {
 /// The share of `part` in `whole`, as a percentage.
 fn pct(part: u64, whole: u64) -> f64 {
     100.0 * part as f64 / whole.max(1) as f64
+}
+
+/// Prints the vignettes `visits` played: scripts and splices by name (a
+/// visit's mean, and how many visits had one), the chat lines she
+/// answered playing on, and her pooled lines by pool.
+fn vignette_summary(visits: &[Visit]) {
+    let n = visits.len().max(1) as f64;
+    let rows = |of: fn(&Visit) -> &BTreeMap<String, usize>| {
+        let mut total: BTreeMap<&str, (usize, usize)> = BTreeMap::new();
+        for visit in visits {
+            for (k, &v) in of(visit) {
+                let row = total.entry(k).or_default();
+                row.0 += v;
+                row.1 += usize::from(v > 0);
+            }
+        }
+        let rows: Vec<String> = total
+            .iter()
+            .map(|(k, (sum, had))| format!("{k} {:.2} ({had} visits)", *sum as f64 / n))
+            .collect();
+        if rows.is_empty() {
+            "none".to_owned()
+        } else {
+            rows.join(", ")
+        }
+    };
+    eprintln!("  scripts a visit: {}", rows(|v| &v.scripts));
+    eprintln!("  splices a visit: {}", rows(|v| &v.splices));
+    eprintln!(
+        "  andagi answers: {} (in {} visits)",
+        visits.iter().map(|v| v.answers).sum::<usize>(),
+        visits.iter().filter(|v| v.answers > 0).count()
+    );
+    eprintln!("  pooled lines a visit: {}", rows(|v| &v.pooled));
 }
 
 /// Prints what `visits` did about her home: home acts by mood, set-downs,
@@ -346,6 +490,18 @@ fn home_summary(visits: &[Visit]) {
         at(0.9),
         took.last()
     );
+    let mut at_start: BTreeMap<&str, usize> = BTreeMap::new();
+    for label in visits.iter().flat_map(|v| &v.broken_at_start) {
+        *at_start.entry(label).or_default() += 1;
+    }
+    eprintln!(
+        "  broken at the start: {} visits of {} with none; {at_start:?}",
+        visits
+            .iter()
+            .filter(|v| v.broken_at_start.is_empty())
+            .count(),
+        visits.len()
+    );
     let mut broken: BTreeMap<&str, usize> = BTreeMap::new();
     for label in visits.iter().flat_map(|v| &v.broken) {
         *broken.entry(label).or_default() += 1;
@@ -393,7 +549,6 @@ fn home_summary(visits: &[Visit]) {
 #[test]
 #[ignore = "the visit simulator: run by hand in release with --nocapture"]
 fn visit_census() {
-    const SEEDS: u64 = 16;
     const MINUTES: u64 = 30;
     // With CENSUS_MOODS set, each room in each mood (forced).
     let moods: Vec<Option<Mood>> = if std::env::var_os("CENSUS_MOODS").is_some() {
@@ -498,6 +653,7 @@ fn visit_census() {
         eprintln!("  headings: {headings:?}");
         eprintln!("  beats: {beats:?}");
         eprintln!("  said: {said:?}");
+        vignette_summary(&visits);
         home_summary(&visits);
         for (i, needs) in visits[0].needs.iter().enumerate() {
             eprintln!("  seed 0 at {:>2} min: {needs}", (i + 1) * 5);
@@ -526,6 +682,30 @@ fn an_uninterrupted_trip_runs_its_course() {
         );
     }
     assert!(set_off >= 8, "only {set_off} trips");
+}
+
+/// The census's home shows every piece she owns as each of its visits
+/// begins, in both drawing modes (one in the closet would read as never
+/// used: no snacks without the fridge, no bedtime lamp without the
+/// lamp).
+#[test]
+fn the_census_home_shows_every_piece() {
+    let room = furnished_room();
+    for graphics in [false, true] {
+        for seed in 0..SEEDS {
+            let guest = arrive_in(&room, seed, graphics, None);
+            let State::Visiting(visit) = &guest.state else {
+                panic!("seed {seed} graphics={graphics}: visiting");
+            };
+            for item in room.owns {
+                assert!(
+                    visit.shown.iter().any(|s| s.item == *item && !s.boxed),
+                    "seed {seed} graphics={graphics}: {item:?} not shown: {:?}",
+                    visit.shown
+                );
+            }
+        }
+    }
 }
 
 /// Milliseconds of `visits` in each census group.
@@ -731,5 +911,80 @@ fn every_pooled_line_shown_was_drawn_from_its_pool() {
     }
     for kind in ["door", "musing", "question", "answer", "hehe"] {
         assert!(kinds.contains_key(kind), "no {kind} shown: {kinds:?}");
+    }
+}
+
+/// The census counts her vignettes as she plays them: on quiet visits
+/// home (no chat, so nothing cuts a coda short or is answered), in both
+/// drawing modes, the shopping channel plays on each (it's on at her
+/// first watch), bedtime with her lamp on some, and some uses are
+/// spliced, a sata andagi and the chopsticks among them. Each splice's
+/// count agrees with what she was heard to say: "Sata andagi." as many
+/// times as the andagis' branches name it, "Hold 'em by the ends!" once
+/// a bad split; a riddle's question and answer are both pooled lines;
+/// and with no question asked, nothing is answered.
+#[test]
+fn the_census_counts_her_vignettes() {
+    use script::{HOLD_EM, SATA_ANDAGI};
+    let room = Room {
+        chat_every: None,
+        ..furnished_room()
+    };
+    for graphics in [false, true] {
+        let mut scripts: BTreeMap<String, usize> = BTreeMap::new();
+        let mut splices: BTreeMap<String, usize> = BTreeMap::new();
+        for seed in 0..3 {
+            let at = format!("seed {seed} graphics={graphics}");
+            let visit = simulate_with(&room, seed, 15, None, graphics, |_, _| {});
+            let get = |row: &BTreeMap<String, usize>, k: &str| row.get(k).copied().unwrap_or(0);
+            assert_eq!(
+                get(&visit.scripts, "shopping"),
+                1,
+                "{at}: {:?}",
+                visit.scripts
+            );
+            let named: usize = ANDAGI_COUNTS
+                .iter()
+                .map(|&n| n as usize * get(&visit.splices, &format!("sata andagi ×{n}")))
+                .sum();
+            assert_eq!(
+                get(&visit.said, SATA_ANDAGI),
+                named,
+                "{at}: {:?}",
+                visit.splices
+            );
+            assert_eq!(
+                get(&visit.said, HOLD_EM),
+                get(&visit.splices, "chopsticks, bad"),
+                "{at}: {:?}",
+                visit.splices
+            );
+            assert_eq!(
+                get(&visit.pooled, "Riddle"),
+                2 * get(&visit.scripts, "riddle"),
+                "{at}: {:?} {:?}",
+                visit.pooled,
+                visit.scripts
+            );
+            assert_eq!(visit.answers, 0, "{at}");
+            for (k, v) in visit.scripts {
+                *scripts.entry(k).or_default() += v;
+            }
+            for (k, v) in visit.splices {
+                *splices.entry(k).or_default() += v;
+            }
+        }
+        let had = |row: &BTreeMap<String, usize>, start: &str| {
+            row.iter().any(|(k, &v)| k.starts_with(start) && v > 0)
+        };
+        assert!(had(&scripts, "bedtime"), "graphics={graphics}: {scripts:?}");
+        assert!(
+            had(&splices, "sata andagi"),
+            "graphics={graphics}: {splices:?}"
+        );
+        assert!(
+            had(&splices, "chopsticks"),
+            "graphics={graphics}: {splices:?}"
+        );
     }
 }
