@@ -2105,7 +2105,7 @@ welcome; the only goal is "watching her is kind of fun".
 
 ## Phase 38: Houseguest mind and home
 
-**Status: phases 0–4 done (2026-10-02 and 2026-10-03); phase 5 next. Nothing since phase 2 is pushed yet.** Design: [the mind
+**Status: phases 0–4 done (2026-10-02 and 2026-10-03); phase 5 split into 5a (vignettes, in progress) and 5b (the clock). Nothing since phase 2 is pushed yet.** Design: [the mind
 and home proposal](proposals/2026-10-02-houseguest-mind.md) (direction
 agreed with the user; their answers are its *Decisions*). Its migration
 plan numbers its own phases 0–8; this section records them.
@@ -2693,3 +2693,48 @@ is clean (256 tests, 43 s, release).
 **Later** (the user, 2026-10-03; not now): posters delivered in
 cardboard tubes; more posters, paintings and plant varieties; perhaps a
 greenhouse or solarium she builds.
+
+### Phase 5 — vignettes and the clock (brief, 2026-10-03)
+
+The proposal's row 5, split in two (the user's call). Decisions from the
+user, this session:
+
+- **5a, vignettes:** `Script`/`Key`/`Prop`, line pools, splices, the
+  shopping channel converted, chopsticks (#40) and sata andagi (#41) with
+  new art (a model sheet first), and four cheap extras: channel surfing
+  (#37), riddle queen (#56), "Where was I?" as a pool, lamp off before
+  bed (#70). Sata andagi: after a snack she says "Sata andagi." a few
+  times, happier each time; a chat line ending in `?` meanwhile gets
+  "Sata andagi." too, turned to the chat; then she eats it.
+- **5b, the clock:** a **game clock** that runs only while dessplay is
+  open, at about 6× real time, persisted, starting at 16:00 on a weekday
+  and never resyncing. It drives her routine, sleep and absence (school,
+  work) included: away, the home shows empty with rare dash-ins, and a
+  resident leaves and comes back. Calendar **dates** are the real date
+  (a starter set of cheap dates; art-heavy ones wait). Tiers, rarity and
+  pity. A window and a wall-clock piece make game time legible (art).
+  Later, maybe a cat who ignores the clock.
+
+**5a working design:**
+[phase5a-design.md](proposals/2026-10-02-houseguest-mind/phase5a-design.md)
+(scripts hosted on `Act::Use` and `Act::SpaceOut`, every use's look a
+script, a use's body with a prelude and a coda, choices at an act's start
+hashed from her latest decision's whims). Commit order: scripts as data
+(goldens unchanged) → lines → splice machinery with surfing and lamp →
+chopsticks and andagi once the art is approved → census, the 256-case
+pass, docs. 5b gets its own brief once 5a is recorded.
+
+Deviations from the proposal's row 5 (mine, told to the user):
+- **`Adverb` is deferred**: moods already carry her traits as rates, and
+  no 5a vignette needs one.
+- **No free-standing `Act::Script` in 5a**: every 5a vignette happens at
+  a piece or while spacing out. 5b decides if calendar content or the
+  dash-ins need one.
+- **The purchase still commits the moment the channel comes on**
+  (design.md unchanged), not "at key 1".
+- **For 5b: "Tier is a factor" can't work as written.** `brain::choose`
+  multiplies by factors, truncates to the top four, then rolls, so a
+  factor below 1 doesn't make a want rare: it removes it whenever four
+  others outscore it. Rarity and pity must gate *offering*, at the offer
+  filter or in `mind::bind`
+  ([map](proposals/2026-10-02-houseguest-mind/phase5a/map.md), A6).
