@@ -43,6 +43,8 @@ pub(super) enum Expression {
     Dizzy,
     Happy,
     Curious,
+    /// Let down: heavy lids over low eyes, mouth turned down.
+    Droop,
 }
 
 impl Expression {
@@ -55,6 +57,7 @@ impl Expression {
             Self::Dizzy => "face-dizzy",
             Self::Happy => "face-happy",
             Self::Curious => "face-curious",
+            Self::Droop => "face-droop",
         }
     }
 }
@@ -141,6 +144,7 @@ impl Rig {
             Face::Pleased => Expression::Smile,
             Face::Happy => Expression::Happy,
             Face::Curious => Expression::Curious,
+            Face::Droop => Expression::Droop,
         };
         let stand = Self::standing(expression);
         match pose {
@@ -280,6 +284,7 @@ impl Rig {
             Pose::Read(frame) => Self::reading(frame, expression),
             Pose::Eat(frame) => Self::eating(frame, expression),
             Pose::Pet(frame) => Self::petting(frame, expression),
+            Pose::Chopsticks(frame) => Self::chopsticks(frame, expression),
             Pose::Gaze => Self {
                 profile: true,
                 tilt: -16.0,
@@ -471,6 +476,51 @@ impl Rig {
         }
     }
 
+    /// Before homework, on her stool at the desk in profile facing it,
+    /// splitting a pair of disposable chopsticks held up in front of her
+    /// chest: `frame` 0 still joined, both hands on the pair; 1 split
+    /// cleanly, one stick in each hand, her head up; 2 split badly, her
+    /// hands sagging, her head bowed over them. The face is the caller's
+    /// (Happy for the clean split, Droop for the bad one). Drawn where
+    /// homework is.
+    pub fn chopsticks(frame: u8, expression: Expression) -> Self {
+        // Arm angles are solved for the hands to land on the sticks'
+        // grips (`hold` places the part's (0, 0) between them).
+        // They lean forward, into the gap between her face and the desk
+        // lamp's shade; split badly, they sag lower with her hands.
+        let (part, tilt, arms, (x, y, angle)) = match frame {
+            0 => (
+                "chopsticks",
+                8.0,
+                [(-46.6, -34.8), (-44.4, -57.8)],
+                (72.0, 86.0, 30.0),
+            ),
+            1 => (
+                "chopsticks-clean",
+                -4.0,
+                [(-32.6, -57.2), (-40.2, -37.6)],
+                (72.0, 86.0, 22.0),
+            ),
+            _ => (
+                "chopsticks-bad",
+                10.0,
+                [(-19.7, -53.3), (-31.2, -22.7)],
+                (69.0, 92.0, 40.0),
+            ),
+        };
+        Self {
+            tilt,
+            bob: -4.0,
+            shift: -16.0,
+            profile: true,
+            stool: true,
+            legs: [(-86.0, 84.0), (-92.0, 92.0)],
+            arms,
+            hold: Some((part, x, y, angle)),
+            ..Self::standing(expression)
+        }
+    }
+
     /// Home from her part-time job with her shopping: a bundle of leeks
     /// cradled across her chest, cut ends at her viewer-left hip, green
     /// tops fanning up past her viewer-right shoulder. Her viewer-left
@@ -514,9 +564,22 @@ impl Rig {
     /// A snack from her fridge: standing side-on, a melon bread held up
     /// to her mouth; `frame` 1 is the bite, eyes shut, munching.
     pub fn eating(frame: u8, expression: Expression) -> Self {
+        Self::eating_food(frame, ["melon-bread", "melon-bread-bitten"], expression)
+    }
+
+    /// [`Rig::eating`] with another food in her hand: `food` is the held
+    /// part whole and bitten (e.g. `["andagi", "andagi-bitten"]`), each
+    /// drawn centred on (0, 0) within the melon bread's radius.
+    pub fn eating_food(frame: u8, food: [&'static str; 2], expression: Expression) -> Self {
         let biting = frame % 2 == 1;
-        let bread = (83.0, 63.0);
-        let arm = aim((P_SHOULDERS[1], P_SHOULDER_Y), (78.0, 74.0));
+        // The food at her mouth (which the bite's head tilt carries a
+        // little forward), her near hand gripping its lower back edge:
+        // the arm angles are solved for the hand to land there.
+        let (food_at, arm) = if biting {
+            ((81.0, 62.0), (-98.5, -23.9))
+        } else {
+            ((80.0, 61.0), (-97.2, -29.3))
+        };
         Self {
             expression: if biting {
                 Expression::Blink
@@ -526,17 +589,8 @@ impl Rig {
             profile: true,
             tilt: if biting { 4.0 } else { 0.0 },
             bob: if biting { -1.0 } else { 0.0 },
-            arms: [(6.0, -8.0), (arm, -118.0)],
-            hold: Some((
-                if biting {
-                    "melon-bread-bitten"
-                } else {
-                    "melon-bread"
-                },
-                bread.0,
-                bread.1,
-                0.0,
-            )),
+            arms: [(6.0, -8.0), arm],
+            hold: Some((food[usize::from(biting)], food_at.0, food_at.1, 0.0)),
             ..Self::standing(expression)
         }
     }
@@ -1206,8 +1260,202 @@ mod tests {
             ("homework", Rig::homework(0, Expression::Vacant)),
             ("homework", Rig::homework(1, Expression::Vacant)),
             ("homework", Rig::homework(2, Expression::Vacant)),
+            ("droop", Rig::for_pose(Pose::Stand, Face::Droop)),
+            ("droop side", Rig::for_pose(Pose::Side, Face::Droop)),
+            ("chopsticks", Rig::chopsticks(0, Expression::Vacant)),
+            ("chopsticks", Rig::chopsticks(1, Expression::Happy)),
+            ("chopsticks", Rig::chopsticks(2, Expression::Droop)),
+            ("eat andagi", Rig::eating_food(0, ANDAGI, Expression::Happy)),
+            ("eat andagi", Rig::eating_food(1, ANDAGI, Expression::Happy)),
         ]);
         out
+    }
+
+    const ANDAGI: [&str; 2] = ["andagi", "andagi-bitten"];
+
+    /// The chopsticks, the droop face and the sata andagi for review,
+    /// beside the art they join: `HOUSEGUEST_VIGNETTES=/dir cargo test
+    /// -p dessplay --lib vignette_sheet -- --ignored` writes
+    /// `vignettes-1x.png`, the same pixels scaled 3× nearest-neighbour
+    /// (`vignettes-1x-nn3x.png`) and a native 3× render
+    /// (`vignettes-3x.png`), over a dark terminal. Rows, left to right:
+    /// the held parts at 4× her scale (chopsticks joined, clean, bad;
+    /// andagi whole, bitten; the melon bread); her at the desk (homework
+    /// for reference, then joined, clean, bad); faces standing and
+    /// side-on (vacant, blink, droop); her eating at the open fridge
+    /// (melon bread for reference, then the andagi whole and bitten).
+    #[test]
+    #[ignore = "writes PNGs for review"]
+    fn vignette_sheet() {
+        enum Shot {
+            /// A held part alone, at 4× her scale.
+            Part(&'static str),
+            /// Her at the desk, as homework places her.
+            Desk(Rig),
+            /// Her beside the open fridge, facing it.
+            Fridge(Rig),
+            /// Her alone.
+            Her(Rig, Facing),
+        }
+        const BG: image::Rgba<u8> = image::Rgba([30, 33, 39, 255]);
+        const GRID: image::Rgba<u8> = image::Rgba([44, 49, 58, 255]);
+        const FLOOR: image::Rgba<u8> = image::Rgba([139, 148, 158, 255]);
+        let dir = std::env::var("HOUSEGUEST_VIGNETTES").expect("HOUSEGUEST_VIGNETTES");
+        let her = |face| Rig::for_pose(Pose::Stand, face);
+        let side = |face| Rig::for_pose(Pose::Side, face);
+        let rows: Vec<Vec<Shot>> = vec![
+            [
+                "chopsticks",
+                "chopsticks-clean",
+                "chopsticks-bad",
+                "andagi",
+                "andagi-bitten",
+                "melon-bread",
+            ]
+            .map(Shot::Part)
+            .into(),
+            vec![
+                Shot::Desk(Rig::homework(0, Expression::Vacant)),
+                Shot::Desk(Rig::chopsticks(0, Expression::Vacant)),
+                Shot::Desk(Rig::chopsticks(1, Expression::Happy)),
+                Shot::Desk(Rig::chopsticks(2, Expression::Droop)),
+            ],
+            vec![
+                Shot::Her(her(Face::Vacant), Facing::Right),
+                Shot::Her(her(Face::Blink), Facing::Right),
+                Shot::Her(her(Face::Droop), Facing::Right),
+                Shot::Her(side(Face::Vacant), Facing::Right),
+                Shot::Her(side(Face::Blink), Facing::Right),
+                Shot::Her(side(Face::Droop), Facing::Right),
+            ],
+            vec![
+                Shot::Fridge(Rig::eating(0, Expression::Happy)),
+                Shot::Fridge(Rig::eating_food(0, ANDAGI, Expression::Happy)),
+                Shot::Fridge(Rig::eating_food(1, ANDAGI, Expression::Happy)),
+            ],
+        ];
+        let desk = Furniture::Desk.spec().footprint;
+        let fridge = Furniture::Fridge.spec().footprint;
+        // Each shot's width in cells (her box is 5).
+        let cells = |shot: &Shot| -> u32 {
+            match shot {
+                Shot::Part(_) => 8,
+                // Her box is centred on the desk's column 7.
+                Shot::Desk(_) => u32::from(desk.0).max(10),
+                Shot::Fridge(_) => u32::from(fridge.0) + 6,
+                Shot::Her(..) => 5,
+            }
+        };
+        let width = rows
+            .iter()
+            .map(|row| row.iter().map(|shot| cells(shot) + 1).sum::<u32>() + 1)
+            .max()
+            .unwrap();
+        let render_sheet = |s: u32| {
+            let (w, h) = (9 * s, 19 * s);
+            let row_h = h * 7;
+            let mut sheet = image::RgbaImage::from_pixel(w * width, row_h * rows.len() as u32, BG);
+            for (row, shots) in rows.iter().enumerate() {
+                let floor = row as u32 * row_h + row_h - h;
+                for gx in 0..w * width {
+                    for t in 0..s {
+                        sheet.put_pixel(gx, floor + h / 2 + t, FLOOR);
+                    }
+                }
+                let mut x0 = w;
+                for shot in shots {
+                    let span = cells(shot);
+                    for gy in 1..=5 {
+                        for gx in x0..x0 + w * span {
+                            sheet.put_pixel(gx, floor - gy * h, GRID);
+                        }
+                    }
+                    let her_box = |rig: &Rig, facing, x: u32, sheet: &mut image::RgbaImage| {
+                        let osaka = render(rig, facing, LINE, w * 5, h * 4 + h / 2).unwrap();
+                        image::imageops::overlay(
+                            sheet,
+                            &osaka,
+                            i64::from(x),
+                            i64::from(floor - h * 4),
+                        );
+                    };
+                    match shot {
+                        Shot::Part(id) => {
+                            // 36 × 36 units around the grip, at 4× her
+                            // 0.45 px per unit.
+                            let side = (36.0 * 0.45 * 4.0 * s as f32) as u32;
+                            let svg = format!(
+                                r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="-18 -28 36 36" color="{LINE}">{PARTS}<use href="#{id}"/></svg>"##
+                            );
+                            let image = rasterize(&svg, (36.0, 36.0), side, side).unwrap();
+                            let x = x0 + (w * span - side) / 2;
+                            image::imageops::overlay(
+                                &mut sheet,
+                                &image,
+                                i64::from(x),
+                                i64::from(floor + h / 2 - side),
+                            );
+                        }
+                        Shot::Desk(rig) => {
+                            let (cols, prows) = (u32::from(desk.0), u32::from(desk.1));
+                            let (pw, ph) = (w * cols, h * prows + h / 2);
+                            let back = render_prop_layer(
+                                Furniture::Desk,
+                                Layer::Back,
+                                Facing::Right,
+                                LINE,
+                                pw,
+                                ph,
+                            )
+                            .unwrap();
+                            image::imageops::overlay(
+                                &mut sheet,
+                                &back,
+                                i64::from(x0),
+                                i64::from(floor + h / 2 - ph),
+                            );
+                            her_box(rig, Facing::Left, x0 + w * 5, &mut sheet);
+                        }
+                        Shot::Fridge(rig) => {
+                            let (cols, prows) = (u32::from(fridge.0), u32::from(fridge.1));
+                            let (pw, ph) = (w * cols, h * prows + h / 2);
+                            let piece = render_piece(
+                                Furniture::Fridge,
+                                PieceState::FridgeOpen,
+                                Facing::Right,
+                                LINE,
+                                pw,
+                                ph,
+                            )
+                            .unwrap();
+                            image::imageops::overlay(
+                                &mut sheet,
+                                &piece,
+                                i64::from(x0),
+                                i64::from(floor - h * prows),
+                            );
+                            her_box(rig, Facing::Left, x0 + w * (cols + 1), &mut sheet);
+                        }
+                        Shot::Her(rig, facing) => her_box(rig, *facing, x0, &mut sheet),
+                    }
+                    x0 += w * (span + 1);
+                }
+            }
+            sheet
+        };
+        let one = render_sheet(1);
+        one.save(format!("{dir}/vignettes-1x.png")).unwrap();
+        image::imageops::resize(
+            &one,
+            one.width() * 3,
+            one.height() * 3,
+            image::imageops::FilterType::Nearest,
+        )
+        .save(format!("{dir}/vignettes-1x-nn3x.png"))
+        .unwrap();
+        render_sheet(3)
+            .save(format!("{dir}/vignettes-3x.png"))
+            .unwrap();
     }
 
     #[test]

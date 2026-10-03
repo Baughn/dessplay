@@ -1,0 +1,540 @@
+diff --git a/dessplay/src/ui/houseguest/art.rs b/dessplay/src/ui/houseguest/art.rs
+index 2c87017..b8efb31 100644
+--- a/dessplay/src/ui/houseguest/art.rs
++++ b/dessplay/src/ui/houseguest/art.rs
+@@ -43,6 +43,8 @@ pub(super) enum Expression {
+     Dizzy,
+     Happy,
+     Curious,
++    /// Let down: heavy lids over low eyes, mouth turned down.
++    Droop,
+ }
+ 
+ impl Expression {
+@@ -55,6 +57,7 @@ impl Expression {
+             Self::Dizzy => "face-dizzy",
+             Self::Happy => "face-happy",
+             Self::Curious => "face-curious",
++            Self::Droop => "face-droop",
+         }
+     }
+ }
+@@ -141,6 +144,7 @@ impl Rig {
+             Face::Pleased => Expression::Smile,
+             Face::Happy => Expression::Happy,
+             Face::Curious => Expression::Curious,
++            Face::Droop => Expression::Droop,
+         };
+         let stand = Self::standing(expression);
+         match pose {
+@@ -280,6 +284,7 @@ impl Rig {
+             Pose::Read(frame) => Self::reading(frame, expression),
+             Pose::Eat(frame) => Self::eating(frame, expression),
+             Pose::Pet(frame) => Self::petting(frame, expression),
++            Pose::Chopsticks(frame) => Self::chopsticks(frame, expression),
+             Pose::Gaze => Self {
+                 profile: true,
+                 tilt: -16.0,
+@@ -471,6 +476,51 @@ impl Rig {
+         }
+     }
+ 
++    /// Before homework, on her stool at the desk in profile facing it,
++    /// splitting a pair of disposable chopsticks held up in front of her
++    /// chest: `frame` 0 still joined, both hands on the pair; 1 split
++    /// cleanly, one stick in each hand, her head up; 2 split badly, her
++    /// hands sagging, her head bowed over them. The face is the caller's
++    /// (Happy for the clean split, Droop for the bad one). Drawn where
++    /// homework is.
++    pub fn chopsticks(frame: u8, expression: Expression) -> Self {
++        // Arm angles are solved for the hands to land on the sticks'
++        // grips (`hold` places the part's (0, 0) between them).
++        // They lean forward, into the gap between her face and the desk
++        // lamp's shade; split badly, they sag lower with her hands.
++        let (part, tilt, arms, (x, y, angle)) = match frame {
++            0 => (
++                "chopsticks",
++                8.0,
++                [(-46.6, -34.8), (-44.4, -57.8)],
++                (72.0, 86.0, 30.0),
++            ),
++            1 => (
++                "chopsticks-clean",
++                -4.0,
++                [(-32.6, -57.2), (-40.2, -37.6)],
++                (72.0, 86.0, 22.0),
++            ),
++            _ => (
++                "chopsticks-bad",
++                10.0,
++                [(-19.7, -53.3), (-31.2, -22.7)],
++                (69.0, 92.0, 40.0),
++            ),
++        };
++        Self {
++            tilt,
++            bob: -4.0,
++            shift: -16.0,
++            profile: true,
++            stool: true,
++            legs: [(-86.0, 84.0), (-92.0, 92.0)],
++            arms,
++            hold: Some((part, x, y, angle)),
++            ..Self::standing(expression)
++        }
++    }
++
+     /// Home from her part-time job with her shopping: a bundle of leeks
+     /// cradled across her chest, cut ends at her viewer-left hip, green
+     /// tops fanning up past her viewer-right shoulder. Her viewer-left
+@@ -514,9 +564,22 @@ impl Rig {
+     /// A snack from her fridge: standing side-on, a melon bread held up
+     /// to her mouth; `frame` 1 is the bite, eyes shut, munching.
+     pub fn eating(frame: u8, expression: Expression) -> Self {
++        Self::eating_food(frame, ["melon-bread", "melon-bread-bitten"], expression)
++    }
++
++    /// [`Rig::eating`] with another food in her hand: `food` is the held
++    /// part whole and bitten (e.g. `["andagi", "andagi-bitten"]`), each
++    /// drawn centred on (0, 0) within the melon bread's radius.
++    pub fn eating_food(frame: u8, food: [&'static str; 2], expression: Expression) -> Self {
+         let biting = frame % 2 == 1;
+-        let bread = (83.0, 63.0);
+-        let arm = aim((P_SHOULDERS[1], P_SHOULDER_Y), (78.0, 74.0));
++        // The food at her mouth (which the bite's head tilt carries a
++        // little forward), her near hand gripping its lower back edge:
++        // the arm angles are solved for the hand to land there.
++        let (food_at, arm) = if biting {
++            ((81.0, 62.0), (-98.5, -23.9))
++        } else {
++            ((80.0, 61.0), (-97.2, -29.3))
++        };
+         Self {
+             expression: if biting {
+                 Expression::Blink
+@@ -526,17 +589,8 @@ impl Rig {
+             profile: true,
+             tilt: if biting { 4.0 } else { 0.0 },
+             bob: if biting { -1.0 } else { 0.0 },
+-            arms: [(6.0, -8.0), (arm, -118.0)],
+-            hold: Some((
+-                if biting {
+-                    "melon-bread-bitten"
+-                } else {
+-                    "melon-bread"
+-                },
+-                bread.0,
+-                bread.1,
+-                0.0,
+-            )),
++            arms: [(6.0, -8.0), arm],
++            hold: Some((food[usize::from(biting)], food_at.0, food_at.1, 0.0)),
+             ..Self::standing(expression)
+         }
+     }
+@@ -1159,10 +1213,204 @@ mod tests {
+             ("homework", Rig::homework(0, Expression::Vacant)),
+             ("homework", Rig::homework(1, Expression::Vacant)),
+             ("homework", Rig::homework(2, Expression::Vacant)),
++            ("droop", Rig::for_pose(Pose::Stand, Face::Droop)),
++            ("droop side", Rig::for_pose(Pose::Side, Face::Droop)),
++            ("chopsticks", Rig::chopsticks(0, Expression::Vacant)),
++            ("chopsticks", Rig::chopsticks(1, Expression::Happy)),
++            ("chopsticks", Rig::chopsticks(2, Expression::Droop)),
++            ("eat andagi", Rig::eating_food(0, ANDAGI, Expression::Happy)),
++            ("eat andagi", Rig::eating_food(1, ANDAGI, Expression::Happy)),
+         ]);
+         out
+     }
+ 
++    const ANDAGI: [&str; 2] = ["andagi", "andagi-bitten"];
++
++    /// The chopsticks, the droop face and the sata andagi for review,
++    /// beside the art they join: `HOUSEGUEST_VIGNETTES=/dir cargo test
++    /// -p dessplay --lib vignette_sheet -- --ignored` writes
++    /// `vignettes-1x.png`, the same pixels scaled 3× nearest-neighbour
++    /// (`vignettes-1x-nn3x.png`) and a native 3× render
++    /// (`vignettes-3x.png`), over a dark terminal. Rows, left to right:
++    /// the held parts at 4× her scale (chopsticks joined, clean, bad;
++    /// andagi whole, bitten; the melon bread); her at the desk (homework
++    /// for reference, then joined, clean, bad); faces standing and
++    /// side-on (vacant, blink, droop); her eating at the open fridge
++    /// (melon bread for reference, then the andagi whole and bitten).
++    #[test]
++    #[ignore = "writes PNGs for review"]
++    fn vignette_sheet() {
++        enum Shot {
++            /// A held part alone, at 4× her scale.
++            Part(&'static str),
++            /// Her at the desk, as homework places her.
++            Desk(Rig),
++            /// Her beside the open fridge, facing it.
++            Fridge(Rig),
++            /// Her alone.
++            Her(Rig, Facing),
++        }
++        const BG: image::Rgba<u8> = image::Rgba([30, 33, 39, 255]);
++        const GRID: image::Rgba<u8> = image::Rgba([44, 49, 58, 255]);
++        const FLOOR: image::Rgba<u8> = image::Rgba([139, 148, 158, 255]);
++        let dir = std::env::var("HOUSEGUEST_VIGNETTES").expect("HOUSEGUEST_VIGNETTES");
++        let her = |face| Rig::for_pose(Pose::Stand, face);
++        let side = |face| Rig::for_pose(Pose::Side, face);
++        let rows: Vec<Vec<Shot>> = vec![
++            [
++                "chopsticks",
++                "chopsticks-clean",
++                "chopsticks-bad",
++                "andagi",
++                "andagi-bitten",
++                "melon-bread",
++            ]
++            .map(Shot::Part)
++            .into(),
++            vec![
++                Shot::Desk(Rig::homework(0, Expression::Vacant)),
++                Shot::Desk(Rig::chopsticks(0, Expression::Vacant)),
++                Shot::Desk(Rig::chopsticks(1, Expression::Happy)),
++                Shot::Desk(Rig::chopsticks(2, Expression::Droop)),
++            ],
++            vec![
++                Shot::Her(her(Face::Vacant), Facing::Right),
++                Shot::Her(her(Face::Blink), Facing::Right),
++                Shot::Her(her(Face::Droop), Facing::Right),
++                Shot::Her(side(Face::Vacant), Facing::Right),
++                Shot::Her(side(Face::Blink), Facing::Right),
++                Shot::Her(side(Face::Droop), Facing::Right),
++            ],
++            vec![
++                Shot::Fridge(Rig::eating(0, Expression::Happy)),
++                Shot::Fridge(Rig::eating_food(0, ANDAGI, Expression::Happy)),
++                Shot::Fridge(Rig::eating_food(1, ANDAGI, Expression::Happy)),
++            ],
++        ];
++        let desk = Furniture::Desk.spec().footprint;
++        let fridge = Furniture::Fridge.spec().footprint;
++        // Each shot's width in cells (her box is 5).
++        let cells = |shot: &Shot| -> u32 {
++            match shot {
++                Shot::Part(_) => 8,
++                // Her box is centred on the desk's column 7.
++                Shot::Desk(_) => u32::from(desk.0).max(10),
++                Shot::Fridge(_) => u32::from(fridge.0) + 6,
++                Shot::Her(..) => 5,
++            }
++        };
++        let width = rows
++            .iter()
++            .map(|row| row.iter().map(|shot| cells(shot) + 1).sum::<u32>() + 1)
++            .max()
++            .unwrap();
++        let render_sheet = |s: u32| {
++            let (w, h) = (9 * s, 19 * s);
++            let row_h = h * 7;
++            let mut sheet = image::RgbaImage::from_pixel(w * width, row_h * rows.len() as u32, BG);
++            for (row, shots) in rows.iter().enumerate() {
++                let floor = row as u32 * row_h + row_h - h;
++                for gx in 0..w * width {
++                    for t in 0..s {
++                        sheet.put_pixel(gx, floor + h / 2 + t, FLOOR);
++                    }
++                }
++                let mut x0 = w;
++                for shot in shots {
++                    let span = cells(shot);
++                    for gy in 1..=5 {
++                        for gx in x0..x0 + w * span {
++                            sheet.put_pixel(gx, floor - gy * h, GRID);
++                        }
++                    }
++                    let her_box = |rig: &Rig, facing, x: u32, sheet: &mut image::RgbaImage| {
++                        let osaka = render(rig, facing, LINE, w * 5, h * 4 + h / 2).unwrap();
++                        image::imageops::overlay(
++                            sheet,
++                            &osaka,
++                            i64::from(x),
++                            i64::from(floor - h * 4),
++                        );
++                    };
++                    match shot {
++                        Shot::Part(id) => {
++                            // 36 × 36 units around the grip, at 4× her
++                            // 0.45 px per unit.
++                            let side = (36.0 * 0.45 * 4.0 * s as f32) as u32;
++                            let svg = format!(
++                                r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="-18 -28 36 36" color="{LINE}">{PARTS}<use href="#{id}"/></svg>"##
++                            );
++                            let image = rasterize(&svg, (36.0, 36.0), side, side).unwrap();
++                            let x = x0 + (w * span - side) / 2;
++                            image::imageops::overlay(
++                                &mut sheet,
++                                &image,
++                                i64::from(x),
++                                i64::from(floor + h / 2 - side),
++                            );
++                        }
++                        Shot::Desk(rig) => {
++                            let (cols, prows) = (u32::from(desk.0), u32::from(desk.1));
++                            let (pw, ph) = (w * cols, h * prows + h / 2);
++                            let back = render_prop_layer(
++                                Furniture::Desk,
++                                Layer::Back,
++                                Facing::Right,
++                                LINE,
++                                pw,
++                                ph,
++                            )
++                            .unwrap();
++                            image::imageops::overlay(
++                                &mut sheet,
++                                &back,
++                                i64::from(x0),
++                                i64::from(floor + h / 2 - ph),
++                            );
++                            her_box(rig, Facing::Left, x0 + w * 5, &mut sheet);
++                        }
++                        Shot::Fridge(rig) => {
++                            let (cols, prows) = (u32::from(fridge.0), u32::from(fridge.1));
++                            let (pw, ph) = (w * cols, h * prows + h / 2);
++                            let piece = render_piece(
++                                Furniture::Fridge,
++                                PieceState::FridgeOpen,
++                                Facing::Right,
++                                LINE,
++                                pw,
++                                ph,
++                            )
++                            .unwrap();
++                            image::imageops::overlay(
++                                &mut sheet,
++                                &piece,
++                                i64::from(x0),
++                                i64::from(floor - h * prows),
++                            );
++                            her_box(rig, Facing::Left, x0 + w * (cols + 1), &mut sheet);
++                        }
++                        Shot::Her(rig, facing) => her_box(rig, *facing, x0, &mut sheet),
++                    }
++                    x0 += w * (span + 1);
++                }
++            }
++            sheet
++        };
++        let one = render_sheet(1);
++        one.save(format!("{dir}/vignettes-1x.png")).unwrap();
++        image::imageops::resize(
++            &one,
++            one.width() * 3,
++            one.height() * 3,
++            image::imageops::FilterType::Nearest,
++        )
++        .save(format!("{dir}/vignettes-1x-nn3x.png"))
++        .unwrap();
++        render_sheet(3)
++            .save(format!("{dir}/vignettes-3x.png"))
++            .unwrap();
++    }
++
+     #[test]
+     fn every_pose_renders_something_inside_the_box() {
+         for (name, rig) in poses() {
+diff --git a/dessplay/src/ui/houseguest/art/osaka.svg b/dessplay/src/ui/houseguest/art/osaka.svg
+index 1452fd0..f90bc03 100644
+--- a/dessplay/src/ui/houseguest/art/osaka.svg
++++ b/dessplay/src/ui/houseguest/art/osaka.svg
+@@ -98,6 +98,25 @@
+           fill="none" stroke="#2b1d18" stroke-width="1.5"/>
+     <path d="M 45.5 60 Q 47.8 58 50 60 Q 52.2 62 54.5 60" fill="none" stroke="#2b1d18" stroke-width="1.5" stroke-linecap="round"/>
+   </g>
++  <!-- Let down (a bad chopstick split): the eyes keep their full
++       size, but heavy lids (one hard skin-shade tone, inside the eye's
++       outline) sag over them toward the outer corners; the irises sit
++       low under the lids; a small turned-down mouth. -->
++  <g id="face-droop">
++    <ellipse cx="39.5" cy="47" rx="6.3" ry="7.6" fill="#ffffff"/>
++    <ellipse cx="60.5" cy="47" rx="6.3" ry="7.6" fill="#ffffff"/>
++    <ellipse cx="40.3" cy="50.4" rx="4.3" ry="4.2" fill="#6b4128"/>
++    <ellipse cx="59.7" cy="50.4" rx="4.3" ry="4.2" fill="#6b4128"/>
++    <ellipse cx="40.3" cy="51" rx="2.2" ry="2.3" fill="#24150e"/>
++    <ellipse cx="59.7" cy="51" rx="2.2" ry="2.3" fill="#24150e"/>
++    <path d="M 33.79 50.2 A 6.3 7.6 0 1 1 45.78 46.4 Q 38 46.6 33.79 50.2 Z" fill="#e3b49c"/>
++    <path d="M 66.21 50.2 A 6.3 7.6 0 1 0 54.22 46.4 Q 62 46.6 66.21 50.2 Z" fill="#e3b49c"/>
++    <ellipse cx="39.5" cy="47" rx="6.3" ry="7.6" fill="none" stroke="#2b1d18" stroke-width="1.2"/>
++    <ellipse cx="60.5" cy="47" rx="6.3" ry="7.6" fill="none" stroke="#2b1d18" stroke-width="1.2"/>
++    <path d="M 32.6 50.2 Q 38 46.6 46.4 46.4" fill="none" stroke="#2b1d18" stroke-width="2.4" stroke-linecap="round"/>
++    <path d="M 67.4 50.2 Q 62 46.6 53.6 46.4" fill="none" stroke="#2b1d18" stroke-width="2.4" stroke-linecap="round"/>
++    <path d="M 47 62.2 Q 50 59.4 53 62.2" fill="none" stroke="#2b1d18" stroke-width="1.5" stroke-linecap="round"/>
++  </g>
+ 
+   <!-- Winter uniform: salmon top, white sailor collar with red trim, a
+        thin red cord with a yellow toggle. -->
+@@ -203,6 +222,21 @@
+           fill="none" stroke="#2b1d18" stroke-width="1.4"/>
+     <path d="M 70 59 Q 72 57.5 74 59 Q 75.5 60.2 76.5 59" fill="none" stroke="#2b1d18" stroke-width="1.4" stroke-linecap="round"/>
+   </g>
++  <!-- The same in profile: the open eye's shape and top line, its upper
++       half lidded in the skin shade, the lid's heavy edge sagging toward
++       the back, the iris low beneath it. -->
++  <g id="p-face-droop">
++    <path d="M 63.5 42.8 C 66.5 40.5 71 40.5 73.5 43.5 L 73.5 50.5 C 70.5 53 66.5 52.8 64 49.8 Z"
++          fill="#ffffff"/>
++    <ellipse cx="70.2" cy="49.4" rx="2.9" ry="3.2" fill="#6b4128"/>
++    <ellipse cx="70.5" cy="49.9" rx="1.5" ry="1.8" fill="#24150e"/>
++    <path d="M 63.5 42.8 C 66.5 40.5 71 40.5 73.5 43.5 L 73.5 46.2 Q 68 46.6 63.9 48.8 Z" fill="#e3b49c"/>
++    <path d="M 63.5 42.8 C 66.5 40.5 71 40.5 73.5 43.5 L 73.5 50.5 C 70.5 53 66.5 52.8 64 49.8 Z"
++          fill="none" stroke="#2b1d18" stroke-width="1"/>
++    <path d="M 62.8 43 C 66 40 71 39.8 74 42.8" fill="none" stroke="#2b1d18" stroke-width="1.2" stroke-linecap="round"/>
++    <path d="M 63.2 49 Q 68 46.6 74 46.2" fill="none" stroke="#2b1d18" stroke-width="2.2" stroke-linecap="round"/>
++    <path d="M 71.6 60.3 Q 73.3 58.5 75.2 60" fill="none" stroke="#2b1d18" stroke-width="1.4" stroke-linecap="round"/>
++  </g>
+   <g id="p-torso">
+     <rect x="47" y="63" width="6.5" height="10" fill="#f6dccb" stroke="currentColor" stroke-width="1.4"/>
+     <path d="M 41 72 C 45 70 55 70 59 72 C 61.5 80 62 92 63 104 L 39 104 C 39.5 92 39.5 80 41 72 Z"
+@@ -288,4 +322,72 @@
+           fill="#e3cf72" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+     <path d="M -5.5 -3 L 2.5 5 M -3 -5.5 L 3.5 1 M -7 0 L 0 7 M -3 5.5 L 3 -0.5 M -5.5 3 L 3 -5.5" fill="none" stroke="#b8983c" stroke-width="0.9"/>
+   </g>
++  <!-- Sata andagi (Okinawan doughnut, Ep 21), the size of the melon
++       bread: a lumpy golden-brown ball with a cracked top showing the
++       pale crumb, one hard shade underneath; bitten on the +x side
++       like the bread. -->
++  <g id="andagi">
++    <path d="M -1.16 -6.6 A 3.4 3.4 0 0 1 3.84 -5.49 A 3.4 3.4 0 0 1 6.6 -1.16 A 3.4 3.4 0 0 1 5.8 3.35
++             A 3.4 3.4 0 0 1 2.07 6.37 A 3.4 3.4 0 0 1 -3.15 5.92 A 3.4 3.4 0 0 1 -6.3 2.29
++             A 3.4 3.4 0 0 1 -6.07 -2.83 A 3.4 3.4 0 0 1 -1.16 -6.6 Z"
++          fill="#c98535"/>
++    <path d="M -4.6 4.6 A 6.4 6.4 0 0 0 6.2 1 A 9 9 0 0 1 -4.6 4.6 Z" fill="#9c5e25"/>
++    <path d="M -1.16 -6.6 A 3.4 3.4 0 0 1 3.84 -5.49 A 3.4 3.4 0 0 1 6.6 -1.16 A 3.4 3.4 0 0 1 5.8 3.35
++             A 3.4 3.4 0 0 1 2.07 6.37 A 3.4 3.4 0 0 1 -3.15 5.92 A 3.4 3.4 0 0 1 -6.3 2.29
++             A 3.4 3.4 0 0 1 -6.07 -2.83 A 3.4 3.4 0 0 1 -1.16 -6.6 Z"
++          fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
++    <path d="M -4.4 -2.8 C -2.6 -6 2 -6.4 4.4 -3.4 L 3 -2.6 L 1.6 -3.4 L 0.4 -2.2 L -1 -3.2 L -2.6 -2 Z"
++          fill="#f6d48a"/>
++    <path d="M -4.4 -2.8 L -2.6 -2 L -1 -3.2 L 0.4 -2.2 L 1.6 -3.4 L 3 -2.6 L 4.4 -3.4"
++          fill="none" stroke="currentColor" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round"/>
++  </g>
++  <g id="andagi-bitten">
++    <path d="M -1.16 -6.6 A 3.4 3.4 0 0 1 3.84 -5.49 A 3.4 3.4 0 0 1 5.29 -4.44 A 3.2 3.2 0 0 0 5.1 0
++             A 3.4 3.4 0 0 0 5.29 4.44 A 3.4 3.4 0 0 1 2.07 6.37 A 3.4 3.4 0 0 1 -3.15 5.92
++             A 3.4 3.4 0 0 1 -6.3 2.29 A 3.4 3.4 0 0 1 -6.07 -2.83 A 3.4 3.4 0 0 1 -1.16 -6.6 Z"
++          fill="#c98535"/>
++    <path d="M -4.6 4.6 A 6.4 6.4 0 0 0 4.6 4.2 A 9 9 0 0 1 -4.6 4.6 Z" fill="#9c5e25"/>
++    <path d="M 5.29 -4.44 A 3.2 3.2 0 0 0 5.1 0 A 3.4 3.4 0 0 0 5.29 4.44 L 3.4 3.9
++             A 3.4 3.4 0 0 1 3.1 0 A 3.2 3.2 0 0 1 3.4 -3.9 Z" fill="#f6d48a"/>
++    <path d="M -1.16 -6.6 A 3.4 3.4 0 0 1 3.84 -5.49 A 3.4 3.4 0 0 1 5.29 -4.44 A 3.2 3.2 0 0 0 5.1 0
++             A 3.4 3.4 0 0 0 5.29 4.44 A 3.4 3.4 0 0 1 2.07 6.37 A 3.4 3.4 0 0 1 -3.15 5.92
++             A 3.4 3.4 0 0 1 -6.3 2.29 A 3.4 3.4 0 0 1 -6.07 -2.83 A 3.4 3.4 0 0 1 -1.16 -6.6 Z"
++          fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
++    <path d="M -4.4 -2.8 C -2.6 -6 1.2 -6.4 3.2 -4.2 L 3 -2.6 L 1.6 -3.4 L 0.4 -2.2 L -1 -3.2 L -2.6 -2 Z"
++          fill="#f6d48a"/>
++    <path d="M -4.4 -2.8 L -2.6 -2 L -1 -3.2 L 0.4 -2.2 L 1.6 -3.4 L 3 -2.6"
++          fill="none" stroke="currentColor" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round"/>
++  </g>
++  <!-- Disposable wooden chopsticks (waribashi, Ep 25), drawn upright
++       with the joined head end up and her grip at (0, 0) near the
++       tips: still joined (a groove down the middle, the tips already
++       parted); split cleanly into a matched pair; split badly, one
++       stick keeping a ragged chunk of the other's head and the other
++       torn short. -->
++  <g id="chopsticks">
++    <path d="M -4.2 -24 L 4.2 -24 L 3.1 5 L -3.1 5 Z"
++          fill="#ecd29e" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
++    <path d="M 0 -22 L 0 0" fill="none" stroke="#a8824e" stroke-width="1"/>
++    <path d="M -1 5.4 L 0 -1 L 1 5.4 Z" fill="currentColor"/>
++  </g>
++  <g id="chopsticks-clean">
++    <g transform="translate(-2.2 2) rotate(-11)">
++      <path d="M -2.1 -26 L 2.1 -26 L 1.5 3 L -1.5 3 Z"
++            fill="#ecd29e" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
++    </g>
++    <g transform="translate(2.2 2) rotate(11)">
++      <path d="M -2.1 -26 L 2.1 -26 L 1.5 3 L -1.5 3 Z"
++            fill="#ecd29e" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
++    </g>
++  </g>
++  <g id="chopsticks-bad">
++    <g transform="translate(-2.2 2) rotate(-11)">
++      <path d="M -2.1 -26 L 5.2 -26 L 4.8 -21.5 L 3 -20 L 3.6 -17.5 L 2 -15 L 2.4 -12.5 L 1.5 3 L -1.5 3 Z"
++            fill="#ecd29e" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
++    </g>
++    <g transform="translate(2.2 2) rotate(11)">
++      <path d="M -1.5 -10 L -1.1 -13.5 L -0.2 -11.4 L 0.6 -15 L 1.5 -11.6 L 1.9 -9 L 1.5 3 L -1.5 3 Z"
++            fill="#ecd29e" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
++    </g>
++  </g>
+ </defs>
+diff --git a/dessplay/src/ui/houseguest/sprite.rs b/dessplay/src/ui/houseguest/sprite.rs
+index 7927899..1656a3d 100644
+--- a/dessplay/src/ui/houseguest/sprite.rs
++++ b/dessplay/src/ui/houseguest/sprite.rs
+@@ -72,6 +72,11 @@ pub(super) enum Pose {
+     Eat(u8),
+     /// Reaching out to pet the cat (frame 1: bitten, hand yanked back).
+     Pet(u8),
++    /// On her stool at the desk, splitting disposable chopsticks: frame
++    /// 0 still joined, 1 split cleanly, 2 split badly (let down).
++    // Drawn for review; the chopstick vignette will construct it.
++    #[cfg_attr(not(test), allow(dead_code))]
++    Chopsticks(u8),
+ }
+ 
+ /// Her face, drawn into the head of frontal poses.
+@@ -85,6 +90,10 @@ pub(super) enum Face {
+     Happy,
+     /// Looking up, a small "o".
+     Curious,
++    /// Let down: heavy lids, eyes cast down (a bad chopstick split).
++    // Drawn for review; the chopstick vignette will construct it.
++    #[cfg_attr(not(test), allow(dead_code))]
++    Droop,
+ }
+ 
+ impl Face {
+@@ -96,6 +105,7 @@ impl Face {
+             Self::Pleased => ['^', '_', '^'],
+             Self::Happy => ['^', 'o', '^'],
+             Self::Curious => ['\'', 'o', '\''],
++            Self::Droop => ['u', '_', 'u'],
+         }
+     }
+ }
+@@ -168,6 +178,13 @@ const PET: [[&str; 4]; 2] = [
+     ["     ", "( ._)", " |V|-", " d b "],
+     ["     ", "( o_)", "\\|V| ", " d b "],
+ ];
++// The chopsticks held up in front of her: one bar while joined, a
++// matched "v" split cleanly, a lopsided "y" split badly (eye drooping).
++const CHOPSTICKS: [[&str; 4]; 3] = [
++    ["     ", "( ._)", " |V|I", "_/ \\ "],
++    ["     ", "( ^_)", " |V|v", "_/ \\ "],
++    ["     ", "( u_)", " |V|y", "_/ \\ "],
++];
+ const PULL: [[&str; 4]; 2] = [
+     ["( ._)", "\\|V|=", " /_\\ ", " / \\ "],
+     ["(._ )", "\\|V|=", " /_\\ ", "/  \\ "],
+@@ -198,6 +215,7 @@ fn rows(pose: Pose) -> ([&'static str; 4], bool) {
+         Pose::Read(frame) => (READ[usize::from(frame % 2)], false),
+         Pose::Eat(frame) => (EAT[usize::from(frame % 2)], false),
+         Pose::Pet(frame) => (PET[usize::from(frame % 2)], false),
++        Pose::Chopsticks(frame) => (CHOPSTICKS[usize::from(frame.min(2))], false),
+     }
+ }
+ 
+@@ -352,7 +370,7 @@ pub(super) fn cells(pose: Pose, facing: Facing, face: Face) -> Vec<SpriteCell> {
+ mod tests {
+     use super::*;
+ 
+-    const ALL: [Pose; 41] = [
++    const ALL: [Pose; 44] = [
+         Pose::Stand,
+         Pose::Walk(0),
+         Pose::Walk(1),
+@@ -400,6 +418,9 @@ mod tests {
+         Pose::Eat(1),
+         Pose::Pet(0),
+         Pose::Pet(1),
++        Pose::Chopsticks(0),
++        Pose::Chopsticks(1),
++        Pose::Chopsticks(2),
+     ];
+ 
+     /// Every pose has a head where her head is drawn: an "o" or

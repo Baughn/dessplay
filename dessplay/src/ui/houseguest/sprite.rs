@@ -72,6 +72,11 @@ pub(super) enum Pose {
     Eat(u8),
     /// Reaching out to pet the cat (frame 1: bitten, hand yanked back).
     Pet(u8),
+    /// On her stool at the desk, splitting disposable chopsticks: frame
+    /// 0 still joined, 1 split cleanly, 2 split badly (let down).
+    // Drawn for review; the chopstick vignette will construct it.
+    #[cfg_attr(not(test), allow(dead_code))]
+    Chopsticks(u8),
 }
 
 /// Her face, drawn into the head of frontal poses.
@@ -85,6 +90,10 @@ pub(super) enum Face {
     Happy,
     /// Looking up, a small "o".
     Curious,
+    /// Let down: heavy lids, eyes cast down (a bad chopstick split).
+    // Drawn for review; the chopstick vignette will construct it.
+    #[cfg_attr(not(test), allow(dead_code))]
+    Droop,
 }
 
 impl Face {
@@ -96,6 +105,7 @@ impl Face {
             Self::Pleased => ['^', '_', '^'],
             Self::Happy => ['^', 'o', '^'],
             Self::Curious => ['\'', 'o', '\''],
+            Self::Droop => ['u', '_', 'u'],
         }
     }
 }
@@ -168,6 +178,13 @@ const PET: [[&str; 4]; 2] = [
     ["     ", "( ._)", " |V|-", " d b "],
     ["     ", "( o_)", "\\|V| ", " d b "],
 ];
+// The chopsticks held up in front of her: one bar while joined, a
+// matched "v" split cleanly, a lopsided "y" split badly (eye drooping).
+const CHOPSTICKS: [[&str; 4]; 3] = [
+    ["     ", "( ._)", " |V|I", "_/ \\ "],
+    ["     ", "( ^_)", " |V|v", "_/ \\ "],
+    ["     ", "( u_)", " |V|y", "_/ \\ "],
+];
 const PULL: [[&str; 4]; 2] = [
     ["( ._)", "\\|V|=", " /_\\ ", " / \\ "],
     ["(._ )", "\\|V|=", " /_\\ ", "/  \\ "],
@@ -198,6 +215,7 @@ fn rows(pose: Pose) -> ([&'static str; 4], bool) {
         Pose::Read(frame) => (READ[usize::from(frame % 2)], false),
         Pose::Eat(frame) => (EAT[usize::from(frame % 2)], false),
         Pose::Pet(frame) => (PET[usize::from(frame % 2)], false),
+        Pose::Chopsticks(frame) => (CHOPSTICKS[usize::from(frame.min(2))], false),
     }
 }
 
@@ -352,7 +370,7 @@ pub(super) fn cells(pose: Pose, facing: Facing, face: Face) -> Vec<SpriteCell> {
 mod tests {
     use super::*;
 
-    const ALL: [Pose; 41] = [
+    const ALL: [Pose; 44] = [
         Pose::Stand,
         Pose::Walk(0),
         Pose::Walk(1),
@@ -400,6 +418,9 @@ mod tests {
         Pose::Eat(1),
         Pose::Pet(0),
         Pose::Pet(1),
+        Pose::Chopsticks(0),
+        Pose::Chopsticks(1),
+        Pose::Chopsticks(2),
     ];
 
     /// Every pose has a head where her head is drawn: an "o" or
