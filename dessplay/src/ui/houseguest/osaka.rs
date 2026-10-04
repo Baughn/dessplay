@@ -564,6 +564,15 @@ enum Shift {
     Back,
 }
 
+/// Where her routine takes her out of her home, through her door (phase
+/// 5b D3, A9): school, which isn't something she wants (her part-time
+/// job is a want, and a [`Shift`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Routine {
+    /// School: out at 08:15 on a school day, home at 12:45.
+    School,
+}
+
 /// What she does on getting where she walks.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Then {
@@ -893,13 +902,15 @@ const DOOR: [DoorBeat; 13] = [
 /// The door beat `elapsed` ms in, and when the next begins; `None` once
 /// it's over. `gap` stretches the time between the doors (she's away).
 fn door_beat(elapsed: u64, gap: u64) -> Option<(&'static DoorBeat, u64)> {
-    let mut end = 0;
+    let mut end: u64 = 0;
+    // Saturating: her routine's door out has a gap that never ends
+    // (`u64::MAX`, see `Osaka::leaving`).
     script::at(&DOOR, elapsed, |beat| {
-        end += if beat.door.is_none() {
+        end = end.saturating_add(if beat.door.is_none() {
             beat.ms.max(gap)
         } else {
             beat.ms
-        };
+        });
         end
     })
     .map(|(_, beat, end)| (beat, end))
@@ -911,6 +922,20 @@ const DOOR_THROUGH_MS: u64 = {
     let mut ms = 0;
     let mut i = 0;
     while i < DOOR.len() && DOOR[i].door.is_some() {
+        ms += DOOR[i].ms;
+        i += 1;
+    }
+    ms
+};
+
+/// How far into a door's beats (with no gap) the far door first shows,
+/// closed: a door she comes out of starts there, so a door standing
+/// closed where she comes out (her closed door while she's away, see
+/// `State::Away`) goes straight on into hers, and never blinks away.
+const DOOR_THERE_MS: u64 = {
+    let mut ms = 0;
+    let mut i = 0;
+    while i < DOOR.len() && !DOOR[i].there {
         ms += DOOR[i].ms;
         i += 1;
     }
@@ -963,8 +988,11 @@ const WORK_AFTER_MS: u64 = 3 * 60_000;
 const SHIFT_MS: (u64, u64) = (60_000, 180_000);
 /// Back from work, showing what she brought.
 const HOME_MS: u64 = 3000;
-/// What she says, back from work.
-const HOME: &str = line!("I'm home!");
+/// What she says, back from work: her coming-home pool's first line.
+const HOME: &str = mind::HOME.lines[0];
+/// What she says leaving for school when it cut her breakfast short
+/// (round 1; her toast waits for its art).
+pub(super) const LATE: &str = line!("Late, late, late!");
 
 /// How long she pokes the scrollback accordion, and each poke.
 const POKE_MS: u64 = 2000;
@@ -1250,6 +1278,18 @@ pub(super) struct Osaka {
     shift: Option<Shift>,
     /// She's been to work this visit (once is plenty).
     worked: bool,
+    /// She's leaving by her routine (A9): through her door in place,
+    /// whose gap never ends (`u64::MAX`, nothing drawn), or out at the
+    /// screen's edge for good. The guest ends the visit once she's
+    /// through and it has closed behind her ([`Osaka::gone_out`]). Never
+    /// a [`Shift`]; cleared by [`Osaka::place`] and by an errand.
+    leaving: Option<Routine>,
+    /// She's coming home by her routine, out of her door: at its end,
+    /// she says so ([`Osaka::home_from`]).
+    returning: Option<Routine>,
+    /// Her routine cut her breakfast short: she's late, and says so as
+    /// she leaves.
+    late: bool,
     needs: Needs,
     /// Her mood this visit.
     mood: Mood,
@@ -1393,8 +1433,9 @@ pub(super) struct Osaka {
     /// Until when she's stirring, turned over, at a chat line in the
     /// night (see [`Osaka::look`]).
     stir_until: u64,
-    /// Until when she's saying good morning (see [`Osaka::begin_day`]):
-    /// what would speak over it waits (see [`Osaka::awake`]).
+    /// Until when she's saying good morning (see [`Osaka::begin_day`]),
+    /// or that she's home (from school or work): what would speak over
+    /// it waits (see [`Osaka::awake`]).
     morning_until: u64,
     /// Her home's master seed: her mornings key her new day's mood on it
     /// and the game day ([`brain::day_seed`]).
@@ -1449,6 +1490,9 @@ impl Osaka {
             arrived: now,
             shift: None,
             worked: false,
+            leaving: None,
+            returning: None,
+            late: false,
             needs: Needs::default(),
             mood: Mood::Ordinary,
             recent: Vec::new(),
@@ -1780,9 +1824,8 @@ impl Osaka {
             }
             Act::Out { .. } => now + WALK_MS,
             Act::Away { until, .. } => until,
-            Act::Door { since, gap, .. } => {
-                door_beat(now.saturating_sub(since), gap).map_or(now, |(_, end)| since + end)
-            }
+            Act::Door { since, gap, .. } => door_beat(now.saturating_sub(since), gap)
+                .map_or(now, |(_, end)| since.saturating_add(end)),
             Act::Look {
                 surprised_until, ..
             } => surprised_until,
@@ -2058,16 +2101,20 @@ impl Osaka {
     /// found, and nothing fires early.
     ///
     /// Only an act she stays at (resting, or at a job: [`Act::props`]'s
-    /// table) is cut. Never what she passes through or what runs its
-    /// course on its own, which that table says she doesn't stay at: her
-    /// errand's poke, a climb, a fall, a door, being out (they end soon,
-    /// in a decision). And at bedtime, never her sleep: asleep in her bed
+    /// table) is cut, and a walk to such a job (its end starts the job
+    /// without a decision). Never what she passes through or what runs
+    /// its course on its own, which that table says she doesn't stay at:
+    /// her errand's poke, a climb, a fall, a door, being out (they end
+    /// soon, in a decision). And at bedtime, never her sleep: asleep in her bed
     /// (or already asleep for the night, as the stage put her), she
     /// sleeps on through the night, in place.
     fn cut(&mut self, at: u64) -> bool {
         let bedtime = self
             .clock
             .is_some_and(|clock| clock.day_of(self.cut_game).slot == routine::Slot::Asleep);
+        let school = self
+            .clock
+            .is_some_and(|clock| clock.day_of(self.cut_game).slot == routine::Slot::Away);
         // Handled before anything it sets off: whatever she decides
         // now searches past it.
         self.cut_past = self.cut_game;
@@ -2075,7 +2122,33 @@ impl Osaka {
             self.refresh_cut();
             return true;
         }
-        let cuttable = matches!(self.act.props().stays, Stays::Rest | Stays::Job);
+        // On her way to a job she'd stay at: at its spot she'd start it
+        // with no decision (her routine's reflex unasked), so it's cut
+        // as the job itself would be.
+        let (to_job, snack) = match &self.act {
+            Act::Walk {
+                then: Then::Job(job),
+                ..
+            } => (
+                true,
+                matches!(job, Job::Use(seat) if seat.what == Use::Snack),
+            ),
+            Act::Use { seat, .. } => (false, seat.what == Use::Snack),
+            _ => (false, false),
+        };
+        let mut changed = false;
+        if school {
+            // Her breakfast cut short, or her way to it: she's late (she
+            // says so, going).
+            self.late = snack;
+            // At work (a stage's cue: her job is open only on days off),
+            // on her way or back: on to school, never home with her
+            // shopping.
+            if self.shift.take().is_some() {
+                changed |= self.school_from_work(at);
+            }
+        }
+        let cuttable = matches!(self.act.props().stays, Stays::Rest | Stays::Job) || to_job;
         if cuttable {
             tracing::info!(at, act = %self.act_summary(), "houseguest: her routine cuts in");
             self.interrupt(Cause::Routine, at);
@@ -2083,7 +2156,34 @@ impl Osaka {
             tracing::trace!(at, act = %self.act_summary(), "houseguest: her routine passes");
         }
         self.refresh_cut();
-        cuttable
+        cuttable || changed
+    }
+
+    /// School begins at `at` while she's at work, or on her way there or
+    /// back (A9): she goes on to school from where she is (`leaving`),
+    /// with no shift and nothing drawn. Through her door, it never opens
+    /// again; off the screen, she never walks back in (either way the
+    /// guest ends the visit at once); on her way out, she doesn't come
+    /// back; in sight on her way in, her next decision sends her out.
+    /// Returns whether her act was altered (her door's gap, or how long
+    /// she's off the screen), so the screen could change: `leaving` is
+    /// set whatever it returns.
+    fn school_from_work(&mut self, at: u64) -> bool {
+        tracing::info!("houseguest: from work, on to school");
+        self.leaving = Some(Routine::School);
+        let through = match self.act {
+            Act::Door { since, gap, .. } => {
+                door_beat(at.saturating_sub(since), gap).is_some_and(|(beat, _)| !beat.there)
+            }
+            _ => false,
+        };
+        match &mut self.act {
+            Act::Door { gap, .. } if through => *gap = u64::MAX,
+            Act::Away { until, .. } => *until = u64::MAX,
+            _ => return false,
+        }
+        self.act_due = self.first_due(at);
+        true
     }
 
     /// At bedtime (`at`), asleep in her bed, or asleep for the night by
@@ -2175,6 +2275,12 @@ impl Osaka {
     #[cfg(test)]
     pub(super) fn slept_ms(&self) -> u64 {
         self.slept_ms
+    }
+
+    /// The routine she's leaving by, if she is (tests).
+    #[cfg(test)]
+    pub(super) fn leaving(&self) -> Option<Routine> {
+        self.leaving
     }
 
     /// Whether she has said hello, or good morning (tests).
@@ -2313,17 +2419,21 @@ impl Osaka {
                 self.x += (to - self.x).signum();
                 if self.x == to {
                     tracing::debug!(shift = ?self.shift, "houseguest: stepped out");
-                    let away = if self.shift.is_some() {
+                    let until = if self.leaving.is_some() {
+                        // Out by her routine: for good (the guest ends the
+                        // visit), nothing drawn.
+                        u64::MAX
+                    } else if self.shift.is_some() {
                         // Her shift, off the screen: what comes after is
                         // her way home.
                         self.shift = Some(Shift::Back);
-                        rng.range(SHIFT_MS.0, SHIFT_MS.1)
+                        at + rng.range(SHIFT_MS.0, SHIFT_MS.1)
                     } else {
-                        rng.range(4000, 12_000)
+                        at + rng.range(4000, 12_000)
                     };
                     self.set(
                         Act::Away {
-                            until: at + away,
+                            until,
                             enter,
                             to_y,
                             to_x,
@@ -2360,7 +2470,7 @@ impl Osaka {
                     (self.x, self.y) = to;
                     if self.errand == Some(to) {
                         self.poke(at);
-                    } else if !self.home_from_work(at) {
+                    } else if !self.back_home(at) {
                         // Drawn from the decision that sent her through
                         // (deciding draws anew); most doors, she says
                         // nothing. Said before deciding, so what she
@@ -2738,7 +2848,7 @@ impl Osaka {
                         },
                         at,
                     ),
-                    None if self.home_from_work(at) => {}
+                    None if self.back_home(at) => {}
                     None => {
                         let at_edge = terrain.platform_at(self.x, self.y).and_then(|i| {
                             let p = terrain.platforms.get(i)?;
@@ -3227,8 +3337,8 @@ impl Osaka {
         self.lamp_off && self.asleep_slot(now)
     }
 
-    /// At bedtime (`at`), whatever moving of her home is under way is
-    /// over for the day (it can't wait out the night: trying a piece is a
+    /// At bedtime, or as she leaves for school (`at`), whatever moving of
+    /// her home is under way is over for the day (it can't wait out the night: trying a piece is a
     /// moment's sit, which her night's sleep isn't). Set down where she
     /// tried it, it stays there; lifted, or not yet, she lets it go, the
     /// piece back where it stood (see [`Osaka::drop_episode`]).
@@ -3310,6 +3420,48 @@ impl Osaka {
             want: self.credit,
             ..Decision::reflex("routine/bed-floor")
         }
+    }
+
+    /// Her routine's away reflex (D4, A9; round 1, "the away cue is her
+    /// closed door"): at school time (`why`), out through her door where
+    /// she stands, saying so ("Late, late, late!" if it cut her
+    /// breakfast short). The door's gap never ends and nothing is drawn
+    /// for it: once it has closed behind her, the guest ends the visit
+    /// ([`Osaka::gone_out`]), and her closed door stands there until she
+    /// comes home out of it.
+    fn go_out(&mut self, why: Routine, whims: Whims, at: u64) -> Decision {
+        // Watching the chat, she still faces it as she goes.
+        if at < self.watch_until {
+            self.facing = toward(self.x, self.watch_x);
+        }
+        let line = if std::mem::take(&mut self.late) {
+            Some(LATE)
+        } else {
+            self.lines.pick(mind::OFF, whims, at)
+        };
+        if let Some(line) = line {
+            self.say(line, at);
+        }
+        tracing::info!(?why, "houseguest: out through her door");
+        self.leaving = Some(why);
+        self.credit = None;
+        self.set(
+            Act::Door {
+                since: at,
+                to: (self.x, self.y),
+                gap: u64::MAX,
+            },
+            at,
+        );
+        Decision::reflex("routine/away")
+    }
+
+    /// The routine she's out by, once she's through her door and it has
+    /// closed behind her (or she's off the screen for good) at `now`: the
+    /// guest ends the visit then (A9).
+    pub fn gone_out(&self, now: u64) -> Option<Routine> {
+        self.leaving
+            .filter(|_| self.hidden(now) && self.door(now).is_none())
     }
 
     /// Her night's sleep is over at `at` (it ran to its end): at her wake
@@ -3394,13 +3546,19 @@ impl Osaka {
     /// Whether she's up at `now` for what would have her say something
     /// (a parcel at the door): not asleep for the night, nor up in the
     /// middle of it (for the accordion, or her midnight snack: her night
-    /// isn't over until her day begins), and not saying good morning,
-    /// which nothing speaks over.
+    /// isn't over until her day begins), not saying good morning or that
+    /// she's home, which nothing speaks over; and here: not out of sight,
+    /// nor on her way out or in, by her routine or to and from work (a
+    /// parcel waits for her to have said she's home).
     pub fn awake(&self, now: u64) -> bool {
         !self.sleeping()
             && self.night.is_none()
             && !self.groggy_at(now)
             && now >= self.morning_until
+            && !self.hidden(now)
+            && self.leaving.is_none()
+            && self.returning.is_none()
+            && self.shift.is_none()
     }
 
     /// A wake time has passed since her day began (her night behind
@@ -4097,6 +4255,12 @@ impl Osaka {
             self.set(Act::Stand { until: at + 1000 }, at);
             return Decision::reflex("no floor");
         };
+        // Coming home by her routine, whatever cut her door short: she's
+        // home.
+        if let Some(why) = self.returning.take() {
+            self.home_from(why, at);
+            return Decision::reflex("routine/home");
+        }
         // Deciding ends a shift under way: on her way back in (whatever
         // cut it short: a fall in, a startle), she's home from work; on
         // her way out, it came to nothing (no shift, no homecoming).
@@ -4118,12 +4282,15 @@ impl Osaka {
         // With nowhere calm to go, she stays as she is, and isn't startled
         // off it again.
         self.rest = terrain.restful(self.x, self.y).then_some((self.x, self.y));
-        // Her routine (D4, A3): at night, to bed, before anything else
-        // she'd do (below, once her context is built). Whatever moving of
-        // her home was under way is settled first, so her context sees
-        // none, and nothing of it is left frozen overnight.
-        let to_bed = self.asleep_slot(at);
-        if to_bed {
+        // Her routine (D4, A3): at night, to bed; at school time, out
+        // through her door; before anything else she'd do (below, once
+        // her context is built). Whatever moving of her home was under
+        // way is settled first, so her context sees none, and nothing of
+        // it is left frozen overnight or while she's out.
+        let slot = self.day(at).map(|day| day.slot);
+        let to_bed = slot == Some(routine::Slot::Asleep);
+        let to_school = slot == Some(routine::Slot::Away);
+        if to_bed || to_school {
             self.settle_for_night(at);
         }
         let mut ctx = Ctx {
@@ -4149,6 +4316,9 @@ impl Osaka {
         // few seconds would keep her up all night).
         if to_bed {
             return self.send_to_bed(&ctx, whims, here, terrain, at, rng);
+        }
+        if to_school {
+            return self.go_out(Routine::School, whims, at);
         }
         if at < self.watch_until {
             self.facing = toward(self.x, self.watch_x);
@@ -5037,6 +5207,9 @@ impl Osaka {
         self.watch_until = 0;
         self.hush(at);
         self.shift = None;
+        self.leaving = None;
+        self.returning = None;
+        self.late = false;
         self.set(Act::Stand { until: at + 1000 }, at);
     }
 
@@ -5314,6 +5487,29 @@ impl Osaka {
         osaka
     }
 
+    /// She comes home by her routine (`why`): out of her door at `spot`,
+    /// facing `facing` (the far door's beats only, from its first, so a
+    /// door standing closed there goes straight on into hers). At its
+    /// end she says she's home ([`Osaka::home_from`]). The day is the
+    /// unit: she said good morning already, so no hello.
+    pub fn back_through_door(
+        spot: (i32, i32),
+        facing: Facing,
+        why: Routine,
+        now: u64,
+        rng: &mut Rng,
+    ) -> Self {
+        let act = Act::Door {
+            since: now.saturating_sub(DOOR_THERE_MS),
+            to: spot,
+            gap: 0,
+        };
+        let mut osaka = Self::new(spot.0, spot.1, facing, act, now, rng);
+        osaka.returning = Some(why);
+        osaka.greeted = true;
+        osaka
+    }
+
     /// Off to poke the scrollback accordion, standing at `spot` on it:
     /// whatever she's doing is dropped (a fall, a climb or a door she's
     /// already through runs its course first), and she walks there along
@@ -5322,6 +5518,9 @@ impl Osaka {
     pub fn errand(&mut self, spot: (i32, i32), terrain: &Terrain, at: u64) {
         tracing::debug!(?spot, "houseguest: off to poke the accordion");
         self.errand = Some(spot);
+        // Not out by her routine any more: the accordion first (on her
+        // way out through her door, it opens on the accordion instead).
+        self.leaving = None;
         // Out of her night's sleep: up groggy, and back to bed after
         // (her routine's bed reflex). Only in the night: a night's sleep
         // the stage gives her by day has no bed to go back to.
@@ -5474,6 +5673,36 @@ impl Osaka {
         rng: &mut Rng,
     ) -> bool {
         let clear = |spot: (i32, i32)| !box_meets(focus, spot);
+        // Leaving by her routine (A9): she has rained out of it, and is
+        // through her door already (or off the screen): out for good,
+        // with no shift and nothing drawn. The guest ends the visit, her
+        // closed door in the pane until it's left alone.
+        if self.leaving.is_some() {
+            if !clear((self.x, self.y)) {
+                tracing::debug!("houseguest: out of the focused pane, out for good");
+                match &mut self.act {
+                    Act::Door { since, gap, .. } => {
+                        *since = (*since).min(now.saturating_sub(DOOR_THROUGH_MS));
+                        *gap = u64::MAX;
+                        self.act_due = self.first_due(now);
+                    }
+                    Act::Away { .. } => {}
+                    _ => {
+                        let (x, y) = (self.x, self.y);
+                        self.set(
+                            Act::Away {
+                                until: u64::MAX,
+                                enter: x,
+                                to_y: y,
+                                to_x: x,
+                            },
+                            now,
+                        );
+                    }
+                }
+            }
+            return true;
+        }
         match &mut self.act {
             // Out of sight: when she's back in, she'll be moved on.
             Act::Away { .. } => return true,
@@ -5580,9 +5809,14 @@ impl Osaka {
         }
     }
 
-    /// Back from work (if she was at work): "I'm home!", showing her
-    /// shopping. Returns whether she was.
-    fn home_from_work(&mut self, at: u64) -> bool {
+    /// Back home out of her door at `at`, if she was out: by her routine
+    /// ([`Osaka::home_from`]), or from work ("I'm home!", showing her
+    /// shopping). Returns whether she was.
+    fn back_home(&mut self, at: u64) -> bool {
+        if let Some(why) = self.returning.take() {
+            self.home_from(why, at);
+            return true;
+        }
         if self.shift.take().is_none() {
             return false;
         }
@@ -5590,10 +5824,32 @@ impl Osaka {
         true
     }
 
-    /// Home from work at `at`: "I'm home!", showing her shopping.
+    /// Home by her routine (`why`) at `at`: "I'm home!" (pooled), with no
+    /// shopping (her leeks are work's), held a moment so it shows; a
+    /// parcel at the door waits for it (see [`Osaka::awake`]).
+    fn home_from(&mut self, why: Routine, at: u64) {
+        tracing::info!(?why, "houseguest: home");
+        let line = self.lines.pick(mind::HOME, self.whims, at);
+        if let Some(line) = line {
+            self.say(line, at);
+            self.morning_until = self.morning_until.max(at + speech_ms(line));
+        }
+        self.set(
+            Act::Stand {
+                until: at + line.map_or(1000, speech_ms),
+            },
+            at,
+        );
+    }
+
+    /// Home from work at `at`: "I'm home!", showing her shopping. Always
+    /// that line (never "Tadaima!"), but it's her coming-home pool's
+    /// line, and noted as said from it, as it cools there too.
     fn come_home(&mut self, at: u64) {
         tracing::info!("houseguest: back from work");
         self.say(HOME, at);
+        self.lines.note(PoolId::Routine, HOME, at);
+        self.morning_until = self.morning_until.max(at + speech_ms(HOME));
         self.set(
             Act::Home {
                 until: at + HOME_MS,
@@ -8953,6 +9209,48 @@ mod tests {
         osaka.travel(out, now);
         tick_till(&mut osaka, now, &level, &mut rng, 30_000, away);
         assert!(length(&osaka) <= 12_000, "{}", length(&osaka));
+    }
+
+    /// On her way out to work at the screen's edge as school begins (the
+    /// cut takes her shift: `school_from_work`), she walks on off it, for
+    /// good: nothing drawn for how long she's out, never back in, and
+    /// the guest may end the visit ([`Osaka::gone_out`]).
+    #[test]
+    fn walking_out_to_work_as_school_begins_she_walks_on_to_school() {
+        let level = edge_floors(4);
+        let mut rng = Rng(4);
+        let mut osaka = Osaka::standing_at(3, 4, 0, &mut rng);
+        let out = edge_out(&osaka, &level);
+        osaka.go_to_work(Some(out), 0, &mut rng);
+        let now = tick_till(&mut osaka, 0, &level, &mut rng, 30_000, |o| {
+            matches!(o.act, Act::Out { .. })
+        });
+        assert!(osaka.shift.take().is_some());
+        assert!(
+            !osaka.school_from_work(now),
+            "walking, her act is as it was"
+        );
+        assert_eq!(osaka.leaving, Some(Routine::School));
+        let drawn = rng.0;
+        let now = tick_till(&mut osaka, now, &level, &mut rng, 30_000, |o| {
+            matches!(o.act, Act::Away { .. })
+        });
+        assert_eq!(rng.0, drawn, "drew how long she's out");
+        assert!(matches!(
+            osaka.act,
+            Act::Away {
+                until: u64::MAX,
+                ..
+            }
+        ));
+        assert_eq!(osaka.gone_out(now), Some(Routine::School));
+        // Never back in (an ordinary trip off the edge is 4-12 s).
+        let mut t = now;
+        while t < now + 600_000 {
+            t += 1000;
+            osaka.tick(t, None, &level, &Chances::default(), &mut rng);
+            assert!(matches!(osaka.act, Act::Away { .. }), "back in at {t}");
+        }
     }
 
     /// With neither bed nor sofa, her night on the floor is her night as

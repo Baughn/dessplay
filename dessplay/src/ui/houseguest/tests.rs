@@ -319,13 +319,26 @@ impl Hidden {
         layer: &[(u16, u16)],
         now: u64,
     ) -> Result<(), TestCaseError> {
+        self.check_raining(frame, real, layer, |_| false, now)
+    }
+
+    /// [`Hidden::check`], but for the cells a rain of hers is painting
+    /// (`raining`): its frozen copy of what was there, whatever it was.
+    fn check_raining(
+        &mut self,
+        frame: &Buffer,
+        real: &Buffer,
+        layer: &[(u16, u16)],
+        raining: impl Fn((u16, u16)) -> bool,
+        now: u64,
+    ) -> Result<(), TestCaseError> {
         let width = real.area.width as usize;
         let mut hidden = std::collections::BTreeSet::new();
         for (index, (got, want)) in frame.content.iter().zip(&real.content).enumerate() {
-            if got == want {
+            let at = ((index % width) as u16, (index / width) as u16);
+            if got == want || raining(at) {
                 continue;
             }
-            let at = ((index % width) as u16, (index / width) as u16);
             let blank = want.symbol().trim().is_empty();
             let line = want
                 .symbol()
@@ -368,7 +381,10 @@ impl Hidden {
 
 fn scatter(buf: &mut Buffer, text: &[(u16, u16, String)], skips: &[(u16, u16)]) {
     for (x, y, s) in text {
-        buf.set_string(*x, *y, s, Style::new());
+        // Off a small screen, it isn't there.
+        if buf.area.contains((*x, *y).into()) {
+            buf.set_string(*x, *y, s, Style::new());
+        }
     }
     for &(x, y) in skips {
         if let Some(cell) = buf.cell_mut((x, y)) {
@@ -452,7 +468,33 @@ fn long_visit(
     owned: &[(Furniture, usize, u16, bool)],
     span: u64,
 ) -> Result<(), TestCaseError> {
-    let mut guest = Guest::new(seed);
+    long_visit_of(
+        Guest::new(seed),
+        graphics,
+        sizes,
+        text,
+        skips,
+        chats,
+        protect,
+        owned,
+        span,
+    )
+}
+
+/// [`long_visit`] for `guest` as made (her clock somewhere in her week,
+/// say): visiting, or her home standing empty while she's out.
+#[allow(clippy::too_many_arguments)]
+fn long_visit_of(
+    mut guest: Guest,
+    graphics: bool,
+    sizes: &[(u16, u16)],
+    text: &[(u16, u16, String)],
+    skips: &[(u16, u16)],
+    chats: &[u64],
+    protect: (u16, u16, u16, u16),
+    owned: &[(Furniture, usize, u16, bool)],
+    span: u64,
+) -> Result<(), TestCaseError> {
     if graphics {
         guest.set_picker(kitty());
     }
@@ -499,11 +541,27 @@ fn long_visit(
             let frame = paint(&mut guest, &real, &view, now);
             let feet = match &guest.state {
                 State::Visiting(visit) => feet(visit),
+                // Her closed door stands on its floor (in line art, its
+                // image redraws the line under it).
+                State::Away(_) => guest.closed_door().map(|door| (door.x, door.y)),
                 _ => None,
             };
             assert_untouched_but_feet(&frame, &real, &protected, feet)?;
             let (layer, shown): (Vec<(u16, u16)>, Vec<Shown>) = match &guest.state {
-                State::Visiting(visit) => (visit.layer.cells().collect(), visit.shown.clone()),
+                // What she moved, and the flap a parcel just came in by
+                // (swung in over her wall's line a moment).
+                State::Visiting(visit) => {
+                    let flap = visit.flap.into_iter().flat_map(|(flap, _)| {
+                        (flap.rows.0..flap.rows.1).filter_map(move |y| {
+                            Some((u16::try_from(flap.x).ok()?, u16::try_from(y).ok()?))
+                        })
+                    });
+                    (
+                        visit.layer.cells().chain(flap).collect(),
+                        visit.shown.clone(),
+                    )
+                }
+                State::Away(empty) => (Vec::new(), empty.shown.clone()),
                 _ => (Vec::new(), Vec::new()),
             };
             // Each real piece stands on the floor of a strip that's
@@ -553,7 +611,9 @@ fn long_visit(
                 }
             }
             if graphics {
-                hidden.check(&frame, &real, &layer, now)?;
+                // What she moved raining out as she went out by her
+                // routine shows it as it was, holes and all, a moment.
+                hidden.check_raining(&frame, &real, &layer, |at| raining(&guest, at), now)?;
             }
             // Besides text she moved: her box and the floor row
             // under it, and one bubble of at most 24 characters.
@@ -565,7 +625,7 @@ fn long_visit(
                 .enumerate()
                 .filter(|(i, (a, b))| {
                     let at = ((i % width) as u16, (i / width) as u16);
-                    a != b && !layer.contains(&at)
+                    a != b && !layer.contains(&at) && !raining(&guest, at)
                 })
                 .count();
             // Her box (with its floor row), a bubble, her furniture,
@@ -585,6 +645,28 @@ fn long_visit(
                     let union = with.fold(her, |r, p| r.union(p.cover()));
                     (furniture, area(union))
                 }
+                // Her door's box, and the pieces its image takes in.
+                State::Away(_) => {
+                    let area = |r: Rect| usize::from(r.width) * usize::from(r.height);
+                    let furniture: usize = shown.iter().map(|p| area(p.cover())).sum();
+                    let spanned = guest.closed_door().map_or(0, |door| {
+                        let box_ = Rect::new(
+                            (door.x - sprite::WIDTH / 2).max(0) as u16,
+                            (door.y - sprite::HEIGHT).max(0) as u16,
+                            sprite::WIDTH as u16,
+                            sprite::HEIGHT as u16 + 1,
+                        );
+                        let covers: Vec<Rect> = shown.iter().map(Shown::cover).collect();
+                        let with = terrain::image(door.x, door.y, &covers).with;
+                        let union = covers
+                            .iter()
+                            .zip(with)
+                            .filter(|(_, with)| *with)
+                            .fold(box_, |r, (c, _)| r.union(*c));
+                        area(union)
+                    });
+                    (furniture, spanned)
+                }
                 _ => (0, 0),
             };
             let most = (sprite::WIDTH * (sprite::HEIGHT + 1)) as usize + 24 + furniture + spanned;
@@ -596,6 +678,9 @@ fn long_visit(
                     visit.osaka.x,
                     visit.osaka.y
                 ),
+                State::Away(empty) => {
+                    format!("away: {:?} door {:?}", empty.shown, guest.closed_door())
+                }
                 _ => String::new(),
             };
             prop_assert!(
@@ -618,6 +703,15 @@ fn long_visit(
     let end = run(&mut guest, &real, &view, now, now + dissolve::DURATION_MS);
     prop_assert_eq!(end, real);
     Ok(())
+}
+
+/// Whether a cell is what she moved and made raining out as she went
+/// out by her routine (her home empty: the rain's cells are its own).
+fn raining(guest: &Guest, (x, y): (u16, u16)) -> bool {
+    match &guest.state {
+        State::Away(empty) => empty.fades.iter().any(|fade| fade.painting(x, y)),
+        _ => false,
+    }
 }
 
 // ---- Against the real default layout ----
@@ -975,6 +1069,7 @@ fn visiting_at(guest: &mut Guest, real: &Buffer, view: &IdleView, (x, y): (i32, 
         ghost: None,
         size: (real.area.width, real.area.height),
         tuck: false,
+        looks: Looks::default(),
     }));
 }
 
@@ -2333,7 +2428,16 @@ fn her_clock_counts_from_the_first_tick() {
     assert_eq!((guest.ledger.clock, guest.clock_rem), (1, 0));
     assert!(!guest.advance(3_615_500));
     assert_eq!((guest.ledger.clock, guest.clock_rem), (1, 33_000));
-    assert_eq!(guest.next_tick(3_615_500), None, "and asks for no tick");
+    // Absent, she wakes only at her routine's next boundary (Monday
+    // 18:00, 7_107_000 game ms on); unfed, at nothing.
+    assert_eq!(
+        guest.next_tick(3_615_500),
+        Some(Duration::from_millis(1_184_500)),
+        "and wakes for her routine's next boundary"
+    );
+    guest.set_feed_clock(false);
+    assert_eq!(guest.next_tick(3_615_500), None, "unfed, no tick");
+    guest.set_feed_clock(true);
     assert_eq!(
         guest.game_clock(0),
         Some(GameClock {
@@ -5982,7 +6086,7 @@ fn watch_errand(
                     seen.gone.get_or_insert(now);
                 }
             }
-            State::Arriving => {}
+            State::Arriving(_) | State::Away(_) => {}
         }
         // Shaking, and painted so (under her feet it's in her image).
         let moved = (accordion.left()..accordion.right())
@@ -10777,5 +10881,6 @@ proptest! {
     }
 }
 
+mod away;
 mod census;
 mod golden;

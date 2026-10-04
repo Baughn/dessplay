@@ -711,6 +711,24 @@ pub(super) const LAST_HOUR_TALK: Pool = Pool {
     d: 1,
 };
 
+/// What she says as she leaves for school through her door (round 1:
+/// pooled).
+pub(super) const OFF: Pool = Pool {
+    id: PoolId::Routine,
+    lines: &[line!("I'm off!"), line!("Off to school!")],
+    n: 1,
+    d: 1,
+};
+
+/// What she says as she comes home from school out of her door (round
+/// 1: pooled; from work it's "I'm home!" with her shopping, on its own).
+pub(super) const HOME: Pool = Pool {
+    id: PoolId::Routine,
+    lines: &[line!("I'm home!"), line!("Tadaima!")],
+    n: 1,
+    d: 1,
+};
+
 /// The riddles she tells, spacing out: each question, and the answer
 /// she gives at once herself. Drawn whole (by its question).
 pub(super) const RIDDLES: [(&str, &str); 6] = [
@@ -788,6 +806,9 @@ pub(super) enum PoolId {
     Riddle,
     /// What she says in her sleep ([`SLEEP_TALK`], [`LAST_HOUR_TALK`]).
     SleepTalk,
+    /// What she says leaving for school and coming home ([`OFF`],
+    /// [`HOME`]).
+    Routine,
     /// A test's pool, with no budget: not a pool she draws from.
     #[cfg(test)]
     Test,
@@ -796,12 +817,13 @@ pub(super) enum PoolId {
 impl PoolId {
     /// Every pool there is.
     #[cfg(test)]
-    pub const ALL: [PoolId; 6] = [
+    pub const ALL: [PoolId; 7] = [
         Self::Beat,
         Self::Door,
         Self::Musing,
         Self::Riddle,
         Self::SleepTalk,
+        Self::Routine,
         Self::Test,
     ];
 
@@ -813,6 +835,7 @@ impl PoolId {
             Self::Musing => 2,
             Self::Riddle => 3,
             Self::SleepTalk => 4,
+            Self::Routine => 5,
             // Out of the way of every pool she draws from.
             #[cfg(test)]
             Self::Test => u64::MAX,
@@ -824,7 +847,7 @@ impl PoolId {
     fn budgeted(self) -> bool {
         match self {
             Self::Beat => true,
-            Self::Door | Self::Musing | Self::Riddle | Self::SleepTalk => false,
+            Self::Door | Self::Musing | Self::Riddle | Self::SleepTalk | Self::Routine => false,
             #[cfg(test)]
             Self::Test => false,
         }
@@ -859,7 +882,8 @@ impl PoolId {
                 ],
             ),
             Self::SleepTalk => (4, vec![SLEEP_TALK, LAST_HOUR_TALK]),
-            Self::Test => (5, Vec::new()),
+            Self::Routine => (5, vec![OFF, HOME]),
+            Self::Test => (6, Vec::new()),
         }
     }
 }

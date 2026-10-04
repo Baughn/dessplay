@@ -1,4 +1,4 @@
-//! Golden trajectories: seven scenes, four seeds each, in ASCII and line
+//! Golden trajectories: nine scenes, four seeds each, in ASCII and line
 //! art, hashed frame by frame; and the first four again with her routine
 //! never reaching her (the `UNFED_*` tables: as she was before the clock
 //! fed her). A refactor that means to change nothing she does keeps every
@@ -57,8 +57,9 @@ impl Trace {
                 )
             }
             State::Leaving(_) => "leaving".to_owned(),
-            State::Arriving => "arriving".to_owned(),
+            State::Arriving(_) => "arriving".to_owned(),
             State::Absent => "absent".to_owned(),
+            State::Away(_) => "away".to_owned(),
         };
         let mut cells = Fnv::new();
         let width = usize::from(real.area.width);
@@ -448,6 +449,52 @@ fn weekend(seed: u64, graphics: bool, _: bool) -> u64 {
     trace.finish(&guest, &format!("weekend-{seed}-{graphics}"))
 }
 
+/// Three minutes of her clock from `at` in her home, with the odd chat
+/// line.
+fn three_minutes_from(seed: u64, graphics: bool, at: routine::GameTime) -> (Guest, Trace) {
+    let (real, view) = home_screen();
+    let mut guest = home_at(seed, at, graphics);
+    let chats = times(seed, 3, 20_000, (30_000, 60_000));
+    let mut mark = ChatMark::default();
+    let mut trace = Trace::new();
+    drive(&mut guest, &mut trace, 180_000, &[], |now, step| {
+        if arrived_within(&chats, now, step) {
+            mark.synced += 1;
+        }
+        let view = IdleView {
+            chat_mark: mark,
+            ..view.clone()
+        };
+        (real.clone(), view, false)
+    });
+    (guest, trace)
+}
+
+/// Tuesday 08:10, a school morning: she's up, and at 08:15 goes out
+/// through her door; her home stands empty, her door closed where she
+/// went out.
+fn school_morning(seed: u64, graphics: bool, _: bool) -> u64 {
+    let at = routine::GameTime {
+        day: 1,
+        h: 8,
+        m: 10,
+    };
+    let (guest, trace) = three_minutes_from(seed, graphics, at);
+    trace.finish(&guest, &format!("school-{seed}-{graphics}"))
+}
+
+/// Tuesday 12:40, at school: her home stands empty, and at 12:45 she
+/// comes home out of her door.
+fn home_from_school(seed: u64, graphics: bool, _: bool) -> u64 {
+    let at = routine::GameTime {
+        day: 1,
+        h: 12,
+        m: 40,
+    };
+    let (guest, trace) = three_minutes_from(seed, graphics, at);
+    trace.finish(&guest, &format!("home-{seed}-{graphics}"))
+}
+
 /// Every run's hash, for a table of `(seed, ASCII, line art)`.
 fn hashes(scene: SceneFn, fed: bool) -> Vec<(u64, u64, u64)> {
     (0..4)
@@ -577,15 +624,46 @@ fn golden_weekend() {
     );
 }
 
+#[test]
+fn golden_school_morning() {
+    check(
+        "school",
+        school_morning,
+        &[
+            (0, 0xb2b7d8e0e05c2bd7, 0x74112a43a0b0c060),
+            (1, 0x044b15882e3f3676, 0xe51f160e52a5ce00),
+            (2, 0xe29a2ca7ee7f9ab0, 0xe28753339037aa01),
+            (3, 0xd87dbd5deeefd2c6, 0x1f68258f09ef2813),
+        ],
+    );
+}
+
+#[test]
+fn golden_home_from_school() {
+    check(
+        "home",
+        home_from_school,
+        &[
+            (0, 0x57528e5f189b1820, 0xae6a109bbb7a9ba9),
+            (1, 0x0ceee9de88786799, 0x3cbf367270361eeb),
+            (2, 0x49590f25ae93c4ea, 0x2911bbd589dbbb90),
+            (3, 0x16817c2b767a8a57, 0xd23eb48164ba0ee4),
+        ],
+    );
+}
+
 // ---- Unfed: as she was before the clock fed her (A5) ----
 
 /// The stage room's tables at the end of phase 5b step 3, but for step 5a's
 /// hidden-goodbye fix (no placement recorded of her hidden behind her
-/// door: its trace diff is in that commit).
+/// door: its trace diff is in that commit), and step 5b's parcels (one
+/// waits while she's out of sight, and for her "I'm home!" from work:
+/// seeds 1 and 2 in ASCII, out at work as the stage sends a parcel; the
+/// trace diff is in that commit).
 const UNFED_STAGE: [(u64, u64, u64); 4] = [
     (0, 0xe6077be20df9456b, 0x2b8c5fb5ebcffa8d),
-    (1, 0x72c7516de7baa27b, 0xf2310f324a023361),
-    (2, 0xe3fa7c994764c94d, 0x4e2fb6c3442e1d11),
+    (1, 0xa208eaff8a9cc01d, 0xf2310f324a023361),
+    (2, 0xbdba4006540e022b, 0x4e2fb6c3442e1d11),
     (3, 0xe2ff1e903886c076, 0x83fff4ee2141d60f),
 ];
 

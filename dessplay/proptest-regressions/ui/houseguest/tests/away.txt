@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 15f2cd3e4bd0fba79c11c0a834fca2ad66b91b5d69b18fc19947fdb50181a088 # shrinks to seed = 0, start = GameTime { day: 1, h: 8, m: 12 }, graphics = true, sizes = [(60, 18)], text = [], skips = [], chats = [], protect = (0, 0, 1, 1), owned = []
+cc 0099f7a2e4d25555b4cf9607bf332c1a44fdc0b9c5e61e44d405c3ff57b4b976 # shrinks to seed = 0, start = GameTime { day: 1, h: 8, m: 14 }, graphics = false, sizes = [(98, 26), (51, 14)], text = [(15, 4, " glmv"), (38, 8, "漢w─t─y"), (48, 10, "w"), (16, 15, "pb漢 ─y"), (56, 4, " "), (4, 8, " 漢─"), (8, 2, " │p")], skips = [(54, 0), (26, 6), (3, 2), (26, 10), (55, 8)], chats = [82658, 61892], protect = (13, 2, 5, 1), owned = [(0, 2, 510, false)]

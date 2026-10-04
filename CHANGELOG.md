@@ -42,6 +42,12 @@ Add new days at the top. Add new entries at the bottom of existing days.
   stepped through her door, she no longer appears for a moment to wave
   goodbye from where she left, and her door no longer blinks out
   before it fades away with the rest.
+- Added: On school days Osaka goes to school in the morning. At a
+  quarter past eight she says "I'm off!" and steps out through her pink
+  door, which stays standing closed in her empty room, the lamp off,
+  until she comes home through it after lunch ("I'm home!"). Start
+  dessplay in school hours and her room is empty, door and all. A
+  parcel that comes while she's out waits for her to get home.
 
 ## 2026-10-03
 
