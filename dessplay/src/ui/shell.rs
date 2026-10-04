@@ -316,7 +316,7 @@ pub fn run_ui_thread(
         elapsed_ms = started.elapsed().as_millis() as u64,
         "terminal setup complete"
     );
-    let exit = run_ui_loop(ui, inputs, actions, &mut adapter);
+    let exit = run_ui_loop(ui, inputs, actions, &mut adapter, None);
     let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableBracketedPaste);
     let _ = adapter.restore();
     tracing::debug!("UI thread exiting");
@@ -334,6 +334,10 @@ pub struct UiExit {
     pub houseguest: Option<super::houseguest::Ledger>,
     /// The pane sizes, when they differ from the ones loaded at startup.
     pub layout: Option<super::layout::LayoutSettings>,
+    /// The real date the houseguest was last told (tests check the
+    /// override reaches her).
+    #[cfg(test)]
+    pub houseguest_date: Option<chrono::NaiveDate>,
 }
 
 /// Escapes that put the terminal's cursor addressing into the state the
@@ -416,11 +420,16 @@ pub fn select_image_picker() -> ratatui_image::picker::Picker {
 /// iteration, a handout parked on a full action queue, and one queued
 /// but dropped when the session ends. The loop runs inside [`turns`],
 /// so a `return` in it can only end the turns, never skip the exit.
+///
+/// `date` fixes the real date the houseguest is told (tests: a date
+/// with no calendar entry); `None` tells her today's
+/// ([`today`]).
 pub fn run_ui_loop<A: TerminalAdapter>(
     mut ui: Ui,
     inputs: super::delivery::UiReceiver,
     actions: mpsc::Sender<UserAction>,
     adapter: &mut A,
+    date: Option<chrono::NaiveDate>,
 ) -> UiExit
 where
     A::Backend: FrameBackend,
@@ -477,6 +486,15 @@ where
     if let Some(picker) = ui.image_picker() {
         guest.set_picker(picker);
     }
+    // The real date, told before every advance (and the first draw):
+    // the guest reads no clock of her own. Every advance goes through
+    // `advance_guest`, so none can miss it.
+    let date = || date.or_else(today);
+    let advance_guest = |guest: &mut super::houseguest::Guest, now: u64| {
+        guest.set_date(date());
+        guest.advance(now)
+    };
+    guest.set_date(date());
     let _ = draw(adapter, &mut ui, &mut renderer, &mut guest);
     // Every exit below is a `break 'ui`; inside `turns` even a `return`
     // only ends the turns, and the exit after them runs regardless.
@@ -514,7 +532,7 @@ where
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                     let now = now_millis();
                     let mut redraw = ui.advance_clock(now);
-                    redraw |= guest.advance(now);
+                    redraw |= advance_guest(&mut guest, now);
                     redraw |= poll_layout(&mut ui, &mut renderer, watcher.as_ref(), custom_enabled);
                     redraw |= dispatch_due_recovery(&mut ui, &actions);
                     dispatch_image_fetches(&mut ui, &actions);
@@ -534,7 +552,7 @@ where
             // by a draw below anyway.
             let now = now_millis();
             let _ = ui.advance_clock(now);
-            let _ = guest.advance(now);
+            let _ = advance_guest(&mut guest, now);
             match input {
                 UiInput::Roguelike(result) => ui.set_roguelike(result),
                 UiInput::Shutdown => break 'ui,
@@ -658,6 +676,8 @@ where
     let exit = UiExit {
         houseguest: guest.final_ledger(now_millis()),
         layout: (ui.layout_settings != layout_loaded).then(|| ui.layout_settings.clone()),
+        #[cfg(test)]
+        houseguest_date: guest.date(),
     };
     tracing::trace!(
         houseguest = exit.houseguest.is_some(),
@@ -666,6 +686,20 @@ where
         "UI state handed back at exit"
     );
     exit
+}
+
+/// Today's real date for the houseguest: [`date_at`] the wall clock.
+pub fn today() -> Option<chrono::NaiveDate> {
+    date_at(std::time::SystemTime::now())
+}
+
+/// The real date at the wall-clock time `time`, its day starting at
+/// 09:00 ([`biblical_date`](crate::timeutil::biblical_date), as the
+/// chat's day separators). `None` before the epoch (or out of chrono's
+/// range).
+pub fn date_at(time: std::time::SystemTime) -> Option<chrono::NaiveDate> {
+    let since = time.duration_since(std::time::UNIX_EPOCH).ok()?;
+    crate::timeutil::biblical_date(u64::try_from(since.as_millis()).ok()?)
 }
 
 /// Run the UI loop's turns. Its `()` result makes a `return` with a
@@ -774,6 +808,9 @@ const HOUSEGUEST_CLOCK_CAP_MS: u64 = 600_000;
 /// steps (NTP corrections) must never reach `Ui::clock`, whose
 /// consumers all measure elapsed local time — a backward step would
 /// freeze every animator for the size of the step (2026-08-20 review).
+/// The one wall-clock read beside it is [`today`]: the houseguest's
+/// real date, a date only and never a time of day, which no animator
+/// measures by.
 fn now_millis() -> u64 {
     static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
     START
@@ -912,6 +949,7 @@ mod roguelike_tests {
         );
         (ui, view)
     }
+
     #[test]
     fn busy_shell_dispatches_once_after_committed_ack() {
         let (mut ui, view) = resting();
@@ -1302,6 +1340,28 @@ mod exit_save_tests {
         let _ = ui.test_update(Msg::LinkListEntry(id));
     }
 
+    /// The real date the loop tells her: one with no calendar entry.
+    const JUNE_17: Option<chrono::NaiveDate> = chrono::NaiveDate::from_ymd_opt(2026, 6, 17);
+
+    /// The houseguest's date is the wall clock's biblical date, and none
+    /// before the epoch.
+    #[test]
+    fn the_houseguest_date_is_none_before_the_epoch() {
+        use std::time::{Duration, UNIX_EPOCH};
+        assert_eq!(date_at(UNIX_EPOCH - Duration::from_secs(1)), None);
+        // 2026-06-17 12:00 UTC: whatever the local zone, a mid-June day.
+        let millis = 1_781_697_600_000;
+        let date = date_at(UNIX_EPOCH + Duration::from_millis(millis));
+        assert_eq!(date, crate::timeutil::biblical_date(millis));
+        let date = date.unwrap();
+        assert!(
+            (chrono::NaiveDate::from_ymd_opt(2026, 6, 16).unwrap()
+                ..=chrono::NaiveDate::from_ymd_opt(2026, 6, 17).unwrap())
+                .contains(&date),
+            "{date}"
+        );
+    }
+
     /// The loop's result and every action it sent.
     struct Run {
         exit: UiExit,
@@ -1369,7 +1429,7 @@ mod exit_save_tests {
         // Kept alive otherwise, so a case that misses its exit hangs.
         let input_tx = (case.exit != Exit::InputsClosed).then_some(input_tx);
         let mut adapter = FlakyAdapter::new(fail_at);
-        let exit = run_ui_loop(ui, input_rx, action_tx, &mut adapter);
+        let exit = run_ui_loop(ui, input_rx, action_tx, &mut adapter, JUNE_17);
         drop(input_tx);
         let mut sent = Vec::new();
         while let Ok(action) = action_rx.try_recv() {
@@ -1403,6 +1463,8 @@ mod exit_save_tests {
     fn check(case: Case) -> Run {
         let label = format!("{case:?}");
         let run = run(case);
+        // The override, not the wall clock, is the date she was told.
+        assert_eq!(run.exit.houseguest_date, JUNE_17, "{label}");
         let moved_out = case.moved_out || case.exit == Exit::DrawFails;
         match &run.exit.houseguest {
             Some(ledger) => {

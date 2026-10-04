@@ -9,10 +9,13 @@
 //! chat message asking her something arrives (as the sata andagi plays,
 //! she answers it) · f give her the next piece of furniture · x show why she does what she
 //! does · v her next mood (lazy, busy, dreamy) · g goodbye · n new seed ·
-//! [ ] slower / faster · 1–6 make her sleepy,
+//! [ ] slower / faster · t skip her clock to the next change in her
+//! routine · d the next stage date (a few calendar days, then today's,
+//! then none) · 1–6 make her sleepy,
 //! restless, keen to tidy, mischievous, hungry, or keen to put right what
-//! she's felt is wrong with her home · q quit. The bar shows her
-//! needs. Her decisions and their reasons are logged to
+//! she's felt is wrong with her home · q quit. The bar shows her game
+//! time and the part of her day it is (her clock runs at the stage's
+//! speed times six), the stage date, and her needs. Her decisions and their reasons are logged to
 //! `houseguest-stage.log` in the working directory (`tail -f` it beside
 //! the stage).
 //!
@@ -26,13 +29,56 @@ use crossterm::{cursor, execute, terminal};
 use dessplay::ui::houseguest::Guest;
 use dessplay::ui::houseguest::stage::{Scene, Want, stage_ui};
 use dessplay::ui::layout::{LayoutBundle, Renderer};
-use dessplay::ui::shell::{TERMINAL_STATE_PROLOGUE, select_image_picker};
+use dessplay::ui::shell::{TERMINAL_STATE_PROLOGUE, select_image_picker, today};
 use dessplay::ui::theme::ColorDepth;
 use tuirealm::ratatui::Terminal;
 use tuirealm::ratatui::backend::CrosstermBackend;
 use tuirealm::ratatui::style::{Modifier, Style};
 
 const SPEEDS: [f64; 6] = [0.125, 0.25, 0.5, 1.0, 2.0, 4.0];
+
+/// The stage's dates (`d` cycles them): a few calendar days, then
+/// today's, then none.
+#[derive(Clone, Copy)]
+enum StageDate {
+    On(u32, u32),
+    Today,
+    Off,
+}
+
+const DATES: [StageDate; 7] = [
+    StageDate::On(1, 1),
+    StageDate::On(2, 3),
+    StageDate::On(7, 25),
+    StageDate::On(10, 31),
+    StageDate::On(12, 24),
+    StageDate::Today,
+    StageDate::Off,
+];
+
+impl StageDate {
+    fn date(self) -> Option<chrono::NaiveDate> {
+        match self {
+            StageDate::On(month, day) => {
+                use chrono::Datelike;
+                let year = today().map_or(2026, |d| d.year());
+                chrono::NaiveDate::from_ymd_opt(year, month, day)
+            }
+            StageDate::Today => today(),
+            StageDate::Off => None,
+        }
+    }
+
+    fn label(self) -> String {
+        let date = self
+            .date()
+            .map_or_else(|| "no date".to_owned(), |d| d.format("%b %-d").to_string());
+        match self {
+            StageDate::Today => format!("{date} (today)"),
+            _ => date,
+        }
+    }
+}
 
 fn restore() {
     let _ = terminal::disable_raw_mode();
@@ -91,6 +137,8 @@ fn run(seed: &mut u64, picker: ratatui_image::picker::Picker) -> color_eyre::Res
     // The newest of those asks her something.
     let mut asked = false;
     let mut explain = false;
+    // The real date she's told: today's to begin with.
+    let mut date = DATES.len() - 2;
     // Her clock runs at the chosen speed.
     let mut now_ms = 0.0f64;
     let mut last = Instant::now();
@@ -99,6 +147,7 @@ fn run(seed: &mut u64, picker: ratatui_image::picker::Picker) -> color_eyre::Res
         last = Instant::now();
         now_ms += elapsed * SPEEDS[speed];
         let now = now_ms as u64;
+        guest.set_date(DATES[date].date());
         guest.advance(now);
         terminal.draw(|frame| {
             ui.draw_with_renderer(frame, &mut renderer);
@@ -123,11 +172,17 @@ fn run(seed: &mut u64, picker: ratatui_image::picker::Picker) -> color_eyre::Res
             let playing = guest
                 .playing(now)
                 .map_or_else(String::new, |p| format!(" │ ▶ {p}"));
+            // Her game time, and the stage date.
+            let clock = guest
+                .clock_label(now)
+                .unwrap_or_else(|| "not met yet".to_owned());
             let menu = format!(
-                " ◀ {} ▶  Enter play · f furnish · m chat · ? ask · x why · v mood · g bye · n seed {} · [ ] {}× · 1-6 needs · q │ {} │ {}{}",
+                " ◀ {} ▶  Enter play · f furnish · m chat · ? ask · x why · v mood · g bye · n seed {} · [ ] {}× · t skip · d date · 1-6 needs · q │ {} · {} │ {} │ {}{}",
                 scene.name(),
                 seed,
                 SPEEDS[speed],
+                clock,
+                DATES[date].label(),
                 mood,
                 note,
                 playing
@@ -207,6 +262,8 @@ fn run(seed: &mut u64, picker: ratatui_image::picker::Picker) -> color_eyre::Res
             KeyCode::Char('4') => guest.press(Want::Mischief),
             KeyCode::Char('5') => guest.press(Want::Hungry),
             KeyCode::Char('6') => guest.press(Want::Nesting),
+            KeyCode::Char('t') => guest.skip_clock(now),
+            KeyCode::Char('d') => date = (date + 1) % DATES.len(),
             KeyCode::Char('[') => speed = speed.saturating_sub(1),
             KeyCode::Char(']') => speed = (speed + 1).min(SPEEDS.len() - 1),
             _ => {}

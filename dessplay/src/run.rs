@@ -3318,6 +3318,7 @@ mod tests {
             Ok(UiExit {
                 houseguest: Some(Ledger::new(5)),
                 layout: Some(layout.clone()),
+                houseguest_date: None,
             }),
             &storage,
         );

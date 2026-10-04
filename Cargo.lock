@@ -980,6 +980,7 @@ dependencies = [
 name = "dessplay-rendezvous"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "clap",
  "color-eyre",
  "dessplay",

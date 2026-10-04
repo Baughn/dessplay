@@ -71,6 +71,7 @@ mod mind;
 mod nudge;
 mod osaka;
 mod room;
+pub mod routine;
 mod rules;
 mod scenes;
 mod scrap;
@@ -416,6 +417,22 @@ pub struct Guest {
     clock_saved: u64,
     /// The most one accrual may add, in real millis (`None`: no cap).
     cap: Option<u64>,
+    /// The real date, as the shell last gave it ([`Guest::set_date`]):
+    /// only ever a date, never a time of day.
+    date: Option<chrono::NaiveDate>,
+    /// The vacation flag of the game day of the last tick, read from
+    /// `date` at that day's first tick and held through it (A12). Held
+    /// per process, never saved: a restart is a cold start, which
+    /// re-derives her state from game time and the date as it is then.
+    day_latch: Option<routine::Latch>,
+    /// The routine reaches her mind (step 4 turns it on for everyone;
+    /// until then only tests do): with it off, `Osaka::day` is `None`
+    /// everywhere, and she behaves exactly as before the clock.
+    feed_clock: bool,
+    /// Her routine's slot at the last tick, while the clock is fed: a
+    /// change dirties the ledger, so the record is consistent at
+    /// departures and bedtimes.
+    slot_was: Option<routine::Slot>,
 }
 
 /// Her clock runs this many times faster than real time.
@@ -485,6 +502,11 @@ impl Guest {
             idle_rem: 0,
             clock_saved: ledger_clock,
             cap: None,
+            date: None,
+            // A cold start: the day latches afresh (see the field).
+            day_latch: None,
+            feed_clock: false,
+            slot_was: None,
         }
     }
 
@@ -525,13 +547,16 @@ impl Guest {
     pub fn move_out(&mut self, seed: u64) {
         tracing::info!("houseguest moved out");
         self.ledger = Ledger::new(seed);
-        // Her clock starts again at Monday 16:00 (the latch stands: it's
+        // Her clock starts again at Monday 16:00 (`clock_at` stands: it's
         // when time was last counted, not whose).
         self.clock_rem = 0;
         self.idle_rem = 0;
         // The next take resets this anyway (the move-out is unsaved);
         // here it keeps `clock_saved <= ledger.clock` in between.
         self.clock_saved = 0;
+        // Monday 16:00 again: the day's latch and slot are another day's.
+        self.day_latch = None;
+        self.slot_was = None;
         self.unsaved = true;
         self.persist = true;
         self.gift = None;
@@ -801,6 +826,110 @@ impl Guest {
         })
     }
 
+    /// The real date, from the shell before every [`Guest::advance`]
+    /// (`None`: unknown, and no calendar or vacation). Only a date
+    /// crosses over, never a time of day: her routine runs on her own
+    /// clock.
+    pub fn set_date(&mut self, date: Option<chrono::NaiveDate>) {
+        if self.date != date {
+            tracing::trace!(?date, "houseguest date");
+        }
+        self.date = date;
+    }
+
+    /// The real date as last set: the one place it's held, where
+    /// whatever of hers needs the date reads it (the [`IdleView`]
+    /// carries none).
+    pub fn date(&self) -> Option<chrono::NaiveDate> {
+        self.date
+    }
+
+    /// Feed her routine to her mind, or not (tests; step 4 makes it the
+    /// default).
+    #[cfg(test)]
+    pub(crate) fn set_feed_clock(&mut self, on: bool) {
+        self.feed_clock = on;
+    }
+
+    /// Everything derived from her clock, brought up to `now` after any
+    /// change to it (by [`Guest::advance`] and [`Guest::skip_clock`],
+    /// the only two): the day's latch (A12), and, while the clock is fed,
+    /// the slot (a change dirties the ledger) and the visiting Osaka's
+    /// clock. Returns her routine as her mind gets it (`None` unless
+    /// fed). Draws nothing: unfed, she behaves as before the clock.
+    fn sync_clock(&mut self, now: u64) -> Option<routine::Clock> {
+        let clock = self.routine_clock(now);
+        if let Some(clock) = clock
+            && self.day_latch != Some(clock.latch)
+        {
+            tracing::trace!(
+                day = clock.latch.day,
+                vacation = clock.latch.vacation,
+                "houseguest day latched"
+            );
+            self.day_latch = Some(clock.latch);
+        }
+        let fed = clock.filter(|_| self.feed_clock);
+        if let Some(clock) = fed {
+            // A slot change saves her record (in the batch's stead).
+            let slot = clock.day(now).slot;
+            if self.slot_was.is_some_and(|was| was != slot) {
+                tracing::trace!(?slot, "houseguest routine slot");
+                self.unsaved = true;
+            }
+            self.slot_was = Some(slot);
+        }
+        if let State::Visiting(visit) = &mut self.state {
+            visit.osaka.read_clock(fed);
+        }
+        fed
+    }
+
+    /// Her clock with the day's latch, whatever the feed: what the stage
+    /// shows and the routine questions read.
+    fn routine_clock(&self, now: u64) -> Option<routine::Clock> {
+        let game = self.game_clock(now)?;
+        Some(routine::Clock::read(game, now, self.day_latch, self.date))
+    }
+
+    /// The routine at `now`, as the mind sees it (tests): `None` unless
+    /// the clock is fed (and running).
+    #[cfg(test)]
+    pub(crate) fn day(&self, now: u64) -> Option<routine::DayTime> {
+        self.routine_clock(now)
+            .filter(|_| self.feed_clock)
+            .map(|clock| clock.day(now))
+    }
+
+    /// Her game time and the part of her day it is, for the stage:
+    /// "Mon 16:05 Afternoon". `None` until she has met you.
+    pub fn clock_label(&self, now: u64) -> Option<String> {
+        self.routine_clock(now)
+            .map(|clock| clock.day(now).to_string())
+    }
+
+    /// The stage: skip her clock forward to the next boundary of her
+    /// routine (never back). Nothing before she has met you.
+    pub fn skip_clock(&mut self, now: u64) {
+        // Brought up to `now` first: the skip starts from her time.
+        self.accrue(now);
+        let Some(clock) = self.routine_clock(now) else {
+            return;
+        };
+        let to = clock.next_boundary(clock.game.at(now));
+        let minutes = (to / GAME_MINUTE_MS).min(ledger::MINUTES_MAX);
+        // Forward only: `to` is always later, but clamped at the clock's
+        // end it may not be, and dropping `clock_rem` would step back.
+        if minutes <= self.ledger.clock {
+            return;
+        }
+        self.ledger.clock = minutes;
+        self.clock_rem = 0;
+        self.unsaved = true;
+        let _ = self.sync_clock(now);
+        tracing::debug!(clock = ?self.clock_label(now), "houseguest clock skipped");
+    }
+
     /// When the client has been quiet for `delay`: the one sum every
     /// idle check reads (each with its own word on the setting).
     fn quiet_until(&self, delay: Duration) -> u64 {
@@ -883,6 +1012,7 @@ impl Guest {
     pub fn advance(&mut self, now: u64) -> bool {
         // Her clock first, and on its own it changes nothing on screen.
         self.accrue(now);
+        let fed = self.sync_clock(now);
         let nudge = self.nudge.advance(now);
         let changed = match &mut self.state {
             State::Absent => {
@@ -901,9 +1031,10 @@ impl Guest {
                     .flap
                     .take_if(|&mut (_, since)| now >= since + FLAP_MS)
                     .is_some();
-                let changed = visit
-                    .osaka
-                    .tick(now, &visit.terrain, &visit.chances, &mut self.rng);
+                let changed =
+                    visit
+                        .osaka
+                        .tick(now, fed, &visit.terrain, &visit.chances, &mut self.rng);
                 // Hers the moment she does it: whatever ends the visit
                 // before the next paint can't lose it.
                 self.unsaved |= record(&mut self.ledger, &mut self.shop_now, visit);

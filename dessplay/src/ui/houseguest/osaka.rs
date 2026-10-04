@@ -8,6 +8,7 @@ use super::brain::{self, Factor, Mood, Need, Needs, Rising, Spot, Want};
 use super::layer::Placed;
 use super::mind::{self, Beat, Bind, Ctx, Heading, Here, Lines, Loss, PoolId, RIDDLES, Whims};
 use super::room::{Furniture, MadeId, PieceRef, Seat, Use};
+use super::routine::{self, DayTime};
 use super::rules::{Grievance, Placement, Repair, TIE_CELLS, Trials};
 use super::scenes::{Build, Job, JobRef, LayerOp, Lift, Pull, SetDown, Side, Swap};
 use super::script::{self, CHANNEL_FRAME_MS, Chat, Cue, Play, Prop, ScriptId, SpliceCtx, SpliceId};
@@ -613,6 +614,8 @@ pub(super) struct Decision {
     pub act: String,
     /// What she was heading for, deciding.
     pub heading: Option<Want>,
+    /// Her routine as she decided (`None`: it didn't reach her).
+    pub day: Option<DayTime>,
 }
 
 impl Decision {
@@ -625,6 +628,7 @@ impl Decision {
             top: Vec::new(),
             act: String::new(),
             heading: None,
+            day: None,
         }
     }
 
@@ -656,7 +660,11 @@ impl std::fmt::Display for Decision {
         if let Some(heading) = self.heading {
             write!(f, " (heading for {heading:?})")?;
         }
-        write!(f, " → {}", self.act)
+        write!(f, " → {}", self.act)?;
+        if let Some(day) = self.day {
+            write!(f, " @ {day}")?;
+        }
+        Ok(())
     }
 }
 
@@ -1204,6 +1212,11 @@ pub(super) struct Osaka {
     /// doing it (see [`Osaka::credit_done`]), and when (tests read it).
     #[cfg(test)]
     pub credited: Vec<(Want, f64, u64)>,
+    /// Her routine's clock and the day's vacation latch, as the guest
+    /// gave them at the last tick's entry (`None`: the routine doesn't
+    /// reach her, and she behaves as before the clock). Every decision
+    /// reads it at its own moment ([`Osaka::day`]).
+    clock: Option<routine::Clock>,
 }
 
 impl Osaka {
@@ -1269,6 +1282,7 @@ impl Osaka {
             decisions: Vec::new(),
             #[cfg(test)]
             credited: Vec::new(),
+            clock: None,
         };
         osaka.whims = Whims(osaka.mind.0 ^ mind::WHIMS_SALT);
         osaka.act_due = osaka.first_due(now);
@@ -1664,8 +1678,29 @@ impl Osaka {
         !self.pending.is_empty()
     }
 
-    /// Run every event due by `now`. Returns whether her pose changed.
-    pub fn tick(&mut self, now: u64, terrain: &Terrain, chances: &Chances, rng: &mut Rng) -> bool {
+    /// Her routine's clock from now on (see [`Osaka::day`]): set at
+    /// every tick's entry, and when the stage skips her clock.
+    pub fn read_clock(&mut self, clock: Option<routine::Clock>) {
+        self.clock = clock;
+    }
+
+    /// Her routine at the monotonic millis `at`: `None` while the clock
+    /// doesn't reach her. The one way anything of hers asks the time.
+    pub fn day(&self, at: u64) -> Option<DayTime> {
+        self.clock.map(|clock| clock.day(at))
+    }
+
+    /// Run every event due by `now`, with her routine's `clock` (`None`:
+    /// none reaches her). Returns whether her pose changed.
+    pub fn tick(
+        &mut self,
+        now: u64,
+        clock: Option<routine::Clock>,
+        terrain: &Terrain,
+        chances: &Chances,
+        rng: &mut Rng,
+    ) -> bool {
+        self.read_clock(clock);
         self.beauty_here = chances.beauty_here;
         let mut changed = false;
         for _ in 0..64 {
@@ -2918,6 +2953,7 @@ impl Osaka {
         let decision = Decision {
             at,
             act: self.act_summary(),
+            day: self.day(at),
             ..why
         };
         tracing::debug!(%decision, "houseguest: decided");

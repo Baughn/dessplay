@@ -2585,6 +2585,338 @@ fn moving_out_resets_her_clock() {
     assert_eq!(guest.ledger.clock, 1);
 }
 
+// ---- Her routine ----
+
+/// Real millis for `minutes` game minutes.
+fn real_ms(minutes: u64) -> u64 {
+    minutes * 60_000 / CLOCK_SPEED
+}
+
+/// Real millis from her clock's start (Monday 16:00 of game day 0) to
+/// `h:m` of game `day`.
+fn real_at(day: u64, h: u64, m: u64) -> u64 {
+    real_ms(day * 1440 + h * 60 + m - routine::START)
+}
+
+/// Advance an absent guest to `until` in steps of ten game minutes (her
+/// clock, the latch and the slot batching run on every advance).
+fn advance_to(guest: &mut Guest, from: u64, until: u64) -> u64 {
+    let mut now = from;
+    while now < until {
+        now = (now + real_ms(10)).min(until);
+        guest.advance(now);
+    }
+    now
+}
+
+fn date(y: i32, m: u32, d: u32) -> Option<chrono::NaiveDate> {
+    chrono::NaiveDate::from_ymd_opt(y, m, d)
+}
+
+/// Unfed (the default, and production's until step 4), the routine
+/// reaches nothing of hers, whatever the date: `day` is `None` for the
+/// guest and for every decision of a visit. Fed, every decision carries
+/// the routine at its own moment, and the explain line shows it.
+#[test]
+fn the_routine_reaches_her_only_when_fed() {
+    let mut guest = met(5);
+    guest.set_date(date(2026, 7, 25));
+    let mut now = 0;
+    guest.advance(now);
+    for _ in 0..2 * 144 {
+        now = advance_to(&mut guest, now, now + real_ms(10));
+        assert_eq!(guest.day(now), None, "at {now}");
+    }
+    assert!(guest.clock_label(now).is_some(), "the stage still reads it");
+    // Before she has met you there's nothing to feed.
+    let mut fresh = Guest::new(5);
+    fresh.set_feed_clock(true);
+    fresh.advance(0);
+    assert_eq!(fresh.day(0), None);
+    assert_eq!(fresh.clock_label(0), None);
+
+    for fed in [false, true] {
+        let mut ui = stage_ui();
+        let (real, view) = real_frame(&mut ui, 100, 30);
+        let mut guest = Guest::new(5);
+        guest.set_feed_clock(fed);
+        guest.set_date(date(2026, 6, 17));
+        guest.cue(Scene::Arrive);
+        paint(&mut guest, &real, &view, 0);
+        let mut now = 0;
+        while now < 60_000 {
+            now += guest
+                .next_tick(now)
+                .map_or(1000, |d| d.as_millis() as u64)
+                .clamp(1, 1000);
+            guest.advance(now);
+            paint(&mut guest, &real, &view, now);
+        }
+        let State::Visiting(visit) = &guest.state else {
+            panic!("still visiting");
+        };
+        let decisions = &visit.osaka.decisions;
+        assert!(decisions.len() > 3, "{} decisions", decisions.len());
+        let clock = guest.game_clock(now).expect("met");
+        for d in decisions {
+            if fed {
+                let day = d.day.expect("fed");
+                // Her own clock, read at the decision's own moment.
+                assert_eq!(day, routine::day_time(clock.at(d.at), false), "{d}");
+                assert_eq!(day.slot, routine::Slot::Afternoon);
+                assert!(day.school_day && !day.vacation);
+            } else {
+                assert_eq!(d.day, None, "{d}");
+            }
+        }
+        let shown = guest.explain().expect("explained");
+        assert_eq!(shown.contains(" @ Mon 16:0"), fed, "{shown}");
+        assert_eq!(visit.osaka.day(now), guest.day(now));
+    }
+}
+
+/// The vacation flag is read once a game day, at its first read: a real
+/// date flipping in the middle of a game day changes nothing until the
+/// next one, so the slots are a pure function of game time within it.
+#[test]
+fn the_vacation_latch_holds_through_a_game_day() {
+    let mut guest = met(5);
+    guest.set_feed_clock(true);
+    guest.set_date(date(2026, 6, 17));
+    guest.advance(0);
+    // Tuesday 08:30, a school day: at school.
+    let mut now = advance_to(&mut guest, 0, real_at(1, 8, 30));
+    let day = guest.day(now).unwrap();
+    assert_eq!(
+        (day.weekday, day.slot),
+        (chrono::Weekday::Tue, routine::Slot::Away)
+    );
+    // Summer starts (the real date flips at 09:00): she stays at school,
+    // and the evening is still a school night's.
+    guest.set_date(date(2026, 7, 25));
+    for (h, m, slot) in [
+        (9, 0, routine::Slot::Away),
+        (12, 45, routine::Slot::Afternoon),
+        (20, 0, routine::Slot::Homework),
+        (22, 30, routine::Slot::Asleep),
+    ] {
+        now = advance_to(&mut guest, now, real_at(1, h, m));
+        let day = guest.day(now).unwrap();
+        assert_eq!(day.slot, slot, "Tue {h}:{m}");
+        assert!(!day.vacation, "Tue {h}:{m}");
+    }
+    // Wednesday reads it afresh: vacation, a lie-in until 09:00.
+    now = advance_to(&mut guest, now, real_at(2, 8, 30));
+    let day = guest.day(now).unwrap();
+    assert!(day.vacation && !day.school_day);
+    assert_eq!(day.slot, routine::Slot::Asleep);
+    assert_eq!(
+        guest.clock_label(now).as_deref(),
+        Some("Wed 08:30 Asleep (vacation)")
+    );
+    // The date goes away mid-day: Wednesday stays a vacation day.
+    guest.set_date(None);
+    now = advance_to(&mut guest, now, real_at(2, 10, 0));
+    let day = guest.day(now).unwrap();
+    assert!(day.vacation);
+    assert_eq!(day.slot, routine::Slot::Morning);
+    // Thursday, no calendar: school.
+    now = advance_to(&mut guest, now, real_at(3, 9, 0));
+    let day = guest.day(now).unwrap();
+    assert!(!day.vacation && day.school_day);
+    assert_eq!(day.slot, routine::Slot::Away);
+}
+
+/// While the clock is fed, crossing a slot boundary hands out her
+/// record (in the batch's stead), so it's consistent at departures and
+/// bedtimes; unfed, only the batch does.
+#[test]
+fn a_slot_change_saves_her_record_when_fed() {
+    for fed in [false, true] {
+        let mut guest = met(5);
+        guest.set_feed_clock(fed);
+        guest.advance(0);
+        // 17:50, the record just handed out.
+        let now = advance_to(&mut guest, 0, real_at(0, 17, 50));
+        let _ = guest.ledger_to_save();
+        // 18:00:30: the evening, ten and a half game minutes on.
+        let now = advance_to(&mut guest, now, real_at(0, 18, 0) + 5_000);
+        assert_eq!(guest.ledger_to_save().is_some(), fed, "fed: {fed}");
+        // And not again within the slot (nor the batch, from 17:50).
+        advance_to(&mut guest, now, real_at(0, 18, 15));
+        assert_eq!(guest.ledger_to_save(), None, "fed: {fed}");
+    }
+}
+
+/// A tick catching up over a long gap reads the routine at each
+/// decision's own moment, not the tick's: decisions across a slot
+/// boundary land in different minutes and slots.
+#[test]
+fn every_decision_reads_the_routine_at_its_own_moment() {
+    let mut ui = stage_ui();
+    let (real, view) = real_frame(&mut ui, 100, 30);
+    let mut guest = Guest::new(5);
+    guest.set_feed_clock(true);
+    guest.set_date(date(2026, 6, 17));
+    guest.cue(Scene::Arrive);
+    paint(&mut guest, &real, &view, 0);
+    let mut now = 0;
+    while now < 20_000 {
+        now += 500;
+        guest.advance(now);
+        paint(&mut guest, &real, &view, now);
+    }
+    // 17:50, then one long gap to past 18:10 with no tick between.
+    guest.ledger.clock = 110;
+    guest.clock_rem = 0;
+    guest.advance(now);
+    let before = now;
+    now += real_ms(25);
+    // One tick runs at most 64 events: tick again at the same moment
+    // until it has caught up.
+    for _ in 0..8 {
+        guest.advance(now);
+    }
+    let State::Visiting(visit) = &guest.state else {
+        panic!("still visiting");
+    };
+    let clock = guest.game_clock(now).expect("met");
+    let gap: Vec<_> = visit
+        .osaka
+        .decisions
+        .iter()
+        .filter(|d| d.at > before)
+        .collect();
+    for d in &gap {
+        assert_eq!(d.day, Some(routine::day_time(clock.at(d.at), false)), "{d}");
+    }
+    let minutes: std::collections::HashSet<u16> = gap
+        .iter()
+        .filter_map(|d| d.day.map(|day| day.minute))
+        .collect();
+    let slots: std::collections::HashSet<routine::Slot> = gap
+        .iter()
+        .filter_map(|d| d.day.map(|day| day.slot))
+        .collect();
+    assert!(minutes.len() > 1, "{minutes:?}");
+    assert_eq!(
+        slots,
+        [routine::Slot::Afternoon, routine::Slot::Evening].into(),
+        "{gap:?}"
+    );
+}
+
+/// Moving out on game day 0 drops the day's latch and slot with her
+/// clock: the next meeting's day 0 latches from the date as it is then,
+/// and its first slot is compared with nothing of the old home's.
+#[test]
+fn moving_out_forgets_the_days_latch_and_slot() {
+    let mut guest = met(5);
+    guest.set_feed_clock(true);
+    guest.set_date(date(2026, 7, 25));
+    guest.advance(0);
+    // Monday 18:30, a vacation day: the evening.
+    let now = advance_to(&mut guest, 0, real_at(0, 18, 30));
+    let day = guest.day(now).unwrap();
+    assert!(day.vacation);
+    assert_eq!(day.slot, routine::Slot::Evening);
+    guest.move_out(9);
+    guest.set_date(date(2026, 6, 17));
+    guest.ledger.visits = 1;
+    let _ = guest.ledger_to_save();
+    // Her first tick after the meeting.
+    let now = now + 1_000;
+    guest.advance(now);
+    let day = guest.day(now).unwrap();
+    assert_eq!((day.day, day.slot), (0, routine::Slot::Afternoon));
+    assert!(!day.vacation, "day 0 latched afresh");
+    assert_eq!(guest.ledger_to_save(), None, "no slot change to save");
+}
+
+/// The stage's `t`: her clock skips forward to the next boundary of her
+/// routine, never back, and the record is handed out; nothing before she
+/// has met you.
+#[test]
+fn skipping_her_clock_walks_her_routine_forward() {
+    let mut fresh = Guest::new(5);
+    fresh.advance(0);
+    fresh.skip_clock(1_000);
+    assert_eq!(fresh.ledger.clock, 0);
+    assert_eq!(fresh.ledger_to_save(), None);
+
+    let mut guest = met(5);
+    guest.set_date(date(2026, 6, 17));
+    guest.advance(0);
+    // A little way into Monday afternoon.
+    let mut now = advance_to(&mut guest, 0, real_ms(7) + 123);
+    let mut labels = Vec::new();
+    for _ in 0..12 {
+        let before = game_ms(&guest);
+        guest.skip_clock(now);
+        assert!(game_ms(&guest) > before, "forward only");
+        assert_eq!(guest.clock_rem, 0, "onto the minute");
+        assert!(guest.ledger_to_save().is_some(), "handed out");
+        labels.push(guest.clock_label(now).unwrap());
+        // A while later (time runs on between skips).
+        now += 1_000;
+        guest.advance(now);
+    }
+    assert_eq!(
+        labels[..10],
+        [
+            "Mon 18:00 Evening",
+            "Mon 20:00 Homework",
+            "Mon 22:30 Asleep",
+            "Tue 07:00 Morning",
+            "Tue 08:15 Away",
+            "Tue 12:45 Afternoon",
+            "Tue 18:00 Evening",
+            "Tue 20:00 Homework",
+            "Tue 22:30 Asleep",
+            "Wed 07:00 Morning",
+        ]
+    );
+    // A skip between ticks brings her clock up to its own moment first:
+    // it lands on the boundary itself, and the next tick at the same
+    // moment adds nothing.
+    assert_eq!(labels[10..], ["Wed 08:15 Away", "Wed 12:45 Afternoon"]);
+    let later = now + 5_000;
+    guest.skip_clock(later);
+    let evening = (2 * 1440 + 18 * 60 - routine::START) * 60_000;
+    assert_eq!(game_ms(&guest), evening);
+    assert_eq!(
+        guest.clock_label(later).as_deref(),
+        Some("Wed 18:00 Evening")
+    );
+    guest.advance(later);
+    assert_eq!(game_ms(&guest), evening, "counted once");
+    // At the clock's very end the boundary can't be reached: nothing
+    // moves, not even back to the whole minute, and nothing is saved.
+    guest.ledger.clock = ledger::MINUTES_MAX;
+    guest.clock_rem = 12_345;
+    guest.advance(later);
+    let _ = guest.ledger_to_save();
+    let end = game_ms(&guest);
+    guest.skip_clock(later);
+    assert_eq!(game_ms(&guest), end, "never back");
+    assert_eq!(guest.ledger_to_save(), None);
+
+    // A visiting Osaka reads the skipped clock at once.
+    let mut ui = stage_ui();
+    let (real, view) = real_frame(&mut ui, 100, 30);
+    let mut guest = Guest::new(5);
+    guest.set_feed_clock(true);
+    guest.cue(Scene::Arrive);
+    paint(&mut guest, &real, &view, 0);
+    guest.advance(1_000);
+    guest.skip_clock(1_000);
+    let State::Visiting(visit) = &guest.state else {
+        panic!("visiting");
+    };
+    let day = visit.osaka.day(1_000).unwrap();
+    assert_eq!((day.minute, day.slot), (18 * 60, routine::Slot::Evening));
+}
+
 // ---- Deliveries and the shopping channel ----
 
 /// The channel sells her furniture first; decor when her room feeling
@@ -7950,7 +8282,7 @@ fn tick_pocket(
     while now < until {
         now += 50;
         let chances = judge(osaka);
-        osaka.tick(now, terrain, &chances, rng);
+        osaka.tick(now, None, terrain, &chances, rng);
         if done(osaka) {
             return Some(now);
         }
@@ -8140,7 +8472,7 @@ fn every_other_spot_gone_she_keeps_it_where_it_is() {
         let kept = loop {
             assert!(now < 60_000, "graphics {graphics}: still at it");
             now += 50;
-            osaka.tick(now, &terrain, &judged(&osaka), &mut rng);
+            osaka.tick(now, None, &terrain, &judged(&osaka), &mut rng);
             if !set && osaka.episode().is_some_and(|e| e.set_down) {
                 // The frame takes it.
                 osaka.set_down_done(Furniture::Sofa, now);

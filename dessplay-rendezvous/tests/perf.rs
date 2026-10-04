@@ -66,6 +66,10 @@ use tokio::sync::mpsc;
 use tuirealm::ratatui::layout::Size;
 use tuirealm::terminal::TestTerminalAdapter;
 
+/// The real date the houseguest is told: a mid-June Wednesday, with no
+/// calendar entry and no vacation, so she does what she does any day.
+const JUNE_17: Option<chrono::NaiveDate> = chrono::NaiveDate::from_ymd_opt(2026, 6, 17);
+
 // Every seeded entry is its own AniDB series, so `franchises()` — whose
 // per-component file collection scans the whole metadata map — builds this
 // many components and rescans them all on every `apply_snapshot`. The two
@@ -423,7 +427,7 @@ async fn perf_rig(harness: &Harness, name: &str, nonce: u128, series_count: u32)
     let ui_actions = action_tx.clone();
     let ui_thread = std::thread::spawn(move || {
         let mut adapter = TestTerminalAdapter::new(Size::new(120, 40)).expect("test adapter");
-        run_ui_loop(ui, ui_rx, ui_actions, &mut adapter);
+        run_ui_loop(ui, ui_rx, ui_actions, &mut adapter, JUNE_17);
     });
 
     PerfRig {
@@ -605,7 +609,7 @@ fn houseguest_visit_cpu_is_negligible() {
     let (action_tx, _action_rx) = mpsc::channel(64);
     let ui_thread = std::thread::spawn(move || {
         let mut adapter = TestTerminalAdapter::new(Size::new(120, 40)).expect("test adapter");
-        run_ui_loop(ui, ui_rx, action_tx, &mut adapter);
+        run_ui_loop(ui, ui_rx, action_tx, &mut adapter, JUNE_17);
         adapter
     });
 
