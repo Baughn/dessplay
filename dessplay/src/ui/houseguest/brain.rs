@@ -262,6 +262,33 @@ pub(super) fn day_seed(master: u64, day: u64) -> u64 {
     z ^ (z >> 31)
 }
 
+/// Salts the seed of a night's midnight snack (see [`night_snack`]):
+/// keeps its hash apart from every other use of the day's seed (the
+/// mood's, step 7's rare draw), so whether she snacks tonight says
+/// nothing of the day she wakes to. (No test pins it: any salt, or none,
+/// passes the snack's own tests; what it guards is a future unsalted
+/// use of [`day_seed`].)
+const SNACK_SALT: u64 = 0x736e_6163_6b5f_3f21;
+
+/// Her midnight snack on the night that ends on game day `morning`, of
+/// the home whose master seed is `master` (phase 5b, round 1): one night
+/// in four, at a minute of [`routine::SNACK_WINDOW`] (since midnight of
+/// `morning`). A pure hash of the two, as [`day_seed`] is: neither random
+/// stream, so whether and when never moves anything else she does.
+///
+/// [`routine::SNACK_WINDOW`]: super::routine::SNACK_WINDOW
+pub(super) fn night_snack(master: u64, morning: u64) -> Option<u16> {
+    let mut z = day_seed(master, morning) ^ SNACK_SALT;
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^= z >> 31;
+    let (from, until) = super::routine::SNACK_WINDOW;
+    let span = u64::from(until - from);
+    // The low bits say whether, the high ones when.
+    z.is_multiple_of(4)
+        .then(|| from + ((z >> 32) % span) as u16)
+}
+
 /// Where a want would have her, as far as her needs care.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Spot {

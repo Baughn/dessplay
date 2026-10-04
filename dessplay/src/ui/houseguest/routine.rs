@@ -278,6 +278,11 @@ impl Clock {
         next_wake(game, |day| self.vacation_on(day))
     }
 
+    /// Her first wake time after `game` ([`next_morning`]).
+    pub fn next_morning(&self, game: u64) -> u64 {
+        next_morning(game, |day| self.vacation_on(day))
+    }
+
     /// The next slot boundary after `game` (game millis since
     /// [`START`]), every day judged by its own flag ([`next_boundary`]).
     pub fn next_boundary(&self, game: u64) -> u64 {
@@ -308,6 +313,14 @@ pub struct DayTime {
     pub vacation: bool,
     /// The game day's weekday.
     pub weekday: Weekday,
+}
+
+impl DayTime {
+    /// Whether the part-time job is open now ([`work_open`]): on a day
+    /// off, 10:00 to 17:00.
+    pub fn work_open(&self) -> bool {
+        work_open(self.day, self.minute, self.vacation)
+    }
 }
 
 impl std::fmt::Display for DayTime {
@@ -419,6 +432,21 @@ pub fn day_time(game: u64, vacation: bool) -> DayTime {
     }
 }
 
+/// The stretch of every night (minutes since midnight, from and until)
+/// her midnight snack may fall in: inside every night (each covers 23:30
+/// to 07:00, the latest bedtime to the earliest wake), clear of settling
+/// in and of waking.
+pub const SNACK_WINDOW: (u16, u16) = (hm(0, 30), hm(5, 30));
+
+/// Game millis since [`START`] at `minute` (since midnight) of game
+/// `day` (0 for a moment before her start).
+pub fn game_of(day: u64, minute: u16) -> u64 {
+    day.saturating_mul(DAY_MIN)
+        .saturating_add(u64::from(minute))
+        .saturating_sub(START)
+        .saturating_mul(MINUTE_MS)
+}
+
 /// Whether the part-time job is open at `minute` of game `day`: on a day
 /// off (a weekend, or vacation), 10:00 to 17:00.
 pub fn work_open(day: u64, minute: u16, vacation: bool) -> bool {
@@ -474,6 +502,20 @@ pub fn next_cutting(game: u64, vacation: impl Fn(u64) -> bool) -> u64 {
 /// at 09:00). Computed from the table, never assumed.
 pub fn next_wake(game: u64, vacation: impl Fn(u64) -> bool) -> u64 {
     next_where(game, vacation, |slot| slot != Slot::Asleep)
+}
+
+/// Her first wake time after `game` (game millis since [`START`]): from
+/// a moment of the night, its morning ([`next_wake`]); from one of the
+/// day, the morning after the next bedtime. Each day judged by
+/// `vacation(day)`.
+pub fn next_morning(game: u64, vacation: impl Fn(u64) -> bool) -> u64 {
+    let (day, _) = split(game);
+    let night = if day_time(game, vacation(day)).slot == Slot::Asleep {
+        game
+    } else {
+        next_where(game, &vacation, |slot| slot == Slot::Asleep)
+    };
+    next_wake(night, vacation)
 }
 
 /// A moment of her clock as a test names it: `h:m` of game `day`.

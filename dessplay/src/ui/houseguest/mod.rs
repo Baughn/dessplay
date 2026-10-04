@@ -337,6 +337,9 @@ struct Leaving {
     /// Line art for the startled-and-wave beat before she bursts into
     /// letters.
     image: Option<Placement>,
+    /// Her face for that first beat: startled, or (woken in the night) a
+    /// sleepy blink.
+    startled: sprite::Face,
     /// Her furniture's line art, held until the rain.
     props: Vec<Shown>,
     /// The pieces she overlapped, drawn in her image.
@@ -800,6 +803,13 @@ impl Guest {
             State::Arriving | State::Absent => {}
             State::Visiting(visit) => {
                 tracing::info!("houseguest leaving");
+                // In the night she isn't startled: she blinks, half
+                // asleep, then waves.
+                let startled = if visit.osaka.drowsy(now) {
+                    sprite::Face::Blink
+                } else {
+                    sprite::Face::Surprised
+                };
                 if !visit.painted.is_empty() {
                     let dissolve = Dissolve::new(
                         now,
@@ -807,10 +817,12 @@ impl Guest {
                         visit.osaka.x,
                         self.truecolor,
                         visit.size,
-                    );
+                    )
+                    .startled(startled);
                     self.state = State::Leaving(Box::new(Leaving {
                         dissolve,
                         image: visit.image,
+                        startled,
                         props: visit
                             .shown
                             .into_iter()
@@ -1170,7 +1182,7 @@ impl Guest {
                     // She jumps up out of anything she was in; what she
                     // overlapped is still drawn in her image.
                     let look = if t < dissolve::SMILE_FROM_MS {
-                        Look::Pose(sprite::Pose::Stand, sprite::Face::Surprised)
+                        Look::Pose(sprite::Pose::Stand, leaving.startled)
                     } else {
                         Look::Wave((t / dissolve::WAVE_MS).is_multiple_of(2))
                     };
@@ -1538,6 +1550,8 @@ impl Guest {
         // Her routine reaches her from her first moment (her first paint
         // may tuck her in), not only from her first tick.
         osaka.read_clock(self.routine_clock(now).filter(|_| self.feed_clock));
+        // Come in the night for the accordion, she was asleep: groggy.
+        osaka.groggy_if_night(now);
         // At night she's tucked in at the first paint (not come on an
         // errand: that's for the accordion).
         let tuck = day.is_some_and(|day| day.slot == routine::Slot::Asleep) && !osaka.on_errand();

@@ -1,4 +1,4 @@
-//! Golden trajectories: six scenes, four seeds each, in ASCII and line
+//! Golden trajectories: seven scenes, four seeds each, in ASCII and line
 //! art, hashed frame by frame; and the first four again with her routine
 //! never reaching her (the `UNFED_*` tables: as she was before the clock
 //! fed her). A refactor that means to change nothing she does keeps every
@@ -256,8 +256,9 @@ fn resident(seed: u64, graphics: bool, fed: bool) -> u64 {
     )
 }
 
-/// A furnished home over ten minutes (long enough to go to work), with
-/// the odd chat line.
+/// A furnished home over ten minutes from Monday 16:00, with the odd
+/// chat line: long enough to go to work unfed; fed, her job's closed on a
+/// school day (see [`weekend`]).
 fn furnished(seed: u64, graphics: bool, fed: bool) -> u64 {
     let (real, view) = home_screen();
     let mut guest = guest_of(seed, fed);
@@ -419,6 +420,32 @@ fn tucked_in(seed: u64, graphics: bool, _: bool) -> u64 {
     trace.finish(&guest, &format!("tucked-{seed}-{graphics}"))
 }
 
+/// Saturday 10:00, a day off (her part-time job open until 17:00): ten
+/// minutes of her morning at home, with the odd chat line.
+fn weekend(seed: u64, graphics: bool, _: bool) -> u64 {
+    let (real, view) = home_screen();
+    let at = routine::GameTime {
+        day: 5,
+        h: 10,
+        m: 0,
+    };
+    let mut guest = home_at(seed, at, graphics);
+    let chats = times(seed, 6, 0, (40_000, 120_000));
+    let mut mark = ChatMark::default();
+    let mut trace = Trace::new();
+    drive(&mut guest, &mut trace, 600_000, &[], |now, step| {
+        if arrived_within(&chats, now, step) {
+            mark.synced += 1;
+        }
+        let view = IdleView {
+            chat_mark: mark,
+            ..view.clone()
+        };
+        (real.clone(), view, false)
+    });
+    trace.finish(&guest, &format!("weekend-{seed}-{graphics}"))
+}
+
 /// Every run's hash, for a table of `(seed, ASCII, line art)`.
 fn hashes(scene: SceneFn, fed: bool) -> Vec<(u64, u64, u64)> {
     (0..4)
@@ -456,10 +483,10 @@ fn golden_stage_room() {
         "stage",
         stage_room,
         &[
-            (0, 0x2862f066781fc555, 0x2d074fdacac51db2),
-            (1, 0x8a4cc24911db2912, 0xf2980d1200ed541d),
-            (2, 0xde3e51f4e7217ef0, 0x10464039ee5778e1),
-            (3, 0x6426c52c5bb5e1dc, 0x8dbca5458879d84a),
+            (0, 0xf0c8e581c411846a, 0x2d074fdacac51db2),
+            (1, 0xae04cfc95045af79, 0x25b0a880ce4d67e1),
+            (2, 0xdce6aa718de2d517, 0x889e14b4e8cf8df9),
+            (3, 0x95b51d88911f193f, 0xda9401e90ca96f7a),
         ],
     );
 }
@@ -484,10 +511,10 @@ fn golden_furnished_home() {
         "furnished",
         furnished,
         &[
-            (0, 0xa1525fc30481c331, 0x912c08cf08982bc2),
-            (1, 0x50ad7fc3219cda6d, 0xd564e0633d480296),
-            (2, 0xfc3ddc27a30adad9, 0xe5595ea585a8be56),
-            (3, 0x405cec71f2e41f35, 0xefa74b1d54a5e882),
+            (0, 0xce411351d40b8db0, 0x704a66641848f382),
+            (1, 0xdf957f9a38ed293a, 0x36a820fdf5a2da93),
+            (2, 0xaa7b2ceb0bf8b5bc, 0x68ef8c97aaef29b5),
+            (3, 0xc9279ea0f38a8416, 0x44aefdc2afe74571),
         ],
     );
 }
@@ -512,10 +539,10 @@ fn golden_homework_evening() {
         "evening",
         homework_evening,
         &[
-            (0, 0x04f133514b8152cc, 0x6f02e97e9ce55b2f),
-            (1, 0x1f92bbb1f3b08c96, 0xca2256fe6ffad767),
-            (2, 0x93b94903ac9e82c2, 0xedd75d7bda0bef42),
-            (3, 0xdef2ec52d0363b31, 0x12050d63244f268c),
+            (0, 0xc714add6b7035e9a, 0xaf1bbbbda0fa2149),
+            (1, 0xd8350653eb6c8d0f, 0xf986e1a0f8174e65),
+            (2, 0xad3a7e6a9cff564d, 0x5c55d0f1198d1566),
+            (3, 0x857f177b56066f57, 0xf887861180fac779),
         ],
     );
 }
@@ -530,6 +557,20 @@ fn golden_tucked_in() {
             (1, 0x3cb861c6934daed1, 0x43718fdc5d1aa0f2),
             (2, 0xdfc846fd62ec9a27, 0xe2c5ec2d0bc9326e),
             (3, 0x23829cc8c48b959f, 0x69b70050d8b5df9a),
+        ],
+    );
+}
+
+#[test]
+fn golden_weekend() {
+    check(
+        "weekend",
+        weekend,
+        &[
+            (0, 0x3fb754fd56078d46, 0xa6cc921ccabf64aa),
+            (1, 0x27792fa4bfae67ed, 0xe9375b7e8b8631dc),
+            (2, 0x265af502895ee3f2, 0x31a531f225ae7477),
+            (3, 0x951005ed7743aba5, 0x1dccf0464b05e7e7),
         ],
     );
 }
@@ -552,12 +593,14 @@ const UNFED_RESIDENT: [(u64, u64, u64); 4] = [
     (3, 0xf1fe032ad00023fe, 0x7fc7ae1de4f031c3),
 ];
 
-/// The furnished home's tables at the end of phase 5b step 3.
+/// The furnished home's tables at the end of phase 5b step 3, but for
+/// step 4b's fix to her part-time job's end (a shift cut short, out or
+/// back, ends as she next decides: its trace diff is in that commit).
 const UNFED_FURNISHED: [(u64, u64, u64); 4] = [
-    (0, 0x6b25ac5adac9b573, 0x44e3c048c59ad257),
-    (1, 0x7533027a7302563b, 0xd9819238399e2aed),
-    (2, 0x92b25c4cd2726a6e, 0xbc1c98a42939d482),
-    (3, 0xaff6c1f55c05d4c3, 0xbe1c52de268388d0),
+    (0, 0xb1d8e0d2d3efee1b, 0x15bd5f15742432e7),
+    (1, 0x91fffe61c77c6a47, 0x4b674f554f1af2ad),
+    (2, 0x484952bd84f65872, 0x919783c7eaacf2b5),
+    (3, 0x6203639870ff41a9, 0xdf31ce48e46e5201),
 ];
 
 /// The errand's tables at the end of phase 5b step 3.

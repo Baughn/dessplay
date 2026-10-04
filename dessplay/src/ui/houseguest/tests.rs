@@ -1838,19 +1838,19 @@ fn home_screen() -> (Buffer, IdleView) {
 /// other half free.
 const VISIT_IMAGES: usize = 512;
 
-/// A furnished home over long visits in line art: she uses each of her
-/// things (and sleeps in her bed more than on a border once she has one), goes
-/// to work at most once a visit, her
-/// image with the pieces she overlaps never hides text, and her images
-/// stay within the frame cache and [`VISIT_IMAGES`]: none she needs
-/// again was dropped.
+/// A furnished home over long visits in line art, on a Saturday from
+/// 10:00 (her part-time job's open: a day off, 10:00 to 17:00): she uses
+/// each of her things (and sleeps in her bed more than on a border once
+/// she has one), goes to work at most once a visit, her image with the
+/// pieces she overlaps never hides text, and her images stay within the
+/// frame cache and [`VISIT_IMAGES`]: none she needs again was dropped.
 #[test]
 fn a_furnished_home_gets_used_and_stays_cheap() {
     use super::brain::Want;
     use super::room::Use;
     let mut choices: Vec<Want> = Vec::new();
     for seed in 0..2u64 {
-        let (mut guest, real, view) = furnished_home(seed);
+        let (mut guest, real, view) = furnished_home_in(on_saturday(seed), &[]);
         live_in(&mut guest, &real, &view, 20 * 60_000, seed);
         let visit = visit_of(&guest);
         let shifts = visit
@@ -2011,6 +2011,15 @@ fn furnished_home(seed: u64) -> (Guest, Buffer, IdleView) {
 /// [`furnished_home`], with `more` given too.
 fn furnished_home_with(seed: u64, more: &[Furniture]) -> (Guest, Buffer, IdleView) {
     furnished_home_in(Guest::new(seed), more)
+}
+
+/// A guest from `seed` meeting her for the first time, her clock
+/// reading Saturday 10:00 (from her first visit on, as it would have
+/// she met on a Saturday morning): a day off, her part-time job open.
+fn on_saturday(seed: u64) -> Guest {
+    let mut guest = Guest::new(seed);
+    guest.ledger.clock = sat(10, 0).minutes();
+    guest
 }
 
 /// [`furnished_home_with`], for `guest` as made (unfed, say).
@@ -3071,6 +3080,67 @@ fn tue(h: u16, m: u16) -> routine::GameTime {
     routine::GameTime { day: 1, h, m }
 }
 
+/// `h:m` of Saturday, game day 5: a day off (her part-time job's open
+/// from 10:00 to 17:00).
+fn sat(h: u16, m: u16) -> routine::GameTime {
+    routine::GameTime { day: 5, h, m }
+}
+
+/// A visitor whose input ends a night visit gets a sleepy goodbye: her
+/// first beat is a blink, not the startled face (round 1); by day it's
+/// startled as ever. Tucked in, or up and about in the night, in both
+/// drawing modes; the ASCII dissolve's face shows it.
+#[test]
+fn a_night_visit_ends_with_a_sleepy_goodbye() {
+    use super::sprite::Face;
+    let (real, view) = home_screen();
+    let bed = [(Furniture::Bed, Nook::Playlist, 500)];
+    for graphics in [false, true] {
+        for (at, standing, face) in [
+            (mon(23, 0), false, Face::Blink),
+            (mon(23, 0), true, Face::Blink),
+            (mon(16, 30), true, Face::Surprised),
+        ] {
+            let what = format!("{at:?} standing={standing} graphics={graphics}");
+            let mut guest = home_at(3, at, &bed, graphics);
+            let mut now = until_visiting(&mut guest, &real, &view, 0);
+            while now < 20_000 {
+                shell_step(&mut guest, &real, &view, &mut now, true);
+            }
+            let night = face == Face::Blink;
+            assert_eq!(asleep(&guest), night, "{what}");
+            if standing {
+                let State::Visiting(visit) = &mut guest.state else {
+                    panic!("{what}: visiting");
+                };
+                let (x, y) = (visit.osaka.x, visit.osaka.y);
+                visit.osaka.place(x, y, now);
+                paint(&mut guest, &real, &view, now);
+            }
+            guest.activity(now + 1);
+            let State::Leaving(leaving) = &guest.state else {
+                panic!("{what}: leaving");
+            };
+            assert_eq!(leaving.startled, face, "{what}");
+            let frame = paint(&mut guest, &real, &view, now + 50);
+            if !graphics && standing {
+                let text: Vec<String> = (0..frame.area.height)
+                    .map(|y| row_text(&frame, y, 0..frame.area.width))
+                    .collect();
+                let shows = |face: Face| {
+                    let glyphs: String = face.glyphs().iter().collect();
+                    text.iter().any(|row| row.contains(&glyphs))
+                };
+                assert!(shows(face), "{what}: {text:#?}");
+                assert!(
+                    !shows(if night { Face::Surprised } else { Face::Blink }),
+                    "{what}"
+                );
+            }
+        }
+    }
+}
+
 /// A home she has visited once, her clock at `at`, `pieces` placed in it
 /// (each on its nook's floor, `x` of the way along in thousandths), on a
 /// mid-June school day with nothing on the calendar: she's absent, and
@@ -3478,8 +3548,9 @@ fn a_visit_at_night_begins_tucked_in() {
 }
 
 /// Come on an errand at night (to poke the accordion), a visit isn't
-/// tucked in: the errand is what she came for. Come for nothing in
-/// particular, the same visit is.
+/// tucked in: the errand is what she came for, and she comes groggy
+/// (she was asleep). Come for nothing in particular, the same visit is
+/// tucked in, and she isn't groggy.
 #[test]
 fn an_errand_at_night_is_never_tucked_in() {
     let (real, view) = home_screen();
@@ -3507,6 +3578,7 @@ fn an_errand_at_night_is_never_tucked_in() {
             panic!("visiting");
         };
         assert_eq!(visit.tuck, !errand, "errand={errand}");
+        assert_eq!(visit.osaka.groggy(), errand, "errand={errand}");
     }
 }
 

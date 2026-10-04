@@ -67,6 +67,14 @@ impl Whims {
         self.below_at(label, salt, d) < n
     }
 
+    /// The whims of the `salt`th of a series of choices made under
+    /// `label` (her night's sleep-talk, each line its own: see
+    /// [`SLEEP_TALK`]), from which that choice draws as from a
+    /// decision's.
+    pub fn series(self, label: &str, salt: u64) -> Whims {
+        Whims(self.roll(label, salt))
+    }
+
     /// With probability `p` (0 never, 1 always).
     pub fn odds(self, label: &str, salt: u64, p: f64) -> bool {
         const D: u64 = 1 << 20;
@@ -678,6 +686,31 @@ pub(super) const MUSINGS: Pool = Pool {
     d: 1,
 };
 
+/// What she says in her sleep, now and then through the night (phase 5b
+/// A14; see [`LAST_HOUR_TALK`] for the night's last game hour).
+pub(super) const SLEEP_TALK: Pool = Pool {
+    id: PoolId::SleepTalk,
+    lines: &[
+        line!("Mm... melon bread..."),
+        line!("...no, the other hand..."),
+        line!("Nanja-kora..."),
+        line!("...penguins..."),
+        line!("...it's floatin'..."),
+        line!("Mm... Chiyo-chan..."),
+        line!("...not a sponge..."),
+    ],
+    n: 1,
+    d: 1,
+};
+
+/// What she says in her sleep in the last game hour before she wakes.
+pub(super) const LAST_HOUR_TALK: Pool = Pool {
+    id: PoolId::SleepTalk,
+    lines: &[line!("...five more minutes")],
+    n: 1,
+    d: 1,
+};
+
 /// The riddles she tells, spacing out: each question, and the answer
 /// she gives at once herself. Drawn whole (by its question).
 pub(super) const RIDDLES: [(&str, &str); 6] = [
@@ -753,6 +786,8 @@ pub(super) enum PoolId {
     /// The riddles she tells spacing out ([`RIDDLES`]): questions and
     /// answers both.
     Riddle,
+    /// What she says in her sleep ([`SLEEP_TALK`], [`LAST_HOUR_TALK`]).
+    SleepTalk,
     /// A test's pool, with no budget: not a pool she draws from.
     #[cfg(test)]
     Test,
@@ -761,11 +796,12 @@ pub(super) enum PoolId {
 impl PoolId {
     /// Every pool there is.
     #[cfg(test)]
-    pub const ALL: [PoolId; 5] = [
+    pub const ALL: [PoolId; 6] = [
         Self::Beat,
         Self::Door,
         Self::Musing,
         Self::Riddle,
+        Self::SleepTalk,
         Self::Test,
     ];
 
@@ -776,6 +812,7 @@ impl PoolId {
             Self::Door => 1,
             Self::Musing => 2,
             Self::Riddle => 3,
+            Self::SleepTalk => 4,
             // Out of the way of every pool she draws from.
             #[cfg(test)]
             Self::Test => u64::MAX,
@@ -787,7 +824,7 @@ impl PoolId {
     fn budgeted(self) -> bool {
         match self {
             Self::Beat => true,
-            Self::Door | Self::Musing | Self::Riddle => false,
+            Self::Door | Self::Musing | Self::Riddle | Self::SleepTalk => false,
             #[cfg(test)]
             Self::Test => false,
         }
@@ -821,7 +858,8 @@ impl PoolId {
                     },
                 ],
             ),
-            Self::Test => (4, Vec::new()),
+            Self::SleepTalk => (4, vec![SLEEP_TALK, LAST_HOUR_TALK]),
+            Self::Test => (5, Vec::new()),
         }
     }
 }
@@ -1128,6 +1166,12 @@ mod tests {
             assert!(distinct(PoolId::Riddle).contains(&question));
             assert!(distinct(PoolId::Riddle).contains(&answer));
         }
+        // Her sleep-talk: some eight lines, the last hour's apart.
+        assert_eq!(
+            distinct(PoolId::SleepTalk).len(),
+            SLEEP_TALK.lines.len() + LAST_HOUR_TALK.lines.len()
+        );
+        assert_eq!(distinct(PoolId::SleepTalk).len(), 8);
         assert!(distinct(PoolId::Test).is_empty());
         // No line is in two pools, so a line said is said from one.
         let mut pool_of: std::collections::BTreeMap<&str, PoolId> = Default::default();

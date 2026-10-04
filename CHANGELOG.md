@@ -24,6 +24,20 @@ Add new days at the top. Add new entries at the bottom of existing days.
   murmur. In the morning she gets up with a stretch and a "Mornin'" that
   shows her mood for the new day. Visit her at night and she's already
   tucked in.
+- Added: Osaka talks in her sleep now and then ("Mm... melon bread..."),
+  and in the last hour before she wakes, it's "...five more minutes".
+  With a fridge, some nights she pads over for a midnight snack in the
+  dark, then goes back to bed. If a message arrives at night while
+  you're scrolled back in the chat, she shuffles over half asleep, pokes
+  it, and goes back to bed. A visitor who ends a night visit gets a
+  sleepy blink goodbye instead of a startled one.
+- Changed: Osaka's part-time job is on weekends (and school holidays)
+  now, from 10 in the morning until 5 in the afternoon.
+- Fixed: After her part-time job, Osaka always comes home with her
+  shopping ("I'm home!"), even when she stumbles on her way back in.
+  She no longer vanishes for minutes on a later trip off the edge of the
+  screen, or says "I'm home!" without having left when something stopped
+  her on her way to work.
 
 ## 2026-10-03
 

@@ -109,6 +109,9 @@ pub(super) struct Dissolve {
     seed: u64,
     truecolor: bool,
     size: (u16, u16),
+    /// Her face for the first beat, before the goodbye smile: startled,
+    /// unless told otherwise ([`Dissolve::startled`]).
+    startled: Face,
 }
 
 fn hash(seed: u64, x: u16) -> u64 {
@@ -162,7 +165,15 @@ impl Dissolve {
             seed: t0,
             truecolor,
             size,
+            startled: Face::Surprised,
         }
+    }
+
+    /// This exit with `face` for her first beat instead of the startled
+    /// one (a sleepy blink, woken in the night).
+    pub fn startled(mut self, face: Face) -> Self {
+        self.startled = face;
+        self
     }
 
     /// When activity began.
@@ -269,7 +280,7 @@ impl Dissolve {
         let t = now.saturating_sub(self.t0);
         let generation = (t / FRAME_MS) as u32;
         let face = if t < SMILE_FROM_MS {
-            Face::Surprised
+            self.startled
         } else {
             Face::Pleased
         }
