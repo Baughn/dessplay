@@ -686,21 +686,50 @@ pub(super) const MUSINGS: Pool = Pool {
     d: 1,
 };
 
+/// Her sleep-talk's lines, every night.
+const SLEEP_TALK_LINES: [&str; 7] = [
+    line!("Mm... melon bread..."),
+    line!("...no, the other hand..."),
+    line!("Nanja-kora..."),
+    line!("...penguins..."),
+    line!("...it's floatin'..."),
+    line!("Mm... Chiyo-chan..."),
+    line!("...not a sponge..."),
+];
+
 /// What she says in her sleep, now and then through the night (phase 5b
-/// A14; see [`LAST_HOUR_TALK`] for the night's last game hour).
+/// A14; see [`LAST_HOUR_TALK`] for the night's last game hour, and
+/// [`NEW_YEAR_TALK`] for the New Year's).
 pub(super) const SLEEP_TALK: Pool = Pool {
     id: PoolId::SleepTalk,
-    lines: &[
-        line!("Mm... melon bread..."),
-        line!("...no, the other hand..."),
-        line!("Nanja-kora..."),
-        line!("...penguins..."),
-        line!("...it's floatin'..."),
-        line!("Mm... Chiyo-chan..."),
-        line!("...not a sponge..."),
-    ],
+    lines: &SLEEP_TALK_LINES,
     n: 1,
     d: 1,
+};
+
+/// `lines`, and `line` after them (`M` is one more than `N`).
+const fn and<const N: usize, const M: usize>(
+    lines: [&'static str; N],
+    line: &'static str,
+) -> [&'static str; M] {
+    assert!(M == N + 1, "one line more");
+    let mut out = [line; M];
+    let mut i = 0;
+    while i < N {
+        out[i] = lines[i];
+        i += 1;
+    }
+    out
+}
+
+/// The New Year's sleep-talk (Jan 1-3, her calendar's tint): every
+/// night's lines, and a dream of the first of the year.
+const NEW_YEAR_TALK_LINES: [&str; 8] = and(SLEEP_TALK_LINES, line!("Pigtails... flying..."));
+
+/// What she says in her sleep through the New Year (see [`SLEEP_TALK`]).
+pub(super) const NEW_YEAR_TALK: Pool = Pool {
+    lines: &NEW_YEAR_TALK_LINES,
+    ..SLEEP_TALK
 };
 
 /// What she says in her sleep in the last game hour before she wakes.
@@ -727,6 +756,71 @@ pub(super) const HOME: Pool = Pool {
     lines: &[line!("I'm home!"), line!("Tadaima!")],
     n: 1,
     d: 1,
+};
+
+/// Her first snack of a morning (by her routine).
+pub(super) const BREAKFAST: Pool = Pool {
+    id: PoolId::Routine,
+    lines: &[line!("Breakfast!")],
+    n: 1,
+    d: 1,
+};
+
+/// Her first snack of an evening (by her routine).
+pub(super) const DINNER: Pool = Pool {
+    id: PoolId::Routine,
+    lines: &[line!("Dinner time~")],
+    n: 1,
+    d: 1,
+};
+
+/// Up on a morning with no school (a weekend, a vacation).
+pub(super) const NO_SCHOOL: Pool = Pool {
+    id: PoolId::Routine,
+    lines: &[line!("No school today!")],
+    n: 1,
+    d: 1,
+};
+
+/// The lamp off for the night.
+pub(super) const NIGHT_NIGHT: Pool = Pool {
+    id: PoolId::Routine,
+    lines: &[line!("Night-night...")],
+    n: 1,
+    d: 1,
+};
+
+/// What her calendar has her say, owed once a day (see
+/// [`super::calendar::Owed`]): said as it's owed, never drawn (so only the
+/// tests list it: each counts as said from its pool).
+#[cfg(test)]
+pub(super) const CALENDAR: Pool = Pool {
+    id: PoolId::Calendar,
+    lines: &super::calendar::GREETINGS,
+    n: 1,
+    d: 1,
+};
+
+/// What she muses on in December (her calendar's tint), one musing in
+/// three.
+pub(super) const DECEMBER: Pool = Pool {
+    id: PoolId::December,
+    lines: &[
+        line!("Rudolph's nose... why?"),
+        line!("Snow tastes of nothing."),
+        line!("Kotatsu... kotatsu..."),
+    ],
+    n: 1,
+    d: 3,
+};
+
+/// What she muses on in summer's last week (her calendar's tint), one
+/// musing in two.
+pub(super) const PANIC: Pool = Pool {
+    id: PoolId::Panic,
+    lines: &[line!("Homework! Homework!")],
+    n: 1,
+    d: 2,
 };
 
 /// The riddles she tells, spacing out: each question, and the answer
@@ -807,8 +901,15 @@ pub(super) enum PoolId {
     /// What she says in her sleep ([`SLEEP_TALK`], [`LAST_HOUR_TALK`]).
     SleepTalk,
     /// What she says leaving for school and coming home ([`OFF`],
-    /// [`HOME`]).
+    /// [`HOME`]), and at the times of her day ([`BREAKFAST`], [`DINNER`],
+    /// [`NO_SCHOOL`], [`NIGHT_NIGHT`]).
     Routine,
+    /// What her calendar owes her to say (its greetings).
+    Calendar,
+    /// Her December musings ([`DECEMBER`]).
+    December,
+    /// Her musing in summer's panic week ([`PANIC`]).
+    Panic,
     /// A test's pool, with no budget: not a pool she draws from.
     #[cfg(test)]
     Test,
@@ -817,13 +918,16 @@ pub(super) enum PoolId {
 impl PoolId {
     /// Every pool there is.
     #[cfg(test)]
-    pub const ALL: [PoolId; 7] = [
+    pub const ALL: [PoolId; 10] = [
         Self::Beat,
         Self::Door,
         Self::Musing,
         Self::Riddle,
         Self::SleepTalk,
         Self::Routine,
+        Self::Calendar,
+        Self::December,
+        Self::Panic,
         Self::Test,
     ];
 
@@ -836,6 +940,9 @@ impl PoolId {
             Self::Riddle => 3,
             Self::SleepTalk => 4,
             Self::Routine => 5,
+            Self::Calendar => 6,
+            Self::December => 7,
+            Self::Panic => 8,
             // Out of the way of every pool she draws from.
             #[cfg(test)]
             Self::Test => u64::MAX,
@@ -847,7 +954,14 @@ impl PoolId {
     fn budgeted(self) -> bool {
         match self {
             Self::Beat => true,
-            Self::Door | Self::Musing | Self::Riddle | Self::SleepTalk | Self::Routine => false,
+            Self::Door
+            | Self::Musing
+            | Self::Riddle
+            | Self::SleepTalk
+            | Self::Routine
+            | Self::Calendar
+            | Self::December
+            | Self::Panic => false,
             #[cfg(test)]
             Self::Test => false,
         }
@@ -881,9 +995,15 @@ impl PoolId {
                     },
                 ],
             ),
-            Self::SleepTalk => (4, vec![SLEEP_TALK, LAST_HOUR_TALK]),
-            Self::Routine => (5, vec![OFF, HOME]),
-            Self::Test => (6, Vec::new()),
+            Self::SleepTalk => (4, vec![SLEEP_TALK, LAST_HOUR_TALK, NEW_YEAR_TALK]),
+            Self::Routine => (
+                5,
+                vec![OFF, HOME, BREAKFAST, DINNER, NO_SCHOOL, NIGHT_NIGHT],
+            ),
+            Self::Calendar => (6, vec![CALENDAR]),
+            Self::December => (7, vec![DECEMBER]),
+            Self::Panic => (8, vec![PANIC]),
+            Self::Test => (9, Vec::new()),
         }
     }
 }
@@ -1143,13 +1263,30 @@ mod tests {
     }
 
     /// Lint: every pooled line fits a bubble (`line!` already makes an
-    /// over-long one a compile error), and every pool has a line to say.
+    /// over-long one a compile error), and so does every line a script
+    /// says; and every pool has a line to say.
     /// Every pool lists its own lines, all of them: the beat pool's six.
     #[test]
     fn every_pooled_line_fits_a_bubble() {
         for (pool, line) in all_lines() {
             assert!(super::super::fits_a_bubble(line), "{pool:?}: {line:?}");
             assert!(!line.is_empty(), "{pool:?}");
+        }
+        // And every line her scripts' keys say, pooled or not.
+        use super::super::script::{self, ScriptId};
+        let scripted = script::script_lines();
+        for &(id, line) in &scripted {
+            assert!(super::super::fits_a_bubble(line), "{id:?}: {line:?}");
+            assert!(!line.is_empty(), "{id:?}");
+        }
+        for (id, line) in [
+            (ScriptId::Setsubun, script::ONI_WA_SOTO),
+            (ScriptId::Setsubun, script::FUKU_WA_UCHI),
+            (ScriptId::FirstSunrise, script::FIRST_SUNRISE_LINE),
+            (ScriptId::DashForgot, script::FORGOT_SOMETHING),
+            (ScriptId::DashForgot, script::WHAT_WAS_IT),
+        ] {
+            assert!(scripted.contains(&(id, line)), "{id:?}: {line:?}");
         }
         for (i, id) in PoolId::ALL.into_iter().enumerate() {
             let (at, pools) = id.listed();
@@ -1190,12 +1327,31 @@ mod tests {
             assert!(distinct(PoolId::Riddle).contains(&question));
             assert!(distinct(PoolId::Riddle).contains(&answer));
         }
-        // Her sleep-talk: some eight lines, the last hour's apart.
+        // Her sleep-talk: some eight lines, the last hour's apart, and
+        // the New Year's dream.
         assert_eq!(
             distinct(PoolId::SleepTalk).len(),
-            SLEEP_TALK.lines.len() + LAST_HOUR_TALK.lines.len()
+            SLEEP_TALK.lines.len() + LAST_HOUR_TALK.lines.len() + 1
         );
-        assert_eq!(distinct(PoolId::SleepTalk).len(), 8);
+        assert_eq!(distinct(PoolId::SleepTalk).len(), 9);
+        assert!(
+            SLEEP_TALK
+                .lines
+                .iter()
+                .all(|line| NEW_YEAR_TALK.lines.contains(line))
+        );
+        // Her routine's: off and home, two each; a line each for the
+        // times of her day.
+        assert_eq!(distinct(PoolId::Routine).len(), 2 + 2 + 4);
+        // Her calendar's: every greeting a date owes, each once.
+        assert_eq!(
+            distinct(PoolId::Calendar).len(),
+            super::super::calendar::GREETINGS.len()
+        );
+        // Her seasons' musings: December's three, panic week's one, none
+        // a musing she says the year round.
+        assert_eq!(distinct(PoolId::December).len(), 3);
+        assert_eq!(distinct(PoolId::Panic).len(), 1);
         assert!(distinct(PoolId::Test).is_empty());
         // No line is in two pools, so a line said is said from one.
         let mut pool_of: std::collections::BTreeMap<&str, PoolId> = Default::default();

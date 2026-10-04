@@ -1600,7 +1600,10 @@ fn every_scene_has_a_spot_in_the_stage_room() {
                         Scene::Arrange => {
                             visit.osaka.carrying().is_some() || sofa(&guest) != sofa_was
                         }
-                        Scene::DashIn | Scene::DashForgot => {
+                        Scene::DashIn
+                        | Scene::DashForgot
+                        | Scene::Setsubun
+                        | Scene::FirstSunrise => {
                             let Some(Cue::Script(id)) = scene.cue() else {
                                 panic!("{at}: {scene:?} cues no script");
                             };
@@ -10895,6 +10898,7 @@ proptest! {
 }
 
 mod away;
+mod calendar;
 mod census;
 mod dash;
 mod golden;

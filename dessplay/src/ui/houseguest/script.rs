@@ -7,6 +7,7 @@
 //! is a pure function of the act.
 
 use super::art::Channel;
+use super::calendar::Tints;
 use super::mind::{Lines, RIDDLES, Whims};
 use super::osaka::{Bubble, SCRUNCH, THERE, USE_FRAME_MS};
 use super::room::{Furniture, Use};
@@ -237,11 +238,17 @@ pub(super) enum ScriptId {
     /// Dashed home from school with no fridge to get to: "Forgot
     /// somethin'..." then "...what was it?", spacing out.
     DashForgot,
+    /// Setsubun (Feb 3, owed by her calendar): beans thrown on the spot,
+    /// jumping from foot to foot, "Oni wa soto!", then "Fuku wa uchi!".
+    Setsubun,
+    /// New Year's Day (owed by her calendar): the first sunrise on her
+    /// TV, "Ooh... first sunrise.", then watching it, humming.
+    FirstSunrise,
 }
 
 impl ScriptId {
     #[cfg(test)]
-    pub const ALL: [ScriptId; 18] = [
+    pub const ALL: [ScriptId; 20] = [
         Self::Lounge,
         Self::Nap,
         Self::Sleep,
@@ -260,6 +267,8 @@ impl ScriptId {
         Self::Night,
         Self::DashLunch,
         Self::DashForgot,
+        Self::Setsubun,
+        Self::FirstSunrise,
     ];
 
     /// Its branches, each a run of keys.
@@ -283,6 +292,8 @@ impl ScriptId {
             Self::Night => NIGHT,
             Self::DashLunch => DASH_LUNCH,
             Self::DashForgot => DASH_FORGOT,
+            Self::Setsubun => SETSUBUN,
+            Self::FirstSunrise => FIRST_SUNRISE,
         }
     }
 
@@ -312,7 +323,9 @@ impl ScriptId {
             | Self::Surf
             | Self::Chopsticks
             | Self::DashLunch
-            | Self::DashForgot => Chat::Look,
+            | Self::DashForgot
+            | Self::Setsubun
+            | Self::FirstSunrise => Chat::Look,
         }
     }
 
@@ -338,7 +351,9 @@ impl ScriptId {
             | Self::Andagi
             | Self::Night
             | Self::DashLunch
-            | Self::DashForgot => 0,
+            | Self::DashForgot
+            | Self::Setsubun
+            | Self::FirstSunrise => 0,
         }
     }
 
@@ -353,13 +368,15 @@ impl ScriptId {
             Self::Nap => Use::Nap,
             Self::Sleep | Self::Night => Use::Sleep,
             Self::Homework => Use::Homework,
-            Self::Watch | Self::Shopping | Self::Surf => Use::Watch,
+            Self::Watch | Self::Shopping | Self::Surf | Self::FirstSunrise => Use::Watch,
             Self::Read => Use::Read,
             Self::Snack | Self::DashLunch => Use::Snack,
             Self::Pet => Use::Pet,
             Self::Crumple => Use::Crumple,
             Self::Unpack => Use::Unpack,
-            Self::Riddle | Self::Chopsticks | Self::Andagi | Self::DashForgot => return None,
+            Self::Riddle | Self::Chopsticks | Self::Andagi | Self::DashForgot | Self::Setsubun => {
+                return None;
+            }
         })
     }
 
@@ -367,7 +384,7 @@ impl ScriptId {
     #[cfg(test)]
     pub fn host(self) -> Host {
         match self {
-            Self::Riddle | Self::DashForgot => Host::SpaceOut,
+            Self::Riddle | Self::DashForgot | Self::Setsubun => Host::SpaceOut,
             Self::Night => Host::Night,
             Self::Chopsticks | Self::Andagi => Host::Splice,
             Self::Lounge
@@ -382,7 +399,8 @@ impl ScriptId {
             | Self::Crumple
             | Self::Unpack
             | Self::Surf
-            | Self::DashLunch => Host::Use,
+            | Self::DashLunch
+            | Self::FirstSunrise => Host::Use,
         }
     }
 
@@ -395,7 +413,7 @@ impl ScriptId {
     #[cfg(test)]
     pub fn shortest_body(self) -> Option<u64> {
         use super::osaka::{
-            DASH_FORGOT_MS, DASH_LUNCH_MS, SPACE_OUT_MS, shortest_use_ms, use_range,
+            DASH_FORGOT_MS, DASH_LUNCH_MS, SETSUBUN_MS, SPACE_OUT_MS, shortest_use_ms, use_range,
         };
         Some(match self {
             Self::Chopsticks | Self::Andagi => return None,
@@ -403,7 +421,8 @@ impl ScriptId {
             // Built directly, always as long.
             Self::DashLunch => DASH_LUNCH_MS,
             Self::DashForgot => DASH_FORGOT_MS,
-            Self::Shopping | Self::Surf => use_range(Use::Watch).0,
+            Self::Setsubun => SETSUBUN_MS,
+            Self::Shopping | Self::Surf | Self::FirstSunrise => use_range(Use::Watch).0,
             Self::Lounge
             | Self::Nap
             | Self::Sleep
@@ -442,6 +461,8 @@ impl ScriptId {
             Self::Night => Scene::Night,
             Self::DashLunch => Scene::DashIn,
             Self::DashForgot => Scene::DashForgot,
+            Self::Setsubun => Scene::Setsubun,
+            Self::FirstSunrise => Scene::FirstSunrise,
         }
     }
 
@@ -569,7 +590,9 @@ impl SpliceId {
                 salt: 1,
                 around: &[Use::Homework],
                 at: Part::Before,
-                chance: (1, 3),
+                // In exam season, before every homework (A23): still
+                // only once in its ten minutes' cooling.
+                chance: |ctx| if ctx.tints.exams { (1, 1) } else { (1, 3) },
                 when: |_| true,
                 // Clean, bad.
                 lens: &[CHOPSTICKS_MS, CHOPSTICKS_MS],
@@ -579,7 +602,7 @@ impl SpliceId {
                 salt: 2,
                 around: &[Use::Snack],
                 at: Part::After,
-                chance: (1, 4),
+                chance: |_| (1, 4),
                 when: |_| true,
                 lens: ANDAGI_LENS,
             },
@@ -589,7 +612,7 @@ impl SpliceId {
                 salt: 100,
                 around: TEST_AROUND,
                 at: Part::Before,
-                chance: (1, 1),
+                chance: |_| (1, 1),
                 when: |_| true,
                 lens: &[4000],
             },
@@ -599,7 +622,7 @@ impl SpliceId {
                 salt: 101,
                 around: TEST_AROUND,
                 at: Part::After,
-                chance: (1, 2),
+                chance: |_| (1, 2),
                 when: |_| true,
                 lens: &[5000],
             },
@@ -609,7 +632,7 @@ impl SpliceId {
                 salt: 102,
                 around: TEST_AROUND,
                 at: Part::Before,
-                chance: (1, 2),
+                chance: |_| (1, 2),
                 when: |_| true,
                 lens: &[3000, 4500],
             },
@@ -679,8 +702,9 @@ pub(super) struct Splice {
     pub around: &'static [Use],
     /// Before or after.
     pub at: Part,
-    /// `n` uses in `d` it wraps (of those `when` allows).
-    pub chance: (u64, u64),
+    /// `n` uses in `d` it wraps (of those `when` allows), as the use
+    /// starts.
+    pub chance: fn(&SpliceCtx) -> (u64, u64),
     /// Whether it may wrap a use as it starts.
     pub when: fn(&SpliceCtx) -> bool,
     /// How long it plays in each of its branches (drawn evenly). Its
@@ -700,10 +724,12 @@ pub(super) struct SpliceCtx {
     /// hidden under it otherwise, so none is rolled).
     pub quiet: bool,
     /// Her routine as the use starts (`None`: it doesn't reach her).
-    // TODO(step 6, step 7): read by the exam chopsticks (A23) and
-    // Scary's 22:00 window; unread until then.
-    #[expect(dead_code, reason = "read from step 6 (A7)")]
+    // TODO(step 7): read by Scary's 22:00 window; unread until then.
+    #[expect(dead_code, reason = "read from step 7 (A7)")]
     pub day: Option<DayTime>,
+    /// The seasons of the real date as the use starts (none without a
+    /// date, or without her routine): exam season's chopsticks.
+    pub tints: Tints,
 }
 
 /// A cue from the stage: what she's to play, forced rather than rolled,
@@ -782,7 +808,7 @@ pub(super) fn splices(
             continue;
         }
         if forced.is_none() {
-            let (n, d) = row.chance;
+            let (n, d) = (row.chance)(ctx);
             let may = (row.at == Part::After || ctx.quiet) && (row.when)(ctx);
             // The chance first: a splice that doesn't roll hasn't
             // played, so it doesn't cool.
@@ -1292,6 +1318,83 @@ const DASH_FORGOT: &[&[Key]] = &[&[
     ),
 ]];
 
+/// Every line a script's keys have her say in a bubble of her own,
+/// with its script (not the shopping channel's pitch, nor a riddle's
+/// halves: those are pooled): the bubble-fit lint walks them beside
+/// [`super::mind::all_lines`].
+#[cfg(test)]
+pub(super) fn script_lines() -> Vec<(ScriptId, &'static str)> {
+    ScriptId::ALL
+        .into_iter()
+        .flat_map(|id| {
+            id.branches().iter().flat_map(move |keys| {
+                keys.iter().filter_map(move |key| match key.say {
+                    Some(Say::Bubble(Bubble::Say(line))) => Some((id, line)),
+                    _ => None,
+                })
+            })
+        })
+        .collect()
+}
+
+/// Setsubun's beans, out (each key a throw, foot to foot)...
+pub(super) const ONI_WA_SOTO: &str = line!("Oni wa soto!");
+/// ...and luck, in.
+pub(super) const FUKU_WA_UCHI: &str = line!("Fuku wa uchi!");
+
+/// One throw of Setsubun's beans: jumping on `frame`, saying `line`,
+/// until `ms` in.
+const fn throw(ms: u64, frame: u8, line: &'static str) -> Key {
+    key(
+        Span::Ms(ms),
+        Posed::Still(Pose::Jack(frame)),
+        Face::Happy,
+        bubble(Bubble::Say(line)),
+    )
+}
+
+/// How long each throw of Setsubun's beans lasts.
+pub(super) const THROW_MS: u64 = 700;
+
+/// Beans out, four throws, then luck in, four more (the last the rest).
+const SETSUBUN: &[&[Key]] = &[&[
+    throw(THROW_MS, 0, ONI_WA_SOTO),
+    throw(2 * THROW_MS, 1, ONI_WA_SOTO),
+    throw(3 * THROW_MS, 0, ONI_WA_SOTO),
+    throw(4 * THROW_MS, 1, ONI_WA_SOTO),
+    throw(5 * THROW_MS, 0, FUKU_WA_UCHI),
+    throw(6 * THROW_MS, 1, FUKU_WA_UCHI),
+    throw(7 * THROW_MS, 0, FUKU_WA_UCHI),
+    key(
+        Span::Rest,
+        Posed::Still(Pose::Jack(1)),
+        Face::Happy,
+        bubble(Bubble::Say(FUKU_WA_UCHI)),
+    ),
+]];
+
+/// New Year's Day on her TV.
+pub(super) const FIRST_SUNRISE_LINE: &str = line!("Ooh... first sunrise.");
+
+/// The sunrise on from the first moment ("Ooh... first sunrise."), then
+/// watching it, humming.
+const FIRST_SUNRISE: &[&[Key]] = &[&[
+    shows(
+        Span::Ms(4000),
+        Posed::Host,
+        Face::Curious,
+        bubble(Bubble::Say(FIRST_SUNRISE_LINE)),
+        Prop::Tv(Channel::Sunrise),
+    ),
+    shows(
+        Span::Rest,
+        Posed::Host,
+        Face::Happy,
+        bubble(Bubble::Hum),
+        Prop::Tv(Channel::Sunrise),
+    ),
+]];
+
 /// Dashed home with no fridge to get to, first...
 pub(super) const FORGOT_SOMETHING: &str = line!("Forgot somethin'...");
 /// ...then.
@@ -1574,6 +1677,8 @@ mod tests {
             ScriptId::Night => 15,
             ScriptId::DashLunch => 16,
             ScriptId::DashForgot => 17,
+            ScriptId::Setsubun => 18,
+            ScriptId::FirstSunrise => 19,
         }
     }
 
@@ -1643,6 +1748,8 @@ mod tests {
             ScriptId::Night => Play::plain(ScriptId::Night),
             ScriptId::DashLunch => Play::plain(ScriptId::DashLunch),
             ScriptId::DashForgot => Play::plain(ScriptId::DashForgot),
+            ScriptId::Setsubun => Play::plain(ScriptId::Setsubun),
+            ScriptId::FirstSunrise => Play::plain(ScriptId::FirstSunrise),
         };
         for id in ScriptId::ALL {
             let play = player(id);
@@ -1776,7 +1883,10 @@ mod tests {
                 .iter()
                 .flat_map(|keys| keys.iter())
                 .any(|k| matches!(k.pose, Posed::Host));
-            let watch = matches!(id, ScriptId::Watch | ScriptId::Shopping | ScriptId::Surf);
+            let watch = matches!(
+                id,
+                ScriptId::Watch | ScriptId::Shopping | ScriptId::Surf | ScriptId::FirstSunrise
+            );
             assert!(!hosted || watch, "{id:?}");
         }
     }
@@ -1870,8 +1980,20 @@ mod tests {
                     "{id:?}: {what:?}"
                 );
             }
-            let (n, d) = row.chance;
-            assert!(n <= d && d > 0, "{id:?}");
+            for exams in [false, true] {
+                let ctx = SpliceCtx {
+                    what: Use::Homework,
+                    trying: false,
+                    quiet: true,
+                    day: None,
+                    tints: Tints {
+                        exams,
+                        ..Tints::default()
+                    },
+                };
+                let (n, d) = (row.chance)(&ctx);
+                assert!(n <= d && d > 0, "{id:?}");
+            }
         }
     }
 
@@ -1891,6 +2013,7 @@ mod tests {
             trying,
             quiet,
             day: None,
+            tints: Tints::default(),
         };
         let (before, after) = splices(rows, &ctx, None, false, Whims(whims), lines, at);
         (before.map(|s| s.splice), after.map(|s| s.splice))
@@ -1963,6 +2086,7 @@ mod tests {
             trying: false,
             quiet: true,
             day: None,
+            tints: Tints::default(),
         };
         for id in SPLICES {
             let (before, after) = splices(
@@ -1997,6 +2121,7 @@ mod tests {
                 trying: false,
                 quiet,
                 day: None,
+                tints: Tints::default(),
             };
             splices(
                 &SpliceId::ALL,
@@ -2271,6 +2396,59 @@ mod tests {
         }
     }
 
+    /// In exam season (A23) her chopsticks come before every homework
+    /// she starts quiet, whatever her whims, still never again within
+    /// their ten minutes' cooling; out of it, about one in three (the
+    /// rows' odds, above), and the season changes nothing else.
+    #[test]
+    fn exam_season_brings_her_chopsticks_to_every_homework() {
+        let ctx = |what, exams| SpliceCtx {
+            what,
+            trying: false,
+            quiet: true,
+            day: None,
+            tints: Tints {
+                exams,
+                ..Tints::default()
+            },
+        };
+        let roll = |what, exams, w, lines: &mut Lines, at| {
+            let (before, after) = splices(
+                &SpliceId::ALL,
+                &ctx(what, exams),
+                None,
+                false,
+                Whims(w),
+                lines,
+                at,
+            );
+            (before.map(|s| s.splice), after.map(|s| s.splice))
+        };
+        let mut outside = 0;
+        for w in 0..300 {
+            let mut lines = Lines::default();
+            let (before, _) = roll(Use::Homework, true, w, &mut lines, 0);
+            assert_eq!(before, Some(SpliceId::Chopsticks), "whims {w}");
+            let (again, _) = roll(Use::Homework, true, w + 1, &mut lines, 599_999);
+            assert_eq!(again, None, "whims {w}: cooling");
+            let (cooled, _) = roll(Use::Homework, true, w + 2, &mut lines, 600_000);
+            assert_eq!(cooled, Some(SpliceId::Chopsticks), "whims {w}: cooled");
+            outside += usize::from(
+                roll(Use::Homework, false, w, &mut Lines::default(), 0).0
+                    == Some(SpliceId::Chopsticks),
+            );
+            // Nothing else is tinted: a snack's andagi rolls as ever.
+            for what in [Use::Snack, Use::Watch] {
+                assert_eq!(
+                    roll(what, true, w, &mut Lines::default(), 0),
+                    roll(what, false, w, &mut Lines::default(), 0),
+                    "{what:?}, whims {w}"
+                );
+            }
+        }
+        assert!((60..140).contains(&outside), "{outside} of 300");
+    }
+
     /// Of several preludes (or codas) that would wrap a use, only the
     /// first that rolls does; each's branch, and so its length, is drawn
     /// evenly from the whims.
@@ -2282,6 +2460,7 @@ mod tests {
             trying: false,
             quiet: true,
             day: None,
+            tints: Tints::default(),
         };
         let lens = SpliceId::TestBedtime.row().lens;
         let mut seen = [0u64; 2];

@@ -61,6 +61,7 @@ macro_rules! line {
 
 mod art;
 mod brain;
+mod calendar;
 mod cells;
 mod dissolve;
 mod graphics;
@@ -91,7 +92,7 @@ use dissolve::{Dissolve, Frozen};
 use graphics::{Graphics, Look};
 pub use idle::{Busy, ChatMark, IdleView, Scrollback, asks, grow};
 pub use ledger::Ledger;
-use osaka::Osaka;
+use osaka::{Bubble, Osaka};
 use room::Shown;
 pub use room::{Furniture, Nook};
 use sprite::{Part, Pose};
@@ -754,6 +755,10 @@ pub struct Guest {
     /// the same game day carries them on (the budget is the day's, not
     /// the visit's). Held per process.
     lines_today: Option<(u64, usize)>,
+    /// The game day and slot whose first snack had her meal's line
+    /// ("Breakfast!", "Dinner time~"), as her last visit left it: a visit
+    /// later in the same slot doesn't say it again. Held per process.
+    meal_today: Option<(u64, routine::Slot)>,
 }
 
 /// Her clock runs this many times faster than real time.
@@ -842,6 +847,7 @@ impl Guest {
             slot_was: None,
             out: None,
             lines_today: None,
+            meal_today: None,
         }
     }
 
@@ -893,6 +899,7 @@ impl Guest {
         self.day_latch = None;
         self.slot_was = None;
         self.lines_today = None;
+        self.meal_today = None;
         self.unsaved = true;
         self.persist = true;
         self.gift = None;
@@ -1463,6 +1470,9 @@ impl Guest {
                         .tick(now, fed, &visit.terrain, &visit.chances, &mut self.rng);
                 if let Some(budget) = visit.osaka.line_budget() {
                     self.lines_today = Some(budget);
+                }
+                if let Some(meal) = visit.osaka.meal_said() {
+                    self.meal_today = Some(meal);
                 }
                 // Hers the moment she does it: whatever ends the visit
                 // before the next paint can't lose it.
@@ -2149,9 +2159,9 @@ impl Guest {
                     &looks,
                     self.truecolor,
                 ));
-                match &mut self.graphics {
+                let drawn = match &mut self.graphics {
                     Some(graphics) => {
-                        let (painted, image) = draw_art(
+                        let (painted, image, drawn) = draw_art(
                             buf,
                             graphics,
                             &visit.osaka,
@@ -2165,9 +2175,10 @@ impl Guest {
                         );
                         layer.extend(painted);
                         visit.image = image;
+                        drawn
                     }
                     None => {
-                        layer.extend(draw(
+                        let (painted, drawn) = draw(
                             buf,
                             &visit.osaka,
                             &visit.terrain,
@@ -2175,13 +2186,21 @@ impl Guest {
                             now,
                             self.truecolor,
                             true,
-                        ));
+                        );
+                        layer.extend(painted);
                         visit.image = None;
+                        drawn
                     }
-                }
+                };
                 visit.apart = apart;
                 visit.looks = looks;
                 visit.painted = layer;
+                // Her calendar's entry, delivered as it shows (its line the
+                // bubble drawn): hers the moment it does, whatever ends
+                // the visit before the next tick.
+                if visit.osaka.shown(now, drawn).is_some() {
+                    self.unsaved |= record(&mut self.ledger, &mut self.shop_now, visit);
+                }
                 // Last, over the real frame in the focused pane (where
                 // nothing else of hers goes).
                 for fade in &mut visit.fades {
@@ -2246,6 +2265,13 @@ impl Guest {
         };
         osaka.set_mood(brain::Mood::of(seed));
         osaka.key_days(self.ledger.master_seed, day.map(|day| day.day));
+        // Her calendar: owed once a day, so the date she last delivered
+        // it on.
+        osaka.set_calendar(self.ledger.calendar_on);
+        // Her meal's line is the slot's, not the visit's.
+        if let Some(day) = day {
+            osaka.carry_meal(self.meal_today.filter(|&(on, _)| on == day.day));
+        }
         // Her line budget is the day's: what she said earlier today
         // counts.
         if let (Some(day), Some((on, spent))) = (day, self.lines_today)
@@ -2559,6 +2585,14 @@ fn record(ledger: &mut Ledger, shop_now: &mut bool, visit: &mut Visit) -> bool {
             // Hers once the frame takes it: at the paint (it must fit
             // where it goes then).
             osaka::HomeEvent::SetDown { piece, to } => visit.set_down = Some((piece, to)),
+            // Owed once a day: not again this date.
+            osaka::HomeEvent::Calendar(date) => {
+                if ledger.calendar_on != Some(date) {
+                    tracing::debug!(%date, "houseguest: her calendar's date recorded");
+                    ledger.calendar_on = Some(date);
+                    changed = true;
+                }
+            }
         }
     }
     changed
@@ -2603,7 +2637,8 @@ fn ink(part: Part, truecolor: bool) -> Ink {
 const DOOR_INK: Ink = Ink::new(Color::LightMagenta, Modifier::empty());
 
 /// Paint her (and any bubble) into `buf`, returning what was painted
-/// over what.
+/// over what, and the bubble drawn, if one was (it shows only where
+/// there's room for it).
 #[allow(clippy::too_many_arguments)]
 fn draw(
     buf: &mut Buffer,
@@ -2613,7 +2648,7 @@ fn draw(
     now: u64,
     truecolor: bool,
     with_sprite: bool,
-) -> Vec<Frozen> {
+) -> (Vec<Frozen>, Option<Bubble>) {
     let (sprite, bubble) = osaka.picture(now);
     let hidden = osaka.hidden(now);
     let door = osaka
@@ -2656,11 +2691,13 @@ fn draw(
                 )
             }),
     );
+    let mut drawn = None;
     if let Some(bubble) = bubble.filter(|_| !hidden) {
         let text = bubble.text();
         let len = text.chars().count() as i32;
         let (pose, _, _) = osaka.appearance(now);
         if let Some((start, row)) = bubble_spot(buf, terrain, shown, osaka, pose, len) {
+            drawn = Some(bubble);
             let bold = Ink::new(ink(Part::Body, truecolor).fg, Modifier::BOLD);
             for (i, glyph) in text.chars().enumerate() {
                 wanted.push((start + i as i32, row, glyph, bold, None));
@@ -2694,7 +2731,7 @@ fn draw(
             });
         }
     }
-    painted
+    (painted, drawn)
 }
 
 /// Where a bubble of `len` characters goes: the first of several spots
@@ -3692,7 +3729,7 @@ fn draw_art(
     looks: &Looks,
     now: u64,
     truecolor: bool,
-) -> (Vec<Frozen>, Option<BoxArt>) {
+) -> (Vec<Frozen>, Option<BoxArt>, Option<Bubble>) {
     let (pose, face, _) = osaka.appearance(now);
     let (sprite, _) = osaka.picture(now);
     // Her, if she's in sight; and a door in space, standing behind her
@@ -3789,11 +3826,12 @@ fn draw_art(
         .paint_layers(buf, &layers, &|x, y| terrain.open(x, y))
         .is_some();
     let mut painted = if placed { body } else { Vec::new() };
-    painted.extend(draw(buf, osaka, terrain, shown, now, truecolor, false));
+    let (bubble, drawn) = draw(buf, osaka, terrain, shown, now, truecolor, false);
+    painted.extend(bubble);
     let image = figure
         .filter(|_| placed)
         .map(|figure| BoxArt { figure, with });
-    (painted, image)
+    (painted, image, drawn)
 }
 
 /// The middle of a screen `size`, at its foot: where her door is looked

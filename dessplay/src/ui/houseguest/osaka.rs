@@ -5,6 +5,7 @@
 use super::Rng;
 use super::art::DoorFrame;
 use super::brain::{self, Mood, Need, Needs, Rising, Spot, Want};
+use super::calendar::{self, Owed, Tints};
 use super::layer::Placed;
 use super::mind::{self, Beat, Bind, Ctx, Heading, Here, Lines, Loss, PoolId, RIDDLES, Whims};
 use super::room::{Furniture, MadeId, PieceRef, Seat, Use};
@@ -277,6 +278,9 @@ pub(super) enum HomeEvent {
     /// A piece of hers set down at `to`: hers once the frame takes it
     /// (it must fit there then; see `Guest::paint`).
     SetDown { piece: Furniture, to: Placement },
+    /// What her calendar owed her on this real date has shown: not owed
+    /// again that date (phase 5b D5).
+    Calendar(chrono::NaiveDate),
 }
 
 impl Chances {
@@ -1470,7 +1474,81 @@ pub(super) struct Osaka {
     /// wondering what it was); then her routine's away reflex sends her
     /// out again. See [`Osaka::dash_in`].
     dash: Option<Dash>,
+    /// Her calendar (phase 5b D5): the real date whose owed entry she
+    /// has delivered (it showed), as her ledger had it when her visit
+    /// began and as she delivers one since. Owed once a day, it's
+    /// checked at each decision against the date she's given
+    /// ([`Osaka::calendar_owed`]), so a resident on screen as the date
+    /// changes gets the new day's.
+    cal_done: Option<chrono::NaiveDate>,
+    /// Her calendar's entry under way: said or begun, not yet shown (or
+    /// said, and never seen). It's delivered as it shows
+    /// ([`Osaka::shown`]), not as it's set: spoken over or cut short
+    /// before it showed, it's owed again (said again once she has moved
+    /// from where it went unseen: see [`Osaka::calendar_greeting`]).
+    cal_showing: Option<CalShowing>,
+    /// How many times this visit her calendar's line for a date was on
+    /// her, she in sight and painted, but not in her drawn bubble (no
+    /// room for it beside her, or what she says of her home over it): at
+    /// [`CAL_MISSES`] she lets it be until her next visit, still owed.
+    cal_missed: Option<(chrono::NaiveDate, u8)>,
+    /// New Year's Day's first sunrise on her TV, after its greeting has
+    /// shown: this visit's, best effort (the day was delivered as the
+    /// greeting showed). Her calendar's beat sends her to her TV for it
+    /// once; any watch of hers that date plays it.
+    sunrise: Option<SunriseOwed>,
+    /// The game day and slot of her routine whose first snack she has
+    /// said her meal's line at ("Breakfast!", "Dinner time~"): this
+    /// visit's, or an earlier one's that day (the guest carries it on).
+    meal_said: Option<(u64, routine::Slot)>,
+    /// Up on a day with no school: "No school today!", once she's quiet,
+    /// that morning.
+    day_off: bool,
 }
+
+/// Her calendar's owed entry for `date`, said or begun, waiting to show
+/// (see [`Osaka::shown`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CalShowing {
+    date: chrono::NaiveDate,
+    owed: Owed,
+    what: CalShows,
+    /// Where she was as she said or began it.
+    spot: (i32, i32),
+    /// A frame missed it: she was in sight with it on her, and it wasn't
+    /// in her drawn bubble (counted once, in [`Osaka::cal_missed`]).
+    missed: bool,
+}
+
+/// How many sayings of her calendar's line may go unseen on screen (a
+/// frame missing it) before she lets it be for the visit (see
+/// [`Osaka::cal_missed`]): a pane too full of text for her bubble
+/// wherever she goes mustn't have her say it all visit.
+const CAL_MISSES: u8 = 3;
+
+/// New Year's Day's first sunrise, owed on her TV this visit (see
+/// [`Osaka::sunrise`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SunriseOwed {
+    /// The date it's owed on (none after it: a resident into Jan 2 has
+    /// missed it).
+    date: chrono::NaiveDate,
+    /// Her calendar's beat has sent her to her TV for it (it sends her
+    /// once).
+    sent: bool,
+}
+
+/// How her calendar's entry shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CalShows {
+    /// Its greeting, as she says it.
+    Line(&'static str),
+    /// Its script, as it plays.
+    Script(ScriptId),
+}
+
+/// Setsubun's beans, on the spot (her calendar's, Feb 3): eight throws.
+pub(super) const SETSUBUN_MS: u64 = 8 * script::THROW_MS;
 
 /// Where she is in a dash home from school (phase 5b D3a).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1578,6 +1656,12 @@ impl Osaka {
             night: None,
             snacking: None,
             dash: None,
+            cal_done: None,
+            cal_showing: None,
+            cal_missed: None,
+            sunrise: None,
+            meal_said: None,
+            day_off: false,
         };
         osaka.whims = Whims(osaka.mind.0 ^ mind::WHIMS_SALT);
         osaka.act_due = osaka.first_due(now);
@@ -1912,11 +1996,34 @@ impl Osaka {
         }
     }
 
+    /// Say `line`, from `pool`, at `at`: never drawn (said as it's due),
+    /// but said from it, so it cools there.
+    fn say_noted(&mut self, pool: PoolId, line: &'static str, at: u64) {
+        self.say(line, at);
+        self.lines.note(pool, line, at);
+    }
+
+    /// Say `pool`'s line (a pool of one, said as it's due) at `at`.
+    fn say_pool(&mut self, pool: mind::Pool, at: u64) {
+        if let Some(&line) = pool.lines.first() {
+            self.say_noted(pool.id, line, at);
+        }
+    }
+
     /// Space out, telling a riddle (one musing in three) or saying one
-    /// of her musings, each drawn from her latest decision's whims. A
-    /// riddle only when she isn't saying something already, which would
-    /// hide its question.
+    /// of her musings, each drawn from her latest decision's whims (in
+    /// summer's panic week or December, one of the season's first, now
+    /// and then). A riddle only when she isn't saying something already,
+    /// which would hide its question. Cued to by the stage, Setsubun's
+    /// beans instead.
     pub fn muse(&mut self, now: u64, rng: &mut Rng) {
+        // Cued, Setsubun's beans: on the spot, whatever she was saying
+        // stopping for them.
+        if self.cued == Some(Cue::Script(ScriptId::Setsubun)) {
+            self.cued = None;
+            self.hush(now);
+            return self.set(Self::setsubun(now), now);
+        }
         // Cued, a riddle: whatever she was saying stops for it.
         let cued = self.cued == Some(Cue::Script(ScriptId::Riddle));
         if cued {
@@ -1946,7 +2053,14 @@ impl Osaka {
                 Some(Play::riddle(which))
             }
             None => {
-                if let Some(line) = self.lines.pick(mind::MUSINGS, self.whims, now) {
+                let (tints, whims) = (self.tints(), self.whims);
+                let seasonal = [(tints.panic, mind::PANIC), (tints.december, mind::DECEMBER)];
+                let line = seasonal
+                    .into_iter()
+                    .filter(|&(on, _)| on)
+                    .find_map(|(_, pool)| self.lines.pick(pool, whims, now))
+                    .or_else(|| self.lines.pick(mind::MUSINGS, whims, now));
+                if let Some(line) = line {
                     self.say(line, now);
                 }
                 None
@@ -2387,7 +2501,9 @@ impl Osaka {
                 continue;
             }
             self.fire(due, terrain, chances, rng);
-            self.latch_lamp(due);
+            if self.latch_lamp(due) {
+                self.say_pool(mind::NIGHT_NIGHT, due);
+            }
             debug_assert!(self.undoes_its_mischief(), "mischief without its undo");
         }
         // Far behind (a suspended laptop): resume from now.
@@ -3124,6 +3240,7 @@ impl Osaka {
                     trying,
                     quiet: quiet <= at,
                     day,
+                    tints: self.tints(),
                 };
                 let (before, after) = script::splices(
                     self.splice_rows(),
@@ -3148,7 +3265,13 @@ impl Osaka {
                 // stage has her flick through the channels).
                 let surf_cued = cued == Some(Cue::Script(ScriptId::Surf));
                 let watching = seat.what == Use::Watch && grievance.is_none() && !trying;
-                let bought = chances.advert.filter(|_| watching && !surf_cued);
+                // Her first sunrise (New Year's Day): owed this visit
+                // (any watch of hers that date), or cued. Nothing else
+                // plays on it.
+                let sunrise = watching && self.sunrise_here(cued, at);
+                let bought = chances
+                    .advert
+                    .filter(|_| watching && !surf_cued && !sunrise);
                 // Else, now and then, she flicks through the channels:
                 // cued to, always (and it cools as if rolled); cued to
                 // play anything else on the watch, never; else by the
@@ -3156,6 +3279,7 @@ impl Osaka {
                 // cool.
                 let surf = bought.is_none()
                     && watching
+                    && !sunrise
                     && match cued {
                         Some(Cue::Script(ScriptId::Surf)) => {
                             self.lines.try_play(ScriptId::Surf, at);
@@ -3186,8 +3310,23 @@ impl Osaka {
                 } else {
                     length
                 };
+                // Her first snack of a morning or an evening: her meal's
+                // line (not over what she'd say of her home).
+                if seat.what == Use::Snack
+                    && !trying
+                    && grievance.is_none()
+                    && let Some(day) = day
+                {
+                    self.meal(day, at);
+                }
                 let plain = Play::of(seat.what, bought);
-                let own = if surf { ScriptId::Surf } else { plain.own };
+                let own = if sunrise {
+                    ScriptId::FirstSunrise
+                } else if surf {
+                    ScriptId::Surf
+                } else {
+                    plain.own
+                };
                 let play = Play {
                     own,
                     branch: if trying { own.trial_branch() } else { 0 },
@@ -3347,14 +3486,16 @@ impl Osaka {
         let act = self.night_in(seat, 0, now, true);
         self.set(act, now);
         self.decided = now;
+        // Tucked in asleep: no "Night-night..." (she's long since said it).
         self.latch_lamp(now);
         true
     }
 
     /// The lamp goes off for the night as her night's lamp key shows it
     /// in the night (see `lamp_off`). A night's sleep the stage gives her
-    /// by day darkens her lamp by its key alone, while it plays.
-    fn latch_lamp(&mut self, at: u64) {
+    /// by day darkens her lamp by its key alone, while it plays. Returns
+    /// whether it went off just now.
+    fn latch_lamp(&mut self, at: u64) -> bool {
         let night = self.asleep_slot(at);
         let off = self.night_play().is_some_and(|(play, since, until)| {
             play.key(since, until, at)
@@ -3363,7 +3504,9 @@ impl Osaka {
         if night && off && !self.lamp_off {
             tracing::info!("houseguest: the lamp off for the night");
             self.lamp_off = true;
+            return true;
         }
+        false
     }
 
     /// Whether it's night by her routine at `at` (her Asleep slot).
@@ -3541,7 +3684,7 @@ impl Osaka {
             self.facing = toward(x, self.x);
             (self.x, self.y) = (x, y);
         }
-        let line = Mood::of(brain::day_seed(self.master, day.day)).wake_line();
+        let line = self.wake_line(day, at);
         let (lo, _) = Activity::Stretch.duration();
         // Leaving the night settles it (her credit, the time slept)
         // before the new day begins.
@@ -3580,9 +3723,25 @@ impl Osaka {
         self.night = None;
         self.snacking = None;
         self.greeted = true;
-        let line = mood.wake_line();
+        let line = self.wake_line(day, at);
         self.say(line, at);
         self.morning_until = at + speech_ms(line);
+        // A day off: she says so, once she's quiet.
+        self.day_off = !day.school_day;
+    }
+
+    /// What she says as her day `day` begins at `at`: good morning in the
+    /// day's mood; or, with her calendar's greeting owed, a plain
+    /// "Mornin'." (the greeting is her mood's part of it, said next, as
+    /// the first beat she owes once she's quiet: a night tucked in, it
+    /// waits for her to wake; see [`Osaka::calendar_beat`]).
+    fn wake_line(&self, day: DayTime, at: u64) -> &'static str {
+        let mood = if self.calendar_greeting(at).is_some() {
+            Mood::Ordinary
+        } else {
+            Mood::of(brain::day_seed(self.master, day.day))
+        };
+        mood.wake_line()
     }
 
     /// Whether she's up at `now` for what would have her say something
@@ -3684,6 +3843,7 @@ impl Osaka {
         let last_hour = self
             .night_play()
             .is_some_and(|(_, _, until)| at.saturating_add(LAST_HOUR_MS) >= until);
+        let new_year = self.tints().new_year;
         let Some(night) = &mut self.night else {
             return false;
         };
@@ -3693,6 +3853,8 @@ impl Osaka {
         night.next_talk = at + talk_gap(night.talk, k + 1);
         let pool = if last_hour {
             mind::LAST_HOUR_TALK
+        } else if new_year {
+            mind::NEW_YEAR_TALK
         } else {
             mind::SLEEP_TALK
         };
@@ -3803,6 +3965,272 @@ impl Osaka {
             at,
         );
         Decision::reflex("dash/forgot")
+    }
+
+    /// The seasons of the real date she was last given (none without a
+    /// date, or without her routine).
+    fn tints(&self) -> Tints {
+        self.real_date()
+            .map(|date| calendar::entries(date).1)
+            .unwrap_or_default()
+    }
+
+    /// The real date she was last given (the guest's, at her tick's
+    /// entry): `None` without one, and without her routine (unfed, she
+    /// knows no date).
+    fn real_date(&self) -> Option<chrono::NaiveDate> {
+        self.clock?.date
+    }
+
+    /// Her calendar as her visit begins: the date she last delivered its
+    /// owed entry on (her ledger's).
+    pub fn set_calendar(&mut self, done: Option<chrono::NaiveDate>) {
+        self.cal_done = done;
+    }
+
+    /// What her calendar owes her at `at`, and for which date: that date's
+    /// entry, unless she has delivered it, or it's under way (said or
+    /// begun, and showing). Checked as she decides, against the date she
+    /// was last given. `None` without a date.
+    pub(super) fn calendar_owed(&self, at: u64) -> Option<(chrono::NaiveDate, Owed)> {
+        let date = self.real_date()?;
+        if self.cal_done == Some(date) || self.cal_under_way(date, at) {
+            return None;
+        }
+        Some((date, calendar::entries(date).0?))
+    }
+
+    /// Whether her calendar's entry for `date` is under way at `at`: its
+    /// greeting still being said, or its script playing.
+    fn cal_under_way(&self, date: chrono::NaiveDate, at: u64) -> bool {
+        self.cal_showing
+            .is_some_and(|s| s.date == date && self.cal_on(s.what, at))
+    }
+
+    /// Whether `what` is on her at `at`: the line being said, the script
+    /// playing.
+    fn cal_on(&self, what: CalShows, at: u64) -> bool {
+        match what {
+            CalShows::Line(line) => self
+                .speech
+                .is_some_and(|(said, until)| said == line && at < until),
+            CalShows::Script(id) => self.plays().is_some_and(|p| p.own == id),
+        }
+    }
+
+    /// The greeting her calendar owes her at `at`, if any, with its date
+    /// and entry: the owed entry's, unless she has let it be this visit
+    /// (frames kept missing it: [`CAL_MISSES`]), or she said it here and
+    /// it went unseen (said again once she has moved, never in place
+    /// over and over where her bubble can't go).
+    fn calendar_greeting(&self, at: u64) -> Option<(chrono::NaiveDate, Owed, &'static str)> {
+        let (date, owed) = self.calendar_owed(at)?;
+        let line = owed.greeting()?;
+        let let_be = self
+            .cal_missed
+            .is_some_and(|(on, n)| on == date && n >= CAL_MISSES);
+        // Under way it isn't owed (above): any saying of it left is one
+        // that went unseen.
+        let unseen_here = self
+            .cal_showing
+            .is_some_and(|s| s.date == date && s.spot == (self.x, self.y));
+        (!let_be && !unseen_here).then_some((date, owed, line))
+    }
+
+    /// Say her calendar's greeting at `at`: delivered as it shows.
+    fn say_calendar(
+        &mut self,
+        (date, owed, line): (chrono::NaiveDate, Owed, &'static str),
+        at: u64,
+    ) {
+        tracing::info!(%date, line, "houseguest: her calendar's greeting");
+        self.say_noted(PoolId::Calendar, line, at);
+        self.cal_showing = Some(CalShowing {
+            date,
+            owed,
+            what: CalShows::Line(line),
+            spot: (self.x, self.y),
+            missed: false,
+        });
+    }
+
+    /// What her calendar owes her at `at`, as the first beat she owes
+    /// (after "I'm home!", after a drop-in's "...I'm OK.", after her
+    /// plain "Mornin'.", or on screen as the date changes), deciding on
+    /// floor `here`: its greeting, spacing out a moment; else Setsubun's
+    /// beans on the spot; else New Year's first sunrise, to her TV. Only
+    /// what can be done now, and once she's quiet (she stands until what
+    /// she's saying is said). Never in the middle of moving a piece of
+    /// her home, or on her way somewhere: it waits for that to settle.
+    /// `None` when there's nothing it can do now.
+    fn calendar_beat(
+        &mut self,
+        here: usize,
+        terrain: &Terrain,
+        chances: &Chances,
+        at: u64,
+    ) -> Option<Decision> {
+        if self.episode.is_some() || self.just_set.is_some() || self.heading.is_some() {
+            return None;
+        }
+        let owed = self.calendar_owed(at);
+        let greeting = self.calendar_greeting(at);
+        let setsubun = owed.filter(|&(_, owed)| owed == Owed::Setsubun);
+        // Her sunrise, if it's owed this visit and her TV is where she
+        // can get to it.
+        let tv = self
+            .sunrise
+            .filter(|s| !s.sent && Some(s.date) == self.real_date())
+            .and_then(|_| {
+                chances
+                    .seats
+                    .iter()
+                    .find(|s| s.what == Use::Watch && terrain.platform_at(s.x, s.y).is_some())
+                    .copied()
+            });
+        if greeting.is_none() && setsubun.is_none() && tv.is_none() {
+            return None;
+        }
+        // Not over what she's saying ("I'm home!", "...I'm OK.",
+        // "Mornin'."): she stands until she's said it, and it's next.
+        if let Some((_, until)) = self.speech.filter(|&(_, until)| until > at) {
+            self.set(Act::Stand { until }, at);
+            return Some(Decision::of(Bucket::Owed, "calendar/wait"));
+        }
+        if let Some(greeting) = greeting {
+            self.say_calendar(greeting, at);
+            self.set(
+                Act::SpaceOut {
+                    since: at,
+                    until: at + speech_ms(greeting.2).max(SPACE_OUT_MS.0),
+                    play: None,
+                },
+                at,
+            );
+            return Some(Decision::of(Bucket::Owed, "calendar"));
+        }
+        if let Some((date, owed)) = setsubun {
+            tracing::info!(%date, "houseguest: Setsubun's beans");
+            self.cal_showing = Some(CalShowing {
+                date,
+                owed,
+                what: CalShows::Script(ScriptId::Setsubun),
+                spot: (self.x, self.y),
+                missed: false,
+            });
+            self.set(Self::setsubun(at), at);
+            return Some(Decision::of(Bucket::Owed, "calendar"));
+        }
+        let (tv, sunrise) = tv.zip(self.sunrise)?;
+        if !self.go_to(Want::Use(Use::Watch), Job::Use(tv), here, terrain, at) {
+            return None;
+        }
+        tracing::info!(date = %sunrise.date, "houseguest: to her TV, for the first sunrise");
+        self.sunrise = Some(SunriseOwed {
+            sent: true,
+            ..sunrise
+        });
+        self.credit = Some(Want::Use(Use::Watch));
+        Some(Decision::of(Bucket::Owed, "calendar/sunrise"))
+    }
+
+    /// Setsubun's beans from `at`, on the spot: always as long.
+    fn setsubun(at: u64) -> Act {
+        Act::SpaceOut {
+            since: at,
+            until: at + SETSUBUN_MS,
+            play: Some(Play::plain(ScriptId::Setsubun)),
+        }
+    }
+
+    /// Whether a watch of hers starting at `at` (`cued` by the stage or
+    /// not) is her first sunrise: cued to it; or, uncued, it's owed this
+    /// visit, on this date (then it's played, and owed no longer).
+    fn sunrise_here(&mut self, cued: Option<Cue>, at: u64) -> bool {
+        if cued == Some(Cue::Script(ScriptId::FirstSunrise)) {
+            self.lines.try_play(ScriptId::FirstSunrise, at);
+            return true;
+        }
+        let today = self.real_date();
+        match self.sunrise {
+            Some(sunrise) if cued.is_none() && Some(sunrise.date) == today => {
+                tracing::info!(date = %sunrise.date, "houseguest: her first sunrise");
+                self.sunrise = None;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// The frame at `now` shows her (the guest calls it as it paints her,
+    /// whatever the drawing; `drawn`: the bubble it drew her, if any):
+    /// her calendar's entry under way has shown if she's in sight and
+    /// it's on her now, its line the bubble drawn (not under something
+    /// else, nor squeezed out), or its script playing. Shown, it's
+    /// delivered: recorded ([`HomeEvent::Calendar`]), and not owed again
+    /// that date; New Year's Day's first sunrise follows, this visit (see
+    /// [`Osaka::sunrise`]). A frame that shows her with its line on her
+    /// but not drawn counts against it ([`CAL_MISSES`]). Returns the date
+    /// delivered.
+    pub fn shown(&mut self, now: u64, drawn: Option<Bubble>) -> Option<chrono::NaiveDate> {
+        let showing = self.cal_showing?;
+        if self.hidden(now) || !self.cal_on(showing.what, now) {
+            return None;
+        }
+        if let CalShows::Line(line) = showing.what
+            && drawn != Some(Bubble::Say(line))
+        {
+            if !showing.missed {
+                let missed = match self.cal_missed {
+                    Some((on, n)) if on == showing.date => n.saturating_add(1),
+                    _ => 1,
+                };
+                tracing::debug!(line, missed, "houseguest: her calendar's line unseen");
+                self.cal_missed = Some((showing.date, missed));
+                self.cal_showing = Some(CalShowing {
+                    missed: true,
+                    ..showing
+                });
+            }
+            return None;
+        }
+        self.cal_showing = None;
+        if showing.owed == Owed::FirstSunrise {
+            self.sunrise = Some(SunriseOwed {
+                date: showing.date,
+                sent: false,
+            });
+        }
+        tracing::info!(date = %showing.date, "houseguest: her calendar's entry delivered");
+        self.cal_done = Some(showing.date);
+        self.events.push(HomeEvent::Calendar(showing.date));
+        Some(showing.date)
+    }
+
+    /// Her meal's line, on her first snack of a morning or an evening by
+    /// her routine (`day`), at `at`: once a slot.
+    fn meal(&mut self, day: DayTime, at: u64) {
+        let pool = match day.slot {
+            routine::Slot::Morning => mind::BREAKFAST,
+            routine::Slot::Evening => mind::DINNER,
+            _ => return,
+        };
+        if self.meal_said == Some((day.day, day.slot)) {
+            return;
+        }
+        self.meal_said = Some((day.day, day.slot));
+        self.say_pool(pool, at);
+    }
+
+    /// The game day and slot whose first snack had its meal's line (the
+    /// guest carries it to her next visit).
+    pub fn meal_said(&self) -> Option<(u64, routine::Slot)> {
+        self.meal_said
+    }
+
+    /// Her meal's line was said on an earlier visit, at `said`.
+    pub fn carry_meal(&mut self, said: Option<(u64, routine::Slot)>) {
+        self.meal_said = said;
     }
 
     /// Her lunch at `seat`, her fridge, from `at`, dashed home for (D3a):
@@ -4245,8 +4673,7 @@ impl Osaka {
 
     /// What she's playing: using a piece (its own script, or the
     /// shopping channel, or surfing, any prelude or coda), or spacing out
-    /// (a riddle).
-    #[cfg(test)]
+    /// (a riddle, Setsubun's beans).
     pub fn plays(&self) -> Option<Play> {
         match self.act {
             Act::Use { play, .. } => Some(play),
@@ -4444,9 +4871,14 @@ impl Osaka {
             );
             return Decision::reflex("watching chat");
         }
+        // Hello: what her calendar owes her to say, if it does, in her
+        // mood's greeting's stead.
         if !self.greeted {
             self.greeted = true;
-            self.say(self.mood.greeting(), at);
+            match self.calendar_greeting(at) {
+                Some(greeting) => self.say_calendar(greeting, at),
+                None => self.say(self.mood.greeting(), at),
+            }
         }
         // Her needs move on with the time since she last chose.
         let rising = Rising {
@@ -4463,6 +4895,33 @@ impl Osaka {
         self.decided = at;
         let heading = self.heading.as_ref().map(|h| h.want);
         let hopped = std::mem::take(&mut self.hopping);
+        // What her calendar owes her (D5): the first beat she owes.
+        if let Some(decision) = self.calendar_beat(here, terrain, chances, at) {
+            return Decision {
+                heading,
+                ..decision
+            };
+        }
+        // Up on a day off: she says so once she's quiet, that morning,
+        // standing a moment (what she'd do next might speak over it).
+        if self.day_off {
+            let morning = self
+                .day(at)
+                .is_some_and(|day| day.slot == routine::Slot::Morning);
+            let quiet = self.speech.is_none_or(|(_, until)| until <= at);
+            if !morning || quiet {
+                self.day_off = false;
+            }
+            if morning && quiet {
+                self.say_pool(mind::NO_SCHOOL, at);
+                let until = self.speech.map_or(at, |(_, until)| until);
+                self.set(Act::Stand { until }, at);
+                return Decision {
+                    heading,
+                    ..Decision::reflex("routine/day off")
+                };
+            }
+        }
         // Something she lost: a glance toward it (maybe a word) first.
         if let Some(&beat) = self.owed.first() {
             tracing::debug!(?beat, "houseguest: a beat she owed");
@@ -8897,6 +9356,16 @@ mod tests {
                     }
                 },
             );
+            // Her lamp off as she settles in: "Night-night...", once, as
+            // its key comes (her routine's line, not sleep-talk).
+            let night_night = mind::NIGHT_NIGHT.lines[0];
+            let lamp: Vec<u64> = talked
+                .iter()
+                .filter(|&&(_, line)| line == night_night)
+                .map(|&(t, _)| t)
+                .collect();
+            assert_eq!(lamp, [start + script::LAMP_ON_MS], "seed {seed}");
+            talked.retain(|&(_, line)| line != night_night);
             let said = sleep_talk(&osaka);
             assert_eq!(said, talked, "seed {seed}: each shown as it's said");
             assert!(osaka.lines.spent() == 0, "seed {seed}: budgeted");
@@ -9643,6 +10112,420 @@ mod tests {
             assert_eq!(said, want, "seed {seed}");
             let distinct: std::collections::HashSet<_> = said.iter().map(|&(_, l)| l).collect();
             assert!(distinct.len() > 2, "seed {seed}: {said:?}");
+        }
+    }
+
+    // ---- Her calendar, and the times of her day ----
+
+    /// Her clock at `h:m` of game `day` from monotonic 0, on the real
+    /// `date`.
+    fn clock_dated(day: u64, h: u64, m: u64, date: Option<chrono::NaiveDate>) -> routine::Clock {
+        let game = ((day * 24 + h) * 60 + m - routine::START) * 60_000;
+        routine::Clock::read(super::super::GameClock { at: 0, game }, 0, None, date)
+    }
+
+    fn ymd(y: i32, m: u32, d: u32) -> Option<chrono::NaiveDate> {
+        chrono::NaiveDate::from_ymd_opt(y, m, d)
+    }
+
+    /// What she said from `pool`.
+    fn said_from(osaka: &Osaka, pool: PoolId) -> Vec<&'static str> {
+        osaka
+            .said_lines()
+            .iter()
+            .filter(|&&(p, ..)| p == pool)
+            .map(|&(_, line, _)| line)
+            .collect()
+    }
+
+    /// Her on Halloween at Monday 16:00, at (20, 15), her calendar's
+    /// greeting owed.
+    fn on_halloween(rng: &mut Rng) -> Osaka {
+        let mut osaka = Osaka::standing_at(20, 15, 0, rng);
+        osaka.read_clock(Some(clock_dated(0, 16, 0, ymd(2026, 10, 31))));
+        osaka
+    }
+
+    /// Her calendar's line is delivered only by a frame that draws it,
+    /// she in sight: not by a frame drawing no bubble (no room for it),
+    /// nor another bubble over it (what she says of her home), nor one
+    /// with her out of sight; then, drawn, it is, recorded once.
+    #[test]
+    fn her_calendars_line_is_delivered_only_as_drawn() {
+        let mut rng = Rng(1);
+        let mut osaka = on_halloween(&mut rng);
+        let greeting = osaka.calendar_greeting(0).expect("owed");
+        let line = greeting.2;
+        assert_eq!(line, calendar::HALLOWEEN);
+        osaka.say_calendar(greeting, 0);
+        assert_eq!(osaka.shown(100, None), None, "squeezed out");
+        assert_eq!(osaka.shown(200, Some(Bubble::Dots)), None, "under another");
+        osaka.act = Act::Away {
+            until: 10_000,
+            enter: 0,
+            to_y: 15,
+            to_x: 20,
+        };
+        assert!(osaka.hidden(300));
+        assert_eq!(osaka.shown(300, Some(Bubble::Say(line))), None, "hidden");
+        osaka.act = Act::Stand { until: 10_000 };
+        assert!(osaka.events.is_empty());
+        assert_eq!(osaka.cal_done, None);
+        let date = ymd(2026, 10, 31);
+        assert_eq!(osaka.shown(400, Some(Bubble::Say(line))), date);
+        assert_eq!(osaka.events, [HomeEvent::Calendar(date.expect("date"))]);
+        assert_eq!(osaka.calendar_owed(500), None, "once a day");
+        assert_eq!(osaka.shown(500, Some(Bubble::Say(line))), None);
+        assert_eq!(osaka.events.len(), 1);
+    }
+
+    /// Said and never seen, her calendar's greeting is said again only
+    /// once she has moved from where it went unseen, never over and over
+    /// in place; and after [`CAL_MISSES`] sayings that frames missed she
+    /// lets it be for the visit (owed still). Unpainted sayings (no frame
+    /// at all) don't count against it.
+    #[test]
+    fn an_unseen_calendar_line_is_said_again_elsewhere_not_forever() {
+        let mut rng = Rng(1);
+        let mut osaka = on_halloween(&mut rng);
+        let mut at = 0;
+        // Unpainted: said, then said again elsewhere, and again.
+        for x in [20, 24, 28, 32] {
+            osaka.x = x;
+            let greeting = osaka.calendar_greeting(at).expect("owed");
+            osaka.say_calendar(greeting, at);
+            at += 10_000;
+            assert_eq!(osaka.calendar_greeting(at), None, "{x}: not in place");
+        }
+        assert_eq!(osaka.cal_missed, None);
+        // Painted, and missed: each time elsewhere, until she lets it be.
+        for k in 0..CAL_MISSES {
+            osaka.x = 40 + i32::from(k);
+            let greeting = osaka
+                .calendar_greeting(at)
+                .unwrap_or_else(|| panic!("{k}: owed"));
+            osaka.say_calendar(greeting, at);
+            assert_eq!(osaka.shown(at + 100, None), None);
+            assert_eq!(osaka.shown(at + 200, None), None, "one miss a saying");
+            at += 10_000;
+            assert_eq!(osaka.calendar_greeting(at), None, "{k}: not in place");
+        }
+        assert_eq!(
+            osaka.cal_missed,
+            Some((
+                chrono::NaiveDate::from_ymd_opt(2026, 10, 31).expect("date"),
+                CAL_MISSES
+            ))
+        );
+        osaka.x = 10;
+        assert_eq!(osaka.calendar_greeting(at), None, "let be");
+        assert!(osaka.calendar_owed(at).is_some(), "owed still");
+        assert_eq!(osaka.cal_done, None);
+    }
+
+    /// Her calendar's beat never cuts into a move of her home under way
+    /// (a piece she's trying, or making for): it waits for it to settle.
+    #[test]
+    fn the_calendar_beat_waits_for_a_move_to_settle() {
+        let terrain = floor_at(15);
+        let chances = Chances::default();
+        let mut rng = Rng(1);
+        let mut osaka = on_halloween(&mut rng);
+        let here = terrain.platform_at(20, 15).expect("floor");
+        osaka.episode = Some(trial_episode());
+        assert!(osaka.calendar_beat(here, &terrain, &chances, 0).is_none());
+        assert!(osaka.cal_showing.is_none(), "nothing said");
+        osaka.episode = None;
+        let beat = osaka.calendar_beat(here, &terrain, &chances, 0);
+        assert_eq!(beat.map(|d| d.method), Some("calendar"));
+    }
+
+    /// New Year's Day's sunrise follows its greeting shown, to her TV if
+    /// it's where she can get to it: with no TV seat, nothing (and no
+    /// standing about waiting to go to it while she talks); with one,
+    /// she waits out what she's saying, then goes, once.
+    #[test]
+    fn her_first_sunrise_wants_a_tv_she_can_get_to() {
+        let terrain = floor_at(15);
+        let tv = Chances {
+            seats: vec![Seat {
+                x: 30,
+                y: 15,
+                ..seat_for(Use::Watch, Furniture::Tv)
+            }],
+            ..Chances::default()
+        };
+        let mut rng = Rng(1);
+        let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+        osaka.read_clock(Some(clock_dated(0, 16, 0, ymd(2027, 1, 1))));
+        let here = terrain.platform_at(20, 15).expect("floor");
+        let greeting = osaka.calendar_greeting(0).expect("owed");
+        assert_eq!(greeting.2, calendar::HAPPY_NEW_YEAR);
+        osaka.say_calendar(greeting, 0);
+        assert!(osaka.shown(100, Some(Bubble::Say(greeting.2))).is_some());
+        assert_eq!(osaka.calendar_owed(100), None, "delivered");
+        // Talking, with no TV: nothing to wait for.
+        osaka.say(mind::HOME.lines[0], 1000);
+        let none = Chances::default();
+        assert!(osaka.calendar_beat(here, &terrain, &none, 1100).is_none());
+        // With one: wait, then to it; then not again.
+        let wait = osaka.calendar_beat(here, &terrain, &tv, 1100);
+        assert_eq!(wait.map(|d| d.method), Some("calendar/wait"));
+        let quiet = osaka.speech.map_or(0, |(_, until)| until);
+        let go = osaka.calendar_beat(here, &terrain, &tv, quiet);
+        assert_eq!(go.map(|d| d.method), Some("calendar/sunrise"));
+        assert!(
+            osaka
+                .calendar_beat(here, &terrain, &tv, quiet + 1)
+                .is_none()
+        );
+        // Any watch of hers that date plays it, once.
+        assert!(osaka.sunrise_here(None, quiet + 2));
+        assert!(!osaka.sunrise_here(None, quiet + 3));
+    }
+
+    /// Her seasons' musings come only in their seasons (her calendar's
+    /// tints): December's in December, and "Homework! Homework!" in
+    /// summer's panic week; in season, now and then (a musing's lines
+    /// still come the rest of the time); never with no date, nor with
+    /// her routine unfed (she knows no date then).
+    #[test]
+    fn her_seasons_musings_come_only_in_their_seasons() {
+        for (date, fed, december, panic) in [
+            (ymd(2026, 12, 10), true, true, false),
+            (ymd(2027, 12, 31), true, true, false),
+            (ymd(2026, 8, 27), true, false, true),
+            (ymd(2026, 11, 30), true, false, false),
+            (ymd(2027, 1, 1), true, false, false),
+            (ymd(2026, 8, 24), true, false, false),
+            (None, true, false, false),
+            (ymd(2026, 12, 10), false, false, false),
+        ] {
+            let mut rng = Rng(3);
+            let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+            osaka.read_clock(fed.then(|| clock_dated(0, 16, 0, date)));
+            for k in 0..240 {
+                osaka.whims = Whims(k ^ 0xca1e);
+                osaka.speech = None;
+                // Ten minutes and more apart: nothing cools.
+                osaka.muse(k * 11 * 60_000, &mut rng);
+            }
+            let at = format!("{date:?} fed {fed}");
+            let seasonal = said_from(&osaka, PoolId::December);
+            assert_eq!(!seasonal.is_empty(), december, "{at}: {seasonal:?}");
+            let panicked = said_from(&osaka, PoolId::Panic);
+            assert_eq!(!panicked.is_empty(), panic, "{at}: {panicked:?}");
+            assert!(seasonal.iter().all(|l| mind::DECEMBER.lines.contains(l)));
+            assert!(!said_from(&osaka, PoolId::Musing).is_empty(), "{at}");
+            if december {
+                let distinct: std::collections::HashSet<_> = seasonal.iter().collect();
+                assert_eq!(distinct.len(), mind::DECEMBER.lines.len(), "{at}");
+            }
+        }
+    }
+
+    /// Through the New Year (Jan 1-3) a dream joins her sleep-talk,
+    /// "Pigtails... flying...": some night over a few seeds, and never
+    /// on any other date.
+    #[test]
+    fn the_new_years_dream_joins_her_sleep_talk() {
+        const PIGTAILS: &str = "Pigtails... flying...";
+        let terrain = floor_at(15);
+        let chances = bed_at(25);
+        for (date, dreams) in [
+            (ymd(2027, 1, 1), true),
+            (ymd(2027, 1, 3), true),
+            (ymd(2027, 1, 4), false),
+            (ymd(2026, 12, 31), false),
+            (None, false),
+        ] {
+            let clock = clock_dated(1, 0, 0, date);
+            let mut dreamt = 0;
+            for seed in 0..6 {
+                let mut rng = Rng(seed);
+                let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+                osaka.read_clock(Some(clock));
+                let now = until_asleep_with(&mut osaka, 0, clock, &terrain, &chances, &mut rng);
+                // Her wake (later on a day of the winter vacation).
+                let (.., wake) = osaka.night_play().expect("asleep");
+                tick_until(
+                    &mut osaka,
+                    now,
+                    wake - 1,
+                    (clock, &terrain, &chances),
+                    &mut rng,
+                    |_, _| {},
+                );
+                let said = sleep_talk(&osaka);
+                dreamt += said.iter().filter(|&&(_, l)| l == PIGTAILS).count();
+                // In the last hour, its lines alone, New Year or no;
+                // before it, never them.
+                for &(when, line) in &said {
+                    let last_hour = when + LAST_HOUR_MS >= wake;
+                    assert_eq!(
+                        mind::LAST_HOUR_TALK.lines.contains(&line),
+                        last_hour,
+                        "{date:?} seed {seed} at {when}: {line:?}"
+                    );
+                }
+                assert!(
+                    said.iter()
+                        .all(|&(_, l)| mind::NEW_YEAR_TALK.lines.contains(&l)
+                            || mind::LAST_HOUR_TALK.lines.contains(&l)),
+                    "{date:?}: {said:?}"
+                );
+            }
+            assert_eq!(dreamt > 0, dreams, "{date:?}: {dreamt}");
+        }
+    }
+
+    /// Her first snack of a morning or an evening by her routine has its
+    /// meal's line ("Breakfast!", "Dinner time~"), once a slot; no other
+    /// snack, no other slot, no trial sit; never with her routine unfed.
+    #[test]
+    fn her_meal_lines_come_in_their_slots_only() {
+        let chances = Chances::default();
+        let seat = seat_for(Use::Snack, Furniture::Fridge);
+        let (breakfast, dinner) = (mind::BREAKFAST.lines[0], mind::DINNER.lines[0]);
+        // Tuesday (a school day), Saturday (a day off).
+        for (day, h, m, want) in [
+            (1, 7, 30, Some(breakfast)),
+            (1, 13, 0, None),
+            (1, 18, 30, Some(dinner)),
+            (1, 21, 0, None),
+            (5, 10, 0, Some(breakfast)),
+            (5, 13, 0, None),
+            (5, 19, 30, Some(dinner)),
+        ] {
+            for fed in [true, false] {
+                let mut rng = Rng(7);
+                let mut osaka = Osaka::standing_at(10, 10, 0, &mut rng);
+                osaka.splice_rows = &[];
+                osaka.read_clock(fed.then(|| clock_dated(day, h, m, None)));
+                osaka.start_job(Job::Use(seat), 1000, &chances, &mut rng);
+                let at = format!("day {day} {h}:{m:02} fed {fed}");
+                let said = osaka.speech.map(|(line, _)| line);
+                assert_eq!(said, want.filter(|_| fed), "{at}");
+                assert_eq!(
+                    said_from(&osaka, PoolId::Routine),
+                    want.filter(|_| fed).into_iter().collect::<Vec<_>>(),
+                    "{at}"
+                );
+                // The slot's second snack: nothing.
+                osaka.speech = None;
+                osaka.start_job(Job::Use(seat), 60_000, &chances, &mut rng);
+                assert_eq!(osaka.speech, None, "{at}: again");
+                // Trying the fridge where it stands: nothing, ever.
+                let mut trying = Osaka::standing_at(10, 10, 0, &mut rng);
+                trying.read_clock(fed.then(|| clock_dated(day, h, m, None)));
+                trying.episode = Some(trial_episode());
+                trying.start_job(Job::Use(seat), 1000, &chances, &mut rng);
+                assert!(
+                    said_from(&trying, PoolId::Routine).is_empty(),
+                    "{at}: a trial sit"
+                );
+            }
+        }
+    }
+
+    /// Up on a day with no school (a weekend, a vacation), she says so
+    /// once she's quiet after good morning, that morning; on a school
+    /// day, or past the morning, never. Her day begins as it does on her
+    /// wake ([`Osaka::begin_day`]).
+    #[test]
+    fn no_school_today_only_on_a_day_off() {
+        let terrain = floor_at(15);
+        let chances = Chances::default();
+        let no_school = mind::NO_SCHOOL.lines[0];
+        for (day, h, date, off) in [
+            (1, 7, ymd(2026, 6, 16), false),
+            (5, 9, ymd(2026, 6, 20), true),
+            (6, 9, ymd(2026, 6, 21), true),
+            // A Tuesday in the summer vacation.
+            (1, 9, ymd(2026, 7, 28), true),
+            (1, 7, None, false),
+            // Her day begun past the morning (caught up at 13:00): the
+            // morning is gone, and so is the line.
+            (5, 13, ymd(2026, 6, 20), false),
+            (1, 13, ymd(2026, 7, 28), false),
+        ] {
+            let clock = clock_dated(day, h, 0, date);
+            let mut rng = Rng(11);
+            let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+            osaka.read_clock(Some(clock));
+            let today = clock.day(0);
+            osaka.begin_day(today, 0);
+            let mut now = 0;
+            while now < 60_000 {
+                now += 500;
+                osaka.tick(now, Some(clock), &terrain, &chances, &mut rng);
+            }
+            let said = said_from(&osaka, PoolId::Routine);
+            let at = format!("day {day} {date:?}");
+            assert_eq!(
+                said,
+                off.then_some(no_school).into_iter().collect::<Vec<_>>(),
+                "{at}"
+            );
+            // Said after good morning, not over it.
+            if let Some(&(.., when)) = osaka.said_lines().iter().find(|&&(_, l, _)| l == no_school)
+            {
+                assert!(when >= osaka.morning_until, "{at}");
+            }
+        }
+    }
+
+    /// Tucked in, she's asleep from the first frame, the lamp off: no
+    /// "Night-night..." (she'd have said it settling in).
+    #[test]
+    fn tucked_in_she_says_no_night_night() {
+        let terrain = floor_at(15);
+        let chances = bed_at(25);
+        let clock = clock_at(1, 0, 0);
+        let mut rng = Rng(2);
+        let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+        osaka.read_clock(Some(clock));
+        assert!(osaka.tuck_in(&chances, &terrain, 0));
+        tick_until(
+            &mut osaka,
+            0,
+            60_000,
+            (clock, &terrain, &chances),
+            &mut rng,
+            |_, _| {},
+        );
+        assert!(osaka.lamp_off);
+        assert!(said_from(&osaka, PoolId::Routine).is_empty());
+    }
+
+    /// In exam season her homework's chopsticks come every time, cooling
+    /// aside (A23): its row's chance reads the season the use starts in.
+    #[test]
+    fn exam_season_chopsticks_wrap_her_homework() {
+        let chances = Chances::default();
+        let seat = seat_for(Use::Homework, Furniture::Desk);
+        for (date, every) in [
+            (ymd(2027, 2, 10), true),
+            (ymd(2027, 4, 10), false),
+            (None, false),
+        ] {
+            let mut wrapped = 0;
+            for seed in 0..60 {
+                let mut rng = Rng(seed);
+                let mut osaka = Osaka::standing_at(10, 10, 0, &mut rng);
+                osaka.whims = Whims(seed ^ 0xe4a3);
+                osaka.read_clock(Some(clock_dated(1, 20, 30, date)));
+                osaka.start_job(Job::Use(seat), 1000, &chances, &mut rng);
+                wrapped +=
+                    usize::from(osaka.plays().is_some_and(|p| {
+                        p.before.is_some_and(|s| s.splice == SpliceId::Chopsticks)
+                    }));
+            }
+            if every {
+                assert_eq!(wrapped, 60, "{date:?}");
+            } else {
+                assert!((5..40).contains(&wrapped), "{date:?}: {wrapped}");
+            }
         }
     }
 }

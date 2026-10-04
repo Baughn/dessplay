@@ -10,8 +10,8 @@
 //! she answers it) · f give her the next piece of furniture · x show why she does what she
 //! does · v her next mood (lazy, busy, dreamy) · g goodbye · n new seed ·
 //! [ ] slower / faster · t skip her clock to the next change in her
-//! routine · d the next stage date (a few calendar days, then today's,
-//! then none) · 1–6 make her sleepy,
+//! routine · d the next stage date (her calendar's days and seasons,
+//! then today's, then none) · 1–6 make her sleepy,
 //! restless, keen to tidy, mischievous, hungry, or keen to put right what
 //! she's felt is wrong with her home · q quit. The bar shows her game
 //! time and the part of her day it is (her clock runs at the stage's
@@ -37,8 +37,9 @@ use tuirealm::ratatui::style::{Modifier, Style};
 
 const SPEEDS: [f64; 6] = [0.125, 0.25, 0.5, 1.0, 2.0, 4.0];
 
-/// The stage's dates (`d` cycles them): a few calendar days, then
-/// today's, then none.
+/// The stage's dates (`d` cycles them): her calendar's days and seasons
+/// (exams, hay fever, summer, panic week, December), then today's, then
+/// none.
 #[derive(Clone, Copy)]
 enum StageDate {
     On(u32, u32),
@@ -46,12 +47,22 @@ enum StageDate {
     Off,
 }
 
-const DATES: [StageDate; 7] = [
+const DATES: [StageDate; 16] = [
+    // Her starter calendar: what each date owes her, and her seasons.
     StageDate::On(1, 1),
+    StageDate::On(1, 2),
     StageDate::On(2, 3),
+    StageDate::On(2, 10),
+    StageDate::On(3, 20),
+    StageDate::On(4, 8),
+    StageDate::On(7, 7),
     StageDate::On(7, 25),
+    StageDate::On(8, 28),
+    StageDate::On(9, 30),
     StageDate::On(10, 31),
+    StageDate::On(12, 10),
     StageDate::On(12, 24),
+    StageDate::On(12, 31),
     StageDate::Today,
     StageDate::Off,
 ];

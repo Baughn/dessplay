@@ -111,11 +111,16 @@ pub enum Scene {
     /// She dashes home from school, and can't think what for: in through
     /// her door, a moment wondering, and (at school time) out again.
     DashForgot,
+    /// Setsubun's beans, thrown on the spot (her calendar's on Feb 3).
+    Setsubun,
+    /// The first sunrise of the year on her TV (her calendar's on Jan 1;
+    /// she gets a TV if she has none).
+    FirstSunrise,
 }
 
 impl Scene {
     /// Every scene, in menu order.
-    pub const ALL: [Scene; 40] = [
+    pub const ALL: [Scene; 42] = [
         Self::Arrive,
         Self::Pull,
         Self::Swap,
@@ -156,6 +161,8 @@ impl Scene {
         Self::Arrange,
         Self::DashIn,
         Self::DashForgot,
+        Self::Setsubun,
+        Self::FirstSunrise,
     ];
 
     /// A short menu label.
@@ -201,6 +208,8 @@ impl Scene {
             Self::Arrange => "turn the sofa round",
             Self::DashIn => "dash home for lunch",
             Self::DashForgot => "dash home, forgetful",
+            Self::Setsubun => "Setsubun's beans",
+            Self::FirstSunrise => "first sunrise",
         }
     }
 
@@ -211,7 +220,7 @@ impl Scene {
             Self::Nap => Use::Nap,
             Self::Sleep | Self::Night => Use::Sleep,
             Self::Homework | Self::ChopsticksClean | Self::ChopsticksBad => Use::Homework,
-            Self::Watch | Self::Shopping | Self::Surf => Use::Watch,
+            Self::Watch | Self::Shopping | Self::Surf | Self::FirstSunrise => Use::Watch,
             Self::Parcel => Use::Unpack,
             Self::Read => Use::Read,
             Self::Snack | Self::Andagi | Self::DashIn => Use::Snack,
@@ -245,6 +254,10 @@ impl Scene {
             Self::Snack => Some(Cue::Script(ScriptId::Snack)),
             Self::DashIn => Some(Cue::Script(ScriptId::DashLunch)),
             Self::DashForgot => Some(Cue::Script(ScriptId::DashForgot)),
+            // Her calendar's, on the stage whatever the date: the beans
+            // spacing out (as a riddle is), the sunrise on a watch.
+            Self::Setsubun => Some(Cue::Script(ScriptId::Setsubun)),
+            Self::FirstSunrise => Some(Cue::Script(ScriptId::FirstSunrise)),
             Self::Arrive
             | Self::Pull
             | Self::Swap

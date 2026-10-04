@@ -22,7 +22,13 @@
 //! number, negative, or absurdly large) reads as zero without failing
 //! the record. A record without them is at Monday 16:00 with nothing
 //! counted, which is where every record from before them starts.
+//!
+//! The real date she last delivered her calendar's owed entry on comes
+//! last, as `"YYYY-MM-DD"`, written only once there is one and read
+//! leniently: a value this build can't read as a date reads as none
+//! (the day's entry is owed again), without failing the record.
 
+use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 
 use super::room::{Anchor, Furniture, Home, Nook, Prop, Strip};
@@ -59,6 +65,9 @@ pub struct Ledger {
     /// `idle_min` when she last showed something legendary for the first
     /// time.
     pub(super) legend_at: u64,
+    /// The real date she last delivered what her calendar owed her on
+    /// (phase 5b D5): owed once a day, so not again that date.
+    pub(super) calendar_on: Option<NaiveDate>,
 }
 
 impl Ledger {
@@ -74,6 +83,7 @@ impl Ledger {
             idle_min: 0,
             rare_at: 0,
             legend_at: 0,
+            calendar_on: None,
         }
     }
 
@@ -167,6 +177,7 @@ impl Ledger {
             idle_min: minutes(raw.idle_min),
             rare_at: minutes(raw.rare_at),
             legend_at: minutes(raw.legend_at),
+            calendar_on: raw.calendar_on.as_ref().and_then(day),
         })
     }
 
@@ -211,6 +222,7 @@ impl Ledger {
             idle_min: self.idle_min,
             rare_at: self.rare_at,
             legend_at: self.legend_at,
+            calendar_on: self.calendar_on.map(|d| d.format(DATE).to_string()),
         };
         serde_json::to_string(&raw).unwrap_or_default()
     }
@@ -263,6 +275,15 @@ fn minutes(value: Option<serde_json::Value>) -> u64 {
         .and_then(serde_json::Value::as_u64)
         .filter(|&m| m <= MINUTES_MAX)
         .unwrap_or(0)
+}
+
+/// How a date is written: `"YYYY-MM-DD"` (chrono has no serde here).
+const DATE: &str = "%Y-%m-%d";
+
+/// A date as read: a string in [`DATE`]'s form naming a real date, or
+/// none (a value this build can't take).
+fn day(value: &serde_json::Value) -> Option<NaiveDate> {
+    NaiveDate::parse_from_str(value.as_str()?, DATE).ok()
 }
 
 /// Whether a count is left out of the record (serde's
@@ -343,6 +364,9 @@ struct Saved {
     rare_at: u64,
     #[serde(skip_serializing_if = "is_zero")]
     legend_at: u64,
+    /// Left out until she has delivered a calendar entry.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    calendar_on: Option<String>,
 }
 
 /// Where a piece stands: its strip, and its anchor there once it has
@@ -383,6 +407,8 @@ struct Raw {
     rare_at: Option<serde_json::Value>,
     #[serde(default)]
     legend_at: Option<serde_json::Value>,
+    #[serde(default)]
+    calendar_on: Option<serde_json::Value>,
 }
 
 #[cfg(test)]
@@ -727,6 +753,63 @@ mod tests {
             r#""bought_on":6,"clock":1099511627775}"#,
         );
         assert_eq!(Ledger::from_json(&text).unwrap().clock, MINUTES_MAX);
+    }
+
+    /// The date of her calendar comes last, after her clock and
+    /// counters, as "YYYY-MM-DD", and reads back as written; none is
+    /// written until there is one.
+    #[test]
+    fn the_calendar_date_round_trips() {
+        let ledger = Ledger {
+            calendar_on: NaiveDate::from_ymd_opt(2027, 2, 3),
+            ..timed()
+        };
+        let text = ledger.to_json();
+        assert!(
+            text.ends_with(r#""legend_at":17,"calendar_on":"2027-02-03"}"#),
+            "{text}"
+        );
+        assert_eq!(Ledger::from_json(&text), Ok(ledger.clone()));
+        let alone = Ledger {
+            calendar_on: NaiveDate::from_ymd_opt(2040, 12, 31),
+            ..furnished()
+        };
+        let text = alone.to_json();
+        assert!(
+            text.ends_with(r#""bought_on":6,"calendar_on":"2040-12-31"}"#),
+            "{text}"
+        );
+        assert_eq!(Ledger::from_json(&text), Ok(alone));
+        assert!(!timed().to_json().contains("calendar_on"));
+        assert!(!furnished().to_json().contains("calendar_on"));
+        // An older build keeps every piece of it.
+        assert_eq!(
+            as_an_older_build_reads(&ledger.to_json()),
+            as_an_older_build_reads(&furnished().to_json())
+        );
+    }
+
+    /// A date this build can't read reads as none (the day's entry is
+    /// owed again), and the rest of the record still reads.
+    #[test]
+    fn a_garbled_calendar_date_reads_as_none() {
+        for garbage in [
+            r#""2027-02-30""#,
+            r#""2027-2-3x""#,
+            r#""tomorrow""#,
+            r#""""#,
+            "20270203",
+            "null",
+            "[2027, 2, 3]",
+            r#"{"y": 2027}"#,
+            "true",
+        ] {
+            let text = furnished().to_json().replace(
+                r#""bought_on":6}"#,
+                &format!(r#""bought_on":6,"calendar_on":{garbage}}}"#),
+            );
+            assert_eq!(Ledger::from_json(&text), Ok(furnished()), "{garbage}");
+        }
     }
 
     /// An older build, which knows none of them, still keeps every

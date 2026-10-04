@@ -61,6 +61,20 @@ Add new days at the top. Add new entries at the bottom of existing days.
 - Fixed: When Osaka heads out by her door and her room isn't left
   standing (she has no furniture yet, or you're at the keys), her door
   and anything she moved now fade away instead of vanishing at once.
+- Added: Osaka notices the real date. On New Year's Day she wishes you
+  a happy New Year and watches the first sunrise on her TV; on Setsubun
+  she throws beans ("Oni wa soto!"); and she has something to say on her
+  debut day (April 8), Tanabata, the day they graduated (September 30),
+  Halloween, Christmas and New Year's Eve. She says it once a day, on
+  your first visit (or as she wakes, or when she gets home from school).
+- Added: Osaka has her seasons. In exam season she does more homework
+  and splits chopsticks before every bit of it, in spring she sneezes
+  with hay fever, in December she muses about Rudolph and kotatsu, and
+  in the last week of the summer holidays it's "Homework! Homework!".
+- Added: Osaka greets the time of day: "Breakfast!" and "Dinner time~"
+  with her first snack of a morning or evening, "No school today!" when
+  she gets up on a weekend or holiday, and "Night-night..." as she turns
+  the lamp off.
 
 ## 2026-10-03
 
