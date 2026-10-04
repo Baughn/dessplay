@@ -828,3 +828,29 @@ synthesis with verified evidence and A-numbers: [phase5b/critique.md](phase5b/cr
    - the day census, the 256-case pass, perf, the dump section;
    - design.md, decisions.md and testing-strategy.md;
    - the CHANGELOG review and the plan.md record.
+
+### Round-1b (advisor check, 2026-10-04)
+
+- **The day is the unit when the clock is fed.**
+  - `begin_visit` and waking both key the mood, `Rares` and the line budget on `(master_seed, game_day)`
+    (splitmix with `DAY_SALT`). Unfed, `begin_visit` keeps `visit_seed` and no golden moves.
+  - So the 12:45 Return continues the morning's mood, and a second visit the same game day (an `Idle`
+    arrival) gets the same mood and says the same greeting.
+  - "At most one unseen rare" is per game day when fed and per visit when unfed.
+  - The line budget resets when the game day changes, not per visit.
+  - The body rng stays seeded per visit (`visit_seed(visits)`), as today.
+- **The lamp through a night interruption.**
+  - `Osaka.lamp_off: bool` is latched by the night act's lamp key and cleared at the wake. `prop()`
+    reads it ahead of the act, so the groggy errand and the midnight snack happen in the dark.
+  - The Asleep slot alone never turns the lamp off: #70 still plays on the way to bed.
+  - Away's `World` sets the lamp off on its own.
+- **The closed door in a resident's focused pane** rains out with the pieces there, and comes back when
+  focus moves on, as they do (D:1860-1866).
+- **Stage cues.**
+  - `cue(Arrive)` from Away is an `Idle` arrival that bypasses the routine. At school time the routine
+    reflex sends her back out at her first decision: honest, and visible on the stage. Skip the clock
+    (`t`) to watch a scene at home time.
+  - A cue at night tucks her in if a bed or sofa is projected, else she arrives and the bed reflex
+    follows.
+- **A visitor's keystroke while `Arriving(Return)`** doesn't cancel it (only `!open` does). She comes
+  home, and the next input or a closing gate ends the visit as usual.
