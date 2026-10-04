@@ -1,0 +1,629 @@
+diff --git a/dessplay/src/ui/houseguest/art.rs b/dessplay/src/ui/houseguest/art.rs
+index c263b429..a7b349c1 100644
+--- a/dessplay/src/ui/houseguest/art.rs
++++ b/dessplay/src/ui/houseguest/art.rs
+@@ -1162,6 +1162,130 @@ pub(super) fn render_tv(
+     )
+ }
+ 
++/// The wall clock's dial, to the quarter-hour: `hour` 0–11, `quarter`
++/// 0–3. 48 faces in all.
++#[cfg_attr(not(test), allow(dead_code))]
++#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
++pub(super) struct Dial {
++    pub hour: u8,
++    pub quarter: u8,
++}
++
++#[cfg_attr(not(test), allow(dead_code))]
++impl Dial {
++    /// The dial showing `minute` of the day, rounded down to its quarter.
++    pub(super) fn at(minute: u16) -> Self {
++        Self {
++            hour: (minute / 60 % 12) as u8,
++            quarter: (minute % 60 / 15) as u8,
++        }
++    }
++
++    /// The hour and minute hands' angles, clockwise from 12.
++    fn angles(self) -> (f32, f32) {
++        let quarter = f32::from(self.quarter % 4);
++        (
++            f32::from(self.hour % 12) * 30.0 + quarter * 7.5,
++            quarter * 90.0,
++        )
++    }
++}
++
++/// A wall clock's art: its SVG group prefix (`{prefix}`, then
++/// `{prefix}-hand-hour`, `-hand-minute`, `-pin`), frame and face centre
++/// in units.
++#[cfg_attr(not(test), allow(dead_code))]
++struct ClockArt {
++    prefix: &'static str,
++    frame: (f32, f32),
++    centre: (f32, f32),
++}
++
++/// The 3 × 2 clock (the face centre sits on a pixel centre at 9 × 19, so
++/// its 1-px hands are crisp at 12, 3, 6 and 9).
++#[cfg_attr(not(test), allow(dead_code))]
++const CLOCK: ClockArt = ClockArt {
++    prefix: "clock",
++    frame: (60.0, 84.0),
++    centre: (30.0, 42.888_89),
++};
++
++/// The 4 × 2 clock, for comparison (its centre sits on a pixel corner,
++/// for 2-px hands).
++#[cfg_attr(not(test), allow(dead_code))]
++const CLOCK4: ClockArt = ClockArt {
++    prefix: "clock4",
++    frame: (80.0, 84.0),
++    centre: (40.0, 44.0),
++};
++
++/// The clock's parts showing `dial`, back to front, unmirrored.
++#[cfg_attr(not(test), allow(dead_code))]
++fn dial_parts(art: &ClockArt, dial: Dial) -> String {
++    let (hour, minute) = dial.angles();
++    let (cx, cy) = art.centre;
++    let p = art.prefix;
++    format!(
++        r##"<use href="#{p}"/><use href="#{p}-hand-hour" transform="rotate({hour} {cx} {cy})"/><use href="#{p}-hand-minute" transform="rotate({minute} {cx} {cy})"/><use href="#{p}-pin"/>"##
++    )
++}
++
++/// The clock showing `dial`, as an SVG document in its frame. It is
++/// never mirrored, whatever way it was hung: a mirrored dial would read
++/// 3:00 as 9:00.
++#[cfg_attr(not(test), allow(dead_code))]
++fn dial_scene(art: &ClockArt, dial: Dial, _facing: Facing, line: &str) -> String {
++    let (w, h) = art.frame;
++    format!(
++        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w} {h}" color="{line}">{PROPS}{}</svg>"##,
++        dial_parts(art, dial)
++    )
++}
++
++/// The sky through the window, by the time of day.
++#[cfg_attr(not(test), allow(dead_code))]
++#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
++pub(super) enum Sky {
++    Night,
++    Dawn,
++    Day,
++    Dusk,
++    Evening,
++}
++
++#[cfg_attr(not(test), allow(dead_code))]
++impl Sky {
++    const ALL: [Self; 5] = [
++        Self::Night,
++        Self::Dawn,
++        Self::Day,
++        Self::Dusk,
++        Self::Evening,
++    ];
++
++    fn id(self) -> &'static str {
++        match self {
++            Self::Night => "night",
++            Self::Dawn => "dawn",
++            Self::Day => "day",
++            Self::Dusk => "dusk",
++            Self::Evening => "evening",
++        }
++    }
++}
++
++/// The window (group `prefix`, frame `frame`) with `sky` behind its
++/// glass, as an SVG document. Static parts: the sky group clips itself to
++/// `{prefix}-glass`. Never mirrored.
++#[cfg_attr(not(test), allow(dead_code))]
++fn window_scene(prefix: &str, frame: (f32, f32), sky: Sky, _facing: Facing, line: &str) -> String {
++    let (w, h) = frame;
++    format!(
++        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w} {h}" color="{line}">{PROPS}<use href="#{prefix}-sky-{}"/><use href="#{prefix}"/></svg>"##,
++        sky.id()
++    )
++}
++
+ /// A prop's frame in SVG units.
+ fn prop_frame(prop: Furniture) -> (f32, f32) {
+     let (cols, rows) = prop.spec().footprint;
+@@ -1278,6 +1402,263 @@ mod tests {
+         out
+     }
+ 
++    /// Every dial and sky inks enough of its footprint, and is drawn the
++    /// same whichever way it was asked to face (a mirrored dial reads
++    /// 3:00 as 9:00).
++    #[test]
++    fn every_dial_and_sky_renders_inside_its_footprint_unmirrored() {
++        let inked = |image: &image::RgbaImage| image.pixels().filter(|p| p.0[3] > 0).count() as u32;
++        for art in [&CLOCK, &CLOCK4] {
++            let (w, h) = ((art.frame.0 * 0.45) as u32, 38);
++            for minute in (0..24 * 60).step_by(15) {
++                let dial = Dial::at(minute);
++                let [right, left] = [Facing::Right, Facing::Left]
++                    .map(|facing| rasterize(&dial_scene(art, dial, facing, LINE), art.frame, w, h));
++                let right = right.expect("renders");
++                assert!(inked(&right) > w * h / 6, "{} {dial:?}", art.prefix);
++                assert_eq!(Some(right), left, "{} {dial:?}", art.prefix);
++            }
++        }
++        // Each quarter of a 12-hour day is its own face.
++        let faces: std::collections::HashSet<_> = (0..12 * 60)
++            .step_by(15)
++            .map(|minute| {
++                rasterize(
++                    &dial_scene(&CLOCK, Dial::at(minute), Facing::Right, LINE),
++                    CLOCK.frame,
++                    27,
++                    38,
++                )
++                .expect("renders")
++                .into_raw()
++            })
++            .collect();
++        assert_eq!(faces.len(), 48);
++        for (prefix, frame, (w, h)) in [
++            ("window", (80.0, 84.0), (36, 38)),
++            ("window5", (100.0, 126.0), (45, 57)),
++        ] {
++            for sky in Sky::ALL {
++                let [right, left] = [Facing::Right, Facing::Left].map(|facing| {
++                    rasterize(&window_scene(prefix, frame, sky, facing, LINE), frame, w, h)
++                });
++                let right = right.expect("renders");
++                assert!(inked(&right) > w * h / 6, "{prefix} {sky:?}");
++                assert_eq!(Some(right), left, "{prefix} {sky:?}");
++            }
++        }
++    }
++
++    /// The wall clock and the window for review (phase 5b):
++    /// `HOUSEGUEST_CLOCK=/dir cargo test -p dessplay --lib clock_sheet --
++    /// --ignored` writes `clock-window-1x.png`, the same pixels at 3×
++    /// nearest-neighbour (`clock-window-1x-nn3x.png`) and a native 3×
++    /// render (`clock-window-3x.png`), over a dark terminal. Hung pieces
++    /// render at exactly their footprint, as the game draws a piece off
++    /// the floor line. Bands, top to bottom:
++    /// 1. the 4 × 2 window in its five skies (night, dawn, day, dusk,
++    ///    evening), then night asked for facing left;
++    /// 2. the 5 × 3 window, the same;
++    /// 3. the 3 × 2 dial at 12 hours (columns 12, 1, …, 11) × 4 quarters
++    ///    (rows :00, :15, :30, :45);
++    /// 4. the 4 × 2 dial, the same;
++    /// 5. facings: each clock at 3:00 facing right, asked for facing left
++    ///    (normalised: identical), and naively mirrored (reads 9:00;
++    ///    underlined red), then the window at dusk both ways;
++    /// 6. the context: both pieces hung beside the poster over the sofa,
++    ///    her in `Gaze` under the window, at 16:00 (day) and 23:00
++    ///    (night); then the 4 × 2 clock and 5 × 3 window at 18:45 (dusk).
++    #[test]
++    #[ignore = "writes PNGs for review"]
++    fn clock_sheet() {
++        enum Draw {
++            /// An SVG in `frame` units over `cols × rows` cells at (x, y);
++            /// standing pieces get the floor row's half cell too, and `y`
++            /// is then their floor row.
++            Svg {
++                svg: String,
++                frame: (f32, f32),
++                at: (u32, u32),
++                size: (u32, u32),
++                standing: bool,
++            },
++            /// Her box (5 × 4) at column `x`, on floor row `y`.
++            Her(Rig, Facing, (u32, u32)),
++            /// A floor line on row `y` from column `x0` to `x1`.
++            Floor(u32, u32, u32),
++            /// A red underline below row `y`, columns `x0..x1`.
++            Wrong(u32, u32, u32),
++        }
++        const BG: image::Rgba<u8> = image::Rgba([30, 33, 39, 255]);
++        const FLOOR: image::Rgba<u8> = image::Rgba([139, 148, 158, 255]);
++        const RED: image::Rgba<u8> = image::Rgba([224, 82, 82, 255]);
++        let dir = std::env::var("HOUSEGUEST_CLOCK").expect("HOUSEGUEST_CLOCK");
++        /// A window's group prefix, frame in units and footprint in cells.
++        type WindowArt = (&'static str, (f32, f32), (u32, u32));
++        const WINDOW4: WindowArt = ("window", (80.0, 84.0), (4, 2));
++        const WINDOW5: WindowArt = ("window5", (100.0, 126.0), (5, 3));
++        let clock_size = |art: &ClockArt| ((art.frame.0 / 20.0) as u32, 2);
++        let window = |w: WindowArt, sky, facing, at| Draw::Svg {
++            svg: window_scene(w.0, w.1, sky, facing, LINE),
++            frame: w.1,
++            at,
++            size: w.2,
++            standing: false,
++        };
++        let dial = |art: &ClockArt, d: Dial, facing, at| Draw::Svg {
++            svg: dial_scene(art, d, facing, LINE),
++            frame: art.frame,
++            at,
++            size: clock_size(art),
++            standing: false,
++        };
++        let mut draws = Vec::new();
++        // 1–2. The windows.
++        for (i, sky) in Sky::ALL.into_iter().enumerate() {
++            draws.push(window(WINDOW4, sky, Facing::Right, (1 + 5 * i as u32, 1)));
++            draws.push(window(WINDOW5, sky, Facing::Right, (1 + 6 * i as u32, 4)));
++        }
++        draws.push(window(WINDOW4, Sky::Night, Facing::Left, (27, 1)));
++        draws.push(window(WINDOW5, Sky::Night, Facing::Left, (32, 4)));
++        // 3–4. Every dial.
++        for quarter in 0..4u8 {
++            for hour in 0..12u8 {
++                let d = Dial { hour, quarter };
++                let (h, q) = (u32::from(hour), u32::from(quarter));
++                draws.push(dial(&CLOCK, d, Facing::Right, (1 + 4 * h, 8 + 3 * q)));
++                draws.push(dial(&CLOCK4, d, Facing::Right, (1 + 5 * h, 21 + 3 * q)));
++            }
++        }
++        // 5. Facings.
++        let three = Dial {
++            hour: 3,
++            quarter: 0,
++        };
++        for (art, x) in [(&CLOCK, 1u32), (&CLOCK4, 14)] {
++            let (cols, _) = clock_size(art);
++            draws.push(dial(art, three, Facing::Right, (x, 34)));
++            draws.push(dial(art, three, Facing::Left, (x + cols + 1, 34)));
++            // What render_piece's mirror group would have drawn.
++            let (w, h) = art.frame;
++            let naive = format!(
++                r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w} {h}" color="{LINE}">{PROPS}<g transform="translate({w} 0) scale(-1 1)">{}</g></svg>"##,
++                dial_parts(art, three)
++            );
++            let nx = x + 2 * (cols + 1);
++            draws.push(Draw::Svg {
++                svg: naive,
++                frame: art.frame,
++                at: (nx, 34),
++                size: (cols, 2),
++                standing: false,
++            });
++            draws.push(Draw::Wrong(36, nx, nx + cols));
++        }
++        draws.push(window(WINDOW4, Sky::Dusk, Facing::Right, (30, 34)));
++        draws.push(window(WINDOW4, Sky::Dusk, Facing::Left, (35, 34)));
++        // 6. The context strips: floor on row 44, hung pieces' bottom
++        // row at floor − 5 (hang 4).
++        let floor = 44u32;
++        let gaze = Rig::for_pose(Pose::Gaze, Face::Curious);
++        let strips: [(u32, &ClockArt, WindowArt, Dial, Sky); 3] = [
++            (0, &CLOCK, WINDOW4, Dial::at(16 * 60), Sky::Day),
++            (20, &CLOCK, WINDOW4, Dial::at(23 * 60), Sky::Night),
++            (40, &CLOCK4, WINDOW5, Dial::at(18 * 60 + 45), Sky::Dusk),
++        ];
++        for (x, art, win, d, sky) in strips {
++            let hung = |rows: u32| floor - 4 - rows;
++            draws.push(Draw::Floor(floor, x + 1, x + 20));
++            draws.push(Draw::Svg {
++                svg: layer_scene(Furniture::Sofa, Layer::Whole, Facing::Right, LINE),
++                frame: prop_frame(Furniture::Sofa),
++                at: (x + 1, floor),
++                size: (9, 3),
++                standing: true,
++            });
++            draws.push(Draw::Svg {
++                svg: layer_scene(Furniture::Poster, Layer::Whole, Facing::Right, LINE),
++                frame: prop_frame(Furniture::Poster),
++                at: (x + 1, hung(2)),
++                size: (4, 2),
++                standing: false,
++            });
++            let (cols, _) = clock_size(art);
++            draws.push(dial(art, d, Facing::Left, (x + 6, hung(2))));
++            let wx = x + 7 + cols;
++            draws.push(window(win, sky, Facing::Left, (wx, hung(win.2.1))));
++            // Her box a little left of the window's middle, facing it.
++            let mid = wx + win.2.0 / 2;
++            draws.push(Draw::Her(gaze, Facing::Right, (mid - 3, floor)));
++        }
++        let (cols, rows) = (62u32, 46u32);
++        let render_sheet = |s: u32| {
++            let (w, h) = (9 * s, 19 * s);
++            let mut sheet = image::RgbaImage::from_pixel(w * cols, h * rows, BG);
++            for draw in &draws {
++                match draw {
++                    Draw::Svg {
++                        svg,
++                        frame,
++                        at,
++                        size,
++                        standing,
++                    } => {
++                        let (pw, mut ph) = (w * size.0, h * size.1);
++                        let mut top = h * at.1;
++                        if *standing {
++                            ph += h / 2;
++                            top = h * (at.1 - size.1);
++                        }
++                        let image = rasterize(svg, *frame, pw, ph).expect("renders");
++                        image::imageops::overlay(
++                            &mut sheet,
++                            &image,
++                            i64::from(w * at.0),
++                            i64::from(top),
++                        );
++                    }
++                    Draw::Her(rig, facing, (x, y)) => {
++                        let osaka = render(rig, *facing, LINE, w * 5, h * 4 + h / 2).unwrap();
++                        image::imageops::overlay(
++                            &mut sheet,
++                            &osaka,
++                            i64::from(w * x),
++                            i64::from(h * (y - 4)),
++                        );
++                    }
++                    Draw::Floor(y, x0, x1) => {
++                        for gx in w * x0..w * x1 {
++                            for t in 0..s {
++                                sheet.put_pixel(gx, h * y + h / 2 + t, FLOOR);
++                            }
++                        }
++                    }
++                    Draw::Wrong(y, x0, x1) => {
++                        for gx in w * x0..w * x1 {
++                            for t in 0..s {
++                                sheet.put_pixel(gx, h * y + 2 * s + t, RED);
++                            }
++                        }
++                    }
++                }
++            }
++            sheet
++        };
++        let one = render_sheet(1);
++        one.save(format!("{dir}/clock-window-1x.png")).unwrap();
++        image::imageops::resize(
++            &one,
++            one.width() * 3,
++            one.height() * 3,
++            image::imageops::FilterType::Nearest,
++        )
++        .save(format!("{dir}/clock-window-1x-nn3x.png"))
++        .unwrap();
++        render_sheet(3)
++            .save(format!("{dir}/clock-window-3x.png"))
++            .unwrap();
++    }
++
+     /// The chopsticks, the droop face and the sata andagi for review,
+     /// beside the art they join: `HOUSEGUEST_VIGNETTES=/dir cargo test
+     /// -p dessplay --lib vignette_sheet -- --ignored` writes
+diff --git a/dessplay/src/ui/houseguest/art/props.svg b/dessplay/src/ui/houseguest/art/props.svg
+index 9f805686..065449a5 100644
+--- a/dessplay/src/ui/houseguest/art/props.svg
++++ b/dessplay/src/ui/houseguest/art/props.svg
+@@ -334,4 +334,225 @@
+     <rect x="6.22" y="7.06" width="12" height="5" fill="#f3e7b0" fill-opacity="0.85" stroke="currentColor" stroke-width="0.9" transform="rotate(-30 12.22 9.56)"/>
+     <rect x="61.78" y="7.06" width="12" height="5" fill="#f3e7b0" fill-opacity="0.85" stroke="currentColor" stroke-width="0.9" transform="rotate(30 67.78 9.56)"/>
+   </g>
++  <!-- gen:wall -->
++  <!-- A round wall clock, 3 x 2 cells (60 x 84). The dial rotates
++       clock-hand-hour and clock-hand-minute about the face centre
++       (30, 42.89); it is never mirrored. -->
++  <g id="clock">
++    <circle cx="30" cy="42.89" r="28.89" fill="currentColor"/>
++    <circle cx="30" cy="42.89" r="26.67" fill="#d9655b"/>
++    <path d="M 55.06 52.01 A 26.67 26.67 0 0 1 4.94 52.01 L 30 42.89 Z" fill="#b84e47"/>
++    <circle cx="30" cy="42.89" r="22.89" fill="currentColor"/>
++    <circle cx="30" cy="42.89" r="21.33" fill="#fbf6ea"/>
++    <rect x="28.89" y="21.78" width="2.22" height="4.44" fill="currentColor"/>
++    <circle cx="39.67" cy="26.15" r="1.11" fill="#b3a48e"/>
++    <circle cx="46.74" cy="33.22" r="1.11" fill="#b3a48e"/>
++    <rect x="46.67" y="41.78" width="4.44" height="2.22" fill="currentColor"/>
++    <circle cx="46.74" cy="52.56" r="1.11" fill="#b3a48e"/>
++    <circle cx="39.67" cy="59.63" r="1.11" fill="#b3a48e"/>
++    <rect x="28.89" y="59.56" width="2.22" height="4.44" fill="currentColor"/>
++    <circle cx="20.33" cy="59.63" r="1.11" fill="#b3a48e"/>
++    <circle cx="13.26" cy="52.56" r="1.11" fill="#b3a48e"/>
++    <rect x="8.89" y="41.78" width="4.44" height="2.22" fill="currentColor"/>
++    <circle cx="13.26" cy="33.22" r="1.11" fill="#b3a48e"/>
++    <circle cx="20.33" cy="26.15" r="1.11" fill="#b3a48e"/>
++    <path d="M 23.92 26.18 A 17.78 17.78 0 0 0 14.6 34" fill="none" stroke="#ffffff" stroke-width="1.78" stroke-linecap="round"/>
++  </g>
++  <g id="clock-hand-hour">
++    <path d="M 30 45.56 L 30 31.78" fill="none" stroke="currentColor" stroke-width="3.56" stroke-linecap="round"/>
++  </g>
++  <g id="clock-hand-minute">
++    <path d="M 30 46.44 L 30 25.11" fill="none" stroke="currentColor" stroke-width="2.22"/>
++  </g>
++  <g id="clock-pin">
++    <circle cx="30" cy="42.89" r="2.22" fill="#d9655b" stroke="currentColor" stroke-width="1"/>
++  </g>
++  <!-- The same clock at 4 x 2 (80 x 84), for comparison; centre
++       (40, 44). -->
++  <g id="clock4">
++    <circle cx="40" cy="44" r="36.67" fill="currentColor"/>
++    <circle cx="40" cy="44" r="34.44" fill="#d9655b"/>
++    <path d="M 72.37 55.78 A 34.44 34.44 0 0 1 7.63 55.78 L 40 44 Z" fill="#b84e47"/>
++    <circle cx="40" cy="44" r="29.56" fill="currentColor"/>
++    <circle cx="40" cy="44" r="28" fill="#fbf6ea"/>
++    <rect x="37.78" y="16.89" width="4.44" height="5.78" fill="currentColor"/>
++    <circle cx="52.33" cy="22.64" r="1.11" fill="#b3a48e"/>
++    <circle cx="61.36" cy="31.67" r="1.11" fill="#b3a48e"/>
++    <rect x="61.33" y="41.78" width="5.78" height="4.44" fill="currentColor"/>
++    <circle cx="61.36" cy="56.33" r="1.11" fill="#b3a48e"/>
++    <circle cx="52.33" cy="65.36" r="1.11" fill="#b3a48e"/>
++    <rect x="37.78" y="65.33" width="4.44" height="5.78" fill="currentColor"/>
++    <circle cx="27.67" cy="65.36" r="1.11" fill="#b3a48e"/>
++    <circle cx="18.64" cy="56.33" r="1.11" fill="#b3a48e"/>
++    <rect x="12.89" y="41.78" width="5.78" height="4.44" fill="currentColor"/>
++    <circle cx="18.64" cy="31.67" r="1.11" fill="#b3a48e"/>
++    <circle cx="27.67" cy="22.64" r="1.11" fill="#b3a48e"/>
++    <path d="M 31.64 21.03 A 24.44 24.44 0 0 0 18.83 31.78" fill="none" stroke="#ffffff" stroke-width="1.78" stroke-linecap="round"/>
++  </g>
++  <g id="clock4-hand-hour">
++    <path d="M 40 47.56 L 40 29.33" fill="none" stroke="currentColor" stroke-width="4.89" stroke-linecap="round"/>
++  </g>
++  <g id="clock4-hand-minute">
++    <path d="M 40 48.44 L 40 20.44" fill="none" stroke="currentColor" stroke-width="3.56"/>
++  </g>
++  <g id="clock4-pin">
++    <circle cx="40" cy="44" r="3.11" fill="#d9655b" stroke="currentColor" stroke-width="1"/>
++  </g>
++  <!-- A two-pane sliding window, 4 x 2 cells (80 x 84), hung on the
++       wall: the sky groups (window-sky-*) go behind the frame and
++       clip themselves to window-glass. Never mirrored. -->
++  <clipPath id="window-glass">
++    <rect x="13.33" y="15.11" width="53.33" height="46.67" fill="#000"/>
++  </clipPath>
++  <g id="window">
++    <path d="M 4.44 6.22 H 75.56 V 70.67 H 4.44 Z M 13.33 15.11 H 66.67 V 61.78 H 13.33 Z" fill="currentColor" fill-rule="evenodd"/>
++    <path d="M 6.67 8.44 H 73.33 V 68.44 H 6.67 Z M 11.11 12.89 H 68.89 V 64 H 11.11 Z" fill="#f3ead8" fill-rule="evenodd"/>
++    <rect x="6.67" y="8.44" width="66.67" height="2.22" fill="#ffffff" fill-opacity="0.55"/>
++    <rect x="35.56" y="15.11" width="8.89" height="46.67" fill="currentColor"/>
++    <rect x="37.78" y="15.11" width="4.44" height="46.67" fill="#f3ead8"/>
++    <rect x="37.78" y="36.22" width="4.44" height="4.44" fill="#c9a14a"/>
++    <rect x="2.22" y="68.44" width="75.56" height="11.11" fill="currentColor"/>
++    <rect x="4.44" y="70.67" width="71.11" height="6.67" fill="#f3ead8"/>
++    <rect x="4.44" y="75.11" width="71.11" height="2.22" fill="#d8ccb4"/>
++  </g>
++  <g id="window-sky-night">
++    <g clip-path="url(#window-glass)">
++      <rect x="13.33" y="15.11" width="53.33" height="46.67" fill="#2c3f72"/>
++      <circle cx="23.33" cy="29.11" r="5.87" fill="#f6e7a8"/>
++      <circle cx="26.56" cy="27.35" r="4.99" fill="#2c3f72"/>
++      <rect x="31.11" y="44" width="2.22" height="2.22" fill="#fff4c2"/>
++      <rect x="51.11" y="24" width="2.22" height="2.22" fill="#fff4c2"/>
++      <rect x="48.89" y="24" width="2.22" height="2.22" fill="#fff4c2" fill-opacity="0.55"/>
++      <rect x="53.33" y="24" width="2.22" height="2.22" fill="#fff4c2" fill-opacity="0.55"/>
++      <rect x="51.11" y="21.78" width="2.22" height="2.22" fill="#fff4c2" fill-opacity="0.55"/>
++      <rect x="51.11" y="26.22" width="2.22" height="2.22" fill="#fff4c2" fill-opacity="0.55"/>
++      <rect x="62.22" y="35.11" width="2.22" height="2.22" fill="#fff4c2"/>
++      <rect x="53.33" y="44" width="2.22" height="2.22" fill="#fff4c2"/>
++      <path d="M 13.33 61.78 L 13.33 57.33 L 17.78 57.33 L 17.78 55.11 L 24.44 50.67 L 31.11 55.11 L 31.11 55.11 L 44.44 55.11 L 44.44 50.67 L 51.11 50.67 L 51.11 55.11 L 55.56 55.11 L 55.56 48.44 L 62.22 48.44 L 62.22 57.33 L 66.67 57.33 L 66.67 61.78 Z" fill="#18223f"/>
++      <rect x="55.56" y="50.67" width="2.22" height="2.22" fill="#f6d48a"/>
++    </g>
++  </g>
++  <g id="window-sky-dawn">
++    <g clip-path="url(#window-glass)">
++      <rect x="13.33" y="15.11" width="53.33" height="46.67" fill="#a9c7ec"/>
++      <rect x="13.33" y="35.11" width="53.33" height="26.67" fill="#f7bfcc"/>
++      <rect x="13.33" y="46.22" width="53.33" height="15.56" fill="#ffe0a6"/>
++      <circle cx="23.33" cy="52.89" r="5.33" fill="#fff6d6"/>
++      <path d="M 13.33 61.78 L 13.33 57.33 L 17.78 57.33 L 17.78 55.11 L 24.44 50.67 L 31.11 55.11 L 31.11 55.11 L 44.44 55.11 L 44.44 50.67 L 51.11 50.67 L 51.11 55.11 L 55.56 55.11 L 55.56 48.44 L 62.22 48.44 L 62.22 57.33 L 66.67 57.33 L 66.67 61.78 Z" fill="#9a88b0"/>
++    </g>
++  </g>
++  <g id="window-sky-day">
++    <g clip-path="url(#window-glass)">
++      <rect x="13.33" y="15.11" width="53.33" height="46.67" fill="#7cc4ec"/>
++      <circle cx="57.33" cy="29.11" r="5.87" fill="#ffd84a" stroke="currentColor" stroke-width="1.11"/>
++      <circle cx="18.85" cy="39.56" r="3.73" fill="#ffffff"/>
++      <circle cx="24.08" cy="36.95" r="4.67" fill="#ffffff"/>
++      <circle cx="28.56" cy="39.56" r="3.55" fill="#ffffff"/>
++      <rect x="15.12" y="39.56" width="16.99" height="3.55" fill="#ffffff"/>
++      <path d="M 47.78 41.82 Q 49.56 41.38 51.11 44.04 Q 52.67 41.38 54.44 41.82" fill="none" stroke="#33405a" stroke-width="1.56" stroke-linecap="round" stroke-linejoin="round"/>
++      <path d="M 13.33 61.78 L 13.33 57.33 L 17.78 57.33 L 17.78 55.11 L 24.44 50.67 L 31.11 55.11 L 31.11 55.11 L 44.44 55.11 L 44.44 50.67 L 51.11 50.67 L 51.11 55.11 L 55.56 55.11 L 55.56 48.44 L 62.22 48.44 L 62.22 57.33 L 66.67 57.33 L 66.67 61.78 Z" fill="#5d8f7c"/>
++    </g>
++  </g>
++  <g id="window-sky-dusk">
++    <g clip-path="url(#window-glass)">
++      <rect x="13.33" y="15.11" width="53.33" height="46.67" fill="#7a4f9a"/>
++      <rect x="13.33" y="32.89" width="53.33" height="28.89" fill="#d0637e"/>
++      <rect x="13.33" y="46.22" width="53.33" height="15.56" fill="#f2924a"/>
++      <circle cx="54.44" cy="52.89" r="8" fill="#ffcf5a"/>
++      <path d="M 13.33 61.78 L 13.33 57.33 L 17.78 57.33 L 17.78 55.11 L 24.44 50.67 L 31.11 55.11 L 31.11 55.11 L 44.44 55.11 L 44.44 50.67 L 51.11 50.67 L 51.11 55.11 L 55.56 55.11 L 55.56 48.44 L 62.22 48.44 L 62.22 57.33 L 66.67 57.33 L 66.67 61.78 Z" fill="#4a2c52"/>
++    </g>
++  </g>
++  <g id="window-sky-evening">
++    <g clip-path="url(#window-glass)">
++      <rect x="13.33" y="15.11" width="53.33" height="46.67" fill="#36579a"/>
++      <rect x="13.33" y="44" width="53.33" height="17.78" fill="#6a5ea8"/>
++      <rect x="57.78" y="26.22" width="2.22" height="2.22" fill="#fff4c2"/>
++      <rect x="55.56" y="26.22" width="2.22" height="2.22" fill="#fff4c2" fill-opacity="0.55"/>
++      <rect x="60" y="26.22" width="2.22" height="2.22" fill="#fff4c2" fill-opacity="0.55"/>
++      <rect x="57.78" y="24" width="2.22" height="2.22" fill="#fff4c2" fill-opacity="0.55"/>
++      <rect x="57.78" y="28.44" width="2.22" height="2.22" fill="#fff4c2" fill-opacity="0.55"/>
++      <path d="M 13.33 61.78 L 13.33 57.33 L 17.78 57.33 L 17.78 55.11 L 24.44 50.67 L 31.11 55.11 L 31.11 55.11 L 44.44 55.11 L 44.44 50.67 L 51.11 50.67 L 51.11 55.11 L 55.56 55.11 L 55.56 48.44 L 62.22 48.44 L 62.22 57.33 L 66.67 57.33 L 66.67 61.78 Z" fill="#232a52"/>
++      <rect x="22.22" y="57.33" width="2.22" height="2.22" fill="#f6d48a"/>
++      <rect x="46.67" y="52.89" width="2.22" height="2.22" fill="#f6d48a"/>
++      <rect x="55.56" y="50.67" width="2.22" height="2.22" fill="#f6d48a"/>
++    </g>
++  </g>
++  <!-- The same window at 5 x 3 (100 x 126), for comparison. -->
++  <clipPath id="window5-glass">
++    <rect x="15.56" y="19.33" width="68.89" height="80" fill="#000"/>
++  </clipPath>
++  <g id="window5">
++    <path d="M 6.67 10.44 H 93.33 V 108.22 H 6.67 Z M 15.56 19.33 H 84.44 V 99.33 H 15.56 Z" fill="currentColor" fill-rule="evenodd"/>
++    <path d="M 8.89 12.67 H 91.11 V 106 H 8.89 Z M 13.33 17.11 H 86.67 V 101.56 H 13.33 Z" fill="#f3ead8" fill-rule="evenodd"/>
++    <rect x="8.89" y="12.67" width="82.22" height="2.22" fill="#ffffff" fill-opacity="0.55"/>
++    <rect x="46.67" y="19.33" width="6.67" height="80" fill="currentColor"/>
++    <rect x="48.89" y="19.33" width="2.22" height="80" fill="#f3ead8"/>
++    <rect x="48.89" y="57.11" width="2.22" height="4.44" fill="#c9a14a"/>
++    <rect x="4.44" y="106" width="91.11" height="13.33" fill="currentColor"/>
++    <rect x="6.67" y="108.22" width="86.67" height="8.89" fill="#f3ead8"/>
++    <rect x="6.67" y="114.89" width="86.67" height="2.22" fill="#d8ccb4"/>
++  </g>
++  <g id="window5-sky-night">
++    <g clip-path="url(#window5-glass)">
++      <rect x="15.56" y="19.33" width="68.89" height="80" fill="#2c3f72"/>
++      <circle cx="29.56" cy="43.33" r="7.58" fill="#f6e7a8"/>
++      <circle cx="33.72" cy="41.06" r="6.44" fill="#2c3f72"/>
++      <rect x="40" y="68.22" width="2.22" height="2.22" fill="#fff4c2"/>
++      <rect x="62.22" y="32.67" width="2.22" height="2.22" fill="#fff4c2"/>
++      <rect x="60" y="32.67" width="2.22" height="2.22" fill="#fff4c2" fill-opacity="0.55"/>
++      <rect x="64.44" y="32.67" width="2.22" height="2.22" fill="#fff4c2" fill-opacity="0.55"/>
++      <rect x="62.22" y="30.44" width="2.22" height="2.22" fill="#fff4c2" fill-opacity="0.55"/>
++      <rect x="62.22" y="34.89" width="2.22" height="2.22" fill="#fff4c2" fill-opacity="0.55"/>
++      <rect x="75.56" y="52.67" width="2.22" height="2.22" fill="#fff4c2"/>
++      <rect x="66.67" y="68.22" width="2.22" height="2.22" fill="#fff4c2"/>
++      <path d="M 15.56 99.33 L 15.56 92.67 L 22.22 92.67 L 22.22 88.22 L 30 81.56 L 37.78 88.22 L 37.78 88.22 L 55.56 88.22 L 55.56 79.33 L 64.44 79.33 L 64.44 88.22 L 71.11 88.22 L 71.11 77.11 L 77.78 77.11 L 77.78 92.67 L 84.44 92.67 L 84.44 99.33 Z" fill="#18223f"/>
++      <rect x="71.11" y="81.56" width="2.22" height="2.22" fill="#f6d48a"/>
++    </g>
++  </g>
++  <g id="window5-sky-dawn">
++    <g clip-path="url(#window5-glass)">
++      <rect x="15.56" y="19.33" width="68.89" height="80" fill="#a9c7ec"/>
++      <rect x="15.56" y="54.89" width="68.89" height="44.44" fill="#f7bfcc"/>
++      <rect x="15.56" y="72.67" width="68.89" height="26.67" fill="#ffe0a6"/>
++      <circle cx="29.56" cy="83.78" r="6.89" fill="#fff6d6"/>
++      <path d="M 15.56 99.33 L 15.56 92.67 L 22.22 92.67 L 22.22 88.22 L 30 81.56 L 37.78 88.22 L 37.78 88.22 L 55.56 88.22 L 55.56 79.33 L 64.44 79.33 L 64.44 88.22 L 71.11 88.22 L 71.11 77.11 L 77.78 77.11 L 77.78 92.67 L 84.44 92.67 L 84.44 99.33 Z" fill="#9a88b0"/>
++    </g>
++  </g>
++  <g id="window5-sky-day">
++    <g clip-path="url(#window5-glass)">
++      <rect x="15.56" y="19.33" width="68.89" height="80" fill="#7cc4ec"/>
++      <circle cx="71.38" cy="43.33" r="7.58" fill="#ffd84a" stroke="currentColor" stroke-width="1.11"/>
++      <circle cx="23.77" cy="60.78" r="4.82" fill="#ffffff"/>
++      <circle cx="30.52" cy="57.4" r="6.03" fill="#ffffff"/>
++      <circle cx="36.31" cy="60.78" r="4.58" fill="#ffffff"/>
++      <rect x="18.95" y="60.78" width="21.94" height="4.58" fill="#ffffff"/>
++      <path d="M 59.33 66.71 Q 61.11 66.27 62.67 68.93 Q 64.22 66.27 66 66.71" fill="none" stroke="#33405a" stroke-width="1.56" stroke-linecap="round" stroke-linejoin="round"/>
++      <path d="M 15.56 99.33 L 15.56 92.67 L 22.22 92.67 L 22.22 88.22 L 30 81.56 L 37.78 88.22 L 37.78 88.22 L 55.56 88.22 L 55.56 79.33 L 64.44 79.33 L 64.44 88.22 L 71.11 88.22 L 71.11 77.11 L 77.78 77.11 L 77.78 92.67 L 84.44 92.67 L 84.44 99.33 Z" fill="#5d8f7c"/>
++    </g>
++  </g>
++  <g id="window5-sky-dusk">
++    <g clip-path="url(#window5-glass)">
++      <rect x="15.56" y="19.33" width="68.89" height="80" fill="#7a4f9a"/>
++      <rect x="15.56" y="50.44" width="68.89" height="48.89" fill="#d0637e"/>
++      <rect x="15.56" y="70.44" width="68.89" height="28.89" fill="#f2924a"/>
++      <circle cx="67.33" cy="83.78" r="10.33" fill="#ffcf5a"/>
++      <path d="M 15.56 99.33 L 15.56 92.67 L 22.22 92.67 L 22.22 88.22 L 30 81.56 L 37.78 88.22 L 37.78 88.22 L 55.56 88.22 L 55.56 79.33 L 64.44 79.33 L 64.44 88.22 L 71.11 88.22 L 71.11 77.11 L 77.78 77.11 L 77.78 92.67 L 84.44 92.67 L 84.44 99.33 Z" fill="#4a2c52"/>
++    </g>
++  </g>
++  <g id="window5-sky-evening">
++    <g clip-path="url(#window5-glass)">
++      <rect x="15.56" y="19.33" width="68.89" height="80" fill="#36579a"/>
++      <rect x="15.56" y="68.22" width="68.89" height="31.11" fill="#6a5ea8"/>
++      <rect x="71.11" y="37.11" width="2.22" height="2.22" fill="#fff4c2"/>
++      <rect x="68.89" y="37.11" width="2.22" height="2.22" fill="#fff4c2" fill-opacity="0.55"/>
++      <rect x="73.33" y="37.11" width="2.22" height="2.22" fill="#fff4c2" fill-opacity="0.55"/>
++      <rect x="71.11" y="34.89" width="2.22" height="2.22" fill="#fff4c2" fill-opacity="0.55"/>
++      <rect x="71.11" y="39.33" width="2.22" height="2.22" fill="#fff4c2" fill-opacity="0.55"/>
++      <path d="M 15.56 99.33 L 15.56 92.67 L 22.22 92.67 L 22.22 88.22 L 30 81.56 L 37.78 88.22 L 37.78 88.22 L 55.56 88.22 L 55.56 79.33 L 64.44 79.33 L 64.44 88.22 L 71.11 88.22 L 71.11 77.11 L 77.78 77.11 L 77.78 92.67 L 84.44 92.67 L 84.44 99.33 Z" fill="#232a52"/>
++      <rect x="26.67" y="92.67" width="2.22" height="2.22" fill="#f6d48a"/>
++      <rect x="57.78" y="83.78" width="2.22" height="2.22" fill="#f6d48a"/>
++      <rect x="71.11" y="81.56" width="2.22" height="2.22" fill="#f6d48a"/>
++    </g>
++  </g>
++  <!-- /gen:wall -->
+ </defs>

@@ -529,3 +529,302 @@ Common and Uncommon left on their chances), night chat, the 09:00 day, and the f
 key name. A note that `instance_lock` means two processes never accrue into one ledger.
 
 **HG:** "Local wall clock, injected" is superseded: the routine runs on the game clock.
+
+## Round-1 amendments (2026-10-04)
+
+Where these differ from the text above, **these win**. Critiques: `phase5b/critic-{mechanics,tests-determinism,persistence-shell,character}.md`;
+synthesis with verified evidence and A-numbers: [phase5b/critique.md](phase5b/critique.md). Approved art: `phase5b/art/`.
+
+### The user's calls, round 1
+
+- **The away cue is her closed door.** When she leaves for school she goes through her pink door, and
+  it stays standing, closed (`DoorFrame::Closed`), where she left, until she comes back out of it. Every
+  routine exit and return is by door, never an edge. If a resize leaves the door's spot unfit, the door
+  moves to the nearest floor spot where she'd fit.
+- **Each morning is a new day.** Waking from the night act starts a game day without counting a visit:
+  - a fresh mood, `Mood::of(visit_seed ^ game_day·φ ^ DAY_SALT)`;
+  - a fresh line budget, `worked` and `Rares` draw, each salted with the game day.
+  - The wake line carries the mood: "Mornin'.", "Mornin'... lazy day.", "Mornin'! Let's tidy!",
+    "...mm? Mornin'...".
+- **Retired musings:** "Escalator? Elevator?", "Oh my gah." and "Chiyo-chan's dad..." leave `MUSINGS`. The
+  rares are now the only place she says them (step 7, re-recording the goldens it moves).
+- **Extras, lines only:**
+  - **Time-of-day lines:** "Breakfast!" and "Dinner time~" on the first snack of a Morning or Evening;
+    "No school today!" on waking on a weekend or vacation morning; "Night-night..." on the lamp key of a
+    night act; pooled "I'm off!" / "Off to school!" and "I'm home!" / "Tadaima!".
+  - **The midnight snack.** With a fridge, at most once a night, 1 in 4, at a time hashed from the visit
+    seed and game day: the night act pauses, she pads to the fridge with the lamp off (a `Snack` use
+    built directly, no splices), and the bed reflex takes her back. `slept_ms` and the Dream's count carry
+    over.
+  - **The sleepy poke:** the groggy errand's poke says "Mm... someone said...".
+  - **The afternoon clock glance:** with a clock projected on her strip, in the Afternoon slot, a
+    SpaceOut-hosted glance (a `Pose::Gaze` key toward the clock), "One-ish." … "Five-ish.", from the
+    game hour.
+- **Art approved** (2026-10-04): the clock 3×2 with a red rim, the window 4×2 with the little town, and
+  the hour hand creeping by quarters. `phase5b/art/worktree.diff` (git `bba7efc`) is the starting point
+  for step 8. Drop the losing variants (`clock4`, the 5×3 window) and trim their lint.
+
+### Mine, round 1
+
+- **The clock parcel** arrives in the first visit where the clock is fed and she owns a TV, so it
+  explains her first bedtime and departure. It isn't in `CATALOGUE` (A17).
+- **Sky phases:** dawn 05–07, day 07–17, dusk 17–19, evening 19–21, night 21–05.
+- **The visitor who ends a night visit** gets a `Face::Blink` goodbye, not the startled face.
+- **A departure that cuts breakfast** says "Late, late, late!" at her normal walk. Toast #46 waits for
+  art.
+- **Dash-in without a fridge:** "Forgot somethin'..." then "...what was it?" (a two-key SpaceOut).
+- **Line replacements:**
+  - Apr 8: "It's my debut day!"
+  - Tanabata: "Wrote my wish. Secret!"
+  - New: Dec 31 "Year's almost over..."
+  - December musings: a pool of three.
+  - The sunrise watch is Jan 1 only.
+  - The Dream: "Hello everynyan..." / "Fine sankyu..." / "Oh my gah!".
+  - NoMelon: an after-splice on a snack, `Face::Droop`, "That was the last one." (the snack shows melon
+    bread).
+  - Seasonal pools and LookOut lines have 2–3 lines per season or sky phase.
+
+### D1 amendments
+
+- **A1.** `GameClock::at(t)` is signed and saturates at 0: `max(0, game + 6·(t − at))`. Catch-up decisions
+  have `t < at`, and plain u64 arithmetic would panic under the overflow checks.
+- **A8.** `accrue(now)` **always** re-latches `clock_at = Some(now)`.
+  - Only the carry into `clock`, `clock_rem`, `idle_min` and `idle_rem` is gated on `visits > 0`.
+  - `game_clock()` uses `clock_at.unwrap_or(now)`.
+  - Her first meeting is at exactly 16:00.
+  - The partition property includes a `visits` 0→1 case.
+- **A20.** The shell calls `Guest::cap_steps(Some(10 min))`. A step over the cap is clamped and logged at
+  debug; tests and censuses leave it `None`. decisions.md cites std's implementation (`CLOCK_MONOTONIC`)
+  and its disclaimer that suspend counting is unspecified.
+- **Saving.**
+  - `clock_saved` is the ledger clock at the last take of `unsaved`. The batch flushes at
+    `clock − clock_saved ≥ 30`.
+  - `touched` is `ledger != loaded`, a clone kept at restore.
+  - Accrual alone sets `touched` only once `visits > 0`.
+- **Step 1, the exit save.**
+  - It wraps the loop in a labelled `'ui: loop`, not an inner fn: an inner fn would trip clippy's
+    `too_many_arguments`.
+  - It's tested by an exit-path table: Quit, Shutdown, a dropped sender, and a handout parked in
+    `ledger_unsent`. That replaces the unstageable "a `Bought` is lost".
+  - SIGHUP and run.rs's `?` exits stay unsaved; design.md says so.
+- **A7, the date.**
+  - The shell computes `Option<NaiveDate>` from `SystemTime::now()` through `biblical_date`, with a
+    pre-epoch time mapped to `None`.
+  - It calls `guest.set_date(d)` before every `advance` and puts the same value in `view.local`. There is
+    no per-minute cache.
+  - `run_ui_loop` takes an optional date override. perf.rs passes a date with no calendar entry, and the
+    stage passes its `d`-key date.
+- **A19, idle.**
+  - `fn gate_open(now) = open && now ≥ quiet_since + delay` is used by `advance`'s Absent arm and by pity.
+    `quiet_since` is only ever set to `now`, so "now ≥ quiet_since" alone would always hold.
+  - `idle_rem` holds the sub-minute remainder.
+  - Pity accrues while `gate_open`, a resident's hands-off playback included. Visits Off pauses it. It
+    accrues in memory when `persist == false`.
+- **The lenient read.**
+  - `seen` is read as a `Vec<Value>` filtered per entry.
+  - `clock` is clamped below 2^40.
+  - `rare_at` and `legend_at` are read with `saturating_sub`.
+  - The downgrade also loses the window, the clock piece and a pending order (decisions.md).
+
+### D2 amendments
+
+- **A12.** `vacation` is latched once per game day, at the day's first read, and held with that day's
+  index. Slots are a pure function of game time within a day, so a real-09:00 date flip changes nothing
+  mid-day.
+- **Night lengths** are computed from the table, never assumed. (The longest is a weekend night of
+  9.5 game hours, 95 min real.)
+- **`next_tick` boundaries round up** to whole real ms.
+
+### D3 amendments
+
+- **A6.** `State::Arriving(How)`, where `How = Idle | Return | Dash`. Input and chat cancel only `Idle`.
+  `Return` and `Dash` are cancelled only by `!open`.
+- **A9, the departure.**
+  - `Osaka.leaving: Option<Routine>`. While it's set, her door's gap is `u64::MAX`, with no draw.
+  - `evict` keeps `leaving`, never sets `at_work`, and draws nothing.
+  - The guest ends the visit when `leaving.is_some() && hidden(now)` and her door has closed behind her:
+    it records the door's spot in `Empty` and goes to Away.
+  - Out at work when Away begins: the visit ends at once, and she doesn't come home with leeks.
+  - `place` clears `leaving`. An errand clears it, and the reflex sets it again after the poke.
+- **The return.**
+  - At the boundary, `Arriving(Return)` fires if `open && (resident || gate_open)`. Otherwise she
+    arrives later through the ordinary idle gate, as an `Idle` arrival.
+  - A Return comes out of the closed door's spot: `since = now − DOOR_THROUGH_MS`, the reseed as at
+    mod.rs:776, `begin_visit` counted.
+  - `home_from(Routine)` says the pooled "I'm home!". No leeks, no greeting. With no home (Absent), the
+    Return comes by door at a fitting floor spot.
+- **A16, dashes.**
+  - `Visit.kind: Normal | Dash`. A dash doesn't bump `visits`.
+  - Absent and Away `next_tick` is the min of the next boundary, the dash time and the idle gate.
+  - A dash fires only when one accrual step crosses its time (`from < t ≤ to`), so a cold start or a
+    restart after it never dashes.
+  - It is kept out of the away period's first and last 10 game minutes. Pure `fn dash(seed, day) -> Option<u16>`,
+    plus a stage `Scene::DashIn`.
+  - At its end it goes to Away if `open && (resident || gate_open)` and she has a home, else Absent.
+  - `DashLunch` is a `ScriptId` with `played_on: Some(Use::Snack)` for the lints. Its `credit` is `None`.
+- **A22, the visit's end and Away's paint.**
+  - Entering Away rains out what she moved and made: `layer` and `made` go into `Empty.fades`.
+  - `Empty` keeps `painted` and `size`. Away's paint diffs the ledger, as Visiting's does, in case
+    `project` changes it.
+  - Away paints the cat of the *coming* visit (`cat_home` at `visits`, not `visits − 1`), so the cat
+    doesn't change at her return.
+  - `Leaving` carries the `Looks` it froze.
+  - The hidden-goodbye class fix (no `with`, no `placement` while hidden) lands as **its own commit**,
+    with a trace diff.
+- **Overlays and chat.** An overlay in Away → `Leaving` with no image (the props rain), as visitor input
+  does. Chat in Away: no change.
+- **Parcels.** Every delivery, the TV included, needs `!hidden && kind != Dash`. A parcel line waits
+  `speech_ms(HOME)` after "I'm home!".
+
+### D4 amendments
+
+- **A7.** At `tick` entry the guest sets `Osaka.clock: Option<GameClock>` and `Osaka.vacation`.
+  - One `fn day(&self, at) -> Option<DayTime>` serves every site: `pass`, the greeting, `start_job`'s
+    length, `look`, `due` and `Ctx`.
+  - `SpliceCtx` gains `day`.
+  - `Decision` gains `DayTime` for the explain log.
+- **A2, boundaries.**
+  - `Osaka.cut_at: Option<u64>` (monotonic) is refreshed at `tick` entry. It is the first cutting
+    boundary after the current act's start.
+  - In the loop, `due == cut_at` is handled **first**, before speech, pending, blink and `fire`. It
+    always advances `cut_at` to the next cutting boundary, whether or not it interrupts.
+  - `skip_clock` and a change in the vacation latch recompute it.
+- **A3.** The routine reflexes run right after `off text`, **before `watching chat`**, with `Ctx` built
+  first. On the routine path she still faces `watch_x`.
+- **A10, what a cut interrupts.**
+  - Only acts whose props are `Stays::Rest | Stays::Job`, never `Poke`.
+  - `Landed` and `Back` acts are left alone: they end soon in `decide`, which hits the reflex.
+  - At bedtime, a bed `Use(Sleep)` already in progress becomes the night act in place.
+  - `Cause::Routine` maps to `(0, 0)`: no startle.
+- **A4, the night act.** The night's sleep is **one act whatever the surface**.
+  - It lasts until the wake time and carries the `ScriptId::Night` script: stir, sleep-talk, the Dream,
+    the wake.
+  - The surface picks the act and pose: a bed is `Use(Sleep)`; a sofa is `Use(Nap)` posed Nap; a
+    makeshift heap uses its own sleep method; the floor is `LieBack`, held still.
+  - Tucked-in and the bed reflex share one binder.
+  - Tucked-in goes after `visit.chances` (mod.rs:1042-1061), sets `credit`, and works even when
+    `Osaka::arrive` is `None` (it only needs the seat). Her look at chat and the greeting wait until she
+    wakes.
+- **A11.**
+  - `Osaka.slept_ms` accumulates in `credit_done` when she leaves the night act, and is consumed by the
+    next `pass`. Sleepy doesn't rise for that time; other needs rise at ×0.25.
+  - Waking sets needs to the Morning arrival levels through `set_clock`.
+  - `slept_ms` is zero for every other act, so the unfed goldens hold.
+- **A13.** `ScriptId::Night` has `on_chat → Stir`. In `look`, after the `aloft` check, the own script's
+  `Stir` is checked whatever `asks` is, and `look` returns. `answer()`'s match is extended.
+- **A14, sleep-talk.**
+  - `Osaka.next_talk: Option<u64>` joins `due()`.
+  - A line every 6–10 real minutes from an ~8-line pool, chosen by the night act's starting decision's
+    `whims`, labelled `"sleep-talk"` with the line index as salt.
+  - The schedule is a pure function of the night act's start. It isn't budgeted.
+  - "...five more minutes" only in the last game hour.
+  - The Dream (step 7) is a `Night` body branch that fires once, 30 game minutes after her first sleep of
+    the night; a groggy errand doesn't reset that count.
+- **Waking** is `Stretch` beside the bed (there's no sit-up pose), with the mood wake line.
+- **The groggy errand.**
+  - `Osaka.groggy` is set when an errand takes her from the night act and cleared back in bed;
+    `appearance` gives `Face::Blink` while it's set.
+  - The poke says "Mm... someone said...".
+  - The night act restarts with the remaining time to the wake.
+- **A lengthened use's `whole`** is its final length (drawn, then overridden), so `credit_done`'s share is
+  true.
+
+### D5 amendments
+
+- **A23, two kinds.**
+  - **Owed:** at most one a day, the most specific window winning: Feb 3 over exams, Apr 8 over hay
+    fever, Dec 24–25 and 31 over December.
+  - **Tints:** boosts and pools, which stack.
+  - **Exam chopsticks is a tint:** the Chopsticks row's chance is 1 in 1 in exam season (its `chance`
+    reads `SpliceCtx.day`), still capped by the 10-minute script cooldown.
+- **"Played today" lives on `Osaka`**, because `record` runs after `tick`. `HomeEvent::Calendar` persists
+  it.
+- **Order.**
+  - On a visit that owes it, the calendar greeting replaces the mood greeting.
+  - After "I'm home!" it is said as the first owed beat.
+  - Tucked in, it waits until she wakes, and replaces the wake line's mood part.
+  - A resident on screen at the day change gets it as an owed SpaceOut.
+
+### D6 amendments
+
+- **Gated splices** are skipped before the `may` and chance rolls.
+- **`Rares.new`** is chosen only among unseen rares whose slots include this visit's start slot or the
+  next one (each rare has a slot list).
+- **The new-day draw** (round 1) re-draws `Rares` each game morning.
+- **The test** is `new ∉ seen` and `open ⊆ seen`, over 1000 seeds, plus a pinned rate.
+
+### D7 amendments
+
+- **The clock** is in `Furniture::ALL`, not `CATALOGUE`.
+  - It comes by its own one-shot doorstep path in `furnish`, when the clock is fed, `owns(Tv)`,
+    `!clock_sent`, `!osaka.hidden(now)` and `kind != Dash`. `clock_sent` is set on delivery.
+  - Shopping is untouched.
+- **The window** is *inserted* before `Plant` in `CATALOGUE`.
+- **The dial changes 24 times a real hour,** not 2 (the original was an arithmetic slip). There are still
+  48 images in all.
+  - The image-budget test runs a fed 17:30–19:30 visit with LookOut and the glances.
+- **LookOut's seat** is offset toward the side she faces from (`Gaze` looks up the way she faces), not
+  dead centre.
+- **Step 8 re-records goldens.** Fallout: tests.rs:2317 ("she has it all" counts `CATALOGUE`) and
+  2470-2525.
+
+### Determinism, goldens and tests
+
+- **A5, the unfed tables.**
+  - A cfg(test) `Guest::unfed()` still accrues `ledger.clock`, but returns `None` to every consumer:
+    `tick`, Away, the boundaries, dashes, `Rares::none()`, `may_work`, the clock parcel, the dial and
+    the sky.
+  - Step 4 first copies the end-of-step-3 tables into golden.rs as `UNFED_*`, one `#[test]` per scene,
+    each under 30 s. Then it re-records the fed tables.
+  - No later step may move `UNFED_*` without a trace diff in its commit.
+- **`idle_min`, `rare_at` and `legend_at` accrue from step 2**, so `finish` moves once.
+- **A21, each step's fallout.**
+  - **Step 2:** `advance` returns `false` on accrual alone (tests.rs:137). Absent `next_tick` stays `None`
+    while `visits == 0` (tests.rs:136). `a_goodbye_mid_carry_…` compares `home` and `ordered`, not
+    `record_of`.
+  - **Step 4:** `a_furnished_home_gets_used…`'s `Work > 0` (tests.rs:1888) and the furnished golden's
+    "long enough to go to work" (golden.rs:251) move to a game Saturday from 10:00, or run unfed. A fed
+    weekend golden is added. The seed-7 snapshot is re-recorded.
+  - **Fed scenes and censuses:** a test-only `Ledger::new_at(seed, GameTime)` with `visits = 1`, pieces
+    pre-placed with `ledger.home.add`, starting Absent with the gate open. `Room.start: None` means unfed.
+  - **The protected-cells proptest:** `start` from `prop_oneof`[08:15±3, 12:45±3, bedtime±3, a forced
+    dash, uniform], at `proptest_cases(16)`.
+  - **The one-day sim** is split into `skip_clock` windows. The full day runs only in `day_census`.
+- **A18, CHANGELOG.** Each step carries its own entry in the same commit. Step 2's says existing homes
+  start at Monday 16:00. Step 9 reviews the wording.
+- **Docs.** Add testing-strategy.md "Golden Trajectories" to the list. design.md's move-out text gains
+  the clock, pity and seen reset. Golden traces gain an `"away"` label.
+- **Dump.** A `houseguest` section, labelled "as of the last save": game time, slot, pity, seen. It needs
+  a `pub` summary accessor, an entry in `dump::SECTIONS`, and an update to the dump-state skill.
+
+### Steps, renumbered
+
+0. **Docs** (this design, the map, the critiques, the art).
+1. **The exit save.**
+2. **The ledger clock and the idle and pity counters:** accrual, `GameClock`, `cap_steps`, the 30-minute
+   batch, and the `finish` re-record with a trace diff.
+3. **`routine.rs` and the mind plumbing, unfed:**
+   - `set_date` and the vacation latch, `DayTime`, `Osaka.clock`, `day()`;
+   - the factors and the lint, rates, arrival levels, the reflexes (placed by A3);
+   - `cut_at`, `Cause::Routine` with the A10 guard, `slept_ms`, the lengthened uses;
+   - slot-change batching, the stage clock and the `t` key.
+   - Goldens are unchanged.
+4. **Feed the clock:**
+   - `UNFED_*`; the night act on every surface, tucked in, `Chat::Stir`;
+   - sleep-talk, the wake and the new day with mood wake lines;
+   - the bed reflex, the midnight snack, the sleepy poke, the Work window;
+   - the re-record, plus the fed scenes.
+5. **The hidden-goodbye class fix** (its own commit). Then Away:
+   - `Arriving(How)`, the departure through the door and the closed door that stays;
+   - the return, cold start, visitor input and overlays, focus, the cat, parcels;
+   - dashes and the errand at school.
+6. **The date:** the calendar (owed and tints), vacations, and the time-of-day lines.
+7. **Rarity:** `Rares`, pity, seen, the four starter rares (the Dream included), and the retired musings.
+8. **The window and clock** from the approved art:
+   - the rows, `symmetric`, the dial and sky;
+   - the clock parcel, LookOut;
+   - the reflex glance and the afternoon glance.
+9. **Finishing:**
+   - the day census, the 256-case pass, perf, the dump section;
+   - design.md, decisions.md and testing-strategy.md;
+   - the CHANGELOG review and the plan.md record.
