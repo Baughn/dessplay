@@ -498,9 +498,7 @@ fn long_visit(
             guest.advance(now);
             let frame = paint(&mut guest, &real, &view, now);
             let feet = match &guest.state {
-                State::Visiting(visit) if graphics && visit.image.is_some_and(|i| i.standing) => {
-                    visit.image.map(|i| (i.x, i.y))
-                }
+                State::Visiting(visit) => feet(visit),
                 _ => None,
             };
             assert_untouched_but_feet(&frame, &real, &protected, feet)?;
@@ -583,7 +581,8 @@ fn long_visit(
                         sprite::WIDTH as u16,
                         sprite::HEIGHT as u16 + 1,
                     );
-                    let union = visit.with.iter().fold(her, |r, p| r.union(p.cover()));
+                    let with = visit.image.iter().flat_map(|i| &i.with);
+                    let union = with.fold(her, |r, p| r.union(p.cover()));
                     (furniture, area(union))
                 }
                 _ => (0, 0),
@@ -592,7 +591,10 @@ fn long_visit(
             let debug = match &guest.state {
                 State::Visiting(visit) => format!(
                     "{:?} with {:?} at ({}, {})",
-                    visit.shown, visit.with, visit.osaka.x, visit.osaka.y
+                    visit.shown,
+                    visit.image.as_ref().map(|i| &i.with),
+                    visit.osaka.x,
+                    visit.osaka.y
                 ),
                 _ => String::new(),
             };
@@ -960,7 +962,7 @@ fn visiting_at(guest: &mut Guest, real: &Buffer, view: &IdleView, (x, y): (i32, 
         layer: layer::TextLayer::default(),
         chances: osaka::Chances::default(),
         shown: Vec::new(),
-        with: Vec::new(),
+        apart: Vec::new(),
         made: Vec::new(),
         next_made: room::MadeId(0),
         reel: None,
@@ -3141,6 +3143,239 @@ fn a_night_visit_ends_with_a_sleepy_goodbye() {
     }
 }
 
+/// Out at work through a door in place, with her sofa in her box, she
+/// isn't there: a visitor's key gets no goodbye from her (no startled
+/// beat, no wave). While her door still stands it stays drawn until the
+/// rain and only its glyphs rain from her box; once it's shut behind
+/// her, nothing of her box rains out but the sofa. The sofa stays drawn
+/// until the rain either way. (Phase 5b: the goodbye's image was taken
+/// from her box whether she was in it or not.) In both drawing modes.
+#[test]
+fn a_goodbye_while_she_is_out_shows_nothing_of_her() {
+    use super::graphics::Look;
+    use super::sprite::Face;
+    let (real, view) = home_screen();
+    for graphics in [false, true] {
+        // Through her door, it still standing; then shut behind her.
+        for standing in [true, false] {
+            let (mut guest, now, (x, y), piece) =
+                out_at_work(&real, &view, graphics, 0, |osaka, now| {
+                    osaka.hidden(now) && osaka.door(now).is_some() == standing
+                });
+            let what = format!("graphics={graphics} door={standing}");
+            let frame = paint(&mut guest, &real, &view, now);
+            assert!(drawn(&frame, &real, &piece), "{what}: sofa");
+            // The sofa is in her box: an image of her box would hold it.
+            assert_eq!(terrain::image(x, y, &[piece.cover()]).with, [true]);
+            let State::Visiting(visit) = &guest.state else {
+                panic!("{what}: visiting");
+            };
+            assert_eq!((visit.osaka.x, visit.osaka.y), (x, y), "{what}");
+            // In line art the sofa is in her door's image while it
+            // stands; shut, it's drawn on its own.
+            if graphics {
+                let with = visit.image.as_ref().map(|i| i.with.clone());
+                if standing {
+                    assert_eq!(with, Some(vec![piece]), "{what}: in her door's image");
+                } else {
+                    assert_eq!(with, None, "{what}: no image of her box");
+                    assert!(visit.apart.contains(&piece), "{what}: on its own");
+                }
+            }
+            // Her door's cells, with their glyphs.
+            let door: Vec<(u16, u16, char)> = visit
+                .osaka
+                .door(now)
+                .map(|frame| sprite::door_cells(frame as usize, visit.osaka.facing))
+                .unwrap_or_default()
+                .into_iter()
+                .map(|c| ((x + c.dx) as u16, (y + c.dy) as u16, c.glyph))
+                .collect();
+            assert_eq!(door.is_empty(), !standing, "{what}");
+            // What rains out of her box but the sofa: her door's glyphs
+            // where it stands, and nothing else.
+            let mine = |cx: u16, cy: u16| {
+                let (cx, cy) = (i32::from(cx), i32::from(cy));
+                (x - sprite::WIDTH / 2..=x + sprite::WIDTH / 2).contains(&cx)
+                    && (y - sprite::HEIGHT..y).contains(&cy)
+                    && !piece.cover().contains(Position::new(cx as u16, cy as u16))
+            };
+            let body: Vec<(u16, u16, char)> = visit
+                .painted
+                .iter()
+                .filter(|c| mine(c.x, c.y))
+                .map(|c| (c.x, c.y, c.glyph))
+                .filter(|cell| !door.contains(cell))
+                .collect();
+            assert!(body.is_empty(), "{what}: her box rains {body:?}");
+            // In ASCII, the door's glyphs as shown (outside the sofa).
+            let shown: Vec<(u16, u16, char)> = door
+                .iter()
+                .copied()
+                .filter(|&(cx, cy, glyph)| {
+                    mine(cx, cy) && frame[(cx, cy)].symbol().starts_with(glyph)
+                })
+                .collect();
+            if !graphics && standing {
+                assert!(!shown.is_empty(), "{what}: the door shows");
+            }
+            if let Some(graphics) = &mut guest.graphics {
+                graphics.take_looks();
+            }
+            guest.activity(now);
+            assert!(matches!(guest.state, State::Leaving(_)), "{what}: leaving");
+            let mut t = now;
+            while t < now + dissolve::RAIN_FROM_MS {
+                let frame = paint(&mut guest, &real, &view, t);
+                let what = format!("{what} t={}", t - now);
+                assert!(drawn(&frame, &real, &piece), "{what}: the sofa stays");
+                let text: Vec<String> = (0..frame.area.height)
+                    .map(|y| row_text(&frame, y, 0..frame.area.width))
+                    .collect();
+                for face in [Face::Surprised, Face::Blink] {
+                    let glyphs: String = face.glyphs().iter().collect();
+                    assert!(
+                        !text.iter().any(|row| row.contains(&glyphs)),
+                        "{what}: {face:?}: {text:#?}"
+                    );
+                }
+                for &(cx, cy, glyph) in &shown {
+                    assert!(
+                        frame[(cx, cy)].symbol().starts_with(glyph),
+                        "{what}: the door stays at ({cx}, {cy})"
+                    );
+                }
+                if let Some(graphics) = &mut guest.graphics {
+                    let looks = graphics.take_looks();
+                    // What the frame painted was seen: the sofa, and her
+                    // door while it stood.
+                    assert!(
+                        looks.iter().any(|look| matches!(
+                            look,
+                            Look::Prop(Furniture::Sofa, _) | Look::Piece(Furniture::Sofa, _)
+                        )),
+                        "{what}: the sofa is painted: {looks:?}"
+                    );
+                    assert_eq!(
+                        looks.iter().any(|look| matches!(look, Look::Door(_))),
+                        standing,
+                        "{what}: the door stays: {looks:?}"
+                    );
+                    let her: Vec<&Look> = looks
+                        .iter()
+                        .filter(|look| matches!(look, Look::Pose(..) | Look::Wave(..)))
+                        .collect();
+                    assert!(her.is_empty(), "{what}: {her:?}");
+                }
+                t += dissolve::FRAME_MS;
+            }
+        }
+    }
+}
+
+/// Through a door in place on a protected floor line (she may stand on
+/// one), the only protected cells a frame changes are the floor's under
+/// what stands in her box, which the frame's image records: her, or her
+/// door while she's through it. In both drawing modes. (The oracles took
+/// the feet from her placement alone, so a door's floor, redrawn as ever,
+/// read as a protected cell touched.)
+#[test]
+fn a_door_on_a_protected_floor_redraws_only_its_floor() {
+    let (real, view) = home_screen();
+    for graphics in [false, true] {
+        let (_, _, (x, y), _) = out_at_work(&real, &view, graphics, 12, |_, _| true);
+        let floor = Rect::new(
+            (x - sprite::WIDTH / 2) as u16,
+            y as u16,
+            sprite::WIDTH as u16 + 1,
+            1,
+        );
+        let mut protected = view.protected.clone();
+        protected.push(floor);
+        let view = IdleView {
+            protected: protected.clone(),
+            ..view.clone()
+        };
+        let (mut guest, mut now, at, _) = out_at_work(&real, &view, graphics, 12, |_, _| true);
+        assert_eq!(at, (x, y), "graphics={graphics}");
+        let (mut doors, mut redrawn) = (0, 0);
+        loop {
+            let frame = paint(&mut guest, &real, &view, now);
+            let State::Visiting(visit) = &guest.state else {
+                panic!("graphics={graphics}: still visiting");
+            };
+            let (hidden, door) = (visit.osaka.hidden(now), visit.osaka.door(now));
+            if hidden && door.is_some() {
+                doors += 1;
+                let floor_cells = (floor.x..floor.right()).map(|cx| (cx, floor.y));
+                if floor_cells.into_iter().any(|at| frame[at] != real[at]) {
+                    redrawn += 1;
+                }
+            }
+            if let Err(e) = assert_untouched_but_feet(&frame, &real, &protected, feet(visit)) {
+                panic!("graphics={graphics} t={now} hidden={hidden} {door:?}: {e}");
+            }
+            if hidden && door.is_none() {
+                break;
+            }
+            assert!(now < 600_000, "graphics={graphics}: never through");
+            now += guest
+                .next_tick(now)
+                .map_or(1000, |d| d.as_millis() as u64)
+                .clamp(1, 1000);
+            guest.advance(now);
+        }
+        assert!(doors > 0, "graphics={graphics}: her door stood");
+        assert_eq!(
+            redrawn > 0,
+            graphics,
+            "graphics={graphics}: its floor redrawn"
+        );
+    }
+}
+
+/// Her sofa's home (seed 3, a Saturday at 11:00), she visiting, set down
+/// `dx` columns right of the middle of her sofa and sent to work through
+/// a door in place there, then stepped as the shell would until `when`
+/// holds of her: the guest, the time, where she stood, and her sofa.
+fn out_at_work(
+    real: &Buffer,
+    view: &IdleView,
+    graphics: bool,
+    dx: i32,
+    when: impl Fn(&Osaka, u64) -> bool,
+) -> (Guest, u64, (i32, i32), Shown) {
+    let sofa = [(Furniture::Sofa, Nook::Users, 300)];
+    let mut guest = home_at(3, sat(11, 0), &sofa, graphics);
+    let mut now = until_visiting(&mut guest, real, view, 0);
+    paint(&mut guest, real, view, now);
+    let piece = shown_piece(&guest, Furniture::Sofa).expect("her sofa is shown");
+    let (x, y) = (piece.left + i32::from(piece.size().0) / 2 + dx, piece.floor);
+    let State::Visiting(visit) = &mut guest.state else {
+        panic!("visiting");
+    };
+    visit.osaka.place(x, y, now);
+    visit.osaka.go_to_work(None, now, &mut Rng(1));
+    paint(&mut guest, real, view, now);
+    loop {
+        let State::Visiting(visit) = &guest.state else {
+            panic!("graphics={graphics}: still visiting");
+        };
+        if when(&visit.osaka, now) {
+            break;
+        }
+        assert!(now < 600_000, "graphics={graphics}: never");
+        shell_step(&mut guest, real, view, &mut now, true);
+    }
+    (guest, now, (x, y), piece)
+}
+
+/// The floor cell under what stands in her box in the last frame's image
+/// (her, or her door), if it stands: its line is redrawn under it.
+fn feet(visit: &Visit) -> Option<(i32, i32)> {
+    visit.image.as_ref().and_then(BoxArt::feet)
+}
+
 /// A home she has visited once, her clock at `at`, `pieces` placed in it
 /// (each on its nook's floor, `x` of the way along in thousandths), on a
 /// mid-June school day with nothing on the calendar: she's absent, and
@@ -4420,7 +4655,11 @@ fn hung_poster_sheet() {
             prop_layer(&sofa, Look::Prop(Furniture::Sofa, art::Layer::Whole)),
             prop_layer(&poster, Look::Prop(Furniture::Poster, art::Layer::Whole)),
             Layer {
-                look: Look::Pose(Pose::Stand, sprite::Face::Vacant),
+                look: Look::Pose(
+                    Pose::Stand,
+                    sprite::Face::Vacant,
+                    placement::InSight::assumed(),
+                ),
                 facing: sprite::Facing::Left,
                 at: (sofa.left + 13, sofa.floor),
                 standing: true,
@@ -8261,7 +8500,10 @@ fn carried_unseen(guest: &Guest, frame: &Buffer, real: &Buffer, view: &IdleView)
     };
     let real_one = |s: &Shown| s.item == piece && s.scrap.is_none();
     assert!(!visit.shown.iter().any(real_one), "{piece:?} shown");
-    assert!(!visit.with.iter().any(real_one), "{piece:?} in her image");
+    assert!(
+        !visit.image.iter().flat_map(|i| &i.with).any(real_one),
+        "{piece:?} in her image"
+    );
     if visit.image.is_some() {
         return;
     }
@@ -10023,8 +10265,7 @@ fn promised_frame(
     let frame = paint(guest, real, view, now);
     carried_unseen(guest, &frame, real, view);
     let visit = visit_of(guest);
-    let feet = visit.image.filter(|i| i.standing).map(|i| (i.x, i.y));
-    assert_untouched_but_feet(&frame, real, &view.protected, feet)?;
+    assert_untouched_but_feet(&frame, real, &view.protected, feet(visit))?;
     // (A pane just focused rains out what of hers was in it.)
     if graphics && visit.fades.is_empty() {
         let layer: Vec<(u16, u16)> = visit.layer.cells().collect();

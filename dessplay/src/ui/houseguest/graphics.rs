@@ -21,6 +21,7 @@ use tuirealm::ratatui::style::Color;
 use tuirealm::ratatui::widgets::Widget;
 
 use super::art::{self, Rig};
+use super::placement::InSight;
 use super::room::Furniture;
 use super::scrap;
 use super::sprite::{Face, Facing, HEIGHT, Pose, WIDTH};
@@ -61,9 +62,10 @@ pub(super) const CACHE_LIMIT: usize = 1024;
 /// What to draw.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) enum Look {
-    Pose(Pose, Face),
-    /// The goodbye wave, arm up or down.
-    Wave(bool),
+    /// Her in a pose with a face, made only where she's in sight.
+    Pose(Pose, Face, InSight),
+    /// The goodbye wave, arm up or down, made only where she's in sight.
+    Wave(bool, InSight),
     /// A door in space, in her box.
     Door(art::DoorFrame),
     /// A piece of her furniture, or the part of it behind or in front of
@@ -95,16 +97,16 @@ impl Look {
                 let (cols, rows) = scrap::footprint(item);
                 (i32::from(cols), i32::from(rows))
             }
-            Self::Pose(..) | Self::Wave(_) | Self::Door(_) => (WIDTH, HEIGHT),
+            Self::Pose(..) | Self::Wave(..) | Self::Door(_) => (WIDTH, HEIGHT),
         }
     }
 
     fn render(self, facing: Facing, width: u32, height: u32) -> Option<RgbaImage> {
         match self {
-            Self::Pose(pose, face) => {
+            Self::Pose(pose, face, _) => {
                 art::render(&Rig::for_pose(pose, face), facing, LINE, width, height)
             }
-            Self::Wave(raised) => art::render(&Rig::waving(raised), facing, LINE, width, height),
+            Self::Wave(raised, _) => art::render(&Rig::waving(raised), facing, LINE, width, height),
             Self::Door(frame) => art::render_door(frame, facing, LINE, width, height),
             Self::Prop(item, layer) => {
                 art::render_prop_layer(item, layer, facing, LINE, width, height)
@@ -387,6 +389,10 @@ pub(super) struct Graphics {
     /// Every image encoded so far (to tell one encoded again).
     #[cfg(test)]
     seen: std::collections::HashSet<Key>,
+    /// While recording, the looks of every layer painted since the last
+    /// take (see [`Graphics::take_looks`]).
+    #[cfg(test)]
+    looks: Option<Vec<Look>>,
 }
 
 /// What her images have cost so far (tests measure the budget by it).
@@ -423,6 +429,8 @@ impl Graphics {
             counts: Counts::default(),
             #[cfg(test)]
             seen: std::collections::HashSet::new(),
+            #[cfg(test)]
+            looks: None,
         })
     }
 
@@ -479,6 +487,10 @@ impl Graphics {
         let (protocol, _) = self.cache.get(&key)?;
         let rect = Rect::new(vx0 as u16, vy0 as u16, clip.2, clip.3);
         Image::new(protocol).render(rect, buf);
+        #[cfg(test)]
+        if let Some(looks) = self.looks.as_mut() {
+            looks.extend(layers.iter().map(|layer| layer.look));
+        }
         Some(rect)
     }
 
@@ -592,6 +604,15 @@ impl Graphics {
     #[cfg(test)]
     pub fn set_limit(&mut self, limit: usize) {
         self.limit = limit;
+    }
+
+    /// The looks of every layer painted since the last take (recording
+    /// from the first): only images actually placed, so a paint that bails
+    /// (nothing to key, or an encode that fails) records nothing, and an
+    /// empty take proves nothing was drawn only beside a look that was.
+    #[cfg(test)]
+    pub fn take_looks(&mut self) -> Vec<Look> {
+        self.looks.replace(Vec::new()).unwrap_or_default()
     }
 
     /// Measure her working set from now on (see [`Graphics::reuses`];
@@ -740,7 +761,7 @@ mod tests {
         let mut buf = Buffer::empty(Rect::new(0, 0, 20, 10));
         buf.set_string(0, 0, c.to_string(), Style::new());
         let her = Layer {
-            look: Look::Pose(Pose::Stand, Face::Vacant),
+            look: Look::Pose(Pose::Stand, Face::Vacant, InSight::assumed()),
             facing: Facing::Right,
             at: (WIDTH / 2, HEIGHT),
             standing: false,

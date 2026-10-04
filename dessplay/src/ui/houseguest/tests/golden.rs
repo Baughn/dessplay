@@ -51,7 +51,9 @@ impl Trace {
                     osaka.y,
                     osaka.facing,
                     osaka.appearance(now),
-                    visit.image
+                    // Her placement alone, as it was recorded before her
+                    // door and the pieces travelled with it.
+                    visit.image.as_ref().and_then(|i| i.figure.her())
                 )
             }
             State::Leaving(_) => "leaving".to_owned(),
@@ -483,10 +485,10 @@ fn golden_stage_room() {
         "stage",
         stage_room,
         &[
-            (0, 0xf0c8e581c411846a, 0x2d074fdacac51db2),
+            (0, 0xf0c8e581c411846a, 0x3dc444745d86df61),
             (1, 0xae04cfc95045af79, 0x25b0a880ce4d67e1),
-            (2, 0xdce6aa718de2d517, 0x889e14b4e8cf8df9),
-            (3, 0x95b51d88911f193f, 0xda9401e90ca96f7a),
+            (2, 0xdce6aa718de2d517, 0xeb9ef4bebb7695b6),
+            (3, 0x95b51d88911f193f, 0x3d09061717aef140),
         ],
     );
 }
@@ -497,10 +499,10 @@ fn golden_resident() {
         "resident",
         resident,
         &[
-            (0, 0xe17c989309e27351, 0xb908778754e0ab55),
-            (1, 0xe6d87d159971dfb3, 0x4867703e16767708),
-            (2, 0xe80789b1a3371b4d, 0xfc5f7ea41409c08e),
-            (3, 0x7c996adf16ce6ae1, 0x7015d72d83e68191),
+            (0, 0xe17c989309e27351, 0x22e5e646d231e359),
+            (1, 0xe6d87d159971dfb3, 0x918b7cf7d48c11b7),
+            (2, 0xe80789b1a3371b4d, 0x64d92d1e905bc905),
+            (3, 0x7c996adf16ce6ae1, 0x54628e1921043571),
         ],
     );
 }
@@ -525,10 +527,10 @@ fn golden_errand() {
         "errand",
         errand,
         &[
-            (0, 0xa115268dd34741af, 0x6fec03e5fb0c0587),
-            (1, 0x60d4f971230730d2, 0xf8b11eec0c0ff261),
-            (2, 0x1e3dd842f4ca4668, 0x460c5ccccdab0e3f),
-            (3, 0x0b3934b5b2e4d1c0, 0x3274248622cdb674),
+            (0, 0xa115268dd34741af, 0x84a48e0354dec3ca),
+            (1, 0x60d4f971230730d2, 0xb92429282cd46ef0),
+            (2, 0x1e3dd842f4ca4668, 0x20d410417a6fc48e),
+            (3, 0x0b3934b5b2e4d1c0, 0x47f20eb30403a5d2),
         ],
     );
 }
@@ -577,20 +579,24 @@ fn golden_weekend() {
 
 // ---- Unfed: as she was before the clock fed her (A5) ----
 
-/// The stage room's tables at the end of phase 5b step 3.
+/// The stage room's tables at the end of phase 5b step 3, but for step 5a's
+/// hidden-goodbye fix (no placement recorded of her hidden behind her
+/// door: its trace diff is in that commit).
 const UNFED_STAGE: [(u64, u64, u64); 4] = [
-    (0, 0xe6077be20df9456b, 0x2a5c2cf391321e1d),
-    (1, 0x72c7516de7baa27b, 0xf2980d1200ed541d),
-    (2, 0xe3fa7c994764c94d, 0xe1b34e3af24d3b85),
-    (3, 0xe2ff1e903886c076, 0xf838400d943eb010),
+    (0, 0xe6077be20df9456b, 0x2b8c5fb5ebcffa8d),
+    (1, 0x72c7516de7baa27b, 0xf2310f324a023361),
+    (2, 0xe3fa7c994764c94d, 0x4e2fb6c3442e1d11),
+    (3, 0xe2ff1e903886c076, 0x83fff4ee2141d60f),
 ];
 
-/// The resident's tables at the end of phase 5b step 3.
+/// The resident's tables at the end of phase 5b step 3, but for step 5a's
+/// hidden-goodbye fix (no placement recorded of her hidden behind her
+/// door: its trace diff is in that commit).
 const UNFED_RESIDENT: [(u64, u64, u64); 4] = [
-    (0, 0x7500d48c817323dc, 0xeee9fa2f728f5676),
-    (1, 0xc9a36f2147c27b57, 0x54cff8d9f4e262d6),
-    (2, 0x9204f86377c803b0, 0x397441f73cf60517),
-    (3, 0xf1fe032ad00023fe, 0x7fc7ae1de4f031c3),
+    (0, 0x7500d48c817323dc, 0xe9ccfad21660aec7),
+    (1, 0xc9a36f2147c27b57, 0x38bbc612ffbcfc2b),
+    (2, 0x9204f86377c803b0, 0xcd7b645d6efb9997),
+    (3, 0xf1fe032ad00023fe, 0x9818dfe4c8fad305),
 ];
 
 /// The furnished home's tables at the end of phase 5b step 3, but for
@@ -603,12 +609,14 @@ const UNFED_FURNISHED: [(u64, u64, u64); 4] = [
     (3, 0x6203639870ff41a9, 0xdf31ce48e46e5201),
 ];
 
-/// The errand's tables at the end of phase 5b step 3.
+/// The errand's tables at the end of phase 5b step 3, but for step 5a's
+/// hidden-goodbye fix (no placement recorded of her hidden behind her
+/// door: its trace diff is in that commit).
 const UNFED_ERRAND: [(u64, u64, u64); 4] = [
-    (0, 0xa115268dd34741af, 0x6fec03e5fb0c0587),
-    (1, 0x60d4f971230730d2, 0xf8b11eec0c0ff261),
-    (2, 0x1e3dd842f4ca4668, 0x460c5ccccdab0e3f),
-    (3, 0x07f3cf925a3cfb31, 0x93d059e22f570521),
+    (0, 0xa115268dd34741af, 0x84a48e0354dec3ca),
+    (1, 0x60d4f971230730d2, 0xb92429282cd46ef0),
+    (2, 0x1e3dd842f4ca4668, 0x20d410417a6fc48e),
+    (3, 0x07f3cf925a3cfb31, 0xf621c3073f8725cf),
 ];
 
 #[test]

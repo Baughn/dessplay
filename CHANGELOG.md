@@ -38,6 +38,10 @@ Add new days at the top. Add new entries at the bottom of existing days.
   She no longer vanishes for minutes on a later trip off the edge of the
   screen, or says "I'm home!" without having left when something stopped
   her on her way to work.
+- Fixed: When you came back while Osaka was out at work, or had just
+  stepped through her door, she no longer appears for a moment to wave
+  goodbye from where she left, and her door no longer blinks out
+  before it fades away with the rest.
 
 ## 2026-10-03
 

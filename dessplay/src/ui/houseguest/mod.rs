@@ -182,13 +182,182 @@ impl Rng {
     }
 }
 
-/// Where her line art was placed in the last frame.
-#[derive(Clone, Copy, Debug)]
-struct Placement {
-    x: i32,
-    y: i32,
-    facing: sprite::Facing,
-    standing: bool,
+use placement::{BoxArt, Door, Figure};
+
+/// What of hers stands in her box in a frame, as line art: her, made
+/// only of her in sight, and her door.
+mod placement {
+    use super::art::DoorFrame;
+    use super::graphics::{Layer, Look};
+    use super::osaka::Osaka;
+    use super::room::Shown;
+    use super::sprite::{self, Face, Pose, SpriteCell};
+
+    /// That a layer showing her (posed or waving) was made of her in
+    /// sight: [`Look::Pose`] and [`Look::Wave`] carry one, and only a
+    /// [`Placement`] makes it, so no layer draws her where she isn't.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+    pub(super) struct InSight(());
+
+    impl InSight {
+        /// One for a test's own layers, with no Osaka to place.
+        #[cfg(test)]
+        pub(super) fn assumed() -> Self {
+            Self(())
+        }
+    }
+
+    /// Where her line art was placed in a frame. [`Placement::of`] alone
+    /// makes one, and never of a hidden Osaka; and her looks are made
+    /// only of one (see [`InSight`]): nothing of her is drawn, posed,
+    /// startled or waving, where she isn't (through her door, out at
+    /// work), and her goodbye shows her only where she was.
+    #[derive(Clone, Copy, Debug)]
+    pub(super) struct Placement {
+        x: i32,
+        y: i32,
+        facing: sprite::Facing,
+        standing: bool,
+    }
+
+    impl Placement {
+        /// Hers at `now`, if she's in sight.
+        pub(super) fn of(osaka: &Osaka, now: u64) -> Option<Self> {
+            (!osaka.hidden(now)).then(|| Self {
+                x: osaka.x,
+                y: osaka.y,
+                facing: osaka.facing,
+                standing: osaka.standing(),
+            })
+        }
+
+        /// Her in `pose` with `face`, where she stood.
+        pub(super) fn pose(self, pose: Pose, face: Face) -> Layer {
+            self.layer(Look::Pose(pose, face, InSight(())))
+        }
+
+        /// Her waving goodbye (arm up, or down), where she stood.
+        pub(super) fn wave(self, raised: bool) -> Layer {
+            self.layer(Look::Wave(raised, InSight(())))
+        }
+
+        fn layer(self, look: Look) -> Layer {
+            Layer {
+                look,
+                facing: self.facing,
+                at: (self.x, self.y),
+                standing: self.standing,
+            }
+        }
+
+        /// The floor cell under her feet, standing.
+        #[cfg(test)]
+        fn feet(self) -> Option<(i32, i32)> {
+            self.standing.then_some((self.x, self.y))
+        }
+    }
+
+    /// Her door in space where it stood in a frame (behind her, or alone
+    /// once she's through it).
+    #[derive(Clone, Copy, Debug)]
+    pub(super) struct Door {
+        frame: DoorFrame,
+        x: i32,
+        y: i32,
+        facing: sprite::Facing,
+        standing: bool,
+    }
+
+    impl Door {
+        /// Hers at `now`, if one stands.
+        pub(super) fn of(osaka: &Osaka, now: u64) -> Option<Self> {
+            osaka.door(now).map(|frame| Self {
+                frame,
+                x: osaka.x,
+                y: osaka.y,
+                facing: osaka.facing,
+                standing: osaka.standing(),
+            })
+        }
+
+        /// The door as it stood.
+        pub(super) fn layer(self) -> Layer {
+            Layer {
+                look: Look::Door(self.frame),
+                facing: self.facing,
+                at: (self.x, self.y),
+                standing: self.standing,
+            }
+        }
+
+        /// Its glyphs (as ASCII draws it), at their columns and rows.
+        pub(super) fn cells(self) -> impl Iterator<Item = (i32, i32, char)> {
+            sprite::door_cells(self.frame as usize, self.facing)
+                .into_iter()
+                .map(move |SpriteCell { dx, dy, glyph, .. }| (self.x + dx, self.y + dy, glyph))
+        }
+
+        /// The floor cell under it, standing.
+        #[cfg(test)]
+        fn feet(self) -> Option<(i32, i32)> {
+            self.standing.then_some((self.x, self.y))
+        }
+    }
+
+    /// What of hers stands in her box at `now`: her if she's in sight,
+    /// her door if one stands, and never neither ([`Figure::of`] is
+    /// `None` then: out of sight with her door shut, nothing of hers is
+    /// there).
+    #[derive(Clone, Copy, Debug)]
+    pub(super) struct Figure {
+        her: Option<Placement>,
+        door: Option<Door>,
+    }
+
+    impl Figure {
+        /// What stands in her box at `now`, if anything does.
+        pub(super) fn of(osaka: &Osaka, now: u64) -> Option<Self> {
+            let (her, door) = (Placement::of(osaka, now), Door::of(osaka, now));
+            (her.is_some() || door.is_some()).then_some(Self { her, door })
+        }
+
+        /// Her, if she's in sight.
+        pub(super) fn her(self) -> Option<Placement> {
+            self.her
+        }
+
+        /// Her door, if one stands.
+        pub(super) fn door(self) -> Option<Door> {
+            self.door
+        }
+
+        /// The floor cell under it, if it stands (her, else her door:
+        /// both stand where she does).
+        #[cfg(test)]
+        fn feet(self) -> Option<(i32, i32)> {
+            self.her
+                .and_then(Placement::feet)
+                .or_else(|| self.door.and_then(Door::feet))
+        }
+    }
+
+    /// The line art of her box as a frame placed it: what stood in it,
+    /// and the pieces it overlapped, drawn in the same image (two images
+    /// would cut each other out).
+    #[derive(Clone, Debug)]
+    pub(super) struct BoxArt {
+        pub(super) figure: Figure,
+        pub(super) with: Vec<Shown>,
+    }
+
+    impl BoxArt {
+        /// The floor cell under what stood in her box, if it stood: the
+        /// image redraws that floor's line.
+        #[cfg(test)]
+        pub(super) fn feet(&self) -> Option<(i32, i32)> {
+            self.figure.feet()
+        }
+    }
 }
 
 struct Visit {
@@ -197,17 +366,21 @@ struct Visit {
     /// What she painted in the last frame, with the real cells beneath —
     /// the dissolve's frozen composite if activity arrives now.
     painted: Vec<Frozen>,
-    /// Her line art in the last frame, if she was drawn as an image.
-    image: Option<Placement>,
+    /// Her box's line art in the last frame, if it was placed: her (in
+    /// sight) and her door (standing), with the pieces they overlapped.
+    /// Out of sight with her door shut, there's nothing in her box to
+    /// draw, and none.
+    image: Option<BoxArt>,
     /// Text she has moved.
     layer: layer::TextLayer,
     /// What the last frame offered her (lines to pull).
     chances: osaka::Chances,
     /// Her furniture as placed in the last frame.
     shown: Vec<Shown>,
-    /// The pieces drawn in her image in the last frame (she overlapped
-    /// them).
-    with: Vec<Shown>,
+    /// The pieces drawn on their own in the last frame: all of them in
+    /// ASCII; in line art, those not in her box's image (it overlapped
+    /// the rest, which show only if it was placed).
+    apart: Vec<Shown>,
     /// What of hers is raining out of a pane that was just focused.
     fades: Vec<Dissolve>,
     /// Makeshift furniture she has made of text this visit.
@@ -334,16 +507,16 @@ impl Made {
 
 struct Leaving {
     dissolve: Dissolve,
-    /// Line art for the startled-and-wave beat before she bursts into
-    /// letters.
-    image: Option<Placement>,
+    /// Her box's line art from the last frame, held until she bursts
+    /// into letters: her (startled, then waving) if she was in sight,
+    /// her door as it stood, and the pieces they overlapped.
+    image: Option<BoxArt>,
     /// Her face for that first beat: startled, or (woken in the night) a
     /// sleepy blink.
     startled: sprite::Face,
-    /// Her furniture's line art, held until the rain.
+    /// Her furniture's line art drawn on its own in the last frame, held
+    /// until the rain.
     props: Vec<Shown>,
-    /// The pieces she overlapped, drawn in her image.
-    with: Vec<Shown>,
 }
 
 /// She's on her way to the chat's scrollback accordion, or poking it.
@@ -819,16 +992,12 @@ impl Guest {
                         visit.size,
                     )
                     .startled(startled);
+                    // What the last frame showed, as it showed it.
                     self.state = State::Leaving(Box::new(Leaving {
                         dissolve,
                         image: visit.image,
                         startled,
-                        props: visit
-                            .shown
-                            .into_iter()
-                            .filter(|s| !visit.with.contains(s))
-                            .collect(),
-                        with: visit.with,
+                        props: visit.apart,
                     }));
                 }
             }
@@ -1174,25 +1343,24 @@ impl Guest {
                         paint_prop_art(buf, graphics, prop, &Looks::default());
                     }
                 }
-                if let (Some(image), Some(graphics)) = (leaving.image, &mut self.graphics)
+                if let (Some(image), Some(graphics)) = (&leaving.image, &mut self.graphics)
                     && t < dissolve::RAIN_FROM_MS
                     && untouched
                 {
                     // Startled, then a wave; then she bursts into letters.
                     // She jumps up out of anything she was in; what she
-                    // overlapped is still drawn in her image.
-                    let look = if t < dissolve::SMILE_FROM_MS {
-                        Look::Pose(sprite::Pose::Stand, leaving.startled)
-                    } else {
-                        Look::Wave((t / dissolve::WAVE_MS).is_multiple_of(2))
-                    };
-                    let her = graphics::Layer {
-                        look,
-                        facing: image.facing,
-                        at: (image.x, image.y),
-                        standing: image.standing,
-                    };
-                    let layers: Vec<graphics::Layer> = leaving
+                    // overlapped is still drawn in her image, and her
+                    // door stands as it stood. Out of sight behind it,
+                    // she isn't there to wave.
+                    let her = image.figure.her().map(|at| {
+                        if t < dissolve::SMILE_FROM_MS {
+                            at.pose(sprite::Pose::Stand, leaving.startled)
+                        } else {
+                            at.wave((t / dissolve::WAVE_MS).is_multiple_of(2))
+                        }
+                    });
+                    let door = image.figure.door().map(Door::layer);
+                    let layers: Vec<graphics::Layer> = image
                         .with
                         .iter()
                         .map(|p| {
@@ -1205,7 +1373,8 @@ impl Guest {
                             );
                             prop_layer(p, look)
                         })
-                        .chain([her])
+                        .chain(door)
+                        .chain(her)
                         .collect();
                     graphics.paint_layers(buf, &layers, &|x, y| terrain.open(x, y));
                 }
@@ -1436,10 +1605,13 @@ impl Guest {
                 if std::mem::take(&mut visit.tuck) {
                     visit.osaka.tuck_in(&visit.chances, &visit.terrain, now);
                 }
-                // In line art, pieces she overlaps go in her image: two
-                // images would cut each other out.
+                // In line art, pieces her box overlaps go in its image
+                // (two images would cut each other out), if anything of
+                // hers stands in it: out of sight, her door shut, every
+                // piece is drawn on its own.
+                let figure = Figure::of(&visit.osaka, now).filter(|_| self.graphics.is_some());
                 let covers: Vec<Rect> = visit.shown.iter().map(Shown::cover).collect();
-                let drawn = match self.graphics {
+                let drawn = match figure {
                     Some(_) => terrain::image(visit.osaka.x, visit.osaka.y, &covers).with,
                     None => vec![false; covers.len()],
                 };
@@ -1488,14 +1660,14 @@ impl Guest {
                             &visit.osaka,
                             &visit.terrain,
                             &visit.shown,
-                            &with,
+                            figure,
+                            with,
                             &looks,
                             now,
                             self.truecolor,
                         );
                         layer.extend(painted);
                         visit.image = image;
-                        visit.with = with;
                     }
                     None => {
                         layer.extend(draw(
@@ -1508,9 +1680,9 @@ impl Guest {
                             true,
                         ));
                         visit.image = None;
-                        visit.with = Vec::new();
                     }
                 }
+                visit.apart = apart;
                 visit.painted = layer;
                 // Last, over the real frame in the focused pane (where
                 // nothing else of hers goes).
@@ -1563,7 +1735,7 @@ impl Guest {
             layer: layer::TextLayer::default(),
             chances: osaka::Chances::default(),
             shown: Vec::new(),
-            with: Vec::new(),
+            apart: Vec::new(),
             fades: Vec::new(),
             flap: None,
             made: Vec::new(),
@@ -1821,6 +1993,9 @@ fn ink(part: Part, truecolor: bool) -> Ink {
     }
 }
 
+/// Her door's glyphs' ink, and the letters they rain as.
+const DOOR_INK: Ink = Ink::new(Color::LightMagenta, Modifier::empty());
+
 /// Paint her (and any bubble) into `buf`, returning what was painted
 /// over what.
 #[allow(clippy::too_many_arguments)]
@@ -1840,7 +2015,6 @@ fn draw(
         .filter(|_| with_sprite)
         .map(|frame| sprite::door_cells(frame as usize, osaka.facing))
         .unwrap_or_default();
-    let door_ink = Ink::new(Color::LightMagenta, Modifier::empty());
     let mut wanted: Vec<(i32, i32, char, Ink, Option<usize>)> = door
         .iter()
         .map(|cell| {
@@ -1848,7 +2022,7 @@ fn draw(
                 osaka.x + cell.dx,
                 osaka.y + cell.dy,
                 cell.glyph,
-                door_ink,
+                DOOR_INK,
                 None,
             )
         })
@@ -2876,12 +3050,14 @@ fn draw_props(
     painted
 }
 
-/// Paint her as line art, plus any bubble as text. The frozen cells for
-/// a dissolve are her box's (blank) cells, carrying the ASCII sprite's
-/// glyphs as the noise class she bursts into.
-/// The pieces she overlaps (`with`) are drawn in the same image: behind
-/// her, bar the quilt of a bed she's asleep in (and the sofa's cushion
-/// is in her arms when she naps).
+/// Paint her box as line art (what of hers stands in it, `figure`, and
+/// the pieces it overlaps, `with`, in one image), plus any bubble as
+/// text: her box's art if it was placed. The frozen cells for a dissolve
+/// are what the image covers (blank), carrying the glyphs it bursts into:
+/// her box's, as her ASCII sprite (she's in sight), else her door's; and
+/// each piece's.
+/// The pieces are behind her, bar the quilt of a bed she's asleep in
+/// (and the sofa's cushion is in her arms when she naps).
 #[allow(clippy::too_many_arguments)]
 fn draw_art(
     buf: &mut Buffer,
@@ -2889,52 +3065,63 @@ fn draw_art(
     osaka: &Osaka,
     terrain: &Terrain,
     shown: &[Shown],
-    with: &[Shown],
+    figure: Option<Figure>,
+    with: Vec<Shown>,
     looks: &Looks,
     now: u64,
     truecolor: bool,
-) -> (Vec<Frozen>, Option<Placement>) {
+) -> (Vec<Frozen>, Option<BoxArt>) {
     let (pose, face, _) = osaka.appearance(now);
     let (sprite, _) = osaka.picture(now);
-    let placement = Placement {
-        x: osaka.x,
-        y: osaka.y,
-        facing: osaka.facing,
-        standing: osaka.standing(),
+    // Her, if she's in sight; and a door in space, standing behind her
+    // (through it, she's gone: it's the door alone).
+    let her = figure.and_then(Figure::her);
+    let door = figure.and_then(Figure::door);
+    let under = |buf: &Buffer, x: i32, y: i32| {
+        // Only what the image can cover (it's clipped to the same cells):
+        // the rest it never drew, and mustn't rain over.
+        if !terrain.open(x, y) {
+            return None;
+        }
+        let (ux, uy) = (u16::try_from(x).ok()?, u16::try_from(y).ok()?);
+        Some((ux, uy, buf.cell((ux, uy))?.clone()))
     };
     let mut body: Vec<Frozen> = Vec::new();
-    for dy in -sprite::HEIGHT..0 {
-        for dx in -(sprite::WIDTH / 2)..=(sprite::WIDTH / 2) {
-            let (x, y) = (osaka.x + dx, osaka.y + dy);
-            // Only what the image can cover (it's clipped to the same
-            // cells): the rest she never drew, and mustn't rain over.
-            if !terrain.open(x, y) {
-                continue;
+    if her.is_some() {
+        // Her box bursts into her letters.
+        for dy in -sprite::HEIGHT..0 {
+            for dx in -(sprite::WIDTH / 2)..=(sprite::WIDTH / 2) {
+                let Some((x, y, under)) = under(buf, osaka.x + dx, osaka.y + dy) else {
+                    continue;
+                };
+                let cell = sprite.iter().find(|c| c.dx == dx && c.dy == dy);
+                body.push(Frozen {
+                    x,
+                    y,
+                    glyph: cell.map_or('a', |c| c.glyph),
+                    ink: ink(cell.map_or(Part::Body, |c| c.part), truecolor),
+                    under,
+                    face: None,
+                    burst: true,
+                });
             }
-            let (Ok(ux), Ok(uy)) = (u16::try_from(x), u16::try_from(y)) else {
-                continue;
-            };
-            let Some(under) = buf.cell((ux, uy)).cloned() else {
-                continue;
-            };
-            let cell = sprite.iter().find(|c| c.dx == dx && c.dy == dy);
-            body.push(Frozen {
-                x: ux,
-                y: uy,
-                glyph: cell.map_or('a', |c| c.glyph),
-                ink: ink(cell.map_or(Part::Body, |c| c.part), truecolor),
+        }
+    } else if let Some(door) = door {
+        // Out of sight behind her door, it bursts into its own glyphs,
+        // as in ASCII.
+        body.extend(door.cells().filter_map(|(x, y, glyph)| {
+            let (x, y, under) = under(buf, x, y)?;
+            Some(Frozen {
+                x,
+                y,
+                glyph,
+                ink: DOOR_INK,
                 under,
                 face: None,
                 burst: true,
-            });
-        }
+            })
+        }));
     }
-    let her = graphics::Layer {
-        look: Look::Pose(pose, face),
-        facing: osaka.facing,
-        at: (osaka.x, osaka.y),
-        standing: placement.standing,
-    };
     let using = osaka.seat().filter(|seat| seat.what.inside());
     let part = |piece: &Shown, front: bool| {
         let what = using
@@ -2955,8 +3142,8 @@ fn draw_art(
             looks.state(piece.item),
         ))
     };
-    let mut layers = Vec::with_capacity(with.len() * 2 + 1);
-    for piece in with {
+    let mut layers = Vec::with_capacity(with.len() * 2 + 2);
+    for piece in &with {
         layers.extend(part(piece, false).map(|layer| prop_layer(piece, layer)));
         body.extend(piece.cells().filter_map(|(x, y, glyph)| {
             let (ux, uy) = (u16::try_from(x).ok()?, u16::try_from(y).ok()?);
@@ -2971,17 +3158,9 @@ fn draw_art(
             })
         }));
     }
-    // A door in space stands behind her; through it, she's gone.
-    if let Some(frame) = osaka.door(now) {
-        layers.push(graphics::Layer {
-            look: Look::Door(frame),
-            ..her
-        });
-    }
-    if !osaka.hidden(now) {
-        layers.push(her);
-    }
-    for piece in with {
+    layers.extend(door.map(Door::layer));
+    layers.extend(her.map(|at| at.pose(pose, face)));
+    for piece in &with {
         layers.extend(part(piece, true).map(|layer| prop_layer(piece, layer)));
     }
     let placed = graphics
@@ -2989,7 +3168,10 @@ fn draw_art(
         .is_some();
     let mut painted = if placed { body } else { Vec::new() };
     painted.extend(draw(buf, osaka, terrain, shown, now, truecolor, false));
-    (painted, placed.then_some(placement))
+    let image = figure
+        .filter(|_| placed)
+        .map(|figure| BoxArt { figure, with });
+    (painted, image)
 }
 
 #[cfg(test)]

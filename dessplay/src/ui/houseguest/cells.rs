@@ -15,7 +15,7 @@ pub(super) struct Ink {
 }
 
 impl Ink {
-    pub fn new(fg: Color, modifier: Modifier) -> Self {
+    pub const fn new(fg: Color, modifier: Modifier) -> Self {
         Self { fg, modifier }
     }
 
