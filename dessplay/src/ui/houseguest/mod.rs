@@ -382,6 +382,11 @@ pub struct Guest {
     note: Option<Result<String, String>>,
     /// Her record: her home, and what her visits are seeded from.
     ledger: Ledger,
+    /// The ledger as restored at startup: the exit save writes hers only
+    /// when it differs ([`Guest::final_ledger`]). `None` when the stored
+    /// one couldn't be read ([`Guest::keep_unsaved`]): whatever she may
+    /// save over it differs from it.
+    loaded: Option<Ledger>,
     /// The ledger changed since it was last handed out for saving.
     unsaved: bool,
     /// Whether it's saved at all (not when the stored one couldn't be
@@ -412,6 +417,7 @@ impl Guest {
     pub fn restore(ledger: Ledger) -> Self {
         Self {
             rng: Rng(ledger.visit_seed(ledger.visits)),
+            loaded: Some(ledger.clone()),
             ledger,
             unsaved: false,
             persist: true,
@@ -439,11 +445,23 @@ impl Guest {
     /// read, and is kept as it is).
     pub fn keep_unsaved(&mut self) {
         self.persist = false;
+        self.loaded = None;
     }
 
     /// Her ledger, when it changed since last asked and is to be saved.
     pub fn ledger_to_save(&mut self) -> Option<Ledger> {
         (std::mem::take(&mut self.unsaved) && self.persist).then(|| self.ledger.clone())
+    }
+
+    /// Her ledger as it stands, for the save at exit: when it's saved
+    /// at all, and differs from the one restored at startup (so a client
+    /// that never met her writes no record, and a moved-out one always
+    /// writes over a record that couldn't be read). Deliberately not
+    /// [`Guest::ledger_to_save`]'s flag: a handout parked on a full
+    /// action queue, or queued and dropped at shutdown, already cleared
+    /// it, and this is its only way out.
+    pub fn final_ledger(&self) -> Option<Ledger> {
+        (self.persist && self.loaded.as_ref() != Some(&self.ledger)).then(|| self.ledger.clone())
     }
 
     /// "Osaka moved out": her home and record are gone; the next visit

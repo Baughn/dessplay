@@ -2220,6 +2220,8 @@ fn her_home_outlives_a_restart() {
     paint(&mut guest, &real, &view, 0);
     let ledger = guest.ledger_to_save().expect("changed");
     assert!(guest.ledger_to_save().is_none(), "handed out once");
+    // The exit save still has it: a handout clears only the flag.
+    assert_eq!(guest.final_ledger().as_ref(), Some(&ledger));
     assert_eq!(ledger.visits, 1);
     let State::Visiting(visit) = &guest.state else {
         panic!("visiting");
@@ -2231,6 +2233,7 @@ fn her_home_outlives_a_restart() {
     // A restart: the record round-trips through its stored form.
     let stored = Ledger::from_json(&ledger.to_json()).unwrap();
     let mut guest = Guest::restore(stored);
+    assert!(guest.final_ledger().is_none(), "unchanged since restored");
     guest.cue(Scene::Arrive);
     paint(&mut guest, &real, &view, 0);
     let State::Visiting(visit) = &guest.state else {
@@ -2257,14 +2260,22 @@ fn moving_out_wipes_her_record_and_an_unreadable_one_is_kept() {
     assert!(!guest.present());
     let ledger = guest.ledger_to_save().expect("the wipe is saved");
     assert_eq!(ledger, Ledger::new(77));
+    assert_eq!(guest.final_ledger(), Some(Ledger::new(77)));
 
     let mut guest = Guest::new(4);
     guest.keep_unsaved();
+    assert!(guest.final_ledger().is_none());
     guest.cue(Scene::Arrive);
     paint(&mut guest, &real, &view, 0);
     guest.give(Furniture::Sofa);
     paint(&mut guest, &real, &view, 0);
     assert!(guest.ledger_to_save().is_none());
+    assert!(guest.final_ledger().is_none(), "nor at exit");
+    // Moving out writes over it, at exit too: even a wipe drawn from the
+    // seed she started from differs from a record that couldn't be read.
+    guest.move_out(4);
+    assert_eq!(guest.ledger_to_save(), Some(Ledger::new(4)));
+    assert_eq!(guest.final_ledger(), Some(Ledger::new(4)));
 }
 
 // ---- Deliveries and the shopping channel ----

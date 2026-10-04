@@ -2239,6 +2239,13 @@ impl Ui {
         actions
     }
 
+    /// Tests outside this module: [`Ui::update`], to stage a modal the
+    /// keys would take long to reach (the shell's exit-save table).
+    #[cfg(test)]
+    pub(crate) fn test_update(&mut self, msg: Msg) -> Option<UserAction> {
+        self.update(msg)
+    }
+
     /// The Elm update: messages become internal changes or actions.
     fn update(&mut self, msg: Msg) -> Option<UserAction> {
         match msg {

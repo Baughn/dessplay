@@ -992,7 +992,7 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
                 Some(UserAction::Quit) | None => {
                     action_rx.close();
                     let _ = input_tx.send(UiInput::Shutdown);
-                    let _ = ui_thread.join();
+                    save_ui_exit(ui_thread.join(), &setup_storage);
                     return Ok(());
                 }
                 Some(_) => continue,
@@ -1149,7 +1149,10 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
     // Release a UI blocked on sending actions before joining its thread.
     session.actions.close();
     let _ = input_tx.send(UiInput::Shutdown);
-    let _ = ui_thread.join();
+    // Before every return below, the rejection's and Resync's
+    // `exec_self` included (her record and the pane sizes live in the
+    // settings DB, which a resync keeps).
+    save_ui_exit(ui_thread.join(), &session.storage);
     if let SessionEnd::Rejected(message) = &end {
         return Err(message.clone());
     }
@@ -1195,6 +1198,40 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
         return exec_self();
     }
     Ok(())
+}
+
+/// Save what the UI thread handed back when it ended
+/// (`run_ui_thread`'s [`UiExit`](crate::ui::shell::UiExit)): the exit
+/// save that catches what the UI loop's periodic handouts missed (the
+/// houseguest's ledger, the pane sizes). Called after both joins of the
+/// UI thread; that placement is checked by review, not by a test.
+///
+/// Unsaved, by design: a panicked UI thread, and every exit that never
+/// joins the UI thread — SIGHUP, and each `?` return in
+/// `run_interactive` between the UI thread's spawn and the session's
+/// end (the setup loop's settings and media-roots saves, the username
+/// check, `prepare`, opening and loading the sync database, loading the
+/// media roots, opening the file storage).
+fn save_ui_exit(joined: std::thread::Result<crate::ui::shell::UiExit>, storage: &Storage) {
+    let exit = match joined {
+        Ok(exit) => exit,
+        Err(_) => {
+            tracing::warn!("the UI thread panicked; its last unsaved changes are lost");
+            return;
+        }
+    };
+    if let Some(ledger) = exit.houseguest {
+        match ledger.save(storage) {
+            Ok(()) => tracing::debug!("houseguest saved at exit"),
+            Err(error) => tracing::error!(%error, "saving the houseguest at exit"),
+        }
+    }
+    if let Some(layout) = exit.layout {
+        match layout.save(storage) {
+            Ok(()) => tracing::debug!("layout sizes saved at exit"),
+            Err(error) => tracing::error!(%error, "saving layout sizes at exit"),
+        }
+    }
 }
 
 /// Replace this process with a fresh copy of itself, same arguments.
@@ -3261,5 +3298,41 @@ mod tests {
         assert_eq!(decode_hex("0A:FF").unwrap(), vec![0x0a, 0xff]);
         assert!(decode_hex("abc").is_err());
         assert!(decode_hex("zz").is_err());
+    }
+
+    /// The exit save writes what the UI handed back, and only that: an
+    /// unchanged field leaves the stored one alone, and a panicked UI
+    /// thread saves nothing (and doesn't take the caller down with it).
+    #[test]
+    fn the_ui_exit_saves_what_changed() {
+        use crate::ui::houseguest::Ledger;
+        use crate::ui::layout::{LayoutBundle, LayoutSettings};
+        use crate::ui::shell::UiExit;
+        let storage = Storage::open_in_memory().unwrap();
+        let mut layout = LayoutSettings::default();
+        layout.activate(
+            &LayoutBundle::builtin().unwrap(),
+            crate::config::PaneLayout::default(),
+        );
+        save_ui_exit(
+            Ok(UiExit {
+                houseguest: Some(Ledger::new(5)),
+                layout: Some(layout.clone()),
+            }),
+            &storage,
+        );
+        assert_eq!(Ledger::load(&storage).unwrap(), Some(Ledger::new(5)));
+        assert_eq!(LayoutSettings::load(&storage).unwrap(), layout);
+
+        save_ui_exit(Ok(UiExit::default()), &storage);
+        save_ui_exit(Err(Box::new("the UI thread panicked")), &storage);
+        assert_eq!(Ledger::load(&storage).unwrap(), Some(Ledger::new(5)));
+        assert_eq!(LayoutSettings::load(&storage).unwrap(), layout);
+
+        let fresh = Storage::open_in_memory().unwrap();
+        save_ui_exit(Ok(UiExit::default()), &fresh);
+        save_ui_exit(Err(Box::new("the UI thread panicked")), &fresh);
+        assert_eq!(Ledger::load(&fresh).unwrap(), None);
+        assert_eq!(fresh.setting("layout_sizes").unwrap(), None);
     }
 }

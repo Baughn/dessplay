@@ -9,6 +9,12 @@ append-only; you cannot reword or remove existing entries.
 
 Add new days at the top. Add new entries at the bottom of existing days.
 
+## 2026-10-04
+
+- Fixed: The houseguest no longer forgets what happened just before you
+  quit. A purchase she made or a parcel that arrived in your last moments
+  is still there next time, and so are pane sizes you had just adjusted.
+
 ## 2026-10-03
 
 - Changed: The houseguest watches TV from her sofa only when the sofa is

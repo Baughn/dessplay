@@ -213,7 +213,9 @@ pub enum UiInput {
 
 /// Run the UI on the current (dedicated) thread until the input
 /// channel closes or the action receiver goes away. Returns the
-/// terminal to its normal state on exit.
+/// terminal to its normal state on exit, and returns what the caller
+/// saves ([`UiExit`], see [`run_ui_loop`]); nothing when the terminal
+/// couldn't be set up.
 ///
 /// `on_terminal_ready` is called exactly once, after every stdin
 /// round-trip this thread performs (the image-protocol query below)
@@ -228,7 +230,7 @@ pub fn run_ui_thread(
     inputs: super::delivery::UiReceiver,
     actions: mpsc::Sender<UserAction>,
     on_terminal_ready: impl FnOnce(),
-) {
+) -> UiExit {
     // Drop guard: `on_terminal_ready` fires on every exit path, early
     // returns included.
     struct Ready<F: FnOnce()>(Option<F>);
@@ -247,7 +249,7 @@ pub fn run_ui_thread(
         Ok(adapter) => adapter,
         Err(e) => {
             tracing::error!("cannot initialize the terminal: {e}");
-            return;
+            return UiExit::default();
         }
     };
     // The adapter enables nothing by itself: raw mode so keys arrive as
@@ -260,7 +262,7 @@ pub fn run_ui_thread(
     {
         tracing::error!("cannot set up the terminal: {e}");
         let _ = adapter.restore();
-        return;
+        return UiExit::default();
     }
     // Establish the cursor-addressing state we depend on instead of
     // inheriting whatever the previous occupant of this terminal left
@@ -314,10 +316,24 @@ pub fn run_ui_thread(
         elapsed_ms = started.elapsed().as_millis() as u64,
         "terminal setup complete"
     );
-    run_ui_loop(ui, inputs, actions, &mut adapter);
+    let exit = run_ui_loop(ui, inputs, actions, &mut adapter);
     let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableBracketedPaste);
     let _ = adapter.restore();
     tracing::debug!("UI thread exiting");
+    exit
+}
+
+/// What the UI loop hands back when it ends, for the caller to save:
+/// the local state whose last change its periodic handouts may not
+/// have got out (see [`run_ui_loop`]). `None` fields are unchanged
+/// since startup, and need no save.
+#[derive(Debug, Default)]
+pub struct UiExit {
+    /// The houseguest's ledger
+    /// ([`Guest::final_ledger`](super::houseguest::Guest::final_ledger)).
+    pub houseguest: Option<super::houseguest::Ledger>,
+    /// The pane sizes, when they differ from the ones loaded at startup.
+    pub layout: Option<super::layout::LayoutSettings>,
 }
 
 /// Escapes that put the terminal's cursor addressing into the state the
@@ -391,19 +407,30 @@ pub fn select_image_picker() -> ratatui_image::picker::Picker {
 /// terminal while tests drive a headless `TestTerminalAdapter` and run
 /// the *real* draw/refresh work. The caller owns terminal
 /// setup/teardown (raw mode, alternate screen, `restore`).
+///
+/// Returns what the caller saves once the loop has ended ([`UiExit`]:
+/// the houseguest's ledger and the pane sizes, when changed). Every
+/// exit — quit, shutdown, a closed channel, a failed draw — leaves the
+/// loop through the one exit at its end, so none can skip that last
+/// save: the drains at the loop's top miss a change made in the last
+/// iteration, a handout parked on a full action queue, and one queued
+/// but dropped when the session ends. The loop runs inside [`turns`],
+/// so a `return` in it can only end the turns, never skip the exit.
 pub fn run_ui_loop<A: TerminalAdapter>(
     mut ui: Ui,
     inputs: super::delivery::UiReceiver,
     actions: mpsc::Sender<UserAction>,
     adapter: &mut A,
-) where
+) -> UiExit
+where
     A::Backend: FrameBackend,
 {
     let builtin = match super::layout::LayoutBundle::builtin() {
         Ok(bundle) => bundle,
         Err(error) => {
+            // Before anything could change: nothing to save.
             tracing::error!(%error, "embedded layout is invalid");
-            return;
+            return UiExit::default();
         }
     };
     let mut renderer = super::layout::Renderer::new(builtin.clone());
@@ -443,178 +470,214 @@ pub fn run_ui_loop<A: TerminalAdapter>(
         }
     };
     let mut ledger_unsent: Option<super::houseguest::Ledger> = None;
+    let layout_loaded = ui.layout_settings.clone();
     if let Some(picker) = ui.image_picker() {
         guest.set_picker(picker);
     }
     let _ = draw(adapter, &mut ui, &mut renderer, &mut guest);
-    loop {
-        if std::mem::take(&mut ui.houseguest_moved_out) {
-            guest.move_out(rand::random());
-        }
-        if let Some(ledger) = guest.ledger_to_save() {
-            ledger_unsent = Some(ledger);
-        }
-        if let Some(ledger) = ledger_unsent.take() {
-            match actions.try_send(UserAction::SaveHouseguest(ledger)) {
-                Ok(()) => {}
-                Err(mpsc::error::TrySendError::Full(UserAction::SaveHouseguest(ledger))) => {
-                    ledger_unsent = Some(ledger);
+    // Every exit below is a `break 'ui`; inside `turns` even a `return`
+    // only ends the turns, and the exit after them runs regardless.
+    turns(|| {
+        'ui: loop {
+            take_move_out(&mut ui, &mut guest);
+            if let Some(ledger) = guest.ledger_to_save() {
+                ledger_unsent = Some(ledger);
+            }
+            if let Some(ledger) = ledger_unsent.take() {
+                match actions.try_send(UserAction::SaveHouseguest(ledger)) {
+                    Ok(()) => {}
+                    Err(mpsc::error::TrySendError::Full(UserAction::SaveHouseguest(ledger))) => {
+                        ledger_unsent = Some(ledger);
+                    }
+                    Err(mpsc::error::TrySendError::Full(_)) => {}
+                    Err(mpsc::error::TrySendError::Closed(_)) => break 'ui,
                 }
-                Err(mpsc::error::TrySendError::Full(_)) => {}
-                Err(mpsc::error::TrySendError::Closed(_)) => break,
             }
-        }
-        if ui.layout_settings_dirty {
-            match actions.try_send(UserAction::SaveLayoutSettings(ui.layout_settings.clone())) {
-                Ok(()) => ui.layout_settings_dirty = false,
-                Err(mpsc::error::TrySendError::Full(_)) => {}
-                Err(mpsc::error::TrySendError::Closed(_)) => break,
-            }
-        }
-        // Adaptive cadence: ~100ms while a marquee pass animates, the
-        // lazy 1s otherwise. Idle cost is unchanged — the timeout arm
-        // only repaints when advance_clock reports a visible change.
-        let timeout = guest
-            .next_tick(now_millis())
-            .map_or(ui.next_tick_hint(), |due| due.min(ui.next_tick_hint()));
-        let input = match inputs.recv_timeout(timeout) {
-            Ok(input) => input,
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                let now = now_millis();
-                let mut redraw = ui.advance_clock(now);
-                redraw |= guest.advance(now);
-                redraw |= poll_layout(&mut ui, &mut renderer, watcher.as_ref(), custom_enabled);
-                redraw |= dispatch_due_recovery(&mut ui, &actions);
-                dispatch_image_fetches(&mut ui, &actions);
-                if redraw && draw(adapter, &mut ui, &mut renderer, &mut guest).is_err() {
-                    break;
+            if ui.layout_settings_dirty {
+                match actions.try_send(UserAction::SaveLayoutSettings(ui.layout_settings.clone())) {
+                    Ok(()) => ui.layout_settings_dirty = false,
+                    Err(mpsc::error::TrySendError::Full(_)) => {}
+                    Err(mpsc::error::TrySendError::Closed(_)) => break 'ui,
                 }
-                continue;
             }
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
-        };
-        // Freshen the animator clock to the dequeue moment before any
-        // handler runs: animation starts (marquee passes, spoiler
-        // teases) and TTL stamps read `Ui::clock`, which would
-        // otherwise be up to one lazy tick stale — and snapshots
-        // advance running animations this way too (~10Hz during
-        // playback). The redraw hint is moot; every input is followed
-        // by a draw below anyway.
-        let now = now_millis();
-        let _ = ui.advance_clock(now);
-        let _ = guest.advance(now);
-        match input {
-            UiInput::Roguelike(result) => ui.set_roguelike(result),
-            UiInput::Shutdown => break,
-            UiInput::Snapshot(snapshot) => ui.apply_snapshot(*snapshot),
-            UiInput::Subtitle {
-                text,
-                speaker,
-                video_millis,
-                arrival_millis,
-            } => ui.push_subtitle(video_millis, arrival_millis, text, speaker),
-            UiInput::Hashing {
-                filename,
-                done_bytes,
-                total_bytes,
-                finished,
-            } => ui.set_hash_progress(filename, done_bytes, total_bytes, finished),
-            UiInput::System { timestamp, text } => ui.push_system(timestamp, text),
-            UiInput::ChatImage { url, result } => ui.set_chat_image(&url, result.map(|img| *img)),
-            UiInput::Irc {
-                timestamp,
-                sender,
-                text,
-                action,
-            } => ui.push_irc(timestamp, sender, text, action),
-            UiInput::Browse {
-                request,
-                files,
-                watched,
-                start,
-            } => ui.open_file_browser(request, files, watched, start),
-            UiInput::LocalCopyOffer {
-                file,
-                filename,
-                candidates,
-            } => ui.offer_local_copies(file, filename, candidates),
-            UiInput::SearchResults { query, results } => {
-                for action in ui.set_search_results(&query, results) {
-                    if actions.blocking_send(action).is_err() {
-                        tracing::debug!("UI thread exiting (actions channel closed)");
-                        return;
+            // Adaptive cadence: ~100ms while a marquee pass animates, the
+            // lazy 1s otherwise. Idle cost is unchanged — the timeout arm
+            // only repaints when advance_clock reports a visible change.
+            let timeout = guest
+                .next_tick(now_millis())
+                .map_or(ui.next_tick_hint(), |due| due.min(ui.next_tick_hint()));
+            let input = match inputs.recv_timeout(timeout) {
+                Ok(input) => input,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    let now = now_millis();
+                    let mut redraw = ui.advance_clock(now);
+                    redraw |= guest.advance(now);
+                    redraw |= poll_layout(&mut ui, &mut renderer, watcher.as_ref(), custom_enabled);
+                    redraw |= dispatch_due_recovery(&mut ui, &actions);
+                    dispatch_image_fetches(&mut ui, &actions);
+                    if redraw && draw(adapter, &mut ui, &mut renderer, &mut guest).is_err() {
+                        break 'ui;
+                    }
+                    continue;
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break 'ui,
+            };
+            // Freshen the animator clock to the dequeue moment before any
+            // handler runs: animation starts (marquee passes, spoiler
+            // teases) and TTL stamps read `Ui::clock`, which would
+            // otherwise be up to one lazy tick stale — and snapshots
+            // advance running animations this way too (~10Hz during
+            // playback). The redraw hint is moot; every input is followed
+            // by a draw below anyway.
+            let now = now_millis();
+            let _ = ui.advance_clock(now);
+            let _ = guest.advance(now);
+            match input {
+                UiInput::Roguelike(result) => ui.set_roguelike(result),
+                UiInput::Shutdown => break 'ui,
+                UiInput::Snapshot(snapshot) => ui.apply_snapshot(*snapshot),
+                UiInput::Subtitle {
+                    text,
+                    speaker,
+                    video_millis,
+                    arrival_millis,
+                } => ui.push_subtitle(video_millis, arrival_millis, text, speaker),
+                UiInput::Hashing {
+                    filename,
+                    done_bytes,
+                    total_bytes,
+                    finished,
+                } => ui.set_hash_progress(filename, done_bytes, total_bytes, finished),
+                UiInput::System { timestamp, text } => ui.push_system(timestamp, text),
+                UiInput::ChatImage { url, result } => {
+                    ui.set_chat_image(&url, result.map(|img| *img))
+                }
+                UiInput::Irc {
+                    timestamp,
+                    sender,
+                    text,
+                    action,
+                } => ui.push_irc(timestamp, sender, text, action),
+                UiInput::Browse {
+                    request,
+                    files,
+                    watched,
+                    start,
+                } => ui.open_file_browser(request, files, watched, start),
+                UiInput::LocalCopyOffer {
+                    file,
+                    filename,
+                    candidates,
+                } => ui.offer_local_copies(file, filename, candidates),
+                UiInput::SearchResults { query, results } => {
+                    for action in ui.set_search_results(&query, results) {
+                        if actions.blocking_send(action).is_err() {
+                            tracing::debug!("UI thread exiting (actions channel closed)");
+                            break 'ui;
+                        }
+                    }
+                }
+                UiInput::NyaaSearchProgress {
+                    request_id,
+                    progress,
+                } => ui.set_nyaa_search_progress(request_id, progress),
+                UiInput::NyaaResults {
+                    request_id,
+                    query,
+                    result,
+                } => ui.set_nyaa_results(request_id, &query, result),
+                UiInput::NyaaImportProgress {
+                    id,
+                    filename,
+                    stage,
+                    done_bytes,
+                    total_bytes,
+                } => ui.set_nyaa_import_progress(id, filename, stage, done_bytes, total_bytes),
+                UiInput::NyaaImportFinished { id } => ui.finish_nyaa_import(id),
+                UiInput::Probe(cell) => {
+                    // Stamp the moment we dequeued this input — measured by a
+                    // test against the send time. Fall through to a draw so
+                    // the probe pays the same per-input cost real input does.
+                    // Recover a poisoned lock (the stamp is the only state):
+                    // the crate denies `unwrap`, and a panicking probe would
+                    // be a poor reason to take down the UI loop.
+                    *cell
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                        Some(std::time::Instant::now());
+                }
+                UiInput::Event(event) => {
+                    // Local input sends the houseguest away (a resident stays,
+                    // putting back what she moved in the chat); a resize only
+                    // re-anchors her, and focus changes (alt-tab) are not
+                    // activity.
+                    if matches!(
+                        event,
+                        Event::Keyboard(_) | Event::Mouse(_) | Event::Paste(_)
+                    ) {
+                        guest.activity(now);
+                    }
+                    for action in ui.handle(event) {
+                        let quit = action == UserAction::Quit;
+                        if actions.blocking_send(action).is_err() || quit {
+                            tracing::debug!("UI thread exiting (quit or actions channel closed)");
+                            break 'ui;
+                        }
                     }
                 }
             }
-            UiInput::NyaaSearchProgress {
-                request_id,
-                progress,
-            } => ui.set_nyaa_search_progress(request_id, progress),
-            UiInput::NyaaResults {
-                request_id,
-                query,
-                result,
-            } => ui.set_nyaa_results(request_id, &query, result),
-            UiInput::NyaaImportProgress {
-                id,
-                filename,
-                stage,
-                done_bytes,
-                total_bytes,
-            } => ui.set_nyaa_import_progress(id, filename, stage, done_bytes, total_bytes),
-            UiInput::NyaaImportFinished { id } => ui.finish_nyaa_import(id),
-            UiInput::Probe(cell) => {
-                // Stamp the moment we dequeued this input — measured by a
-                // test against the send time. Fall through to a draw so
-                // the probe pays the same per-input cost real input does.
-                // Recover a poisoned lock (the stamp is the only state):
-                // the crate denies `unwrap`, and a panicking probe would
-                // be a poor reason to take down the UI loop.
-                *cell
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) =
-                    Some(std::time::Instant::now());
-            }
-            UiInput::Event(event) => {
-                // Local input sends the houseguest away (a resident stays,
-                // putting back what she moved in the chat); a resize only
-                // re-anchors her, and focus changes (alt-tab) are not
-                // activity.
-                if matches!(
-                    event,
-                    Event::Keyboard(_) | Event::Mouse(_) | Event::Paste(_)
-                ) {
-                    guest.activity(now);
-                }
-                for action in ui.handle(event) {
-                    let quit = action == UserAction::Quit;
-                    if actions.blocking_send(action).is_err() || quit {
-                        tracing::debug!("UI thread exiting (quit or actions channel closed)");
-                        return;
+            dispatch_due_recovery(&mut ui, &actions);
+            dispatch_image_fetches(&mut ui, &actions);
+            match ui.layout_request.take() {
+                Some('r') => {
+                    custom_enabled = true;
+                    if let Some(watcher) = &watcher {
+                        watcher.reload();
                     }
                 }
-            }
-        }
-        dispatch_due_recovery(&mut ui, &actions);
-        dispatch_image_fetches(&mut ui, &actions);
-        match ui.layout_request.take() {
-            Some('r') => {
-                custom_enabled = true;
-                if let Some(watcher) = &watcher {
-                    watcher.reload();
+                Some('b') => {
+                    custom_enabled = false;
+                    renderer.install(builtin.clone());
+                    ui.cancel_layout_grabs();
                 }
+                _ => {}
             }
-            Some('b') => {
-                custom_enabled = false;
-                renderer.install(builtin.clone());
-                ui.cancel_layout_grabs();
+            poll_layout(&mut ui, &mut renderer, watcher.as_ref(), custom_enabled);
+            if draw(adapter, &mut ui, &mut renderer, &mut guest).is_err() {
+                break 'ui;
             }
-            _ => {}
         }
-        poll_layout(&mut ui, &mut renderer, watcher.as_ref(), custom_enabled);
-        if draw(adapter, &mut ui, &mut renderer, &mut guest).is_err() {
-            break;
-        }
+    });
+    // The one exit: whatever ended the loop, what changed goes back to
+    // the caller to save (a parked or dropped handout included, and a
+    // move-out confirmed in the last turn).
+    take_move_out(&mut ui, &mut guest);
+    let exit = UiExit {
+        houseguest: guest.final_ledger(),
+        layout: (ui.layout_settings != layout_loaded).then(|| ui.layout_settings.clone()),
+    };
+    tracing::trace!(
+        houseguest = exit.houseguest.is_some(),
+        parked = ledger_unsent.is_some(),
+        layout = exit.layout.is_some(),
+        "UI state handed back at exit"
+    );
+    exit
+}
+
+/// Run the UI loop's turns. Its `()` result makes a `return` with a
+/// value inside them a type error: they can only end, and whatever
+/// follows (the exit save) runs however they did.
+fn turns(turns: impl FnOnce()) {
+    turns();
+}
+
+/// Apply a confirmed "Osaka moved out" (the settings screen sets the
+/// flag). The loop's top and its exit both look, so a move-out
+/// confirmed in the last turn isn't lost.
+fn take_move_out(ui: &mut Ui, guest: &mut super::houseguest::Guest) {
+    if std::mem::take(&mut ui.houseguest_moved_out) {
+        guest.move_out(rand::random());
     }
 }
 
@@ -996,6 +1059,439 @@ mod frame_tests {
                 proptest::prop_assert!(bytes.starts_with(b"\x1b[?2026h"), "repaint starts without synchronization");
                 proptest::prop_assert!(bytes.ends_with(b"\x1b[?2026l"), "repaint does not release synchronization");
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod exit_save_tests {
+    //! The exit save: every way out of [`run_ui_loop`] hands back what
+    //! changed since startup — the houseguest's ledger, the pane sizes —
+    //! for the caller to save (design.md, Houseguest; phase 5b D1).
+    //!
+    //! Not staged: a draw failing on an idle tick (the timeout arm's
+    //! redraw needs a visible change on a tick, which isn't
+    //! deterministic here), and a ledger change recorded by
+    //! `guest.advance` in the last turn (needs her clock; the design
+    //! calls it unstageable). Both exit through [`turns`], whose `()`
+    //! result leaves them no way past the exit save; the draw-failure
+    //! row below covers a change made in the exiting turn.
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    use super::super::houseguest::Ledger;
+    use super::super::layout::{LayoutBundle, LayoutSettings};
+    use super::super::msg::Msg;
+    use super::*;
+    use crate::config::Settings;
+    use dessplay_core::state::CrdtState;
+    use dessplay_core::types::{
+        ActorId, ListEntryId, ListStatus, SeriesListEntry, SharedTimestamp, UserId,
+    };
+    use tuirealm::event::{Key, KeyEvent, KeyModifiers};
+    use tuirealm::ratatui::layout::Rect;
+    use tuirealm::ratatui::{Terminal, TerminalOptions, Viewport};
+    use tuirealm::terminal::{TerminalAdapter, TerminalResult};
+
+    /// Output that starts failing once `fail` is set.
+    struct Sink(Rc<Cell<bool>>);
+
+    impl std::io::Write for Sink {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            if self.0.get() {
+                Err(std::io::Error::other("the terminal went away"))
+            } else {
+                Ok(buf.len())
+            }
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            self.write(&[]).map(|_| ())
+        }
+    }
+
+    /// A headless terminal whose `fail_at`th draw (counting the one
+    /// before the loop, whose result is ignored) and every later one
+    /// fail. Each draw takes the terminal once through `raw_mut`. A
+    /// fixed viewport never asks the real terminal its size.
+    struct FlakyAdapter {
+        terminal: Terminal<tuirealm::ratatui::backend::CrosstermBackend<Sink>>,
+        fail: Rc<Cell<bool>>,
+        draws: usize,
+        fail_at: usize,
+    }
+
+    impl FlakyAdapter {
+        fn new(fail_at: usize) -> Self {
+            let fail = Rc::new(Cell::new(false));
+            let backend = tuirealm::ratatui::backend::CrosstermBackend::new(Sink(fail.clone()));
+            let terminal = Terminal::with_options(
+                backend,
+                TerminalOptions {
+                    viewport: Viewport::Fixed(Rect::new(0, 0, 120, 40)),
+                },
+            )
+            .unwrap();
+            Self {
+                terminal,
+                fail,
+                draws: 0,
+                fail_at,
+            }
+        }
+    }
+
+    impl TerminalAdapter for FlakyAdapter {
+        type Backend = tuirealm::ratatui::backend::CrosstermBackend<Sink>;
+        fn enable_raw_mode(&mut self) -> TerminalResult<()> {
+            Ok(())
+        }
+        fn disable_raw_mode(&mut self) -> TerminalResult<()> {
+            Ok(())
+        }
+        fn enter_alternate_screen(&mut self) -> TerminalResult<()> {
+            Ok(())
+        }
+        fn leave_alternate_screen(&mut self) -> TerminalResult<()> {
+            Ok(())
+        }
+        fn enable_mouse_capture(&mut self) -> TerminalResult<()> {
+            Ok(())
+        }
+        fn disable_mouse_capture(&mut self) -> TerminalResult<()> {
+            Ok(())
+        }
+        fn raw_mut(&mut self) -> &mut Terminal<Self::Backend> {
+            self.draws += 1;
+            if self.draws >= self.fail_at {
+                self.fail.set(true);
+            }
+            &mut self.terminal
+        }
+        fn raw(&self) -> &Terminal<Self::Backend> {
+            &self.terminal
+        }
+    }
+
+    /// How the loop is made to end.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum Exit {
+        /// `UiInput::Shutdown`, as run.rs sends after the session ends.
+        Shutdown,
+        /// Ctrl-C: `UserAction::Quit`, sent and then the loop ends.
+        Quit,
+        /// Every input sender dropped: the mailbox disconnects.
+        InputsClosed,
+        /// The action receiver dropped: the first handout's send fails
+        /// (her ledger's, else the pane sizes'). No input follows, so a
+        /// case with nothing to hand out would hang, not pass.
+        ActionsClosed,
+        /// The action receiver dropped, then an AniDB search answers
+        /// empty for an open link search: the List flag's send fails.
+        SearchFails,
+        /// "Osaka moved out" confirmed with `y`, and that turn's closing
+        /// draw fails: the move-out is still pending when the loop ends.
+        DrawFails,
+    }
+
+    /// Her stored record.
+    #[derive(Clone, Copy, Debug)]
+    enum Record {
+        /// She never visited.
+        Never,
+        /// A record of three visits ([`stored`]).
+        Stored,
+        /// One that couldn't be read (kept as it is).
+        Unreadable,
+    }
+
+    /// One way of running the loop.
+    #[derive(Clone, Copy, Debug)]
+    struct Case {
+        record: Record,
+        /// "Osaka moved out" confirmed before the first turn (changing
+        /// her ledger at its top).
+        moved_out: bool,
+        exit: Exit,
+        /// The action queue is full before the loop starts, so every
+        /// try-send handout is parked.
+        parked: bool,
+        /// The pane sizes as stored: `false` for none, so the first
+        /// draw fills them in and they're handed out like any change.
+        layout_stored: bool,
+    }
+
+    impl Case {
+        fn new(record: Record, exit: Exit) -> Self {
+            Self {
+                record,
+                moved_out: false,
+                exit,
+                parked: false,
+                layout_stored: true,
+            }
+        }
+    }
+
+    /// A stored record that isn't a first meeting, so a moved-out one
+    /// (no visits) differs from it whatever seed the move drew.
+    fn stored() -> Ledger {
+        let mut raw: serde_json::Value = serde_json::from_str(&Ledger::new(7).to_json()).unwrap();
+        raw["visits"] = 3.into();
+        Ledger::from_json(&raw.to_string()).unwrap()
+    }
+
+    fn visits(ledger: &Ledger) -> u64 {
+        let raw: serde_json::Value = serde_json::from_str(&ledger.to_json()).unwrap();
+        raw["visits"].as_u64().unwrap()
+    }
+
+    fn key(c: char, modifiers: KeyModifiers) -> UiInput {
+        UiInput::Event(Event::Keyboard(KeyEvent {
+            code: Key::Char(c),
+            modifiers,
+        }))
+    }
+
+    /// An unlinked List entry, its AniDB search open (awaiting a reply).
+    fn open_link_search(ui: &mut Ui) {
+        let id = ListEntryId(1);
+        let mut state = CrdtState::new();
+        state.put_list_entry(
+            ActorId::SERVER,
+            SharedTimestamp(1),
+            id,
+            SeriesListEntry {
+                name: "Some Obscure Show".into(),
+                nero_name: None,
+                genre: None,
+                notes: Vec::new(),
+                recommender: None,
+                status: ListStatus::Active,
+                status_note: None,
+                source: None,
+                watchers: Default::default(),
+                anidb_series_id: None,
+                local_aliases: Default::default(),
+                manual_files: Default::default(),
+                anidb_unavailable: false,
+            },
+        );
+        ui.apply_snapshot(UiSnapshot {
+            view: std::sync::Arc::new(state.view()),
+            ..UiSnapshot::default()
+        });
+        // Its search request goes nowhere: the reply is staged.
+        let _ = ui.test_update(Msg::LinkListEntry(id));
+    }
+
+    /// The loop's result and every action it sent.
+    struct Run {
+        exit: UiExit,
+        sent: Vec<UserAction>,
+    }
+
+    /// Run the real loop headless until `case.exit`.
+    fn run(case: Case) -> Run {
+        let settings = Settings {
+            username: Some("kim".into()),
+            password: Some("test".into()),
+            ..Settings::default()
+        };
+        let mut ui = Ui::with_setup(UserId::new("kim"), settings.clone(), vec![], false);
+        ui.houseguest_ledger = match case.record {
+            Record::Never => None,
+            Record::Stored => Some(Ok(stored())),
+            Record::Unreadable => Some(Err(())),
+        };
+        ui.houseguest_moved_out = case.moved_out;
+        if case.layout_stored {
+            let mut layout = LayoutSettings::default();
+            layout.activate(&LayoutBundle::builtin().unwrap(), settings.pane_layout);
+            ui.layout_settings = layout;
+        }
+        let (input_tx, input_rx) = super::super::delivery::channel();
+        let (action_tx, mut action_rx) = mpsc::channel(if case.parked { 1 } else { 64 });
+        if case.parked {
+            action_tx
+                .try_send(UserAction::FetchChatImage {
+                    url: "filler".into(),
+                })
+                .unwrap();
+        }
+        let mut fail_at = usize::MAX;
+        match case.exit {
+            Exit::Shutdown => input_tx.send(UiInput::Shutdown).unwrap(),
+            Exit::Quit => input_tx.send(key('c', KeyModifiers::CONTROL)).unwrap(),
+            Exit::InputsClosed => {}
+            Exit::ActionsClosed => action_rx.close(),
+            Exit::SearchFails => {
+                open_link_search(&mut ui);
+                action_rx.close();
+                input_tx
+                    .send(UiInput::SearchResults {
+                        query: "Some Obscure Show".into(),
+                        results: vec![],
+                    })
+                    .unwrap();
+            }
+            Exit::DrawFails => {
+                assert_eq!(
+                    ui.test_update(Msg::Confirm {
+                        prompt: "Osaka moves out?".into(),
+                        then: Box::new(Msg::HouseguestMovedOut),
+                    }),
+                    None
+                );
+                input_tx.send(key('y', KeyModifiers::NONE)).unwrap();
+                // The first draw is before the loop; the second closes
+                // the `y` turn.
+                fail_at = 2;
+            }
+        }
+        // Kept alive otherwise, so a case that misses its exit hangs.
+        let input_tx = (case.exit != Exit::InputsClosed).then_some(input_tx);
+        let mut adapter = FlakyAdapter::new(fail_at);
+        let exit = run_ui_loop(ui, input_rx, action_tx, &mut adapter);
+        drop(input_tx);
+        let mut sent = Vec::new();
+        while let Ok(action) = action_rx.try_recv() {
+            sent.push(action);
+        }
+        Run { exit, sent }
+    }
+
+    fn ledger_handouts(sent: &[UserAction]) -> Vec<&Ledger> {
+        sent.iter()
+            .filter_map(|action| match action {
+                UserAction::SaveHouseguest(ledger) => Some(ledger),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn layout_handouts(sent: &[UserAction]) -> Vec<&LayoutSettings> {
+        sent.iter()
+            .filter_map(|action| match action {
+                UserAction::SaveLayoutSettings(layout) => Some(layout),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Run `case` and check what came back: her ledger exactly when she
+    /// moved out (a wiped record: no visits), the pane sizes exactly
+    /// when none were stored, and each equal to the last handout (if
+    /// any got onto the queue).
+    fn check(case: Case) -> Run {
+        let label = format!("{case:?}");
+        let run = run(case);
+        let moved_out = case.moved_out || case.exit == Exit::DrawFails;
+        match &run.exit.houseguest {
+            Some(ledger) => {
+                assert!(moved_out, "{label}: saved an unchanged ledger");
+                assert_eq!(visits(ledger), 0, "{label}: a wiped record");
+                if let Some(last) = ledger_handouts(&run.sent).last() {
+                    assert_eq!(*last, ledger, "{label}: the last handout is the final one");
+                }
+            }
+            None => assert!(!moved_out, "{label}: her move-out is lost"),
+        }
+        match &run.exit.layout {
+            Some(layout) => {
+                assert!(!case.layout_stored, "{label}: saved unchanged sizes");
+                if let Some(last) = layout_handouts(&run.sent).last() {
+                    assert_eq!(*last, layout, "{label}: the last handout is the final one");
+                }
+            }
+            None => assert!(case.layout_stored, "{label}: the filled-in sizes are lost"),
+        }
+        if case.parked {
+            // Nothing got past the filler: only the exit save carries
+            // what changed.
+            assert_eq!(run.sent.len(), 1, "{label}: only the filler was queued");
+        }
+        if case.exit == Exit::Quit {
+            assert_eq!(run.sent.last(), Some(&UserAction::Quit), "{label}");
+        }
+        run
+    }
+
+    #[test]
+    fn every_exit_returns_what_changed() {
+        let mut cases = Vec::new();
+        for record in [Record::Stored, Record::Unreadable] {
+            for exit in [
+                Exit::Shutdown,
+                Exit::Quit,
+                Exit::InputsClosed,
+                Exit::ActionsClosed,
+            ] {
+                // Handed out and queued (or refused, when closed): a
+                // queued handout the session never reads is lost with
+                // its queue, so the exit save carries it all the same.
+                for layout_stored in [true, false] {
+                    cases.push(Case {
+                        moved_out: true,
+                        layout_stored,
+                        ..Case::new(record, exit)
+                    });
+                }
+            }
+            for exit in [Exit::Shutdown, Exit::InputsClosed] {
+                cases.push(Case {
+                    moved_out: true,
+                    parked: true,
+                    layout_stored: false,
+                    ..Case::new(record, exit)
+                });
+            }
+            cases.push(Case::new(record, Exit::DrawFails));
+        }
+        for case in cases {
+            check(case);
+        }
+    }
+
+    /// A move-out confirmed in the turn whose draw ends the loop never
+    /// reaches the loop's top again: only the exit save has it.
+    #[test]
+    fn a_move_out_in_the_last_turn_is_saved() {
+        let run = check(Case::new(Record::Stored, Exit::DrawFails));
+        assert!(run.exit.houseguest.is_some());
+        assert!(ledger_handouts(&run.sent).is_empty(), "never handed out");
+    }
+
+    /// The pane sizes alone changed, and the closed queue refuses their
+    /// handout: they come back at exit, and her unchanged ledger doesn't.
+    #[test]
+    fn unsent_pane_sizes_come_back_at_exit() {
+        let run = check(Case {
+            layout_stored: false,
+            ..Case::new(Record::Stored, Exit::ActionsClosed)
+        });
+        assert!(run.exit.layout.is_some());
+        assert!(run.exit.houseguest.is_none());
+    }
+
+    #[test]
+    fn nothing_unchanged_is_saved_at_exit() {
+        for record in [Record::Never, Record::Stored, Record::Unreadable] {
+            for exit in [
+                Exit::Shutdown,
+                Exit::Quit,
+                Exit::InputsClosed,
+                Exit::SearchFails,
+            ] {
+                let run = check(Case::new(record, exit));
+                assert!(ledger_handouts(&run.sent).is_empty(), "{record:?} {exit:?}");
+            }
+            // A closed queue needs a handout to fail: the sizes', which
+            // the first draw filled in.
+            check(Case {
+                layout_stored: false,
+                ..Case::new(record, Exit::ActionsClosed)
+            });
         }
     }
 }
