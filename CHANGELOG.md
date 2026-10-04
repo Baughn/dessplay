@@ -17,6 +17,13 @@ Add new days at the top. Add new entries at the bottom of existing days.
 - Added: Osaka's days now pass while dessplay is open, about six times
   faster than real time. Her clock starts on a Monday at 4 in the
   afternoon, for a home she already has too.
+- Added: Osaka keeps a daily routine on her own clock. She snacks and
+  lounges in the afternoon, does her homework in the evening before a
+  school day, and goes to bed at night: in her bed (or on her sofa, or
+  the floor), turning the lamp off. Chat at night only makes her stir and
+  murmur. In the morning she gets up with a stretch and a "Mornin'" that
+  shows her mood for the new day. Visit her at night and she's already
+  tucked in.
 
 ## 2026-10-03
 

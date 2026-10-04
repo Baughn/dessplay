@@ -261,9 +261,21 @@ impl Clock {
 
     /// The routine at the monotonic millis `at`.
     pub fn day(&self, at: u64) -> DayTime {
-        let game = self.game.at(at);
+        self.day_of(self.game.at(at))
+    }
+
+    /// The routine at `game` (game millis since [`START`]), its day
+    /// judged by its own flag.
+    pub fn day_of(&self, game: u64) -> DayTime {
         let (day, _) = split(game);
         day_time(game, self.vacation_on(day))
+    }
+
+    /// When she wakes from a night asleep at `game` (game millis since
+    /// [`START`]): the first boundary after it that ends the Asleep slot
+    /// ([`next_wake`]).
+    pub fn next_wake(&self, game: u64) -> u64 {
+        next_wake(game, |day| self.vacation_on(day))
     }
 
     /// The next slot boundary after `game` (game millis since
@@ -453,6 +465,36 @@ pub fn next_boundary(game: u64, vacation: impl Fn(u64) -> bool) -> u64 {
 /// bedtime ([`Slot::cuts`]), as [`next_boundary`].
 pub fn next_cutting(game: u64, vacation: impl Fn(u64) -> bool) -> u64 {
     next_where(game, vacation, Slot::cuts)
+}
+
+/// The first boundary after `game` (game millis since [`START`]) where a
+/// slot other than Asleep begins: from a moment of the night, the
+/// morning's wake time; each day judged by `vacation(day)`, so the
+/// morning's by its own day's flag (a school morning at 07:00, a day off
+/// at 09:00). Computed from the table, never assumed.
+pub fn next_wake(game: u64, vacation: impl Fn(u64) -> bool) -> u64 {
+    next_where(game, vacation, |slot| slot != Slot::Asleep)
+}
+
+/// A moment of her clock as a test names it: `h:m` of game `day`.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GameTime {
+    /// The game day (day 0 is the Monday her clock started on).
+    pub day: u64,
+    /// The hour.
+    pub h: u16,
+    /// The minute.
+    pub m: u16,
+}
+
+#[cfg(test)]
+impl GameTime {
+    /// Game minutes since [`START`] (her ledger's clock) at this moment,
+    /// which must be no earlier than her start.
+    pub fn minutes(self) -> u64 {
+        self.day * DAY_MIN + u64::from(hm(self.h, self.m)) - START
+    }
 }
 
 /// Whether `date` falls in `window`.

@@ -233,6 +233,33 @@ impl Mood {
             Self::Dreamy => line!("...hm? Oh, hello."),
         }
     }
+
+    /// What she says getting up in the morning, the new day's mood in
+    /// it (her greeting, that day).
+    pub fn wake_line(self) -> &'static str {
+        match self {
+            Self::Ordinary => line!("Mornin'."),
+            Self::Lazy => line!("Mornin'... lazy day."),
+            Self::Industrious => line!("Mornin'! Let's tidy!"),
+            Self::Dreamy => line!("...mm? Mornin'..."),
+        }
+    }
+}
+
+/// Salts the seed of a game day (see [`day_seed`]).
+const DAY_SALT: u64 = 0x6461_795f_6f66_5f21;
+
+/// The seed of game `day` of the home whose master seed is `master`
+/// (round-1b, "the day is the unit"): while her routine is fed, the day's
+/// mood is drawn from it (as the visit begins, and as she wakes), so a
+/// second visit the same game day comes in the same mood and says the
+/// same hello. Step 7's rare draw is to come from it too. Neither random
+/// stream: her body's stays seeded per visit.
+pub(super) fn day_seed(master: u64, day: u64) -> u64 {
+    let mut z = master ^ day.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ DAY_SALT;
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
 }
 
 /// Where a want would have her, as far as her needs care.

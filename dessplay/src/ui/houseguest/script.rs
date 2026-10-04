@@ -225,11 +225,16 @@ pub(super) enum ScriptId {
     /// After a snack, a sata andagi from the fridge: "Sata andagi." a
     /// few times over, happier each time, then she eats it.
     Andagi,
+    /// Her night's sleep (phase 5b A4): one act from bedtime to the wake
+    /// time, on her bed, her sofa, a makeshift heap or the floor (each
+    /// its pose: see [`Surface`]), the lamp on a moment as she settles
+    /// (#70) or off from the start. A chat line only stirs her.
+    Night,
 }
 
 impl ScriptId {
     #[cfg(test)]
-    pub const ALL: [ScriptId; 15] = [
+    pub const ALL: [ScriptId; 16] = [
         Self::Lounge,
         Self::Nap,
         Self::Sleep,
@@ -245,6 +250,7 @@ impl ScriptId {
         Self::Surf,
         Self::Chopsticks,
         Self::Andagi,
+        Self::Night,
     ];
 
     /// Its branches, each a run of keys.
@@ -265,18 +271,21 @@ impl ScriptId {
             Self::Surf => SURF,
             Self::Chopsticks => CHOPSTICKS,
             Self::Andagi => ANDAGI,
+            Self::Night => NIGHT,
         }
     }
 
     /// What a chat line arriving while it plays does: what any does
     /// (she stops and looks), or, a line asking her something, gets
     /// this answer said toward the chat while she plays on. Only a
-    /// splice's script answers (see [`Osaka::look`]). Wildcard-free.
+    /// splice's script answers, and only her night's stirs (see
+    /// [`Osaka::look`]). Wildcard-free.
     ///
     /// [`Osaka::look`]: super::osaka::Osaka::look
     pub fn on_chat(self) -> Chat {
         match self {
             Self::Andagi => Chat::Answer(SATA_ANDAGI),
+            Self::Night => Chat::Stir,
             Self::Lounge
             | Self::Nap
             | Self::Sleep
@@ -313,19 +322,21 @@ impl ScriptId {
             | Self::Riddle
             | Self::Surf
             | Self::Chopsticks
-            | Self::Andagi => 0,
+            | Self::Andagi
+            | Self::Night => 0,
         }
     }
 
     /// The use it plays on as that use's own script (`None`: it plays
     /// spacing out, or spliced round a use). Wildcard-free, so a new
     /// script doesn't compile until it says (the lints hold each to its
-    /// host).
+    /// host). Her night's plays on whatever she sleeps on, a sofa's nap
+    /// and the floor too; as the stage cues it, on her bed.
     pub fn played_on(self) -> Option<Use> {
         Some(match self {
             Self::Lounge => Use::Lounge,
             Self::Nap => Use::Nap,
-            Self::Sleep => Use::Sleep,
+            Self::Sleep | Self::Night => Use::Sleep,
             Self::Homework => Use::Homework,
             Self::Watch | Self::Shopping | Self::Surf => Use::Watch,
             Self::Read => Use::Read,
@@ -342,6 +353,7 @@ impl ScriptId {
     pub fn host(self) -> Host {
         match self {
             Self::Riddle => Host::SpaceOut,
+            Self::Night => Host::Night,
             Self::Chopsticks | Self::Andagi => Host::Splice,
             Self::Lounge
             | Self::Nap
@@ -380,7 +392,8 @@ impl ScriptId {
             | Self::Snack
             | Self::Pet
             | Self::Crumple
-            | Self::Unpack => shortest_use_ms(),
+            | Self::Unpack
+            | Self::Night => shortest_use_ms(),
         })
     }
 
@@ -405,6 +418,7 @@ impl ScriptId {
             Self::Surf => Scene::Surf,
             Self::Chopsticks => Scene::ChopsticksClean,
             Self::Andagi => Scene::Andagi,
+            Self::Night => Scene::Night,
         }
     }
 
@@ -433,6 +447,9 @@ pub(super) enum Host {
     SpaceOut,
     /// Spliced round a use, as its prelude or coda (see [`SpliceId`]).
     Splice,
+    /// Her night's sleep: a use of her bed, her sofa or a makeshift
+    /// heap, or lying on the floor (see [`Surface`]).
+    Night,
 }
 
 /// What a chat line arriving while a script plays does.
@@ -443,6 +460,54 @@ pub(super) enum Chat {
     /// A line asking her something gets this said toward the chat, and
     /// she plays on; any other, she stops and looks.
     Answer(&'static str),
+    /// Any line only stirs her: a murmur, a turn, and she sleeps on (her
+    /// night's sleep: a chat at night doesn't wake her).
+    Stir,
+}
+
+/// Where she spends her night (phase 5b A4), and so how her night's
+/// script poses her: in bed, curled on a sofa, or flat on the floor,
+/// held still (a makeshift heap is a bed's or a sofa's, by what it was
+/// made for).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Surface {
+    Bed,
+    Sofa,
+    Floor,
+}
+
+impl Surface {
+    /// Every surface.
+    #[cfg(test)]
+    pub const ALL: [Surface; 3] = [Self::Bed, Self::Sofa, Self::Floor];
+
+    /// What she sleeps on using a piece for `what`: a bed's sleep, a
+    /// sofa's nap (`None`: nothing she spends the night on).
+    pub fn of(what: Use) -> Option<Self> {
+        match what {
+            Use::Sleep => Some(Self::Bed),
+            Use::Nap => Some(Self::Sofa),
+            Use::Lounge
+            | Use::Homework
+            | Use::Watch
+            | Use::Unpack
+            | Use::Read
+            | Use::Snack
+            | Use::Pet
+            | Use::Crumple => None,
+        }
+    }
+
+    /// The branch of [`ScriptId::Night`] she sleeps on it on: the lamp on
+    /// a moment as she settles (#70), or (`at_once`) off from the start.
+    pub fn branch(self, at_once: bool) -> u8 {
+        let surface = match self {
+            Self::Bed => 0,
+            Self::Sofa => 1,
+            Self::Floor => 2,
+        };
+        2 * surface + u8::from(at_once)
+    }
 }
 
 /// A script spliced before or after a use (a prelude or a coda).
@@ -996,6 +1061,55 @@ const SLEEP: &[&[Key]] = &[
     )],
 ];
 
+/// Her night: each surface's two branches ([`Surface::branch`]), the lamp
+/// on a moment as she settles (the bed's, timed as [`SLEEP`]'s, so a sleep
+/// running into bedtime becomes the night in place) or off at once. In
+/// bed she breathes as she does sleeping by day, on a sofa as napping; on
+/// the floor she lies still (the floor's host wakes only as a key ends).
+const NIGHT: &[&[Key]] = &[
+    &[
+        key(
+            Span::Ms(LAMP_ON_MS),
+            Posed::Bob(Pose::Sleep, USE_FRAME_MS),
+            Face::Blink,
+            bubble(Bubble::Dots),
+        ),
+        night(Posed::Bob(Pose::Sleep, USE_FRAME_MS)),
+    ],
+    &[night(Posed::Bob(Pose::Sleep, USE_FRAME_MS))],
+    &[
+        key(
+            Span::Ms(LAMP_ON_MS),
+            Posed::Bob(Pose::Nap, USE_FRAME_MS),
+            Face::Blink,
+            bubble(Bubble::Dots),
+        ),
+        night(Posed::Bob(Pose::Nap, USE_FRAME_MS)),
+    ],
+    &[night(Posed::Bob(Pose::Nap, USE_FRAME_MS))],
+    &[
+        key(
+            Span::Ms(LAMP_ON_MS),
+            Posed::Still(Pose::LieBack(0)),
+            Face::Blink,
+            bubble(Bubble::Dots),
+        ),
+        night(Posed::Still(Pose::LieBack(0))),
+    ],
+    &[night(Posed::Still(Pose::LieBack(0)))],
+];
+
+/// Asleep for the night, posed `pose`, with the lamp off.
+const fn night(pose: Posed) -> Key {
+    shows(
+        Span::Rest,
+        pose,
+        Face::Blink,
+        bubble(Bubble::Zzz),
+        Prop::LampOff,
+    )
+}
+
 /// Writing for the first half, then nodding off onto the paper.
 const HOMEWORK: &[&[Key]] = &[&[
     key(
@@ -1392,6 +1506,7 @@ mod tests {
             ScriptId::Surf => 12,
             ScriptId::Chopsticks => 13,
             ScriptId::Andagi => 14,
+            ScriptId::Night => 15,
         }
     }
 
@@ -1458,11 +1573,12 @@ mod tests {
             ScriptId::Unpack => Play::of(Use::Unpack, None),
             ScriptId::Riddle => Play::riddle(0),
             ScriptId::Surf => Play::plain(ScriptId::Surf),
+            ScriptId::Night => Play::plain(ScriptId::Night),
         };
         for id in ScriptId::ALL {
             let play = player(id);
             let plays = match id.host() {
-                Host::Use | Host::SpaceOut => play.own,
+                Host::Use | Host::SpaceOut | Host::Night => play.own,
                 Host::Splice => {
                     let splice = play.after.unwrap().splice;
                     assert!(SpliceId::ALL.contains(&splice), "{id:?}: not a row's");
@@ -1953,14 +2069,61 @@ mod tests {
     }
 
     /// Lint: only a splice's script answers a question (its own use's
-    /// script, or a musing's, is played where no answer is looked for).
+    /// script, or a musing's, is played where no answer is looked for),
+    /// and only her night's stirs (and every surface's branch of it).
     #[test]
-    fn only_a_splice_answers() {
+    fn only_a_splice_answers_and_only_the_night_stirs() {
         for id in ScriptId::ALL {
-            if id.host() != Host::Splice {
-                assert_eq!(id.on_chat(), Chat::Look, "{id:?}");
+            match id.on_chat() {
+                Chat::Answer(_) => assert_eq!(id.host(), Host::Splice, "{id:?}"),
+                Chat::Stir => assert_eq!(id, ScriptId::Night),
+                Chat::Look => assert_ne!(id, ScriptId::Night),
             }
         }
+    }
+
+    /// Her night: a branch for each surface and lamp, each posed as its
+    /// surface is slept on (in bed, napping, flat on the floor), the lamp
+    /// off by its last key; the floor's held still (its host wakes only
+    /// as a key ends, so a bob would freeze), the bed's lamp moment timed
+    /// as a day's sleep's (so one running into bedtime becomes the night
+    /// in place, its keys where they were).
+    #[test]
+    fn the_night_poses_her_as_her_surface_with_the_lamp_off() {
+        let night = ScriptId::Night;
+        assert_eq!(night.branches().len(), 2 * Surface::ALL.len());
+        for surface in Surface::ALL {
+            for at_once in [false, true] {
+                let keys = night.keys(surface.branch(at_once));
+                assert_eq!(keys.len(), if at_once { 1 } else { 2 }, "{surface:?}");
+                assert_eq!(keys.last().unwrap().prop, Some(Prop::LampOff));
+                assert_eq!(keys[0].prop.is_some(), at_once, "{surface:?}");
+                for key in keys {
+                    let pose = match key.pose {
+                        Posed::Bob(pose, _) => pose(0),
+                        Posed::Still(pose) => pose,
+                        Posed::Host => panic!("{surface:?}: posed by its host"),
+                    };
+                    let want = match surface {
+                        Surface::Bed => Pose::Sleep(0),
+                        Surface::Sofa => Pose::Nap(0),
+                        Surface::Floor => Pose::LieBack(0),
+                    };
+                    assert_eq!(pose, want, "{surface:?}");
+                    if surface == Surface::Floor {
+                        assert!(matches!(key.pose, Posed::Still(_)), "{key:?}");
+                    }
+                }
+            }
+        }
+        let (sleep, bed) = (
+            ScriptId::Sleep.keys(0),
+            night.keys(Surface::Bed.branch(false)),
+        );
+        assert_eq!(sleep[0].span, bed[0].span);
+        assert_eq!(Surface::of(Use::Sleep), Some(Surface::Bed));
+        assert_eq!(Surface::of(Use::Nap), Some(Surface::Sofa));
+        assert_eq!(Surface::of(Use::Lounge), None);
     }
 
     /// The andagi: the fridge open a moment as she finds it, then held

@@ -234,6 +234,9 @@ struct Visit {
     /// nothing she makes or moves goes there).
     ghost: Option<Rect>,
     size: (u16, u16),
+    /// The visit began at night by her routine: at its first paint she's
+    /// tucked in, if her bed or sofa is shown ([`Osaka::tuck_in`]).
+    tuck: bool,
 }
 
 /// What a paint makes of the move she's making (the `osaka::Judged`
@@ -425,14 +428,19 @@ pub struct Guest {
     /// per process, never saved: a restart is a cold start, which
     /// re-derives her state from game time and the date as it is then.
     day_latch: Option<routine::Latch>,
-    /// The routine reaches her mind (step 4 turns it on for everyone;
-    /// until then only tests do): with it off, `Osaka::day` is `None`
-    /// everywhere, and she behaves exactly as before the clock.
+    /// The routine reaches her mind: always, but in the tests that turn
+    /// it off ([`Guest::unfed`]), where `Osaka::day` is `None`
+    /// everywhere and she behaves exactly as before the clock.
     feed_clock: bool,
     /// Her routine's slot at the last tick, while the clock is fed: a
     /// change dirties the ledger, so the record is consistent at
     /// departures and bedtimes.
     slot_was: Option<routine::Slot>,
+    /// Her line budget as her last visit left it, while the clock is fed:
+    /// the game day, and the beat lines she said that day. A visit later
+    /// the same game day carries them on (the budget is the day's, not
+    /// the visit's). Held per process.
+    lines_today: Option<(u64, usize)>,
 }
 
 /// Her clock runs this many times faster than real time.
@@ -517,8 +525,9 @@ impl Guest {
             date: None,
             // A cold start: the day latches afresh (see the field).
             day_latch: None,
-            feed_clock: false,
+            feed_clock: true,
             slot_was: None,
+            lines_today: None,
         }
     }
 
@@ -569,6 +578,7 @@ impl Guest {
         // Monday 16:00 again: the day's latch and slot are another day's.
         self.day_latch = None;
         self.slot_was = None;
+        self.lines_today = None;
         self.unsaved = true;
         self.persist = true;
         self.gift = None;
@@ -856,11 +866,21 @@ impl Guest {
         self.date
     }
 
-    /// Feed her routine to her mind, or not (tests; step 4 makes it the
-    /// default).
+    /// Feed her routine to her mind, or not (tests: fed is the default).
     #[cfg(test)]
     pub(crate) fn set_feed_clock(&mut self, on: bool) {
         self.feed_clock = on;
+    }
+
+    /// This guest with her routine never reaching her (A5): her clock
+    /// still accrues into the ledger, but `tick` gets no clock, no
+    /// boundary cuts in, and no visit or morning is keyed on the game
+    /// day. She behaves exactly as before the clock: the `UNFED_*`
+    /// golden tables hold her to it.
+    #[cfg(test)]
+    pub(crate) fn unfed(mut self) -> Self {
+        self.feed_clock = false;
+        self
     }
 
     /// Everything derived from her clock, brought up to `now` after any
@@ -1053,6 +1073,9 @@ impl Guest {
                     visit
                         .osaka
                         .tick(now, fed, &visit.terrain, &visit.chances, &mut self.rng);
+                if let Some(budget) = visit.osaka.line_budget() {
+                    self.lines_today = Some(budget);
+                }
                 // Hers the moment she does it: whatever ends the visit
                 // before the next paint can't lose it.
                 self.unsaved |= record(&mut self.ledger, &mut self.shop_now, visit);
@@ -1332,6 +1355,11 @@ impl Guest {
                 let beauty_here =
                     beauty_at(&visit.shown, &view.nooks, (visit.osaka.x, visit.osaka.y));
                 if let Some(scene) = self.cue.take() {
+                    // A scene cued for this visit's start is played, not
+                    // slept through (an arrival is tucked in, as any).
+                    if scene != stage::Scene::Arrive {
+                        visit.tuck = false;
+                    }
                     let offered = osaka::Chances {
                         pulls: pulls.clone(),
                         swaps: swaps.clone(),
@@ -1387,6 +1415,15 @@ impl Guest {
                     judged,
                     beauty_here,
                 };
+                // A visit beginning at night: in her bed (else on her
+                // sofa) from the first frame, if either is shown; else she
+                // arrives as ever, and her routine sends her to bed. (It
+                // needs only the piece: an arrival with nowhere to come in
+                // is one with no floor at all, where no piece could
+                // stand.)
+                if std::mem::take(&mut visit.tuck) {
+                    visit.osaka.tuck_in(&visit.chances, &visit.terrain, now);
+                }
                 // In line art, pieces she overlaps go in her image: two
                 // images would cut each other out.
                 let covers: Vec<Rect> = visit.shown.iter().map(Shown::cover).collect();
@@ -1406,12 +1443,13 @@ impl Guest {
                 // the cat...
                 let cat = self.cat_now || cat_home(&self.ledger);
                 let prop = visit.osaka.prop(now);
+                let dark = visit.osaka.dark(now);
                 let looks = Looks {
                     tv: prop.and_then(script::Prop::channel),
                     states: visit
                         .shown
                         .iter()
-                        .map(|p| (p.item, piece_state(p, prop, cat)))
+                        .map(|p| (p.item, piece_state(p, prop, dark, cat)))
                         .collect(),
                 };
                 nudge.paint(buf, now);
@@ -1476,14 +1514,33 @@ impl Guest {
         self.ledger.visits += 1;
         self.unsaved = true;
         tracing::info!(visit = self.ledger.visits, "houseguest arrived");
-        // Her mood, from this visit's seed (neither random stream).
-        osaka.set_mood(brain::Mood::of(
-            self.ledger.visit_seed(self.ledger.visits.saturating_sub(1)),
-        ));
+        let day = self.fed_day(now);
+        // Her mood (neither random stream): the game day's, her routine
+        // fed (a second visit the same day comes in the same mood, saying
+        // the same hello), else this visit's.
+        let seed = match day {
+            Some(day) => brain::day_seed(self.ledger.master_seed, day.day),
+            None => self.ledger.visit_seed(self.ledger.visits.saturating_sub(1)),
+        };
+        osaka.set_mood(brain::Mood::of(seed));
+        osaka.key_days(self.ledger.master_seed, day.map(|day| day.day));
+        // Her line budget is the day's: what she said earlier today
+        // counts.
+        if let (Some(day), Some((on, spent))) = (day, self.lines_today)
+            && on == day.day
+        {
+            osaka.carry_lines(spent);
+        }
         // Her needs, from the time of her day (unfed: as ever).
-        if let Some(day) = self.fed_day(now) {
+        if let Some(day) = day {
             osaka.set_clock(day);
         }
+        // Her routine reaches her from her first moment (her first paint
+        // may tuck her in), not only from her first tick.
+        osaka.read_clock(self.routine_clock(now).filter(|_| self.feed_clock));
+        // At night she's tucked in at the first paint (not come on an
+        // errand: that's for the accordion).
+        let tuck = day.is_some_and(|day| day.slot == routine::Slot::Asleep) && !osaka.on_errand();
         self.state = State::Visiting(Box::new(Visit {
             osaka,
             terrain,
@@ -1505,6 +1562,7 @@ impl Guest {
             judging: None,
             ghost: None,
             size,
+            tuck,
         }));
     }
 
@@ -2013,8 +2071,12 @@ fn furnish(
         ledger.ordered = Some(Furniture::Tv);
         ledger.bought_on = ledger.visits - 1;
     }
+    // Not while she's asleep for the night, or about to be tucked in:
+    // she'd say so. It waits for her to wake, and to say good morning.
+    let awake = !visit.tuck && visit.osaka.awake(now);
     if let Some(item) = ledger.ordered
         && ledger.bought_on < ledger.visits
+        && awake
         && let Some((prop, flap)) = home.doorstep(buf, &view.nooks, &shown, &blocked, item)
         && home.add(prop)
     {
@@ -2578,12 +2640,22 @@ fn cat_home(ledger: &Ledger) -> bool {
 }
 
 /// What state `piece` is in, given what the script she's playing shows
-/// on her furniture (`prop`; see [`Osaka::prop`]): the lamp off while
-/// she sleeps, the fridge open as she looks in, the cat in his bed
-/// (`cat`), biting at the end of a petting.
-fn piece_state(piece: &Shown, prop: Option<script::Prop>, cat: bool) -> art::PieceState {
+/// on her furniture (`prop`; see [`Osaka::prop`]) and whether her lamp is
+/// dark for the night (`dark`; see [`Osaka::dark`]), each piece from its
+/// own: the lamp off while she sleeps or in the night, the fridge open
+/// as she looks in, the cat in his bed (`cat`), biting at the end of a
+/// petting.
+fn piece_state(
+    piece: &Shown,
+    prop: Option<script::Prop>,
+    dark: bool,
+    cat: bool,
+) -> art::PieceState {
     use art::PieceState;
     use script::Prop;
+    if dark && piece.item == Furniture::Lamp {
+        return PieceState::LampOff;
+    }
     let state = match prop.filter(|p| p.item() == piece.item) {
         Some(Prop::LampOff) => Some(PieceState::LampOff),
         Some(Prop::FridgeOpen) => Some(PieceState::FridgeOpen),

@@ -77,6 +77,17 @@ impl Ledger {
         }
     }
 
+    /// A home she has visited once, her clock at `at` (tests: a scene at
+    /// a time of her day, her pieces added before it begins).
+    #[cfg(test)]
+    pub(crate) fn new_at(master_seed: u64, at: super::routine::GameTime) -> Self {
+        Self {
+            visits: 1,
+            clock: at.minutes(),
+            ..Self::new(master_seed)
+        }
+    }
+
     /// The seed of visit number `visit` (the first is the master seed
     /// itself).
     pub(super) fn visit_seed(&self, visit: u64) -> u64 {

@@ -11,7 +11,9 @@ use super::room::{Furniture, MadeId, PieceRef, Seat, Use};
 use super::routine::{self, DayTime};
 use super::rules::{Grievance, Placement, Repair, TIE_CELLS, Trials};
 use super::scenes::{Build, Job, JobRef, LayerOp, Lift, Pull, SetDown, Side, Swap};
-use super::script::{self, CHANNEL_FRAME_MS, Chat, Cue, Play, Prop, ScriptId, SpliceCtx, SpliceId};
+use super::script::{
+    self, CHANNEL_FRAME_MS, Chat, Cue, Play, Prop, ScriptId, SpliceCtx, SpliceId, Surface,
+};
 use super::sprite::{self, Face, Facing, HEIGHT, Pose, SpriteCell};
 use super::terrain::{Link, Platform, Route, Terrain};
 use tuirealm::ratatui::layout::Rect;
@@ -178,6 +180,53 @@ pub(super) fn middle(p: &Platform) -> (i32, i32) {
     ((p.x0 + p.x1) / 2, p.y)
 }
 
+/// Where she spends the night, of what's shown (A4): her bed, else her
+/// sofa, real ones where she can lie. The one binder of her night's place
+/// for her routine's bed reflex and for being tucked in.
+pub(super) fn night_seat(chances: &Chances, terrain: &Terrain) -> Option<Seat> {
+    night_seats(chances, terrain).next()
+}
+
+/// Every real piece she could spend the night on, of what's shown, in
+/// the order she'd choose them (A4): her beds, then her sofas.
+fn night_seats<'a>(chances: &'a Chances, terrain: &'a Terrain) -> impl Iterator<Item = Seat> + 'a {
+    [Use::Sleep, Use::Nap].into_iter().flat_map(move |what| {
+        chances
+            .seats
+            .iter()
+            .filter(move |s| {
+                s.what == what && !s.makeshift() && terrain.platform_at(s.x, s.y).is_some()
+            })
+            .copied()
+    })
+}
+
+/// A spot on its floor just beside the piece she's in at `seat` (her bed,
+/// her sofa), where she may stay: the side nearer first.
+fn beside(seat: &Seat, terrain: &Terrain) -> Option<(i32, i32)> {
+    let (cols, sit) = match seat.piece {
+        PieceRef::Made(_) => (
+            i32::from(super::scrap::footprint(seat.item).0),
+            super::scrap::SEAT,
+        ),
+        PieceRef::Real(item) => {
+            let cols = i32::from(item.spec().footprint.0);
+            (cols, item.spec().sit.map_or(cols / 2, |(col, _)| col))
+        }
+    };
+    let left = match seat.facing {
+        Facing::Right => seat.x - sit,
+        Facing::Left => seat.x - (cols - 1 - sit),
+    };
+    let half = sprite::WIDTH / 2;
+    let floor = terrain.platform_at(seat.x, seat.y);
+    let mut xs = [left - half - 1, left + cols + half];
+    xs.sort_by_key(|&x| ((x - seat.x).abs(), x));
+    xs.into_iter().map(|x| (x, seat.y)).find(|&(x, y)| {
+        floor.is_some() && terrain.platform_at(x, y) == floor && terrain.restful(x, y)
+    })
+}
+
 /// Pick one of `n` things, those `in_chat` weighing [`CHAT_FACTOR`],
 /// with `below(k)` uniform in `0..k`. With none in the chat it's a plain
 /// uniform pick.
@@ -314,7 +363,9 @@ const RECENT: usize = 3;
 const RETRIES: u8 = 5;
 
 /// After a hard landing.
-const OK: &str = line!("...I'm OK.");
+pub(super) const OK: &str = line!("...I'm OK.");
+/// Stirring at a chat line in the night.
+pub(super) const MM: &str = line!("mm...");
 /// Spacing out, musing or not (ms range).
 pub(super) const SPACE_OUT_MS: (u64, u64) = (6000, 14_000);
 
@@ -408,11 +459,14 @@ enum Act {
         since: u64,
         until: u64,
     },
-    /// An activity on the spot.
+    /// An activity on the spot. `play`: her night's script, lying on
+    /// the floor for the night (see [`Surface::Floor`]); `None` for any
+    /// other activity, which plays none.
     Idle {
         what: Activity,
         since: u64,
         until: u64,
+        play: Option<Play>,
     },
     /// Clambering over a divider: over to `column`, along the pole to
     /// `to_y`, then over to `to_x` on the new floor.
@@ -1268,11 +1322,32 @@ pub(super) struct Osaka {
     /// settled twice as she leaves it, by the decision and by the act
     /// that follows: once is counted).
     slept_to: u64,
-    /// Her act counts as her night's sleep (a test's, until step 4).
-    // TODO(step 4): goes, with its init, when `in_night_act` reads her
-    // act.
-    #[cfg(test)]
-    pub(super) night_act: bool,
+    /// The lamp is off for the night (round-1b): turned off by her night
+    /// act's lamp key in the night (by her routine), so whatever takes
+    /// her out of bed in the night happens in the dark. (Bedtime alone
+    /// never turns it off: she does, settling in.) Only ever honoured in
+    /// the night (see [`Osaka::dark`]), and cleared as a new day begins
+    /// (woken into, or caught up on), so a night missed or cut short
+    /// never darkens a day, nor the next night before she settles.
+    lamp_off: bool,
+    /// Until when she's stirring, turned over, at a chat line in the
+    /// night (see [`Osaka::look`]).
+    stir_until: u64,
+    /// Until when she's saying good morning (see [`Osaka::begin_day`]):
+    /// what would speak over it waits (see [`Osaka::awake`]).
+    morning_until: u64,
+    /// Her home's master seed: her mornings key her new day's mood on it
+    /// and the game day ([`brain::day_seed`]).
+    master: u64,
+    /// The game day her line budget is that day's (`None`: no routine
+    /// reaches her, and it's the visit's).
+    budget_day: Option<u64>,
+    /// The earliest her clock reads (game millis): its reading before
+    /// the last time it lost time (a step the shell's cap clamped: a
+    /// suspend). A catch-up decision whose time that step left far behind
+    /// would otherwise map back, through the new reading, to before the
+    /// old one.
+    game_floor: u64,
 }
 
 impl Osaka {
@@ -1348,8 +1423,12 @@ impl Osaka {
             cut_past: 0,
             slept_ms: 0,
             slept_to: 0,
-            #[cfg(test)]
-            night_act: false,
+            lamp_off: false,
+            stir_until: 0,
+            morning_until: 0,
+            master: 0,
+            budget_day: None,
+            game_floor: 0,
         };
         osaka.whims = Whims(osaka.mind.0 ^ mind::WHIMS_SALT);
         osaka.act_due = osaka.first_due(now);
@@ -1568,7 +1647,17 @@ impl Osaka {
                 since + WINDUP_MS + if knocked { RECOIL_MS } else { 0 }
             }
             Act::Tear { since, ripped, .. } => since + if ripped { REEL_MS } else { BRACE_MS },
-            Act::Idle { what, since, until } => next_frame(what, since, now).min(until),
+            // Her night on the floor wakes only as a key ends (it's held
+            // still); any other activity on its frames.
+            Act::Idle {
+                play: Some(play),
+                since,
+                until,
+                ..
+            } => play.next_end(since, until, now).unwrap_or(until).min(until),
+            Act::Idle {
+                what, since, until, ..
+            } => next_frame(what, since, now).min(until),
             // As each key of a riddle ends.
             Act::SpaceOut { since, until, play } => play
                 .and_then(|play| play.next_end(since, until, now))
@@ -1749,17 +1838,37 @@ impl Osaka {
 
     /// Her routine's clock from now on (see [`Osaka::day`]): set at
     /// every tick's entry, and when the stage skips her clock. Her next
-    /// cutting boundary is found afresh from it.
+    /// cutting boundary is found afresh from it, and her night's wake
+    /// time (a later day's vacation flag is provisional until that day
+    /// latches: what's predicted into it is predicted again each time).
     pub fn read_clock(&mut self, clock: Option<routine::Clock>) {
+        // Time lost between the readings (a step the shell's cap clamped:
+        // a suspend): no moment from here on reads earlier than the last
+        // reading did, as this one, extended back, would.
+        if let (Some(was), Some(now)) = (self.clock, clock)
+            && now.game.game < was.game.at(now.game.at)
+        {
+            self.game_floor = self.game_floor.max(was.game.game);
+        }
         self.clock = clock;
-        if let Some(clock) = clock {
+        if clock.is_some() {
             // An act begun before any clock reached her: when it began
             // by this first reading, held from now on.
             let since = self.act_since;
-            self.act_since_game
-                .get_or_insert_with(|| clock.game.at(since));
+            if self.act_since_game.is_none() {
+                self.act_since_game = self.game_at(since);
+            }
         }
         self.refresh_cut();
+        self.refresh_night();
+    }
+
+    /// Her clock at the monotonic millis `at` (game millis since her
+    /// start), never earlier than the last tick's reading (see
+    /// `game_floor`): `None` while no routine reaches her.
+    fn game_at(&self, at: u64) -> Option<u64> {
+        self.clock
+            .map(|clock| clock.game.at(at).max(self.game_floor))
     }
 
     /// Find her next cutting boundary ([`routine::Slot::cuts`]) from her
@@ -1788,26 +1897,79 @@ impl Osaka {
         self.cut_at = Some(clock.game.when(boundary));
     }
 
+    /// When her night's sleep begun at `began` (game millis) ends: the
+    /// wake time, in monotonic millis, if it began in the night (by her
+    /// routine); `None` for one begun by day (the stage's), or with no
+    /// routine reaching her.
+    fn wake_of(&self, began: u64) -> Option<u64> {
+        let clock = self.clock?;
+        (clock.day_of(began).slot == routine::Slot::Asleep)
+            .then(|| clock.game.when(clock.next_wake(began)))
+    }
+
+    /// Her night's sleep lasts until her wake time, found afresh from her
+    /// clock as it's read now (from when it began by her clock, never
+    /// mapped back): a later day's flag may have changed since it began.
+    fn refresh_night(&mut self) {
+        let Some(began) = self.act_since_game.filter(|_| self.sleeping()) else {
+            return;
+        };
+        let Some(wake) = self.wake_of(began) else {
+            return;
+        };
+        let changed = match &mut self.act {
+            Act::Use {
+                since,
+                until,
+                whole,
+                play,
+                ..
+            } => {
+                let was = *until;
+                *until = wake.max(play.body_start(*since));
+                *whole = until.saturating_sub(play.body_start(*since));
+                *until != was
+            }
+            Act::Idle { since, until, .. } => {
+                let was = *until;
+                *until = wake.max(*since);
+                *until != was
+            }
+            _ => false,
+        };
+        if changed {
+            tracing::trace!(wake, "houseguest: her wake time moved");
+            self.act_due = self.act_due.min(wake);
+        }
+    }
+
     /// Her routine reached a cutting boundary at `at` (school, bed):
     /// what she's resting at or busy with stops (A10), and she decides
-    /// again (no reflex sends her anywhere yet: steps 4 and 5). Whatever
-    /// she's doing, the boundary is handled: the next one is found, and
-    /// nothing fires early.
+    /// again, where her routine sends her (see [`Osaka::send_to_bed`]).
+    /// Whatever she's doing, the boundary is handled: the next one is
+    /// found, and nothing fires early.
     ///
     /// Only an act she stays at (resting, or at a job: [`Act::props`]'s
     /// table) is cut. Never what she passes through or what runs its
     /// course on its own, which that table says she doesn't stay at: her
     /// errand's poke, a climb, a fall, a door, being out (they end soon,
-    /// in a decision).
+    /// in a decision). And at bedtime, never her sleep: asleep in her bed
+    /// (or already asleep for the night, as the stage put her), she
+    /// sleeps on through the night, in place.
     fn cut(&mut self, at: u64) -> bool {
-        // TODO(step 4): a bed's `Use(Sleep)` running at bedtime becomes
-        // the night act in place (A10), not interrupted.
-        let cuttable = matches!(self.act.props().stays, Stays::Rest | Stays::Job);
+        let bedtime = self
+            .clock
+            .is_some_and(|clock| clock.day_of(self.cut_game).slot == routine::Slot::Asleep);
         // Handled before anything it sets off: whatever she decides
         // now searches past it.
         self.cut_past = self.cut_game;
+        if bedtime && self.sleep_on(at) {
+            self.refresh_cut();
+            return true;
+        }
+        let cuttable = matches!(self.act.props().stays, Stays::Rest | Stays::Job);
         if cuttable {
-            tracing::debug!(at, act = %self.act_summary(), "houseguest: her routine cuts in");
+            tracing::info!(at, act = %self.act_summary(), "houseguest: her routine cuts in");
             self.interrupt(Cause::Routine, at);
         } else {
             tracing::trace!(at, act = %self.act_summary(), "houseguest: her routine passes");
@@ -1816,22 +1978,82 @@ impl Osaka {
         cuttable
     }
 
-    /// Whether her act is her night's sleep (A4), whose time asleep her
-    /// needs keep apart (see [`Osaka::slept_ms`]). None is yet: step 4
-    /// brings it.
-    // TODO(step 4): one arm, a real test of her act (the night act),
-    // replaces both; `Osaka.night_act` and its init go.
-    #[cfg(not(test))]
-    fn in_night_act(&self) -> bool {
-        false
+    /// At bedtime (`at`), asleep in her bed, or asleep for the night by
+    /// day: that sleep becomes her night's, in place (A10), lasting until
+    /// her wake time. No interruption, no new act: the sleep's keys stay
+    /// where they were (the night's bed branches are timed as a day's
+    /// sleep's), and only the night from bedtime on counts as slept.
+    /// False for anything else.
+    fn sleep_on(&mut self, at: u64) -> bool {
+        let night = match &self.act {
+            Act::Use { seat, play, .. } => {
+                (seat.what == Use::Sleep && play.own == ScriptId::Sleep)
+                    || play.own == ScriptId::Night
+            }
+            Act::Idle { play, .. } => play.is_some_and(|p| p.own == ScriptId::Night),
+            _ => false,
+        };
+        let Some(wake) = self
+            .clock
+            .map(|clock| clock.game.when(clock.next_wake(self.cut_game)))
+        else {
+            return false;
+        };
+        if !night {
+            return false;
+        }
+        match &mut self.act {
+            Act::Use {
+                since,
+                until,
+                whole,
+                play,
+                ..
+            } => {
+                if play.own == ScriptId::Sleep {
+                    // Lamp on a moment, or (a trial's) off at once.
+                    play.branch = Surface::Bed.branch(play.branch != 0);
+                    play.own = ScriptId::Night;
+                }
+                play.after = None;
+                *until = wake.max(play.body_start(*since));
+                *whole = until.saturating_sub(play.body_start(*since));
+            }
+            Act::Idle { since, until, .. } => *until = wake.max(*since),
+            _ => {}
+        }
+        // From bedtime, as her clock read it then: her wake time is found
+        // from it from now on.
+        self.act_since_game = Some(self.cut_game);
+        self.slept_to = at;
+        self.act_due = self.first_due(at);
+        self.latch_lamp(at);
+        tracing::info!(at, act = %self.act_summary(), "houseguest: asleep for the night");
+        true
     }
 
-    /// Whether her act is her night's sleep: as a test says, until step
-    /// 4 brings one.
-    // TODO(step 4): see the other arm.
-    #[cfg(test)]
-    fn in_night_act(&self) -> bool {
-        self.night_act
+    /// Her night's sleep, if that's her act (A4): what it plays, and its
+    /// span. Whatever she sleeps on, it's one act.
+    fn night_play(&self) -> Option<(Play, u64, u64)> {
+        match self.act {
+            Act::Use {
+                play, since, until, ..
+            } if play.own == ScriptId::Night => Some((play, since, until)),
+            Act::Idle {
+                play: Some(play),
+                since,
+                until,
+                ..
+            } if play.own == ScriptId::Night => Some((play, since, until)),
+            _ => None,
+        }
+    }
+
+    /// Whether she's asleep for the night: her act is her night's sleep
+    /// (A4), whatever she sleeps on, whose time asleep her needs keep
+    /// apart (see `slept_ms`).
+    pub(super) fn sleeping(&self) -> bool {
+        self.night_play().is_some()
     }
 
     /// Her next cutting boundary (tests).
@@ -1840,10 +2062,30 @@ impl Osaka {
         self.cut_at
     }
 
+    /// The night's sleep kept for her needs' next pass (tests).
+    #[cfg(test)]
+    pub(super) fn slept_ms(&self) -> u64 {
+        self.slept_ms
+    }
+
+    /// Whether she has said hello, or good morning (tests).
+    #[cfg(test)]
+    pub(super) fn greeted(&self) -> bool {
+        self.greeted
+    }
+
+    /// A beat line said at `at`, as if she'd drawn it (tests: her line
+    /// budget spent).
+    #[cfg(test)]
+    pub(super) fn note_beat(&mut self, at: u64) {
+        self.lines.note(mind::PoolId::Beat, "Hm.", at);
+    }
+
     /// Her routine at the monotonic millis `at`: `None` while the clock
     /// doesn't reach her. The one way anything of hers asks the time.
     pub fn day(&self, at: u64) -> Option<DayTime> {
-        self.clock.map(|clock| clock.day(at))
+        let clock = self.clock?;
+        self.game_at(at).map(|game| clock.day_of(game))
     }
 
     /// Run every event due by `now`, with her routine's `clock` (`None`:
@@ -1896,6 +2138,7 @@ impl Osaka {
                 continue;
             }
             self.fire(due, terrain, chances, rng);
+            self.latch_lamp(due);
             debug_assert!(self.undoes_its_mischief(), "mischief without its undo");
         }
         // Far behind (a suspended laptop): resume from now.
@@ -1913,17 +2156,19 @@ impl Osaka {
         }
         self.act = act;
         self.act_since = at;
-        self.act_since_game = self.clock.map(|clock| clock.game.at(at));
+        self.act_since_game = self.game_at(at);
         self.act_due = self.first_due(at);
     }
 
     fn fire(&mut self, at: u64, terrain: &Terrain, chances: &Chances, rng: &mut Rng) {
         match self.act.clone() {
             Act::Idle { until, .. } => {
-                if at >= until {
-                    self.decide(at, terrain, chances, rng);
-                } else {
+                if at < until {
                     self.act_due = self.first_due(at);
+                } else if self.sleeping() {
+                    self.end_night(at, terrain, chances, rng);
+                } else {
+                    self.decide(at, terrain, chances, rng);
                 }
             }
             Act::Clamber { column, to_y, to_x } => {
@@ -2047,7 +2292,9 @@ impl Osaka {
                         let_go: false,
                     });
                 }
-                if at >= until {
+                if at >= until && self.sleeping() {
+                    self.end_night(at, terrain, chances, rng);
+                } else if at >= until {
                     if seat.what == Use::Unpack {
                         tracing::info!(item = ?seat.item, "houseguest: unpacked");
                         self.events.push(HomeEvent::Unpacked(seat.item));
@@ -2554,11 +2801,30 @@ impl Osaka {
                         .map(|b| b.key),
                     PieceRef::Made(_) => None,
                 };
+                // Her night's sleep (A4), in bed or on a sofa, real or
+                // made: at night, or as the stage cues it. It plays whole,
+                // nothing spliced round it and nothing felt: she's asleep.
+                // Its length is drawn as a use's is, then (at night) her
+                // wake time's.
+                let sleeps_here = !trying && Surface::of(seat.what).is_some();
+                let at_night = day.is_some_and(|day| day.slot == routine::Slot::Asleep);
                 // What the stage cued, if it plays on this use (else it
-                // waits for one it does).
-                let cued = self
-                    .cued
-                    .take_if(|cue| cue.plays_on(seat.what, trying, grievance.is_some()));
+                // waits for one it does). A splice waits for a use it
+                // wraps that isn't her night's sleep (nothing wraps that).
+                let cued = self.cued.take_if(|cue| {
+                    cue.plays_on(seat.what, trying, grievance.is_some())
+                        && !(sleeps_here && at_night && matches!(cue, Cue::Splice(..)))
+                });
+                let night = sleeps_here
+                    && match cued {
+                        Some(Cue::Script(id)) => id == ScriptId::Night,
+                        Some(Cue::Splice(..)) | None => at_night,
+                    };
+                if night {
+                    let drawn = rng.range(lo, hi);
+                    let act = self.night_in(seat, drawn, at, false);
+                    return self.set(act, at);
+                }
                 let mut quiet = self.speech.map_or(at, |(_, until)| until);
                 // A prelude, a coda: drawn from her latest decision's
                 // whims (never round a trial), so the body is drawn as
@@ -2724,6 +2990,291 @@ impl Osaka {
         self.set(act, at);
     }
 
+    /// Her night's sleep (A4) at `seat`, on her bed or her sofa, real or
+    /// made, from `at`: until her wake time, if it's night by her routine;
+    /// else (the stage's, by day) `drawn` long. The lamp on a moment as
+    /// she settles, or (`at_once`) off from the start.
+    fn night_in(&mut self, seat: Seat, drawn: u64, at: u64, at_once: bool) -> Act {
+        if let PieceRef::Made(id) = seat.piece {
+            self.events.push(HomeEvent::Used(id));
+        }
+        let surface = Surface::of(seat.what).unwrap_or(Surface::Bed);
+        let until = self.night_until(at, drawn);
+        tracing::info!(item = ?seat.item, ?surface, until, "houseguest: asleep for the night");
+        Act::Use {
+            seat,
+            since: at,
+            until,
+            whole: until - at,
+            play: Play {
+                branch: surface.branch(at_once),
+                ..Play::plain(ScriptId::Night)
+            },
+            grievance: None,
+        }
+    }
+
+    /// Her night's sleep on the floor (A4) from `at`, lying still where
+    /// she is, the lamp on a moment as she settles: until her wake time
+    /// (else, by day, as long as lying back lasts).
+    fn night_on_floor(&mut self, at: u64, rng: &mut Rng) -> Act {
+        let (lo, hi) = Activity::LieBack.duration();
+        let until = self.night_until(at, rng.range(lo, hi));
+        tracing::info!(until, "houseguest: asleep for the night on the floor");
+        Act::Idle {
+            what: Activity::LieBack,
+            since: at,
+            until,
+            play: Some(Play {
+                branch: Surface::Floor.branch(false),
+                ..Play::plain(ScriptId::Night)
+            }),
+        }
+    }
+
+    /// When a night's sleep begun at `at` ends: her wake time, if it's
+    /// night by her routine; else `drawn` ms on.
+    fn night_until(&self, at: u64, drawn: u64) -> u64 {
+        self.game_at(at)
+            .and_then(|game| self.wake_of(game))
+            .map_or(at + drawn, |wake| wake.max(at))
+    }
+
+    /// Tucked in (A4): a visit beginning at night (`now`) has her in her
+    /// bed, else on her sofa, asleep from the start, the lamp already
+    /// off. False, and nothing changes, with neither shown where she
+    /// could lie (she arrives as ever, and her routine sends her to bed),
+    /// or when it isn't night by her routine. Her look at the chat and
+    /// her hello wait for her to wake.
+    pub fn tuck_in(&mut self, chances: &Chances, terrain: &Terrain, now: u64) -> bool {
+        let night = self
+            .day(now)
+            .is_some_and(|day| day.slot == routine::Slot::Asleep);
+        let Some(seat) = night_seat(chances, terrain).filter(|_| night) else {
+            return false;
+        };
+        tracing::info!(item = ?seat.item, "houseguest: tucked in");
+        (self.x, self.y, self.facing) = (seat.x, seat.y, seat.facing);
+        self.heading = None;
+        self.credit = Some(Want::Use(seat.what));
+        let act = self.night_in(seat, 0, now, true);
+        self.set(act, now);
+        self.decided = now;
+        self.latch_lamp(now);
+        true
+    }
+
+    /// The lamp goes off for the night as her night's lamp key shows it
+    /// in the night (see `lamp_off`). A night's sleep the stage gives her
+    /// by day darkens her lamp by its key alone, while it plays.
+    fn latch_lamp(&mut self, at: u64) {
+        let night = self.asleep_slot(at);
+        let off = self.night_play().is_some_and(|(play, since, until)| {
+            play.key(since, until, at)
+                .is_some_and(|(key, _)| key.prop == Some(Prop::LampOff))
+        });
+        if night && off && !self.lamp_off {
+            tracing::info!("houseguest: the lamp off for the night");
+            self.lamp_off = true;
+        }
+    }
+
+    /// Whether it's night by her routine at `at` (her Asleep slot).
+    fn asleep_slot(&self, at: u64) -> bool {
+        self.day(at)
+            .is_some_and(|day| day.slot == routine::Slot::Asleep)
+    }
+
+    /// Whether her lamp is dark at `now` for the night, whatever she's
+    /// doing (see `lamp_off`): off since she settled in, and still the
+    /// night. What her act shows on her furniture is [`Osaka::prop`].
+    pub fn dark(&self, now: u64) -> bool {
+        self.lamp_off && self.asleep_slot(now)
+    }
+
+    /// At bedtime (`at`), whatever moving of her home is under way is
+    /// over for the day (it can't wait out the night: trying a piece is a
+    /// moment's sit, which her night's sleep isn't). Set down where she
+    /// tried it, it stays there; lifted, or not yet, she lets it go, the
+    /// piece back where it stood (see [`Osaka::drop_episode`]).
+    fn settle_for_night(&mut self, at: u64) {
+        if self.episode.is_some() {
+            tracing::info!("houseguest: her arranging over for the day");
+            self.drop_episode(None, at);
+        }
+        self.just_set = None;
+    }
+
+    /// Her routine's bed reflex (D4, A4): at night, to bed. Her bed, else
+    /// her sofa (the one way she finds either, tucked in too: see
+    /// [`night_seat`]); else a makeshift one, by its own methods (one she
+    /// made, or making one); else the floor where she is. Each in turn
+    /// until she can set off for it. Her night's sleep begins as she gets
+    /// there (see [`Osaka::start_job`]).
+    fn send_to_bed(
+        &mut self,
+        ctx: &Ctx,
+        whims: Whims,
+        here: usize,
+        terrain: &Terrain,
+        at: u64,
+        rng: &mut Rng,
+    ) -> Decision {
+        // Watching the chat, she still faces it as she sets off.
+        if at < self.watch_until {
+            self.facing = toward(self.x, self.watch_x);
+        }
+        let real = night_seats(ctx.chances, terrain)
+            .map(|seat| (Want::Use(seat.what), "routine/bed", Job::Use(seat)));
+        let made = [Use::Sleep, Use::Nap].into_iter().filter_map(|what| {
+            let want = Want::Use(what);
+            match mind::bind(ctx, whims, want) {
+                Some((_, Bind::Job(job))) => Some((want, "routine/bed-made", job)),
+                _ => None,
+            }
+        });
+        for (want, method, job) in real.chain(made) {
+            if self.go_to(want, job, here, terrain, at) {
+                self.credit = Some(want);
+                return Decision {
+                    want: Some(want),
+                    ..Decision::reflex(method)
+                };
+            }
+        }
+        let act = self.night_on_floor(at, rng);
+        self.set(act, at);
+        self.credit = Some(Want::Idle(Activity::LieBack));
+        Decision {
+            want: self.credit,
+            ..Decision::reflex("routine/bed-floor")
+        }
+    }
+
+    /// Her night's sleep is over at `at` (it ran to its end): at her wake
+    /// time, she wakes to a new day; one the stage gave her by day just
+    /// ends (the lamp on again), and she decides as ever.
+    fn end_night(&mut self, at: u64, terrain: &Terrain, chances: &Chances, rng: &mut Rng) {
+        let night = self
+            .day(at)
+            .is_some_and(|day| day.slot == routine::Slot::Asleep);
+        let morning = !night
+            && self
+                .act_since_game
+                .is_some_and(|began| self.wake_of(began).is_some());
+        if morning {
+            self.wake(at, terrain);
+        } else {
+            self.decide(at, terrain, chances, rng);
+        }
+    }
+
+    /// She wakes at `at`, her night's sleep over (round 1, "each morning
+    /// is a new day"): up beside her bed (there's no sitting up), a big
+    /// stretch, and good morning in the new day's mood (see
+    /// [`Osaka::begin_day`]).
+    fn wake(&mut self, at: u64, terrain: &Terrain) {
+        let Some(day) = self.day(at) else {
+            return;
+        };
+        let beside = match self.act {
+            Act::Use { seat, .. } => beside(&seat, terrain),
+            _ => None,
+        };
+        tracing::info!(%day, "houseguest: she wakes");
+        if let Some((x, y)) = beside {
+            self.facing = toward(x, self.x);
+            (self.x, self.y) = (x, y);
+        }
+        let line = Mood::of(brain::day_seed(self.master, day.day)).wake_line();
+        let (lo, _) = Activity::Stretch.duration();
+        // Leaving the night settles it (her credit, the time slept)
+        // before the new day begins.
+        self.set(
+            Act::Idle {
+                what: Activity::Stretch,
+                since: at,
+                until: at + speech_ms(line).max(lo),
+                play: None,
+            },
+            at,
+        );
+        self.begin_day(day, at);
+    }
+
+    /// A new game day begins for her at `at` (`day`), without a new
+    /// visit, whether she wakes into it ([`Osaka::wake`]) or was up at
+    /// her wake time ([`Osaka::catch_up_day`]): the one place either
+    /// starts it. Its mood, keyed on the day as a visit's is (so it's the
+    /// one a visit that day would bring), a fresh line budget and shift;
+    /// her needs the time of day's (the night is behind her: none of it
+    /// is counted again), the lamp on, and good morning in that mood.
+    fn begin_day(&mut self, day: DayTime, at: u64) {
+        let mood = Mood::of(brain::day_seed(self.master, day.day));
+        tracing::info!(?mood, %day, "houseguest: a new day");
+        self.mood = mood;
+        self.lines.new_day(at);
+        self.budget_day = Some(day.day);
+        self.worked = false;
+        self.set_clock(day);
+        self.decided = at;
+        self.slept_ms = 0;
+        self.lamp_off = false;
+        self.greeted = true;
+        let line = mood.wake_line();
+        self.say(line, at);
+        self.morning_until = at + speech_ms(line);
+    }
+
+    /// Whether she's up at `now` for what would have her say something
+    /// (a parcel at the door): not asleep for the night, and not saying
+    /// good morning, which nothing speaks over.
+    pub fn awake(&self, now: u64) -> bool {
+        !self.sleeping() && now >= self.morning_until
+    }
+
+    /// The day changed since her budget's (her night behind her), and
+    /// she didn't wake into it from her night's sleep (she was up, or on
+    /// her way back to bed, at her wake time): it begins as she next
+    /// decides, at `at`, as if she'd woken (without the stretch).
+    fn catch_up_day(&mut self, at: u64) {
+        if let Some(day) = self.day(at)
+            && day.slot != routine::Slot::Asleep
+            && self.budget_day.is_some_and(|was| was < day.day)
+        {
+            tracing::info!(%day, "houseguest: up at her wake time");
+            self.begin_day(day, at);
+        }
+    }
+
+    /// She stirs at a chat line in the night (A13): a murmur, a turn,
+    /// and she sleeps on.
+    fn stir(&mut self, now: u64) {
+        tracing::info!("houseguest: stirs in her sleep");
+        self.say(MM, now);
+        self.stir_until = now + speech_ms(MM);
+    }
+
+    /// Her home's master seed, for her mornings' new days, and the game
+    /// day the visit begins on (`None`: no routine reaches her): set as a
+    /// visit begins.
+    pub fn key_days(&mut self, master: u64, day: Option<u64>) {
+        self.master = master;
+        self.budget_day = day;
+    }
+
+    /// Her line budget as it stands, with the routine fed: the game day
+    /// it's that day's, and the beat lines she has said that day.
+    pub fn line_budget(&self) -> Option<(u64, usize)> {
+        self.budget_day.map(|day| (day, self.lines.spent()))
+    }
+
+    /// She said `spent` beat lines earlier today, on another visit: her
+    /// budget is the day's (her routine fed).
+    pub fn carry_lines(&mut self, spent: usize) {
+        self.lines.carry(spent);
+    }
+
     fn finish_pull(&mut self, at: u64) {
         self.credit_whole(Want::Pull);
         self.set(Act::Admire { until: at + 2000 }, at);
@@ -2739,7 +3290,7 @@ impl Osaka {
     fn credit_done(&mut self, at: u64) {
         // Leaving her night's sleep, the time asleep is kept for her
         // needs (A11), counted once.
-        if self.in_night_act() {
+        if self.sleeping() {
             let from = self.act_since.max(self.slept_to);
             self.slept_ms = self.slept_ms.saturating_add(at.saturating_sub(from));
             self.slept_to = at;
@@ -2752,9 +3303,12 @@ impl Osaka {
                 .clamp(0.0, 1.0)
         };
         let (done, spot) = match (&self.act, want) {
-            (Act::Idle { what, since, until }, Want::Idle(chose)) if *what == chose => {
-                (span(*since, *until), Spot::Floor)
-            }
+            (
+                Act::Idle {
+                    what, since, until, ..
+                },
+                Want::Idle(chose),
+            ) if *what == chose => (span(*since, *until), Spot::Floor),
             // By the share of its body done: none of it in a prelude,
             // all of it in a coda.
             (
@@ -2965,12 +3519,22 @@ impl Osaka {
     /// (what's on TV moving every [`CHANNEL_FRAME_MS`] from the start of
     /// the part it plays in: the prelude, the body or the coda, so a
     /// splice never shifts the body's frames).
+    ///
+    /// The lamp off for the night, whatever she's doing, is apart from
+    /// it ([`Osaka::dark`]): the two show together (the fridge open in
+    /// the dark).
     pub fn prop(&self, now: u64) -> Option<Prop> {
-        let Act::Use {
-            since, until, play, ..
-        } = self.act
-        else {
-            return None;
+        let (since, until, play) = match self.act {
+            Act::Use {
+                since, until, play, ..
+            }
+            | Act::Idle {
+                since,
+                until,
+                play: Some(play),
+                ..
+            } => (since, until, play),
+            _ => return None,
         };
         let (key, elapsed) = play.key(since, until, now)?;
         let frame = (elapsed / CHANNEL_FRAME_MS % 2) as u8;
@@ -2988,6 +3552,12 @@ impl Osaka {
                 since,
                 until,
                 play: Some(play),
+            }
+            | Act::Idle {
+                since,
+                until,
+                play: Some(play),
+                ..
             } => Some(play.note(since, until, now)),
             _ => None,
         }
@@ -3050,7 +3620,7 @@ impl Osaka {
     pub fn plays(&self) -> Option<Play> {
         match self.act {
             Act::Use { play, .. } => Some(play),
-            Act::SpaceOut { play, .. } => play,
+            Act::SpaceOut { play, .. } | Act::Idle { play, .. } => play,
             _ => None,
         }
     }
@@ -3063,6 +3633,11 @@ impl Osaka {
         match self.act {
             Act::Use { since, play, .. } => Some((since, play)),
             Act::SpaceOut {
+                since,
+                play: Some(play),
+                ..
+            }
+            | Act::Idle {
                 since,
                 play: Some(play),
                 ..
@@ -3149,6 +3724,7 @@ impl Osaka {
         self.whims = whims;
         // What she just finished counts before she chooses anew.
         self.credit_done(at);
+        self.catch_up_day(at);
         self.rest = None;
         if self.errand.is_some() {
             self.head_for_errand(terrain, at);
@@ -3166,6 +3742,41 @@ impl Osaka {
         // With nowhere calm to go, she stays as she is, and isn't startled
         // off it again.
         self.rest = terrain.restful(self.x, self.y).then_some((self.x, self.y));
+        // Her routine (D4, A3): at night, to bed, before anything else
+        // she'd do (below, once her context is built). Whatever moving of
+        // her home was under way is settled first, so her context sees
+        // none, and nothing of it is left frozen overnight.
+        let to_bed = self.asleep_slot(at);
+        if to_bed {
+            self.settle_for_night(at);
+        }
+        let mut ctx = Ctx {
+            x: self.x,
+            y: self.y,
+            here,
+            links: terrain
+                .links
+                .iter()
+                .filter(|l| l.from == here)
+                .copied()
+                .collect(),
+            terrain,
+            chances,
+            may_work: chances.furnished
+                && !self.worked
+                && self.episode.is_none()
+                && at >= self.arrived + WORK_AFTER_MS,
+            owes: self.owes(),
+            episode: self.episode,
+            just_set: self.just_set,
+            may_arrange: !self.to_mend(&chances.broken).is_empty(),
+        };
+        // Her routine (D4, A3): at night, to bed, before anything else
+        // she'd do, a chat she's watching included (or a chat line every
+        // few seconds would keep her up all night).
+        if to_bed {
+            return self.send_to_bed(&ctx, whims, here, terrain, at, rng);
+        }
         if at < self.watch_until {
             self.facing = toward(self.x, self.watch_x);
             self.set(
@@ -3217,27 +3828,6 @@ impl Osaka {
                 ..Decision::of(Bucket::Owed, "beat")
             };
         }
-        let mut ctx = Ctx {
-            x: self.x,
-            y: self.y,
-            here,
-            links: terrain
-                .links
-                .iter()
-                .filter(|l| l.from == here)
-                .copied()
-                .collect(),
-            terrain,
-            chances,
-            may_work: chances.furnished
-                && !self.worked
-                && self.episode.is_none()
-                && at >= self.arrived + WORK_AFTER_MS,
-            owes: self.owes(),
-            episode: self.episode,
-            just_set: self.just_set,
-            may_arrange: !self.to_mend(&chances.broken).is_empty(),
-        };
         // Landed from a hop of her way somewhere, or making for a piece
         // she made: the next hop of the same trip, without choosing anew.
         // (Not a step of a move whose tries are spent: that's let go below.)
@@ -4059,6 +4649,7 @@ impl Osaka {
             what,
             since: at,
             until: at + rng.range(lo, hi),
+            play: None,
         }
     }
 
@@ -4114,6 +4705,14 @@ impl Osaka {
         if self.aloft() {
             return; // She looks once she has landed (decide watches).
         }
+        // Asleep for the night, a line only stirs her, whatever it asks
+        // (A13): she doesn't even turn to it.
+        if self
+            .night_play()
+            .is_some_and(|(play, ..)| play.own.on_chat() == Chat::Stir)
+        {
+            return self.stir(now);
+        }
         self.facing = toward(self.x, chat_x);
         if asks && let Some(answer) = self.answer(now) {
             tracing::info!(answer, "houseguest: answers the chat, playing on");
@@ -4149,7 +4748,7 @@ impl Osaka {
             .on_chat()
         {
             Chat::Answer(answer) => Some(answer),
-            Chat::Look => None,
+            Chat::Look | Chat::Stir => None,
         }
     }
 
@@ -4626,6 +5225,26 @@ impl Osaka {
         (pose, face, speech.or(bubble))
     }
 
+    /// How she looks asleep for the night (`look`), stirring at a chat
+    /// line if she is at `now`: turned over, held there, blinking.
+    fn stirring(
+        &self,
+        look: (Pose, Face, Option<Bubble>),
+        now: u64,
+    ) -> (Pose, Face, Option<Bubble>) {
+        if now >= self.stir_until {
+            return look;
+        }
+        let (pose, _, bubble) = look;
+        let turned = match pose {
+            Pose::Sleep(_) => Pose::Sleep(1),
+            Pose::Nap(_) => Pose::Nap(1),
+            Pose::LieBack(_) => Pose::LieBack(1),
+            other => other,
+        };
+        (turned, Face::Blink, bubble)
+    }
+
     fn acting(&self, now: u64) -> (Pose, Face, Option<Bubble>) {
         match self.act {
             Act::Stand { .. } => {
@@ -4638,6 +5257,20 @@ impl Osaka {
                     Pose::Stand
                 };
                 (pose, face, None)
+            }
+            Act::Idle {
+                play: Some(play),
+                since,
+                until,
+                what,
+            } => {
+                let host = what.look(0).0;
+                let look = play
+                    .key(since, until, now)
+                    .map_or(what.look(0), |(key, elapsed)| {
+                        key.look(elapsed, host, &play)
+                    });
+                self.stirring(look, now)
             }
             Act::Idle { what, since, .. } => {
                 let frame = now
@@ -4676,6 +5309,7 @@ impl Osaka {
                     Some((line, from)) if (from..from + GRIEVANCE_MS).contains(&now) => {
                         (pose, Face::Curious, Some(Bubble::Say(line)))
                     }
+                    _ if play.own == ScriptId::Night => self.stirring((pose, face, bubble), now),
                     _ => (pose, face, bubble),
                 }
             }
@@ -4969,6 +5603,7 @@ mod tests {
                 what,
                 since: 0,
                 until: 1000,
+                play: None,
             };
             osaka.credit_done(1000);
             let eased = osaka.needs.get(Need::Beauty) < before;
@@ -6456,6 +7091,7 @@ mod tests {
                 what: Activity::Sit,
                 since: 0,
                 until: far,
+                play: None,
             },
             Act::SpaceOut {
                 since: 0,
@@ -6721,24 +7357,26 @@ mod tests {
     fn a_nights_sleep_is_counted_once() {
         let mut rng = Rng(3);
         let mut osaka = Osaka::standing_at(10, 10, 0, &mut rng);
-        osaka.set(
-            Act::Idle {
-                what: Activity::LieBack,
-                since: 1_000,
-                until: 90_000,
-            },
-            1_000,
-        );
+        let lie_back = |play| Act::Idle {
+            what: Activity::LieBack,
+            since: 1_000,
+            until: 90_000,
+            play,
+        };
+        osaka.set(lie_back(None), 1_000);
         osaka.credit_done(50_000);
         assert_eq!(osaka.slept_ms, 0, "not the night act");
-        osaka.night_act = true;
+        let night = Play {
+            branch: Surface::Floor.branch(false),
+            ..Play::plain(ScriptId::Night)
+        };
+        osaka.set(lie_back(Some(night)), 1_000);
         osaka.credit_done(61_000);
         osaka.credit_done(61_000);
         assert_eq!(osaka.slept_ms, 60_000);
         osaka.set(Act::Stand { until: 70_000 }, 61_000);
         assert_eq!(osaka.slept_ms, 60_000, "counted once");
         // Her decision takes it: sleepiness rose only for the time awake.
-        osaka.night_act = false;
         let terrain = {
             use tuirealm::ratatui::buffer::Buffer;
             use tuirealm::ratatui::layout::Rect;
@@ -6816,5 +7454,539 @@ mod tests {
         assert_eq!(osaka.needs, ever);
         osaka.set_clock(monday_at(21, 0).day(0));
         assert!(osaka.needs.get(Need::Sleepy) > ever.get(Need::Sleepy));
+    }
+
+    /// A terrain with one floor, at `row`, across 40 columns.
+    fn floor_at(row: u16) -> Terrain {
+        use tuirealm::ratatui::buffer::Buffer;
+        use tuirealm::ratatui::layout::Rect;
+        use tuirealm::ratatui::style::Style;
+        let mut buf = Buffer::empty(Rect::new(0, 0, 40, 20));
+        buf.set_string(0, row, "─".repeat(40), Style::default());
+        Terrain::read(&buf, &[], false)
+    }
+
+    /// Her ticks from `now` on `terrain` with `clock`, a second apart, until
+    /// she's asleep for the night (at most `bound` ms on): when she is.
+    fn until_asleep(
+        osaka: &mut Osaka,
+        mut now: u64,
+        clock: routine::Clock,
+        terrain: &Terrain,
+        rng: &mut Rng,
+        bound: u64,
+    ) -> u64 {
+        let from = now;
+        while !osaka.sleeping() {
+            assert!(now < from + bound, "awake at {now}: {:?}", osaka.act);
+            now += 1_000;
+            osaka.tick(now, Some(clock), terrain, &Chances::default(), rng);
+        }
+        now
+    }
+
+    /// Awake in the night is out of her reach through every way out of
+    /// what she's doing that skips an interruption (D4): put somewhere by
+    /// the stage, set musing, her floor gone from under her (a fall, a
+    /// dazed moment). Each ends in a decision, and that takes her back to
+    /// sleep at once (with nothing shown to lie on, on the floor).
+    #[test]
+    fn every_way_out_of_her_night_leads_back_to_sleep() {
+        let (high, low) = (floor_at(12), floor_at(15));
+        let clock = clock_at(1, 2, 0);
+        let mut rng = Rng(3);
+        let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+        osaka.read_clock(Some(clock));
+        let mut now = until_asleep(&mut osaka, 0, clock, &low, &mut rng, 5_000);
+        assert_eq!(
+            osaka.decisions.last().map(|d| d.method),
+            Some("routine/bed-floor")
+        );
+        // Placed.
+        osaka.place(30, 15, now);
+        assert!(!osaka.sleeping());
+        now = until_asleep(&mut osaka, now, clock, &low, &mut rng, 5_000);
+        // Musing.
+        osaka.muse(now, &mut rng);
+        assert!(!osaka.sleeping());
+        now = until_asleep(&mut osaka, now, clock, &low, &mut rng, 20_000);
+        // Her floor gone: the one above it holds, and she falls onto the
+        // one below in the other's stead.
+        let mut rng2 = Rng(4);
+        let mut up = Osaka::standing_at(20, 12, now, &mut rng2);
+        up.read_clock(Some(clock));
+        let then = until_asleep(&mut up, now, clock, &high, &mut rng2, 5_000);
+        assert!(up.settle(then, &low));
+        assert!(!up.sleeping(), "fell: {:?}", up.act);
+        until_asleep(&mut up, then, clock, &low, &mut rng2, 10_000);
+        assert_eq!(up.y, 15);
+    }
+
+    /// At bedtime, asleep in her bed (a day's sleep running into it):
+    /// she sleeps on, the same act become her night's in place (A10), no
+    /// interruption and no decision, lasting until her wake time (07:00);
+    /// her credit stays with it, and only the night from bedtime counts
+    /// as slept.
+    #[test]
+    fn a_sleep_running_into_bedtime_becomes_her_night() {
+        let sleep = Act::Use {
+            seat: seat_for(Use::Sleep, Furniture::Bed),
+            since: BED - 30_000,
+            until: BED + 90_000,
+            whole: 120_000,
+            play: Play::of(Use::Sleep, None),
+            grievance: None,
+        };
+        let (mut osaka, mut rng) = at_bedtime(sleep, BED + 400);
+        osaka.credit = Some(Want::Use(Use::Sleep));
+        assert_eq!(osaka.cut_at, Some(BED));
+        osaka.tick(
+            BED,
+            Some(monday_at(22, 0)),
+            &blank_terrain(),
+            &Chances::default(),
+            &mut rng,
+        );
+        let wake = (9 * 60 - 30) * 10_000;
+        let (since, until, whole, play) = begun(&osaka);
+        assert_eq!((since, until), (BED - 30_000, BED + wake));
+        assert_eq!(whole, until - play.body_start(since));
+        assert_eq!(play.own, ScriptId::Night);
+        assert_eq!(play.branch, Surface::Bed.branch(false));
+        assert!(osaka.decisions.is_empty(), "{:?}", osaka.decisions);
+        assert_eq!(osaka.cut_at, Some(SCHOOL));
+        assert_eq!(osaka.credit, Some(Want::Use(Use::Sleep)));
+        assert_eq!(osaka.prop(BED), Some(Prop::LampOff));
+        osaka.credit_done(BED + 60_000);
+        assert_eq!(osaka.slept_ms, 60_000, "from bedtime");
+    }
+
+    /// Her wake time is found afresh as her clock is read (a later day's
+    /// flag is provisional until that day latches): a night begun on
+    /// Sunday at bedtime, before a school day (up at 07:00), whose
+    /// morning turns out a vacation day (the real date crosses into
+    /// summer in the night, before Monday latches) lasts until 09:00:
+    /// the longest night there is, 105 real minutes. On the floor and in
+    /// her bed alike (a use's whole follows its end). And a wake time
+    /// moved earlier when her next event is already the old one (the
+    /// lamp's off: nothing else happens before her wake on the floor)
+    /// still wakes her at the new one.
+    #[test]
+    fn her_wake_time_follows_her_mornings_flag() {
+        use super::super::GameClock;
+        let june = chrono::NaiveDate::from_ymd_opt(2026, 6, 17);
+        let july = chrono::NaiveDate::from_ymd_opt(2026, 7, 25);
+        let game = ((6 * 24 + 22) * 60 + 30 - routine::START) * 60_000;
+        // Sunday latched in June (school tomorrow), Monday's flag read
+        // from the date as it is now.
+        let read = |date| routine::Clock {
+            ahead: date == july,
+            date,
+            ..routine::Clock::read(GameClock { at: 0, game }, 0, None, june)
+        };
+        assert_eq!(read(july).latch.day, 6);
+        let low = floor_at(15);
+        // From 22:30 on Sunday, at monotonic 0.
+        let school = (8 * 60 + 30) * 10_000;
+        let summer = (10 * 60 + 30) * 10_000;
+        for chances in [Chances::default(), bed_at(25)] {
+            let bed = !chances.seats.is_empty();
+            let mut rng = Rng(3);
+            let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+            osaka.read_clock(Some(read(june)));
+            let mut now = 0;
+            while !osaka.sleeping() {
+                assert!(now < 30_000, "bed={bed}: {:?}", osaka.act);
+                now += 1_000;
+                osaka.tick(now, Some(read(june)), &low, &chances, &mut rng);
+            }
+            let until = |osaka: &Osaka| match osaka.act {
+                Act::Idle { until, .. } => until,
+                Act::Use {
+                    since,
+                    until,
+                    whole,
+                    play,
+                    ..
+                } => {
+                    assert_eq!(whole, until - play.body_start(since), "bed={bed}");
+                    until
+                }
+                _ => panic!("{:?}", osaka.act),
+            };
+            assert_eq!(matches!(osaka.act, Act::Use { .. }), bed, "{:?}", osaka.act);
+            assert_eq!(until(&osaka), school, "bed={bed}");
+            osaka.read_clock(Some(read(july)));
+            assert_eq!(until(&osaka), summer, "bed={bed}: 105 real minutes");
+            // And back, should the date go back before Monday latches.
+            osaka.read_clock(Some(read(june)));
+            assert_eq!(until(&osaka), school, "bed={bed}");
+        }
+        // On the floor, settled in (the lamp off) on a predicted summer
+        // morning: her next event is her 09:00 wake. Then the date turns
+        // out June after all: up at 07:00, not 09:00.
+        let mut rng = Rng(3);
+        let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+        osaka.read_clock(Some(read(july)));
+        let chances = Chances::default();
+        let settled = 1_000 + script::LAMP_ON_MS + 5_000;
+        for now in [1_000, settled] {
+            osaka.tick(now, Some(read(july)), &low, &chances, &mut rng);
+        }
+        assert!(osaka.sleeping());
+        assert_eq!(osaka.act_due, summer, "nothing before her wake");
+        osaka.tick(school + 1_000, Some(read(june)), &low, &chances, &mut rng);
+        assert!(!osaka.sleeping(), "awake at 07:00: {:?}", osaka.act);
+    }
+
+    /// Only her night's sleep stirs at a chat line (A13): a sleep or a
+    /// nap by day she wakes from to look, as ever; asleep for the night,
+    /// in her bed, on her sofa or on the floor, she murmurs, blinks,
+    /// turns over and sleeps on, whatever the line asks, not even turning
+    /// to it.
+    #[test]
+    fn only_her_nights_sleep_stirs() {
+        let terrain = floor_at(15);
+        for (what, item) in [(Use::Sleep, Furniture::Bed), (Use::Nap, Furniture::Sofa)] {
+            for night in [false, true] {
+                for asks in [false, true] {
+                    let at = format!("{what:?} night={night} asks={asks}");
+                    let mut rng = Rng(3);
+                    let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+                    let seat = Seat {
+                        y: 15,
+                        x: 20,
+                        facing: Facing::Right,
+                        ..seat_for(what, item)
+                    };
+                    let play = if night {
+                        Play {
+                            branch: Surface::of(what).unwrap().branch(true),
+                            ..Play::plain(ScriptId::Night)
+                        }
+                    } else {
+                        Play::of(what, None)
+                    };
+                    osaka.set(
+                        Act::Use {
+                            seat,
+                            since: 0,
+                            until: 600_000,
+                            whole: 600_000,
+                            play,
+                            grievance: None,
+                        },
+                        0,
+                    );
+                    osaka.look(5_000, 0, asks, &terrain);
+                    assert_eq!(osaka.sleeping(), night, "{at}");
+                    if night {
+                        assert!(matches!(osaka.act, Act::Use { .. }), "{at}");
+                        assert_eq!(osaka.facing, Facing::Right, "{at}: not turned to it");
+                        let (pose, face, said) = osaka.appearance(5_000);
+                        assert!(matches!(pose, Pose::Sleep(1) | Pose::Nap(1)), "{at}");
+                        assert_eq!(face, Face::Blink, "{at}");
+                        assert_eq!(said, Some(Bubble::Say(MM)), "{at}");
+                        // Over, she's asleep as before.
+                        let after = 5_000 + speech_ms(MM);
+                        let (_, _, said) = osaka.appearance(after);
+                        assert_eq!(said, Some(Bubble::Zzz), "{at}");
+                    } else {
+                        assert!(osaka.looking(), "{at}: {:?}", osaka.act);
+                    }
+                }
+            }
+        }
+        // On the floor, lying still: turned over a moment, blinking, and
+        // as still as before once it's over.
+        for asks in [false, true] {
+            let mut rng = Rng(3);
+            let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+            osaka.set(
+                Act::Idle {
+                    what: Activity::LieBack,
+                    since: 0,
+                    until: 600_000,
+                    play: Some(Play {
+                        branch: Surface::Floor.branch(true),
+                        ..Play::plain(ScriptId::Night)
+                    }),
+                },
+                0,
+            );
+            let unstirred = osaka.clone();
+            let (pose, ..) = unstirred.appearance(5_000);
+            assert!(matches!(pose, Pose::LieBack(0)), "{pose:?}");
+            osaka.look(5_000, 0, asks, &terrain);
+            assert!(osaka.sleeping(), "floor asks={asks}");
+            assert!(matches!(osaka.act, Act::Idle { .. }));
+            assert_eq!(osaka.facing, unstirred.facing, "not turned to it");
+            let (pose, face, said) = osaka.appearance(5_000);
+            assert_eq!(pose, Pose::LieBack(1), "floor asks={asks}");
+            assert_eq!(face, Face::Blink);
+            assert_eq!(said, Some(Bubble::Say(MM)));
+            let after = 5_000 + speech_ms(MM);
+            assert_eq!(osaka.appearance(after), unstirred.appearance(after));
+        }
+    }
+
+    /// Her bed, `x` along [`floor_at`]`(15)`, as the frame offers it.
+    fn bed_at(x: i32) -> Chances {
+        Chances {
+            seats: vec![Seat {
+                x,
+                y: 15,
+                facing: Facing::Right,
+                ..seat_for(Use::Sleep, Furniture::Bed)
+            }],
+            ..Chances::default()
+        }
+    }
+
+    /// Bedtime settles whatever moving of her home is under way: trying
+    /// a piece where she set it down (kept there, "There!"), or with it
+    /// in her pocket (let go, back where it stood). Either way her night
+    /// is her night's sleep, not a trial sit over and over, and nothing
+    /// of it is left in her pocket overnight.
+    #[test]
+    fn bedtime_settles_her_arranging() {
+        let clock = clock_at(1, 2, 0);
+        let terrain = floor_at(15);
+        let chances = bed_at(25);
+        let pocketed = Episode {
+            pocket: true,
+            tried: 0,
+            trying: false,
+            ..trial_episode()
+        };
+        for episode in [trial_episode(), pocketed] {
+            let at = format!("pocket={} trying={}", episode.pocket, episode.trying);
+            let mut rng = Rng(3);
+            let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+            osaka.episode = Some(episode);
+            osaka.read_clock(Some(clock));
+            let mut now = 0;
+            while !osaka.sleeping() {
+                assert!(now < 60_000, "{at}: awake at {now}: {:?}", osaka.act);
+                now += 1_000;
+                osaka.tick(now, Some(clock), &terrain, &chances, &mut rng);
+            }
+            assert_eq!(osaka.episode, None, "{at}");
+            assert_eq!(osaka.carrying(), None, "{at}");
+            assert_eq!(osaka.seat().map(|s| s.item), Some(Furniture::Bed), "{at}");
+            let methods: Vec<_> = osaka.decisions.iter().map(|d| d.method).collect();
+            assert_eq!(methods, ["routine/bed"], "{at}");
+            // And she sleeps on.
+            for t in (now..now + 600_000).step_by(1_000) {
+                osaka.tick(t, Some(clock), &terrain, &chances, &mut rng);
+            }
+            assert!(osaka.sleeping(), "{at}");
+            assert_eq!(osaka.decisions.len(), 1, "{at}");
+        }
+    }
+
+    /// Up at her wake time (put out of bed a moment before): the new day
+    /// begins as she next decides, as if she'd woken, the stretch aside.
+    /// Its mood and a fresh budget, good morning, her needs the
+    /// morning's with nothing of the night kept, and the lamp on: the
+    /// night's dark never reaches the day.
+    #[test]
+    fn up_at_her_wake_time_she_starts_the_day_all_the_same() {
+        use super::super::brain::Needs;
+        let clock = clock_at(1, 6, 50);
+        let terrain = floor_at(15);
+        let chances = bed_at(25);
+        let mut rng = Rng(3);
+        let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+        osaka.key_days(9, Some(0));
+        osaka.worked = true;
+        osaka.read_clock(Some(clock));
+        let mut now = until_asleep_with(&mut osaka, 0, clock, &terrain, &chances, &mut rng);
+        // Settled in: dark.
+        for t in (now..now + script::LAMP_ON_MS + 2_000).step_by(500) {
+            osaka.tick(t, Some(clock), &terrain, &chances, &mut rng);
+        }
+        now += script::LAMP_ON_MS + 2_000;
+        assert!(osaka.dark(now));
+        // 07:00 is 100 s on: out of bed a second before.
+        let wake = 100_000;
+        osaka.place(2, 15, wake - 1_000);
+        assert!(!osaka.sleeping());
+        assert!(osaka.dark(wake - 1_000), "up in the dark");
+        assert!(!osaka.dark(wake), "the day is never dark");
+        let mood = Mood::of(brain::day_seed(9, 1));
+        now = wake - 1_000;
+        while osaka.budget_day == Some(0) {
+            assert!(now < wake + 60_000, "the day never began");
+            now += 500;
+            osaka.tick(now, Some(clock), &terrain, &chances, &mut rng);
+        }
+        assert_eq!(osaka.day(now).map(|d| d.slot), Some(routine::Slot::Morning));
+        assert_eq!(osaka.line_budget(), Some((1, 0)));
+        assert_eq!(osaka.mood(), mood);
+        assert!(osaka.greeted);
+        assert_eq!(osaka.speech.map(|(line, _)| line), Some(mood.wake_line()));
+        assert_eq!(osaka.slept_ms, 0);
+        assert!(!osaka.worked);
+        assert!(!osaka.lamp_off && !osaka.dark(now));
+        assert_eq!(osaka.prop(now), None);
+        // Her needs started from the morning's at that decision.
+        let decided = osaka.decided;
+        let mut morning = Needs::arriving_in(routine::Slot::Morning);
+        assert!(decided <= now);
+        if decided == now {
+            assert_eq!(osaka.needs, morning);
+        } else {
+            morning = osaka.needs;
+        }
+        assert!(Need::ALL.iter().all(|&n| morning.get(n) < 0.9));
+    }
+
+    /// A night's sleep the stage gives her by day darkens her lamp by
+    /// its own key while it plays, and never latches it: once it's over,
+    /// the lamp is on (and no dark is left waiting for the night).
+    #[test]
+    fn a_stage_night_by_day_leaves_the_lamp_on() {
+        let clock = monday_at(16, 0);
+        let mut rng = Rng(3);
+        let mut osaka = Osaka::standing_at(10, 10, 0, &mut rng);
+        osaka.read_clock(Some(clock));
+        osaka.cue(Some(Cue::Script(ScriptId::Night)));
+        osaka.credit = Some(Want::Use(Use::Sleep));
+        osaka.start_job(
+            Job::Use(seat_for(Use::Sleep, Furniture::Bed)),
+            1_000,
+            &Chances::default(),
+            &mut rng,
+        );
+        assert!(osaka.sleeping(), "{:?}", osaka.act);
+        let (_, until, _, _) = begun(&osaka);
+        let terrain = blank_terrain();
+        let mut dark_by_key = false;
+        let mut now = 1_000;
+        while osaka.sleeping() {
+            assert!(now <= until + 1_000, "{:?}", osaka.act);
+            dark_by_key |= osaka.prop(now) == Some(Prop::LampOff);
+            assert!(!osaka.dark(now), "by day, the latch never sets");
+            now += 500;
+            osaka.tick(now, Some(clock), &terrain, &Chances::default(), &mut rng);
+        }
+        assert!(dark_by_key, "dark while she sleeps, by its key");
+        assert!(!osaka.lamp_off);
+        assert_eq!(osaka.prop(now), None);
+    }
+
+    /// Her clock read after a step that lost time (a suspend the shell's
+    /// cap clamped): a catch-up moment before the new reading never maps
+    /// back to before the last one.
+    #[test]
+    fn a_clock_that_lost_time_never_reads_earlier() {
+        use super::super::GameClock;
+        let was = monday_at(22, 0);
+        let mut rng = Rng(3);
+        let mut osaka = Osaka::standing_at(10, 10, 0, &mut rng);
+        osaka.read_clock(Some(was));
+        let (then, now) = (500_000, 1_000_000);
+        let lost = GameClock {
+            at: now,
+            game: was.game.at(1_000),
+        };
+        osaka.read_clock(Some(routine::Clock::read(lost, now, None, None)));
+        assert!(osaka.game_at(then) >= Some(was.game.game));
+        assert!(osaka.game_at(now) >= Some(was.game.game));
+    }
+
+    /// A day's sleep in her bed that bedtime made her night's, in place,
+    /// is her night through to its end: at 07:00 she wakes (a stretch,
+    /// good morning in the new day's mood), a fresh budget and shift,
+    /// nothing of the night kept twice, the lamp on.
+    #[test]
+    fn a_sleep_become_her_night_wakes_her_at_seven() {
+        let sleep = Act::Use {
+            seat: seat_for(Use::Sleep, Furniture::Bed),
+            since: BED - 30_000,
+            until: BED + 90_000,
+            whole: 120_000,
+            play: Play::of(Use::Sleep, None),
+            grievance: None,
+        };
+        let (mut osaka, mut rng) = at_bedtime(sleep, BED + 400);
+        osaka.credit = Some(Want::Use(Use::Sleep));
+        osaka.key_days(9, Some(0));
+        osaka.worked = true;
+        let clock = Some(monday_at(22, 0));
+        let terrain = blank_terrain();
+        osaka.tick(BED, clock, &terrain, &Chances::default(), &mut rng);
+        assert!(osaka.sleeping());
+        let wake = BED + (9 * 60 - 30) * 10_000;
+        let mut now = BED;
+        while osaka.sleeping() {
+            assert!(now < wake + 2_000, "still asleep at {now}");
+            now += 1_000;
+            osaka.tick(now, clock, &terrain, &Chances::default(), &mut rng);
+        }
+        assert!(now >= wake, "woke at {now}, before {wake}");
+        assert!(
+            matches!(
+                osaka.act,
+                Act::Idle {
+                    what: Activity::Stretch,
+                    ..
+                }
+            ),
+            "{:?}",
+            osaka.act
+        );
+        let mood = Mood::of(brain::day_seed(9, 1));
+        assert_eq!(osaka.speech.map(|(line, _)| line), Some(mood.wake_line()));
+        assert_eq!(osaka.line_budget(), Some((1, 0)));
+        assert!(!osaka.worked, "a new shift");
+        assert_eq!(osaka.slept_ms, 0, "the night not kept twice");
+        assert!(!osaka.lamp_off);
+        assert_eq!(osaka.prop(now), None);
+    }
+
+    /// Her ticks from `now` a second apart with `chances` until she's
+    /// asleep for the night (within a minute): when she is.
+    fn until_asleep_with(
+        osaka: &mut Osaka,
+        mut now: u64,
+        clock: routine::Clock,
+        terrain: &Terrain,
+        chances: &Chances,
+        rng: &mut Rng,
+    ) -> u64 {
+        let from = now;
+        while !osaka.sleeping() {
+            assert!(now < from + 60_000, "awake at {now}: {:?}", osaka.act);
+            now += 1_000;
+            osaka.tick(now, Some(clock), terrain, chances, rng);
+        }
+        now
+    }
+
+    /// Watching the chat at night, the bed reflex fires first (A3), and
+    /// she still faces the chat as it does: on the floor, where she lies
+    /// down where she is, facing it.
+    #[test]
+    fn to_bed_while_watching_she_still_faces_the_chat() {
+        let terrain = floor_at(15);
+        for (watch_x, facing) in [(0, Facing::Left), (39, Facing::Right)] {
+            let mut rng = Rng(3);
+            let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+            osaka.facing = if facing == Facing::Left {
+                Facing::Right
+            } else {
+                Facing::Left
+            };
+            osaka.read_clock(Some(clock_at(1, 2, 0)));
+            osaka.watch_until = 10_000;
+            osaka.watch_x = watch_x;
+            osaka.decide(1_000, &terrain, &Chances::default(), &mut rng);
+            let method = osaka.decisions.last().map(|d| d.method);
+            assert_eq!(method, Some("routine/bed-floor"));
+            assert!(osaka.sleeping());
+            assert_eq!(osaka.facing, facing, "watching {watch_x}");
+        }
     }
 }

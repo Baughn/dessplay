@@ -731,14 +731,15 @@ pub(super) struct Beat {
 
 /// A line waits this long before she says it again.
 const LINE_COOLDOWN_MS: u64 = 10 * 60_000;
-/// Beat lines a visit, at most (lines from other pools aren't counted).
+/// Beat lines a game day (a visit's, her routine unfed), at most (lines
+/// from other pools aren't counted).
 const LINE_BUDGET: usize = 8;
 /// A script waits this long before she plays it again.
 const SCRIPT_COOLDOWN_MS: u64 = 10 * 60_000;
 
 /// Which pool a line is drawn from. Its id salts the rolls drawing from
 /// it, so two picks in one decision don't share a roll; only beat lines
-/// count toward a visit's [`LINE_BUDGET`].
+/// count toward a game day's (a visit's, unfed) [`LINE_BUDGET`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum PoolId {
     /// What she says over a beat she owes, or going back to something
@@ -781,7 +782,8 @@ impl PoolId {
         }
     }
 
-    /// Whether its lines count toward a visit's [`LINE_BUDGET`].
+    /// Whether its lines count toward a game day's (a visit's, unfed)
+    /// [`LINE_BUDGET`].
     fn budgeted(self) -> bool {
         match self {
             Self::Beat => true,
@@ -862,15 +864,21 @@ pub(super) fn all_lines() -> Vec<(PoolId, &'static str)> {
 pub(super) struct Lines {
     said: Vec<(PoolId, &'static str, u64)>,
     played: Vec<(ScriptId, u64)>,
+    /// Since when her [`LINE_BUDGET`] counts what she says: the visit's
+    /// start, or (her routine fed) the morning she woke this visit.
+    budget_since: u64,
+    /// Beat lines she said earlier the same game day, on an earlier
+    /// visit (her routine fed: the budget is the day's, not the visit's).
+    carried: usize,
 }
 
 impl Lines {
     /// One of `pool`'s lines, `n` times in `d`, unless she said it lately
-    /// or (a beat line) has said enough this visit. Said is said, whether
+    /// or (a beat line) has said enough today. Said is said, whether
     /// or not it shows, unless it's spoken over the instant it's said
     /// (see [`Lines::unsay`]): then it never could show.
     pub fn pick(&mut self, pool: Pool, w: Whims, at: u64) -> Option<&'static str> {
-        let spent = || self.said.iter().filter(|&&(id, ..)| id.budgeted()).count() >= LINE_BUDGET;
+        let spent = || self.spent() >= LINE_BUDGET;
         if pool.id.budgeted() && spent() || !w.chance("line", pool.id.id(), pool.n, pool.d) {
             return None;
         }
@@ -889,6 +897,30 @@ impl Lines {
         let line = *fresh.get(which as usize)?;
         self.said.push((pool.id, line, at));
         Some(line)
+    }
+
+    /// The beat lines she has said today: on this visit since the budget
+    /// last started afresh, and on earlier visits the same game day.
+    pub fn spent(&self) -> usize {
+        let since = self.budget_since;
+        self.carried
+            + self
+                .said
+                .iter()
+                .filter(|&&(id, _, at)| id.budgeted() && at >= since)
+                .count()
+    }
+
+    /// A new game day began at `at` (she woke): her budget starts afresh.
+    /// What she said lately still cools.
+    pub fn new_day(&mut self, at: u64) {
+        self.budget_since = at;
+        self.carried = 0;
+    }
+
+    /// She said `spent` beat lines earlier today, on another visit.
+    pub fn carry(&mut self, spent: usize) {
+        self.carried = spent;
     }
 
     /// `line`, from `pool`, said at `at` (drawn with another of the

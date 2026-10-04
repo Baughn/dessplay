@@ -972,6 +972,7 @@ fn visiting_at(guest: &mut Guest, real: &Buffer, view: &IdleView, (x, y): (i32, 
         judging: None,
         ghost: None,
         size: (real.area.width, real.area.height),
+        tuck: false,
     }));
 }
 
@@ -1468,6 +1469,7 @@ fn every_scene_has_a_spot_in_the_stage_room() {
                         Scene::Lounge => posed(Pose::Lounge),
                         Scene::Nap => posed(Pose::Nap(0)),
                         Scene::Sleep => posed(Pose::Sleep(0)),
+                        Scene::Night => visit.osaka.sleeping(),
                         Scene::Homework => posed(Pose::Homework(0)),
                         Scene::Watch => used == Some(Furniture::Tv),
                         // Torn off and taking shape (the whole scene runs
@@ -1697,7 +1699,9 @@ fn her_needs_shape_long_visits() {
     let (mut early, mut late) = (0u64, 0u64);
     let mut choices: Vec<Want> = Vec::new();
     for seed in 0..4u64 {
-        let mut guest = Guest::new(seed);
+        // Her needs alone: her routine would have her afternoon (16:00 to
+        // 18:00, these twenty minutes) slow her sleepiness by design.
+        let mut guest = Guest::new(seed).unfed();
         guest.cue(Scene::Arrive);
         let mut now = 0;
         paint(&mut guest, &real, &view, now);
@@ -1949,7 +1953,11 @@ fn a_home_full_of_vignettes_stays_cheap() {
     for seed in [0u64, 2, 3] {
         let mut encoded = [0; 2];
         for sure in [false, true] {
-            let (mut guest, real, view) = furnished_home_with(seed, &[Furniture::Fridge]);
+            // The cost of her vignettes alone, unfed from the start: in
+            // her afternoon (these twenty minutes) her routine boosts the
+            // snack and the sofa over the homework the chopsticks wrap.
+            let (mut guest, real, view) =
+                furnished_home_in(Guest::new(seed).unfed(), &[Furniture::Fridge]);
             let State::Visiting(visit) = &mut guest.state else {
                 panic!("visiting");
             };
@@ -2002,8 +2010,13 @@ fn furnished_home(seed: u64) -> (Guest, Buffer, IdleView) {
 
 /// [`furnished_home`], with `more` given too.
 fn furnished_home_with(seed: u64, more: &[Furniture]) -> (Guest, Buffer, IdleView) {
+    furnished_home_in(Guest::new(seed), more)
+}
+
+/// [`furnished_home_with`], for `guest` as made (unfed, say).
+fn furnished_home_in(mut guest: Guest, more: &[Furniture]) -> (Guest, Buffer, IdleView) {
     let (real, view) = home_screen();
-    let mut guest = Guest::new(seed);
+    let seed = guest.ledger.master_seed;
     guest.set_picker(kitty());
     guest.cue(Scene::Arrive);
     paint(&mut guest, &real, &view, 0);
@@ -2613,13 +2626,13 @@ fn date(y: i32, m: u32, d: u32) -> Option<chrono::NaiveDate> {
     chrono::NaiveDate::from_ymd_opt(y, m, d)
 }
 
-/// Unfed (the default, and production's until step 4), the routine
-/// reaches nothing of hers, whatever the date: `day` is `None` for the
-/// guest and for every decision of a visit. Fed, every decision carries
-/// the routine at its own moment, and the explain line shows it.
+/// Unfed (the tests' [`Guest::unfed`]), the routine reaches nothing of
+/// hers, whatever the date: `day` is `None` for the guest and for every
+/// decision of a visit. Fed (the default), every decision carries the
+/// routine at its own moment, and the explain line shows it.
 #[test]
 fn the_routine_reaches_her_only_when_fed() {
-    let mut guest = met(5);
+    let mut guest = met(5).unfed();
     guest.set_date(date(2026, 7, 25));
     let mut now = 0;
     guest.advance(now);
@@ -3043,6 +3056,697 @@ fn her_routine_cuts_in_at_bedtime_and_never_spins() {
         };
         assert_eq!(visit.osaka.cut_at(), fed.then_some(school), "fed: {fed}");
     }
+}
+
+// ---- Her night ----
+
+/// `h:m` of Monday, game day 0: a school night (bed at 22:30, up at 07:00
+/// on Tuesday).
+fn mon(h: u16, m: u16) -> routine::GameTime {
+    routine::GameTime { day: 0, h, m }
+}
+
+/// `h:m` of Tuesday, game day 1: a school day.
+fn tue(h: u16, m: u16) -> routine::GameTime {
+    routine::GameTime { day: 1, h, m }
+}
+
+/// A home she has visited once, her clock at `at`, `pieces` placed in it
+/// (each on its nook's floor, `x` of the way along in thousandths), on a
+/// mid-June school day with nothing on the calendar: she's absent, and
+/// arrives as soon as the idle gate opens.
+fn home_at(
+    seed: u64,
+    at: routine::GameTime,
+    pieces: &[(Furniture, Nook, u16)],
+    graphics: bool,
+) -> Guest {
+    let mut ledger = Ledger::new_at(seed, at);
+    for &(item, nook, x) in pieces {
+        assert!(
+            ledger
+                .home
+                .add(room::Prop::new(item, nook, x, sprite::Facing::Right)),
+            "{item:?}"
+        );
+    }
+    let mut guest = Guest::restore(ledger);
+    guest.set_date(date(2026, 6, 17));
+    if graphics {
+        guest.set_picker(kitty());
+    }
+    guest
+}
+
+/// One step as the shell takes it from `now`: a tick, and a paint if it
+/// says the screen could change (or `always`).
+fn shell_step(guest: &mut Guest, real: &Buffer, view: &IdleView, now: &mut u64, always: bool) {
+    *now += guest
+        .next_tick(*now)
+        .map_or(1000, |d| d.as_millis() as u64)
+        .clamp(1, 1000);
+    if guest.advance(*now) || always {
+        paint(guest, real, view, *now);
+    }
+}
+
+/// From `from`, until she's visiting (the gate opens after the idle
+/// delay): when she arrived.
+fn until_visiting(guest: &mut Guest, real: &Buffer, view: &IdleView, from: u64) -> u64 {
+    let mut now = from;
+    paint(guest, real, view, now);
+    while !matches!(guest.state, State::Visiting(_)) {
+        assert!(now < from + 60_000, "she never came");
+        shell_step(guest, real, view, &mut now, true);
+    }
+    now
+}
+
+/// The monotonic millis her clock reads `at` (as read at `now`).
+fn real_of(guest: &Guest, now: u64, at: routine::GameTime) -> u64 {
+    guest
+        .game_clock(now)
+        .expect("met")
+        .when(at.minutes() * 60_000)
+}
+
+/// Whether she's asleep for the night.
+fn asleep(guest: &Guest) -> bool {
+    matches!(&guest.state, State::Visiting(visit) if visit.osaka.sleeping())
+}
+
+/// Her night's sleep, on each surface she spends it on (her bed; her
+/// sofa, with no bed; a bed she makes of text, with neither; the floor,
+/// with nothing to make one of): to bed at her first decision after
+/// bedtime (not before), there soon after, posed as the surface has her
+/// with the lamp going off as she settles, and one act until her wake
+/// time (Tuesday 07:00, 85 real minutes on); then up beside it, a
+/// stretch and good morning in the new day's mood. In both drawing
+/// modes.
+#[test]
+fn her_night_on_each_surface_is_one_act_until_she_wakes() {
+    use super::script::{ScriptId, Surface};
+    use super::sprite::Pose;
+    let homely = home_screen();
+    let mut ui = stage_ui();
+    let wordy = real_frame(&mut ui, 100, 30);
+    for graphics in [false, true] {
+        for (surface, made, pieces, (real, view)) in [
+            (
+                Surface::Bed,
+                false,
+                vec![
+                    (Furniture::Bed, Nook::Playlist, 500),
+                    (Furniture::Sofa, Nook::Users, 300),
+                ],
+                &homely,
+            ),
+            (
+                Surface::Sofa,
+                false,
+                vec![(Furniture::Sofa, Nook::Users, 300)],
+                &homely,
+            ),
+            (Surface::Bed, true, vec![], &wordy),
+            (Surface::Floor, false, vec![], &homely),
+        ] {
+            let at = format!("{surface:?} made={made} graphics={graphics}");
+            let mut guest = home_at(3, mon(22, 20), &pieces, graphics);
+            let mut now = until_visiting(&mut guest, real, view, 0);
+            let bedtime = real_of(&guest, now, mon(22, 30));
+            while !asleep(&guest) {
+                assert!(now < bedtime + 120_000, "{at}: not in bed by {now}");
+                shell_step(&mut guest, real, view, &mut now, false);
+            }
+            let osaka = &visit_of(&guest).osaka;
+            let first = osaka
+                .decisions
+                .iter()
+                .find(|d| d.day.is_some_and(|day| day.slot == routine::Slot::Asleep))
+                .expect("decided at night");
+            assert!(first.method.starts_with("routine/bed"), "{at}: {first}");
+            assert!(
+                osaka
+                    .decisions
+                    .iter()
+                    .filter(|d| d.at < bedtime)
+                    .all(|d| !d.method.starts_with("routine/")),
+                "{at}: to bed early"
+            );
+            let (since, play) = osaka.plays_since().expect("playing");
+            assert!(since >= bedtime, "{at}");
+            assert_eq!(play.own, ScriptId::Night, "{at}");
+            assert_eq!(play.branch, surface.branch(false), "{at}");
+            let (pose, ..) = osaka.appearance(now);
+            let posed = match surface {
+                Surface::Bed => matches!(pose, Pose::Sleep(_)),
+                Surface::Sofa => matches!(pose, Pose::Nap(_)),
+                Surface::Floor => matches!(pose, Pose::LieBack(_)),
+            };
+            assert!(posed, "{at}: {pose:?}");
+            let on = osaka.seat();
+            assert_eq!(
+                on.map(|seat| seat.makeshift()),
+                (surface != Surface::Floor).then_some(made),
+                "{at}"
+            );
+            assert_eq!(
+                on.map(|seat| seat.item),
+                match surface {
+                    Surface::Bed => Some(Furniture::Bed),
+                    Surface::Sofa => Some(Furniture::Sofa),
+                    Surface::Floor => None,
+                },
+                "{at}"
+            );
+            // One act until her wake time, the lamp off once she's settled.
+            let wake = real_of(&guest, now, tue(7, 0));
+            let mut woke = None;
+            while woke.is_none() {
+                assert!(now < wake + 5_000, "{at}: still asleep at {now}");
+                shell_step(&mut guest, real, view, &mut now, false);
+                let osaka = &visit_of(&guest).osaka;
+                if osaka.sleeping() {
+                    assert_eq!(osaka.plays_since().map(|(t, _)| t), Some(since), "{at}");
+                    if now > since + script::LAMP_ON_MS {
+                        assert_eq!(osaka.prop(now), Some(script::Prop::LampOff), "{at}");
+                    }
+                } else {
+                    woke = Some(now);
+                }
+            }
+            let woke = woke.unwrap_or_default();
+            assert!(
+                woke >= wake && woke < wake + 1_000,
+                "{at}: woke at {woke}, not {wake}"
+            );
+            // Up: a stretch, good morning in her new day's mood, the lamp on.
+            let osaka = &visit_of(&guest).osaka;
+            let (pose, _, said) = osaka.appearance(woke);
+            assert_eq!(pose, Pose::Stretch, "{at}");
+            let mood = brain::Mood::of(brain::day_seed(3, 1));
+            assert_eq!(osaka.mood(), mood, "{at}");
+            assert_eq!(said, Some(osaka::Bubble::Say(mood.wake_line())), "{at}");
+            assert_eq!(osaka.prop(woke), None, "{at}");
+            assert_eq!(
+                guest.day(woke).map(|day| day.slot),
+                Some(routine::Slot::Morning),
+                "{at}"
+            );
+            // Beside her bed or sofa, not in it.
+            if let Some(seat) = on {
+                assert_ne!(osaka.x, seat.x, "{at}: still in it");
+            }
+            paint(&mut guest, real, view, woke);
+        }
+    }
+}
+
+/// Awake at 02:00 is out of her reach, however lively the chat: a line
+/// every ten seconds from 22:00 on, and her first decision after bedtime
+/// still takes her to bed, where she's asleep by soon after; there she
+/// only stirs at each line (a murmur, blinking, turned over, in the same
+/// act), right through to 02:00. In both drawing modes.
+#[test]
+fn a_lively_chat_never_keeps_her_up() {
+    use super::sprite::Pose;
+    let (real, view) = home_screen();
+    for graphics in [false, true] {
+        let mut guest = home_at(
+            4,
+            mon(22, 0),
+            &[(Furniture::Bed, Nook::Playlist, 500)],
+            graphics,
+        );
+        let mut mark = ChatMark::default();
+        let mut now = until_visiting(&mut guest, &real, &view, 0);
+        let (bedtime, two) = (
+            real_of(&guest, now, mon(22, 30)),
+            real_of(&guest, now, tue(2, 0)),
+        );
+        let mut next_line = now;
+        let mut slept_since = None;
+        let mut stirs = 0;
+        while now < two {
+            let chat = now >= next_line;
+            if chat {
+                mark.synced += 1;
+                next_line = now + 10_000;
+            }
+            let view = IdleView {
+                chat_mark: mark,
+                ..view.clone()
+            };
+            now += guest
+                .next_tick(now)
+                .map_or(1000, |d| d.as_millis() as u64)
+                .clamp(1, 1000)
+                .min(next_line.saturating_sub(now).max(1));
+            let changed = guest.advance(now);
+            // Painted on each line, or (before she's down) on any change.
+            if chat || changed && slept_since.is_none() {
+                paint(&mut guest, &real, &view, now);
+            }
+            let osaka = &visit_of(&guest).osaka;
+            match slept_since {
+                None if osaka.sleeping() => {
+                    assert!(now >= bedtime, "graphics={graphics}: to bed early");
+                    assert!(
+                        now < bedtime + 90_000,
+                        "graphics={graphics}: in bed at {now}"
+                    );
+                    slept_since = osaka.plays_since().map(|(t, _)| t);
+                }
+                None => {}
+                Some(since) => {
+                    assert!(osaka.sleeping(), "graphics={graphics}: awake at {now}");
+                    assert_eq!(osaka.plays_since().map(|(t, _)| t), Some(since));
+                    if chat {
+                        let (pose, face, said) = osaka.appearance(now);
+                        assert_eq!(pose, Pose::Sleep(1), "graphics={graphics}: turned");
+                        assert_eq!(face, sprite::Face::Blink);
+                        assert_eq!(said, Some(osaka::Bubble::Say(osaka::MM)));
+                        stirs += 1;
+                    }
+                }
+            }
+        }
+        assert!(slept_since.is_some(), "graphics={graphics}: never in bed");
+        assert!(stirs > 100, "graphics={graphics}: {stirs} stirs");
+        let osaka = &visit_of(&guest).osaka;
+        let first = osaka
+            .decisions
+            .iter()
+            .find(|d| d.at >= bedtime)
+            .expect("decided after bedtime");
+        assert_eq!(
+            first.day.map(|day| day.slot),
+            Some(routine::Slot::Asleep),
+            "graphics={graphics}: {first}"
+        );
+        assert!(
+            first.method.starts_with("routine/bed"),
+            "graphics={graphics}: her first decision after bedtime: {first}"
+        );
+        let decided = osaka.decisions.iter().filter(|d| d.at >= bedtime).count();
+        assert!(
+            decided < 30,
+            "graphics={graphics}: {decided} decisions after bedtime"
+        );
+    }
+}
+
+/// Tucked in (A4): a visit beginning at night has her in her bed from its
+/// first frame (else her sofa), asleep for the night, the lamp already
+/// off; a chat line only stirs her. With neither, she arrives as ever and
+/// her routine sends her to bed at her first decision. In both drawing
+/// modes.
+#[test]
+fn a_visit_at_night_begins_tucked_in() {
+    use super::script::{Prop, ScriptId, Surface};
+    let (real, view) = home_screen();
+    for graphics in [false, true] {
+        for (pieces, surface) in [
+            (
+                vec![
+                    (Furniture::Bed, Nook::Playlist, 500),
+                    (Furniture::Sofa, Nook::Users, 300),
+                ],
+                Some(Surface::Bed),
+            ),
+            (
+                vec![(Furniture::Sofa, Nook::Users, 300)],
+                Some(Surface::Sofa),
+            ),
+            (vec![], None),
+        ] {
+            let at = format!("{surface:?} graphics={graphics}");
+            let mut guest = home_at(5, mon(23, 0), &pieces, graphics);
+            let arrived = until_visiting(&mut guest, &real, &view, 0);
+            let osaka = &visit_of(&guest).osaka;
+            match surface {
+                Some(surface) => {
+                    assert!(osaka.sleeping(), "{at}: tucked in");
+                    let (since, play) = osaka.plays_since().unwrap();
+                    assert_eq!(since, arrived, "{at}");
+                    assert_eq!(play.own, ScriptId::Night, "{at}");
+                    assert_eq!(
+                        play.branch,
+                        surface.branch(true),
+                        "{at}: the lamp off at once"
+                    );
+                    assert_eq!(osaka.prop(arrived), Some(Prop::LampOff), "{at}");
+                    assert_eq!(
+                        osaka.appearance(arrived).2,
+                        Some(osaka::Bubble::Zzz),
+                        "{at}: no hello"
+                    );
+                    let wake = real_of(&guest, arrived, tue(7, 0));
+                    assert_eq!(
+                        osaka.use_span().map(|(_, _, until)| until),
+                        Some(wake),
+                        "{at}"
+                    );
+                    // A chat line: a stir, no more.
+                    let mut now = arrived;
+                    let mark = ChatMark {
+                        synced: 1,
+                        ..ChatMark::default()
+                    };
+                    let chatty = IdleView {
+                        chat_mark: mark,
+                        ..view.clone()
+                    };
+                    for _ in 0..5 {
+                        shell_step(&mut guest, &real, &chatty, &mut now, true);
+                    }
+                    let osaka = &visit_of(&guest).osaka;
+                    assert!(osaka.sleeping(), "{at}");
+                    assert_eq!(osaka.plays_since().map(|(t, _)| t), Some(since), "{at}");
+                    assert!(osaka.decisions.is_empty(), "{at}: {:?}", osaka.decisions);
+                    assert!(osaka.said_lines().is_empty() && !osaka.looking(), "{at}");
+                    assert!(!osaka.greeted(), "{at}: hello waits for the morning");
+                    // Her hello is good morning, as she wakes (her bed's
+                    // case, the night through).
+                    if surface == Surface::Bed {
+                        while asleep(&guest) {
+                            assert!(now < wake + 5_000, "{at}: still asleep");
+                            shell_step(&mut guest, &real, &view, &mut now, false);
+                        }
+                        let osaka = &visit_of(&guest).osaka;
+                        let mood = brain::Mood::of(brain::day_seed(5, 1));
+                        assert_eq!(osaka.mood(), mood, "{at}");
+                        assert_eq!(
+                            osaka.appearance(now).2,
+                            Some(osaka::Bubble::Say(mood.wake_line())),
+                            "{at}"
+                        );
+                        assert!(osaka.greeted(), "{at}");
+                        // And no hello after it.
+                        let woke = now;
+                        while now < woke + 30_000 {
+                            shell_step(&mut guest, &real, &view, &mut now, true);
+                            let said = visit_of(&guest).osaka.appearance(now).2;
+                            assert_ne!(
+                                said,
+                                Some(osaka::Bubble::Say(mood.greeting())),
+                                "{at}: hello at {now}"
+                            );
+                        }
+                    }
+                }
+                None => {
+                    assert!(!osaka.sleeping(), "{at}: not tucked in");
+                    assert!(osaka.decisions.is_empty(), "{at}: {:?}", osaka.decisions);
+                    let mut now = arrived;
+                    while !asleep(&guest) {
+                        assert!(now < arrived + 60_000, "{at}: never to bed");
+                        shell_step(&mut guest, &real, &view, &mut now, false);
+                    }
+                    let osaka = &visit_of(&guest).osaka;
+                    assert!(
+                        osaka
+                            .decisions
+                            .iter()
+                            .all(|d| d.method.starts_with("routine/bed")),
+                        "{at}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Come on an errand at night (to poke the accordion), a visit isn't
+/// tucked in: the errand is what she came for. Come for nothing in
+/// particular, the same visit is.
+#[test]
+fn an_errand_at_night_is_never_tucked_in() {
+    let (real, view) = home_screen();
+    for errand in [false, true] {
+        let mut guest = home_at(
+            5,
+            mon(23, 0),
+            &[(Furniture::Bed, Nook::Playlist, 500)],
+            false,
+        );
+        let terrain = Terrain::read(&real, &view.protected, false);
+        let floor = terrain.platforms.first().cloned().expect("a floor");
+        let (x, y) = ((floor.x0 + floor.x1) / 2, floor.y);
+        let mut rng = Rng(1);
+        let mut osaka = Osaka::standing_at(x, y, 0, &mut rng);
+        if errand {
+            osaka.errand((x, y), &terrain, 0);
+        }
+        assert_eq!(
+            guest.day(0).map(|day| day.slot),
+            Some(routine::Slot::Asleep)
+        );
+        guest.begin_visit(osaka, terrain, (100, 30), 0);
+        let State::Visiting(visit) = &guest.state else {
+            panic!("visiting");
+        };
+        assert_eq!(visit.tuck, !errand, "errand={errand}");
+    }
+}
+
+/// The stage at night: cued to arrive, she comes tucked in if her bed
+/// or sofa is shown (else she arrives, and her routine sends her to
+/// bed); cued to a scene, she plays it (her routine takes her to bed
+/// after).
+#[test]
+fn a_stage_cue_at_night_tucks_her_in_only_to_arrive() {
+    let (real, view) = home_screen();
+    for graphics in [false, true] {
+        for (pieces, scene, tucked) in [
+            (
+                vec![(Furniture::Bed, Nook::Playlist, 500)],
+                Scene::Arrive,
+                true,
+            ),
+            (
+                vec![(Furniture::Sofa, Nook::Users, 300)],
+                Scene::Arrive,
+                true,
+            ),
+            (vec![], Scene::Arrive, false),
+            (
+                vec![(Furniture::Bed, Nook::Playlist, 500)],
+                Scene::Jacks,
+                false,
+            ),
+        ] {
+            let at = format!("{scene:?} {pieces:?} graphics={graphics}");
+            let mut guest = home_at(8, mon(23, 0), &pieces, graphics);
+            guest.advance(0);
+            guest.cue(scene);
+            paint(&mut guest, &real, &view, 0);
+            assert_eq!(asleep(&guest), tucked, "{at}");
+            if scene == Scene::Jacks {
+                let mut now = 0;
+                for _ in 0..3 {
+                    shell_step(&mut guest, &real, &view, &mut now, true);
+                }
+                let (pose, ..) = visit_of(&guest).osaka.appearance(now);
+                assert!(matches!(pose, sprite::Pose::Jack(_)), "{at}: {pose:?}");
+            }
+        }
+    }
+}
+
+/// The lamp goes off for the night as she settles in, and stays off
+/// whatever gets her up in the night (here the stage putting her
+/// elsewhere: back to bed in the dark), until she wakes.
+#[test]
+fn the_lamp_stays_off_until_she_wakes() {
+    let (real, view) = home_screen();
+    let mut guest = home_at(
+        6,
+        tue(6, 30),
+        &[(Furniture::Bed, Nook::Playlist, 500)],
+        false,
+    );
+    let mut now = until_visiting(&mut guest, &real, &view, 0);
+    assert!(asleep(&guest));
+    let State::Visiting(visit) = &mut guest.state else {
+        panic!("visiting");
+    };
+    let (x, y) = (visit.osaka.x, visit.osaka.y);
+    visit.osaka.place(x + 30, y, now);
+    assert!(!visit.osaka.sleeping());
+    assert!(visit.osaka.dark(now), "up, in the dark");
+    assert_eq!(visit.osaka.prop(now), None, "her act shows nothing");
+    while !asleep(&guest) {
+        assert!(visit_of(&guest).osaka.dark(now), "at {now}");
+        assert!(now < 60_000 + 30_000, "never back to bed");
+        shell_step(&mut guest, &real, &view, &mut now, true);
+    }
+    let wake = real_of(&guest, now, tue(7, 0));
+    // Back in bed (settling in the dark: her act's lamp key a moment on
+    // shows nothing over the dark).
+    while asleep(&guest) {
+        assert!(visit_of(&guest).osaka.dark(now), "at {now}");
+        shell_step(&mut guest, &real, &view, &mut now, false);
+    }
+    assert!(now >= wake);
+    let osaka = &visit_of(&guest).osaka;
+    assert!(!osaka.dark(now), "on again as she wakes");
+    assert_eq!(osaka.prop(now), None);
+}
+
+/// Her needs after the night (A11), a whole one from her evening by her
+/// routine's bed reflex: as she wakes they're the morning's, exactly,
+/// with nothing of the night kept to count again; and at her first
+/// decision after, none is anywhere near saturated (a night at a quarter
+/// of the pace would have the quick ones at 1). Her line budget, spent
+/// in the evening, is the new day's, afresh.
+#[test]
+fn she_wakes_with_the_mornings_needs() {
+    use super::brain::{Need, Needs};
+    let (real, view) = home_screen();
+    let mut guest = home_at(
+        7,
+        mon(22, 20),
+        &[(Furniture::Bed, Nook::Playlist, 500)],
+        false,
+    );
+    let mut now = until_visiting(&mut guest, &real, &view, 0);
+    assert!(!asleep(&guest));
+    let State::Visiting(visit) = &mut guest.state else {
+        panic!("visiting");
+    };
+    visit.osaka.note_beat(now);
+    let bedtime = real_of(&guest, now, mon(22, 30));
+    while !asleep(&guest) {
+        assert!(now < bedtime + 120_000, "not in bed by {now}");
+        shell_step(&mut guest, &real, &view, &mut now, false);
+    }
+    assert!(now >= bedtime);
+    let spent = visit_of(&guest).osaka.line_budget();
+    assert!(spent.is_some_and(|(d, n)| d == 0 && n > 0), "{spent:?}");
+    let wake = real_of(&guest, now, tue(7, 0));
+    while asleep(&guest) {
+        assert!(now < wake + 5_000, "still asleep at {now}");
+        shell_step(&mut guest, &real, &view, &mut now, false);
+    }
+    let osaka = &visit_of(&guest).osaka;
+    let morning = Needs::arriving_in(routine::Slot::Morning);
+    assert_eq!(*osaka.needs(), morning, "as she wakes");
+    assert_eq!(osaka.slept_ms(), 0, "the night is behind her");
+    assert_eq!(osaka.line_budget(), Some((1, 0)), "a new day's budget");
+    let decided = osaka.decisions.len();
+    while visit_of(&guest).osaka.decisions.len() == decided {
+        shell_step(&mut guest, &real, &view, &mut now, true);
+    }
+    let needs = *visit_of(&guest).osaka.needs();
+    for need in Need::ALL {
+        let bound = morning.get(need) + 0.25;
+        assert!(
+            needs.get(need) <= bound.min(0.95),
+            "{need:?}: {} after the night",
+            needs.get(need)
+        );
+    }
+}
+
+/// The day is the unit (round-1b): a second visit the same game day
+/// comes in that day's mood and says its hello; her mood changes with
+/// the game day (as a visit begins on a new one, and as she wakes into
+/// one), never within one; her line budget is the day's. Unfed, each
+/// visit's own, as ever.
+#[test]
+fn her_mood_is_the_game_days() {
+    let (real, view) = home_screen();
+    let mood_of = |guest: &Guest| visit_of(guest).osaka.mood();
+    let (mut changed, mut hellos) = (0, 0);
+    for seed in 0..16u64 {
+        // Two visits on Monday evening: one mood, one hello.
+        let mut guest = home_at(seed, mon(18, 0), &[], false);
+        let mut now = until_visiting(&mut guest, &real, &view, 0);
+        let first = mood_of(&guest);
+        assert_eq!(
+            first,
+            brain::Mood::of(brain::day_seed(seed, 0)),
+            "seed {seed}"
+        );
+        let later = now + 60_000;
+        while now < later {
+            shell_step(&mut guest, &real, &view, &mut now, true);
+        }
+        // A beat line said: the day's budget has something in it.
+        let State::Visiting(visit) = &mut guest.state else {
+            panic!("visiting");
+        };
+        visit.osaka.note_beat(now);
+        // (Kept by the guest as she next steps, as one she said would be.)
+        shell_step(&mut guest, &real, &view, &mut now, true);
+        let spent = visit_of(&guest).osaka.line_budget();
+        assert!(
+            spent.is_some_and(|(day, n)| day == 0 && n > 0),
+            "seed {seed}: {spent:?}"
+        );
+        guest.activity(now);
+        while guest.present() {
+            assert!(now < later + 60_000, "seed {seed}: never gone");
+            shell_step(&mut guest, &real, &view, &mut now, true);
+        }
+        // What she said that day up to leaving (the one noted, at least)
+        // is the budget the next visit that day starts from.
+        let today = guest.lines_today;
+        assert!(
+            today
+                .zip(spent)
+                .is_some_and(|((d, n), (_, m))| d == 0 && n >= m),
+            "seed {seed}: {today:?} {spent:?}"
+        );
+        let mut now = until_visiting(&mut guest, &real, &view, now);
+        assert_eq!(guest.ledger.visits, 3);
+        assert_eq!(mood_of(&guest), first, "seed {seed}: the same day's mood");
+        assert_eq!(
+            visit_of(&guest).osaka.line_budget(),
+            today,
+            "seed {seed}: the day's budget"
+        );
+        // Her hello is the day's (or, dropping in, "I'm OK", which does
+        // as well).
+        let came = now;
+        while !visit_of(&guest).osaka.greeted() {
+            assert!(now < came + 120_000, "seed {seed}: no hello");
+            shell_step(&mut guest, &real, &view, &mut now, true);
+        }
+        let said = visit_of(&guest).osaka.appearance(now).2;
+        if said != Some(osaka::Bubble::Say(osaka::OK)) {
+            assert_eq!(
+                said,
+                Some(osaka::Bubble::Say(first.greeting())),
+                "seed {seed}"
+            );
+            hellos += 1;
+        }
+        // A visit on Tuesday: Tuesday's mood.
+        let mut tuesday = home_at(seed, tue(18, 0), &[], false);
+        until_visiting(&mut tuesday, &real, &view, 0);
+        let next = mood_of(&tuesday);
+        assert_eq!(
+            next,
+            brain::Mood::of(brain::day_seed(seed, 1)),
+            "seed {seed}"
+        );
+        changed += usize::from(next != first);
+        // Unfed: the visit's own.
+        let mut unfed = home_at(seed, mon(18, 0), &[], false).unfed();
+        until_visiting(&mut unfed, &real, &view, 0);
+        assert_eq!(
+            mood_of(&unfed),
+            brain::Mood::of(unfed.ledger.visit_seed(1)),
+            "seed {seed}"
+        );
+    }
+    assert!(
+        changed > 4,
+        "her mood changed with the day {changed} times in 16"
+    );
+    assert!(hellos > 4, "the day's hello {hellos} times in 16");
 }
 
 // ---- Deliveries and the shopping channel ----
@@ -3857,14 +4561,21 @@ fn watch_scene_in(
 /// The state `item` is in right now, as drawn.
 fn state_of(visit: &Visit, item: Furniture, cat: bool, now: u64) -> Option<art::PieceState> {
     let piece = visit.shown.iter().find(|s| s.item == item)?;
-    Some(piece_state(piece, visit.osaka.prop(now), cat))
+    Some(piece_state(
+        piece,
+        visit.osaka.prop(now),
+        visit.osaka.dark(now),
+        cat,
+    ))
 }
 
 /// What each piece shows for each thing her script can show on her
-/// furniture, cat home or not: the lamp off, the fridge open and the cat
-/// biting each only on their own piece, the cat biting only when he's
-/// home, and in his bed when nothing's going on; everything else plain
-/// (what's on TV is drawn on its screen, not as a state).
+/// furniture, cat home or not, her lamp dark for the night or not: the
+/// lamp off, the fridge open and the cat biting each only on their own
+/// piece, the cat biting only when he's home, and in his bed when
+/// nothing's going on; the lamp off in the dark whatever her script
+/// shows, and the dark nothing else's; everything else plain (what's on
+/// TV is drawn on its screen, not as a state).
 #[test]
 fn every_piece_shows_what_her_script_shows_on_it() {
     use art::{Channel, PieceState};
@@ -3889,18 +4600,21 @@ fn every_piece_shows_what_her_script_shows_on_it() {
         };
         for prop in props {
             for cat in [false, true] {
-                let want = match (item, prop) {
-                    (Furniture::Lamp, Some(Prop::LampOff)) => PieceState::LampOff,
-                    (Furniture::Fridge, Some(Prop::FridgeOpen)) => PieceState::FridgeOpen,
-                    (Furniture::CatBed, Some(Prop::CatBiting)) if cat => PieceState::CatBiting,
-                    (Furniture::CatBed, _) if cat => PieceState::Cat,
-                    _ => PieceState::Plain,
-                };
-                assert_eq!(
-                    piece_state(&piece, prop, cat),
-                    want,
-                    "{item:?} {prop:?} cat {cat}"
-                );
+                for dark in [false, true] {
+                    let want = match (item, prop) {
+                        (Furniture::Lamp, _) if dark => PieceState::LampOff,
+                        (Furniture::Lamp, Some(Prop::LampOff)) => PieceState::LampOff,
+                        (Furniture::Fridge, Some(Prop::FridgeOpen)) => PieceState::FridgeOpen,
+                        (Furniture::CatBed, Some(Prop::CatBiting)) if cat => PieceState::CatBiting,
+                        (Furniture::CatBed, _) if cat => PieceState::Cat,
+                        _ => PieceState::Plain,
+                    };
+                    assert_eq!(
+                        piece_state(&piece, prop, dark, cat),
+                        want,
+                        "{item:?} {prop:?} cat {cat} dark {dark}"
+                    );
+                }
             }
         }
     }

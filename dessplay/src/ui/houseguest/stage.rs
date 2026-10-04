@@ -70,6 +70,9 @@ pub enum Scene {
     Nap,
     /// Sleep in her bed.
     Sleep,
+    /// Her night's sleep in her bed: until her wake time if it's bedtime,
+    /// else as long as a day's sleep (chat only stirs her).
+    Night,
     /// Homework at her desk.
     Homework,
     /// Watch her TV.
@@ -105,7 +108,7 @@ pub enum Scene {
 
 impl Scene {
     /// Every scene, in menu order.
-    pub const ALL: [Scene; 37] = [
+    pub const ALL: [Scene; 38] = [
         Self::Arrive,
         Self::Pull,
         Self::Swap,
@@ -128,6 +131,7 @@ impl Scene {
         Self::Lounge,
         Self::Nap,
         Self::Sleep,
+        Self::Night,
         Self::Homework,
         Self::Watch,
         Self::Parcel,
@@ -170,6 +174,7 @@ impl Scene {
             Self::Lounge => "sit on the sofa",
             Self::Nap => "nap on the sofa",
             Self::Sleep => "sleep in bed",
+            Self::Night => "a night's sleep",
             Self::Homework => "homework",
             Self::Watch => "watch TV",
             Self::Parcel => "a parcel",
@@ -193,7 +198,7 @@ impl Scene {
         Some(match self {
             Self::Lounge => Use::Lounge,
             Self::Nap => Use::Nap,
-            Self::Sleep => Use::Sleep,
+            Self::Sleep | Self::Night => Use::Sleep,
             Self::Homework | Self::ChopsticksClean | Self::ChopsticksBad => Use::Homework,
             Self::Watch | Self::Shopping | Self::Surf => Use::Watch,
             Self::Parcel => Use::Unpack,
@@ -206,7 +211,8 @@ impl Scene {
 
     /// What it has her play, forced rather than rolled: each script
     /// that shares its piece with another (a plain watch, surfing, the
-    /// shopping channel: cued to one, she plays none of the others), a
+    /// shopping channel; a day's sleep, her night's: cued to one, she
+    /// plays none of the others), a
     /// riddle (musing, she might not tell one), and each splice (the
     /// chopsticks on the branch named). Wildcard-free, so a new scene
     /// says.
@@ -219,6 +225,9 @@ impl Scene {
             Self::Shopping => Some(Cue::Script(ScriptId::Shopping)),
             Self::Surf => Some(Cue::Script(ScriptId::Surf)),
             Self::Riddle => Some(Cue::Script(ScriptId::Riddle)),
+            // A day's sleep and her night's both play on her bed.
+            Self::Sleep => Some(Cue::Script(ScriptId::Sleep)),
+            Self::Night => Some(Cue::Script(ScriptId::Night)),
             Self::Arrive
             | Self::Pull
             | Self::Swap
@@ -239,7 +248,6 @@ impl Scene {
             | Self::Muse
             | Self::Lounge
             | Self::Nap
-            | Self::Sleep
             | Self::Homework
             | Self::Parcel
             | Self::Work

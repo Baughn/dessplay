@@ -221,6 +221,7 @@ fn named(play: Play, lamp: bool) -> Vec<(bool, String)> {
         ScriptId::Shopping => Some("shopping".to_owned()),
         ScriptId::Surf => Some("surf".to_owned()),
         ScriptId::Riddle => Some("riddle".to_owned()),
+        ScriptId::Night => Some("night".to_owned()),
         ScriptId::Sleep if play.branch == 0 && lamp => Some("bedtime".to_owned()),
         ScriptId::Sleep
         | ScriptId::Lounge
@@ -273,7 +274,9 @@ fn arrive_drawn(
     mood: Option<Mood>,
     draw: impl FnOnce(&mut Guest),
 ) -> Guest {
-    let mut guest = Guest::new(seed);
+    // Unfed: the censuses measure her by the hour of the visit, not of
+    // her day (5a's tables; a census of her day starts her at a time).
+    let mut guest = Guest::new(seed).unfed();
     draw(&mut guest);
     guest.cue(Scene::Arrive);
     paint(&mut guest, &room.real, &room.view, 0);
