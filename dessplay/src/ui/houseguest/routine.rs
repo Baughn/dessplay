@@ -63,13 +63,19 @@ const BOUNDARIES: [u16; 8] = [
 
 /// A real-date window, inclusive at both ends, as (month, day); one whose
 /// end comes before its start runs over the new year.
-type DateWindow = ((u32, u32), (u32, u32));
+pub type DateWindow = ((u32, u32), (u32, u32));
 
 /// School's out (Q4): summer, the year's end, spring.
 const VACATIONS: [DateWindow; 3] = [((7, 20), (8, 31)), ((12, 25), (1, 7)), ((3, 25), (4, 5))];
 
 /// Summer's last week: homework panic.
-const PANIC_WEEK: DateWindow = ((8, 25), (8, 31));
+pub const PANIC_WEEK: DateWindow = ((8, 25), (8, 31));
+
+/// Exam season (D5): homework weighs on her.
+pub const EXAMS: DateWindow = ((1, 20), (3, 10));
+
+/// Hay fever (D5): she sneezes more.
+pub const HAY_FEVER: DateWindow = ((3, 1), (4, 30));
 
 /// What part of her day it is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -106,6 +112,66 @@ impl Slot {
         matches!(self, Slot::Away | Slot::Asleep)
     }
 }
+
+/// A set of slots, written as a const (`SlotSet::of(&[Slot::Evening])`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SlotSet(u8);
+
+impl SlotSet {
+    /// The set of `slots`.
+    pub const fn of(slots: &[Slot]) -> SlotSet {
+        let mut bits = 0;
+        let mut i = 0;
+        while i < slots.len() {
+            bits |= 1 << slots[i] as u8;
+            i += 1;
+        }
+        SlotSet(bits)
+    }
+
+    /// Whether `slot` is in the set.
+    pub fn contains(self, slot: Slot) -> bool {
+        self.0 & (1 << slot as u8) != 0
+    }
+}
+
+/// When in her day something holds (a boost of her mind's, D4 lever 1),
+/// as the routine answers it: the mind asks, the routine reads the
+/// minute.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum When {
+    /// In any of these slots.
+    In(SlotSet),
+    /// The evening before a day off: the evening slot of a day whose
+    /// next isn't a school day (a weekend's or a vacation's, the reading
+    /// evening of D2's table, homework-free).
+    EveningOff,
+    /// From the first game time of day (minutes since midnight) until
+    /// the second, running over midnight when it's earlier: the sky as
+    /// the window shows it (dusk and night: 17:00 until 05:00).
+    Hours(u16, u16),
+}
+
+impl When {
+    /// Whether it holds at `day`.
+    pub fn holds(self, day: &DayTime) -> bool {
+        match self {
+            When::In(slots) => slots.contains(day.slot),
+            When::EveningOff => day.slot == Slot::Evening && !day.night_before_school,
+            When::Hours(from, until) => {
+                if from <= until {
+                    (from..until).contains(&day.minute)
+                } else {
+                    day.minute >= from || day.minute < until
+                }
+            }
+        }
+    }
+}
+
+/// Dusk, the evening and the night (D7's sky phases from 17:00 until
+/// 05:00), as a [`When`].
+pub const DUSK_TO_DAWN: When = When::Hours(hm(17, 0), hm(5, 0));
 
 /// The vacation flag of one game day, read from the real date at that
 /// day's first read and held for the rest of it (A12): a real-09:00
@@ -160,6 +226,9 @@ pub struct Clock {
     /// School is out by the date as it reads now: the provisional flag
     /// of every later day.
     pub ahead: bool,
+    /// The real date as it reads now (`None`: unknown): her seasons
+    /// (exam season, hay fever) read it, the slots never do.
+    pub date: Option<NaiveDate>,
 }
 
 impl Clock {
@@ -171,6 +240,7 @@ impl Clock {
             game,
             latch: Latch::at(held, day, date),
             ahead: date.is_some_and(vacation),
+            date,
         }
     }
 
@@ -386,7 +456,7 @@ pub fn next_cutting(game: u64, vacation: impl Fn(u64) -> bool) -> u64 {
 }
 
 /// Whether `date` falls in `window`.
-fn within(date: NaiveDate, ((m0, d0), (m1, d1)): DateWindow) -> bool {
+pub fn within(date: NaiveDate, ((m0, d0), (m1, d1)): DateWindow) -> bool {
     let md = (date.month(), date.day());
     if (m0, d0) <= (m1, d1) {
         (m0, d0) <= md && md <= (m1, d1)
@@ -783,5 +853,103 @@ mod tests {
         assert_eq!(Latch::at(Some(held), 5, june).eve, None);
         // No calendar: no vacation.
         assert!(!Latch::at(None, 3, None).vacation);
+    }
+
+    /// A set of slots holds exactly its own.
+    #[test]
+    fn a_slot_set_holds_its_slots() {
+        const SET: SlotSet = SlotSet::of(&[Slot::Morning, Slot::Homework]);
+        for slot in Slot::ALL {
+            assert_eq!(
+                SET.contains(slot),
+                matches!(slot, Slot::Morning | Slot::Homework),
+                "{slot:?}"
+            );
+            assert!(!SlotSet::of(&[]).contains(slot));
+            assert!(SlotSet::of(&Slot::ALL).contains(slot));
+        }
+    }
+
+    /// When a boost holds: its slots; the evening before a day off (the
+    /// reading evening, never a school night's, never past bedtime);
+    /// game hours, over midnight too.
+    #[test]
+    fn when_holds_at_its_times() {
+        let flags: [fn(u64) -> bool; 2] = [|_| false, |_| true];
+        for flag in flags {
+            for abs in TAPE.0..TAPE.1 {
+                let (day, minute) = (abs / DAY_MIN, (abs % DAY_MIN) as u16);
+                let now = day_time(at(day, u64::from(minute)), flag(day));
+                let evening = When::In(SlotSet::of(&[Slot::Evening]));
+                assert_eq!(evening.holds(&now), now.slot == Slot::Evening);
+                let off = When::EveningOff.holds(&now);
+                assert_eq!(
+                    off,
+                    now.slot == Slot::Evening && !night_before_school(day, flag(day)),
+                    "{now}"
+                );
+                if off {
+                    assert!((EVENING..BED_OFF).contains(&minute), "{now}");
+                }
+                assert_eq!(
+                    DUSK_TO_DAWN.holds(&now),
+                    !(hm(5, 0)..hm(17, 0)).contains(&minute),
+                    "{now}"
+                );
+                assert_eq!(
+                    When::Hours(hm(9, 0), hm(10, 0)).holds(&now),
+                    (hm(9, 0)..hm(10, 0)).contains(&minute)
+                );
+            }
+        }
+        // A school week's evenings off: Friday's and Saturday's.
+        let off: Vec<Weekday> = (7..14)
+            .filter(|&day| When::EveningOff.holds(&day_time(at(day, 21 * 60), false)))
+            .map(weekday)
+            .collect();
+        assert_eq!(off, [Weekday::Fri, Weekday::Sat]);
+    }
+
+    /// The clock's inverse: the earliest moment it reads a game time or
+    /// later, ahead of the reading or behind it (rounded up, never below
+    /// zero).
+    #[test]
+    fn when_is_the_clocks_inverse() {
+        for (at, game) in [(0, 0), (1_000, 0), (5_000, 7), (100_000, 3_000_001)] {
+            let clock = GameClock { at, game };
+            for target in (0..game + 1_000_000)
+                .step_by(997)
+                .chain([game, game + 6, game + 7])
+            {
+                let t = clock.when(target);
+                assert!(clock.at(t) >= target, "{clock:?} {target}: {t}");
+                // (Earliest above zero: below her start the clock reads 0.)
+                if t > 0 && target > 0 {
+                    assert!(clock.at(t - 1) < target, "{clock:?} {target}: {t}");
+                }
+            }
+        }
+    }
+
+    /// Exam season, hay fever and panic week fall on their dates.
+    #[test]
+    fn the_seasons_fall_on_their_dates() {
+        let days = |window: DateWindow| -> Vec<(u32, u32)> {
+            (0..366)
+                .map(|i| date(2028, 1, 1) + chrono::Duration::days(i))
+                .filter(|&d| within(d, window))
+                .map(|d| (d.month(), d.day()))
+                .collect()
+        };
+        let exams = days(EXAMS);
+        assert_eq!(exams.first(), Some(&(1, 20)));
+        assert_eq!(exams.last(), Some(&(3, 10)));
+        assert_eq!(exams.len(), 12 + 29 + 10);
+        let hay = days(HAY_FEVER);
+        assert_eq!(
+            (hay.first(), hay.last(), hay.len()),
+            (Some(&(3, 1)), Some(&(4, 30)), 61)
+        );
+        assert_eq!(days(PANIC_WEEK).len(), 7);
     }
 }

@@ -462,6 +462,18 @@ impl GameClock {
             i128::from(self.game) + i128::from(CLOCK_SPEED) * (i128::from(t) - i128::from(self.at));
         u64::try_from(game.max(0)).unwrap_or(u64::MAX)
     }
+
+    /// The earliest monotonic millis at which her clock reads `game` or
+    /// later (for a `game` above zero: below her start it reads 0):
+    /// [`GameClock::at`]'s inverse, rounded up (so `at(when(g)) >= g`),
+    /// earlier than `at` for a time already past; never below zero.
+    pub fn when(&self, game: u64) -> u64 {
+        let speed = i128::from(CLOCK_SPEED);
+        let ahead = i128::from(game) - i128::from(self.game);
+        // Ceiling division, for either sign.
+        let real = ahead.div_euclid(speed) + i128::from(ahead.rem_euclid(speed) != 0);
+        u64::try_from((i128::from(self.at) + real).max(0)).unwrap_or(u64::MAX)
+    }
 }
 
 impl Guest {
@@ -892,13 +904,19 @@ impl Guest {
         Some(routine::Clock::read(game, now, self.day_latch, self.date))
     }
 
-    /// The routine at `now`, as the mind sees it (tests): `None` unless
-    /// the clock is fed (and running).
-    #[cfg(test)]
-    pub(crate) fn day(&self, now: u64) -> Option<routine::DayTime> {
+    /// The routine at `now`, as the mind sees it: `None` unless the
+    /// clock is fed (and running).
+    fn fed_day(&self, now: u64) -> Option<routine::DayTime> {
         self.routine_clock(now)
             .filter(|_| self.feed_clock)
             .map(|clock| clock.day(now))
+    }
+
+    /// The routine at `now`, as the mind sees it (tests): see
+    /// [`Guest::fed_day`].
+    #[cfg(test)]
+    pub(crate) fn day(&self, now: u64) -> Option<routine::DayTime> {
+        self.fed_day(now)
     }
 
     /// Her game time and the part of her day it is, for the stage:
@@ -1086,7 +1104,7 @@ impl Guest {
                 self.rng = Rng(self.ledger.visit_seed(self.ledger.visits));
                 if let Some(osaka) = Osaka::arrive(now, &terrain, i32::from(size.0), &mut self.rng)
                 {
-                    self.begin_visit(osaka, terrain, size);
+                    self.begin_visit(osaka, terrain, size, now);
                 }
             }
             if !self.present() {
@@ -1454,7 +1472,7 @@ impl Guest {
     }
 
     /// A new visit, with `osaka` just arrived.
-    fn begin_visit(&mut self, mut osaka: Osaka, terrain: Terrain, size: (u16, u16)) {
+    fn begin_visit(&mut self, mut osaka: Osaka, terrain: Terrain, size: (u16, u16), now: u64) {
         self.ledger.visits += 1;
         self.unsaved = true;
         tracing::info!(visit = self.ledger.visits, "houseguest arrived");
@@ -1462,6 +1480,10 @@ impl Guest {
         osaka.set_mood(brain::Mood::of(
             self.ledger.visit_seed(self.ledger.visits.saturating_sub(1)),
         ));
+        // Her needs, from the time of her day (unfed: as ever).
+        if let Some(day) = self.fed_day(now) {
+            osaka.set_clock(day);
+        }
         self.state = State::Visiting(Box::new(Visit {
             osaka,
             terrain,
@@ -1577,7 +1599,7 @@ impl Guest {
                 self.rng = Rng(self.ledger.visit_seed(self.ledger.visits));
                 let osaka = Osaka::arrive_for_errand(spot, now, &mut self.rng);
                 let size = (buf.area.width, buf.area.height);
-                self.begin_visit(osaka, terrain, size);
+                self.begin_visit(osaka, terrain, size, now);
             }
             State::Leaving(_) => return false,
         }

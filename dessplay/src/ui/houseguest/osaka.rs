@@ -4,7 +4,7 @@
 
 use super::Rng;
 use super::art::DoorFrame;
-use super::brain::{self, Factor, Mood, Need, Needs, Rising, Spot, Want};
+use super::brain::{self, Mood, Need, Needs, Rising, Spot, Want};
 use super::layer::Placed;
 use super::mind::{self, Beat, Bind, Ctx, Heading, Here, Lines, Loss, PoolId, RIDDLES, Whims};
 use super::room::{Furniture, MadeId, PieceRef, Seat, Use};
@@ -565,6 +565,9 @@ enum Cause {
     /// The letters moved before she could swap them
     /// ([`Osaka::refused`]).
     Refused,
+    /// Her routine: it's time for school, or bed ([`Osaka::cut`]). She
+    /// isn't startled; she just decides again.
+    Routine,
 }
 
 /// Why she lets go of where she was heading.
@@ -935,6 +938,20 @@ fn use_duration(what: Use) -> (u64, u64) {
     }
 }
 
+/// Homework at homework time (her routine's slot) lasts this long (ms
+/// range): the evening reads as homework with breaks.
+const HOMEWORK_IN_SLOT_MS: (u64, u64) = (120_000, 240_000);
+
+/// How long she keeps at `what` at her routine's `slot` (ms range;
+/// `None`: no routine reaches her). The same one draw over either range:
+/// a lengthened use draws no more than a usual one.
+fn use_duration_in(what: Use, slot: Option<routine::Slot>) -> (u64, u64) {
+    match (what, slot) {
+        (Use::Homework, Some(routine::Slot::Homework)) => HOMEWORK_IN_SLOT_MS,
+        _ => use_duration(what),
+    }
+}
+
 /// Animation frame period for `what`.
 pub(super) const USE_FRAME_MS: u64 = 1400;
 
@@ -1205,6 +1222,11 @@ pub(super) struct Osaka {
     /// Every choice she made (tests read it).
     #[cfg(test)]
     pub choices: Vec<Want>,
+    /// Every factor her choices weighed a want by (the chat's, her
+    /// day's, the season's; not her inertia), with whether it would have
+    /// taken her into the chat (tests read it).
+    #[cfg(test)]
+    pub factored: Vec<(Want, bool, f64)>,
     /// Every decision she made (tests read it).
     #[cfg(test)]
     pub decisions: Vec<Decision>,
@@ -1217,6 +1239,40 @@ pub(super) struct Osaka {
     /// reach her, and she behaves as before the clock). Every decision
     /// reads it at its own moment ([`Osaka::day`]).
     clock: Option<routine::Clock>,
+    /// When her current act began (monotonic millis): set by
+    /// [`Osaka::set`], the one way an act begins.
+    act_since: u64,
+    /// When her current act began by her clock (game millis since her
+    /// start), read as it began: from the clock then, never mapped back
+    /// through a later reading (a capped step moves every earlier
+    /// moment, see [`Osaka::refresh_cut`]). `None` until a clock has
+    /// reached her during the act (the first one stamps it).
+    act_since_game: Option<u64>,
+    /// The next boundary of her routine that cuts into what she's doing
+    /// (school, bed: [`routine::Slot::cuts`]), in monotonic millis: the
+    /// first after her act began and after the last one handled (see
+    /// [`Osaka::refresh_cut`]). `None` while no routine reaches her.
+    cut_at: Option<u64>,
+    /// That boundary by her clock (game millis), whose handling
+    /// [`Osaka::cut`] records in `cut_past`.
+    cut_game: u64,
+    /// The last cutting boundary handled, by her clock (game millis; 0
+    /// before any): handled, it's never found again, cutting or not,
+    /// however her clock is read afterwards.
+    cut_past: u64,
+    /// How long she has slept the night since her needs last moved on
+    /// (A11): the next [`Needs::pass`] takes it (see
+    /// [`Osaka::credit_done`]).
+    slept_ms: u64,
+    /// Until when her night act has been counted into `slept_ms` (it's
+    /// settled twice as she leaves it, by the decision and by the act
+    /// that follows: once is counted).
+    slept_to: u64,
+    /// Her act counts as her night's sleep (a test's, until step 4).
+    // TODO(step 4): goes, with its init, when `in_night_act` reads her
+    // act.
+    #[cfg(test)]
+    pub(super) night_act: bool,
 }
 
 impl Osaka {
@@ -1279,10 +1335,21 @@ impl Osaka {
             #[cfg(test)]
             choices: Vec::new(),
             #[cfg(test)]
+            factored: Vec::new(),
+            #[cfg(test)]
             decisions: Vec::new(),
             #[cfg(test)]
             credited: Vec::new(),
             clock: None,
+            act_since: now,
+            act_since_game: None,
+            cut_at: None,
+            cut_game: 0,
+            cut_past: 0,
+            slept_ms: 0,
+            slept_to: 0,
+            #[cfg(test)]
+            night_act: false,
         };
         osaka.whims = Whims(osaka.mind.0 ^ mind::WHIMS_SALT);
         osaka.act_due = osaka.first_due(now);
@@ -1557,10 +1624,12 @@ impl Osaka {
         }
     }
 
-    /// When her pose, speech, or the text layer next changes.
+    /// When her pose, speech, or the text layer next changes, or her
+    /// routine next cuts into what she's doing.
     pub fn due(&self) -> u64 {
         let hush = self.speech.map_or(u64::MAX, |(_, until)| until);
-        self.pose_due().min(self.pending_due()).min(hush)
+        let cut = self.cut_at.unwrap_or(u64::MAX);
+        self.pose_due().min(self.pending_due()).min(hush).min(cut)
     }
 
     /// Say `text` for a while, over whatever bubble her act shows (and
@@ -1679,9 +1748,96 @@ impl Osaka {
     }
 
     /// Her routine's clock from now on (see [`Osaka::day`]): set at
-    /// every tick's entry, and when the stage skips her clock.
+    /// every tick's entry, and when the stage skips her clock. Her next
+    /// cutting boundary is found afresh from it.
     pub fn read_clock(&mut self, clock: Option<routine::Clock>) {
         self.clock = clock;
+        if let Some(clock) = clock {
+            // An act begun before any clock reached her: when it began
+            // by this first reading, held from now on.
+            let since = self.act_since;
+            self.act_since_game
+                .get_or_insert_with(|| clock.game.at(since));
+        }
+        self.refresh_cut();
+    }
+
+    /// Find her next cutting boundary ([`routine::Slot::cuts`]) from her
+    /// clock: the first after both her act's start and the last one
+    /// handled. From the act's start, not from now, so a catch-up that
+    /// falls behind still cuts the act that was running at the boundary;
+    /// past the last handled, so a handled one is never due again (no
+    /// tick spins on it). Always later than both.
+    ///
+    /// Both floors are her clock's own times, recorded as they happened:
+    /// only the boundary found is mapped to monotonic time, forward,
+    /// through the clock as read now. Never history backward through it:
+    /// a step the shell's cap clamps (a suspend) puts every earlier
+    /// monotonic moment further back in her day than it was, and a
+    /// boundary handled would be found again and cut again.
+    fn refresh_cut(&mut self) {
+        let Some(clock) = self.clock else {
+            self.cut_at = None;
+            return;
+        };
+        let began = self
+            .act_since_game
+            .unwrap_or_else(|| clock.game.at(self.act_since));
+        let boundary = clock.next_cutting(began.max(self.cut_past));
+        self.cut_game = boundary;
+        self.cut_at = Some(clock.game.when(boundary));
+    }
+
+    /// Her routine reached a cutting boundary at `at` (school, bed):
+    /// what she's resting at or busy with stops (A10), and she decides
+    /// again (no reflex sends her anywhere yet: steps 4 and 5). Whatever
+    /// she's doing, the boundary is handled: the next one is found, and
+    /// nothing fires early.
+    ///
+    /// Only an act she stays at (resting, or at a job: [`Act::props`]'s
+    /// table) is cut. Never what she passes through or what runs its
+    /// course on its own, which that table says she doesn't stay at: her
+    /// errand's poke, a climb, a fall, a door, being out (they end soon,
+    /// in a decision).
+    fn cut(&mut self, at: u64) -> bool {
+        // TODO(step 4): a bed's `Use(Sleep)` running at bedtime becomes
+        // the night act in place (A10), not interrupted.
+        let cuttable = matches!(self.act.props().stays, Stays::Rest | Stays::Job);
+        // Handled before anything it sets off: whatever she decides
+        // now searches past it.
+        self.cut_past = self.cut_game;
+        if cuttable {
+            tracing::debug!(at, act = %self.act_summary(), "houseguest: her routine cuts in");
+            self.interrupt(Cause::Routine, at);
+        } else {
+            tracing::trace!(at, act = %self.act_summary(), "houseguest: her routine passes");
+        }
+        self.refresh_cut();
+        cuttable
+    }
+
+    /// Whether her act is her night's sleep (A4), whose time asleep her
+    /// needs keep apart (see [`Osaka::slept_ms`]). None is yet: step 4
+    /// brings it.
+    // TODO(step 4): one arm, a real test of her act (the night act),
+    // replaces both; `Osaka.night_act` and its init go.
+    #[cfg(not(test))]
+    fn in_night_act(&self) -> bool {
+        false
+    }
+
+    /// Whether her act is her night's sleep: as a test says, until step
+    /// 4 brings one.
+    // TODO(step 4): see the other arm.
+    #[cfg(test)]
+    fn in_night_act(&self) -> bool {
+        self.night_act
+    }
+
+    /// Her next cutting boundary (tests).
+    #[cfg(test)]
+    pub(super) fn cut_at(&self) -> Option<u64> {
+        self.cut_at
     }
 
     /// Her routine at the monotonic millis `at`: `None` while the clock
@@ -1707,6 +1863,12 @@ impl Osaka {
             let due = self.due();
             if due > now {
                 return changed;
+            }
+            // Her routine first: a boundary is handled before anything
+            // else due with it, and never fires her act.
+            if self.cut_at == Some(due) {
+                changed |= self.cut(due);
+                continue;
             }
             changed = true;
             if let Some((_, until)) = self.speech
@@ -1750,6 +1912,8 @@ impl Osaka {
             self.credit_done(at);
         }
         self.act = act;
+        self.act_since = at;
+        self.act_since_game = self.clock.map(|clock| clock.game.at(at));
         self.act_due = self.first_due(at);
     }
 
@@ -2371,11 +2535,11 @@ impl Osaka {
                 // Trying a piece where she has just set it down: a moment
                 // on it, thoughtful.
                 let trying = self.episode.is_some_and(|e| e.trying);
-                let (lo, hi) = if trying {
-                    TRIAL_USE_MS
-                } else {
-                    use_duration(seat.what)
-                };
+                let day = self.day(at);
+                // How long a use lasts now (longer homework at homework
+                // time): a trial is a share of it.
+                let usual = use_duration_in(seat.what, day.map(|day| day.slot));
+                let (lo, hi) = if trying { TRIAL_USE_MS } else { usual };
                 if trying {
                     self.say(HMM, at);
                 }
@@ -2408,6 +2572,7 @@ impl Osaka {
                     what: seat.what,
                     trying,
                     quiet: quiet <= at,
+                    day,
                 };
                 let (before, after) = script::splices(
                     self.splice_rows(),
@@ -2465,7 +2630,7 @@ impl Osaka {
                 }
                 let length = rng.range(lo, hi);
                 let whole = if trying {
-                    let (lo, hi) = use_duration(seat.what);
+                    let (lo, hi) = usual;
                     lo.midpoint(hi)
                 } else {
                     length
@@ -2572,6 +2737,13 @@ impl Osaka {
     /// her want of beauty too, by the share done (as much as one pretty
     /// thing does, at most).
     fn credit_done(&mut self, at: u64) {
+        // Leaving her night's sleep, the time asleep is kept for her
+        // needs (A11), counted once.
+        if self.in_night_act() {
+            let from = self.act_since.max(self.slept_to);
+            self.slept_ms = self.slept_ms.saturating_add(at.saturating_sub(from));
+            self.slept_to = at;
+        }
         let Some(want) = self.credit else {
             return;
         };
@@ -3013,9 +3185,13 @@ impl Osaka {
             mess: !chances.pulls.is_empty(),
             grieved: self.grieved(chances),
             plain: chances.beauty_here <= 0.0,
+            slept_ms: std::mem::take(&mut self.slept_ms),
         };
+        let slot = self.day(at).map(|day| day.slot);
         self.needs
-            .pass(at.saturating_sub(self.decided), rising, self.mood);
+            .pass(at.saturating_sub(self.decided), rising, self.mood, |need| {
+                brain::clock_rate(slot, need)
+            });
         self.decided = at;
         let heading = self.heading.as_ref().map(|h| h.want);
         let hopped = std::mem::take(&mut self.hopping);
@@ -3146,12 +3322,16 @@ impl Osaka {
                 None => self.drop_heading(Letting::Gone),
             }
         }
+        let (day, date) = (self.day(at), self.clock.and_then(|clock| clock.date));
+        #[cfg(test)]
+        let factored = std::cell::RefCell::new(Vec::new());
         for attempt in 0.. {
             let wants: Vec<(Want, Spot)> = offers
                 .iter()
                 .map(|(want, _, bind)| (*want, bind.on()))
                 .collect();
-            // A resident mostly keeps out of the chat, where people read.
+            // A resident mostly keeps out of the chat, where people read;
+            // her day and the season make some things likelier.
             let factor = |want: Want| {
                 let into_chat = offers
                     .iter()
@@ -3162,19 +3342,15 @@ impl Osaka {
                 } else {
                     1.0
                 };
-                want.def()
-                    .factors
-                    .iter()
-                    .map(|&factor| match factor {
-                        Factor::InChat(times) if into_chat => times,
-                        Factor::InChat(_) => 1.0,
-                    })
-                    .product::<f64>()
-                    * inertia
+                let times = brain::factor(want, into_chat, day.as_ref(), date);
+                #[cfg(test)]
+                factored.borrow_mut().push((want, into_chat, times));
+                times * inertia
             };
-            let Some((i, top)) =
-                brain::choose(&wants, &self.needs, &self.recent, &factor, whims, attempt)
-            else {
+            let chosen = brain::choose(&wants, &self.needs, &self.recent, &factor, whims, attempt);
+            #[cfg(test)]
+            self.factored.append(&mut factored.borrow_mut());
+            let Some((i, top)) = chosen else {
                 break;
             };
             let (want, method, bind) = offers.remove(i);
@@ -3820,6 +3996,15 @@ impl Osaka {
         self.mood = mood;
     }
 
+    /// Her needs as she arrives at `day`'s time of her routine (D4 lever
+    /// 3; set as a visit begins, beside her mood): the afternoon's are
+    /// as ever, she comes sleepier later in the day, hungrier at
+    /// mealtimes.
+    pub fn set_clock(&mut self, day: DayTime) {
+        tracing::trace!(%day, "houseguest: arriving at this time of her day");
+        self.needs = Needs::arriving_in(day.slot);
+    }
+
     /// Stage: make `need` pressing.
     pub fn press(&mut self, need: Need) {
         self.needs.serve(need, -1.0);
@@ -3978,7 +4163,7 @@ impl Osaka {
             Cause::Chat => (SURPRISED_MS, LOOK_MS),
             Cause::Restless | Cause::SeatGone | Cause::Shaken => (SURPRISED_MS, LOOK_MS / 2),
             Cause::LostGrip | Cause::Refused => (0, LOOK_MS / 2),
-            Cause::ChatPassing => (0, 0),
+            Cause::ChatPassing | Cause::Routine => (0, 0),
         };
         self.rest = None;
         // Where she was heading now competes with what else she'd do.
@@ -6208,5 +6393,428 @@ mod tests {
             }
         }
         assert!(wrapped > 100, "{wrapped}");
+    }
+
+    // ---- Her routine's levers (phase 5b step 3b) ----
+
+    /// A blank 40×20 screen as she reads it.
+    fn blank_terrain() -> Terrain {
+        use tuirealm::ratatui::buffer::Buffer;
+        use tuirealm::ratatui::layout::Rect;
+        Terrain::read(&Buffer::empty(Rect::new(0, 0, 40, 20)), &[], false)
+    }
+
+    /// Her clock reading Monday `h:m` (a school day) at monotonic 0.
+    /// From 22:00, bedtime (22:30) is five real minutes on.
+    fn monday_at(h: u64, m: u64) -> routine::Clock {
+        clock_at(0, h, m)
+    }
+
+    /// Her clock reading `h:m` of game day `day` (day 0 a Monday, from
+    /// 16:00) at monotonic 0.
+    fn clock_at(day: u64, h: u64, m: u64) -> routine::Clock {
+        let game = ((day * 24 + h) * 60 + m - routine::START) * 60_000;
+        routine::Clock::read(super::super::GameClock { at: 0, game }, 0, None, None)
+    }
+
+    /// Bedtime (Monday 22:30) in monotonic millis, from [`monday_at`]
+    /// 22:00.
+    const BED: u64 = 300_000;
+    /// School (Tuesday 08:15) in monotonic millis, from 22:00: the next
+    /// cutting boundary after bedtime.
+    const SCHOOL: u64 = (2 * 60 + 8 * 60 + 15) * 10_000;
+
+    /// Her, at `act` (its next pose change at `act_due`), with her clock
+    /// at Monday 22:00 from monotonic 0.
+    fn at_bedtime(act: Act, act_due: u64) -> (Osaka, Rng) {
+        let mut rng = Rng(3);
+        let mut osaka = Osaka::standing_at(10, 10, 0, &mut rng);
+        osaka.act = act;
+        osaka.act_due = act_due;
+        osaka.read_clock(Some(monday_at(22, 0)));
+        (osaka, rng)
+    }
+
+    /// What she's resting at or busy with, her routine cuts at a cutting
+    /// boundary (bedtime): no startle, and she decides again at once;
+    /// the next boundary (school) is due next.
+    #[test]
+    fn her_routine_cuts_what_she_rests_at_without_a_startle() {
+        let far = 10 * BED;
+        let watch = Act::Use {
+            seat: seat_for(Use::Watch, Furniture::Tv),
+            since: 0,
+            until: far,
+            whole: far,
+            play: Play::of(Use::Watch, None),
+            grievance: None,
+        };
+        let acts = [
+            watch.clone(),
+            Act::Stand { until: far },
+            Act::Idle {
+                what: Activity::Sit,
+                since: 0,
+                until: far,
+            },
+            Act::SpaceOut {
+                since: 0,
+                until: far,
+                play: None,
+            },
+        ];
+        for act in acts {
+            let (mut osaka, _) = at_bedtime(act.clone(), far);
+            assert_eq!(osaka.cut_at, Some(BED), "{act:?}");
+            assert!(osaka.cut(BED), "{act:?}");
+            assert_eq!(
+                osaka.act,
+                Act::Look {
+                    surprised_until: BED,
+                    until: BED,
+                },
+                "{act:?}: no startle"
+            );
+            assert_eq!(osaka.cut_at, Some(SCHOOL), "{act:?}");
+        }
+        // Through a tick: the cut comes first, at the boundary itself,
+        // however late the tick (a catch-up), and she decides there.
+        let (mut osaka, mut rng) = at_bedtime(watch, far);
+        let terrain = blank_terrain();
+        let late = BED + 7_000;
+        assert!(osaka.tick(
+            late,
+            Some(monday_at(22, 0)),
+            &terrain,
+            &Chances::default(),
+            &mut rng
+        ));
+        assert!(!matches!(osaka.act, Act::Use { .. }), "{:?}", osaka.act);
+        assert_eq!(osaka.decisions.first().map(|d| d.at), Some(BED));
+        assert_eq!(osaka.cut_at, Some(SCHOOL));
+        assert!(osaka.due() > late);
+    }
+
+    /// A use ending at bedtime itself: the boundary is handled first (it
+    /// cuts the use), and she decides once. Were the use's end fired
+    /// first, she'd decide, and what she began at the boundary would be
+    /// cut by it too: a second decision.
+    #[test]
+    fn a_cut_due_with_her_act_comes_first() {
+        let watch = Act::Use {
+            seat: seat_for(Use::Watch, Furniture::Tv),
+            since: 0,
+            until: BED,
+            whole: BED,
+            play: Play::of(Use::Watch, None),
+            grievance: None,
+        };
+        let (mut osaka, mut rng) = at_bedtime(watch, BED);
+        assert_eq!(osaka.cut_at, Some(BED));
+        let terrain = blank_terrain();
+        osaka.tick(
+            BED,
+            Some(monday_at(22, 0)),
+            &terrain,
+            &Chances::default(),
+            &mut rng,
+        );
+        assert_eq!(osaka.decisions.len(), 1, "{:?}", osaka.decisions);
+        assert_eq!(osaka.cut_at, Some(SCHOOL));
+    }
+
+    /// What runs its course on its own (a climb, a fall, a door, being
+    /// out, her errand's poke) her routine leaves alone: crossing the
+    /// boundary, nothing of hers is stepped (no fire, no draw), the
+    /// boundary is handled all the same (the next is due, so the tick
+    /// doesn't spin on it), and a tick finds nothing to do. (Each is
+    /// spared by `Act::props`'s table, which has her passing through
+    /// them: an act moved to one she stays at fails here.)
+    #[test]
+    fn her_routine_leaves_what_runs_its_course() {
+        let step = BED + 50;
+        let acts = [
+            Act::Climb { to_y: 4 },
+            Act::Fall {
+                from_y: 4,
+                since: BED - 100,
+                to_y: 10,
+            },
+            Act::Door {
+                since: BED - 100,
+                to: (20, 10),
+                gap: 5_000,
+            },
+            Act::Poke {
+                since: BED - 100,
+                until: BED + 2_000,
+            },
+            Act::Out {
+                to: 0,
+                enter: 30,
+                to_y: 10,
+                to_x: 30,
+            },
+            Act::Away {
+                until: BED + 60_000,
+                enter: 30,
+                to_y: 10,
+                to_x: 30,
+            },
+        ];
+        let terrain = blank_terrain();
+        for act in acts {
+            let (mut osaka, mut rng) = at_bedtime(act.clone(), step);
+            let before = rng.0;
+            assert_eq!(osaka.cut_at, Some(BED), "{act:?}");
+            let changed = osaka.tick(
+                BED,
+                Some(monday_at(22, 0)),
+                &terrain,
+                &Chances::default(),
+                &mut rng,
+            );
+            assert!(!changed, "{act:?}");
+            assert_eq!(osaka.act, act, "not cut, not stepped");
+            assert_eq!(osaka.act_due, step, "{act:?}");
+            assert_eq!(rng.0, before, "{act:?}: nothing drawn");
+            assert!(osaka.decisions.is_empty(), "{act:?}");
+            assert_eq!(osaka.cut_at, Some(SCHOOL), "{act:?}");
+            assert_eq!(osaka.due(), step, "{act:?}");
+            // Again at the same moment, and as the clock is read afresh
+            // (the next tick's entry): the boundary handled stays handled.
+            assert!(!osaka.tick(
+                BED,
+                Some(monday_at(22, 0)),
+                &terrain,
+                &Chances::default(),
+                &mut rng
+            ));
+            assert_eq!(osaka.cut_at, Some(SCHOOL), "{act:?}");
+        }
+    }
+
+    /// Without her routine, nothing is ever cut: no boundary is due.
+    #[test]
+    fn unfed_nothing_is_cut() {
+        let mut rng = Rng(3);
+        let mut osaka = Osaka::standing_at(10, 10, 0, &mut rng);
+        osaka.read_clock(None);
+        assert_eq!(osaka.cut_at, None);
+        let unfed = osaka.clone();
+        osaka.read_clock(Some(monday_at(22, 0)));
+        assert_eq!(osaka.cut_at, Some(BED));
+        osaka.read_clock(None);
+        assert_eq!(osaka.cut_at, None);
+        assert_eq!(osaka.due(), unfed.due());
+    }
+
+    /// An act begun after a boundary is cut only at the next: the
+    /// search starts from her act's start.
+    #[test]
+    fn a_cut_is_the_first_boundary_after_her_act_began() {
+        let mut rng = Rng(3);
+        let mut osaka = Osaka::standing_at(10, 10, BED + 1_000, &mut rng);
+        osaka.read_clock(Some(monday_at(22, 0)));
+        assert_eq!(osaka.cut_at, Some(SCHOOL));
+        // Begun before: bedtime.
+        let mut osaka = Osaka::standing_at(10, 10, BED - 1, &mut rng);
+        osaka.read_clock(Some(monday_at(22, 0)));
+        assert_eq!(osaka.cut_at, Some(BED));
+        // A new act after it moves the search on.
+        osaka.set(Act::Stand { until: BED + 5_000 }, BED + 1);
+        osaka.read_clock(Some(monday_at(22, 0)));
+        assert_eq!(osaka.cut_at, Some(SCHOOL));
+    }
+
+    /// A boundary handled stays handled when her clock is read afresh
+    /// after a step the shell's cap clamps (a suspend: `Guest::accrue`
+    /// counts at most the cap, so the new reading puts every earlier
+    /// monotonic moment further back in her day than it was): the act
+    /// begun after bedtime isn't cut again at a bedtime found anew, and
+    /// school is still her next cut.
+    #[test]
+    fn a_capped_step_never_brings_a_handled_boundary_back() {
+        use super::super::{CLOCK_SPEED, GameClock};
+        let far = 100 * SCHOOL;
+        let (mut osaka, mut rng) = at_bedtime(Act::Stand { until: far }, far);
+        let terrain = blank_terrain();
+        let before = monday_at(22, 0);
+        osaka.tick(BED, Some(before), &terrain, &Chances::default(), &mut rng);
+        assert_eq!(osaka.decisions.len(), 1, "cut at bedtime");
+        assert_eq!(osaka.cut_at, Some(SCHOOL));
+        // Resting, begun after bedtime.
+        osaka.set(Act::Stand { until: far }, BED + 30_000);
+        let decided = osaka.decisions.len();
+        // Ticked last a minute after bedtime; then an hour's suspend,
+        // counted as the ten minutes the shell caps it at.
+        let (last, cap) = (BED + 60_000, 600_000);
+        let now = last + 3_600_000;
+        let game = GameClock {
+            at: now,
+            game: before.game.at(last) + CLOCK_SPEED * cap,
+        };
+        let after = routine::Clock::read(game, now, None, None);
+        assert_eq!(after.day(now).to_string(), "Mon 23:36 Asleep");
+        // The hour's blinks may hold the tick's catch-up back (it gives
+        // up after a few dozen events): the next tick, a moment on, goes
+        // on from there.
+        for now in [now, now + 1_000] {
+            osaka.tick(now, Some(after), &terrain, &Chances::default(), &mut rng);
+        }
+        assert_eq!(osaka.decisions.len(), decided, "not cut again");
+        assert_eq!(osaka.act, Act::Stand { until: far });
+        let school = before.game.at(SCHOOL);
+        assert_eq!(osaka.cut_at, Some(game.when(school)));
+        assert!(osaka.due() > now + 1_000);
+    }
+
+    /// At homework time, homework lasts 2-4 real minutes instead of 30-60
+    /// seconds: the same one draw over the longer range (her stream is
+    /// left exactly as unfed), and the whole use is its length, so its
+    /// credit is the share truly done. Out of homework time, or another
+    /// use, as ever.
+    #[test]
+    fn homework_lasts_longer_at_homework_time() {
+        let length = |what: Use, clock: Option<routine::Clock>, seed: u64| {
+            let mut rng = Rng(seed);
+            let mut osaka = Osaka::standing_at(10, 10, 0, &mut rng);
+            osaka.splice_rows = &[];
+            osaka.whims = Whims(seed ^ 0x5eed);
+            osaka.credit = Some(Want::Use(what));
+            osaka.read_clock(clock);
+            let item = Furniture::ALL
+                .into_iter()
+                .find(|f| f.spec().uses.contains(&what))
+                .unwrap_or(Furniture::Sofa);
+            osaka.start_job(
+                Job::Use(seat_for(what, item)),
+                1000,
+                &Chances::default(),
+                &mut rng,
+            );
+            let (since, until, whole, play) = begun(&osaka);
+            assert_eq!((play.before, play.after), (None, None));
+            assert_eq!(whole, until - since, "the whole is its length");
+            (until - since, rng.0)
+        };
+        let homework_time = Some(monday_at(21, 0));
+        let afternoon = Some(monday_at(16, 0));
+        for seed in 0..64 {
+            let (unfed, drawn) = length(Use::Homework, None, seed);
+            let (fed, fed_drawn) = length(Use::Homework, homework_time, seed);
+            assert!((30_000..60_000).contains(&unfed), "{unfed}");
+            assert!((120_000..240_000).contains(&fed), "{fed}");
+            assert_eq!(fed_drawn, drawn, "seed {seed}: the same draws");
+            assert_eq!(length(Use::Homework, afternoon, seed), (unfed, drawn));
+            for what in [Use::Read, Use::Watch, Use::Lounge] {
+                assert_eq!(length(what, homework_time, seed), length(what, None, seed));
+            }
+        }
+    }
+
+    /// Her night's sleep, as she leaves it, is kept for her needs (A11):
+    /// counted once, though it's settled twice (by her decision, then by
+    /// the act that follows), and taken by her needs at that decision.
+    /// Any other act keeps nothing.
+    #[test]
+    fn a_nights_sleep_is_counted_once() {
+        let mut rng = Rng(3);
+        let mut osaka = Osaka::standing_at(10, 10, 0, &mut rng);
+        osaka.set(
+            Act::Idle {
+                what: Activity::LieBack,
+                since: 1_000,
+                until: 90_000,
+            },
+            1_000,
+        );
+        osaka.credit_done(50_000);
+        assert_eq!(osaka.slept_ms, 0, "not the night act");
+        osaka.night_act = true;
+        osaka.credit_done(61_000);
+        osaka.credit_done(61_000);
+        assert_eq!(osaka.slept_ms, 60_000);
+        osaka.set(Act::Stand { until: 70_000 }, 61_000);
+        assert_eq!(osaka.slept_ms, 60_000, "counted once");
+        // Her decision takes it: sleepiness rose only for the time awake.
+        osaka.night_act = false;
+        let terrain = {
+            use tuirealm::ratatui::buffer::Buffer;
+            use tuirealm::ratatui::layout::Rect;
+            use tuirealm::ratatui::style::Style;
+            let mut buf = Buffer::empty(Rect::new(0, 0, 40, 20));
+            buf.set_string(0, 15, "─".repeat(40), Style::default());
+            Terrain::read(&buf, &[], false)
+        };
+        let floor = terrain.platforms.first().cloned().expect("a floor");
+        osaka.x = (floor.x0 + floor.x1) / 2;
+        osaka.y = floor.y;
+        osaka.decided = 1_000;
+        let sleepy = osaka.needs.get(Need::Sleepy);
+        osaka.decide(61_000, &terrain, &Chances::default(), &mut rng);
+        let method = osaka.decisions.last().map(|d| d.method);
+        assert!(
+            !matches!(method, Some("no floor" | "off text")),
+            "{method:?}"
+        );
+        assert_eq!(osaka.slept_ms, 0, "taken");
+        assert_eq!(osaka.needs.get(Need::Sleepy), sleepy, "asleep throughout");
+    }
+
+    /// Her needs rise by her day as she decides (D4 lever 2, through the
+    /// decision's own reading of her clock): a minute ending at
+    /// homework time, sleepiness three times as fast as unfed; one
+    /// ending at (Tuesday's) breakfast, hunger twice as fast; in the
+    /// afternoon, as unfed.
+    #[test]
+    fn her_decisions_raise_her_needs_by_her_day() {
+        let terrain = {
+            use tuirealm::ratatui::buffer::Buffer;
+            use tuirealm::ratatui::layout::Rect;
+            use tuirealm::ratatui::style::Style;
+            let mut buf = Buffer::empty(Rect::new(0, 0, 40, 20));
+            buf.set_string(0, 15, "─".repeat(40), Style::default());
+            Terrain::read(&buf, &[], false)
+        };
+        let floor = terrain.platforms.first().cloned().expect("a floor");
+        let rose = |clock: Option<routine::Clock>, need: Need| {
+            let mut rng = Rng(3);
+            let mut osaka = Osaka::standing_at((floor.x0 + floor.x1) / 2, floor.y, 0, &mut rng);
+            osaka.read_clock(clock);
+            osaka.decided = 0;
+            let before = osaka.needs.get(need);
+            osaka.decide(60_000, &terrain, &Chances::default(), &mut rng);
+            let after = osaka.needs.get(need);
+            assert!(after < 1.0, "{need:?} saturated");
+            after - before
+        };
+        for (clock, need, times) in [
+            (monday_at(21, 0), Need::Sleepy, 3.0),
+            (clock_at(1, 7, 30), Need::Hungry, 2.0),
+            (monday_at(16, 0), Need::Hungry, 1.0),
+        ] {
+            let unfed = rose(None, need);
+            assert!(unfed > 0.0, "{need:?}");
+            let fed = rose(Some(clock), need);
+            assert!(
+                (fed - unfed * times).abs() < 1e-9,
+                "{need:?} at {}: {fed} vs {unfed}",
+                clock.day(60_000)
+            );
+        }
+    }
+
+    /// Fed her routine, she arrives as her day has left her: at 16:00
+    /// exactly as ever.
+    #[test]
+    fn she_arrives_at_four_exactly_as_ever() {
+        let mut rng = Rng(3);
+        let mut osaka = Osaka::standing_at(10, 10, 0, &mut rng);
+        let ever = osaka.needs;
+        osaka.set_clock(monday_at(16, 0).day(0));
+        assert_eq!(osaka.needs, ever);
+        osaka.set_clock(monday_at(21, 0).day(0));
+        assert!(osaka.needs.get(Need::Sleepy) > ever.get(Need::Sleepy));
     }
 }

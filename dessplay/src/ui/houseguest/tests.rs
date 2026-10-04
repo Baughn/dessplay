@@ -2917,6 +2917,134 @@ fn skipping_her_clock_walks_her_routine_forward() {
     assert_eq!((day.minute, day.slot), (18 * 60, routine::Slot::Evening));
 }
 
+/// Fed her routine, she arrives as her day has left her (D4 lever 3):
+/// her first meeting, at 16:00, exactly as ever; at homework time
+/// sleepier. Unfed, as ever whatever the time.
+#[test]
+fn she_arrives_as_her_day_has_left_her() {
+    use super::brain::{Need, Needs};
+    let mut ui = stage_ui();
+    let (real, view) = real_frame(&mut ui, 100, 30);
+    let arrived = |mut guest: Guest| {
+        guest.cue(Scene::Arrive);
+        paint(&mut guest, &real, &view, 0);
+        let State::Visiting(visit) = &guest.state else {
+            panic!("visiting");
+        };
+        *visit.osaka.needs()
+    };
+    for fed in [false, true] {
+        let mut guest = Guest::new(5);
+        guest.set_feed_clock(fed);
+        assert_eq!(arrived(guest), Needs::default(), "fed: {fed}");
+        // Monday 21:00: homework.
+        let mut guest = met(5);
+        guest.set_feed_clock(fed);
+        guest.ledger.clock = 5 * 60;
+        let needs = arrived(guest);
+        if fed {
+            assert_eq!(needs, Needs::arriving_in(routine::Slot::Homework));
+            assert!(needs.get(Need::Sleepy) > Needs::default().get(Need::Sleepy));
+        } else {
+            assert_eq!(needs, Needs::default());
+        }
+    }
+}
+
+/// Fed her routine, her choices weigh homework by her day and the date
+/// (D4 lever 1, through the decision's own reading of her clock): at
+/// homework time three times as likely, in exam season twice that again;
+/// unfed, as ever. (Monday 21:00 on: three real minutes stay inside
+/// homework time.)
+#[test]
+fn her_choices_weigh_homework_by_her_day_and_the_date() {
+    use super::brain::{BOOST, BOOST_STRONG, Want};
+    use super::room::Use;
+    let homework = Want::Use(Use::Homework);
+    for (fed, on, times) in [
+        (false, date(2027, 2, 1), 1.0),
+        (true, date(2026, 6, 17), BOOST_STRONG),
+        (true, date(2027, 2, 1), BOOST_STRONG * BOOST),
+    ] {
+        let (mut guest, real, view) = furnished_home(3);
+        guest.set_feed_clock(fed);
+        guest.set_date(on);
+        guest.ledger.clock = 5 * 60;
+        live_in(&mut guest, &real, &view, 3 * 60_000, 3);
+        let visit = visit_of(&guest);
+        let weighed: Vec<f64> = visit
+            .osaka
+            .factored
+            .iter()
+            .filter(|&&(want, into_chat, _)| want == homework && !into_chat)
+            .map(|&(_, _, times)| times)
+            .collect();
+        assert!(!weighed.is_empty(), "fed {fed}: homework never weighed");
+        assert!(
+            weighed.iter().all(|&t| t == times),
+            "fed {fed} on {on:?}: {weighed:?}"
+        );
+    }
+}
+
+/// Fed her routine, a visit across bedtime: skipping her clock onto
+/// 22:30 makes the boundary due at once (the next tick handles it, cut
+/// or not), and no tick ever leaves her due at or before its moment (no
+/// spin), the next boundary (school) found as each is handled. Unfed,
+/// no boundary is ever due.
+#[test]
+fn her_routine_cuts_in_at_bedtime_and_never_spins() {
+    for fed in [false, true] {
+        let mut ui = stage_ui();
+        let (real, view) = real_frame(&mut ui, 100, 30);
+        let mut guest = Guest::new(5);
+        guest.set_feed_clock(fed);
+        guest.set_date(date(2026, 6, 17));
+        guest.cue(Scene::Arrive);
+        paint(&mut guest, &real, &view, 0);
+        let mut now = 0;
+        let step = |guest: &mut Guest, now: &mut u64, until: u64| {
+            while *now < until {
+                *now += guest
+                    .next_tick(*now)
+                    .map_or(1000, |d| d.as_millis() as u64)
+                    .clamp(1, 1000);
+                guest.advance(*now);
+                // (A paint may set her something due at once: the next
+                // tick's.)
+                let State::Visiting(visit) = &guest.state else {
+                    panic!("still visiting");
+                };
+                assert!(visit.osaka.due() > *now, "due at {now}");
+                paint(guest, &real, &view, *now);
+            }
+        };
+        step(&mut guest, &mut now, 10_000);
+        for _ in 0..3 {
+            guest.skip_clock(now);
+        }
+        let State::Visiting(visit) = &guest.state else {
+            panic!("still visiting");
+        };
+        assert_eq!(guest.clock_label(now).as_deref(), Some("Mon 22:30 Asleep"));
+        assert_eq!(visit.osaka.cut_at(), fed.then_some(now), "fed: {fed}");
+        guest.advance(now);
+        let State::Visiting(visit) = &guest.state else {
+            panic!("still visiting");
+        };
+        // Tuesday 08:15, 585 game minutes on.
+        let school = now + real_ms(585);
+        assert_eq!(visit.osaka.cut_at(), fed.then_some(school), "fed: {fed}");
+        assert!(visit.osaka.due() > now);
+        let until = now + 120_000;
+        step(&mut guest, &mut now, until);
+        let State::Visiting(visit) = &guest.state else {
+            panic!("still visiting");
+        };
+        assert_eq!(visit.osaka.cut_at(), fed.then_some(school), "fed: {fed}");
+    }
+}
+
 // ---- Deliveries and the shopping channel ----
 
 /// The channel sells her furniture first; decor when her room feeling

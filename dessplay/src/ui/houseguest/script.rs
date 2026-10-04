@@ -10,6 +10,7 @@ use super::art::Channel;
 use super::mind::{Lines, RIDDLES, Whims};
 use super::osaka::{Bubble, SCRUNCH, THERE, USE_FRAME_MS};
 use super::room::{Furniture, Use};
+use super::routine::DayTime;
 use super::sprite::{Face, Pose};
 
 /// When a key ends: cumulative, from the start of the body it plays
@@ -610,6 +611,11 @@ pub(super) struct SpliceCtx {
     /// She has stopped saying anything (a prelude's first key would be
     /// hidden under it otherwise, so none is rolled).
     pub quiet: bool,
+    /// Her routine as the use starts (`None`: it doesn't reach her).
+    // TODO(step 6, step 7): read by the exam chopsticks (A23) and
+    // Scary's 22:00 window; unread until then.
+    #[expect(dead_code, reason = "read from step 6 (A7)")]
+    pub day: Option<DayTime>,
 }
 
 /// A cue from the stage: what she's to play, forced rather than rolled,
@@ -1699,6 +1705,7 @@ mod tests {
             what,
             trying,
             quiet,
+            day: None,
         };
         let (before, after) = splices(rows, &ctx, None, false, Whims(whims), lines, at);
         (before.map(|s| s.splice), after.map(|s| s.splice))
@@ -1770,6 +1777,7 @@ mod tests {
             what: Use::Homework,
             trying: false,
             quiet: true,
+            day: None,
         };
         for id in SPLICES {
             let (before, after) = splices(
@@ -1803,6 +1811,7 @@ mod tests {
                 what,
                 trying: false,
                 quiet,
+                day: None,
             };
             splices(
                 &SpliceId::ALL,
@@ -2040,6 +2049,7 @@ mod tests {
             what: Use::Homework,
             trying: false,
             quiet: true,
+            day: None,
         };
         let lens = SpliceId::TestBedtime.row().lens;
         let mut seen = [0u64; 2];
