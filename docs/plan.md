@@ -2105,7 +2105,7 @@ welcome; the only goal is "watching her is kind of fun".
 
 ## Phase 38: Houseguest mind and home
 
-**Status: phases 0–4 done (2026-10-02 and 2026-10-03); phase 5 split into 5a (vignettes, done 2026-10-03) and 5b (the clock, next). Nothing since phase 2 is pushed yet.** Design: [the mind
+**Status: phases 0–4 done (2026-10-02 and 2026-10-03); phase 5 split into 5a (vignettes, done 2026-10-03) and 5b (the clock; working design 2026-10-04: [phase5b-design.md](proposals/2026-10-02-houseguest-mind/phase5b-design.md), in progress). Nothing since phase 2 is pushed yet.** Design: [the mind
 and home proposal](proposals/2026-10-02-houseguest-mind.md) (direction
 agreed with the user; their answers are its *Decisions*). Its migration
 plan numbers its own phases 0–8; this section records them.
@@ -2872,3 +2872,16 @@ code:
   of idle minutes; at most one unseen rare a visit. Ledger fields lenient
   and skipped when empty; an older build drops them on save.
 - **Art**: a window piece and a wall-clock piece (model sheets first).
+
+### Phase 5b — the clock (brief, 2026-10-04)
+
+Working design: [phase5b-design.md](proposals/2026-10-02-houseguest-mind/phase5b-design.md)
+(code map and critiques in its `phase5b/` dir). The user's calls this
+session: school 08:30–12:30 (home from 12:45; HG's full day left every
+other session mostly empty); an errand while she's at school is a dash
+in and out by her door, and asleep she gets up groggy, pokes it and
+goes back to bed; the wall clock arrives as a one-time parcel and the
+window is sold after the cat bed, with a look-out use and a clock glance
+at routine changes; real-date vacations (summer, year-end, spring)
+cancel school. At 6× that's about 49% of open time home and awake, 37%
+asleep (visible) and 14% away. Steps 0–9 are in the design.
