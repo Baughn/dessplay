@@ -230,11 +230,18 @@ pub(super) enum ScriptId {
     /// its pose: see [`Surface`]), the lamp on a moment as she settles
     /// (#70) or off from the start. A chat line only stirs her.
     Night,
+    /// Dashed home from school for her lunch (phase 5b D3a): a look in
+    /// the fridge, then "Forgot my lunch!". Built directly on a use of
+    /// her fridge, never chosen (see `Osaka::dash_on`).
+    DashLunch,
+    /// Dashed home from school with no fridge to get to: "Forgot
+    /// somethin'..." then "...what was it?", spacing out.
+    DashForgot,
 }
 
 impl ScriptId {
     #[cfg(test)]
-    pub const ALL: [ScriptId; 16] = [
+    pub const ALL: [ScriptId; 18] = [
         Self::Lounge,
         Self::Nap,
         Self::Sleep,
@@ -251,6 +258,8 @@ impl ScriptId {
         Self::Chopsticks,
         Self::Andagi,
         Self::Night,
+        Self::DashLunch,
+        Self::DashForgot,
     ];
 
     /// Its branches, each a run of keys.
@@ -272,6 +281,8 @@ impl ScriptId {
             Self::Chopsticks => CHOPSTICKS,
             Self::Andagi => ANDAGI,
             Self::Night => NIGHT,
+            Self::DashLunch => DASH_LUNCH,
+            Self::DashForgot => DASH_FORGOT,
         }
     }
 
@@ -299,7 +310,9 @@ impl ScriptId {
             | Self::Unpack
             | Self::Riddle
             | Self::Surf
-            | Self::Chopsticks => Chat::Look,
+            | Self::Chopsticks
+            | Self::DashLunch
+            | Self::DashForgot => Chat::Look,
         }
     }
 
@@ -323,7 +336,9 @@ impl ScriptId {
             | Self::Surf
             | Self::Chopsticks
             | Self::Andagi
-            | Self::Night => 0,
+            | Self::Night
+            | Self::DashLunch
+            | Self::DashForgot => 0,
         }
     }
 
@@ -340,11 +355,11 @@ impl ScriptId {
             Self::Homework => Use::Homework,
             Self::Watch | Self::Shopping | Self::Surf => Use::Watch,
             Self::Read => Use::Read,
-            Self::Snack => Use::Snack,
+            Self::Snack | Self::DashLunch => Use::Snack,
             Self::Pet => Use::Pet,
             Self::Crumple => Use::Crumple,
             Self::Unpack => Use::Unpack,
-            Self::Riddle | Self::Chopsticks | Self::Andagi => return None,
+            Self::Riddle | Self::Chopsticks | Self::Andagi | Self::DashForgot => return None,
         })
     }
 
@@ -352,7 +367,7 @@ impl ScriptId {
     #[cfg(test)]
     pub fn host(self) -> Host {
         match self {
-            Self::Riddle => Host::SpaceOut,
+            Self::Riddle | Self::DashForgot => Host::SpaceOut,
             Self::Night => Host::Night,
             Self::Chopsticks | Self::Andagi => Host::Splice,
             Self::Lounge
@@ -366,7 +381,8 @@ impl ScriptId {
             | Self::Pet
             | Self::Crumple
             | Self::Unpack
-            | Self::Surf => Host::Use,
+            | Self::Surf
+            | Self::DashLunch => Host::Use,
         }
     }
 
@@ -378,10 +394,15 @@ impl ScriptId {
     /// Wildcard-free.
     #[cfg(test)]
     pub fn shortest_body(self) -> Option<u64> {
-        use super::osaka::{SPACE_OUT_MS, shortest_use_ms, use_range};
+        use super::osaka::{
+            DASH_FORGOT_MS, DASH_LUNCH_MS, SPACE_OUT_MS, shortest_use_ms, use_range,
+        };
         Some(match self {
             Self::Chopsticks | Self::Andagi => return None,
             Self::Riddle => SPACE_OUT_MS.0,
+            // Built directly, always as long.
+            Self::DashLunch => DASH_LUNCH_MS,
+            Self::DashForgot => DASH_FORGOT_MS,
             Self::Shopping | Self::Surf => use_range(Use::Watch).0,
             Self::Lounge
             | Self::Nap
@@ -419,6 +440,8 @@ impl ScriptId {
             Self::Chopsticks => Scene::ChopsticksClean,
             Self::Andagi => Scene::Andagi,
             Self::Night => Scene::Night,
+            Self::DashLunch => Scene::DashIn,
+            Self::DashForgot => Scene::DashForgot,
         }
     }
 
@@ -1232,6 +1255,48 @@ const SNACK: &[&[Key]] = &[&[
     ),
 ]];
 
+/// Dashed home from school for her lunch: a look in the fridge (as a
+/// snack's), then, turning with it, the line.
+const DASH_LUNCH: &[&[Key]] = &[&[
+    shows(
+        Span::Ms(1500),
+        Posed::Still(Pose::Side),
+        Face::Curious,
+        None,
+        Prop::FridgeOpen,
+    ),
+    key(
+        Span::Rest,
+        Posed::Still(Pose::Stand),
+        Face::Happy,
+        bubble(Bubble::Say(FORGOT_LUNCH)),
+    ),
+]];
+
+/// What she says as she has the lunch she dashed home for.
+pub(super) const FORGOT_LUNCH: &str = line!("Forgot my lunch!");
+
+/// Dashed home with no fridge to get to: she can't think what it was.
+const DASH_FORGOT: &[&[Key]] = &[&[
+    key(
+        Span::Ms(1500),
+        Posed::Still(Pose::Stand),
+        Face::Curious,
+        bubble(Bubble::Say(FORGOT_SOMETHING)),
+    ),
+    key(
+        Span::Rest,
+        Posed::Still(Pose::Stand),
+        Face::Vacant,
+        bubble(Bubble::Say(WHAT_WAS_IT)),
+    ),
+]];
+
+/// Dashed home with no fridge to get to, first...
+pub(super) const FORGOT_SOMETHING: &str = line!("Forgot somethin'...");
+/// ...then.
+pub(super) const WHAT_WAS_IT: &str = line!("...what was it?");
+
 /// Petting the cat, until he bites.
 const PET: &[&[Key]] = &[&[
     key(
@@ -1507,6 +1572,8 @@ mod tests {
             ScriptId::Chopsticks => 13,
             ScriptId::Andagi => 14,
             ScriptId::Night => 15,
+            ScriptId::DashLunch => 16,
+            ScriptId::DashForgot => 17,
         }
     }
 
@@ -1574,6 +1641,8 @@ mod tests {
             ScriptId::Riddle => Play::riddle(0),
             ScriptId::Surf => Play::plain(ScriptId::Surf),
             ScriptId::Night => Play::plain(ScriptId::Night),
+            ScriptId::DashLunch => Play::plain(ScriptId::DashLunch),
+            ScriptId::DashForgot => Play::plain(ScriptId::DashForgot),
         };
         for id in ScriptId::ALL {
             let play = player(id);

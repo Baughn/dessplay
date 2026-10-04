@@ -48,6 +48,13 @@ Add new days at the top. Add new entries at the bottom of existing days.
   until she comes home through it after lunch ("I'm home!"). Start
   dessplay in school hours and her room is empty, door and all. A
   parcel that comes while she's out waits for her to get home.
+- Added: Now and then on a school day, Osaka dashes home through her
+  door for something she forgot: her lunch from the fridge ("Forgot my
+  lunch!"), or, with no fridge, she stands there wondering what it was.
+  Then she's off to school again.
+- Added: If new messages are waiting while you're scrolled back in the
+  chat and Osaka is at school, she pops in through her door to poke the
+  chat for you, then heads straight back out.
 
 ## 2026-10-03
 

@@ -104,11 +104,18 @@ pub enum Scene {
     /// Her sofa turned away from her TV (she gets both if she hasn't
     /// them): she's felt it, and turns it round.
     Arrange,
+    /// She dashes home from school for her lunch: in through her door,
+    /// to her fridge (she gets one if she has none), and (at school time)
+    /// out again.
+    DashIn,
+    /// She dashes home from school, and can't think what for: in through
+    /// her door, a moment wondering, and (at school time) out again.
+    DashForgot,
 }
 
 impl Scene {
     /// Every scene, in menu order.
-    pub const ALL: [Scene; 38] = [
+    pub const ALL: [Scene; 40] = [
         Self::Arrive,
         Self::Pull,
         Self::Swap,
@@ -147,6 +154,8 @@ impl Scene {
         Self::MakeSofa,
         Self::MakeBed,
         Self::Arrange,
+        Self::DashIn,
+        Self::DashForgot,
     ];
 
     /// A short menu label.
@@ -190,6 +199,8 @@ impl Scene {
             Self::MakeSofa => "make a sofa of text",
             Self::MakeBed => "make a bed of text",
             Self::Arrange => "turn the sofa round",
+            Self::DashIn => "dash home for lunch",
+            Self::DashForgot => "dash home, forgetful",
         }
     }
 
@@ -203,7 +214,7 @@ impl Scene {
             Self::Watch | Self::Shopping | Self::Surf => Use::Watch,
             Self::Parcel => Use::Unpack,
             Self::Read => Use::Read,
-            Self::Snack | Self::Andagi => Use::Snack,
+            Self::Snack | Self::Andagi | Self::DashIn => Use::Snack,
             Self::Pet => Use::Pet,
             _ => return None,
         })
@@ -211,8 +222,8 @@ impl Scene {
 
     /// What it has her play, forced rather than rolled: each script
     /// that shares its piece with another (a plain watch, surfing, the
-    /// shopping channel; a day's sleep, her night's: cued to one, she
-    /// plays none of the others), a
+    /// shopping channel; a day's sleep, her night's; a snack, the lunch
+    /// she dashes home for: cued to one, she plays none of the others), a
     /// riddle (musing, she might not tell one), and each splice (the
     /// chopsticks on the branch named). Wildcard-free, so a new scene
     /// says.
@@ -228,6 +239,12 @@ impl Scene {
             // A day's sleep and her night's both play on her bed.
             Self::Sleep => Some(Cue::Script(ScriptId::Sleep)),
             Self::Night => Some(Cue::Script(ScriptId::Night)),
+            // A snack and the lunch she dashes home for both play on her
+            // fridge; dashed home with one to hand, she still forgets,
+            // cued to.
+            Self::Snack => Some(Cue::Script(ScriptId::Snack)),
+            Self::DashIn => Some(Cue::Script(ScriptId::DashLunch)),
+            Self::DashForgot => Some(Cue::Script(ScriptId::DashForgot)),
             Self::Arrive
             | Self::Pull
             | Self::Swap
@@ -252,7 +269,6 @@ impl Scene {
             | Self::Parcel
             | Self::Work
             | Self::Read
-            | Self::Snack
             | Self::Pet
             | Self::MakeSofa
             | Self::MakeBed
@@ -324,6 +340,28 @@ pub(super) fn direct(
     osaka.cue(scene.cue());
     match scene {
         Scene::Arrive => Ok("arriving".into()),
+        // In through her door already: what she forgot, she goes for as
+        // she first decides (her routine sends her out after, at school
+        // time). Dashing home for her lunch, the door is beside her
+        // fridge, so the scene shows soon.
+        Scene::DashIn | Scene::DashForgot => {
+            let fridge = chances
+                .seats
+                .iter()
+                .find(|s| s.what == Use::Snack && !s.makeshift())
+                .filter(|_| scene == Scene::DashIn);
+            if let Some(seat) = fridge {
+                let away = match Job::Use(*seat).side() {
+                    Side::Left => 1,
+                    Side::Right => -1,
+                };
+                let start = approach(terrain, seat.x, seat.y, away);
+                osaka.dash_through((start, seat.y), now);
+                Ok(format!("{name}: in by her fridge at ({start}, {})", seat.y))
+            } else {
+                Ok(format!("{name}: in through her door"))
+            }
+        }
         // The sofa was set up turned from the TV as the frame was read,
         // and she's felt it: she sets off to lift it.
         Scene::Arrange => {

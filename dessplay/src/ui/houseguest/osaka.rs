@@ -1465,7 +1465,31 @@ pub(super) struct Osaka {
     /// moment it gets her up until she's at it (see
     /// [`Osaka::midnight_snack`]).
     snacking: Option<Seat>,
+    /// She dashed home from school for something she forgot (phase 5b
+    /// D3a): set as she comes in, kept until she has it (or has stood
+    /// wondering what it was); then her routine's away reflex sends her
+    /// out again. See [`Osaka::dash_in`].
+    dash: Option<Dash>,
 }
+
+/// Where she is in a dash home from school (phase 5b D3a).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Dash {
+    /// Just in: what she forgot is settled as she first decides (her
+    /// lunch, from her fridge if she can get to it; else she can't
+    /// remember).
+    In,
+    /// On her way to her fridge, `Seat`, for her lunch: kept until she's
+    /// at it, so whatever stops her on the way, she sets off again.
+    Lunch(Seat),
+}
+
+/// Her lunch from her fridge, dashed home for: the door open a moment,
+/// then "Forgot my lunch!" (see [`ScriptId::DashLunch`]).
+pub(super) const DASH_LUNCH_MS: u64 = 3800;
+/// Dashed home with no fridge to get to: standing, "Forgot somethin'..."
+/// then "...what was it?" (see [`ScriptId::DashForgot`]).
+pub(super) const DASH_FORGOT_MS: u64 = 3000;
 
 impl Osaka {
     fn new(x: i32, y: i32, facing: Facing, act: Act, now: u64, rng: &mut Rng) -> Self {
@@ -1553,6 +1577,7 @@ impl Osaka {
             day_from: None,
             night: None,
             snacking: None,
+            dash: None,
         };
         osaka.whims = Whims(osaka.mind.0 ^ mind::WHIMS_SALT);
         osaka.act_due = osaka.first_due(now);
@@ -2277,8 +2302,7 @@ impl Osaka {
         self.slept_ms
     }
 
-    /// The routine she's leaving by, if she is (tests).
-    #[cfg(test)]
+    /// The routine she's leaving by, if she is.
     pub(super) fn leaving(&self) -> Option<Routine> {
         self.leaving
     }
@@ -2476,8 +2500,15 @@ impl Osaka {
                         // nothing. Said before deciding, so what she
                         // starts waits for it (a riddle, a grievance);
                         // if the decision speaks over it at once, it was
-                        // never said (see `hush`).
-                        if let Some(line) = self.lines.pick(mind::DOOR, self.whims, at) {
+                        // never said (see `hush`). Not on a dash home
+                        // from school: her routine's doors never say
+                        // the door's lines (round 1, "Routine doors").
+                        let line = if self.dash.is_none() {
+                            self.lines.pick(mind::DOOR, self.whims, at)
+                        } else {
+                            None
+                        };
+                        if let Some(line) = line {
                             self.say(line, at);
                         }
                         self.decide(at, terrain, chances, rng);
@@ -3020,6 +3051,17 @@ impl Osaka {
                 {
                     self.snacking = None;
                     let act = self.night_snack_at(seat, at, rng);
+                    return self.set(act, at);
+                }
+                // At the fridge for the lunch she dashed home for: built
+                // here too, nothing spliced, felt or recorded, nothing
+                // drawn (see `dash_lunch_at`).
+                if let Some(Dash::Lunch(s)) = self.dash
+                    && s.piece == seat.piece
+                    && s.what == seat.what
+                {
+                    self.dash = None;
+                    let act = Self::dash_lunch_at(seat, at);
                     return self.set(act, at);
                 }
                 // Trying a piece where she has just set it down: a moment
@@ -3711,6 +3753,73 @@ impl Osaka {
         }
     }
 
+    /// Dashed home from school (`dash`, D3a), deciding at `at` on floor
+    /// `here`: to her fridge for her lunch, if one's shown where she can
+    /// get to it (the one she was on her way to, if she was); else she
+    /// stands a moment, unable to remember what it was. Neither eases a
+    /// need (no credit). What the stage cued for a dash is taken here (a
+    /// cue for the forgetting forgets with a fridge to hand), so it never
+    /// waits on for a later snack.
+    fn dash_on(
+        &mut self,
+        dash: Dash,
+        here: usize,
+        terrain: &Terrain,
+        chances: &Chances,
+        at: u64,
+    ) -> Decision {
+        let cued = self
+            .cued
+            .take_if(|cue| matches!(cue, Cue::Script(ScriptId::DashLunch | ScriptId::DashForgot)));
+        self.credit = None;
+        let fridge = match dash {
+            Dash::Lunch(seat) => Some(seat),
+            Dash::In => chances
+                .seats
+                .iter()
+                .find(|s| {
+                    s.what == Use::Snack
+                        && !s.makeshift()
+                        && terrain.platform_at(s.x, s.y).is_some()
+                })
+                .copied(),
+        }
+        .filter(|_| cued != Some(Cue::Script(ScriptId::DashForgot)));
+        if let Some(seat) = fridge {
+            self.dash = Some(Dash::Lunch(seat));
+            if self.go_to(Want::Use(Use::Snack), Job::Use(seat), here, terrain, at) {
+                return Decision::reflex("dash/lunch");
+            }
+            tracing::debug!("houseguest: no way to her fridge for her lunch");
+        }
+        self.dash = None;
+        tracing::info!("houseguest: dashed home for something, but what?");
+        self.set(
+            Act::SpaceOut {
+                since: at,
+                until: at + DASH_FORGOT_MS,
+                play: Some(Play::plain(ScriptId::DashForgot)),
+            },
+            at,
+        );
+        Decision::reflex("dash/forgot")
+    }
+
+    /// Her lunch at `seat`, her fridge, from `at`, dashed home for (D3a):
+    /// built directly (no prelude or coda, no grievance felt, nothing
+    /// recorded, nothing drawn), always as long.
+    fn dash_lunch_at(seat: Seat, at: u64) -> Act {
+        tracing::info!(item = ?seat.item, "houseguest: her lunch, forgotten");
+        Act::Use {
+            seat,
+            since: at,
+            until: at + DASH_LUNCH_MS,
+            whole: DASH_LUNCH_MS,
+            play: Play::plain(ScriptId::DashLunch),
+            grievance: None,
+        }
+    }
+
     /// When the Dream would come tonight, in monotonic millis: 30 game
     /// minutes after her first sleep of the night, counted across
     /// whatever got her up since. `None` with no night by her routine.
@@ -4282,6 +4391,11 @@ impl Osaka {
         // With nowhere calm to go, she stays as she is, and isn't startled
         // off it again.
         self.rest = terrain.restful(self.x, self.y).then_some((self.x, self.y));
+        // Dashed home from school (D3a): for what she forgot, before her
+        // routine sends her out again.
+        if let Some(dash) = self.dash {
+            return self.dash_on(dash, here, terrain, chances, at);
+        }
         // Her routine (D4, A3): at night, to bed; at school time, out
         // through her door; before anything else she'd do (below, once
         // her context is built). Whatever moving of her home was under
@@ -5210,6 +5324,7 @@ impl Osaka {
         self.leaving = None;
         self.returning = None;
         self.late = false;
+        self.dash = None;
         self.set(Act::Stand { until: at + 1000 }, at);
     }
 
@@ -5508,6 +5623,40 @@ impl Osaka {
         osaka.returning = Some(why);
         osaka.greeted = true;
         osaka
+    }
+
+    /// She dashes home from school for something she forgot (phase 5b
+    /// D3a): out of her door at `spot`, facing `facing` (the far door's
+    /// beats only, from its first, so a door standing closed there goes
+    /// straight on into hers). As she first decides, she goes for it (see
+    /// [`Osaka::dash_on`]); then her routine sends her out again. No
+    /// hello: she said good morning already.
+    pub fn dash_in(spot: (i32, i32), facing: Facing, now: u64, rng: &mut Rng) -> Self {
+        let act = Act::Door {
+            since: now.saturating_sub(DOOR_THERE_MS),
+            to: spot,
+            gap: 0,
+        };
+        let mut osaka = Self::new(spot.0, spot.1, facing, act, now, rng);
+        osaka.dash = Some(Dash::In);
+        osaka.greeted = true;
+        osaka
+    }
+
+    /// The stage: her dash home comes out of a door at `spot` instead
+    /// (beside her fridge, so the scene shows soon), from its first far
+    /// beat at `now`, what she forgot still to settle.
+    pub fn dash_through(&mut self, spot: (i32, i32), now: u64) {
+        (self.x, self.y) = spot;
+        self.dash = Some(Dash::In);
+        self.set(
+            Act::Door {
+                since: now.saturating_sub(DOOR_THERE_MS),
+                to: spot,
+                gap: 0,
+            },
+            now,
+        );
     }
 
     /// Off to poke the scrollback accordion, standing at `spot` on it:

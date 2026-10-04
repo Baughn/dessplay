@@ -1050,6 +1050,7 @@ fn visiting_at(guest: &mut Guest, real: &Buffer, view: &IdleView, (x, y): (i32, 
     guest.state = State::Visiting(Box::new(Visit {
         fades: Vec::new(),
         osaka: Osaka::standing_at(x, y, 0, &mut rng),
+        kind: Kind::Normal,
         terrain: Terrain::default(),
         painted: Vec::new(),
         image: None,
@@ -1598,6 +1599,12 @@ fn every_scene_has_a_spot_in_the_stage_room() {
                         // Lifted, or (a turn) set down already.
                         Scene::Arrange => {
                             visit.osaka.carrying().is_some() || sofa(&guest) != sofa_was
+                        }
+                        Scene::DashIn | Scene::DashForgot => {
+                            let Some(Cue::Script(id)) = scene.cue() else {
+                                panic!("{at}: {scene:?} cues no script");
+                            };
+                            visit.osaka.plays().is_some_and(|p| p.own == id)
                         }
                     };
                 }
@@ -3912,7 +3919,7 @@ fn an_errand_at_night_is_never_tucked_in() {
             guest.day(0).map(|day| day.slot),
             Some(routine::Slot::Asleep)
         );
-        guest.begin_visit(osaka, terrain, (100, 30), 0);
+        guest.begin_visit(osaka, terrain, (100, 30), Kind::Normal, 0);
         let State::Visiting(visit) = &guest.state else {
             panic!("visiting");
         };
@@ -10883,4 +10890,5 @@ proptest! {
 
 mod away;
 mod census;
+mod dash;
 mod golden;

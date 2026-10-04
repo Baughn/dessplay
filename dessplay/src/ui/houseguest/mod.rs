@@ -384,6 +384,8 @@ mod placement {
 
 struct Visit {
     osaka: Osaka,
+    /// Counted, or a dash home while she's out at school (A16).
+    kind: Kind,
     terrain: Terrain,
     /// What she painted in the last frame, with the real cells beneath —
     /// the dissolve's frozen composite if activity arrives now.
@@ -577,9 +579,22 @@ enum How {
     /// (where it stood, if it did): only the gate shutting (`!open`)
     /// calls it off.
     Return(Option<DoorAt>),
-    /// A dash in while she's out (step 5c, which builds it; nothing
-    /// makes one yet): only the gate shutting calls it off.
-    #[expect(dead_code, reason = "phase 5b step 5c dashes in")]
+    /// A dash home while she's out at school (D3a, A16), out of her
+    /// closed door (where it stands, if it does): only the gate shutting
+    /// calls it off.
+    Dash,
+}
+
+/// What a visit is (A16).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Kind {
+    /// A visit: counted (`Ledger::visits`), and her body's stream seeded
+    /// by its number.
+    Normal,
+    /// A dash home while she's out at school (D3a), for something she
+    /// forgot or for the chat's accordion: not counted (she's still out),
+    /// her body's stream salted apart from the coming visit's, no parcel
+    /// delivered, and her routine sends her out again by her door.
     Dash,
 }
 
@@ -955,9 +970,13 @@ impl Guest {
                 }
             }
         }
+        // A dash home, forced: in through her door whatever she's at
+        // (at school time, out again after).
+        if matches!(scene, stage::Scene::DashIn | stage::Scene::DashForgot) {
+            self.state = State::Arriving(How::Dash);
         // From her empty home too: an arrival like any (at school time
         // her routine sends her out again at her first decision).
-        if scene == stage::Scene::Arrive || !matches!(self.state, State::Visiting(_)) {
+        } else if scene == stage::Scene::Arrive || !matches!(self.state, State::Visiting(_)) {
             self.state = State::Arriving(How::Idle);
         }
         self.cue = Some(scene);
@@ -1395,24 +1414,32 @@ impl Guest {
     /// could change (the shell redraws only then).
     pub fn advance(&mut self, now: u64) -> bool {
         // Her clock first, and on its own it changes nothing on screen.
+        let before = self.game_ms();
         self.accrue(now);
         let fed = self.sync_clock(now);
         let nudge = self.nudge.advance(now);
         // School time, by her routine as fed to her (unfed, never).
         let school = fed.is_some_and(|clock| clock.day(now).slot == routine::Slot::Away);
+        // Her dash home (D3a), if this step of her clock crossed it: an
+        // edge, so a cold start or a restart after it never dashes.
+        let dash = fed.is_some_and(|clock| self.dash_crossed(&clock, before, self.game_ms()));
         let mut changed = match &mut self.state {
-            State::Absent => self.absent(now, school),
+            State::Absent => self.absent(now, school, dash),
             State::Arriving(_) => true,
             State::Away(empty) => {
                 // A rain ending this tick needs its last frame too (the
                 // frame without it).
                 let fading = !empty.fades.is_empty();
                 empty.fades.retain(|fade| !fade.done(now));
-                if school {
-                    fading
-                } else {
+                if !school {
                     self.school_out(now);
                     true
+                } else if dash && self.comes_in(now) {
+                    tracing::info!("houseguest: dashing home from school");
+                    self.state = State::Arriving(How::Dash);
+                    true
+                } else {
+                    fading
                 }
             }
             State::Visiting(visit) => {
@@ -1432,6 +1459,16 @@ impl Guest {
                 // Hers the moment she does it: whatever ends the visit
                 // before the next paint can't lose it.
                 self.unsaved |= record(&mut self.ledger, &mut self.shop_now, visit);
+                // Dashed home and still here as school ends (in on an
+                // errand at 12:44, say), not on her way out again: she's
+                // home, and it's a visit after all.
+                if visit.kind == Kind::Dash && !school && visit.osaka.leaving().is_none() {
+                    visit.kind = Kind::Normal;
+                    self.ledger.visits += 1;
+                    self.unsaved = true;
+                    self.out = None;
+                    tracing::info!(visit = self.ledger.visits, "houseguest: home early");
+                }
                 changed || fading || flapped
             }
             State::Leaving(leaving) => {
@@ -1451,12 +1488,18 @@ impl Guest {
 
     /// Absent at `now` (`school`: it's school time by her routine): she
     /// comes in as the idle gate opens, or, at school time, her home
-    /// stands empty (she has one; with none, there's nothing to show);
-    /// as school ends, her coming home is decided. Returns whether the
-    /// screen could change.
-    fn absent(&mut self, now: u64, school: bool) -> bool {
+    /// stands empty (she has one; with none, there's nothing to show),
+    /// or she dashes home (`dash`: its moment just passed); as school
+    /// ends, her coming home is decided. Returns whether the screen could
+    /// change.
+    fn absent(&mut self, now: u64, school: bool, dash: bool) -> bool {
         if school {
             self.out.get_or_insert_default();
+            if dash && self.comes_in(now) {
+                tracing::info!("houseguest: dashing home from school");
+                self.state = State::Arriving(How::Dash);
+                return true;
+            }
         } else if self.out.is_some() {
             self.school_out(now);
             return !matches!(self.state, State::Absent);
@@ -1477,6 +1520,13 @@ impl Guest {
         true
     }
 
+    /// Whether it's school time at `now` by her routine as fed to her
+    /// (unfed, never).
+    fn at_school(&self, now: u64) -> bool {
+        self.fed_day(now)
+            .is_some_and(|day| day.slot == routine::Slot::Away)
+    }
+
     /// Whether she has a home: furniture of her own.
     fn furnished(&self) -> bool {
         !self.ledger.home.props.is_empty()
@@ -1489,13 +1539,56 @@ impl Guest {
     /// she's absent, and comes in later on the idle gate.
     fn school_out(&mut self, now: u64) {
         let door = self.out.take().and_then(|out| out.door);
-        if self.open && (self.resident || self.gate_open(now)) {
+        if self.comes_in(now) {
             tracing::info!("houseguest: home from school");
             self.state = State::Arriving(How::Return(door));
         } else {
             tracing::debug!("houseguest: school's out, but the client is busy");
             self.state = State::Absent;
         }
+    }
+
+    /// Whether she comes in at `now` by her routine while she's out (home
+    /// from school, or dashing home): the client idle, or she lives here,
+    /// and visits on. Asked once, as it's due: input or chat since
+    /// doesn't call it off (A6).
+    fn comes_in(&self, now: u64) -> bool {
+        self.open && (self.resident || self.gate_open(now))
+    }
+
+    /// Her clock, in game millis since its start (0 before she has met
+    /// you: it stands still then).
+    fn game_ms(&self) -> u64 {
+        self.ledger
+            .clock
+            .saturating_mul(GAME_MINUTE_MS)
+            .saturating_add(self.clock_rem)
+    }
+
+    /// Whether a dash home (D3a) falls in her clock's step from game
+    /// millis `from` (not included) to `to`: on a game day of the step,
+    /// at its minute ([`brain::dash`]), while that day is at school by
+    /// her routine (`clock`). At most one a day.
+    fn dash_crossed(&self, clock: &routine::Clock, from: u64, to: u64) -> bool {
+        let days = routine::split(from).0..=routine::split(to).0;
+        from < to
+            && days.into_iter().any(|day| {
+                brain::dash(self.ledger.master_seed, day).is_some_and(|minute| {
+                    let at = routine::game_of(day, minute);
+                    from < at && at <= to && clock.day_of(at).slot == routine::Slot::Away
+                })
+            })
+    }
+
+    /// When her next dash home (D3a) is due, in monotonic millis, while
+    /// her routine is fed: today's, if it's still to come (a later day's
+    /// comes after a boundary she wakes for anyway).
+    fn next_dash(&self, now: u64) -> Option<u64> {
+        let clock = self.routine_clock(now).filter(|_| self.feed_clock)?;
+        let game = clock.game.at(now);
+        let day = routine::split(game).0;
+        let at = routine::game_of(day, brain::dash(self.ledger.master_seed, day)?);
+        (at > game && clock.day_of(at).slot == routine::Slot::Away).then(|| clock.game.when(at))
     }
 
     /// Where her closed door stands while she's out, if it does.
@@ -1518,7 +1611,7 @@ impl Guest {
         let State::Visiting(visit) = std::mem::replace(&mut self.state, State::Absent) else {
             return;
         };
-        tracing::info!("houseguest: out, her door shut behind her");
+        tracing::info!(kind = ?visit.kind, "houseguest: out, her door shut behind her");
         let door = DoorAt {
             x: visit.osaka.x,
             y: visit.osaka.y,
@@ -1527,7 +1620,14 @@ impl Guest {
         // Where she went out (with no home to show, it's where she comes
         // back in).
         self.out = Some(Out { door: Some(door) });
-        if !self.furnished() {
+        // Out again from a dash home, her home stands empty only for a
+        // client still idle (or hers); else it shows when the gate next
+        // opens.
+        let shown = match visit.kind {
+            Kind::Normal => true,
+            Kind::Dash => self.comes_in(now),
+        };
+        if !self.furnished() || !shown {
             return;
         }
         // What she moved and made goes (the real text shows again), as
@@ -1577,6 +1677,7 @@ impl Guest {
                     .filter(|_| !school || self.furnished())
                     .into_iter()
                     .chain(self.next_boundary(now))
+                    .chain(self.next_dash(now))
                     .min()
             }
             State::Arriving(_) => Some(now),
@@ -1585,6 +1686,7 @@ impl Guest {
                 .iter()
                 .map(|fade| fade.next_frame(now))
                 .chain(self.next_boundary(now))
+                .chain(self.next_dash(now))
                 .min(),
             State::Visiting(visit) => Some(
                 visit
@@ -1613,31 +1715,33 @@ impl Guest {
             self.state = State::Absent;
             if size.0 >= MIN_WIDTH && size.1 >= MIN_HEIGHT {
                 let terrain = Terrain::read(buf, &view.protected, self.graphics.is_some());
+                let kind = self.kind_of(how == How::Dash);
                 // Each visit draws from its own seed.
-                self.rng = Rng(self.ledger.visit_seed(self.ledger.visits));
+                self.rng = Rng(self.seed_of(kind));
+                // Out of her door where it stood (or the nearest spot it
+                // fits, or one near the middle with no home), never
+                // dropping in from the sky.
+                let through = |door: Option<DoorAt>| {
+                    let near = door.map_or(middle(size), |d| (d.x, d.y));
+                    let facing = door.map_or(sprite::Facing::Right, |d| d.facing);
+                    door_spot(&terrain, near).map(|spot| (spot, facing))
+                };
                 let osaka = match how {
-                    How::Idle | How::Dash => {
-                        Osaka::arrive(now, &terrain, i32::from(size.0), &mut self.rng)
-                    }
-                    // Out of her door where it stood (or the nearest
-                    // spot it fits, or one near the middle with no home),
-                    // never dropping in from the sky.
-                    How::Return(door) => {
-                        let near = door.map_or(middle(size), |d| (d.x, d.y));
-                        let facing = door.map_or(sprite::Facing::Right, |d| d.facing);
-                        door_spot(&terrain, near).map(|spot| {
-                            Osaka::back_through_door(
-                                spot,
-                                facing,
-                                osaka::Routine::School,
-                                now,
-                                &mut self.rng,
-                            )
-                        })
-                    }
+                    How::Idle => Osaka::arrive(now, &terrain, i32::from(size.0), &mut self.rng),
+                    How::Return(door) => through(door).map(|(spot, facing)| {
+                        Osaka::back_through_door(
+                            spot,
+                            facing,
+                            osaka::Routine::School,
+                            now,
+                            &mut self.rng,
+                        )
+                    }),
+                    How::Dash => through(self.closed_door())
+                        .map(|(spot, facing)| Osaka::dash_in(spot, facing, now, &mut self.rng)),
                 };
                 if let Some(osaka) = osaka {
-                    self.begin_visit(osaka, terrain, size, now);
+                    self.begin_visit(osaka, terrain, size, kind, now);
                 }
             }
             if !self.present() {
@@ -2062,14 +2166,51 @@ impl Guest {
         }
     }
 
-    /// A new visit, with `osaka` just arrived.
-    fn begin_visit(&mut self, mut osaka: Osaka, terrain: Terrain, size: (u16, u16), now: u64) {
-        self.ledger.visits += 1;
-        self.unsaved = true;
-        // Here, she isn't out (whatever brought her: her coming home, an
-        // errand, the stage), and her closed door is hers again.
-        self.out = None;
-        tracing::info!(visit = self.ledger.visits, "houseguest arrived");
+    /// What a visit beginning now is: a dash home (`dash`, A16) once
+    /// she has met you; a first meeting is always counted (her clock
+    /// starts with it).
+    fn kind_of(&self, dash: bool) -> Kind {
+        if dash && self.ledger.visits > 0 {
+            Kind::Dash
+        } else {
+            Kind::Normal
+        }
+    }
+
+    /// The seed of her body's stream for a visit of `kind` beginning
+    /// now: the coming visit's, salted apart for a dash home (so the
+    /// visit after it draws as it would have).
+    fn seed_of(&self, kind: Kind) -> u64 {
+        let seed = self.ledger.visit_seed(self.ledger.visits);
+        match kind {
+            Kind::Normal => seed,
+            Kind::Dash => seed ^ brain::DASH_SALT,
+        }
+    }
+
+    /// A new visit of `kind`, with `osaka` just arrived.
+    fn begin_visit(
+        &mut self,
+        mut osaka: Osaka,
+        terrain: Terrain,
+        size: (u16, u16),
+        kind: Kind,
+        now: u64,
+    ) {
+        match kind {
+            Kind::Normal => {
+                self.ledger.visits += 1;
+                self.unsaved = true;
+                // Here, she isn't out (whatever brought her: her coming
+                // home, an errand, the stage), and her closed door is
+                // hers again.
+                self.out = None;
+                tracing::info!(visit = self.ledger.visits, "houseguest arrived");
+            }
+            // Still out at school: her door's spot is kept, for her empty
+            // home if this is cut short.
+            Kind::Dash => tracing::info!(visit = self.ledger.visits, "houseguest dashed home"),
+        }
         let day = self.fed_day(now);
         // Her mood (neither random stream): the game day's, her routine
         // fed (a second visit the same day comes in the same mood, saying
@@ -2101,6 +2242,7 @@ impl Guest {
         let tuck = day.is_some_and(|day| day.slot == routine::Slot::Asleep) && !osaka.on_errand();
         self.state = State::Visiting(Box::new(Visit {
             osaka,
+            kind,
             terrain,
             painted: Vec::new(),
             image: None,
@@ -2158,6 +2300,12 @@ impl Guest {
         if !errand.poked && accordion.is_some() {
             self.nudge.shake(now);
         }
+        // At school time she's off again by her door (her routine's away
+        // reflex), not in a dissolve (Q2).
+        if self.at_school(now) {
+            tracing::debug!("houseguest: errand done, back to school");
+            return;
+        }
         let quiet = view
             .delay
             .is_some_and(|delay| now >= self.quiet_until(delay));
@@ -2212,17 +2360,18 @@ impl Guest {
         };
         match &mut self.state {
             State::Visiting(visit) => visit.osaka.errand(spot, &visit.terrain, now),
-            // Out at school, she comes for it too, out of a door; her
-            // routine sends her out again after the poke (5c makes it a
-            // dash).
+            // Out at school, she comes for it too, out of a door: a dash
+            // home (Q2), and after the poke her routine sends her out
+            // again by her door.
             State::Absent | State::Arriving(_) | State::Away(_) => {
                 // Her closed door, as it stood in her empty home, rains
                 // out as she comes (her pieces stand on in the visit).
                 let door = self.door_rain(now);
-                self.rng = Rng(self.ledger.visit_seed(self.ledger.visits));
+                let kind = self.kind_of(self.at_school(now));
+                self.rng = Rng(self.seed_of(kind));
                 let osaka = Osaka::arrive_for_errand(spot, now, &mut self.rng);
                 let size = (buf.area.width, buf.area.height);
-                self.begin_visit(osaka, terrain, size, now);
+                self.begin_visit(osaka, terrain, size, kind, now);
                 if let (State::Visiting(visit), Some(door)) = (&mut self.state, door) {
                     visit.fades.push(door);
                 }
@@ -2301,8 +2450,11 @@ impl Guest {
                     // Switched off: no goodbye.
                     self.state = State::Absent;
                 }
-                // On an errand, she stays till it's done.
+                // On an errand, she stays till it's done; on a dash home
+                // from school (an errand's too, Q2), till she's out again
+                // by her door (it's brief, and on her routine's way).
                 State::Visiting(_) if self.errand.is_some() => {}
+                State::Visiting(ref visit) if visit.kind == Kind::Dash => {}
                 // Covered over (an overlay), or a visitor busy: her home
                 // rains out, her too if she's here.
                 State::Visiting(_) | State::Away(_) => self.leave(now),
@@ -2683,7 +2835,8 @@ fn furnish(
     }
     // Not while she's asleep for the night, or about to be tucked in:
     // she'd say so. It waits for her to wake, and to say good morning.
-    let awake = !visit.tuck && visit.osaka.awake(now);
+    // Nor on a dash home from school (A16): it waits for her return.
+    let awake = !visit.tuck && visit.kind != Kind::Dash && visit.osaka.awake(now);
     if let Some(item) = ledger.ordered
         && ledger.bought_on < ledger.visits
         && awake

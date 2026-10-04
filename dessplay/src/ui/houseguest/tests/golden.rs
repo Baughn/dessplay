@@ -1,4 +1,4 @@
-//! Golden trajectories: nine scenes, four seeds each, in ASCII and line
+//! Golden trajectories: ten scenes, four seeds each, in ASCII and line
 //! art, hashed frame by frame; and the first four again with her routine
 //! never reaching her (the `UNFED_*` tables: as she was before the clock
 //! fed her). A refactor that means to change nothing she does keeps every
@@ -495,6 +495,39 @@ fn home_from_school(seed: u64, graphics: bool, _: bool) -> u64 {
     trace.finish(&guest, &format!("home-{seed}-{graphics}"))
 }
 
+/// A dash home (D3a), as it falls for `seed`: from a minute before its
+/// first school day's dash (a Tuesday or later), her home standing empty
+/// with a fridge in it, three minutes of her clock: out of her closed
+/// door, to the fridge for her lunch, and out again by her door.
+fn dash_home(seed: u64, graphics: bool, _: bool) -> u64 {
+    let (day, minute) = (1..)
+        .find_map(|day| {
+            let school = routine::weekday(day).num_days_from_monday() < 5;
+            brain::dash(seed, day)
+                .filter(|_| school)
+                .map(|minute| (day, minute))
+        })
+        .unwrap();
+    let at = routine::GameTime {
+        day,
+        h: (minute - 1) / 60,
+        m: (minute - 1) % 60,
+    };
+    let (real, view) = home_screen();
+    let mut guest = home_at(seed, at, graphics);
+    assert!(guest.ledger.home.add(room::Prop::new(
+        Furniture::Fridge,
+        Nook::Playlist,
+        900,
+        sprite::Facing::Right
+    )));
+    let mut trace = Trace::new();
+    drive(&mut guest, &mut trace, 180_000, &[], |_, _| {
+        (real.clone(), view.clone(), false)
+    });
+    trace.finish(&guest, &format!("dash-{seed}-{graphics}"))
+}
+
 /// Every run's hash, for a table of `(seed, ASCII, line art)`.
 fn hashes(scene: SceneFn, fed: bool) -> Vec<(u64, u64, u64)> {
     (0..4)
@@ -648,6 +681,20 @@ fn golden_home_from_school() {
             (1, 0x0ceee9de88786799, 0x3cbf367270361eeb),
             (2, 0x49590f25ae93c4ea, 0x2911bbd589dbbb90),
             (3, 0x16817c2b767a8a57, 0xd23eb48164ba0ee4),
+        ],
+    );
+}
+
+#[test]
+fn golden_dash_home() {
+    check(
+        "dash",
+        dash_home,
+        &[
+            (0, 0x146fdfcb4445418c, 0xa31153cf283a6bbd),
+            (1, 0x973488674fe497a8, 0x629d2676800bfd3d),
+            (2, 0x6cf8b1ebaaf4ec62, 0x07cf674663a0282f),
+            (3, 0xc14b4e9f2925d69d, 0xd66b50ed236a52dc),
         ],
     );
 }

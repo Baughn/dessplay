@@ -289,6 +289,32 @@ pub(super) fn night_snack(master: u64, morning: u64) -> Option<u16> {
         .then(|| from + ((z >> 32) % span) as u16)
 }
 
+/// Salts the seed of a school day's dash home (see [`dash`]): keeps its
+/// hash apart from every other use of the day's seed (the mood's, the
+/// midnight snack's), so whether she dashes home says nothing of her mood.
+pub(super) const DASH_SALT: u64 = 0x6461_7368_5f69_6e21;
+
+/// Her dash home from school on game `day`, of the home whose master
+/// seed is `master` (phase 5b D3a, A16): one school day in three, at a
+/// minute of [`routine::DASH_WINDOW`] (since midnight of `day`). A pure
+/// hash of the two, as [`night_snack`] is: neither random stream, so
+/// whether and when never moves anything else she does. Whether `day`
+/// is a school day at all is the routine's to say (the caller asks it):
+/// this is only the minute it would be.
+///
+/// [`routine::DASH_WINDOW`]: super::routine::DASH_WINDOW
+pub(super) fn dash(master: u64, day: u64) -> Option<u16> {
+    let mut z = day_seed(master, day) ^ DASH_SALT;
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^= z >> 31;
+    let (from, until) = super::routine::DASH_WINDOW;
+    let span = u64::from(until - from);
+    // Its remainder by three says whether, the high bits when.
+    z.is_multiple_of(3)
+        .then(|| from + ((z >> 32) % span) as u16)
+}
+
 /// Where a want would have her, as far as her needs care.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Spot {
@@ -819,6 +845,38 @@ pub(super) fn choose(
 mod tests {
     use super::super::Rng;
     use super::*;
+
+    /// Her dash home from school is a pure function of the home and the
+    /// game day: at most one a day (one minute, or none), the same every
+    /// time, never in the first or last 10 game minutes of school
+    /// (08:15-12:45), and about one school day in three (a pinned band
+    /// over 4000 days).
+    #[test]
+    fn the_dash_home_is_hashed_from_the_home_and_day() {
+        let (from, until) = super::super::routine::DASH_WINDOW;
+        assert_eq!((from, until), (8 * 60 + 25, 12 * 60 + 35));
+        let (mut days, mut first, mut last) = (0, u16::MAX, 0);
+        for master in 0..400u64 {
+            for day in 0..10 {
+                let dash = dash(master, day);
+                assert_eq!(dash, super::dash(master, day));
+                if let Some(minute) = dash {
+                    assert!((from..until).contains(&minute), "{minute}");
+                    days += 1;
+                    first = first.min(minute);
+                    last = last.max(minute);
+                }
+            }
+        }
+        assert!((1250..1420).contains(&days), "{days} in 4000");
+        // Spread over the window, not bunched.
+        assert!(first < from + 10 && last >= until - 10, "{first}..{last}");
+        // Not the midnight snack's draw over again.
+        let both = (0..4000u64)
+            .filter(|&m| dash(m, 3).is_some() && night_snack(m, 3).is_some())
+            .count();
+        assert!((250..420).contains(&both), "{both}");
+    }
 
     fn all() -> Vec<Want> {
         let mut offers = vec![

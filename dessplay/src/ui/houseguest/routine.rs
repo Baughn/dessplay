@@ -438,6 +438,12 @@ pub fn day_time(game: u64, vacation: bool) -> DayTime {
 /// in and of waking.
 pub const SNACK_WINDOW: (u16, u16) = (hm(0, 30), hm(5, 30));
 
+/// The stretch of a school day (minutes since midnight, from, and until
+/// but not including) her dash home for something she forgot may fall
+/// in (phase 5b D3a, A16): inside her time at school, clear of its first
+/// and last 10 game minutes.
+pub const DASH_WINDOW: (u16, u16) = (AWAY.0 + 10, AWAY.1 - 10);
+
 /// Game millis since [`START`] at `minute` (since midnight) of game
 /// `day` (0 for a moment before her start).
 pub fn game_of(day: u64, minute: u16) -> u64 {
