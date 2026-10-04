@@ -41,6 +41,10 @@ import sys
 import tempfile
 from pathlib import Path
 
+sys.dont_write_bytecode = True  # no __pycache__ in the repo
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import live_agents  # noqa: E402
+
 REPORT_TAIL = 200
 LINE_CAP = 500
 
@@ -148,6 +152,16 @@ def main() -> int:
     retrying = hook_input.get("stop_hook_active") is True
     session = re.sub(r"[^A-Za-z0-9_-]", "", str(hook_input.get("session_id", ""))) or "manual"
     state = Path(tempfile.gettempdir()) / f"dessplay-stop-hook-{session}.keys"
+
+    # Subagents at work own the working copy (see live_agents.py): their
+    # half-finished edits aren't this session's failures, and fmt or a
+    # build would race them. Stand down until the last one stops.
+    agents = live_agents.live(project)
+    if agents:
+        print(json.dumps({
+            "systemMessage": f"Stop gate skipped: {len(agents)} subagent(s) still working.",
+        }))
+        return 0
 
     failures = run_steps(project)
     if not failures:
