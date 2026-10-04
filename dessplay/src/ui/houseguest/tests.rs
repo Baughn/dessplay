@@ -3953,6 +3953,12 @@ fn a_stage_cue_at_night_tucks_her_in_only_to_arrive() {
                 Scene::Jacks,
                 false,
             ),
+            // Dashed home (the stage's, at night): for what she forgot.
+            (
+                vec![(Furniture::Bed, Nook::Playlist, 500)],
+                Scene::DashIn,
+                false,
+            ),
         ] {
             let at = format!("{scene:?} {pieces:?} graphics={graphics}");
             let mut guest = home_at(8, mon(23, 0), &pieces, graphics);

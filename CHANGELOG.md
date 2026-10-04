@@ -55,6 +55,12 @@ Add new days at the top. Add new entries at the bottom of existing days.
 - Added: If new messages are waiting while you're scrolled back in the
   chat and Osaka is at school, she pops in through her door to poke the
   chat for you, then heads straight back out.
+- Fixed: Opening a menu or dialog while Osaka is on her way to poke the
+  chat now sends her off at once, as it does on any visit, instead of
+  her carrying on over it. The chat still gets its poke.
+- Fixed: When Osaka heads out by her door and her room isn't left
+  standing (she has no furniture yet, or you're at the keys), her door
+  and anything she moved now fade away instead of vanishing at once.
 
 ## 2026-10-03
 

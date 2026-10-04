@@ -60,17 +60,32 @@ fn dashing(guest: &Guest) -> bool {
         || matches!(&guest.state, State::Visiting(visit) if visit.kind == Kind::Dash)
 }
 
-/// One step as the shell takes it from `now`, waking as late as she
-/// asks (up to a minute): a tick, and a paint if it says the screen could
-/// change.
+/// One step as the shell takes it from `now`, sleeping exactly as long
+/// as she asks (a minute when she asks nothing): a tick, and a paint if
+/// it says the screen could change. Whatever she must wake for (her
+/// dash home among them) is hers to ask for: no shorter wait covers for
+/// a wake she forgot.
 fn long_step(guest: &mut Guest, real: &Buffer, view: &IdleView, now: &mut u64) {
     *now += guest
         .next_tick(*now)
         .map_or(60_000, |d| d.as_millis() as u64)
-        .clamp(1, 60_000);
+        .max(1);
     if guest.advance(*now) {
         paint(guest, real, view, *now);
     }
+}
+
+/// Whether a goodbye shows her (a dissolve of her, waving or not; not
+/// only of her things, as when they rain out with her out of sight).
+fn waving(guest: &Guest) -> bool {
+    let State::Leaving(leaving) = &guest.state else {
+        return false;
+    };
+    leaving.dissolve.has_face()
+        || leaving
+            .image
+            .as_ref()
+            .is_some_and(|image| image.figure.her().is_some())
 }
 
 /// What a dash home looked like, frame by frame.
@@ -92,8 +107,9 @@ struct Seen {
 
 /// Run `guest` (out at school, her home standing empty or not) from
 /// `now` until she has dashed home and is out again, at most `limit`
-/// ms. A dash never counts as a visit, never ends in a goodbye, and
-/// brings no parcel while it lasts.
+/// ms. A dash never counts as a visit, never ends in a goodbye of her
+/// (what it showed may rain out, with no home to stand), and brings no
+/// parcel while it lasts.
 fn watch_dash(guest: &mut Guest, real: &Buffer, view: &IdleView, mut now: u64, limit: u64) -> Seen {
     let visits = guest.ledger.visits;
     let ordered = guest.ledger.ordered;
@@ -102,10 +118,7 @@ fn watch_dash(guest: &mut Guest, real: &Buffer, view: &IdleView, mut now: u64, l
     while now < end && seen.back.is_none() {
         let door = guest.closed_door();
         shell_step(guest, real, view, &mut now, true);
-        assert!(
-            !matches!(guest.state, State::Leaving(_)),
-            "a goodbye at {now}"
-        );
+        assert!(!waving(guest), "a goodbye at {now}");
         assert_eq!(guest.ledger.visits, visits, "a dash counted at {now}");
         if dashing(guest) && seen.came.is_none() {
             seen.came = Some((now, door));
@@ -160,7 +173,12 @@ fn a_dash_home_for_her_lunch_and_out_again() {
             let (came, door) = seen
                 .came
                 .unwrap_or_else(|| panic!("{at}: no dash: {seen:?}"));
-            assert!(came >= due, "{at}: dashed home at {came}, before {due}");
+            // At its minute, as the step crossing it ends (a second's
+            // step, here).
+            assert!(
+                (due..=due + 1000).contains(&came),
+                "{at}: dashed home at {came}, due {due}"
+            );
             let door = door.unwrap_or_else(|| panic!("{at}: no door"));
             assert_eq!(seen.first, Some((door.x, door.y)), "{at}: out of her door");
             assert!(seen.fridge_open, "{at}: her fridge never opened");
@@ -303,10 +321,11 @@ fn at_most_one_dash_a_school_day() {
 
 /// The errand at school (Q2): scrolled back with messages unseen while
 /// she's out, she dashes in by a door, pokes the accordion, and goes
-/// straight back out by her door: no dissolve, even for a visitor whose
-/// video plays (she's out on her routine's way, not his); not counted;
-/// then her home stands empty again (a resident's), or she's simply out
-/// (a visitor at the video: it shows when he's idle). With no home she
+/// straight back out by her door: no goodbye of her, even for a visitor
+/// whose video plays (she's out on her routine's way, not his); not
+/// counted; then her home stands empty again (a resident's), or she's
+/// simply out (a visitor at the video: what the dash showed rains out,
+/// nobody waving, and her home shows when he's idle). With no home she
 /// still comes and goes by her door.
 #[test]
 fn the_errand_at_school_is_a_dash() {
@@ -342,10 +361,7 @@ fn the_errand_at_school_is_a_dash() {
                     .clamp(1, 100);
                 guest.advance(now);
                 paint(&mut guest, &real, &view, now);
-                assert!(
-                    !matches!(guest.state, State::Leaving(_)),
-                    "{at}: a dissolve at {now}"
-                );
+                assert!(!waving(&guest), "{at}: a goodbye at {now}");
                 assert_eq!(guest.ledger.visits, visits, "{at}: counted at {now}");
                 match &guest.state {
                     State::Visiting(visit) => {
@@ -416,8 +432,480 @@ fn still_in_from_a_dash_as_school_ends_she_is_home() {
     }
 }
 
-/// Her clock two game minutes before `seed`'s first dash home on a
-/// school day from game day `from` on.
+/// A master seed from `from` on whose Tuesday has no dash home.
+fn no_dash_seed(from: u64) -> u64 {
+    (from..)
+        .find(|&seed| brain::dash(seed, TUESDAY).is_none())
+        .unwrap()
+}
+
+/// From a cold start until her home stands empty, then a dash cued
+/// (`scene`): she's in through her door, dashing.
+fn cue_a_dash(guest: &mut Guest, real: &Buffer, view: &IdleView, scene: Scene) -> u64 {
+    let mut now = until_visiting_or_away(guest, real, view);
+    guest.cue(scene);
+    now += 1;
+    paint(guest, real, view, now);
+    assert!(dashing(guest), "{scene:?}: dashing");
+    now
+}
+
+/// Dashed home near school's end and already through her door on her
+/// way out again when it ends: she goes on out (the dash isn't made a
+/// visit then: it's over), and comes home as school ends, out of her
+/// door, counted once.
+#[test]
+fn on_her_way_out_from_a_dash_as_school_ends_she_comes_home_once() {
+    let (real, view) = home_screen();
+    let seed = no_dash_seed(0);
+    for graphics in [false, true] {
+        let at = format!("graphics={graphics}");
+        let mut guest = home_at(seed, tue_at(12 * 60 + 40), &FRIDGE_HOME, graphics);
+        let mut now = cue_a_dash(&mut guest, &real, &view, Scene::DashForgot);
+        let visits = guest.ledger.visits;
+        // Through her door, on her way out, before school ends.
+        let through = |guest: &Guest, now: u64| {
+            matches!(&guest.state, State::Visiting(visit)
+                if visit.osaka.leaving().is_some() && visit.osaka.hidden(now))
+        };
+        while !through(&guest, now) {
+            assert!(now < 60_000, "{at}: never on her way out");
+            shell_step(&mut guest, &real, &view, &mut now, true);
+        }
+        guest.skip_clock(now);
+        assert_eq!(
+            guest.clock_label(now).as_deref(),
+            Some("Tue 12:45 Afternoon")
+        );
+        let (mut out, mut home) = (false, false);
+        let end = now + 60_000;
+        while now < end && !home {
+            shell_step(&mut guest, &real, &view, &mut now, true);
+            assert!(guest.ledger.visits <= visits + 1, "{at}: counted twice");
+            match &guest.state {
+                State::Visiting(visit) if visit.kind == Kind::Normal => {
+                    assert!(out, "{at}: made a visit before she was out");
+                    home = true;
+                }
+                State::Visiting(_) => {}
+                _ => out = true,
+            }
+        }
+        assert!(home, "{at}: never home");
+        assert_eq!(guest.ledger.visits, visits + 1, "{at}: counted once");
+    }
+}
+
+/// A first meeting is always counted (her clock starts with it): a dash
+/// home cued on a guest never met is a visit, and she says hello after
+/// her lunch.
+#[test]
+fn a_dash_cued_at_a_first_meeting_is_a_visit() {
+    let (real, view) = home_screen();
+    for graphics in [false, true] {
+        let at = format!("graphics={graphics}");
+        let mut guest = Guest::new(5);
+        if graphics {
+            guest.set_picker(kitty());
+        }
+        assert_eq!(guest.ledger.visits, 0);
+        guest.cue(Scene::DashIn);
+        paint(&mut guest, &real, &view, 0);
+        let visit = visit_of(&guest);
+        assert_eq!(visit.kind, Kind::Normal, "{at}");
+        assert!(!visit.osaka.greeted(), "{at}: her hello is to come");
+        assert_eq!(guest.ledger.visits, 1, "{at}: counted");
+        let mut now = 0;
+        let mut said = Vec::new();
+        while now < 60_000 && !visit_of(&guest).osaka.greeted() {
+            shell_step(&mut guest, &real, &view, &mut now, true);
+            if let Some(Bubble::Say(line)) = visit_of(&guest).osaka.appearance(now).2
+                && said.last() != Some(&line)
+            {
+                said.push(line);
+            }
+        }
+        let greeting = visit_of(&guest).osaka.mood().greeting();
+        assert!(said.contains(&FORGOT_LUNCH), "{at}: {said:?}");
+        while now < 60_000 && said.last() != Some(&greeting) {
+            shell_step(&mut guest, &real, &view, &mut now, true);
+            if let Some(Bubble::Say(line)) = visit_of(&guest).osaka.appearance(now).2
+                && said.last() != Some(&line)
+            {
+                said.push(line);
+            }
+        }
+        assert_eq!(said.last(), Some(&greeting), "{at}: no hello: {said:?}");
+    }
+}
+
+/// The forgetful dash cued with her fridge to hand: she still can't
+/// think what she came for ("Forgot somethin'..." then "...what was
+/// it?"), and her fridge stays shut.
+#[test]
+fn the_forgetful_dash_forgets_with_a_fridge_to_hand() {
+    let (real, view) = home_screen();
+    for graphics in [false, true] {
+        let at = format!("graphics={graphics}");
+        let mut guest = home_at(no_dash_seed(0), tue_at(9 * 60), &FRIDGE_HOME, graphics);
+        let now = cue_a_dash(&mut guest, &real, &view, Scene::DashForgot);
+        let seen = watch_dash(&mut guest, &real, &view, now, 120_000);
+        assert!(!seen.fridge_open, "{at}: her fridge opened");
+        assert!(!seen.said.contains(&FORGOT_LUNCH), "{at}: {:?}", seen.said);
+        let forgot = seen
+            .said
+            .iter()
+            .position(|&line| line == FORGOT_SOMETHING)
+            .unwrap_or_else(|| panic!("{at}: {:?}", seen.said));
+        assert_eq!(seen.said.get(forgot + 1), Some(&WHAT_WAS_IT), "{at}");
+        assert_eq!(seen.methods.first(), Some(&"dash/forgot"), "{at}");
+        assert!(seen.back.is_some(), "{at}: never out again");
+    }
+}
+
+/// Whatever stops her on her way to her fridge for her lunch (here a
+/// chat line: she stops and looks), she sets off for it again, and has
+/// her lunch.
+#[test]
+fn stopped_on_her_way_to_her_lunch_she_sets_off_again() {
+    let (real, view) = home_screen();
+    for graphics in [false, true] {
+        let at = format!("graphics={graphics}");
+        let mut guest = home_at(no_dash_seed(0), tue_at(9 * 60), &FRIDGE_HOME, graphics);
+        let mut now = until_visiting_or_away(&mut guest, &real, &view);
+        // Dashing home as her clock would have her (not cued: the stage
+        // puts her door beside her fridge), out of her closed door, a
+        // walk from her fridge.
+        guest.state = State::Arriving(How::Dash);
+        let walking = |guest: &Guest| {
+            matches!(&guest.state, State::Visiting(visit)
+                if visit.osaka.act_name() == "Walk"
+                    && visit.osaka.decisions.iter().any(|d| d.method == "dash/lunch"))
+        };
+        while !walking(&guest) {
+            assert!(now < 60_000, "{at}: never on her way to her fridge");
+            shell_step(&mut guest, &real, &view, &mut now, true);
+        }
+        // A chat line: she stops to look.
+        let chatty = IdleView {
+            chat_mark: ChatMark {
+                synced: 1,
+                ..ChatMark::default()
+            },
+            ..view.clone()
+        };
+        now += 1;
+        guest.advance(now);
+        paint(&mut guest, &real, &chatty, now);
+        assert!(!walking(&guest), "{at}: she didn't stop");
+        let seen = watch_dash(&mut guest, &real, &chatty, now, 120_000);
+        assert!(seen.fridge_open, "{at}: no lunch: {:?}", seen.methods);
+        assert!(seen.said.contains(&FORGOT_LUNCH), "{at}: {:?}", seen.said);
+        assert!(seen.back.is_some(), "{at}: never out again");
+    }
+}
+
+/// With no home (nothing to show while she's out: she's simply absent),
+/// she still dashes home as its minute passes, the shell asleep until
+/// she asks to wake for it: in by a door at a spot it fits, can't think
+/// what for, and out by her door again; what showed (her door) rains
+/// out, nobody waving, and she's absent, out at school, her door's spot
+/// kept. Not counted. Her client not idle at the minute, the day's dash
+/// is simply missed.
+#[test]
+fn with_no_home_she_dashes_home_from_absent() {
+    let (real, view) = home_screen();
+    let (seed, minute) = dash_seed(0);
+    for graphics in [false, true] {
+        let at = format!("graphics={graphics}");
+        let mut guest = home_at(seed, tue_at(minute - 3), &[], graphics);
+        let visits = guest.ledger.visits;
+        // The shell's first tick latches her clock; then it sleeps as
+        // long as she asks.
+        let mut now = 0;
+        guest.advance(now);
+        paint(&mut guest, &real, &view, now);
+        let due = real_of(&guest, now, tue_at(minute));
+        while !dashing(&guest) {
+            assert!(
+                matches!(guest.state, State::Absent),
+                "{at}: absent till she dashes"
+            );
+            assert!(now <= due, "{at}: no dash by {now} (due {due})");
+            long_step(&mut guest, &real, &view, &mut now);
+        }
+        assert!((due..=due + 10).contains(&now), "{at}: at {now}, due {due}");
+        let seen = watch_dash(&mut guest, &real, &view, now - 1, 120_000);
+        assert!(seen.first.is_some(), "{at}: never in: {seen:?}");
+        let forgot = seen
+            .said
+            .iter()
+            .position(|&line| line == FORGOT_SOMETHING)
+            .unwrap_or_else(|| panic!("{at}: {:?}", seen.said));
+        assert_eq!(seen.said.get(forgot + 1), Some(&WHAT_WAS_IT), "{at}");
+        assert_eq!(seen.methods.last(), Some(&"routine/away"), "{at}");
+        let back = seen.back.unwrap_or_else(|| panic!("{at}: never out again"));
+        now = back;
+        while !matches!(guest.state, State::Absent) {
+            assert!(now < back + 10_000, "{at}: never absent");
+            assert!(!waving(&guest), "{at}: a goodbye at {now}");
+            shell_step(&mut guest, &real, &view, &mut now, true);
+        }
+        let door = guest
+            .closed_door()
+            .unwrap_or_else(|| panic!("{at}: no door"));
+        assert_eq!(
+            Some((door.x, door.y)),
+            seen.first,
+            "{at}: out where she came in"
+        );
+        assert_eq!(guest.ledger.visits, visits, "{at}: counted");
+    }
+    // At the keys a moment before the minute (the client open, the idle
+    // gate shut): no dash that day.
+    for resident in [false, true] {
+        let view = IdleView {
+            resident,
+            ..view.clone()
+        };
+        let mut guest = home_at(seed, tue_at(minute - 3), &[], false);
+        let mut now = 0;
+        guest.advance(now);
+        paint(&mut guest, &real, &view, now);
+        let due = real_of(&guest, now, tue_at(minute));
+        now = due - 1000;
+        guest.advance(now);
+        guest.activity(now);
+        paint(&mut guest, &real, &view, now);
+        let end = real_of(&guest, now, tue_at(12 * 60 + 40));
+        let mut dashed = false;
+        while now < end {
+            long_step(&mut guest, &real, &view, &mut now);
+            dashed |= dashing(&guest);
+        }
+        assert_eq!(dashed, resident, "resident={resident}: hers, or missed");
+    }
+}
+
+/// The errand at school for a visitor at the keys (nothing playing, but
+/// not idle long enough for her to come): in by a door, the poke, out by
+/// her door; and her home isn't left standing for him after (it shows
+/// only to an idle client): what the dash showed rains out, nobody
+/// waving, and she's simply out.
+#[test]
+fn the_errand_at_school_for_a_visitor_at_the_keys() {
+    let (w, h) = (100, 30);
+    for graphics in [false, true] {
+        let at = format!("graphics={graphics}");
+        let (real, accordion) = accordion_room(w, h, 2);
+        let chat = nooks(w, h)[0].1;
+        let base = IdleView {
+            // Typed a moment ago: the idle gate stays shut throughout.
+            delay: Some(Duration::from_secs(600)),
+            chat,
+            nooks: nooks(w, h)[1..].to_vec(),
+            ..view(bottom_strip(w, h))
+        };
+        let view = scrolled_back(base, accordion, 2);
+        let mut guest = home_at(no_dash_seed(0), tue_at(9 * 60), &BARE_HOME, graphics);
+        let visits = guest.ledger.visits;
+        let mut now = 0;
+        paint(&mut guest, &real, &view, now);
+        let (mut came, mut poked, mut rained) = (false, false, false);
+        while now < 150_000 && !(came && matches!(guest.state, State::Absent)) {
+            shell_step(&mut guest, &real, &view, &mut now, true);
+            assert!(empty_of(&guest).is_none(), "{at}: her home shown at {now}");
+            assert!(!waving(&guest), "{at}: a goodbye at {now}");
+            assert_eq!(guest.ledger.visits, visits, "{at}: counted at {now}");
+            match &guest.state {
+                State::Visiting(visit) => {
+                    assert_eq!(visit.kind, Kind::Dash, "{at}");
+                    came = true;
+                    poked |= guest.errand.as_ref().is_some_and(|e| e.poked);
+                }
+                State::Leaving(_) => rained = true,
+                _ => {}
+            }
+        }
+        assert!(came && poked, "{at}: came {came}, poked {poked}");
+        assert!(matches!(guest.state, State::Absent), "{at}: out");
+        assert!(rained, "{at}: her things just vanished");
+        assert!(
+            guest.out.is_some_and(|o| o.door.is_some()),
+            "{at}: out by her door"
+        );
+    }
+}
+
+/// An overlay (a modal, F3) opened while she's dashed home ends the dash
+/// at once, as it ends any visit: nothing of hers goes on over it. So
+/// too her errand at school, before she has poked (the accordion shakes
+/// by itself).
+#[test]
+fn an_overlay_ends_a_dash_home_at_once() {
+    let (real, home) = home_screen();
+    let home = IdleView {
+        resident: true,
+        ..home
+    };
+    let covered = IdleView {
+        busy: Some(Busy::Overlay),
+        ..home.clone()
+    };
+    for graphics in [false, true] {
+        let at = format!("graphics={graphics}");
+        let mut guest = home_at(no_dash_seed(0), tue_at(9 * 60), &FRIDGE_HOME, graphics);
+        let mut now = cue_a_dash(&mut guest, &real, &home, Scene::DashIn);
+        for _ in 0..3 {
+            shell_step(&mut guest, &real, &home, &mut now, true);
+        }
+        assert!(dashing(&guest), "{at}");
+        now += 1;
+        guest.advance(now);
+        paint(&mut guest, &real, &covered, now);
+        assert!(!guest.present() || !dashing(&guest), "{at}: dashing on");
+        assert!(
+            !matches!(guest.state, State::Visiting(_)),
+            "{at}: still visiting under the overlay"
+        );
+    }
+    // The errand at school, under way when the overlay opens.
+    let (w, h) = (100, 30);
+    for graphics in [false, true] {
+        let at = format!("errand graphics={graphics}");
+        let (real, accordion) = accordion_room(w, h, 2);
+        let chat = nooks(w, h)[0].1;
+        let base = IdleView {
+            resident: true,
+            chat,
+            nooks: nooks(w, h)[1..].to_vec(),
+            ..view(bottom_strip(w, h))
+        };
+        let open = scrolled_back(base, accordion, 2);
+        let covered = IdleView {
+            busy: Some(Busy::Overlay),
+            ..open.clone()
+        };
+        let mut guest = home_at(no_dash_seed(0), tue_at(9 * 60), &BARE_HOME, graphics);
+        let mut now = 0;
+        paint(&mut guest, &real, &open, now);
+        while !(guest.errand.is_some() && matches!(guest.state, State::Visiting(_))) {
+            assert!(now < 60_000, "{at}: no errand");
+            shell_step(&mut guest, &real, &open, &mut now, true);
+        }
+        assert!(guest.errand.as_ref().is_some_and(|e| !e.poked), "{at}");
+        now += 1;
+        guest.advance(now);
+        paint(&mut guest, &real, &covered, now);
+        assert!(
+            !matches!(guest.state, State::Visiting(_)),
+            "{at}: still on her errand under the overlay"
+        );
+        paint(&mut guest, &real, &covered, now + 1);
+        assert!(guest.errand.is_none(), "{at}: the errand's off");
+    }
+}
+
+/// The cat stays as he is through her dash home: in his bed or not as
+/// her empty home has him (the coming visit's), not the last visit's,
+/// over homes where the two differ.
+#[test]
+fn the_cat_stays_put_through_a_dash_home() {
+    let (real, view) = home_screen();
+    let pieces = [
+        (Furniture::Sofa, Nook::Users, 200),
+        (Furniture::CatBed, Nook::Users, 700),
+        (Furniture::Bed, Nook::Playlist, 200),
+        (Furniture::Fridge, Nook::Playlist, 800),
+    ];
+    let mut differ = 0;
+    for seed in 0..40 {
+        let guest = home_at(seed, tue_at(9 * 60), &pieces, false);
+        let ledger = &guest.ledger;
+        if cat_home_of(ledger, ledger.visits) == cat_home_of(ledger, ledger.visits - 1) {
+            continue;
+        }
+        differ += 1;
+        for graphics in [false, true] {
+            let at = format!("seed {seed} graphics={graphics}");
+            let mut guest = home_at(seed, tue_at(9 * 60), &pieces, graphics);
+            let mut now = until_visiting_or_away(&mut guest, &real, &view);
+            let cat = |guest: &Guest| match &guest.state {
+                State::Away(empty) => Some(empty.looks.state(Furniture::CatBed)),
+                State::Visiting(visit) => Some(visit.looks.state(Furniture::CatBed)),
+                _ => None,
+            };
+            let home = cat(&guest).unwrap_or_else(|| panic!("{at}: away"));
+            guest.cue(Scene::DashForgot);
+            let end = now + 60_000;
+            let mut dashed = false;
+            while now < end && !(dashed && empty_of(&guest).is_some()) {
+                shell_step(&mut guest, &real, &view, &mut now, true);
+                dashed |= dashing(&guest);
+                if let Some(state) = cat(&guest) {
+                    assert_eq!(state, home, "{at}: the cat changed at {now}");
+                }
+            }
+            assert!(dashed && empty_of(&guest).is_some(), "{at}: dash done");
+        }
+    }
+    assert!(differ >= 5, "{differ} homes");
+}
+
+/// The stage's dash cued on a visit under way (after school): as any
+/// scene but an arrival, the visit goes on (not ended, not a new one),
+/// and she's put through a door where one may stand, beside her fridge
+/// for her lunch, or where she stood, forgetful.
+#[test]
+fn a_dash_cued_on_a_visit_keeps_the_visit() {
+    let (real, view) = home_screen();
+    for scene in [Scene::DashIn, Scene::DashForgot] {
+        for graphics in [false, true] {
+            let at = format!("{scene:?} graphics={graphics}");
+            let mut guest = home_at(
+                no_dash_seed(0),
+                tue_at(16 * 60 + 30),
+                &FRIDGE_HOME,
+                graphics,
+            );
+            let mut now = until_visiting(&mut guest, &real, &view, 0);
+            let visits = guest.ledger.visits;
+            guest.cue(scene);
+            now += 1;
+            paint(&mut guest, &real, &view, now);
+            assert!(
+                matches!(guest.cue_note(), Some(Ok(_))),
+                "{at}: {:?}",
+                guest.cue_note()
+            );
+            let visit = visit_of(&guest);
+            assert_eq!(visit.kind, Kind::Normal, "{at}: the same visit");
+            assert_eq!(guest.ledger.visits, visits, "{at}: not a new one");
+            assert!(visit.osaka.dashing(), "{at}: dashing in");
+            let spot = (visit.osaka.x, visit.osaka.y);
+            assert!(
+                door_fits(&visit.terrain, spot),
+                "{at}: her door at {spot:?}"
+            );
+            let line = if scene == Scene::DashIn {
+                FORGOT_LUNCH
+            } else {
+                WHAT_WAS_IT
+            };
+            let mut said = Vec::new();
+            while now < 30_000 && !said.contains(&line) {
+                shell_step(&mut guest, &real, &view, &mut now, true);
+                if let Some(Bubble::Say(line)) = visit_of(&guest).osaka.appearance(now).2 {
+                    said.push(line);
+                }
+            }
+            assert!(said.contains(&line), "{at}: {said:?}");
+        }
+    }
+}
+
+/// Her clock a game minute before `seed`'s first dash home on a school
+/// day from game day `from` on.
 fn before_a_dash(seed: u64, from: u64) -> routine::GameTime {
     let (day, minute) = (from..)
         .find_map(|day| {
@@ -429,8 +917,8 @@ fn before_a_dash(seed: u64, from: u64) -> routine::GameTime {
         .unwrap();
     routine::GameTime {
         day,
-        h: (minute - 2) / 60,
-        m: (minute - 2) % 60,
+        h: (minute - 1) / 60,
+        m: (minute - 1) % 60,
     }
 }
 
@@ -438,10 +926,12 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(dessplay_core::test_support::proptest_cases(16)))]
 
     /// [`her_days_never_touch_what_is_protected`] across a dash home:
-    /// from two game minutes before one, a fridge among her things, she
+    /// from a game minute before one, a fridge among her things, she
     /// dashes in through her door and out again (for her lunch, or for
     /// nothing she can remember), and nothing protected is painted, no
-    /// image of hers hides text, and a key rains it all back.
+    /// image of hers hides text, and a key rains it all back. Long
+    /// enough that nearly every dash reaches its end (her way out, and
+    /// what it showed raining out), not only its start.
     ///
     /// [`her_days_never_touch_what_is_protected`]: super::away
     #[test]
@@ -452,7 +942,7 @@ proptest! {
         sizes in proptest::collection::vec((48u16..130, 14u16..45), 1..3),
         text in proptest::collection::vec((0u16..60, 0u16..18, "[a-z漢─│ ]{1,6}"), 0..20),
         skips in proptest::collection::vec((0u16..60, 0u16..18), 0..6),
-        chats in proptest::collection::vec(0u64..60_000, 0..3),
+        chats in proptest::collection::vec(0u64..120_000, 0..3),
         protect in (0u16..40, 0u16..10, 1u16..20, 1u16..6),
         owned in proptest::collection::vec((0usize..4, 0usize..3, 0u16..=1000, any::<bool>()), 0..3),
         fridge in (0usize..3, 0u16..=1000),
@@ -464,6 +954,6 @@ proptest! {
         owned.push((Furniture::Fridge, fridge.0, fridge.1, false));
         let mut guest = Guest::restore(Ledger::new_at(seed, before_a_dash(seed, from)));
         guest.set_date(date(2026, 6, 17));
-        long_visit_of(guest, graphics, &sizes, &text, &skips, &chats, protect, &owned, 60_000)?;
+        long_visit_of(guest, graphics, &sizes, &text, &skips, &chats, protect, &owned, 120_000)?;
     }
 }

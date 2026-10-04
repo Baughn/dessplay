@@ -216,6 +216,13 @@ impl Dissolve {
             .is_some_and(|&index| !self.settled.get(index).copied().unwrap_or(true))
     }
 
+    /// Whether her face is in it (her ASCII sprite in sight as it froze:
+    /// a goodbye of her, not only of her things).
+    #[cfg(test)]
+    pub fn has_face(&self) -> bool {
+        self.cells.iter().any(|cell| cell.face.is_some())
+    }
+
     fn phase(&self, cell: &Frozen, t: u64) -> Phase {
         if t >= SETTLE_BY_MS {
             return Phase::Settled;

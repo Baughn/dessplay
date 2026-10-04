@@ -292,6 +292,9 @@ pub(super) fn night_snack(master: u64, morning: u64) -> Option<u16> {
 /// Salts the seed of a school day's dash home (see [`dash`]): keeps its
 /// hash apart from every other use of the day's seed (the mood's, the
 /// midnight snack's), so whether she dashes home says nothing of her mood.
+/// It also salts the dash visit's body stream apart from the coming
+/// visit's (`visit_seed(visits) ^ DASH_SALT`, the guest's `seed_of`), so
+/// the visit after a dash draws as it would have.
 pub(super) const DASH_SALT: u64 = 0x6461_7368_5f69_6e21;
 
 /// Her dash home from school on game `day`, of the home whose master
@@ -848,18 +851,33 @@ mod tests {
 
     /// Her dash home from school is a pure function of the home and the
     /// game day: at most one a day (one minute, or none), the same every
-    /// time, never in the first or last 10 game minutes of school
-    /// (08:15-12:45), and about one school day in three (a pinned band
-    /// over 4000 days).
+    /// time (pinned for a few homes and days, so a change to its salt or
+    /// mix is a change on purpose), never in the first or last 10 game
+    /// minutes of school (08:15-12:45), and about one school day in three
+    /// (a pinned band over 4000 days).
     #[test]
     fn the_dash_home_is_hashed_from_the_home_and_day() {
         let (from, until) = super::super::routine::DASH_WINDOW;
         assert_eq!((from, until), (8 * 60 + 25, 12 * 60 + 35));
+        let pinned = [
+            (0, 0, None),
+            (0, 1, Some(617)),
+            (0, 3, Some(604)),
+            (0, 4, Some(615)),
+            (1, 1, None),
+            (1, 3, Some(527)),
+            (1, 6, Some(670)),
+            (2, 0, Some(592)),
+            (2, 5, Some(602)),
+            (2, 7, None),
+        ];
+        for (master, day, minute) in pinned {
+            assert_eq!(dash(master, day), minute, "home {master}, day {day}");
+        }
         let (mut days, mut first, mut last) = (0, u16::MAX, 0);
         for master in 0..400u64 {
             for day in 0..10 {
                 let dash = dash(master, day);
-                assert_eq!(dash, super::dash(master, day));
                 if let Some(minute) = dash {
                     assert!((from..until).contains(&minute), "{minute}");
                     days += 1;

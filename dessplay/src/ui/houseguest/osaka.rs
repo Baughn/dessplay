@@ -5630,8 +5630,9 @@ impl Osaka {
     /// beats only, from its first, so a door standing closed there goes
     /// straight on into hers). As she first decides, she goes for it (see
     /// [`Osaka::dash_on`]); then her routine sends her out again. No
-    /// hello: she said good morning already.
-    pub fn dash_in(spot: (i32, i32), facing: Facing, now: u64, rng: &mut Rng) -> Self {
+    /// hello once she has `met` you (she said good morning already); a
+    /// first meeting (the stage's) has hers after.
+    pub fn dash_in(spot: (i32, i32), facing: Facing, met: bool, now: u64, rng: &mut Rng) -> Self {
         let act = Act::Door {
             since: now.saturating_sub(DOOR_THERE_MS),
             to: spot,
@@ -5639,15 +5640,23 @@ impl Osaka {
         };
         let mut osaka = Self::new(spot.0, spot.1, facing, act, now, rng);
         osaka.dash = Some(Dash::In);
-        osaka.greeted = true;
+        osaka.greeted = met;
         osaka
     }
 
+    /// Whether she's on a dash home from school, what she forgot not yet
+    /// got (see [`Osaka::dash_in`]).
+    pub fn dashing(&self) -> bool {
+        self.dash.is_some()
+    }
+
     /// The stage: her dash home comes out of a door at `spot` instead
-    /// (beside her fridge, so the scene shows soon), from its first far
-    /// beat at `now`, what she forgot still to settle.
+    /// (beside her fridge, so the scene shows soon; or, on a visit under
+    /// way, where she stood), from its first far beat at `now`, what she
+    /// forgot still to settle. Whatever she was up to is dropped, as
+    /// [`Osaka::place`] drops it.
     pub fn dash_through(&mut self, spot: (i32, i32), now: u64) {
-        (self.x, self.y) = spot;
+        self.place(spot.0, spot.1, now);
         self.dash = Some(Dash::In);
         self.set(
             Act::Door {

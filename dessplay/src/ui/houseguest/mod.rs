@@ -545,6 +545,11 @@ struct Leaving {
     props: Vec<Shown>,
     /// How it looked then (A22): the TV on, the lamp off, as they were.
     looks: Looks,
+    /// What of hers was already raining out (a focused pane's, what she'd
+    /// moved and made, her closed door broken in on): it rains on to its
+    /// end, before the goodbye's own (they all began before it), never
+    /// cut off.
+    fades: Vec<Dissolve>,
 }
 
 /// She's on her way to the chat's scrollback accordion, or poking it.
@@ -970,13 +975,18 @@ impl Guest {
                 }
             }
         }
-        // A dash home, forced: in through her door whatever she's at
-        // (at school time, out again after).
-        if matches!(scene, stage::Scene::DashIn | stage::Scene::DashForgot) {
+        let dash = matches!(scene, stage::Scene::DashIn | stage::Scene::DashForgot);
+        let visiting = matches!(self.state, State::Visiting(_));
+        if dash && !visiting {
+            // A dash home, forced: in through her door (at school time,
+            // out again after). On a visit under way, as any scene but
+            // an arrival, the visit goes on (the stage puts her through
+            // a door).
             self.state = State::Arriving(How::Dash);
-        // From her empty home too: an arrival like any (at school time
-        // her routine sends her out again at her first decision).
-        } else if scene == stage::Scene::Arrive || !matches!(self.state, State::Visiting(_)) {
+        } else if scene == stage::Scene::Arrive || !visiting {
+            // From her empty home too: an arrival like any (at school
+            // time her routine sends her out again at her first
+            // decision).
             self.state = State::Arriving(How::Idle);
         }
         self.cue = Some(scene);
@@ -1154,6 +1164,7 @@ impl Guest {
                         startled: sprite::Face::Surprised,
                         props: empty.apart,
                         looks: empty.looks,
+                        fades: empty.fades,
                     }));
                 }
             }
@@ -1182,6 +1193,7 @@ impl Guest {
                         startled,
                         props: visit.apart,
                         looks: visit.looks,
+                        fades: visit.fades,
                     }));
                 }
             }
@@ -1205,11 +1217,7 @@ impl Guest {
     pub fn game_clock(&self, now: u64) -> Option<GameClock> {
         (self.ledger.visits > 0).then(|| GameClock {
             at: self.clock_at.unwrap_or(now),
-            game: self
-                .ledger
-                .clock
-                .saturating_mul(GAME_MINUTE_MS)
-                .saturating_add(self.clock_rem),
+            game: self.game_ms(),
         })
     }
 
@@ -1472,6 +1480,7 @@ impl Guest {
                 changed || fading || flapped
             }
             State::Leaving(leaving) => {
+                leaving.fades.retain(|fade| !fade.done(now));
                 if leaving.dissolve.done(now) {
                     tracing::trace!("houseguest gone");
                     self.state = State::Absent;
@@ -1556,8 +1565,9 @@ impl Guest {
         self.open && (self.resident || self.gate_open(now))
     }
 
-    /// Her clock, in game millis since its start (0 before she has met
-    /// you: it stands still then).
+    /// Her clock, in game millis since its start, as of the last accrual
+    /// (0 before she has met you: it stands still then). The one reading
+    /// of her clock's units ([`Guest::game_clock`] reads it too).
     fn game_ms(&self) -> u64 {
         self.ledger
             .clock
@@ -1603,10 +1613,15 @@ impl Guest {
     }
 
     /// Her visit ends at `now` with her out through her door by her
-    /// routine (A9): a new end, with no goodbye and no dissolve of her.
-    /// With a home, it stands empty, her closed door where she went out
-    /// (`State::Away`), and what she'd moved and made rains out; with
-    /// none, she's simply absent. Either way she's out until school ends.
+    /// routine (A9): a new end, with no goodbye and no wave of her. With
+    /// a home to show, it stands empty, her closed door where she went
+    /// out (`State::Away`), and what she'd moved and made rains out.
+    /// With none (no home; or out again from a dash home, the client in
+    /// use), what the visit showed rains out as her empty home's does
+    /// for a visitor's key: her door, her pieces, what she'd moved and
+    /// made, nobody in it to wave (she's out of sight); and she's absent.
+    /// Nothing of hers just vanishes. Either way she's out until school
+    /// ends.
     fn out_by_door(&mut self, now: u64) {
         let State::Visiting(visit) = std::mem::replace(&mut self.state, State::Absent) else {
             return;
@@ -1623,11 +1638,15 @@ impl Guest {
         // Out again from a dash home, her home stands empty only for a
         // client still idle (or hers); else it shows when the gate next
         // opens.
-        let shown = match visit.kind {
-            Kind::Normal => true,
-            Kind::Dash => self.comes_in(now),
-        };
-        if !self.furnished() || !shown {
+        let stands = self.furnished()
+            && match visit.kind {
+                Kind::Normal => true,
+                Kind::Dash => self.comes_in(now),
+            };
+        if !stands {
+            tracing::info!("houseguest: what she showed rains out, her home not shown");
+            self.state = State::Visiting(visit);
+            self.leave(now);
             return;
         }
         // What she moved and made goes (the real text shows again), as
@@ -1696,6 +1715,7 @@ impl Guest {
                     .chain(visit.flap.map(|(_, since)| since + FLAP_MS))
                     .fold(visit.osaka.due(), u64::min),
             ),
+            // Every fade began before the goodbye's rain, and ends first.
             State::Leaving(leaving) => Some(leaving.dissolve.next_frame(now)),
         };
         let due = due.into_iter().chain(self.nudge.next_at(now)).min()?;
@@ -1737,8 +1757,10 @@ impl Guest {
                             &mut self.rng,
                         )
                     }),
-                    How::Dash => through(self.closed_door())
-                        .map(|(spot, facing)| Osaka::dash_in(spot, facing, now, &mut self.rng)),
+                    How::Dash => through(self.closed_door()).map(|(spot, facing)| {
+                        let met = kind == Kind::Dash;
+                        Osaka::dash_in(spot, facing, met, now, &mut self.rng)
+                    }),
                 };
                 if let Some(osaka) = osaka {
                     self.begin_visit(osaka, terrain, size, kind, now);
@@ -1804,6 +1826,9 @@ impl Guest {
                 let terrain = Terrain::read(buf, &view.protected, true);
                 nudge.paint(buf, now);
                 leaving.dissolve.paint(buf, now);
+                for fade in &mut leaving.fades {
+                    fade.paint(buf, now);
+                }
                 if let Some(graphics) = &mut self.graphics
                     && t < dissolve::RAIN_FROM_MS
                     && untouched
@@ -2020,7 +2045,7 @@ impl Guest {
                         seats: seats(
                             &visit.shown,
                             &visit.terrain,
-                            self.cat_now || cat_home(&self.ledger),
+                            self.cat_now || cat_home(&self.ledger, visit.kind),
                         ),
                         builds: builds.clone(),
                         mine: visit.made.iter().filter_map(Made::mine).collect(),
@@ -2055,7 +2080,7 @@ impl Guest {
                     seats: seats(
                         &visit.shown,
                         &visit.terrain,
-                        self.cat_now || cat_home(&self.ledger),
+                        self.cat_now || cat_home(&self.ledger, visit.kind),
                     ),
                     builds,
                     mine: visit.made.iter().filter_map(Made::mine).collect(),
@@ -2097,7 +2122,7 @@ impl Guest {
                 }
                 // She's watching: the TV is on. And the lamp, the fridge,
                 // the cat...
-                let cat = self.cat_now || cat_home(&self.ledger);
+                let cat = self.cat_now || cat_home(&self.ledger, visit.kind);
                 let prop = visit.osaka.prop(now);
                 let dark = visit.osaka.dark(now);
                 let looks = Looks {
@@ -2238,8 +2263,11 @@ impl Guest {
         // Come in the night for the accordion, she was asleep: groggy.
         osaka.groggy_if_night(now);
         // At night she's tucked in at the first paint (not come on an
-        // errand: that's for the accordion).
-        let tuck = day.is_some_and(|day| day.slot == routine::Slot::Asleep) && !osaka.on_errand();
+        // errand: that's for the accordion; nor dashed home: that's for
+        // what she forgot).
+        let tuck = day.is_some_and(|day| day.slot == routine::Slot::Asleep)
+            && !osaka.on_errand()
+            && !osaka.dashing();
         self.state = State::Visiting(Box::new(Visit {
             osaka,
             kind,
@@ -2450,11 +2478,15 @@ impl Guest {
                     // Switched off: no goodbye.
                     self.state = State::Absent;
                 }
-                // On an errand, she stays till it's done; on a dash home
-                // from school (an errand's too, Q2), till she's out again
-                // by her door (it's brief, and on her routine's way).
-                State::Visiting(_) if self.errand.is_some() => {}
-                State::Visiting(ref visit) if visit.kind == Kind::Dash => {}
+                // A visitor busy (his video, a selection): on an errand,
+                // she stays till it's done; on a dash home from school
+                // (an errand's too, Q2), till she's out again by her door
+                // (it's brief, and on her routine's way). Never under an
+                // overlay: nothing of hers goes on over a modal (the
+                // accordion shakes by itself if she hadn't poked it).
+                State::Visiting(ref visit)
+                    if view.busy != Some(Busy::Overlay)
+                        && (self.errand.is_some() || visit.kind == Kind::Dash) => {}
                 // Covered over (an overlay), or a visitor busy: her home
                 // rains out, her too if she's here.
                 State::Visiting(_) | State::Away(_) => self.leave(now),
@@ -3390,11 +3422,19 @@ fn piece_look(
     }
 }
 
-/// Whether the cat is in his bed this visit (about half of them): read
-/// off the visit's seed, so it's settled for the whole visit and draws
-/// nothing from her generator.
-fn cat_home(ledger: &Ledger) -> bool {
-    cat_home_of(ledger, ledger.visits.saturating_sub(1))
+/// Whether the cat is in his bed this visit, of `kind` (about half of
+/// them): read off the visit's seed, so it's settled for the whole visit
+/// and draws nothing from her generator. A dash home has the coming
+/// visit's (`ledger.visits`: it isn't counted), as her empty home does
+/// (A22), so he's there or not as she dashes in and out again; a counted
+/// visit, its own (`visits - 1`), which a dash promoted as school ends
+/// keeps (the count goes up as it becomes one).
+fn cat_home(ledger: &Ledger, kind: Kind) -> bool {
+    let visit = match kind {
+        Kind::Normal => ledger.visits.saturating_sub(1),
+        Kind::Dash => ledger.visits,
+    };
+    cat_home_of(ledger, visit)
 }
 
 /// Whether the cat is in his bed on visit number `visit` (from 0): while

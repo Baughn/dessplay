@@ -1180,8 +1180,9 @@ fn an_errand_from_her_empty_home_rains_her_door_out() {
 }
 
 /// A start of her clock where she goes out or comes home (school's start
-/// or end, give or take three minutes, on a school day), or anywhere in
-/// her week.
+/// or end, give or take three minutes, on a school day), where she goes
+/// to bed (her bedtime, give or take three minutes, any night), or
+/// anywhere in her week.
 fn somewhen() -> impl Strategy<Value = routine::GameTime> {
     let near = |h: u16, m: u16| {
         (1u64..5, 0u16..7).prop_map(move |(day, d)| {
@@ -1193,9 +1194,24 @@ fn somewhen() -> impl Strategy<Value = routine::GameTime> {
             }
         })
     };
+    // 22:30 the night before school (Sunday to Thursday), else 23:30.
+    let bedtime = (0u64..7, 0u16..7).prop_map(|(day, d)| {
+        let bed = if matches!(day, 4 | 5) {
+            23 * 60 + 30
+        } else {
+            22 * 60 + 30
+        };
+        let minute = bed - 3 + d;
+        routine::GameTime {
+            day,
+            h: minute / 60,
+            m: minute % 60,
+        }
+    });
     prop_oneof![
         near(8, 15),
         near(12, 45),
+        bedtime,
         (1u64..8, 0u16..1440).prop_map(|(day, minute)| routine::GameTime {
             day,
             h: minute / 60,
