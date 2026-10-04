@@ -2221,7 +2221,7 @@ fn her_home_outlives_a_restart() {
     let ledger = guest.ledger_to_save().expect("changed");
     assert!(guest.ledger_to_save().is_none(), "handed out once");
     // The exit save still has it: a handout clears only the flag.
-    assert_eq!(guest.final_ledger().as_ref(), Some(&ledger));
+    assert_eq!(guest.final_ledger(0).as_ref(), Some(&ledger));
     assert_eq!(ledger.visits, 1);
     let State::Visiting(visit) = &guest.state else {
         panic!("visiting");
@@ -2233,7 +2233,7 @@ fn her_home_outlives_a_restart() {
     // A restart: the record round-trips through its stored form.
     let stored = Ledger::from_json(&ledger.to_json()).unwrap();
     let mut guest = Guest::restore(stored);
-    assert!(guest.final_ledger().is_none(), "unchanged since restored");
+    assert!(guest.final_ledger(0).is_none(), "unchanged since restored");
     guest.cue(Scene::Arrive);
     paint(&mut guest, &real, &view, 0);
     let State::Visiting(visit) = &guest.state else {
@@ -2260,22 +2260,329 @@ fn moving_out_wipes_her_record_and_an_unreadable_one_is_kept() {
     assert!(!guest.present());
     let ledger = guest.ledger_to_save().expect("the wipe is saved");
     assert_eq!(ledger, Ledger::new(77));
-    assert_eq!(guest.final_ledger(), Some(Ledger::new(77)));
+    assert_eq!(guest.final_ledger(0), Some(Ledger::new(77)));
 
     let mut guest = Guest::new(4);
     guest.keep_unsaved();
-    assert!(guest.final_ledger().is_none());
+    assert!(guest.final_ledger(0).is_none());
     guest.cue(Scene::Arrive);
     paint(&mut guest, &real, &view, 0);
     guest.give(Furniture::Sofa);
     paint(&mut guest, &real, &view, 0);
     assert!(guest.ledger_to_save().is_none());
-    assert!(guest.final_ledger().is_none(), "nor at exit");
+    assert!(guest.final_ledger(0).is_none(), "nor at exit");
     // Moving out writes over it, at exit too: even a wipe drawn from the
     // seed she started from differs from a record that couldn't be read.
     guest.move_out(4);
     assert_eq!(guest.ledger_to_save(), Some(Ledger::new(4)));
-    assert_eq!(guest.final_ledger(), Some(Ledger::new(4)));
+    assert_eq!(guest.final_ledger(0), Some(Ledger::new(4)));
+}
+
+// ---- Her clock ----
+
+/// A guest who has met you (her clock runs), at Monday 16:00.
+fn met(seed: u64) -> Guest {
+    let mut ledger = Ledger::new(seed);
+    ledger.visits = 1;
+    Guest::restore(ledger)
+}
+
+/// Her clock in game millis.
+fn game_ms(guest: &Guest) -> u64 {
+    guest.ledger.clock * 60_000 + guest.clock_rem
+}
+
+/// Her idle counter in real millis.
+fn idle_ms(guest: &Guest) -> u64 {
+    guest.ledger.idle_min * 60_000 + guest.idle_rem
+}
+
+/// The first tick only latches; time counts from it, six game millis to
+/// the real one, and on its own changes nothing on screen.
+#[test]
+fn her_clock_counts_from_the_first_tick() {
+    let mut guest = met(5);
+    assert_eq!(guest.game_clock(42), Some(GameClock { at: 42, game: 0 }));
+    assert!(!guest.advance(3_600_000), "time alone changes nothing");
+    assert_eq!(game_ms(&guest), 0, "the first tick only latches");
+    assert!(!guest.advance(3_610_000));
+    assert_eq!((guest.ledger.clock, guest.clock_rem), (1, 0));
+    assert!(!guest.advance(3_615_500));
+    assert_eq!((guest.ledger.clock, guest.clock_rem), (1, 33_000));
+    assert_eq!(guest.next_tick(3_615_500), None, "and asks for no tick");
+    assert_eq!(
+        guest.game_clock(0),
+        Some(GameClock {
+            at: 3_615_500,
+            game: 93_000
+        })
+    );
+    // Before she has met you it doesn't run, and there's no reading.
+    let mut guest = Guest::new(5);
+    guest.advance(0);
+    assert!(!guest.advance(3_600_000));
+    assert_eq!(game_ms(&guest), 0);
+    assert_eq!(guest.game_clock(3_600_000), None);
+    assert_eq!(guest.next_tick(3_600_000), None);
+}
+
+/// A step back in time (the stage slowed down, say) counts nothing and
+/// panics nowhere; the next step forward counts only what's new.
+#[test]
+fn a_step_back_counts_nothing() {
+    let mut guest = met(5);
+    guest.open = true;
+    guest.delay = Some(DELAY);
+    guest.advance(1_000);
+    guest.advance(500);
+    assert_eq!((game_ms(&guest), idle_ms(&guest)), (0, 0));
+    guest.advance(1_500);
+    assert_eq!(game_ms(&guest), 6 * 500, "500 to 1500, once");
+    guest.advance(DELAY.as_millis() as u64 + 2_000);
+    guest.advance(DELAY.as_millis() as u64 + 1_000);
+    guest.advance(DELAY.as_millis() as u64 + 3_000);
+    assert_eq!(idle_ms(&guest), 3_000, "from the gate, once");
+}
+
+/// A clean exit hands out a ledger whose only change is her clock.
+#[test]
+fn the_exit_save_carries_time_alone() {
+    let mut guest = met(5);
+    assert_eq!(guest.final_ledger(0), None, "unchanged");
+    guest.advance(0);
+    guest.advance(50_000);
+    assert_eq!(guest.ledger_to_save(), None, "under a batch");
+    let ledger = guest.final_ledger(60_000).expect("her clock moved");
+    assert_eq!(ledger.clock, 6);
+    assert_eq!(
+        Ledger { clock: 0, ..ledger },
+        met(5).ledger,
+        "and nothing else"
+    );
+}
+
+/// A restored clock batches from where it was restored, not from zero.
+#[test]
+fn a_restored_clock_batches_from_where_it_was() {
+    let mut ledger = Ledger::new(8);
+    ledger.visits = 1;
+    ledger.clock = 40;
+    let mut guest = Guest::restore(ledger);
+    guest.advance(0);
+    for now in (5_000..300_000).step_by(5_000) {
+        guest.advance(now);
+        assert_eq!(
+            guest.ledger_to_save(),
+            None,
+            "at {now}: {} game minutes",
+            guest.ledger.clock
+        );
+    }
+    guest.advance(300_000);
+    assert_eq!(guest.ledger_to_save().map(|l| l.clock), Some(70));
+}
+
+/// Her clock stops at the top, and what it stops at is saved as itself.
+#[test]
+fn her_clock_stops_at_the_top() {
+    let mut ledger = Ledger::new(8);
+    ledger.visits = 1;
+    ledger.clock = ledger::MINUTES_MAX - 1;
+    ledger.idle_min = ledger::MINUTES_MAX - 1;
+    let mut guest = Guest::restore(ledger);
+    guest.open = true;
+    guest.delay = Some(DELAY);
+    guest.advance(0);
+    guest.advance(3_600_000);
+    assert_eq!(guest.ledger.clock, ledger::MINUTES_MAX);
+    assert_eq!(guest.ledger.idle_min, ledger::MINUTES_MAX);
+    let stored = Ledger::from_json(&guest.ledger.to_json()).unwrap();
+    assert_eq!(stored, guest.ledger);
+}
+
+/// A reading of her clock answers for any moment: later at six times
+/// the pace, earlier too (a catch-up decision), and never before zero.
+#[test]
+fn a_clock_reading_answers_earlier_and_later() {
+    let clock = GameClock {
+        at: 10_000,
+        game: 30_000,
+    };
+    assert_eq!(clock.at(10_000), 30_000);
+    assert_eq!(clock.at(11_000), 36_000);
+    assert_eq!(clock.at(9_000), 24_000);
+    assert_eq!(clock.at(0), 0, "saturates at zero");
+    assert_eq!(clock.at(u64::MAX), u64::MAX, "and at the top");
+}
+
+/// The shell caps one step (a suspend `Instant` may count); without the
+/// cap a step counts whole.
+#[test]
+fn a_capped_step_counts_only_the_cap() {
+    let mut guest = met(5);
+    guest.cap_steps(Some(600_000));
+    guest.open = true;
+    guest.delay = Some(Duration::ZERO);
+    guest.advance(0);
+    guest.advance(3_600_000);
+    assert_eq!(guest.ledger.clock, 60, "ten real minutes, no more");
+    assert_eq!(idle_ms(&guest), 600_000, "for the idle counter too");
+    guest.advance(3_601_000);
+    assert_eq!(game_ms(&guest), 60 * 60_000 + 6_000);
+}
+
+proptest! {
+    /// Her clock and her idle counter come to the same however the time
+    /// is cut into ticks: the clock from the tick she met you at, at six
+    /// times real time; the idle counter from when the gate opened (or
+    /// she met you, if later). The latch moves while the clock waits for
+    /// her first meeting, so none of the wait counts.
+    #[test]
+    fn accrual_is_independent_of_how_ticks_fall(
+        before in proptest::collection::vec(1u64..200_000, 0..8),
+        after in proptest::collection::vec(1u64..200_000, 0..12),
+        start in 0u64..100_000,
+        quiet in 0u64..2_000_000,
+        open in any::<bool>(),
+    ) {
+        let mut guest = Guest::new(9);
+        guest.open = open;
+        guest.delay = Some(DELAY);
+        guest.quiet_since = quiet;
+        let mut now = start;
+        guest.advance(now);
+        for gap in &before {
+            now += gap;
+            guest.advance(now);
+        }
+        prop_assert_eq!(game_ms(&guest), 0, "not before she met you");
+        prop_assert_eq!(idle_ms(&guest), 0);
+        // She meets you on a paint at `met_at`, after its tick.
+        let met_at = now;
+        guest.ledger.visits = 1;
+        for gap in &after {
+            now += gap;
+            guest.advance(now);
+        }
+        prop_assert_eq!(game_ms(&guest), 6 * (now - met_at));
+        let gate = quiet + DELAY.as_millis() as u64;
+        let idle = if open { now.saturating_sub(gate.max(met_at)) } else { 0 };
+        prop_assert_eq!(idle_ms(&guest), idle);
+    }
+
+    /// Her clock never runs back within a process, even when time does
+    /// (the stage slowing down); a clean exit saves it to the
+    /// millisecond's minute, and a crash, restored from the last handout,
+    /// loses less than a batch.
+    #[test]
+    fn her_clock_survives_a_restart(
+        gaps in proptest::collection::vec(-100_000i64..400_000, 1..40),
+        events in proptest::collection::vec(any::<bool>(), 40),
+        tail in 0u64..400_000,
+    ) {
+        let mut guest = met(3);
+        let mut saved = guest.ledger.clone();
+        let mut now = 1_000u64;
+        // The latest moment yet: time counts from it.
+        let mut high = now;
+        guest.advance(now);
+        let mut last = 0;
+        for (i, &gap) in gaps.iter().enumerate() {
+            now = now.saturating_add_signed(gap);
+            high = high.max(now);
+            guest.advance(now);
+            if events[i] {
+                // An event dirties the ledger at once.
+                guest.send_parcel();
+            }
+            prop_assert!(guest.ledger.clock >= last, "never runs back");
+            last = guest.ledger.clock;
+            if let Some(ledger) = guest.ledger_to_save() {
+                saved = ledger;
+            }
+            // A crash now: restored from the last handout.
+            prop_assert!(
+                guest.ledger.clock - saved.clock < 30,
+                "a crash loses less than a batch: {} saved at {}",
+                guest.ledger.clock,
+                saved.clock
+            );
+        }
+        // A clean exit: her clock up to the exit's moment, handed out
+        // whenever it moved (the record restored had it at zero).
+        let exit = high + tail;
+        let want = (game_ms(&guest) + 6 * tail) / 60_000;
+        let ledger = match guest.final_ledger(exit) {
+            Some(ledger) => ledger,
+            None => {
+                prop_assert_eq!(want, 0, "her clock moved, and the exit save dropped it");
+                guest.ledger.clone()
+            }
+        };
+        prop_assert_eq!(ledger.clock, want);
+        let restored = Guest::restore(Ledger::from_json(&ledger.to_json()).unwrap());
+        prop_assert_eq!(restored.ledger.clock, want, "equal after the restart");
+        prop_assert_eq!(restored.ledger.idle_min, ledger.idle_min);
+    }
+}
+
+/// Time dirties the ledger in batches of thirty game minutes since the
+/// last handout; an event hands it out at once and starts the batch
+/// again.
+#[test]
+fn her_clock_is_saved_in_batches() {
+    let mut guest = met(8);
+    let mut now = 0;
+    guest.advance(now);
+    // Ten real seconds a game minute.
+    let mut tick = |guest: &mut Guest| {
+        now += 10_000;
+        guest.advance(now);
+        guest.ledger_to_save()
+    };
+    for minute in 1..30 {
+        assert_eq!(tick(&mut guest), None, "minute {minute}");
+    }
+    let ledger = tick(&mut guest).expect("thirty game minutes");
+    assert_eq!(ledger.clock, 30);
+    for _ in 31..50 {
+        assert_eq!(tick(&mut guest), None);
+    }
+    // An event at 16:50: handed out at once, and the batch restarts.
+    guest.send_parcel();
+    assert_eq!(tick(&mut guest).map(|l| l.clock), Some(50));
+    for minute in 51..80 {
+        assert_eq!(tick(&mut guest), None, "minute {minute}");
+    }
+    assert_eq!(tick(&mut guest).map(|l| l.clock), Some(80));
+}
+
+/// Moving out stops her clock back at Monday 16:00, counters and all;
+/// it starts again when she next meets you.
+#[test]
+fn moving_out_resets_her_clock() {
+    let mut guest = met(8);
+    guest.open = true;
+    guest.delay = Some(DELAY);
+    guest.advance(0);
+    guest.advance(3_605_500);
+    assert_eq!((guest.ledger.clock, guest.clock_rem), (360, 33_000));
+    assert!(guest.ledger.idle_min > 0);
+    assert_ne!(guest.idle_rem, 0);
+    guest.ledger.rare_at = 7;
+    guest.ledger.legend_at = 9;
+    guest.move_out(8);
+    assert_eq!(guest.ledger_to_save(), Some(Ledger::new(8)));
+    assert_eq!(
+        (game_ms(&guest), idle_ms(&guest)),
+        (0, 0),
+        "no remainder carried over"
+    );
+    guest.advance(3_700_000);
+    assert_eq!(game_ms(&guest), 0, "not until she meets you again");
+    guest.ledger.visits = 1;
+    guest.advance(3_710_000);
+    assert_eq!(guest.ledger.clock, 1);
 }
 
 // ---- Deliveries and the shopping channel ----
@@ -7357,9 +7664,10 @@ fn cued_carry(graphics: bool, setting: bool) -> (Guest, Buffer, IdleView, u64) {
     (guest, real, view, at)
 }
 
-/// Her record, as saved.
-fn record_of(guest: &Guest) -> String {
-    guest.ledger.to_json()
+/// What her record says of her home: the pieces, and what's on order
+/// (not her clock, which runs on through the goodbye).
+fn home_of(guest: &Guest) -> (room::Home, Option<Furniture>) {
+    (guest.ledger.home.clone(), guest.ledger.ordered)
 }
 
 /// A goodbye with the sofa in her pocket, or set down but not yet taken
@@ -7370,7 +7678,7 @@ fn a_goodbye_mid_carry_leaves_the_piece_where_it_stood() {
     for graphics in [false, true] {
         for setting in [false, true] {
             let (mut guest, real, view, mut now) = cued_carry(graphics, setting);
-            let record = record_of(&guest);
+            let record = home_of(&guest);
             let sofa = prop_of(&guest, Furniture::Sofa);
             if setting {
                 // Set down, and the visit ends before any paint takes it.
@@ -7394,7 +7702,7 @@ fn a_goodbye_mid_carry_leaves_the_piece_where_it_stood() {
                 "graphics {graphics}: the rain restores the frame"
             );
             assert_eq!(
-                record_of(&guest),
+                home_of(&guest),
                 record,
                 "graphics {graphics}, setting {setting}"
             );

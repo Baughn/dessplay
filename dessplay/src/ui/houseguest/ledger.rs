@@ -15,6 +15,13 @@
 //! The pieces she hasn't settled yet (deliveries, standing where they
 //! came in) are listed in `unsettled`, written only when there are any;
 //! a record without it has every piece settled.
+//!
+//! Her clock (game minutes since Monday 16:00 of game day 0) and her idle
+//! and pity counters come after it, each written only when it isn't
+//! zero and read leniently: a value this build can't take (not a whole
+//! number, negative, or absurdly large) reads as zero without failing
+//! the record. A record without them is at Monday 16:00 with nothing
+//! counted, which is where every record from before them starts.
 
 use serde::{Deserialize, Serialize};
 
@@ -40,6 +47,18 @@ pub struct Ledger {
     pub(super) ordered: Option<Furniture>,
     /// The visit she last bought something on.
     pub(super) bought_on: u64,
+    /// Her clock: game minutes since `START`, Monday 16:00 of game day
+    /// 0 (part of the format; it never changes). It runs only while
+    /// dessplay is open and she has met you (phase 5b D1).
+    pub(super) clock: u64,
+    /// Real minutes the client has stood idle with her gate open, present
+    /// or not, once she has met you (her pity counter, phase 5b D6).
+    pub(super) idle_min: u64,
+    /// `idle_min` when she last showed something rare for the first time.
+    pub(super) rare_at: u64,
+    /// `idle_min` when she last showed something legendary for the first
+    /// time.
+    pub(super) legend_at: u64,
 }
 
 impl Ledger {
@@ -51,6 +70,10 @@ impl Ledger {
             home: Home::default(),
             ordered: None,
             bought_on: 0,
+            clock: 0,
+            idle_min: 0,
+            rare_at: 0,
+            legend_at: 0,
         }
     }
 
@@ -129,6 +152,10 @@ impl Ledger {
             home,
             ordered,
             bought_on: raw.bought_on,
+            clock: minutes(raw.clock),
+            idle_min: minutes(raw.idle_min),
+            rare_at: minutes(raw.rare_at),
+            legend_at: minutes(raw.legend_at),
         })
     }
 
@@ -169,6 +196,10 @@ impl Ledger {
                 .filter(|p| !p.settled)
                 .map(|p| p.item)
                 .collect(),
+            clock: self.clock,
+            idle_min: self.idle_min,
+            rare_at: self.rare_at,
+            legend_at: self.legend_at,
         };
         serde_json::to_string(&raw).unwrap_or_default()
     }
@@ -204,6 +235,29 @@ struct SavedProp {
 
 fn facing_right() -> Facing {
     Facing::Right
+}
+
+/// The most a count of minutes holds, counting up in memory and as
+/// read (one constant, so a count stopped at the top reads back as
+/// itself): just under 2^40, far past anything real (two million
+/// years), and far enough below `u64::MAX` that no arithmetic on it
+/// overflows.
+pub(super) const MINUTES_MAX: u64 = (1 << 40) - 1;
+
+/// A count of minutes as read: a whole number up to [`MINUTES_MAX`], or
+/// zero (missing, or a value this build can't take).
+fn minutes(value: Option<serde_json::Value>) -> u64 {
+    value
+        .as_ref()
+        .and_then(serde_json::Value::as_u64)
+        .filter(|&m| m <= MINUTES_MAX)
+        .unwrap_or(0)
+}
+
+/// Whether a count is left out of the record (serde's
+/// `skip_serializing_if` takes a reference).
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 /// Which pane each room is in, as older builds read it: the pane of its
@@ -268,6 +322,16 @@ struct Saved {
     /// record with none reads as before.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     unsettled: Vec<Furniture>,
+    /// Her clock and counters; each left out at zero, so a record with
+    /// none reads as before.
+    #[serde(skip_serializing_if = "is_zero")]
+    clock: u64,
+    #[serde(skip_serializing_if = "is_zero")]
+    idle_min: u64,
+    #[serde(skip_serializing_if = "is_zero")]
+    rare_at: u64,
+    #[serde(skip_serializing_if = "is_zero")]
+    legend_at: u64,
 }
 
 /// Where a piece stands: its strip, and its anchor there once it has
@@ -300,6 +364,14 @@ struct Raw {
     bought_on: u64,
     #[serde(default)]
     unsettled: Vec<serde_json::Value>,
+    #[serde(default)]
+    clock: Option<serde_json::Value>,
+    #[serde(default)]
+    idle_min: Option<serde_json::Value>,
+    #[serde(default)]
+    rare_at: Option<serde_json::Value>,
+    #[serde(default)]
+    legend_at: Option<serde_json::Value>,
 }
 
 #[cfg(test)]
@@ -342,6 +414,8 @@ mod tests {
     /// too).
     fn as_an_older_build_reads(text: &str) -> Vec<(Furniture, Nook, u16)> {
         let raw: serde_json::Value = serde_json::from_str(text).unwrap();
+        // Every older build refuses another version.
+        assert_eq!(raw["version"], 1, "an older build can't read {text}");
         let mut rooms: Vec<(RoomKind, Nook)> = Vec::new();
         for room in raw["rooms"].as_array().unwrap() {
             let (kind, nook): (RoomKind, Nook) = serde_json::from_value(room.clone()).unwrap();
@@ -529,6 +603,130 @@ mod tests {
     fn a_ledger_round_trips() {
         let ledger = furnished();
         assert_eq!(Ledger::from_json(&ledger.to_json()), Ok(ledger));
+    }
+
+    /// `furnished`, with her clock and counters running.
+    fn timed() -> Ledger {
+        Ledger {
+            clock: 3 * 1440 + 125,
+            idle_min: 900,
+            rare_at: 400,
+            legend_at: 17,
+            ..furnished()
+        }
+    }
+
+    /// Her clock and counters come last, after anything unsettled, and
+    /// read back as written.
+    #[test]
+    fn the_clock_and_counters_round_trip() {
+        let mut ledger = timed();
+        ledger.home.props[1].settled = false;
+        let text = ledger.to_json();
+        assert!(
+            text.ends_with(concat!(
+                r#""bought_on":6,"unsettled":["Tv"],"#,
+                r#""clock":4445,"idle_min":900,"rare_at":400,"legend_at":17}"#
+            )),
+            "{text}"
+        );
+        assert_eq!(Ledger::from_json(&text), Ok(ledger));
+        // Each on its own, the others at zero (left out).
+        for one in [
+            Ledger {
+                clock: 1,
+                ..furnished()
+            },
+            Ledger {
+                idle_min: 2,
+                ..furnished()
+            },
+            Ledger {
+                rare_at: 3,
+                ..furnished()
+            },
+            Ledger {
+                legend_at: 4,
+                ..furnished()
+            },
+        ] {
+            let text = one.to_json();
+            assert_eq!(
+                text.matches(':').count(),
+                furnished().to_json().matches(':').count() + 1,
+                "{text}"
+            );
+            assert_eq!(Ledger::from_json(&text), Ok(one));
+        }
+    }
+
+    /// At zero none is written: a record without them is as before.
+    #[test]
+    fn a_stopped_clock_writes_nothing() {
+        let text = furnished().to_json();
+        for field in ["clock", "idle_min", "rare_at", "legend_at"] {
+            assert!(!text.contains(field), "{field}: {text}");
+        }
+    }
+
+    /// The most a count holds in memory is the most it reads back as:
+    /// a ledger stopped at the top doesn't come back at zero.
+    #[test]
+    fn a_count_at_the_top_round_trips() {
+        let ledger = Ledger {
+            clock: MINUTES_MAX,
+            idle_min: MINUTES_MAX,
+            rare_at: MINUTES_MAX,
+            legend_at: MINUTES_MAX,
+            ..furnished()
+        };
+        assert_eq!(Ledger::from_json(&ledger.to_json()), Ok(ledger));
+    }
+
+    /// A value this build can't take reads as zero, and the rest of the
+    /// record still reads.
+    #[test]
+    fn a_garbled_clock_reads_as_zero() {
+        for field in ["clock", "idle_min", "rare_at", "legend_at"] {
+            for garbage in [
+                r#""noon""#,
+                "-5",
+                "2.5",
+                "1e30",
+                "18446744073709551615",
+                "1099511627776",
+                "null",
+                "[1]",
+                "{}",
+            ] {
+                let text = furnished().to_json().replace(
+                    r#""bought_on":6}"#,
+                    &format!(r#""bought_on":6,"{field}":{garbage}}}"#),
+                );
+                assert_eq!(
+                    Ledger::from_json(&text),
+                    Ok(furnished()),
+                    "{field}: {garbage}"
+                );
+            }
+        }
+        // The top still reads.
+        let text = furnished().to_json().replace(
+            r#""bought_on":6}"#,
+            r#""bought_on":6,"clock":1099511627775}"#,
+        );
+        assert_eq!(Ledger::from_json(&text).unwrap().clock, MINUTES_MAX);
+    }
+
+    /// An older build, which knows none of them, still keeps every
+    /// piece of a record with them all set.
+    #[test]
+    fn an_older_build_reads_past_the_clock() {
+        assert_eq!(
+            as_an_older_build_reads(&timed().to_json()),
+            as_an_older_build_reads(&furnished().to_json())
+        );
+        assert_eq!(as_an_older_build_reads(&timed().to_json()).len(), 3);
     }
 
     #[test]

@@ -14,6 +14,9 @@ Add new days at the top. Add new entries at the bottom of existing days.
 - Fixed: The houseguest no longer forgets what happened just before you
   quit. A purchase she made or a parcel that arrived in your last moments
   is still there next time, and so are pane sizes you had just adjusted.
+- Added: Osaka's days now pass while dessplay is open, about six times
+  faster than real time. Her clock starts on a Monday at 4 in the
+  afternoon, for a home she already has too.
 
 ## 2026-10-03
 

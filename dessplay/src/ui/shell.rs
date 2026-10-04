@@ -469,6 +469,9 @@ where
             guest
         }
     };
+    // Her clock counts no more than this in one step: `Instant` may or
+    // may not count a suspend (std leaves it unspecified).
+    guest.cap_steps(Some(HOUSEGUEST_CLOCK_CAP_MS));
     let mut ledger_unsent: Option<super::houseguest::Ledger> = None;
     let layout_loaded = ui.layout_settings.clone();
     if let Some(picker) = ui.image_picker() {
@@ -653,7 +656,7 @@ where
     // move-out confirmed in the last turn).
     take_move_out(&mut ui, &mut guest);
     let exit = UiExit {
-        houseguest: guest.final_ledger(),
+        houseguest: guest.final_ledger(now_millis()),
         layout: (ui.layout_settings != layout_loaded).then(|| ui.layout_settings.clone()),
     };
     tracing::trace!(
@@ -760,6 +763,10 @@ fn dispatch_due_recovery(ui: &mut Ui, actions: &mpsc::Sender<UserAction>) -> boo
     }
     true
 }
+
+/// The most real time the houseguest's clock counts in one step (ten
+/// minutes; the shell ticks her at least once a second).
+const HOUSEGUEST_CLOCK_CAP_MS: u64 = 600_000;
 
 /// Monotonic millis since the first call — the UI thread's only time
 /// source (the `Ui` itself never reads a clock; tests drive it with
@@ -1072,10 +1079,19 @@ mod exit_save_tests {
     //! Not staged: a draw failing on an idle tick (the timeout arm's
     //! redraw needs a visible change on a tick, which isn't
     //! deterministic here), and a ledger change recorded by
-    //! `guest.advance` in the last turn (needs her clock; the design
-    //! calls it unstageable). Both exit through [`turns`], whose `()`
-    //! result leaves them no way past the exit save; the draw-failure
-    //! row below covers a change made in the exiting turn.
+    //! `guest.advance` in the last turn (her clock's batch, which takes
+    //! five real minutes: the loop reads the real clock, `now_millis`).
+    //! Both exit through [`turns`], whose `()` result leaves them no way
+    //! past the exit save; the draw-failure row below covers a change
+    //! made in the exiting turn, and the houseguest's own tests cover
+    //! the batch (`her_clock_is_saved_in_batches`) and the exit save of
+    //! time alone (`the_exit_save_carries_time_alone`).
+    //!
+    //! Her clock runs in these rows ([`Record::Stored`] has met her),
+    //! by the real clock: ten real seconds between the loop's first
+    //! tick and its exit would move it a game minute, and a row
+    //! expecting an unchanged ledger would see a save. The loop takes
+    //! milliseconds.
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use std::cell::Cell;
     use std::rc::Rc;
@@ -1199,7 +1215,8 @@ mod exit_save_tests {
     enum Record {
         /// She never visited.
         Never,
-        /// A record of three visits ([`stored`]).
+        /// A record of three visits ([`stored`]): her clock runs (by the
+        /// real clock; see the module doc for its ten-second margin).
         Stored,
         /// One that couldn't be read (kept as it is).
         Unreadable,

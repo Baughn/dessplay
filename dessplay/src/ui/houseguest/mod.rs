@@ -404,6 +404,47 @@ pub struct Guest {
     /// When to poke the scrollback accordion, and its shake.
     nudge: nudge::Nudge,
     errand: Option<Errand>,
+    /// Monotonic millis of the last accrual of her clock (`None` before
+    /// the first: it only latches). See [`Guest::accrue`].
+    clock_at: Option<u64>,
+    /// Game millis below the whole minute `ledger.clock` holds.
+    clock_rem: u64,
+    /// Idle real millis below the whole minute `ledger.idle_min` holds.
+    idle_rem: u64,
+    /// `ledger.clock` when the ledger was last handed out for saving:
+    /// time alone dirties it again once [`CLOCK_BATCH`] more has passed.
+    clock_saved: u64,
+    /// The most one accrual may add, in real millis (`None`: no cap).
+    cap: Option<u64>,
+}
+
+/// Her clock runs this many times faster than real time.
+pub const CLOCK_SPEED: u64 = 6;
+/// A game minute, in game millis.
+const GAME_MINUTE_MS: u64 = 60_000;
+/// Game minutes of her clock that dirty the ledger on their own (5 real
+/// minutes): time is saved in batches, events at once (phase 5b D1,
+/// Saving). A crash loses less than this.
+const CLOCK_BATCH: u64 = 30;
+
+/// Her clock at a moment, to read at any other: `game` game millis since
+/// Monday 16:00 of game day 0 at the monotonic millis `at`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GameClock {
+    /// Monotonic millis of the reading.
+    pub at: u64,
+    /// Game millis since the start of her clock, at `at`.
+    pub game: u64,
+}
+
+impl GameClock {
+    /// Her game millis at the monotonic millis `t`, earlier than `at` or
+    /// later (a catch-up decision is earlier); never below zero.
+    pub fn at(&self, t: u64) -> u64 {
+        let game =
+            i128::from(self.game) + i128::from(CLOCK_SPEED) * (i128::from(t) - i128::from(self.at));
+        u64::try_from(game.max(0)).unwrap_or(u64::MAX)
+    }
 }
 
 impl Guest {
@@ -415,6 +456,7 @@ impl Guest {
 
     /// The guest `ledger` records.
     pub fn restore(ledger: Ledger) -> Self {
+        let ledger_clock = ledger.clock;
         Self {
             rng: Rng(ledger.visit_seed(ledger.visits)),
             loaded: Some(ledger.clone()),
@@ -438,6 +480,11 @@ impl Guest {
             arranging: false,
             nudge: nudge::Nudge::default(),
             errand: None,
+            clock_at: None,
+            clock_rem: 0,
+            idle_rem: 0,
+            clock_saved: ledger_clock,
+            cap: None,
         }
     }
 
@@ -450,7 +497,12 @@ impl Guest {
 
     /// Her ledger, when it changed since last asked and is to be saved.
     pub fn ledger_to_save(&mut self) -> Option<Ledger> {
-        (std::mem::take(&mut self.unsaved) && self.persist).then(|| self.ledger.clone())
+        if !std::mem::take(&mut self.unsaved) {
+            return None;
+        }
+        // Whatever dirtied it, the clock's batch starts again here.
+        self.clock_saved = self.ledger.clock;
+        self.persist.then(|| self.ledger.clone())
     }
 
     /// Her ledger as it stands, for the save at exit: when it's saved
@@ -460,7 +512,11 @@ impl Guest {
     /// [`Guest::ledger_to_save`]'s flag: a handout parked on a full
     /// action queue, or queued and dropped at shutdown, already cleared
     /// it, and this is its only way out.
-    pub fn final_ledger(&self) -> Option<Ledger> {
+    ///
+    /// Her clock is brought up to `now` first: the one accrual outside
+    /// [`Guest::advance`], so a clean exit loses none of her time.
+    pub fn final_ledger(&mut self, now: u64) -> Option<Ledger> {
+        self.accrue(now);
         (self.persist && self.loaded.as_ref() != Some(&self.ledger)).then(|| self.ledger.clone())
     }
 
@@ -469,6 +525,13 @@ impl Guest {
     pub fn move_out(&mut self, seed: u64) {
         tracing::info!("houseguest moved out");
         self.ledger = Ledger::new(seed);
+        // Her clock starts again at Monday 16:00 (the latch stands: it's
+        // when time was last counted, not whose).
+        self.clock_rem = 0;
+        self.idle_rem = 0;
+        // The next take resets this anyway (the move-out is unsaved);
+        // here it keeps `clock_saved <= ledger.clock` in between.
+        self.clock_saved = 0;
         self.unsaved = true;
         self.persist = true;
         self.gift = None;
@@ -714,20 +777,121 @@ impl Guest {
         }
     }
 
+    /// The most one accrual of her clock may add (`None`, the default:
+    /// no cap). The shell caps it against a suspend that `Instant` might
+    /// count (std leaves that unspecified); tests and censuses jump
+    /// hours on purpose and leave it off.
+    pub fn cap_steps(&mut self, cap: Option<u64>) {
+        self.cap = cap;
+    }
+
+    /// Her clock, to read at any moment: as of the last accrual, or as of
+    /// `now` before the first. `None` until she has met you (and again
+    /// after she moves out, until she next does): her clock stands still
+    /// at Monday 16:00 then, which a reading, always running, can't say.
+    /// Pure.
+    pub fn game_clock(&self, now: u64) -> Option<GameClock> {
+        (self.ledger.visits > 0).then(|| GameClock {
+            at: self.clock_at.unwrap_or(now),
+            game: self
+                .ledger
+                .clock
+                .saturating_mul(GAME_MINUTE_MS)
+                .saturating_add(self.clock_rem),
+        })
+    }
+
+    /// When the client has been quiet for `delay`: the one sum every
+    /// idle check reads (each with its own word on the setting).
+    fn quiet_until(&self, delay: Duration) -> u64 {
+        self.quiet_since
+            .saturating_add(u64::try_from(delay.as_millis()).unwrap_or(u64::MAX))
+    }
+
+    /// When the idle gate opens: the client idle for the delay, with the
+    /// setting on (as of the last paint). `None` while it's shut.
+    fn gate_from(&self) -> Option<u64> {
+        self.delay
+            .filter(|_| self.open)
+            .map(|delay| self.quiet_until(delay))
+    }
+
+    /// Whether the idle gate is open at `now` (her arrival, and her pity
+    /// counter).
+    fn gate_open(&self, now: u64) -> bool {
+        self.gate_from().is_some_and(|from| now >= from)
+    }
+
+    /// Count the time since the last accrual: her clock, at
+    /// [`CLOCK_SPEED`], and the idle minutes since the gate opened. Only
+    /// once she has met you; the latch moves to `now` either way, so her
+    /// first meeting is at Monday 16:00, give or take the tick it falls
+    /// in (she meets you on a paint, between ticks). Time alone dirties
+    /// the ledger once [`CLOCK_BATCH`] game minutes have passed since it
+    /// was last handed out.
+    ///
+    /// However the time is cut into ticks, it counts the same, as long
+    /// as nothing between them moves the idle gate. `activity` and
+    /// `observe` (a paint) do, without an accrual first: the gate's open
+    /// time since the last tick isn't counted then, at most a tick (a
+    /// second) each time it shuts. The clock itself loses nothing.
+    fn accrue(&mut self, now: u64) {
+        let Some(prev) = self.clock_at.replace(now.max(self.clock_at.unwrap_or(0))) else {
+            return;
+        };
+        let mut from = prev.min(now);
+        if let Some(cap) = self.cap
+            && now - from > cap
+        {
+            tracing::debug!(
+                step_ms = now - from,
+                cap_ms = cap,
+                "houseguest clock step capped"
+            );
+            from = now - cap;
+        }
+        if self.ledger.visits == 0 {
+            return;
+        }
+        let game = self
+            .clock_rem
+            .saturating_add(CLOCK_SPEED.saturating_mul(now - from));
+        self.ledger.clock = self
+            .ledger
+            .clock
+            .saturating_add(game / GAME_MINUTE_MS)
+            .min(ledger::MINUTES_MAX);
+        self.clock_rem = game % GAME_MINUTE_MS;
+        if let Some(gate) = self.gate_from()
+            && now > gate.max(from)
+        {
+            let idle = self.idle_rem.saturating_add(now - gate.max(from));
+            self.ledger.idle_min = self
+                .ledger
+                .idle_min
+                .saturating_add(idle / 60_000)
+                .min(ledger::MINUTES_MAX);
+            self.idle_rem = idle % 60_000;
+        }
+        if self.ledger.clock.saturating_sub(self.clock_saved) >= CLOCK_BATCH {
+            self.unsaved = true;
+        }
+    }
+
     /// Advance to `now` on a timer tick. Returns whether the screen
     /// could change (the shell redraws only then).
     pub fn advance(&mut self, now: u64) -> bool {
+        // Her clock first, and on its own it changes nothing on screen.
+        self.accrue(now);
         let nudge = self.nudge.advance(now);
         let changed = match &mut self.state {
             State::Absent => {
-                let due = self
-                    .delay
-                    .is_some_and(|d| now >= self.quiet_since + d.as_millis() as u64);
-                if self.open && due {
+                let due = self.gate_open(now);
+                if due {
                     tracing::trace!("houseguest arriving");
                     self.state = State::Arriving;
                 }
-                self.open && due
+                due
             }
             State::Arriving => true,
             State::Visiting(visit) => {
@@ -759,10 +923,7 @@ impl Guest {
     /// How soon she next needs a tick; `None` when nothing is pending.
     pub fn next_tick(&self, now: u64) -> Option<Duration> {
         let due = match &self.state {
-            State::Absent => self
-                .delay
-                .filter(|_| self.open)
-                .map(|delay| self.quiet_since + delay.as_millis() as u64),
+            State::Absent => self.gate_from(),
             State::Arriving => Some(now),
             State::Visiting(visit) => Some(
                 visit
@@ -1229,7 +1390,7 @@ impl Guest {
         }
         let quiet = view
             .delay
-            .is_some_and(|delay| now >= self.quiet_since + delay.as_millis() as u64);
+            .is_some_and(|delay| now >= self.quiet_until(delay));
         if !view.resident && (errand.leave_after || !quiet || view.busy.is_some()) {
             self.leave(now);
         }
@@ -1305,7 +1466,7 @@ impl Guest {
         let mut view = view.clone();
         let quiet = view
             .delay
-            .is_none_or(|delay| now >= self.quiet_since + delay.as_millis() as u64);
+            .is_none_or(|delay| now >= self.quiet_until(delay));
         let in_use = !quiet || view.busy.is_some();
         match view.focus {
             // On her errand, the accordion comes first (it's usually in
