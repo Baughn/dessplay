@@ -78,6 +78,41 @@ pub(super) enum Pose {
     /// On her stool at the desk, splitting disposable chopsticks: frame
     /// 0 still joined, 1 split cleanly, 2 split badly (let down).
     Chopsticks(u8),
+    /// Homework on the floor where there's no desk: lying on her front
+    /// over a paper, writing (frame 0–1), then dozing face-down on it
+    /// (2). Phase 5c art, not yet wired.
+    #[cfg_attr(not(test), allow(dead_code))]
+    FloorHomework(u8),
+    /// Homework at her paper desk (a low cube of crumpled text), kneeling
+    /// beside it, side-on: writing (frame 0–1), nodding off (2), asleep
+    /// on the cube (3). Phase 5c art, not yet wired.
+    #[cfg_attr(not(test), allow(dead_code))]
+    PaperDesk(u8),
+    /// Sitting on the floor reading a strip of text she tore off a line
+    /// (frame 1 reads along it). Phase 5c art, not yet wired.
+    #[cfg_attr(not(test), allow(dead_code))]
+    ReadStrip(u8),
+    /// Sitting cross-legged on the floor, side-on (before the TV).
+    /// Phase 5c art, not yet wired.
+    #[cfg_attr(not(test), allow(dead_code))]
+    CrossLegged,
+    /// Standing at ease under the window, hands behind her back, looking
+    /// up and out. Phase 5c art, not yet wired.
+    #[cfg_attr(not(test), allow(dead_code))]
+    SillLean,
+    /// Sitting on the floor under the window, chin in her hands, looking
+    /// up at the sky. Phase 5c art, not yet wired.
+    #[cfg_attr(not(test), allow(dead_code))]
+    UnderSill,
+    /// Dozing off sitting on the floor, head sinking onto her knees
+    /// (frame 1 lower). Phase 5c art, not yet wired.
+    #[cfg_attr(not(test), allow(dead_code))]
+    SitDoze(u8),
+    /// Lying on her back reading, an open book held up over her face
+    /// (frame 1 turns a page); dozed off with it open on her face (2).
+    /// Phase 5c art, not yet wired.
+    #[cfg_attr(not(test), allow(dead_code))]
+    LieRead(u8),
 }
 
 /// Her face, drawn into the head of frontal poses.
@@ -188,6 +223,39 @@ const CHOPSTICKS: [[&str; 4]; 3] = [
     ["     ", "( ^_)", " |V|v", "_/ \\ "],
     ["     ", "( u_)", " |V|y", "_/ \\ "],
 ];
+// Phase 5c. On her front over a paper (`=`), the pencil moving; then
+// face-down on it, feet down.
+const FLOOR_HOMEWORK: [[&str; 4]; 3] = [
+    ["     ", "     ", "\\    ", "\\_Vo="],
+    ["     ", "     ", "\\    ", "\\_Vo-"],
+    ["     ", "     ", "     ", "__Vo="],
+];
+// Kneeling at the paper desk, the paper on its top in front of her.
+const PAPER_DESK: [[&str; 4]; 4] = [
+    ["     ", "     ", "( ._)", "_|V|="],
+    ["     ", "     ", "( ._)", "_|V|-"],
+    ["     ", "     ", "( -_)", "_|V|="],
+    ["     ", "     ", " (-_)", "_/V\\="],
+];
+// A torn strip held up to read, in place of the book.
+const READ_STRIP: [[&str; 4]; 2] = [
+    ["     ", "( ._)", "==V| ", " d b "],
+    ["     ", "( ._)", "~=V| ", " d b "],
+];
+const CROSS_LEGGED: [&str; 4] = ["     ", "( ._)", " |V| ", "_/x\\_"];
+// Elbows on the sill, chin in her hands.
+const SILL_LEAN: [&str; 4] = ["( 'o)", " |V/ ", " /_\\ ", " / \\ "];
+// On her back, the book held up over her face; then open on it (a tent).
+const LIE_READ: [[&str; 4]; 3] = [
+    ["     ", "     ", "[] /\\", "o=V=^"],
+    ["     ", "     ", "/] /\\", "o=V=^"],
+    ["     ", "     ", "^  /\\", "o=V=^"],
+];
+const UNDER_SILL: [&str; 4] = ["     ", "( 'o)", " |V/ ", " d b "];
+const SIT_DOZE: [[&str; 4]; 2] = [
+    ["     ", "(-_-)", "<(V)>", " d b "],
+    ["     ", "     ", "(-_-)", "<dVb>"],
+];
 const PULL: [[&str; 4]; 2] = [
     ["( ._)", "\\|V|=", " /_\\ ", " / \\ "],
     ["(._ )", "\\|V|=", " /_\\ ", "/  \\ "],
@@ -225,6 +293,14 @@ fn rows(pose: Pose) -> ([&'static str; 4], bool) {
         },
         Pose::Pet(frame) => (PET[usize::from(frame % 2)], false),
         Pose::Chopsticks(frame) => (CHOPSTICKS[usize::from(frame.min(2))], false),
+        Pose::FloorHomework(frame) => (FLOOR_HOMEWORK[usize::from(frame.min(2))], false),
+        Pose::PaperDesk(frame) => (PAPER_DESK[usize::from(frame.min(3))], false),
+        Pose::ReadStrip(frame) => (READ_STRIP[usize::from(frame % 2)], false),
+        Pose::CrossLegged => (CROSS_LEGGED, false),
+        Pose::SillLean => (SILL_LEAN, false),
+        Pose::UnderSill => (UNDER_SILL, false),
+        Pose::SitDoze(frame) => (SIT_DOZE[usize::from(frame % 2)], false),
+        Pose::LieRead(frame) => (LIE_READ[usize::from(frame.min(2))], false),
     }
 }
 
@@ -377,7 +453,7 @@ pub(super) fn cells(pose: Pose, facing: Facing, face: Face) -> Vec<SpriteCell> {
 
 /// Every pose (each frame of each), for the lints.
 #[cfg(test)]
-pub(super) const ALL: [Pose; 47] = [
+pub(super) const ALL: [Pose; 64] = [
     Pose::Stand,
     Pose::Walk(0),
     Pose::Walk(1),
@@ -431,6 +507,23 @@ pub(super) const ALL: [Pose; 47] = [
     Pose::Chopsticks(0),
     Pose::Chopsticks(1),
     Pose::Chopsticks(2),
+    Pose::FloorHomework(0),
+    Pose::FloorHomework(1),
+    Pose::FloorHomework(2),
+    Pose::PaperDesk(0),
+    Pose::PaperDesk(1),
+    Pose::PaperDesk(2),
+    Pose::PaperDesk(3),
+    Pose::ReadStrip(0),
+    Pose::ReadStrip(1),
+    Pose::CrossLegged,
+    Pose::SillLean,
+    Pose::UnderSill,
+    Pose::SitDoze(0),
+    Pose::SitDoze(1),
+    Pose::LieRead(0),
+    Pose::LieRead(1),
+    Pose::LieRead(2),
 ];
 
 #[cfg(test)]

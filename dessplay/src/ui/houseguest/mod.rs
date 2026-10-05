@@ -3943,6 +3943,15 @@ fn screen_glyphs(channel: art::Channel) -> [char; 2] {
         art::Channel::Shopping(_) => ['^', '^'],
         art::Channel::ColourBars => ['|', '|'],
         art::Channel::Sunrise => ['o', '_'],
+        // Phase 5c's drawn programmes (not yet wired): the anchor over
+        // the ticker, the sun and a cloud, a penguin on the sea, a bowl
+        // under its steam.
+        art::Channel::Programme(programme) => match programme {
+            art::Programme::News => ['o', '='],
+            art::Programme::Weather => ['*', 'c'],
+            art::Programme::Penguins => ['i', '~'],
+            art::Programme::Cooking => ['~', 'u'],
+        },
     }
 }
 

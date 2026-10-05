@@ -114,7 +114,7 @@ impl Prop {
         match self {
             Self::Tv(Channel::Snow(_)) => Self::Tv(Channel::Snow(frame)),
             Self::Tv(Channel::Shopping(_)) => Self::Tv(Channel::Shopping(frame)),
-            Self::Tv(Channel::ColourBars | Channel::Sunrise)
+            Self::Tv(Channel::ColourBars | Channel::Sunrise | Channel::Programme(_))
             | Self::LampOff
             | Self::FridgeOpen
             | Self::CatBiting => self,

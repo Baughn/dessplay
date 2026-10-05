@@ -55,6 +55,63 @@
     <path d="M 32 80 C 38 76 46 75 52 76" fill="none" stroke="#6b7a8c" stroke-width="2" stroke-linecap="round"/>
   </g>
 
+  <!-- Programme cards (phase 5c): held pictures on the TV's glass
+       (26..84 x 72..118; the TV clips them to it), drawn when there's no
+       film to show. Two or three big flat shapes each, nothing finer
+       than ~2 px at 1x. -->
+  <g id="tv-news">
+    <rect x="26" y="72" width="58" height="46" fill="#3f6aa6"/>
+    <rect x="26" y="72" width="58" height="8" fill="#5a86c2"/>
+    <rect x="64" y="78" width="16" height="12" fill="#e8c34a" stroke="currentColor" stroke-width="1.2"/>
+    <path d="M 68 87 L 72 81 L 76 87 Z" fill="#c9453f"/>
+    <circle cx="48" cy="87" r="8" fill="#3a2a22"/>
+    <ellipse cx="48" cy="90" rx="5.6" ry="6.6" fill="#f6dccb" stroke="currentColor" stroke-width="1"/>
+    <path d="M 41.5 88 C 41 81 55 80 54.5 88 C 52 84 44 84 41.5 88 Z" fill="#3a2a22"/>
+    <path d="M 33 108 C 34 99 40 97 48 97 C 56 97 62 99 63 108 Z" fill="#2b2f3a" stroke="currentColor" stroke-width="1"/>
+    <path d="M 45 97.5 L 48 104 L 51 97.5 Z" fill="#ffffff"/>
+    <rect x="26" y="104" width="58" height="6" fill="#d9dde3" stroke="currentColor" stroke-width="1"/>
+    <rect x="26" y="110" width="58" height="8" fill="#c9453f"/>
+    <rect x="30" y="112.5" width="18" height="2.6" fill="#ffffff"/>
+    <rect x="51" y="112.5" width="11" height="2.6" fill="#ffffff"/>
+  </g>
+  <g id="tv-weather">
+    <rect x="26" y="72" width="58" height="46" fill="#5aa7de"/>
+    <path d="M 27 113 C 33 107 40 104 47 101 C 55 98 59 93 62 87 C 65 82 70 79 76 78 L 81 86 C 76 89 73 93 70 98 C 65 107 57 113 49 116 C 43 118 37 120 32 122 Z"
+          fill="#7cc36e" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
+    <ellipse cx="78" cy="76" rx="5" ry="3.4" fill="#7cc36e" stroke="currentColor" stroke-width="1.2"/>
+    <circle cx="40" cy="86" r="6.4" fill="#ffd84a" stroke="currentColor" stroke-width="1.2"/>
+    <path d="M 40 76 L 40 78.5 M 40 93.5 L 40 96 M 30 86 L 32.5 86 M 47.5 86 L 50 86" stroke="#ffd84a" stroke-width="1.8" stroke-linecap="round"/>
+    <path d="M 60 110 C 56 110 55 104 60 103 C 60 98 68 97 70 101 C 74 99 78 103 76 106 C 79 107 78 110 75 110 Z"
+          fill="#ffffff" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round"/>
+    <path d="M 63 112.5 L 62 116 M 69 112.5 L 68 116" stroke="#2c5fa0" stroke-width="1.8" stroke-linecap="round"/>
+  </g>
+  <g id="tv-penguin">
+    <rect x="26" y="72" width="58" height="46" fill="#bfe3f5"/>
+    <rect x="26" y="100" width="58" height="18" fill="#2f6fa8"/>
+    <path d="M 33 102 L 38 97 L 70 96 L 78 101 L 74 105 L 36 105 Z" fill="#ffffff" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round"/>
+    <path d="M 36 105 L 74 105 L 72 108 L 40 108 Z" fill="#9ccbe6"/>
+    <ellipse cx="54" cy="88" rx="6.5" ry="9" fill="#23262e" stroke="currentColor" stroke-width="1"/>
+    <ellipse cx="55.6" cy="90" rx="4" ry="6.6" fill="#ffffff"/>
+    <circle cx="55" cy="79" r="5" fill="#23262e"/>
+    <circle cx="57" cy="78.4" r="1.2" fill="#ffffff"/>
+    <path d="M 59.5 79 L 63 80.2 L 59.5 81.4 Z" fill="#f08a2c"/>
+    <path d="M 50 97.5 L 54 97.5 M 56 97.5 L 60 97.5" stroke="#f08a2c" stroke-width="2" stroke-linecap="round"/>
+    <ellipse cx="44" cy="93" rx="3.6" ry="4.8" fill="#8c939c" stroke="currentColor" stroke-width="0.9"/>
+    <circle cx="44.6" cy="88" r="2.8" fill="#8c939c" stroke="currentColor" stroke-width="0.9"/>
+  </g>
+  <g id="tv-cooking">
+    <rect x="26" y="72" width="58" height="46" fill="#f4dca8"/>
+    <path d="M 26 84 L 84 84 M 26 96 L 84 96 M 40 72 L 40 84 M 56 72 L 56 84 M 72 72 L 72 84 M 48 84 L 48 96 M 64 84 L 64 96 M 32 84 L 32 96 M 80 84 L 80 96" stroke="#e2c58a" stroke-width="1"/>
+    <rect x="26" y="108" width="58" height="10" fill="#a0784f"/>
+    <path d="M 46 82 C 43 79 49 76 46 73 M 55 81 C 52 78 58 75 55 72 M 64 82 C 61 79 67 76 64 73" fill="none" stroke="#ffffff" stroke-width="1.8" stroke-linecap="round"/>
+    <path d="M 36 94 L 74 94 C 73 104 66 109 55 109 C 44 109 37 104 36 94 Z" fill="#c9453f" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
+    <ellipse cx="55" cy="94" rx="19" ry="3.6" fill="#f2d27a" stroke="currentColor" stroke-width="1.2"/>
+    <circle cx="61" cy="93.4" r="3" fill="#ffffff" stroke="currentColor" stroke-width="0.8"/>
+    <circle cx="61" cy="93.4" r="1.2" fill="#e58a9a"/>
+    <path d="M 44 102 L 66 102" stroke="#ffffff" stroke-width="1.4"/>
+    <path d="M 63 91 L 79 78 M 66 92 L 81 81" stroke="#ecd29e" stroke-width="1.8" stroke-linecap="round"/>
+  </g>
+
   <!-- A single bed seen from the side: headboard on the left, a pillow,
        and a blue polka-dot quilt (bed-quilt) folded back at the head. -->
   <g id="bed">

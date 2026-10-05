@@ -32,6 +32,9 @@ const NECK: (f32, f32) = (50.0, 70.0);
 const P_SHOULDERS: [f32; 2] = [49.0, 52.0];
 const P_SHOULDER_Y: f32 = 76.0;
 const P_HIPS: [f32; 2] = [48.0, 52.5];
+/// The paper desk's top in her canvas (see `scrap::DESK`), where her
+/// paper lies when she does homework at it.
+const PAPER_DESK_TOP: f32 = 112.0;
 /// A standing image spans ~4.5 rows of the canvas's 160 units.
 const ROW_UNITS: f32 = CANVAS_H / 4.5;
 
@@ -101,6 +104,9 @@ pub(super) struct Rig {
     /// her lap and her legs are the seated part (thighs along the seat,
     /// shins hanging); `legs` is ignored.
     pub seated: bool,
+    /// Sitting cross-legged on the floor (in profile): her legs are the
+    /// crossed-legs part, out in front of her skirt; `legs` is ignored.
+    pub crossed: bool,
     /// Cradling a bundle of leeks across her chest (frontal only): drawn
     /// in front of her body, under her arms, whose hands hold it.
     pub leeks: bool,
@@ -108,6 +114,11 @@ pub(super) struct Rig {
     /// `(x, y)` (her own, pre-bob coordinates) and turned `angle`
     /// degrees; drawn over her body and head, under her near arm.
     pub hold: Option<(&'static str, f32, f32, f32)>,
+    /// Something lying on the floor or a surface in front of her (her
+    /// paper): a part of `art/osaka.svg` placed at `(x, y)` in canvas
+    /// coordinates (not bobbed, turned or scaled with her) and turned
+    /// `angle` degrees; drawn behind her, so her hands go over it.
+    pub ground: Option<(&'static str, f32, f32, f32)>,
     /// (shoulder, elbow).
     pub arms: [(f32, f32); 2],
     /// (hip, knee).
@@ -129,8 +140,10 @@ impl Rig {
             stool: false,
             cushion: false,
             seated: false,
+            crossed: false,
             leeks: false,
             hold: None,
+            ground: None,
             arms: [(12.0, -4.0), (-12.0, 4.0)],
             legs: [(3.0, 0.0), (-3.0, 0.0)],
         }
@@ -291,6 +304,14 @@ impl Rig {
             Pose::EatAndagi(_) => Self::eating_food(0, [ANDAGI[1]; 2], expression),
             Pose::Pet(frame) => Self::petting(frame, expression),
             Pose::Chopsticks(frame) => Self::chopsticks(frame, expression),
+            Pose::FloorHomework(frame) => Self::floor_homework(frame, expression),
+            Pose::PaperDesk(frame) => Self::paper_desk(frame, true, expression),
+            Pose::ReadStrip(frame) => Self::reading_strip(frame, expression),
+            Pose::CrossLegged => Self::cross_legged(expression),
+            Pose::SillLean => Self::sill_lean(expression),
+            Pose::UnderSill => Self::under_sill(expression),
+            Pose::SitDoze(frame) => Self::sit_doze(frame),
+            Pose::LieRead(frame) => Self::lie_read(frame, expression),
             Pose::Gaze => Self {
                 profile: true,
                 tilt: -16.0,
@@ -350,8 +371,10 @@ impl Rig {
             stool: false,
             cushion: false,
             seated: false,
+            crossed: false,
             leeks: false,
             hold: None,
+            ground: None,
             arms: [(arm(0) + 4.0, 0.0), (arm(1), 0.0)],
             legs,
         }
@@ -394,8 +417,10 @@ impl Rig {
             stool: false,
             cushion: false,
             seated: false,
+            crossed: false,
             leeks: false,
             hold: None,
+            ground: None,
             arms,
             legs,
         }
@@ -644,6 +669,228 @@ impl Rig {
         }
     }
 
+    /// Homework on the floor (no desk): lying on her front, head up, a
+    /// paper on the floor in front of her (its near edge under her chin,
+    /// most of it out past her face: her chibi arms reach no further)
+    /// and a pencil in her near hand, feet up behind her (`frame` 0–1:
+    /// the pencil moves); at 2 she's dozed off, her head down on her
+    /// arms, the paper still out in front of her.
+    pub fn floor_homework(frame: u8, expression: Expression) -> Self {
+        let base = Self {
+            turn: 90.0,
+            scale: 0.74,
+            bob: 30.0,
+            profile: true,
+            ground: Some(("paper-floor", 74.0, 156.0, 0.0)),
+            ..Self::standing(expression)
+        };
+        // Arm angles solved for her hands to land on the paper's near
+        // edge; the pencil there (in her own, unturned coordinates)
+        // leaning back toward her, its point on the paper.
+        match frame {
+            0 | 1 => {
+                let (near, pencil) = if frame == 0 {
+                    ((-102.0, -34.0), (73.9, 63.8, -102.0))
+                } else {
+                    ((-126.0, -2.0), (72.9, 60.2, -88.0))
+                };
+                Self {
+                    shift: -38.0,
+                    lean: -18.0,
+                    tilt: -20.0,
+                    legs: [(0.0, 120.0), (0.0, 80.0)],
+                    arms: [(-104.0, -8.0), near],
+                    hold: Some(("pencil", pencil.0, pencil.1, pencil.2)),
+                    ..base
+                }
+            }
+            _ => Self {
+                expression: Expression::Blink,
+                shift: -40.0,
+                lean: -10.0,
+                tilt: -40.0,
+                legs: [(0.0, 90.0), (0.0, 50.0)],
+                arms: [(-96.0, -56.0), (-160.0, 40.0)],
+                ..base
+            },
+        }
+    }
+
+    /// Reading on the floor on her back, knees up, an open book held up
+    /// over her face in both hands (`frame` 1 turns a page); at 2 she's
+    /// dozed off with it lying open on her face, her arms down. For
+    /// floor reading, or floor homework with a book.
+    pub fn lie_read(frame: u8, expression: Expression) -> Self {
+        let base = Self {
+            turn: -90.0,
+            scale: 0.74,
+            shift: 30.0,
+            bob: 17.0,
+            tilt: -6.0,
+            profile: true,
+            legs: [(-62.0, 118.0), (-48.0, 104.0)],
+            ..Self::standing(expression)
+        };
+        // Her hands reach only to her face's height (her head is big),
+        // so she holds the book by its near end, tipped open toward her
+        // eyes just over her face (its place in her own, unturned frame;
+        // a quarter turn stands it ridge-up over her). Dozing, it lies
+        // open on her face turned side-on to the viewer (`book-cover`),
+        // covering her eyes, which is why one sleeps under a book.
+        match frame {
+            0 | 1 => Self {
+                arms: [(-110.0, -2.0), (-112.0, -4.0)],
+                hold: Some((
+                    if frame == 0 {
+                        "book-side"
+                    } else {
+                        "book-side-turn"
+                    },
+                    89.2,
+                    48.4,
+                    115.0,
+                )),
+                ..base
+            },
+            _ => Self {
+                expression: Expression::Blink,
+                arms: [(8.0, -12.0), (-30.0, -60.0)],
+                hold: Some(("book-cover", 73.0, 45.7, 90.0)),
+                ..base
+            },
+        }
+    }
+
+    /// Homework at her paper desk: kneeling (or, `kneel` false,
+    /// cross-legged) on the floor beside the low cube of crumpled text,
+    /// side-on facing it, writing on a paper on its top (`frame` 0–1);
+    /// nodding off (2); asleep on the cube, her head on her arms (3).
+    /// Drawn with her box centred a column past the cube's end, facing
+    /// it, as at the desk.
+    pub fn paper_desk(frame: u8, kneel: bool, expression: Expression) -> Self {
+        // (shift, lean, tilt, far arm, near arm): the arms are solved for
+        // her hands to land on the paper on the cube's top.
+        type Frame = (f32, f32, f32, (f32, f32), (f32, f32));
+        let (shift, lean, tilt, far, near): Frame = match (kneel, frame) {
+            (true, 0) => (-4.0, 12.0, 14.0, (-28.0, -66.0), (-38.0, -60.0)),
+            (true, 1) => (-4.0, 12.0, 16.0, (-28.0, -66.0), (-62.0, -30.0)),
+            (true, 2) => (-18.0, 16.0, 24.0, (-72.0, -6.0), (-78.0, 0.0)),
+            (true, _) => (-30.0, 24.0, 34.0, (-94.0, -2.0), (-100.0, 0.0)),
+            (false, 0) => (-4.0, 12.0, 10.0, (-32.0, -88.0), (-42.0, -80.0)),
+            (false, 1) => (-4.0, 12.0, 12.0, (-32.0, -88.0), (-62.0, -56.0)),
+            (false, 2) => (-18.0, 16.0, 22.0, (-64.0, -46.0), (-72.0, -36.0)),
+            (false, _) => (-30.0, 22.0, 32.0, (-104.0, -2.0), (-106.0, -8.0)),
+        };
+        let (bob, legs) = if kneel {
+            (20.0, [(-52.0, 140.0), (-46.0, 136.0)])
+        } else {
+            (26.0, [(0.0, 0.0); 2])
+        };
+        Self {
+            expression: if frame >= 2 {
+                Expression::Blink
+            } else {
+                expression
+            },
+            lean,
+            tilt,
+            bob,
+            shift,
+            profile: true,
+            legs_front: kneel,
+            crossed: !kneel,
+            legs,
+            arms: [far, near],
+            ground: Some(("paper", 82.0, PAPER_DESK_TOP - 2.0, 0.0)),
+            ..Self::standing(expression)
+        }
+    }
+
+    /// Reading a strip of text she tore off a line, sitting on the floor
+    /// as she reads a book: the strip held up in front of her face in
+    /// both hands; `frame` 1 reads along it, her head tipped further.
+    pub fn reading_strip(frame: u8, expression: Expression) -> Self {
+        let along = frame % 2 == 1;
+        // Held out over her knees in both hands, her head bowed over it;
+        // reading along, she tips it and follows it with her head.
+        let strip = if along { (78.0, 88.0) } else { (76.0, 86.0) };
+        let arm = |i: usize| aim((P_SHOULDERS[i], P_SHOULDER_Y), strip);
+        Self {
+            hold: Some(("strip", strip.0, strip.1, if along { 4.0 } else { -8.0 })),
+            tilt: if along { 24.0 } else { 18.0 },
+            arms: [(arm(0) + 6.0, -22.0), (arm(1) + 4.0, -26.0)],
+            ..Self::reading(0, expression)
+        }
+    }
+
+    /// Sitting cross-legged on the floor, side-on, hands on her knees,
+    /// her head up a little (watching the TV beside her).
+    pub fn cross_legged(expression: Expression) -> Self {
+        // Her legs crossed out in front of her (the crossed-legs part);
+        // her hands in her lap (her arms don't reach her knees).
+        Self {
+            bob: 26.0,
+            lean: -2.0,
+            tilt: -4.0,
+            profile: true,
+            crossed: true,
+            legs: [(0.0, 0.0); 2],
+            arms: [(-46.0, 44.0), (-36.0, 22.0)],
+            ..Self::standing(expression)
+        }
+    }
+
+    /// Leaning on the window sill (the window hung low, its sill at her
+    /// chest), side-on facing it: elbows on the sill, chin in her hands,
+    /// gazing out (a long daydream hold, unlike the stiff `Gaze`). Arm
+    /// angles solved for her elbows to rest on the sill and her hands to
+    /// cup her chin.
+    pub fn sill_lean(expression: Expression) -> Self {
+        Self {
+            profile: true,
+            lean: 8.0,
+            tilt: -6.0,
+            shift: 4.0,
+            arms: [(-82.0, -72.0), (-84.0, -74.0)],
+            legs: [(2.0, 0.0), (-6.0, 10.0)],
+            ..Self::standing(expression)
+        }
+    }
+
+    /// Sitting on the floor under the window, knees up, chin in her
+    /// hands, looking up at the sky.
+    pub fn under_sill(expression: Expression) -> Self {
+        // Arm angles solved for her hands to cup her chin.
+        Self {
+            bob: 34.0,
+            lean: -4.0,
+            tilt: -16.0,
+            profile: true,
+            legs_front: true,
+            legs: [(-146.0, 124.0), (-138.0, 118.0)],
+            arms: [(-92.0, -74.0), (-86.0, -86.0)],
+            ..Self::standing(expression)
+        }
+    }
+
+    /// Dozing off sitting on the floor, hugging her knees, her head
+    /// sinking onto them (`frame` 1 lower); eyes shut.
+    pub fn sit_doze(frame: u8) -> Self {
+        let low = frame % 2 == 1;
+        Self {
+            bob: 34.0,
+            // Sinking forward, she sits back to keep her head in her box.
+            shift: if low { -12.0 } else { -6.0 },
+            lean: if low { 12.0 } else { 6.0 },
+            tilt: if low { 30.0 } else { 20.0 },
+            profile: true,
+            legs_front: true,
+            legs: [(-146.0, 124.0), (-138.0, 118.0)],
+            arms: [(-36.0, -20.0), (-28.0, -24.0)],
+            ..Self::standing(Expression::Blink)
+        }
+    }
+
     /// Waving goodbye (the dissolve's first beat).
     pub fn waving(raised: bool) -> Self {
         let wave = if raised { -168.0 } else { -150.0 };
@@ -736,15 +983,21 @@ pub(super) fn scene(rig: &Rig, facing: Facing, line: &str) -> String {
     let body = if rig.profile {
         format!(
             r##"{legs_behind}<g transform="rotate({lean} 50 {HIP_Y})">{far_arm}{hair}<use href="#{skirt}"/><use href="#p-torso"/>{head}</g>{legs_before}<g transform="rotate({lean} 50 {HIP_Y})">{cushion}{near_arm}</g>"##,
-            legs_behind = if rig.seated || rig.legs_front {
+            legs_behind = if rig.seated || rig.crossed || rig.legs_front {
                 String::new()
             } else {
                 leg(0) + &leg(1)
             },
-            legs_before = if rig.seated {
+            legs_before = if rig.seated || rig.crossed {
                 format!(
-                    r##"<g transform="rotate({} 50 {HIP_Y})"><use href="#p-seated-legs"/></g>"##,
-                    rig.lean
+                    r##"<g transform="rotate({} 50 {HIP_Y})"><use href="#{}"/></g>"##,
+                    // Crossed, her legs stay on the floor as she leans.
+                    if rig.seated { rig.lean } else { 0.0 },
+                    if rig.seated {
+                        "p-seated-legs"
+                    } else {
+                        "p-crossed-legs"
+                    }
                 )
             } else if rig.legs_front {
                 leg(0) + &leg(1)
@@ -773,7 +1026,7 @@ pub(super) fn scene(rig: &Rig, facing: Facing, line: &str) -> String {
         )
     };
     format!(
-        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {CANVAS_W} {CANVAS_H}" color="{line}">{PARTS}<g{mirror}>{stool}<g transform="translate({shift} {bob}) translate(50 {HIP_Y}) scale({scale}) rotate({turn}) translate(-50 -{HIP_Y})">{body}</g></g></svg>"##,
+        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {CANVAS_W} {CANVAS_H}" color="{line}">{PARTS}<g{mirror}>{ground}{stool}<g transform="translate({shift} {bob}) translate(50 {HIP_Y}) scale({scale}) rotate({turn}) translate(-50 -{HIP_Y})">{body}</g></g></svg>"##,
         stool = if rig.stool {
             format!(
                 r##"<use href="#stool" transform="translate({} 0)"/>"##,
@@ -782,6 +1035,12 @@ pub(super) fn scene(rig: &Rig, facing: Facing, line: &str) -> String {
         } else {
             String::new()
         },
+        ground = rig
+            .ground
+            .map(|(part, x, y, angle)| {
+                format!(r##"<use href="#{part}" transform="translate({x} {y}) rotate({angle})"/>"##)
+            })
+            .unwrap_or_default(),
         shift = rig.shift,
         bob = rig.bob,
         scale = rig.scale,
@@ -1126,6 +1385,39 @@ pub(super) enum Channel {
     Shopping(u8),
     ColourBars,
     Sunrise,
+    /// A held programme picture (phase 5c art, not yet wired): drawn
+    /// when there's no film to show.
+    #[cfg_attr(not(test), allow(dead_code))]
+    Programme(Programme),
+}
+
+/// The drawn programmes the TV can hold (phase 5c art, not yet wired).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub(super) enum Programme {
+    /// The news: an anchor at the desk, a red ticker.
+    News,
+    /// The weather: the map, a sun and a rain cloud.
+    Weather,
+    /// A nature programme: penguins on an ice floe.
+    Penguins,
+    /// A cooking show: a steaming bowl of ramen.
+    Cooking,
+}
+
+impl Programme {
+    #[cfg(test)]
+    const ALL: [Self; 4] = [Self::News, Self::Weather, Self::Penguins, Self::Cooking];
+
+    /// Its picture's part in `art/props.svg`.
+    fn id(self) -> &'static str {
+        match self {
+            Self::News => "tv-news",
+            Self::Weather => "tv-weather",
+            Self::Penguins => "tv-penguin",
+            Self::Cooking => "tv-cooking",
+        }
+    }
 }
 
 /// The TV's glass, in its frame.
@@ -1230,6 +1522,7 @@ fn tv_scene(channel: Channel, facing: Facing, line: &str) -> String {
         Channel::Snow(frame) => snow(frame),
         Channel::ColourBars => colour_bars(),
         Channel::Sunrise => sunrise(),
+        Channel::Programme(programme) => format!(r##"<use href="#{}"/>"##, programme.id()),
         Channel::Shopping(frame) => {
             // He bobs, and talks on the up-beat.
             let (bob, mouth) = if frame % 2 == 0 {
@@ -1377,6 +1670,25 @@ mod tests {
             ("eat andagi", Rig::for_pose(Pose::EatAndagi(0), Face::Happy)),
             ("eat andagi", Rig::for_pose(Pose::EatAndagi(1), Face::Happy)),
             ("eat andagi", Rig::for_pose(Pose::EatAndagi(2), Face::Happy)),
+            ("floor homework", Rig::floor_homework(0, Expression::Vacant)),
+            ("floor homework", Rig::floor_homework(1, Expression::Vacant)),
+            ("floor homework", Rig::floor_homework(2, Expression::Vacant)),
+            ("paper desk", Rig::paper_desk(0, true, Expression::Vacant)),
+            ("paper desk", Rig::paper_desk(1, true, Expression::Vacant)),
+            ("paper desk", Rig::paper_desk(2, true, Expression::Vacant)),
+            ("paper desk", Rig::paper_desk(3, true, Expression::Vacant)),
+            ("paper desk", Rig::paper_desk(0, false, Expression::Vacant)),
+            ("paper desk", Rig::paper_desk(3, false, Expression::Vacant)),
+            ("read strip", Rig::reading_strip(0, Expression::Vacant)),
+            ("read strip", Rig::reading_strip(1, Expression::Vacant)),
+            ("cross-legged", Rig::cross_legged(Expression::Curious)),
+            ("sill lean", Rig::sill_lean(Expression::Curious)),
+            ("under sill", Rig::under_sill(Expression::Curious)),
+            ("sit doze", Rig::sit_doze(0)),
+            ("sit doze", Rig::sit_doze(1)),
+            ("lie read", Rig::lie_read(0, Expression::Vacant)),
+            ("lie read", Rig::lie_read(1, Expression::Vacant)),
+            ("lie read", Rig::lie_read(2, Expression::Vacant)),
         ]);
         out
     }
@@ -1978,6 +2290,488 @@ mod tests {
         .unwrap();
         render_sheet(3)
             .save(format!("{dir}/clock-window-3x.png"))
+            .unwrap();
+    }
+
+    /// A 5 × 7 bitmap of `c` (bit 4 is the left column), for the bubbles
+    /// and labels on the stillness sheet: bubbles are terminal text, and
+    /// the renderer has no fonts. Only the glyphs the sheet uses.
+    fn glyph(c: char) -> [u8; 7] {
+        match c {
+            '!' => [4, 4, 4, 4, 4, 0, 4],
+            '?' => [14, 17, 1, 2, 4, 0, 4],
+            '.' => [0, 0, 0, 0, 0, 0, 4],
+            '\'' => [4, 4, 8, 0, 0, 0, 0],
+            '~' => [0, 0, 8, 21, 2, 0, 0],
+            'M' => [17, 27, 21, 21, 17, 17, 17],
+            'T' => [31, 4, 4, 4, 4, 4, 4],
+            'a' => [0, 0, 14, 1, 15, 17, 15],
+            'b' => [16, 16, 22, 25, 17, 17, 30],
+            'c' => [0, 0, 14, 16, 16, 17, 14],
+            'd' => [1, 1, 13, 19, 17, 17, 15],
+            'e' => [0, 0, 14, 17, 31, 16, 14],
+            'h' => [16, 16, 22, 25, 17, 17, 17],
+            'i' => [4, 0, 12, 4, 4, 4, 14],
+            'k' => [16, 16, 18, 20, 24, 20, 18],
+            'l' => [12, 4, 4, 4, 4, 4, 14],
+            'm' => [0, 0, 26, 21, 21, 21, 17],
+            'n' => [0, 0, 22, 25, 17, 17, 17],
+            'o' => [0, 0, 14, 17, 17, 17, 14],
+            'r' => [0, 0, 22, 25, 16, 16, 16],
+            's' => [0, 0, 15, 16, 14, 1, 30],
+            't' => [8, 8, 28, 8, 8, 9, 6],
+            'u' => [0, 0, 17, 17, 17, 19, 13],
+            'w' => [0, 0, 17, 17, 21, 21, 10],
+            'z' => [0, 0, 31, 2, 4, 8, 31],
+            '1' => [4, 12, 4, 4, 4, 4, 14],
+            '2' => [14, 17, 1, 2, 4, 8, 31],
+            '3' => [14, 17, 1, 6, 1, 17, 14],
+            '4' => [2, 6, 10, 18, 31, 2, 2],
+            '5' => [31, 16, 30, 1, 1, 17, 14],
+            '6' => [6, 8, 16, 30, 17, 17, 14],
+            '7' => [31, 1, 2, 4, 8, 8, 8],
+            '8' => [14, 17, 17, 14, 17, 17, 14],
+            '9' => [14, 17, 17, 15, 1, 2, 12],
+            _ => [0; 7],
+        }
+    }
+
+    /// Phase 5c's new art for review: `HOUSEGUEST_STILLNESS=/dir cargo
+    /// test -p dessplay --lib stillness_sheet -- --ignored` writes
+    /// `stillness-1x.png`, the same pixels at 3× nearest-neighbour
+    /// (`stillness-1x-nn3x.png`) and a native 3× render
+    /// (`stillness-3x.png`), over a dark terminal. Bubbles (terminal
+    /// text) are drawn in a stand-in bitmap font. Bands, top to bottom
+    /// (numbered on the sheet):
+    /// 1. floor homework, the paper out in front of her: writing (two
+    ///    frames), the doze, and facing left; then reading on her back,
+    ///    the book held up over her face (two frames), and the doze with
+    ///    it open on her face;
+    /// 2. the paper desk alone, then homework at it kneeling (writing ×2,
+    ///    nodding off, asleep), then cross-legged (writing, asleep);
+    /// 3. reading a torn strip (two frames, both facings); `Read` with
+    ///    the book for reference;
+    /// 4. cross-legged before the TV (a programme card on), and the
+    ///    current `Sit` there for reference;
+    /// 5. the window hung low (hang 1, its sill at her chest), beside a
+    ///    sofa and partly behind it: leaning on the sill, chin in her
+    ///    hands (both facings); sitting in front of it chin in hands (a
+    ///    musing), and dozing there;
+    /// 6. cloud-watching (`LieBack`, Curious, held, a musing) lying under
+    ///    the low window, against the doze (`LieBack`, Blink, zzz);
+    /// 7. the sitting doze (two frames) beside `Sit`;
+    /// 8. looking up in place at chat (facing it, on the left): `!` with
+    ///    Surprised, then `?` with Curious, sitting, lying back,
+    ///    cross-legged and under the window;
+    /// 9. the same on the sofa; dozes stir (Blink, `Mm?`);
+    /// 10. the programme cards, then the colour bars and the sunrise
+    ///     for reference.
+    #[test]
+    #[ignore = "writes PNGs for review"]
+    fn stillness_sheet() {
+        use super::super::room::MadeId;
+        use super::super::scrap::{self, Scrap};
+        use tuirealm::ratatui::style::Color;
+
+        enum Draw {
+            /// A piece standing on floor row `y` (left column `x`), or
+            /// hung with its top row at `y`.
+            Piece(Furniture, PieceState, Facing, (u32, u32), bool),
+            /// The TV on `channel`, standing on floor row `y`.
+            Tv(Channel, Facing, (u32, u32)),
+            /// A made piece, standing on floor row `y`.
+            Scrap(Furniture, scrap::Part, Facing, (u32, u32)),
+            /// A piece's `Bare` layer (the sofa without the cushion she
+            /// hugs), standing on floor row `y`.
+            Bare(Furniture, Facing, (u32, u32)),
+            /// Her box (5 × 4) at left column `x`, on floor row `y`.
+            Her(Rig, Facing, (u32, u32)),
+            /// A floor line on row `y` from column `x0` to `x1`.
+            Floor(u32, u32, u32),
+            /// Terminal text (a bubble) starting at cell (x, y).
+            Text(&'static str, (u32, u32)),
+            /// A dim label.
+            Label(&'static str, (u32, u32)),
+        }
+        const BG: image::Rgba<u8> = image::Rgba([30, 33, 39, 255]);
+        const FLOOR: image::Rgba<u8> = image::Rgba([139, 148, 158, 255]);
+        const TEXT: image::Rgba<u8> = image::Rgba([201, 209, 217, 255]);
+        const DIM: image::Rgba<u8> = image::Rgba([110, 118, 129, 255]);
+        let dir = std::env::var("HOUSEGUEST_STILLNESS").expect("HOUSEGUEST_STILLNESS");
+        let glyphs: Vec<(char, Color)> = "Frieren 12"
+            .chars()
+            .zip(
+                [
+                    Color::Rgb(201, 209, 217),
+                    Color::Rgb(201, 209, 217),
+                    Color::Rgb(121, 192, 255),
+                    Color::Rgb(201, 209, 217),
+                ]
+                .into_iter()
+                .cycle(),
+            )
+            .collect();
+        let mut cube = Scrap::new(MadeId(0), &glyphs, 7);
+        cube.stage = scrap::STAGES;
+        let rig = Rig::for_pose;
+        let mut draws = Vec::new();
+        let band = |k: u32| 7 + 9 * k;
+        let label = |draws: &mut Vec<Draw>, text, k: u32| {
+            draws.push(Draw::Label(text, (0, band(k) - 6)));
+            draws.push(Draw::Floor(band(k), 1, 70));
+        };
+        // 1. Floor homework, the paper out in front of her; then reading
+        // on her back, the book held up over her face, and dozing under it.
+        let f = band(0);
+        label(&mut draws, "1", 0);
+        for (i, frame) in [0u8, 1, 2].into_iter().enumerate() {
+            let x = 2 + 7 * i as u32;
+            draws.push(Draw::Her(
+                rig(Pose::FloorHomework(frame), Face::Vacant),
+                Facing::Right,
+                (x, f),
+            ));
+        }
+        draws.push(Draw::Text("zzz", (21, f - 2)));
+        draws.push(Draw::Her(
+            rig(Pose::FloorHomework(0), Face::Vacant),
+            Facing::Left,
+            (25, f),
+        ));
+        for (x, frame) in [(34u32, 0u8), (41, 1), (50, 2)] {
+            draws.push(Draw::Her(
+                rig(Pose::LieRead(frame), Face::Vacant),
+                Facing::Right,
+                (x, f),
+            ));
+        }
+        draws.push(Draw::Text("zzz", (47, f - 2)));
+        // 2. The paper desk: alone, then in use (her box two columns
+        // past its end, facing it).
+        let f = band(1);
+        label(&mut draws, "2", 1);
+        draws.push(Draw::Scrap(
+            Furniture::Desk,
+            scrap::Part::Whole,
+            Facing::Right,
+            (2, f),
+        ));
+        let desk = |draws: &mut Vec<Draw>, x: u32, her: Rig| {
+            draws.push(Draw::Scrap(
+                Furniture::Desk,
+                scrap::Part::Back,
+                Facing::Right,
+                (x, f),
+            ));
+            draws.push(Draw::Her(her, Facing::Left, (x + 2, f)));
+        };
+        for (i, frame) in [0u8, 1, 2, 3].into_iter().enumerate() {
+            desk(
+                &mut draws,
+                8 + 9 * i as u32,
+                Rig::paper_desk(frame, true, Expression::Vacant),
+            );
+        }
+        draws.push(Draw::Text("zzz", (35, f - 3)));
+        for (i, frame) in [0u8, 3].into_iter().enumerate() {
+            desk(
+                &mut draws,
+                45 + 9 * i as u32,
+                Rig::paper_desk(frame, false, Expression::Vacant),
+            );
+        }
+        // 3. Reading a torn strip.
+        let f = band(2);
+        label(&mut draws, "3", 2);
+        draws.push(Draw::Her(
+            rig(Pose::ReadStrip(0), Face::Vacant),
+            Facing::Right,
+            (2, f),
+        ));
+        draws.push(Draw::Her(
+            rig(Pose::ReadStrip(1), Face::Vacant),
+            Facing::Right,
+            (9, f),
+        ));
+        draws.push(Draw::Her(
+            rig(Pose::ReadStrip(0), Face::Vacant),
+            Facing::Left,
+            (16, f),
+        ));
+        draws.push(Draw::Her(
+            rig(Pose::Read(0), Face::Vacant),
+            Facing::Right,
+            (27, f),
+        ));
+        // 4. Cross-legged before the TV, and today's `Sit` there.
+        let f = band(3);
+        label(&mut draws, "4", 3);
+        for (x, channel, her) in [
+            (
+                2,
+                Channel::Programme(Programme::Penguins),
+                rig(Pose::CrossLegged, Face::Vacant),
+            ),
+            (
+                16,
+                Channel::Programme(Programme::Cooking),
+                rig(Pose::CrossLegged, Face::Curious),
+            ),
+            (32, Channel::Shopping(0), rig(Pose::Sit, Face::Curious)),
+        ] {
+            draws.push(Draw::Tv(channel, Facing::Right, (x, f)));
+            draws.push(Draw::Her(her, Facing::Left, (x + 7, f)));
+        }
+        // 5. The window hung low (hang 1: its sill at her chest), beside
+        // the sofa and partly behind it (the window is drawn first); her
+        // face over its middle, leaning on the sill. Then sitting in front
+        // of it and dozing there, the settle-ins.
+        let f = band(4);
+        label(&mut draws, "5", 4);
+        let low = |wx: u32| {
+            Draw::Piece(
+                Furniture::Window,
+                PieceState::Sky(Sky::Day),
+                Facing::Right,
+                (wx, f - 3),
+                false,
+            )
+        };
+        draws.push(low(9));
+        draws.push(Draw::Piece(
+            Furniture::Sofa,
+            PieceState::Plain,
+            Facing::Right,
+            (2, f),
+            true,
+        ));
+        draws.push(Draw::Her(
+            rig(Pose::SillLean, Face::Curious),
+            Facing::Left,
+            (11, f),
+        ));
+        draws.push(low(20));
+        draws.push(Draw::Her(
+            rig(Pose::SillLean, Face::Vacant),
+            Facing::Right,
+            (18, f),
+        ));
+        draws.push(Draw::Text("~", (24, f - 4)));
+        for (wx, her, bubble) in [
+            (30u32, rig(Pose::UnderSill, Face::Curious), "~"),
+            (40, rig(Pose::SitDoze(1), Face::Blink), "zzz"),
+        ] {
+            draws.push(low(wx));
+            draws.push(Draw::Her(her, Facing::Right, (wx - 1, f)));
+            draws.push(Draw::Text(bubble, (wx + 4, f - 4)));
+        }
+        // 6. Cloud-watching, lying under the (low) window, against the
+        // doze on the bare floor.
+        let f = band(5);
+        label(&mut draws, "6", 5);
+        draws.push(Draw::Piece(
+            Furniture::Window,
+            PieceState::Sky(Sky::Day),
+            Facing::Right,
+            (3, f - 3),
+            false,
+        ));
+        draws.push(Draw::Her(
+            rig(Pose::LieBack(0), Face::Curious),
+            Facing::Right,
+            (4, f),
+        ));
+        draws.push(Draw::Text("That cloud's a bun.", (10, f - 2)));
+        draws.push(Draw::Her(
+            rig(Pose::LieBack(0), Face::Blink),
+            Facing::Right,
+            (44, f),
+        ));
+        draws.push(Draw::Text("zzz", (40, f - 2)));
+        // 7. The sitting doze beside `Sit`.
+        let f = band(6);
+        label(&mut draws, "7", 6);
+        draws.push(Draw::Her(
+            rig(Pose::Sit, Face::Vacant),
+            Facing::Right,
+            (2, f),
+        ));
+        draws.push(Draw::Her(
+            rig(Pose::SitDoze(0), Face::Blink),
+            Facing::Right,
+            (9, f),
+        ));
+        draws.push(Draw::Her(
+            rig(Pose::SitDoze(1), Face::Blink),
+            Facing::Right,
+            (16, f),
+        ));
+        draws.push(Draw::Text("zzz", (21, f - 3)));
+        draws.push(Draw::Her(
+            rig(Pose::SitDoze(1), Face::Blink),
+            Facing::Left,
+            (25, f),
+        ));
+        // 8–9. Looking up in place: facing the chat (on the left), a `!`
+        // then a `?` a cell out from her head.
+        let f = band(7);
+        label(&mut draws, "8", 7);
+        // Lying on her back, her head is already at the chat's end (her
+        // facing is toward her feet), so she keeps it.
+        let mut x = 4;
+        for (pose, head_row, facing) in [
+            (Pose::Sit, 3, Facing::Left),
+            (Pose::LieBack(0), 1, Facing::Right),
+            (Pose::CrossLegged, 3, Facing::Left),
+            (Pose::UnderSill, 3, Facing::Left),
+        ] {
+            for (face, text) in [(Face::Surprised, "!"), (Face::Curious, "?")] {
+                draws.push(Draw::Her(rig(pose, face), facing, (x, f)));
+                draws.push(Draw::Text(text, (x - 1, f - head_row - 1)));
+                x += 8;
+            }
+        }
+        let f = band(8);
+        label(&mut draws, "9", 8);
+        for (i, (face, text)) in [(Face::Surprised, "!"), (Face::Curious, "?")]
+            .into_iter()
+            .enumerate()
+        {
+            let sx = 2 + 11 * i as u32;
+            draws.push(Draw::Piece(
+                Furniture::Sofa,
+                PieceState::Plain,
+                Facing::Left,
+                (sx, f),
+                true,
+            ));
+            draws.push(Draw::Her(
+                rig(Pose::Lounge, face),
+                Facing::Left,
+                (sx + 2, f),
+            ));
+            draws.push(Draw::Text(text, (sx + 1, f - 5)));
+        }
+        // Dozes stir instead.
+        draws.push(Draw::Her(
+            rig(Pose::LieBack(0), Face::Blink),
+            Facing::Right,
+            (28, f),
+        ));
+        draws.push(Draw::Text("Mm?", (25, f - 2)));
+        draws.push(Draw::Bare(Furniture::Sofa, Facing::Right, (37, f)));
+        draws.push(Draw::Her(
+            Rig::sofa_nap(Expression::Blink),
+            Facing::Right,
+            (39, f),
+        ));
+        draws.push(Draw::Text("Mm?", (35, f - 3)));
+        // 10. The programme cards, then the colour bars and the sunrise.
+        let f = band(9);
+        label(&mut draws, "10", 9);
+        for (i, channel) in Programme::ALL
+            .map(Channel::Programme)
+            .into_iter()
+            .chain([Channel::ColourBars, Channel::Sunrise])
+            .enumerate()
+        {
+            draws.push(Draw::Tv(channel, Facing::Right, (2 + 8 * i as u32, f)));
+        }
+        let (cols, rows) = (72u32, band(9) + 2);
+        let render_sheet = |s: u32| {
+            let (w, h) = (9 * s, 19 * s);
+            let mut sheet = image::RgbaImage::from_pixel(w * cols, h * rows, BG);
+            let put = |sheet: &mut image::RgbaImage, image: &image::RgbaImage, x: u32, y: u32| {
+                image::imageops::overlay(sheet, image, i64::from(x), i64::from(y));
+            };
+            for draw in &draws {
+                match draw {
+                    Draw::Piece(item, state, facing, at, standing) => {
+                        let (pc, pr) = item.spec().footprint;
+                        let (pw, mut ph) = (w * u32::from(pc), h * u32::from(pr));
+                        let mut top = h * at.1;
+                        if *standing {
+                            ph += h / 2;
+                            top = h * (at.1 - u32::from(pr));
+                        }
+                        let image =
+                            render_piece(*item, *state, *facing, LINE, pw, ph).expect("renders");
+                        put(&mut sheet, &image, w * at.0, top);
+                    }
+                    Draw::Tv(channel, facing, (x, y)) => {
+                        let (pc, pr) = Furniture::Tv.spec().footprint;
+                        let (pw, ph) = (w * u32::from(pc), h * u32::from(pr) + h / 2);
+                        let image = render_tv(*channel, *facing, LINE, pw, ph).expect("renders");
+                        put(&mut sheet, &image, w * x, h * (y - u32::from(pr)));
+                    }
+                    Draw::Scrap(item, part, facing, (x, y)) => {
+                        let (pc, pr) = scrap::footprint(*item);
+                        let (pw, ph) = (w * u32::from(pc), h * u32::from(pr) + h / 2);
+                        if let Some(image) =
+                            scrap::render(*item, &cube, *part, *facing, LINE, pw, ph)
+                        {
+                            put(&mut sheet, &image, w * x, h * (y - u32::from(pr)));
+                        }
+                    }
+                    Draw::Bare(item, facing, (x, y)) => {
+                        let (pc, pr) = item.spec().footprint;
+                        let (pw, ph) = (w * u32::from(pc), h * u32::from(pr) + h / 2);
+                        let image = render_prop_layer(*item, Layer::Bare, *facing, LINE, pw, ph)
+                            .expect("renders");
+                        put(&mut sheet, &image, w * x, h * (y - u32::from(pr)));
+                    }
+                    Draw::Her(rig, facing, (x, y)) => {
+                        let osaka = render(rig, *facing, LINE, w * 5, h * 4 + h / 2).unwrap();
+                        put(&mut sheet, &osaka, w * x, h * (y - 4));
+                    }
+                    Draw::Floor(y, x0, x1) => {
+                        for gx in w * x0..w * x1 {
+                            for t in 0..s {
+                                sheet.put_pixel(gx, h * y + h / 2 + t, FLOOR);
+                            }
+                        }
+                    }
+                    Draw::Text(text, (x, y)) | Draw::Label(text, (x, y)) => {
+                        let ink = if matches!(draw, Draw::Text(..)) {
+                            TEXT
+                        } else {
+                            DIM
+                        };
+                        for (i, c) in text.chars().enumerate() {
+                            let (cx, cy) = (w * (x + i as u32) + 2 * s, h * y + 6 * s);
+                            for (row, bits) in glyph(c).into_iter().enumerate() {
+                                for col in 0..5u32 {
+                                    if bits >> (4 - col) & 1 == 1 {
+                                        for dy in 0..s {
+                                            for dx in 0..s {
+                                                sheet.put_pixel(
+                                                    cx + col * s + dx,
+                                                    cy + row as u32 * s + dy,
+                                                    ink,
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            sheet
+        };
+        let one = render_sheet(1);
+        one.save(format!("{dir}/stillness-1x.png")).unwrap();
+        image::imageops::resize(
+            &one,
+            one.width() * 3,
+            one.height() * 3,
+            image::imageops::FilterType::Nearest,
+        )
+        .save(format!("{dir}/stillness-1x-nn3x.png"))
+        .unwrap();
+        render_sheet(3)
+            .save(format!("{dir}/stillness-3x.png"))
             .unwrap();
     }
 

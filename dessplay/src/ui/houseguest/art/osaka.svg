@@ -269,6 +269,18 @@
     <g transform="translate(-4 -1)"><use href="#p-seated-leg"/></g>
     <use href="#p-seated-leg"/>
   </g>
+  <!-- Cross-legged on the floor (facing right), for `Rig::crossed`, in
+       her own (unbobbed) frame with the floor at y = 132: both thighs
+       out forward along the floor, the shins crossed under the knees,
+       the far foot tucked behind, the near one peeking out in front. -->
+  <g id="p-crossed-legs">
+    <path d="M 74 123 L 54 128 L 55.5 133 L 76 128.5 Z" fill="#f7f4f0" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+    <ellipse cx="51.5" cy="131" rx="5" ry="2.6" fill="#6b3a24" stroke="currentColor" stroke-width="1.2"/>
+    <path d="M 44 112 L 75 116 C 81 117 82 124.5 76 125 L 44 123 Z" fill="#f6dccb" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+    <path d="M 58 123.5 L 81 128 L 79.5 132.8 L 56.5 128.5 Z" fill="#f7f4f0" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+    <ellipse cx="84" cy="131" rx="5" ry="2.6" fill="#6b3a24" stroke="currentColor" stroke-width="1.2"/>
+    <path d="M 46 116 L 71 120 C 77 121 78 128.5 72 129 L 46 127 Z" fill="#f6dccb" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+  </g>
   <g id="p-skirt">
     <path d="M 38.5 102 L 63.5 102 L 70 126 L 33 126 Z"
           fill="#823f49" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
@@ -357,6 +369,62 @@
           fill="#f6d48a"/>
     <path d="M -4.4 -2.8 L -2.6 -2 L -1 -3.2 L 0.4 -2.2 L 1.6 -3.4 L 3 -2.6"
           fill="none" stroke="currentColor" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round"/>
+  </g>
+  <!-- Homework (phase 5c): a sheet of paper lying flat, seen a little
+       from above, centred on (0, 0) with its underside at y = 2; a
+       pencil, its grip at (0, 0), point down. -->
+  <g id="paper">
+    <path d="M -14 -3 L 13 -3 L 16 2 L -11 2 Z" fill="#fbf8f1" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round"/>
+    <path d="M -9 -1.4 L 8 -1.4 M -8 0.4 L 11 0.4" fill="none" stroke="#9db4d6" stroke-width="0.8"/>
+  </g>
+  <!-- The same sheet, larger, lying on the floor in front of her
+       (floor homework): centred on (0, 0), 40 wide, underside at y = 2. -->
+  <g id="paper-floor">
+    <path d="M -19 -3.4 L 17 -3.4 L 21 2 L -15 2 Z" fill="#fbf8f1" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round"/>
+    <path d="M -12 -1.6 L 12 -1.6 M -10 0.4 L 15 0.4" fill="none" stroke="#9db4d6" stroke-width="0.8"/>
+  </g>
+  <!-- An open book seen from the side, its covers a tent (ridge up),
+       the pages under them: held up over her face to read lying on her
+       back, or left lying on her face. Centred on (0, 0), 34 x 13. The
+       turn has a page lifting off the ridge. -->
+  <g id="book-side">
+    <path d="M -15 6.5 L 0 -1 L 15 6.5 L 13 8.5 L 0 2 L -13 8.5 Z" fill="#fbf8f1" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
+    <path d="M -17 5.5 L 0 -5 L 17 5.5 L 15 7.5 L 0 -1.5 L -15 7.5 Z" fill="#5f8f8b" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+    <path d="M -9 0.6 L -4.5 -2.2" fill="none" stroke="#e7c77a" stroke-width="1.8"/>
+  </g>
+  <!-- The same book left open on her face as she dozes, turned to show
+       its cover side-on: the near cover, its spine along the top (the
+       tent's ridge), the pages' edges along the bottom where it rests.
+       Lying over her face it covers her eyes. Centred on (0, 0),
+       35 x 22. -->
+  <g id="book-cover">
+    <rect x="-17" y="-10.5" width="34" height="21" rx="2.5" fill="#5f8f8b" stroke="currentColor" stroke-width="1.6"/>
+    <rect x="-17" y="-10.5" width="34" height="5" rx="2" fill="#4d7774" stroke="currentColor" stroke-width="1.2"/>
+    <rect x="-15.5" y="7.5" width="31" height="3" fill="#fbf8f1" stroke="currentColor" stroke-width="0.9"/>
+    <path d="M -9 0.5 L 9 0.5" fill="none" stroke="#e7c77a" stroke-width="2.2"/>
+  </g>
+  <g id="book-side-turn">
+    <use href="#book-side"/>
+    <path d="M 0 -4.8 C 1.5 -14 8.5 -17 13.5 -13.5 C 10 -11 5.5 -8.5 0 -4.8 Z" fill="#ffffff" stroke="currentColor" stroke-width="1" stroke-linejoin="round"/>
+  </g>
+  <g id="pencil">
+    <path d="M 0 -9 L 0 4" fill="none" stroke="currentColor" stroke-width="3.6" stroke-linecap="round"/>
+    <path d="M 0 -7.5 L 0 2.5" fill="none" stroke="#e8c34a" stroke-width="2"/>
+    <path d="M 0 -9 L 0 -7.5" fill="none" stroke="#e58a9a" stroke-width="2"/>
+    <path d="M -1.4 3.6 L 0 7 L 1.4 3.6 Z" fill="currentColor"/>
+  </g>
+  <!-- A strip of text torn off a line (HG #72), held up to read: a
+       ragged band of the shredded glyphs (as her makeshift furniture
+       draws them), in two text colours. Centred on (0, 0). The game's
+       own strip would be drawn from the real glyphs. -->
+  <g id="strip">
+    <path d="M -17 -6.5 L -14 -5.8 L -11 -6.8 L 4 -6 L 8 -6.8 L 12 -6 C 17 -6 20 -3 20 2 L 21 6 L 18.5 13 L 16 11 L 13.5 13.5 L 13 6.5 L -12 6.8 L -15 5.6 L -18 6.4 L -16 0.5 Z"
+          fill="currentColor" stroke="currentColor" stroke-width="1" stroke-linejoin="round"/>
+    <path d="M -14.5 -4.5 h 2.6 v 2.6 h -2.6 Z M -11.3 -4.5 h 2.6 v 9 h -2.6 Z M -14.5 1.9 h 2.6 v 2.6 h -2.6 Z
+             M 0.4 -4.5 h 2.6 v 9 h -2.6 Z M 3.6 -1.3 h 2.6 v 2.6 h -2.6 Z M 3.6 1.9 h 2.6 v 2.6 h -2.6 Z
+             M 15 1 h 2.6 v 2.6 h -2.6 Z M 15 4.2 h 2.6 v 6 h -2.6 Z" fill="#c9d1d9"/>
+    <path d="M -6.6 -4.5 h 5.8 v 2.6 h -5.8 Z M -5 -1.3 h 2.6 v 5.8 h -2.6 Z
+             M 8.4 -4.5 h 2.6 v 2.6 h -2.6 Z M 8.4 1.9 h 2.6 v 2.6 h -2.6 Z" fill="#79c0ff"/>
   </g>
   <!-- Disposable wooden chopsticks (waribashi, Ep 25), drawn upright
        with the joined head end up and her grip at (0, 0) near the

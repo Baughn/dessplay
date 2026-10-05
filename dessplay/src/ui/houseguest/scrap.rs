@@ -73,6 +73,8 @@ impl Scrap {
         let drawn = match item {
             // A pillow at the head end, the mattress below.
             Furniture::Bed => dy == rows - 1 || (dy == rows - 2 && dx == 0),
+            // The paper desk (phase 5c art): a solid cube.
+            Furniture::Desk => true,
             // The backrest, arms, and seat.
             _ => match rows - 1 - dy {
                 0 => true,
@@ -99,6 +101,8 @@ pub(super) const MAKES: [Furniture; 2] = [Furniture::Sofa, Furniture::Bed];
 pub(super) fn footprint(item: Furniture) -> (u16, u16) {
     match item {
         Furniture::Bed => (7, 2),
+        // Phase 5c art: the paper desk, a low cube she sits beside.
+        Furniture::Desk => (4, 2),
         _ => (7, 3),
     }
 }
@@ -137,6 +141,9 @@ struct Heap {
     rx: f32,
     ry: f32,
     front: bool,
+    /// A block (the box `rx` × `ry` about its centre) rather than an
+    /// ellipse.
+    block: bool,
 }
 
 const fn heap(cx: f32, cy: f32, rx: f32, ry: f32, front: bool) -> Heap {
@@ -146,6 +153,19 @@ const fn heap(cx: f32, cy: f32, rx: f32, ry: f32, front: bool) -> Heap {
         rx,
         ry,
         front,
+        block: false,
+    }
+}
+
+/// A block of shreds, `rx` × `ry` about its centre.
+const fn block(cx: f32, cy: f32, rx: f32, ry: f32) -> Heap {
+    Heap {
+        cx,
+        cy,
+        rx,
+        ry,
+        front: false,
+        block: true,
     }
 }
 
@@ -164,10 +184,14 @@ static SOFA: [Heap; 4] = [
     heap(10.0, 94.0, 11.0, 28.0, false),
     heap(130.0, 94.0, 11.0, 28.0, false),
 ];
+/// The paper desk (phase 5c art, not yet in [`MAKES`]): a low cube,
+/// 80 × 84, its top 48 units up (where her paper lies).
+static DESK: [Heap; 1] = [block(40.0, 61.0, 35.0, 22.0)];
 
 fn heaps(item: Furniture) -> &'static [Heap] {
     match item {
         Furniture::Bed => &BED,
+        Furniture::Desk => &DESK,
         _ => &SOFA,
     }
 }
@@ -203,7 +227,12 @@ fn shreds(item: Furniture, scrap: &Scrap) -> Vec<(Shred, bool)> {
             let mut x = heap.cx - heap.rx;
             while x <= heap.cx + heap.rx {
                 let (dx, dy) = ((x - heap.cx) / heap.rx, (y - heap.cy) / heap.ry);
-                if dx * dx + dy * dy <= 1.0 {
+                let inside = if heap.block {
+                    dx.abs() <= 1.0 && dy.abs() <= 1.0
+                } else {
+                    dx * dx + dy * dy <= 1.0
+                };
+                if inside {
                     let from = (mix.next() % 3) as u32;
                     out.push((
                         Shred {
