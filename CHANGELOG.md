@@ -124,6 +124,8 @@ Add new days at the top. Add new entries at the bottom of existing days.
   work, and still reach rows you would have to scroll to.
 - Added: In settings, you can drag media roots with the mouse to reorder
   them (the top one is where downloads go), and clicking a row selects it.
+- Fixed: Capital letters (and other shifted keys) can be typed again in
+  terminals where a previous program left an enhanced keyboard mode on.
 
 ## 2026-10-04
 

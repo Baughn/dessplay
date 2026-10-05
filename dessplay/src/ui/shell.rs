@@ -283,7 +283,7 @@ pub fn run_ui_thread(
         std::io::stdout(),
         crossterm::style::Print(TERMINAL_STATE_PROLOGUE)
     ) {
-        tracing::warn!("cannot reset terminal margins: {e}");
+        tracing::warn!("cannot reset terminal state: {e}");
     }
     // Bracketed paste (design.md #33): without it, a terminal delivers
     // pasted text as a stream of individual key-press events instead of
@@ -363,7 +363,14 @@ pub struct UiExit {
 /// cursor", which is the sequence ratatui-image embeds in every Kitty
 /// image row, so each row of a picture printed at the screen's
 /// top-left instead of under its message.
-pub const TERMINAL_STATE_PROLOGUE: &str = "\x1b[?69l\x1b[r\x1b[?6l";
+///
+/// Then the keyboard: xterm modifyOtherKeys off (`CSI >4;0m`) and the
+/// Kitty keyboard flags of the current (alternate) screen cleared
+/// (`CSI =0u`). crossterm decodes neither modifyOtherKeys sequences nor
+/// keys we never asked to be enhanced; a leftover modifyOtherKeys level 2
+/// sent Shift+A as `CSI 27;2;65~`, which crossterm discards, so capital
+/// letters could not be typed at all.
+pub const TERMINAL_STATE_PROLOGUE: &str = "\x1b[?69l\x1b[r\x1b[?6l\x1b[>4;0m\x1b[=0u";
 
 /// Pick the image-rendering protocol for inline chat images.
 ///
@@ -1060,12 +1067,17 @@ mod prologue_tests {
     use super::TERMINAL_STATE_PROLOGUE;
 
     /// The prologue resets exactly the three modes that remap absolute
-    /// cursor moves or repurpose `CSI s`: left/right margin mode, the
-    /// scroll region, and origin mode. Anything else here would be a
-    /// silent change to what every frame assumes.
+    /// cursor moves or repurpose `CSI s` (left/right margin mode, the
+    /// scroll region, origin mode) and the two that change key encoding
+    /// away from what crossterm decodes (modifyOtherKeys, Kitty keyboard
+    /// flags). Anything else here would be a silent change to what every
+    /// frame or keypress assumes.
     #[test]
-    fn prologue_resets_margin_region_and_origin() {
-        assert_eq!(TERMINAL_STATE_PROLOGUE, "\x1b[?69l\x1b[r\x1b[?6l");
+    fn prologue_resets_cursor_and_keyboard_modes() {
+        assert_eq!(
+            TERMINAL_STATE_PROLOGUE,
+            "\x1b[?69l\x1b[r\x1b[?6l\x1b[>4;0m\x1b[=0u"
+        );
     }
 }
 

@@ -1014,11 +1014,13 @@ failure, the link stays plain text with no error chrome.
   do not open the viewer. There is no keyboard command to open it.
 - **Terminal state.** Right after entering the alternate screen the
   client resets left/right margin mode, the scroll region, and origin
-  mode (`CSI ?69l`, `CSI r`, `CSI ?6l`). Every frame assumes absolute
-  cursor addressing and that `CSI s`/`CSI u` save and restore the
-  cursor; those hold only in that state, and a terminal keeps it across
-  the alternate-screen switch, so whatever the previous program left
-  set would otherwise leak into ours (why:
+  mode (`CSI ?69l`, `CSI r`, `CSI ?6l`), and turns off xterm
+  modifyOtherKeys and the Kitty keyboard flags (`CSI >4;0m`,
+  `CSI =0u`). Every frame assumes absolute cursor addressing and that
+  `CSI s`/`CSI u` save and restore the cursor, and input decoding
+  assumes legacy key encoding; those hold only in that state, and a
+  terminal keeps it across the alternate-screen switch, so whatever the
+  previous program left set would otherwise leak into ours (why:
   [decisions](decisions.md#the-terminal-state-prologue)).
 
 ### System Messages
