@@ -376,3 +376,35 @@ fn a_day_drawn_as_she_wakes_carries_to_her_next_visit() {
     assert_eq!(guest.day(now).map(|d| d.day), Some(1));
     assert_eq!(visit_of(&guest).osaka.rares(), &woke);
 }
+
+/// The pity cliff (step 7's review), through her days: she has shown
+/// every rare thing, so her pity never starts again and stands far past
+/// its bound, yet over a few hundred school days what's open is about a
+/// day in seven (each day's draw on its base roll alone), nothing is ever
+/// new, and what she has seen and her pity stay as they were.
+#[test]
+fn every_rare_seen_they_stay_rare_however_long_her_pity() {
+    let (real, view) = home_screen();
+    let mut guest = idle_home_at(8, mon(16, 0), false);
+    guest.ledger.seen = rarity::RARES.iter().map(|r| r.key.into()).collect();
+    guest.ledger.idle_min = 1_000_020;
+    let seen = guest.ledger.seen.clone();
+    let mut now = 0;
+    let (mut days, mut open) = (0u64, 0u64);
+    for day in (0..420).filter(|&d| routine::weekday(d).num_days_from_monday() < 5) {
+        guest.activity(now);
+        guest.ledger.clock = GameTime { day, h: 16, m: 0 }.minutes();
+        now = until_visiting(&mut guest, &real, &view, now);
+        assert_eq!(guest.day(now).map(|d| d.day), Some(day));
+        let rares = visit_of(&guest).osaka.rares();
+        assert_eq!(rares.new_one(), None, "day {day}: nothing unseen is left");
+        open += u64::from(!rares.open().is_empty());
+        days += 1;
+        assert_eq!(guest.ledger.seen, seen, "day {day}");
+        assert_eq!(guest.ledger.rare_at, 20, "day {day}");
+    }
+    // Three hundred days: within 0.08 of 0.15 is about four deviations
+    // (the cliff opened them every day).
+    let share = open as f64 / days as f64;
+    assert!((share - 0.15).abs() < 0.08, "{open} of {days} days");
+}

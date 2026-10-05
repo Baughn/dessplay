@@ -7068,10 +7068,10 @@ mod tests {
         for placed in [false, true] {
             let mut rng = Rng(1);
             let mut osaka = Osaka::standing_at(10, 10, 0, &mut rng);
-            let w = (0..)
+            let w = (0..10_000)
                 .map(Whims)
                 .find(|&w| Lines::default().pick(mind::DOOR, w, 0) == Some(line))
-                .unwrap();
+                .expect("a whim that picks it");
             assert_eq!(osaka.lines.pick(mind::DOOR, w, 1000), Some(line));
             osaka.say(line, 1000);
             if placed {
@@ -8184,7 +8184,7 @@ mod tests {
         }
         // A cued surf cools as a rolled one does: not again on its own
         // within ten minutes, whatever the whims.
-        let surfing = (0..)
+        let surfing = (0..10_000)
             .find(|&seed| {
                 let seat = seat_for(Use::Watch, Furniture::Tv);
                 begun(&started(seat, 1000, &plain, None, None, seed).0)
@@ -8192,7 +8192,7 @@ mod tests {
                     .own
                     == ScriptId::Surf
             })
-            .unwrap_or_default();
+            .expect("a seed she surfs on");
         osaka.cue(Some(Cue::Script(ScriptId::Surf)));
         assert_eq!(
             start(&mut osaka, Use::Watch, false, &plain).own,
@@ -8285,7 +8285,9 @@ mod tests {
         let surfs_on = |seed: u64| {
             own(&started(seat, 1000, &Chances::default(), None, None, seed).0) == ScriptId::Surf
         };
-        let surfing = (0..).find(|&seed| surfs_on(seed)).unwrap_or_default();
+        let surfing = (0..10_000)
+            .find(|&seed| surfs_on(seed))
+            .expect("a seed she surfs on");
         let mut surfs = 0u64;
         let n = 2400u64;
         for seed in 0..n {
@@ -9779,9 +9781,9 @@ mod tests {
     /// A master seed whose night ending on game `morning` has a midnight
     /// snack, and its minute.
     fn snack_night(morning: u64) -> (u64, u16) {
-        (0..)
+        (0..10_000)
             .find_map(|master| brain::night_snack(master, morning).map(|m| (master, m)))
-            .unwrap()
+            .expect("a night with a snack")
     }
 
     /// Her midnight snack is a pure function of the home and the night:
@@ -9912,7 +9914,9 @@ mod tests {
         let (snacks, up, ..) = run(&bed_at(25));
         assert!(snacks.is_empty() && up.is_empty(), "{snacks:?} {up:?}");
         // A night without one: none, fridge or no.
-        let quiet = (0..).find(|&m| brain::night_snack(m, 1).is_none()).unwrap();
+        let quiet = (0..10_000)
+            .find(|&m| brain::night_snack(m, 1).is_none())
+            .expect("a night without one");
         let mut rng = Rng(9);
         let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
         osaka.key_days(quiet, Some(1));
@@ -10236,7 +10240,7 @@ mod tests {
     /// A master seed whose night ending on game `morning` has a midnight
     /// snack at a minute in `range`, and that minute.
     fn snack_night_in(morning: u64, range: std::ops::Range<u16>) -> (u64, u16) {
-        (0..)
+        (0..10_000)
             .find_map(|master| {
                 brain::night_snack(master, morning)
                     .filter(|m| range.contains(m))
@@ -11315,15 +11319,19 @@ mod tests {
     /// and not again within its cooldown.
     #[test]
     fn the_escalator_is_mused_only_on_a_day_its_open() {
-        let open = Rares::draw(
-            0,
-            &[ScriptId::Escalator],
-            Pity {
-                rare: 360,
-                legend: 0,
-            },
-            rarity::DAY_WINDOW,
-        );
+        // A day it's open: the first whose Rare roll passes its base
+        // chance (pity never opens the seen).
+        let open = (0..1000)
+            .map(|seed| {
+                Rares::draw(
+                    seed,
+                    &[ScriptId::Escalator],
+                    Pity::default(),
+                    rarity::DAY_WINDOW,
+                )
+            })
+            .find(|r| r.allows(ScriptId::Escalator))
+            .expect("a day in seven or so");
         assert!(open.allows(ScriptId::Escalator));
         let escalator = |osaka: &Osaka| matches!(osaka.act, Act::SpaceOut { play: Some(p), .. } if p.own == ScriptId::Escalator);
         let mut mused = 0;

@@ -2318,7 +2318,7 @@ mod tests {
             )
             .1 == Some(SpliceId::TestSleep)
         };
-        let coda = (0..).find(|&w| rolls(w)).unwrap();
+        let coda = (0..10_000).find(|&w| rolls(w)).expect("a coda rolls");
         let mut afters = 0;
         for w in 0..400 {
             for &what in &Use::ALL {
@@ -3014,15 +3014,13 @@ mod tests {
         use super::super::rarity::{DAY_WINDOW, Pity, Rares};
         use super::super::routine::{self, Slot};
         let none = Rares::none();
-        let open = Rares::draw(
-            0,
-            &[ScriptId::NoMelon, ScriptId::Scary],
-            Pity {
-                rare: 360,
-                legend: 0,
-            },
-            DAY_WINDOW,
-        );
+        // A day both are open: the first whose Rare roll passes its base
+        // chance (pity never opens the seen).
+        let seen = [ScriptId::NoMelon, ScriptId::Scary];
+        let open = (0..1000)
+            .map(|seed| Rares::draw(seed, &seen, Pity::default(), DAY_WINDOW))
+            .find(|r| r.allows(ScriptId::NoMelon))
+            .expect("a day in seven or so");
         assert!(open.allows(ScriptId::NoMelon) && open.allows(ScriptId::Scary));
         let late = routine::day_time(routine::game_of(0, 22 * 60 + 10), false);
         let early = routine::day_time(routine::game_of(0, 21 * 60 + 50), false);

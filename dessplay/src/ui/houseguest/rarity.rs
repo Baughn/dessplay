@@ -9,11 +9,15 @@
 //!
 //! The gate is [`Rares`], drawn once a game day while her routine is fed
 //! (as her visit begins, and as she wakes into a new day: "the day is the
-//! unit") and once a visit while it isn't. Each tier rolls its base chance
-//! plus a ramp in her pity counter (real idle minutes since she last
-//! showed something new of that tier), certain at the tier's bound: the
-//! seen scripts of a tier that passes are open, and at most one unseen
-//! script is new.
+//! unit") and once a visit while it isn't. Each tier rolls once: the seen
+//! scripts of a tier whose roll passes its base chance are open, and at
+//! most one unseen script is new, from a tier whose roll passes its base
+//! chance plus a ramp in her pity counter (real idle minutes since she
+//! last showed something new of that tier), certain at the tier's bound.
+//! Pity is only for choosing something unseen: it never opens what she
+//! has seen (once every Rare is seen her counter never starts again, and
+//! would otherwise open them all every day), and with nothing unseen
+//! left there is no pity at all.
 
 use super::routine::{Slot, SlotSet};
 use super::script::ScriptId;
@@ -25,11 +29,15 @@ pub(super) enum Rarity {
     Common,
     /// Now and then, by its own chance roll: ungated.
     Uncommon,
-    /// A day in seven or so, and certain after six idle hours without
-    /// anything new.
+    /// Each seen one open a day in seven or so; something unseen of the
+    /// tier new a day in seven or so (one of them, evenly, if several
+    /// fit), certain after six idle hours without anything new. Unfed,
+    /// a visit in place of a day.
     Rare,
-    /// A day in fifty or so, and certain after forty idle hours without
-    /// anything new.
+    /// Each seen one open a day in fifty or so; something unseen of the
+    /// tier new a day in fifty or so (one of them, evenly, if several
+    /// fit), certain after forty idle hours without anything new. Unfed,
+    /// a visit in place of a day.
     Legendary,
 }
 
@@ -66,7 +74,7 @@ impl Rarity {
 
 /// Her pity counters as a draw reads them: real idle minutes since she
 /// last showed something rare (and something legendary) for the first
-/// time.
+/// time. A draw reads them only to choose something unseen.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct Pity {
     pub rare: u64,
@@ -106,7 +114,8 @@ impl Pity {
 
 /// The chance `tier` passes a draw with its pity counter at `counter`:
 /// its base chance, rising in a straight line to certain at its bound
-/// (an ungated tier always passes). Monotone in the counter.
+/// (an ungated tier always passes). Monotone in the counter. A seen
+/// script's roll is at counter 0, its base chance ([`Rares::draw_from`]).
 pub(super) fn chance(tier: Rarity, counter: u64) -> f64 {
     match tier.odds() {
         None => 1.0,
@@ -215,8 +224,10 @@ pub(super) const DAY_WINDOW: SlotSet = SlotSet::of(&Slot::ALL);
 pub(super) const UNFED_WINDOW: SlotSet = SlotSet::of(&[Slot::Afternoon]);
 
 /// What of hers that's rare is open now (her day's, or unfed her
-/// visit's): the seen rare scripts whose tier passed the draw, and at
-/// most one she hasn't shown yet (the `Option` makes two unrepresentable).
+/// visit's): the seen rare scripts whose tier's roll passed its base
+/// chance (never pity), and at most one she hasn't shown yet, from a
+/// tier whose roll passed its chance with pity (the `Option` makes two
+/// unrepresentable).
 /// Built only by [`Rares::draw`] and [`Rares::none`] (its fields private,
 /// no `Default`), so it's always a draw over [`RARES`] or nothing.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -242,11 +253,15 @@ impl Rares {
     }
 
     /// [`Rares::draw`] over `rows` (tests try Legendary rows of their own:
-    /// none ships). Each tier rolls once: its seen scripts are open if it
-    /// passes. The new one is chosen from the first tier that passes,
-    /// Legendary before Rare, with an unseen script whose slots meet the
-    /// window, evenly among those. Private: a row whose tier isn't its
-    /// script's would make [`Rares::allows`] disagree with the draw.
+    /// none ships). Each tier rolls once, on one number: its seen scripts
+    /// are open if that passes its base chance alone (no pity). The new
+    /// one is chosen from the first tier whose number passes its chance
+    /// with pity, Legendary before Rare, with an unseen script whose
+    /// slots meet the window, evenly among those: pity is only for
+    /// something unseen, so with nothing unseen left there is none.
+    ///
+    /// Private: a row whose tier isn't its script's would make
+    /// [`Rares::allows`] disagree with the draw.
     fn draw_from(
         rows: &[RareRow],
         seed: u64,
@@ -255,15 +270,17 @@ impl Rares {
         window: SlotSet,
     ) -> Self {
         let z = mix(seed ^ RARE_SALT);
-        let pass = |tier: Rarity| passes(z, tier, pity.of_tier(tier));
+        // The seen roll their tier's base chance alone: pity never opens
+        // what she has already shown (with every Rare seen her counter
+        // never starts again, and would open them all, every day).
         let open = rows
             .iter()
-            .filter(|r| seen.contains(&r.id) && pass(r.rarity))
+            .filter(|r| seen.contains(&r.id) && passes(z, r.rarity, 0))
             .map(|r| r.id)
             .collect();
         let new = [Rarity::Legendary, Rarity::Rare]
             .into_iter()
-            .filter(|&tier| pass(tier))
+            .filter(|&tier| passes(z, tier, pity.of_tier(tier)))
             .find_map(|tier| {
                 let fresh: Vec<ScriptId> = rows
                     .iter()
@@ -382,6 +399,69 @@ mod tests {
         assert!(near(half, 0.575, 0.015), "Rare at 180: {half}");
     }
 
+    /// The pity cliff (step 7's review): once she has shown every Rare,
+    /// her pity counter never starts again, so it runs far past its
+    /// bound. Pity is only for choosing something unseen: each seen rare
+    /// still opens on about its tier's base rate of days, however long
+    /// since anything new (rares stay rare), and with nothing unseen left
+    /// nothing is new. With one Rare unseen, pity at its bound still
+    /// makes it certain, and leaves the seen ones at their base rate.
+    /// Legendary alike, on the tests' own rows.
+    #[test]
+    fn seen_rares_open_at_their_base_rate_however_long_her_pity() {
+        const N: u64 = 20_000;
+        let near = |got: f64, want: f64, tol: f64| (got - want).abs() < tol;
+        let all: Vec<ScriptId> = RARES.iter().map(|r| r.id).collect();
+        for rare in [360, 361, 10_000, 1_000_000, u64::MAX] {
+            let pity = Pity { rare, legend: 0 };
+            let mut opened = [0u64; RARES.len()];
+            for seed in 0..N {
+                let d = Rares::draw(seed, &all, pity, DAY_WINDOW);
+                assert_eq!(d.new, None, "{seed}: nothing unseen is left");
+                for (i, r) in RARES.iter().enumerate() {
+                    opened[i] += u64::from(d.open.contains(&r.id));
+                }
+            }
+            for (i, r) in RARES.iter().enumerate() {
+                let share = opened[i] as f64 / N as f64;
+                assert!(
+                    near(share, 0.15, 0.01),
+                    "{:?} at pity {rare}: {share}",
+                    r.id
+                );
+            }
+            // One Rare unseen: certain at the bound, the rest still rare.
+            let (unseen, seen) = (all[1], [all[0], all[2], all[3]]);
+            let mut opened = 0u64;
+            for seed in 0..N {
+                let d = Rares::draw(seed, &seen, pity, DAY_WINDOW);
+                assert_eq!(d.new, Some(unseen), "{seed}: pity's certain");
+                opened += u64::from(d.open.contains(&seen[0]));
+            }
+            let share = opened as f64 / N as f64;
+            assert!(near(share, 0.15, 0.01), "pity {rare}, one unseen: {share}");
+        }
+        let any = SlotSet::of(&Slot::ALL);
+        let rows = [RareRow {
+            id: ScriptId::Lounge,
+            rarity: Rarity::Legendary,
+            key: "test-legend",
+            slots: any,
+        }];
+        for legend in [2400, 100_000, u64::MAX] {
+            let pity = Pity { rare: 0, legend };
+            let opened = (0..N)
+                .filter(|&seed| {
+                    let d = Rares::draw_from(&rows, seed, &[ScriptId::Lounge], pity, any);
+                    assert_eq!(d.new, None, "{seed}");
+                    d.open.contains(&ScriptId::Lounge)
+                })
+                .count();
+            let share = opened as f64 / N as f64;
+            assert!(near(share, 0.02, 0.004), "Legendary at {legend}: {share}");
+        }
+    }
+
     /// Every seen subset of her rares, as a list in table order.
     fn subsets(rows: &[RareRow]) -> Vec<Vec<ScriptId>> {
         (0..1u32 << rows.len())
@@ -397,9 +477,12 @@ mod tests {
 
     /// Over a thousand seeds and every set of seen rares, pity and
     /// window: the new one is never one she has seen, is one the window
-    /// can hold, and the open ones are all seen; with no pity the draw
-    /// opens something on about the Rare tier's base rate of days, and
-    /// with full pity on every one.
+    /// can hold, and the open ones are all seen. The seen open on the
+    /// Rare tier's one number passing its base chance alone, whatever her
+    /// pity (about its base rate of days, with every Rare seen), and that
+    /// same number news something unseen that fits (a base pass is a pity
+    /// pass); with full pity something unseen is new on every day it can
+    /// be.
     #[test]
     fn a_draw_opens_only_the_seen_and_news_only_the_unseen() {
         let windows = [
@@ -410,6 +493,7 @@ mod tests {
             visit_window(Slot::Asleep, Slot::Morning),
         ];
         let mut news = 0;
+        let mut all_seen_open = 0u64;
         for seen in subsets(&RARES) {
             for pity in [
                 Pity::default(),
@@ -432,13 +516,36 @@ mod tests {
                             assert!(row.slots.meets(window), "{new:?} out of its window");
                             news += 1;
                         }
+                        // What's open is the seen ones' base roll on the
+                        // tier's one number, never their pity.
+                        let base = passes(mix(seed ^ RARE_SALT), Rarity::Rare, 0);
+                        for r in RARES.iter().filter(|r| seen.contains(&r.id)) {
+                            assert_eq!(
+                                rares.open.contains(&r.id),
+                                base,
+                                "{seed} {pity:?} {:?}",
+                                r.id
+                            );
+                        }
+                        // The same number news: open, and something
+                        // unseen fits, so something is new.
+                        let fits = RARES
+                            .iter()
+                            .any(|r| !seen.contains(&r.id) && r.slots.meets(window));
+                        if !rares.open.is_empty() && fits {
+                            assert!(rares.new.is_some(), "{seed} {pity:?} {seen:?}");
+                        }
+                        // The base rate, every Rare seen (counted once a
+                        // seed: what's open doesn't hang on the window).
+                        if seen.len() == RARES.len()
+                            && pity == Pity::default()
+                            && window == DAY_WINDOW
+                        {
+                            all_seen_open += u64::from(!rares.open.is_empty());
+                        }
                         // Certain at the bound: something unseen that
-                        // fits is new, and every seen one is open.
+                        // fits is new.
                         if pity.rare >= 360 {
-                            assert_eq!(rares.open.len(), seen.len(), "{seed}");
-                            let fits = RARES
-                                .iter()
-                                .any(|r| !seen.contains(&r.id) && r.slots.meets(window));
                             assert_eq!(rares.new.is_some(), fits, "{seed} {seen:?}");
                         }
                         // Ungated scripts are always allowed; gated ones
@@ -455,6 +562,9 @@ mod tests {
             }
         }
         assert!(news > 0);
+        // A thousand seeds: within 0.05 of 0.15 is over four deviations.
+        let share = all_seen_open as f64 / 1000.0;
+        assert!((share - 0.15).abs() < 0.05, "every Rare seen: {share}");
     }
 
     /// Nothing rare is open with none drawn: not one of her rare scripts
@@ -512,7 +622,8 @@ mod tests {
                 all,
             );
             assert_eq!(sure.new, Some(ScriptId::Lounge), "{seed}");
-            // Seen, it opens with its tier's roll alone.
+            // Seen, it opens with its tier's base roll alone, however
+            // sure its pity.
             let seen = [ScriptId::Lounge];
             let open = Rares::draw_from(
                 &rows,
@@ -520,7 +631,7 @@ mod tests {
                 &seen,
                 Pity {
                     rare: 360,
-                    legend: 0,
+                    legend: 2400,
                 },
                 all,
             );

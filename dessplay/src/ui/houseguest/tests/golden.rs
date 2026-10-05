@@ -500,14 +500,14 @@ fn home_from_school(seed: u64, graphics: bool, _: bool) -> u64 {
 /// with a fridge in it, three minutes of her clock: out of her closed
 /// door, to the fridge for her lunch, and out again by her door.
 fn dash_home(seed: u64, graphics: bool, _: bool) -> u64 {
-    let (day, minute) = (1..)
+    let (day, minute) = (1..1000)
         .find_map(|day| {
             let school = routine::weekday(day).num_days_from_monday() < 5;
             brain::dash(seed, day)
                 .filter(|_| school)
                 .map(|minute| (day, minute))
         })
-        .unwrap();
+        .expect("a school day with a dash home");
     let at = routine::GameTime {
         day,
         h: (minute - 1) / 60,

@@ -32,9 +32,9 @@ const TUESDAY: u64 = 1;
 /// A master seed from `from` on whose Tuesday has a dash home, and its
 /// minute.
 fn dash_seed(from: u64) -> (u64, u16) {
-    (from..)
+    (from..from + 10_000)
         .find_map(|seed| brain::dash(seed, TUESDAY).map(|m| (seed, m)))
-        .unwrap()
+        .expect("a Tuesday with a dash home")
 }
 
 /// `minute` (since midnight) of Tuesday.
@@ -261,9 +261,9 @@ fn until_visiting_or_away(guest: &mut Guest, real: &Buffer, view: &IdleView) -> 
 fn a_restart_after_her_dash_never_dashes() {
     let (real, view) = home_screen();
     let (seed, minute) = dash_seed(0);
-    let none = (0..)
+    let none = (0..10_000)
         .find(|&seed| brain::dash(seed, TUESDAY).is_none())
-        .unwrap();
+        .expect("a Tuesday without one");
     let june = date(2026, 6, 17);
     let summer = date(2026, 7, 28);
     for (what, seed, from, date) in [
@@ -345,10 +345,10 @@ fn the_errand_at_school_is_a_dash() {
             };
             let view = scrolled_back(base, accordion, 2);
             let pieces: &[(Furniture, Nook, u16)] = if home { &BARE_HOME } else { &[] };
-            let (seed, _) = (0..)
+            let (seed, _) = (0..10_000)
                 .map(|seed| (seed, brain::dash(seed, TUESDAY)))
                 .find(|(_, dash)| dash.is_none())
-                .unwrap();
+                .expect("a Tuesday without one");
             let mut guest = home_at(seed, tue_at(9 * 60), pieces, graphics);
             let visits = guest.ledger.visits;
             let mut now = 0;
@@ -402,10 +402,10 @@ fn the_errand_at_school_is_a_dash() {
 #[test]
 fn still_in_from_a_dash_as_school_ends_she_is_home() {
     let (real, view) = home_screen();
-    let (seed, _) = (0..)
+    let (seed, _) = (0..10_000)
         .map(|seed| (seed, brain::dash(seed, TUESDAY)))
         .find(|(_, dash)| dash.is_none())
-        .unwrap();
+        .expect("a Tuesday without one");
     for graphics in [false, true] {
         let at = format!("graphics={graphics}");
         let mut guest = home_at(seed, tue_at(12 * 60 + 40), &FRIDGE_HOME, graphics);
@@ -434,9 +434,9 @@ fn still_in_from_a_dash_as_school_ends_she_is_home() {
 
 /// A master seed from `from` on whose Tuesday has no dash home.
 fn no_dash_seed(from: u64) -> u64 {
-    (from..)
+    (from..from + 10_000)
         .find(|&seed| brain::dash(seed, TUESDAY).is_none())
-        .unwrap()
+        .expect("a Tuesday without one")
 }
 
 /// From a cold start until her home stands empty, then a dash cued
@@ -907,14 +907,14 @@ fn a_dash_cued_on_a_visit_keeps_the_visit() {
 /// Her clock a game minute before `seed`'s first dash home on a school
 /// day from game day `from` on.
 fn before_a_dash(seed: u64, from: u64) -> routine::GameTime {
-    let (day, minute) = (from..)
+    let (day, minute) = (from..from + 1000)
         .find_map(|day| {
             let school = routine::weekday(day).num_days_from_monday() < 5;
             brain::dash(seed, day)
                 .filter(|_| school)
                 .map(|minute| (day, minute))
         })
-        .unwrap();
+        .expect("a school day with a dash home");
     routine::GameTime {
         day,
         h: (minute - 1) / 60,
