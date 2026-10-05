@@ -263,7 +263,7 @@ fn what_she_moved_rains_out_as_she_goes() {
             assert!(now < 60_000, "{at}: never out");
             shell_step(&mut guest, &real, &view, &mut now, true);
         }
-        let raining = empty_of(&guest).is_some_and(|e| !e.fades.is_empty());
+        let raining = empty_of(&guest).is_some() && !guest.fades.is_empty();
         assert!(raining, "{at}: what she moved goes as a rain");
         // As the shell has it: painted only when the tick says so.
         let out = now;
@@ -1166,14 +1166,14 @@ fn an_errand_from_her_empty_home_rains_her_door_out() {
         guest.advance(now);
         let accordion = Rect::new(10, 8, 20, 1);
         assert!(guest.send(&real, &view, accordion, now), "{at}: sent");
-        let State::Visiting(visit) = &guest.state else {
+        let State::Visiting(_) = &guest.state else {
             panic!("{at}: visiting");
         };
         let raining = closed(door).cells().any(|(x, y, _)| {
             let (Ok(x), Ok(y)) = (u16::try_from(x), u16::try_from(y)) else {
                 return false;
             };
-            visit.fades.iter().any(|fade| fade.painting(x, y))
+            guest.fades.iter().any(|fade| fade.painting(x, y))
         });
         assert!(raining, "{at}: her door rains out");
     }

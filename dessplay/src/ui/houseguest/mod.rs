@@ -426,8 +426,6 @@ struct Visit {
     /// ASCII; in line art, those not in her box's image (it overlapped
     /// the rest, which show only if it was placed).
     apart: Vec<Shown>,
-    /// What of hers is raining out of a pane that was just focused.
-    fades: Vec<Dissolve>,
     /// Makeshift furniture she has made of text this visit.
     made: Vec<Made>,
     /// The next piece she makes.
@@ -566,11 +564,6 @@ struct Leaving {
     props: Vec<Shown>,
     /// How it looked then (A22): the TV on, the lamp off, as they were.
     looks: Looks,
-    /// What of hers was already raining out (a focused pane's, what she'd
-    /// moved and made, her closed door broken in on): it rains on to its
-    /// end, before the goodbye's own (they all began before it), never
-    /// cut off.
-    fades: Vec<Dissolve>,
 }
 
 /// She's on her way to the chat's scrollback accordion, or poking it.
@@ -665,9 +658,6 @@ struct Empty {
     painted: Vec<Frozen>,
     /// How her furniture looked in the last frame (a goodbye keeps it).
     looks: Looks,
-    /// What of hers is raining out: what she'd moved and made, as she
-    /// went; what stood in a pane just focused.
-    fades: Vec<Dissolve>,
     size: (u16, u16),
 }
 
@@ -682,7 +672,6 @@ impl Empty {
             image: None,
             painted: Vec::new(),
             looks: Looks::default(),
-            fades: Vec::new(),
             size: (0, 0),
         }
     }
@@ -733,6 +722,18 @@ pub struct Guest {
     arranging: bool,
     /// When to poke the scrollback accordion, and its shake.
     nudge: nudge::Nudge,
+    /// What of hers is raining out: what stood in a pane just focused,
+    /// what she'd moved and made as she went out by her routine, her
+    /// closed door broken in on. Hers, not her state's: it rains on to
+    /// its end whatever comes meanwhile (she comes home, a goodbye, she
+    /// goes with nothing of hers shown, school ends with the client
+    /// busy), tended once a tick ([`Guest::advance`]: the tick it ends on
+    /// is drawn too), painted once a frame over every state
+    /// ([`Guest::paint`]), and woken for. Only her being sent away
+    /// (switched off, moved out) or her room going (no room, a resize)
+    /// ends it early: the user's say, or the geometry it froze against
+    /// gone ([`Guest::vanish`]).
+    fades: Vec<Dissolve>,
     errand: Option<Errand>,
     /// Monotonic millis of the last accrual of her clock (`None` before
     /// the first: it only latches). See [`Guest::accrue`].
@@ -864,6 +865,7 @@ impl Guest {
             cat_now: false,
             arranging: false,
             nudge: nudge::Nudge::default(),
+            fades: Vec::new(),
             errand: None,
             clock_at: None,
             clock_rem: 0,
@@ -939,12 +941,20 @@ impl Guest {
         self.gift = None;
         self.shop_now = false;
         self.out = None;
-        if matches!(
-            self.state,
-            State::Visiting(_) | State::Arriving(_) | State::Away(_)
-        ) {
-            self.state = State::Absent;
+        // Gone at once; a goodbye under way rains to its end.
+        if !matches!(self.state, State::Leaving(_)) {
+            self.vanish();
         }
+    }
+
+    /// She's gone at once, with no goodbye, sent away (switched off,
+    /// moved out) or out of room (no room, a resize): absent, and nothing
+    /// of hers rains on. The one place her rains are cut short; every
+    /// other way she goes (or doesn't come) lets them fall to their end
+    /// ([`Guest::fades`]).
+    fn vanish(&mut self) {
+        self.state = State::Absent;
+        self.fades.clear();
     }
 
     /// The stage: give her `item`, placed at the next paint on a quiet
@@ -1205,7 +1215,6 @@ impl Guest {
                         startled: sprite::Face::Surprised,
                         props: empty.apart,
                         looks: empty.looks,
-                        fades: empty.fades,
                     }));
                 }
             }
@@ -1234,7 +1243,6 @@ impl Guest {
                         startled,
                         props: visit.apart,
                         looks: visit.looks,
-                        fades: visit.fades,
                     }));
                 }
             }
@@ -1475,14 +1483,14 @@ impl Guest {
         // A quarter-hour passed: a clock's dial or a window's sky shown
         // may have changed.
         let quarter = fed.is_some() && routine::quarter_crossed(before, self.game_ms());
+        // Her rains, whatever her state: one ending this tick needs its
+        // last frame too (the frame without it).
+        let fading = !self.fades.is_empty();
+        self.fades.retain(|fade| !fade.done(now));
         let mut changed = match &mut self.state {
             State::Absent => self.absent(now, school, dash),
             State::Arriving(_) => true,
             State::Away(empty) => {
-                // A rain ending this tick needs its last frame too (the
-                // frame without it).
-                let fading = !empty.fades.is_empty();
-                empty.fades.retain(|fade| !fade.done(now));
                 let ticked = quarter && tells_time(&empty.shown);
                 if !school {
                     self.school_out(now);
@@ -1492,12 +1500,10 @@ impl Guest {
                     self.state = State::Arriving(How::Dash);
                     true
                 } else {
-                    fading || ticked
+                    ticked
                 }
             }
             State::Visiting(visit) => {
-                visit.fades.retain(|fade| !fade.done(now));
-                let fading = !visit.fades.is_empty();
                 let flapped = visit
                     .flap
                     .take_if(|&mut (_, since)| now >= since + FLAP_MS)
@@ -1535,10 +1541,9 @@ impl Guest {
                     self.out = None;
                     tracing::info!(visit = self.ledger.visits, "houseguest: home early");
                 }
-                changed || fading || flapped || quarter && tells_time(&visit.shown)
+                changed || flapped || quarter && tells_time(&visit.shown)
             }
             State::Leaving(leaving) => {
-                leaving.fades.retain(|fade| !fade.done(now));
                 if leaving.dissolve.done(now) {
                     tracing::trace!("houseguest gone");
                     self.state = State::Absent;
@@ -1550,7 +1555,7 @@ impl Guest {
             self.out_by_door(now);
             changed = true;
         }
-        changed || nudge
+        changed || fading || nudge
     }
 
     /// Absent at `now` (`school`: it's school time by her routine): she
@@ -1717,9 +1722,8 @@ impl Guest {
                 || made.iter().any(|r| r.contains((cell.x, cell.y).into()))
         };
         let out: Vec<Frozen> = visit.painted.iter().filter(mine).cloned().collect();
-        let mut fades = visit.fades;
         if !out.is_empty() {
-            fades.push(Dissolve::new(
+            self.fades.push(Dissolve::new(
                 now.saturating_sub(dissolve::RAIN_FROM_MS),
                 out,
                 door.x,
@@ -1728,7 +1732,6 @@ impl Guest {
             ));
         }
         let mut empty = Empty::new(&self.ledger, self.cat_now);
-        empty.fades = fades;
         empty.size = visit.size;
         self.state = State::Away(Box::new(empty));
     }
@@ -1778,33 +1781,50 @@ impl Guest {
                     .min()
             }
             State::Arriving(_) => Some(now),
-            State::Away(empty) => empty
-                .fades
-                .iter()
-                .map(|fade| fade.next_frame(now))
-                .chain(self.next_boundary(now))
+            State::Away(empty) => self
+                .next_boundary(now)
+                .into_iter()
                 .chain(self.next_dash(now))
                 .chain(self.next_quarter(&empty.shown, now))
                 .min(),
             State::Visiting(visit) => Some(
                 visit
-                    .fades
-                    .iter()
-                    .map(|fade| fade.next_frame(now))
-                    .chain(visit.flap.map(|(_, since)| since + FLAP_MS))
+                    .flap
+                    .map(|(_, since)| since + FLAP_MS)
+                    .into_iter()
                     .chain(self.next_quarter(&visit.shown, now))
                     .fold(visit.osaka.due(), u64::min),
             ),
-            // Every fade began before the goodbye's rain, and ends first.
             State::Leaving(leaving) => Some(leaving.dissolve.next_frame(now)),
         };
-        let due = due.into_iter().chain(self.nudge.next_at(now)).min()?;
+        // Her rains' frames, whatever her state.
+        let due = due
+            .into_iter()
+            .chain(self.fades.iter().map(|fade| fade.next_frame(now)))
+            .chain(self.nudge.next_at(now))
+            .min()?;
         Some(Duration::from_millis(due.saturating_sub(now)))
     }
 
     /// Paint her over the finished frame. `view` must describe the frame
     /// just drawn (pane rectangles are measured during the draw).
     pub fn paint(&mut self, buf: &mut Buffer, view: &IdleView, now: u64) {
+        // Her rains, last, over the real frame in a focused pane (where
+        // nothing else of hers goes), whatever her state now; once a
+        // frame (a second pass would take the first's glyphs for the UI
+        // changing, and settle them), so only when the arm that painted
+        // her state didn't already (a goodbye paints them under its
+        // image).
+        if self.paint_state(buf, view, now) == Rains::ToPaint {
+            let size = (buf.area.width, buf.area.height);
+            paint_fades(&mut self.fades, buf, size, now);
+        }
+    }
+
+    /// Paint her state over the finished frame (see [`Guest::paint`]).
+    /// Returns whether that painted her rains too: each arm says, so
+    /// they're painted once whatever state she ends the frame in.
+    fn paint_state(&mut self, buf: &mut Buffer, view: &IdleView, now: u64) -> Rains {
         self.observe(view, now);
         let as_drawn = view;
         let view = &whole_glyphs(buf, self.gate(view, now));
@@ -1862,7 +1882,10 @@ impl Guest {
         // after everything that reads the real frame, and under her.
         let nudge = &self.nudge;
         match &mut self.state {
-            State::Absent | State::Arriving(_) => nudge.paint(buf, now),
+            State::Absent | State::Arriving(_) => {
+                nudge.paint(buf, now);
+                Rains::ToPaint
+            }
             State::Away(empty) => {
                 if size.0 < MIN_WIDTH || size.1 < MIN_HEIGHT {
                     // As a visit leaves for no room: shown again only
@@ -1870,9 +1893,9 @@ impl Guest {
                     // would show it at once, to go again at this paint).
                     // She's still out, her door's spot kept.
                     tracing::info!("houseguest: her empty home goes (no room)");
-                    self.state = State::Absent;
+                    self.vanish();
                     self.quiet_since = now;
-                    return;
+                    return Rains::ToPaint;
                 }
                 // As the frame has it, before she keeps out of a focused
                 // pane: her closed door moves only for what would keep
@@ -1882,6 +1905,7 @@ impl Guest {
                 let door = &mut self.out.get_or_insert_default().door;
                 let changed = paint_empty(
                     empty,
+                    &mut self.fades,
                     door,
                     &mut self.ledger,
                     self.graphics.as_mut(),
@@ -1894,12 +1918,13 @@ impl Guest {
                     self.truecolor,
                 );
                 self.unsaved |= changed;
+                Rains::ToPaint
             }
             State::Leaving(leaving) => {
                 if leaving.dissolve.size() != size {
                     // The geometry she froze against is gone.
-                    self.state = State::Absent;
-                    return;
+                    self.vanish();
+                    return Rains::ToPaint;
                 }
                 // Everything that compares against the real frame reads it
                 // before any of her pixels or glyphs go on: her own image
@@ -1909,9 +1934,11 @@ impl Guest {
                 let terrain = Terrain::read(buf, &view.protected, true);
                 nudge.paint(buf, now);
                 leaving.dissolve.paint(buf, now);
-                for fade in &mut leaving.fades {
-                    fade.paint(buf, now);
-                }
+                // Her rains on to their ends, before the goodbye's own
+                // (they all began before it), under its image (over it,
+                // the rain's cells there would differ from the real frame
+                // and settle for good).
+                paint_fades(&mut self.fades, buf, size, now);
                 if let Some(graphics) = &mut self.graphics
                     && t < dissolve::RAIN_FROM_MS
                     && untouched
@@ -1958,6 +1985,7 @@ impl Guest {
                         .collect();
                     graphics.paint_layers(buf, &layers, &|x, y| terrain.open(x, y));
                 }
+                Rains::Painted
             }
             State::Visiting(visit) => {
                 // Someone's at the keys: what she moved in the chat goes
@@ -1984,7 +2012,7 @@ impl Guest {
                             cells = out.len(),
                             "houseguest: raining out of the focused pane"
                         );
-                        visit.fades.push(Dissolve::new(
+                        self.fades.push(Dissolve::new(
                             now.saturating_sub(dissolve::RAIN_FROM_MS),
                             out,
                             visit.osaka.x,
@@ -1993,9 +2021,6 @@ impl Guest {
                         ));
                     }
                 }
-                visit
-                    .fades
-                    .retain(|fade| fade.size() == size && !fade.done(now));
                 // Read before paint: the layer validates against the real
                 // frame, then its cells join the protected set so she
                 // never stands over moved text or the holes it left.
@@ -2096,9 +2121,9 @@ impl Guest {
                     || !visit.osaka.settle(now, &visit.terrain)
                 {
                     tracing::info!("houseguest left (no room)");
-                    self.state = State::Absent;
+                    self.vanish();
                     self.quiet_since = now;
-                    return;
+                    return Rains::ToPaint;
                 }
                 // A line she moved isn't hers to pull again (it's
                 // protected), but its letters are hers to swap where
@@ -2281,11 +2306,7 @@ impl Guest {
                 if visit.osaka.shown(now, drawn).is_some() {
                     self.unsaved |= record(&mut self.ledger, &mut self.shop_now, visit);
                 }
-                // Last, over the real frame in the focused pane (where
-                // nothing else of hers goes).
-                for fade in &mut visit.fades {
-                    fade.paint(buf, now);
-                }
+                Rains::ToPaint
             }
         }
     }
@@ -2425,7 +2446,6 @@ impl Guest {
             chances: osaka::Chances::default(),
             shown: Vec::new(),
             apart: Vec::new(),
-            fades: Vec::new(),
             flap: None,
             made: Vec::new(),
             next_made: room::MadeId(0),
@@ -2547,9 +2567,7 @@ impl Guest {
                 let osaka = Osaka::arrive_for_errand(spot, now, &mut self.rng);
                 let size = (buf.area.width, buf.area.height);
                 self.begin_visit(osaka, terrain, size, kind, now);
-                if let (State::Visiting(visit), Some(door)) = (&mut self.state, door) {
-                    visit.fades.push(door);
-                }
+                self.fades.extend(door);
             }
             State::Leaving(_) => return false,
         }
@@ -2620,11 +2638,14 @@ impl Guest {
         if !self.open {
             self.quiet_since = now;
             match self.state {
-                State::Arriving(_) => self.state = State::Absent,
-                State::Visiting(_) | State::Away(_) if view.delay.is_none() => {
-                    // Switched off: no goodbye.
-                    self.state = State::Absent;
+                // Switched off: no goodbye, and nothing of hers rains on
+                // (a goodbye under way rains to its end).
+                State::Absent | State::Arriving(_) | State::Visiting(_) | State::Away(_)
+                    if view.delay.is_none() =>
+                {
+                    self.vanish();
                 }
+                State::Arriving(_) => self.state = State::Absent,
                 // A visitor busy (his video, a selection): on an errand,
                 // she stays till it's done; on a dash home from school
                 // (an errand's too, Q2), till she's out again by her door
@@ -4142,6 +4163,27 @@ fn door_spot(terrain: &Terrain, near: (i32, i32)) -> Option<(i32, i32)> {
         .min_by_key(|&(x, y)| ((x - near.0).abs() + (y - near.1).abs(), y, x))
 }
 
+/// Whether the arm of [`Guest::paint_state`] that painted her state
+/// painted her rains too, or left them to [`Guest::paint`].
+#[must_use]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Rains {
+    /// Painted under the goodbye's image.
+    Painted,
+    /// Still to paint, last, over everything.
+    ToPaint,
+}
+
+/// Paint her rains (`fades`, [`Guest::fades`]) over the frame `buf`
+/// (`size`), dropping those done at `now` or made at another size (the
+/// geometry they froze against is gone).
+fn paint_fades(fades: &mut Vec<Dissolve>, buf: &mut Buffer, size: (u16, u16), now: u64) {
+    fades.retain(|fade| fade.size() == size && !fade.done(now));
+    for fade in fades {
+        fade.paint(buf, now);
+    }
+}
+
 /// Paint her home standing empty while she's out (`State::Away`) over
 /// the finished frame: her furniture as a visit projects it (and nothing
 /// a visit's paint sets going: no gift, no order, no parcel), the TV off
@@ -4155,6 +4197,7 @@ fn door_spot(terrain: &Terrain, near: (i32, i32)) -> Option<(i32, i32)> {
 #[allow(clippy::too_many_arguments)]
 fn paint_empty(
     empty: &mut Empty,
+    fades: &mut Vec<Dissolve>,
     door: &mut Option<DoorAt>,
     ledger: &mut Ledger,
     mut graphics: Option<&mut Graphics>,
@@ -4181,7 +4224,7 @@ fn paint_empty(
                 cells = out.len(),
                 "houseguest: her empty home rains out of the focused pane"
             );
-            empty.fades.push(Dissolve::new(
+            fades.push(Dissolve::new(
                 now.saturating_sub(dissolve::RAIN_FROM_MS),
                 out,
                 origin,
@@ -4190,9 +4233,6 @@ fn paint_empty(
             ));
         }
     }
-    empty
-        .fades
-        .retain(|fade| fade.size() == size && !fade.done(now));
     // Her furniture where a visit's paint would stand it, clear of
     // protected cells.
     let blocked = |cx: i32, cy: i32| {
@@ -4269,10 +4309,6 @@ fn paint_empty(
         let (cells, art) = draw_door(buf, graphics, door, with, &looks, &terrain, truecolor);
         painted.extend(cells);
         image = art;
-    }
-    // Last, over the real frame in the focused pane.
-    for fade in &mut empty.fades {
-        fade.paint(buf, now);
     }
     empty.shown = shown;
     empty.apart = apart;

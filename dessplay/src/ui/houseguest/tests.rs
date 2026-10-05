@@ -734,7 +734,7 @@ fn long_visit_of(
 /// out by her routine (her home empty: the rain's cells are its own).
 fn raining(guest: &Guest, (x, y): (u16, u16)) -> bool {
     match &guest.state {
-        State::Away(empty) => empty.fades.iter().any(|fade| fade.painting(x, y)),
+        State::Away(_) => guest.fades.iter().any(|fade| fade.painting(x, y)),
         _ => false,
     }
 }
@@ -1073,7 +1073,6 @@ fn visiting_at(guest: &mut Guest, real: &Buffer, view: &IdleView, (x, y): (i32, 
     paint(guest, real, view, 0);
     let mut rng = Rng(1);
     guest.state = State::Visiting(Box::new(Visit {
-        fades: Vec::new(),
         osaka: Osaka::standing_at(x, y, 0, &mut rng),
         kind: Kind::Normal,
         // As a visit begins: the room read off the frame she comes into.
@@ -6217,11 +6216,11 @@ fn the_focused_pane_is_hers_again_when_the_client_is_left_alone() {
     now += 1;
     guest.advance(now);
     paint(&mut guest, &real, &view, now);
-    let State::Visiting(visit) = &guest.state else {
+    let State::Visiting(_) = &guest.state else {
         panic!("visiting");
     };
     assert!(
-        visit.fades.is_empty(),
+        guest.fades.is_empty(),
         "no rain while the client is left alone"
     );
     assert_eq!(at(&guest), spot, "she stays where she is");
@@ -6230,10 +6229,10 @@ fn the_focused_pane_is_hers_again_when_the_client_is_left_alone() {
     guest.activity(now);
     guest.advance(now);
     paint(&mut guest, &real, &view, now);
-    let State::Visiting(visit) = &guest.state else {
+    let State::Visiting(_) = &guest.state else {
         panic!("a resident stays");
     };
-    assert!(!visit.fades.is_empty(), "she rains out of the focused pane");
+    assert!(!guest.fades.is_empty(), "she rains out of the focused pane");
     let pressed = now;
     assert_eq!(guest.gate(&view, now).focus, Some(pane));
     // A delay's quiet later, it's hers again.
@@ -9044,7 +9043,7 @@ fn carried_unseen(guest: &Guest, frame: &Buffer, real: &Buffer, view: &IdleView)
             continue;
         };
         let cell = (cx as u16, cy as u16);
-        if visit.fades.iter().any(|f| f.painting(cell.0, cell.1)) {
+        if guest.fades.iter().any(|f| f.painting(cell.0, cell.1)) {
             continue;
         }
         let got = frame.cell(cell).unwrap().symbol();
@@ -10791,7 +10790,7 @@ fn promised_frame(
     let visit = visit_of(guest);
     assert_untouched_but_feet(&frame, real, &view.protected, feet(visit))?;
     // (A pane just focused rains out what of hers was in it.)
-    if graphics && visit.fades.is_empty() {
+    if graphics && guest.fades.is_empty() {
         let layer: Vec<(u16, u16)> = visit.layer.cells().collect();
         hidden.check(&frame, real, &layer, &open_flap(guest, now), now)?;
     }
@@ -11307,4 +11306,5 @@ mod census;
 mod clock;
 mod dash;
 mod golden;
+mod rain;
 mod rares;

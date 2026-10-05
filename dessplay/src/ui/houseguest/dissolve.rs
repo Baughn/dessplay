@@ -195,6 +195,12 @@ impl Dissolve {
         now.saturating_sub(self.t0) >= DURATION_MS
     }
 
+    /// When it ends: the frame without it is due then.
+    #[cfg(test)]
+    pub fn ends_at(&self) -> u64 {
+        self.t0 + DURATION_MS
+    }
+
     /// When the next frame is due.
     pub fn next_frame(&self, now: u64) -> u64 {
         let t = now.saturating_sub(self.t0);

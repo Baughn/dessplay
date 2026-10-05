@@ -579,10 +579,10 @@ fn golden_resident() {
         "resident",
         resident,
         &[
-            (0, 0x9edb2f88161cd06e, 0x2b67eae2c1e7639b),
-            (1, 0x66e880b457962f15, 0x7066efcb805b4afe),
-            (2, 0x09bc3be953e7971e, 0xa4fb914ec7872439),
-            (3, 0xfe93ff6197edea0d, 0x884c6a69fef789f5),
+            (0, 0x159aeccddcc71c34, 0xb310e9c1d24e6d2a),
+            (1, 0x1c31aa319ebf49a7, 0x0a6f41a6467a0cfe),
+            (2, 0x1e68322acf91a80d, 0x938e65d6c960c217),
+            (3, 0xc93586d452fd9669, 0xd4cef6d21bdd82bf),
         ],
     );
 }
@@ -608,9 +608,9 @@ fn golden_errand() {
         errand,
         &[
             (0, 0xa115268dd34741af, 0x84a48e0354dec3ca),
-            (1, 0xf0e25986f30fae63, 0x67b51cfcbab5b012),
+            (1, 0xe0f41b1ece93757c, 0x827f3f555bf64164),
             (2, 0x1e3dd842f4ca4668, 0x20d410417a6fc48e),
-            (3, 0x0b3934b5b2e4d1c0, 0x47f20eb30403a5d2),
+            (3, 0xc2e68cc1c3988003, 0x648adf4edb47be5a),
         ],
     );
 }
@@ -716,12 +716,15 @@ const UNFED_STAGE: [(u64, u64, u64); 4] = [
 
 /// The resident's tables at the end of phase 5b step 3, but for step 5a's
 /// hidden-goodbye fix (no placement recorded of her hidden behind her
-/// door: its trace diff is in that commit).
+/// door: its trace diff is in that commit), and phase 5c step 1's
+/// rain-out fix (the tick a focused pane's rain ends on is drawn: one
+/// frame inserted at each rain's end, every seed and mode, nothing else
+/// changed; the trace diff is in that commit).
 const UNFED_RESIDENT: [(u64, u64, u64); 4] = [
-    (0, 0xbc82a8f260a5d799, 0xe9ccfad21660aec7),
-    (1, 0xc9a36f2147c27b57, 0x38bbc612ffbcfc2b),
-    (2, 0x9204f86377c803b0, 0xcd7b645d6efb9997),
-    (3, 0xf1fe032ad00023fe, 0x9818dfe4c8fad305),
+    (0, 0xf6f9ea92658d4f25, 0x11419451071cd534),
+    (1, 0x3ca5bf68b72726c0, 0xdff0ac9174e46f25),
+    (2, 0xfd6ddc9497586054, 0xc7dea150ebe6ed3e),
+    (3, 0x7b25569fe1c14189, 0x2e08bce79097501d),
 ];
 
 /// The furnished home's tables at the end of phase 5b step 3, but for
@@ -736,12 +739,15 @@ const UNFED_FURNISHED: [(u64, u64, u64); 4] = [
 
 /// The errand's tables at the end of phase 5b step 3, but for step 5a's
 /// hidden-goodbye fix (no placement recorded of her hidden behind her
-/// door: its trace diff is in that commit).
+/// door: its trace diff is in that commit), and phase 5c step 1's
+/// rain-out fix (the tick a focused pane's rain ends on is drawn: one
+/// frame inserted at the rain's end, seeds 1 and 3 (the residents) in
+/// both modes, nothing else changed; the trace diff is in that commit).
 const UNFED_ERRAND: [(u64, u64, u64); 4] = [
     (0, 0xa115268dd34741af, 0x84a48e0354dec3ca),
-    (1, 0xf0e25986f30fae63, 0x67b51cfcbab5b012),
+    (1, 0xe0f41b1ece93757c, 0x827f3f555bf64164),
     (2, 0x1e3dd842f4ca4668, 0x20d410417a6fc48e),
-    (3, 0x07f3cf925a3cfb31, 0xf621c3073f8725cf),
+    (3, 0x11bd15f445a20504, 0x627e6797aa8f8636),
 ];
 
 #[test]
