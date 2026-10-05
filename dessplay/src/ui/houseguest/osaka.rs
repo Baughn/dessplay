@@ -8,6 +8,7 @@ use super::brain::{self, Mood, Need, Needs, Rising, Spot, Want};
 use super::calendar::{self, Owed, Tints};
 use super::layer::Placed;
 use super::mind::{self, Beat, Bind, Ctx, Heading, Here, Lines, Loss, PoolId, RIDDLES, Whims};
+use super::rarity::{self, Pity, Rares};
 use super::room::{Furniture, MadeId, PieceRef, Seat, Use};
 use super::routine::{self, DayTime};
 use super::rules::{Grievance, Placement, Repair, TIE_CELLS, Trials};
@@ -281,6 +282,10 @@ pub(super) enum HomeEvent {
     /// What her calendar owed her on this real date has shown: not owed
     /// again that date (phase 5b D5).
     Calendar(chrono::NaiveDate),
+    /// A rare script of hers showed for the first time (its first key
+    /// played: not as it was planned, or offered): seen from now on, and
+    /// her pity for its tier starts again (phase 5b D6).
+    Seen(ScriptId),
 }
 
 impl Chances {
@@ -1017,6 +1022,10 @@ pub(super) const LAST_HOUR_MS: u64 = 60 * 60_000 / super::CLOCK_SPEED;
 /// The Dream (step 7) comes this long after her first sleep of the
 /// night, by her clock (game millis).
 const DREAM_AFTER_MS: u64 = 30 * 60_000;
+/// Back in bed after its moment passed while she was up (an errand, her
+/// midnight snack, a visit's end), she sleeps this long (real millis)
+/// before the Dream comes: not the instant she lies down.
+pub(super) const DREAM_SETTLE_MS: u64 = 20_000;
 
 /// How long until her `k`th sleep-talk after the one before it (the
 /// 0th: after the night act's start), drawn from the night act's
@@ -1031,9 +1040,10 @@ pub(super) fn talk_gap(whims: Whims, k: u64) -> u64 {
 /// morning: what of it carries across whatever gets her out of bed
 /// before her wake time (an errand, her midnight snack), and her current
 /// night act's sleep-talk, scheduled afresh as each begins (see
-/// [`Osaka::arm_night`]).
+/// [`Osaka::arm_night`]). The guest keeps her last one across her visits
+/// (see [`Osaka::carry_night`]): a night is hers, not a visit's.
 #[derive(Clone, Copy, Debug)]
-struct Night {
+pub(super) struct Night {
     /// The game day the night ends on (its morning): what keys it.
     morning: u64,
     /// When she first slept this night, by her clock (game millis): the
@@ -1049,6 +1059,9 @@ struct Night {
     talk_k: u64,
     /// When it's due (monotonic millis).
     next_talk: u64,
+    /// Tonight's Dream has come (or its moment passed with no room for
+    /// it before she wakes): once a night.
+    dreamt: bool,
 }
 
 /// The shortest use there is: a trial sit, or the shortest use of
@@ -1465,6 +1478,11 @@ pub(super) struct Osaka {
     /// Her night, while it's night by her routine and she has slept
     /// some of it (see [`Night`]); cleared as a new day begins.
     night: Option<Night>,
+    /// Her night as an earlier visit left it (the guest's: see
+    /// [`Osaka::carry_night`]): her first night act this visit carries it
+    /// on if it's the same night, so what's once a night (the Dream, her
+    /// midnight snack) stays once, and the Dream's count runs on.
+    night_before: Option<Night>,
     /// The fridge she's padding to for her midnight snack, from the
     /// moment it gets her up until she's at it (see
     /// [`Osaka::midnight_snack`]).
@@ -1504,6 +1522,19 @@ pub(super) struct Osaka {
     /// Up on a day with no school: "No school today!", once she's quiet,
     /// that morning.
     day_off: bool,
+    /// What's rare and open (phase 5b D6): her day's, drawn as the visit
+    /// began or as she woke into the day (see [`Osaka::begin_day`]), or
+    /// unfed the visit's. Nothing before a draw.
+    rares: Rares,
+    /// The game day `rares` was drawn for (`None`: unfed, the visit's),
+    /// so a day is drawn once, however it began.
+    rares_day: Option<u64>,
+    /// The rare scripts she has shown (her ledger's as the visit began,
+    /// and those she has shown since).
+    seen: Vec<ScriptId>,
+    /// Her pity counters as the guest last gave them (and reset here as
+    /// she shows something new): a new day's draw reads them.
+    pity: Pity,
 }
 
 /// Her calendar's owed entry for `date`, said or begun, waiting to show
@@ -1654,6 +1685,7 @@ impl Osaka {
             groggy: false,
             day_from: None,
             night: None,
+            night_before: None,
             snacking: None,
             dash: None,
             cal_done: None,
@@ -1662,6 +1694,10 @@ impl Osaka {
             sunrise: None,
             meal_said: None,
             day_off: false,
+            rares: Rares::none(),
+            rares_day: None,
+            seen: Vec::new(),
+            pity: Pity::default(),
         };
         osaka.whims = Whims(osaka.mind.0 ^ mind::WHIMS_SALT);
         osaka.act_due = osaka.first_due(now);
@@ -1952,12 +1988,31 @@ impl Osaka {
         let cut = self.cut_at.unwrap_or(u64::MAX);
         let talk = self.talk_due().unwrap_or(u64::MAX);
         let snack = self.snack_due().unwrap_or(u64::MAX);
+        let dream = self.dream_due().unwrap_or(u64::MAX);
         self.pose_due()
             .min(self.pending_due())
             .min(hush)
             .min(cut)
             .min(talk)
             .min(snack)
+            .min(dream)
+    }
+
+    /// When tonight's Dream comes (monotonic millis): 30 game minutes
+    /// after she first slept tonight, counted across whatever got her up
+    /// since (and, its moment passed while she was up, a little after
+    /// she's back asleep: [`DREAM_SETTLE_MS`]), once a night, only while
+    /// she's asleep for it, and only on a day it's open.
+    fn dream_due(&self) -> Option<u64> {
+        self.night
+            .filter(|night| !night.dreamt && self.sleeping())?;
+        if !self.rares.allows(ScriptId::Dream) {
+            return None;
+        }
+        Some(
+            self.dream_at()?
+                .max(self.act_since.saturating_add(DREAM_SETTLE_MS)),
+        )
     }
 
     /// When she next talks in her sleep (monotonic millis): only while
@@ -2014,8 +2069,9 @@ impl Osaka {
     /// of her musings, each drawn from her latest decision's whims (in
     /// summer's panic week or December, one of the season's first, now
     /// and then). A riddle only when she isn't saying something already,
-    /// which would hide its question. Cued to by the stage, Setsubun's
-    /// beans instead.
+    /// which would hide its question. On a day it's open, first, now and
+    /// then, her rare musing (the escalator), quiet too. Cued to by the
+    /// stage, Setsubun's beans, or the escalator, instead.
     pub fn muse(&mut self, now: u64, rng: &mut Rng) {
         // Cued, Setsubun's beans: on the spot, whatever she was saying
         // stopping for them.
@@ -2023,6 +2079,34 @@ impl Osaka {
             self.cued = None;
             self.hush(now);
             return self.set(Self::setsubun(now), now);
+        }
+        // Her rare musing: cued, whatever she was saying stops for it (it
+        // cools as if rolled); else on a day it's open (checked before
+        // anything of it rolls), one musing in three while she's quiet,
+        // and not again within its ten minutes. It takes the musing's
+        // place, as long as one.
+        let quiet = self.speech.is_none_or(|(_, until)| until <= now);
+        let escalator = if self.cued == Some(Cue::Script(ScriptId::Escalator)) {
+            self.cued = None;
+            self.hush(now);
+            self.lines.try_play(ScriptId::Escalator, now);
+            true
+        } else {
+            self.rares.allows(ScriptId::Escalator)
+                && quiet
+                && self.whims.chance("rare-musing", 0, 1, 3)
+                && self.lines.try_play(ScriptId::Escalator, now)
+        };
+        if escalator {
+            tracing::debug!("houseguest: which one's the escalator");
+            return self.set(
+                Act::SpaceOut {
+                    since: now,
+                    until: now + rng.range(SPACE_OUT_MS.0, SPACE_OUT_MS.1),
+                    play: Some(Play::plain(ScriptId::Escalator)),
+                },
+                now,
+            );
         }
         // Cued, a riddle: whatever she was saying stops for it.
         let cued = self.cued == Some(Cue::Script(ScriptId::Riddle));
@@ -2334,10 +2418,9 @@ impl Osaka {
     fn sleep_on(&mut self, at: u64) -> bool {
         let night = match &self.act {
             Act::Use { seat, play, .. } => {
-                (seat.what == Use::Sleep && play.own == ScriptId::Sleep)
-                    || play.own == ScriptId::Night
+                (seat.what == Use::Sleep && play.own == ScriptId::Sleep) || play.own.is_night()
             }
-            Act::Idle { play, .. } => play.is_some_and(|p| p.own == ScriptId::Night),
+            Act::Idle { play, .. } => play.is_some_and(|p| p.own.is_night()),
             _ => false,
         };
         let Some(wake) = self
@@ -2386,13 +2469,13 @@ impl Osaka {
         match self.act {
             Act::Use {
                 play, since, until, ..
-            } if play.own == ScriptId::Night => Some((play, since, until)),
+            } if play.own.is_night() => Some((play, since, until)),
             Act::Idle {
                 play: Some(play),
                 since,
                 until,
                 ..
-            } if play.own == ScriptId::Night => Some((play, since, until)),
+            } if play.own.is_night() => Some((play, since, until)),
             _ => None,
         }
     }
@@ -2457,6 +2540,7 @@ impl Osaka {
         for _ in 0..64 {
             let due = self.due();
             if due > now {
+                self.note_seen(now);
                 return changed;
             }
             // Her routine first: a boundary is handled before anything
@@ -2466,7 +2550,12 @@ impl Osaka {
                 continue;
             }
             // Her night's own moments, while she sleeps it: nothing to
-            // show if no line came, or no fridge got her up.
+            // show if no line came, or no fridge got her up. The Dream
+            // first: her sleep-talk waits for it.
+            if self.dream_due() == Some(due) {
+                changed |= self.dream(due);
+                continue;
+            }
             if self.talk_due() == Some(due) {
                 changed |= self.sleep_talk(due);
                 continue;
@@ -2501,6 +2590,8 @@ impl Osaka {
                 continue;
             }
             self.fire(due, terrain, chances, rng);
+            // A rare script's first key, shown as it begins.
+            self.note_seen(due);
             if self.latch_lamp(due) {
                 self.say_pool(mind::NIGHT_NIGHT, due);
             }
@@ -2509,6 +2600,7 @@ impl Osaka {
         // Far behind (a suspended laptop): resume from now.
         self.act_due = self.act_due.max(now);
         self.next_blink = self.next_blink.max(now);
+        self.note_seen(now);
         changed
     }
 
@@ -3218,12 +3310,17 @@ impl Osaka {
                 });
                 let night = sleeps_here
                     && match cued {
-                        Some(Cue::Script(id)) => id == ScriptId::Night,
+                        Some(Cue::Script(id)) => id.is_night(),
                         Some(Cue::Splice(..)) | None => at_night,
                     };
                 if night {
                     let drawn = rng.range(lo, hi);
-                    let act = self.night_in(seat, drawn, at, false);
+                    let mut act = self.night_in(seat, drawn, at, false);
+                    // Cued, the Dream: her night dreamt from the start
+                    // (tonight's, if it's night).
+                    if cued == Some(Cue::Script(ScriptId::Dream)) {
+                        self.dream_from(&mut act, at);
+                    }
                     return self.set(act, at);
                 }
                 let mut quiet = self.speech.map_or(at, |(_, until)| until);
@@ -3241,6 +3338,7 @@ impl Osaka {
                     quiet: quiet <= at,
                     day,
                     tints: self.tints(),
+                    rares: &self.rares,
                 };
                 let (before, after) = script::splices(
                     self.splice_rows(),
@@ -3494,19 +3592,23 @@ impl Osaka {
     /// The lamp goes off for the night as her night's lamp key shows it
     /// in the night (see `lamp_off`). A night's sleep the stage gives her
     /// by day darkens her lamp by its key alone, while it plays. Returns
-    /// whether it went off just now.
+    /// whether she turned it off just now, settling for the night (and
+    /// so says "Night-night..."): only her night's own lamp key. Dreaming
+    /// (the stage's Dream from the start), she's long since said it, and
+    /// it goes off without a word.
     fn latch_lamp(&mut self, at: u64) -> bool {
         let night = self.asleep_slot(at);
-        let off = self.night_play().is_some_and(|(play, since, until)| {
+        let off = self.night_play().and_then(|(play, since, until)| {
             play.key(since, until, at)
-                .is_some_and(|(key, _)| key.prop == Some(Prop::LampOff))
+                .filter(|(key, _)| key.prop == Some(Prop::LampOff))
+                .map(|_| play.own)
         });
-        if night && off && !self.lamp_off {
-            tracing::info!("houseguest: the lamp off for the night");
-            self.lamp_off = true;
-            return true;
-        }
-        false
+        let Some(own) = off.filter(|_| night && !self.lamp_off) else {
+            return false;
+        };
+        tracing::info!(?own, "houseguest: the lamp off for the night");
+        self.lamp_off = true;
+        own == ScriptId::Night
     }
 
     /// Whether it's night by her routine at `at` (her Asleep slot).
@@ -3711,6 +3813,19 @@ impl Osaka {
         let mood = Mood::of(brain::day_seed(self.master, day.day));
         tracing::info!(?mood, %day, "houseguest: a new day");
         self.mood = mood;
+        // What's rare today: drawn for the whole day, from the day's
+        // seed, unless this visit already drew it (begun after
+        // midnight).
+        if self.rares_day != Some(day.day) {
+            self.rares = Rares::draw(
+                brain::day_seed(self.master, day.day),
+                &self.seen,
+                self.pity,
+                rarity::DAY_WINDOW,
+            );
+            self.rares_day = Some(day.day);
+            tracing::debug!(rares = ?self.rares, %day, "houseguest: what's rare today");
+        }
         self.lines.new_day(at);
         self.budget_day = Some(day.day);
         self.day_from = self.game_at(at);
@@ -3795,8 +3910,10 @@ impl Osaka {
     /// decision's whims (the one that sent her to bed: a pure schedule of
     /// the act's start); and, the night's first, the Dream's count starts
     /// and her midnight snack is found. A later night act the same night
-    /// (after an errand, or the snack) keeps both: the count runs on, and
-    /// a snack had (or missed while she was up) isn't had again.
+    /// (after an errand, or the snack; or on a later visit, carried by
+    /// the guest) keeps both: the count runs on, the Dream come isn't
+    /// come again, and a snack had (or missed while she was up) isn't had
+    /// again.
     fn arm_night(&mut self, at: u64) {
         self.groggy = false;
         let (Some(clock), Some(game)) = (self.clock, self.game_at(at)) else {
@@ -3807,7 +3924,7 @@ impl Osaka {
         }
         let (morning, _) = routine::split(clock.next_wake(game));
         let whims = self.whims;
-        let mut night = match self.night {
+        let mut night = match self.night.or(self.night_before) {
             Some(night) if night.morning == morning => night,
             _ => Night {
                 morning,
@@ -3817,6 +3934,7 @@ impl Osaka {
                 talk: whims,
                 talk_k: 0,
                 next_talk: at,
+                dreamt: false,
             },
         };
         night.snack = night.snack.filter(|&snack| snack > game);
@@ -4228,6 +4346,22 @@ impl Osaka {
         self.meal_said
     }
 
+    /// Her night so far, while it's night and she has slept some of it
+    /// (the guest keeps it for her next visit: see
+    /// [`Osaka::carry_night`]).
+    pub fn night(&self) -> Option<Night> {
+        self.night
+    }
+
+    /// Her night as an earlier visit left it: if this visit's first night
+    /// act is the same night (keyed on its morning), it carries on from
+    /// it, the Dream's count and what's once a night included, rather
+    /// than beginning the night afresh. Held apart from her own night
+    /// until then, so arriving in the night isn't sleeping it.
+    pub fn carry_night(&mut self, night: Option<Night>) {
+        self.night_before = night;
+    }
+
     /// Her meal's line was said on an earlier visit, at `said`.
     pub fn carry_meal(&mut self, said: Option<(u64, routine::Slot)>) {
         self.meal_said = said;
@@ -4251,11 +4385,160 @@ impl Osaka {
     /// When the Dream would come tonight, in monotonic millis: 30 game
     /// minutes after her first sleep of the night, counted across
     /// whatever got her up since. `None` with no night by her routine.
-    // TODO(step 7): a `Night` body branch plays the Dream here, once.
-    #[cfg_attr(not(test), expect(dead_code, reason = "step 7 plays the Dream here"))]
     fn dream_at(&self) -> Option<u64> {
         let first = self.night?.first;
         Some(self.clock?.game.when(first + DREAM_AFTER_MS))
+    }
+
+    /// Tonight's Dream at `at` (step 7): her night's sleep turns to it in
+    /// place, on whatever she sleeps on, if there's room for all of it
+    /// before she wakes; her sleep-talk waits for it to be said. Once a
+    /// night either way. Returns whether it came.
+    fn dream(&mut self, at: u64) -> bool {
+        if let Some(night) = &mut self.night {
+            night.dreamt = true;
+            night.next_talk = night.next_talk.max(at + script::DREAM_MS);
+        }
+        let room = self
+            .night_play()
+            .is_some_and(|(_, _, until)| until.saturating_sub(at) >= script::DREAM_MS);
+        if !room {
+            tracing::trace!("houseguest: no time left tonight for the Dream");
+            return false;
+        }
+        let mut act = self.act.clone();
+        self.dream_from(&mut act, at);
+        self.act = act;
+        self.act_due = self.first_due(at);
+        tracing::info!("houseguest: the Dream");
+        self.note_seen(at);
+        true
+    }
+
+    /// Her night act `act` dreamt from `at` on: the Dream's branch for
+    /// the surface it's on, from its first line, until she wakes as
+    /// before. In place: no new act (her sleep, her wake time and her
+    /// night's count are as they were), only what it plays and from when.
+    /// Tonight's Dream has come. Whatever she was saying stops for it
+    /// (a murmur, or on the stage what she said on her way to bed), so
+    /// it begins on its first line.
+    fn dream_from(&mut self, act: &mut Act, at: u64) {
+        if let Some(night) = &mut self.night {
+            night.dreamt = true;
+        }
+        self.hush(at);
+        let dreamt = |play: Play| Play {
+            branch: Surface::of_branch(play.branch).dream_branch(),
+            ..Play::plain(ScriptId::Dream)
+        };
+        match act {
+            Act::Use {
+                since,
+                until,
+                whole,
+                play,
+                ..
+            } => {
+                *since = at;
+                *whole = until.saturating_sub(at);
+                *play = dreamt(*play);
+            }
+            Act::Idle {
+                since,
+                play: Some(play),
+                ..
+            } => {
+                *since = at;
+                *play = dreamt(*play);
+            }
+            _ => {}
+        }
+    }
+
+    /// What's rare and open as her visit begins (`rares`, drawn for game
+    /// `day`, or unfed the visit's), and the rare scripts she has shown
+    /// (her ledger's).
+    pub fn set_rares(&mut self, rares: Rares, day: Option<u64>, seen: Vec<ScriptId>) {
+        tracing::debug!(?rares, ?day, ?seen, "houseguest: what's rare");
+        self.rares = rares;
+        self.rares_day = day;
+        self.seen = seen;
+    }
+
+    /// Her pity counters as her ledger has them now (the guest gives them
+    /// before each tick: a new day's draw reads them).
+    pub fn set_pity(&mut self, pity: Pity) {
+        self.pity = pity;
+    }
+
+    /// What's rare and open today, with its game day, her routine fed
+    /// (the guest carries it to the day's next visit, so a day is drawn
+    /// once).
+    pub fn rares_today(&self) -> Option<(u64, &Rares)> {
+        self.rares_day.map(|day| (day, &self.rares))
+    }
+
+    /// What's rare and open (tests).
+    #[cfg(test)]
+    pub(super) fn rares(&self) -> &Rares {
+        &self.rares
+    }
+
+    /// The rare script whose key plays at `at`, if one does: the part of
+    /// her act's play then (its prelude, its own script or its coda).
+    fn rare_playing(&self, at: u64) -> Option<ScriptId> {
+        let (play, since, until) = match self.act {
+            Act::Use {
+                play, since, until, ..
+            } => (play, since, until),
+            Act::SpaceOut {
+                play: Some(play),
+                since,
+                until,
+            }
+            | Act::Idle {
+                play: Some(play),
+                since,
+                until,
+                ..
+            } => (play, since, until),
+            _ => return None,
+        };
+        let id = play
+            .spliced_at(since, until, at)
+            .map_or(play.own, |s| s.splice.script());
+        id.rarity().gated().then_some(id)
+    }
+
+    /// Seen means first shown: a rare script's key playing at `at` that
+    /// she has never shown is seen now ([`HomeEvent::Seen`]), and her
+    /// pity for its tier starts again. Not as it's planned, or offered: a
+    /// walk to it cut short leaves it unseen. (She's in sight whenever
+    /// one plays: [`Osaka::rare_playing`] reads only acts she's seen
+    /// doing, never a door's or being away.)
+    fn note_seen(&mut self, at: u64) {
+        let Some(id) = self.rare_playing(at) else {
+            return;
+        };
+        if self.seen.contains(&id) {
+            return;
+        }
+        tracing::info!(?id, "houseguest: something rare, for the first time");
+        self.seen.push(id);
+        self.pity.reset(id.rarity());
+        self.events.push(HomeEvent::Seen(id));
+    }
+
+    /// What she has shown of what's rare (tests).
+    #[cfg(test)]
+    pub(super) fn seen(&self) -> &[ScriptId] {
+        &self.seen
+    }
+
+    /// The rare script whose key plays at `now`, if one does (tests).
+    #[cfg(test)]
+    pub(super) fn rare_showing(&self, now: u64) -> Option<ScriptId> {
+        self.rare_playing(now)
     }
 
     /// Whether she may go to work at `at` (D2): the one place it's
@@ -4307,9 +4590,10 @@ impl Osaka {
         self.groggy
     }
 
-    /// When the Dream would come tonight (tests; see `dream_at`).
+    /// When the Dream would come tonight, open or not (tests; see
+    /// `dream_at`).
     #[cfg(test)]
-    pub(super) fn dream_due(&self) -> Option<u64> {
+    pub(super) fn dream_moment(&self) -> Option<u64> {
         self.dream_at()
     }
 
@@ -4360,19 +4644,27 @@ impl Osaka {
             (at.saturating_sub(since) as f64 / until.saturating_sub(since).max(1) as f64)
                 .clamp(0.0, 1.0)
         };
+        // Her night act runs from when she lay down (`act_since`: the
+        // Dream turns its play in place, re-timing it from the Dream on,
+        // never her night's start) to her wake.
+        let night = self.sleeping();
         let (done, spot) = match (&self.act, want) {
             (
                 Act::Idle {
                     what, since, until, ..
                 },
                 Want::Idle(chose),
-            ) if *what == chose => (span(*since, *until), Spot::Floor),
+            ) if *what == chose => {
+                let since = if night { self.act_since } else { *since };
+                (span(since, *until), Spot::Floor)
+            }
             // By the share of its body done: none of it in a prelude,
             // all of it in a coda.
             (
                 Act::Use {
                     seat,
                     since,
+                    until,
                     whole,
                     play,
                     ..
@@ -4384,8 +4676,13 @@ impl Osaka {
                 } else {
                     Spot::Real(seat.item)
                 };
-                let start = play.body_start(*since);
-                (span(start, start + whole), spot)
+                let (start, end) = if night {
+                    (play.body_start(self.act_since), *until)
+                } else {
+                    let start = play.body_start(*since);
+                    (start, start + whole)
+                };
+                (span(start, end), spot)
             }
             (Act::Pull { offset, goal, .. }, Want::Pull) => {
                 (f64::from(*offset) / f64::from((*goal).max(1)), Spot::Any)
@@ -6577,7 +6874,7 @@ impl Osaka {
                     Some((line, from)) if (from..from + GRIEVANCE_MS).contains(&now) => {
                         (pose, Face::Curious, Some(Bubble::Say(line)))
                     }
-                    _ if play.own == ScriptId::Night => self.stirring((pose, face, bubble), now),
+                    _ if play.own.is_night() => self.stirring((pose, face, bubble), now),
                     _ => (pose, face, bubble),
                 }
             }
@@ -8828,7 +9125,7 @@ mod tests {
         // Her night is armed from bedtime: sleep-talk on its schedule, the
         // Dream's count begun.
         assert_eq!(osaka.talk_due(), Some(BED + talk_gap(osaka.whims, 0)));
-        assert_eq!(osaka.dream_due(), Some(BED + DREAM_AFTER_MS / 6));
+        assert_eq!(osaka.dream_moment(), Some(BED + DREAM_AFTER_MS / 6));
         osaka.credit_done(BED + 60_000);
         assert_eq!(osaka.slept_ms, 60_000, "from bedtime");
     }
@@ -9437,7 +9734,7 @@ mod tests {
             osaka.read_clock(Some(clock));
             let asleep = until_asleep_with(&mut osaka, 0, clock, &terrain, &chances, &mut rng);
             let first = osaka.act_since;
-            let dream = osaka.dream_due();
+            let dream = osaka.dream_moment();
             assert_eq!(
                 dream,
                 Some(clock.game.when(clock.game.at(first) + DREAM_AFTER_MS))
@@ -9470,7 +9767,7 @@ mod tests {
             assert!(!osaka.groggy());
             assert!(osaka.dark(now));
             assert_eq!(osaka.night_play().map(|(.., until)| until), Some(wake));
-            assert_eq!(osaka.dream_due(), dream, "the Dream's count runs on");
+            assert_eq!(osaka.dream_moment(), dream, "the Dream's count runs on");
             assert!(osaka.slept_ms() >= 300_000, "kept: {}", osaka.slept_ms());
             assert_eq!(
                 osaka.decisions.last().map(|d| d.method),
@@ -9534,7 +9831,7 @@ mod tests {
             osaka.splices_sure = true;
             osaka.cued = Some(cue);
             let now = until_asleep_with(&mut osaka, 0, clock, &terrain, chances, &mut rng);
-            let (asleep, dream) = (osaka.act_since, osaka.dream_due());
+            let (asleep, dream) = (osaka.act_since, osaka.dream_moment());
             assert!(dream.is_some());
             // Snacks: when each began, and whether she was ever awake
             // other than for one; what she'd slept as she got up.
@@ -9579,7 +9876,7 @@ mod tests {
             assert!(osaka.events.is_empty(), "{:?}", osaka.events);
             assert!(osaka.felt.is_empty(), "{:?}", osaka.felt);
             assert_eq!(osaka.cued, Some(cue), "the cue waits");
-            assert_eq!(osaka.dream_due(), dream, "the Dream's count runs on");
+            assert_eq!(osaka.dream_moment(), dream, "the Dream's count runs on");
             if let Some(slept) = slept {
                 assert!(slept >= moment - asleep, "{slept} of {}", moment - asleep);
                 assert!(osaka.slept_ms() >= slept, "kept");
@@ -9722,7 +10019,7 @@ mod tests {
             assert_eq!(line, if at < wake { SLEEPY_POKE } else { POKE }, "{what}");
             assert!(!osaka.groggy(), "{what}: groggy by day");
             assert!(!osaka.drowsy(now), "{what}");
-            assert!(osaka.dream_due().is_none(), "{what}: her night kept");
+            assert!(osaka.dream_moment().is_none(), "{what}: her night kept");
             assert!(!osaka.lamp_off && osaka.snacking.is_none(), "{what}");
             assert!(osaka.awake(now), "{what}");
             assert_eq!(osaka.line_budget().map(|(day, _)| day), Some(1), "{what}");
@@ -9895,7 +10192,7 @@ mod tests {
         );
         assert!(osaka.sleeping());
         assert_eq!(osaka.talk_due(), Some(1_000 + talk_gap(osaka.whims, 0)));
-        assert_eq!(osaka.dream_due(), Some(1_000 + DREAM_AFTER_MS / 6));
+        assert_eq!(osaka.dream_moment(), Some(1_000 + DREAM_AFTER_MS / 6));
     }
 
     /// Up groggy is only ever in the night: come for the accordion just
@@ -9931,7 +10228,7 @@ mod tests {
         let act = osaka.night_in(seat, 120_000, 0, true);
         osaka.set(act, 0);
         assert!(osaka.sleeping() && osaka.drowsy(1_000), "a sleepy goodbye");
-        assert!(osaka.dream_due().is_none(), "no night by day");
+        assert!(osaka.dream_moment().is_none(), "no night by day");
         osaka.errand((20, 15), &terrain, 1_000);
         assert!(!osaka.groggy() && !osaka.drowsy(1_000));
     }
@@ -10527,5 +10824,542 @@ mod tests {
                 assert!((5..40).contains(&wrapped), "{date:?}: {wrapped}");
             }
         }
+    }
+
+    /// What's rare and open with the Dream new tonight (the only rare
+    /// thing her night holds: her pity certain).
+    fn dream_open() -> Rares {
+        let rares = Rares::draw(
+            0,
+            &[],
+            Pity {
+                rare: 360,
+                legend: 0,
+            },
+            routine::SlotSet::of(&[routine::Slot::Asleep]),
+        );
+        assert_eq!(rares.new_one(), Some(ScriptId::Dream));
+        rares
+    }
+
+    /// The Dream (step 7): on a night it's open, 30 game minutes after
+    /// she first slept (five real minutes), counted across the groggy
+    /// errand that got her up and back to bed meanwhile, her night's
+    /// sleep turns to it in place: in bed, the lamp off, her wake time as
+    /// it was, "Hello everynyan...", "Fine sankyu...", "Oh my gah!" in
+    /// turn, then asleep as before. Seen as its first line plays, once.
+    /// Once a night: another errand after it, and back in bed, no second
+    /// one before her wake. On a night it isn't open, none at all.
+    #[test]
+    fn the_dream_comes_once_a_night_across_a_groggy_errand() {
+        use script::{DREAM_LINE_MS, EVERYNYAN, OH_MY_GAH, SANKYU};
+        let terrain = floor_at(15);
+        let clock = clock_at(1, 2, 0);
+        let wake = 5 * 60 * 10_000;
+        let chances = bed_at(25);
+        for open in [true, false] {
+            let mut rng = Rng(5);
+            let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+            osaka.read_clock(Some(clock));
+            let rares = if open { dream_open() } else { Rares::none() };
+            osaka.set_rares(rares, Some(1), Vec::new());
+            let asleep = until_asleep_with(&mut osaka, 0, clock, &terrain, &chances, &mut rng);
+            let first = osaka.act_since;
+            let dream = clock.game.when(clock.game.at(first) + DREAM_AFTER_MS);
+            assert_eq!(dream, first + 300_000, "five real minutes");
+            assert_eq!(osaka.dream_moment(), Some(dream));
+            // Two minutes asleep, then the accordion.
+            let mut now = tick_until(
+                &mut osaka,
+                asleep,
+                asleep + 120_000,
+                (clock, &terrain, &chances),
+                &mut rng,
+                |_, _| {},
+            );
+            osaka.errand((18, 15), &terrain, now);
+            while !osaka.take_poked() {
+                assert!(now < asleep + 200_000, "never poked: {:?}", osaka.act);
+                now += 100;
+                osaka.tick(now, Some(clock), &terrain, &chances, &mut rng);
+            }
+            now = until_asleep_with(&mut osaka, now, clock, &terrain, &chances, &mut rng);
+            assert!(now < dream, "back in bed before its moment");
+            assert!(osaka.act_since > first, "a night act of its own");
+            // Her night through to her wake: every line she says, and
+            // each turn to the Dream.
+            let mut lines: Vec<(u64, &str)> = Vec::new();
+            let mut dreams: Vec<u64> = Vec::new();
+            let mut was = osaka.plays().map(|p| p.own);
+            let mut errand_again = open;
+            let mut seen: Vec<HomeEvent> = osaka.take_events();
+            while now < wake - 1 {
+                now = osaka.due().clamp(now + 1, now + 1_000).min(wake - 1);
+                osaka.tick(now, Some(clock), &terrain, &chances, &mut rng);
+                seen.extend(osaka.take_events());
+                let own = osaka.plays().map(|p| p.own);
+                if own == Some(ScriptId::Dream) && was != own {
+                    dreams.push(now);
+                    assert_eq!(osaka.night_play().map(|(.., until)| until), Some(wake));
+                    assert!(osaka.dark(now), "the lamp off");
+                }
+                was = own;
+                if let (_, _, Some(Bubble::Say(line))) = osaka.appearance(now)
+                    && lines.last().map(|&(_, l)| l) != Some(line)
+                {
+                    lines.push((now, line));
+                }
+                // After the Dream, up for the accordion again.
+                if errand_again && !dreams.is_empty() && now > dream + 60_000 && osaka.sleeping() {
+                    errand_again = false;
+                    osaka.errand((18, 15), &terrain, now);
+                }
+            }
+            let dreamt: Vec<&str> = lines
+                .iter()
+                .map(|&(_, l)| l)
+                .filter(|l| [EVERYNYAN, SANKYU, OH_MY_GAH].contains(l))
+                .collect();
+            let seen: Vec<&HomeEvent> = seen
+                .iter()
+                .filter(|e| matches!(e, HomeEvent::Seen(_)))
+                .collect();
+            if open {
+                assert_eq!(dreams, [dream], "once, at its moment");
+                assert_eq!(dreamt, [EVERYNYAN, SANKYU, OH_MY_GAH], "{lines:?}");
+                let at = |line| lines.iter().find(|&&(_, l)| l == line).map(|&(t, _)| t);
+                assert_eq!(at(EVERYNYAN), Some(dream));
+                assert_eq!(at(SANKYU), Some(dream + DREAM_LINE_MS));
+                assert_eq!(at(OH_MY_GAH), Some(dream + 2 * DREAM_LINE_MS));
+                assert_eq!(seen, [&HomeEvent::Seen(ScriptId::Dream)]);
+                assert_eq!(osaka.seen(), [ScriptId::Dream]);
+                assert!(!errand_again, "up again after it");
+                assert_eq!(osaka.plays().map(|p| p.own), Some(ScriptId::Night));
+            } else {
+                assert!(dreams.is_empty() && dreamt.is_empty(), "{lines:?}");
+                assert!(seen.is_empty());
+            }
+        }
+    }
+
+    /// A new day's draw (as she wakes into it, or catches up on it), over
+    /// a thousand homes and every set of what she has seen: what's new is
+    /// never seen, what's open is all seen, and it's the day's own draw,
+    /// keyed on the home and the day (the same home and day draw the
+    /// same); a day already drawn (a visit begun after midnight) isn't
+    /// drawn again, whatever she has seen since, so a game day has at
+    /// most one new rare thing.
+    #[test]
+    fn a_new_day_draws_once_and_news_only_the_unseen() {
+        let day = routine::day_time(routine::game_of(3, 7 * 60), false);
+        let rows = rarity::RARES.map(|r| r.id);
+        let mut news = 0;
+        for master in 0..1000u64 {
+            let bits = master % 16;
+            let seen: Vec<ScriptId> = rows
+                .iter()
+                .enumerate()
+                .filter(|&(i, _)| bits & 1 << i != 0)
+                .map(|(_, &id)| id)
+                .collect();
+            let mut rng = Rng(master);
+            let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+            osaka.master = master;
+            osaka.set_rares(Rares::none(), None, seen.clone());
+            osaka.set_pity(Pity {
+                rare: master % 400,
+                legend: 0,
+            });
+            osaka.begin_day(day, 1_000);
+            let rares = osaka.rares().clone();
+            assert_eq!(osaka.rares_today().map(|(d, _)| d), Some(3));
+            assert!(rares.open().iter().all(|id| seen.contains(id)), "{master}");
+            if let Some(new) = rares.new_one() {
+                assert!(!seen.contains(&new), "{master}: {new:?}");
+                news += 1;
+            }
+            assert_eq!(
+                rares,
+                Rares::draw(
+                    brain::day_seed(master, 3),
+                    &seen,
+                    osaka.pity,
+                    rarity::DAY_WINDOW
+                ),
+                "{master}"
+            );
+            // The same day again (begun after midnight, then woken into):
+            // as drawn, whatever she has seen since.
+            osaka.seen = rows.to_vec();
+            osaka.begin_day(day, 2_000);
+            assert_eq!(osaka.rares(), &rares, "{master}");
+        }
+        assert!(news > 100, "{news}");
+    }
+
+    /// The lines she shows (her speech or her act's bubble) as each
+    /// first shows, a new one each time it changes.
+    fn note_line(lines: &mut Vec<(u64, &'static str)>, osaka: &Osaka, now: u64) {
+        if let (_, _, Some(Bubble::Say(line))) = osaka.appearance(now)
+            && lines.last().map(|&(_, l)| l) != Some(line)
+        {
+            lines.push((now, line));
+        }
+    }
+
+    /// Her tucked in at monotonic 0 in her bed at 25 on [`floor_at`]`(15)`
+    /// by `clock` (it must be night by it), the Dream new tonight: her
+    /// night's start is the Dream's count's.
+    fn tucked_in_dreamy(clock: routine::Clock) -> (Osaka, Rng, Terrain, Chances) {
+        let mut rng = Rng(5);
+        let terrain = floor_at(15);
+        let chances = bed_at(25);
+        let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+        osaka.read_clock(Some(clock));
+        osaka.set_rares(dream_open(), Some(1), Vec::new());
+        assert!(osaka.tuck_in(&chances, &terrain, 0), "tucked in");
+        assert_eq!(osaka.dream_moment(), Some(DREAM_AFTER_MS / 6));
+        (osaka, rng, terrain, chances)
+    }
+
+    /// The Dream on every surface her night is spent on: her bed, her
+    /// sofa (napping on it) and the floor (lying back, no seat): at its
+    /// moment, her night's own act turns to it in place, on that
+    /// surface's branch, its three lines in turn, seen once as it begins.
+    #[test]
+    fn the_dream_comes_on_every_surface() {
+        use script::{DREAM_LINE_MS, DREAM_MS, EVERYNYAN, OH_MY_GAH, SANKYU};
+        let terrain = floor_at(15);
+        let clock = clock_at(1, 2, 0);
+        let sofa = Chances {
+            seats: vec![Seat {
+                x: 25,
+                y: 15,
+                facing: Facing::Right,
+                ..seat_for(Use::Nap, Furniture::Sofa)
+            }],
+            ..Chances::default()
+        };
+        for (surface, chances) in [
+            (Surface::Bed, bed_at(25)),
+            (Surface::Sofa, sofa),
+            (Surface::Floor, Chances::default()),
+        ] {
+            let mut rng = Rng(5);
+            let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+            osaka.read_clock(Some(clock));
+            osaka.set_rares(dream_open(), Some(1), Vec::new());
+            let asleep = until_asleep_with(&mut osaka, 0, clock, &terrain, &chances, &mut rng);
+            let dream = osaka.act_since + DREAM_AFTER_MS / 6;
+            assert_eq!(osaka.dream_moment(), Some(dream), "{surface:?}");
+            let floor = matches!(osaka.act, Act::Idle { .. });
+            assert_eq!(
+                floor,
+                surface == Surface::Floor,
+                "{surface:?}: {:?}",
+                osaka.act
+            );
+            let mut lines = Vec::new();
+            let mut turned = Vec::new();
+            let mut events = osaka.take_events();
+            let mut was = osaka.plays().map(|p| p.own);
+            tick_until(
+                &mut osaka,
+                asleep,
+                dream + DREAM_MS + 2_000,
+                (clock, &terrain, &chances),
+                &mut rng,
+                |osaka, now| {
+                    note_line(&mut lines, osaka, now);
+                    let play = osaka.plays();
+                    if play.map(|p| p.own) == Some(ScriptId::Dream) && was != Some(ScriptId::Dream)
+                    {
+                        turned.push((now, play.map(|p| p.branch)));
+                    }
+                    was = play.map(|p| p.own);
+                },
+            );
+            events.extend(osaka.take_events());
+            assert_eq!(
+                turned,
+                [(dream, Some(surface.dream_branch()))],
+                "{surface:?}"
+            );
+            let dreamt: Vec<(u64, &str)> = lines
+                .into_iter()
+                .filter(|&(_, l)| [EVERYNYAN, SANKYU, OH_MY_GAH].contains(&l))
+                .collect();
+            assert_eq!(
+                dreamt,
+                [
+                    (dream, EVERYNYAN),
+                    (dream + DREAM_LINE_MS, SANKYU),
+                    (dream + 2 * DREAM_LINE_MS, OH_MY_GAH)
+                ],
+                "{surface:?}"
+            );
+            let seen: Vec<&HomeEvent> = events
+                .iter()
+                .filter(|e| matches!(e, HomeEvent::Seen(_)))
+                .collect();
+            assert_eq!(seen, [&HomeEvent::Seen(ScriptId::Dream)], "{surface:?}");
+            assert!(osaka.sleeping(), "{surface:?}: asleep on");
+        }
+    }
+
+    /// The Dream comes only with room for all of it before she wakes: its
+    /// moment 4.5 s short of her wake, no Dream (not one line, not seen),
+    /// and tonight's chance of one is spent.
+    #[test]
+    fn no_dream_without_room_for_it_before_her_wake() {
+        let wake = DREAM_AFTER_MS / 6 + 4_500;
+        let game = ((24 + 7) * 60 - routine::START) * 60_000 - super::super::CLOCK_SPEED * wake;
+        let clock = routine::Clock::read(super::super::GameClock { at: 0, game }, 0, None, None);
+        let (mut osaka, mut rng, terrain, chances) = tucked_in_dreamy(clock);
+        assert_eq!(osaka.night_play().map(|(.., until)| until), Some(wake));
+        let moment = DREAM_AFTER_MS / 6;
+        let mut lines = Vec::new();
+        let mut spent = false;
+        tick_until(
+            &mut osaka,
+            0,
+            wake + 5_000,
+            (clock, &terrain, &chances),
+            &mut rng,
+            |osaka, now| {
+                note_line(&mut lines, osaka, now);
+                assert_ne!(osaka.plays().map(|p| p.own), Some(ScriptId::Dream), "{now}");
+                if (moment..wake).contains(&now) {
+                    assert!(osaka.night.is_some_and(|n| n.dreamt), "{now}: spent");
+                    assert_eq!(osaka.dream_due(), None, "{now}");
+                    spent = true;
+                }
+            },
+        );
+        assert!(spent);
+        assert!(
+            !lines
+                .iter()
+                .any(|&(_, l)| l == script::EVERYNYAN || l == script::SANKYU),
+            "{lines:?}"
+        );
+        assert!(osaka.seen().is_empty());
+        assert!(
+            !osaka
+                .take_events()
+                .iter()
+                .any(|e| matches!(e, HomeEvent::Seen(_)))
+        );
+    }
+
+    /// Her sleep-talk waits for the Dream: a line due a second into it
+    /// comes once its last line has been said, and the Dream's three are
+    /// shown unbroken.
+    #[test]
+    fn her_sleep_talk_waits_for_the_dream() {
+        use script::{DREAM_LINE_MS, DREAM_MS, EVERYNYAN, OH_MY_GAH, SANKYU};
+        let clock = clock_at(1, 2, 0);
+        let (mut osaka, mut rng, terrain, chances) = tucked_in_dreamy(clock);
+        let dream = DREAM_AFTER_MS / 6;
+        if let Some(night) = &mut osaka.night {
+            night.next_talk = dream + 1_000;
+        }
+        let mut lines = Vec::new();
+        tick_until(
+            &mut osaka,
+            0,
+            dream + DREAM_MS + 5_000,
+            (clock, &terrain, &chances),
+            &mut rng,
+            |osaka, now| note_line(&mut lines, osaka, now),
+        );
+        let during: Vec<(u64, &str)> = lines
+            .iter()
+            .copied()
+            .filter(|&(t, _)| (dream..dream + DREAM_MS).contains(&t))
+            .collect();
+        assert_eq!(
+            during,
+            [
+                (dream, EVERYNYAN),
+                (dream + DREAM_LINE_MS, SANKYU),
+                (dream + 2 * DREAM_LINE_MS, OH_MY_GAH)
+            ]
+        );
+        let talk = sleep_talk(&osaka);
+        assert!(
+            talk.first().is_some_and(|&(t, _)| t >= dream + DREAM_MS),
+            "{talk:?}"
+        );
+    }
+
+    /// Its moment passed while she was up (for the accordion), the Dream
+    /// comes a little after she's back asleep, not the instant she lies
+    /// down: [`DREAM_SETTLE_MS`] on.
+    #[test]
+    fn the_dream_missed_while_up_waits_for_her_to_settle() {
+        let clock = clock_at(1, 2, 0);
+        let (mut osaka, mut rng, terrain, chances) = tucked_in_dreamy(clock);
+        let dream = DREAM_AFTER_MS / 6;
+        let mut now = tick_until(
+            &mut osaka,
+            0,
+            dream - 2_000,
+            (clock, &terrain, &chances),
+            &mut rng,
+            |_, _| {},
+        );
+        osaka.errand((18, 15), &terrain, now);
+        while !osaka.take_poked() {
+            assert!(now < dream + 60_000, "never poked: {:?}", osaka.act);
+            now += 100;
+            osaka.tick(now, Some(clock), &terrain, &chances, &mut rng);
+        }
+        now = until_asleep_with(&mut osaka, now, clock, &terrain, &chances, &mut rng);
+        let back = osaka.act_since;
+        assert!(back > dream, "back in bed after its moment: {back}");
+        let mut turned = None;
+        tick_until(
+            &mut osaka,
+            now,
+            back + DREAM_SETTLE_MS + 5_000,
+            (clock, &terrain, &chances),
+            &mut rng,
+            |osaka, now| {
+                if turned.is_none() && osaka.plays().map(|p| p.own) == Some(ScriptId::Dream) {
+                    turned = Some(now);
+                }
+            },
+        );
+        assert_eq!(turned, Some(back + DREAM_SETTLE_MS));
+    }
+
+    /// Dreaming re-times only what her night act plays, not her night:
+    /// interrupted after the Dream, what she's done of it is counted from
+    /// when she lay down to her wake, not from the Dream.
+    #[test]
+    fn the_dream_keeps_her_nights_share() {
+        let clock = clock_at(1, 2, 0);
+        let (mut osaka, mut rng, terrain, chances) = tucked_in_dreamy(clock);
+        let wake = osaka.night_play().map(|(.., until)| until).unwrap();
+        let now = tick_until(
+            &mut osaka,
+            0,
+            600_000,
+            (clock, &terrain, &chances),
+            &mut rng,
+            |_, _| {},
+        );
+        assert_eq!(osaka.plays().map(|p| p.own), Some(ScriptId::Dream));
+        osaka.credited.clear();
+        osaka.errand((18, 15), &terrain, now);
+        let &(want, done, at) = osaka.credited.last().expect("credited as she gets up");
+        assert_eq!((want, at), (Want::Use(Use::Sleep), now));
+        let share = now as f64 / wake as f64;
+        assert!((done - share).abs() < 1e-9, "{done} of {share}");
+    }
+
+    /// Her night is the night's, not the visit's: carried to a later visit
+    /// the same night (keyed on its morning), her first night act there
+    /// carries it on, the Dream's count from her first sleep, a Dream come
+    /// and a snack had staying so; another night's isn't carried.
+    #[test]
+    fn a_night_carried_to_a_later_visit_carries_on() {
+        let clock = clock_at(1, 2, 0);
+        let (first, ..) = tucked_in_dreamy(clock);
+        let mut was = first.night.expect("armed");
+        was.dreamt = true;
+        was.snack = None;
+        for (carried, same) in [
+            (was, true),
+            (
+                Night {
+                    morning: was.morning + 1,
+                    ..was
+                },
+                false,
+            ),
+        ] {
+            let mut rng = Rng(9);
+            let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+            // Her clock a real minute on: the same night.
+            let later = routine::Clock::read(
+                super::super::GameClock {
+                    at: 0,
+                    game: clock.game.at(60_000),
+                },
+                0,
+                None,
+                None,
+            );
+            osaka.read_clock(Some(later));
+            osaka.set_rares(dream_open(), Some(1), Vec::new());
+            osaka.carry_night(Some(carried));
+            assert!(osaka.night.is_none(), "not asleep for arriving");
+            assert!(osaka.tuck_in(&bed_at(25), &floor_at(15), 0));
+            let night = osaka.night.expect("armed");
+            if same {
+                assert_eq!(night.first, was.first);
+                assert!(night.dreamt && night.snack.is_none());
+                assert_eq!(osaka.dream_due(), None);
+            } else {
+                assert_eq!(night.first, later.game.at(0));
+                assert!(!night.dreamt);
+                assert!(osaka.dream_due().is_some());
+            }
+        }
+    }
+
+    /// Her rare musing, the escalator: never on a day it isn't open;
+    /// open, one quiet musing in three or so (and never over speech),
+    /// and not again within its cooldown.
+    #[test]
+    fn the_escalator_is_mused_only_on_a_day_its_open() {
+        let open = Rares::draw(
+            0,
+            &[ScriptId::Escalator],
+            Pity {
+                rare: 360,
+                legend: 0,
+            },
+            rarity::DAY_WINDOW,
+        );
+        assert!(open.allows(ScriptId::Escalator));
+        let escalator = |osaka: &Osaka| matches!(osaka.act, Act::SpaceOut { play: Some(p), .. } if p.own == ScriptId::Escalator);
+        let mut mused = 0;
+        let n = 300;
+        for seed in 0..n {
+            for (rares, talking) in [
+                (Rares::none(), false),
+                (open.clone(), true),
+                (open.clone(), false),
+            ] {
+                let allowed = rares.allows(ScriptId::Escalator) && !talking;
+                let mut rng = Rng(seed);
+                let mut osaka = Osaka::standing_at(10, 10, 0, &mut rng);
+                osaka.whims = Whims(seed);
+                osaka.set_rares(rares, Some(0), vec![ScriptId::Escalator]);
+                if talking {
+                    osaka.say(OK, 0);
+                }
+                osaka.muse(0, &mut rng);
+                if !allowed {
+                    assert!(!escalator(&osaka), "seed {seed} talking={talking}");
+                    continue;
+                }
+                if !escalator(&osaka) {
+                    continue;
+                }
+                mused += 1;
+                // Its own whims would muse it again: its cooldown says no,
+                // until it's past.
+                osaka.muse(60_000, &mut rng);
+                assert!(!escalator(&osaka), "seed {seed}: again within its cooldown");
+                osaka.speech = None;
+                osaka.muse(11 * 60_000, &mut rng);
+                assert!(escalator(&osaka), "seed {seed}: its cooldown past");
+            }
+        }
+        assert!((n / 4..n * 5 / 12).contains(&mused), "{mused} of {n}");
     }
 }

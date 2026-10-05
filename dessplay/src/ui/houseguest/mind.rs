@@ -667,6 +667,9 @@ pub(super) const DOOR: Pool = Pool {
 };
 
 /// Things she says when spacing out (when she isn't telling a riddle).
+/// What grew into her rare things (the escalator, the Dream's "Oh my
+/// gah!", Chiyo-chan's dad in it) isn't here: she says those only as
+/// they're rare (phase 5b D6).
 pub(super) const MUSINGS: Pool = Pool {
     id: PoolId::Musing,
     lines: &[
@@ -675,12 +678,9 @@ pub(super) const MUSINGS: Pool = Pool {
         line!("Melon bread..."),
         line!("Black spots on white?"),
         line!("Or white on black..."),
-        line!("Escalator? Elevator?"),
         line!("Feels like I could fly."),
         line!("Which hand's left..."),
-        line!("Chiyo-chan's dad..."),
         line!("Nanja-kora."),
-        line!("Oh my gah."),
     ],
     n: 1,
     d: 1,
@@ -1285,6 +1285,14 @@ mod tests {
             (ScriptId::FirstSunrise, script::FIRST_SUNRISE_LINE),
             (ScriptId::DashForgot, script::FORGOT_SOMETHING),
             (ScriptId::DashForgot, script::WHAT_WAS_IT),
+            (ScriptId::Dream, script::EVERYNYAN),
+            (ScriptId::Dream, script::SANKYU),
+            (ScriptId::Dream, script::OH_MY_GAH),
+            (ScriptId::NoMelon, script::LAST_ONE),
+            (ScriptId::Escalator, script::BOX_ONE),
+            (ScriptId::Escalator, script::ESCALATOR_NO),
+            (ScriptId::Scary, script::STORY_TIME),
+            (ScriptId::Scary, script::NOT_MINE),
         ] {
             assert!(scripted.contains(&(id, line)), "{id:?}: {line:?}");
         }

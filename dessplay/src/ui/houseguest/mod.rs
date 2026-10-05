@@ -71,6 +71,7 @@ mod ledger;
 mod mind;
 mod nudge;
 mod osaka;
+mod rarity;
 mod room;
 pub mod routine;
 mod rules;
@@ -759,6 +760,16 @@ pub struct Guest {
     /// ("Breakfast!", "Dinner time~"), as her last visit left it: a visit
     /// later in the same slot doesn't say it again. Held per process.
     meal_today: Option<(u64, routine::Slot)>,
+    /// What's rare and open on a game day, as her last visit left it
+    /// (drawn as the day's first visit began, or as she woke into it): a
+    /// visit later that day carries it on, so a day is drawn once and
+    /// has at most one new rare thing. Held per process.
+    rares_today: Option<(u64, rarity::Rares)>,
+    /// Her night as her last visit left it (keyed on its morning): a
+    /// visit later that night carries it on, so what's once a night (the
+    /// Dream, her midnight snack) is once a night, not once a visit.
+    /// Held per process.
+    night_today: Option<osaka::Night>,
 }
 
 /// Her clock runs this many times faster than real time.
@@ -848,6 +859,8 @@ impl Guest {
             out: None,
             lines_today: None,
             meal_today: None,
+            rares_today: None,
+            night_today: None,
         }
     }
 
@@ -900,6 +913,8 @@ impl Guest {
         self.slot_was = None;
         self.lines_today = None;
         self.meal_today = None;
+        self.rares_today = None;
+        self.night_today = None;
         self.unsaved = true;
         self.persist = true;
         self.gift = None;
@@ -1464,6 +1479,8 @@ impl Guest {
                     .flap
                     .take_if(|&mut (_, since)| now >= since + FLAP_MS)
                     .is_some();
+                // Her pity as it stands, for a new day's draw.
+                visit.osaka.set_pity(pity_of(&self.ledger));
                 let changed =
                     visit
                         .osaka
@@ -1471,8 +1488,16 @@ impl Guest {
                 if let Some(budget) = visit.osaka.line_budget() {
                     self.lines_today = Some(budget);
                 }
+                if let Some((day, rares)) = visit.osaka.rares_today()
+                    && self.rares_today.as_ref().is_none_or(|&(on, _)| on != day)
+                {
+                    self.rares_today = Some((day, rares.clone()));
+                }
                 if let Some(meal) = visit.osaka.meal_said() {
                     self.meal_today = Some(meal);
+                }
+                if let Some(night) = visit.osaka.night() {
+                    self.night_today = Some(night);
                 }
                 // Hers the moment she does it: whatever ends the visit
                 // before the next paint can't lose it.
@@ -2232,6 +2257,16 @@ impl Guest {
         }
     }
 
+    /// The window of her day a visit beginning at `now` (`day`, her
+    /// routine fed) draws what's rare for: the part of her day it begins
+    /// in, and the next.
+    fn rare_window(&self, now: u64, day: routine::DayTime) -> routine::SlotSet {
+        let next = self.routine_clock(now).map_or(day.slot, |clock| {
+            clock.day_of(clock.next_boundary(clock.game.at(now))).slot
+        });
+        rarity::visit_window(day.slot, next)
+    }
+
     /// A new visit of `kind`, with `osaka` just arrived.
     fn begin_visit(
         &mut self,
@@ -2265,12 +2300,43 @@ impl Guest {
         };
         osaka.set_mood(brain::Mood::of(seed));
         osaka.key_days(self.ledger.master_seed, day.map(|day| day.day));
+        // What's rare and open (neither random stream): the game day's,
+        // her routine fed, drawn for the day's first visit and carried
+        // on to its others; else this visit's (her endless afternoon).
+        let seen = self.ledger.seen_scripts();
+        let rares = match day {
+            Some(day) => match &self.rares_today {
+                Some((on, rares)) if *on == day.day => rares.clone(),
+                _ => rarity::Rares::draw(
+                    brain::day_seed(self.ledger.master_seed, day.day),
+                    &seen,
+                    pity_of(&self.ledger),
+                    self.rare_window(now, day),
+                ),
+            },
+            None => rarity::Rares::draw(
+                self.ledger.visit_seed(self.ledger.visits.saturating_sub(1)),
+                &seen,
+                pity_of(&self.ledger),
+                rarity::UNFED_WINDOW,
+            ),
+        };
+        if let Some(day) = day {
+            self.rares_today = Some((day.day, rares.clone()));
+        }
+        osaka.set_rares(rares, day.map(|day| day.day), seen);
+        osaka.set_pity(pity_of(&self.ledger));
         // Her calendar: owed once a day, so the date she last delivered
         // it on.
         osaka.set_calendar(self.ledger.calendar_on);
         // Her meal's line is the slot's, not the visit's.
         if let Some(day) = day {
             osaka.carry_meal(self.meal_today.filter(|&(on, _)| on == day.day));
+        }
+        // Her night is the night's: what an earlier visit had of it
+        // counts (its morning keys it).
+        if day.is_some() {
+            osaka.carry_night(self.night_today);
         }
         // Her line budget is the day's: what she said earlier today
         // counts.
@@ -2552,6 +2618,11 @@ impl Guest {
     }
 }
 
+/// Her pity counters as `ledger` has them (phase 5b D6).
+fn pity_of(ledger: &Ledger) -> rarity::Pity {
+    rarity::Pity::of(ledger.idle_min, ledger.rare_at, ledger.legend_at)
+}
+
 /// Record what she did to her home since last asked: the ledger's part
 /// (an order, an unpacking) and the visit's (a makeshift piece crumpled
 /// into shape, or used). Returns whether the ledger changed.
@@ -2590,6 +2661,16 @@ fn record(ledger: &mut Ledger, shop_now: &mut bool, visit: &mut Visit) -> bool {
                 if ledger.calendar_on != Some(date) {
                     tracing::debug!(%date, "houseguest: her calendar's date recorded");
                     ledger.calendar_on = Some(date);
+                    changed = true;
+                }
+            }
+            // Seen from now on; something new, so her pity for its tier
+            // starts again (not for one she'd seen already).
+            osaka::HomeEvent::Seen(id) => {
+                if let Some(key) = rarity::key(id)
+                    && ledger.mark_seen(key, id.rarity())
+                {
+                    tracing::debug!(key, "houseguest: something rare recorded as seen");
                     changed = true;
                 }
             }

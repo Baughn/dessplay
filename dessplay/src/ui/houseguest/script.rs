@@ -10,8 +10,9 @@ use super::art::Channel;
 use super::calendar::Tints;
 use super::mind::{Lines, RIDDLES, Whims};
 use super::osaka::{Bubble, SCRUNCH, THERE, USE_FRAME_MS};
+use super::rarity::{Rares, Rarity};
 use super::room::{Furniture, Use};
-use super::routine::DayTime;
+use super::routine::{DayTime, Slot};
 use super::sprite::{Face, Pose};
 
 /// When a key ends: cumulative, from the start of the body it plays
@@ -244,11 +245,27 @@ pub(super) enum ScriptId {
     /// New Year's Day (owed by her calendar): the first sunrise on her
     /// TV, "Ooh... first sunrise.", then watching it, humming.
     FirstSunrise,
+    /// The Dream (rare, step 7): once a night, 30 game minutes after she
+    /// first slept, her night's sleep turns to a dream of a certain
+    /// orange cat, talked in her sleep: "Hello everynyan...", "Fine
+    /// sankyu...", "Oh my gah!". Her night's act from then on, on
+    /// whatever she sleeps on (each surface its branch: see
+    /// [`Surface::dream_branch`]); a chat line only stirs her.
+    Dream,
+    /// After a snack (rare): back in the fridge, let down, "That was the
+    /// last one." (the melon bread she just ate).
+    NoMelon,
+    /// Spacing out (rare): "The box one's the..." then "...escalator?
+    /// No?".
+    Escalator,
+    /// After lounging or reading, from 22:00 to bedtime (rare): hugging
+    /// her knees, "Scary story time...", then "A fart. Not mine.".
+    Scary,
 }
 
 impl ScriptId {
     #[cfg(test)]
-    pub const ALL: [ScriptId; 20] = [
+    pub const ALL: [ScriptId; 24] = [
         Self::Lounge,
         Self::Nap,
         Self::Sleep,
@@ -269,7 +286,46 @@ impl ScriptId {
         Self::DashForgot,
         Self::Setsubun,
         Self::FirstSunrise,
+        Self::Dream,
+        Self::NoMelon,
+        Self::Escalator,
+        Self::Scary,
     ];
+
+    /// How rare it is (phase 5b D6): only a Rare or Legendary script
+    /// passes a gate (see [`super::rarity::Rares`]); the rest play on
+    /// their own chances, as ever. Wildcard-free, so a new script says.
+    pub fn rarity(self) -> Rarity {
+        match self {
+            Self::Dream | Self::NoMelon | Self::Escalator | Self::Scary => Rarity::Rare,
+            Self::Riddle
+            | Self::Surf
+            | Self::Chopsticks
+            | Self::Andagi
+            | Self::Shopping
+            | Self::Setsubun
+            | Self::FirstSunrise => Rarity::Uncommon,
+            Self::Lounge
+            | Self::Nap
+            | Self::Sleep
+            | Self::Homework
+            | Self::Watch
+            | Self::Read
+            | Self::Snack
+            | Self::Pet
+            | Self::Crumple
+            | Self::Unpack
+            | Self::Night
+            | Self::DashLunch
+            | Self::DashForgot => Rarity::Common,
+        }
+    }
+
+    /// Whether it's her night's sleep (her night, or the Dream it turns
+    /// to): the one test of it, wherever a night act is told apart.
+    pub fn is_night(self) -> bool {
+        matches!(self, Self::Night | Self::Dream)
+    }
 
     /// Its branches, each a run of keys.
     pub fn branches(self) -> &'static [&'static [Key]] {
@@ -294,6 +350,10 @@ impl ScriptId {
             Self::DashForgot => DASH_FORGOT,
             Self::Setsubun => SETSUBUN,
             Self::FirstSunrise => FIRST_SUNRISE,
+            Self::Dream => DREAM,
+            Self::NoMelon => NO_MELON,
+            Self::Escalator => ESCALATOR,
+            Self::Scary => SCARY,
         }
     }
 
@@ -307,7 +367,7 @@ impl ScriptId {
     pub fn on_chat(self) -> Chat {
         match self {
             Self::Andagi => Chat::Answer(SATA_ANDAGI),
-            Self::Night => Chat::Stir,
+            Self::Night | Self::Dream => Chat::Stir,
             Self::Lounge
             | Self::Nap
             | Self::Sleep
@@ -325,7 +385,10 @@ impl ScriptId {
             | Self::DashLunch
             | Self::DashForgot
             | Self::Setsubun
-            | Self::FirstSunrise => Chat::Look,
+            | Self::FirstSunrise
+            | Self::NoMelon
+            | Self::Escalator
+            | Self::Scary => Chat::Look,
         }
     }
 
@@ -353,7 +416,11 @@ impl ScriptId {
             | Self::DashLunch
             | Self::DashForgot
             | Self::Setsubun
-            | Self::FirstSunrise => 0,
+            | Self::FirstSunrise
+            | Self::Dream
+            | Self::NoMelon
+            | Self::Escalator
+            | Self::Scary => 0,
         }
     }
 
@@ -366,7 +433,7 @@ impl ScriptId {
         Some(match self {
             Self::Lounge => Use::Lounge,
             Self::Nap => Use::Nap,
-            Self::Sleep | Self::Night => Use::Sleep,
+            Self::Sleep | Self::Night | Self::Dream => Use::Sleep,
             Self::Homework => Use::Homework,
             Self::Watch | Self::Shopping | Self::Surf | Self::FirstSunrise => Use::Watch,
             Self::Read => Use::Read,
@@ -374,7 +441,14 @@ impl ScriptId {
             Self::Pet => Use::Pet,
             Self::Crumple => Use::Crumple,
             Self::Unpack => Use::Unpack,
-            Self::Riddle | Self::Chopsticks | Self::Andagi | Self::DashForgot | Self::Setsubun => {
+            Self::Riddle
+            | Self::Chopsticks
+            | Self::Andagi
+            | Self::DashForgot
+            | Self::Setsubun
+            | Self::NoMelon
+            | Self::Escalator
+            | Self::Scary => {
                 return None;
             }
         })
@@ -384,9 +458,9 @@ impl ScriptId {
     #[cfg(test)]
     pub fn host(self) -> Host {
         match self {
-            Self::Riddle | Self::DashForgot | Self::Setsubun => Host::SpaceOut,
-            Self::Night => Host::Night,
-            Self::Chopsticks | Self::Andagi => Host::Splice,
+            Self::Riddle | Self::DashForgot | Self::Setsubun | Self::Escalator => Host::SpaceOut,
+            Self::Night | Self::Dream => Host::Night,
+            Self::Chopsticks | Self::Andagi | Self::NoMelon | Self::Scary => Host::Splice,
             Self::Lounge
             | Self::Nap
             | Self::Sleep
@@ -416,8 +490,10 @@ impl ScriptId {
             DASH_FORGOT_MS, DASH_LUNCH_MS, SETSUBUN_MS, SPACE_OUT_MS, shortest_use_ms, use_range,
         };
         Some(match self {
-            Self::Chopsticks | Self::Andagi => return None,
-            Self::Riddle => SPACE_OUT_MS.0,
+            Self::Chopsticks | Self::Andagi | Self::NoMelon | Self::Scary => return None,
+            Self::Riddle | Self::Escalator => SPACE_OUT_MS.0,
+            // Begun only with room for it all before she wakes.
+            Self::Dream => DREAM_MS,
             // Built directly, always as long.
             Self::DashLunch => DASH_LUNCH_MS,
             Self::DashForgot => DASH_FORGOT_MS,
@@ -463,6 +539,10 @@ impl ScriptId {
             Self::DashForgot => Scene::DashForgot,
             Self::Setsubun => Scene::Setsubun,
             Self::FirstSunrise => Scene::FirstSunrise,
+            Self::Dream => Scene::Dream,
+            Self::NoMelon => Scene::NoMelon,
+            Self::Escalator => Scene::Escalator,
+            Self::Scary => Scene::Scary,
         }
     }
 
@@ -552,6 +632,25 @@ impl Surface {
         };
         2 * surface + u8::from(at_once)
     }
+
+    /// The surface her night's branch `branch` is on.
+    pub fn of_branch(branch: u8) -> Self {
+        match branch / 2 {
+            0 => Self::Bed,
+            1 => Self::Sofa,
+            _ => Self::Floor,
+        }
+    }
+
+    /// The branch of [`ScriptId::Dream`] she dreams on it on (the lamp
+    /// off: she's been asleep a while).
+    pub fn dream_branch(self) -> u8 {
+        match self {
+            Self::Bed => 0,
+            Self::Sofa => 1,
+            Self::Floor => 2,
+        }
+    }
 }
 
 /// A script spliced before or after a use (a prelude or a coda).
@@ -563,6 +662,12 @@ pub(super) enum SpliceId {
     /// After a snack, about one in four: a sata andagi, named a few
     /// times over (four to six, its branch), then eaten.
     Andagi,
+    /// After a snack, on a day it's open (rare), one in three (of those
+    /// the andagi leaves it): that was the last melon bread.
+    NoMelon,
+    /// After lounging or reading from 22:00 to bedtime, on a day it's
+    /// open (rare), one in two: a scary story.
+    Scary,
     /// A test's prelude (the snack's look in the fridge, then eating):
     /// not a row.
     #[cfg(test)]
@@ -580,7 +685,10 @@ pub(super) enum SpliceId {
 impl SpliceId {
     /// Every row: what a use may be wrapped in (the tests' splices
     /// aren't rows, and are never rolled).
-    pub const ALL: [SpliceId; 2] = [Self::Chopsticks, Self::Andagi];
+    /// The rare rows last: on a day one's open, a commoner one that rolls
+    /// still wraps the use as ever (the melon bread is missed after an
+    /// andagi), so being open takes nothing from the rest.
+    pub const ALL: [SpliceId; 4] = [Self::Chopsticks, Self::Andagi, Self::NoMelon, Self::Scary];
 
     /// Its row.
     pub fn row(self) -> Splice {
@@ -605,6 +713,29 @@ impl SpliceId {
                 chance: |_| (1, 4),
                 when: |_| true,
                 lens: ANDAGI_LENS,
+            },
+            Self::NoMelon => Splice {
+                name: "no melon",
+                salt: 3,
+                around: &[Use::Snack],
+                at: Part::After,
+                chance: |_| (1, 3),
+                when: |_| true,
+                lens: &[NO_MELON_MS],
+            },
+            Self::Scary => Splice {
+                name: "scary story",
+                salt: 4,
+                around: &[Use::Lounge, Use::Read],
+                at: Part::After,
+                chance: |_| (1, 2),
+                // From 22:00 until her bedtime (by her routine: never
+                // without it).
+                when: |ctx| {
+                    ctx.day
+                        .is_some_and(|day| day.minute >= SCARY_FROM && day.slot != Slot::Asleep)
+                },
+                lens: &[SCARY_MS],
             },
             #[cfg(test)]
             Self::TestSnack => Splice {
@@ -644,6 +775,8 @@ impl SpliceId {
         match self {
             Self::Chopsticks => ScriptId::Chopsticks,
             Self::Andagi => ScriptId::Andagi,
+            Self::NoMelon => ScriptId::NoMelon,
+            Self::Scary => ScriptId::Scary,
             #[cfg(test)]
             Self::TestSnack => ScriptId::Snack,
             #[cfg(test)]
@@ -661,6 +794,8 @@ impl SpliceId {
         match self {
             Self::Chopsticks => &[Scene::ChopsticksClean, Scene::ChopsticksBad],
             Self::Andagi => &[Scene::Andagi],
+            Self::NoMelon => &[Scene::NoMelon],
+            Self::Scary => &[Scene::Scary],
             Self::TestSnack | Self::TestSleep | Self::TestBedtime => &[],
         }
     }
@@ -704,9 +839,9 @@ pub(super) struct Splice {
     pub at: Part,
     /// `n` uses in `d` it wraps (of those `when` allows), as the use
     /// starts.
-    pub chance: fn(&SpliceCtx) -> (u64, u64),
+    pub chance: fn(&SpliceCtx<'_>) -> (u64, u64),
     /// Whether it may wrap a use as it starts.
-    pub when: fn(&SpliceCtx) -> bool,
+    pub when: fn(&SpliceCtx<'_>) -> bool,
     /// How long it plays in each of its branches (drawn evenly). Its
     /// script's keys end at set times (never a share: it has no body to
     /// take one of), each inside its branch's length.
@@ -715,7 +850,7 @@ pub(super) struct Splice {
 
 /// What a splice row sees as the use it would wrap starts.
 #[derive(Clone, Copy, Debug)]
-pub(super) struct SpliceCtx {
+pub(super) struct SpliceCtx<'a> {
     /// What she's using it for.
     pub what: Use,
     /// She's only trying the piece where it stands: no splice.
@@ -723,13 +858,15 @@ pub(super) struct SpliceCtx {
     /// She has stopped saying anything (a prelude's first key would be
     /// hidden under it otherwise, so none is rolled).
     pub quiet: bool,
-    /// Her routine as the use starts (`None`: it doesn't reach her).
-    // TODO(step 7): read by Scary's 22:00 window; unread until then.
-    #[expect(dead_code, reason = "read from step 7 (A7)")]
+    /// Her routine as the use starts (`None`: it doesn't reach her):
+    /// the scary story's late evening.
     pub day: Option<DayTime>,
     /// The seasons of the real date as the use starts (none without a
     /// date, or without her routine): exam season's chopsticks.
     pub tints: Tints,
+    /// What's rare and open today (phase 5b D6): a rare row wraps a use
+    /// only if its script is.
+    pub rares: &'a Rares,
 }
 
 /// A cue from the stage: what she's to play, forced rather than rolled,
@@ -770,8 +907,10 @@ impl Cue {
 }
 
 /// The prelude and coda a use is wrapped in as it starts (`ctx`): of
-/// `rows`, each that wraps it, may (`when`, and a prelude only when
-/// she's quiet), rolls its chance from `whims` and hasn't played in the
+/// `rows`, each that wraps it, is open today if it's rare (a closed one
+/// is passed over before anything of it rolls), may (`when`, and a
+/// prelude only when she's quiet), rolls its chance from `whims` and
+/// hasn't played in the
 /// last while (`lines` keeps what she's played), at most one before and
 /// one after, its branch (so its length) drawn from `whims` too. Or, cued
 /// (`forced`), that splice alone, if it wraps the use, whether she's
@@ -782,7 +921,7 @@ impl Cue {
 /// nothing from her body's stream.
 pub(super) fn splices(
     rows: &[SpliceId],
-    ctx: &SpliceCtx,
+    ctx: &SpliceCtx<'_>,
     forced: Option<(SpliceId, Option<u8>)>,
     sure: bool,
     whims: Whims,
@@ -808,6 +947,11 @@ pub(super) fn splices(
             continue;
         }
         if forced.is_none() {
+            // Rare, and not open today: passed over before it rolls, so
+            // a closed day rolls everything else as if it weren't a row.
+            if !ctx.rares.allows(id.script()) {
+                continue;
+            }
             let (n, d) = (row.chance)(ctx);
             let may = (row.at == Part::After || ctx.quiet) && (row.when)(ctx);
             // The chance first: a splice that doesn't roll hasn't
@@ -1395,6 +1539,127 @@ const FIRST_SUNRISE: &[&[Key]] = &[&[
     ),
 ]];
 
+/// The Dream's lines, talked in her sleep, in turn.
+pub(super) const EVERYNYAN: &str = line!("Hello everynyan...");
+pub(super) const SANKYU: &str = line!("Fine sankyu...");
+pub(super) const OH_MY_GAH: &str = line!("Oh my gah!");
+
+/// Each of the Dream's lines shows this long, the last ending at
+/// [`DREAM_MS`]; then she sleeps on.
+pub(super) const DREAM_LINE_MS: u64 = 3000;
+/// The Dream's lines, all said.
+pub(super) const DREAM_MS: u64 = 3 * DREAM_LINE_MS;
+
+/// One of the Dream's keys: asleep posed `pose`, talking in her sleep,
+/// the lamp off, until `ms` in.
+const fn dreaming(ms: u64, pose: Posed, line: &'static str) -> Key {
+    shows(
+        Span::Ms(ms),
+        pose,
+        Face::Blink,
+        bubble(Bubble::Say(line)),
+        Prop::LampOff,
+    )
+}
+
+/// The Dream on a surface posed `pose`: its three lines, then asleep for
+/// the night as before.
+const fn dream(pose: Posed) -> [Key; 4] {
+    [
+        dreaming(DREAM_LINE_MS, pose, EVERYNYAN),
+        dreaming(2 * DREAM_LINE_MS, pose, SANKYU),
+        dreaming(DREAM_MS, pose, OH_MY_GAH),
+        night(pose),
+    ]
+}
+
+/// The Dream, each surface its branch ([`Surface::dream_branch`]): in
+/// bed, on a sofa, on the floor.
+const DREAM: &[&[Key]] = &[
+    &dream(Posed::Bob(Pose::Sleep, USE_FRAME_MS)),
+    &dream(Posed::Bob(Pose::Nap, USE_FRAME_MS)),
+    &dream(Posed::Still(Pose::LieBack(0))),
+];
+
+/// What she says, the melon bread all gone.
+pub(super) const LAST_ONE: &str = line!("That was the last one.");
+/// She looks back in the fridge this long...
+pub(super) const NO_MELON_LOOK_MS: u64 = 1200;
+/// ...and it's all of it.
+pub(super) const NO_MELON_MS: u64 = NO_MELON_LOOK_MS + 3000;
+
+/// After the snack, back in the fridge (standing open) for another, then
+/// turning from it, let down: none left.
+const NO_MELON: &[&[Key]] = &[&[
+    shows(
+        Span::Ms(NO_MELON_LOOK_MS),
+        Posed::Still(Pose::Side),
+        Face::Curious,
+        None,
+        Prop::FridgeOpen,
+    ),
+    shows(
+        Span::Rest,
+        Posed::Still(Pose::Stand),
+        Face::Droop,
+        bubble(Bubble::Say(LAST_ONE)),
+        Prop::FridgeOpen,
+    ),
+]];
+
+/// Spacing out, she starts on something...
+pub(super) const BOX_ONE: &str = line!("The box one's the...");
+/// ...and isn't sure.
+pub(super) const ESCALATOR_NO: &str = line!("...escalator? No?");
+/// The first half shows this long (inside the shortest musing).
+pub(super) const ESCALATOR_HALF_MS: u64 = 3000;
+
+/// Which moving staircase is which: standing, blank, then looking up,
+/// unsure.
+const ESCALATOR: &[&[Key]] = &[&[
+    key(
+        Span::Ms(ESCALATOR_HALF_MS),
+        Posed::Still(Pose::Stand),
+        Face::Vacant,
+        bubble(Bubble::Say(BOX_ONE)),
+    ),
+    key(
+        Span::Rest,
+        Posed::Still(Pose::Gaze),
+        Face::Curious,
+        bubble(Bubble::Say(ESCALATOR_NO)),
+    ),
+]];
+
+/// Her story's opening...
+pub(super) const STORY_TIME: &str = line!("Scary story time...");
+/// ...and how it ends.
+pub(super) const NOT_MINE: &str = line!("A fart. Not mine.");
+/// The opening shows this long...
+pub(super) const SCARY_OPEN_MS: u64 = 3000;
+/// ...and it's all of it.
+pub(super) const SCARY_MS: u64 = SCARY_OPEN_MS + 3000;
+/// Her scary story comes from this minute of the day (22:00) until her
+/// bedtime.
+const SCARY_FROM: u16 = 22 * 60;
+
+/// Hugging her knees for the story, solemn; then the ending, pleased
+/// with it.
+const SCARY: &[&[Key]] = &[&[
+    key(
+        Span::Ms(SCARY_OPEN_MS),
+        Posed::Still(Pose::Sit),
+        Face::Curious,
+        bubble(Bubble::Say(STORY_TIME)),
+    ),
+    key(
+        Span::Rest,
+        Posed::Still(Pose::Sit),
+        Face::Pleased,
+        bubble(Bubble::Say(NOT_MINE)),
+    ),
+]];
+
 /// Dashed home with no fridge to get to, first...
 pub(super) const FORGOT_SOMETHING: &str = line!("Forgot somethin'...");
 /// ...then.
@@ -1679,6 +1944,10 @@ mod tests {
             ScriptId::DashForgot => 17,
             ScriptId::Setsubun => 18,
             ScriptId::FirstSunrise => 19,
+            ScriptId::Dream => 20,
+            ScriptId::NoMelon => 21,
+            ScriptId::Escalator => 22,
+            ScriptId::Scary => 23,
         }
     }
 
@@ -1695,7 +1964,7 @@ mod tests {
         // Wildcard-free: a new splice doesn't compile until it's said
         // here whether it's a row (and so listed).
         let row = |id: SpliceId| match id {
-            SpliceId::Chopsticks | SpliceId::Andagi => true,
+            SpliceId::Chopsticks | SpliceId::Andagi | SpliceId::NoMelon | SpliceId::Scary => true,
             SpliceId::TestSnack | SpliceId::TestSleep | SpliceId::TestBedtime => false,
         };
         for id in SPLICES {
@@ -1750,6 +2019,10 @@ mod tests {
             ScriptId::DashForgot => Play::plain(ScriptId::DashForgot),
             ScriptId::Setsubun => Play::plain(ScriptId::Setsubun),
             ScriptId::FirstSunrise => Play::plain(ScriptId::FirstSunrise),
+            ScriptId::Dream => Play::plain(ScriptId::Dream),
+            ScriptId::NoMelon => spliced(SpliceId::NoMelon),
+            ScriptId::Escalator => Play::plain(ScriptId::Escalator),
+            ScriptId::Scary => spliced(SpliceId::Scary),
         };
         for id in ScriptId::ALL {
             let play = player(id);
@@ -1981,6 +2254,7 @@ mod tests {
                 );
             }
             for exams in [false, true] {
+                let none = Rares::none();
                 let ctx = SpliceCtx {
                     what: Use::Homework,
                     trying: false,
@@ -1990,6 +2264,7 @@ mod tests {
                         exams,
                         ..Tints::default()
                     },
+                    rares: &none,
                 };
                 let (n, d) = (row.chance)(&ctx);
                 assert!(n <= d && d > 0, "{id:?}");
@@ -2008,12 +2283,14 @@ mod tests {
         lines: &mut Lines,
         at: u64,
     ) -> (Option<SpliceId>, Option<SpliceId>) {
+        let none = Rares::none();
         let ctx = SpliceCtx {
             what,
             trying,
             quiet,
             day: None,
             tints: Tints::default(),
+            rares: &none,
         };
         let (before, after) = splices(rows, &ctx, None, false, Whims(whims), lines, at);
         (before.map(|s| s.splice), after.map(|s| s.splice))
@@ -2081,12 +2358,14 @@ mod tests {
         let n = 400 * TEST_AROUND.len();
         assert!((n * 2 / 5..n * 3 / 5).contains(&afters), "{afters} of {n}");
         // Each its row's length.
+        let none = Rares::none();
         let ctx = SpliceCtx {
             what: Use::Homework,
             trying: false,
             quiet: true,
             day: None,
             tints: Tints::default(),
+            rares: &none,
         };
         for id in SPLICES {
             let (before, after) = splices(
@@ -2116,12 +2395,14 @@ mod tests {
     fn the_rows_wrap_their_uses_at_their_odds() {
         let n = 3000u64;
         let rolled = |what, quiet, w| {
+            let none = Rares::none();
             let ctx = SpliceCtx {
                 what,
                 trying: false,
                 quiet,
                 day: None,
                 tints: Tints::default(),
+                rares: &none,
             };
             splices(
                 &SpliceId::ALL,
@@ -2264,15 +2545,68 @@ mod tests {
 
     /// Lint: only a splice's script answers a question (its own use's
     /// script, or a musing's, is played where no answer is looked for),
-    /// and only her night's stirs (and every surface's branch of it).
+    /// and only her night's stirs (and every surface's branch of it, the
+    /// Dream's too).
     #[test]
     fn only_a_splice_answers_and_only_the_night_stirs() {
         for id in ScriptId::ALL {
             match id.on_chat() {
                 Chat::Answer(_) => assert_eq!(id.host(), Host::Splice, "{id:?}"),
-                Chat::Stir => assert_eq!(id, ScriptId::Night),
-                Chat::Look => assert_ne!(id, ScriptId::Night),
+                Chat::Stir => assert!(id.is_night(), "{id:?}"),
+                Chat::Look => assert!(!id.is_night(), "{id:?}"),
             }
+            assert_eq!(id.is_night(), id.host() == Host::Night, "{id:?}");
+        }
+    }
+
+    /// The Dream: a branch for each surface her night is on, posed as
+    /// her night's is there (the floor's held still), the lamp off
+    /// throughout; its three lines in turn, each a line of her sleep-talk
+    /// shown a while, then asleep as before until she wakes.
+    #[test]
+    fn the_dream_is_talked_in_her_sleep_on_every_surface() {
+        let dream = ScriptId::Dream;
+        assert_eq!(dream.branches().len(), Surface::ALL.len());
+        for surface in Surface::ALL {
+            for at_once in [false, true] {
+                assert_eq!(Surface::of_branch(surface.branch(at_once)), surface);
+            }
+            let keys = dream.keys(surface.dream_branch());
+            let night = ScriptId::Night.keys(surface.branch(true));
+            let said: Vec<Option<Say>> = keys.iter().map(|k| k.say).collect();
+            assert_eq!(
+                said,
+                [
+                    bubble(Bubble::Say(EVERYNYAN)),
+                    bubble(Bubble::Say(SANKYU)),
+                    bubble(Bubble::Say(OH_MY_GAH)),
+                    bubble(Bubble::Zzz),
+                ],
+                "{surface:?}"
+            );
+            let posed = |pose: Posed| match pose {
+                Posed::Bob(pose, period) => (pose(0), Some(period)),
+                Posed::Still(pose) => (pose, None),
+                Posed::Host => panic!("{surface:?}: posed by its host"),
+            };
+            for key in keys {
+                assert_eq!(key.prop, Some(Prop::LampOff), "{surface:?}");
+                assert_eq!(key.face, Face::Blink, "{surface:?}");
+                assert_eq!(
+                    posed(key.pose),
+                    posed(night[0].pose),
+                    "{surface:?}: posed as her night"
+                );
+            }
+            let ends: Vec<u64> = keys
+                .iter()
+                .map(|k| k.span.end(Some(DREAM_MS * 10)))
+                .collect();
+            assert_eq!(
+                ends,
+                [DREAM_LINE_MS, 2 * DREAM_LINE_MS, DREAM_MS, DREAM_MS * 10],
+                "{surface:?}"
+            );
         }
     }
 
@@ -2402,6 +2736,7 @@ mod tests {
     /// rows' odds, above), and the season changes nothing else.
     #[test]
     fn exam_season_brings_her_chopsticks_to_every_homework() {
+        let none = Rares::none();
         let ctx = |what, exams| SpliceCtx {
             what,
             trying: false,
@@ -2411,6 +2746,7 @@ mod tests {
                 exams,
                 ..Tints::default()
             },
+            rares: &none,
         };
         let roll = |what, exams, w, lines: &mut Lines, at| {
             let (before, after) = splices(
@@ -2455,12 +2791,14 @@ mod tests {
     #[test]
     fn the_first_splice_to_roll_wraps_it_on_a_branch_of_its_own() {
         let rows = [SpliceId::TestBedtime, SpliceId::TestSnack];
+        let none = Rares::none();
         let ctx = SpliceCtx {
             what: Use::Homework,
             trying: false,
             quiet: true,
             day: None,
             tints: Tints::default(),
+            rares: &none,
         };
         let lens = SpliceId::TestBedtime.row().lens;
         let mut seen = [0u64; 2];
@@ -2663,5 +3001,142 @@ mod tests {
         let sold = Play::of(Use::Watch, Some(Furniture::Lamp));
         assert_eq!(sold.own, ScriptId::Shopping);
         assert_eq!(sold.bought, Some(Furniture::Lamp));
+    }
+
+    /// A rare splice never wraps a use on a day it isn't open, however
+    /// sure her whims (not even the tests' "every vignette" roll), and
+    /// leaves everything else to roll exactly as if it weren't a row; on a
+    /// day it's open it rolls its own odds (in its own window: the scary
+    /// story only from 22:00 to bedtime, never without her routine); and
+    /// cued, it plays whether open or not.
+    #[test]
+    fn a_rare_splice_plays_only_on_a_day_its_open() {
+        use super::super::rarity::{DAY_WINDOW, Pity, Rares};
+        use super::super::routine::{self, Slot};
+        let none = Rares::none();
+        let open = Rares::draw(
+            0,
+            &[ScriptId::NoMelon, ScriptId::Scary],
+            Pity {
+                rare: 360,
+                legend: 0,
+            },
+            DAY_WINDOW,
+        );
+        assert!(open.allows(ScriptId::NoMelon) && open.allows(ScriptId::Scary));
+        let late = routine::day_time(routine::game_of(0, 22 * 60 + 10), false);
+        let early = routine::day_time(routine::game_of(0, 21 * 60 + 50), false);
+        // Past her bedtime (22:30 on a school night), and after midnight.
+        let past_bed = [
+            routine::day_time(routine::game_of(0, 22 * 60 + 45), false),
+            routine::day_time(routine::game_of(1, 60 + 15), false),
+        ];
+        assert_eq!(late.slot, Slot::Homework);
+        assert!(past_bed.iter().all(|day| day.slot == Slot::Asleep));
+        let rare = [SpliceId::NoMelon, SpliceId::Scary];
+        let roll = |rares: &Rares, what, day, sure, w| {
+            let ctx = SpliceCtx {
+                what,
+                trying: false,
+                quiet: true,
+                day,
+                tints: Tints::default(),
+                rares,
+            };
+            let (before, after) = splices(
+                &SpliceId::ALL,
+                &ctx,
+                None,
+                sure,
+                Whims(w),
+                &mut Lines::default(),
+                0,
+            );
+            (before.map(|s| s.splice), after.map(|s| s.splice))
+        };
+        let mut counts = [0u64; 2];
+        let n = 3000;
+        for w in 0..n {
+            for what in Use::ALL {
+                for day in [None, Some(early), Some(late)] {
+                    for sure in [false, true] {
+                        let (before, after) = roll(&none, what, day, sure, w);
+                        assert!(
+                            !rare.iter().any(|r| [before, after].contains(&Some(*r))),
+                            "closed: {what:?} {day:?} sure={sure} whims {w}"
+                        );
+                        // Closed, they're as if not rows at all.
+                        let commons = [SpliceId::Chopsticks, SpliceId::Andagi];
+                        let ctx = SpliceCtx {
+                            what,
+                            trying: false,
+                            quiet: true,
+                            day,
+                            tints: Tints::default(),
+                            rares: &none,
+                        };
+                        let (b, a) = splices(
+                            &commons,
+                            &ctx,
+                            None,
+                            sure,
+                            Whims(w),
+                            &mut Lines::default(),
+                            0,
+                        );
+                        assert_eq!(
+                            (b.map(|s| s.splice), a.map(|s| s.splice)),
+                            (before, after),
+                            "{what:?} whims {w}"
+                        );
+                    }
+                }
+            }
+            // Open: the melon bread after a snack, one in three of those
+            // the andagi (one in four) leaves it...
+            let (_, after) = roll(&open, Use::Snack, None, false, w);
+            counts[0] += u64::from(after == Some(SpliceId::NoMelon));
+            // ...the story after lounging or reading late, one in two,
+            // and never earlier, nor past her bedtime, nor unfed.
+            for what in [Use::Lounge, Use::Read] {
+                let (_, after) = roll(&open, what, Some(late), false, w);
+                counts[1] += u64::from(after == Some(SpliceId::Scary));
+                for day in [None, Some(early), Some(past_bed[0]), Some(past_bed[1])] {
+                    let (_, after) = roll(&open, what, day, true, w);
+                    assert_ne!(after, Some(SpliceId::Scary), "{what:?} {day:?}");
+                }
+            }
+        }
+        assert!(
+            (n * 22 / 100..n * 28 / 100).contains(&counts[0]),
+            "{counts:?}"
+        );
+        assert!(
+            (2 * n * 45 / 100..2 * n * 55 / 100).contains(&counts[1]),
+            "{counts:?}"
+        );
+        // Cued, each plays closed or not, at any hour.
+        for id in rare {
+            for what in id.row().around {
+                let ctx = SpliceCtx {
+                    what: *what,
+                    trying: false,
+                    quiet: true,
+                    day: None,
+                    tints: Tints::default(),
+                    rares: &none,
+                };
+                let (_, after) = splices(
+                    &[],
+                    &ctx,
+                    Some((id, None)),
+                    false,
+                    Whims(1),
+                    &mut Lines::default(),
+                    0,
+                );
+                assert_eq!(after.map(|s| s.splice), Some(id), "{id:?} cued");
+            }
+        }
     }
 }

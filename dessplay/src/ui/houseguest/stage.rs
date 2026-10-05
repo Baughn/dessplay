@@ -116,11 +116,22 @@ pub enum Scene {
     /// The first sunrise of the year on her TV (her calendar's on Jan 1;
     /// she gets a TV if she has none).
     FirstSunrise,
+    /// The Dream, rare: her night's sleep in her bed (she gets one if she
+    /// has none), dreamt from the start ("Hello everynyan...").
+    Dream,
+    /// After a snack, rare: that was the last melon bread (she gets a
+    /// fridge if she has none).
+    NoMelon,
+    /// Spacing out, rare: which one's the escalator.
+    Escalator,
+    /// After lounging on her sofa, rare: a scary story (she gets a sofa
+    /// if she has none; whatever the hour).
+    Scary,
 }
 
 impl Scene {
     /// Every scene, in menu order.
-    pub const ALL: [Scene; 42] = [
+    pub const ALL: [Scene; 46] = [
         Self::Arrive,
         Self::Pull,
         Self::Swap,
@@ -163,6 +174,10 @@ impl Scene {
         Self::DashForgot,
         Self::Setsubun,
         Self::FirstSunrise,
+        Self::Dream,
+        Self::NoMelon,
+        Self::Escalator,
+        Self::Scary,
     ];
 
     /// A short menu label.
@@ -210,20 +225,24 @@ impl Scene {
             Self::DashForgot => "dash home, forgetful",
             Self::Setsubun => "Setsubun's beans",
             Self::FirstSunrise => "first sunrise",
+            Self::Dream => "the Dream",
+            Self::NoMelon => "no melon bread left",
+            Self::Escalator => "which one's the escalator",
+            Self::Scary => "scary story time",
         }
     }
 
     /// What she does with her furniture in this scene.
     pub(super) fn furniture(self) -> Option<Use> {
         Some(match self {
-            Self::Lounge => Use::Lounge,
+            Self::Lounge | Self::Scary => Use::Lounge,
             Self::Nap => Use::Nap,
-            Self::Sleep | Self::Night => Use::Sleep,
+            Self::Sleep | Self::Night | Self::Dream => Use::Sleep,
             Self::Homework | Self::ChopsticksClean | Self::ChopsticksBad => Use::Homework,
             Self::Watch | Self::Shopping | Self::Surf | Self::FirstSunrise => Use::Watch,
             Self::Parcel => Use::Unpack,
             Self::Read => Use::Read,
-            Self::Snack | Self::Andagi | Self::DashIn => Use::Snack,
+            Self::Snack | Self::Andagi | Self::DashIn | Self::NoMelon => Use::Snack,
             Self::Pet => Use::Pet,
             _ => return None,
         })
@@ -258,6 +277,14 @@ impl Scene {
             // spacing out (as a riddle is), the sunrise on a watch.
             Self::Setsubun => Some(Cue::Script(ScriptId::Setsubun)),
             Self::FirstSunrise => Some(Cue::Script(ScriptId::FirstSunrise)),
+            // Her rare things, forced whatever's open today: the Dream on
+            // her bed (as her night is), the escalator spacing out (as a
+            // riddle is), the melon bread and the scary story as the
+            // splices they are.
+            Self::Dream => Some(Cue::Script(ScriptId::Dream)),
+            Self::Escalator => Some(Cue::Script(ScriptId::Escalator)),
+            Self::NoMelon => Some(Cue::Splice(SpliceId::NoMelon, None)),
+            Self::Scary => Some(Cue::Splice(SpliceId::Scary, None)),
             Self::Arrive
             | Self::Pull
             | Self::Swap

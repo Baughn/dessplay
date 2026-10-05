@@ -253,8 +253,9 @@ const DAY_SALT: u64 = 0x6461_795f_6f66_5f21;
 /// (round-1b, "the day is the unit"): while her routine is fed, the day's
 /// mood is drawn from it (as the visit begins, and as she wakes), so a
 /// second visit the same game day comes in the same mood and says the
-/// same hello. Step 7's rare draw is to come from it too. Neither random
-/// stream: her body's stays seeded per visit.
+/// same hello. What's rare that day is drawn from it too (salted apart:
+/// see [`super::rarity::Rares::draw`]). Neither random stream: her body's
+/// stays seeded per visit.
 pub(super) fn day_seed(master: u64, day: u64) -> u64 {
     let mut z = master ^ day.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ DAY_SALT;
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);

@@ -1585,7 +1585,11 @@ fn every_scene_has_a_spot_in_the_stage_room() {
                         // Chosen as the use starts (the andagi plays
                         // after the snack, past the cap: see
                         // her_vignettes_play_at_her_things).
-                        Scene::ChopsticksClean | Scene::ChopsticksBad | Scene::Andagi => {
+                        Scene::ChopsticksClean
+                        | Scene::ChopsticksBad
+                        | Scene::Andagi
+                        | Scene::NoMelon
+                        | Scene::Scary => {
                             let Some(Cue::Splice(id, branch)) = scene.cue() else {
                                 panic!("{at}: {scene:?} cues no splice");
                             };
@@ -1603,7 +1607,9 @@ fn every_scene_has_a_spot_in_the_stage_room() {
                         Scene::DashIn
                         | Scene::DashForgot
                         | Scene::Setsubun
-                        | Scene::FirstSunrise => {
+                        | Scene::FirstSunrise
+                        | Scene::Dream
+                        | Scene::Escalator => {
                             let Some(Cue::Script(id)) = scene.cue() else {
                                 panic!("{at}: {scene:?} cues no script");
                             };
@@ -10902,3 +10908,4 @@ mod calendar;
 mod census;
 mod dash;
 mod golden;
+mod rares;

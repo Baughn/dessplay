@@ -565,7 +565,7 @@ fn golden_stage_room() {
         "stage",
         stage_room,
         &[
-            (0, 0xf0c8e581c411846a, 0x3dc444745d86df61),
+            (0, 0xf0c8e581c411846a, 0x70f0e04f52d274b3),
             (1, 0xae04cfc95045af79, 0x25b0a880ce4d67e1),
             (2, 0xdce6aa718de2d517, 0xeb9ef4bebb7695b6),
             (3, 0x95b51d88911f193f, 0x3d09061717aef140),
@@ -593,10 +593,10 @@ fn golden_furnished_home() {
         "furnished",
         furnished,
         &[
-            (0, 0xce411351d40b8db0, 0x704a66641848f382),
+            (0, 0xe9c4f064b39b62c2, 0xe5176fba30126b15),
             (1, 0xdf957f9a38ed293a, 0x36a820fdf5a2da93),
             (2, 0xaa7b2ceb0bf8b5bc, 0x68ef8c97aaef29b5),
-            (3, 0xc9279ea0f38a8416, 0x44aefdc2afe74571),
+            (3, 0x97d6177f725fae90, 0x98311fcb093f8040),
         ],
     );
 }
@@ -608,7 +608,7 @@ fn golden_errand() {
         errand,
         &[
             (0, 0xa115268dd34741af, 0x84a48e0354dec3ca),
-            (1, 0x60d4f971230730d2, 0xb92429282cd46ef0),
+            (1, 0xf0e25986f30fae63, 0x67b51cfcbab5b012),
             (2, 0x1e3dd842f4ca4668, 0x20d410417a6fc48e),
             (3, 0x0b3934b5b2e4d1c0, 0x47f20eb30403a5d2),
         ],
@@ -649,7 +649,7 @@ fn golden_weekend() {
         "weekend",
         weekend,
         &[
-            (0, 0x3fb754fd56078d46, 0xa6cc921ccabf64aa),
+            (0, 0x3b5632dafeecfe78, 0xcc5342a9d0789d38),
             (1, 0x27792fa4bfae67ed, 0xe9375b7e8b8631dc),
             (2, 0x265af502895ee3f2, 0x31a531f225ae7477),
             (3, 0x951005ed7743aba5, 0x1dccf0464b05e7e7),
@@ -710,15 +710,15 @@ fn golden_dash_home() {
 const UNFED_STAGE: [(u64, u64, u64); 4] = [
     (0, 0xe6077be20df9456b, 0x2b8c5fb5ebcffa8d),
     (1, 0xa208eaff8a9cc01d, 0xf2310f324a023361),
-    (2, 0xbdba4006540e022b, 0x4e2fb6c3442e1d11),
-    (3, 0xe2ff1e903886c076, 0x83fff4ee2141d60f),
+    (2, 0x240765c9edcdd92b, 0x4e2fb6c3442e1d11),
+    (3, 0x31bbdf16633107f7, 0xa7a75f1cdc3e3323),
 ];
 
 /// The resident's tables at the end of phase 5b step 3, but for step 5a's
 /// hidden-goodbye fix (no placement recorded of her hidden behind her
 /// door: its trace diff is in that commit).
 const UNFED_RESIDENT: [(u64, u64, u64); 4] = [
-    (0, 0x7500d48c817323dc, 0xe9ccfad21660aec7),
+    (0, 0xbc82a8f260a5d799, 0xe9ccfad21660aec7),
     (1, 0xc9a36f2147c27b57, 0x38bbc612ffbcfc2b),
     (2, 0x9204f86377c803b0, 0xcd7b645d6efb9997),
     (3, 0xf1fe032ad00023fe, 0x9818dfe4c8fad305),
@@ -739,7 +739,7 @@ const UNFED_FURNISHED: [(u64, u64, u64); 4] = [
 /// door: its trace diff is in that commit).
 const UNFED_ERRAND: [(u64, u64, u64); 4] = [
     (0, 0xa115268dd34741af, 0x84a48e0354dec3ca),
-    (1, 0x60d4f971230730d2, 0xb92429282cd46ef0),
+    (1, 0xf0e25986f30fae63, 0x67b51cfcbab5b012),
     (2, 0x1e3dd842f4ca4668, 0x20d410417a6fc48e),
     (3, 0x07f3cf925a3cfb31, 0xf621c3073f8725cf),
 ];

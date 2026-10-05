@@ -133,6 +133,11 @@ impl SlotSet {
     pub fn contains(self, slot: Slot) -> bool {
         self.0 & (1 << slot as u8) != 0
     }
+
+    /// Whether it shares a slot with `other`.
+    pub fn meets(self, other: SlotSet) -> bool {
+        self.0 & other.0 != 0
+    }
 }
 
 /// When in her day something holds (a boost of her mind's, D4 lever 1),

@@ -226,6 +226,8 @@ fn named(play: Play, lamp: bool) -> Vec<(bool, String)> {
         ScriptId::DashForgot => Some("dash, forgot".to_owned()),
         ScriptId::Setsubun => Some("setsubun".to_owned()),
         ScriptId::FirstSunrise => Some("first sunrise".to_owned()),
+        ScriptId::Dream => Some("dream".to_owned()),
+        ScriptId::Escalator => Some("escalator".to_owned()),
         ScriptId::Sleep if play.branch == 0 && lamp => Some("bedtime".to_owned()),
         ScriptId::Sleep
         | ScriptId::Lounge
@@ -238,7 +240,9 @@ fn named(play: Play, lamp: bool) -> Vec<(bool, String)> {
         | ScriptId::Crumple
         | ScriptId::Unpack
         | ScriptId::Chopsticks
-        | ScriptId::Andagi => None,
+        | ScriptId::Andagi
+        | ScriptId::NoMelon
+        | ScriptId::Scary => None,
     };
     let splices = [play.before, play.after]
         .into_iter()
@@ -250,6 +254,8 @@ fn named(play: Play, lamp: bool) -> Vec<(bool, String)> {
                 Some(count) => format!("sata andagi ×{count}"),
                 None => format!("sata andagi, branch {}", s.branch),
             },
+            SpliceId::NoMelon => "no melon".to_owned(),
+            SpliceId::Scary => "scary story".to_owned(),
             SpliceId::TestSnack | SpliceId::TestSleep | SpliceId::TestBedtime => {
                 format!("{:?}", s.splice)
             }

@@ -75,6 +75,10 @@ Add new days at the top. Add new entries at the bottom of existing days.
   with her first snack of a morning or evening, "No school today!" when
   she gets up on a weekend or holiday, and "Night-night..." as she turns
   the lamp off.
+- Added: Every so often she does something rare, like dreaming about a
+  certain orange cat, and if you haven't seen anything new from her in a
+  while, something is sure to turn up. She remembers which ones you've
+  seen.
 
 ## 2026-10-03
 

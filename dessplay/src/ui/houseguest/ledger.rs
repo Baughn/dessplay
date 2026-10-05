@@ -24,9 +24,15 @@
 //! counted, which is where every record from before them starts.
 //!
 //! The real date she last delivered her calendar's owed entry on comes
-//! last, as `"YYYY-MM-DD"`, written only once there is one and read
+//! next, as `"YYYY-MM-DD"`, written only once there is one and read
 //! leniently: a value this build can't read as a date reads as none
 //! (the day's entry is owed again), without failing the record.
+//!
+//! The rare things she has shown come last, by their stable ids
+//! ([`super::rarity::RARES`]), written only once there are any and read
+//! leniently, entry by entry: an id this build doesn't know (a later
+//! build's), or anything that isn't an id, is skipped, and the rest of
+//! the record still reads.
 
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
@@ -68,6 +74,10 @@ pub struct Ledger {
     /// The real date she last delivered what her calendar owed her on
     /// (phase 5b D5): owed once a day, so not again that date.
     pub(super) calendar_on: Option<NaiveDate>,
+    /// The rare things she has shown, by their stable ids, in the order
+    /// she first showed them (phase 5b D6): each once, each one this
+    /// build knows.
+    pub(super) seen: Vec<String>,
 }
 
 impl Ledger {
@@ -84,6 +94,7 @@ impl Ledger {
             rare_at: 0,
             legend_at: 0,
             calendar_on: None,
+            seen: Vec::new(),
         }
     }
 
@@ -96,6 +107,33 @@ impl Ledger {
             clock: at.minutes(),
             ..Self::new(master_seed)
         }
+    }
+
+    /// The rare scripts she has shown.
+    pub(super) fn seen_scripts(&self) -> Vec<super::script::ScriptId> {
+        self.seen
+            .iter()
+            .filter_map(|key| super::rarity::by_key(key))
+            .collect()
+    }
+
+    /// She has shown the rare script her ledger records as `key`, of
+    /// `tier`: seen from now on, and, the first time, her pity for its
+    /// tier starts again from her idle minutes now. Returns whether the
+    /// record changed (not for one she'd shown already, nor for an
+    /// ungated tier's, which has no pity).
+    pub(super) fn mark_seen(&mut self, key: &str, tier: super::rarity::Rarity) -> bool {
+        use super::rarity::Rarity;
+        if self.seen.iter().any(|k| k == key) {
+            return false;
+        }
+        match tier {
+            Rarity::Rare => self.rare_at = self.idle_min,
+            Rarity::Legendary => self.legend_at = self.idle_min,
+            Rarity::Common | Rarity::Uncommon => return false,
+        }
+        self.seen.push(key.to_owned());
+        true
     }
 
     /// The seed of visit number `visit` (the first is the master seed
@@ -178,6 +216,7 @@ impl Ledger {
             rare_at: minutes(raw.rare_at),
             legend_at: minutes(raw.legend_at),
             calendar_on: raw.calendar_on.as_ref().and_then(day),
+            seen: seen(raw.seen.as_ref()),
         })
     }
 
@@ -223,6 +262,7 @@ impl Ledger {
             rare_at: self.rare_at,
             legend_at: self.legend_at,
             calendar_on: self.calendar_on.map(|d| d.format(DATE).to_string()),
+            seen: self.seen.clone(),
         };
         serde_json::to_string(&raw).unwrap_or_default()
     }
@@ -284,6 +324,26 @@ const DATE: &str = "%Y-%m-%d";
 /// none (a value this build can't take).
 fn day(value: &serde_json::Value) -> Option<NaiveDate> {
     NaiveDate::parse_from_str(value.as_str()?, DATE).ok()
+}
+
+/// The rare things she has shown, as read: each entry a stable id this
+/// build knows, once (in the order first written); anything else
+/// (another build's id, a value that isn't an id, a list that isn't one)
+/// skipped.
+fn seen(value: Option<&serde_json::Value>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for key in value
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+        .filter(|key| super::rarity::by_key(key).is_some())
+    {
+        if !out.iter().any(|k| k == key) {
+            out.push(key.to_owned());
+        }
+    }
+    out
 }
 
 /// Whether a count is left out of the record (serde's
@@ -367,6 +427,9 @@ struct Saved {
     /// Left out until she has delivered a calendar entry.
     #[serde(skip_serializing_if = "Option::is_none")]
     calendar_on: Option<String>,
+    /// Left out until she has shown something rare.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    seen: Vec<String>,
 }
 
 /// Where a piece stands: its strip, and its anchor there once it has
@@ -409,12 +472,15 @@ struct Raw {
     legend_at: Option<serde_json::Value>,
     #[serde(default)]
     calendar_on: Option<serde_json::Value>,
+    #[serde(default)]
+    seen: Option<serde_json::Value>,
 }
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::super::room::Side;
+    use super::super::script::ScriptId;
     use super::*;
 
     fn furnished() -> Ledger {
@@ -809,6 +875,137 @@ mod tests {
                 &format!(r#""bought_on":6,"calendar_on":{garbage}}}"#),
             );
             assert_eq!(Ledger::from_json(&text), Ok(furnished()), "{garbage}");
+        }
+    }
+
+    /// The rare things she has shown come last, after her calendar's
+    /// date, by their stable ids in the order she showed them, and read
+    /// back as written; none is written until there's one; an older
+    /// build keeps every piece of it.
+    #[test]
+    fn what_shes_seen_round_trips() {
+        let seen = |keys: &[&str]| keys.iter().map(|k| (*k).to_owned()).collect::<Vec<_>>();
+        let ledger = Ledger {
+            calendar_on: NaiveDate::from_ymd_opt(2027, 2, 3),
+            seen: seen(&["escalator", "dream"]),
+            ..timed()
+        };
+        let text = ledger.to_json();
+        assert!(
+            text.ends_with(r#""calendar_on":"2027-02-03","seen":["escalator","dream"]}"#),
+            "{text}"
+        );
+        assert_eq!(Ledger::from_json(&text), Ok(ledger.clone()));
+        assert_eq!(
+            ledger.seen_scripts(),
+            [ScriptId::Escalator, ScriptId::Dream]
+        );
+        let alone = Ledger {
+            seen: seen(&["no-melon"]),
+            ..furnished()
+        };
+        let text = alone.to_json();
+        assert!(
+            text.ends_with(r#""bought_on":6,"seen":["no-melon"]}"#),
+            "{text}"
+        );
+        assert_eq!(Ledger::from_json(&text), Ok(alone));
+        assert!(!timed().to_json().contains("seen"));
+        assert!(!Ledger::new(3).to_json().contains("seen"));
+        assert_eq!(
+            as_an_older_build_reads(&ledger.to_json()),
+            as_an_older_build_reads(&furnished().to_json())
+        );
+    }
+
+    /// Marking something rare seen: the first time, it's in her record
+    /// and her pity for its tier starts again from her idle minutes then;
+    /// shown again later, nothing changes (her pity runs on from the
+    /// first). A Legendary's pity is its own; an ungated script has none
+    /// and isn't recorded.
+    #[test]
+    fn marking_seen_once_starts_her_pity_once() {
+        use super::super::rarity::Rarity;
+        let mut ledger = Ledger {
+            idle_min: 100,
+            rare_at: 7,
+            legend_at: 8,
+            ..timed()
+        };
+        assert!(ledger.mark_seen("no-melon", Rarity::Rare));
+        assert_eq!((ledger.rare_at, ledger.legend_at), (100, 8));
+        ledger.idle_min = 250;
+        assert!(!ledger.mark_seen("no-melon", Rarity::Rare));
+        assert_eq!(ledger.seen, ["no-melon"]);
+        assert_eq!(ledger.rare_at, 100, "the first showing's");
+        assert!(ledger.mark_seen("test-legend", Rarity::Legendary));
+        assert_eq!((ledger.rare_at, ledger.legend_at), (100, 250));
+        ledger.idle_min = 300;
+        assert!(!ledger.mark_seen("test-legend", Rarity::Legendary));
+        assert_eq!(ledger.legend_at, 250);
+        for tier in [Rarity::Common, Rarity::Uncommon] {
+            assert!(!ledger.mark_seen("snack", tier), "{tier:?}");
+        }
+        assert_eq!(ledger.seen, ["no-melon", "test-legend"]);
+        assert_eq!((ledger.rare_at, ledger.legend_at), (100, 250));
+    }
+
+    /// Pity counters read ahead of her idle minutes (a garbled record, or
+    /// a clock set back) round-trip as written and read as no pity yet.
+    #[test]
+    fn pity_ahead_of_her_idle_minutes_round_trips() {
+        let ledger = Ledger {
+            idle_min: 5,
+            rare_at: 10,
+            legend_at: 3000,
+            ..timed()
+        };
+        let read = Ledger::from_json(&ledger.to_json()).unwrap();
+        assert_eq!(read, ledger);
+        assert_eq!(
+            super::super::rarity::Pity::of(read.idle_min, read.rare_at, read.legend_at),
+            super::super::rarity::Pity::default()
+        );
+    }
+
+    /// What she's seen is read entry by entry: an id this build doesn't
+    /// know (a later build's), anything that isn't an id, and an id
+    /// twice are skipped, the rest kept in order; a value that isn't a
+    /// list at all reads as nothing seen. The rest of the record reads
+    /// either way.
+    #[test]
+    fn garbage_in_what_shes_seen_is_skipped() {
+        let with = |value: &str| {
+            furnished().to_json().replace(
+                r#""bought_on":6}"#,
+                &format!(r#""bought_on":6,"seen":{value}}}"#),
+            )
+        };
+        for (garbage, kept) in [
+            (r#"["dream","unicorn","scary"]"#, &["dream", "scary"][..]),
+            (
+                r#"[1, null, "dream", {"id": "scary"}, ["scary"]]"#,
+                &["dream"],
+            ),
+            (r#"["scary","scary","dream","scary"]"#, &["scary", "dream"]),
+            (r#"["Dream", "DREAM", " dream", ""]"#, &[]),
+            (r#""dream""#, &[]),
+            ("17", &[]),
+            ("null", &[]),
+            ("true", &[]),
+            (r#"{"dream": true}"#, &[]),
+            ("[]", &[]),
+        ] {
+            let ledger = Ledger::from_json(&with(garbage)).unwrap();
+            assert_eq!(ledger.seen, kept, "{garbage}");
+            assert_eq!(
+                Ledger {
+                    seen: Vec::new(),
+                    ..ledger
+                },
+                furnished(),
+                "{garbage}"
+            );
         }
     }
 
