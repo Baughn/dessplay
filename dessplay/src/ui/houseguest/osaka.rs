@@ -216,6 +216,19 @@ pub(super) fn night_seat(chances: &Chances, terrain: &Terrain) -> Option<Seat> {
     night_seats(chances, terrain).next()
 }
 
+/// Where she has a snack from `fridge` as it's shown now, if it is: what
+/// she got up or came home for (her midnight snack, the lunch she
+/// dashed home for) names its piece, and is found afresh here each time
+/// she sets off for it, so she never sets off for one gone into the
+/// closet, nor for where it stood before.
+fn fridge_seat(fridge: PieceRef, chances: &Chances) -> Option<Seat> {
+    chances
+        .seats
+        .iter()
+        .find(|s| s.piece == fridge && s.what == Use::Snack)
+        .copied()
+}
+
 /// Every real piece she could spend the night on, of what's shown, in
 /// the order she'd choose them (A4): her beds, then her sofas.
 fn night_seats<'a>(chances: &'a Chances, terrain: &'a Terrain) -> impl Iterator<Item = Seat> + 'a {
@@ -1517,14 +1530,17 @@ pub(super) struct Osaka {
     /// on if it's the same night, so what's once a night (the Dream, her
     /// midnight snack) stays once, and the Dream's count runs on.
     night_before: Option<Night>,
-    /// The fridge she's padding to for her midnight snack, from the
-    /// moment it gets her up until she's at it (see
-    /// [`Osaka::midnight_snack`]).
-    snacking: Option<Seat>,
+    /// The fridge she's up for her midnight snack from, from the moment
+    /// it gets her up until she has had it (see
+    /// [`Osaka::midnight_snack`], [`Osaka::got_what_she_came_for`]). The
+    /// piece, not where it stood: she finds it afresh each time she sets
+    /// off for it (see [`fridge_seat`]), and gives up on it once it's
+    /// gone.
+    snacking: Option<PieceRef>,
     /// She dashed home from school for something she forgot (phase 5b
     /// D3a): set as she comes in, kept until she has it (or has stood
-    /// wondering what it was); then her routine's away reflex sends her
-    /// out again. See [`Osaka::dash_in`].
+    /// wondering what it was, or its fridge has gone); then her routine's
+    /// away reflex sends her out again. See [`Osaka::dash_in`].
     dash: Option<Dash>,
     /// Her calendar (phase 5b D5): the real date whose owed entry she
     /// has delivered (it showed), as her ledger had it when her visit
@@ -1633,9 +1649,11 @@ enum Dash {
     /// lunch, from her fridge if she can get to it; else she can't
     /// remember).
     In,
-    /// On her way to her fridge, `Seat`, for her lunch: kept until she's
-    /// at it, so whatever stops her on the way, she sets off again.
-    Lunch(Seat),
+    /// For her lunch from her fridge (the piece, found afresh each time
+    /// she sets off for it: see [`fridge_seat`]): kept until she has had
+    /// it (see [`Osaka::got_what_she_came_for`]), so whatever stops her on
+    /// the way or at it, she sets off again; gone, she gives up on it.
+    Lunch(PieceRef),
 }
 
 /// Her lunch from her fridge, dashed home for: the door open a moment,
@@ -2728,6 +2746,10 @@ impl Osaka {
         if !pulling_on {
             self.credit_done(at);
         }
+        // However her act ends (her next decision, a look at the chat, a
+        // startle), what she got up or came home for counts as had if it
+        // ran its course.
+        self.got_what_she_came_for(at);
         self.act = act;
         self.act_since = at;
         self.act_since_game = self.game_at(at);
@@ -3369,23 +3391,17 @@ impl Osaka {
                 self.facing = seat.facing;
                 // At the fridge for her midnight snack: a snack as it
                 // plays, built here, nothing spliced round it, nothing
-                // felt, nothing recorded (see `night_snack_at`).
-                if self
-                    .snacking
-                    .is_some_and(|s| s.piece == seat.piece && s.what == seat.what)
-                {
-                    self.snacking = None;
+                // felt, nothing recorded (see `night_snack_at`). Still
+                // owed until she has had it (see `got_what_she_came_for`).
+                if self.snacking == Some(seat.piece) && seat.what == Use::Snack {
                     let act = self.night_snack_at(seat, at, rng);
                     return self.set(act, at);
                 }
                 // At the fridge for the lunch she dashed home for: built
                 // here too, nothing spliced, felt or recorded, nothing
-                // drawn (see `dash_lunch_at`).
-                if let Some(Dash::Lunch(s)) = self.dash
-                    && s.piece == seat.piece
-                    && s.what == seat.what
-                {
-                    self.dash = None;
+                // drawn (see `dash_lunch_at`). Still what she's home for
+                // until she has had it.
+                if self.dash == Some(Dash::Lunch(seat.piece)) && seat.what == Use::Snack {
                     let act = Self::dash_lunch_at(seat, at);
                     return self.set(act, at);
                 }
@@ -3838,17 +3854,10 @@ impl Osaka {
         }
         // Up for her midnight snack: the fridge first, hop by hop (each
         // landing decides again, and comes here), then back to bed.
-        if let Some(fridge) = self.snacking.take() {
-            let seat = ctx
-                .chances
-                .seats
-                .iter()
-                .find(|s| s.piece == fridge.piece && s.what == Use::Snack)
-                .copied();
+        if let Some(fridge) = self.snacking {
             let want = Want::Use(Use::Snack);
-            // Kept until she's at it (see `start_job`).
-            self.snacking = seat;
-            match seat {
+            // Kept until she has had it (see `got_what_she_came_for`).
+            match fridge_seat(fridge, ctx.chances) {
                 Some(seat) if self.go_to(want, Job::Use(seat), here, terrain, at) => {
                     self.credit = Some(want);
                     return Decision {
@@ -4274,7 +4283,7 @@ impl Osaka {
             return false;
         };
         tracing::info!("houseguest: up for a midnight snack");
-        self.snacking = Some(fridge);
+        self.snacking = Some(fridge.piece);
         self.decide(at, terrain, chances, rng);
         true
     }
@@ -4298,11 +4307,15 @@ impl Osaka {
 
     /// Dashed home from school (`dash`, D3a), deciding at `at` on floor
     /// `here`: to her fridge for her lunch, if one's shown where she can
-    /// get to it (the one she was on her way to, if she was); else she
-    /// stands a moment, unable to remember what it was. Neither eases a
-    /// need (no credit). What the stage cued for a dash is taken here (a
+    /// get to it (the one she was on her way to, or at, if she was); else
+    /// she stands a moment, unable to remember what it was. Neither eases
+    /// a need (no credit). What the stage cued for a dash is taken here (a
     /// cue for the forgetting forgets with a fridge to hand), so it never
-    /// waits on for a later snack.
+    /// waits on for a later snack. Already set on her lunch, its fridge
+    /// gone (into the closet) or out of her reach, she gives up on it:
+    /// `None`, her dash over, and her routine sends her out again (as her
+    /// midnight snack's sends her back to bed: see
+    /// [`Osaka::send_to_bed`]).
     fn dash_on(
         &mut self,
         dash: Dash,
@@ -4310,7 +4323,7 @@ impl Osaka {
         terrain: &Terrain,
         chances: &Chances,
         at: u64,
-    ) -> Decision {
+    ) -> Option<Decision> {
         let cued = self
             .cued
             .take_if(|cue| matches!(cue, Cue::Script(ScriptId::DashLunch | ScriptId::DashForgot)));
@@ -4319,23 +4332,29 @@ impl Osaka {
         // after, with no glance at the clock ("Time for school!" is for
         // her morning's leaving).
         self.pass_glance(at);
-        let fridge = match dash {
-            Dash::Lunch(seat) => Some(seat),
-            Dash::In => chances
-                .seats
-                .iter()
-                .find(|s| {
-                    s.what == Use::Snack
-                        && !s.makeshift()
-                        && terrain.platform_at(s.x, s.y).is_some()
-                })
-                .copied(),
+        let want = Want::Use(Use::Snack);
+        if let Dash::Lunch(fridge) = dash {
+            if let Some(seat) = fridge_seat(fridge, chances)
+                && self.go_to(want, Job::Use(seat), here, terrain, at)
+            {
+                return Some(Decision::reflex("dash/lunch"));
+            }
+            tracing::debug!("houseguest: no way to her fridge for her lunch; out again");
+            self.dash = None;
+            return None;
         }
-        .filter(|_| cued != Some(Cue::Script(ScriptId::DashForgot)));
+        let fridge = chances
+            .seats
+            .iter()
+            .find(|s| {
+                s.what == Use::Snack && !s.makeshift() && terrain.platform_at(s.x, s.y).is_some()
+            })
+            .copied()
+            .filter(|_| cued != Some(Cue::Script(ScriptId::DashForgot)));
         if let Some(seat) = fridge {
-            self.dash = Some(Dash::Lunch(seat));
-            if self.go_to(Want::Use(Use::Snack), Job::Use(seat), here, terrain, at) {
-                return Decision::reflex("dash/lunch");
+            self.dash = Some(Dash::Lunch(seat.piece));
+            if self.go_to(want, Job::Use(seat), here, terrain, at) {
+                return Some(Decision::reflex("dash/lunch"));
             }
             tracing::debug!("houseguest: no way to her fridge for her lunch");
         }
@@ -4349,7 +4368,7 @@ impl Osaka {
             },
             at,
         );
-        Decision::reflex("dash/forgot")
+        Some(Decision::reflex("dash/forgot"))
     }
 
     /// The seasons of the real date she was last given (none without a
@@ -4632,6 +4651,33 @@ impl Osaka {
     /// Her meal's line was said on an earlier visit, at `said`.
     pub fn carry_meal(&mut self, said: Option<(u64, routine::Slot)>) {
         self.meal_said = said;
+    }
+
+    /// What she got up or came home for, had to its end by `at` (her act
+    /// is its use, run its course), is done: the lunch she dashed home
+    /// for, her midnight snack. Called as her act ends, however it ends
+    /// (see [`Osaka::set`]), and as she decides (the act just finished
+    /// still hers), so a use that ran its course is had even when a look
+    /// replaces it before her tick for its end has come. Cut short (a
+    /// chat line she looks at, a startle), it isn't: deciding next, she
+    /// goes back to it, as she does when something stops her on her way
+    /// (a lunch cut just after its line has shown is had again, line and
+    /// all; never lost), unless its fridge has gone.
+    fn got_what_she_came_for(&mut self, at: u64) {
+        let Act::Use { seat, until, .. } = self.act else {
+            return;
+        };
+        let had = |fridge: PieceRef| at >= until && fridge == seat.piece && seat.what == Use::Snack;
+        if self.snacking.is_some_and(had) {
+            tracing::trace!("houseguest: her midnight snack had");
+            self.snacking = None;
+        }
+        if let Some(Dash::Lunch(fridge)) = self.dash
+            && had(fridge)
+        {
+            tracing::trace!("houseguest: the lunch she dashed home for had");
+            self.dash = None;
+        }
     }
 
     /// Her lunch at `seat`, her fridge, from `at`, dashed home for (D3a):
@@ -5347,6 +5393,7 @@ impl Osaka {
         self.whims = whims;
         // What she just finished counts before she chooses anew.
         self.credit_done(at);
+        self.got_what_she_came_for(at);
         self.catch_up_day(at);
         self.rest = None;
         if self.errand.is_some() {
@@ -5386,8 +5433,10 @@ impl Osaka {
         self.rest = terrain.restful(self.x, self.y).then_some((self.x, self.y));
         // Dashed home from school (D3a): for what she forgot, before her
         // routine sends her out again.
-        if let Some(dash) = self.dash {
-            return self.dash_on(dash, here, terrain, chances, at);
+        if let Some(dash) = self.dash
+            && let Some(decision) = self.dash_on(dash, here, terrain, chances, at)
+        {
+            return decision;
         }
         // Her routine (D4, A3): at night, to bed; at school time, out
         // through her door; before anything else she'd do (below, once
@@ -10582,6 +10631,189 @@ mod tests {
     /// Whether her act is a snack.
     fn snacking(osaka: &Osaka) -> bool {
         matches!(osaka.act, Act::Use { seat, .. } if seat.what == Use::Snack)
+    }
+
+    /// A chat line on a night with a midnight snack.
+    #[derive(Clone, Copy, Debug)]
+    enum NightLine {
+        /// `into` ms after her first snack began, her ticks `lag` ms
+        /// behind it (the shell reads its clock for her tick and for its
+        /// frame apart).
+        Into { into: u64, lag: u64 },
+        /// As her first snack ends: her ticks up to a moment before its
+        /// end, the line `late` ms after it, before her tick for it.
+        AsItEnds { late: u64 },
+    }
+
+    /// A midnight snack, as it went.
+    #[derive(Clone, Copy, Debug)]
+    struct SnackSeen {
+        since: u64,
+        until: u64,
+        /// When she left it, and whether a chat line cut it short.
+        ended: Option<(u64, bool)>,
+    }
+
+    impl SnackSeen {
+        /// It ran its course.
+        fn had(&self) -> bool {
+            self.ended.is_some_and(|(at, _)| at >= self.until)
+        }
+    }
+
+    /// Her night with a midnight snack (the first of [`snack_night`]'s
+    /// on Tuesday morning), her `rng` seeded `seed`, her fridge and her
+    /// bed on one floor: asleep, then up for her snack, with `lines` as
+    /// they come due, until her wake time. Each snack, and her at the
+    /// end.
+    fn snack_run(seed: u64, lines: &[NightLine]) -> (Vec<SnackSeen>, Osaka) {
+        let terrain = floor_at(15);
+        let chances = fridge_and_bed(4);
+        let clock = clock_at(1, 0, 0);
+        let wake = 7 * 60 * 10_000;
+        let (master, _) = snack_night(1);
+        let mut rng = Rng(seed);
+        let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+        osaka.key_days(master, Some(1));
+        osaka.read_clock(Some(clock));
+        let mut now = until_asleep_with(&mut osaka, 0, clock, &terrain, &chances, &mut rng);
+        let mut lines = lines.to_vec();
+        let mut snacks: Vec<SnackSeen> = Vec::new();
+        let observe = |osaka: &Osaka, snacks: &mut Vec<SnackSeen>, t: u64, chat: bool| {
+            let at = match osaka.act {
+                Act::Use {
+                    seat, since, until, ..
+                } if seat.what == Use::Snack => Some((since, until)),
+                _ => None,
+            };
+            if let Some(last) = snacks.last_mut()
+                && last.ended.is_none()
+                && at.map(|a| a.0) != Some(last.since)
+            {
+                last.ended = Some((t, chat && t < last.until));
+            }
+            if let Some((since, until)) = at
+                && snacks.last().map(|s| s.since) != Some(since)
+            {
+                snacks.push(SnackSeen {
+                    since,
+                    until,
+                    ended: None,
+                });
+            }
+        };
+        while now < wake - 1 {
+            let next = osaka.due().clamp(now + 1, now + 1_000).min(wake - 1);
+            let first = snacks.first().copied();
+            // The next line, if it comes by `next`: when her ticks reach,
+            // and when it's drawn.
+            let line = lines.iter().position(|line| match (*line, first) {
+                (NightLine::Into { into, .. }, Some(s)) => s.since + into <= next,
+                (NightLine::AsItEnds { .. }, Some(s)) => s.ended.is_none() && s.until <= next,
+                (_, None) => false,
+            });
+            let Some(line) = line.map(|i| lines.remove(i)) else {
+                osaka.tick(next, Some(clock), &terrain, &chances, &mut rng);
+                now = next;
+                observe(&osaka, &mut snacks, now, false);
+                continue;
+            };
+            let (ticks, drawn) = match (line, first) {
+                (NightLine::Into { into, lag }, Some(s)) => {
+                    let at = s.since + into;
+                    (at.saturating_sub(lag), at)
+                }
+                (NightLine::AsItEnds { late }, Some(s)) => (s.until - 1, s.until + late),
+                (_, None) => (now, now),
+            };
+            if ticks > now {
+                osaka.tick(ticks, Some(clock), &terrain, &chances, &mut rng);
+                now = ticks;
+                observe(&osaka, &mut snacks, now, false);
+            }
+            now = now.max(drawn);
+            osaka.look(now, 40, false, &terrain);
+            observe(&osaka, &mut snacks, now, true);
+        }
+        (snacks, osaka)
+    }
+
+    /// Up for her midnight snack, she has it once, to its end, whatever
+    /// chat lines come, and is back in bed by her wake time: each line
+    /// that cuts it short (she looks at the chat), she has it again
+    /// after; one that comes as it ends finds it had.
+    fn snack_had_once(seed: u64, lines: &[NightLine]) -> Result<(), String> {
+        let (snacks, osaka) = snack_run(seed, lines);
+        let had = snacks.iter().filter(|s| s.had()).count();
+        let cut = snacks
+            .iter()
+            .filter(|s| s.ended.is_some_and(|e| e.1))
+            .count();
+        if had != 1 {
+            return Err(format!("had {had} times: {snacks:?}"));
+        }
+        if had + cut != snacks.len() {
+            return Err(format!("left short, not by a line: {snacks:?}"));
+        }
+        if !osaka.sleeping() || osaka.snacking.is_some() {
+            return Err(format!("not back in bed, or owed it: {snacks:?}"));
+        }
+        Ok(())
+    }
+
+    /// A chat line as her midnight snack begins, or a moment into it,
+    /// doesn't cost her the snack: she looks at the chat (awake, at her
+    /// fridge), then has it after all, to its end, before she goes back
+    /// to bed; as one that stops her on her way to the fridge does.
+    #[test]
+    fn a_chat_line_at_her_midnight_snack_doesnt_cost_her_it() {
+        for into in [0u64, 1_000, 3_000] {
+            let lines = [NightLine::Into { into, lag: 0 }];
+            let (snacks, _) = snack_run(9, &lines);
+            assert!(
+                snacks.first().is_some_and(|s| s.ended.is_some_and(|e| e.1)),
+                "{into}: she looks at the chat: {snacks:?}"
+            );
+            if let Err(e) = snack_had_once(9, &lines) {
+                panic!("{into}: {e}");
+            }
+        }
+    }
+
+    /// A chat line drawn as her midnight snack ends (at its end, or a
+    /// moment after, before her tick for it) finds it had: no second
+    /// snack.
+    #[test]
+    fn a_chat_line_as_her_midnight_snack_ends_finds_it_had() {
+        for late in [0u64, 1, 300] {
+            if let Err(e) = snack_had_once(9, &[NightLine::AsItEnds { late }]) {
+                panic!("{late} ms late: {e}");
+            }
+        }
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(
+            dessplay_core::test_support::proptest_cases(64)
+        ))]
+
+        /// [`snack_had_once`], whatever chat lines come, wherever in her
+        /// snack or after, her ticks lagging each as the shell's may.
+        #[test]
+        fn her_midnight_snack_is_had_once_whatever_the_chat(
+            seed in proptest::prelude::any::<u64>(),
+            into in proptest::collection::vec((0u64..12_000, 0u64..400), 0..4),
+            ends in proptest::option::of(0u64..400),
+        ) {
+            let mut lines: Vec<NightLine> = into
+                .into_iter()
+                .map(|(into, lag)| NightLine::Into { into, lag })
+                .collect();
+            lines.extend(ends.map(|late| NightLine::AsItEnds { late }));
+            if let Err(e) = snack_had_once(seed, &lines) {
+                proptest::prop_assert!(false, "{lines:?}: {e}");
+            }
+        }
     }
 
     /// The midnight snack is never had late: tucked in after its moment

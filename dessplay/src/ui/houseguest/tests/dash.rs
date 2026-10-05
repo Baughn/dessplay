@@ -8,7 +8,7 @@
 use super::*;
 use crate::ui::houseguest::art::PieceState;
 use crate::ui::houseguest::osaka::Bubble;
-use crate::ui::houseguest::script::{FORGOT_LUNCH, FORGOT_SOMETHING, WHAT_WAS_IT};
+use crate::ui::houseguest::script::{FORGOT_LUNCH, FORGOT_SOMETHING, ScriptId, WHAT_WAS_IT};
 
 /// Her home on [`home_screen`] with a fridge: the sofa and TV in the
 /// Users pane, the bed and fridge in the Playlist pane.
@@ -206,6 +206,244 @@ fn a_dash_home_for_her_lunch_and_out_again() {
             assert!(empty_of(&guest).is_some(), "{at}: her home stands empty");
             assert!(guest.closed_door().is_some(), "{at}: her door stands");
             assert_eq!(guest.ledger.ordered, Some(Furniture::Desk), "{at}");
+        }
+    }
+}
+
+/// Something done to her screen on a dash home for her lunch.
+#[derive(Clone, Copy, Debug)]
+enum Poke {
+    /// A chat line, `into` ms after her first lunch at her fridge began,
+    /// drawn `lag` ms after the tick before it (the shell reads its clock
+    /// for each).
+    Chat { into: u64, lag: u64 },
+    /// A chat line as her first lunch ends: her ticks up to a moment
+    /// before its end, then the line drawn `late` ms after it, before her
+    /// tick for it.
+    ChatAsItEnds { late: u64 },
+    /// Text over her fridge (into the closet it goes), `into` ms after
+    /// she sets off for it (`walking`) or after her first lunch began.
+    Closet { walking: bool, into: u64 },
+}
+
+/// A dash home for her lunch, as poked (see [`lunch_run`]).
+#[derive(Debug, Default)]
+struct LunchRun {
+    /// Every line she said, each time it showed.
+    said: Vec<&'static str>,
+    /// Each lunch at her fridge: when it began, and when it would end.
+    lunches: Vec<(u64, u64)>,
+    /// Each chat line that landed on a lunch before its end: whether she
+    /// looked at it, and how many lines she had said by then.
+    cuts: Vec<(bool, usize)>,
+    /// Chat lines delivered.
+    chats: usize,
+    /// When she first set off for her fridge.
+    set_off: Option<u64>,
+    /// When her fridge went into the closet.
+    closeted: Option<u64>,
+    /// When she was out again, her home standing empty.
+    out: Option<u64>,
+}
+
+/// Her lunch at her fridge, if she's at it: when it began, and when it
+/// would end.
+fn at_lunch(guest: &Guest) -> Option<(u64, u64)> {
+    let State::Visiting(visit) = &guest.state else {
+        return None;
+    };
+    let osaka = &visit.osaka;
+    osaka
+        .plays()
+        .filter(|p| p.own == ScriptId::DashLunch)
+        .and(osaka.use_span())
+        .map(|(_, since, until)| (since, until))
+}
+
+/// Her dash home for her lunch on a Tuesday (`seed`'s, at `minute`), on
+/// `screen` (with her fridge among her things), stepped as the shell
+/// steps, with `pokes` done to it as they come due, until she's out
+/// again (at most `limit` ms).
+fn lunch_run(
+    (seed, minute): (u64, u16),
+    (real, view): &(Buffer, IdleView),
+    graphics: bool,
+    pokes: &[Poke],
+    limit: u64,
+) -> LunchRun {
+    let mut guest = home_at(seed, tue_at(minute - 3), &FRIDGE_HOME, graphics);
+    let (mut real, mut view) = (real.clone(), view.clone());
+    let mut pokes = pokes.to_vec();
+    let mut run = LunchRun::default();
+    let (mut came, mut bubble) = (false, None);
+    let mut now = 0;
+    paint(&mut guest, &real, &view, now);
+    while now < limit && run.out.is_none() {
+        let mut to = now
+            + guest
+                .next_tick(now)
+                .map_or(1000, |d| d.as_millis() as u64)
+                .clamp(1, 1000);
+        let lunch = at_lunch(&guest);
+        let first = run.lunches.first().map(|l| l.0);
+        let poke = pokes.iter().position(|poke| match *poke {
+            Poke::Chat { into, .. } => first.is_some_and(|b| b + into <= to),
+            Poke::ChatAsItEnds { .. } => {
+                lunch.is_some_and(|(since, until)| Some(since) == first && until <= to)
+            }
+            Poke::Closet { walking, into } => {
+                let from = if walking { run.set_off } else { first };
+                from.is_some_and(|b| b + into <= to)
+            }
+        });
+        let poke = poke.map(|i| pokes.remove(i));
+        let mut draw = to;
+        match poke {
+            Some(Poke::Chat { lag, .. }) => draw = to + lag,
+            Some(Poke::ChatAsItEnds { late }) => {
+                let until = lunch.map_or(to, |l| l.1);
+                to = (until - 1).max(now);
+                draw = until + late;
+            }
+            Some(Poke::Closet { .. }) => {
+                if let State::Visiting(visit) = &guest.state
+                    && let Some(fridge) = visit.shown.iter().find(|s| s.item == Furniture::Fridge)
+                {
+                    let cover = fridge.cover();
+                    for y in cover.y..cover.y + cover.height {
+                        let text = "x".repeat(usize::from(cover.width));
+                        real.set_string(cover.x, y, text, Style::new());
+                    }
+                    run.closeted = Some(to);
+                }
+            }
+            None => {}
+        }
+        let chat = matches!(poke, Some(Poke::Chat { .. } | Poke::ChatAsItEnds { .. }));
+        guest.advance(to);
+        let lunch = at_lunch(&guest);
+        now = draw;
+        if chat {
+            view.chat_mark.synced += 1;
+            run.chats += 1;
+        }
+        paint(&mut guest, &real, &view, now);
+        if let State::Visiting(visit) = &guest.state {
+            came = true;
+            let osaka = &visit.osaka;
+            if chat
+                && let Some((_, until)) = lunch
+                && now < until
+            {
+                run.cuts.push((osaka.act_name() == "Look", run.said.len()));
+            }
+            if let Some(lunch) = at_lunch(&guest)
+                && run.lunches.last() != Some(&lunch)
+            {
+                run.lunches.push(lunch);
+            }
+            if run.set_off.is_none()
+                && osaka.act_name() == "Walk"
+                && osaka.decisions.iter().any(|d| d.method == "dash/lunch")
+            {
+                run.set_off = Some(now);
+            }
+            let line = match osaka.appearance(now).2 {
+                Some(Bubble::Say(line)) => Some(line),
+                _ => None,
+            };
+            if let Some(line) = line
+                && bubble != Some(line)
+            {
+                run.said.push(line);
+            }
+            bubble = line;
+        } else if came && !dashing(&guest) {
+            run.out = Some(now);
+        }
+    }
+    run
+}
+
+/// A chat line as she gets to her fridge doesn't cost her the lunch she
+/// dashed home for: arriving as its look in the fridge begins, or a
+/// moment into it (before "Forgot my lunch!"), it has her look at the
+/// chat, and then she has her lunch after all, line and all, before
+/// she's out again by her door. As one that stops her on her way does.
+/// Quiet panes or text-dense, in both drawing modes.
+#[test]
+fn a_chat_line_at_her_fridge_doesnt_cost_her_her_lunch() {
+    let dash = dash_seed(0);
+    for (name, screen) in home_screens() {
+        for graphics in [false, true] {
+            for into in [0u64, 700, 1400] {
+                let at = format!("{name} graphics={graphics} {into} ms in");
+                let pokes = [Poke::Chat { into, lag: 0 }];
+                let run = lunch_run(dash, &screen, graphics, &pokes, 300_000);
+                assert!(run.out.is_some(), "{at}: never out again: {run:?}");
+                let [(looked, said)] = run.cuts[..] else {
+                    panic!("{at}: the line never landed on her lunch: {run:?}");
+                };
+                assert!(looked, "{at}: she didn't look at the chat: {run:?}");
+                assert!(
+                    run.said[said..].contains(&FORGOT_LUNCH),
+                    "{at}: out without her lunch: {run:?}"
+                );
+            }
+        }
+    }
+}
+
+/// A chat line drawn as her lunch ends (at its end, or a moment after,
+/// before her tick for it: the shell reads its clock for her tick and
+/// for its frame apart) finds her lunch had: she looks at the chat, and
+/// goes out again with no second lunch. Quiet panes or text-dense, in
+/// both drawing modes.
+#[test]
+fn a_chat_line_as_her_lunch_ends_doesnt_have_her_have_it_again() {
+    let dash = dash_seed(0);
+    for (name, screen) in home_screens() {
+        for graphics in [false, true] {
+            for late in [0u64, 1, 300] {
+                let at = format!("{name} graphics={graphics} {late} ms late");
+                let pokes = [Poke::ChatAsItEnds { late }];
+                let run = lunch_run(dash, &screen, graphics, &pokes, 300_000);
+                assert_eq!(run.chats, 1, "{at}: no line: {run:?}");
+                assert!(run.out.is_some(), "{at}: never out again: {run:?}");
+                assert_eq!(run.lunches.len(), 1, "{at}: had again: {run:?}");
+                let lines = run.said.iter().filter(|&&l| l == FORGOT_LUNCH).count();
+                assert_eq!(lines, 1, "{at}: {run:?}");
+            }
+        }
+    }
+}
+
+/// Her fridge going into the closet (text over it) as she has her
+/// lunch, or on her way to it, ends her dash: she gives up on her lunch
+/// and goes out again by her door, never back and forth to where it
+/// stood. Quiet panes or text-dense, in both drawing modes.
+#[test]
+fn a_fridge_gone_from_her_lunch_doesnt_keep_her_home() {
+    let dash = dash_seed(0);
+    for (name, screen) in home_screens() {
+        for graphics in [false, true] {
+            for (walking, into) in [(true, 0u64), (true, 300), (false, 0), (false, 700)] {
+                let at = format!("{name} graphics={graphics} walking={walking} {into} ms in");
+                let pokes = [Poke::Closet { walking, into }];
+                let run = lunch_run(dash, &screen, graphics, &pokes, 300_000);
+                let closeted = run
+                    .closeted
+                    .unwrap_or_else(|| panic!("{at}: never closeted: {run:?}"));
+                let out = run
+                    .out
+                    .unwrap_or_else(|| panic!("{at}: never out again: {run:?}"));
+                assert!(
+                    out < closeted + 30_000,
+                    "{at}: out at {out}, closeted at {closeted}: {run:?}"
+                );
+                let after = run.lunches.iter().filter(|l| l.0 > closeted).count();
+                assert!(after <= 1, "{at}: back to where it stood: {run:?}");
+            }
         }
     }
 }
@@ -969,6 +1207,56 @@ fn before_a_dash(seed: u64, from: u64) -> routine::GameTime {
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(dessplay_core::test_support::proptest_cases(16)))]
+
+    /// Dashed home for her lunch, she has it whatever chat lines come
+    /// (wherever in it or after, drawn a moment after her tick as the
+    /// shell's may be), and is out again by her door: a line before its
+    /// end cuts it short (she looks at the chat) and she has it again
+    /// after, line and all; one as it ends finds it had; no lunch is had
+    /// again without a line cutting the one before. Her fridge going
+    /// into the closet (as she sets off for it, or has it) ends her dash,
+    /// and she's out again all the same, never back to where it stood.
+    /// Quiet panes or text-dense, in both drawing modes.
+    #[test]
+    fn a_dash_home_has_her_lunch_whatever_the_chat(
+        from in 0u64..2000,
+        wordy in any::<bool>(),
+        graphics in any::<bool>(),
+        chats in proptest::collection::vec((0u64..6000, 0u64..400), 0..4),
+        ends in proptest::option::of(0u64..400),
+        closet in proptest::option::weighted(0.25, (any::<bool>(), 0u64..5000)),
+    ) {
+        let dash = dash_seed(from);
+        let screen = if wordy { wordy_home_screen() } else { home_screen() };
+        let mut pokes: Vec<Poke> = chats
+            .into_iter()
+            .map(|(into, lag)| Poke::Chat { into, lag })
+            .collect();
+        pokes.extend(ends.map(|late| Poke::ChatAsItEnds { late }));
+        pokes.extend(closet.map(|(walking, into)| Poke::Closet { walking, into }));
+        let run = lunch_run(dash, &screen, graphics, &pokes, 300_000);
+        let out = run.out;
+        prop_assert!(out.is_some(), "never out again: {run:?}");
+        prop_assert!(run.cuts.iter().all(|c| c.0), "a line she didn't look at: {run:?}");
+        match run.closeted {
+            None => {
+                // Each cut, she has it again after: its line too.
+                let since = run.cuts.last().map_or(0, |c| c.1);
+                prop_assert!(
+                    run.said[since..].contains(&FORGOT_LUNCH),
+                    "out without her lunch: {run:?}"
+                );
+                prop_assert!(
+                    run.lunches.len() <= 1 + run.cuts.len(),
+                    "had again, uncut: {run:?}"
+                );
+            }
+            Some(closeted) => {
+                let after = run.lunches.iter().filter(|l| l.0 > closeted).count();
+                prop_assert!(after <= 1, "back to where it stood: {run:?}");
+            }
+        }
+    }
 
     /// [`her_days_never_touch_what_is_protected`] across a dash home:
     /// from a game minute before one, a fridge among her things, she

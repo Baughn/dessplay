@@ -92,6 +92,10 @@ Add new days at the top. Add new entries at the bottom of existing days.
   can see it, she glances up at it at bedtime ("Oh! It's late!") and as
   she leaves for school ("Time for school!"), and now and then of an
   afternoon tells you the hour, roughly ("Three-ish.").
+- Fixed: A chat message arriving just as Osaka gets to her fridge no
+  longer sends her back out to school without the lunch she dashed home
+  for, or back to bed without her midnight snack. She looks at the
+  chat, then has it anyway.
 
 ## 2026-10-03
 
