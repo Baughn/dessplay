@@ -2105,7 +2105,7 @@ welcome; the only goal is "watching her is kind of fun".
 
 ## Phase 38: Houseguest mind and home
 
-**Status: phases 0–4 done (2026-10-02 and 2026-10-03); phase 5 split into 5a (vignettes, done 2026-10-03) and 5b (the clock, done 2026-10-05; record below). master was pushed by the user at 5b step 5c (2026-10-04) to test it; the rest of 5b is unpushed. Next: the user's restlessness discussion, then phase 6.** Design: [the mind
+**Status: phases 0–4 done (2026-10-02 and 2026-10-03); phase 5 split into 5a (vignettes, done 2026-10-03) and 5b (the clock, done 2026-10-05; record below). master was pushed by the user at 5b step 5c (2026-10-04) to test it; the rest of 5b is unpushed. Next: phase 5c, stillness (brief below), then phase 6.** Design: [the mind
 and home proposal](proposals/2026-10-02-houseguest-mind.md) (direction
 agreed with the user; their answers are its *Decisions*). Its migration
 plan numbers its own phases 0–8; this section records them.
@@ -3000,3 +3000,65 @@ midnight snack) cost her what she came for; fixed with a property each.
   included, so it waits for a decision. Away's arm has the fix.
 - **Her pane-corner column** belongs to no strip, so from there she sees no
   clock (as `beauty_at` already sees no decor).
+
+### Phase 5c — stillness (brief, 2026-10-05)
+
+Between 5b and phase 6, at the user's request. **The problem:** she spends
+35–45% of her awake time moving (5b's week census, every slot, room and
+mood), and movement catches the eye far more than her sitting still, so it
+feels like more than it is. This is about **attention control**: walking
+to a job counts as movement just as wandering does.
+
+**The user's decisions (2026-10-05):**
+- **A target band per mood** for moving, as a share of awake time, in the
+  15–30% range: about 15 lazy, 20–25 ordinary and dreamy, up to 30
+  industrious. It becomes a census band test per room and mood.
+- **Walking to a job counts** as movement.
+- **New art is fine this phase** (model sheets first, as always).
+- **The window is a daydreaming place**, not a quick glance: look-outs
+  become rarer and much longer (5b's census had about 19 short ones a game
+  day in a furnished home, which also crowded out the afternoon clock
+  glance).
+- **A dash keeps looking at chat lines** (as built).
+- **The rain-out's lingering last frame:** apply the fix (5b's record,
+  "Open": Visiting's `fading` computed after `retain`), re-recording the 24
+  traces it moves with the reason.
+
+**Why she moves so much** (2026-10-05, brain.rs): movement wins the rolls
+(Walk base 14, Travel 10, Pull 16; Stand, Sit and LieBack 4; SpaceOut and
+Gaze 6); its needs refill fastest (Restless fills in 90 s, Tidy in 60 s;
+Daydreams 10 min, Comfort 8 min); and stillness is brief (spacing out
+6–14 s) while a walk lasts its whole path.
+
+**Plan, in order:**
+1. **Measure first:** split the census's "moving" by purpose (wandering:
+   Walk and Travel; walking to a job: to text, to a seat; climbs, falls
+   and doors), per room and mood, unfed (5a-comparable) and in the day
+   census.
+2. **The band test** per room and mood, failing at today's numbers.
+3. **Cheap levers, then re-measure:**
+   - slower movement needs (Restless toward about 5 min, Tidy toward
+     about 4) and a lower Walk base;
+   - longer still acts (spacing out 20–60 s, sitting or lying 30–90 s,
+     longer lounging and watching) and **settling in**: when a still act
+     ends she often settles further (sit, lie back, doze) instead of
+     getting up;
+   - prefer the nearest spot that answers a want;
+   - daydream sessions: a long space-out with musings in a row, or lying
+     back cloud-watching;
+   - TV from the floor, cross-legged before it (check whether Watch binds
+     without a sofa today; the cheapest win for a TV-only home).
+4. **Bare-room stillness with new art:**
+   - homework on the floor, lying on her front with a paper;
+   - its discomfort drives a **makeshift desk**: she tears and crumples
+     text into a cube and does homework at it, like the made sofa;
+   - reading a pulled line like a book (HG #72), sitting on the floor;
+   - **more makeshift furniture while she owns no real piece** for that
+     use (for example, three times the weight on "make one"), dropping
+     away as real furniture arrives.
+5. **The window as a daydream:** rarer, much longer look-outs; then check
+   the afternoon clock glance has room again.
+
+Steps 1–3 should be re-measured before step 4. Step 4 may be smaller if
+the band is met, but floor homework and the desk are wanted for their
+own charm.
