@@ -143,6 +143,23 @@ fn advert(ledger: &Ledger, shop_now: bool, needs: &brain::Needs) -> Option<Furni
     (due && idle && ledger.home.owns(Furniture::Tv)).then_some(item)
 }
 
+/// Her wall clock as `shown` on the strips of `nooks`, if it's out of
+/// its box on one (see [`osaka::Chances::clock`]).
+fn clock_on(shown: &[Shown], nooks: &[(Nook, Rect)]) -> Option<osaka::ClockOn> {
+    let clock = shown
+        .iter()
+        .find(|s| s.item == Furniture::Clock && !s.boxed && s.scrap.is_none())?;
+    let strip = clock.strip?;
+    let (_, extent) = room::strips(nooks).into_iter().find(|&(s, _)| s == strip)?;
+    let (cols, _) = clock.size();
+    Some(osaka::ClockOn {
+        x: clock.left + i32::from(cols) / 2,
+        floor: extent.floor,
+        from: extent.from,
+        to: extent.to,
+    })
+}
+
 /// How pretty the room she stands in at `(x, y)` is: the beauty of what
 /// shows on the strip whose floor that is (0 off any strip).
 fn beauty_at(shown: &[Shown], nooks: &[(Nook, Rect)], (x, y): (i32, i32)) -> f64 {
@@ -2099,6 +2116,7 @@ impl Guest {
                 let (lift_at, judged) = arranging(visit);
                 let beauty_here =
                     beauty_at(&visit.shown, &view.nooks, (visit.osaka.x, visit.osaka.y));
+                let clock = clock_on(&visit.shown, &view.nooks);
                 if let Some(scene) = self.cue.take() {
                     // A scene cued for this visit's start is played, not
                     // slept through (an arrival is tucked in, as any).
@@ -2124,6 +2142,7 @@ impl Guest {
                         lift_at: lift_at.clone(),
                         judged,
                         beauty_here,
+                        clock,
                     };
                     let note =
                         stage::direct(scene, buf, &protected, visit, &offered, now, &mut self.rng);
@@ -2159,6 +2178,7 @@ impl Guest {
                     lift_at,
                     judged,
                     beauty_here,
+                    clock,
                 };
                 // A visit beginning at night: in her bed (else on her
                 // sofa) from the first frame, if either is shown; else she
@@ -3400,6 +3420,20 @@ fn seat_spot(terrain: &Terrain, x: i32, y: i32) -> bool {
     terrain.restful(x, y) && terrain.platform_at(x, y).is_some()
 }
 
+/// Whether her box standing at `(x, y)` is clear of every shown piece
+/// (and the floor beneath one): where she stands to look out of the
+/// window, not in front of the sofa beneath it.
+fn clear_of(shown: &[Shown], x: i32, y: i32) -> bool {
+    let half = sprite::WIDTH / 2;
+    let (Ok(left), Ok(top)) = (u16::try_from(x - half), u16::try_from(y - sprite::HEIGHT)) else {
+        return false;
+    };
+    let width = u16::try_from(sprite::WIDTH).unwrap_or(u16::MAX);
+    let height = u16::try_from(sprite::HEIGHT + 1).unwrap_or(u16::MAX);
+    let her = Rect::new(left, top, width, height);
+    shown.iter().all(|s| !s.cover().intersects(her))
+}
+
 fn spots_for(piece: &Shown, shown: &[Shown], terrain: &Terrain, cat: bool) -> Vec<room::Seat> {
     let mut out = Vec::new();
     for &what in piece.uses() {
@@ -3408,11 +3442,20 @@ fn spots_for(piece: &Shown, shown: &[Shown], terrain: &Terrain, cat: bool) -> Ve
         if what == room::Use::Pet && !cat {
             continue;
         }
-        let spots: &[i32] = if what.inside() { &[0] } else { &piece.beside() };
+        // Looking out of the window: under it if she can stand there,
+        // else beside it.
+        let spots: &[i32] = match what {
+            room::Use::LookOut => &piece.look_out_spots(),
+            _ if what.inside() => &[0],
+            _ => &piece.beside(),
+        };
         let seat = spots
             .iter()
             .map(|&beside| piece.seat(what, beside))
-            .find(|seat| seat_spot(terrain, seat.x, seat.y));
+            .find(|seat| {
+                seat_spot(terrain, seat.x, seat.y)
+                    && (what != room::Use::LookOut || clear_of(shown, seat.x, seat.y))
+            });
         out.extend(seat);
     }
     // A sofa that faces the TV (see [`room::faces`]) is where to watch

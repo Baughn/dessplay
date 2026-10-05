@@ -86,6 +86,12 @@ Add new days at the top. Add new entries at the bottom of existing days.
 - Fixed: Osaka unpacks a cat bed that arrives in its box (it used to sit
   boxed for good, and she stopped shopping), and parcels arrive only
   where she can get to them to unpack them.
+- Added: Osaka looks out of her window and says what she sees: the stars
+  at night, "Pretty..." at sunset, the lights coming on of an evening.
+  She does it most at dusk and after dark. With her wall clock where she
+  can see it, she glances up at it at bedtime ("Oh! It's late!") and as
+  she leaves for school ("Time for school!"), and now and then of an
+  afternoon tells you the hour, roughly ("Three-ish.").
 
 ## 2026-10-03
 

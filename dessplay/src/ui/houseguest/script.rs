@@ -6,7 +6,7 @@
 //! that was chosen for it when it began, so how she looks at any instant
 //! is a pure function of the act.
 
-use super::art::Channel;
+use super::art::{Channel, Sky};
 use super::calendar::Tints;
 use super::mind::{Lines, RIDDLES, Whims};
 use super::osaka::{Bubble, SCRUNCH, THERE, USE_FRAME_MS};
@@ -261,11 +261,19 @@ pub(super) enum ScriptId {
     /// After lounging or reading, from 22:00 to bedtime (rare): hugging
     /// her knees, "Scary story time...", then "A fart. Not mine.".
     Scary,
+    /// Looking out of the window (phase 5b D7), gazing up: a line from
+    /// the sky as it is (see [`LOOK_OUT_LINES`]), each its branch.
+    LookOut,
+    /// A glance up at her wall clock (phase 5b D7), spacing out a moment:
+    /// "Oh! It's late!" at bedtime, "Time for school!" as she leaves,
+    /// or the hour, roughly, of an afternoon ("Three-ish."), each its
+    /// branch (see [`ClockGlance`]).
+    ClockGlance,
 }
 
 impl ScriptId {
     #[cfg(test)]
-    pub const ALL: [ScriptId; 24] = [
+    pub const ALL: [ScriptId; 26] = [
         Self::Lounge,
         Self::Nap,
         Self::Sleep,
@@ -290,6 +298,8 @@ impl ScriptId {
         Self::NoMelon,
         Self::Escalator,
         Self::Scary,
+        Self::LookOut,
+        Self::ClockGlance,
     ];
 
     /// How rare it is (phase 5b D6): only a Rare or Legendary script
@@ -317,7 +327,9 @@ impl ScriptId {
             | Self::Unpack
             | Self::Night
             | Self::DashLunch
-            | Self::DashForgot => Rarity::Common,
+            | Self::DashForgot
+            | Self::LookOut
+            | Self::ClockGlance => Rarity::Common,
         }
     }
 
@@ -354,6 +366,8 @@ impl ScriptId {
             Self::NoMelon => NO_MELON,
             Self::Escalator => ESCALATOR,
             Self::Scary => SCARY,
+            Self::LookOut => LOOK_OUT,
+            Self::ClockGlance => CLOCK_GLANCE,
         }
     }
 
@@ -388,7 +402,9 @@ impl ScriptId {
             | Self::FirstSunrise
             | Self::NoMelon
             | Self::Escalator
-            | Self::Scary => Chat::Look,
+            | Self::Scary
+            | Self::LookOut
+            | Self::ClockGlance => Chat::Look,
         }
     }
 
@@ -420,7 +436,9 @@ impl ScriptId {
             | Self::Dream
             | Self::NoMelon
             | Self::Escalator
-            | Self::Scary => 0,
+            | Self::Scary
+            | Self::LookOut
+            | Self::ClockGlance => 0,
         }
     }
 
@@ -441,6 +459,7 @@ impl ScriptId {
             Self::Pet => Use::Pet,
             Self::Crumple => Use::Crumple,
             Self::Unpack => Use::Unpack,
+            Self::LookOut => Use::LookOut,
             Self::Riddle
             | Self::Chopsticks
             | Self::Andagi
@@ -448,7 +467,8 @@ impl ScriptId {
             | Self::Setsubun
             | Self::NoMelon
             | Self::Escalator
-            | Self::Scary => {
+            | Self::Scary
+            | Self::ClockGlance => {
                 return None;
             }
         })
@@ -458,7 +478,11 @@ impl ScriptId {
     #[cfg(test)]
     pub fn host(self) -> Host {
         match self {
-            Self::Riddle | Self::DashForgot | Self::Setsubun | Self::Escalator => Host::SpaceOut,
+            Self::Riddle
+            | Self::DashForgot
+            | Self::Setsubun
+            | Self::Escalator
+            | Self::ClockGlance => Host::SpaceOut,
             Self::Night | Self::Dream => Host::Night,
             Self::Chopsticks | Self::Andagi | Self::NoMelon | Self::Scary => Host::Splice,
             Self::Lounge
@@ -474,7 +498,8 @@ impl ScriptId {
             | Self::Unpack
             | Self::Surf
             | Self::DashLunch
-            | Self::FirstSunrise => Host::Use,
+            | Self::FirstSunrise
+            | Self::LookOut => Host::Use,
         }
     }
 
@@ -487,7 +512,8 @@ impl ScriptId {
     #[cfg(test)]
     pub fn shortest_body(self) -> Option<u64> {
         use super::osaka::{
-            DASH_FORGOT_MS, DASH_LUNCH_MS, SETSUBUN_MS, SPACE_OUT_MS, shortest_use_ms, use_range,
+            CLOCK_GLANCE_MS, DASH_FORGOT_MS, DASH_LUNCH_MS, SETSUBUN_MS, SPACE_OUT_MS,
+            shortest_use_ms, use_range,
         };
         Some(match self {
             Self::Chopsticks | Self::Andagi | Self::NoMelon | Self::Scary => return None,
@@ -498,6 +524,7 @@ impl ScriptId {
             Self::DashLunch => DASH_LUNCH_MS,
             Self::DashForgot => DASH_FORGOT_MS,
             Self::Setsubun => SETSUBUN_MS,
+            Self::ClockGlance => CLOCK_GLANCE_MS,
             Self::Shopping | Self::Surf | Self::FirstSunrise => use_range(Use::Watch).0,
             Self::Lounge
             | Self::Nap
@@ -509,7 +536,8 @@ impl ScriptId {
             | Self::Pet
             | Self::Crumple
             | Self::Unpack
-            | Self::Night => shortest_use_ms(),
+            | Self::Night
+            | Self::LookOut => shortest_use_ms(),
         })
     }
 
@@ -543,6 +571,8 @@ impl ScriptId {
             Self::NoMelon => Scene::NoMelon,
             Self::Escalator => Scene::Escalator,
             Self::Scary => Scene::Scary,
+            Self::LookOut => Scene::LookOut,
+            Self::ClockGlance => Scene::ClockGlance,
         }
     }
 
@@ -618,7 +648,8 @@ impl Surface {
             | Use::Read
             | Use::Snack
             | Use::Pet
-            | Use::Crumple => None,
+            | Use::Crumple
+            | Use::LookOut => None,
         }
     }
 
@@ -1180,6 +1211,7 @@ impl Use {
             Use::Snack => ScriptId::Snack,
             Use::Pet => ScriptId::Pet,
             Use::Crumple => ScriptId::Crumple,
+            Use::LookOut => ScriptId::LookOut,
         }
     }
 }
@@ -1665,6 +1697,154 @@ pub(super) const FORGOT_SOMETHING: &str = line!("Forgot somethin'...");
 /// ...then.
 pub(super) const WHAT_WAS_IT: &str = line!("...what was it?");
 
+/// What she says looking out of the window, by the sky outside (two or
+/// three a phase, so it doesn't repeat): each a branch of
+/// [`ScriptId::LookOut`], in this order (see [`look_out_branch`]).
+pub(super) const LOOK_OUT_LINES: [(Sky, &str); 11] = [
+    (Sky::Day, line!("Sunny!")),
+    (Sky::Day, line!("A bird!")),
+    (Sky::Day, line!("That cloud's a bun.")),
+    (Sky::Dawn, line!("Mornin', sky.")),
+    (Sky::Dawn, line!("The sun's up!")),
+    (Sky::Dusk, line!("Pretty...")),
+    (Sky::Dusk, line!("The sky's on fire.")),
+    (Sky::Evening, line!("Lights are on...")),
+    (Sky::Evening, line!("First star!")),
+    (Sky::Night, line!("Stars!")),
+    (Sky::Night, line!("So many stars...")),
+];
+
+/// Looking out of the window, her line shows this long (inside the
+/// shortest use there is).
+pub(super) const LOOK_OUT_LINE_MS: u64 = 3000;
+
+/// Gazing up out of the window, curious: `line` first, then quietly.
+const fn looking(line: &'static str) -> [Key; 2] {
+    [
+        key(
+            Span::Ms(LOOK_OUT_LINE_MS),
+            Posed::Still(Pose::Gaze),
+            Face::Curious,
+            bubble(Bubble::Say(line)),
+        ),
+        key(Span::Rest, Posed::Still(Pose::Gaze), Face::Curious, None),
+    ]
+}
+
+/// Looking out of the window, each of [`LOOK_OUT_LINES`] its branch.
+const LOOK_OUT: &[&[Key]] = &[
+    &looking(LOOK_OUT_LINES[0].1),
+    &looking(LOOK_OUT_LINES[1].1),
+    &looking(LOOK_OUT_LINES[2].1),
+    &looking(LOOK_OUT_LINES[3].1),
+    &looking(LOOK_OUT_LINES[4].1),
+    &looking(LOOK_OUT_LINES[5].1),
+    &looking(LOOK_OUT_LINES[6].1),
+    &looking(LOOK_OUT_LINES[7].1),
+    &looking(LOOK_OUT_LINES[8].1),
+    &looking(LOOK_OUT_LINES[9].1),
+    &looking(LOOK_OUT_LINES[10].1),
+];
+
+/// The branch of [`ScriptId::LookOut`] she plays looking out at `sky`:
+/// the `pick`th (wrapping) of that sky's lines.
+pub(super) fn look_out_branch(sky: Sky, pick: u64) -> u8 {
+    let mine: Vec<usize> = LOOK_OUT_LINES
+        .iter()
+        .enumerate()
+        .filter(|(_, (s, _))| *s == sky)
+        .map(|(i, _)| i)
+        .collect();
+    let i = usize::try_from(pick % mine.len().max(1) as u64).unwrap_or(0);
+    mine.get(i)
+        .and_then(|&branch| u8::try_from(branch).ok())
+        .unwrap_or(0)
+}
+
+/// Her glance up at the clock at bedtime...
+pub(super) const ITS_LATE: &str = line!("Oh! It's late!");
+/// ...and as she leaves for school.
+pub(super) const SCHOOL_TIME: &str = line!("Time for school!");
+/// The hour, roughly: noon, one to eleven (morning or evening), and
+/// midnight (see [`hour_line`]). Of an afternoon, noon to five.
+pub(super) const HOURS: [&str; 13] = [
+    line!("Noon-ish."),
+    line!("One-ish."),
+    line!("Two-ish."),
+    line!("Three-ish."),
+    line!("Four-ish."),
+    line!("Five-ish."),
+    line!("Six-ish."),
+    line!("Seven-ish."),
+    line!("Eight-ish."),
+    line!("Nine-ish."),
+    line!("Ten-ish."),
+    line!("Eleven-ish."),
+    line!("Midnight-ish."),
+];
+
+/// Which of [`HOURS`] says `hour` (0 to 23), roughly.
+pub(super) fn hour_line(hour: u16) -> usize {
+    match hour % 24 {
+        0 => 12,
+        h => usize::from(h % 12),
+    }
+}
+
+/// Which glance up at the clock: a branch of [`ScriptId::ClockGlance`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ClockGlance {
+    /// Bedtime: "Oh! It's late!".
+    Bed,
+    /// Off to school: "Time for school!".
+    School,
+    /// The game `hour` (0 to 23): it, roughly (of an afternoon, the
+    /// hours 12 to 17; cued by the stage, any).
+    Hour(u16),
+}
+
+impl ClockGlance {
+    /// Its branch.
+    pub fn branch(self) -> u8 {
+        match self {
+            Self::Bed => 0,
+            Self::School => 1,
+            // From noon (the first of the afternoon's, 12:45) on, as
+            // [`HOURS`] has them.
+            Self::Hour(hour) => 2 + u8::try_from(hour_line(hour)).unwrap_or(0),
+        }
+    }
+}
+
+/// A glance up at the clock, saying `line` with `face`.
+const fn glancing(face: Face, line: &'static str) -> [Key; 1] {
+    [key(
+        Span::Rest,
+        Posed::Still(Pose::Gaze),
+        face,
+        bubble(Bubble::Say(line)),
+    )]
+}
+
+/// Her glances up at the clock, each its branch ([`ClockGlance::branch`]).
+const CLOCK_GLANCE: &[&[Key]] = &[
+    &glancing(Face::Surprised, ITS_LATE),
+    &glancing(Face::Happy, SCHOOL_TIME),
+    &glancing(Face::Curious, HOURS[0]),
+    &glancing(Face::Curious, HOURS[1]),
+    &glancing(Face::Curious, HOURS[2]),
+    &glancing(Face::Curious, HOURS[3]),
+    &glancing(Face::Curious, HOURS[4]),
+    &glancing(Face::Curious, HOURS[5]),
+    &glancing(Face::Curious, HOURS[6]),
+    &glancing(Face::Curious, HOURS[7]),
+    &glancing(Face::Curious, HOURS[8]),
+    &glancing(Face::Curious, HOURS[9]),
+    &glancing(Face::Curious, HOURS[10]),
+    &glancing(Face::Curious, HOURS[11]),
+    &glancing(Face::Curious, HOURS[12]),
+];
+
 /// Petting the cat, until he bites.
 const PET: &[&[Key]] = &[&[
     key(
@@ -1948,6 +2128,8 @@ mod tests {
             ScriptId::NoMelon => 21,
             ScriptId::Escalator => 22,
             ScriptId::Scary => 23,
+            ScriptId::LookOut => 24,
+            ScriptId::ClockGlance => 25,
         }
     }
 
@@ -1983,6 +2165,7 @@ mod tests {
             Use::Snack => 7,
             Use::Pet => 8,
             Use::Crumple => 9,
+            Use::LookOut => 10,
         };
         for (i, u) in Use::ALL.into_iter().enumerate() {
             assert_eq!(use_at(u), i, "{u:?}");
@@ -2023,6 +2206,8 @@ mod tests {
             ScriptId::NoMelon => spliced(SpliceId::NoMelon),
             ScriptId::Escalator => Play::plain(ScriptId::Escalator),
             ScriptId::Scary => spliced(SpliceId::Scary),
+            ScriptId::LookOut => Play::of(Use::LookOut, None),
+            ScriptId::ClockGlance => Play::plain(ScriptId::ClockGlance),
         };
         for id in ScriptId::ALL {
             let play = player(id);
@@ -3135,6 +3320,41 @@ mod tests {
                 );
                 assert_eq!(after.map(|s| s.splice), Some(id), "{id:?} cued");
             }
+        }
+    }
+
+    /// A glance up at the clock says the hour, roughly, whatever the
+    /// hour: its branch is its line's, "Noon-ish." at 12, "Five-ish."
+    /// at 17, "Midnight-ish." at 0, "Eight-ish." at 8 and at 20; the
+    /// afternoon's (12 to 17) on the branches they always were (2 to 7).
+    #[test]
+    fn a_glance_says_the_hour_roughly() {
+        let said = |hour: u16| {
+            let branch = usize::from(ClockGlance::Hour(hour).branch());
+            let keys = CLOCK_GLANCE.get(branch).expect("a branch");
+            keys.iter().find_map(|k| match k.say {
+                Some(Say::Bubble(Bubble::Say(line))) => Some(line),
+                _ => None,
+            })
+        };
+        for (hour, line) in [
+            (0, "Midnight-ish."),
+            (1, "One-ish."),
+            (8, "Eight-ish."),
+            (11, "Eleven-ish."),
+            (12, "Noon-ish."),
+            (15, "Three-ish."),
+            (17, "Five-ish."),
+            (20, "Eight-ish."),
+            (23, "Eleven-ish."),
+        ] {
+            assert_eq!(said(hour), Some(line), "{hour}");
+        }
+        for hour in 12..18 {
+            assert_eq!(ClockGlance::Hour(hour).branch(), 2 + (hour - 12) as u8);
+        }
+        for hour in 0..24 {
+            assert!(said(hour).is_some(), "{hour}");
         }
     }
 }

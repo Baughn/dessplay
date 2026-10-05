@@ -596,7 +596,7 @@ fn golden_furnished_home() {
             (0, 0xa914c6afdbb112e6, 0x9d9c6a3f468e6df6),
             (1, 0x92743870beecf5ea, 0x599a6aa229d9a231),
             (2, 0xa9825c121f768f21, 0x1c31746177b45c83),
-            (3, 0x720179d9687dfa7a, 0xae5b5d2dbe8cc351),
+            (3, 0xbc889838735e0a39, 0x359fd5a3dfc4dadf),
         ],
     );
 }

@@ -347,13 +347,15 @@ pub(super) fn quality(need: Need, spot: Spot) -> f64 {
 
 /// Where her fun comes from: each wears thin with use (its tolerance
 /// rises) and fresh again with time, so she varies what she enjoys.
-const FUN_SOURCES: [Want; 6] = [
+/// Every want that serves [`Need::Fun`] is one (a lint holds it).
+const FUN_SOURCES: [Want; 7] = [
     Want::Use(Use::Watch),
     Want::Use(Use::Read),
     Want::Use(Use::Pet),
     Want::Use(Use::Unpack),
     Want::Use(Use::Snack),
     Want::Swap,
+    Want::Use(Use::LookOut),
 ];
 /// A whole use of a fun source raises its tolerance by this.
 const TOLERANCE_PER_USE: f64 = 0.6;
@@ -601,6 +603,9 @@ const STRETCH_FACTORS: &[Factor] = &[Factor::Clock(
 )];
 /// Gazing at dusk and through the night.
 const GAZE_FACTORS: &[Factor] = &[Factor::Clock(routine::DUSK_TO_DAWN, BOOST)];
+/// Looking out of the window at dusk and through the night (the sunset,
+/// the stars).
+const LOOK_OUT_FACTORS: &[Factor] = &[CHAT, Factor::Clock(routine::DUSK_TO_DAWN, BOOST)];
 /// Hay fever.
 const SNEEZE_FACTORS: &[Factor] = &[Factor::Season(routine::HAY_FEVER, BOOST_STRONG)];
 
@@ -628,7 +633,7 @@ const fn in_chat(def: DesireDef) -> DesireDef {
 
 impl Want {
     /// Every want there is (the order she considers them in).
-    pub const ALL: [Want; 26] = [
+    pub const ALL: [Want; 27] = [
         Self::Stand,
         Self::SpaceOut,
         Self::Sneeze,
@@ -654,6 +659,7 @@ impl Want {
         Self::Use(Use::Snack),
         Self::Use(Use::Pet),
         Self::Use(Use::Crumple),
+        Self::Use(Use::LookOut),
         Self::Arrange,
     ];
 
@@ -726,6 +732,12 @@ impl Want {
                 AFTERNOON_FACTORS,
             ),
             Self::Use(Use::Pet) => in_chat(row(8.0, &[(Need::Fun, 0.6)])),
+            // Gazing out of the window: a daydream, as gazing up is, and
+            // a little fun (what's out there?).
+            Self::Use(Use::LookOut) => with(
+                row(8.0, &[(Need::Daydreams, 0.5), (Need::Fun, 0.3)]),
+                LOOK_OUT_FACTORS,
+            ),
             // Only on offer while a rule she has felt is broken and her
             // mood leaves her something to do about it: nesting is all
             // it answers.
@@ -1160,6 +1172,36 @@ mod tests {
         assert_eq!(needs.fresh(tv), 1.0);
     }
 
+    /// Every want that serves her fun is a source of it, and wears thin
+    /// with use (else it would never tire, however often she chose it);
+    /// and every source of fun serves it.
+    #[test]
+    fn every_fun_is_a_fun_source() {
+        for want in Want::ALL {
+            let fun = want.def().serves.iter().any(|&(need, _)| need == Need::Fun);
+            assert_eq!(fun, FUN_SOURCES.contains(&want), "{want:?}");
+        }
+        for want in FUN_SOURCES {
+            assert!(Want::ALL.contains(&want), "{want:?}");
+        }
+        // Looking out of the window tires too.
+        let window = Want::Use(Use::LookOut);
+        let mut needs = Needs::with(&[(Need::Fun, 1.0)]);
+        needs.enjoyed(window, 1.0);
+        assert!(needs.fresh(window) < 1.0);
+    }
+
+    /// Looking out of the window is a daydream, as gazing up is, and a
+    /// little fun (phase 5b D7): its row, pinned.
+    #[test]
+    fn looking_out_is_a_daydream_and_some_fun() {
+        let def = Want::Use(Use::LookOut).def();
+        assert_eq!(def.serves, &[(Need::Daydreams, 0.5), (Need::Fun, 0.3)]);
+        assert_eq!(def.base, 8.0);
+        assert!(!def.own_sake);
+        assert_eq!(def.factors, LOOK_OUT_FACTORS);
+    }
+
     /// Moods come in the shares the table says, from the visit's seed.
     #[test]
     fn moods_come_in_their_shares() {
@@ -1248,7 +1290,7 @@ mod tests {
     /// written out before her day's boosts gave some of them rows of
     /// their own (whose slices must keep the chat's: [`in_chat`] would
     /// overwrite them).
-    const CHAT_WANTS: [Want; 13] = [
+    const CHAT_WANTS: [Want; 14] = [
         Want::Travel,
         Want::Pull,
         Want::Swap,
@@ -1262,6 +1304,7 @@ mod tests {
         Want::Use(Use::Read),
         Want::Use(Use::Snack),
         Want::Use(Use::Pet),
+        Want::Use(Use::LookOut),
     ];
 
     /// The chat's factor for `want`, pinned (not read off the table).
@@ -1324,7 +1367,9 @@ mod tests {
                 Want::Use(Use::Homework) => day.slot == Slot::Homework,
                 Want::Use(Use::Read) => day.slot == Slot::Evening && !day.night_before_school,
                 Want::Idle(Activity::Stretch) => day.slot == Slot::Morning,
-                Want::Idle(Activity::Gaze) => day.minute >= 17 * 60 || day.minute < 5 * 60,
+                Want::Idle(Activity::Gaze) | Want::Use(Use::LookOut) => {
+                    day.minute >= 17 * 60 || day.minute < 5 * 60
+                }
                 _ => false,
             }
         };
@@ -1350,7 +1395,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!(seen.len(), 7, "{seen:?}");
+        assert_eq!(seen.len(), 8, "{seen:?}");
         // Read's evening is before a day off: Friday's, not Thursday's.
         let thursday = day_at(10, 19 * 60, false);
         let friday = day_at(11, 19 * 60, false);

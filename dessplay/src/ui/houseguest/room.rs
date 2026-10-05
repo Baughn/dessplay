@@ -327,7 +327,8 @@ const WINDOW: Spec = Spec {
     // The sky's two cells are drawn over (see the guest's `overrides`).
     ascii: &[".--.", "|  |"],
     ink: (Color::Rgb(243, 234, 216), Color::White),
-    uses: &[],
+    // She stands under it (or beside it), gazing out (phase 5b D7).
+    uses: &[Use::LookOut],
     offers: &[],
     sit: None,
     comfort: 1.0,
@@ -407,12 +408,14 @@ pub(super) enum Use {
     Pet,
     /// Crumple torn-off text into a makeshift piece.
     Crumple,
+    /// Stand under the window (or beside it), gazing out at the sky.
+    LookOut,
 }
 
 impl Use {
     /// Every use.
     #[cfg(test)]
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::Lounge,
         Self::Nap,
         Self::Sleep,
@@ -423,12 +426,29 @@ impl Use {
         Self::Snack,
         Self::Pet,
         Self::Crumple,
+        Self::LookOut,
     ];
 
     /// Whether she uses it from in it (sits on it, lies in it), rather
-    /// than from beside it.
+    /// than from beside it (or, looking out of the window, from under
+    /// it).
     pub fn inside(self) -> bool {
-        !matches!(self, Use::Watch | Use::Read | Use::Snack | Use::Pet)
+        !matches!(
+            self,
+            Use::Watch | Use::Read | Use::Snack | Use::Pet | Use::LookOut
+        )
+    }
+
+    /// Whether a piece is set down only where she'd fit to use it so
+    /// (see [`roomy`]). Not to look out of the window: it's hung where
+    /// the wall has room for it, and she looks out of it if she can get
+    /// under it or beside it (it's offered only then: see
+    /// [`Shown::look_out_spots`]). Asking room for that too would keep a
+    /// window over a sofa in the closet (and refuse her any move that
+    /// set a piece down beneath one). A new one comes in where she could
+    /// look out of it first, if anywhere (see [`room_to_look`]).
+    pub fn asks_room(self) -> bool {
+        self != Use::LookOut
     }
 }
 
@@ -914,7 +934,10 @@ impl Shown {
 
     /// Where she'd be to use this piece for `what`: her anchor column and
     /// the way she faces. In the piece for most uses; for the TV, at
-    /// `beside` (a standing spot next to it), facing it.
+    /// `beside` (a standing spot next to it), facing it. Looking out of
+    /// the window, `beside` is the spot she stands on (under it or
+    /// beside it: see [`Shown::look_out_spots`]), and she faces the
+    /// window's middle from it, gazing up the way she faces.
     pub fn seat(&self, what: Use, beside: i32) -> Seat {
         let (cols, _) = self.size();
         let cols = i32::from(cols);
@@ -943,6 +966,14 @@ impl Shown {
                     Facing::Left
                 },
             ),
+            Use::LookOut => (
+                beside,
+                if beside < self.left + cols / 2 {
+                    Facing::Right
+                } else {
+                    Facing::Left
+                },
+            ),
         };
         Seat {
             what,
@@ -960,6 +991,23 @@ impl Shown {
         let half = super::sprite::WIDTH / 2;
         let rect = self.rect();
         [i32::from(rect.x) - half - 1, i32::from(rect.right()) + half]
+    }
+
+    /// Where she'd stand to look out of it (a window), in the order she
+    /// tries them: under it, a cell off its middle toward the side she
+    /// faces it from (her gaze goes up the way she faces), facing the
+    /// way it was hung, then the other side of its middle; then just
+    /// beside it (see [`Shown::beside`]), on the side she'd face it the
+    /// way it was hung from first, for when what stands beneath it leaves
+    /// her no room under it.
+    pub fn look_out_spots(&self) -> [i32; 4] {
+        let (cols, _) = self.size();
+        let middle = self.left + i32::from(cols) / 2;
+        let [left, right] = self.beside();
+        match self.facing {
+            Facing::Right => [middle - 1, middle, left, right],
+            Facing::Left => [middle, middle - 1, right, left],
+        }
     }
 
     /// Every footprint cell, with its ASCII glyph if drawn (the parcel's,
@@ -1236,7 +1284,7 @@ impl Home {
             Facing::Left
         };
         let cols = item.spec().footprint.0;
-        let spots: Vec<Prop> = strips(nooks)
+        let spots: Vec<(Prop, bool)> = strips(nooks)
             .into_iter()
             .flat_map(|(strip, e)| {
                 (0..=10).filter_map(move |step| {
@@ -1254,12 +1302,20 @@ impl Home {
                         .then(|| (prop, stand(&prop, strip, e, e.share(at, cols))))
                 })
             })
-            .filter(|(_, at)| {
+            .filter_map(|(prop, at)| {
                 let clear = |x: i32, y: i32| free(shown, blocked, x, y);
-                fits(buf, at, &clear) && roomy(buf, at, &clear)
+                (fits(buf, &at, &clear) && roomy(buf, &at, &clear))
+                    .then(|| (prop, room_to_look(buf, &at, &clear)))
             })
-            .map(|(prop, _)| prop)
             .collect();
+        // A window where she could stand to look out of it, if there's
+        // anywhere (see [`Home::doorstep`]).
+        let looking: Vec<Prop> = spots.iter().filter(|(_, l)| *l).map(|&(p, _)| p).collect();
+        let spots: Vec<Prop> = if looking.is_empty() {
+            spots.into_iter().map(|(p, _)| p).collect()
+        } else {
+            looking
+        };
         spots.get(rng.below(spots.len() as u64) as usize).copied()
     }
 
@@ -1273,7 +1329,10 @@ impl Home {
     /// floor she can stand on, as for any seat of hers; her box may take
     /// in the wall's line), and she'd fit to use the piece. A piece that
     /// hangs must fit both ways: boxed, standing on the floor to be
-    /// unpacked, and hung on the wall above.
+    /// unpacked, and hung on the wall above. A window comes in first
+    /// through a wall where she could stand to look out of it (not over
+    /// a piece standing beneath it: see [`room_to_look`]), if any; else
+    /// wherever it fits.
     pub fn doorstep(
         &self,
         buf: &Buffer,
@@ -1291,7 +1350,15 @@ impl Home {
         }
         // The screen's edge first; otherwise in pane order.
         walls.sort_by_key(|&(edge, ..)| !edge);
-        walls.into_iter().find_map(|(_, strip, e, side)| {
+        let looks: &[bool] = if item.spec().uses.contains(&Use::LookOut) {
+            &[true, false]
+        } else {
+            &[false]
+        };
+        let tries = looks
+            .iter()
+            .flat_map(|&look| walls.iter().map(move |&wall| (look, wall)));
+        tries.into_iter().find_map(|(look, (_, strip, e, side))| {
             let prop = Prop {
                 item,
                 strip,
@@ -1317,12 +1384,13 @@ impl Home {
                 boxed: true,
                 ..prop
             };
-            let at = self.admits(buf, shown, blocked, e, parcel, false)?;
+            let at = self.admits(buf, shown, blocked, e, parcel, Room::None)?;
             let unpack = at.seat(Use::Unpack, 0);
             if !stands(unpack.x, unpack.y) {
                 return None;
             }
-            self.admits(buf, shown, blocked, e, prop, true)?;
+            let room = if look { Room::ToLook } else { Room::ToUse };
+            self.admits(buf, shown, blocked, e, prop, room)?;
             let x = match side {
                 Side::Left => e.from - 1,
                 Side::Right => e.to,
@@ -1344,7 +1412,7 @@ impl Home {
     /// Where `prop`, new, would stand on its strip (`e` this frame), if
     /// the pieces in its lane there make way for it, packed in order:
     /// every one of them that shows still fits, and it fits on blank,
-    /// free cells, where she'd fit to use it if `used`.
+    /// free cells, with the `room` around it she'd need.
     fn admits(
         &self,
         buf: &Buffer,
@@ -1352,7 +1420,7 @@ impl Home {
         blocked: &dyn Fn(i32, i32) -> bool,
         e: Extent,
         prop: Prop,
-        used: bool,
+        room: Room,
     ) -> Option<Shown> {
         let (strip, lane) = (prop.strip, prop.lane());
         let mut with = self.clone();
@@ -1376,7 +1444,13 @@ impl Home {
                         .iter()
                         .any(|(j, s)| *j != i && s.rect().contains((x as u16, y as u16).into()))
             };
-            fits(buf, at, &clear) && (i != new || !used || roomy(buf, at, &clear))
+            fits(buf, at, &clear)
+                && (i != new
+                    || match room {
+                        Room::None => true,
+                        Room::ToUse => roomy(buf, at, &clear),
+                        Room::ToLook => roomy(buf, at, &clear) && room_to_look(buf, at, &clear),
+                    })
         };
         let all_fit = packed.iter().all(|(i, at)| {
             let was = with.props.get(*i).map(|p| p.item);
@@ -1435,12 +1509,32 @@ pub(super) fn faces(seat: &Shown, screen: &Shown) -> bool {
         && seat.facing == toward
 }
 
-/// Whether she'd fit to use `at` every way it's used (a new piece is
-/// never set down where she couldn't): for a use in it, her box at its
+/// Whether she'd fit to use `at` every way it's used that asks room of
+/// it (a new piece is never set down where she couldn't; see
+/// [`Use::asks_room`]): for a use in it, her box at its
 /// seat, beyond the piece itself; for a use beside it, her box at one of
 /// the spots beside it, standing on a line. Her box must be blank and
 /// `clear`.
 pub(super) fn roomy(buf: &Buffer, at: &Shown, clear: &dyn Fn(i32, i32) -> bool) -> bool {
+    room_for(buf, at, clear, Use::asks_room)
+}
+
+/// Whether she'd fit to look out of `at` (a window), standing at one of
+/// [`Shown::look_out_spots`], as [`roomy`] judges room (true of a piece
+/// she doesn't look out of). Not asked of a window (see
+/// [`Use::asks_room`]), only preferred where a new one comes in.
+pub(super) fn room_to_look(buf: &Buffer, at: &Shown, clear: &dyn Fn(i32, i32) -> bool) -> bool {
+    room_for(buf, at, clear, |what| what == Use::LookOut)
+}
+
+/// Whether she'd fit to use `at` every way it's used that `asks` room of
+/// (see [`roomy`]).
+fn room_for(
+    buf: &Buffer,
+    at: &Shown,
+    clear: &dyn Fn(i32, i32) -> bool,
+    asks: impl Fn(Use) -> bool,
+) -> bool {
     let half = super::sprite::WIDTH / 2;
     let rect = at.rect();
     let cell = |x: i32, y: i32| {
@@ -1471,16 +1565,30 @@ pub(super) fn roomy(buf: &Buffer, at: &Shown, clear: &dyn Fn(i32, i32) -> bool) 
             })
         })
     };
-    at.uses().iter().all(|&what| {
-        if what.inside() {
-            let seat = at.seat(what, 0);
-            fits(seat.x, seat.y)
-        } else {
-            at.beside()
-                .into_iter()
-                .any(|x| fits(x, at.floor) && floor(x, at.floor))
-        }
+    at.uses().iter().filter(|&&what| asks(what)).all(|&what| {
+        let spots: &[i32] = match what {
+            Use::LookOut => &at.look_out_spots(),
+            _ if what.inside() => {
+                let seat = at.seat(what, 0);
+                return fits(seat.x, seat.y);
+            }
+            _ => &at.beside(),
+        };
+        spots
+            .iter()
+            .any(|&x| fits(x, at.floor) && floor(x, at.floor))
     })
+}
+
+/// The room a new piece asks around it (see [`Home::admits`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Room {
+    /// None: its parcel, which she only unpacks.
+    None,
+    /// Room to use it (see [`roomy`]).
+    ToUse,
+    /// That, and room to look out of it, a window (see [`room_to_look`]).
+    ToLook,
 }
 
 /// Whether `(x, y)` is neither `blocked` nor under a shown piece.
@@ -2290,6 +2398,59 @@ mod tests {
                 .is_some(),
             "a plant stands"
         );
+    }
+
+    /// A window comes in first through a wall where she could stand to
+    /// look out of it: with her sofa against the right wall (the first
+    /// tried), through the left. With a piece against each wall it comes
+    /// in all the same, through the right (looking out of it asks no room
+    /// of where it hangs: see [`Use::asks_room`]), where she can't.
+    #[test]
+    fn a_window_comes_in_where_she_can_look_out() {
+        let rows = empty("Users", 30, 9);
+        let clean = Buffer::with_lines(rows.iter().map(String::as_str));
+        let nooks = [(Nook::Users, clean.area)];
+        for (props, side, looks) in [
+            (vec![prop(Furniture::Sofa, 1000)], Side::Left, true),
+            (
+                vec![prop(Furniture::Sofa, 1000), prop(Furniture::Bed, 0)],
+                Side::Right,
+                false,
+            ),
+        ] {
+            let at = format!("{props:?}");
+            let mut room = home(Nook::Users, &props);
+            let shown = room.project(&clean, &nooks, &|_, _| false);
+            assert_eq!(shown.len(), props.len(), "{at}");
+            let (window, _) = room
+                .doorstep(
+                    &clean,
+                    &nooks,
+                    &shown,
+                    &|_, _| false,
+                    &|_, _| true,
+                    Furniture::Window,
+                )
+                .unwrap_or_else(|| panic!("{at}: delivered"));
+            assert_eq!(window.anchor.map(|a| a.side), Some(side), "{at}");
+            assert!(room.add(Prop {
+                boxed: false,
+                ..window
+            }));
+            let shown = room.project(&clean, &nooks, &|_, _| false);
+            let hung = *shown
+                .iter()
+                .find(|s| s.item == Furniture::Window)
+                .unwrap_or_else(|| panic!("{at}: shown"));
+            let others: Vec<Shown> = shown
+                .iter()
+                .filter(|s| s.item != Furniture::Window)
+                .copied()
+                .collect();
+            let clear = |x: i32, y: i32| free(&others, &|_, _| false, x, y);
+            assert!(roomy(&clean, &hung, &clear), "{at}");
+            assert_eq!(room_to_look(&clean, &hung, &clear), looks, "{at}");
+        }
     }
 
     proptest! {

@@ -56,6 +56,7 @@ pub(super) const ANY_USE: &[Use] = &[
     Use::Read,
     Use::Snack,
     Use::Pet,
+    Use::LookOut,
 ];
 
 /// The rules, in the order they're judged.
@@ -1162,6 +1163,7 @@ mod tests {
             Use::Snack,
             Use::Pet,
             Use::Crumple,
+            Use::LookOut,
         ];
         for what in all {
             // Exhaustive: a new use is placed here, then in ANY_USE.
@@ -1173,7 +1175,8 @@ mod tests {
                 | Use::Watch
                 | Use::Read
                 | Use::Snack
-                | Use::Pet => true,
+                | Use::Pet
+                | Use::LookOut => true,
                 Use::Unpack | Use::Crumple => false,
             };
             assert_eq!(ANY_USE.contains(&what), real, "{what:?}");

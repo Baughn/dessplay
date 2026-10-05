@@ -241,6 +241,51 @@ fn dashed_home_with_no_fridge_she_cant_think_what_for() {
     }
 }
 
+/// Dashed home with her wall clock hanging (in either room: by her
+/// fridge, where she has her lunch and goes out again from, or in the
+/// other), she goes out again with no glance at it: "Time for school!"
+/// is for her morning's leaving, not for heading back after what she
+/// forgot.
+#[test]
+fn dashed_home_she_doesnt_glance_at_her_clock() {
+    let (real, view) = home_screen();
+    let (seed, minute) = dash_seed(0);
+    for graphics in [false, true] {
+        for nook in [Nook::Playlist, Nook::Users] {
+            let at = format!("graphics={graphics} clock in {nook:?}");
+            let mut guest = home_at(seed, tue_at(minute - 3), &FRIDGE_HOME, graphics);
+            assert!(guest.ledger.home.add(room::Prop::new(
+                Furniture::Clock,
+                nook,
+                500,
+                sprite::Facing::Right
+            )));
+            let mut now = 0;
+            paint(&mut guest, &real, &view, now);
+            while empty_of(&guest).is_none() {
+                assert!(now < 60_000, "{at}: her home never stood empty");
+                shell_step(&mut guest, &real, &view, &mut now, true);
+            }
+            let seen = watch_dash(&mut guest, &real, &view, now, 120_000);
+            assert!(seen.came.is_some(), "{at}: no dash");
+            assert!(seen.methods.contains(&"dash/lunch"), "{at}");
+            assert_eq!(seen.methods.last(), Some(&"routine/away"), "{at}");
+            assert!(
+                !seen.methods.contains(&"routine/glance"),
+                "{at}: {:?}",
+                seen.methods
+            );
+            assert!(
+                !seen
+                    .said
+                    .contains(&crate::ui::houseguest::script::SCHOOL_TIME),
+                "{at}: {:?}",
+                seen.said
+            );
+        }
+    }
+}
+
 /// From a cold start until her home stands empty: when.
 fn until_visiting_or_away(guest: &mut Guest, real: &Buffer, view: &IdleView) -> u64 {
     let mut now = 0;

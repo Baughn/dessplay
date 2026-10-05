@@ -14,7 +14,8 @@ use super::routine::{self, DayTime};
 use super::rules::{Grievance, Placement, Repair, TIE_CELLS, Trials};
 use super::scenes::{Build, Job, JobRef, LayerOp, Lift, Pull, SetDown, Side, Swap};
 use super::script::{
-    self, CHANNEL_FRAME_MS, Chat, Cue, Play, Prop, ScriptId, SpliceCtx, SpliceId, Surface,
+    self, CHANNEL_FRAME_MS, Chat, ClockGlance, Cue, Play, Prop, ScriptId, SpliceCtx, SpliceId,
+    Surface,
 };
 use super::sprite::{self, Face, Facing, HEIGHT, Pose, SpriteCell};
 use super::terrain::{Link, Platform, Route, Terrain};
@@ -55,6 +56,32 @@ pub(super) struct Chances {
     /// How pretty the room she's in is: what's pretty on the strip she
     /// stands on (0 off any strip).
     pub beauty_here: f64,
+    /// Her wall clock, if it's shown out of its box on a strip: where it
+    /// hangs, and the strip's floor and columns (what she glances at,
+    /// on that strip: see [`ClockOn::seen_from`]).
+    pub clock: Option<ClockOn>,
+}
+
+/// Her wall clock where it hangs (phase 5b D7): its middle column, and
+/// the floor and columns of the strip it hangs over.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct ClockOn {
+    /// Its middle column.
+    pub x: i32,
+    /// The strip's floor.
+    pub floor: i32,
+    /// The strip's first column.
+    pub from: i32,
+    /// Just past the strip's last column.
+    pub to: i32,
+}
+
+impl ClockOn {
+    /// Its column, if it hangs on the strip she'd stand on at `(x, y)`
+    /// (where she can see it, to glance up at it).
+    pub fn seen_from(self, (x, y): (i32, i32)) -> Option<i32> {
+        (self.floor == y && (self.from..self.to).contains(&x)).then_some(self.x)
+    }
 }
 
 /// Where she'd stand to lift a piece (beside it, on its floor), and which
@@ -377,6 +404,12 @@ pub(super) const OK: &str = line!("...I'm OK.");
 pub(super) const MM: &str = line!("mm...");
 /// Spacing out, musing or not (ms range).
 pub(super) const SPACE_OUT_MS: (u64, u64) = (6000, 14_000);
+/// A glance up at her wall clock (phase 5b D7): a moment, spacing out.
+pub(super) const CLOCK_GLANCE_MS: u64 = 2500;
+/// Of an afternoon, with her wall clock where she can see it, a musing
+/// in this many (`n` in `d`, once a visit) is a glance up at it instead,
+/// saying the hour, roughly.
+const HOUR_GLANCE: (u64, u64) = (1, 3);
 
 /// Tearing text off a line for furniture: bracing, then the rip.
 const BRACE_MS: u64 = 700;
@@ -1093,6 +1126,7 @@ fn use_duration(what: Use) -> (u64, u64) {
         Use::Snack => (6_000, 9_000),
         Use::Pet => (6_000, 9_000),
         Use::Crumple => (4_000, 6_000),
+        Use::LookOut => (15_000, 30_000),
     }
 }
 
@@ -1522,6 +1556,17 @@ pub(super) struct Osaka {
     /// Up on a day with no school: "No school today!", once she's quiet,
     /// that morning.
     day_off: bool,
+    /// Her wall clock where it hangs, as the frame last offered it (see
+    /// [`Chances::clock`]): what she glances up at.
+    clock_on: Option<ClockOn>,
+    /// The slot of her routine she has had her glance at the clock in
+    /// (or her night begun in), by its end (game millis): her bed and
+    /// school reflexes glance first only once a slot, however often they
+    /// send her (back from her midnight snack, an errand).
+    clock_glanced: Option<u64>,
+    /// She has glanced up at the clock of an afternoon this visit (once
+    /// a visit).
+    hour_glanced: bool,
     /// What's rare and open (phase 5b D6): her day's, drawn as the visit
     /// began or as she woke into the day (see [`Osaka::begin_day`]), or
     /// unfed the visit's. Nothing before a draw.
@@ -1694,6 +1739,9 @@ impl Osaka {
             sunrise: None,
             meal_said: None,
             day_off: false,
+            clock_on: None,
+            clock_glanced: None,
+            hour_glanced: false,
             rares: Rares::none(),
             rares_day: None,
             seen: Vec::new(),
@@ -1856,6 +1904,15 @@ impl Osaka {
     #[cfg(test)]
     pub fn owes_anything(&self) -> bool {
         self.owes()
+    }
+
+    /// What she keeps of the frame's `chances` between frames: how
+    /// pretty the room she stands in is, and where her wall clock hangs.
+    /// Taken in at each tick, and by the stage before it directs her (a
+    /// scene played before her tick has seen the frame sees it as it is).
+    pub fn take_in(&mut self, chances: &Chances) {
+        self.beauty_here = chances.beauty_here;
+        self.clock_on = chances.clock;
     }
 
     /// The stage: play `cue` (if any) the next time it can, forced
@@ -2070,46 +2127,62 @@ impl Osaka {
     /// summer's panic week or December, one of the season's first, now
     /// and then). A riddle only when she isn't saying something already,
     /// which would hide its question. On a day it's open, first, now and
-    /// then, her rare musing (the escalator), quiet too. Cued to by the
-    /// stage, Setsubun's beans, or the escalator, instead.
+    /// then, her rare musing (the escalator), quiet too; then, of an
+    /// afternoon, with her wall clock where she can see it, now and then
+    /// (once a visit, quiet too) a glance up at it, saying the hour,
+    /// roughly. Cued to by the stage, Setsubun's beans, a glance at the
+    /// clock, the escalator, or a riddle, instead: nothing rolled takes a
+    /// cued one's place.
     pub fn muse(&mut self, now: u64, rng: &mut Rng) {
-        // Cued, Setsubun's beans: on the spot, whatever she was saying
-        // stopping for them.
-        if self.cued == Some(Cue::Script(ScriptId::Setsubun)) {
-            self.cued = None;
-            self.hush(now);
-            return self.set(Self::setsubun(now), now);
+        // Cued, on the spot, whatever she was saying stopping for it:
+        // Setsubun's beans; a glance up at her clock (whatever the hour,
+        // three o'clock without her clock to tell her, and wherever her
+        // clock: turned toward it if she can see it); her rare musing
+        // (it cools as if rolled).
+        match self.cued {
+            Some(Cue::Script(ScriptId::Setsubun)) => {
+                self.cued = None;
+                self.hush(now);
+                return self.set(Self::setsubun(now), now);
+            }
+            Some(Cue::Script(ScriptId::ClockGlance)) => {
+                self.cued = None;
+                if let Some((glance, x)) = self.hour_glance(now, true, true) {
+                    return self.glance_up(glance, x, now);
+                }
+            }
+            Some(Cue::Script(ScriptId::Escalator)) => {
+                self.cued = None;
+                self.hush(now);
+                self.lines.try_play(ScriptId::Escalator, now);
+                return self.wonder(now, rng);
+            }
+            _ => {}
         }
-        // Her rare musing: cued, whatever she was saying stops for it (it
-        // cools as if rolled); else on a day it's open (checked before
-        // anything of it rolls), one musing in three while she's quiet,
-        // and not again within its ten minutes. It takes the musing's
-        // place, as long as one.
+        // A riddle cued (below) is what this musing is: nothing she'd
+        // roll comes first.
+        let rolls = self.cued != Some(Cue::Script(ScriptId::Riddle));
+        // Her rare musing: on a day it's open (checked before anything of
+        // it rolls), one musing in three while she's quiet, and not again
+        // within its ten minutes. It takes the musing's place, as long as
+        // one.
         let quiet = self.speech.is_none_or(|(_, until)| until <= now);
-        let escalator = if self.cued == Some(Cue::Script(ScriptId::Escalator)) {
-            self.cued = None;
-            self.hush(now);
-            self.lines.try_play(ScriptId::Escalator, now);
-            true
-        } else {
-            self.rares.allows(ScriptId::Escalator)
-                && quiet
-                && self.whims.chance("rare-musing", 0, 1, 3)
-                && self.lines.try_play(ScriptId::Escalator, now)
-        };
-        if escalator {
-            tracing::debug!("houseguest: which one's the escalator");
-            return self.set(
-                Act::SpaceOut {
-                    since: now,
-                    until: now + rng.range(SPACE_OUT_MS.0, SPACE_OUT_MS.1),
-                    play: Some(Play::plain(ScriptId::Escalator)),
-                },
-                now,
-            );
+        if rolls
+            && self.rares.allows(ScriptId::Escalator)
+            && quiet
+            && self.whims.chance("rare-musing", 0, 1, 3)
+            && self.lines.try_play(ScriptId::Escalator, now)
+        {
+            return self.wonder(now, rng);
+        }
+        // Of an afternoon, her wall clock where she can see it: now and
+        // then (once a visit, while she's quiet) a glance up at it, saying
+        // the hour, roughly ("Three-ish."). It takes the musing's place.
+        if rolls && let Some((glance, x)) = self.hour_glance(now, quiet, false) {
+            return self.glance_up(glance, x, now);
         }
         // Cued, a riddle: whatever she was saying stops for it.
-        let cued = self.cued == Some(Cue::Script(ScriptId::Riddle));
+        let cued = !rolls;
         if cued {
             self.cued = None;
             self.hush(now);
@@ -2158,6 +2231,50 @@ impl Osaka {
             },
             now,
         );
+    }
+
+    /// Her glance up at her clock of an afternoon (see
+    /// [`Osaka::hour_glance`]), at column `x` (where she stands, if she
+    /// can't see it), from `now`: once a visit.
+    fn glance_up(&mut self, glance: ClockGlance, x: Option<i32>, now: u64) {
+        tracing::debug!(?glance, "houseguest: a glance at her clock");
+        self.hour_glanced = true;
+        self.glance_at_clock(glance, x.unwrap_or(self.x), now);
+    }
+
+    /// Her rare musing, spacing out from `now` (see [`Osaka::muse`]):
+    /// which one's the escalator?
+    fn wonder(&mut self, now: u64, rng: &mut Rng) {
+        tracing::debug!("houseguest: which one's the escalator");
+        self.set(
+            Act::SpaceOut {
+                since: now,
+                until: now + rng.range(SPACE_OUT_MS.0, SPACE_OUT_MS.1),
+                play: Some(Play::plain(ScriptId::Escalator)),
+            },
+            now,
+        );
+    }
+
+    /// Whether she glances up at her clock at `now`, spacing out (see
+    /// [`Osaka::muse`]; `quiet`: she isn't saying anything; `cued`: the
+    /// stage cued it, and she does, saying whatever hour her clock says,
+    /// three o'clock without one): the glance, and the clock's column if
+    /// it's where she can see it. Rolled, only of an afternoon.
+    fn hour_glance(&self, now: u64, quiet: bool, cued: bool) -> Option<(ClockGlance, Option<i32>)> {
+        let x = self.clock_on.and_then(|c| c.seen_from((self.x, self.y)));
+        let day = self.day(now);
+        if cued {
+            let hour = day.map_or(15, |day| day.minute / 60);
+            return Some((ClockGlance::Hour(hour), x));
+        }
+        let hour = day
+            .filter(|day| day.slot == routine::Slot::Afternoon)
+            .map(|day| day.minute / 60)?;
+        let (n, d) = HOUR_GLANCE;
+        let glance =
+            !self.hour_glanced && quiet && x.is_some() && self.whims.chance("hour-glance", 0, n, d);
+        glance.then_some((ClockGlance::Hour(hour), x))
     }
 
     fn pose_due(&self) -> u64 {
@@ -2535,7 +2652,7 @@ impl Osaka {
         rng: &mut Rng,
     ) -> bool {
         self.read_clock(clock);
-        self.beauty_here = chances.beauty_here;
+        self.take_in(chances);
         let mut changed = false;
         for _ in 0..64 {
             let due = self.due();
@@ -3425,9 +3542,17 @@ impl Osaka {
                 } else {
                     plain.own
                 };
+                // Looking out of the window: a line from the sky as it is.
+                let branch = if trying {
+                    own.trial_branch()
+                } else if own == ScriptId::LookOut {
+                    self.look_out_branch(at)
+                } else {
+                    0
+                };
                 let play = Play {
                     own,
-                    branch: if trying { own.trial_branch() } else { 0 },
+                    branch,
                     before,
                     after,
                     ..plain
@@ -3635,6 +3760,61 @@ impl Osaka {
             self.drop_episode(None, at);
         }
         self.just_set = None;
+    }
+
+    /// Her routine's glance up at her wall clock (D7), the first key of
+    /// her bed or school reflex at `at`: turned toward the clock, gazing
+    /// up at it, `glance`'s line ("Oh! It's late!", "Time for school!"),
+    /// whatever she was saying stopping for it. Only with her clock
+    /// hanging on the strip she stands on, and once a slot (see
+    /// `clock_glanced`): `None` otherwise, and her reflex goes on.
+    fn glance_first(&mut self, glance: ClockGlance, at: u64) -> Option<Decision> {
+        if !self.pass_glance(at) {
+            return None;
+        }
+        let x = self.clock_on.and_then(|c| c.seen_from((self.x, self.y)))?;
+        if self.hidden(at) {
+            return None;
+        }
+        tracing::debug!(?glance, "houseguest: a glance at her clock");
+        self.glance_at_clock(glance, x, at);
+        Some(Decision::reflex("routine/glance"))
+    }
+
+    /// Her routine's glance up at her clock is spent for the slot she's
+    /// in at `at` (keyed on its end: see `clock_glanced`): whether it
+    /// wasn't yet. Without her routine, never anything to spend.
+    fn pass_glance(&mut self, at: u64) -> bool {
+        let Some(end) = self
+            .clock
+            .zip(self.game_at(at))
+            .map(|(clock, game)| clock.next_boundary(game))
+        else {
+            return false;
+        };
+        self.clock_glanced.replace(end) != Some(end)
+    }
+
+    /// A glance up at her clock (at column `x`) from `at`: turned toward
+    /// it, spacing out a moment, saying `glance`'s line, whatever she was
+    /// saying stopping for it.
+    fn glance_at_clock(&mut self, glance: ClockGlance, x: i32, at: u64) {
+        if x != self.x {
+            self.facing = toward(self.x, x);
+        }
+        self.hush(at);
+        self.credit = None;
+        self.set(
+            Act::SpaceOut {
+                since: at,
+                until: at + CLOCK_GLANCE_MS,
+                play: Some(Play {
+                    branch: glance.branch(),
+                    ..Play::plain(ScriptId::ClockGlance)
+                }),
+            },
+            at,
+        );
     }
 
     /// Her routine's bed reflex (D4, A4): at night, to bed. Her bed, else
@@ -4002,6 +4182,9 @@ impl Osaka {
         if clock.day_of(game).slot != routine::Slot::Asleep {
             return;
         }
+        // In for the night: past her glance at the clock (going back to
+        // bed after a midnight snack, or an errand, she doesn't again).
+        self.pass_glance(at);
         let (morning, _) = routine::split(clock.next_wake(game));
         let whims = self.whims;
         let mut night = match self.night.or(self.night_before) {
@@ -4132,6 +4315,10 @@ impl Osaka {
             .cued
             .take_if(|cue| matches!(cue, Cue::Script(ScriptId::DashLunch | ScriptId::DashForgot)));
         self.credit = None;
+        // Home only for what she forgot: her routine sends her out again
+        // after, with no glance at the clock ("Time for school!" is for
+        // her morning's leaving).
+        self.pass_glance(at);
         let fridge = match dash {
             Dash::Lunch(seat) => Some(seat),
             Dash::In => chances
@@ -4392,6 +4579,17 @@ impl Osaka {
         self.cal_done = Some(showing.date);
         self.events.push(HomeEvent::Calendar(showing.date));
         Some(showing.date)
+    }
+
+    /// The branch she looks out of the window on at `at`: one of the
+    /// lines of the sky her clock shows (unfed, the day's: her window
+    /// shows a day sky then), drawn from her latest decision's whims.
+    fn look_out_branch(&self, at: u64) -> u8 {
+        let sky = self
+            .day(at)
+            .map_or(super::art::Sky::Day, |day| super::art::Sky::at(day.minute));
+        // Six: as even over two lines as over three.
+        script::look_out_branch(sky, self.whims.below_at("look-out", 0, 6))
     }
 
     /// Her meal's line, on her first snack of a morning or an evening by
@@ -5004,6 +5202,8 @@ impl Osaka {
     #[cfg(test)]
     pub fn census_group(&self) -> &'static str {
         match self.act {
+            // Gazing out of the window is spacing out, as gazing up is.
+            Act::Use { seat, .. } if seat.what == Use::LookOut => "spacing out",
             Act::Use { .. } => "furniture",
             Act::Idle { what, .. } => match what {
                 Activity::Sit | Activity::LieBack | Activity::LieFront => "floor rest",
@@ -5218,6 +5418,22 @@ impl Osaka {
             just_set: self.just_set,
             may_arrange: !self.to_mend(&chances.broken).is_empty(),
         };
+        // With her wall clock where she can see it, her routine's first
+        // key is a glance up at it (D7): "Oh! It's late!", "Time for
+        // school!". Once a slot: not on her way back to bed from her
+        // midnight snack or an errand (her night latched it: see
+        // [`Osaka::arm_night`]), nor out again after a dash home (see
+        // [`Osaka::dash_on`]).
+        if to_bed || to_school {
+            let glance = if to_bed {
+                ClockGlance::Bed
+            } else {
+                ClockGlance::School
+            };
+            if let Some(decision) = self.glance_first(glance, at) {
+                return decision;
+            }
+        }
         // Her routine (D4, A3): at night, to bed, before anything else
         // she'd do, a chat she's watching included (or a chat line every
         // few seconds would keep her up all night).
@@ -7259,6 +7475,7 @@ mod tests {
             Use::Snack,
             Use::Pet,
             Use::Crumple,
+            Use::LookOut,
         ] {
             let (mut osaka, _) = pressed(Need::Beauty);
             let before = osaka.needs.get(Need::Beauty);
@@ -7520,6 +7737,22 @@ mod tests {
                         (0, Face::Happy, None, |t| (Pose::ToeTouch(bob(t)), None)),
                         (length * 3 / 5, Face::Happy, Some(Bubble::Ooh), |t| {
                             (Pose::ToeTouch(bob(t)), None)
+                        }),
+                    ],
+                ),
+                (
+                    Use::LookOut,
+                    false,
+                    None,
+                    vec![
+                        (
+                            0,
+                            Face::Curious,
+                            Some(Bubble::Say(script::LOOK_OUT_LINES[0].1)),
+                            |_| (Pose::Gaze, None),
+                        ),
+                        (script::LOOK_OUT_LINE_MS, Face::Curious, None, |_| {
+                            (Pose::Gaze, None)
                         }),
                     ],
                 ),
@@ -9793,17 +10026,23 @@ mod tests {
     /// again until her wake time (Tuesday 07:00), no longer groggy, the
     /// lamp off all the while, the night she slept kept for her needs and
     /// the Dream's count running on from her first sleep. On a fridge
-    /// night too (none due), from her bed and with a walk or a door.
+    /// night too (none due), from her bed and with a walk or a door. In
+    /// for the night, she's past her glance at the clock: back to bed,
+    /// with it hanging over her floor now, she doesn't glance.
     #[test]
     fn the_groggy_errand_goes_back_to_bed() {
         let terrain = floor_at(15);
         let clock = clock_at(1, 2, 0);
         let wake = 5 * 60 * 10_000;
-        for (chances, spot) in [(bed_at(25), (18, 15)), (fridge_and_bed(4), (2, 15))] {
+        for (unlit, spot) in [(bed_at(25), (18, 15)), (fridge_and_bed(4), (2, 15))] {
             let mut rng = Rng(5);
             let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
             osaka.read_clock(Some(clock));
-            let asleep = until_asleep_with(&mut osaka, 0, clock, &terrain, &chances, &mut rng);
+            let asleep = until_asleep_with(&mut osaka, 0, clock, &terrain, &unlit, &mut rng);
+            let chances = Chances {
+                clock: Some(clock_on(30, 15)),
+                ..unlit
+            };
             let first = osaka.act_since;
             let dream = osaka.dream_moment();
             assert_eq!(
@@ -9844,6 +10083,8 @@ mod tests {
                 osaka.decisions.last().map(|d| d.method),
                 Some("routine/bed")
             );
+            let methods: Vec<&str> = osaka.decisions.iter().map(|d| d.method).collect();
+            assert!(!methods.contains(&"routine/glance"), "{methods:?}");
         }
     }
 
@@ -9904,6 +10145,14 @@ mod tests {
             let now = until_asleep_with(&mut osaka, 0, clock, &terrain, chances, &mut rng);
             let (asleep, dream) = (osaka.act_since, osaka.dream_moment());
             assert!(dream.is_some());
+            // Her wall clock over her floor from now on: in for the
+            // night, she's past her glance at it (back from her snack, she
+            // doesn't glance).
+            let decided = osaka.decisions.len();
+            let chances = &Chances {
+                clock: Some(clock_on(30, 15)),
+                ..chances.clone()
+            };
             // Snacks: when each began, and whether she was ever awake
             // other than for one; what she'd slept as she got up.
             let mut snacks: Vec<u64> = Vec::new();
@@ -9944,6 +10193,11 @@ mod tests {
                 },
             );
             assert!(osaka.sleeping(), "back in bed");
+            let methods: Vec<&str> = osaka.decisions[decided..]
+                .iter()
+                .map(|d| d.method)
+                .collect();
+            assert!(!methods.contains(&"routine/glance"), "{methods:?}");
             assert!(osaka.events.is_empty(), "{:?}", osaka.events);
             assert!(osaka.felt.is_empty(), "{:?}", osaka.felt);
             assert_eq!(osaka.cued, Some(cue), "the cue waits");
@@ -11527,5 +11781,417 @@ mod tests {
             }
         }
         assert!((n / 4..n * 5 / 12).contains(&mused), "{mused} of {n}");
+    }
+
+    /// Her wall clock hung over the floor at row `floor` (its strip
+    /// columns 0 to 40), its middle at column `x`.
+    fn clock_on(x: i32, floor: i32) -> ClockOn {
+        ClockOn {
+            x,
+            floor,
+            from: 0,
+            to: 40,
+        }
+    }
+
+    /// Her routine's first key is a glance up at her wall clock (D7)
+    /// when it hangs on the strip she stands on: turned toward it, gazing
+    /// up, "Oh! It's late!" at bedtime, "Time for school!" as she leaves,
+    /// whatever she was saying stopping for it (she's mid-sentence); then
+    /// her reflex goes on, and doesn't glance again that slot (sent
+    /// again, by the stage). Without a clock, or with it on another floor
+    /// or over another strip of hers on this floor (the next pane's),
+    /// her reflex goes on at once.
+    #[test]
+    fn her_routine_glances_at_her_clock_first() {
+        let terrain = floor_at(15);
+        // A game minute (ten real seconds) before bedtime, Monday 22:30
+        // (to the floor: nothing to lie on), and before school, Tuesday
+        // 08:15.
+        let cases = [
+            (
+                monday_at(22, 29),
+                10_000,
+                ClockGlance::Bed,
+                Face::Surprised,
+                script::ITS_LATE,
+            ),
+            (
+                clock_at(1, 8, 14),
+                10_000,
+                ClockGlance::School,
+                Face::Happy,
+                script::SCHOOL_TIME,
+            ),
+        ];
+        for (clock, due, glance, face, line) in cases {
+            for on in [
+                None,
+                Some(clock_on(5, 15)),
+                Some(clock_on(35, 15)),
+                Some(clock_on(5, 10)),
+                // Over the pane beside hers (past her floor's end), on
+                // the same row.
+                Some(ClockOn {
+                    x: 45,
+                    floor: 15,
+                    from: 40,
+                    to: 80,
+                }),
+            ] {
+                let at = format!("{glance:?} {on:?}");
+                let mut rng = Rng(3);
+                let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+                osaka.read_clock(Some(clock));
+                let chances = Chances {
+                    clock: on,
+                    ..Chances::default()
+                };
+                let seen = on.is_some_and(|c| c.floor == 15 && c.from == 0);
+                let routine = |osaka: &Osaka| -> Vec<&'static str> {
+                    osaka
+                        .decisions
+                        .iter()
+                        .map(|d| d.method)
+                        .filter(|m| m.starts_with("routine/"))
+                        .collect()
+                };
+                let mut now = 0;
+                let mut glanced = None;
+                while !routine(&osaka).iter().any(|&m| m != "routine/glance") {
+                    assert!(now < due + 30_000, "{at}: no routine by {now}");
+                    // Saying something as her routine turns.
+                    if now == due - 500 {
+                        osaka.say(OK, now);
+                    }
+                    now += 500;
+                    osaka.tick(now, Some(clock), &terrain, &chances, &mut rng);
+                    if osaka
+                        .plays()
+                        .is_some_and(|p| p.own == ScriptId::ClockGlance)
+                        && glanced.is_none()
+                    {
+                        let toward = on.map(|c| toward(osaka.x, c.x));
+                        glanced = Some((now, osaka.plays(), osaka.appearance(now), toward));
+                        assert_eq!(Some(osaka.facing), toward, "{at}: not toward it");
+                    }
+                }
+                let methods = routine(&osaka);
+                if !seen {
+                    assert_eq!(glanced, None, "{at}");
+                    assert!(!methods.contains(&"routine/glance"), "{at}: {methods:?}");
+                    continue;
+                }
+                let Some((when, play, look, _)) = glanced else {
+                    panic!("{at}: no glance ({methods:?})");
+                };
+                assert!(when >= due, "{at}: glanced at {when}, before {due}");
+                assert_eq!(play.map(|p| p.branch), Some(glance.branch()), "{at}");
+                assert_eq!(look, (Pose::Gaze, face, Some(Bubble::Say(line))), "{at}");
+                assert_eq!(methods[0], "routine/glance", "{at}: {methods:?}");
+                assert!(methods[1] != "routine/glance", "{at}: {methods:?}");
+                // Sent again that slot: no second glance.
+                let decided = osaka.decisions.len();
+                osaka.place(osaka.x, osaka.y, now);
+                osaka.tick(now + 1500, Some(clock), &terrain, &chances, &mut rng);
+                let again: Vec<&str> = osaka.decisions[decided..]
+                    .iter()
+                    .map(|d| d.method)
+                    .collect();
+                assert!(
+                    !again.is_empty() && !again.contains(&"routine/glance"),
+                    "{at}: {again:?}"
+                );
+            }
+        }
+    }
+
+    /// In for the night by any way (here, tucked in), she's past her
+    /// glance at the clock: sent to bed again that night (back from her
+    /// midnight snack, an errand), she doesn't glance.
+    #[test]
+    fn in_for_the_night_she_glances_no_more() {
+        let terrain = floor_at(15);
+        let clock = clock_at(1, 1, 0);
+        let mut rng = Rng(3);
+        let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+        osaka.read_clock(Some(clock));
+        let chances = Chances {
+            clock: Some(clock_on(5, 15)),
+            ..bed_at(25)
+        };
+        assert!(osaka.tuck_in(&chances, &terrain, 0));
+        let decided = osaka.decisions.len();
+        osaka.place(20, 15, 1000);
+        osaka.tick(2500, Some(clock), &terrain, &chances, &mut rng);
+        let methods: Vec<&str> = osaka.decisions[decided..]
+            .iter()
+            .map(|d| d.method)
+            .collect();
+        assert!(methods.contains(&"routine/bed"), "{methods:?}");
+        assert!(!methods.contains(&"routine/glance"), "{methods:?}");
+    }
+
+    /// Of an afternoon, her wall clock where she can see it, now and then
+    /// (about a musing in three) she glances up at it instead of musing,
+    /// saying the hour roughly ("Noon-ish." from 12:45, "Five-ish." up to
+    /// 18:00), turned toward it; once a visit. Never out of the afternoon,
+    /// without a clock, with it on another floor, unfed, or while she's
+    /// saying something.
+    #[test]
+    fn of_an_afternoon_she_glances_at_the_hour() {
+        let glance = |osaka: &Osaka| {
+            osaka
+                .plays()
+                .filter(|p| p.own == ScriptId::ClockGlance)
+                .map(|p| p.branch)
+        };
+        let n = 300u64;
+        for (day, h, m, hour) in [
+            (1, 12, 50, Some(0)),
+            (1, 13, 0, Some(1)),
+            (0, 16, 30, Some(4)),
+            (5, 17, 59, Some(5)),
+            (1, 18, 0, None),
+            (5, 10, 0, None),
+            (1, 21, 0, None),
+        ] {
+            let mut glanced = 0;
+            for seed in 0..n {
+                for (on, talking, fed) in [
+                    (Some(clock_on(5, 10)), false, true),
+                    (None, false, true),
+                    (Some(clock_on(5, 3)), false, true),
+                    // Over the pane beside hers, on her row.
+                    (
+                        Some(ClockOn {
+                            x: 3,
+                            floor: 10,
+                            from: 0,
+                            to: 8,
+                        }),
+                        false,
+                        true,
+                    ),
+                    (Some(clock_on(5, 10)), true, true),
+                    (Some(clock_on(5, 10)), false, false),
+                ] {
+                    let at =
+                        format!("{day} {h}:{m} seed {seed} {on:?} talking={talking} fed={fed}");
+                    let mut rng = Rng(seed);
+                    let mut osaka = Osaka::standing_at(10, 10, 0, &mut rng);
+                    osaka.whims = Whims(seed);
+                    if fed {
+                        osaka.read_clock(Some(clock_at(day, h, m)));
+                    }
+                    osaka.clock_on = on;
+                    if talking {
+                        osaka.say(OK, 0);
+                    }
+                    // What she was doing before, credited already.
+                    osaka.credit = Some(Want::SpaceOut);
+                    osaka.muse(0, &mut rng);
+                    let open =
+                        hour.is_some() && on.is_some_and(|c| c.seen_from((10, 10)).is_some());
+                    let Some(branch) = glance(&osaka) else {
+                        continue;
+                    };
+                    assert!(open && !talking && fed, "{at}");
+                    assert_eq!(osaka.credit, None, "{at}: a glance eases nothing");
+                    let hour = hour.unwrap_or_default();
+                    assert_eq!(branch, 2 + hour, "{at}");
+                    assert_eq!(osaka.facing, Facing::Left, "{at}: toward the clock");
+                    assert_eq!(
+                        osaka.appearance(0),
+                        (
+                            Pose::Gaze,
+                            Face::Curious,
+                            Some(Bubble::Say(script::HOURS[usize::from(hour)]))
+                        ),
+                        "{at}"
+                    );
+                    glanced += 1;
+                    // Once a visit: never again, whatever her whims.
+                    for k in 1..20u64 {
+                        osaka.whims = Whims(seed ^ (k << 20));
+                        osaka.speech = None;
+                        osaka.muse(k * 60_000, &mut rng);
+                        assert_eq!(glance(&osaka), None, "{at}: again at {k}");
+                    }
+                }
+            }
+            match hour {
+                Some(_) => assert!(
+                    (n / 5..n / 2).contains(&glanced),
+                    "{h}:{m}: {glanced} of {n}"
+                ),
+                None => assert_eq!(glanced, 0, "{h}:{m}"),
+            }
+        }
+    }
+
+    /// Looking out of the window, she says what she sees of the sky her
+    /// clock shows (unfed, the day's: her window's plain look), each of
+    /// that sky's lines over her whims, gazing up curious: the stars at
+    /// night, the sunset at dusk.
+    #[test]
+    fn looking_out_she_says_what_the_sky_is() {
+        use super::super::art::Sky;
+        for (clock, sky) in [
+            (Some(clock_at(1, 6, 0)), Sky::Dawn),
+            (Some(clock_at(1, 14, 0)), Sky::Day),
+            (Some(clock_at(0, 18, 0)), Sky::Dusk),
+            (Some(clock_at(0, 20, 0)), Sky::Evening),
+            (Some(clock_at(0, 21, 30)), Sky::Night),
+            (None, Sky::Day),
+        ] {
+            let mut said = std::collections::BTreeSet::new();
+            for seed in 0..64 {
+                let at = format!("{sky:?} seed {seed}");
+                let mut rng = Rng(seed);
+                let mut osaka = Osaka::standing_at(10, 10, 0, &mut rng);
+                osaka.splice_rows = &[];
+                osaka.whims = Whims(seed ^ 0x5eed);
+                osaka.read_clock(clock);
+                osaka.credit = Some(Want::Use(Use::LookOut));
+                osaka.start_job(
+                    Job::Use(seat_for(Use::LookOut, Furniture::Window)),
+                    1000,
+                    &Chances::default(),
+                    &mut rng,
+                );
+                let (_, _, _, play) = begun(&osaka);
+                assert_eq!(play.own, ScriptId::LookOut, "{at}");
+                let (of, line) = script::LOOK_OUT_LINES[usize::from(play.branch)];
+                assert_eq!(of, sky, "{at}: {line}");
+                assert_eq!(
+                    osaka.appearance(1000),
+                    (Pose::Gaze, Face::Curious, Some(Bubble::Say(line))),
+                    "{at}"
+                );
+                said.insert(line);
+            }
+            let lines: std::collections::BTreeSet<&str> = script::LOOK_OUT_LINES
+                .iter()
+                .filter(|(s, _)| *s == sky)
+                .map(|&(_, line)| line)
+                .collect();
+            assert_eq!(said, lines, "{sky:?}: not every line");
+            assert!((2..=3).contains(&lines.len()), "{sky:?}");
+        }
+    }
+
+    /// Cued by the stage, she glances up at her clock at any hour, and
+    /// says the hour her clock shows (not the afternoon's only): "Eight-
+    /// ish." at 20:00, "Nine-ish." at 09:00, "Three-ish." at 15:00;
+    /// unfed, with no clock to tell her, three o'clock. Turned toward the
+    /// clock where she can see it; rolled, never out of the afternoon.
+    #[test]
+    fn a_cued_glance_says_the_hour_her_clock_shows() {
+        for (clock, line) in [
+            (Some(clock_at(1, 20, 0)), "Eight-ish."),
+            (Some(clock_at(1, 9, 10)), "Nine-ish."),
+            (Some(clock_at(1, 15, 30)), "Three-ish."),
+            (Some(clock_at(1, 0, 20)), "Midnight-ish."),
+            (None, "Three-ish."),
+        ] {
+            for on in [None, Some(clock_on(30, 10))] {
+                let at = format!("{clock:?} {on:?}");
+                let mut rng = Rng(4);
+                let mut osaka = Osaka::standing_at(10, 10, 0, &mut rng);
+                osaka.read_clock(clock);
+                osaka.clock_on = on;
+                osaka.cue(Some(Cue::Script(ScriptId::ClockGlance)));
+                osaka.muse(0, &mut rng);
+                assert_eq!(
+                    osaka.plays().map(|p| p.own),
+                    Some(ScriptId::ClockGlance),
+                    "{at}"
+                );
+                assert_eq!(osaka.appearance(0).2, Some(Bubble::Say(line)), "{at}");
+                if on.is_some() {
+                    assert_eq!(osaka.facing, Facing::Right, "{at}: toward it");
+                }
+                assert_eq!(osaka.cued, None, "{at}");
+            }
+        }
+        assert_eq!(script::HOURS[3], "Three-ish.");
+    }
+
+    /// A riddle the stage cued is what her musing is: a glance at her
+    /// clock she'd roll of an afternoon (or her rare musing) never takes
+    /// its place.
+    #[test]
+    fn a_cued_riddle_wins_over_a_rolled_glance() {
+        let mut glanced = 0;
+        for seed in 0..64u64 {
+            let mut rng = Rng(seed);
+            let mut osaka = Osaka::standing_at(10, 10, 0, &mut rng);
+            osaka.whims = Whims(seed);
+            osaka.read_clock(Some(clock_at(1, 15, 0)));
+            osaka.clock_on = Some(clock_on(5, 10));
+            // Rolled: now and then a glance.
+            let mut rolled = osaka.clone();
+            rolled.muse(0, &mut rng.clone());
+            if rolled.plays().map(|p| p.own) == Some(ScriptId::ClockGlance) {
+                glanced += 1;
+            }
+            osaka.cue(Some(Cue::Script(ScriptId::Riddle)));
+            osaka.muse(0, &mut rng);
+            assert_eq!(
+                osaka.plays().map(|p| p.own),
+                Some(ScriptId::Riddle),
+                "seed {seed}"
+            );
+            assert_eq!(osaka.cued, None, "seed {seed}");
+        }
+        assert!(glanced > 0, "no glance rolled to stand in for");
+    }
+
+    /// Out of sight as her routine turns (through a door, out), she
+    /// doesn't glance at her clock: her reflex goes on, and her glance is
+    /// spent for the slot.
+    #[test]
+    fn hidden_she_glances_not() {
+        let terrain = floor_at(15);
+        let clock = clock_at(1, 8, 15);
+        let mut rng = Rng(3);
+        let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+        osaka.read_clock(Some(clock));
+        let chances = Chances {
+            clock: Some(clock_on(5, 15)),
+            ..Chances::default()
+        };
+        osaka.take_in(&chances);
+        osaka.act = Act::Away {
+            until: 0,
+            enter: 20,
+            to_y: 15,
+            to_x: 20,
+        };
+        assert!(osaka.hidden(0));
+        osaka.decide(0, &terrain, &chances, &mut rng);
+        let methods: Vec<&str> = osaka.decisions.iter().map(|d| d.method).collect();
+        assert!(!methods.contains(&"routine/glance"), "{methods:?}");
+        assert!(osaka.clock_glanced.is_some(), "spent for the slot");
+        assert!(osaka.plays().is_none_or(|p| p.own != ScriptId::ClockGlance));
+    }
+
+    /// Looking out of the window lasts a while (15 to 30 s), and it's
+    /// spacing out, as gazing up is, in the census.
+    #[test]
+    fn looking_out_lasts_and_counts_as_spacing_out() {
+        assert_eq!(use_duration(Use::LookOut), (15_000, 30_000));
+        let mut rng = Rng(2);
+        let mut osaka = Osaka::standing_at(10, 10, 0, &mut rng);
+        osaka.credit = Some(Want::Use(Use::LookOut));
+        osaka.start_job(
+            Job::Use(seat_for(Use::LookOut, Furniture::Window)),
+            1000,
+            &Chances::default(),
+            &mut rng,
+        );
+        assert!(matches!(osaka.act, Act::Use { seat, .. } if seat.what == Use::LookOut));
+        assert_eq!(osaka.census_group(), "spacing out");
     }
 }

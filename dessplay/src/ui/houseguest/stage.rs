@@ -127,11 +127,17 @@ pub enum Scene {
     /// After lounging on her sofa, rare: a scary story (she gets a sofa
     /// if she has none; whatever the hour).
     Scary,
+    /// She looks out of her window at the sky (she gets one if she has
+    /// none), saying what she sees.
+    LookOut,
+    /// Spacing out, a glance up at her wall clock, saying the hour,
+    /// roughly (three o'clock, without her clock to tell her).
+    ClockGlance,
 }
 
 impl Scene {
     /// Every scene, in menu order.
-    pub const ALL: [Scene; 46] = [
+    pub const ALL: [Scene; 48] = [
         Self::Arrive,
         Self::Pull,
         Self::Swap,
@@ -178,6 +184,8 @@ impl Scene {
         Self::NoMelon,
         Self::Escalator,
         Self::Scary,
+        Self::LookOut,
+        Self::ClockGlance,
     ];
 
     /// A short menu label.
@@ -229,6 +237,8 @@ impl Scene {
             Self::NoMelon => "no melon bread left",
             Self::Escalator => "which one's the escalator",
             Self::Scary => "scary story time",
+            Self::LookOut => "look out of the window",
+            Self::ClockGlance => "glance at the clock",
         }
     }
 
@@ -244,6 +254,7 @@ impl Scene {
             Self::Read => Use::Read,
             Self::Snack | Self::Andagi | Self::DashIn | Self::NoMelon => Use::Snack,
             Self::Pet => Use::Pet,
+            Self::LookOut => Use::LookOut,
             _ => return None,
         })
     }
@@ -285,6 +296,8 @@ impl Scene {
             Self::Escalator => Some(Cue::Script(ScriptId::Escalator)),
             Self::NoMelon => Some(Cue::Splice(SpliceId::NoMelon, None)),
             Self::Scary => Some(Cue::Splice(SpliceId::Scary, None)),
+            // A glance at the clock spacing out (as a riddle is).
+            Self::ClockGlance => Some(Cue::Script(ScriptId::ClockGlance)),
             Self::Arrive
             | Self::Pull
             | Self::Swap
@@ -312,7 +325,8 @@ impl Scene {
             | Self::Pet
             | Self::MakeSofa
             | Self::MakeBed
-            | Self::Arrange => None,
+            | Self::Arrange
+            | Self::LookOut => None,
         }
     }
 
@@ -376,6 +390,9 @@ pub(super) fn direct(
     rng: &mut Rng,
 ) -> Result<String, String> {
     let (terrain, osaka) = (&visit.terrain, &mut visit.osaka);
+    // The frame as it is (her tick may not have seen it yet): where her
+    // clock hangs, for a glance up at it.
+    osaka.take_in(chances);
     let name = scene.name();
     osaka.cue(scene.cue());
     match scene {

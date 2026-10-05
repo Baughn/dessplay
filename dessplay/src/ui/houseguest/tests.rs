@@ -1512,6 +1512,20 @@ fn every_scene_has_a_spot_in_the_stage_room() {
                 paint(&mut guest, &real, &view, 0);
                 let at = format!("{scene:?} at {width}x{height} graphics={graphics}");
                 let note = guest.cue_note().cloned();
+                // Her window hangs above her head (its hang and its rows
+                // clear over the floor): in panes too short for it (the
+                // small room's), it's in the closet, and the stage says
+                // so.
+                let (_, rows) = Furniture::Window.spec().footprint;
+                let hung = Furniture::Window.spec().hang.unwrap_or(0) + rows;
+                let no_wall = room::strips(&view.nooks)
+                    .iter()
+                    .all(|(_, extent)| extent.rows < hung);
+                if scene == Scene::LookOut && no_wall {
+                    assert!(matches!(note, Some(Err(_))), "{at}: {note:?}");
+                    assert!(width < 100, "{at}: the stage room's panes hold it");
+                    continue;
+                }
                 assert!(matches!(note, Some(Ok(_))), "{at}: {note:?}");
                 let State::Visiting(visit) = &guest.state else {
                     panic!("{at}: visiting");
@@ -1608,6 +1622,10 @@ fn every_scene_has_a_spot_in_the_stage_room() {
                         Scene::Read => posed(Pose::Read(0)),
                         Scene::Snack => posed(Pose::Eat(0)),
                         Scene::Pet => posed(Pose::Pet(0)),
+                        Scene::LookOut => visit
+                            .osaka
+                            .plays()
+                            .is_some_and(|p| p.own == script::ScriptId::LookOut),
                         // Chosen as the use starts (the andagi plays
                         // after the snack, past the cap: see
                         // her_vignettes_play_at_her_things).
@@ -1635,7 +1653,8 @@ fn every_scene_has_a_spot_in_the_stage_room() {
                         | Scene::Setsubun
                         | Scene::FirstSunrise
                         | Scene::Dream
-                        | Scene::Escalator => {
+                        | Scene::Escalator
+                        | Scene::ClockGlance => {
                             let Some(Cue::Script(id)) = scene.cue() else {
                                 panic!("{at}: {scene:?} cues no script");
                             };
@@ -7752,6 +7771,7 @@ fn every_want_can_be_cued() {
             Want::Use(Use::Snack) => &[Scene::Snack],
             Want::Use(Use::Pet) => &[Scene::Pet],
             Want::Use(Use::Crumple) => &[Scene::MakeSofa, Scene::MakeBed],
+            Want::Use(Use::LookOut) => &[Scene::LookOut],
             Want::Arrange => &[Scene::Arrange],
         };
         assert!(

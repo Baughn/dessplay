@@ -228,6 +228,8 @@ fn named(play: Play, lamp: bool) -> Vec<(bool, String)> {
         ScriptId::FirstSunrise => Some("first sunrise".to_owned()),
         ScriptId::Dream => Some("dream".to_owned()),
         ScriptId::Escalator => Some("escalator".to_owned()),
+        ScriptId::LookOut => Some("look out".to_owned()),
+        ScriptId::ClockGlance => Some("clock glance".to_owned()),
         ScriptId::Sleep if play.branch == 0 && lamp => Some("bedtime".to_owned()),
         ScriptId::Sleep
         | ScriptId::Lounge

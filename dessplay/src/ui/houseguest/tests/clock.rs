@@ -488,13 +488,16 @@ fn her_wall_clock_waits_while_shes_out_of_sight_or_asleep() {
 }
 
 /// Both shown through a busy fed visit from 17:30 to 19:30 (her dusk and
-/// evening, the dial turning every 2.5 real minutes) cost scarcely any
-/// images: the frame cache drops nothing, encodes nothing twice, and the
-/// visit stays within [`VISIT_IMAGES`]. Over seeds, quiet panes or
-/// text-dense; never hiding text.
+/// evening, the dial turning every 2.5 real minutes), with her looking
+/// out of the window and glancing up at the clock (the stage cues each
+/// once, at 17:35 and 17:45; she looks out of her own accord too), cost
+/// scarcely any images: the frame cache drops nothing, encodes nothing
+/// twice, and the visit stays within [`VISIT_IMAGES`]. Over seeds, quiet
+/// panes or text-dense; never hiding text.
 #[test]
 fn her_clock_and_window_stay_cheap() {
     use super::brain::Mood;
+    use super::script::ScriptId;
     for ((name, (real, view)), seed) in screens()
         .into_iter()
         .flat_map(|screen| (0..3u64).map(move |seed| (screen.clone(), seed)))
@@ -514,12 +517,23 @@ fn her_clock_and_window_stay_cheap() {
         visit.osaka.set_mood(Mood::Industrious);
         let mut hidden = Hidden::default();
         let (mut dials, mut skies) = (Vec::new(), Vec::new());
+        let mut cues = vec![
+            (real_of(&guest, start, mon(17, 45)), Scene::ClockGlance),
+            (real_of(&guest, start, mon(17, 35)), Scene::LookOut),
+        ];
+        let (mut looked, mut glanced) = (0, 0);
+        let mut playing = None;
         let mut now = start;
         while now < start + 20 * 60_000 {
             now += guest
                 .next_tick(now)
                 .map_or(1000, |d| d.as_millis() as u64)
                 .clamp(1, 1000);
+            if cues.last().is_some_and(|&(t, _)| t <= now)
+                && let Some((_, scene)) = cues.pop()
+            {
+                guest.cue(scene);
+            }
             if guest.advance(now) {
                 let frame = paint(&mut guest, &real, &view, now);
                 let State::Visiting(visit) = &guest.state else {
@@ -539,8 +553,22 @@ fn her_clock_and_window_stay_cheap() {
                         seen.push(state);
                     }
                 }
+                let plays = visit.osaka.plays_since();
+                if plays != playing {
+                    match plays.map(|(_, p)| p.own) {
+                        Some(ScriptId::LookOut) => looked += 1,
+                        Some(ScriptId::ClockGlance) => glanced += 1,
+                        _ => {}
+                    }
+                    playing = plays;
+                }
             }
         }
+        assert!(cues.is_empty(), "{seed_at}: cues left");
+        assert!(
+            looked >= 1 && glanced >= 1,
+            "{seed_at}: looked {looked}, glanced {glanced}"
+        );
         assert!(dials.len() >= 8, "{seed_at}: dials {dials:?}");
         assert_eq!(
             skies,
@@ -558,5 +586,480 @@ fn her_clock_and_window_stay_cheap() {
             counts.encoded <= VISIT_IMAGES,
             "{seed_at}: her images cost more: {counts:?}"
         );
+    }
+}
+
+/// The LookOut seats the frame offers her (her window's, if any).
+fn look_out_seats(guest: &Guest) -> Vec<room::Seat> {
+    visit_of(guest)
+        .chances
+        .seats
+        .iter()
+        .filter(|s| s.what == room::Use::LookOut)
+        .copied()
+        .collect()
+}
+
+/// She looks out of her window only with it shown and somewhere to stand
+/// for it (step 8b): under it, a cell off its middle toward the side she
+/// faces from (her gaze goes up the way she faces), on its floor; with a
+/// piece standing beneath it, never in front of that: beside it, clear,
+/// facing it (her lamp beneath), or, with nowhere clear to stand (her
+/// sofa beneath), not at all: nothing binds. Without a window, or with it
+/// still in its box, there's nothing to look out of (only the box to
+/// unpack), and nothing binds. Her wall clock is offered as where it
+/// hangs only out of its box. Quiet panes or text-dense, in both drawing
+/// modes.
+#[test]
+fn she_looks_out_only_of_a_window_she_can_reach() {
+    use crate::ui::houseguest::mind::{Place, Whims, places};
+    let offered = |guest: &Guest| {
+        (0..32u64)
+            .filter(|&w| !places(room::Use::LookOut, &visit_of(guest).chances, Whims(w)).is_empty())
+            .count()
+    };
+    for (name, (real, view)) in screens() {
+        for graphics in [false, true] {
+            let at = format!("{name} graphics={graphics}");
+            // Hung, with nothing beneath it: under it.
+            let mut guest = timed_home(3, tue(14, 0), sprite::Facing::Right, graphics);
+            let now = until_visiting(&mut guest, &real, &view, 0);
+            paint(&mut guest, &real, &view, now);
+            let window = *visit_of(&guest)
+                .shown
+                .iter()
+                .find(|s| s.item == Furniture::Window)
+                .unwrap_or_else(|| panic!("{at}: window shown"));
+            let rect = window.rect();
+            let middle = i32::from(rect.x) + i32::from(rect.width) / 2;
+            let seats = look_out_seats(&guest);
+            assert_eq!(seats.len(), 1, "{at}: {seats:?}");
+            let seat = seats[0];
+            assert_eq!(seat.item, Furniture::Window, "{at}");
+            assert_eq!(
+                (seat.x, seat.y),
+                (middle - 1, window.floor),
+                "{at}: under it"
+            );
+            assert_eq!(seat.facing, sprite::Facing::Right, "{at}");
+            assert_eq!(offered(&guest), 32, "{at}");
+            assert!(
+                places(room::Use::LookOut, &visit_of(&guest).chances, Whims(0))
+                    .iter()
+                    .all(|p| matches!(p, Place::Seat(s) if *s == seat)),
+                "{at}"
+            );
+            // Her clock, where it hangs.
+            let clock = visit_of(&guest)
+                .shown
+                .iter()
+                .find(|s| s.item == Furniture::Clock)
+                .map(Shown::rect)
+                .unwrap_or_else(|| panic!("{at}: clock shown"));
+            let on = visit_of(&guest).chances.clock.expect("her clock offered");
+            assert_eq!(
+                on.x,
+                i32::from(clock.x) + i32::from(clock.width) / 2,
+                "{at}"
+            );
+            assert_eq!(on.floor, window.floor, "{at}: the same strip");
+            assert_eq!(on.seen_from((seat.x, seat.y)), Some(on.x), "{at}");
+            assert_eq!(on.seen_from((seat.x, seat.y - 3)), None, "{at}");
+            // Hung the other way: under it, the other side of its middle.
+            let mut guest = timed_home(3, tue(14, 0), sprite::Facing::Left, graphics);
+            let now = until_visiting(&mut guest, &real, &view, 0);
+            paint(&mut guest, &real, &view, now);
+            let seats = look_out_seats(&guest);
+            assert_eq!(
+                seats.iter().map(|s| (s.x, s.facing)).collect::<Vec<_>>(),
+                [(middle, sprite::Facing::Left)],
+                "{at}: hung facing left"
+            );
+            // Over a piece that stands: never in front of it. Over her
+            // lamp, beside it (clear of the lamp), facing it; over her
+            // sofa, wider, nowhere clear to stand (her box beside the
+            // window would be in front of the sofa too), so she can't
+            // reach it to look out, and nothing binds.
+            // Beside it, she stands first on the side she'd face it from
+            // the way it was hung (the other is clear too).
+            for (piece, reachable, facing) in [
+                (Furniture::Lamp, true, sprite::Facing::Right),
+                (Furniture::Lamp, true, sprite::Facing::Left),
+                (Furniture::Sofa, false, sprite::Facing::Right),
+            ] {
+                let at = format!("{at} over her {piece:?} hung {facing:?}");
+                let mut guest = home_at(
+                    3,
+                    tue(14, 0),
+                    &[(piece, Nook::Users, 550), (Furniture::Tv, Nook::Users, 900)],
+                    graphics,
+                );
+                assert!(guest.ledger.home.add(room::Prop::new(
+                    Furniture::Window,
+                    Nook::Users,
+                    550,
+                    facing
+                )));
+                let now = until_visiting(&mut guest, &real, &view, 0);
+                paint(&mut guest, &real, &view, now);
+                let shown = &visit_of(&guest).shown;
+                let rect_of = |item: Furniture| {
+                    shown
+                        .iter()
+                        .find(|s| s.item == item)
+                        .map(Shown::rect)
+                        .unwrap_or_else(|| panic!("{at}: {item:?} shown"))
+                };
+                let (window, below) = (rect_of(Furniture::Window), rect_of(piece));
+                let under = |x: i32| (i32::from(below.x)..i32::from(below.right())).contains(&x);
+                let middle = i32::from(window.x) + i32::from(window.width) / 2;
+                assert!(
+                    under(middle - 1) || under(middle),
+                    "{at}: {window:?} over {below:?}"
+                );
+                let seats = look_out_seats(&guest);
+                if !reachable {
+                    assert!(seats.is_empty(), "{at}: {seats:?}");
+                    assert_eq!(offered(&guest), 0, "{at}");
+                    continue;
+                }
+                assert_eq!(seats.len(), 1, "{at}: {seats:?} {window:?} {below:?}");
+                assert_eq!(offered(&guest), 32, "{at}");
+                let seat = seats[0];
+                let half = sprite::WIDTH / 2;
+                assert!(
+                    seat.x + half < i32::from(below.x) || seat.x - half >= i32::from(below.right()),
+                    "{at}: in front of it: {seat:?}, {below:?}"
+                );
+                assert_eq!(
+                    seat.facing,
+                    if seat.x < middle {
+                        sprite::Facing::Right
+                    } else {
+                        sprite::Facing::Left
+                    },
+                    "{at}: facing it"
+                );
+                assert_eq!(seat.facing, facing, "{at}: from the side it was hung to");
+                // The other side would do as well: she'd fit there too.
+                let terrain = &visit_of(&guest).terrain;
+                let window = *shown
+                    .iter()
+                    .find(|s| s.item == Furniture::Window)
+                    .unwrap_or_else(|| panic!("{at}: window"));
+                let [left, right] = window.beside();
+                let other = if seat.x == left { right } else { left };
+                assert_ne!(seat.x, other, "{at}");
+                assert!(
+                    seat_spot(terrain, other, window.floor) && clear_of(shown, other, window.floor),
+                    "{at}: the other side at {other} is blocked"
+                );
+            }
+            // No window, or one still boxed: nothing to look out of; no
+            // clock offered.
+            for boxed in [None, Some(())] {
+                let mut guest = home_at(3, tue(14, 0), &HOME, graphics);
+                if boxed.is_some() {
+                    let mut window =
+                        room::Prop::new(Furniture::Window, Nook::Users, 550, sprite::Facing::Right);
+                    window.boxed = true;
+                    assert!(guest.ledger.home.add(window));
+                    let mut clock =
+                        room::Prop::new(Furniture::Clock, Nook::Users, 150, sprite::Facing::Right);
+                    clock.boxed = true;
+                    assert!(guest.ledger.home.add(clock));
+                }
+                let now = until_visiting(&mut guest, &real, &view, 0);
+                paint(&mut guest, &real, &view, now);
+                assert!(look_out_seats(&guest).is_empty(), "{at} boxed={boxed:?}");
+                assert_eq!(offered(&guest), 0, "{at} boxed={boxed:?}");
+                assert_eq!(visit_of(&guest).chances.clock, None, "{at} boxed={boxed:?}");
+            }
+        }
+    }
+}
+
+/// Looking out of her window, she says what her sky shows, gazing up
+/// curious: the sun by day, the sunset at dusk, the lights coming on of
+/// an evening, the stars at night. Cued at each of those times, in both
+/// drawing modes, quiet panes or text-dense; drawn, the bubble is her
+/// line (nothing else she says is over it at first).
+#[test]
+fn she_looks_out_at_the_sky_she_sees() {
+    use super::script::{LOOK_OUT_LINES, ScriptId};
+    for (name, (real, view)) in screens() {
+        for graphics in [false, true] {
+            for (when, sky) in [
+                (tue(14, 0), Sky::Day),
+                (mon(17, 30), Sky::Dusk),
+                (mon(19, 30), Sky::Evening),
+                (mon(21, 30), Sky::Night),
+            ] {
+                let at = format!("{name} graphics={graphics} {sky:?}");
+                let mut guest = timed_home(2, when, sprite::Facing::Right, graphics);
+                let mut now = until_visiting(&mut guest, &real, &view, 0);
+                guest.cue(Scene::LookOut);
+                let start = now;
+                let play = loop {
+                    assert!(now < start + 30_000, "{at}: never looked out");
+                    shell_step(&mut guest, &real, &view, &mut now, true);
+                    if let Some(play) = visit_of(&guest)
+                        .osaka
+                        .plays()
+                        .filter(|p| p.own == ScriptId::LookOut)
+                    {
+                        break play;
+                    }
+                };
+                let (of, line) = LOOK_OUT_LINES[usize::from(play.branch)];
+                assert_eq!(of, sky, "{at}: {line}");
+                assert_eq!(
+                    Sky::at(minute_at(&guest, now)),
+                    sky,
+                    "{at}: the sky turned meanwhile"
+                );
+                let (pose, face, bubble) = visit_of(&guest).osaka.appearance(now);
+                assert_eq!(
+                    (pose, face),
+                    (sprite::Pose::Gaze, sprite::Face::Curious),
+                    "{at}"
+                );
+                assert_eq!(bubble, Some(osaka::Bubble::Say(line)), "{at}");
+            }
+        }
+    }
+}
+
+/// A window delivered to a furnished home (her sofa, TV, bed, desk, lamp
+/// and fridge wherever, across her two rooms) comes in through a wall
+/// where she can stand to look out of it, wherever one lets her: unboxed
+/// where its parcel stood, it offers her a seat in nearly every home.
+/// Without that preference about a third of them had a window she could
+/// never look out of. In both drawing modes.
+#[test]
+fn a_delivered_window_is_one_she_can_look_out_of() {
+    const PIECES: [Furniture; 6] = [
+        Furniture::Sofa,
+        Furniture::Tv,
+        Furniture::Bed,
+        Furniture::Desk,
+        Furniture::Lamp,
+        Furniture::Fridge,
+    ];
+    let (real, view) = home_screen();
+    for graphics in [false, true] {
+        let (mut delivered, mut usable) = (0, 0);
+        for seed in 0..40u64 {
+            let at = format!("seed {seed} graphics={graphics}");
+            let mut rng = Rng(seed ^ 0x77_1d0e);
+            let pieces: Vec<(Furniture, Nook, u16)> = PIECES
+                .iter()
+                .map(|&item| {
+                    let nook = if rng.below(2) == 0 {
+                        Nook::Users
+                    } else {
+                        Nook::Playlist
+                    };
+                    (item, nook, rng.below(1001) as u16)
+                })
+                .collect();
+            let mut guest = home_at(seed, tue(14, 0), &pieces, graphics);
+            let mut now = until_visiting(&mut guest, &real, &view, 0);
+            guest.ledger.ordered = Some(Furniture::Window);
+            guest.ledger.bought_on = 0;
+            let start = now;
+            while !guest.ledger.home.owns(Furniture::Window) && now < start + 10_000 {
+                shell_step(&mut guest, &real, &view, &mut now, true);
+            }
+            let Some(window) = guest
+                .ledger
+                .home
+                .props
+                .iter_mut()
+                .find(|p| p.item == Furniture::Window)
+            else {
+                continue;
+            };
+            delivered += 1;
+            window.boxed = false;
+            paint(&mut guest, &real, &view, now);
+            if look_out_seats(&guest).is_empty() {
+                tracing::debug!("{at}: no window seat");
+            } else {
+                usable += 1;
+            }
+        }
+        // 26 of 40 without the preference (2026-10-05); 40 of 40 with.
+        assert!(
+            delivered >= 30,
+            "graphics={graphics}: {delivered} delivered"
+        );
+        assert!(
+            usable * 20 >= delivered * 19,
+            "graphics={graphics}: {usable} of {delivered} she can look out of"
+        );
+    }
+}
+
+/// As her routine turns, at bedtime (22:30) and as she leaves for school
+/// (08:15), with her wall clock hung over the strip she stands on, she
+/// first glances up at it, through the frame's own chain (where it
+/// hangs, offered to her each frame): turned toward it, gazing up,
+/// "Oh! It's late!" or "Time for school!", and then her routine goes on.
+/// With it hung in her other room (or her standing between rooms), or
+/// with none, her routine goes on at once. (Just before the turn, she's
+/// put in her living room, and it's hung there or in her
+/// bedroom.) In both drawing modes, quiet panes or text-dense.
+#[test]
+fn she_glances_at_her_clock_as_her_routine_turns() {
+    use super::script::{ClockGlance, ITS_LATE, SCHOOL_TIME, ScriptId};
+    for (name, (real, view)) in screens() {
+        for graphics in [false, true] {
+            for (start, turn, glance, line) in [
+                (mon(22, 25), mon(22, 30), ClockGlance::Bed, ITS_LATE),
+                (tue(8, 10), tue(8, 15), ClockGlance::School, SCHOOL_TIME),
+            ] {
+                let mut glanced = 0;
+                for (mine, hung) in [(true, true), (false, true), (false, false)] {
+                    for seed in 0..3u64 {
+                        let at = format!(
+                            "{name} graphics={graphics} {glance:?} mine={mine} hung={hung} {seed}"
+                        );
+                        let mut guest = home_at(seed, start, &HOME, graphics);
+                        let mut now = until_visiting(&mut guest, &real, &view, 0);
+                        let due = real_of(&guest, now, turn);
+                        assert!(now + 3000 < due, "{at}: arrived after the turn");
+                        // (Each step at most a second: none crosses the
+                        // turn.)
+                        while now + 3000 < due {
+                            shell_step(&mut guest, &real, &view, &mut now, true);
+                        }
+                        // In her living room as the turn comes (the stage
+                        // puts her there), her clock hung there or in her
+                        // bedroom.
+                        let State::Visiting(visit) = &mut guest.state else {
+                            panic!("{at}: visiting");
+                        };
+                        let (_, users) = view.nooks[0];
+                        visit.osaka.place(25, i32::from(users.bottom()) - 1, now);
+                        if hung {
+                            let nook = if mine { Nook::Users } else { Nook::Playlist };
+                            assert!(guest.ledger.home.add(room::Prop::new(
+                                Furniture::Clock,
+                                nook,
+                                500,
+                                sprite::Facing::Right
+                            )));
+                        }
+                        paint(&mut guest, &real, &view, now);
+                        let decided = visit_of(&guest).osaka.decisions.len();
+                        let first = |guest: &Guest| {
+                            visit_of(guest).osaka.decisions[decided..]
+                                .iter()
+                                .find(|d| d.at >= due && d.method.starts_with("routine/"))
+                                .map(|d| d.method)
+                        };
+                        while first(&guest).is_none() && now < due + 30_000 {
+                            shell_step(&mut guest, &real, &view, &mut now, true);
+                        }
+                        // Off out of sight as the turn came (her routine
+                        // waits for her), or asleep in her bed already as
+                        // bedtime came (her night begun in place): no
+                        // routine to glance first.
+                        if first(&guest).is_none() {
+                            let osaka = &visit_of(&guest).osaka;
+                            assert!(
+                                osaka.hidden(now) || glance == ClockGlance::Bed && osaka.sleeping(),
+                                "{at}: no routine by {now}: {:?}",
+                                osaka.act_name()
+                            );
+                            continue;
+                        }
+                        let visit = visit_of(&guest);
+                        let osaka = &visit.osaka;
+                        let clock = visit.chances.clock;
+                        assert_eq!(clock.is_some(), hung, "{at}: {clock:?}");
+                        let seen = clock.and_then(|c| c.seen_from((osaka.x, osaka.y)));
+                        let method = first(&guest);
+                        let Some(x) = seen else {
+                            assert_ne!(method, Some("routine/glance"), "{at}");
+                            continue;
+                        };
+                        assert_eq!(method, Some("routine/glance"), "{at}");
+                        glanced += 1;
+                        assert_eq!(
+                            osaka.plays().map(|p| (p.own, p.branch)),
+                            Some((ScriptId::ClockGlance, glance.branch())),
+                            "{at}"
+                        );
+                        let (pose, _, bubble) = osaka.appearance(now);
+                        assert_eq!(pose, sprite::Pose::Gaze, "{at}");
+                        assert_eq!(bubble, Some(osaka::Bubble::Say(line)), "{at}");
+                        if x != osaka.x {
+                            let toward = if x > osaka.x {
+                                sprite::Facing::Right
+                            } else {
+                                sprite::Facing::Left
+                            };
+                            assert_eq!(osaka.facing, toward, "{at}: toward it at {x}");
+                        }
+                    }
+                }
+                assert!(
+                    glanced >= 1,
+                    "{name} graphics={graphics} {glance:?}: {glanced} on her strip"
+                );
+            }
+        }
+    }
+}
+
+/// Cued by the stage in the very frame her wall clock first shows
+/// (before any tick of hers has seen it), her glance still finds it:
+/// the stage hands her the frame as it is. Turned toward it, she says
+/// the hour it shows ("Two-ish." at 14:00). In both drawing modes, quiet
+/// panes or text-dense.
+#[test]
+fn a_cued_glance_finds_the_clock_as_it_hangs_now() {
+    use super::script::ScriptId;
+    for (name, (real, view)) in screens() {
+        for graphics in [false, true] {
+            let at = format!("{name} graphics={graphics}");
+            let mut guest = home_at(2, tue(14, 0), &HOME, graphics);
+            let now = until_visiting(&mut guest, &real, &view, 0);
+            let (_, users) = view.nooks[0];
+            let State::Visiting(visit) = &mut guest.state else {
+                panic!("{at}: visiting");
+            };
+            visit.osaka.place(40, i32::from(users.bottom()) - 1, now);
+            visit.osaka.facing = sprite::Facing::Right;
+            assert!(guest.ledger.home.add(room::Prop::new(
+                Furniture::Clock,
+                Nook::Users,
+                150,
+                sprite::Facing::Right
+            )));
+            guest.cue(Scene::ClockGlance);
+            paint(&mut guest, &real, &view, now);
+            let visit = visit_of(&guest);
+            let osaka = &visit.osaka;
+            let x = visit
+                .chances
+                .clock
+                .and_then(|c| c.seen_from((osaka.x, osaka.y)))
+                .unwrap_or_else(|| panic!("{at}: her clock in sight"));
+            assert!(x < osaka.x, "{at}: {x} vs {}", osaka.x);
+            assert_eq!(
+                osaka.plays().map(|p| p.own),
+                Some(ScriptId::ClockGlance),
+                "{at}"
+            );
+            assert_eq!(osaka.facing, sprite::Facing::Left, "{at}: toward it");
+            assert_eq!(
+                osaka.appearance(now).2,
+                Some(osaka::Bubble::Say("Two-ish.")),
+                "{at}"
+            );
+        }
     }
 }
