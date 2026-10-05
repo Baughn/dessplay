@@ -1,0 +1,385 @@
+# Phase 5c (stillness) — implementation design
+
+**Working design, 2026-10-05.** Brief: docs/plan.md, Phase 38, "Phase 5c — stillness (brief, 2026-10-05)".
+Code map with file:line refs at HEAD `cabf5d1`: [phase5c/map.md](phase5c/map.md). Its last section
+("Gaps and corrections") overrides the sections above it. Paths are relative to
+`dessplay/src/ui/houseguest/`. HG is docs/proposals/2026-09-28-houseguest.md.
+
+## User decisions
+
+From the brief (2026-10-05):
+- **A target band per mood** for moving, as a share of awake time: about **15 lazy, 20–25 ordinary and
+  dreamy, up to 30 industrious**. It becomes a census band test per room and mood.
+- **Walking to a job counts** as movement.
+- **New art is fine** (model sheets first).
+- **The window is a daydreaming place:** look-outs become rarer and much longer.
+- **A dash keeps looking at chat lines.**
+- **Apply the rain-out fix** and re-record the traces it moves, with the reason.
+
+This session (2026-10-05):
+- **Q1, chat.** A still act cut by a chat line **resumes** once she's looked. The band is judged both in a
+  quiet room and at the census chat rates, and must pass both. **The watch after a line drops from 15 s
+  to 5 s** (`WATCH_MS`): "the act of looking is there solely to draw attention, which only happens during
+  change."
+- **Q2, mood.** The difference between moods comes from **still-act lengths and settling in**: a lazy
+  Osaka lingers and settles further more often, an industrious one is briefer and gets up. No mood factor
+  on walking, so the `sane_factor` rule stands.
+- **Q3, the metric.** The band pins the **in-sight time share** per mood **and a cap on set-offs per awake
+  minute** (walks, hops, doors), so shorter or faster walks can't pass on their own. Exercise in place
+  (jacks, toe touches) and lying kicking her feet count as still, and are printed.
+
+Told to the user (not questions): the brief's 35–45% included time she's off screen (away at work, a
+door's hidden beats); the band's quantity is moving in sight ÷ awake time in sight, roughly 33–38% today
+(to be measured in step 1). Two older bugs land first as their own commits (D0).
+
+**Decided unless the user objects** (each recorded in decisions.md when it lands):
+- The band is pinned in **line art** (the user's client is kitty); step 1 measures both modes once.
+- A door's **visible** beats count as moving; its hidden beats, Away and her work shift are out of the
+  band entirely (neither moving nor still).
+- A walk to text torn for a made piece (`Job::Build`) is "to text" (the walk's goal), with the want shown
+  in a second table.
+- D4 of 5b ("Gaze ×more with a window") is dropped: the window is now the daydream place itself (D6).
+- `hour_glanced` stays once a visit unless step 5's measure says the afternoon glance is still starved.
+
+## Design decisions
+
+### D0. Pre-commits (each alone, before step 1 measures anything)
+
+**D0a. The rain-out's last frame** (5b "Open"; map §rainout). The Visiting arm of `Guest::advance`
+computes `fading` after `retain` (mod.rs:1499-1500), so the tick a fade ends on can report "nothing
+changed". Away's arm has the order right; Leaving ignores the result. Make the class unrepresentable: one
+helper all three arms call,
+
+```rust
+/// Drop the fades done at `now`. Whether the screen could change: any was
+/// running (its frame, or the frame without it).
+fn tend_fades(fades: &mut Vec<Dissolve>, now: u64) -> bool
+```
+
+and no arm touches `fades.retain` itself. Test first: a property over the states with fades (Visiting,
+Away, Leaving): **whenever a fade was live before `advance(now)`, `advance` returns true**. It fails on
+HEAD for Visiting. The ~24 moved traces (resident fed/unfed, errand seeds 1 and 3) are re-recorded; the
+procedure in *Goldens* confirms each moved trace first differs by one added frame at a fade's
+`t0 + DURATION_MS`.
+
+**D0b. Wants that serve needs but are never credited.** `credit_done` (osaka.rs:4964-5003) has no arm for
+`Act::SpaceOut` (SpaceOut serves Daydreams 0.6; design.md:1459 says spacing out answers daydreams) or for
+Work (serves Restless 0.5). Fix the class:
+- SpaceOut (and Muse, which is a SpaceOut) credits by the share of its span done, `Spot::Any`.
+- Work credits whole when the shift (or the hop out) completes; a shift cut short credits its share.
+- **Class test:** over `Want::ALL`, every want with non-empty `serves` is credited by some path (cue each
+  want's `Scene`, run it to its end, assert `credited` holds it with share > 0). Stand and Sneeze serve
+  nothing; Walk/Travel are credited at set-off; Pull/Swap by `credit_whole`/offset. A future want with
+  `serves` and no arm fails it.
+- Two commits (SpaceOut, Work) or one; each re-records all goldens with the reason.
+
+### D1. Measuring (step 1; test code only, no golden moves)
+
+**The classifier.** A `#[cfg(test)] pub fn census_motion(&self, now) -> Option<Motion>` on `Osaka`, beside
+`census_group` (osaka.rs:5249), wildcard-free so a new act won't compile without a class. `Motion` has two
+axes:
+- *Body:* `walk` (Walk, Out), `climb` (Climb, Clamber), `fall` (Peer, Fall, Dazed), `door` (visible
+  beats), `hidden` (Away, a door's hidden beats, i.e. `hidden(now)`).
+- *Purpose*, in priority order: `heading.is_some()` → to a job by kind; `Walk { then: Job(job) }` → to a
+  job by kind (**text**: Pull, Swap, Build; **seat**: Use; **home**: Lift, SetDown); `shift` → work;
+  `leaving`/`returning` → routine; `dash`; `errand`; otherwise by a chain tag: `walk/along` → wander,
+  `travel/*` → travel, off text, arrival/return, accident.
+- **The chain tag:** a `#[cfg(test)] chain: &'static str` set in `decide()` from `Decision.method` and
+  overwritten at the non-decision `set` sites (arrival walk-in, floor gone, back from Away, climb after a
+  hop keeps its hop's tag). No behaviour changes.
+
+**What's counted.** Per visit: in-sight ms (Visiting, not hidden, not asleep for the night), moving ms by
+(purpose, body), and **set-offs**: each start of a Walk, a Travel hop, a door, or a `go_to` hop (one per
+leg; a climb that continues a hop is not a new set-off). Also exercise ms and animated-still ms (LieFront)
+printed apart.
+
+**Where.**
+- `visit_census` (unfed, 5a-comparable): adds per room×mood: moving % of in-sight time by purpose and body,
+  set-offs per in-sight minute, and **per-seed min/max** of the share.
+- A **fed afternoon census** (new, `#[ignore]`d, printed): each room fed at a fixed weekday 13:00 (school
+  done, the Afternoon slot) for 15 real minutes, mood forced after the first paint and **asserted**
+  (`set_mood` behind an `if let` today fails silently: make it an `expect`). No shopping (rooms stay as
+  set). Both chat conditions: quiet, and the room's census cadence. Both drawing modes. This is the band's
+  own setup, so step 2's thresholds read off it.
+- `day_census`: `Stretch` gains moving by purpose and a mood bucket (`format!("{:?}", osaka.mood())`);
+  per-room week table of purpose × mood. Dash-ins and the Asleep/Away slot lines (<0.5% of their time)
+  are excluded from any band reading. Bare-room numbers come from the unfed stage, not a fed week (its
+  rooms gain furniture).
+- Step 1 checks the forced mood holds through the fed afternoon (no `begin_day` inside 90 game minutes)
+  and records the cost per sim-minute in line art.
+
+**Output of step 1:** a baseline table in the design dir (`phase5c/baseline.md`): in-sight share and
+set-offs/min per room × mood × chat × mode, fed and unfed, with per-seed spread.
+
+### D2. The band test (step 2)
+
+- One `#[test]` per room × mood (12; a `macro_rules!` is fine), each running the fed-afternoon setup in
+  **line art**, **quiet and at the census cadence**, N seeds × M minutes (set from step 1 so each test is
+  ≤ 3 s under the gate; shorten minutes before adding seeds).
+- Each asserts, per chat condition, the seed-mean in-sight moving share inside its band, and set-offs per
+  in-sight minute under its cap:
+
+  | Mood | Share ceiling | Share floor ("too still") |
+  |---|---|---|
+  | Lazy | 17 | 7 |
+  | Ordinary, Dreamy | 26 | 12 |
+  | Industrious | 31 | 15 |
+
+  Tolerances (the ceilings above sit a point or two over the user's targets) are re-checked against step
+  1's per-seed spread before pinning.
+- **The set-off cap** per room × mood: today's rate × (target share ÷ today's share) × 1.15, computed from
+  the baseline, so a lever that only shortens walks fails it.
+- It fails at today's numbers (confirmed by running it), and is committed `#[ignore = "5c: un-ignored when
+  step 3 meets the band"]`; step 3c un-ignores it. A `CENSUS_BAND_SEEDS` env knob scales it for deep runs.
+- The stage and resident are judged as well as the home; a TV-only home is printed.
+
+### D3. Chat: a shorter watch, and resuming (step 3a)
+
+- `WATCH_MS` 15 s → **5 s**. After a line she looks (`LOOK_MS` 4 s), then watches until 5 s after the last
+  line, then resumes. A lively chat still holds her (each line renews it).
+- **Resume.** When a chat line cuts (`Cause::Chat`, not `ChatPassing`) a **still act** (Idle Sit, LieBack,
+  LieFront, Gaze; SpaceOut, a daydream session included; a Use of Lounge, Nap, Watch, Read, Homework,
+  LookOut, and day Sleep), she keeps `resume: Option<Resume>`: the want, the seat (for a Use), her spot,
+  and the ms left. In `choose_next`, after the routine reflexes and the watch and before every other
+  continuation, a `Bucket::Continuation` "resume" re-enters it if:
+  - she is still at that spot, the terrain there is still restful, and the seat still stands (re-read from
+    `chances.seats`; for a made seat, `Visit.made` still has it);
+  - the routine hasn't claimed her (to bed, to school, out to work), and it's within 30 s of the cut;
+  - at least `RESUME_MIN_MS` (8 s) was left.
+  Otherwise the resume is dropped and she chooses afresh.
+- The resumed act lasts what was left. A Use resumes on its host's **plain body**: no prelude, no splice
+  drawn afresh, no rare, no new line budget; a splice that was playing is over. The resumed act's credit
+  is scaled by `left ÷ whole`, so a cut-and-resumed act eases no more than an uncut one.
+- Cut again, it resumes again on what's left. A dash, an errand and the night don't resume (the dash keeps
+  looking at chat, as built).
+- **Rule** (design.md, Houseguest): resuming is a continuation of what she chose, like a leftover or a
+  heading, not a new choice, so it skips the roll. decisions.md records why (attention is drawn by change;
+  a fresh roll after every chat line was a walk half the time).
+
+### D4. Cheap levers (step 3b mechanisms, step 3c tuning)
+
+**Mood lingering.** `Mood::linger(self) -> f64`: Lazy 1.5, Dreamy 1.25, Ordinary 1.0, Industrious 0.7
+(starting values). It scales the drawn length of every still act (the Idle restful activities, SpaceOut,
+and the still Uses: Lounge, Nap, Watch, Read, Homework, LookOut, day Sleep), one draw as now. Not exercise,
+chores (Unpack, Crumple, Snack, Pet) or the night. The script lints (`shortest_body`, `BODIES`) use the
+shortest over moods (base minimum × 0.7), so base minimums rise to keep them.
+
+**Settling in** (name: `settle_in`; `Osaka::settle` is taken). When a still act **ends on its own** (the
+ended act is still `self.act` in `choose_next`; a cut one is a `Look` and goes through D3 instead), a
+`Bucket::Continuation` "settle in" rolls `whims.chance("settle in", p(mood))`, p = Lazy 0.6, Dreamy 0.45,
+Ordinary 0.35, Industrious 0.15 (starting values), and binds in place, no walk:
+- SpaceOut or Gaze (standing) → Idle(Sit) → Idle(LieBack) (the doze; for Dreamy, cloud-watching, D5).
+- Use(Lounge) → Use(Nap) on the same sofa.
+- Use(LookOut) → sitting under the sill (step 5, with its art).
+- Watch and Read on the floor: nodding off, if the art sheet has it (step 4); otherwise nothing.
+- A chain ends at its last state. A settled act only binds what `mind::bind` would bind for that want at
+  her spot (the offering/planning invariant), is credited as its own want, and doesn't enter `recent`.
+- Settling sits after `leftover` and the routine reflexes, so bedtime, school and arranging win.
+- Day dozes ease Sleepy (LieBack 0.15, Nap 0.1): re-check the 5b night numbers (bed by 22:00) in the day
+  census after this lands.
+
+**Daydream sessions.** A chosen SpaceOut lasts longer (D4 tuning) and its `muse` arm, instead of one line,
+says up to `n` musings spaced 12–20 s apart (n drawn 1–3, ×linger rounded), each a fresh `muse` (riddle,
+musing, seasonal pool); the hour glance rolls once a session, and the Escalator rare once a session. A
+session with nothing left to say just spaces out. It needs D0b's credit first.
+
+**Nearer spots.** All pure functions of `(Ctx, Whims)`, so offering and planning still agree:
+- `walk` (mind.rs:253): the column weighted toward nearer ones, weight `1 / (1 + |dx| / 8)`, no target
+  within 3 cells.
+- `place` (mind.rs:434): seats weighted `1 / (1 + d / 10)`, d = `|dx|` on her floor, +40 per floor away.
+  `use_real`/`use_made`/`use_make` keep calling it with the same whims and label.
+- `pull`, `swap` (mind.rs:318-340): offers on her own floor ×4, then nearer first by the same weight. This
+  is the stage's big lever (731 off-floor hops in 16 visits; map critic G7).
+
+**Tuning (step 3c),** starting values, re-measured against the band, then pinned:
+- `rise_ms`: Restless 90 s → **300 s**, Tidy 60 s → **240 s**.
+- Walk base 14 → **9**; arrival Restless 0.7 → 0.5 if the fed afternoon still opens with a walk run.
+- Base still-act lengths (before ×linger): SpaceOut 20–60 s; Sit 30–90; LieBack 40–120; LieFront 20–50;
+  Gaze 10–25; Lounge 40–90; Nap 60–150; Watch 45–120; Read 40–90; Homework 45–90 (its slot's 120–240
+  stays); LookOut in step 5.
+- Order of moves if the band isn't met: settle-in odds, then lengths, then Walk base, then needs. Each
+  tuning run uses the fed-afternoon census; the goldens are re-recorded once at the end of 3c, not per
+  try.
+- **What the levers hit:** `a_restless_osaka_mostly_moves` (keeps passing at base 9 per the map),
+  `sleepiness_draws_her_to_lie_down` (sensitive: re-derive, don't loosen blindly),
+  `at_home_her_furniture_beats_the_floor` (floor rest grows: re-state the property, e.g. furniture > 3×
+  floor rest, with the reason), `her_mood_shows` (its doc's "moving is no measure" is retired: the band
+  test now pins it), the made-piece property's `BOUND` (now derived: longest still act at Lazy + a chat
+  gap + the watch + a walk, not the literal 90 s), and design.md's numbers (fit formula untouched; the
+  rise times, Walk base, watch length and lengths move).
+
+### D5. Bare-room stillness (step 4, after the art is approved)
+
+**Floor homework.** A new `Activity::Homework` (Here::Idle, `Spot::Floor`), lying on her front with a
+paper and pencil (new art), offered only where no desk (real or made) stands. It gets `HOMEWORK_FACTORS`
+(×3 in the Homework slot, exams), serves Daydreams 0.3, Comfort 0.1. It ends with a sore moment ("my
+back...") and sets `ached` for the visit.
+
+**The makeshift desk.** `Furniture::Desk` joins `MAKES` (no new `Furniture` variant, so no ledger format
+change): a low cube of crumpled text, 3–4 × 2 cells, explicit arms in `footprint`, `cell`, `heaps`, a seat
+**beside** it (not in it), `roomy` allowing her spot, a "...my desk." loss line, `Scene::MakeDesk`, and a
+floor-seated writing pose at it (new art, no stool). Chopsticks splice only at a real desk (its `when`
+checks the seat). While `ached`, Use(Homework)'s `use/make` bind gets the D5 make factor again (×3, so ×9
+in all): her back drives the desk as the brief asks.
+
+**More makeshift while she owns no real piece.** In `choose_next`'s `factor` closure (osaka.rs:5669), an
+offer whose bind is `Job::Build(_)` gets ×3 (above 1, so no lint change). It drops away by itself as real
+furniture arrives: with a real piece of the kind, `places()` offers make only 1 in 20.
+
+**Reading a pulled line (HG #72).** A method of Use(Read) where no bookshelf stands, `use/borrow`: she
+walks to a line of text (counts as moving, one set-off), tears a strip (reel), sits on the floor reading it
+(the `Read` pose with a strip `hold` part instead of the book), then slides it back (`unreel`). A cut
+read mends at once (Loss::Tear). No persistence.
+
+**TV from the floor.** Watch already binds with a TV alone and seats her beside it (map §brain 7). The host
+pose away from a sofa becomes **cross-legged** facing the screen (new art) instead of hugging her knees.
+
+**Cloud-watching.** By day, a LieBack settled into by a Dreamy Osaka, or from a daydream session, shows a
+Curious face with a musing bubble instead of the doze's blink and Zzz (art check in line art; ASCII
+differs only by bubble).
+
+### D6. The window as a daydream (step 5)
+
+- LookOut base 8 → **3**, its length **60–180 s** (×linger), and it becomes a session: the sky line, then
+  a long sit or lean at the sill (new art) with up to three sky musings (a new small pool: clouds, birds,
+  the moon at night), stars after dark as now.
+- Settling in from it: sitting under the sill.
+- `looking_out_is_a_daydream_and_some_fun` updates to the new row; the day census's look-out count should
+  fall from about 19 to a few a game day, and the afternoon clock glance be re-checked. If it's still
+  starved, the hour glance rolls once per daydream session (it already belongs to a musing's place).
+
+## Art (model sheets first; drawn in parallel with steps 0–3)
+
+An art agent in a worktree (committing with **git**, not jj) draws, at 1×, 1×-nn3× and 3× over the usual
+background, a sheet of: floor homework (lying on her front writing, 2 frames, plus a face-down doze);
+the crumpled-cube desk and homework at it (kneeling or cross-legged, writing, nodding off); reading a torn
+strip on the floor; cross-legged before the TV; sitting or leaning at the window sill (and sitting under
+it); cloud-watching LieBack face; nodding off while watching/reading on the floor (if it reads well). Saved
+under `phase5c/art/` with `snippets.md` and `worktree.diff`. **The user approves the sheet before step 4
+wires anything.** ASCII rows need no review but every new pose needs them (the sprite lints).
+
+## Goldens and determinism
+
+- Every lever moves every hash (112 plus the `osaka_at_home_seed_7` snapshot). Re-record once per commit
+  that changes behaviour, with the reason in the commit message; the failing test prints the new table.
+- **Narrow fixes are verified, not just re-recorded** (D0a, the WATCH change if done alone): run the
+  golden tests with `HOUSEGUEST_GOLDEN_TRACE=<dir>` on the old revision (a `git worktree` in the
+  scratchpad with its own `CARGO_TARGET_DIR`) and the new, diff, and check every moved trace first differs
+  where the change predicts.
+- New weights go through `pick_weighted`, which changes the draw even when it picks the same thing (map
+  critic G8): expected.
+- No `Date::now`-style or unseeded randomness; whims labels are new strings ("settle in", "resume").
+
+## Tests (written first where they apply)
+
+- D0a: the fades property (fails on HEAD). D0b: the credit-class test over `Want::ALL` (fails on HEAD).
+- D2: the band tests (fail on HEAD, committed ignored until 3c).
+- D3: a cut still act resumes after the watch (each still kind, both modes); not when she was moved, the
+  seat went, the routine claimed her, or too little was left; a cut-and-resumed act's credit totals one
+  act's; the watch is 5 s.
+- D4: settle-in chains (SpaceOut → Sit → LieBack; Lounge → Nap) only on an uncut end, never past bedtime;
+  mood linger scales lengths; nearer spots are preferred (a seeded distribution test on `walk` and
+  `place`); pulls stay on her floor when there's text there.
+- D5/D6: floor homework only without a desk; the desk is made, used and let go (the made-piece property
+  covers Desk); a borrowed line is always slid back or mended; Watch's host pose is cross-legged away from
+  a sofa; LookOut's new row and length.
+- Every test loops `graphics in [false, true]` and fills panes with text where terrain matters.
+- Reviewers prove a new test can fail by a mutant.
+
+## Steps (each implemented, reviewed twice, then fixed, minors included)
+
+0. This design and the map (docs commit). Art agent starts.
+1. D0a rain-out (helper, property, verified trace re-record).
+2. D0b credit class (SpaceOut, Work; class test; re-record).
+3. D1 measuring; `phase5c/baseline.md`.
+4. D2 band test (ignored), thresholds and caps from the baseline.
+5. D3 watch 5 s and resuming.
+6. D4 mechanisms: linger, settle in, daydream sessions, nearer spots.
+7. D4 tuning to the band; un-ignore the band test; re-measure all censuses.
+8. (after art approval) Art wired: poses, parts, ASCII rows.
+9. D5 floor homework, makeshift desk, more makeshift, reading a pulled line, cross-legged TV,
+   cloud-watching.
+10. D6 the window as a daydream; glance re-check.
+11. Census pass (256-case houseguest run in release, day census, fed afternoon, visit census both modes),
+    docs: design.md rules, decisions.md reasons, plan.md record, CHANGELOG (she's calmer; resumes after
+    chat; floor homework, the paper desk, reading a line, the window daydream).
+
+## Docs that change
+
+- design.md, Houseguest: the watch (5 s), resuming, settling in, mood lingering, the rise times and Walk
+  base, nearer spots, floor homework and the paper desk, reading a pulled line, cross-legged TV, the
+  window daydream, the band as a stated aim (share in sight per mood, with its set-off cap).
+- decisions.md: why each (attention control; why mood acts through lengths, not a walking factor; why the
+  band excludes hidden time; why resuming skips the roll).
+- plan.md Phase 38: the 5c record.
+
+## Round-1 amendments (2026-10-05)
+
+Four critics ([mechanics](phase5c/critic-mechanics.md), [character](phase5c/critic-character.md),
+[tests](phase5c/critic-tests.md), [feasibility](phase5c/critic-feasibility.md)) and their
+[synthesis](phase5c/critique.md). **Every amendment in the synthesis is adopted** (B1, B3–B6, M1–M11,
+minors 1–12) except where this section says otherwise; B2 (the resume fallback) is **not** adopted, since
+the user chose B1. Where this section and the synthesis disagree with the sections above, they win, this
+section first.
+
+### The user's calls, round 1
+
+- **Q1 → she looks up in place** (synthesis B1). A chat line during a still act on restful terrain doesn't
+  `interrupt`: a look overlay on the running act turns her to the chat (where the pose has a facing), `!`
+  then `?`, then a plain watching face until `watch_until`; the act's clock and credit run on. Dozes
+  (LieBack, Nap, day Sleep) stir instead ("Mm?", as at night). Walking, pulling, chores, making, exercise
+  and anything on text are still cut as today. **D3's `Resume` and its guards are gone**; `WATCH_MS` 15 →
+  5 s stays, as its own verified commit. design.md's "she stops and looks" becomes "in a still act she
+  looks up where she is".
+- **Q2 → the TV shows the film** (new D7 below). The user: "could it use screenshots from the running mpv
+  player, if any (changing infrequently)?"
+- **Q3 → a slow blink** on held poses (Sit, Lounge, cross-legged, a long Gaze, reading, homework at rest):
+  150 ms every 6–12 s, drawn from whims/the body stream (not wall time), landing in step 8's re-record.
+
+### D7. The TV picture (new)
+
+- **Static only as it switches on and between channels** (about 1 s), then a **held picture**: animated
+  static for up to 3 minutes would be the most eye-catching thing in a TV home.
+- **With a film loaded in mpv, the held picture is a screenshot of it.** The player already takes
+  screenshots for commentary (`PlayerCommand::Screenshot(path)`, actors/player.rs:176, 634; requested from
+  session.rs:2801; `Player::screenshot_to_file`, player/mod.rs:173). The UI asks for one when she switches
+  the TV on, and at most once every 60 s while a watch runs; the file is decoded (the `image` crate,
+  already a dependency), cropped to the glass's aspect and scaled to the glass at the cell size, and handed
+  to the guest as the TV's picture (`IdleView` or a setter; not persisted). Stale after 10 minutes.
+  - Line art only (kitty images): the screenshot replaces the glass's fill. ASCII keeps a held glyph
+    pattern.
+  - No film, mpv not running, the screenshot failing or late (> 2 s), or no player at all: the held
+    picture is drawn art (colour bars, or a small set of programme cards from the art sheet).
+  - The shopping channel and the sunrise keep their own pictures; surfing flips held pictures per channel
+    (each a new screenshot only if the 60 s allows, otherwise drawn cards).
+  - Each distinct screenshot is a new kitty image: at ≤ 1 a minute that's well inside the image cache
+    (`image_census` re-run in step 13).
+  - The houseguest stays pure: the request and the file I/O live in the shell/session side, the guest
+    only receives `Option<Arc<RgbaImage>>` with a timestamp; tests use a fixed picture.
+- **Test:** no act longer than 30 s flips cells faster than `USE_FRAME_MS` after its first 10 s (both
+  modes), which also guards against future animation churn.
+
+### Steps, renumbered
+
+0. This design, the map and the critiques (docs commit). The art agent starts (worktree, git commits),
+   its sheet: floor homework (writing ×2, face-down doze), the paper desk and homework at it (kneeling or
+   cross-legged, no stool, nodding off), reading a torn strip, cross-legged before the TV, sitting or
+   leaning at the sill and sitting under it, cloud-watching LieBack (held, eyes open), an optional sitting
+   doze, the look-in-place heads for seated and lying poses (`!`/`?` while seated or lying), and 3–4
+   drawn programme cards for the TV.
+1. D0a: fades hoisted onto `Guest` (M1), the property and the deterministic case; verified re-record.
+2. D0b: the credit class (B3, M2), `served` record, per-(want, method) test; re-record.
+3. D1: measuring (M3), the fed-afternoon helper (B4), `phase5c/baseline.md` with σ over ~20 seed sets.
+4. D2: the band test, ignored (B5), thresholds and caps from the baseline.
+5. `WATCH_MS` 15 → 5 s alone (verified: traces first differ 5 s after a line); re-baseline (minor 6).
+6. D3: looking up in place (B1), dozes stir; the tests that pinned the standing look restated.
+7. D4 mechanisms, golden-neutral (M11): linger at call sites (M8), settle in (M7), daydream sessions as one
+   act (B6), nearer spots for pull/swap/pick_build and place (M6).
+8. D4 tuning (M5's order and stop rule; Travel 7 with Walk, M4), the slow blink; un-ignore the band test;
+   one re-record; re-measure all censuses.
+9. (after the user approves the sheet) Art wired: poses, parts, ASCII rows.
+10. D5 (M10): floor homework, the paper desk, more makeshift, reading a borrowed line, cross-legged TV,
+    cloud-watching.
+11. D6: the window as a daydream; glance re-check; the band re-read on a windowed home.
+12. D7: the TV picture (held pictures, then the mpv screenshot path).
+13. Census pass and docs (as step 11 before).
