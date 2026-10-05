@@ -1,6 +1,6 @@
 # Testing Strategy
 
-Last updated: 2026-10-03
+Last updated: 2026-10-05
 
 ## Table of Contents
 
@@ -764,18 +764,62 @@ whole-app tests.
 ### Golden Trajectories (houseguest)
 
 A refactor of the houseguest that means to change nothing she does is
-proven by `houseguest::tests::golden`: four scenes (the stage room cued
-through every job while chat arrives, a resident through focus changes,
-key presses and chat mischief, a furnished home over ten minutes, an
-errand), four seeds each, ASCII and line art. Every painted frame's act,
-position, appearance, image placement and changed cells are hashed with
-FNV-1a (stable across Rust versions); a kitty image's random id is left
-out. A deliberate behaviour change re-records the table the failure
-prints. To find where two versions part, set
-`HOUSEGUEST_GOLDEN_TRACE=<dir>` on both and diff the per-frame traces.
+proven by `houseguest::tests::golden` (`tests/golden.rs`). Each table
+is a scene run at four seeds, in ASCII and line art. Every painted
+frame's act, position, appearance, image placement and changed cells
+are hashed with FNV-1a (stable across Rust versions; a kitty image's
+random id is left out), and the run's saved record at the end.
+
+The **fed** tables run her as she ships, her clock driving her routine.
+Ten scenes: the stage room cued through every job while chat arrives
+(16:00, her clock's start), a resident through focus changes, key
+presses and chat mischief, a furnished home over ten minutes, an
+errand, and her day: Monday 20:30 (homework), 23:00 (tucked in,
+stirring at chat), Saturday 10:00 (her job open), Tuesday 08:10 (out
+to school, her home empty), Tuesday 12:40 (home from school), and a
+dash home (from a minute before each seed's first one). The day scenes
+start from `Ledger::new_at` with her furniture placed.
+
+The four **`UNFED_*`** tables (stage, resident, furnished, errand) run
+the first four scenes through `Guest::unfed()`, whose clock still
+counts but reaches nothing: no routine, no day keying, no Away, no
+dash, no wall-clock gift, and rare things drawn per visit (over her
+afternoon), not per day. They hold her to what she did before the clock
+fed her, so they guard everything that should work the same at any time
+of day. They don't guard rare things or pity: a change to the unfed draw's
+seed leaves them green. Those are
+guarded by `rarity.rs`'s draw tests and `tests/rares.rs`. No change may
+move the `UNFED_*` tables without a trace diff in its commit (each
+table's comment lists the deliberate moves).
+
+A deliberate behaviour change re-records the tables: a failing check
+prints its replacement table. Never re-record without knowing why it
+moved: set `HOUSEGUEST_GOLDEN_TRACE=<dir>` (an existing directory: the
+test fails if it's missing) on the old revision and the new, and diff
+the per-frame traces. Each run writes `<scene>-<seed>-<graphics>.txt`
+(`graphics` is `true` for line art), with `-unfed` before `.txt` for
+the unfed runs: one line a frame (her empty home's frames are labelled
+`away`), then her record as it stands at the end, as JSON. The commit
+says where the traces first differ and why, and that the rest are
+byte-identical. The seed-7 snapshot (`osaka_at_home_seed_7`, an insta
+snapshot) has no trace: re-accept it with `cargo insta review` only
+once the commit explains why it moved.
+
 The sofa census (`sofa_census`, ignored; run with `--release --ignored
 --nocapture`) is the migration's checkpoint bench: what became of every
-piece she made over 100 seeds, with and without chat every 37 s.
+piece she made over 100 seeds, with and without chat every 37 s. The
+visit censuses run unfed (`Room.start: None`), so they compare with
+earlier phases. The **day census** (`day_census`, ignored, about a
+minute in release: `cargo test --release -p dessplay --lib day_census
+-- --ignored --nocapture`) runs a game week from Monday 00:00, fed, in
+each room at three seeds, on Oct 31 (a date that owes her calendar's
+greeting) and with no date (no holidays, nothing owed). It reports, by the hour of
+her day (school days and days off apart) and by slot, where her time
+went (here, on a dash, asleep, out of sight, away at school, gone),
+what she did while here and awake, and what happened (arrivals,
+departures and returns, dashes, goodbyes, vignettes, glances at her
+clock, looking out of her window, the calendar, rare things first
+seen). It found the lunch lost to a chat line at her fridge.
 
 ### Whole-App TUI Tests
 

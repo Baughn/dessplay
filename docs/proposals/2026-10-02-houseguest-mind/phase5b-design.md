@@ -1,5 +1,7 @@
 # Phase 5b (the clock) — implementation design
 
+**Historical:** the plan as agreed and amended on 2026-10-04, kept for its reasoning. Where it differs from what was built, plan.md Phase 38's phase-5b record is authoritative.
+
 **Working design, 2026-10-04.** Brief: docs/plan.md, Phase 38, "Phase 5 — vignettes and the clock (brief)"
 and "For 5b's brief". Proposal: docs/proposals/2026-10-02-houseguest-mind.md (*Character*: the wall clock,
 rarity and pity; migration row 5). Code map with file:line refs at HEAD `0661710`:
@@ -323,9 +325,11 @@ The art-heavy dates wait: the sheet ghost, the tree, the kotatsu, the flying pig
 - `open: Vec<ScriptId>` holds the **seen** rares whose roll passed this visit.
 - `new: Option<ScriptId>` holds **at most one unseen** rare. The `Option` makes two unseen rares in a
   visit unrepresentable.
-- The roll for a tier is `p(tier) + ramp(pity)`. Rare is 0.15 a visit, certain once 6 real idle hours
-  have passed since a new rare was last seen. Legendary is 0.02 a visit, certain at 40 hours (HG's
-  bounds).
+- Each tier rolls once. The seen rares of a tier are open if the roll passes `p(tier)` alone. The
+  unseen one is chosen if it passes `p(tier) + ramp(pity)`: pity is only for something unseen (as built,
+  2026-10-05: rolling the seen at `p + ramp` opened every seen rare every day once all were seen and
+  the counter never restarted). Rare is 0.15, certain for an unseen one once 6 real idle hours have
+  passed since a new rare was last seen. Legendary is 0.02, certain at 40 hours (HG's bounds).
 - Gated wants check `Rares` in `mind::bind`. Gated splices are skipped in `splices()`' candidate loop
   unless forced. Inside an open visit the row's own `chance` and `when` still apply.
 - `Rares::none()` (clock off, tests) opens nothing.
@@ -446,8 +450,9 @@ user's approval before wiring.
   - An older build keeps every piece.
 - **Pity** is a pure function of `(seed, counter)`:
   - monotone in the counter;
-  - certain at the bound;
-  - within tolerance of its base rate over fixed seeds.
+  - certain at the bound (for choosing an unseen rare);
+  - within tolerance of its base rate over fixed seeds;
+  - a seen rare's share of draws stays at its base rate at any pity.
 - **Rares:** at most one unseen per visit, over 1000 `begin_visit` seeds.
 - **The calendar over 2024–2040:** at most one entry a day, stable across calls, each starter date on
   exactly its days.

@@ -275,6 +275,11 @@ seasonally (kotatsu replaces the sofa December–February).
 
 ## Routine and calendar (*planned*, phases 3–4)
 
+*Superseded (phase 5b, 2026-10-04): the routine runs on her own game
+clock (6×, running only while dessplay is open), not the local wall
+clock; only the real date reaches her. See [plan.md](../plan.md), Phase
+38, and [design.md](../design.md#houseguest).*
+
 Local wall clock, injected. School-day absence is a feature: evening
 visits feel like her real home time.
 

@@ -1,6 +1,6 @@
 # DessPlay Decision Log
 
-Last updated: 2026-10-04
+Last updated: 2026-10-05
 
 The reasoning behind the rules in [design.md](design.md): the failure that
 motivated each one, the alternatives that were rejected, and the date it
@@ -2072,8 +2072,14 @@ commits at the end (an interruption would leave a piece half-owned).
 ## Houseguest keeps a local record (2026-09-29)
 
 **Rule:** Her home, visit count and master seed live in one local JSON
-record (settings key `houseguest`), saved on change; an unreadable
+record (settings key `houseguest_ledger`), saved on change; an unreadable
 record is kept, not overwritten. See [design.md](design.md#houseguest).
+*(2026-09-29: the key was `houseguest`, which the arrival delay setting
+already used, so after her first visit the settings failed to load; it
+moved to `houseguest_ledger` the same day. 2026-10-04: her clock and
+what's rare joined the record, and time is saved in batches and at exit;
+see [her record: events at once, time in batches, and on
+exit](#her-record-events-at-once-time-in-batches-and-on-exit-2026-10-04).)*
 
 **Why:** A home is the point of phase 3, and it has to outlive the
 process. Local like the layout sizes: each client has its own Osaka,
@@ -3173,6 +3179,373 @@ truncates to the top four, then rolls. A factor below 1 doesn't make a
 want rare; it removes it whenever four others outscore it, and does
 nothing when fewer are on offer. So rarity and pity must decide whether
 it's offered at all (at the offer filter, or when her mind binds it).
+*(2026-10-04: 5b gates scripts, not wants: a rare splice, musing or
+dream is passed over before anything of it rolls, and no want is rare;
+see [rarity is drawn per day](#rarity-is-drawn-per-day-and-pity-is-only-for-the-unseen-2026-10-05).)*
+
+## Her days run on a game clock (2026-10-04)
+
+**Rule:** Her routine runs on a game clock of her own: six times real
+time, running only while dessplay is open and only once she has met
+you, starting at Monday 16:00 and never resynced with the real time of
+day. Moving her out sets it back to Monday 16:00. Only the real *date*
+reaches her (her calendar, the school holidays). See
+[design.md](design.md#houseguest).
+
+**Why:** the user's call (2026-10-03). The proposal's routine ran on the
+local wall clock, which makes her a schedule nobody sees: a client
+opened for an evening's episode would only ever meet her evening, and
+one opened at work would find her at school every time. A clock that
+runs only while dessplay is open makes every session see her day move,
+and at 6× a game day is four real hours, about a long session. 16:00
+because she's home, awake and in her afternoon (the slot whose levels
+are exactly her pre-clock arrival levels), with her evening and first
+bedtime coming within the session. Never resynced: a game clock that
+jumped to the real hour would undo the point. Only the date crosses,
+because a calendar is only fun on the real day (Halloween on the 31st),
+while a time of day would bring the wall clock back. The clock stands
+still until she has met you, so a client that never met her writes no
+record, and her first meeting is at 16:00. Rejected: the wall clock
+(above); a clock that runs while dessplay is closed (the wall clock
+again, sped up).
+
+## Her clock is stored as game minutes since Monday 16:00 (2026-10-04)
+
+**Rule:** Her record keeps her clock as whole game minutes since Monday
+16:00 of game day 0. That start is part of the format and never
+changes. A record without the field, or with anything but a whole
+number below 2^40, reads as Monday 16:00. See
+[design.md](design.md#houseguest).
+
+**Why:** *Game time, not real time*: storing real milliseconds would
+tie her past to the 6× ratio, so retuning it would move where she is in
+her week. Game minutes stay right whatever the ratio. *From Monday
+16:00*: a new record is all zero, as it was before the clock, so every
+pre-clock record reads as a new clock, which is right for a new home
+and acceptable for an old one (the changelog said so). *Lenient*: like
+the rest of the record, a field it can't read is the default rather
+than a failed record. Rejected: game time since a Monday-00:00 epoch
+(as good, but a new record would no longer be all zero); a separate
+settings key for the clock. A separate key would survive a downgrade,
+but needs a second write and a second read, and moving out would have to
+clear both.
+
+*The downgrade loss*, accepted: an older build ignores the new fields
+and drops them when it saves. After running `stable` and coming back,
+her clock is back at Monday 16:00, her pity and the rare things she has
+shown start again, and her calendar may greet again that day. It also
+skips the pieces it doesn't know (the window, the wall clock) and a
+window on order, as it skips any unknown piece. Each is small, and none
+breaks the record.
+
+## Her clock has no clamp but the shell's ten-minute step (2026-10-04)
+
+**Rule:** Her clock counts the UI thread's monotonic time. One step of
+it is capped at ten real minutes only when the shell asks
+(`Guest::cap_steps`), which it does, logging at debug when the cap
+bites. The cap is off by default: tests and censuses jump hours on
+purpose. A capped step also counts at most ten idle minutes toward her
+pity.
+See [design.md](design.md#houseguest).
+
+**Why:** A suspended laptop shouldn't age her a day. std's `Instant` is
+`CLOCK_MONOTONIC` on Linux and `CLOCK_UPTIME_RAW` on Apple
+(`library/std/src/sys/time/unix.rs`, Rust 1.98), neither of which
+counts a suspend. But std says "it is also not specified whether system
+suspends count as elapsed time or not. The behavior varies across
+platforms and Rust versions" (`library/std/src/time.rs`), and Windows
+is unchecked. The UI thread steps at least once a second, so ten minutes
+never bites in normal running; when it does, a whole suspend adds at
+most an hour of her day. The cap lives in the guest's accrual but is
+off unless the shell sets it, so a test helper that jumps hours still
+counts all of them: a cap always on would lose game time there
+silently. The idle minutes are cut with the step, since a suspend is no
+more idle time than it is game time. Rejected: no cap (trusting an
+unspecified behaviour); a cap always on in the guest.
+
+## Her record: events at once, time in batches, and on exit (2026-10-04)
+
+**Rule:** What happens to her (a purchase, a parcel, a piece set down,
+something rare seen, the calendar delivered) saves her record at once.
+Time alone saves it every 30 game minutes (5 real) and at each change
+of routine slot. Every way out of the UI loop hands back her final
+record, its clock brought up to that moment, and the pane sizes, for
+the caller to save after the UI thread has joined. A SIGHUP, a panicked
+UI thread, and a failure between the UI's start and the session's end
+(the `?` exits in `run_interactive`) stay unsaved. See
+[design.md](design.md#houseguest).
+
+**Why:** *Batches*: her clock changes every second; saving each change
+would be a settings write a second for nothing. Thirty game minutes is
+what a crash loses at most, and the slot changes keep the record right
+at her departures and bedtimes. *The exit save*: before it, every exit
+of the UI loop (Quit, Shutdown, a closed channel, a failed draw) skipped
+the loop's one save, so a change in the last iteration was lost, and so
+was a handout parked on a full action queue. The loop is labelled and
+every exit is a `break` to its one end, which hands back the record:
+an exit that skips it can't be written. It doesn't go through the
+periodic handout's "unsaved" flag, because a parked handout has already
+cleared that flag; it compares with the record restored at startup instead,
+so a client that never met her writes nothing. The pane sizes had the
+same bug (saved only on the loop's periodic path), so they go back the
+same way. The unsaved exits never join the UI thread (a SIGHUP exits at
+once; the `?` exits don't restore the terminal either), and a panicked
+UI thread hands nothing back. Rejected: saving on exit
+only (a crash loses the parcel that just came); an inner function for
+the loop body (clippy's `too_many_arguments`).
+
+*One process per record*: `instance_lock` lets one process hold a
+database at a time, so two clients never count time into one record and
+then save over each other.
+
+## Away at school ends the visit at her door (2026-10-04)
+
+**Rule:** When she leaves for school the visit ends, once she's through
+her door. Her home stands empty until 12:45 with her closed door where
+she left; she comes home out of it as a new visit. Every routine exit
+and return is by her door, never a screen edge. See
+[design.md](design.md#houseguest).
+
+**Why:** *A visit's end, not a long hidden act*: everything kept per
+visit (the mood and hello, her beat lines, her shift, a parcel's
+arrival, what's rare) stays meaningful. Keeping her "in" a 4½-hour
+hidden act would need each of them re-keyed, and every check of what
+she's doing would have to know she isn't there. The cost is honest and
+small: a resident's school day counts one visit more (her return), so
+shopping comes a little sooner. *The closed door*: the user's call
+(2026-10-04). An empty home says nothing about where she is; her door
+standing closed where she went out says "out, back later", and her
+coming out of it says "home". So it stays until she comes back out of
+it, follows a resize only when its spot no longer fits, and rains out
+of a resident's focused pane with her pieces. *Her return is its own*:
+it isn't called off by a key or a chat line (they'd lose her
+homecoming for good), only by the gate closing (playing, an overlay,
+visits off); then she arrives later through the idle gate.
+*A short school day* (08:30 to 12:30, home at 12:45): the user's call.
+The proposal's 08:30 to 15:30 would leave every other two-hour session
+mostly empty or dark. Rejected: a hidden act (above); leaving by an
+edge (no cue in the empty room).
+
+## At school or asleep, she still comes, by her door (2026-10-04)
+
+**Rule:** The accordion's errand still comes whatever the idle gate
+says, but how changes with her day. At school she dashes in through her
+door, pokes it, and goes straight back out by her door, not counted as
+a visit. Asleep, she gets up groggy, pokes it, and goes back to bed.
+One school day in three she also dashes home for her lunch, at a minute
+fixed by her home and the day, only when her clock runs across that
+minute. See [design.md](design.md#houseguest).
+
+**Why:** the user's call (2026-10-03): the errand is a service (someone
+said something while you were scrolled back), so it can't wait for 12:45
+or the morning, but she shouldn't stay. The dash is the same visit:
+not counted, so nothing per visit moves (her shopping, her mood); its
+body stream is reseeded from its own salt, so the visit after it draws
+as it would have. *Only when her clock crosses the minute*: a cold start
+or a restart after it would otherwise dash at once, every time. Drawn
+from the home's day seed, not a random stream, so it's at most one a
+day by construction and no draw shifts anything else.
+
+## Overlays end a dash and an errand (2026-10-04)
+
+**Rule:** An overlay (a modal, the settings) ends a dash home and an
+errand under way at once, as it ends any visit: her things rain out,
+and if she hadn't poked the accordion yet, it shakes by itself. A
+visitor's video or a held selection still lets her finish. See
+[design.md](design.md#houseguest).
+
+**Why:** the dash and the errand stay through a visitor being busy,
+because they're brief and on her way. That exemption had been written as
+"through anything that closes the gate", which let her carry on over a
+modal: nothing of hers is drawn over an overlay on any other visit. The
+dash and the errand were the same bug in two places, so both were fixed
+together.
+
+## The day is the unit (2026-10-04)
+
+**Rule:** With her clock running, her mood, what's rare and her budget
+of beat lines are the game day's, not the visit's: keyed on her master
+seed and the game day, drawn at the day's first visit or as she wakes
+into it, and carried over the day's later visits. Her body's random
+stream is still the visit's. See [design.md](design.md#houseguest).
+
+**Why:** *Same day, same Osaka*: keyed per visit, the 12:45 return
+would bring a new mood an hour after "Mornin'... lazy day.", and two
+visits an hour apart would greet you twice in different moods. *Each
+morning a new day*: the user's call (2026-10-04). A resident who keeps
+her through the night sees her wake into a new mood with a new budget,
+as a new visit would bring. *The body per visit*: keying it on the day
+would make two visits the same day walk the same steps.
+
+*Carried in memory only*: what a day hands its next visit (the line
+budget, the rare draw, the night's Dream and snack, the meal lines) is
+kept per process, not saved. A restart the same game day starts them
+afresh: the mood is the same (it's keyed, not carried), but her beat
+lines are full again, and the day is drawn again (a second new rare
+thing is possible). Saving them would put five per-day fields in the
+record for a restart on the same game day, which is rare at 6×.
+
+## Her holiday flag is held for the game day (2026-10-04)
+
+**Rule:** A game day takes its holiday flag from the real date the
+first time it's read, and keeps it until the next game day. The flag
+isn't saved: a restart reads it again. See
+[design.md](design.md#houseguest).
+
+**Why:** the real date changes at real 09:00, in the middle of some
+game day. Read live, a date flip could cancel school while she's at
+school, or move her bedtime after she went to bed. Each game day keeps
+its own flag, so slots are a pure function of game time within a day.
+Her bedtime asks whether tomorrow is a school day before tomorrow's flag
+is read, so it uses today's date; the next day's own flag may differ. A
+school night whose morning turns out to be a holiday has her up at
+09:00, not 07:00 (105 real minutes asleep), and a holiday's last
+evening before school has her up at 07:00 (75): a night is 75 to 105
+real minutes, not at most 95 as the design assumed. *Not saved*: a restart is a cold
+start, which works out where she is from game time and the date as it
+is then (she isn't mid-act after a restart), so re-reading the flag
+changes no slot under her. *The evening before a day off* (her book's
+boost) is judged the same way, by the evening's own flag: Friday's
+evening and a holiday's last evening are evenings off, Sunday's is a
+school night, and so is the evening before a holiday begins.
+
+## Her calendar's day starts at 09:00 (2026-10-04)
+
+**Rule:** The real date she gets is `timeutil::biblical_date`'s: the
+day starts at 09:00, as the chat's day separators do. Something a date
+owes her is owed once a day, and delivered only when it shows. See
+[design.md](design.md#houseguest).
+
+**Why:** watch parties run past midnight. Halloween at 00:30 is still
+Halloween to the people watching, and Christmas morning before 09:00
+is Christmas Eve's night. One day boundary for the whole client
+([the chat's](#day-boundary-at-0900)), so the chat's "today" and hers
+agree. *Delivered when shown*: marked when set,
+a greeting with no room for its bubble, or one cut off by a key, would
+use up the day unseen. The date is saved in the same paint that shows
+it, so no visit's end can lose it.
+
+## Chat at night makes her stir, not wake (2026-10-04)
+
+**Rule:** Asleep for the night, a chat line makes her stir ("mm...", a
+blink, turning over) and sleep on, whatever it asks. By day, a nap or a
+doze still looks at the chat. See [design.md](design.md#houseguest).
+
+**Why:** a watch party chats most at night, which is exactly when she's
+asleep. If each line woke her she'd never sleep through a session, and
+her night (bed, sleep-talk, the Dream) would be cut every few seconds.
+Stirring shows she heard it, which is what the look is for. Rejected:
+waking her (above); not reacting at all (the chat would seem not to
+reach her).
+
+## Her night is one act, and her lamp stays off (2026-10-04)
+
+**Rule:** Her night's sleep is one act until her wake time, whatever she
+sleeps on: her bed, her sofa, a heap she made, the floor. The lamp goes
+off as she settles and stays off until she wakes, whatever gets her up
+in between. Bedtime alone doesn't turn it off. See
+[design.md](design.md#houseguest).
+
+**Why:** *One act*: her night's sleep-talk, the stir and the Dream live
+on its script, so they come wherever she sleeps, and every way of
+getting there (a bed, the floor because there's nothing else) has one
+end, her wake. *The lamp latched*: tied to the act, the lamp came back
+on for the groggy errand and the midnight snack, so in the middle of
+the night she'd pad about with the lights up. Latched by the night's
+lamp key and cleared at the wake, it's dark for everything between.
+Bedtime alone doesn't turn it off, so the moment she switches it off
+as she settles still plays.
+
+## Rarity is drawn per day, and pity is only for the unseen (2026-10-05)
+
+**Rule:** Only rare and legendary scripts are gated. Common and
+uncommon ones play by their own chances. A game day (a visit, without
+her clock) draws once which rare things are open: those she has shown
+you, each tier at its base chance, and at most one she hasn't, at the
+base chance plus her pity, certain at the tier's bound. Pity only
+chooses something unseen. See [design.md](design.md#houseguest).
+
+**Why:** *Gated, not scaled*: a factor below 1 doesn't make a want rare
+([2026-10-03](#deferred-from-the-vignettes-adverb-and-rarity-2026-10-03)).
+*Common and uncommon left alone*: their chance rolls already are their
+rarity, and a second system on top would make them rarer than tuned.
+*Per day*: the day is the unit (above), and a draw per visit would make
+rare things as common as visits, which a resident and a visitor have in
+very different numbers. *At most one new a day*: an `Option`, so two
+unrepresentable; something new is an event, and two in a day halves
+each. *Pity only for the unseen*: the first design rolled both the seen
+and the new at base plus pity. But pity starts again only when
+something new is shown, so once every rare had been seen the counter
+ran on forever, and past six idle hours every seen rare was open every
+day: rare stopped being rare (the cliff, found in review). Seen ones
+now roll the base chance alone, and with nothing unseen left there's no
+pity at all. Pity counts real idle minutes, not game time, so a fast
+clock doesn't make it more generous. *Drawn once a day*: a visit begun
+after midnight draws the day over the night and the morning, and her
+waking doesn't widen it to the whole day: a second draw would roll the
+day twice (a second chance at something new, and what's open changing
+under a visit that already had it). So an evening's rare thing can't be
+new on such a day.
+
+## A parcel comes only when she's up and can stand to unpack it (2026-10-05)
+
+**Rule:** Every delivery (her TV, a purchase, the wall clock) waits
+until she's up and in sight: not asleep or up in the night, not on a
+dash home, not between her doors, and after "I'm home!". It comes in
+only where she can stand to unpack it, judged by her seat test (a floor
+under her, lines allowed). The wall clock also waits for her hello, the
+day's calendar, quiet, and no other parcel's flap still open (every
+parcel comes through a wall's flap, never her door). See
+[design.md](design.md#houseguest).
+
+**Why:** a parcel is announced ("A parcel!"); delivered while she's
+asleep or out, the line is said to no one and the box sits there with
+no story. Asleep, she'd have to wake to say it. *Where she can stand*:
+a hung piece's box is small (the clock's is 3 wide), and judged by
+"room for her box" it never fit at a wall, so the clock never came;
+judged by nothing, a box could arrive where she couldn't get to unpack
+it. Her seat test is the one every use is judged by. In the same review,
+a boxed cat bed counted its cat and was never unpacked, which stopped
+her shopping for good (a bug since 2026-10-01); she now unpacks it like
+any box. *The clock after the calendar*: the date's greeting is owed
+first, all of it, and a parcel's line would talk over it. A day she lets
+be, or a New Year's sunrise her TV can't be reached for, doesn't hold
+the clock back.
+
+## Her window and her wall clock (2026-10-04)
+
+**Rule:** Two hung pieces show her time of day: the wall clock (to the
+quarter-hour) and the window (five skies). Both are always drawn facing
+one way. They change on her clock's quarter-hours, and only a home
+showing one wakes for them. The wall clock is a gift, once, after her
+TV; the window is sold after the cat bed. See
+[design.md](design.md#houseguest).
+
+**Why:** the user's call (2026-10-03): game time needs to be legible,
+or her bedtime at real 20:00 looks like a bug. *Never mirrored*: a
+mirrored dial reads 3:00 as 9:00, and drawing one way also halves their
+images. *Quarter-hours*: 48 faces in all, changing about every 2½ real
+minutes, and her frame cache holds them. Homes without either gain no
+wakeups, so nothing else redraws. *The clock as a gift*: it explains her
+first bedtime and first school morning, so it should come soon to every
+home, old ones included, not wait its turn in the shop. After the TV,
+because before that her home is a first meeting or two. *The window
+sold*: after the cat bed, before the decor, so homes that have a cat
+bed are the only ones whose shopping changes.
+
+## A window comes in where she can look out of it (2026-10-05)
+
+**Rule:** A window is delivered first where she'd have a spot to look
+out of it (clear floor under it, or just beside it). Only with no such
+wall does it come in where she can't, over a sofa. See
+[design.md](design.md#houseguest).
+
+**Why:** a window she can't look out of is a picture. The test
+measured 26 of 40 delivered windows with a spot to look out from before
+this, 40 of 40 after. Over a sofa is kept as a fallback, rather than
+refused: making it strict would also stop her moving a piece under a
+window when she puts her home right, since both use the same room
+test.
 
 ## Houseguest chooses by needs among the top few (2026-09-28)
 

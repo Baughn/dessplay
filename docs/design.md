@@ -1,6 +1,6 @@
 # DessPlay Design Document
 
-Last updated: 2026-10-04
+Last updated: 2026-10-05
 
 A synchronized video player for watch parties. Terminal-first, built for
 reliability over flaky connections. Server-coordinated, including relayed
@@ -1352,7 +1352,8 @@ this section states what is built.
   hashing/Nyaa-import overlay, no held chat selection, no local input,
   and no new chat or IRC line. For a **resident** (below) playback and
   a held chat selection don't count against it. The terminal must be at
-  least 60×18.
+  least 60×18. Her routine (below) decides what the open gate shows: at
+  school, her empty home; at night, her already in bed.
 - She is a **visual overlay only**, painted over each finished frame; she
   never changes app state
   (why: [decisions](decisions.md#houseguest-is-a-post-render-overlay-2026-09-28)).
@@ -1387,12 +1388,16 @@ this section states what is built.
   (`spoiler::rain_glyph`) before settling to the real UI. Every cell has
   settled by 3.6 s and the overlay is gone at 3.75 s; a cell the real UI
   changed since the input shows the real UI at once, and a settled cell
-  never shows noise again.
+  never shows noise again. Asleep for the night (or up in it), the
+  startled face is a sleepy blink.
 - A **chat or IRC line** from anyone does not end a visit: she stops,
   turns toward the chat pane with a `!` then a `?`, and keeps watching
   until chat has been quiet for 15 s, then carries on
   (why: [decisions](decisions.md#line-art-osaka-passes-text-and-watches-chat-briefly-2026-09-30)).
-  **The one exception** is the sata andagi after a snack (see Using her
+  **There are two exceptions.** Asleep for the night, a line only makes
+  her stir and sleep on (see *Her night*)
+  (why: [decisions](decisions.md#chat-at-night-makes-her-stir-not-wake-2026-10-04)).
+  The other is the sata andagi after a snack (see Using her
   furniture): a line that asks her something (it ends in `?`, trailing
   whitespace aside; of each source whose count rose, chat or IRC, its
   newest line does) gets "Sata andagi." said toward the chat, beaming,
@@ -1468,11 +1473,18 @@ this section states what is built.
   need wants, and never below 0.5 for a parcel or her part-time job, which
   she takes whatever she feels. She arrives wide awake (sleepy 0), keen to
   move (restless 0.7), mischief and hunger at 0.2, nesting at 0, beauty
-  at 0.3, the rest at 0.5.
-  **Her mood for the visit** is drawn from the visit's seed (as the cat's
-  presence is): ordinary half the time, lazy and industrious a fifth
-  each, dreamy a tenth. A mood is how fast her needs rise: lazy, comfort
-  ×2, sleepy ×1.5, restless ×0.4, tidy ×0.7; industrious, tidy ×1.6,
+  at 0.3, the rest at 0.5: that's her afternoon. Her routine changes
+  some of it (see *Her routine*).
+  **Her mood for the day** is drawn from her master seed and the game
+  day (each visit's, without her clock): ordinary half the time, lazy
+  and industrious a fifth each, dreamy a tenth. A second visit the same
+  game day comes in the same mood with the same hello, and each morning
+  brings a new one. What a day carries to its later visits (the
+  beat-line budget, the rare draw, the night's Dream and snack, the meal
+  lines) is kept while dessplay runs; a restart the same game day starts
+  them afresh
+  (why: [decisions](decisions.md#the-day-is-the-unit-2026-10-04)).
+  A mood is how fast her needs rise: lazy, comfort ×2, sleepy ×1.5, restless ×0.4, tidy ×0.7; industrious, tidy ×1.6,
   restless ×1.5, comfort ×0.5, sleepy ×0.8, daydreams ×0.6, nesting
   ×1.6; dreamy,
   daydreams ×2.5, restless ×0.7. Her greeting hints at it: "Mm... lazy
@@ -1518,7 +1530,8 @@ this section states what is built.
   or the stage putting her somewhere), which never could show: it isn't
   said, and doesn't cool. Her fixed lines (a greeting, "...I'm OK.",
   "Ow!", "Hold 'em by the ends!", "Sata andagi." and the like) are no
-  pool's and have no cooldown of their own. A visit has eight beat lines at most; the
+  pool's and have no cooldown of their own. A game day (a visit, without
+  her clock) has eight beat lines at most, across its visits; the
   other pools have no budget (their chances pace them). No splice (the
   chopsticks, the sata andagi) plays again within ten minutes, nor does
   channel surfing; a riddle is paced by its pool's chance and its
@@ -1533,7 +1546,7 @@ this section states what is built.
   open; with no such spot the bubble isn't shown. Things she *says*
   (≤ 24 characters) show for 1.2 s + 60 ms per character over her act's
   own bubble: a greeting on first finding her feet ("Nice to meet you.",
-  or her mood's), "...I'm OK."
+  the date's, or her mood's), "...I'm OK."
   after a hard landing (always on her entrance, else half the time), and
   on a third of her spacing-outs a musing ("I wish I were a bird."), or,
   one time in three when she isn't already saying something (it would
@@ -1559,37 +1572,49 @@ this section states what is built.
     and after a moment ("...") she puts them back one every 400 ms. A
     put-back the frame refuses is retried a few times; the goodbye rain
     re-knits anything left.
-- **Her part-time job**: once she has a home, at most once a visit and
-  no sooner than three minutes in, she may go to work: out at a screen
+- **Her part-time job**: once she has a home, on a day off (a weekend or
+  a school holiday) from 10:00 to 17:00 of her clock, at most once a
+  visit, she may go to work: out at a screen
   edge if her floor reaches one, else through her door. Her room stands
   furnished while she's gone (one to three minutes); a chat or IRC line
   meanwhile doesn't fetch her (mischief is still undone at once). She
   comes back the same way with a bundle of leeks cradled in her arms
-  ("I'm home!").
+  ("I'm home!"). Once she's back in sight her shift is over, however her
+  walk in ends (a fall, a daze); a trip to work that never got out of
+  sight brings no homecoming.
 - **Getting furniture**: her TV is ordered for her and arrives on her
   second visit. After that, when she watches TV at least three visits
   after her last purchase, with nothing on order or still boxed, the
   shopping channel comes on (Chiyo-chichi) and she buys the next piece
-  she lacks — sofa, bed, desk, lamp, bookshelf, fridge, cat bed, in that
-  order, then decor (a potted plant, a poster), but decor first while
+  she lacks — sofa, bed, desk, lamp, bookshelf, fridge, cat bed, window,
+  in that order, then decor (a potted plant, a poster), but decor first while
   beauty is the most pressing of her needs (none higher) — the moment
   it comes on,
-  whatever happens next. What she buys arrives on a later visit as a
-  parcel ("A parcel!"), pushed in through a **flap** in a wall of one of
+  whatever happens next. Her wall clock isn't sold: it's a gift (see
+  *Her window and wall clock*). What she buys arrives on a later visit as a
+  parcel ("A parcel!"), once she's up and in sight (not asleep or up in
+  the night, not on a dash home, not between her doors, and after her
+  "I'm home!"), pushed in through a **flap** in a wall of one of
   her strips (below), a wall at the screen's edge first: the wall's
   line cells just above the floor show the flap swung in (`╱`/`╲`) for
   800 ms, and the parcel stands against that wall, facing into the
   room, where the piece will stand. The pieces already on that strip
   make way (packed in order, the newcomer nearest the wall), but only
   where every one that shows still fits, the parcel's cells are blank
-  and free, and she'd fit to unpack and use it; with no such wall it
-  waits. She unpacks it (her strongest wish while it's there) and it
+  and free, she can stand to unpack it (judged as any seat of hers: a
+  floor under her, lines allowed) and she'd fit to use it; a window comes
+  in first where she could look out of it. With no such wall it
+  waits
+  (why: [decisions](decisions.md#a-parcel-comes-only-when-shes-up-and-can-stand-to-unpack-it-2026-10-05),
+  [decisions](decisions.md#a-window-comes-in-where-she-can-look-out-of-it-2026-10-05)).
+  She unpacks it (her strongest wish while it's there) and it
   becomes the piece. A parcel stays boxed, across visits, until she
   finishes unpacking it.
 - **Furniture** (phase 3): a sofa (9×3 cells), TV (6×4), bed (10×3),
-  desk (7×3), floor lamp (3×4), bookshelf (5×4), fridge (4×4) and cat
-  bed (4×2), and, just for looks, a potted plant (3×3) and a poster
-  (4×2, hung on the wall), drawn in her style (outlined, soft fills) as line art, or as
+  desk (7×3), floor lamp (3×4), bookshelf (5×4), fridge (4×4), cat
+  bed (4×2) and window (4×2, hung on the wall), and, just for looks, a
+  potted plant (3×3), a poster (4×2, hung) and a wall clock (3×2, hung),
+  drawn in her style (outlined, soft fills) as line art, or as
   ASCII without graphics. She owns her furniture across visits; each
   kind is one row of a catalogue (name, footprint, drawing, ink, uses,
   where she sits in it, what it offers a room, comfort, beauty, and how
@@ -1610,8 +1635,9 @@ this section states what is built.
   gone or too small to hold its pieces, they move, together and in
   order, to the first other strip that holds them with its own pieces,
   every moved piece on free cells, and stay there; with none, they're
-  all in the closet. **Wall pieces**: a piece that hangs (the poster)
-  hangs on its strip's wall, its bottom row 4 rows above the floor
+  all in the closet. **Wall pieces**: a piece that hangs (the poster,
+  the window, the wall clock) hangs on its strip's wall, its bottom
+  row 4 rows above the floor
   (above the tallest piece that stands, and her head), in a lane of its
   own: hung pieces stand in anchor order among themselves, by the same
   rules, and may hang over pieces that stand. It needs no floor beneath
@@ -1660,7 +1686,9 @@ this section states what is built.
   about half her visits Kamineko is asleep in the cat bed — she pets
   him, and he bites ("Ow!"). Her lamp is lit, and dark while she sleeps
   in her bed, from 2 s in (she settles with it on, blinking; trying the
-  bed, it's dark at once). Each use is an offer to the brain while the piece is placed
+  bed, it's dark at once). Through her night it stays dark from then
+  until she wakes, whatever gets her up meanwhile, and it's off in her
+  empty home. Each use is an offer to the brain while the piece is placed
   and she can get there and stay: her box, and the whole of the one
   image she and the pieces it overlaps are drawn in (the rectangle
   spanning them, above the floor), clear of text; if text comes up
@@ -1846,10 +1874,185 @@ this section states what is built.
   chat is a tenth as likely, like anything else there, and a sofa is
   five times as likely to be made where it would face her TV
   (why: [decisions](decisions.md#houseguest-makes-furniture-of-torn-off-text-2026-10-01)).
+- **Her clock** (phase 5b): she has a game clock of her own, running
+  six times faster than real time, only while dessplay is open, from
+  her first meeting on (whatever the Visits setting; before it, it
+  stands still). It starts at Monday 16:00, for a new home and for one
+  she had before the clock, and never resyncs with the real time of
+  day. One step of it counts at most ten real minutes (an hour of hers,
+  and ten idle minutes toward her pity), so a suspend doesn't age her a
+  day. Moving her out sets it back to
+  Monday 16:00
+  (why: [decisions](decisions.md#her-days-run-on-a-game-clock-2026-10-04),
+  [decisions](decisions.md#her-clock-has-no-clamp-but-the-shells-ten-minute-step-2026-10-04)).
+- **Her routine** runs on that clock, by a fixed table. A school day
+  (Monday to Friday, not a holiday): up at 07:00 (morning: breakfast),
+  out to school at 08:15 (school is 08:30 to 12:30), home at 12:45
+  (afternoon: snack, sofa, TV), evening from 18:00 (dinner, TV). A day
+  off (a weekend or a school holiday): up at 09:00 (a slow morning),
+  afternoon from 12:45, evening from 18:00. A school night (an evening
+  before a school day: Sunday to Thursday, outside holidays) is
+  homework from 20:00 and bed at 22:30; any other evening runs on to bed
+  at 23:30. A night is 75 to 105 real minutes. School holidays are by
+  the real date: summer (Jul 20 to Aug 31), the year's end (Dec 25 to Jan 7) and spring (Mar
+  25 to Apr 5). A game day takes its holiday flag from the real date the
+  first time it's read, and keeps it all that game day; it isn't saved
+  (why: [decisions](decisions.md#her-holiday-flag-is-held-for-the-game-day-2026-10-04)).
+  Her mind sees only the part of the day, never the minute, and it
+  nudges her, never forces: the afternoon doubles a snack and the sofa,
+  the evening the TV, the evening before a day off a book, the morning a
+  stretch, and gazing doubles from 17:00 to 05:00; homework is three
+  times as likely in its own slot, where it lasts 2–4 min instead of
+  30–60 s. Sleepy rises at 0.3× by day, 1× in the evening and 3× at
+  homework and at night; hungry 2× at breakfast and dinner (her mood's
+  rate and her day's together never above 4×). She arrives in the
+  evening a little sleepy (0.3; 0.5 at homework time, 0.8 at night) and
+  at mealtimes hungry (0.6). Only two changes cut into what she's doing:
+  leaving for school and bedtime. They cut what she's resting at or
+  working at, and a walk to it, at once and without a startle (a climb,
+  a fall, a door or a poke finishes first); then she goes, whatever
+  else she wanted. Every other change waits for her next choice.
+- **Away at school**: at 08:15 on a school day she says "I'm off!" or
+  "Off to school!" ("Late, late, late!" if it cut her breakfast short)
+  and goes out through her pink door, which stays standing, closed,
+  where she left, until she comes back out of it. The visit ends there.
+  Her home stands empty meanwhile: her pieces, the lamp and TV off, the
+  cat as he'll be when she's back, her door. It shows when a visit would
+  (the idle gate open, or a resident) and goes as one does: a visitor's
+  input or an overlay rains it out (nobody in it to wave), switching
+  visits off or too small a terminal removes it at once, and a chat line
+  changes nothing. With no furniture there's nothing to show. If a
+  resize leaves her door's spot unfit, it moves to the nearest floor
+  spot where she'd fit. At 12:45 she comes home out of that door ("I'm
+  home!" or "Tadaima!"), counted as a visit but in the morning's mood,
+  with no hello, if the client is open to her then (a resident, or the
+  idle gate open). A key or a chat line doesn't call her return off;
+  the gate closing (playback, an overlay, visits off) does, and then she
+  arrives later through the idle gate as usual. With no home she still
+  comes home by a door. Started in school hours, the client shows her
+  empty home once the gate opens. Everything of hers that comes and goes
+  by her routine uses her door, never a screen edge
+  (why: [decisions](decisions.md#away-at-school-ends-the-visit-at-her-door-2026-10-04)).
+- **Dashes home**: one school day in three, at a minute between 08:25
+  and 12:35 fixed by her home and the day, she dashes home through her
+  door: to her fridge for her lunch (the fridge open, "Forgot my
+  lunch!"), or with no fridge, "Forgot somethin'..." then "...what was
+  it?"; then straight back out by her door. A dash isn't a visit (not
+  counted, no hello, no parcel). It comes only if the client is open to
+  her at that minute (as her return asks), and only when her clock runs
+  across that minute: started or restarted after it, there's none that
+  day. A visitor busy with a video or a held selection doesn't send her
+  off mid-dash; a key or an overlay does. Stopped on her way to the
+  fridge (a chat line), she still has her lunch
+  (why: [decisions](decisions.md#at-school-or-asleep-she-still-comes-by-her-door-2026-10-04)).
+- **Her night**: at bedtime she goes to bed: her bed, else her sofa,
+  else a bed or sofa she makes of text, else the floor where she is.
+  Her night is one act until her wake time, whatever she sleeps on, and
+  the lamp, off as she settles ("Night-night..."), stays off till she
+  wakes
+  (why: [decisions](decisions.md#her-night-is-one-act-and-her-lamp-stays-off-2026-10-04)).
+  A visit that begins at night finds her already tucked in (her bed,
+  else her sofa; with neither she arrives as usual and goes to bed), and
+  her hello waits for the morning. A chat line makes her stir ("mm...",
+  a blink, turning over) and sleep on
+  (why: [decisions](decisions.md#chat-at-night-makes-her-stir-not-wake-2026-10-04)).
+  Every 6–10 minutes she talks in her sleep ("Mm... melon bread...";
+  in her last game hour, "...five more minutes"), a pool with no budget.
+  With a fridge, one night in four, at a minute between 00:30 and 05:30
+  fixed by her home and the night, she gets up in the dark for a
+  midnight snack, then goes back to bed; stopped on the way (a chat
+  line), she still has it. Asleep, sleepy doesn't rise and her other
+  needs rise at a quarter of the rate. What's once a night (the Dream,
+  the snack) is once a night across visits. At her wake time she gets
+  up beside her bed with a stretch and a good morning in the new day's
+  mood ("Mornin'.", "Mornin'... lazy day.", "Mornin'! Let's tidy!",
+  "...mm? Mornin'..."). That begins a new game day without a visit: a
+  new mood, a new budget of beat lines, her job open again, the day's
+  rare draw, her needs at the morning's levels. Up at her wake time
+  anyway (a visit begun just before it), the new day begins at her next
+  choice.
+- **The real date**: she knows the real date (from 09:00 to 09:00),
+  never the real time. Some dates owe her something, once a day: Jan 1,
+  "Happy New Year!" and then the first sunrise on her TV if she can get
+  to it ("Ooh... first sunrise."); Jan 2–3, "Happy New Year!"; Feb 3,
+  Setsubun, beans thrown on the spot ("Oni wa soto!", then "Fuku wa
+  uchi!"); Apr 8, "It's my debut day!"; Jul 7, "Wrote my wish.
+  Secret!"; Sep 30, "We graduated, huh..."; Oct 31, "Trick or treat!";
+  Dec 24–25, "Merry Christmas!"; Dec 31, "Year's almost over...". At
+  most one a day, the narrowest date winning. A greeting takes the place
+  of her mood's hello; after "I'm home!" (or "...I'm OK.") it's the first
+  thing she says once she's quiet; tucked in, it waits for her wake
+  ("Mornin'." first); on screen as the date changes, she says it as she
+  spaces out. It's delivered only once it shows (its bubble drawn, or
+  its script playing), and the date is saved then; a greeting that finds
+  no room three times in a visit waits for her next visit. Seasons tint
+  what she does, and stack: exam season (Jan 20 to Mar 10) doubles
+  homework and has her split chopsticks before every bit of it (still
+  ten minutes apart); hay fever (Mar 1 to Apr 30) triples sneezing;
+  December brings musings ("Rudolph's nose... why?"); the New Year (Jan
+  1–3) a dream in her sleep-talk ("Pigtails... flying..."); summer's last
+  week (Aug 25–31) doubles homework, with "Homework! Homework!". With no
+  date, none of this, and no holidays
+  (why: [decisions](decisions.md#her-calendars-day-starts-at-0900-2026-10-04)).
+- **Time-of-day lines**: "Breakfast!" or "Dinner time~" with the first
+  snack of a morning or an evening (once per morning or evening across
+  visits), "No school today!" on getting up on a day off (once she's
+  quiet), "Night-night..." as the lamp goes off for the night, and the
+  pooled "I'm off!" / "Off to school!" and "I'm home!" / "Tadaima!"
+  (why: [decisions](decisions.md#the-day-is-the-unit-2026-10-04)).
+- **Rare things, and pity**: each of her scripts has a rarity: common,
+  uncommon, rare or legendary. Common and uncommon ones play by their
+  own chances. Rare and legendary ones play only when open, which a draw
+  decides once a game day (a visit, without her clock), from the day's
+  seed: each tier rolls once; the rare things she has shown you are
+  open if it passes the tier's base chance (rare 0.15, legendary 0.02);
+  and at most one she hasn't is new that day, if the roll passes the
+  base chance plus her pity, which rises in a straight line to certain
+  after 6 idle hours (legendary 40) without anything new of that tier.
+  Pity only chooses something unseen: what she has shown rolls the base
+  chance alone, and with nothing unseen left there's none. The new one
+  is chosen evenly among those that can happen in the part of her day
+  the draw is for (a visit's: the slot it begins in and the next;
+  waking: the whole day, unless a visit begun after midnight already
+  drew it, and then the night and morning only). Pity counts real minutes with the idle gate
+  open, her there or not, asleep included; Visits off pauses it. A rare
+  thing is shown when its first key plays with her in sight: then it's
+  saved as seen, and its tier's pity starts again. The day's draw is
+  kept in memory, so a restart the same game day draws it again. The
+  rare things: the Dream (asleep, 30 game minutes after she first lies
+  down for the night: "Hello everynyan...", "Fine sankyu...", "Oh my
+  gah!"), the last melon bread after a snack ("That was the last
+  one."), the escalator ("The box one's the...", "...escalator? No?")
+  as she spaces out, and a scary story on her sofa or over a book from
+  22:00 to bedtime ("Scary story time...", "A fart. Not mine.")
+  (why: [decisions](decisions.md#rarity-is-drawn-per-day-and-pity-is-only-for-the-unseen-2026-10-05)).
+- **Her window and wall clock**: two hung pieces show her time of day,
+  drawn from her clock, never mirrored. The wall clock (3×2, decor,
+  beauty 0.5) shows it to the quarter-hour, the hour hand creeping by
+  quarters; the window (4×2, a little town below) shows five skies:
+  dawn 05–07, day 07–17, dusk 17–19, evening 19–21, night 21–05. They
+  change on her clock's quarter-hours (about every 2½ real minutes), in
+  her empty home too, and only a home showing one wakes for them. The
+  wall clock is a gift, once and never sold: a parcel (through a wall's
+  flap, as any parcel) the first time her clock is running, her TV is
+  out of its box, and she's up, in sight, greeted, quiet and done with
+  the day's calendar, with no other parcel's flap open. The window is sold after the cat bed. She
+  looks out of it from under it or just beside it (15–30 s, gazing up,
+  curious), saying what the sky shows ("Sunny!", "Pretty...",
+  "Stars!"); it answers daydreams and fun, twice as likely from 17:00 to
+  05:00. With her wall clock on the strip she stands on, she glances up
+  at it before going to bed ("Oh! It's late!") and as she leaves for
+  school ("Time for school!"), once each, and now and then of an
+  afternoon (a musing in three, once a visit) says the hour, roughly
+  ("Three-ish.")
+  (why: [decisions](decisions.md#her-window-and-her-wall-clock-2026-10-04)).
 
 - Playback starting (for a visitor) or an overlay opening mid-visit
-  starts the dissolve; switching the setting off removes her at once. A terminal resize
-  re-anchors her (she falls if her floor went away); during a dissolve it
+  starts the dissolve (on a dash home or an errand too: an overlay ends
+  those at once, and a visitor's playback lets her finish); switching
+  the setting off removes her at once
+  (why: [decisions](decisions.md#overlays-end-a-dash-and-an-errand-2026-10-04)).
+  A terminal resize re-anchors her (she falls if her floor went away); during a dissolve it
   ends the dissolve immediately. Terminal focus changes (alt-tab) are not activity.
 - **Resident Osaka** (on by default): once she's arrived she stays —
   through playback, and through local input. She keeps out of the way
@@ -1867,7 +2070,9 @@ this section states what is built.
     until focus moves on. She may still stand on the focused pane's top
     border with her body in the pane above, as on any protected line.
     Headed out to work, she still goes; on her way home, the door is how
-    she gets in.
+    she gets in. She goes to school as well, and comes home (see *Away
+    at school*); in her empty home, her closed door in the focused pane
+    rains out with her pieces there, and comes back with them.
   - **The chat** is where people read: whatever would take her into the
     chat pane — a pull or swap there, a climb or hop or door that lands
     her there, a walk along a floor into it — is a tenth as likely.
@@ -1879,8 +2084,13 @@ this section states what is built.
     focused one) instead of ending the visit. Overlays still end it, as does switching visits off.
 - **The scrollback accordion** (see [Chat](#chat)): when a poke is due
   she goes to poke it, whatever the idle gate says (only an overlay or a
-  held chat selection keeps her away, and then it waits). Absent, she
-  arrives for it, out of a door standing on it; visiting, she drops what
+  held chat selection keeps her away, and then it waits), though her
+  routine changes how: at school she dashes in through a door, pokes it
+  and goes straight back out by her door, no goodbye and not a visit;
+  asleep, she gets up groggy and blinking, pokes it in the dark ("Mm...
+  someone said..."), and goes back to bed
+  (why: [decisions](decisions.md#at-school-or-asleep-she-still-comes-by-her-door-2026-10-04)).
+  Absent, she arrives for it, out of a door standing on it; visiting, she drops what
   she's doing and walks there along her floor, or takes a door (a fall,
   a climb, or a door she's already through finishes first; out at work,
   she comes straight back through a door). She stands on the accordion —
@@ -1898,27 +2108,50 @@ this section states what is built.
   in the focused pane leaves it by her door. If the log follows the
   newest line again (or the accordion moves) before she pokes, the
   errand is off; if she can't get there at all (too small a terminal,
-  nowhere to stand on it), the accordion shakes by itself.
+  nowhere to stand on it), or an overlay ends the errand before she
+  pokes, the accordion shakes by itself.
 - **Settings** (F3 → Houseguest), local only: *Visits* — after 1
   (default), 2, 5, 10, or 30 idle minutes, or Off; *Resident* (default
   on); *Osaka moved out* (asks first) wipes her record: her home goes,
-  and the next visit is a first meeting.
+  her clock goes back to Monday 16:00, what she has shown you and her
+  pity start again, and the next visit is a first meeting.
 - **Her record** is local and never synced (the same tier as layout
   sizes): her home (each piece, its strip and anchor, and which she
   hasn't settled yet), the number of visits,
   and a master seed; each visit's randomness is drawn from the master
-  seed and the visit's number. It's saved whenever it changes. It
-  stays version 1 for older builds: where pieces stand is a field they
+  seed and the visit's number. With phase 5b it also holds her clock
+  (game minutes since Monday 16:00), her idle minutes and where her pity
+  last started, the rare things she has shown, the date her calendar was
+  last delivered, and whether her wall clock was sent; each is left out
+  while it's the default. What happens to her is saved at once; time
+  alone is saved every 30 game minutes (5 real) and at each change of
+  her routine's part of the day. Every way out of the UI loop hands back
+  her record, its clock brought up to that moment, and the pane sizes,
+  saved once the UI thread has ended; a SIGHUP, a panicked UI thread,
+  and a failure while the session starts up are not saved (a crash loses
+  at most the last batch of her time). One client process holds a
+  database at a time, so no two count time into one record
+  (why: [decisions](decisions.md#her-record-events-at-once-time-in-batches-and-on-exit-2026-10-04)).
+  It stays version 1 for older builds: where pieces stand is a field they
   ignore, and each piece's share of the way along and a pane per old
-  room kind are still written, so they keep every piece; a record they
-  saved since is anchored again from those. Pieces, rooms or strips a
-  build doesn't know are skipped; a record that can't be read
+  room kind are still written, so they keep every piece they know; a
+  record they saved since is anchored again from those, without her
+  clock (Monday 16:00 again), pity, what she has shown, her calendar's
+  date, or the window and wall clock
+  (why: [decisions](decisions.md#her-clock-is-stored-as-game-minutes-since-monday-1600-2026-10-04)).
+  Pieces, rooms or strips a build doesn't know are skipped; a record that can't be read
   at all (malformed, another version) is left as it is and never saved
   over — she starts afresh for that session
   (why: [decisions](decisions.md#houseguest-keeps-a-local-record-2026-09-29)).
 - Timing uses the UI thread's monotonic clock and her behaviour comes
-  from a per-visit seeded generator; she redraws only when her pose
-  changes, never at a fixed frame rate.
+  from a per-visit seeded generator (what's keyed on her day, from the
+  day's). The one exception is the real date: the shell reads it from
+  the wall clock (`biblical_date`, the day starting at 09:00) and tells
+  her before every step; only a date crosses, never a time of day
+  (why: [decisions](decisions.md#her-calendars-day-starts-at-0900-2026-10-04)).
+  She redraws only when her pose changes and, while a wall clock or
+  window of hers shows, on her clock's quarter-hours; never at a fixed
+  frame rate.
 - **Line art** when the terminal speaks the kitty graphics protocol
   (Ghostty): SVG parts posed by a rig, rendered at the terminal's cell
   size and placed over her 5×4-cell box with unicode placeholders.
@@ -1960,7 +2193,10 @@ this section states what is built.
   (why: [decisions](decisions.md#houseguest-line-art-over-kitty-placeholders-2026-09-28)).
 - **Stage** (developer tool, not in the client): `cargo run -p dessplay
   --example houseguest` cues any scene on demand in the default layout,
-  placed where it works, with slow motion.
+  placed where it works, with slow motion. Its bar shows her game time
+  and part of the day ("Mon 16:05 Afternoon"); `t` skips her clock
+  forward to her routine's next change, and `d` cycles the real date
+  she's told through a few calendar dates, today and none.
 
 ### Watching a Series
 
