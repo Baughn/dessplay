@@ -100,8 +100,9 @@ use sprite::{Part, Pose};
 use terrain::Terrain;
 
 /// What the shopping channel sells, in order (the TV comes first, on
-/// its own): furniture, then decor.
-const CATALOGUE: [Furniture; 9] = [
+/// its own): furniture, then decor. Not her wall clock: that's a gift,
+/// once (see [`furnish`]).
+const CATALOGUE: [Furniture; 10] = [
     Furniture::Sofa,
     Furniture::Bed,
     Furniture::Desk,
@@ -109,6 +110,7 @@ const CATALOGUE: [Furniture; 9] = [
     Furniture::Bookshelf,
     Furniture::Fridge,
     Furniture::CatBed,
+    Furniture::Window,
     Furniture::Plant,
     Furniture::Poster,
 ];
@@ -1453,6 +1455,9 @@ impl Guest {
         // Her dash home (D3a), if this step of her clock crossed it: an
         // edge, so a cold start or a restart after it never dashes.
         let dash = fed.is_some_and(|clock| self.dash_crossed(&clock, before, self.game_ms()));
+        // A quarter-hour passed: a clock's dial or a window's sky shown
+        // may have changed.
+        let quarter = fed.is_some() && routine::quarter_crossed(before, self.game_ms());
         let mut changed = match &mut self.state {
             State::Absent => self.absent(now, school, dash),
             State::Arriving(_) => true,
@@ -1461,6 +1466,7 @@ impl Guest {
                 // frame without it).
                 let fading = !empty.fades.is_empty();
                 empty.fades.retain(|fade| !fade.done(now));
+                let ticked = quarter && tells_time(&empty.shown);
                 if !school {
                     self.school_out(now);
                     true
@@ -1469,7 +1475,7 @@ impl Guest {
                     self.state = State::Arriving(How::Dash);
                     true
                 } else {
-                    fading
+                    fading || ticked
                 }
             }
             State::Visiting(visit) => {
@@ -1512,7 +1518,7 @@ impl Guest {
                     self.out = None;
                     tracing::info!(visit = self.ledger.visits, "houseguest: home early");
                 }
-                changed || fading || flapped
+                changed || fading || flapped || quarter && tells_time(&visit.shown)
             }
             State::Leaving(leaving) => {
                 leaving.fades.retain(|fade| !fade.done(now));
@@ -1718,6 +1724,26 @@ impl Guest {
         Some(clock.game.when(clock.next_boundary(clock.game.at(now))))
     }
 
+    /// Her minute of the day at `now`, as her wall clock and window show
+    /// it: `None` unless her routine is fed to her (and her clock runs),
+    /// when they show a plain face and a day sky (A5).
+    fn time_of_day(&self, now: u64) -> Option<u16> {
+        let clock = self.game_clock(now).filter(|_| self.feed_clock)?;
+        Some(routine::split(clock.at(now)).1)
+    }
+
+    /// The next quarter-hour of her clock after `now` (monotonic millis,
+    /// rounded up), while `shown` has a piece that tells the time and her
+    /// routine is fed: its dial or sky may change then. A home without
+    /// one wakes for nothing more.
+    fn next_quarter(&self, shown: &[Shown], now: u64) -> Option<u64> {
+        if !tells_time(shown) {
+            return None;
+        }
+        let clock = self.game_clock(now).filter(|_| self.feed_clock)?;
+        Some(clock.when(routine::next_quarter(clock.at(now))))
+    }
+
     /// How soon she next needs a tick; `None` when nothing is pending.
     pub fn next_tick(&self, now: u64) -> Option<Duration> {
         let due = match &self.state {
@@ -1741,6 +1767,7 @@ impl Guest {
                 .map(|fade| fade.next_frame(now))
                 .chain(self.next_boundary(now))
                 .chain(self.next_dash(now))
+                .chain(self.next_quarter(&empty.shown, now))
                 .min(),
             State::Visiting(visit) => Some(
                 visit
@@ -1748,6 +1775,7 @@ impl Guest {
                     .iter()
                     .map(|fade| fade.next_frame(now))
                     .chain(visit.flap.map(|(_, since)| since + FLAP_MS))
+                    .chain(self.next_quarter(&visit.shown, now))
                     .fold(visit.osaka.due(), u64::min),
             ),
             // Every fade began before the goodbye's rain, and ends first.
@@ -1811,6 +1839,8 @@ impl Guest {
         if self.gone_out(now) {
             self.out_by_door(now);
         }
+        // Her time of day, as her clock and window show it.
+        let time = self.time_of_day(now);
         // The accordion's shake is hers, painted like the rest of her:
         // after everything that reads the real frame, and under her.
         let nudge = &self.nudge;
@@ -1842,6 +1872,7 @@ impl Guest {
                     view,
                     &unkept,
                     nudge,
+                    time,
                     now,
                     self.truecolor,
                 );
@@ -1966,6 +1997,7 @@ impl Guest {
                     buf,
                     view,
                     visit,
+                    time.is_some(),
                     now,
                     &mut self.rng,
                 );
@@ -2157,7 +2189,10 @@ impl Guest {
                 }
                 // She's watching: the TV is on. And the lamp, the fridge,
                 // the cat...
-                let cat = self.cat_now || cat_home(&self.ledger, visit.kind);
+                let world = World {
+                    cat: self.cat_now || cat_home(&self.ledger, visit.kind),
+                    time,
+                };
                 let prop = visit.osaka.prop(now);
                 let dark = visit.osaka.dark(now);
                 let looks = Looks {
@@ -2165,7 +2200,7 @@ impl Guest {
                     states: visit
                         .shown
                         .iter()
-                        .map(|p| (p.item, piece_state(p, prop, dark, cat)))
+                        .map(|p| (p.item, piece_state(p, prop, dark, world)))
                         .collect(),
                 };
                 nudge.paint(buf, now);
@@ -2913,6 +2948,7 @@ fn furnish(
     buf: &Buffer,
     view: &IdleView,
     visit: &mut Visit,
+    fed: bool,
     now: u64,
     rng: &mut Rng,
 ) -> Vec<Shown> {
@@ -2987,15 +3023,54 @@ fn furnish(
     // she'd say so. It waits for her to wake, and to say good morning.
     // Nor on a dash home from school (A16): it waits for her return.
     let awake = !visit.tuck && visit.kind != Kind::Dash && visit.osaka.awake(now);
+    // A parcel comes in only where she can unpack it (her seats' test).
+    let terrain = &visit.terrain;
+    let stands = |x: i32, y: i32| seat_spot(terrain, x, y);
     if let Some(item) = ledger.ordered
         && ledger.bought_on < ledger.visits
         && awake
-        && let Some((prop, flap)) = home.doorstep(buf, &view.nooks, &shown, &blocked, item)
+        && let Some((prop, flap)) = home.doorstep(buf, &view.nooks, &shown, &blocked, &stands, item)
         && home.add(prop)
     {
         tracing::info!(?item, strip = ?prop.strip, "houseguest: a parcel arrived");
         visit.flap = Some((flap, now));
         ledger.ordered = None;
+        visit.osaka.say(PARCEL, now);
+        shown = home.project(buf, &view.nooks, &blocked);
+    }
+    // Her wall clock (phase 5b D7, Q3): a gift, once ever, on her
+    // doorstep, the first time she's up and about with her clock fed to
+    // her and her TV out of its box (so it's there for her first bedtime
+    // and her first morning off to school). Never in the CATALOGUE, so
+    // her shopping is untouched; never with another parcel at the door
+    // (a flap still open), nor while she's out of sight, asleep, or on a
+    // dash home (`awake`), nor before her hello (and her calendar's
+    // entry) is said.
+    if fed
+        && !ledger.clock_sent
+        && awake
+        && visit
+            .osaka
+            .free_for_a_gift(now, &visit.chances, &visit.terrain)
+        && visit.flap.is_none()
+        && !home.owns(Furniture::Clock)
+        && home
+            .props
+            .iter()
+            .any(|p| p.item == Furniture::Tv && !p.boxed)
+        && let Some((prop, flap)) = home.doorstep(
+            buf,
+            &view.nooks,
+            &shown,
+            &blocked,
+            &stands,
+            Furniture::Clock,
+        )
+        && home.add(prop)
+    {
+        tracing::info!(strip = ?prop.strip, "houseguest: her wall clock arrived");
+        visit.flap = Some((flap, now));
+        ledger.clock_sent = true;
         visit.osaka.say(PARCEL, now);
         shown = home.project(buf, &view.nooks, &blocked);
     }
@@ -3318,20 +3393,26 @@ fn seats_of(piece: &Shown, shown: &[Shown], terrain: &Terrain, cat: bool) -> Vec
     out
 }
 
+/// Whether she could be seated at `(x, y)` to use something: where she
+/// may stay, on a floor she stands on. (A parcel comes in only where
+/// this holds of its unpack spot: [`room::Home::doorstep`].)
+fn seat_spot(terrain: &Terrain, x: i32, y: i32) -> bool {
+    terrain.restful(x, y) && terrain.platform_at(x, y).is_some()
+}
+
 fn spots_for(piece: &Shown, shown: &[Shown], terrain: &Terrain, cat: bool) -> Vec<room::Seat> {
     let mut out = Vec::new();
-    // No cat, no petting.
-    if piece.item == Furniture::CatBed && !cat {
-        return out;
-    }
     for &what in piece.uses() {
+        // No cat, no petting (but his bed, boxed, is hers to unpack: the
+        // cat comes only to a bed out of its box).
+        if what == room::Use::Pet && !cat {
+            continue;
+        }
         let spots: &[i32] = if what.inside() { &[0] } else { &piece.beside() };
         let seat = spots
             .iter()
             .map(|&beside| piece.seat(what, beside))
-            .find(|seat| {
-                terrain.restful(seat.x, seat.y) && terrain.platform_at(seat.x, seat.y).is_some()
-            });
+            .find(|seat| seat_spot(terrain, seat.x, seat.y));
         out.extend(seat);
     }
     // A sofa that faces the TV (see [`room::faces`]) is where to watch
@@ -3567,23 +3648,48 @@ fn cat_home_of(ledger: &Ledger, visit: u64) -> bool {
     owns && ledger.visit_seed(visit) >> 17 & 1 == 1
 }
 
+/// What of the world beyond her shows on her furniture: whether the cat
+/// is home, and her minute of the day (`None`: her clock isn't fed to
+/// her, or isn't running) for her wall clock's dial and her window's
+/// sky. Game time, never her script's ([`script::Prop`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct World {
+    cat: bool,
+    time: Option<u16>,
+}
+
+/// Whether any of `shown` tells the time as it's drawn (a clock or a
+/// window out of its box): it changes as her clock runs. (Neither is
+/// ever made of text: [`scrap::MAKES`] has no piece that tells the
+/// time.)
+fn tells_time(shown: &[Shown]) -> bool {
+    shown.iter().any(|s| s.item.tells_time() && !s.boxed)
+}
+
 /// What state `piece` is in, given what the script she's playing shows
-/// on her furniture (`prop`; see [`Osaka::prop`]) and whether her lamp is
-/// dark for the night (`dark`; see [`Osaka::dark`]), each piece from its
-/// own: the lamp off while she sleeps or in the night, the fridge open
-/// as she looks in, the cat in his bed (`cat`), biting at the end of a
-/// petting.
+/// on her furniture (`prop`; see [`Osaka::prop`]), whether her lamp is
+/// dark for the night (`dark`; see [`Osaka::dark`]) and the `world`,
+/// each piece from its own: the lamp off while she sleeps or in the
+/// night, the fridge open as she looks in, the cat in his bed (`cat`),
+/// biting at the end of a petting; the clock's dial and the window's sky
+/// at her time of day (plain without one).
 fn piece_state(
     piece: &Shown,
     prop: Option<script::Prop>,
     dark: bool,
-    cat: bool,
+    world: World,
 ) -> art::PieceState {
     use art::PieceState;
     use script::Prop;
     if dark && piece.item == Furniture::Lamp {
         return PieceState::LampOff;
     }
+    match (piece.item, world.time) {
+        (Furniture::Clock, Some(minute)) => return PieceState::Dial(art::Dial::at(minute)),
+        (Furniture::Window, Some(minute)) => return PieceState::Sky(art::Sky::at(minute)),
+        _ => {}
+    }
+    let cat = world.cat;
     let state = match prop.filter(|p| p.item() == piece.item) {
         Some(Prop::LampOff) => Some(PieceState::LampOff),
         Some(Prop::FridgeOpen) => Some(PieceState::FridgeOpen),
@@ -3607,7 +3713,8 @@ fn prop_layer(prop: &Shown, look: Look) -> graphics::Layer {
     let lift = i32::from(prop.lift());
     graphics::Layer {
         look,
-        facing: prop.facing,
+        // A symmetric piece is drawn one way (and cached once).
+        facing: prop.item.drawn_facing(prop.facing),
         at: (prop.left + i32::from(cols) / 2, prop.floor - lift),
         standing: lift == 0,
     }
@@ -3696,8 +3803,71 @@ fn cat_glyphs(state: art::PieceState) -> Option<[char; 4]> {
     match state {
         art::PieceState::Cat => Some([' ', '^', '^', ' ']),
         art::PieceState::CatBiting => Some(['!', '^', '^', '!']),
-        art::PieceState::Plain | art::PieceState::LampOff | art::PieceState::FridgeOpen => None,
+        art::PieceState::Plain
+        | art::PieceState::LampOff
+        | art::PieceState::FridgeOpen
+        | art::PieceState::Dial(_)
+        | art::PieceState::Sky(_) => None,
     }
+}
+
+/// The wall clock's hand in ASCII, in its face's cell: by the minute
+/// hand, so it moves on the quarter-hour as the dial does.
+fn dial_glyph(dial: art::Dial) -> char {
+    match dial.quarter % 4 {
+        0 => '\'',
+        1 => '>',
+        2 => '.',
+        _ => '<',
+    }
+}
+
+/// The window's two panes of sky in ASCII.
+fn sky_glyphs(sky: art::Sky) -> [char; 2] {
+    match sky {
+        art::Sky::Night => ['*', '.'],
+        art::Sky::Dawn => ['_', 'o'],
+        art::Sky::Day => ['-', 'o'],
+        art::Sky::Dusk => ['~', '~'],
+        art::Sky::Evening => ['.', '*'],
+    }
+}
+
+/// What's drawn over `prop`'s ASCII drawing this frame, cell by cell
+/// (never mirrored): what's on the TV's screen, the cat in his bed, the
+/// clock's hand, the window's sky. Placed from the piece's footprint as
+/// it stands or hangs (`Shown::rect`), never from its floor alone.
+fn overrides(prop: &Shown, looks: &Looks) -> Vec<((i32, i32), char)> {
+    let mut out = Vec::new();
+    // On, the TV's screen shows what's on.
+    if let (Some(cells), Some(channel)) = (prop.screen(), looks.tv) {
+        out.extend(cells.into_iter().zip(screen_glyphs(channel)));
+    }
+    if prop.boxed {
+        return out;
+    }
+    let rect = prop.rect();
+    let (left, top) = (prop.left, i32::from(rect.y));
+    let state = looks.state(prop.item);
+    // The cat curls in his bed (its top row).
+    if let Some(glyphs) = cat_glyphs(state) {
+        out.extend(
+            glyphs
+                .into_iter()
+                .enumerate()
+                .map(|(dx, glyph)| ((left + dx as i32, top), glyph)),
+        );
+    }
+    // (Never a makeshift piece's: none tells the time, [`scrap::MAKES`].)
+    match state {
+        art::PieceState::Dial(dial) => out.push(((left + 1, top + 1), dial_glyph(dial))),
+        art::PieceState::Sky(sky) => {
+            let [a, b] = sky_glyphs(sky);
+            out.extend([((left + 1, top + 1), a), ((left + 2, top + 1), b)]);
+        }
+        _ => {}
+    }
+    out
 }
 
 /// What's on the TV's two-cell screen in ASCII: static, the shopping
@@ -3724,28 +3894,15 @@ fn draw_props(
     let mut painted = Vec::new();
     for prop in shown {
         let ink = prop_ink(prop.item, truecolor);
-        // On, the TV's screen shows what's on; the cat curls in his bed.
-        let cat = cat_glyphs(looks.state(prop.item));
-        let screen = prop
-            .screen()
-            .zip(looks.tv)
-            .map(|(cells, channel)| (cells, screen_glyphs(channel)));
+        let over = overrides(prop, looks);
         let unders: Vec<_> = prop
             .cells()
             .filter_map(|(x, y, glyph)| {
                 let (ux, uy) = (u16::try_from(x).ok()?, u16::try_from(y).ok()?);
-                let glyph = screen
-                    .and_then(|(cells, glyphs)| {
-                        cells
-                            .iter()
-                            .position(|&c| c == (x, y))
-                            .and_then(|i| glyphs.get(i).copied())
-                    })
-                    .or_else(|| {
-                        let top = y == prop.floor - i32::from(prop.size().1);
-                        let glyphs = cat.filter(|_| top && !prop.boxed)?;
-                        glyphs.get((x - prop.left) as usize).copied()
-                    })
+                let glyph = over
+                    .iter()
+                    .find(|&&(at, _)| at == (x, y))
+                    .map(|&(_, over)| over)
                     .or(glyph);
                 Some((ux, uy, glyph, buf.cell((ux, uy))?.clone()))
             })
@@ -3945,7 +4102,8 @@ fn door_spot(terrain: &Terrain, near: (i32, i32)) -> Option<(i32, i32)> {
 /// Paint her home standing empty while she's out (`State::Away`) over
 /// the finished frame: her furniture as a visit projects it (and nothing
 /// a visit's paint sets going: no gift, no order, no parcel), the TV off
-/// and the lamp off, the cat as the coming visit has him; her closed
+/// and the lamp off, the cat as the coming visit has him, her clock and
+/// window at her time of day (`time`, when it's fed); her closed
 /// door where she went out (moved to the nearest spot it fits only once
 /// it doesn't on the frame as drawn, `unkept`); what was in a pane just
 /// focused raining out (her door too: it comes back when the pane's left
@@ -3961,6 +4119,7 @@ fn paint_empty(
     view: &IdleView,
     unkept: &[Rect],
     nudge: &nudge::Nudge,
+    time: Option<u16>,
     now: u64,
     truecolor: bool,
 ) -> bool {
@@ -4032,12 +4191,17 @@ fn paint_empty(
         terrain.furnish(covers.iter().copied());
         terrain
     };
-    // Nobody's watching, reading by the lamp or petting him.
+    // Nobody's watching, reading by the lamp or petting him; her clock
+    // and window tell the time all the same.
+    let world = World {
+        cat: empty.cat,
+        time,
+    };
     let looks = Looks {
         tv: None,
         states: shown
             .iter()
-            .map(|p| (p.item, piece_state(p, None, true, empty.cat)))
+            .map(|p| (p.item, piece_state(p, None, true, world)))
             .collect(),
     };
     nudge.paint(buf, now);

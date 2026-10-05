@@ -572,6 +572,26 @@ pub fn panic_week(date: NaiveDate) -> bool {
     within(date, PANIC_WEEK)
 }
 
+/// A quarter of an hour, in game millis: what her wall clock's dial
+/// moves by (and her window's sky changes on the hour, one of them).
+const QUARTER_MS: u64 = 15 * MINUTE_MS;
+
+/// The next quarter-hour after `game` (game millis since [`START`], a
+/// quarter-hour itself): when the clock's dial and the window's sky may
+/// next change. The one place their time is told, beside [`split`]'s
+/// minute.
+pub fn next_quarter(game: u64) -> u64 {
+    (game / QUARTER_MS)
+        .saturating_add(1)
+        .saturating_mul(QUARTER_MS)
+}
+
+/// Whether a quarter-hour falls in `from < t <= to` (game millis since
+/// [`START`]): the dial and the sky may have changed between them.
+pub fn quarter_crossed(from: u64, to: u64) -> bool {
+    from / QUARTER_MS != to / QUARTER_MS
+}
+
 /// `game` (game millis since [`START`]) as the stage shows it: "Mon
 /// 16:05".
 pub fn label(game: u64) -> String {
@@ -1024,6 +1044,26 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The next quarter-hour is the first after a moment, a quarter-hour
+    /// on her day's own clock (16:00 is one), and the dial's minute
+    /// changes there and nowhere between.
+    #[test]
+    fn the_next_quarter_hour() {
+        for game in
+            (0..3 * DAY_MIN * MINUTE_MS)
+                .step_by(7_919)
+                .chain([0, QUARTER_MS - 1, QUARTER_MS])
+        {
+            let next = next_quarter(game);
+            assert!(next > game && next <= game + QUARTER_MS, "{game}: {next}");
+            assert_eq!(split(next).1 % 15, 0, "{game}: {next}");
+            assert!(quarter_crossed(game, next), "{game}");
+            assert!(!quarter_crossed(game, next - 1), "{game}");
+            assert_eq!(split(next - 1).1 / 15, split(game).1 / 15, "{game}");
+        }
+        assert_eq!(next_quarter(at(1, 9 * 60 + 14)), at(1, 9 * 60 + 15));
     }
 
     /// Exam season, hay fever and panic week fall on their dates.

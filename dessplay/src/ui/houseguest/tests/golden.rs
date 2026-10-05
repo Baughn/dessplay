@@ -565,10 +565,10 @@ fn golden_stage_room() {
         "stage",
         stage_room,
         &[
-            (0, 0xf0c8e581c411846a, 0x70f0e04f52d274b3),
-            (1, 0xae04cfc95045af79, 0x25b0a880ce4d67e1),
-            (2, 0xdce6aa718de2d517, 0xeb9ef4bebb7695b6),
-            (3, 0x95b51d88911f193f, 0x3d09061717aef140),
+            (0, 0xcf5dfb4e8fc37942, 0x3f3e40c43764033e),
+            (1, 0x2459dc80ca7e7052, 0xea80ccc4be6aa9c8),
+            (2, 0x7423eca31c687f95, 0xdafbf486df7e4a16),
+            (3, 0x4008ade7e155e9f0, 0x25a41cc21f1e7a80),
         ],
     );
 }
@@ -579,10 +579,10 @@ fn golden_resident() {
         "resident",
         resident,
         &[
-            (0, 0xe17c989309e27351, 0x22e5e646d231e359),
-            (1, 0xe6d87d159971dfb3, 0x918b7cf7d48c11b7),
-            (2, 0xe80789b1a3371b4d, 0x64d92d1e905bc905),
-            (3, 0x7c996adf16ce6ae1, 0x54628e1921043571),
+            (0, 0x9edb2f88161cd06e, 0x2b67eae2c1e7639b),
+            (1, 0x66e880b457962f15, 0x7066efcb805b4afe),
+            (2, 0x09bc3be953e7971e, 0xa4fb914ec7872439),
+            (3, 0xfe93ff6197edea0d, 0x884c6a69fef789f5),
         ],
     );
 }
@@ -593,10 +593,10 @@ fn golden_furnished_home() {
         "furnished",
         furnished,
         &[
-            (0, 0xe9c4f064b39b62c2, 0xe5176fba30126b15),
-            (1, 0xdf957f9a38ed293a, 0x36a820fdf5a2da93),
-            (2, 0xaa7b2ceb0bf8b5bc, 0x68ef8c97aaef29b5),
-            (3, 0x97d6177f725fae90, 0x98311fcb093f8040),
+            (0, 0xa914c6afdbb112e6, 0x9d9c6a3f468e6df6),
+            (1, 0x92743870beecf5ea, 0x599a6aa229d9a231),
+            (2, 0xa9825c121f768f21, 0x1c31746177b45c83),
+            (3, 0x720179d9687dfa7a, 0xae5b5d2dbe8cc351),
         ],
     );
 }
@@ -621,10 +621,10 @@ fn golden_homework_evening() {
         "evening",
         homework_evening,
         &[
-            (0, 0xc714add6b7035e9a, 0xaf1bbbbda0fa2149),
-            (1, 0xd8350653eb6c8d0f, 0xf986e1a0f8174e65),
-            (2, 0xad3a7e6a9cff564d, 0x5c55d0f1198d1566),
-            (3, 0x857f177b56066f57, 0xf887861180fac779),
+            (0, 0x7fc23bc674141859, 0x04c8e70c3f0f49f8),
+            (1, 0xc734d18cfe2f73fa, 0x81fd6de5f873087c),
+            (2, 0xadc7632f7551b89f, 0x57cb07b610a676a9),
+            (3, 0x6a76d75a91bbda9d, 0xc838b637d1149eab),
         ],
     );
 }
@@ -649,10 +649,10 @@ fn golden_weekend() {
         "weekend",
         weekend,
         &[
-            (0, 0x3b5632dafeecfe78, 0xcc5342a9d0789d38),
-            (1, 0x27792fa4bfae67ed, 0xe9375b7e8b8631dc),
-            (2, 0x265af502895ee3f2, 0x31a531f225ae7477),
-            (3, 0x951005ed7743aba5, 0x1dccf0464b05e7e7),
+            (0, 0x1379e72ff451ee87, 0x67c9ab8672f3b351),
+            (1, 0x4eca730ec35c27ec, 0x87a47d329d7f0a5b),
+            (2, 0x9096d5b0402d22a4, 0x4e7dda8089ae31ff),
+            (3, 0x71193299d7f3d45f, 0x494e0e4b83611ca5),
         ],
     );
 }
@@ -663,10 +663,10 @@ fn golden_school_morning() {
         "school",
         school_morning,
         &[
-            (0, 0xb2b7d8e0e05c2bd7, 0x74112a43a0b0c060),
-            (1, 0x044b15882e3f3676, 0xe51f160e52a5ce00),
-            (2, 0xe29a2ca7ee7f9ab0, 0xe28753339037aa01),
-            (3, 0xd87dbd5deeefd2c6, 0x1f68258f09ef2813),
+            (0, 0x78ccce965e42be1f, 0x343dd7e1638e6f82),
+            (1, 0x3f90b25eba234732, 0x1ff902c5b3cc9894),
+            (2, 0x12714caaef695715, 0x17e75178cc58e115),
+            (3, 0x263af0d80a57ee7d, 0x964ab390f8540262),
         ],
     );
 }
@@ -677,10 +677,10 @@ fn golden_home_from_school() {
         "home",
         home_from_school,
         &[
-            (0, 0x57528e5f189b1820, 0xae6a109bbb7a9ba9),
-            (1, 0x0ceee9de88786799, 0x3cbf367270361eeb),
-            (2, 0x49590f25ae93c4ea, 0x2911bbd589dbbb90),
-            (3, 0x16817c2b767a8a57, 0xd23eb48164ba0ee4),
+            (0, 0x16529222b1eb840d, 0xec5696903e4a3a92),
+            (1, 0x80ebc409caa74c94, 0xbf30ec70de831fec),
+            (2, 0xb431055690129397, 0xc5dcdc1e15ca0ce5),
+            (3, 0x3f3695bc1062a1e4, 0xdbc2c77de609deea),
         ],
     );
 }

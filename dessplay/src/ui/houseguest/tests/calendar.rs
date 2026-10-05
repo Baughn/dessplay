@@ -566,3 +566,103 @@ fn her_meal_line_is_once_a_slot_across_visits() {
         );
     }
 }
+
+/// Her wall clock, not yet sent, waits for the day's calendar entry and
+/// comes after it in the same visit: after her Halloween greeting (her
+/// hello, or, home from school, the first beat she owes after "I'm
+/// home!"), after both of Setsubun's beans (a script), and on New Year's
+/// Day after "Happy New Year!" and her first sunrise on her TV, never
+/// while it plays. In both drawing modes, quiet panes or text-dense.
+#[test]
+fn her_wall_clock_comes_after_the_days_entry() {
+    for (screen, (real, view)) in home_screens() {
+        for graphics in [false, true] {
+            for (day, school, entry) in [
+                (date(2026, 10, 31), false, &[HALLOWEEN][..]),
+                (date(2026, 10, 31), true, &[HALLOWEEN][..]),
+                (date(2027, 2, 3), false, &[ONI_WA_SOTO, FUKU_WA_UCHI][..]),
+                (
+                    date(2027, 1, 1),
+                    false,
+                    &[HAPPY_NEW_YEAR, FIRST_SUNRISE_LINE][..],
+                ),
+            ] {
+                let at = format!("{screen} graphics={graphics} {day:?} school={school}");
+                // Home from school at Tuesday 12:45, or come at Monday 16:00.
+                let start = if school { tue(12, 30) } else { mon(16, 0) };
+                let mut guest = home_at(5, start, &HOME, graphics);
+                guest.ledger.clock_sent = false;
+                guest.set_date(day);
+                let mut now = if school {
+                    guest.advance(0);
+                    0
+                } else {
+                    until_visiting(&mut guest, &real, &view, 0)
+                };
+                let mut visits = None;
+                let mut lines: Vec<&str> = Vec::new();
+                let mut end = now + 240_000;
+                while now < end {
+                    if guest.ledger.clock_sent {
+                        // On a few seconds, for her to say so.
+                        end = end.min(now + 5_000);
+                    }
+                    now += guest
+                        .next_tick(now)
+                        .map_or(1000, |d| d.as_millis() as u64)
+                        .clamp(1, 1000);
+                    guest.advance(now);
+                    paint(&mut guest, &real, &view, now);
+                    let State::Visiting(visit) = &guest.state else {
+                        assert!(!guest.ledger.clock_sent, "{at}: sent while she's out");
+                        continue;
+                    };
+                    let osaka = &visit.osaka;
+                    visits.get_or_insert(guest.ledger.visits);
+                    if guest.ledger.clock_sent {
+                        assert!(
+                            !osaka.plays().is_some_and(|p| matches!(
+                                p.own,
+                                ScriptId::FirstSunrise | ScriptId::Setsubun
+                            )),
+                            "{at}: in the middle of {:?}",
+                            osaka.plays().map(|p| p.own)
+                        );
+                    }
+                    if !osaka.hidden(now)
+                        && let (_, _, Some(Bubble::Say(line))) = osaka.appearance(now)
+                        && lines.last() != Some(&line)
+                    {
+                        lines.push(line);
+                    }
+                }
+                assert!(guest.ledger.clock_sent, "{at}: no clock: {lines:?}");
+                assert_eq!(Some(guest.ledger.visits), visits, "{at}: the same visit");
+                let parcel = lines
+                    .iter()
+                    .position(|&l| l == PARCEL)
+                    .unwrap_or_else(|| panic!("{at}: never said: {lines:?}"));
+                for line in entry {
+                    let Some(said) = lines.iter().position(|l| l == line) else {
+                        // Text where she'd watch it: no getting to her TV
+                        // for the sunrise (best effort), and nothing holds
+                        // the clock back for it.
+                        assert!(
+                            screen != "quiet" && *line == FIRST_SUNRISE_LINE,
+                            "{at}: no {line:?}: {lines:?}"
+                        );
+                        continue;
+                    };
+                    assert!(said < parcel, "{at}: {lines:?}");
+                }
+                if school {
+                    let home = lines
+                        .iter()
+                        .position(|&l| mind::HOME.lines.contains(&l))
+                        .unwrap_or_else(|| panic!("{at}: never home: {lines:?}"));
+                    assert!(home < parcel, "{at}: {lines:?}");
+                }
+            }
+        }
+    }
+}

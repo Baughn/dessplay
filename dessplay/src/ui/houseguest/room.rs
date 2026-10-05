@@ -39,11 +39,18 @@ pub enum Furniture {
     Plant,
     /// A poster on the wall (just for looks).
     Poster,
+    /// A round wall clock showing her time of day (it comes as a gift).
+    Clock,
+    /// A window on the wall, with the sky of her time of day outside.
+    Window,
 }
 
 impl Furniture {
-    /// Every piece, in catalogue order.
-    pub const ALL: [Self; 10] = [
+    /// Every piece, in the order they were added (their serde names are
+    /// stable; the first eight are the oldest builds', see
+    /// [`Furniture::legacy`]). What the channel sells, in order, is
+    /// `CATALOGUE`.
+    pub const ALL: [Self; 12] = [
         Self::Sofa,
         Self::Tv,
         Self::Bed,
@@ -54,11 +61,46 @@ impl Furniture {
         Self::CatBed,
         Self::Plant,
         Self::Poster,
+        Self::Clock,
+        Self::Window,
     ];
 
     /// Whether it's just for looks.
     pub(super) fn decor(self) -> bool {
         self.spec().offers.contains(&Offer::Decor)
+    }
+
+    /// Whether the oldest builds that read her record know it (the first
+    /// eight kinds): they skip every later one, so it claims no room's
+    /// pane in what's written for them.
+    pub(super) fn legacy(self) -> bool {
+        match self {
+            Self::Sofa
+            | Self::Tv
+            | Self::Bed
+            | Self::Desk
+            | Self::Lamp
+            | Self::Bookshelf
+            | Self::Fridge
+            | Self::CatBed => true,
+            Self::Plant | Self::Poster | Self::Clock | Self::Window => false,
+        }
+    }
+
+    /// Whether it shows her time of day (the clock's dial, the window's
+    /// sky), so it changes as her clock runs, on the quarter-hour.
+    pub(super) fn tells_time(self) -> bool {
+        matches!(self, Self::Clock | Self::Window)
+    }
+
+    /// The way it's drawn facing `facing`: a symmetric piece always as
+    /// facing right (a mirrored dial would read 3:00 as 9:00).
+    pub(super) fn drawn_facing(self, facing: Facing) -> Facing {
+        if self.spec().symmetric {
+            Facing::Right
+        } else {
+            facing
+        }
     }
 
     /// Its row of the catalogue.
@@ -74,6 +116,8 @@ impl Furniture {
             Self::CatBed => &CAT_BED,
             Self::Plant => &PLANT,
             Self::Poster => &POSTER,
+            Self::Clock => &CLOCK,
+            Self::Window => &WINDOW,
         }
     }
 }
@@ -111,6 +155,10 @@ pub(super) struct Spec {
     pub hang: Option<u16>,
     /// How much prettier it makes a room (decor; nothing else does).
     pub beauty: f64,
+    /// It reads the same either way round, and is always drawn facing
+    /// right (as line art and in ASCII): the clock's dial and the
+    /// window's sky would read wrong mirrored.
+    pub symmetric: bool,
 }
 
 const SOFA: Spec = Spec {
@@ -125,6 +173,7 @@ const SOFA: Spec = Spec {
     comfort: 1.0,
     hang: None,
     beauty: 0.0,
+    symmetric: false,
 };
 const TV: Spec = Spec {
     name: "TV",
@@ -138,6 +187,7 @@ const TV: Spec = Spec {
     comfort: 1.0,
     hang: None,
     beauty: 0.0,
+    symmetric: false,
 };
 const BED: Spec = Spec {
     name: "bed",
@@ -152,6 +202,7 @@ const BED: Spec = Spec {
     comfort: 1.0,
     hang: None,
     beauty: 0.0,
+    symmetric: false,
 };
 const DESK: Spec = Spec {
     name: "desk",
@@ -166,6 +217,7 @@ const DESK: Spec = Spec {
     comfort: 1.0,
     hang: None,
     beauty: 0.0,
+    symmetric: false,
 };
 const LAMP: Spec = Spec {
     name: "lamp",
@@ -179,6 +231,7 @@ const LAMP: Spec = Spec {
     comfort: 1.0,
     hang: None,
     beauty: 0.0,
+    symmetric: false,
 };
 const BOOKSHELF: Spec = Spec {
     name: "bookshelf",
@@ -192,6 +245,7 @@ const BOOKSHELF: Spec = Spec {
     comfort: 1.0,
     hang: None,
     beauty: 0.0,
+    symmetric: false,
 };
 const FRIDGE: Spec = Spec {
     name: "fridge",
@@ -205,6 +259,7 @@ const FRIDGE: Spec = Spec {
     comfort: 1.0,
     hang: None,
     beauty: 0.0,
+    symmetric: false,
 };
 const CAT_BED: Spec = Spec {
     name: "cat bed",
@@ -218,6 +273,7 @@ const CAT_BED: Spec = Spec {
     comfort: 1.0,
     hang: None,
     beauty: 0.0,
+    symmetric: false,
 };
 const PLANT: Spec = Spec {
     name: "potted plant",
@@ -231,6 +287,7 @@ const PLANT: Spec = Spec {
     comfort: 1.0,
     hang: None,
     beauty: 1.0,
+    symmetric: false,
 };
 const POSTER: Spec = Spec {
     name: "poster",
@@ -245,12 +302,45 @@ const POSTER: Spec = Spec {
     // Above her head and the tallest piece that stands (4 rows).
     hang: Some(4),
     beauty: 1.0,
+    symmetric: false,
+};
+const CLOCK: Spec = Spec {
+    name: "wall clock",
+    pitch: line!("Ooh, a clock!"),
+    footprint: (3, 2),
+    // The hand's cell is drawn over (see the guest's `overrides`).
+    ascii: &[".-.", "(o)"],
+    ink: (Color::Rgb(217, 101, 91), Color::LightRed),
+    uses: &[],
+    offers: &[Offer::Decor],
+    sit: None,
+    comfort: 1.0,
+    // Beside the poster, as high.
+    hang: Some(4),
+    beauty: 0.5,
+    symmetric: true,
+};
+const WINDOW: Spec = Spec {
+    name: "window",
+    pitch: line!("A window! A view!"),
+    footprint: (4, 2),
+    // The sky's two cells are drawn over (see the guest's `overrides`).
+    ascii: &[".--.", "|  |"],
+    ink: (Color::Rgb(243, 234, 216), Color::White),
+    uses: &[],
+    offers: &[],
+    sit: None,
+    comfort: 1.0,
+    hang: Some(4),
+    beauty: 0.0,
+    symmetric: true,
 };
 
 /// The glyph at `(dx, dy)` of `item`'s ASCII drawing facing `facing`, if
 /// that cell is drawn (spaces are not).
 pub(super) fn glyph(item: Furniture, facing: Facing, dx: u16, dy: u16) -> Option<char> {
     let spec = item.spec();
+    let facing = item.drawn_facing(facing);
     let (cols, _) = spec.footprint;
     let row = spec.ascii.get(usize::from(dy))?;
     let c = match facing {
@@ -1178,16 +1268,19 @@ impl Home {
     /// to stand against it facing into the room, unsettled (she never
     /// chose where it stands). The pieces already on
     /// that strip make way, packed in order, but only where every one of
-    /// them that shows still fits, the piece fits on blank, free cells,
-    /// and she'd fit to unpack and use it. A piece that hangs must fit
-    /// both ways: boxed, standing on the floor to be unpacked, and
-    /// hung on the wall above.
+    /// them that shows still fits, its box fits on blank, free cells, she
+    /// can unpack it (`stands`: she may stay at its unpack spot, on a
+    /// floor she can stand on, as for any seat of hers; her box may take
+    /// in the wall's line), and she'd fit to use the piece. A piece that
+    /// hangs must fit both ways: boxed, standing on the floor to be
+    /// unpacked, and hung on the wall above.
     pub fn doorstep(
         &self,
         buf: &Buffer,
         nooks: &[(Nook, Rect)],
         shown: &[Shown],
         blocked: &dyn Fn(i32, i32) -> bool,
+        stands: &dyn Fn(i32, i32) -> bool,
         item: Furniture,
     ) -> Option<(Prop, Flap)> {
         let screen = buf.area;
@@ -1215,18 +1308,21 @@ impl Home {
                 // She never chose where it stands.
                 settled: false,
             };
-            let at = match item.spec().hang {
-                None => self.admits(buf, shown, blocked, e, prop)?,
-                Some(_) => {
-                    let parcel = Prop {
-                        boxed: true,
-                        ..prop
-                    };
-                    let at = self.admits(buf, shown, blocked, e, parcel)?;
-                    self.admits(buf, shown, blocked, e, prop)?;
-                    at
-                }
+            // Its box stands on the floor, where she can get to it to
+            // unpack it (judged as her seats are, not as room to use a
+            // piece: a box narrower than her at a wall has her take in
+            // the wall's line); then the piece, standing there or hung
+            // above, must fit with room to use it.
+            let parcel = Prop {
+                boxed: true,
+                ..prop
             };
+            let at = self.admits(buf, shown, blocked, e, parcel, false)?;
+            let unpack = at.seat(Use::Unpack, 0);
+            if !stands(unpack.x, unpack.y) {
+                return None;
+            }
+            self.admits(buf, shown, blocked, e, prop, true)?;
             let x = match side {
                 Side::Left => e.from - 1,
                 Side::Right => e.to,
@@ -1248,7 +1344,7 @@ impl Home {
     /// Where `prop`, new, would stand on its strip (`e` this frame), if
     /// the pieces in its lane there make way for it, packed in order:
     /// every one of them that shows still fits, and it fits on blank,
-    /// free cells where she'd fit to use it.
+    /// free cells, where she'd fit to use it if `used`.
     fn admits(
         &self,
         buf: &Buffer,
@@ -1256,6 +1352,7 @@ impl Home {
         blocked: &dyn Fn(i32, i32) -> bool,
         e: Extent,
         prop: Prop,
+        used: bool,
     ) -> Option<Shown> {
         let (strip, lane) = (prop.strip, prop.lane());
         let mut with = self.clone();
@@ -1279,7 +1376,7 @@ impl Home {
                         .iter()
                         .any(|(j, s)| *j != i && s.rect().contains((x as u16, y as u16).into()))
             };
-            fits(buf, at, &clear) && (i != new || roomy(buf, at, &clear))
+            fits(buf, at, &clear) && (i != new || !used || roomy(buf, at, &clear))
         };
         let all_fit = packed.iter().all(|(i, at)| {
             let was = with.props.get(*i).map(|p| p.item);
@@ -1932,7 +2029,11 @@ mod tests {
         for item in Furniture::ALL {
             if let Some(hang) = item.spec().hang {
                 assert!(hang >= tallest, "{item:?} hangs {hang}, under {tallest}");
-                assert!(item.spec().uses.is_empty(), "{item:?} is out of reach");
+                // Used from the floor beneath or beside it, never from in
+                // it (out of reach).
+                for &what in item.spec().uses {
+                    assert!(!what.inside(), "{item:?} is out of reach for {what:?}");
+                }
             }
         }
     }
@@ -2070,7 +2171,8 @@ mod tests {
     }
 
     /// A delivery that hangs comes in only where it fits both ways: its
-    /// parcel on the floor (with room to unpack it), and hung above.
+    /// parcel on the floor (where she can stand to unpack it: `stands`),
+    /// and hung above.
     #[test]
     fn a_poster_is_delivered_where_it_fits_boxed_and_hung() {
         let room = home(Nook::Users, &[prop(Furniture::Sofa, 500)]);
@@ -2080,23 +2182,69 @@ mod tests {
         let mut projected = room.clone();
         let shown = projected.project(&clean, &nooks, &|_, _| false);
         let (prop, flap) = projected
-            .doorstep(&clean, &nooks, &shown, &|_, _| false, Furniture::Poster)
+            .doorstep(
+                &clean,
+                &nooks,
+                &shown,
+                &|_, _| false,
+                &|_, _| true,
+                Furniture::Poster,
+            )
             .expect("room for it");
         assert!(prop.boxed);
         assert_eq!(prop.lane(), Lane::Floor);
         assert_eq!(flap.rows, (6, 8), "the flap is at the floor");
+        assert_eq!(prop.anchor.map(|a| a.side), Some(Side::Right));
+        // Nowhere for her to stand to unpack it at the right wall (its
+        // box's middle column, 27): the left wall; at neither, none.
+        let (prop, _) = projected
+            .doorstep(
+                &clean,
+                &nooks,
+                &shown,
+                &|_, _| false,
+                &|x, _| x != 27,
+                Furniture::Poster,
+            )
+            .expect("the other wall");
+        assert_eq!(prop.anchor.map(|a| a.side), Some(Side::Left));
+        assert_eq!(
+            projected.doorstep(
+                &clean,
+                &nooks,
+                &shown,
+                &|_, _| false,
+                &|_, _| false,
+                Furniture::Poster
+            ),
+            None
+        );
         // Text where it would hang, at the screen's edge (the right
         // wall): it comes in at the left wall instead.
         let mut hung_over = clean.clone();
         hung_over[(27, 2)].set_symbol("x");
         let (prop, _) = projected
-            .doorstep(&hung_over, &nooks, &shown, &|_, _| false, Furniture::Poster)
+            .doorstep(
+                &hung_over,
+                &nooks,
+                &shown,
+                &|_, _| false,
+                &|_, _| true,
+                Furniture::Poster,
+            )
             .expect("the other wall");
         assert_eq!(prop.anchor.map(|a| a.side), Some(Side::Left));
         // Text where it would hang at either wall: no delivery.
         hung_over[(2, 2)].set_symbol("x");
         assert_eq!(
-            projected.doorstep(&hung_over, &nooks, &shown, &|_, _| false, Furniture::Poster),
+            projected.doorstep(
+                &hung_over,
+                &nooks,
+                &shown,
+                &|_, _| false,
+                &|_, _| true,
+                Furniture::Poster
+            ),
             None
         );
         // Text where the parcel would stand at either wall: none either.
@@ -2104,7 +2252,14 @@ mod tests {
         floored[(27, 7)].set_symbol("x");
         floored[(2, 7)].set_symbol("x");
         assert_eq!(
-            projected.doorstep(&floored, &nooks, &shown, &|_, _| false, Furniture::Poster),
+            projected.doorstep(
+                &floored,
+                &nooks,
+                &shown,
+                &|_, _| false,
+                &|_, _| true,
+                Furniture::Poster
+            ),
             None
         );
         // Too low to hang it: none.
@@ -2112,12 +2267,26 @@ mod tests {
         let low_nooks = [(Nook::Users, low.area)];
         let shown = projected.project(&low, &low_nooks, &|_, _| false);
         assert_eq!(
-            projected.doorstep(&low, &low_nooks, &shown, &|_, _| false, Furniture::Poster),
+            projected.doorstep(
+                &low,
+                &low_nooks,
+                &shown,
+                &|_, _| false,
+                &|_, _| true,
+                Furniture::Poster
+            ),
             None
         );
         assert!(
             projected
-                .doorstep(&low, &low_nooks, &shown, &|_, _| false, Furniture::Plant)
+                .doorstep(
+                    &low,
+                    &low_nooks,
+                    &shown,
+                    &|_, _| false,
+                    &|_, _| true,
+                    Furniture::Plant
+                )
                 .is_some(),
             "a plant stands"
         );

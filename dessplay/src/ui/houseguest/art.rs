@@ -883,16 +883,26 @@ fn parts(prop: Furniture, layer: Layer) -> &'static [&'static str] {
         (Furniture::CatBed, _) => &["cat-bed", "cat-bed-front"],
         (Furniture::Plant, _) => &["plant"],
         (Furniture::Poster, _) => &["poster"],
+        // Plain, the hands both point at 12.
+        (Furniture::Clock, _) => &["clock", "clock-hand-hour", "clock-hand-minute", "clock-pin"],
+        (Furniture::Window, _) => &["window-sky-day", "window"],
+    }
+}
+
+/// The SVG `transform` attribute that draws a piece facing `facing` in a
+/// frame `w` units wide (mirrored facing left), none for a symmetric
+/// piece (see [`Furniture::drawn_facing`]).
+fn mirror(prop: Furniture, facing: Facing, w: f32) -> String {
+    match prop.drawn_facing(facing) {
+        Facing::Right => String::new(),
+        Facing::Left => format!(r#" transform="translate({w} 0) scale(-1 1)""#),
     }
 }
 
 /// `layer` of a piece as an SVG document, in the piece's own frame.
 fn layer_scene(prop: Furniture, layer: Layer, facing: Facing, line: &str) -> String {
     let (w, h) = prop_frame(prop);
-    let mirror = match facing {
-        Facing::Right => String::new(),
-        Facing::Left => format!(r#" transform="translate({w} 0) scale(-1 1)""#),
-    };
+    let mirror = mirror(prop, facing, w);
     let uses: String = parts(prop, layer)
         .iter()
         .map(|id| format!(r##"<use href="#{id}"/>"##))
@@ -938,8 +948,94 @@ pub(super) enum PieceState {
     Cat,
     /// Kamineko awake, and biting.
     CatBiting,
+    /// The wall clock's hands at her time of day.
+    Dial(Dial),
+    /// The sky outside the window at her time of day.
+    Sky(Sky),
 }
 
+/// The wall clock's dial, to the quarter-hour: `hour` 0–11, `quarter`
+/// 0–3. 48 faces in all, and a new one every 2.5 real minutes (her
+/// clock runs six times as fast).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(super) struct Dial {
+    pub hour: u8,
+    pub quarter: u8,
+}
+
+impl Dial {
+    /// The dial showing `minute` of the day, rounded down to its quarter.
+    pub(super) fn at(minute: u16) -> Self {
+        // Below 12 and 4: they fit.
+        Self {
+            hour: (minute / 60 % 12) as u8,
+            quarter: (minute % 60 / 15) as u8,
+        }
+    }
+
+    /// The hour and minute hands' angles in degrees, clockwise from 12:
+    /// the hour hand creeps on 7.5° a quarter, as a real clock's does.
+    fn angles(self) -> (f32, f32) {
+        let quarter = f32::from(self.quarter % 4);
+        (
+            f32::from(self.hour % 12) * 30.0 + quarter * 7.5,
+            quarter * 90.0,
+        )
+    }
+}
+
+/// The clock's face centre in its frame, which its hands turn about (on
+/// a pixel centre at 9 × 19, so its 1-px hands are crisp at 12, 3, 6
+/// and 9).
+const CLOCK_CENTRE: (f32, f32) = (30.0, 42.888_89);
+
+/// The clock's parts showing `dial`, back to front: the hands, drawn
+/// pointing at 12, turned about the face's centre. Never mirrored.
+fn dial_parts(dial: Dial) -> String {
+    let (hour, minute) = dial.angles();
+    let (cx, cy) = CLOCK_CENTRE;
+    format!(
+        r##"<use href="#clock"/><use href="#clock-hand-hour" transform="rotate({hour} {cx} {cy})"/><use href="#clock-hand-minute" transform="rotate({minute} {cx} {cy})"/><use href="#clock-pin"/>"##
+    )
+}
+
+/// The sky through the window, by the time of day.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(super) enum Sky {
+    /// 21:00 to 05:00: navy, a moon and stars, one window still lit.
+    Night,
+    /// 05:00 to 07:00: pastel bands, the sun just up.
+    Dawn,
+    /// 07:00 to 17:00: blue, the sun, a cloud, a bird.
+    Day,
+    /// 17:00 to 19:00: purple over rose over orange, the sun going down.
+    Dusk,
+    /// 19:00 to 21:00: deep blue, the first star, people home.
+    Evening,
+}
+
+impl Sky {
+    /// Every sky.
+    #[cfg(test)]
+    pub(super) const ALL: [Self; 5] = [
+        Self::Night,
+        Self::Dawn,
+        Self::Day,
+        Self::Dusk,
+        Self::Evening,
+    ];
+
+    /// The sky at `minute` of the day (phase 5b, sky phases).
+    pub(super) fn at(minute: u16) -> Self {
+        match minute / 60 {
+            5 | 6 => Self::Dawn,
+            7..=16 => Self::Day,
+            17 | 18 => Self::Dusk,
+            19 | 20 => Self::Evening,
+            _ => Self::Night,
+        }
+    }
+}
 /// The parts of `item` in `state`, back to front.
 fn state_parts(item: Furniture, state: PieceState) -> &'static [&'static str] {
     match (item, state) {
@@ -949,6 +1045,12 @@ fn state_parts(item: Furniture, state: PieceState) -> &'static [&'static str] {
         (Furniture::CatBed, PieceState::CatBiting) => {
             &["cat-bed", "kamineko-bite", "cat-bed-front"]
         }
+        // Each sky clips itself to the glass, behind the frame.
+        (Furniture::Window, PieceState::Sky(Sky::Night)) => &["window-sky-night", "window"],
+        (Furniture::Window, PieceState::Sky(Sky::Dawn)) => &["window-sky-dawn", "window"],
+        (Furniture::Window, PieceState::Sky(Sky::Day)) => &["window-sky-day", "window"],
+        (Furniture::Window, PieceState::Sky(Sky::Dusk)) => &["window-sky-dusk", "window"],
+        (Furniture::Window, PieceState::Sky(Sky::Evening)) => &["window-sky-evening", "window"],
         _ => parts(item, Layer::Whole),
     }
 }
@@ -964,14 +1066,15 @@ pub(super) fn render_piece(
     height: u32,
 ) -> Option<image::RgbaImage> {
     let (w, h) = prop_frame(item);
-    let mirror = match facing {
-        Facing::Right => String::new(),
-        Facing::Left => format!(r#" transform="translate({w} 0) scale(-1 1)""#),
+    let mirror = mirror(item, facing, w);
+    let uses: String = match (item, state) {
+        // Turned by the time: drawn, not looked up.
+        (Furniture::Clock, PieceState::Dial(dial)) => dial_parts(dial),
+        _ => state_parts(item, state)
+            .iter()
+            .map(|id| format!(r##"<use href="#{id}"/>"##))
+            .collect(),
     };
-    let uses: String = state_parts(item, state)
-        .iter()
-        .map(|id| format!(r##"<use href="#{id}"/>"##))
-        .collect();
     let svg = format!(
         r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w} {h}" color="{line}">{PROPS}<g{mirror}>{uses}</g></svg>"##
     );
@@ -1530,7 +1633,7 @@ mod tests {
 
     /// Every state that applies to each of the second half of the
     /// catalogue.
-    const STATES: [(Furniture, PieceState); 8] = [
+    const STATES: [(Furniture, PieceState); 13] = [
         (Furniture::Lamp, PieceState::Plain),
         (Furniture::Lamp, PieceState::LampOff),
         (Furniture::Bookshelf, PieceState::Plain),
@@ -1539,7 +1642,344 @@ mod tests {
         (Furniture::CatBed, PieceState::Plain),
         (Furniture::CatBed, PieceState::Cat),
         (Furniture::CatBed, PieceState::CatBiting),
+        (Furniture::Clock, PieceState::Plain),
+        (
+            Furniture::Clock,
+            PieceState::Dial(Dial {
+                hour: 4,
+                quarter: 2,
+            }),
+        ),
+        (Furniture::Window, PieceState::Plain),
+        (Furniture::Window, PieceState::Sky(Sky::Dusk)),
+        (Furniture::Window, PieceState::Sky(Sky::Night)),
     ];
+
+    /// The dial reads its minute to the quarter, and the sky its phase
+    /// by the hour.
+    #[test]
+    fn the_dial_and_the_sky_read_the_time_of_day() {
+        assert_eq!(
+            Dial::at(16 * 60 + 44),
+            Dial {
+                hour: 4,
+                quarter: 2
+            }
+        );
+        assert_eq!(Dial::at(0), Dial::at(12 * 60));
+        assert_eq!(
+            Dial::at(23 * 60 + 59),
+            Dial {
+                hour: 11,
+                quarter: 3
+            }
+        );
+        let phases: Vec<(u16, Sky)> = [
+            (0, Sky::Night),
+            (4 * 60 + 59, Sky::Night),
+            (5 * 60, Sky::Dawn),
+            (6 * 60 + 59, Sky::Dawn),
+            (7 * 60, Sky::Day),
+            (16 * 60 + 59, Sky::Day),
+            (17 * 60, Sky::Dusk),
+            (18 * 60 + 59, Sky::Dusk),
+            (19 * 60, Sky::Evening),
+            (20 * 60 + 59, Sky::Evening),
+            (21 * 60, Sky::Night),
+            (23 * 60 + 59, Sky::Night),
+        ]
+        .into_iter()
+        .collect();
+        for (minute, sky) in phases {
+            assert_eq!(Sky::at(minute), sky, "{minute}");
+        }
+        // Every sky shows some time of day; the sky changes only on the
+        // hour, the dial only on the quarter-hour.
+        for sky in Sky::ALL {
+            assert!((0..1440).any(|m| Sky::at(m) == sky), "{sky:?}");
+        }
+        for minute in 1..1440u16 {
+            if minute % 15 != 0 {
+                assert_eq!(Dial::at(minute), Dial::at(minute - 1), "{minute}");
+            }
+            if minute % 60 != 0 {
+                assert_eq!(Sky::at(minute), Sky::at(minute - 1), "{minute}");
+            }
+        }
+    }
+
+    /// The hands point where a real clock's do: the minute hand by the
+    /// quarter, and the hour hand creeping on 7.5° a quarter toward the
+    /// next hour (approved art), never jumping a whole hour at once.
+    #[test]
+    fn the_hour_hand_creeps_by_quarters() {
+        assert_eq!(Dial::at(0).angles(), (0.0, 0.0));
+        assert_eq!(Dial::at(3 * 60).angles(), (90.0, 0.0));
+        assert_eq!(Dial::at(4 * 60 + 30).angles(), (135.0, 180.0));
+        assert_eq!(Dial::at(16 * 60 + 45).angles(), (142.5, 270.0));
+        assert_eq!(Dial::at(23 * 60 + 59).angles(), (352.5, 270.0));
+        // Each quarter-hour on, the hour hand moves 7.5° and no more,
+        // round the dial and back to 12.
+        for minute in (15..1440u16).step_by(15) {
+            let (was, _) = Dial::at(minute - 15).angles();
+            let (now, _) = Dial::at(minute).angles();
+            assert_eq!((now - was).rem_euclid(360.0), 7.5, "{minute}");
+        }
+    }
+
+    /// Every dial and sky inks enough of its footprint, and is drawn the
+    /// same whichever way the piece faces, as the guest draws it
+    /// ([`render_piece`]: a mirrored dial reads 3:00 as 9:00); and each
+    /// quarter of a 12-hour day is its own face.
+    #[test]
+    fn every_dial_and_sky_renders_inside_its_footprint_unmirrored() {
+        let inked = |image: &image::RgbaImage| image.pixels().filter(|p| p.0[3] > 0).count() as u32;
+        let both = |item: Furniture, state: PieceState| {
+            let (cols, rows) = item.spec().footprint;
+            let (w, h) = (u32::from(cols) * 9, u32::from(rows) * 19);
+            let [right, left] = [Facing::Right, Facing::Left]
+                .map(|facing| render_piece(item, state, facing, LINE, w, h));
+            let right = right.unwrap_or_else(|| panic!("{item:?} {state:?} renders"));
+            assert!(inked(&right) > w * h / 6, "{item:?} {state:?}");
+            assert_eq!(Some(&right), left.as_ref(), "{item:?} {state:?} mirrored");
+            right
+        };
+        let mut faces = std::collections::HashSet::new();
+        for minute in (0..24 * 60).step_by(15) {
+            let face = both(Furniture::Clock, PieceState::Dial(Dial::at(minute)));
+            if minute < 12 * 60 {
+                faces.insert(face.into_raw());
+            }
+        }
+        assert_eq!(faces.len(), 48);
+        let mut skies = std::collections::HashSet::new();
+        for sky in Sky::ALL {
+            skies.insert(both(Furniture::Window, PieceState::Sky(sky)).into_raw());
+        }
+        assert_eq!(skies.len(), 5);
+        // Plain, each is a sane look, unmirrored too.
+        for item in [Furniture::Clock, Furniture::Window] {
+            both(item, PieceState::Plain);
+            let (cols, rows) = item.spec().footprint;
+            let (w, h) = (u32::from(cols) * 9, u32::from(rows) * 19);
+            let [right, left] = [Facing::Right, Facing::Left]
+                .map(|facing| render_prop_layer(item, Layer::Whole, facing, LINE, w, h));
+            assert_eq!(right, left, "{item:?} mirrored");
+        }
+    }
+
+    /// The wall clock and the window for review (phase 5b):
+    /// `HOUSEGUEST_CLOCK=/dir cargo test -p dessplay --lib clock_sheet --
+    /// --ignored` writes `clock-window-1x.png`, the same pixels at 3×
+    /// nearest-neighbour (`clock-window-1x-nn3x.png`) and a native 3×
+    /// render (`clock-window-3x.png`), over a dark terminal, as the guest
+    /// draws them ([`render_piece`]). Hung pieces render at exactly their
+    /// footprint, as the game draws a piece off the floor line. Bands,
+    /// top to bottom:
+    /// 1. the window in its five skies (night, dawn, day, dusk, evening),
+    ///    then night facing left (drawn the same);
+    /// 2. the dial at 12 hours (columns 12, 1, …, 11) × 4 quarters (rows
+    ///    :00, :15, :30, :45);
+    /// 3. facings: the clock at 3:00 facing right, facing left (the
+    ///    same), and naively mirrored (reads 9:00; underlined red), then
+    ///    the window at dusk both ways;
+    /// 4. the context: both pieces hung beside the poster over the sofa,
+    ///    her in `Gaze` under the window, at 16:00 (day) and 23:00
+    ///    (night).
+    #[test]
+    #[ignore = "writes PNGs for review"]
+    fn clock_sheet() {
+        enum Draw {
+            /// A piece in a state at (x, y), its top row (standing: its
+            /// floor row, with the floor row's half cell too).
+            Piece(Furniture, PieceState, Facing, (u32, u32), bool),
+            /// An SVG in `frame` units over `cols × rows` cells at (x, y).
+            Svg(String, (f32, f32), (u32, u32), (u32, u32)),
+            /// Her box (5 × 4) at column `x`, on floor row `y`.
+            Her(Rig, Facing, (u32, u32)),
+            /// A floor line on row `y` from column `x0` to `x1`.
+            Floor(u32, u32, u32),
+            /// A red underline below row `y`, columns `x0..x1`.
+            Wrong(u32, u32, u32),
+        }
+        const BG: image::Rgba<u8> = image::Rgba([30, 33, 39, 255]);
+        const FLOOR: image::Rgba<u8> = image::Rgba([139, 148, 158, 255]);
+        const RED: image::Rgba<u8> = image::Rgba([224, 82, 82, 255]);
+        let dir = std::env::var("HOUSEGUEST_CLOCK").expect("HOUSEGUEST_CLOCK");
+        let hung = |item, state, facing, at| Draw::Piece(item, state, facing, at, false);
+        let mut draws = Vec::new();
+        // 1. The window.
+        for (i, sky) in Sky::ALL.into_iter().enumerate() {
+            let at = (1 + 5 * i as u32, 1);
+            draws.push(hung(
+                Furniture::Window,
+                PieceState::Sky(sky),
+                Facing::Right,
+                at,
+            ));
+        }
+        draws.push(hung(
+            Furniture::Window,
+            PieceState::Sky(Sky::Night),
+            Facing::Left,
+            (27, 1),
+        ));
+        // 2. Every dial.
+        for quarter in 0..4u8 {
+            for hour in 0..12u8 {
+                let (h, q) = (u32::from(hour), u32::from(quarter));
+                let dial = PieceState::Dial(Dial { hour, quarter });
+                draws.push(hung(
+                    Furniture::Clock,
+                    dial,
+                    Facing::Right,
+                    (1 + 4 * h, 4 + 3 * q),
+                ));
+            }
+        }
+        // 3. Facings.
+        let three = Dial {
+            hour: 3,
+            quarter: 0,
+        };
+        draws.push(hung(
+            Furniture::Clock,
+            PieceState::Dial(three),
+            Facing::Right,
+            (1, 17),
+        ));
+        draws.push(hung(
+            Furniture::Clock,
+            PieceState::Dial(three),
+            Facing::Left,
+            (5, 17),
+        ));
+        // What a mirror group would have drawn.
+        let (w, h) = prop_frame(Furniture::Clock);
+        let naive = format!(
+            r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w} {h}" color="{LINE}">{PROPS}<g transform="translate({w} 0) scale(-1 1)">{}</g></svg>"##,
+            dial_parts(three)
+        );
+        draws.push(Draw::Svg(naive, (w, h), (9, 17), (3, 2)));
+        draws.push(Draw::Wrong(19, 9, 12));
+        for (x, facing) in [(14, Facing::Right), (19, Facing::Left)] {
+            draws.push(hung(
+                Furniture::Window,
+                PieceState::Sky(Sky::Dusk),
+                facing,
+                (x, 17),
+            ));
+        }
+        // 4. The context strips: floor on row 27, hung pieces' bottom
+        // row at floor − 5 (hang 4).
+        let floor = 27u32;
+        let gaze = Rig::for_pose(Pose::Gaze, Face::Curious);
+        for (x, minute) in [(0u32, 16 * 60), (20, 23 * 60)] {
+            let top = floor - 4 - 2;
+            draws.push(Draw::Floor(floor, x + 1, x + 20));
+            draws.push(Draw::Piece(
+                Furniture::Sofa,
+                PieceState::Plain,
+                Facing::Right,
+                (x + 1, floor),
+                true,
+            ));
+            draws.push(hung(
+                Furniture::Poster,
+                PieceState::Plain,
+                Facing::Right,
+                (x + 1, top),
+            ));
+            draws.push(hung(
+                Furniture::Clock,
+                PieceState::Dial(Dial::at(minute)),
+                Facing::Left,
+                (x + 6, top),
+            ));
+            let wx = x + 10;
+            draws.push(hung(
+                Furniture::Window,
+                PieceState::Sky(Sky::at(minute)),
+                Facing::Left,
+                (wx, top),
+            ));
+            // Her box a little left of the window's middle, facing it.
+            draws.push(Draw::Her(gaze, Facing::Right, (wx + 2 - 3, floor)));
+        }
+        let (cols, rows) = (49u32, 29u32);
+        let render_sheet = |s: u32| {
+            let (w, h) = (9 * s, 19 * s);
+            let mut sheet = image::RgbaImage::from_pixel(w * cols, h * rows, BG);
+            for draw in &draws {
+                match draw {
+                    Draw::Piece(item, state, facing, at, standing) => {
+                        let (pc, pr) = item.spec().footprint;
+                        let (pw, mut ph) = (w * u32::from(pc), h * u32::from(pr));
+                        let mut top = h * at.1;
+                        if *standing {
+                            ph += h / 2;
+                            top = h * (at.1 - u32::from(pr));
+                        }
+                        let image =
+                            render_piece(*item, *state, *facing, LINE, pw, ph).expect("renders");
+                        image::imageops::overlay(
+                            &mut sheet,
+                            &image,
+                            i64::from(w * at.0),
+                            i64::from(top),
+                        );
+                    }
+                    Draw::Svg(svg, frame, at, size) => {
+                        let image =
+                            rasterize(svg, *frame, w * size.0, h * size.1).expect("renders");
+                        image::imageops::overlay(
+                            &mut sheet,
+                            &image,
+                            i64::from(w * at.0),
+                            i64::from(h * at.1),
+                        );
+                    }
+                    Draw::Her(rig, facing, (x, y)) => {
+                        let osaka = render(rig, *facing, LINE, w * 5, h * 4 + h / 2).unwrap();
+                        image::imageops::overlay(
+                            &mut sheet,
+                            &osaka,
+                            i64::from(w * x),
+                            i64::from(h * (y - 4)),
+                        );
+                    }
+                    Draw::Floor(y, x0, x1) => {
+                        for gx in w * x0..w * x1 {
+                            for t in 0..s {
+                                sheet.put_pixel(gx, h * y + h / 2 + t, FLOOR);
+                            }
+                        }
+                    }
+                    Draw::Wrong(y, x0, x1) => {
+                        for gx in w * x0..w * x1 {
+                            for t in 0..s {
+                                sheet.put_pixel(gx, h * y + 2 * s + t, RED);
+                            }
+                        }
+                    }
+                }
+            }
+            sheet
+        };
+        let one = render_sheet(1);
+        one.save(format!("{dir}/clock-window-1x.png")).unwrap();
+        image::imageops::resize(
+            &one,
+            one.width() * 3,
+            one.height() * 3,
+            image::imageops::FilterType::Nearest,
+        )
+        .save(format!("{dir}/clock-window-1x-nn3x.png"))
+        .unwrap();
+        render_sheet(3)
+            .save(format!("{dir}/clock-window-3x.png"))
+            .unwrap();
+    }
 
     #[test]
     fn every_new_piece_renders_inside_its_footprint_in_every_state() {

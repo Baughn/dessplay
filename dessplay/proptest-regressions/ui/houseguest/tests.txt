@@ -27,3 +27,5 @@ cc 7a0f7bbc12ef825ada271b5e895c5a3249b68437c9063891ec102cbae77e1ea3 # shrinks to
 cc 57714d431f38174a3244aade87ff9460e70e666e2f8729e631e10c49053ce5b0 # shrinks to seed = 3331215861354657979, graphics = false, home = 5, offset = 8, mood = 0, cue = true, resident = false, sizes = [], chats = [4800], focuses = []
 cc fc8786bcd21c659c4bb66ea9c48af1710c4056c3a4fd3d04cb6a908165a68c42 # shrinks to seed = 15, graphics = false, relifted = false, resident = true, sizes = [], chats = [], focuses = [(10361, Some(2))]
 cc fdb0f3f2f9f7cf65d9126bb674c78a6c09893b934ed9073e5abf1a3fa663c8cf # shrinks to seed = 13181728277609933285, graphics = true, home = 0, offset = 8, mood = 0, cue = false, resident = true, sizes = [], chats = [14722, 9191], focuses = []
+cc c400e7fd090912747450342064fe09d1429c8c26e65d76f637109077af1324d8 # shrinks to seed = 2499287610893504670, graphics = false, (w, h) = (60, 22), text = [(27, 15, "漢aa"), (6, 15, "a漢漢")], owned = [], tv = (2, 0), which = 10
+cc 85f0afa8027d0f417562cf3037d03b6fb82d46be35a53f31f3079f66f6569216 # shrinks to seed = 0, graphics = true, (w, h) = (60, 18), text = [(5, 10, "漢")], owned = [], tv = (0, 0), which = 3

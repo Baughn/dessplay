@@ -79,6 +79,13 @@ Add new days at the top. Add new entries at the bottom of existing days.
   certain orange cat, and if you haven't seen anything new from her in a
   while, something is sure to turn up. She remembers which ones you've
   seen.
+- Added: A wall clock arrives for Osaka's home as a parcel, once she has
+  a TV, and shows her time of day, its hands moving every quarter of her
+  hour. She can also buy a window after the cat bed: dawn, day, dusk,
+  evening and night show outside it, with a little town below.
+- Fixed: Osaka unpacks a cat bed that arrives in its box (it used to sit
+  boxed for good, and she stopped shopping), and parcels arrive only
+  where she can get to them to unpack them.
 
 ## 2026-10-03
 

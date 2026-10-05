@@ -28,11 +28,14 @@
 //! leniently: a value this build can't read as a date reads as none
 //! (the day's entry is owed again), without failing the record.
 //!
-//! The rare things she has shown come last, by their stable ids
+//! The rare things she has shown come next, by their stable ids
 //! ([`super::rarity::RARES`]), written only once there are any and read
 //! leniently, entry by entry: an id this build doesn't know (a later
 //! build's), or anything that isn't an id, is skipped, and the rest of
 //! the record still reads.
+//!
+//! Whether her wall clock has been sent comes last, written only once it
+//! has, and read leniently: anything but `true` reads as not yet.
 
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
@@ -78,6 +81,9 @@ pub struct Ledger {
     /// she first showed them (phase 5b D6): each once, each one this
     /// build knows.
     pub(super) seen: Vec<String>,
+    /// Her wall clock has been sent (phase 5b D7): a one-time gift on her
+    /// doorstep, never again, even once it's gone.
+    pub(super) clock_sent: bool,
 }
 
 impl Ledger {
@@ -95,6 +101,7 @@ impl Ledger {
             legend_at: 0,
             calendar_on: None,
             seen: Vec::new(),
+            clock_sent: false,
         }
     }
 
@@ -217,6 +224,11 @@ impl Ledger {
             legend_at: minutes(raw.legend_at),
             calendar_on: raw.calendar_on.as_ref().and_then(day),
             seen: seen(raw.seen.as_ref()),
+            clock_sent: raw
+                .clock_sent
+                .as_ref()
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false),
         })
     }
 
@@ -263,6 +275,7 @@ impl Ledger {
             legend_at: self.legend_at,
             calendar_on: self.calendar_on.map(|d| d.format(DATE).to_string()),
             seen: self.seen.clone(),
+            clock_sent: self.clock_sent,
         };
         serde_json::to_string(&raw).unwrap_or_default()
     }
@@ -357,8 +370,8 @@ fn is_zero(n: &u64) -> bool {
 /// pane none has (each room needs a pane of its own there).
 fn rooms(home: &Home) -> Vec<(RoomKind, Nook)> {
     let mut out: Vec<(RoomKind, Nook)> = Vec::new();
-    // Decor claims no room's pane: older builds don't know it.
-    for prop in home.props.iter().filter(|p| !p.item.decor()) {
+    // A later kind claims no room's pane: older builds don't know it.
+    for prop in home.props.iter().filter(|p| p.item.legacy()) {
         let kind = RoomKind::of(prop.item);
         if out.iter().any(|&(k, _)| k == kind) {
             continue;
@@ -391,7 +404,9 @@ impl RoomKind {
             | Furniture::Tv
             | Furniture::CatBed
             | Furniture::Plant
-            | Furniture::Poster => Self::Living,
+            | Furniture::Poster
+            | Furniture::Clock
+            | Furniture::Window => Self::Living,
             Furniture::Bed | Furniture::Desk | Furniture::Lamp | Furniture::Bookshelf => {
                 Self::Bedroom
             }
@@ -430,6 +445,9 @@ struct Saved {
     /// Left out until she has shown something rare.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     seen: Vec<String>,
+    /// Left out until her wall clock has been sent.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    clock_sent: bool,
 }
 
 /// Where a piece stands: its strip, and its anchor there once it has
@@ -474,6 +492,8 @@ struct Raw {
     calendar_on: Option<serde_json::Value>,
     #[serde(default)]
     seen: Option<serde_json::Value>,
+    #[serde(default)]
+    clock_sent: Option<serde_json::Value>,
 }
 
 #[cfg(test)]
@@ -511,6 +531,18 @@ mod tests {
         ledger
     }
 
+    /// The kinds of piece the oldest builds know, as they're written.
+    const OLDEST_KINDS: [&str; 8] = [
+        "Sofa",
+        "Tv",
+        "Bed",
+        "Desk",
+        "Lamp",
+        "Bookshelf",
+        "Fridge",
+        "CatBed",
+    ];
+
     /// What an older build reads of a record: the pane of each room, and
     /// each piece in its room's pane at its share of the way along (a
     /// piece whose room has no pane is dropped, a second room in one pane
@@ -531,10 +563,14 @@ mod tests {
             .unwrap()
             .iter()
             .filter_map(|prop| {
-                // It knows no decor: an unknown piece is skipped.
-                let item = serde_json::from_value::<Furniture>(prop["item"].clone())
-                    .ok()
-                    .filter(|item| !item.decor())?;
+                // It knows only the first eight kinds, by name (frozen
+                // here, not this build's `legacy()`): an unknown piece is
+                // skipped.
+                let name = prop["item"].as_str()?;
+                if !OLDEST_KINDS.contains(&name) {
+                    return None;
+                }
+                let item = serde_json::from_value::<Furniture>(prop["item"].clone()).ok()?;
                 let at = prop["at"].as_u64().unwrap() as u16;
                 let &(_, nook) = rooms.iter().find(|&&(k, _)| k == RoomKind::of(item))?;
                 Some((item, nook, at))
@@ -1018,6 +1054,83 @@ mod tests {
             as_an_older_build_reads(&furnished().to_json())
         );
         assert_eq!(as_an_older_build_reads(&timed().to_json()).len(), 3);
+    }
+
+    /// That her wall clock was sent comes last, only once it has been,
+    /// and reads back; anything but `true` there reads as not yet,
+    /// without failing the record.
+    #[test]
+    fn the_clock_sent_round_trips() {
+        let text = furnished().to_json();
+        assert!(!text.contains("clock_sent"), "{text}");
+        let sent = Ledger {
+            clock_sent: true,
+            ..timed()
+        };
+        let text = sent.to_json();
+        assert!(text.ends_with(r#","clock_sent":true}"#), "{text}");
+        assert_eq!(Ledger::from_json(&text), Ok(sent));
+        for garbage in ["false", "1", "\"yes\"", "null", "[true]", "{}"] {
+            let text = furnished().to_json().replace(
+                r#""bought_on":6}"#,
+                &format!(r#""bought_on":6,"clock_sent":{garbage}}}"#),
+            );
+            assert_eq!(Ledger::from_json(&text), Ok(furnished()), "{garbage}");
+        }
+    }
+
+    /// Her wall clock and window are pieces older builds don't know: they
+    /// skip them, the two claim no room's pane there, and every piece
+    /// they do know keeps its room's; this build reads them back where
+    /// they hang. Both are kept in the living room by kind.
+    #[test]
+    fn an_older_build_skips_the_clock_and_the_window() {
+        let mut ledger = Ledger::new(3);
+        for (item, nook, at) in [
+            (Furniture::Clock, Nook::Users, 0),
+            (Furniture::Window, Nook::List, 1000),
+            (Furniture::Sofa, Nook::Playlist, 0),
+            (Furniture::Tv, Nook::Playlist, 1000),
+        ] {
+            assert!(ledger.home.add(Prop {
+                anchor: Some(Anchor {
+                    side: Side::Left,
+                    offset: at / 100,
+                }),
+                ..Prop::new(item, nook, at, Facing::Right)
+            }));
+        }
+        ledger.clock_sent = true;
+        let text = ledger.to_json();
+        assert!(!text.contains(r#"["Living","Users"]"#), "{text}");
+        assert_eq!(
+            as_an_older_build_reads(&text),
+            [
+                (Furniture::Sofa, Nook::Playlist, 0),
+                (Furniture::Tv, Nook::Playlist, 1000),
+            ]
+        );
+        assert_eq!(Ledger::from_json(&text), Ok(ledger));
+        for item in [Furniture::Clock, Furniture::Window] {
+            assert!(!item.legacy(), "{item:?}");
+            assert_eq!(RoomKind::of(item), RoomKind::Living, "{item:?}");
+        }
+        assert_eq!(
+            Furniture::ALL
+                .iter()
+                .filter(|item| item.legacy())
+                .collect::<Vec<_>>(),
+            Furniture::ALL[..8].iter().collect::<Vec<_>>()
+        );
+        // This build's names for them are the ones they know.
+        for item in Furniture::ALL {
+            let name = serde_json::to_value(item).unwrap();
+            assert_eq!(
+                item.legacy(),
+                OLDEST_KINDS.contains(&name.as_str().unwrap()),
+                "{item:?}"
+            );
+        }
     }
 
     #[test]

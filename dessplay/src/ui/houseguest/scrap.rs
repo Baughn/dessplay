@@ -360,6 +360,14 @@ mod tests {
 
     const LINE: &str = "#1d1714";
 
+    /// Nothing she makes of text tells the time: the dial and the sky
+    /// (their quarter-hour wakeups, their ASCII overrides) are only ever
+    /// a real piece's.
+    #[test]
+    fn nothing_makeshift_tells_the_time() {
+        assert!(MAKES.iter().all(|m| !m.tells_time()), "{MAKES:?}");
+    }
+
     /// A title's worth of letters in a playlist's colours.
     fn sample(seed: u32) -> Scrap {
         let glyphs: Vec<(char, Color)> = "Frieren 12"

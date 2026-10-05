@@ -3877,6 +3877,86 @@ impl Osaka {
             && self.shift.is_none()
     }
 
+    /// Whether she's free at `now` for a gift on her doorstep (her wall
+    /// clock, phase 5b D7): up and here ([`Osaka::awake`]), not walking
+    /// off the screen nor going through a door (out of sight in a
+    /// moment, either way), her hello said and nothing else being said, and
+    /// her calendar settled ([`Osaka::calendar_settled`]: it comes first,
+    /// all of it, but a day she lets be, or a first sunrise she can't get
+    /// to her TV for, doesn't hold the gift back). `chances` and
+    /// `terrain` are the frame's, as her calendar's beat reads them.
+    pub fn free_for_a_gift(&self, now: u64, chances: &Chances, terrain: &Terrain) -> bool {
+        self.awake(now)
+            && !matches!(self.act, Act::Out { .. } | Act::Door { .. })
+            && self.greeted
+            && self.speech.is_none_or(|(_, until)| until <= now)
+            && self.calendar_settled(now, chances, terrain)
+    }
+
+    /// Whether her calendar has nothing more to do at `now` before
+    /// anything else she'd say this visit: no date, or nothing owed
+    /// (delivered, or nothing that day); its greeting owed only if she
+    /// has let it be for the visit ([`CAL_MISSES`]; it's still owed, but
+    /// she won't say it again until her next visit), not if it's waiting
+    /// to be said again elsewhere; not under way; not Setsubun's beans,
+    /// owed (thrown on the spot, next) or being thrown; not the first
+    /// sunrise playing (both delivered at their first key, they play on
+    /// to their end first); nor New Year's first sunrise after it, owed
+    /// with her TV where she can get to it (she goes next), or on her way
+    /// to it.
+    fn calendar_settled(&self, now: u64, chances: &Chances, terrain: &Terrain) -> bool {
+        let Some(date) = self.real_date() else {
+            return true;
+        };
+        if self.cal_under_way(date, now)
+            || self
+                .plays()
+                .is_some_and(|p| matches!(p.own, ScriptId::Setsubun | ScriptId::FirstSunrise))
+            || self.sunrise_tv(chances, terrain).is_some()
+            || self.to_her_sunrise()
+        {
+            return false;
+        }
+        match self.calendar_owed(now) {
+            None => true,
+            Some((_, Owed::Setsubun)) => false,
+            Some((date, Owed::Greet(_) | Owed::FirstSunrise)) => self.cal_let_be(date),
+        }
+    }
+
+    /// Her TV's seat for New Year's first sunrise, if it's owed this
+    /// visit, she hasn't been sent to it yet, and the seat is where she
+    /// can get to it (`chances` and `terrain` the frame's).
+    fn sunrise_tv(&self, chances: &Chances, terrain: &Terrain) -> Option<Seat> {
+        self.sunrise
+            .filter(|s| !s.sent && Some(s.date) == self.real_date())
+            .and_then(|_| {
+                chances
+                    .seats
+                    .iter()
+                    .find(|s| s.what == Use::Watch && terrain.platform_at(s.x, s.y).is_some())
+                    .copied()
+            })
+    }
+
+    /// Whether she's on her way to her TV for New Year's first sunrise
+    /// (sent, and still heading for a watch of it: it's hers once she
+    /// watches, [`Osaka::sunrise_here`]).
+    fn to_her_sunrise(&self) -> bool {
+        let watch = |job: &Job| matches!(job, Job::Use(seat) if seat.what == Use::Watch);
+        self.sunrise
+            .is_some_and(|s| s.sent && Some(s.date) == self.real_date())
+            && (self.heading.as_ref().is_some_and(|h| watch(&h.job))
+                || matches!(&self.act, Act::Walk { then: Then::Job(job), .. } if watch(job)))
+    }
+
+    /// Whether she has let her calendar's greeting for `date` be this
+    /// visit: frames kept missing it ([`CAL_MISSES`]).
+    fn cal_let_be(&self, date: chrono::NaiveDate) -> bool {
+        self.cal_missed
+            .is_some_and(|(on, n)| on == date && n >= CAL_MISSES)
+    }
+
     /// A wake time has passed since her day began (her night behind
     /// her), and she didn't wake into it from her night's sleep (she was
     /// up, or on her way back to bed, at her wake time): it begins as she
@@ -4144,9 +4224,7 @@ impl Osaka {
     fn calendar_greeting(&self, at: u64) -> Option<(chrono::NaiveDate, Owed, &'static str)> {
         let (date, owed) = self.calendar_owed(at)?;
         let line = owed.greeting()?;
-        let let_be = self
-            .cal_missed
-            .is_some_and(|(on, n)| on == date && n >= CAL_MISSES);
+        let let_be = self.cal_let_be(date);
         // Under way it isn't owed (above): any saying of it left is one
         // that went unseen.
         let unseen_here = self
@@ -4196,16 +4274,7 @@ impl Osaka {
         let setsubun = owed.filter(|&(_, owed)| owed == Owed::Setsubun);
         // Her sunrise, if it's owed this visit and her TV is where she
         // can get to it.
-        let tv = self
-            .sunrise
-            .filter(|s| !s.sent && Some(s.date) == self.real_date())
-            .and_then(|_| {
-                chances
-                    .seats
-                    .iter()
-                    .find(|s| s.what == Use::Watch && terrain.platform_at(s.x, s.y).is_some())
-                    .copied()
-            });
+        let tv = self.sunrise_tv(chances, terrain);
         if greeting.is_none() && setsubun.is_none() && tv.is_none() {
             return None;
         }
@@ -10522,6 +10591,95 @@ mod tests {
         assert_eq!(osaka.calendar_greeting(at), None, "let be");
         assert!(osaka.calendar_owed(at).is_some(), "owed still");
         assert_eq!(osaka.cal_done, None);
+    }
+
+    /// A gift on her doorstep (her wall clock) waits for her calendar to
+    /// settle, and only that long: not while its greeting is owed, being
+    /// said, or waiting to be said again elsewhere (unseen where she
+    /// stood); free once it's delivered, or once she lets it be for the
+    /// visit ([`CAL_MISSES`] sayings missed, owed still); not while
+    /// Setsubun's beans are owed, nor while they're thrown (delivered on
+    /// their first frame, they play on to their end first).
+    #[test]
+    fn a_gift_waits_for_her_calendar_to_settle() {
+        let terrain = floor_at(15);
+        let none = Chances::default();
+        let free = |osaka: &Osaka, at: u64| osaka.free_for_a_gift(at, &none, &terrain);
+        let mut rng = Rng(1);
+        // Let be: missed CAL_MISSES times, each elsewhere.
+        let mut osaka = on_halloween(&mut rng);
+        osaka.greeted = true;
+        let mut at = 0;
+        assert!(!free(&osaka, at), "owed");
+        for k in 0..CAL_MISSES {
+            osaka.x = 40 + i32::from(k);
+            let greeting = osaka
+                .calendar_greeting(at)
+                .unwrap_or_else(|| panic!("{k}: owed"));
+            osaka.say_calendar(greeting, at);
+            assert!(!free(&osaka, at + 50), "{k}: being said");
+            assert_eq!(osaka.shown(at + 100, None), None);
+            at += 10_000;
+            // Unseen where she stood: said again once she's moved.
+            assert_eq!(osaka.calendar_greeting(at), None);
+            assert_eq!(
+                free(&osaka, at),
+                k + 1 == CAL_MISSES,
+                "{k}: let be only after {CAL_MISSES}"
+            );
+        }
+        assert!(osaka.calendar_owed(at).is_some(), "owed still");
+        // Delivered.
+        let mut osaka = on_halloween(&mut rng);
+        osaka.greeted = true;
+        let greeting = osaka.calendar_greeting(0).expect("owed");
+        osaka.say_calendar(greeting, 0);
+        assert!(osaka.shown(100, Some(Bubble::Say(greeting.2))).is_some());
+        let quiet = osaka.speech.map_or(0, |(_, until)| until);
+        assert!(!free(&osaka, quiet - 1), "still saying it");
+        assert!(free(&osaka, quiet), "delivered");
+        // Setsubun: owed, then thrown, then done.
+        let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+        osaka.read_clock(Some(clock_dated(0, 16, 0, ymd(2027, 2, 3))));
+        osaka.greeted = true;
+        assert!(!free(&osaka, 0), "beans owed");
+        let here = terrain.platform_at(20, 15).expect("floor");
+        let beat = osaka.calendar_beat(here, &terrain, &none, 0);
+        assert_eq!(beat.map(|d| d.method), Some("calendar"));
+        assert!(osaka.shown(100, None).is_some(), "delivered as they play");
+        assert!(!free(&osaka, 200), "thrown");
+        osaka.act = Act::Stand { until: u64::MAX };
+        assert!(free(&osaka, SETSUBUN_MS + 1), "done");
+        // New Year's Day: greeted, then her first sunrise, if she can get
+        // to her TV for it; not while she's on her way to it.
+        let tv = Chances {
+            seats: vec![Seat {
+                x: 30,
+                y: 15,
+                ..seat_for(Use::Watch, Furniture::Tv)
+            }],
+            ..Chances::default()
+        };
+        let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+        osaka.read_clock(Some(clock_dated(0, 16, 0, ymd(2027, 1, 1))));
+        osaka.greeted = true;
+        let greeting = osaka.calendar_greeting(0).expect("owed");
+        osaka.say_calendar(greeting, 0);
+        assert!(osaka.shown(100, Some(Bubble::Say(greeting.2))).is_some());
+        let quiet = osaka.speech.map_or(0, |(_, until)| until);
+        assert!(free(&osaka, quiet), "no TV to get to: the greeting is all");
+        assert!(
+            !osaka.free_for_a_gift(quiet, &tv, &terrain),
+            "to her TV next"
+        );
+        let go = osaka.calendar_beat(here, &terrain, &tv, quiet);
+        assert_eq!(go.map(|d| d.method), Some("calendar/sunrise"));
+        assert!(!osaka.free_for_a_gift(quiet, &tv, &terrain), "on her way");
+        assert!(!free(&osaka, quiet), "on her way, whatever the frame");
+        osaka.act = Act::Stand { until: u64::MAX };
+        assert!(free(&osaka, quiet), "she let it go");
+        assert!(osaka.sunrise_here(None, quiet + 1), "hers as she watches");
+        assert!(osaka.free_for_a_gift(quiet + 1, &tv, &terrain), "seen");
     }
 
     /// Her calendar's beat never cuts into a move of her home under way

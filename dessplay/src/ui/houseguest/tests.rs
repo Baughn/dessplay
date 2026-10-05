@@ -311,15 +311,18 @@ const HIDDEN_MS: u64 = 10_000;
 
 impl Hidden {
     /// Check a frame: her image covers only blank cells, lines, and text
-    /// in passing; anything else changed is her text layer.
+    /// in passing; anything else changed is her text layer, or the flap
+    /// a parcel is coming in through (`flap`: see [`open_flap`]), swung
+    /// open in its wall.
     fn check(
         &mut self,
         frame: &Buffer,
         real: &Buffer,
         layer: &[(u16, u16)],
+        flap: &[(u16, u16)],
         now: u64,
     ) -> Result<(), TestCaseError> {
-        self.check_raining(frame, real, layer, |_| false, now)
+        self.check_raining(frame, real, layer, flap, |_| false, now)
     }
 
     /// [`Hidden::check`], but for the cells a rain of hers is painting
@@ -329,6 +332,7 @@ impl Hidden {
         frame: &Buffer,
         real: &Buffer,
         layer: &[(u16, u16)],
+        flap: &[(u16, u16)],
         raining: impl Fn((u16, u16)) -> bool,
         now: u64,
     ) -> Result<(), TestCaseError> {
@@ -345,6 +349,13 @@ impl Hidden {
                 .chars()
                 .next()
                 .is_some_and(|c| graphics::strokes(c).is_some());
+            // A parcel's flap swung open in its wall, while it's open.
+            if flap.contains(&at)
+                && matches!(want.symbol(), "│" | "┃")
+                && matches!(got.symbol(), "╲" | "╱")
+            {
+                continue;
+            }
             if cells::untouchable(got) {
                 prop_assert!(
                     cells::width(want) <= 1,
@@ -377,6 +388,21 @@ impl Hidden {
         }
         Ok(())
     }
+}
+
+/// The wall cells of the flap a parcel is coming in through at `now`,
+/// while it stands open ([`FLAP_MS`] from its delivery): none once it
+/// has shut, nor outside a visit.
+fn open_flap(guest: &Guest, now: u64) -> Vec<(u16, u16)> {
+    let State::Visiting(visit) = &guest.state else {
+        return Vec::new();
+    };
+    let Some((flap, _)) = visit.flap.filter(|&(_, since)| now < since + FLAP_MS) else {
+        return Vec::new();
+    };
+    (flap.rows.0..flap.rows.1)
+        .filter_map(|y| Some((u16::try_from(flap.x).ok()?, u16::try_from(y).ok()?)))
+        .collect()
 }
 
 fn scatter(buf: &mut Buffer, text: &[(u16, u16, String)], skips: &[(u16, u16)]) {
@@ -548,22 +574,14 @@ fn long_visit_of(
             };
             assert_untouched_but_feet(&frame, &real, &protected, feet)?;
             let (layer, shown): (Vec<(u16, u16)>, Vec<Shown>) = match &guest.state {
-                // What she moved, and the flap a parcel just came in by
-                // (swung in over her wall's line a moment).
-                State::Visiting(visit) => {
-                    let flap = visit.flap.into_iter().flat_map(|(flap, _)| {
-                        (flap.rows.0..flap.rows.1).filter_map(move |y| {
-                            Some((u16::try_from(flap.x).ok()?, u16::try_from(y).ok()?))
-                        })
-                    });
-                    (
-                        visit.layer.cells().chain(flap).collect(),
-                        visit.shown.clone(),
-                    )
-                }
+                // What she moved.
+                State::Visiting(visit) => (visit.layer.cells().collect(), visit.shown.clone()),
                 State::Away(empty) => (Vec::new(), empty.shown.clone()),
                 _ => (Vec::new(), Vec::new()),
             };
+            // The flap a parcel is coming in by (swung in over her wall's
+            // line a moment).
+            let flap = open_flap(&guest, now);
             // Each real piece stands on the floor of a strip that's
             // here this frame.
             let strips = room::strips(&view.nooks);
@@ -613,7 +631,14 @@ fn long_visit_of(
             if graphics {
                 // What she moved raining out as she went out by her
                 // routine shows it as it was, holes and all, a moment.
-                hidden.check_raining(&frame, &real, &layer, |at| raining(&guest, at), now)?;
+                hidden.check_raining(
+                    &frame,
+                    &real,
+                    &layer,
+                    &flap,
+                    |at| raining(&guest, at),
+                    now,
+                )?;
             }
             // Besides text she moved: her box and the floor row
             // under it, and one bubble of at most 24 characters.
@@ -625,7 +650,7 @@ fn long_visit_of(
                 .enumerate()
                 .filter(|(i, (a, b))| {
                     let at = ((i % width) as u16, (i / width) as u16);
-                    a != b && !layer.contains(&at) && !raining(&guest, at)
+                    a != b && !layer.contains(&at) && !flap.contains(&at) && !raining(&guest, at)
                 })
                 .count();
             // Her box (with its floor row), a bubble, her furniture,
@@ -1051,7 +1076,8 @@ fn visiting_at(guest: &mut Guest, real: &Buffer, view: &IdleView, (x, y): (i32, 
         fades: Vec::new(),
         osaka: Osaka::standing_at(x, y, 0, &mut rng),
         kind: Kind::Normal,
-        terrain: Terrain::default(),
+        // As a visit begins: the room read off the frame she comes into.
+        terrain: Terrain::read(real, &view.protected, guest.graphics.is_some()),
         painted: Vec::new(),
         image: None,
         layer: layer::TextLayer::default(),
@@ -2195,7 +2221,7 @@ fn live_in_watching(
             };
             let layer: Vec<(u16, u16)> = visit.layer.cells().collect();
             hidden
-                .check(&frame, real, &layer, now)
+                .check(&frame, real, &layer, &open_flap(guest, now), now)
                 .unwrap_or_else(|e| panic!("seed {seed} at {now}: {e}"));
             watch(guest, now);
         }
@@ -2270,7 +2296,7 @@ fn she_gets_out_of_a_pit_through_a_door() {
                 if graphics && let State::Visiting(visit) = &guest.state {
                     let layer: Vec<(u16, u16)> = visit.layer.cells().collect();
                     hidden
-                        .check(&frame, &real, &layer, now)
+                        .check(&frame, &real, &layer, &open_flap(&guest, now), now)
                         .unwrap_or_else(|e| panic!("at {now}: {e}"));
                 }
             }
@@ -3498,8 +3524,10 @@ fn feet(visit: &Visit) -> Option<(i32, i32)> {
 
 /// A home she has visited once, her clock at `at`, `pieces` placed in it
 /// (each on its nook's floor, `x` of the way along in thousandths), on a
-/// mid-June school day with nothing on the calendar: she's absent, and
-/// arrives as soon as the idle gate opens.
+/// mid-June school day with nothing on the calendar, her wall clock long
+/// since sent (no parcel turns up; see
+/// [`her_wall_clock_comes_once_on_a_fed_visit_with_a_tv`]): she's absent,
+/// and arrives as soon as the idle gate opens.
 fn home_at(
     seed: u64,
     at: routine::GameTime,
@@ -3507,6 +3535,7 @@ fn home_at(
     graphics: bool,
 ) -> Guest {
     let mut ledger = Ledger::new_at(seed, at);
+    ledger.clock_sent = true;
     for &(item, nook, x) in pieces {
         assert!(
             ledger
@@ -4232,6 +4261,38 @@ fn the_channel_sells_decor_when_her_room_feels_bare() {
     assert_eq!(advert(&ledger, false, &bare), None, "she has it all");
 }
 
+/// The channel sells her window after her cat bed and before the decor
+/// (unless her room feeling bare is what she needs most: then the decor
+/// first, as ever); her wall clock it never sells (a gift, once).
+#[test]
+fn the_window_is_sold_after_the_cat_bed() {
+    use super::brain::{Need, Needs};
+    let bare = Needs::with(&[(Need::Beauty, 0.9), (Need::Fun, 0.5)]);
+    let fun = Needs::with(&[(Need::Beauty, 0.5), (Need::Fun, 0.9)]);
+    let mut ledger = Ledger::new(1);
+    ledger.visits = 9;
+    let owned = std::iter::once(Furniture::Tv).chain(
+        CATALOGUE
+            .into_iter()
+            .take_while(|&item| item != Furniture::Window),
+    );
+    for item in owned {
+        assert!(
+            ledger
+                .home
+                .add(room::Prop::new(item, Nook::Users, 0, sprite::Facing::Right))
+        );
+    }
+    assert!(ledger.home.owns(Furniture::CatBed));
+    assert_eq!(advert(&ledger, false, &fun), Some(Furniture::Window));
+    assert_eq!(advert(&ledger, false, &bare), Some(Furniture::Plant));
+    // One piece short of the cat bed, the cat bed comes first.
+    ledger.home.props.retain(|p| p.item != Furniture::CatBed);
+    assert_eq!(advert(&ledger, false, &fun), Some(Furniture::CatBed));
+    assert!(!CATALOGUE.contains(&Furniture::Clock), "a gift");
+    assert!(!Furniture::Window.decor() && Furniture::Clock.decor());
+}
+
 /// [`home_screen`] with chat text above her panes.
 fn busy_home_screen() -> (Buffer, IdleView) {
     let (mut real, view) = home_screen();
@@ -4244,6 +4305,125 @@ fn busy_home_screen() -> (Buffer, IdleView) {
         );
     }
     (real, view)
+}
+
+/// A guest from `seed` (fed, or else [`Guest::unfed`]) on her first
+/// visit, arrived on [`busy_home_screen`], in line art or not, given
+/// `pieces`.
+fn given(seed: u64, fed: bool, graphics: bool, pieces: &[Furniture]) -> (Guest, Buffer, IdleView) {
+    let (real, view) = busy_home_screen();
+    let guest = Guest::new(seed);
+    let mut guest = if fed { guest } else { guest.unfed() };
+    if graphics {
+        guest.set_picker(kitty());
+    }
+    guest.cue(Scene::Arrive);
+    paint(&mut guest, &real, &view, 0);
+    for &item in pieces {
+        guest.give(item);
+        paint(&mut guest, &real, &view, 0);
+        assert!(guest.ledger.home.owns(item), "{item:?}");
+    }
+    (guest, real, view)
+}
+
+/// Her wall clock (phase 5b D7, Q3) comes once ever: on her doorstep, as
+/// a parcel, early in a visit with her clock fed and her TV out of its
+/// box (her TV still boxed, it waits for her to unpack it), and she
+/// unpacks it onto the wall. Gone again (moved out of the record, say),
+/// it never comes back; unfed, or with no TV, it never comes at all. Her
+/// shopping is untouched: nothing's on order for it. In both drawing
+/// modes, under text-dense panes.
+#[test]
+fn her_wall_clock_comes_once_on_a_fed_visit_with_a_tv() {
+    for graphics in [false, true] {
+        for tv_boxed in [false, true] {
+            let at = format!("graphics={graphics} tv_boxed={tv_boxed}");
+            let (mut guest, real, view) =
+                given(5, true, graphics, &[Furniture::Sofa, Furniture::Tv]);
+            for prop in &mut guest.ledger.home.props {
+                prop.boxed |= prop.item == Furniture::Tv && tv_boxed;
+            }
+            assert!(!guest.ledger.clock_sent, "{at}");
+            let tv_boxed_now = |guest: &Guest| {
+                guest
+                    .ledger
+                    .home
+                    .props
+                    .iter()
+                    .any(|p| p.item == Furniture::Tv && p.boxed)
+            };
+            let (mut came, mut said, mut unpacked) = (None, false, None);
+            let mut now = 0;
+            while now < 240_000 && !said {
+                now += guest
+                    .next_tick(now)
+                    .map_or(1000, |d| d.as_millis() as u64)
+                    .clamp(1, 1000);
+                if guest.advance(now) {
+                    paint(&mut guest, &real, &view, now);
+                }
+                if tv_boxed_now(&guest) {
+                    assert!(
+                        !guest.ledger.clock_sent,
+                        "{at}: came with her TV boxed, at {now}"
+                    );
+                } else {
+                    unpacked.get_or_insert(now);
+                }
+                if guest.ledger.home.owns(Furniture::Clock) {
+                    came.get_or_insert(now);
+                    said |= matches!(
+                        visit_of(&guest).osaka.appearance(now).2,
+                        Some(Bubble::Say(PARCEL))
+                    );
+                }
+            }
+            let came = came.unwrap_or_else(|| panic!("{at}: no clock came"));
+            assert!(said, "{at}: she never said so (it came at {came})");
+            assert!(
+                unpacked.is_some_and(|t| t <= came),
+                "{at}: {unpacked:?} {came}"
+            );
+            assert!(guest.ledger.clock_sent, "{at}");
+            assert_eq!(guest.ledger.ordered, None, "{at}: nothing ordered");
+            assert_eq!(guest.ledger.bought_on, 0, "{at}: nothing bought");
+            // She unpacks it onto the wall.
+            let boxed = |guest: &Guest| {
+                guest
+                    .ledger
+                    .home
+                    .props
+                    .iter()
+                    .any(|p| p.item == Furniture::Clock && p.boxed)
+            };
+            let until = now + 300_000;
+            while boxed(&guest) {
+                assert!(now < until, "{at}: still boxed");
+                shell_step(&mut guest, &real, &view, &mut now, false);
+            }
+            // Gone, it never comes again.
+            guest
+                .ledger
+                .home
+                .props
+                .retain(|p| p.item != Furniture::Clock);
+            run(&mut guest, &real, &view, now, now + 120_000);
+            assert!(!guest.ledger.home.owns(Furniture::Clock), "{at}: twice");
+        }
+        // Unfed, or with no TV, never.
+        for (fed, pieces) in [
+            (false, &[Furniture::Sofa, Furniture::Tv][..]),
+            (true, &[Furniture::Sofa, Furniture::Bed][..]),
+        ] {
+            let (mut guest, real, view) = given(5, fed, graphics, pieces);
+            run(&mut guest, &real, &view, 0, 120_000);
+            assert!(
+                !guest.ledger.home.owns(Furniture::Clock) && !guest.ledger.clock_sent,
+                "graphics={graphics} fed={fed} {pieces:?}"
+            );
+        }
+    }
 }
 
 /// Watching the shopping channel in a room that feels bare to her, she
@@ -4323,6 +4503,8 @@ fn a_pretty_room_eases_her_want_of_beauty() {
             if graphics {
                 guest.set_picker(kitty());
             }
+            // A plain room stays plain: her wall clock came long ago.
+            guest.ledger.clock_sent = true;
             let mut pieces = vec![
                 (Furniture::Sofa, Nook::Users, 0),
                 (Furniture::Tv, Nook::Users, 600),
@@ -4386,7 +4568,8 @@ fn one_visit(guest: &mut Guest, real: &Buffer, view: &IdleView, from: u64, minut
 /// Her home fills up over visits, across a restart: the TV comes boxed
 /// on her second visit and she unpacks it; after that the shopping
 /// channel sells her one piece at a time, at most once every three
-/// visits, and each arrives boxed on a later visit.
+/// visits, and each arrives boxed on a later visit; her wall clock comes
+/// once, unbought.
 #[test]
 fn her_home_fills_up_over_visits() {
     let (real, view) = home_screen();
@@ -4430,10 +4613,16 @@ fn her_home_fills_up_over_visits() {
     for pair in bought.windows(2) {
         assert!(pair[1].0 >= pair[0].0 + SHOP_EVERY, "too often: {bought:?}");
     }
-    // Nothing turns up that she didn't buy.
+    // Nothing turns up that she didn't buy, but her TV and (once she has
+    // it) her wall clock, the gift that comes once.
+    assert!(
+        home.owns(Furniture::Clock) && guest.ledger.clock_sent,
+        "her wall clock came: {home:?}"
+    );
     for prop in &home.props {
         assert!(
-            prop.item == Furniture::Tv || bought.iter().any(|&(_, item)| item == prop.item),
+            matches!(prop.item, Furniture::Tv | Furniture::Clock)
+                || bought.iter().any(|&(_, item)| item == prop.item),
             "{:?} unbought: {bought:?}",
             prop.item
         );
@@ -4491,6 +4680,173 @@ fn a_parcel_comes_in_through_a_flap_at_the_screens_edge() {
     }
 }
 
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(dessplay_core::test_support::proptest_cases(12)))]
+
+    /// Every parcel left on her doorstep is one she can unpack: it comes
+    /// in only where she can stand to unpack it, as for any seat of hers
+    /// (her box may take in the wall's line, as anywhere on a floor). Over
+    /// arbitrary screens, text and the pieces she has, in both drawing
+    /// modes, each piece the channel sells (on order) and her wall clock
+    /// (a gift), once delivered, has a seat to unpack it from at once,
+    /// and nothing protected is touched; with no text about (none for her
+    /// to move, or to come up, where she'd stand), she unpacks it within
+    /// ten real minutes.
+    #[test]
+    fn every_parcel_on_her_doorstep_gets_unpacked(
+        seed in any::<u64>(),
+        graphics in any::<bool>(),
+        (w, h) in (60u16..130, 18u16..45),
+        text in prop_oneof![
+            Just(Vec::new()),
+            proptest::collection::vec((0u16..60, 0u16..18, "[a-z漢─│ ]{1,6}"), 1..12),
+        ],
+        owned in proptest::collection::vec((0usize..8, 0usize..3, 0u16..=1000, any::<bool>()), 0..4),
+        tv in (0usize..3, 0u16..=1000),
+        which in 0usize..=CATALOGUE.len(),
+    ) {
+        a_parcel_on_her_doorstep(seed, graphics, (w, h), &text, &owned, tv, which)?;
+    }
+}
+
+/// [`every_parcel_on_her_doorstep_gets_unpacked`]'s cases that found
+/// what kept her from unpacking, in both drawing modes: her cat's bed,
+/// boxed, with no cat yet (who comes only to it unboxed); a lamp at the
+/// wall where text above the floor leaves her nowhere to stand to
+/// unpack it.
+#[test]
+fn parcels_she_could_not_unpack() {
+    for graphics in [false, true] {
+        let cat_bed = CATALOGUE
+            .iter()
+            .position(|&i| i == Furniture::CatBed)
+            .expect("sold");
+        let lamp = CATALOGUE
+            .iter()
+            .position(|&i| i == Furniture::Lamp)
+            .expect("sold");
+        a_parcel_on_her_doorstep(0, graphics, (60, 18), &[], &[], (0, 0), cat_bed)
+            .unwrap_or_else(|e| panic!("graphics={graphics}: {e}"));
+        let text = [(5, 10, "漢".to_owned())];
+        a_parcel_on_her_doorstep(0, graphics, (60, 18), &text, &[], (0, 0), lamp)
+            .unwrap_or_else(|e| panic!("graphics={graphics}: {e}"));
+    }
+}
+
+/// One case of [`every_parcel_on_her_doorstep_gets_unpacked`]: on a
+/// `w`×`h` screen with `text`, her TV out of its box at `tv` (nook,
+/// thousandths along) and `owned` pieces, `CATALOGUE[which]` on order
+/// (one past the end: her wall clock, owed).
+fn a_parcel_on_her_doorstep(
+    seed: u64,
+    graphics: bool,
+    (w, h): (u16, u16),
+    text: &[(u16, u16, String)],
+    owned: &[(usize, usize, u16, bool)],
+    tv: (usize, u16),
+    which: usize,
+) -> Result<(), TestCaseError> {
+    let item = CATALOGUE.get(which).copied().unwrap_or(Furniture::Clock);
+    let nook = [Nook::List, Nook::Users, Nook::Playlist];
+    let mut guest = home_at(seed, mon(16, 0), &[], graphics);
+    // Her TV first, out of its box (the clock comes only then), unless
+    // it's the parcel.
+    let pieces = std::iter::once((Furniture::Tv, tv.0, tv.1, false)).chain(
+        owned
+            .iter()
+            .map(|&(piece, at, along, left)| (Furniture::ALL[piece], at, along, left)),
+    );
+    for (piece, at, along, left) in pieces {
+        if piece == item {
+            continue;
+        }
+        let facing = if left {
+            sprite::Facing::Left
+        } else {
+            sprite::Facing::Right
+        };
+        let _ = guest
+            .ledger
+            .home
+            .add(room::Prop::new(piece, nook[at], along, facing));
+    }
+    if item == Furniture::Clock {
+        guest.ledger.clock_sent = false;
+    } else {
+        guest.ledger.ordered = Some(item);
+        guest.ledger.bought_on = 0;
+    }
+    let mut real = rooms(w, h);
+    scatter(&mut real, text, &[]);
+    let protected = bottom_strip(w, h);
+    let view = IdleView {
+        nooks: nooks(w, h),
+        ..view(protected.clone())
+    };
+    let boxed = |guest: &Guest| {
+        guest
+            .ledger
+            .home
+            .props
+            .iter()
+            .any(|p| p.item == item && p.boxed)
+    };
+    let mut now = 0;
+    let mut delivered = None;
+    let mut seat = false;
+    while now < 20 * 60_000 {
+        now += guest
+            .next_tick(now)
+            .map_or(1000, |d| d.as_millis() as u64)
+            .clamp(1, 1000);
+        guest.advance(now);
+        let frame = paint(&mut guest, &real, &view, now);
+        let State::Visiting(visit) = &guest.state else {
+            prop_assert!(delivered.is_none(), "gone at {now}, {item:?} boxed");
+            prop_assert!(now < 60_000, "she never came");
+            continue;
+        };
+        assert_untouched_but_feet(&frame, &real, &protected, feet(visit))?;
+        if delivered.is_none() && guest.ledger.home.owns(item) {
+            prop_assert!(boxed(&guest), "{item:?} came unboxed");
+            delivered = Some(now);
+        }
+        let Some(since) = delivered else {
+            // No room for it at either wall: it waits (fine), so long
+            // as nothing else is the matter.
+            if now > 180_000 {
+                return Ok(());
+            }
+            continue;
+        };
+        seat |= visit
+            .chances
+            .seats
+            .iter()
+            .any(|s| s.what == room::Use::Unpack && s.item == item);
+        if !boxed(&guest) {
+            prop_assert!(seat, "{item:?} unpacked from no seat");
+            return Ok(());
+        }
+        prop_assert!(
+            seat || now < since + 5_000,
+            "{item:?} delivered at {since} with no seat to unpack it: {:?}",
+            visit.shown
+        );
+        if !text.is_empty() && seat {
+            return Ok(());
+        }
+        prop_assert!(
+            now < since + 10 * 60_000,
+            "{item:?} delivered at {since}, still boxed at {now}: {:?}",
+            visit.shown
+        );
+    }
+    Err(TestCaseError::fail(format!(
+        "{item:?}: the visit never settled"
+    )))
+}
+
 /// The piece `item` as shown this frame, if it is.
 fn shown_piece(guest: &Guest, item: Furniture) -> Option<Shown> {
     match &guest.state {
@@ -4507,10 +4863,16 @@ fn drawn(frame: &Buffer, real: &Buffer, piece: &Shown) -> bool {
 
 /// Decor delivered: its parcel stands on the floor where it came in, she
 /// unpacks it, and the plant stands there while the poster hangs on the
-/// wall above, both drawn. In both drawing modes.
+/// wall above, both drawn; so do the window and the wall clock (a box
+/// narrower than her, at the wall). In both drawing modes.
 #[test]
 fn she_unpacks_delivered_decor() {
-    for item in [Furniture::Plant, Furniture::Poster] {
+    for item in [
+        Furniture::Plant,
+        Furniture::Poster,
+        Furniture::Window,
+        Furniture::Clock,
+    ] {
         for graphics in [false, true] {
             let at = format!("{item:?} graphics={graphics}");
             let (real, view) = home_screen();
@@ -4545,9 +4907,9 @@ fn she_unpacks_delivered_decor() {
             let frame = paint(&mut guest, &real, &view, now);
             let piece = shown_piece(&guest, item).unwrap_or_else(|| panic!("{at}: shown"));
             assert_eq!(piece.left, parcel.left, "{at}: where its parcel stood");
-            let lane = match item {
-                Furniture::Poster => room::Lane::Wall,
-                _ => room::Lane::Floor,
+            let lane = match item.spec().hang {
+                Some(_) => room::Lane::Wall,
+                None => room::Lane::Floor,
             };
             assert_eq!(piece.lane(), lane, "{at}");
             assert!(drawn(&frame, &real, &piece), "{at}: drawn");
@@ -4658,7 +5020,7 @@ fn a_poster_hangs_over_her_sofa() {
                     .unwrap_or_else(|e| panic!("{at} {now}: {e}"));
                 if graphics {
                     hidden
-                        .check(&frame, &real, &layer, now)
+                        .check(&frame, &real, &layer, &open_flap(&guest, now), now)
                         .unwrap_or_else(|e| panic!("{at} {now}: {e}"));
                 }
             }
@@ -4737,7 +5099,7 @@ fn text_near_a_hung_poster_closets_only_what_it_covers() {
                     .unwrap_or_else(|e| panic!("{at} {now}: {e}"));
                 if graphics {
                     hidden
-                        .check(&frame, &real, &layer, now)
+                        .check(&frame, &real, &layer, &open_flap(&guest, now), now)
                         .unwrap_or_else(|e| panic!("{at} {now}: {e}"));
                 }
             }
@@ -4985,7 +5347,7 @@ fn watch_scene_in(
         if graphics {
             let layer: Vec<(u16, u16)> = visit.layer.cells().collect();
             hidden
-                .check(&frame, real, &layer, now)
+                .check(&frame, real, &layer, &open_flap(&guest, now), now)
                 .unwrap_or_else(|e| panic!("{scene:?} at {now}: {e}"));
         }
         if until(visit, now) {
@@ -5002,7 +5364,7 @@ fn state_of(visit: &Visit, item: Furniture, cat: bool, now: u64) -> Option<art::
         piece,
         visit.osaka.prop(now),
         visit.osaka.dark(now),
-        cat,
+        World { cat, time: None },
     ))
 }
 
@@ -5011,8 +5373,10 @@ fn state_of(visit: &Visit, item: Furniture, cat: bool, now: u64) -> Option<art::
 /// lamp off, the fridge open and the cat biting each only on their own
 /// piece, the cat biting only when he's home, and in his bed when
 /// nothing's going on; the lamp off in the dark whatever her script
-/// shows, and the dark nothing else's; everything else plain (what's on
-/// TV is drawn on its screen, not as a state).
+/// shows, and the dark nothing else's; the clock's dial and the window's
+/// sky at her time of day, whatever her script shows, and plain without
+/// one (her clock not fed); everything else plain (what's on TV is drawn
+/// on its screen, not as a state).
 #[test]
 fn every_piece_shows_what_her_script_shows_on_it() {
     use art::{Channel, PieceState};
@@ -5038,19 +5402,27 @@ fn every_piece_shows_what_her_script_shows_on_it() {
         for prop in props {
             for cat in [false, true] {
                 for dark in [false, true] {
-                    let want = match (item, prop) {
-                        (Furniture::Lamp, _) if dark => PieceState::LampOff,
-                        (Furniture::Lamp, Some(Prop::LampOff)) => PieceState::LampOff,
-                        (Furniture::Fridge, Some(Prop::FridgeOpen)) => PieceState::FridgeOpen,
-                        (Furniture::CatBed, Some(Prop::CatBiting)) if cat => PieceState::CatBiting,
-                        (Furniture::CatBed, _) if cat => PieceState::Cat,
-                        _ => PieceState::Plain,
-                    };
-                    assert_eq!(
-                        piece_state(&piece, prop, dark, cat),
-                        want,
-                        "{item:?} {prop:?} cat {cat} dark {dark}"
-                    );
+                    for time in [None, Some(0), Some(18 * 60 + 44)] {
+                        let want = match (item, prop, time) {
+                            (Furniture::Lamp, ..) if dark => PieceState::LampOff,
+                            (Furniture::Lamp, Some(Prop::LampOff), _) => PieceState::LampOff,
+                            (Furniture::Fridge, Some(Prop::FridgeOpen), _) => {
+                                PieceState::FridgeOpen
+                            }
+                            (Furniture::CatBed, Some(Prop::CatBiting), _) if cat => {
+                                PieceState::CatBiting
+                            }
+                            (Furniture::CatBed, ..) if cat => PieceState::Cat,
+                            (Furniture::Clock, _, Some(m)) => PieceState::Dial(art::Dial::at(m)),
+                            (Furniture::Window, _, Some(m)) => PieceState::Sky(art::Sky::at(m)),
+                            _ => PieceState::Plain,
+                        };
+                        assert_eq!(
+                            piece_state(&piece, prop, dark, World { cat, time }),
+                            want,
+                            "{item:?} {prop:?} cat {cat} dark {dark} at {time:?}"
+                        );
+                    }
                 }
             }
         }
@@ -5197,7 +5569,7 @@ fn andagi_until(
         if graphics {
             let layer: Vec<(u16, u16)> = visit_of(&guest).layer.cells().collect();
             hidden
-                .check(&frame, real, &layer, now)
+                .check(&frame, real, &layer, &open_flap(&guest, now), now)
                 .unwrap_or_else(|e| panic!("graphics at {now}: {e}"));
         }
         let osaka = &visit_of(&guest).osaka;
@@ -5317,7 +5689,7 @@ fn asked_during_the_andagi_she_answers_and_plays_on() {
                     if graphics {
                         let layer: Vec<(u16, u16)> = visit_of(&guest).layer.cells().collect();
                         hidden
-                            .check(&frame, real, &layer, now)
+                            .check(&frame, real, &layer, &open_flap(&guest, now), now)
                             .unwrap_or_else(|e| panic!("{case} at {now}: {e}"));
                     }
                     let osaka = &visit_of(&guest).osaka;
@@ -6484,7 +6856,7 @@ fn in_line_art_she_passes_text_but_does_not_stay_over_it() {
             let mut strict = Hidden(hidden.0.clone());
             // Walking past a cell takes her box's width in steps.
             strict
-                .check(&frame, &real, &layer, now)
+                .check(&frame, &real, &layer, &open_flap(&guest, now), now)
                 .and_then(|()| {
                     let longest = strict.0.values().map(|&since| now - since).max();
                     prop_assert!(
@@ -6886,7 +7258,7 @@ proptest! {
                 State::Visiting(visit) => visit.layer.cells().collect(),
                 _ => Vec::new(),
             };
-            hidden.check(&frame, &real, &layer, now)?;
+            hidden.check(&frame, &real, &layer, &open_flap(&guest, now), now)?;
         }
     }
 }
@@ -9899,6 +10271,8 @@ fn keen_on(
     if graphics {
         guest.set_picker(kitty());
     }
+    // Nothing delivered: her wall clock came long ago.
+    guest.ledger.clock_sent = true;
     for (item, nook, side, offset, facing, settled) in wrong_home(home, 12) {
         assert!(guest.ledger.home.add(Prop {
             anchor: Some(Anchor { side, offset }),
@@ -10395,7 +10769,7 @@ fn promised_frame(
     // (A pane just focused rains out what of hers was in it.)
     if graphics && visit.fades.is_empty() {
         let layer: Vec<(u16, u16)> = visit.layer.cells().collect();
-        hidden.check(&frame, real, &layer, now)?;
+        hidden.check(&frame, real, &layer, &open_flap(guest, now), now)?;
     }
     let new_act = visit.osaka.home_acts() > acts;
     let after = guest.ledger.home.clone();
@@ -10906,6 +11280,7 @@ proptest! {
 mod away;
 mod calendar;
 mod census;
+mod clock;
 mod dash;
 mod golden;
 mod rares;
