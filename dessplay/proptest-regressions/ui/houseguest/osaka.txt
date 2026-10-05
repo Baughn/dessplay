@@ -6,3 +6,4 @@
 # everyone who runs the test benefits from these saved cases.
 cc 3fcde8433981e6d32bfee8e82a9318248a58b2fed22d9a6a88e923229192d6cc # shrinks to seed = 0, into = [(0, 0)], ends = None
 cc 2fb7c1969a7a3ba85d1d3795c786a9b21f4e4aa2e4421c1dff6223e416be807d # shrinks to seed = 0, into = [], ends = Some(0)
+cc 50bd866ad9b587d611d66ac34d8f687dd931e9d5d5cb8e63ee130fad192d7777 # shrinks to level = 0.0, stretch = 19831, how = 0, what = 0

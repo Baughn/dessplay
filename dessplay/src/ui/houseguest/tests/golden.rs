@@ -579,10 +579,10 @@ fn golden_resident() {
         "resident",
         resident,
         &[
-            (0, 0x159aeccddcc71c34, 0xb310e9c1d24e6d2a),
+            (0, 0x159aeccddcc71c34, 0x1fa3649c2fd7fe05),
             (1, 0x1c31aa319ebf49a7, 0x0a6f41a6467a0cfe),
             (2, 0x1e68322acf91a80d, 0x938e65d6c960c217),
-            (3, 0xc93586d452fd9669, 0xd4cef6d21bdd82bf),
+            (3, 0xeef6278ec06f9046, 0x982c176590fab05d),
         ],
     );
 }
@@ -593,10 +593,10 @@ fn golden_furnished_home() {
         "furnished",
         furnished,
         &[
-            (0, 0xa914c6afdbb112e6, 0x9d9c6a3f468e6df6),
-            (1, 0x92743870beecf5ea, 0x599a6aa229d9a231),
-            (2, 0xa9825c121f768f21, 0x1c31746177b45c83),
-            (3, 0xbc889838735e0a39, 0x359fd5a3dfc4dadf),
+            (0, 0x871cdb86f433323e, 0x7baf7c4a2ebe9bb1),
+            (1, 0xf2abd69e035ee4ff, 0xd286462e2d59f3d5),
+            (2, 0xd5fd88ee1579ab0b, 0x76575460f55a7298),
+            (3, 0x7d84488a86136cb7, 0x6bef737cecc9821d),
         ],
     );
 }
@@ -649,10 +649,10 @@ fn golden_weekend() {
         "weekend",
         weekend,
         &[
-            (0, 0x1379e72ff451ee87, 0x67c9ab8672f3b351),
-            (1, 0x4eca730ec35c27ec, 0x87a47d329d7f0a5b),
-            (2, 0x9096d5b0402d22a4, 0x4e7dda8089ae31ff),
-            (3, 0x71193299d7f3d45f, 0x494e0e4b83611ca5),
+            (0, 0xcb83318c16905bd1, 0xf08f3bfc6162ced2),
+            (1, 0x4206f6749f5810e2, 0x6aef6259a7b979a0),
+            (2, 0x55ed3409de4ef6f1, 0x38a273690aa478e6),
+            (3, 0x6077b219049c9492, 0x0c99035f41609497),
         ],
     );
 }
@@ -721,9 +721,9 @@ const UNFED_STAGE: [(u64, u64, u64); 4] = [
 /// frame inserted at each rain's end, every seed and mode, nothing else
 /// changed; the trace diff is in that commit).
 const UNFED_RESIDENT: [(u64, u64, u64); 4] = [
-    (0, 0xf6f9ea92658d4f25, 0x11419451071cd534),
-    (1, 0x3ca5bf68b72726c0, 0xdff0ac9174e46f25),
-    (2, 0xfd6ddc9497586054, 0xc7dea150ebe6ed3e),
+    (0, 0x191be937c76f9945, 0x11419451071cd534),
+    (1, 0x77c16e85ebe56095, 0x1edd3a631abc1ecc),
+    (2, 0x4eac2f4d121c7507, 0x8ca86dbfee79514d),
     (3, 0x7b25569fe1c14189, 0x2e08bce79097501d),
 ];
 

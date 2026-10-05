@@ -11304,6 +11304,7 @@ mod away;
 mod calendar;
 mod census;
 mod clock;
+mod credit;
 mod dash;
 mod golden;
 mod rain;

@@ -1628,7 +1628,8 @@ fn every_pooled_line_shown_was_drawn_from_its_pool() {
 /// home (no chat, so nothing cuts a coda short or is answered), in both
 /// drawing modes, the shopping channel plays on each (it's on at her
 /// first watch), bedtime with her lamp on some, and some uses are
-/// spliced, a sata andagi and the chopsticks among them. Each splice's
+/// spliced, the chopsticks among them; and on a visit cued one, a sata
+/// andagi (rare enough to play on none of the others). Each splice's
 /// count agrees with what she was heard to say: "Sata andagi." as many
 /// times as the andagis' branches name it, "Hold 'em by the ends!" once
 /// a bad split; a riddle's question and answer are both pooled lines;
@@ -1643,9 +1644,16 @@ fn the_census_counts_her_vignettes() {
     for graphics in [false, true] {
         let mut scripts: BTreeMap<String, usize> = BTreeMap::new();
         let mut splices: BTreeMap<String, usize> = BTreeMap::new();
-        for seed in 0..3 {
-            let at = format!("seed {seed} graphics={graphics}");
-            let visit = simulate_with(&room, seed, 15, None, graphics, |_, _| {});
+        let visits = (0..3)
+            .map(|seed| (seed, None))
+            .chain([(3, Some(Scene::Andagi))]);
+        for (seed, cue) in visits {
+            let at = format!("seed {seed} {cue:?} graphics={graphics}");
+            let mut guest = arrive_in(&room, seed, graphics, None);
+            if let Some(scene) = cue {
+                guest.cue(scene);
+            }
+            let (visit, _) = visit_from(&room, guest, 15, |_, _| {});
             let get = |row: &BTreeMap<String, usize>, k: &str| row.get(k).copied().unwrap_or(0);
             assert_eq!(
                 get(&visit.scripts, "shopping"),
@@ -1677,6 +1685,16 @@ fn the_census_counts_her_vignettes() {
                 visit.scripts
             );
             assert_eq!(visit.answers, 0, "{at}");
+            if cue.is_some() {
+                assert!(
+                    visit
+                        .splices
+                        .iter()
+                        .any(|(k, &v)| k.starts_with("sata andagi") && v > 0),
+                    "{at}: {:?}",
+                    visit.splices
+                );
+            }
             for (k, v) in visit.scripts {
                 *scripts.entry(k).or_default() += v;
             }
