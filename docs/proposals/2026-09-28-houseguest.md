@@ -280,6 +280,8 @@ clock (6×, running only while dessplay is open), not the local wall
 clock; only the real date reaches her. See [plan.md](../plan.md), Phase
 38, and [design.md](../design.md#houseguest).*
 
+*Superseded (2026-10-05): her routine runs on a persisted game clock at 6×, not the local wall clock, with school 08:30–12:30; real dates drive only the calendar and holidays. See design.md (Houseguest) and plan.md, Phase 38, phase 5b.*
+
 Local wall clock, injected. School-day absence is a feature: evening
 visits feel like her real home time.
 
