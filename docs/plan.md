@@ -2105,7 +2105,7 @@ welcome; the only goal is "watching her is kind of fun".
 
 ## Phase 38: Houseguest mind and home
 
-**Status: phases 0–4 done (2026-10-02 and 2026-10-03); phase 5 split into 5a (vignettes, done 2026-10-03) and 5b (the clock; working design 2026-10-04: [phase5b-design.md](proposals/2026-10-02-houseguest-mind/phase5b-design.md), in progress). Nothing since phase 2 is pushed yet.** Design: [the mind
+**Status: phases 0–4 done (2026-10-02 and 2026-10-03); phase 5 split into 5a (vignettes, done 2026-10-03) and 5b (the clock, done 2026-10-05; record below). master was pushed by the user at 5b step 5c (2026-10-04) to test it; the rest of 5b is unpushed. Next: the user's restlessness discussion, then phase 6.** Design: [the mind
 and home proposal](proposals/2026-10-02-houseguest-mind.md) (direction
 agreed with the user; their answers are its *Decisions*). Its migration
 plan numbers its own phases 0–8; this section records them.
@@ -2885,3 +2885,118 @@ window is sold after the cat bed, with a look-out use and a clock glance
 at routine changes; real-date vacations (summer, year-end, spring)
 cancel school. At 6× that's about 49% of open time home and awake, 37%
 asleep (visible) and 14% away. Steps 0–9 are in the design.
+
+### Phase 5b — the clock (done 2026-10-05)
+
+Built as the [working design](proposals/2026-10-02-houseguest-mind/phase5b-design.md)
+and its round-1 and 1b amendments say (code map, four critiques and their
+synthesis in its `phase5b/` dir; the approved window and clock art in
+`phase5b/art/`). The rules are in design.md (Houseguest) and the reasons
+in decisions.md. Each step was implemented, reviewed twice (correctness,
+and tests proven by mutants) and fixed, minors included. Commits, in
+order: the exit save; her clock and the idle/pity counters; `routine.rs`,
+the real date and `DayTime` (unfed); the mind's levers (unfed); the clock
+fed and her night; the night's extras and the job on days off; no goodbye
+from her where she isn't; away at school with her closed door; (the stop
+hook stands down while subagents work); dashes and the errand at school,
+plus its fixes; the calendar and time-of-day lines; rares and pity; pity
+only for the unseen; the wall clock and window; looking out and the
+glances; the week census; a chat line at her fridge; `--dump`'s
+houseguest section; the docs. Several step commits' messages went stale
+under their fixers (steps 1, 2, 3a, 3b, 4a, 6, 8a, 8b, 9a, 9b) and one
+(5c's) couldn't take its fixes because master had been pushed; this
+record supersedes them.
+
+Differences from the design (the notable ones; design.md states them):
+
+- **The date's single source is `Guest::date()`**, set by the shell
+  before every `advance`; `IdleView.local` was dropped as a mirror with
+  no reader. Each game day is judged by its own vacation flag, latched
+  per game day (not persisted), so the longest night is **105** real
+  minutes at a school-to-vacation edge, not 95.
+- **The exit save also carries pane sizes** (`UiExit { houseguest,
+  layout }`): the layout drain had the same lost-on-exit class. Exits
+  that never join the UI thread (SIGHUP, a panic, the `?` returns in
+  `run_interactive` between the UI's spawn and the session's end) stay
+  unsaved.
+- **The night:** one act on any surface, its wake time recomputed at
+  every clock reading; the lamp's dark is `Osaka::dark(now)`, latched
+  only in the Asleep slot; `begin_day` is the one new-day path (wake or a
+  missed wake), and the line budget, the rare draw, the Dream, the
+  midnight snack and the meal lines belong to the game day, carried
+  across visits per process. Bedtime settles an arranging episode (a
+  trial is kept, a pocketed piece let go). Parcels wait while she sleeps,
+  until her morning line has shown, and while she's out or behind a door.
+- **Two bugs older than 5b, found and fixed on the way:** a work shift
+  cut short left her "at work" forever or said "I'm home!" without
+  leaving (now `shift: Option<Shift>`); a boxed cat bed unpacked with the
+  cat already in it (since 2026-10-01). Also new: an overlay ends an
+  errand or a dash already under way (she used to paint over modals).
+- **A hidden Osaka can't be placed** (`Placement::of` is the only
+  constructor and is `None` while she's hidden): the hidden-goodbye class
+  is unrepresentable.
+- **Away:** the door's spot lives on the `Guest` (a no-home return comes
+  out where she went in); a goodbye from Away rains the door out with no
+  wave; a no-home door-end rains out what she moved or made. A dash reads
+  the coming visit's cat.
+- **The calendar:** delivered only when its line is actually drawn
+  (`draw` returns the drawn bubble), retried at another spot at most
+  three times a visit, then left owed; Jan 1's sunrise is a best-effort
+  extra within the visit. With a calendar greeting she wakes with a plain
+  "Mornin'." first (the combined line won't fit 24 characters).
+- **Rarity:** seen rares roll their tier's base rate only; pity ramps
+  only the choice of an unseen one (otherwise, once every rare had been
+  seen, every seen rare would open every day). A day begun after midnight
+  draws over the night and morning only. A restart the same game day may
+  redraw.
+- **The window and clock:** a parcel comes in only where she can stand to
+  unpack it (her seat test), and a window first where she can look out
+  of it (26 of 40 deliveries before, 40 of 40 after). The gift waits
+  until her day's calendar entry is settled. A cued hour glance reads the
+  game hour in any slot.
+
+**Measured (2026-10-05).** Gate 2173 tests. The 256-case houseguest pass
+(557 tests, release) passed three times and found no product bug; the
+slowest are `every_made_piece_is_used_or_let_go` 45–47 s (120 s override)
+and four tests at 29–39 s. Perf: a visit 0.00–0.33% of a core, playback
+4.7–5.3%. `sofa_census` (now unfed) matches 5a exactly; `visit_census`
+(unfed) is within 0.2 points of 5a for the stage and 1–3 for the home and
+resident; `image_census` is unchanged. The new `day_census` (`#[ignore]`d;
+`cargo test --release -p dessplay --lib day_census -- --ignored
+--nocapture`, about 65 s) runs a fed game week from Monday 00:00 at three
+seeds, on Oct 31 and with no date:
+
+| Room | Here | Asleep | Away | Hidden in a visit |
+|---|---|---|---|---|
+| stage | 47.3 | 36.4 | 13.3 | 2.9 |
+| home | 49.0 | 36.5 | 13.3 | 1.2 |
+| resident | 49.0 | 36.5 | 13.3 | 1.1 |
+
+(D2 predicted 49 / 37 / 14.) Out to school and home again 30 of 30;
+dash-ins 10 a room (1 in 3); Halloween once a run, at the wake, never
+undated; the clock parcel at Monday 07:00–07:18; look-outs about 19 a
+game day in the home; 13–14 rares first seen a room, every run sees the
+Dream. Moving is 35–45% of awake time in every slot. The census found one
+product bug: a chat line as she reached her fridge on a dash (or a
+midnight snack) cost her what she came for; fixed with a property each.
+
+**Open, for the user.**
+- **Restlessness** (the user, testing on 2026-10-04): she spends too much
+  time walking about (35–45% of awake time; Restless fills in 90 s). To be
+  discussed before phase 6.
+- **Should a dash look at chat lines at all?** Today she's startled and
+  looks, then carries on; the tests pin that.
+- **Look-outs vs. the afternoon clock glance:** in a full home look-outs
+  (about 19 a game day) crowd out spacing out, so the afternoon glance
+  came once in six home-weeks (nine each in the stage and resident). The
+  glance is also once per visit, not per game day, and D4's "Gaze ×more
+  with a window" isn't built.
+- **Rares a home can't show:** pity can pick NoMelon in a fridgeless room
+  (a wasted day's draw; nothing is lost). Scary is first seen in about one
+  week in six (its window is 30 minutes on school nights).
+- **A rain-out's last frame may linger** until the next redraw when it
+  ends in a tick where nothing else changes (Visiting's `fading` is
+  computed after `retain`). The fix moves 24 golden traces, unfed tables
+  included, so it waits for a decision. Away's arm has the fix.
+- **Her pane-corner column** belongs to no strip, so from there she sees no
+  clock (as `beauty_at` already sees no decor).
