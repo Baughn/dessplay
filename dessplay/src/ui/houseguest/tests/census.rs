@@ -11,17 +11,33 @@
 //! ```
 //!
 //! The day census ([`day_census`]) runs her routine instead: a game week
-//! from Monday 00:00 in each room, by the hour of her day.
+//! from Monday 00:00 in each room, by the hour of her day. The fed
+//! afternoon census ([`fed_afternoon_census`]) runs the stillness band's
+//! own setup: each room fed on a Tuesday afternoon, in each mood forced.
+//!
+//! Moving, as the censuses count it (phase 5c, D1): moving in sight
+//! (walking, climbing, falling, a door's seen beats, a pull's heave) as a
+//! share of her time in sight (visiting, not asleep for the night, not
+//! out of sight), from minute 3 ([`WARM_MS`]; the warm-up apart), and her
+//! set-offs a minute in sight ([`Osaka::census_motion`],
+//! [`Osaka::set_off_log`]).
 
 use super::*;
 use crate::ui::houseguest::brain::{Mood, Need, Want};
 use crate::ui::houseguest::mind::Loss;
+use crate::ui::houseguest::osaka::{Body, Motion};
 use crate::ui::houseguest::routine::{self, GameTime, Slot};
 use crate::ui::houseguest::script::{ANDAGI_COUNTS, Play, ScriptId, SpliceId};
 use std::collections::BTreeMap;
 
 /// The census's visits to each room: one a seed, from 0.
 const SEEDS: u64 = 16;
+
+/// The start of a visit the stillness band leaves out (phase 5c, B5):
+/// her arrival's run of walks, at her arrival's needs, is a far bigger
+/// share of a short census visit than of an evening. The censuses print
+/// it apart.
+const WARM_MS: u64 = 3 * 60_000;
 
 /// A room to visit: the frame and view at `now`, and whether a chat line
 /// arrives on this step.
@@ -85,7 +101,10 @@ pub(super) fn furnished_room() -> Room {
     }
 }
 
-/// A resident beside a chat with text in reach, a sofa and TV owned.
+/// A resident beside a chat, a sofa and TV owned. Its text all lies
+/// above her reach: no floor gives her a line to pull or a letter to
+/// swap, and none of her standing spots is unrestful in either drawing
+/// mode, so her runs here are the same in ASCII and line art.
 pub(super) fn resident_room() -> Room {
     let (w, h) = (100, 30);
     let mut real = rooms(w, h);
@@ -199,6 +218,61 @@ pub(super) struct Visit {
     pub answers: usize,
     /// The pooled lines she said, by pool.
     pub pooled: BTreeMap<String, usize>,
+    /// Milliseconds in sight (visiting, not asleep for the night, not
+    /// out of sight): in the warm-up ([`WARM_MS`]), and after it.
+    pub sight: [u64; 2],
+    /// Milliseconds moving in sight in the warm-up.
+    pub warm_moving: u64,
+    /// Milliseconds moving in sight after the warm-up, by what for and
+    /// what her body did ([`Osaka::census_motion`]).
+    pub motion: BTreeMap<(&'static str, Body), u64>,
+    /// Milliseconds moving in sight after the warm-up to a job, by its
+    /// kind and the want she went for.
+    pub wants: BTreeMap<(&'static str, String), u64>,
+    /// Milliseconds out of sight (away off the screen, between a door's
+    /// ends), and asleep for the night.
+    pub hidden: u64,
+    pub asleep: u64,
+    /// Her set-offs in the warm-up.
+    pub warm_set_offs: usize,
+    /// Her set-offs after the warm-up, by what for and how.
+    pub set_offs: BTreeMap<(&'static str, Body), usize>,
+    /// After the warm-up: the chat lines that stopped her ("look", or
+    /// "passing" over text), by what she was moving for ("still" if she
+    /// wasn't); and the set-offs that were her first after one, the same.
+    pub chat_cuts: BTreeMap<String, usize>,
+    pub restarts: BTreeMap<String, usize>,
+    /// Milliseconds in sight after the warm-up she was still but busy:
+    /// exercising, kicking her feet lying on her front, swapping letters,
+    /// sneezing, picking up after a sneeze.
+    pub busy: BTreeMap<&'static str, u64>,
+    /// After the warm-up: the times she started exercising, and the
+    /// bubbles that came up over her (each new one), in sight.
+    pub exercise_starts: usize,
+    pub bubbles: usize,
+}
+
+impl Visit {
+    /// Milliseconds moving in sight after the warm-up.
+    fn moving(&self) -> u64 {
+        self.motion.values().sum()
+    }
+
+    /// Her set-offs after the warm-up.
+    fn set_off_count(&self) -> usize {
+        self.set_offs.values().sum()
+    }
+}
+
+/// The census's label for what a chat line stopped her at: "look" or
+/// "passing" (over text, on without a look), and what she was moving
+/// for, or "still".
+fn chat_label((passing, cut): (bool, Option<&'static str>)) -> String {
+    format!(
+        "{} {}",
+        if passing { "passing" } else { "look" },
+        cut.unwrap_or("still")
+    )
 }
 
 /// What she's doing, as the census counts it.
@@ -310,7 +384,13 @@ fn arrive_drawn(
     draw(&mut guest);
     guest.cue(Scene::Arrive);
     paint(&mut guest, &room.real, &room.view, 0);
-    if let (Some(mood), State::Visiting(visit)) = (mood, &mut guest.state) {
+    if let Some(mood) = mood {
+        let State::Visiting(visit) = &mut guest.state else {
+            panic!(
+                "{} seed {seed}: not visiting after her arrival's paint, so {mood:?} can't be forced",
+                room.name
+            );
+        };
         visit.osaka.set_mood(mood);
     }
     for &item in room.owns {
@@ -350,10 +430,14 @@ fn visit_from(
 ) -> (Visit, Guest) {
     let (mut real, mut view) = (room.real.clone(), room.view.clone());
     let mut arrived = 0;
-    // The shopping channel is on at her first watch, as on any visit
-    // it's due: what she buys, and when, shows whether decor comes
-    // before the furniture she lacks.
-    guest.shop();
+    // Unfed, the shopping channel is on at her first watch, as on any
+    // visit it's due: what she buys, and when, shows whether decor comes
+    // before the furniture she lacks. A fed census keeps its room as set
+    // (see [`fed_afternoon`]).
+    let unfed = room.start.is_none();
+    if unfed {
+        guest.shop();
+    }
     let mut out = Visit::default();
     if let State::Visiting(visit) = &guest.state {
         out.broken_at_start = visit.broken.iter().map(|b| b.key.label()).collect();
@@ -362,6 +446,7 @@ fn visit_from(
     let mut said: Option<&'static str> = None;
     let mut playing: Option<u64> = None;
     let mut answered: Option<u64> = None;
+    let mut tally = Tally::default();
     while now < minutes * 60_000 {
         let step = guest
             .next_tick(now)
@@ -371,7 +456,7 @@ fn visit_from(
         if let State::Visiting(visit) = &guest.state {
             let doing = doing(&visit.osaka, now);
             out.groups.insert(doing.clone(), visit.osaka.census_group());
-            *out.time.entry(doing).or_default() += step;
+            *out.time.entry(doing.clone()).or_default() += step;
             let speech = match visit.osaka.appearance(now).2 {
                 Some(osaka::Bubble::Say(text)) => Some(text),
                 _ => None,
@@ -405,6 +490,10 @@ fn visit_from(
                 out.answers += 1;
             }
             answered = answer;
+            tally.step(&visit.osaka, &doing, now, step, &mut out);
+        } else {
+            // A new visit's logs start afresh.
+            tally = Tally::default();
         }
         if (now + step) / 300_000 != now / 300_000
             && let State::Visiting(visit) = &guest.state
@@ -433,10 +522,16 @@ fn visit_from(
             paint(&mut guest, &real, &view, now);
         }
         if let State::Visiting(visit) = &guest.state {
-            home_census(&guest, visit, now, &mut out);
+            // Her logs as this step left them, while she's still here to
+            // read (only what the step that ends a visit logs is lost).
+            tally.logs(&visit.osaka, &mut out);
+            if unfed {
+                home_census(&guest, visit, now, &mut out);
+            }
         }
     }
     if let State::Visiting(visit) = &guest.state {
+        tally.logs(&visit.osaka, &mut out);
         out.mood = Some(visit.osaka.mood());
         out.home_acts = visit.osaka.home_acts();
         out.set_downs = visit.osaka.set_downs;
@@ -478,6 +573,104 @@ fn visit_from(
     (out, guest)
 }
 
+/// Her moving as a census visit tallies it into a [`Visit`], step by
+/// step: where it has got to in her logs, and how she was at the last
+/// step in sight.
+#[derive(Default)]
+struct Tally {
+    /// Her set-offs and chat cuts tallied so far.
+    set_offs: usize,
+    chat_cuts: usize,
+    /// Her bubble and census group at the last step in sight.
+    bubble: Option<osaka::Bubble>,
+    group: &'static str,
+}
+
+impl Tally {
+    /// Tally the step of `step` ms from `now`, `doing` what the census
+    /// calls it.
+    fn step(&mut self, osaka: &Osaka, doing: &str, now: u64, step: u64, out: &mut Visit) {
+        self.logs(osaka, out);
+        let warm = now < WARM_MS;
+        // Out of sight, or asleep: whatever she's at when she's back in
+        // sight is a new onset.
+        if osaka.sleeping() {
+            out.asleep += step;
+            (self.bubble, self.group) = (None, "");
+            return;
+        }
+        if osaka.hidden(now) {
+            out.hidden += step;
+            (self.bubble, self.group) = (None, "");
+            return;
+        }
+        out.sight[usize::from(!warm)] += step;
+        let bubble = osaka.appearance(now).2;
+        let group = osaka.census_group();
+        if !warm {
+            if bubble.is_some() && bubble != self.bubble {
+                out.bubbles += 1;
+            }
+            if group == "exercise" && self.group != "exercise" {
+                out.exercise_starts += 1;
+            }
+        }
+        self.bubble = bubble;
+        self.group = group;
+        match osaka.census_motion(now) {
+            Some(_) if warm => out.warm_moving += step,
+            Some(Motion {
+                purpose,
+                body,
+                want,
+            }) => {
+                *out.motion.entry((purpose, body)).or_default() += step;
+                if purpose.starts_with("to ") {
+                    let want = want.map_or("?".to_owned(), |w| format!("{w:?}"));
+                    *out.wants.entry((purpose, want)).or_default() += step;
+                }
+            }
+            None if warm => {}
+            None => {
+                let busy = match doing {
+                    _ if group == "exercise" => Some("exercise"),
+                    "idle:LieFront" => Some("lie front"),
+                    "Swap" => Some("swap"),
+                    "Sneeze" => Some("sneeze"),
+                    "PutBack" => Some("put back"),
+                    _ => None,
+                };
+                if let Some(busy) = busy {
+                    *out.busy.entry(busy).or_default() += step;
+                }
+            }
+        }
+    }
+
+    /// Tally what her set-off and chat-cut logs have gained.
+    fn logs(&mut self, osaka: &Osaka, out: &mut Visit) {
+        for set_off in osaka.set_off_log.iter().skip(self.set_offs) {
+            if set_off.at < WARM_MS {
+                out.warm_set_offs += 1;
+                continue;
+            }
+            *out.set_offs
+                .entry((set_off.purpose, set_off.body))
+                .or_default() += 1;
+            if let Some(after) = set_off.after_chat {
+                *out.restarts.entry(chat_label(after)).or_default() += 1;
+            }
+        }
+        self.set_offs = osaka.set_off_log.len();
+        for &(at, passing, cut) in osaka.chat_cuts.iter().skip(self.chat_cuts) {
+            if at >= WARM_MS {
+                *out.chat_cuts.entry(chat_label((passing, cut))).or_default() += 1;
+            }
+        }
+        self.chat_cuts = osaka.chat_cuts.len();
+    }
+}
+
 /// The census of her home, after the step at `now`: rules she has just
 /// felt, felt rules now mended, and what she has just bought.
 fn home_census(guest: &Guest, visit: &super::super::Visit, now: u64, out: &mut Visit) {
@@ -514,6 +707,190 @@ fn group(groups: &BTreeMap<String, &'static str>, doing: &str) -> &'static str {
 /// The share of `part` in `whole`, as a percentage.
 fn pct(part: u64, whole: u64) -> f64 {
     100.0 * part as f64 / whole.max(1) as f64
+}
+
+/// The mean and the (sample) standard deviation of `values`.
+fn mean_sd(values: &[f64]) -> (f64, f64) {
+    let n = values.len() as f64;
+    let mean = values.iter().sum::<f64>() / n.max(1.0);
+    let var = values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / (n - 1.0).max(1.0);
+    (mean, var.sqrt())
+}
+
+/// One census cell's moving, as its last table has it.
+struct MotionRow {
+    /// Moving in sight after the warm-up, % of the time in sight then,
+    /// pooled over its visits; σ of the pooled share of a set of
+    /// [`MotionRow::set`] visits, over its disjoint sets (`None` with
+    /// fewer than two); and the least and most a visit had.
+    share: f64,
+    share_sd: Option<f64>,
+    least: f64,
+    most: f64,
+    /// Set-offs a minute in sight after the warm-up, pooled, and σ of a
+    /// set's as for the share.
+    rate: f64,
+    rate_sd: Option<f64>,
+    /// The visits a set has, and how many sets.
+    set: usize,
+    sets: usize,
+    /// The warm-up's moving share and set-offs a minute in sight.
+    warm_share: f64,
+    warm_rate: f64,
+}
+
+/// Prints the moving of `visits` (moving in sight, with the warm-up
+/// apart; by what for and by what her body did; to jobs, by the want;
+/// set-offs a minute in sight, by what for, doors apart; what chat lines
+/// stopped her, and her set-offs after them; still but busy; exercise
+/// begun and bubbles a minute; time out of sight and asleep), taking
+/// sets of `set` visits in order for the spread of its means; returns
+/// its row.
+fn motion_summary(visits: &[Visit], set: usize) -> MotionRow {
+    let sight: u64 = visits.iter().map(|v| v.sight[1]).sum();
+    let minutes = sight as f64 / 60_000.0;
+    let per_min = |n: usize| n as f64 / minutes.max(1e-9);
+    let moving: u64 = visits.iter().map(Visit::moving).sum();
+    let set_offs: usize = visits.iter().map(Visit::set_off_count).sum();
+    let shares: Vec<f64> = visits.iter().map(|v| pct(v.moving(), v.sight[1])).collect();
+    let pooled = |of: &[Visit]| {
+        let sight: u64 = of.iter().map(|v| v.sight[1]).sum();
+        (
+            pct(of.iter().map(Visit::moving).sum(), sight),
+            of.iter().map(Visit::set_off_count).sum::<usize>() as f64
+                / (sight as f64 / 60_000.0).max(1e-9),
+        )
+    };
+    let sets: Vec<(f64, f64)> = visits.chunks_exact(set.max(1)).map(pooled).collect();
+    let spread = |values: Vec<f64>| (values.len() >= 2).then(|| mean_sd(&values).1);
+    let warm_sight: u64 = visits.iter().map(|v| v.sight[0]).sum();
+    let row = MotionRow {
+        share: pct(moving, sight),
+        share_sd: spread(sets.iter().map(|s| s.0).collect()),
+        least: shares.iter().copied().fold(f64::INFINITY, f64::min),
+        most: shares.iter().copied().fold(0.0, f64::max),
+        rate: per_min(set_offs),
+        rate_sd: spread(sets.iter().map(|s| s.1).collect()),
+        set,
+        sets: sets.len(),
+        warm_share: pct(visits.iter().map(|v| v.warm_moving).sum(), warm_sight),
+        warm_rate: visits.iter().map(|v| v.warm_set_offs).sum::<usize>() as f64
+            / (warm_sight as f64 / 60_000.0).max(1e-9),
+    };
+    let sd = |sd: Option<f64>| sd.map_or("-".to_owned(), |sd| format!("{sd:.2}"));
+    let (_, seed_sd) = mean_sd(&shares);
+    eprintln!(
+        "  moving in sight (from minute {}): {:.1}% (σ of a {set}-visit mean {} over {} sets; a visit {:.1}–{:.1}, σ {seed_sd:.1}); set-offs {:.2} a minute (σ {}); warm-up {:.1}%, {:.2} a minute",
+        WARM_MS / 60_000,
+        row.share,
+        sd(row.share_sd),
+        row.sets,
+        row.least,
+        row.most,
+        row.rate,
+        sd(row.rate_sd),
+        row.warm_share,
+        row.warm_rate,
+    );
+    let mut purposes: BTreeMap<&str, u64> = BTreeMap::new();
+    let mut bodies: BTreeMap<Body, u64> = BTreeMap::new();
+    let mut wants: BTreeMap<(&str, &str), u64> = BTreeMap::new();
+    let mut offs: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut doors = 0;
+    let mut cuts: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut restarts: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut busy: BTreeMap<&str, u64> = BTreeMap::new();
+    for v in visits {
+        for (&(purpose, body), &ms) in &v.motion {
+            *purposes.entry(purpose).or_default() += ms;
+            *bodies.entry(body).or_default() += ms;
+        }
+        for ((purpose, want), &ms) in &v.wants {
+            *wants.entry((purpose, want.as_str())).or_default() += ms;
+        }
+        for (&(purpose, body), &n) in &v.set_offs {
+            *offs.entry(purpose).or_default() += n;
+            if body == Body::Door {
+                doors += n;
+            }
+        }
+        for (k, &n) in &v.chat_cuts {
+            *cuts.entry(k.as_str()).or_default() += n;
+        }
+        for (k, &n) in &v.restarts {
+            *restarts.entry(k.as_str()).or_default() += n;
+        }
+        for (&k, &ms) in &v.busy {
+            *busy.entry(k).or_default() += ms;
+        }
+    }
+    let by_ms = |rows: Vec<(String, u64)>| {
+        let mut rows = rows;
+        rows.sort_by_key(|(_, ms)| std::cmp::Reverse(*ms));
+        rows.iter()
+            .map(|(k, ms)| format!("{k} {:.1}", pct(*ms, sight)))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    eprintln!(
+        "  moving by what for (% in sight): {}",
+        by_ms(purposes.iter().map(|(k, v)| (k.to_string(), *v)).collect())
+    );
+    eprintln!(
+        "  moving by body (% in sight): {}",
+        by_ms(
+            Body::ALL
+                .iter()
+                .filter_map(|b| bodies.get(b).map(|ms| (b.label().to_owned(), *ms)))
+                .collect()
+        )
+    );
+    eprintln!(
+        "  to jobs, by want (% in sight): {}",
+        by_ms(
+            wants
+                .iter()
+                .map(|((p, w), ms)| (format!("{p}/{w}"), *ms))
+                .collect()
+        )
+    );
+    let mut offs: Vec<(&str, usize)> = offs.into_iter().collect();
+    offs.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+    eprintln!(
+        "  set-offs a minute in sight by what for: {}; doors {:.2}",
+        offs.iter()
+            .map(|(k, n)| format!("{k} {:.2}", per_min(*n)))
+            .collect::<Vec<_>>()
+            .join(", "),
+        per_min(doors)
+    );
+    let counts = |rows: &BTreeMap<&str, usize>| {
+        rows.iter()
+            .map(|(k, n)| format!("{k} {:.2}", per_min(*n)))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    eprintln!(
+        "  chat lines that stopped her, a minute in sight: {}; her set-offs right after one: {}",
+        counts(&cuts),
+        counts(&restarts)
+    );
+    eprintln!(
+        "  still but busy (% in sight): {}; exercise begun {:.2} a minute; bubbles {:.2} a minute",
+        by_ms(busy.iter().map(|(k, v)| (k.to_string(), *v)).collect()),
+        per_min(visits.iter().map(|v| v.exercise_starts).sum()),
+        per_min(visits.iter().map(|v| v.bubbles).sum()),
+    );
+    let all: u64 = visits
+        .iter()
+        .map(|v| v.sight[0] + v.sight[1] + v.hidden + v.asleep)
+        .sum();
+    eprintln!(
+        "  of the visit: out of sight {:.1}%, asleep {:.1}%",
+        pct(visits.iter().map(|v| v.hidden).sum(), all),
+        pct(visits.iter().map(|v| v.asleep).sum(), all)
+    );
+    row
 }
 
 /// Prints the vignettes `visits` played: scripts and splices by name (a
@@ -657,6 +1034,12 @@ fn home_summary(visits: &[Visit]) {
     );
 }
 
+/// The visit census: [`SEEDS`] unfed visits of 30 minutes to each room
+/// (5a's tables), in a drawn mood, or each forced with `CENSUS_MOODS`;
+/// in ASCII, or as `CENSUS_MODES` says ("line", "both"); at the rooms'
+/// chat cadence, or as `CENSUS_CHAT` says ("quiet", "both"). Each cell
+/// prints her choices and her time, then her moving
+/// ([`motion_summary`]); a line a cell at the end.
 #[test]
 #[ignore = "the visit simulator: run by hand in release with --nocapture"]
 fn visit_census() {
@@ -667,14 +1050,41 @@ fn visit_census() {
     } else {
         vec![None]
     };
+    let modes = census_modes();
+    let chats = census_chats();
+    let mut table = Vec::new();
     let rooms = [stage_room(), furnished_room(), resident_room()];
-    for (room, mood) in rooms
-        .iter()
-        .flat_map(|room| moods.iter().map(move |&mood| (room, mood)))
-    {
-        let visits: Vec<Visit> = (0..SEEDS)
-            .map(|seed| simulate(room, seed, MINUTES, mood))
-            .collect();
+    let mut cells = Vec::new();
+    for room in &rooms {
+        for &mood in &moods {
+            for &quiet in &chats {
+                for &graphics in &modes {
+                    cells.push((room, mood, quiet, graphics));
+                }
+            }
+        }
+    }
+    for (room, mood, quiet, graphics) in cells {
+        let room = &Room {
+            real: room.real.clone(),
+            view: room.view.clone(),
+            chat_every: if quiet { None } else { room.chat_every },
+            ..*room
+        };
+        let started = std::time::Instant::now();
+        let visits: Vec<Visit> = std::thread::scope(|scope| {
+            let runs: Vec<_> = (0..SEEDS)
+                .map(|seed| {
+                    scope.spawn(move || {
+                        simulate_with(room, seed, MINUTES, mood, graphics, |_, _| {})
+                    })
+                })
+                .collect();
+            runs.into_iter()
+                .map(|run| run.join().expect("a visit"))
+                .collect()
+        });
+        let cpu = started.elapsed();
         let mut choices: BTreeMap<String, usize> = BTreeMap::new();
         let mut time: BTreeMap<String, u64> = BTreeMap::new();
         let mut kinds: BTreeMap<String, &'static str> = BTreeMap::new();
@@ -723,10 +1133,16 @@ fn visit_census() {
         for (k, v) in &time {
             *groups.entry(group(&kinds, k)).or_default() += v;
         }
-        eprintln!(
-            "\n== {} {} ({SEEDS} visits × {MINUTES} min): {} choices ({:.0} a visit)",
+        let cell = format!(
+            "{} {} {} {}",
             room.name,
             mood.map_or("(drawn)".to_owned(), |m| format!("{m:?}")),
+            chat_name(room),
+            mode_name(graphics)
+        );
+        eprintln!(
+            "\n== {cell} ({SEEDS} visits × {MINUTES} min, {:.1} s): {} choices ({:.0} a visit)",
+            cpu.as_secs_f64(),
             n,
             n as f64 / SEEDS as f64
         );
@@ -769,6 +1185,65 @@ fn visit_census() {
         for (i, needs) in visits[0].needs.iter().enumerate() {
             eprintln!("  seed 0 at {:>2} min: {needs}", (i + 1) * 5);
         }
+        table.push((cell, motion_summary(&visits, 4)));
+    }
+    motion_table("visit census (unfed)", &table);
+}
+
+/// The drawing modes a census runs in: ASCII, unless `CENSUS_MODES` says
+/// "line" (line art) or "both".
+fn census_modes() -> Vec<bool> {
+    match std::env::var("CENSUS_MODES").as_deref() {
+        Ok("both") => vec![false, true],
+        Ok("line") => vec![true],
+        _ => vec![false],
+    }
+}
+
+/// The chat a census runs at: its rooms' cadence, unless `CENSUS_CHAT`
+/// says "quiet" (none) or "both" (quiet first).
+fn census_chats() -> Vec<bool> {
+    match std::env::var("CENSUS_CHAT").as_deref() {
+        Ok("both") => vec![true, false],
+        Ok("quiet") => vec![true],
+        _ => vec![false],
+    }
+}
+
+/// The census's name for `room`'s chat: "quiet", or its cadence.
+fn chat_name(room: &Room) -> String {
+    room.chat_every.map_or("quiet".to_owned(), |every| {
+        format!("chat/{}s", every / 1000)
+    })
+}
+
+/// The census's name for a drawing mode.
+fn mode_name(graphics: bool) -> &'static str {
+    if graphics { "line art" } else { "ascii" }
+}
+
+/// Prints the cells of a census, a line each: moving in sight (from the
+/// warm-up's end), its spread, and set-offs a minute in sight.
+fn motion_table(name: &str, rows: &[(String, MotionRow)]) {
+    let sd = |sd: Option<f64>| sd.map_or("-".to_owned(), |sd| format!("{sd:.2}"));
+    eprintln!(
+        "\n== {name}: moving % in sight from minute {} (σ of a set's mean; a visit's least–most) | set-offs a minute in sight (σ) | warm-up % and set-offs a minute",
+        WARM_MS / 60_000
+    );
+    for (cell, row) in rows {
+        eprintln!(
+            "  {cell:<40} {:>5.1} (σ {} by {}×{}; {:.1}–{:.1}) | {:.2} (σ {}) | {:.1}, {:.2}",
+            row.share,
+            sd(row.share_sd),
+            row.sets,
+            row.set,
+            row.least,
+            row.most,
+            row.rate,
+            sd(row.rate_sd),
+            row.warm_share,
+            row.warm_rate
+        );
     }
 }
 
@@ -968,6 +1443,207 @@ fn day_guest(room: &Room, seed: u64, date: Option<chrono::NaiveDate>) -> Guest {
     guest
 }
 
+/// Tuesday 13:00, the fed afternoon's start: school is done (Monday's
+/// would be before her clock started), and the Afternoon slot runs to
+/// 18:00, so fifteen real minutes (90 game minutes) keep her in it, and
+/// in her day's mood (no wake between).
+const AFTERNOON: GameTime = GameTime {
+    day: 1,
+    h: 13,
+    m: 0,
+};
+
+/// A visit far ahead: the stage's TV is held back on order to it (her
+/// first TV is ordered for her on her second visit otherwise; the
+/// shopping channel's due is this plus [`SHOP_EVERY`], so no overflow).
+const HELD_BACK: u64 = 1_000;
+
+/// The fed afternoon's rooms (phase 5c, B4): the visit census's, from
+/// [`AFTERNOON`], each as set (the stage with nothing, its TV held back).
+fn afternoon_rooms() -> [Room; 3] {
+    [stage_room(), furnished_room(), resident_room()].map(|room| Room {
+        start: Some(AFTERNOON),
+        ..room
+    })
+}
+
+/// Her in `room` from `seed`, drawn in line art if `graphics`, fed her
+/// routine at `room.start` (an afternoon), arrived and visiting, in
+/// `mood` (forced after her arrival's paint): the stillness band's setup
+/// (phase 5c, B4). Her pieces stand where an unfed arrival in the same
+/// mode puts them, each shown out of its box; her wall clock is already
+/// sent (no parcel comes); a room with no TV holds its first back on
+/// order ([`HELD_BACK`]); no shopping. The real date is none.
+fn fed_afternoon(room: &Room, seed: u64, graphics: bool, mood: Mood) -> Guest {
+    let start = room.start.expect("a fed room starts at a time");
+    let unfed = Room {
+        start: None,
+        real: room.real.clone(),
+        view: room.view.clone(),
+        ..*room
+    };
+    let given = arrive_in(&unfed, seed, graphics, None);
+    let mut ledger = Ledger::new_at(seed, start);
+    ledger.home = given.ledger.home.clone();
+    ledger.clock_sent = true;
+    if !ledger.home.owns(Furniture::Tv) {
+        ledger.ordered = Some(Furniture::Tv);
+        ledger.bought_on = HELD_BACK;
+    }
+    let mut guest = Guest::restore(ledger);
+    if graphics {
+        guest.set_picker(kitty());
+    }
+    let at = format!("{} seed {seed} graphics={graphics}", room.name);
+    assert_eq!(guest.graphics.is_some(), graphics, "{at}: drawn so");
+    guest.cue(Scene::Arrive);
+    paint(&mut guest, &room.real, &room.view, 0);
+    let State::Visiting(visit) = &mut guest.state else {
+        panic!("{at}: not visiting after her arrival's paint");
+    };
+    visit.osaka.set_mood(mood);
+    for item in room.owns {
+        assert!(
+            visit.shown.iter().any(|s| s.item == *item && !s.boxed),
+            "{at}: {item:?} not shown: {:?}",
+            visit.shown
+        );
+    }
+    guest
+}
+
+/// A fed afternoon of `minutes` in `room` from `seed` ([`fed_afternoon`]),
+/// checked as it goes: she stays visiting, the same visit (her decisions
+/// only grow), in `mood`; and at its end her room is as it was set: the
+/// same pieces, none boxed, nothing on order but what was held back.
+/// (Where they stand may change: putting her home right is hers to do.)
+fn afternoon(room: &Room, seed: u64, graphics: bool, mood: Mood, minutes: u64) -> (Visit, Guest) {
+    let guest = fed_afternoon(room, seed, graphics, mood);
+    let pieces = |guest: &Guest| {
+        let mut pieces: Vec<(Furniture, bool)> = guest
+            .ledger
+            .home
+            .props
+            .iter()
+            .map(|p| (p.item, p.boxed))
+            .collect();
+        pieces.sort_by_key(|&(item, boxed)| (format!("{item:?}"), boxed));
+        pieces
+    };
+    let (props, ordered) = (pieces(&guest), guest.ledger.ordered);
+    let at = format!("{} {mood:?} seed {seed} graphics={graphics}", room.name);
+    let mut decided = 0;
+    let (visit, guest) = visit_from(room, guest, minutes, |guest, now| {
+        let State::Visiting(visit) = &guest.state else {
+            panic!("{at} at {now}: left her visit");
+        };
+        assert_eq!(visit.osaka.mood(), mood, "{at} at {now}: her mood");
+        let decisions = visit.osaka.decisions.len();
+        assert!(decisions >= decided, "{at} at {now}: a new visit");
+        decided = decisions;
+    });
+    assert_eq!(pieces(&guest), props, "{at}: her pieces changed");
+    assert_eq!(guest.ledger.ordered, ordered, "{at}: an order");
+    (visit, guest)
+}
+
+/// Her moving on fed afternoons (phase 5c, D1 and B4/B5): each census
+/// room fed at Tuesday 13:00 ([`fed_afternoon`]: as set, no shopping, her
+/// mood forced and checked at every step), in each mood, quiet and at
+/// the room's chat cadence, in ASCII and line art, for fifteen minutes,
+/// at `CENSUS_SETS` (20) disjoint sets of `CENSUS_SET_SEEDS` (4) seeds.
+/// Prints each cell's moving in sight (from minute 3, the warm-up apart)
+/// with the σ of a set's mean, by what for and how; set-offs a minute in
+/// sight; what chat lines stopped her; still-but-busy time, exercise
+/// begun and bubbles a minute; and what a sim-minute cost to run, then a
+/// line a cell. It's the stillness band's own setup, read before the
+/// band's thresholds are set. Ignored; run by hand:
+///
+/// ```text
+/// cargo test --release -p dessplay --lib fed_afternoon_census -- --ignored --nocapture
+/// ```
+#[test]
+#[ignore = "the fed afternoon census: run by hand in release with --nocapture"]
+fn fed_afternoon_census() {
+    const MINUTES: u64 = 15;
+    let knob = |name: &str, default: u64| {
+        std::env::var(name)
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(default)
+    };
+    let (sets, set) = (knob("CENSUS_SETS", 20), knob("CENSUS_SET_SEEDS", 4));
+    let modes = match std::env::var("CENSUS_MODES").as_deref() {
+        Ok("ascii") => vec![false],
+        Ok("line") => vec![true],
+        _ => vec![false, true],
+    };
+    // Visits run at once: a hardware thread each, unless
+    // `CENSUS_THREADS` says fewer. The cost column is each visit's own
+    // wall time, so it's inflated under contention (about 2× at 32
+    // threads here): the cost table is read with few at once (see
+    // phase5c/baseline.md).
+    let threads = knob(
+        "CENSUS_THREADS",
+        std::thread::available_parallelism().map_or(1, |n| n.get() as u64),
+    )
+    .max(1) as usize;
+    let mut table = Vec::new();
+    for room in afternoon_rooms() {
+        for mood in Mood::ALL {
+            for quiet in [true, false] {
+                for &graphics in &modes {
+                    let room = &Room {
+                        real: room.real.clone(),
+                        view: room.view.clone(),
+                        chat_every: if quiet { None } else { room.chat_every },
+                        ..room
+                    };
+                    let started = std::time::Instant::now();
+                    let seeds: Vec<u64> = (0..sets * set).collect();
+                    let runs: Vec<(Visit, f64)> = seeds
+                        .chunks(threads)
+                        .flat_map(|chunk| {
+                            std::thread::scope(|scope| {
+                                let runs: Vec<_> = chunk
+                                    .iter()
+                                    .map(|&seed| {
+                                        scope.spawn(move || {
+                                            let started = std::time::Instant::now();
+                                            let (visit, _) =
+                                                afternoon(room, seed, graphics, mood, MINUTES);
+                                            (visit, started.elapsed().as_secs_f64())
+                                        })
+                                    })
+                                    .collect();
+                                runs.into_iter()
+                                    .map(|run| run.join().expect("an afternoon"))
+                                    .collect::<Vec<_>>()
+                            })
+                        })
+                        .collect();
+                    let cpu: f64 = runs.iter().map(|(_, s)| s).sum();
+                    let visits: Vec<Visit> = runs.into_iter().map(|(v, _)| v).collect();
+                    let cell = format!(
+                        "{} {mood:?} {} {}",
+                        room.name,
+                        chat_name(room),
+                        mode_name(graphics)
+                    );
+                    eprintln!(
+                        "\n== fed afternoon: {cell} ({} visits × {MINUTES} min; {:.1} s; {:.1} ms a sim-minute)",
+                        visits.len(),
+                        started.elapsed().as_secs_f64(),
+                        1000.0 * cpu / (visits.len() as u64 * MINUTES) as f64
+                    );
+                    table.push((cell, motion_summary(&visits, set as usize)));
+                }
+            }
+        }
+    }
+    motion_table("fed afternoon", &table);
+}
+
 /// Where her time goes, as the day census counts it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Where {
@@ -1032,6 +1708,9 @@ struct Stretch {
     /// What happened, by name: comings and goings, vignettes, the
     /// calendar, rare things first seen.
     events: BTreeMap<String, usize>,
+    /// Real millis awake and in sight moving, by what for
+    /// ([`Osaka::census_purpose`]).
+    moving: BTreeMap<&'static str, u64>,
 }
 
 impl Stretch {
@@ -1081,6 +1760,42 @@ impl Stretch {
         for (k, v) in &other.events {
             *self.events.entry(k.clone()).or_default() += v;
         }
+        for (k, v) in &other.moving {
+            *self.moving.entry(k).or_default() += v;
+        }
+    }
+
+    /// Its moving by what for, as % of its time awake and in sight.
+    fn purposes(&self) -> String {
+        let awake: u64 = self.groups.values().sum();
+        let mut rows: Vec<(&&str, &u64)> = self.moving.iter().collect();
+        rows.sort_by_key(|(_, ms)| std::cmp::Reverse(**ms));
+        rows.iter()
+            .map(|(k, ms)| format!("{k} {:.1}", pct(**ms, awake)))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+/// Her week in one mood (her day's), here, awake and in sight on a visit
+/// that isn't a dash home: the band's quantity, fed.
+#[derive(Clone, Default)]
+struct MoodWeek {
+    /// Real millis here, awake and in sight.
+    here: u64,
+    /// Real millis of that moving, by what for.
+    moving: BTreeMap<&'static str, u64>,
+    /// Her set-offs (awake, not on a dash).
+    set_offs: usize,
+}
+
+impl MoodWeek {
+    fn add(&mut self, other: &MoodWeek) {
+        self.here += other.here;
+        for (k, v) in &other.moving {
+            *self.moving.entry(k).or_default() += v;
+        }
+        self.set_offs += other.set_offs;
     }
 }
 
@@ -1096,6 +1811,8 @@ struct Week {
     /// What happened once, when (game day and time): the calendar played,
     /// a rare thing first seen, her wall clock delivered.
     once: Vec<String>,
+    /// By her mood that day.
+    moods: BTreeMap<String, MoodWeek>,
 }
 
 /// How `guest` is, for her comings and goings: her state, how she's
@@ -1161,6 +1878,7 @@ fn live_week(room: &Room, seed: u64, date: Option<chrono::NaiveDate>) -> Week {
         guest.ledger.clock_sent,
     );
     let mut drawn: Option<u64> = None;
+    let mut set_offs = 0;
     while now < WEEK_MS {
         let day = guest.day(now).expect("fed, and met");
         let off = usize::from(!day.school_day);
@@ -1175,6 +1893,35 @@ fn live_week(room: &Room, seed: u64, date: Option<chrono::NaiveDate>) -> Week {
         spent.at.insert(at, step);
         if let (Where::Present | Where::Dash, State::Visiting(visit)) = (at, &guest.state) {
             spent.groups.insert(visit.osaka.census_group(), step);
+            let motion = visit.osaka.census_motion(now);
+            if let Some(motion) = motion {
+                spent.moving.insert(motion.purpose, step);
+            }
+            if at == Where::Present {
+                let mood = week
+                    .moods
+                    .entry(format!("{:?}", visit.osaka.mood()))
+                    .or_default();
+                mood.here += step;
+                if let Some(motion) = motion {
+                    *mood.moving.entry(motion.purpose).or_default() += step;
+                }
+            }
+        }
+        // Her set-offs, by her mood, awake and not on a dash (counted
+        // as her log gains them; a new visit's log starts afresh).
+        match &guest.state {
+            State::Visiting(visit) => {
+                let log = &visit.osaka.set_off_log;
+                if visit.kind != Kind::Dash && !visit.osaka.sleeping() {
+                    week.moods
+                        .entry(format!("{:?}", visit.osaka.mood()))
+                        .or_default()
+                        .set_offs += log.len().saturating_sub(set_offs);
+                }
+                set_offs = log.len();
+            }
+            _ => set_offs = 0,
         }
         week.hours[off][hour].add(&spent);
         week.slots[off].entry(slot.clone()).or_default().add(&spent);
@@ -1360,14 +2107,109 @@ fn day_census() {
             for slot in Slot::ALL {
                 if let Some(stretch) = slots[kind].get(&format!("{slot:?}")) {
                     eprintln!("    {:<9} {}", format!("{slot:?}"), stretch.line());
+                    eprintln!("              moving by what for: {}", stretch.purposes());
                 }
             }
+        }
+        // The band's quantity, fed: by her day's mood, here, awake and in
+        // sight, not on a dash home (the Asleep and Away slots' lines
+        // are a dash's or her way to bed or out, and no band reading).
+        let mut moods: BTreeMap<String, MoodWeek> = BTreeMap::new();
+        for (_, week) in &runs {
+            for (mood, row) in &week.moods {
+                moods.entry(mood.clone()).or_default().add(row);
+            }
+        }
+        eprintln!(
+            "  the week by her mood (here, awake, in sight, not on a dash): mood | minutes | moving % | set-offs a minute | moving by what for (%)"
+        );
+        for (mood, row) in &moods {
+            let minutes = row.here as f64 / 60_000.0;
+            let mut purposes: Vec<(&&str, &u64)> = row.moving.iter().collect();
+            purposes.sort_by_key(|(_, ms)| std::cmp::Reverse(**ms));
+            eprintln!(
+                "    {mood:<11} {minutes:>6.0} | {:>5.1} | {:.2} | {}",
+                pct(row.moving.values().sum(), row.here),
+                row.set_offs as f64 / minutes.max(1e-9),
+                purposes
+                    .iter()
+                    .map(|(k, ms)| format!("{k} {:.1}", pct(**ms, row.here)))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
         }
         for ((seed, date), week) in &runs {
             eprintln!("  seed {seed}, date {date:?}:");
             eprintln!("    rares: {}", week.rares.join("; "));
             eprintln!("    once: {}", week.once.join("; "));
         }
+    }
+}
+
+/// The fed afternoon's tallies add up, in both drawing modes, on the
+/// stage (doors, text, chat) and in the home (a TV, so a wall clock would
+/// come if it weren't already sent): her time is all in sight (the
+/// warm-up apart), out of sight or asleep, step by step; out of sight shows on the
+/// stage; the warm-up's set-offs are her log's before minute 3 (her
+/// arrival's among them) and the rest are the table's; the chat lines
+/// that stopped her after the warm-up are the table's; moving is part of
+/// her time in sight. And [`afternoon`]'s own checks hold: the forced
+/// mood, the one visit, her room as set (no parcel, no order).
+#[test]
+fn the_fed_afternoon_tallies_add_up() {
+    const MINUTES: u64 = 4;
+    for graphics in [false, true] {
+        let mut hidden = 0;
+        for room in [stage_room(), furnished_room()] {
+            let room = Room {
+                start: Some(AFTERNOON),
+                ..room
+            };
+            {
+                let seed = 0;
+                let at = format!("{} seed {seed} graphics={graphics}", room.name);
+                let (visit, guest) = afternoon(&room, seed, graphics, Mood::Ordinary, MINUTES);
+                let State::Visiting(her) = &guest.state else {
+                    panic!("{at}: visiting");
+                };
+                let log = &her.osaka.set_off_log;
+                // The run's steps, the last overrunning its end by under
+                // a second.
+                let all = visit.sight[0] + visit.sight[1] + visit.hidden + visit.asleep;
+                assert!(
+                    (MINUTES * 60_000..MINUTES * 60_000 + 1000).contains(&all),
+                    "{at}: her time {all}"
+                );
+                // The warm-up's steps, by when each began.
+                assert!(
+                    visit.sight[0] < WARM_MS + 1000 && visit.sight[0] + visit.hidden >= WARM_MS,
+                    "{at}: the warm-up's time in sight {}",
+                    visit.sight[0]
+                );
+                assert!(visit.moving() <= visit.sight[1], "{at}: moving");
+                let warm = log.iter().filter(|s| s.at < WARM_MS).count();
+                assert!(warm >= 1, "{at}: her arrival is a set-off: {log:?}");
+                assert_eq!(visit.warm_set_offs, warm, "{at}: the warm-up's set-offs");
+                assert_eq!(
+                    visit.set_off_count(),
+                    log.len() - warm,
+                    "{at}: the set-offs after it"
+                );
+                assert_eq!(
+                    visit.chat_cuts.values().sum::<usize>(),
+                    her.osaka
+                        .chat_cuts
+                        .iter()
+                        .filter(|&&(at, ..)| at >= WARM_MS)
+                        .count(),
+                    "{at}: the chat lines that stopped her"
+                );
+                if room.name == "stage" {
+                    hidden += visit.hidden;
+                }
+            }
+        }
+        assert!(hidden > 0, "graphics={graphics}: never out of sight");
     }
 }
 

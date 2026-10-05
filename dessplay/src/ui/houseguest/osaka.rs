@@ -652,6 +652,132 @@ pub struct Served {
     pub via: Via,
 }
 
+/// What her body does while she's moving, as the census counts it (see
+/// [`Osaka::census_motion`]).
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Body {
+    /// Walking, walking off the screen's edge, or around off it.
+    Walk,
+    /// Climbing a pole, or clambering over a divider.
+    Climb,
+    /// Peering over an edge, falling, dazed after a fall.
+    Fall,
+    /// A door's beats she's seen in.
+    Door,
+    /// Heaving a line of text she pulls, stepping back with it.
+    Text,
+}
+
+#[cfg(test)]
+impl Body {
+    pub const ALL: [Body; 5] = [Body::Walk, Body::Climb, Body::Fall, Body::Door, Body::Text];
+
+    /// Its column heading.
+    pub fn label(self) -> &'static str {
+        match self {
+            Body::Walk => "walk",
+            Body::Climb => "climb",
+            Body::Fall => "fall",
+            Body::Door => "door",
+            Body::Text => "text",
+        }
+    }
+}
+
+/// Her moving, as the census counts it: what her body does, what for
+/// (see [`Osaka::census_purpose`]), and the want behind it, if one.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Motion {
+    pub purpose: &'static str,
+    pub body: Body,
+    pub want: Option<Want>,
+}
+
+/// One time she set off (see [`Osaka::count_set_off`]).
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SetOff {
+    pub at: u64,
+    pub body: Body,
+    /// What for ([`Osaka::census_purpose`]); empty until the decision
+    /// that set her off has its method (its chain), then filled.
+    pub purpose: &'static str,
+    /// The first set-off after a chat line stopped her (whether she only
+    /// passed on over text, and what she was moving for if she was).
+    pub after_chat: Option<(bool, Option<&'static str>)>,
+}
+
+/// How an act moves her, as the census counts it (see [`census_moves`]).
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Moves {
+    /// What she sets off on: a walk (or off the screen's edge), a climb,
+    /// a door.
+    Off(Body),
+    /// Moving that only carries on from setting off: peering over an
+    /// edge, falling, dazed, around off the screen.
+    On(Body),
+    /// Moving in place: a pull's heave, the beat she steps back with the
+    /// line. Moving for the share, but not a trip: what she sets off on
+    /// after a pull is a set-off.
+    Heave,
+    /// Staying put (a pull's bracing and reeling in, a swap, a sneeze,
+    /// exercise: whatever she does in place).
+    Still,
+}
+
+#[cfg(test)]
+impl Moves {
+    /// On a trip (setting off, or carried on from it): what she sets off
+    /// on next isn't a set-off unless a decision starts it.
+    fn trip(self) -> bool {
+        matches!(self, Moves::Off(_) | Moves::On(_))
+    }
+}
+
+/// The census's one class of each act: how it moves her. Wildcard-free,
+/// so a new act doesn't compile until it's classed; the census's motion,
+/// set-offs and chat cuts all read it.
+#[cfg(test)]
+fn census_moves(act: &Act) -> Moves {
+    match act {
+        Act::Walk { .. } | Act::Out { .. } => Moves::Off(Body::Walk),
+        Act::Climb { .. } | Act::Clamber { .. } => Moves::Off(Body::Climb),
+        Act::Door { .. } => Moves::Off(Body::Door),
+        Act::Peer { .. } | Act::Fall { .. } | Act::Dazed { .. } => Moves::On(Body::Fall),
+        Act::Away { .. } => Moves::On(Body::Walk),
+        // She steps back as a bracing beat turns into a heave (`fire`),
+        // once the line's slack is in (`offset > gap`); the bracing beat
+        // after it is still.
+        Act::Pull {
+            pull,
+            offset,
+            heaving: true,
+            ..
+        } if *offset > pull.gap => Moves::Heave,
+        Act::Pull { .. }
+        | Act::Stand { .. }
+        | Act::SpaceOut { .. }
+        | Act::Look { .. }
+        | Act::Admire { .. }
+        | Act::Glance { .. }
+        | Act::Swap { .. }
+        | Act::Giggle { .. }
+        | Act::Innocent { .. }
+        | Act::Sneeze { .. }
+        | Act::PutBack { .. }
+        | Act::Idle { .. }
+        | Act::Home { .. }
+        | Act::Poke { .. }
+        | Act::Tear { .. }
+        | Act::Use { .. }
+        | Act::Lift { .. }
+        | Act::SetDown { .. } => Moves::Still,
+    }
+}
+
 /// Where she is in a shift of her part-time job (see
 /// [`Osaka::go_to_work`]). Whatever she decides next ends it (see
 /// [`Osaka::choose_next`]): it lasts only as long as the acts it set
@@ -1484,6 +1610,41 @@ pub(super) struct Osaka {
     /// The times the frame took a piece she set down (tests read it).
     #[cfg(test)]
     pub set_downs: u32,
+    /// The times she set off (see [`Osaka::count_set_off`]; the census
+    /// reads it).
+    #[cfg(test)]
+    pub set_offs: u32,
+    /// Each time she set off, what for and how (the census reads it).
+    #[cfg(test)]
+    pub set_off_log: Vec<SetOff>,
+    /// The chat lines that stopped her (not those she only stirred at,
+    /// answered playing on, or that lapsed while she was out of sight or
+    /// aloft), as she was stopped: when, whether she only passed on over
+    /// text, and what she was moving for if she was (one that came while
+    /// she was out of sight or aloft stops her as she next decides and
+    /// watches, and cut what she was on when it came; see
+    /// [`Osaka::chat_owed`]). The census reads it.
+    #[cfg(test)]
+    pub chat_cuts: Vec<(u64, bool, Option<&'static str>)>,
+    /// The chain her moving belongs to, for the census: the method of the
+    /// decision that set it going, or what set it going without one
+    /// ("arrival", "accident"). See [`Osaka::census_purpose`].
+    #[cfg(test)]
+    chain: &'static str,
+    /// Deciding (inside [`Osaka::decide`]), and whether this decision has
+    /// set her off yet.
+    #[cfg(test)]
+    deciding: Option<bool>,
+    /// A chat line stopped her (whether she only passed on, what she was
+    /// moving for), and she hasn't done anything but look and watch
+    /// since: her next set-off is a restart after it.
+    #[cfg(test)]
+    after_chat: Option<(bool, Option<&'static str>)>,
+    /// A chat line came while she was out of sight, in a door or aloft
+    /// (what it cut): it stops her as she next decides, if she watches
+    /// it then (the census reads it as a look then).
+    #[cfg(test)]
+    chat_owed: Option<Option<&'static str>>,
     /// How each heading went: set off, arrived, or let go and why
     /// (tests read it).
     #[cfg(test)]
@@ -1788,6 +1949,20 @@ impl Osaka {
             #[cfg(test)]
             set_downs: 0,
             #[cfg(test)]
+            set_offs: 0,
+            #[cfg(test)]
+            set_off_log: Vec::new(),
+            #[cfg(test)]
+            chat_cuts: Vec::new(),
+            #[cfg(test)]
+            chain: "arrival",
+            #[cfg(test)]
+            deciding: None,
+            #[cfg(test)]
+            after_chat: None,
+            #[cfg(test)]
+            chat_owed: None,
+            #[cfg(test)]
             headings: Vec::new(),
             log: std::collections::VecDeque::new(),
             #[cfg(test)]
@@ -1840,7 +2015,24 @@ impl Osaka {
         };
         osaka.whims = Whims(osaka.mind.0 ^ mind::WHIMS_SALT);
         osaka.act_due = osaka.first_due(now);
+        // Her arrival's act (a walk in, a door) is a set-off from
+        // nowhere: no `set` starts it. What for is her arrival's, or
+        // what the constructor that made her says (see
+        // [`Osaka::census_arrived_for`]).
+        #[cfg(test)]
+        osaka.count_set_off(false, now);
         osaka
+    }
+
+    /// The census: her arrival came for what she's flagged with now (an
+    /// errand, her routine, a dash home), set after [`Osaka::new`], so
+    /// her arrival's set-off is for it too.
+    #[cfg(test)]
+    fn census_arrived_for(&mut self) {
+        let purpose = self.census_purpose();
+        for set_off in &mut self.set_off_log {
+            set_off.purpose = purpose;
+        }
     }
 
     /// She enters: walking in from a screen edge a floor reaches, or
@@ -2875,10 +3067,66 @@ impl Osaka {
         // startle), what she got up or came home for counts as had if it
         // ran its course.
         self.got_what_she_came_for(at);
+        #[cfg(test)]
+        let was_moving = census_moves(&self.act).trip();
         self.act = act;
         self.act_since = at;
         self.act_since_game = self.game_at(at);
         self.act_due = self.first_due(at);
+        #[cfg(test)]
+        self.count_set_off(was_moving, at);
+    }
+
+    /// The census's count of her setting off, as she starts `self.act`
+    /// (tests). A set-off is a start of a walk, a climb or a door that
+    /// either comes from a still body (standing, looking at the chat, a
+    /// pull: anything not on a trip, see [`Moves::trip`]) or is the
+    /// first such start of a decision (so each hop of a trip, landed
+    /// and chosen again, is one; a second start in one decision counts
+    /// only from a still body). Moving on within a trip without a
+    /// decision (a walk to a pole, then the climb; off the screen's
+    /// edge and back in; a door's far side) is not one, and falling
+    /// never is. Its purpose is read as she starts outside a decision,
+    /// and once the decision has its method (its chain) inside one.
+    #[cfg(test)]
+    fn count_set_off(&mut self, was_moving: bool, at: u64) {
+        let Moves::Off(body) = census_moves(&self.act) else {
+            if !matches!(self.act, Act::Look { .. } | Act::Stand { .. }) {
+                self.after_chat = None;
+            }
+            return;
+        };
+        let fresh = match self.deciding {
+            Some(set_off) => !set_off || !was_moving,
+            None => !was_moving,
+        };
+        if !fresh {
+            return;
+        }
+        if let Some(set_off) = &mut self.deciding {
+            *set_off = true;
+        }
+        self.set_offs += 1;
+        let purpose = if self.deciding.is_some() {
+            ""
+        } else {
+            self.census_purpose()
+        };
+        self.set_off_log.push(SetOff {
+            at,
+            body,
+            purpose,
+            after_chat: self.after_chat.take(),
+        });
+    }
+
+    /// What a chat line arriving now cuts, for the census: what she's
+    /// moving for, on a trip; `None` if she isn't on one.
+    #[cfg(test)]
+    fn census_cut(&self) -> Option<&'static str> {
+        census_moves(&self.act)
+            .trip()
+            .then(|| self.census_purpose())
     }
 
     fn fire(&mut self, at: u64, terrain: &Terrain, chances: &Chances, rng: &mut Rng) {
@@ -2992,6 +3240,11 @@ impl Osaka {
                 if at >= until {
                     tracing::debug!("houseguest: errand done");
                     self.errand = None;
+                    // Her way out is her errand's, for the census.
+                    #[cfg(test)]
+                    {
+                        self.chain = "errand";
+                    }
                     // Off the log's text the way she came: by door.
                     let calm = |(x, y): (i32, i32)| terrain.restful(x, y);
                     if !terrain.restful(self.x, self.y)
@@ -5521,6 +5774,80 @@ impl Osaka {
         }
     }
 
+    /// Her moving at `now`, as the census counts it ([`census_moves`]):
+    /// what her body does and what for. `None` while she's still
+    /// (whatever she does in place: a pull's bracing and reeling in, a
+    /// swap, a sneeze, picking up after it, exercise) *or out of sight*
+    /// (around off the screen, a door's hidden beats): a caller counting
+    /// still time leaves out [`Osaka::hidden`] first, as the census does.
+    /// A pull's heave, the beat she steps back with the line, moves her,
+    /// for pulling.
+    #[cfg(test)]
+    pub fn census_motion(&self, now: u64) -> Option<Motion> {
+        if self.hidden(now) {
+            return None;
+        }
+        let (body, purpose) = match census_moves(&self.act) {
+            Moves::Off(body) | Moves::On(body) => (body, self.census_purpose()),
+            Moves::Heave => (Body::Text, "pull"),
+            Moves::Still => return None,
+        };
+        let want = self.heading.as_ref().map(|h| h.want).or(self.credit);
+        Some(Motion {
+            purpose,
+            body,
+            want,
+        })
+    }
+
+    /// What her moving is for, as the census counts it, first that
+    /// holds: to a job she's heading for on another floor, or walking to
+    /// on hers, by its kind ("to text": a pull, a swap, tearing text to
+    /// make a piece; "to seat": a use; "to home": lifting or setting
+    /// down a piece); her shift ("work"); her routine out or home
+    /// ("routine"); a dash home ("dash"); an errand ("errand"); else by
+    /// her chain: a wander ("wander", "travel"), off the text ("off
+    /// text"), her arrival ("arrival"), the floor gone under her
+    /// ("accident"), her errand's way out ("errand"), or the method of
+    /// the decision itself. The climb, the drop's daze and the walk back
+    /// in from off the screen that finish a hop keep the hop's chain (a
+    /// trip around the screen's edge reads "travel" to its end, not a
+    /// return). A walk to a job that a re-anchor ([`Osaka::settle`])
+    /// turned into a plain walk reads as its chain.
+    #[cfg(test)]
+    pub fn census_purpose(&self) -> &'static str {
+        let kind = |job: &Job| match job {
+            Job::Pull(_) | Job::Swap(_) | Job::Build(_) => "to text",
+            Job::Use(_) => "to seat",
+            Job::Lift(_) | Job::SetDown(_) => "to home",
+        };
+        if let Some(heading) = &self.heading {
+            return kind(&heading.job);
+        }
+        if let Act::Walk {
+            then: Then::Job(job),
+            ..
+        } = &self.act
+        {
+            return kind(job);
+        }
+        if self.shift.is_some() {
+            "work"
+        } else if self.leaving.is_some() || self.returning.is_some() {
+            "routine"
+        } else if self.dash.is_some() {
+            "dash"
+        } else if self.errand.is_some() {
+            "errand"
+        } else {
+            match self.chain {
+                "walk/along" => "wander",
+                "travel/link" | "travel/door" => "travel",
+                chain => chain,
+            }
+        }
+    }
+
     /// What she's playing: using a piece (its own script, or the
     /// shopping channel, or surfing, any prelude or coda), or spacing out
     /// (a riddle, Setsubun's beans).
@@ -5603,7 +5930,25 @@ impl Osaka {
 
     /// Choose what to do next, standing somewhere valid.
     fn decide(&mut self, at: u64, terrain: &Terrain, chances: &Chances, rng: &mut Rng) {
+        #[cfg(test)]
+        {
+            self.deciding = Some(false);
+        }
         let why = self.choose_next(at, terrain, chances, rng);
+        // The census's chain: what set her moving is this decision now,
+        // and any set-off it made is for what it's for.
+        #[cfg(test)]
+        {
+            self.deciding = None;
+            // A line owed a look that this decision didn't watch (bed or
+            // school came first, or the watch ran out) never stopped her.
+            self.chat_owed = None;
+            self.chain = why.method;
+            let purpose = self.census_purpose();
+            for set_off in self.set_off_log.iter_mut().filter(|s| s.purpose.is_empty()) {
+                set_off.purpose = purpose;
+            }
+        }
         let decision = Decision {
             at,
             act: self.act_summary(),
@@ -5740,6 +6085,13 @@ impl Osaka {
                 },
                 at,
             );
+            // A line that came while she was out of sight or aloft stops
+            // her now, for the census (what it cut is what she was on).
+            #[cfg(test)]
+            if let Some(cut) = self.chat_owed.take() {
+                self.chat_cuts.push((at, false, cut));
+                self.after_chat = Some((false, cut));
+            }
             return Decision::reflex("watching chat");
         }
         // Hello: what her calendar owes her to say, if it does, in her
@@ -6665,6 +7017,10 @@ impl Osaka {
     /// stopped nor cut short (and she watches the chat a while after it,
     /// as after any line).
     pub fn look(&mut self, now: u64, chat_x: i32, asks: bool, terrain: &Terrain) {
+        // What the line cuts, for the census: read before anything here
+        // lets go of where she was heading.
+        #[cfg(test)]
+        let cut = self.census_cut();
         self.watch_until = now + WATCH_MS;
         // Wherever she is on her way, chat interrupts the trip: where she
         // was heading competes again once she's watched it.
@@ -6682,10 +7038,18 @@ impl Osaka {
         }
         // Out, or on her way: she'll see it when she's back.
         if self.act.props().on_chat == OnChat::Back {
+            #[cfg(test)]
+            {
+                self.chat_owed = Some(cut);
+            }
             return;
         }
         self.watch_x = chat_x;
         if self.aloft() {
+            #[cfg(test)]
+            {
+                self.chat_owed = Some(cut);
+            }
             return; // She looks once she has landed (decide watches).
         }
         // Asleep for the night, a line only stirs her, whatever it asks
@@ -6703,15 +7067,22 @@ impl Osaka {
             self.answering = self.use_span().map(|span| (span, now + speech_ms(answer)));
             return;
         }
-        if terrain.restful(self.x, self.y) {
-            self.interrupt(Cause::Chat, now);
-        } else {
+        let passing = !terrain.restful(self.x, self.y);
+        if passing {
             tracing::trace!(
                 x = self.x,
                 y = self.y,
                 "houseguest: chat over text; on somewhere calm"
             );
             self.interrupt(Cause::ChatPassing, now);
+        } else {
+            self.interrupt(Cause::Chat, now);
+        }
+        #[cfg(test)]
+        {
+            self.chat_owed = None;
+            self.chat_cuts.push((now, passing, cut));
+            self.after_chat = Some((passing, cut));
         }
     }
 
@@ -6815,6 +7186,10 @@ impl Osaka {
             }
         }
         // The floor went away under her.
+        #[cfg(test)]
+        {
+            self.chain = "accident";
+        }
         if let Some(landing) = terrain.landing(self.x, self.y) {
             let to_y = terrain.platforms.get(landing).map_or(self.y, |p| p.y);
             self.set(
@@ -6924,6 +7299,11 @@ impl Osaka {
         };
         let mut osaka = Self::new(spot.0, spot.1, Facing::Right, act, now, rng);
         osaka.errand = Some(spot);
+        #[cfg(test)]
+        {
+            osaka.chain = "errand";
+            osaka.census_arrived_for();
+        }
         osaka
     }
 
@@ -6947,6 +7327,8 @@ impl Osaka {
         let mut osaka = Self::new(spot.0, spot.1, facing, act, now, rng);
         osaka.returning = Some(why);
         osaka.greeted = true;
+        #[cfg(test)]
+        osaka.census_arrived_for();
         osaka
     }
 
@@ -6966,6 +7348,8 @@ impl Osaka {
         let mut osaka = Self::new(spot.0, spot.1, facing, act, now, rng);
         osaka.dash = Some(Dash::In);
         osaka.greeted = met;
+        #[cfg(test)]
+        osaka.census_arrived_for();
         osaka
     }
 
@@ -12837,6 +13221,480 @@ mod tests {
         assert!(!methods.contains(&"routine/glance"), "{methods:?}");
         assert!(osaka.clock_glanced.is_some(), "spent for the slot");
         assert!(osaka.plays().is_none_or(|p| p.own != ScriptId::ClockGlance));
+    }
+
+    /// A line of text to pull, at her feet on [`floor_at`]'s floor 15.
+    fn census_pull() -> Pull {
+        Pull {
+            x: 20,
+            y: 15,
+            row: 13,
+            side: Side::Right,
+            cells: vec![22, 23, 24],
+            glyphs: "abc".to_owned(),
+            gap: 2,
+        }
+    }
+
+    /// The census counts her setting off, not her moving on: a walk, a
+    /// climb or a door started from a still body (standing, looking at
+    /// the chat, pulling) is a set-off, and so is the first a decision
+    /// starts, whatever she was doing (a door that ended and chose a
+    /// walk, a walk that ended and chose another, a hop landed and on to
+    /// the next); a second start in one decision is one only from a
+    /// still body. Moving on within a trip without a decision (the walk
+    /// to a pole, then the climb; off the screen's edge, and back in)
+    /// and falling are not. A set-off outside a decision is for what her
+    /// chain says at once; one a decision made is for what that decision
+    /// chose (a wander is "wander", whatever set her going before).
+    /// (The mechanism, with `deciding` set by hand; the real paths are
+    /// the tests after it.)
+    #[test]
+    fn the_census_counts_setting_off_not_moving_on() {
+        let mut rng = Rng(1);
+        let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+        let walk = |to| Act::Walk {
+            to,
+            then: Then::Nothing,
+        };
+        let door = Act::Door {
+            since: 0,
+            to: (5, 15),
+            gap: 0,
+        };
+        let look = Act::Look {
+            surprised_until: 0,
+            until: 0,
+        };
+        let fall = Act::Fall {
+            from_y: 10,
+            since: 0,
+            to_y: 15,
+        };
+        let away = Act::Away {
+            until: 0,
+            enter: 0,
+            to_y: 15,
+            to_x: 5,
+        };
+        let out = Act::Out {
+            to: 0,
+            enter: 0,
+            to_y: 15,
+            to_x: 5,
+        };
+        let heave = Act::Pull {
+            pull: census_pull(),
+            offset: 4,
+            goal: 8,
+            heaving: true,
+        };
+        let stand = Act::Stand { until: 0 };
+        // (what, the act, deciding (and whether the decision has set
+        // her off already), whether it's a set-off)
+        let steps: [(&str, Act, Option<bool>, bool); 22] = [
+            ("stand → walk", walk(5), None, true),
+            (
+                "walk → climb (on along the hop)",
+                Act::Climb { to_y: 10 },
+                None,
+                false,
+            ),
+            ("climb → stand", stand.clone(), None, false),
+            ("stand → door", door.clone(), None, true),
+            ("door → walk, its decision", walk(5), Some(false), true),
+            ("walk → out (off the edge)", out, None, false),
+            ("out → away", away, None, false),
+            ("away → walk (back in)", walk(5), None, false),
+            ("walk → walk, deciding", walk(8), Some(false), true),
+            ("walk → door, the same decision", door, Some(true), false),
+            ("door → look (a chat line)", look, None, false),
+            ("look → walk", walk(5), None, true),
+            ("walk → walk, deciding", walk(9), Some(false), true),
+            (
+                "walk → stand, the same decision",
+                stand.clone(),
+                Some(true),
+                false,
+            ),
+            (
+                "stand → walk, the same decision (from still)",
+                walk(8),
+                Some(true),
+                true,
+            ),
+            ("walk → fall (no decision)", fall.clone(), None, false),
+            ("fall → stand", stand.clone(), None, false),
+            ("stand → fall", fall, None, false),
+            ("fall → dazed", Act::Dazed { until: 0 }, None, false),
+            ("dazed → walk, deciding", walk(5), Some(false), true),
+            ("walk → a pull's heave", heave, None, false),
+            ("a pull's heave → walk (not a trip)", walk(5), None, true),
+        ];
+        let mut want = 0;
+        for (i, (what, act, deciding, counts)) in steps.into_iter().enumerate() {
+            osaka.deciding = deciding;
+            osaka.set(act, i as u64 * 1000);
+            osaka.deciding = None;
+            want += u32::from(counts);
+            assert_eq!(osaka.set_offs, want, "{what}");
+            assert_eq!(osaka.set_off_log.len(), want as usize, "{what}");
+        }
+        let bodies: Vec<Body> = osaka.set_off_log.iter().map(|s| s.body).collect();
+        let (w, d) = (Body::Walk, Body::Door);
+        assert_eq!(bodies, [w, d, w, w, w, w, w, w, w]);
+        // Outside a decision, for her chain at once (her arrival, here);
+        // inside one, filled in as the decision has its method.
+        assert_eq!(osaka.set_off_log[0].purpose, "arrival");
+        assert_eq!(osaka.set_off_log[2].purpose, "");
+
+        // A real decision: a wander from a walk that ended (her chain was
+        // her arrival) is a set-off, for wandering.
+        let terrain = floor_at(15);
+        let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+        osaka.act = walk(20);
+        osaka.offer_only = Some((Want::Walk, "walk/along"));
+        osaka.decide(1000, &terrain, &Chances::default(), &mut rng);
+        assert!(
+            matches!(osaka.act, Act::Walk { .. }),
+            "{:?}",
+            osaka.decisions
+        );
+        assert_eq!(osaka.set_offs, 1);
+        assert_eq!(osaka.set_off_log[0].purpose, "wander");
+        assert_eq!(osaka.census_purpose(), "wander");
+    }
+
+    /// Her arrival is a set-off (no `set` starts it), for what she came
+    /// for: walking in, her arrival; out of a door, her errand, her
+    /// routine home, or her dash home. Her errand's way out is the
+    /// errand's too. Standing there from the start, or dropping in, is
+    /// none.
+    #[test]
+    fn her_arrival_is_a_set_off_for_what_she_came_for() {
+        let mut rng = Rng(1);
+        let terrain = floor_at(15);
+        let mut walked_in = false;
+        for seed in 0..32 {
+            let mut rng = Rng(seed);
+            let osaka = Osaka::arrive(0, &terrain, 40, &mut rng).expect("somewhere");
+            let log: Vec<_> = osaka
+                .set_off_log
+                .iter()
+                .map(|s| (s.body, s.purpose))
+                .collect();
+            match osaka.act {
+                Act::Walk { .. } => {
+                    walked_in = true;
+                    assert_eq!(log, [(Body::Walk, "arrival")], "seed {seed}");
+                }
+                _ => assert_eq!(log, [], "seed {seed}: {:?}", osaka.act),
+            }
+        }
+        assert!(walked_in, "she never walked in");
+        let errand = Osaka::arrive_for_errand((20, 15), 0, &mut rng);
+        let back = Osaka::back_through_door((20, 15), Facing::Left, Routine::School, 0, &mut rng);
+        let dash = Osaka::dash_in((20, 15), Facing::Left, true, 0, &mut rng);
+        for (osaka, what) in [(&errand, "errand"), (&back, "routine"), (&dash, "dash")] {
+            let log: Vec<_> = osaka
+                .set_off_log
+                .iter()
+                .map(|s| (s.body, s.purpose))
+                .collect();
+            assert_eq!(log, [(Body::Door, what)], "{what}");
+        }
+        assert_eq!(Osaka::standing_at(20, 15, 0, &mut rng).set_offs, 0);
+        // The errand done, over text, she leaves by a door: the errand's.
+        let mut osaka = errand;
+        osaka.errand = None;
+        osaka.chain = "errand";
+        osaka.set(Act::Stand { until: 0 }, 1000);
+        osaka.through_door((5, 15), 2000);
+        assert_eq!(osaka.set_off_log.last().map(|s| s.purpose), Some("errand"));
+    }
+
+    /// A chat line that stops her is logged with what it cut (nothing, if
+    /// she was still; what she was moving for, a walk to her job read
+    /// before the line lets go of where she was heading), and the first
+    /// set-off after it, a decision's, carries it: a restart. A look, a
+    /// watch and nothing else between, so a glance she owes in between
+    /// drops it. A line that comes while she's in a door is owed: it
+    /// stops her as she next decides and watches, for what she was on
+    /// when it came; one whose watch has run out by then never does.
+    #[test]
+    fn the_census_counts_her_restarts_after_a_chat_line() {
+        let mut rng = Rng(1);
+        let terrain = floor_at(15);
+        let chances = Chances::default();
+        let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+        osaka.offer_only = Some((Want::Walk, "walk/along"));
+        // Still: a look, her watch, then a wander.
+        osaka.look(1000, 30, false, &terrain);
+        assert_eq!(osaka.chat_cuts, [(1000, false, None)]);
+        let mut now = 1000;
+        while osaka.set_offs == 0 {
+            now += 250;
+            assert!(now < 60_000, "never set off: {:?}", osaka.act);
+            osaka.tick(now, None, &terrain, &chances, &mut rng);
+        }
+        let first = osaka.set_off_log[0];
+        assert!(first.at >= 1000 + WATCH_MS, "watched first: {first:?}");
+        assert_eq!(
+            (first.purpose, first.after_chat),
+            ("wander", Some((false, None)))
+        );
+        // On her way to a job she's heading for: the line cuts it.
+        osaka.heading = Some(Heading {
+            want: Want::Pull,
+            job: Job::Pull(census_pull()),
+        });
+        osaka.set(
+            Act::Walk {
+                to: 25,
+                then: Then::Job(Job::Pull(census_pull())),
+            },
+            now,
+        );
+        osaka.look(now, 30, false, &terrain);
+        assert_eq!(osaka.chat_cuts.last(), Some(&(now, false, Some("to text"))));
+        // A glance she owes before she's off again: no restart.
+        osaka.set(Act::Glance { until: now + 500 }, now);
+        osaka.set(
+            Act::Walk {
+                to: 5,
+                then: Then::Nothing,
+            },
+            now + 500,
+        );
+        assert_eq!(osaka.set_off_log.last().map(|s| s.after_chat), Some(None));
+        // In a door: owed, not yet a cut.
+        osaka.heading = None;
+        let cuts = osaka.chat_cuts.len();
+        now += 10_000;
+        osaka.chain = "travel/door";
+        osaka.set(
+            Act::Door {
+                since: now,
+                to: (5, 15),
+                gap: 0,
+            },
+            now,
+        );
+        osaka.look(now, 30, false, &terrain);
+        assert_eq!(osaka.chat_cuts.len(), cuts, "in a door");
+        // Back out of it within the watch: she stops and watches now.
+        osaka.set(Act::Stand { until: 0 }, now + 2000);
+        osaka.decide(now + 2000, &terrain, &chances, &mut rng);
+        assert_eq!(
+            osaka.chat_cuts.last(),
+            Some(&(now + 2000, false, Some("travel")))
+        );
+        assert!(matches!(osaka.act, Act::Stand { .. }), "{:?}", osaka.act);
+        // Owed again, but out past the watch: it lapses.
+        let cuts = osaka.chat_cuts.len();
+        now += 10_000;
+        osaka.set(
+            Act::Door {
+                since: now,
+                to: (5, 15),
+                gap: 0,
+            },
+            now,
+        );
+        osaka.look(now, 30, false, &terrain);
+        osaka.set(Act::Stand { until: 0 }, now + WATCH_MS);
+        osaka.decide(now + WATCH_MS, &terrain, &chances, &mut rng);
+        assert_eq!(osaka.chat_cuts.len(), cuts, "lapsed");
+        assert_eq!(osaka.chat_owed, None);
+    }
+
+    /// A real hop: she sets off once a hop, the walk to the pole and the
+    /// climb one trip (the climb no set-off of its own), for travel; and
+    /// landed and chosen again, the next hop is the next set-off.
+    #[test]
+    fn a_hop_is_one_set_off() {
+        use tuirealm::ratatui::buffer::Buffer;
+        use tuirealm::ratatui::layout::Rect;
+        use tuirealm::ratatui::style::Style;
+        let mut buf = Buffer::empty(Rect::new(0, 0, 40, 20));
+        // A box clear of the screen's edges: a pole between its top and
+        // its floor is the only way between them.
+        buf.set_string(10, 8, format!("┌{}┐", "─".repeat(18)), Style::default());
+        for row in 9..15 {
+            buf.set_string(10, row, format!("│{}│", " ".repeat(18)), Style::default());
+        }
+        buf.set_string(10, 15, format!("└{}┘", "─".repeat(18)), Style::default());
+        let terrain = Terrain::read(&buf, &[], false);
+        assert!(
+            terrain.links.iter().all(|l| l.route == Route::Climb),
+            "{:?}",
+            terrain.links
+        );
+        let low = terrain
+            .platforms
+            .iter()
+            .max_by_key(|p| p.y)
+            .expect("a floor");
+        let mut rng = Rng(3);
+        let chances = Chances::default();
+        let mut osaka = Osaka::standing_at((low.x0 + low.x1) / 2, low.y, 0, &mut rng);
+        osaka.offer_only = Some((Want::Travel, "travel/link"));
+        let (mut now, mut climbed) = (0, false);
+        while osaka.set_offs < 2 {
+            now += 100;
+            assert!(now < 120_000, "{:?}", osaka.decisions);
+            osaka.tick(now, None, &terrain, &chances, &mut rng);
+            if matches!(osaka.act, Act::Climb { .. }) {
+                climbed = true;
+                assert_eq!(osaka.set_offs, 1, "the climb is the hop's");
+            }
+        }
+        assert!(
+            climbed,
+            "she never climbed: {:?} {:?} {:?}",
+            osaka.set_off_log, osaka.decisions, terrain.links
+        );
+        let log: Vec<_> = osaka.set_off_log.iter().map(|s| s.purpose).collect();
+        assert_eq!(log, ["travel", "travel"]);
+    }
+
+    /// The floor gone from under her: her fall is an accident's.
+    #[test]
+    fn the_floor_gone_is_an_accident() {
+        let mut rng = Rng(1);
+        let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+        osaka.chain = "walk/along";
+        assert!(osaka.settle(1000, &floor_at(18)));
+        let motion = osaka.census_motion(1000);
+        assert_eq!(
+            motion.map(|m| (m.body, m.purpose)),
+            Some((Body::Fall, "accident")),
+            "{:?}",
+            osaka.act
+        );
+        assert_eq!(osaka.set_offs, 0, "falling is no set-off");
+    }
+
+    /// What her moving is for, first that holds: a job she's heading for,
+    /// or walking to; her shift; her routine (out or home); a dash home;
+    /// an errand; then her chain (named: a wander, travel; or as it is).
+    #[test]
+    fn the_census_reads_what_her_moving_is_for_first_that_holds() {
+        let mut rng = Rng(1);
+        let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+        osaka.act = Act::Walk {
+            to: 25,
+            then: Then::Nothing,
+        };
+        osaka.heading = Some(Heading {
+            want: Want::Pull,
+            job: Job::Pull(census_pull()),
+        });
+        osaka.shift = Some(Shift::Going);
+        osaka.leaving = Some(Routine::School);
+        osaka.returning = Some(Routine::School);
+        osaka.dash = Some(Dash::In);
+        osaka.errand = Some((5, 15));
+        osaka.chain = "walk/along";
+        let mut read = vec![osaka.census_purpose()];
+        osaka.heading = None;
+        osaka.act = Act::Walk {
+            to: 25,
+            then: Then::Job(Job::Pull(census_pull())),
+        };
+        read.push(osaka.census_purpose());
+        osaka.act = Act::Walk {
+            to: 25,
+            then: Then::Nothing,
+        };
+        read.push(osaka.census_purpose());
+        osaka.shift = None;
+        read.push(osaka.census_purpose());
+        osaka.leaving = None;
+        read.push(osaka.census_purpose());
+        osaka.returning = None;
+        read.push(osaka.census_purpose());
+        osaka.dash = None;
+        read.push(osaka.census_purpose());
+        osaka.errand = None;
+        read.push(osaka.census_purpose());
+        osaka.chain = "travel/door";
+        read.push(osaka.census_purpose());
+        osaka.chain = "off-text/rest";
+        read.push(osaka.census_purpose());
+        assert_eq!(
+            read,
+            [
+                "to text",
+                "to text",
+                "work",
+                "routine",
+                "routine",
+                "dash",
+                "errand",
+                "wander",
+                "travel",
+                "off-text/rest"
+            ]
+        );
+    }
+
+    /// The census's motion: a door is moving in the beats she's seen in,
+    /// and none between them (out of sight, as off the screen is); a pull
+    /// moves her in the beat she steps back with the line (a "text" body,
+    /// for pulling: heaving, once its slack is in), not while she braces
+    /// or reels the slack in; a walk to a job is for the job's kind, for
+    /// the want she chose.
+    #[test]
+    fn the_census_classes_her_moving() {
+        let mut rng = Rng(1);
+        let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+        assert_eq!(osaka.census_motion(0), None, "standing is still");
+        osaka.act = Act::Door {
+            since: 0,
+            to: (5, 15),
+            gap: 0,
+        };
+        assert_eq!(osaka.census_motion(0).map(|m| m.body), Some(Body::Door));
+        let hidden = (0..6000).find(|&t| osaka.hidden(t)).expect("a hidden beat");
+        assert_eq!(osaka.census_motion(hidden), None, "out of sight");
+        osaka.act = Act::Away {
+            until: 0,
+            enter: 0,
+            to_y: 15,
+            to_x: 5,
+        };
+        assert_eq!(osaka.census_motion(0), None, "off the screen");
+        let pull = census_pull();
+        for offset in 0..6 {
+            for heaving in [false, true] {
+                osaka.act = Act::Pull {
+                    pull: pull.clone(),
+                    offset,
+                    goal: 8,
+                    heaving,
+                };
+                let moving = heaving && offset > pull.gap;
+                assert_eq!(
+                    osaka.census_motion(0).map(|m| (m.body, m.purpose)),
+                    moving.then_some((Body::Text, "pull")),
+                    "offset {offset} heaving {heaving}"
+                );
+            }
+        }
+        osaka.credit = Some(Want::Pull);
+        osaka.act = Act::Walk {
+            to: 25,
+            then: Then::Job(Job::Pull(pull)),
+        };
+        assert_eq!(
+            osaka.census_motion(0),
+            Some(Motion {
+                purpose: "to text",
+                body: Body::Walk,
+                want: Some(Want::Pull),
+            })
+        );
     }
 
     /// Looking out of the window lasts a while (15 to 30 s), and it's
