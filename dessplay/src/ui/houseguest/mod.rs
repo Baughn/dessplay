@@ -92,7 +92,7 @@ use cells::{Ink, put};
 use dissolve::{Dissolve, Frozen};
 use graphics::{Graphics, Look};
 pub use idle::{Busy, ChatMark, IdleView, Scrollback, asks, grow};
-pub use ledger::Ledger;
+pub use ledger::{Ledger, Owned, Pities, Summary, TierPity};
 use osaka::{Bubble, Osaka};
 use room::Shown;
 pub use room::{Furniture, Nook};

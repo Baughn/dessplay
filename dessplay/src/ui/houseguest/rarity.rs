@@ -61,6 +61,13 @@ impl Rarity {
         }
     }
 
+    /// The pity (real idle minutes without anything new of the tier) at
+    /// which a gated tier's draw is certain to make something unseen new
+    /// (`None`: ungated).
+    pub fn bound(self) -> Option<u64> {
+        self.odds().map(|(_, bound)| bound)
+    }
+
     /// Its own salt for its roll, so the two tiers roll apart.
     fn salt(self) -> u64 {
         match self {

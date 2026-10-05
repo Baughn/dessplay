@@ -2589,11 +2589,15 @@ pub fn run_dump(args: &HeadlessArgs, sections: &[String]) -> Result<(), String> 
         .load_settings()
         .map_err(|e| format!("loading settings: {e}"))?;
     let media_roots = storage.media_roots().map_err(|e| e.to_string())?;
+    // Her record as saved, judged by the date now (the day starting at
+    // 09:00) for her slot's vacation flag.
+    let houseguest = crate::dump::Houseguest::load(&storage, std::time::SystemTime::now());
     let snapshot = load_dump_snapshot(&path)?;
     let doc = crate::dump::build(
         &path.display().to_string(),
         &settings,
         &media_roots,
+        &houseguest,
         snapshot.as_ref(),
         &selection,
     )

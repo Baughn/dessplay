@@ -150,9 +150,10 @@ impl Ledger {
     }
 
     /// Read from JSON; `Err` for text that isn't a record this build can
-    /// read (malformed, or another version).
+    /// read (malformed, not an object, or another version).
     pub fn from_json(text: &str) -> Result<Self, String> {
-        let raw: Raw = serde_json::from_str(text).map_err(|e| e.to_string())?;
+        let value: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
+        let raw: Raw = object(value).ok_or("not a JSON object")??;
         if raw.version != VERSION {
             return Err(format!("unsupported version {}", raw.version));
         }
@@ -169,7 +170,7 @@ impl Ledger {
         let anchors: Vec<SavedAnchor> = raw
             .anchors
             .into_iter()
-            .filter_map(|v| serde_json::from_value::<SavedAnchor>(v).ok())
+            .filter_map(|v| object::<SavedAnchor>(v)?.ok())
             .collect();
         let unsettled: Vec<Furniture> = raw
             .unsettled
@@ -180,7 +181,7 @@ impl Ledger {
         for prop in raw
             .props
             .into_iter()
-            .filter_map(|v| serde_json::from_value::<SavedProp>(v).ok())
+            .filter_map(|v| object::<SavedProp>(v)?.ok())
         {
             if home.owns(prop.item) {
                 continue;
@@ -296,6 +297,154 @@ impl Ledger {
     pub fn save(&self, storage: &crate::storage::Storage) -> crate::storage::Result<()> {
         storage.set_setting(KEY, Some(&self.to_json()))
     }
+
+    /// What the record says, for `dessplay --dump` (read from the saved
+    /// record, never a live guest). Her slot is judged by her routine
+    /// with school out or not by the real `date` (`None`: unknown, so
+    /// term time); a running client latches each game day's flag at that
+    /// day's first read, so the two can differ on a day the date turned.
+    pub fn summary(&self, date: Option<NaiveDate>) -> Summary {
+        use super::rarity::{Pity, Rarity};
+        use super::routine;
+        let game = self.clock.saturating_mul(super::GAME_MINUTE_MS);
+        let vacation = date.is_some_and(routine::vacation);
+        let now = routine::day_time(game, vacation);
+        let pity = Pity::of(self.idle_min, self.rare_at, self.legend_at);
+        let tier = |tier: Rarity, since: u64, at: u64| {
+            let unseen: Vec<String> = super::rarity::RARES
+                .iter()
+                .filter(|r| r.rarity == tier && !self.seen.iter().any(|k| k == r.key))
+                .map(|r| r.key.to_owned())
+                .collect();
+            TierPity {
+                running: !unseen.is_empty(),
+                unseen,
+                since_new_min: since,
+                new_at_idle_min: at,
+                certain_at_min: tier.bound().unwrap_or(0),
+            }
+        };
+        Summary {
+            visits: self.visits,
+            master_seed: format!("{:#018x}", self.master_seed),
+            clock_min: self.clock,
+            game_day: now.day,
+            game_time: routine::label(game),
+            slot: format!("{:?}", now.slot),
+            vacation,
+            vacation_by: match date {
+                Some(date) => format!(
+                    "today's date as the client counts it (the day starts at 09:00), {date} \
+                     (a running client holds each game day's flag from that day's first read)"
+                ),
+                None => "no real date: judged as term time".to_owned(),
+            },
+            idle_min: self.idle_min,
+            pity: Pities {
+                rare: tier(Rarity::Rare, pity.rare, self.rare_at),
+                legendary: tier(Rarity::Legendary, pity.legend, self.legend_at),
+            },
+            seen: self.seen.clone(),
+            calendar_on: self.calendar_on.map(|d| d.format(DATE).to_string()),
+            clock_sent: self.clock_sent,
+            owns: self
+                .home
+                .props
+                .iter()
+                .map(|p| Owned {
+                    item: format!("{:?}", p.item),
+                    boxed: p.boxed,
+                    settled: p.settled,
+                    strip: format!("{:?}", p.strip),
+                })
+                .collect(),
+            ordered: self.ordered.map(|item| format!("{item:?}")),
+            bought_on_visit: self.bought_on,
+        }
+    }
+}
+
+/// Her record as `dessplay --dump` shows it ([`Ledger::summary`]).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct Summary {
+    /// Visits so far.
+    pub visits: u64,
+    /// The seed every visit's randomness derives from, in hex (a 64-bit
+    /// number loses precision in most JSON readers).
+    pub master_seed: String,
+    /// Her clock: game minutes since Monday 16:00 of game day 0.
+    pub clock_min: u64,
+    /// The game day her clock is on (day 0 is the Monday it started).
+    pub game_day: u64,
+    /// Her game time, weekday and `HH:MM` ("Mon 16:05").
+    pub game_time: String,
+    /// The part of her day it is then, by her routine.
+    pub slot: String,
+    /// Whether school was judged out for `slot`.
+    pub vacation: bool,
+    /// What `vacation` was judged by.
+    pub vacation_by: String,
+    /// Real minutes the client has stood idle with her gate open (what
+    /// her pity counts in).
+    pub idle_min: u64,
+    /// Her pity, for each tier that has one.
+    pub pity: Pities,
+    /// The rare things she has shown, by their stable ids, in the order
+    /// she first showed them.
+    pub seen: Vec<String>,
+    /// The real date her calendar's owed entry was last delivered on.
+    pub calendar_on: Option<String>,
+    /// Her wall clock has been sent.
+    pub clock_sent: bool,
+    /// The pieces she owns.
+    pub owns: Vec<Owned>,
+    /// Bought and not yet delivered.
+    pub ordered: Option<String>,
+    /// The visit she last bought something on.
+    pub bought_on_visit: u64,
+}
+
+/// Her pity for each gated tier ([`Summary::pity`]).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct Pities {
+    /// Rare.
+    pub rare: TierPity,
+    /// Legendary.
+    pub legendary: TierPity,
+}
+
+/// One tier's pity: whether it runs at all, how long since she last
+/// showed something new of it, and when a draw is certain to make
+/// something unseen new.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct TierPity {
+    /// Whether pity runs for the tier: only while something of it is
+    /// unseen (with nothing left to show for the first time, the
+    /// counters below mean nothing).
+    pub running: bool,
+    /// The tier's scripts she hasn't shown yet, by stable id.
+    pub unseen: Vec<String>,
+    /// Real idle minutes since she last showed something of the tier for
+    /// the first time (0 for a counter read ahead of `idle_min`).
+    pub since_new_min: u64,
+    /// `idle_min` when she last did.
+    pub new_at_idle_min: u64,
+    /// The pity at which a draw is certain to make something unseen of
+    /// the tier new (only while it's `running`).
+    pub certain_at_min: u64,
+}
+
+/// A piece she owns ([`Summary::owns`]).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct Owned {
+    /// What it is.
+    pub item: String,
+    /// Still in its box.
+    pub boxed: bool,
+    /// She has set it where it stands (a delivery hasn't yet).
+    pub settled: bool,
+    /// The strip (pane) it stands on.
+    pub strip: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -458,6 +607,15 @@ struct SavedAnchor {
     strip: Strip,
     #[serde(default)]
     anchor: Option<Anchor>,
+}
+
+/// A record's struct from `value` only when it's a JSON object (`None`
+/// otherwise; `Some(Err)` for an object that isn't one): serde reads a
+/// struct from an array too, by position, and nothing writes that.
+fn object<T: serde::de::DeserializeOwned>(value: serde_json::Value) -> Option<Result<T, String>> {
+    value
+        .is_object()
+        .then(|| serde_json::from_value(value).map_err(|e| e.to_string()))
 }
 
 /// What's read, before the entries this build knows are picked out.
@@ -819,6 +977,11 @@ mod tests {
             legend_at: MINUTES_MAX,
             ..furnished()
         };
+        // Its summary for `--dump` reads it too, with or without a date.
+        let at_top = ledger.summary(None);
+        assert_eq!(at_top.clock_min, MINUTES_MAX);
+        assert_eq!(at_top.pity.rare.since_new_min, 0);
+        let _ = ledger.summary(NaiveDate::from_ymd_opt(2026, 8, 1));
         assert_eq!(Ledger::from_json(&ledger.to_json()), Ok(ledger));
     }
 
@@ -1141,6 +1304,24 @@ mod tests {
         assert!(Ledger::from_json(&text).is_err());
         assert!(Ledger::from_json("{}").is_err(), "no version");
         assert!(Ledger::from_json("not json").is_err());
+    }
+
+    /// A record, and each piece and stand in it, is an object: serde
+    /// would read a struct from an array by position, so `[1,2]` would
+    /// otherwise be a record of version 1 with master seed 2, and a
+    /// positional piece a piece. Nothing writes either.
+    #[test]
+    fn only_objects_are_read_as_records() {
+        for garbage in ["[]", "[1]", "[1,2]", "[1,2,3,4]", "1", r#""text""#, "null"] {
+            assert!(Ledger::from_json(garbage).is_err(), "{garbage}");
+        }
+        let text = r#"{"version":1,"rooms":[["Living","Users"]],
+            "props":[["Sofa",300,"Right",false],{"item":"Tv","at":100}],
+            "anchors":[["Tv",{"Bottom":"Users"},{"side":"Left","offset":3}]]}"#;
+        let ledger = Ledger::from_json(text).unwrap();
+        let items: Vec<Furniture> = ledger.home.props.iter().map(|p| p.item).collect();
+        assert_eq!(items, [Furniture::Tv]);
+        assert_eq!(ledger.home.props[0].anchor, None);
     }
 
     #[test]

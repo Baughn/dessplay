@@ -103,7 +103,7 @@ struct Cli {
     reset_sync: bool,
 
     /// Restrict `--dump` to these sections (repeatable). Valid names:
-    /// settings, media_roots, playlist, watched, now_playing,
+    /// settings, media_roots, houseguest, playlist, watched, now_playing,
     /// seek_authority, playback_intent, series_preference,
     /// manual_override, file_availability, anidb_metadata,
     /// series_relations, file_catalog, list_entries, list_next_ep,

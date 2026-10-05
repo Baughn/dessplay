@@ -14,6 +14,13 @@
 //! can be sliced with `jq`. `--section` trims it to just the parts a query
 //! needs, keeping the common case off the multi-megabyte metadata/catalog
 //! maps.
+//!
+//! The `houseguest` section is her record (the local `houseguest_ledger`
+//! setting) as of its last save, read through
+//! [`Ledger::summary`](crate::ui::houseguest::Ledger::summary), never
+//! from a live guest: a running client saves events at once, but her
+//! time only in batches (every 30 game minutes), at each change of her
+//! slot and on exit, so her clock there can trail the one on screen.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -26,12 +33,15 @@ use serde::Serialize;
 use serde_json::{Map, Value, json};
 
 use crate::config::Settings;
+use crate::ui::houseguest::Ledger;
 
-/// Selectable top-level sections, in dump order. `settings`/`media_roots`
-/// are document-level; the rest are fields of the `state` object.
+/// Selectable top-level sections, in dump order.
+/// `settings`/`media_roots`/`houseguest` are document-level; the rest are
+/// fields of the `state` object.
 pub const SECTIONS: &[&str] = &[
     "settings",
     "media_roots",
+    "houseguest",
     "playlist",
     "watched",
     "now_playing",
@@ -53,7 +63,7 @@ pub const SECTIONS: &[&str] = &[
 ];
 
 /// The sections that live under the `state` object (everything except the
-/// two document-level ones).
+/// document-level ones).
 const STATE_SECTIONS: &[&str] = &[
     "playlist",
     "watched",
@@ -122,11 +132,35 @@ impl Selection {
     }
 }
 
+/// Her record as read for the `houseguest` section.
+#[derive(Debug)]
+pub struct Houseguest {
+    /// The saved record: `Ok(None)` when she has never visited, `Err`
+    /// with why for one that can't be read.
+    pub ledger: Result<Option<Ledger>, String>,
+    /// The date her slot's vacation flag is judged by, as the client
+    /// counts days (starting at 09:00; `None`: unknown).
+    pub date: Option<chrono::NaiveDate>,
+}
+
+impl Houseguest {
+    /// Her record as saved in `storage` (the local `houseguest_ledger`
+    /// setting, read as a starting client reads it), judged at the
+    /// wall-clock time `now`.
+    pub fn load(storage: &crate::storage::Storage, now: std::time::SystemTime) -> Self {
+        Self {
+            ledger: Ledger::load(storage).map_err(|e| e.to_string()),
+            date: crate::ui::shell::date_at(now),
+        }
+    }
+}
+
 /// Build the full dump document for the given inputs.
 pub fn build(
     database: &str,
     settings: &Settings,
     media_roots: &[PathBuf],
+    houseguest: &Houseguest,
     snapshot: Option<&StateSnapshot>,
     sections: &Selection,
 ) -> Result<Value, serde_json::Error> {
@@ -141,6 +175,9 @@ pub fn build(
             .map(|p| p.display().to_string())
             .collect();
         doc.insert("media_roots".into(), json!(roots));
+    }
+    if sections.wants("houseguest") {
+        doc.insert("houseguest".into(), houseguest_json(houseguest)?);
     }
     match snapshot {
         None => {
@@ -183,7 +220,28 @@ fn settings_json(s: &Settings) -> Value {
         "irc_tls": s.irc_tls,
         "irc_channel": s.irc_channel,
         "pane_layout": s.pane_layout.as_string(),
+        "houseguest": format!("{:?}", s.houseguest),
+        "houseguest_resident": s.houseguest_resident,
     })
+}
+
+/// Her record, labelled as of its last save. A missing or unreadable
+/// record is a note, never a failed dump.
+fn houseguest_json(guest: &Houseguest) -> Result<Value, serde_json::Error> {
+    let mut out = match &guest.ledger {
+        Ok(Some(ledger)) => serde_json::to_value(ledger.summary(guest.date))?,
+        Ok(None) => json!({ "note": "no record: she hasn't visited this client yet" }),
+        Err(error) => json!({
+            "note": format!(
+                "unreadable record ({error}); a running client starts her afresh \
+                 and doesn't save over it, unless she's moved out in settings"
+            ),
+        }),
+    };
+    if let Value::Object(map) = &mut out {
+        map.insert("as_of".into(), json!("the last save"));
+    }
+    Ok(out)
 }
 
 fn state_json(view: &StateView, sel: &Selection) -> Result<Value, serde_json::Error> {
@@ -430,6 +488,215 @@ mod tests {
         assert!(json.as_object().unwrap().contains_key("chat"));
     }
 
+    /// A record with everything in it: Tuesday 10:00 of her clock (game
+    /// minutes since Monday 16:00), pity running, a boxed delivery she
+    /// hasn't settled, and a piece on order.
+    const RECORD: &str = r#"{"version":1,"master_seed":42,"visits":7,
+        "rooms":[["Living","Users"],["Bedroom","Playlist"]],
+        "props":[{"item":"Sofa","at":0,"facing":"Left","boxed":false},
+                 {"item":"Bed","at":500,"facing":"Right","boxed":true}],
+        "ordered":"Desk","bought_on":6,"unsettled":["Bed"],
+        "clock":1080,"idle_min":900,"rare_at":400,"legend_at":17,
+        "calendar_on":"2026-10-03","seen":["dream","no-melon"],"clock_sent":true}"#;
+
+    fn houseguest(text: Option<&str>, date: Option<chrono::NaiveDate>) -> Value {
+        let ledger = match text {
+            None => Ok(None),
+            Some(text) => Ledger::from_json(text).map(Some),
+        };
+        houseguest_json(&Houseguest { ledger, date }).unwrap()
+    }
+
+    #[test]
+    fn houseguest_shows_her_record_as_of_the_last_save() {
+        assert_eq!(
+            houseguest(Some(RECORD), None),
+            json!({
+                "as_of": "the last save",
+                "visits": 7,
+                "master_seed": "0x000000000000002a",
+                "clock_min": 1080,
+                "game_day": 1,
+                "game_time": "Tue 10:00",
+                "slot": "Away",
+                "vacation": false,
+                "vacation_by": "no real date: judged as term time",
+                "idle_min": 900,
+                "pity": {
+                    "rare": {
+                        "running": true,
+                        "unseen": ["escalator", "scary"],
+                        "since_new_min": 500,
+                        "new_at_idle_min": 400,
+                        "certain_at_min": 360,
+                    },
+                    // No legendary scripts yet: nothing unseen, no pity.
+                    "legendary": {
+                        "running": false,
+                        "unseen": [],
+                        "since_new_min": 883,
+                        "new_at_idle_min": 17,
+                        "certain_at_min": 2400,
+                    },
+                },
+                "seen": ["dream", "no-melon"],
+                "calendar_on": "2026-10-03",
+                "clock_sent": true,
+                "owns": [
+                    { "item": "Sofa", "boxed": false, "settled": true, "strip": "Bottom(Users)" },
+                    { "item": "Bed", "boxed": true, "settled": false, "strip": "Bottom(Playlist)" },
+                ],
+                "ordered": "Desk",
+                "bought_on_visit": 6,
+            })
+        );
+    }
+
+    /// With a real date, her slot is judged by it, and the section says so.
+    #[test]
+    fn houseguest_slot_is_judged_by_the_date_given() {
+        let summer = chrono::NaiveDate::from_ymd_opt(2026, 8, 1);
+        let json = houseguest(Some(RECORD), summer);
+        assert_eq!(json["slot"], json!("Morning"));
+        assert_eq!(json["vacation"], json!(true));
+        let by = json["vacation_by"].as_str().unwrap();
+        assert!(by.contains("2026-08-01"), "{by}");
+        let term = chrono::NaiveDate::from_ymd_opt(2026, 10, 5);
+        let json = houseguest(Some(RECORD), term);
+        assert_eq!(
+            (&json["slot"], &json["vacation"]),
+            (&json!("Away"), &json!(false))
+        );
+        let by = json["vacation_by"].as_str().unwrap();
+        assert!(by.contains("2026-10-05"), "{by}");
+    }
+
+    /// An empty record is her start: Monday 16:00, nothing counted, nothing
+    /// owned.
+    #[test]
+    fn houseguest_empty_record_is_at_her_start() {
+        let json = houseguest(Some(r#"{"version":1}"#), None);
+        assert_eq!(json["game_time"], json!("Mon 16:00"));
+        assert_eq!(json["slot"], json!("Afternoon"));
+        assert_eq!(json["clock_min"], json!(0));
+        assert_eq!(json["pity"]["rare"]["since_new_min"], json!(0));
+        assert_eq!(json["owns"], json!([]));
+        assert_eq!(json["ordered"], Value::Null);
+        assert_eq!(json["as_of"], json!("the last save"));
+    }
+
+    #[test]
+    fn houseguest_missing_record_is_a_note() {
+        assert_eq!(
+            houseguest(None, None),
+            json!({
+                "as_of": "the last save",
+                "note": "no record: she hasn't visited this client yet",
+            })
+        );
+    }
+
+    /// A record that can't be read is a note saying why, never a failed
+    /// dump.
+    #[test]
+    fn houseguest_unreadable_record_is_a_note() {
+        for garbage in [
+            "not json",
+            r#"{"version":2}"#,
+            "{}",
+            "[]",
+            "[1]",
+            "[1,2]",
+            "null",
+            "",
+        ] {
+            let json = houseguest(Some(garbage), None);
+            let keys: Vec<&String> = json.as_object().unwrap().keys().collect();
+            assert_eq!(keys, ["as_of", "note"], "{garbage}");
+            let note = json["note"].as_str().unwrap();
+            assert!(note.starts_with("unreadable record ("), "{garbage}: {note}");
+        }
+    }
+
+    /// Midday on `(y, m, d)` by the local clock, so the client's 09:00
+    /// day start puts it on that date in any time zone.
+    fn midday(y: i32, m: u32, d: u32) -> std::time::SystemTime {
+        use chrono::TimeZone;
+        chrono::Local
+            .with_ymd_and_hms(y, m, d, 12, 0, 0)
+            .single()
+            .unwrap()
+            .into()
+    }
+
+    /// Through storage, as `--dump` reads it: her saved record, judged
+    /// by the date at the time given.
+    #[test]
+    fn houseguest_loads_her_saved_record() {
+        let storage = crate::storage::Storage::open_in_memory().unwrap();
+        let none = Houseguest::load(&storage, midday(2026, 8, 1));
+        assert!(matches!(none.ledger, Ok(None)), "{none:?}");
+        storage
+            .set_setting("houseguest_ledger", Some(RECORD))
+            .unwrap();
+        let json = houseguest_json(&Houseguest::load(&storage, midday(2026, 8, 1))).unwrap();
+        assert_eq!(json["visits"], json!(7));
+        assert_eq!(json["slot"], json!("Morning"));
+        let by = json["vacation_by"].as_str().unwrap();
+        assert!(by.contains("2026-08-01"), "{by}");
+    }
+
+    /// Through storage: a garbled setting is a note.
+    #[test]
+    fn houseguest_garbled_setting_is_a_note() {
+        let storage = crate::storage::Storage::open_in_memory().unwrap();
+        storage
+            .set_setting("houseguest_ledger", Some("{garbage"))
+            .unwrap();
+        let guest = Houseguest::load(&storage, midday(2026, 10, 5));
+        assert!(guest.ledger.is_err());
+        let json = houseguest_json(&guest).unwrap();
+        let note = json["note"].as_str().unwrap();
+        assert!(note.contains("houseguest ledger"), "{note}");
+    }
+
+    /// Her section is document-level: asking for it alone resolves no
+    /// state, and it's emitted without a sync database.
+    #[test]
+    fn houseguest_section_is_document_level() {
+        let sel = Selection::parse(&["houseguest".to_string()]).unwrap();
+        assert!(!sel.wants_state());
+        let guest = Houseguest {
+            ledger: Ok(None),
+            date: None,
+        };
+        let doc = build("db", &Settings::default(), &[], &guest, None, &sel).unwrap();
+        assert_eq!(doc["houseguest"]["as_of"], json!("the last save"));
+        assert!(doc.get("settings").is_none());
+        let all = build(
+            "db",
+            &Settings::default(),
+            &[],
+            &guest,
+            None,
+            &Selection::all(),
+        )
+        .unwrap();
+        assert!(all.get("houseguest").is_some());
+        let settings_only = Selection::parse(&["settings".to_string()]).unwrap();
+        let doc = build(
+            "db",
+            &Settings::default(),
+            &[],
+            &guest,
+            None,
+            &settings_only,
+        )
+        .unwrap();
+        assert!(doc.get("houseguest").is_none());
+        assert!(doc.get("settings").is_some());
+    }
+
     #[test]
     fn settings_dump_includes_subtitle_speaker_preferences() {
         let settings = Settings {
@@ -442,5 +709,22 @@ mod tests {
         assert_eq!(json["subtitle_speaker_names"], json!(true));
         assert_eq!(json["subtitle_speaker_colors"], json!(false));
         assert_eq!(json["subtitle_speaker_overflow"], json!("DisableColors"));
+    }
+
+    /// Whether she visits at all, and stays, is the first thing to check
+    /// when her record isn't moving.
+    #[test]
+    fn settings_dump_includes_houseguest_settings() {
+        let settings = Settings {
+            houseguest: crate::config::Houseguest::Off,
+            houseguest_resident: false,
+            ..Settings::default()
+        };
+        let json = settings_json(&settings);
+        assert_eq!(json["houseguest"], json!("Off"));
+        assert_eq!(json["houseguest_resident"], json!(false));
+        let json = settings_json(&Settings::default());
+        assert_eq!(json["houseguest"], json!("After(60s)"));
+        assert_eq!(json["houseguest_resident"], json!(true));
     }
 }

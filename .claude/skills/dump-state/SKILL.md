@@ -43,11 +43,13 @@ cargo run -q --bin dessplay -- --dump \
 
 ## Document shape
 
-Top level: `database`, `epoch`, `settings`, `media_roots`, `state`.
-Everything else is a field of `state`. Selectable `--section` names:
+Top level: `database`, `epoch`, `settings`, `media_roots`, `houseguest`,
+`state`. Everything else is a field of `state`. Selectable `--section`
+names:
 
 | Section | Shape | Notes |
 |---|---|---|
+| `houseguest` | object (top level) | her record as of the last save: see "Her record" below |
 | `playlist` | array, display order | `{hash, filename, added_by, size_bytes, duration_millis}` |
 | `watched` | `{hex_hash: bool}` | group watched flags (server-written at EOF) |
 | `now_playing` | hex hash or null | the current file |
@@ -106,6 +108,39 @@ cargo run -q --bin dessplay -- --dump \
 # the clauses together, not in priority order) — for a disputed case,
 # read series_identity.rs.
 ```
+
+**Her record** (the houseguest's saved ledger, the local
+`houseguest_ledger` setting; never synced):
+```bash
+cargo run -q --bin dessplay -- --dump --section houseguest 2>/dev/null | jq '.houseguest'
+# Just her time and pity:
+... | jq '.houseguest | {game_time, slot, vacation, idle_min, pity}'
+```
+- Not moving? Check `.settings.houseguest` (`Off`, or `After(<delay>)`)
+  and `.settings.houseguest_resident` first (add `--section settings`): her idle minutes count only
+  with her gate open, and her clock only once she has met you.
+- It's **as of the last save** (`as_of`): a running client saves events
+  at once but her clock and idle counter only in batches (every 30 game
+  minutes), at each change of her slot, and on exit, so it can trail
+  what's on screen.
+- `clock_min` is game minutes since Monday 16:00 of game day 0 (her clock
+  runs 6x real time while dessplay is open, once she has met you, with
+  each step capped at ten real minutes); `game_time`/`slot` are derived
+  from it. `slot` is judged with school out or not by today's date **as
+  the client counts it: the day starts at 09:00**, so before 09:00 it's
+  yesterday's (`vacation_by` names it); a running client latches each
+  game day's flag at that day's first read, so the two can differ on a
+  day the date turned.
+- `pity.<tier>.since_new_min` counts real idle minutes since she last
+  showed something new of that tier; at `certain_at_min` a draw is sure to
+  make an unseen one new. Pity runs only while `running` (something of the
+  tier is still `unseen`); otherwise the counters mean nothing. `seen`
+  lists what she has shown by stable id.
+- `owns` lists her pieces (`boxed` = still a parcel, `settled` = she's set
+  it in place); `ordered` is bought and not yet delivered.
+- No record yet, or one this build can't read, is a `note` instead (a
+  running client won't save over an unreadable one, unless she's moved
+  out in settings: "Osaka moved out" replaces it).
 
 **A user's full series preferences:**
 ```bash
