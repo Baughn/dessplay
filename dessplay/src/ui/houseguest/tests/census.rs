@@ -9,10 +9,14 @@
 //! ```text
 //! cargo test --release -p dessplay --lib visit_census -- --ignored --nocapture
 //! ```
+//!
+//! The day census ([`day_census`]) runs her routine instead: a game week
+//! from Monday 00:00 in each room, by the hour of her day.
 
 use super::*;
 use crate::ui::houseguest::brain::{Mood, Need, Want};
 use crate::ui::houseguest::mind::Loss;
+use crate::ui::houseguest::routine::{self, GameTime, Slot};
 use crate::ui::houseguest::script::{ANDAGI_COUNTS, Play, ScriptId, SpliceId};
 use std::collections::BTreeMap;
 
@@ -32,6 +36,10 @@ pub(super) struct Room {
     /// The frame and view once this many chat lines have arrived, where
     /// each one changes the screen (else the frame stays `real`).
     pub live: Option<fn(u64) -> (Buffer, IdleView)>,
+    /// Her clock as [`day_census`] begins, her routine fed to her; `None`
+    /// for the visit censuses, which run her unfed (5a's tables: her
+    /// visit by its own hour, not her day's).
+    pub start: Option<GameTime>,
 }
 
 /// The stage room: an evening's chat, a visitor, nothing owned.
@@ -45,6 +53,7 @@ pub(super) fn stage_room() -> Room {
         owns: &[],
         chat_every: Some(45_000),
         live: None,
+        start: None,
     }
 }
 
@@ -72,6 +81,7 @@ pub(super) fn furnished_room() -> Room {
         ],
         chat_every: Some(90_000),
         live: None,
+        start: None,
     }
 }
 
@@ -96,6 +106,7 @@ pub(super) fn resident_room() -> Room {
         owns: &[Furniture::Sofa, Furniture::Tv],
         chat_every: Some(60_000),
         live: None,
+        start: None,
     }
 }
 
@@ -113,6 +124,7 @@ pub(super) fn live_room() -> Room {
         owns: &[],
         chat_every: Some(45_000),
         live: Some(live_frame),
+        start: None,
     }
 }
 
@@ -287,7 +299,13 @@ fn arrive_drawn(
     draw: impl FnOnce(&mut Guest),
 ) -> Guest {
     // Unfed: the censuses measure her by the hour of the visit, not of
-    // her day (5a's tables; a census of her day starts her at a time).
+    // her day (5a's tables; a census of her day starts her at a time:
+    // see [`day_guest`]).
+    assert!(
+        room.start.is_none(),
+        "{}: a visit census is unfed",
+        room.name
+    );
     let mut guest = Guest::new(seed).unfed();
     draw(&mut guest);
     guest.cue(Scene::Arrive);
@@ -865,6 +883,490 @@ fn image_census() {
                 "  {minutes:>3} min: most distinct {distinct}, largest working set {working}, most held {:.1} MB, most encoded again {again:?} by {LIMITS:?}",
                 *bytes as f64 / 1024.0 / 1024.0
             );
+        }
+    }
+}
+
+// ---- Her day ----
+
+/// Monday 00:00, the day census's start: her second Monday (her clock
+/// started at 16:00 on the first).
+const MONDAY: GameTime = GameTime { day: 7, h: 0, m: 0 };
+
+/// A game week, in real millis at her clock's speed.
+const WEEK_MS: u64 = 7 * 24 * 60 * 60_000 / CLOCK_SPEED;
+
+/// Her home for the day census: the census home's pieces, with her wall
+/// clock and her window (so she can glance at the one and look out of
+/// the other).
+const DAY_HOME: [Furniture; 9] = [
+    Furniture::Sofa,
+    Furniture::Tv,
+    Furniture::Bed,
+    Furniture::Desk,
+    Furniture::Bookshelf,
+    Furniture::Fridge,
+    Furniture::Lamp,
+    Furniture::Clock,
+    Furniture::Window,
+];
+
+/// The day census's rooms: the stage (nothing owned), her home with a
+/// clock and a window, and the resident's (a sofa and a TV, her wall
+/// clock not yet sent: it comes in the week), each from [`MONDAY`].
+fn day_rooms() -> [Room; 3] {
+    [
+        Room {
+            start: Some(MONDAY),
+            ..stage_room()
+        },
+        Room {
+            owns: &DAY_HOME,
+            start: Some(MONDAY),
+            ..furnished_room()
+        },
+        Room {
+            start: Some(MONDAY),
+            ..resident_room()
+        },
+    ]
+}
+
+/// Her in `room` from `seed` as its day census begins, the real date
+/// `date`: a home she has visited once, her clock at `room.start`, her
+/// pieces each where the visit census puts them (given on an unfed
+/// arrival, then carried over), her wall clock sent if she owns one;
+/// absent, and coming as the idle gate opens.
+fn day_guest(room: &Room, seed: u64, date: Option<chrono::NaiveDate>) -> Guest {
+    let start = room.start.expect("a day census room starts at a time");
+    let unfed = Room {
+        start: None,
+        real: room.real.clone(),
+        view: room.view.clone(),
+        ..*room
+    };
+    let given = arrive_in(&unfed, seed, false, None);
+    let State::Visiting(visit) = &given.state else {
+        panic!(
+            "{} seed {seed}: never arrived to be given her pieces",
+            room.name
+        );
+    };
+    for item in room.owns {
+        assert!(
+            visit.shown.iter().any(|s| s.item == *item && !s.boxed),
+            "{} seed {seed}: {item:?} not shown: {:?}",
+            room.name,
+            visit.shown
+        );
+    }
+    let mut ledger = Ledger::new_at(seed, start);
+    ledger.home = given.ledger.home.clone();
+    ledger.clock_sent = ledger.home.owns(Furniture::Clock);
+    let mut guest = Guest::restore(ledger);
+    guest.set_date(date);
+    guest
+}
+
+/// Where her time goes, as the day census counts it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Where {
+    /// Visiting, awake and in sight.
+    Present,
+    /// On a dash home from school, in sight.
+    Dash,
+    /// Asleep for the night.
+    Asleep,
+    /// Visiting but out of sight (at work, through a door).
+    Hidden,
+    /// Out by her routine (at school): her empty home shown, or nothing.
+    Away,
+    /// Not here otherwise (coming, going, waiting for the idle gate).
+    Gone,
+}
+
+impl Where {
+    const ALL: [Where; 6] = [
+        Where::Present,
+        Where::Dash,
+        Where::Asleep,
+        Where::Hidden,
+        Where::Away,
+        Where::Gone,
+    ];
+
+    /// Its column heading.
+    fn label(self) -> &'static str {
+        match self {
+            Where::Present => "here",
+            Where::Dash => "dash",
+            Where::Asleep => "asleep",
+            Where::Hidden => "hidden",
+            Where::Away => "away",
+            Where::Gone => "gone",
+        }
+    }
+
+    /// Where `guest` is at `now`.
+    fn of(guest: &Guest, now: u64) -> Where {
+        match &guest.state {
+            State::Visiting(visit) if visit.osaka.sleeping() => Where::Asleep,
+            State::Visiting(visit) if visit.osaka.hidden(now) => Where::Hidden,
+            State::Visiting(visit) if visit.kind == Kind::Dash => Where::Dash,
+            State::Visiting(_) | State::Leaving(_) => Where::Present,
+            State::Away(_) => Where::Away,
+            State::Absent | State::Arriving(_) if guest.out.is_some() => Where::Away,
+            State::Absent | State::Arriving(_) => Where::Gone,
+        }
+    }
+}
+
+/// A stretch of her day (an hour of it, or a slot), over the census's
+/// runs.
+#[derive(Clone, Default)]
+struct Stretch {
+    /// Real millis by where she was.
+    at: BTreeMap<Where, u64>,
+    /// Real millis awake and in sight, by census group.
+    groups: BTreeMap<&'static str, u64>,
+    /// What happened, by name: comings and goings, vignettes, the
+    /// calendar, rare things first seen.
+    events: BTreeMap<String, usize>,
+}
+
+impl Stretch {
+    /// The share of its time she was `at`, as a percentage.
+    fn share(&self, at: Where) -> f64 {
+        pct(
+            self.at.get(&at).copied().unwrap_or(0),
+            self.at.values().sum(),
+        )
+    }
+
+    /// Its line: where she was (%), the groups awake and in sight (% of
+    /// that time), and what happened (counts over all runs).
+    fn line(&self) -> String {
+        let at: Vec<String> = Where::ALL
+            .iter()
+            .map(|&w| format!("{:>5.1}", self.share(w)))
+            .collect();
+        let awake: u64 = self.groups.values().sum();
+        let mut groups: Vec<(&&str, &u64)> = self.groups.iter().collect();
+        groups.sort_by_key(|(_, ms)| std::cmp::Reverse(**ms));
+        let groups: Vec<String> = groups
+            .iter()
+            .take(4)
+            .map(|(g, ms)| format!("{g} {:.0}", pct(**ms, awake)))
+            .collect();
+        let events: Vec<String> = self
+            .events
+            .iter()
+            .map(|(e, n)| format!("{e} {n}"))
+            .collect();
+        format!(
+            "{} | {} | {}",
+            at.join(" "),
+            groups.join(", "),
+            events.join(", ")
+        )
+    }
+
+    fn add(&mut self, other: &Stretch) {
+        for (k, v) in &other.at {
+            *self.at.entry(*k).or_default() += v;
+        }
+        for (k, v) in &other.groups {
+            *self.groups.entry(k).or_default() += v;
+        }
+        for (k, v) in &other.events {
+            *self.events.entry(k.clone()).or_default() += v;
+        }
+    }
+}
+
+/// What one census week came to.
+#[derive(Default)]
+struct Week {
+    /// By hour of the day, school days then days off.
+    hours: [[Stretch; 24]; 2],
+    /// By slot, school days then days off.
+    slots: [BTreeMap<String, Stretch>; 2],
+    /// Each game day's rare draw, as her first visit that day had it.
+    rares: Vec<String>,
+    /// What happened once, when (game day and time): the calendar played,
+    /// a rare thing first seen, her wall clock delivered.
+    once: Vec<String>,
+}
+
+/// How `guest` is, for her comings and goings: her state, how she's
+/// coming, and what kind of visit it is.
+fn phase(guest: &Guest) -> String {
+    match &guest.state {
+        State::Absent => "absent".to_owned(),
+        State::Arriving(how) => format!("arriving {how:?}"),
+        State::Visiting(visit) => format!("visiting {:?}", visit.kind),
+        State::Leaving(_) => "leaving".to_owned(),
+        State::Away(_) => "away".to_owned(),
+    }
+}
+
+/// The coming or going between `was` and `now` ([`phase`]s), if one.
+fn moved(was: &str, now: &str, out: bool) -> Option<&'static str> {
+    if was == now {
+        return None;
+    }
+    if now.starts_with("arriving Idle") {
+        Some("arrive")
+    } else if now.starts_with("arriving Return") {
+        Some("return")
+    } else if now == "visiting Dash" {
+        Some("dash in")
+    } else if now == "leaving" {
+        Some("goodbye")
+    } else if was == "visiting Normal" && !now.starts_with("visiting") && out {
+        Some("out to school")
+    } else {
+        None
+    }
+}
+
+/// "Tue 08:15" for the game time `day`.
+fn when(day: &routine::DayTime) -> String {
+    format!(
+        "{:?} {:02}:{:02}",
+        day.weekday,
+        day.minute / 60,
+        day.minute % 60
+    )
+}
+
+/// A game week of her in `room` from `seed`, the real date `date`, as the
+/// shell would run it: a tick when she asks (at least every second), the
+/// date set before it, a paint when it says the screen changed, a chat
+/// line as the room has them, nobody at the keys.
+fn live_week(room: &Room, seed: u64, date: Option<chrono::NaiveDate>) -> Week {
+    let mut guest = day_guest(room, seed, date);
+    let (real, mut view) = (room.real.clone(), room.view.clone());
+    // Her idle gate as the tests have it: a census of her day, not of
+    // the client's idle delay.
+    view.delay = Some(DELAY);
+    let mut week = Week::default();
+    let mut now = 0;
+    paint(&mut guest, &real, &view, now);
+    let mut was = phase(&guest);
+    let mut playing: Option<u64> = None;
+    let (mut seen, mut calendar, mut clock_sent) = (
+        guest.ledger.seen.len(),
+        guest.ledger.calendar_on,
+        guest.ledger.clock_sent,
+    );
+    let mut drawn: Option<u64> = None;
+    while now < WEEK_MS {
+        let day = guest.day(now).expect("fed, and met");
+        let off = usize::from(!day.school_day);
+        let hour = usize::from(day.minute / 60);
+        let slot = format!("{:?}", day.slot);
+        let step = guest
+            .next_tick(now)
+            .map_or(1000, |d| d.as_millis() as u64)
+            .clamp(1, 1000);
+        let at = Where::of(&guest, now);
+        let mut spent = Stretch::default();
+        spent.at.insert(at, step);
+        if let (Where::Present | Where::Dash, State::Visiting(visit)) = (at, &guest.state) {
+            spent.groups.insert(visit.osaka.census_group(), step);
+        }
+        week.hours[off][hour].add(&spent);
+        week.slots[off].entry(slot.clone()).or_default().add(&spent);
+        now += step;
+        if room
+            .chat_every
+            .is_some_and(|every| now / every != (now - step) / every)
+        {
+            // Every other line asks her something.
+            view.chat_mark.synced += 1;
+            view.chat_mark.synced_asks = view.chat_mark.synced.is_multiple_of(2);
+        }
+        guest.set_date(date);
+        let changed = guest.advance(now);
+        // Her comings and goings, as the tick left her and as the paint
+        // did (an arrival lasts only until the paint).
+        let mut events: Vec<String> = Vec::new();
+        let mut note = |guest: &Guest, was: &mut String| {
+            let is = phase(guest);
+            if let Some(event) = moved(was, &is, guest.out.is_some()) {
+                events.push(event.to_owned());
+            }
+            *was = is;
+        };
+        note(&guest, &mut was);
+        if changed {
+            paint(&mut guest, &real, &view, now);
+        }
+        note(&guest, &mut was);
+        if let State::Visiting(visit) = &guest.state {
+            let plays = visit.osaka.plays_since();
+            if let Some((since, play)) = plays
+                && playing != Some(since)
+            {
+                let lamp = visit
+                    .shown
+                    .iter()
+                    .any(|s| s.item == Furniture::Lamp && !s.boxed);
+                for (_, name) in named(play, lamp) {
+                    events.push(if play.own == ScriptId::ClockGlance {
+                        match play.branch {
+                            0 => "clock glance, bed".to_owned(),
+                            1 => "clock glance, school".to_owned(),
+                            _ => "clock glance, hour".to_owned(),
+                        }
+                    } else {
+                        name
+                    });
+                }
+            }
+            playing = plays.map(|(since, _)| since);
+            if let Some((day, rares)) = visit.osaka.rares_today()
+                && drawn != Some(day)
+            {
+                drawn = Some(day);
+                week.rares.push(format!(
+                    "day {day}: open {:?}, new {:?}",
+                    rares.open(),
+                    rares.new_one()
+                ));
+            }
+        } else {
+            playing = None;
+        }
+        let day = guest.day(now).expect("fed, and met");
+        let mut once = |what: String| week.once.push(format!("{} {what}", when(&day)));
+        if guest.ledger.seen.len() > seen {
+            for key in &guest.ledger.seen[seen..] {
+                events.push("first seen".to_owned());
+                once(format!("first seen: {key}"));
+            }
+            seen = guest.ledger.seen.len();
+        }
+        if guest.ledger.calendar_on != calendar {
+            calendar = guest.ledger.calendar_on;
+            events.push("calendar".to_owned());
+            once(format!("calendar played: {calendar:?}"));
+        }
+        if guest.ledger.clock_sent != clock_sent {
+            clock_sent = guest.ledger.clock_sent;
+            events.push("wall clock delivered".to_owned());
+            once("her wall clock delivered".to_owned());
+        }
+        let off = usize::from(!day.school_day);
+        let hour = usize::from(day.minute / 60);
+        let slot = format!("{:?}", day.slot);
+        for event in events {
+            *week.hours[off][hour]
+                .events
+                .entry(event.clone())
+                .or_default() += 1;
+            *week.slots[off]
+                .entry(slot.clone())
+                .or_default()
+                .events
+                .entry(event)
+                .or_default() += 1;
+        }
+    }
+    week
+}
+
+/// Her days: a game week from Monday 00:00 (her routine fed), in each
+/// room at a few seeds and on two real dates (Oct 31, which owes her
+/// calendar's greeting, and none, which owes nothing and has no
+/// vacation), as the shell runs her with nobody at the keys. Reports, by
+/// the hour of her day, school days and days off apart: where her time
+/// went (here, on a dash home, asleep, out of sight in a visit, away at
+/// school, or gone), her census groups while here and awake, and what
+/// happened (arrivals, going out to school, coming home, dash-ins,
+/// goodbyes, her vignettes, clock glances by kind, looking out of her
+/// window, the calendar, rare things first seen); then the same by slot,
+/// and each run's rare draws and one-off events. About a minute in
+/// release. Ignored; run by hand:
+///
+/// ```text
+/// cargo test --release -p dessplay --lib day_census -- --ignored --nocapture
+/// ```
+#[test]
+#[ignore = "the day census: run by hand in release with --nocapture"]
+fn day_census() {
+    const DAY_SEEDS: [u64; 3] = [0, 1, 2];
+    let dates = [date(2026, 10, 31), None];
+    for room in day_rooms() {
+        let started = std::time::Instant::now();
+        let room = &room;
+        let runs: Vec<((u64, Option<chrono::NaiveDate>), Week)> = std::thread::scope(|scope| {
+            let runs: Vec<_> = DAY_SEEDS
+                .iter()
+                .flat_map(|&seed| dates.iter().map(move |&date| (seed, date)))
+                .map(|(seed, date)| {
+                    (
+                        (seed, date),
+                        scope.spawn(move || live_week(room, seed, date)),
+                    )
+                })
+                .collect();
+            runs.into_iter()
+                .map(|(at, run)| (at, run.join().expect("a week")))
+                .collect()
+        });
+        let mut hours: [[Stretch; 24]; 2] = Default::default();
+        let mut slots: [BTreeMap<String, Stretch>; 2] = Default::default();
+        let mut whole = Stretch::default();
+        for (_, week) in &runs {
+            for (kind, row) in week.hours.iter().enumerate() {
+                for (hour, stretch) in row.iter().enumerate() {
+                    hours[kind][hour].add(stretch);
+                    whole.add(stretch);
+                }
+            }
+            for (kind, row) in week.slots.iter().enumerate() {
+                for (slot, stretch) in row {
+                    slots[kind].entry(slot.clone()).or_default().add(stretch);
+                }
+            }
+        }
+        eprintln!(
+            "\n== day census: {} ({} runs: seeds {DAY_SEEDS:?} × dates {dates:?}; a game week from Monday 00:00 each; {:.0} s)",
+            room.name,
+            runs.len(),
+            started.elapsed().as_secs_f64()
+        );
+        let heading = Where::ALL
+            .iter()
+            .map(|w| format!("{:>5}", w.label()))
+            .collect::<Vec<_>>()
+            .join(" ");
+        eprintln!("  the week: {heading} (%)\n            {}", whole.line());
+        for (kind, name) in [(0, "school days"), (1, "days off")] {
+            eprintln!(
+                "  {name}, by game hour: {heading} (%) | groups here and awake (%) | events (all runs)"
+            );
+            for (hour, stretch) in hours[kind].iter().enumerate() {
+                if stretch.at.is_empty() {
+                    continue;
+                }
+                eprintln!("    {hour:02}  {}", stretch.line());
+            }
+        }
+        for (kind, name) in [(0, "school days"), (1, "days off")] {
+            eprintln!("  {name}, by slot:");
+            for slot in Slot::ALL {
+                if let Some(stretch) = slots[kind].get(&format!("{slot:?}")) {
+                    eprintln!("    {:<9} {}", format!("{slot:?}"), stretch.line());
+                }
+            }
+        }
+        for ((seed, date), week) in &runs {
+            eprintln!("  seed {seed}, date {date:?}:");
+            eprintln!("    rares: {}", week.rares.join("; "));
+            eprintln!("    once: {}", week.once.join("; "));
         }
     }
 }

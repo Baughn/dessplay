@@ -8004,7 +8004,9 @@ fn each_prop_looks_distinct_in_each_mode() {
 /// room, cued to make a sofa, five-minute visits with chat every 37 s
 /// (in a phase that differs by seed) or none, what became of each piece she made — used (and how long after
 /// she made it), let be after her tries, lost (gone unused), or still
-/// waiting when the visit ended. Prints; run by hand in release.
+/// waiting when the visit ended. Her routine isn't fed to her (as
+/// before the clock: 16:00's afternoon would tilt her choices), so the
+/// census stays comparable across phases. Prints; run by hand in release.
 #[test]
 #[ignore]
 fn sofa_census() {
@@ -8017,7 +8019,9 @@ fn sofa_census() {
             for seed in 0..SEEDS {
                 let mut ui = stage_ui();
                 let (real, mut view) = real_frame(&mut ui, 100, 30);
-                let mut guest = Guest::new(seed);
+                // Unfed, as the census has always measured her: by the hour
+                // of the visit, not of her day (16:00's afternoon boosts).
+                let mut guest = Guest::new(seed).unfed();
                 if graphics {
                     guest.set_picker(kitty());
                 }
