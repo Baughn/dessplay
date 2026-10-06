@@ -58,6 +58,23 @@ pub(super) struct Room {
     pub start: Option<GameTime>,
 }
 
+impl Room {
+    /// The step from `now`: `step` long, but cut at the next chat line if
+    /// it would cross one; and whether a line comes at its end. So every
+    /// line comes at its own time, as in the client, not at the first
+    /// step past it (whose length her wakes set: a wake that changes
+    /// only how she looks would move what she does).
+    pub(super) fn step_from(&self, now: u64, step: u64) -> (u64, bool) {
+        match self.chat_every {
+            Some(every) => {
+                let to_line = every - now % every;
+                (step.min(to_line), step >= to_line)
+            }
+            None => (step, false),
+        }
+    }
+}
+
 /// The stage room: an evening's chat, a visitor, nothing owned.
 pub(super) fn stage_room() -> Room {
     let mut ui = stage_ui();
@@ -250,6 +267,9 @@ pub(super) struct Visit {
     /// bubbles that came up over her (each new one), in sight.
     pub exercise_starts: usize,
     pub bubbles: usize,
+    /// When each chat line arrived (ms): what the driver delivered, so
+    /// a test can hold it to the room's cadence.
+    pub lines: Vec<u64>,
 }
 
 impl Visit {
@@ -448,10 +468,13 @@ pub(super) fn visit_from(
     let mut answered: Option<u64> = None;
     let mut tally = Tally::default();
     while now < minutes * 60_000 {
-        let step = guest
-            .next_tick(now)
-            .map_or(1000, |d| d.as_millis() as u64)
-            .clamp(1, 1000);
+        let (step, line) = room.step_from(
+            now,
+            guest
+                .next_tick(now)
+                .map_or(1000, |d| d.as_millis() as u64)
+                .clamp(1, 1000),
+        );
         watch(&guest, now);
         if let State::Visiting(visit) = &guest.state {
             let doing = doing(&visit.osaka, now);
@@ -502,10 +525,8 @@ pub(super) fn visit_from(
         }
         now += step;
         let mut changed = false;
-        if room
-            .chat_every
-            .is_some_and(|every| now / every != (now - step) / every)
-        {
+        if line {
+            out.lines.push(now);
             if let Some(live) = room.live {
                 arrived += 1;
                 let mark = view.chat_mark;
@@ -1846,6 +1867,8 @@ struct Week {
     once: Vec<String>,
     /// By her mood that day.
     moods: BTreeMap<String, MoodWeek>,
+    /// When each chat line arrived (ms), as the driver delivered it.
+    lines: Vec<u64>,
 }
 
 /// How `guest` is, for her comings and goings: her state, how she's
@@ -1895,6 +1918,11 @@ fn when(day: &routine::DayTime) -> String {
 /// date set before it, a paint when it says the screen changed, a chat
 /// line as the room has them, nobody at the keys.
 fn live_week(room: &Room, seed: u64, date: Option<chrono::NaiveDate>) -> Week {
+    live_for(room, seed, date, WEEK_MS)
+}
+
+/// [`live_week`] for `until` ms from its start (a test's few minutes).
+fn live_for(room: &Room, seed: u64, date: Option<chrono::NaiveDate>, until: u64) -> Week {
     let mut guest = day_guest(room, seed, date);
     let (real, mut view) = (room.real.clone(), room.view.clone());
     // Her idle gate as the tests have it: a census of her day, not of
@@ -1912,15 +1940,18 @@ fn live_week(room: &Room, seed: u64, date: Option<chrono::NaiveDate>) -> Week {
     );
     let mut drawn: Option<u64> = None;
     let mut set_offs = 0;
-    while now < WEEK_MS {
+    while now < until {
         let day = guest.day(now).expect("fed, and met");
         let off = usize::from(!day.school_day);
         let hour = usize::from(day.minute / 60);
         let slot = format!("{:?}", day.slot);
-        let step = guest
-            .next_tick(now)
-            .map_or(1000, |d| d.as_millis() as u64)
-            .clamp(1, 1000);
+        let (step, line) = room.step_from(
+            now,
+            guest
+                .next_tick(now)
+                .map_or(1000, |d| d.as_millis() as u64)
+                .clamp(1, 1000),
+        );
         let at = Where::of(&guest, now);
         let mut spent = Stretch::default();
         spent.at.insert(at, step);
@@ -1959,10 +1990,8 @@ fn live_week(room: &Room, seed: u64, date: Option<chrono::NaiveDate>) -> Week {
         week.hours[off][hour].add(&spent);
         week.slots[off].entry(slot.clone()).or_default().add(&spent);
         now += step;
-        if room
-            .chat_every
-            .is_some_and(|every| now / every != (now - step) / every)
-        {
+        if line {
+            week.lines.push(now);
             // Every other line asks her something.
             view.chat_mark.synced += 1;
             view.chat_mark.synced_asks = view.chat_mark.synced.is_multiple_of(2);
@@ -2244,6 +2273,68 @@ fn the_fed_afternoon_tallies_add_up() {
             }
         }
         assert!(hidden > 0, "graphics={graphics}: never out of sight");
+    }
+}
+
+/// The census's chat lines come at their own times, each exactly once:
+/// the visit is stepped to each line's moment (a step that would cross
+/// one is cut there) and the line is delivered at that step's end, so
+/// she sees each as the client would, not at the first step past it,
+/// whose length her wakes set (a wake that changes only how she looks,
+/// a blink's, used to move the chat cells; step 8's hand-off). Both
+/// drivers: [`visit_from`] in each census room at its cadence, both
+/// drawing modes, unfed and fed, and [`live_week`]'s ([`live_for`]) in
+/// each day room; a quiet room gets no line from either.
+#[test]
+fn chat_lines_come_at_their_own_time() {
+    const MINUTES: u64 = 4;
+    let end = MINUTES * 60_000;
+    // A line at the run's very end comes too: the step to it is the
+    // run's last.
+    let due =
+        |every: u64| -> Vec<u64> { (1..).map(|k| k * every).take_while(|&t| t <= end).collect() };
+    for graphics in [false, true] {
+        for room in [stage_room(), furnished_room(), resident_room()] {
+            let every = room.chat_every.expect("a census room chats");
+            let at = format!("{} graphics={graphics}", room.name);
+            let mut stepped = Vec::new();
+            let guest = arrive_in(&room, 1, graphics, None);
+            let (unfed, _) = visit_from(&room, guest, MINUTES, |_, now| stepped.push(now));
+            let fed_room = at_afternoon(room);
+            let mut fed_stepped = Vec::new();
+            let guest = fed_afternoon(&fed_room, 1, graphics, Mood::Ordinary);
+            let (fed, _) = visit_from(&fed_room, guest, MINUTES, |_, now| fed_stepped.push(now));
+            for (how, stepped, visit) in [("unfed", stepped, unfed), ("fed", fed_stepped, fed)] {
+                for &line in due(every).iter().filter(|&&t| t < end) {
+                    assert!(
+                        stepped.binary_search(&line).is_ok(),
+                        "{at} {how}: no step lands on the line at {line} ms"
+                    );
+                }
+                assert_eq!(visit.lines, due(every), "{at} {how}: the lines delivered");
+            }
+            let quiet = with_chat(&fed_room, true);
+            let guest = fed_afternoon(&quiet, 1, graphics, Mood::Ordinary);
+            let (visit, _) = visit_from(&quiet, guest, MINUTES, |_, _| ());
+            assert_eq!(visit.lines, Vec::<u64>::new(), "{at} quiet: no line");
+        }
+    }
+    for room in day_rooms() {
+        let every = room.chat_every.expect("a day room chats");
+        let week = live_for(&room, 1, None, end);
+        assert_eq!(
+            week.lines,
+            due(every),
+            "{} day: the lines delivered",
+            room.name
+        );
+        let week = live_for(&with_chat(&room, true), 1, None, end);
+        assert_eq!(
+            week.lines,
+            Vec::<u64>::new(),
+            "{} day quiet: no line",
+            room.name
+        );
     }
 }
 
