@@ -383,3 +383,52 @@ section first.
 11. D6: the window as a daydream; glance re-check; the band re-read on a windowed home.
 12. D7: the TV picture (held pictures, then the mpv screenshot path).
 13. Census pass and docs (as step 11 before).
+
+## Round-2 amendments (2026-10-06): the art, and steps 1–4's hand-offs
+
+### The art, approved by the user
+
+The sheet, its wiring notes and the code diff are in [phase5c/art/](phase5c/art/) (`snippets.md` maps
+each item to its `Pose`, `Rig` and hold); the poses and parts are in the tree, unwired. Two rounds of
+the user's redraws:
+- **Floor homework** (`FloorHomework`): lying on her front, the paper out in front of her face (her arms
+  reach only under her chin, so she writes at its near edge); a doze with her head on her arms.
+- **Reading on her back** (`LieRead`, new, the user's idea): holding the book close over her face; a
+  doze with the book turned side-on over her eyes ("which is largely why one uses books this way").
+  It serves floor reading, and floor homework with a book.
+- **The paper desk** (`PaperDesk`): kneeling in seiza at a 4×2 block of crumpled text.
+- **Reading a torn strip** (`ReadStrip`), **cross-legged at the TV** (`CrossLegged`), **the sitting doze**
+  (`SitDoze`, "looks great": a second settle-in branch from Sit), **looking up in place** and stirring
+  (no new heads; LieBack and Nap don't flip to face the chat), **the TV's four programme cards**.
+- **The window hangs lower** so she can lean on the sill, chin in her hands (`SillLean`); it may be
+  drawn **behind a sofa** (the user: fine for the sofa, unlike other furniture), but must still clear
+  every other standing piece. `UnderSill` and `SitDoze` before it are the settle-in poses. Wiring (step
+  11): the new hang, a sofa-only exception in `hung_pieces_clear_every_standing_piece` and the placement
+  rules (one overlap rule for floor and wall), the window drawn before standing furniture, where she
+  stands to lean. Existing homes' windows move with the new hang (check the ledger keeps them valid).
+- **Cloud-watching only lying under a window** (or a solarium, which remains to do).
+
+### Hand-offs from steps 1–4 (their commits carry the detail)
+
+- **Step 1** made fades live on `Guest`, and `paint_state` returns `Rains` so each arm decides who
+  paints them. Rule: a rain is cut short only when she's sent away (off, moved out) or her room goes;
+  every other exit lets it fall. A goodbye overlapping a rain wakes about twice the paint rate. Still
+  open: a busy client's `school_out` makes the empty home vanish with no rain (other class).
+- **Step 2** credits SpaceOut and Work, and `cut_shift` settles a cut shift by the share worked (the
+  errand, `place`/`dash_through`, school, her next decision on the way out). **Deferred to step 8:**
+  needs should rise to the credit's moment before it lands (`rise_to` at the top of `serve`); landing
+  it alone collapses late-visit dozing in `her_needs_shape_long_visits` (rates were tuned while credits
+  were lost), so it lands with the tuning, un-ignoring `a_credit_eases_her_needs_as_they_are`.
+  SpaceOut stays not restful for Beauty ("done on her feet").
+- **Step 3**'s baseline: [phase5c/baseline.md](phase5c/baseline.md). Every home and resident cell is
+  over its ceiling (lazy 29–35, ordinary/dreamy 28–47, industrious 35–51); the line-art stage is near
+  or inside the band but its set-offs (4–5 a minute) bind; industrious ÷ lazy is only 1.2–1.6; the
+  home and resident numbers don't depend on drawing mode (no text in her reach there).
+- **Step 4**'s band tests (`tests/band.rs`) are ignored until step 8. The gate runs 2 seeds: there, 3σ
+  is 13–34 points, so the gate catches only gross excess and the set-off cap; **full strength**
+  (`CENSUS_BAND_SEEDS`, `--profile band`, N up to 187, minutes) is the real check, run at step
+  boundaries from step 5 on and in step 13. Step 5 re-baselines at the band's 9-minute length
+  (`CENSUS_MINUTES=9 CENSUS_MODES=line fed_afternoon_census`, `BASELINE_MINUTES = 9`). Step 7's
+  lengths go through `use_duration_in`, `Activity::duration` or `SPACE_OUT_MS` (or `longest_still_ms`
+  learns what they use). Step 8 fills all 24 `TUNED` rows from one 9-minute line-art census. Step 11
+  adds a TV-only home print and a home or resident with text at her floors' heights.
