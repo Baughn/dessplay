@@ -105,8 +105,7 @@ pub(super) enum Pose {
     #[cfg_attr(not(test), allow(dead_code))]
     UnderSill,
     /// Dozing off sitting on the floor, head sinking onto her knees
-    /// (frame 1 lower). Phase 5c art, not yet wired.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// (frame 1 lower): settled into from sitting (phase 5c).
     SitDoze(u8),
     /// Lying on her back reading, an open book held up over her face
     /// (frame 1 turns a page); dozed off with it open on her face (2).

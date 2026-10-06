@@ -1532,6 +1532,44 @@ this section states what is built.
   nothing. Needs only weight choices: nothing is ever ruled out,
   and nothing bad happens when a need is high
   (why: [decisions](decisions.md#houseguest-chooses-by-needs-among-the-top-few-2026-09-28)).
+  **Settling in**: a still act she chose that runs its course on calm
+  floor may settle further where she is, without walking or turning, as
+  often as her mood's odds: spacing out (musing, a riddle, her rare
+  musing) or gazing, to sitting; sitting, to lying back or dozing where she sits (her head
+  sinking onto her knees); lounging, to a nap from the same seat of the
+  same sofa (when napping there is on offer). Lying back, a doze and a
+  nap are as far as it goes. Like a leftover or a heading it's a
+  continuation of what she chose, not a new choice: it skips the roll,
+  isn't one of her recent choices, and eases her as its own want
+  (dozing where she sits as lying back does). It comes after her
+  routine, a beat she owes, a heading and a piece she's moving or made.
+  Watching the chat as the act ran out, she settles first and watches on
+  in her new pose (a doze, a nap included, wears no look: on a sofa she
+  faces as its seat does), unless one of those is waiting: then she
+  stands the watch out, and it comes next. Never after what she didn't
+  choose (a glance at her clock, Setsubun, the moment after a swap, a
+  trial sit), nor what was cut short. **Lingering**: her mood stretches
+  the length she draws for a still act she chose (sitting, lying back,
+  gazing, dozing where she sits, spacing out (her rare musing too),
+  lounging, napping, a day's sleep, watching, reading, looking out); not
+  exercise, lying on her front, chores, a snack, the cat, homework (her
+  mood moves where it nods off instead), her night or a trial sit. **A
+  daydream** (a musing spacing-out) holds as many musings as her mood's
+  whim says, the first as ever (or a riddle, which holds no more), each
+  next a gap on while it lasts, waiting while she speaks or looks up at
+  the chat; those that don't fit before it ends go unsaid; with none she
+  only spaces out. Her rare musing and a glance at her clock aren't
+  musings of hers: they take a daydream's place at their own odds in
+  every mood, a daydream of none included, and hold no more. Her
+  musings cool as any line does (ten minutes each, eight of them), so
+  back-to-back daydreams use them up and say less. **Nearer spots**: a line to pull, letters to swap and text to make
+  a piece of are on her own floor whenever it has any, the nearer
+  likelier; a seat is likelier the nearer it is (another floor counts as
+  40 columns more), and none is ruled out; where she wanders has no
+  weight. The values (odds, stretch, musings, nod-off, nearness on or
+  off) are the stillness band's tuning (phase 5c step 8); until it, each
+  lever is neutral
+  (why: [decisions](decisions.md#her-stillness-levers-settling-in-lingering-daydreams-nearer-spots-2026-10-06)).
   Something is on offer only when there's a way to do it from where she
   stands (a method that binds: a spot on her floor, a way off it, a
   piece, text in reach), and she does it the way that bound.

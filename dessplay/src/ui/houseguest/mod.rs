@@ -80,6 +80,7 @@ mod scrap;
 mod script;
 mod sprite;
 pub mod stage;
+mod stillness;
 mod terrain;
 
 use std::time::Duration;

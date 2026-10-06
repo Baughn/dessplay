@@ -262,7 +262,9 @@ fn what_she_chooses_eases_what_it_serves() {
             check(&mut room, Want::SpaceOut, method, 3 * MINUTE),
         );
     }
-    for what in Activity::ALL {
+    // (Those she only settles into are credited as they end: osaka.rs's
+    // settling tests.)
+    for what in Activity::ALL.into_iter().filter(|a| a.chosen()) {
         let mut room = stage_room(2, &[]);
         let want = Want::Idle(what);
         note(want, "idle", check(&mut room, want, "idle", 3 * MINUTE));

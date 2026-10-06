@@ -1,0 +1,203 @@
+//! Her stillness levers (phase 5c, D4 as amended by M6–M8 and B6): how a
+//! mood stretches the still acts she chooses (lingering), how often a
+//! still act that ran its course settles further where she is (settling
+//! in), how many musings a daydream holds, where her homework nods off,
+//! and whether nearer spots draw her. One table holds them all, so the
+//! tuning that pins the stillness band changes values here and nowhere
+//! else.
+//!
+//! What ships is [`SHIPPED`]: [`Stillness::NEUTRAL`] until the band is
+//! tuned (phase 5c step 8), every lever as it was before it existed (each
+//! linger 1, no settling, one musing a daydream, homework nodding off
+//! halfway, no nearness), so the mechanisms land without moving anything
+//! she does. Tests turn a lever on by setting [`Osaka`]'s table.
+//!
+//! [`Osaka`]: super::osaka::Osaka
+
+use super::brain::Mood;
+
+/// One value per mood.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct ByMood<T> {
+    pub ordinary: T,
+    pub lazy: T,
+    pub industrious: T,
+    pub dreamy: T,
+}
+
+impl<T: Copy> ByMood<T> {
+    /// The same in every mood.
+    pub const fn all(value: T) -> Self {
+        Self {
+            ordinary: value,
+            lazy: value,
+            industrious: value,
+            dreamy: value,
+        }
+    }
+
+    pub fn of(&self, mood: Mood) -> T {
+        match mood {
+            Mood::Ordinary => self.ordinary,
+            Mood::Lazy => self.lazy,
+            Mood::Industrious => self.industrious,
+            Mood::Dreamy => self.dreamy,
+        }
+    }
+
+    #[cfg(test)]
+    fn each(&self) -> [T; 4] {
+        [self.ordinary, self.lazy, self.industrious, self.dreamy]
+    }
+}
+
+/// Where her homework nods off: the branch of its script that writes
+/// for this share of its body, nods for half what's left, then sleeps on
+/// the paper (see `script::HOMEWORK`, whose branches are in this order).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub(super) enum NodOff {
+    /// Writing for the first half (as homework always has).
+    Half,
+    /// A third.
+    Third,
+    /// Five sixths.
+    FiveSixths,
+}
+
+impl NodOff {
+    /// Its branch of the homework script.
+    pub fn branch(self) -> u8 {
+        match self {
+            Self::Half => 0,
+            Self::Third => 1,
+            Self::FiveSixths => 2,
+        }
+    }
+}
+
+/// The stillness levers, by mood where a mood bears on one.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct Stillness {
+    /// Times the length she draws for a still act she chose: sitting,
+    /// lying back, gazing; spacing out (musing, or her rare musing); and
+    /// the still uses (lounging, napping, watching, reading, looking out,
+    /// a day's sleep). Never exercise, chores, lying on her front kicking
+    /// her feet (it draws the eye), homework (its nod-off moves instead),
+    /// her night, a trial sit, a glance, Setsubun or the moment after a
+    /// swap. See [`Activity::lingers`] and [`Use::lingers`].
+    ///
+    /// [`Activity::lingers`]: super::osaka::Activity::lingers
+    /// [`Use::lingers`]: super::room::Use::lingers
+    pub linger: ByMood<f64>,
+    /// The odds, as a still act she chose (or settled into) runs its
+    /// course, that she settles further where she is: spacing out or
+    /// gazing to sitting, sitting to lying back (or dozing where she
+    /// sits), lounging to a nap on the same sofa.
+    pub settle: ByMood<f64>,
+    /// Settling from sitting, the odds she dozes off sitting up rather
+    /// than lying back.
+    pub sit_doze: f64,
+    /// The musings a daydream session holds (from, to: both included),
+    /// the first as her musing has always been (or a riddle, her rare
+    /// musing, a glance at her clock, which hold no more); each next one
+    /// said [`Stillness::musing_gap`] after the last while the session
+    /// lasts. None: she only spaces out.
+    pub musings: ByMood<(u8, u8)>,
+    /// The gap between one musing of a session and the next (ms, from
+    /// and to).
+    pub musing_gap: (u64, u64),
+    /// Where her homework nods off.
+    pub nod_off: ByMood<NodOff>,
+    /// Nearer spots: a line to pull, letters to swap or text to make a
+    /// piece of on her own floor strictly first when it has any, then
+    /// nearer ones likelier; a seat likelier the nearer it is (see
+    /// `mind::Near`).
+    pub near: bool,
+}
+
+impl Stillness {
+    /// Every lever as before it was made: what ships until the band is
+    /// tuned.
+    pub const NEUTRAL: Self = Self {
+        linger: ByMood::all(1.0),
+        settle: ByMood::all(0.0),
+        sit_doze: 0.0,
+        musings: ByMood::all((1, 1)),
+        musing_gap: (12_000, 20_000),
+        nod_off: ByMood::all(NodOff::Half),
+        near: false,
+    };
+
+    /// The design's starting values (phase 5c D4, M8, B6), before the
+    /// band tunes them: a lazy Osaka lingers and settles most, an
+    /// industrious one least; a dreamy one lingers and settles as an
+    /// ordinary one does, and differs by her daydreams.
+    ///
+    /// Not shippable alone: its musings need the longer spacing out D4
+    /// asks for (with today's 6–14 s, a session's second musing, 12 s
+    /// or more on, seldom fits and goes unsaid), and watching lingers
+    /// over TV snow until D7's held picture. Both come with the tuning.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub const STARTING: Self = Self {
+        linger: ByMood {
+            ordinary: 1.0,
+            lazy: 1.5,
+            industrious: 0.7,
+            dreamy: 1.0,
+        },
+        settle: ByMood {
+            ordinary: 0.35,
+            lazy: 0.6,
+            industrious: 0.15,
+            dreamy: 0.35,
+        },
+        sit_doze: 0.5,
+        musings: ByMood {
+            ordinary: (1, 3),
+            lazy: (0, 2),
+            industrious: (0, 1),
+            dreamy: (2, 4),
+        },
+        musing_gap: (12_000, 20_000),
+        nod_off: ByMood {
+            ordinary: NodOff::Half,
+            lazy: NodOff::Third,
+            industrious: NodOff::FiveSixths,
+            dreamy: NodOff::Half,
+        },
+        near: true,
+    };
+
+    /// `ms` drawn for a still act she chose, lingered as her `mood` does.
+    pub fn lingered(&self, mood: Mood, ms: u64) -> u64 {
+        (ms as f64 * self.linger.of(mood)).round() as u64
+    }
+
+    /// `ms`, as long as the most lingering mood lingers over it if it
+    /// `lingers`.
+    #[cfg(test)]
+    pub fn lingered_most(&self, lingers: bool, ms: u64) -> u64 {
+        if lingers {
+            (ms as f64 * self.most_linger()).round() as u64
+        } else {
+            ms
+        }
+    }
+
+    /// Whether any mood settles in at all.
+    #[cfg(test)]
+    pub fn settles(&self) -> bool {
+        self.settle.each().into_iter().any(|odds| odds > 0.0)
+    }
+
+    /// The most any mood lingers (at least 1: a mood that lingers less
+    /// shortens no act past its table's longest).
+    #[cfg(test)]
+    pub fn most_linger(&self) -> f64 {
+        self.linger.each().into_iter().fold(1.0, f64::max)
+    }
+}
+
+/// The levers as she ships with them.
+pub(super) const SHIPPED: Stillness = Stillness::NEUTRAL;

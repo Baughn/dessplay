@@ -1347,27 +1347,41 @@ const fn night(pose: Posed) -> Key {
     )
 }
 
-/// Writing for the first half, then nodding off onto the paper.
-const HOMEWORK: &[&[Key]] = &[&[
-    key(
-        Span::Upto(1, 2),
-        Posed::Bob(Pose::Homework, USE_FRAME_MS),
-        Face::Vacant,
-        None,
-    ),
-    key(
-        Span::Upto(3, 4),
-        Posed::Still(Pose::Homework(2)),
-        Face::Blink,
-        bubble(Bubble::Dots),
-    ),
-    key(
-        Span::Rest,
-        Posed::Still(Pose::Homework(3)),
-        Face::Blink,
-        bubble(Bubble::Zzz),
-    ),
-]];
+/// Writing, then nodding off onto the paper: each branch writes for a
+/// share of the body (her mood's: see `stillness::NodOff`, whose
+/// variants are these branches in order), nods for half what's left,
+/// then sleeps on the paper. Branch 0, the first half, is what every mood
+/// had before (and has, in the levers she ships with).
+const HOMEWORK: &[&[Key]] = &[
+    &homework((1, 2), (3, 4)),
+    &homework((1, 3), (2, 3)),
+    &homework((5, 6), (11, 12)),
+];
+
+/// Homework writing up to `write` of the way through the body, nodding
+/// up to `nod`, then asleep on the paper.
+const fn homework(write: (u64, u64), nod: (u64, u64)) -> [Key; 3] {
+    [
+        key(
+            Span::Upto(write.0, write.1),
+            Posed::Bob(Pose::Homework, USE_FRAME_MS),
+            Face::Vacant,
+            None,
+        ),
+        key(
+            Span::Upto(nod.0, nod.1),
+            Posed::Still(Pose::Homework(2)),
+            Face::Blink,
+            bubble(Bubble::Dots),
+        ),
+        key(
+            Span::Rest,
+            Posed::Still(Pose::Homework(3)),
+            Face::Blink,
+            bubble(Bubble::Zzz),
+        ),
+    ]
+}
 
 const WATCH: &[&[Key]] = &[&[shows(
     Span::Rest,

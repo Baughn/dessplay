@@ -7,7 +7,7 @@
 //! and the body's stream (durations, how she looks) is its own.
 
 use super::brain::{Spot, Want};
-use super::osaka::{Activity, CHAT_FACTOR, Chances, Episode, landing, middle, pick};
+use super::osaka::{Activity, CHAT_FACTOR, Chances, Episode, landing, middle, pick, pick_weighted};
 use super::room::{Furniture, PieceRef, Seat, Use};
 use super::rules::Trials;
 use super::scenes::{Build, Job, Lift, SetDown};
@@ -30,7 +30,7 @@ const FACING_TV: f64 = 5.0;
 /// The decision's one draw from her mind's stream. Each choice made from
 /// it hashes it with its own label (and a salt, for one of many), so no
 /// two choices share a number.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Whims(pub u64);
 
 impl Whims {
@@ -105,6 +105,71 @@ pub(super) struct Ctx<'a> {
     /// She'd put a rule of her home right: one she felt is broken
     /// still, and her mood leaves her something to do about her home.
     pub may_arrange: bool,
+    /// Nearer spots draw her (phase 5c M6; [`Stillness::near`]): see
+    /// [`Near`].
+    ///
+    /// [`Stillness::near`]: super::stillness::Stillness::near
+    pub near: bool,
+}
+
+/// Where she stands, to weigh spots by how near they are (phase 5c M6):
+/// a line to pull, letters to swap and text to make a piece of are
+/// picked on her own floor strictly first when it has any, and then
+/// (as a seat is, wherever) as likely as [`Near::weight`].
+#[derive(Clone, Copy)]
+pub(super) struct Near<'a> {
+    terrain: &'a Terrain,
+    here: usize,
+    x: i32,
+}
+
+impl<'a> Near<'a> {
+    /// Her, as the decision sees her, if nearer spots draw her.
+    pub fn of(c: &Ctx<'a>) -> Option<Self> {
+        c.near.then_some(Self {
+            terrain: c.terrain,
+            here: c.here,
+            x: c.x,
+        })
+    }
+
+    /// Whether `spot` is on her floor.
+    fn on_floor(self, (x, y): (i32, i32)) -> bool {
+        self.terrain.platform_at(x, y) == Some(self.here)
+    }
+
+    /// How likely `spot` is against one where she stands: `1 / (1 +
+    /// d / 10)`, `d` its columns away, and 40 more off her floor.
+    fn weight(self, spot: (i32, i32)) -> f64 {
+        let off = if self.on_floor(spot) { 0 } else { 40 };
+        let d = (spot.0 - self.x).abs() + off;
+        1.0 / (1.0 + f64::from(d) / 10.0)
+    }
+}
+
+/// One of `n` spots (each at `spot(i)`), `weight(i)` as likely, by
+/// `below(k)` uniform in `0..k`. With `near`, only those on her floor if
+/// any is, each as likely as its weight times its nearness; without,
+/// any, by its weight alone (so with all weighing 1, a plain `below(n)`).
+fn pick_near(
+    near: Option<Near>,
+    n: usize,
+    spot: impl Fn(usize) -> (i32, i32),
+    weight: impl Fn(usize) -> f64,
+    below: impl FnOnce(u64) -> u64,
+) -> Option<usize> {
+    let Some(near) = near else {
+        return pick_weighted(n, weight, below);
+    };
+    let on: Vec<usize> = (0..n).filter(|&i| near.on_floor(spot(i))).collect();
+    let among: Vec<usize> = if on.is_empty() { (0..n).collect() } else { on };
+    let at = |j: usize| among.get(j).copied().unwrap_or(0);
+    let j = pick_weighted(
+        among.len(),
+        |j| weight(at(j)) * near.weight(spot(at(j))),
+        below,
+    )?;
+    among.get(j).copied()
 }
 
 /// What she does on the spot.
@@ -315,14 +380,24 @@ fn work(c: &Ctx, _: Whims, _: Want) -> Option<Bind> {
     Some(Bind::Work(out))
 }
 
+/// A line to pull: those into the chat a tenth as likely, and nearer
+/// ones first if they draw her ([`Near`]).
 fn pull(c: &Ctx, w: Whims, _: Want) -> Option<Bind> {
     let pulls = &c.chances.pulls;
-    let i = pick(
+    let spot = |i: usize| pulls.get(i).map_or((0, 0), |p| (p.x, p.y));
+    let i = pick_near(
+        Near::of(c),
         pulls.len(),
-        |i| pulls.get(i).is_some_and(|p| c.chances.in_chat((p.x, p.y))),
+        spot,
+        |i| chat_weight(pulls.get(i).is_some_and(|p| c.chances.in_chat((p.x, p.y)))),
         |n| w.below("pull", n),
     )?;
     pulls.get(i).cloned().map(|p| Bind::Job(Job::Pull(p)))
+}
+
+/// A spot's weight for being in the chat (`in_chat`) or not.
+fn chat_weight(in_chat: bool) -> f64 {
+    if in_chat { CHAT_FACTOR } else { 1.0 }
 }
 
 /// One piece of mischief at a time: no new swap while one is owed.
@@ -331,9 +406,11 @@ fn swap(c: &Ctx, w: Whims, _: Want) -> Option<Bind> {
         return None;
     }
     let swaps = &c.chances.swaps;
-    let i = pick(
+    let i = pick_near(
+        Near::of(c),
         swaps.len(),
-        |i| swaps.get(i).is_some_and(|s| c.chances.in_chat((s.x, s.y))),
+        |i| swaps.get(i).map_or((0, 0), |s| (s.x, s.y)),
+        |i| chat_weight(swaps.get(i).is_some_and(|s| c.chances.in_chat((s.x, s.y)))),
         |n| w.below("swap", n),
     )?;
     swaps.get(i).cloned().map(|s| Bind::Job(Job::Swap(s)))
@@ -430,13 +507,32 @@ pub(super) fn places(what: Use, chances: &Chances, w: Whims) -> Vec<Place> {
     out
 }
 
-/// The place she'd go to `want`, any of them as likely.
+/// The place she'd go to `want`: any of them as likely, or, if nearer
+/// spots draw her ([`Near`]), each as likely as its nearness (a piece to
+/// make, as near as the nearest text she'd make it of).
 fn place(c: &Ctx, w: Whims, want: Want) -> Option<(Use, Place)> {
     let Want::Use(what) = want else {
         return None;
     };
     let places = places(what, c.chances, w);
-    let i = w.below("place", places.len() as u64) as usize;
+    let below = |n| w.below("place", n);
+    let i = match Near::of(c) {
+        None => below(places.len() as u64) as usize,
+        Some(near) => {
+            let weight = |i: usize| match places.get(i) {
+                Some(Place::Seat(seat)) => near.weight((seat.x, seat.y)),
+                Some(Place::Make(item)) => c
+                    .chances
+                    .builds
+                    .iter()
+                    .filter(|b| b.then == what && b.piece.item == *item)
+                    .map(|b| near.weight((b.x, b.y)))
+                    .fold(0.0, f64::max),
+                None => 0.0,
+            };
+            pick_weighted(places.len(), weight, below)?
+        }
+    };
     places.get(i).map(|&place| (what, place))
 }
 
@@ -456,9 +552,8 @@ fn use_made(c: &Ctx, w: Whims, want: Want) -> Option<Bind> {
 
 fn use_make(c: &Ctx, w: Whims, want: Want) -> Option<Bind> {
     match place(c, w, want)? {
-        (what, Place::Make(item)) => {
-            pick_build(what, item, c.chances, w).map(|b| Bind::Job(Job::Build(b.clone())))
-        }
+        (what, Place::Make(item)) => pick_build(what, item, c.chances, w, Near::of(c))
+            .map(|b| Bind::Job(Job::Build(b.clone()))),
         _ => None,
     }
 }
@@ -542,13 +637,15 @@ fn lift(c: &Ctx, w: Whims, _: Want) -> Option<Bind> {
 
 /// Where she makes a makeshift `item` for `what`: anywhere it can be
 /// made, the chat a tenth as likely, and a sofa [`FACING_TV`] times as
-/// likely where it would face the TV too.
-pub(super) fn pick_build(
+/// likely where it would face the TV too; nearer first, if nearer spots
+/// draw her (`near`: see [`Near`]).
+pub(super) fn pick_build<'c>(
     what: Use,
     item: Furniture,
-    chances: &Chances,
+    chances: &'c Chances,
     w: Whims,
-) -> Option<&Build> {
+    near: Option<Near>,
+) -> Option<&'c Build> {
     let builds: Vec<&Build> = chances
         .builds
         .iter()
@@ -571,8 +668,14 @@ pub(super) fn pick_build(
             chat * tv
         })
     };
-    super::osaka::pick_weighted(builds.len(), weight, |n| w.below("build", n))
-        .and_then(|i| builds.get(i).copied())
+    pick_near(
+        near,
+        builds.len(),
+        |i| builds.get(i).map_or((0, 0), |b| (b.x, b.y)),
+        weight,
+        |n| w.below("build", n),
+    )
+    .and_then(|i| builds.get(i).copied())
 }
 
 /// What she loses, and owes a beat for: a glance toward it, and maybe
@@ -1233,7 +1336,8 @@ impl Heading {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
-    use super::super::scenes::{Pull, Side};
+    use super::super::layer::Placed;
+    use super::super::scenes::{Pull, Side, Swap};
     use super::*;
 
     fn pull(row: u16, glyphs: &str) -> Pull {
@@ -1625,5 +1729,319 @@ mod tests {
             found(vec![pull(17, "abc"), pull(19, "abc")]),
             Some(Job::Pull(pull(19, "abc")))
         );
+    }
+
+    // Phase 5c M6: nearer spots, turned on in each test (they ship off).
+
+    /// Two floors across 100 columns, at rows 10 and 25, read in each
+    /// drawing mode.
+    fn two_floors(graphics: bool) -> Terrain {
+        use tuirealm::ratatui::buffer::Buffer;
+        use tuirealm::ratatui::layout::Rect;
+        use tuirealm::ratatui::style::Style;
+        let mut buf = Buffer::empty(Rect::new(0, 0, 100, 30));
+        buf.set_string(0, 10, "─".repeat(100), Style::default());
+        buf.set_string(0, 25, "─".repeat(100), Style::default());
+        Terrain::read(&buf, &[], graphics)
+    }
+
+    /// Her deciding at column 12 of the upper floor (row 10).
+    fn at_twelve<'a>(terrain: &'a Terrain, chances: &'a Chances, near: bool) -> Ctx<'a> {
+        Ctx {
+            x: 12,
+            y: 10,
+            here: terrain.platform_at(12, 10).expect("the upper floor"),
+            links: Vec::new(),
+            terrain,
+            chances,
+            may_work: false,
+            owes: false,
+            episode: None,
+            just_set: None,
+            may_arrange: false,
+            near,
+        }
+    }
+
+    fn pull_at(x: i32, y: i32) -> Pull {
+        Pull {
+            x,
+            y,
+            row: u16::try_from(y - 2).unwrap_or(0),
+            side: Side::Left,
+            cells: vec![2, 3, 4],
+            glyphs: format!("{x},{y}"),
+            gap: 0,
+        }
+    }
+
+    /// How often each of `spots` binds over 3000 whims (`bound` reading
+    /// a bind's spot).
+    fn tally(
+        spots: &[(i32, i32)],
+        mut bound: impl FnMut(Whims) -> Option<(i32, i32)>,
+    ) -> Vec<usize> {
+        let mut counts = vec![0; spots.len()];
+        for w in 0..3000u64 {
+            let spot = bound(Whims(w.wrapping_mul(0x9E37_79B9_7F4A_7C15))).expect("binds");
+            let i = spots.iter().position(|&s| s == spot).expect("one of them");
+            counts[i] += 1;
+        }
+        counts
+    }
+
+    /// With nearer spots drawing her, a line to pull (and letters to
+    /// swap, and text to make a piece of) is on her own floor whenever
+    /// her floor has any, the nearer likelier by `1 / (1 + d / 10)`;
+    /// with none there, those elsewhere. Without, any line as likely, as
+    /// the plain pick it always was.
+    #[test]
+    fn nearer_lines_draw_her_on_her_own_floor_first() {
+        for graphics in [false, true] {
+            let terrain = two_floors(graphics);
+            let spots = [(14, 10), (90, 10), (12, 25)];
+            let chances = Chances {
+                pulls: spots.iter().map(|&(x, y)| pull_at(x, y)).collect(),
+                ..Chances::default()
+            };
+            let pulled = |near: bool| {
+                tally(&spots, |w| {
+                    match bind(&at_twelve(&terrain, &chances, near), w, Want::Pull) {
+                        Some((_, Bind::Job(Job::Pull(p)))) => Some((p.x, p.y)),
+                        _ => None,
+                    }
+                })
+            };
+            let near = pulled(true);
+            assert_eq!(
+                near[2], 0,
+                "graphics {graphics}: never off her floor: {near:?}"
+            );
+            // 2 columns off against 78: 1/1.2 against 1/8.8, 88% to 12%.
+            assert!(
+                (2500..=2780).contains(&near[0]),
+                "graphics {graphics}: the nearer {near:?}"
+            );
+            let far = pulled(false);
+            assert!(
+                far.iter().all(|&n| (850..=1150).contains(&n)),
+                "graphics {graphics}: any as likely {far:?}"
+            );
+            // Without, exactly the plain pick.
+            for w in 0..200 {
+                let plain = pick(spots.len(), |_| false, |n| Whims(w).below("pull", n));
+                let got = match bind(&at_twelve(&terrain, &chances, false), Whims(w), Want::Pull) {
+                    Some((_, Bind::Job(Job::Pull(p)))) => {
+                        spots.iter().position(|&s| s == (p.x, p.y))
+                    }
+                    _ => None,
+                };
+                assert_eq!(got, plain, "graphics {graphics}: whims {w}");
+            }
+            // None on her floor: elsewhere.
+            let elsewhere = Chances {
+                pulls: vec![pull_at(12, 25), pull_at(80, 25)],
+                ..Chances::default()
+            };
+            for w in 0..50 {
+                let got = bind(&at_twelve(&terrain, &elsewhere, true), Whims(w), Want::Pull);
+                assert!(
+                    matches!(got, Some((_, Bind::Job(Job::Pull(p)))) if p.y == 25),
+                    "graphics {graphics}"
+                );
+            }
+            // Letters to swap, the same.
+            let swap_at = |x: i32, y: i32| Swap {
+                x,
+                y,
+                row: u16::try_from(y - 2).unwrap_or(0),
+                side: Side::Left,
+                a: Placed::home((2, 8)),
+                b: Placed::home((3, 8)),
+                glyphs: format!("{x}"),
+            };
+            let swaps = Chances {
+                swaps: spots.iter().map(|&(x, y)| swap_at(x, y)).collect(),
+                ..Chances::default()
+            };
+            let swapped = tally(&spots, |w| {
+                match bind(&at_twelve(&terrain, &swaps, true), w, Want::Swap) {
+                    Some((_, Bind::Job(Job::Swap(s)))) => Some((s.x, s.y)),
+                    _ => None,
+                }
+            });
+            assert_eq!(
+                swapped[2], 0,
+                "graphics {graphics}: swaps on her floor: {swapped:?}"
+            );
+            assert!(
+                swapped[0] > 5 * swapped[1],
+                "graphics {graphics}: {swapped:?}"
+            );
+        }
+    }
+
+    /// Where she'd make a piece of text, with nearer spots drawing her:
+    /// on her own floor first (as likely otherwise as they always were),
+    /// and the nearer likelier.
+    #[test]
+    fn a_piece_is_made_of_text_on_her_own_floor_first() {
+        use super::super::room::{MadeId, Shown};
+        use super::super::sprite::Facing;
+        let build = |x: i32, y: i32| Build {
+            x,
+            y,
+            row: u16::try_from(y - 2).unwrap_or(0),
+            side: Side::Left,
+            cells: vec![20, 21, 22, 23, 24],
+            glyphs: "hello".to_owned(),
+            piece: Shown {
+                item: Furniture::Sofa,
+                facing: Facing::Right,
+                boxed: false,
+                strip: None,
+                left: x - 3,
+                floor: y,
+                scrap: Some(super::super::scrap::Scrap::new(MadeId(0), &[], 0)),
+            },
+            then: Use::Lounge,
+        };
+        for graphics in [false, true] {
+            let terrain = two_floors(graphics);
+            let spots = [(14, 10), (90, 10), (12, 25)];
+            let chances = Chances {
+                builds: spots.iter().map(|&(x, y)| build(x, y)).collect(),
+                ..Chances::default()
+            };
+            let ctx = at_twelve(&terrain, &chances, true);
+            let made = tally(&spots, |w| {
+                pick_build(Use::Lounge, Furniture::Sofa, &chances, w, Near::of(&ctx))
+                    .map(|b| (b.x, b.y))
+            });
+            assert_eq!(made[2], 0, "graphics {graphics}: {made:?}");
+            assert!(made[0] > 5 * made[1], "graphics {graphics}: {made:?}");
+            let anywhere = tally(&spots, |w| {
+                pick_build(Use::Lounge, Furniture::Sofa, &chances, w, None).map(|b| (b.x, b.y))
+            });
+            assert!(
+                anywhere.iter().all(|&n| (850..=1150).contains(&n)),
+                "graphics {graphics}: {anywhere:?}"
+            );
+            // Through the method, too: making a sofa to lounge on.
+            let bound = tally(&spots, |w| match bind(&ctx, w, Want::Use(Use::Lounge)) {
+                Some((_, Bind::Job(Job::Build(b)))) => Some((b.x, b.y)),
+                _ => None,
+            });
+            assert_eq!(bound[2], 0, "graphics {graphics}: {bound:?}");
+        }
+    }
+
+    /// With nearer spots drawing her, a piece she'd make is a place as
+    /// near as the nearest text she'd make it of: here a sofa to nap on
+    /// made of text two columns off (or 78), weighed against a bed 38
+    /// columns off, as likely as `1 / 1.2` to the bed's `1 / 4.8`.
+    #[test]
+    fn a_piece_to_make_is_as_near_as_its_nearest_text() {
+        use super::super::room::{MadeId, Shown};
+        use super::super::sprite::Facing;
+        let build = |x: i32| Build {
+            x,
+            y: 10,
+            row: 8,
+            side: Side::Left,
+            cells: vec![20, 21, 22, 23, 24],
+            glyphs: "hello".to_owned(),
+            piece: Shown {
+                item: Furniture::Sofa,
+                facing: Facing::Right,
+                boxed: false,
+                strip: None,
+                left: x - 3,
+                floor: 10,
+                scrap: Some(super::super::scrap::Scrap::new(MadeId(0), &[], 0)),
+            },
+            then: Use::Nap,
+        };
+        let bed = Seat {
+            what: Use::Nap,
+            item: Furniture::Bed,
+            piece: PieceRef::Real(Furniture::Bed),
+            x: 50,
+            y: 10,
+            facing: Facing::Left,
+        };
+        for graphics in [false, true] {
+            let terrain = two_floors(graphics);
+            let chances = Chances {
+                seats: vec![bed],
+                builds: vec![build(90), build(14)],
+                ..Chances::default()
+            };
+            let ctx = at_twelve(&terrain, &chances, true);
+            let spots = [(0, 0), (bed.x, bed.y)];
+            let placed = tally(&spots, |w| match place(&ctx, w, Want::Use(Use::Nap))? {
+                (_, Place::Make(_)) => Some((0, 0)),
+                (_, Place::Seat(s)) => Some((s.x, s.y)),
+            });
+            let share: f64 = (1.0 / 1.2) / (1.0 / 1.2 + 1.0 / 4.8);
+            let expect = 3000.0 * share;
+            let sd = (3000.0 * share * (1.0 - share)).sqrt();
+            assert!(
+                (placed[0] as f64 - expect).abs() < 4.0 * sd,
+                "graphics {graphics}: {placed:?}, {expect:.0} made"
+            );
+        }
+    }
+
+    /// With nearer spots drawing her, a seat is as likely as `1 / (1 +
+    /// d / 10)`: `d` its columns away, 40 more on another floor (not
+    /// strictly on her floor first: every place she'd use stays on
+    /// offer). Without, any as likely.
+    #[test]
+    fn nearer_seats_are_likelier() {
+        let seat_at = |x: i32, y: i32| Seat {
+            what: Use::Lounge,
+            item: Furniture::Sofa,
+            piece: PieceRef::Real(Furniture::Sofa),
+            x,
+            y,
+            facing: super::super::sprite::Facing::Left,
+        };
+        for graphics in [false, true] {
+            let terrain = two_floors(graphics);
+            let spots = [(14, 10), (90, 10), (12, 25)];
+            let chances = Chances {
+                seats: spots.iter().map(|&(x, y)| seat_at(x, y)).collect(),
+                ..Chances::default()
+            };
+            let seated = |near: bool| {
+                tally(&spots, |w| {
+                    match bind(
+                        &at_twelve(&terrain, &chances, near),
+                        w,
+                        Want::Use(Use::Lounge),
+                    ) {
+                        Some((_, Bind::Job(Job::Use(s)))) => Some((s.x, s.y)),
+                        _ => None,
+                    }
+                })
+            };
+            let weights = [1.0 / 1.2, 1.0 / 8.8, 1.0 / 5.2];
+            let total: f64 = weights.iter().sum();
+            let near = seated(true);
+            for (i, w) in weights.iter().enumerate() {
+                let expect = 3000.0 * w / total;
+                let got = near[i] as f64;
+                assert!(
+                    (got - expect).abs() < 4.0 * (expect * (1.0 - w / total)).sqrt() + 5.0,
+                    "graphics {graphics}: seat {i}: {near:?}"
+                );
+            }
+            let any = seated(false);
+            assert!(
+                any.iter().all(|&n| (850..=1150).contains(&n)),
+                "graphics {graphics}: {any:?}"
+            );
+        }
     }
 }

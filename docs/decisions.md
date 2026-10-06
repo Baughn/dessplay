@@ -3690,6 +3690,91 @@ replayed from its start and credit scaled by what was left. The census
 counts an in-place look as a look that cut nothing (no restart after
 it); a stir isn't counted as a look, as at night.
 
+## Her stillness levers: settling in, lingering, daydreams, nearer spots (2026-10-06)
+
+**Rule:** A still act she chose that runs its course may settle
+further where she is (spacing out or gazing to sitting; sitting to
+lying back or dozing where she sits; lounging to a nap on the same
+seat), skipping the roll; her mood stretches the still acts she chooses
+and moves where her homework nods off; a musing daydream holds several
+musings; a line to pull, letters to swap and text to make a piece of
+are on her own floor first, and nearer spots are likelier. Each lever's
+values come with the stillness band's tuning (phase 5c step 8); they
+land neutral. See [design.md](design.md#houseguest).
+
+**Why:** phase 5c's band asks for less moving in sight, and lazy moods
+noticeably stiller than industrious ones, without a mood factor on
+walking (the user, Q2: the difference between moods comes from
+still-act lengths and settling in). Need rates alone gave about four
+points between lazy and industrious (the map's C3), since every use
+begins with a walk; a mood that lingers and settles further spends
+longer between walks instead.
+
+**Settling skips the roll** because it's a continuation of what she
+chose, like a leftover or a heading, not a new choice: she sat down
+because spacing out ran on, she lay back because sitting did. Rolling
+afresh at each step would make every settled act compete with a walk
+again (the roll's top four almost always holds one), which is exactly
+the restlessness the band measures; and a settled act isn't one of her
+recent choices, so it doesn't make the act she'd choose next less
+likely. It binds only what her methods would bind there (a nap only
+from the same seat, as napping there is on offer), and eases her as its
+own want. It sits after everything that already pre-empts a choice
+(her routine, a beat she owes, a heading, a piece she's moving or made),
+so bedtime, school, a glance toward what she lost and arranging win.
+Watching the chat as it ran out, she settles first and watches on in
+the new pose: standing up to watch and then choosing would undo the
+point of looking up in place. But not when one of those pre-empting
+things is waiting (review, 2026-10-06): settling first then held it
+back a whole settled act (a nap is a minute or more) instead of the
+five seconds of a watch, so a glance toward something she lost came
+long after the loss, and which came first hung on whether a chat line
+happened to be up. There she stands the watch out, as before settling
+was, and the waiting thing is next; the check is the same test each of
+them makes where it's done. Only
+what she chose settles (not a glance at her clock, Setsubun, the moment
+after a swap or a trial sit), only an act that ran its course, and only
+on calm floor. Dozing where she sits (the approved sitting doze) is a
+second branch from sitting, and an activity she never chooses: it's
+not among her wants, and eases her as lying back does.
+
+**Lingering applies where the length is drawn,** for each act she
+chose, never inside the length tables: a glance, Setsubun, the moment
+after a swap, a trial sit and her night keep theirs. Lying on her front
+kicking her feet doesn't linger (twice a second, a longer kick draws
+the eye longer), nor does exercise. Homework moves its nod-off instead
+of lingering: its slot already makes it long, and where she nods off
+is the mood's tell.
+
+**A daydream is one act**, its musings said in turn on its own clock:
+each musing as a fresh muse would have ended the act (crediting its
+first part and clearing what it eases) and drawn every musing from the
+same whims (a session all riddles or none). A riddle, her rare musing
+and a glance at her clock are only its first; a musing due while she
+speaks or looks up waits. How many, and the gaps, come from her
+decision's whims, not her body's stream, so they're the same however
+she's drawn. Musings that don't fit in the daydream's drawn length go
+unsaid, so the band's guard on the longest still act reads the length
+tables alone (the band guard counts a chain she settles along as one
+stretch, since a settled chain is one still stretch to the eye). Her
+rare musing and a glance at her clock roll before the musing count
+(review, 2026-10-06): they aren't musings of hers, and 5b pinned their
+frequency (the escalator's rarity and pity, the clock glance once a
+visit); rolled after it, a mood whose daydreams are often silent would
+see them a third to a half less, for no reason of the mood's. Eight
+musings cooling ten minutes each means back-to-back daydreams run
+dry: a long session says less the more of them she's had, which suits
+a daydream (it goes quiet) and keeps lines rare.
+
+**Nearer spots, strictly on her floor first for text:** a weight of
+four for her own floor would only have moved her from a fifth to half
+of her pulls (the stage's off-floor hops were most of its moving); on
+her floor first makes "pulls stay on her floor when there's text there"
+true. A seat is weighted, not filtered, so every place she'd use stays
+on offer. Wandering keeps no distance weight: shorter wanders lower the
+share without lowering how often she sets off, which the band's cap
+counts.
+
 ## Houseguest chooses by needs among the top few (2026-09-28)
 
 **Rule:** Her next act is a weighted-random pick among the four

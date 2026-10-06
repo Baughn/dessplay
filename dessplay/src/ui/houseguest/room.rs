@@ -450,6 +450,20 @@ impl Use {
     pub fn asks_room(self) -> bool {
         self != Use::LookOut
     }
+
+    /// Whether it's a still use, whose length her mood lingers over
+    /// (phase 5c M8: see [`Stillness::linger`]): lounging, napping,
+    /// sleeping (by day: her night has its own wake), watching, reading,
+    /// looking out. Not chores (unpacking, crumpling, a snack, petting
+    /// the cat), nor homework, whose nod-off her mood moves instead.
+    ///
+    /// [`Stillness::linger`]: super::stillness::Stillness::linger
+    pub fn lingers(self) -> bool {
+        match self {
+            Use::Lounge | Use::Nap | Use::Sleep | Use::Watch | Use::Read | Use::LookOut => true,
+            Use::Homework | Use::Unpack | Use::Snack | Use::Pet | Use::Crumple => false,
+        }
+    }
 }
 
 /// A makeshift piece, among those she makes in a visit.

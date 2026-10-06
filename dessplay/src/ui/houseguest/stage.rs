@@ -50,6 +50,9 @@ pub enum Scene {
     Sit,
     /// Doze on her back.
     LieBack,
+    /// Doze off sitting up, head sinking onto her knees (she only
+    /// settles into it, from sitting).
+    SitDoze,
     /// Lie on her front, feet kicking.
     LieFront,
     /// Jumping jacks.
@@ -137,7 +140,7 @@ pub enum Scene {
 
 impl Scene {
     /// Every scene, in menu order.
-    pub const ALL: [Scene; 48] = [
+    pub const ALL: [Scene; 49] = [
         Self::Arrive,
         Self::Pull,
         Self::Swap,
@@ -150,6 +153,7 @@ impl Scene {
         Self::Door,
         Self::Sit,
         Self::LieBack,
+        Self::SitDoze,
         Self::LieFront,
         Self::Jacks,
         Self::ToeTouch,
@@ -203,6 +207,7 @@ impl Scene {
             Self::Door => "door in space",
             Self::Sit => "sit",
             Self::LieBack => "lie on back",
+            Self::SitDoze => "doze sitting up",
             Self::LieFront => "lie on front",
             Self::Jacks => "jumping jacks",
             Self::ToeTouch => "toe touches",
@@ -310,6 +315,7 @@ impl Scene {
             | Self::Door
             | Self::Sit
             | Self::LieBack
+            | Self::SitDoze
             | Self::LieFront
             | Self::Jacks
             | Self::ToeTouch
@@ -334,6 +340,7 @@ impl Scene {
         Some(match self {
             Self::Sit => Activity::Sit,
             Self::LieBack => Activity::LieBack,
+            Self::SitDoze => Activity::SitDoze,
             Self::LieFront => Activity::LieFront,
             Self::Jacks => Activity::Jacks,
             Self::ToeTouch => Activity::ToeTouch,

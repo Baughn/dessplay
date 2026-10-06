@@ -18,6 +18,7 @@ use super::script::{
     Surface,
 };
 use super::sprite::{self, Face, Facing, HEIGHT, Pose, SpriteCell};
+use super::stillness::{self, Stillness};
 use super::terrain::{Link, Platform, Route, Terrain};
 use tuirealm::ratatui::layout::Rect;
 
@@ -445,16 +446,51 @@ pub(super) fn speech_ms(text: &str) -> u64 {
     1200 + 60 * text.chars().count() as u64
 }
 
+/// What her calendar has for her to do (see [`Osaka::calendar_due`]).
+struct CalendarDue {
+    greeting: Option<(chrono::NaiveDate, Owed, &'static str)>,
+    setsubun: Option<(chrono::NaiveDate, Owed)>,
+    tv: Option<Seat>,
+}
+
+/// The decision that settles her further where she is (see
+/// [`Osaka::settle_in`]): a continuation, not a method she chooses by.
+pub(super) const SETTLE_IN: &str = "settle in";
+
+/// What she settles into where she is (see [`Osaka::settling`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Settle {
+    /// Something on the spot.
+    Idle(Activity),
+    /// The same piece, another use from the same seat.
+    Use(Seat),
+}
+
+/// The musings a daydream session has still to say (phase 5c B6): the
+/// next at `next`, and `left` in all; `said` so far (her first, as she
+/// set about it, included). Each next one is drawn from her decision's
+/// whims for the session's `said`th musing, as is the gap after it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Session {
+    left: u8,
+    next: u64,
+    said: u8,
+    /// Her whims as she set about it.
+    whims: Whims,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Act {
     Stand {
         until: u64,
     },
-    /// Spacing out, maybe telling a riddle (a musing only).
+    /// Spacing out, maybe telling a riddle (a musing only), or a
+    /// daydream session's musings to come (see [`Session`]).
     SpaceOut {
         since: u64,
         until: u64,
         play: Option<Play>,
+        session: Option<Session>,
     },
     Walk {
         to: i32,
@@ -1384,30 +1420,79 @@ fn use_duration_in(what: Use, slot: Option<routine::Slot>) -> (u64, u64) {
 /// spacing out. The stillness band's visits must outlast it twice over
 /// (phase 5c, B5), so a lengthened act shows there.
 ///
-/// It reads the length tables themselves, so an act lengthened anywhere
-/// else (phase 5c step 7's mood linger and settling in, for one) must
-/// draw its length through these tables, or this must read what it
-/// draws through: else the band's guard can't see it.
+/// It reads the length tables themselves, lingered as the mood that
+/// lingers most does in the levers she ships with ([`stillness::SHIPPED`]:
+/// see [`longest_still_ms_with`]), so an act lengthened anywhere else
+/// must draw its length through these tables, or this must read what it
+/// draws through: else the band's guard can't see it. Settling in
+/// (phase 5c M7) strings still acts together where she is into one still
+/// stretch, so with any mood settling, the longest chain of them counts
+/// as one act here.
 #[cfg(test)]
 pub(super) fn longest_still_ms(slot: Option<routine::Slot>) -> u64 {
-    let wrap = |what: Use, part: script::Part| {
-        SpliceId::ALL
-            .iter()
-            .map(|id| id.row())
-            .filter(|row| row.at == part && row.around.contains(&what))
-            .flat_map(|row| row.lens.iter().copied())
-            .max()
-            .unwrap_or(0)
+    longest_still_ms_with(slot, &stillness::SHIPPED)
+}
+
+/// [`longest_still_ms`], with the levers `still`: each act her mood
+/// lingers over as long as the most lingering mood's, and, if any mood
+/// settles in, each chain she can settle along (spacing out or gazing,
+/// then sitting, then lying back or dozing where she sits; lounging,
+/// then napping on the same sofa) as long as its links together.
+#[cfg(test)]
+pub(super) fn longest_still_ms_with(slot: Option<routine::Slot>, still: &Stillness) -> u64 {
+    let linger = |lingers: bool, ms: u64| still.lingered_most(lingers, ms);
+    let using = |what: Use| {
+        splice_wrap_ms(what, script::Part::Before)
+            + linger(what.lingers(), use_duration_in(what, slot).1)
+            + splice_wrap_ms(what, script::Part::After)
     };
-    let uses = Use::ALL.map(|what| {
-        wrap(what, script::Part::Before)
-            + use_duration_in(what, slot).1
-            + wrap(what, script::Part::After)
-    });
-    let here = Activity::ALL.map(|what| what.duration().1);
-    uses.into_iter()
-        .chain(here)
-        .chain([SPACE_OUT_MS.1])
+    let doing = |what: Activity| linger(what.lingers(), what.duration().1);
+    let space_out = linger(true, SPACE_OUT_MS.1);
+    Use::ALL
+        .map(using)
+        .into_iter()
+        .chain(Activity::ALL.map(doing))
+        .chain([space_out])
+        .chain(settle_chains_ms(slot, still))
+        .max()
+        .unwrap_or(0)
+}
+
+/// The longest chains she can settle along with the levers `still` at
+/// her routine's `slot` (ms; none, if no mood settles in): spacing out
+/// or gazing, then sitting, then lying back or dozing where she sits;
+/// lounging, then napping on the same sofa (each with the longest
+/// prelude and coda any splice row may wrap it in). Each link is as
+/// long as its longest, lingered as the most lingering mood lingers.
+#[cfg(test)]
+pub(super) fn settle_chains_ms(slot: Option<routine::Slot>, still: &Stillness) -> [u64; 2] {
+    if !still.settles() {
+        return [0; 2];
+    }
+    let linger = |lingers: bool, ms: u64| still.lingered_most(lingers, ms);
+    let doing = |what: Activity| linger(what.lingers(), what.duration().1);
+    let using = |what: Use| {
+        splice_wrap_ms(what, script::Part::Before)
+            + linger(what.lingers(), use_duration_in(what, slot).1)
+            + splice_wrap_ms(what, script::Part::After)
+    };
+    let into_sit = linger(true, SPACE_OUT_MS.1).max(doing(Activity::Gaze));
+    let from_sit = doing(Activity::LieBack).max(doing(Activity::SitDoze));
+    [
+        into_sit + doing(Activity::Sit) + from_sit,
+        using(Use::Lounge) + using(Use::Nap),
+    ]
+}
+
+/// The longest `part` (a prelude or a coda) any splice row may wrap a
+/// use of `what` in (ms).
+#[cfg(test)]
+fn splice_wrap_ms(what: Use, part: script::Part) -> u64 {
+    SpliceId::ALL
+        .iter()
+        .map(|id| id.row())
+        .filter(|row| row.at == part && row.around.contains(&what))
+        .flat_map(|row| row.lens.iter().copied())
         .max()
         .unwrap_or(0)
 }
@@ -1443,11 +1528,16 @@ pub(super) enum Activity {
     ToeTouch,
     Stretch,
     Gaze,
+    /// Dozing off where she sits, her head sinking onto her knees: only
+    /// ever settled into from sitting (phase 5c M7), never chosen.
+    SitDoze,
 }
 
 impl Activity {
+    /// Every activity: those she chooses, and those she only settles
+    /// into ([`Activity::chosen`]).
     #[cfg(test)]
-    pub const ALL: [Activity; 7] = [
+    pub const ALL: [Activity; 8] = [
         Self::Sit,
         Self::LieBack,
         Self::LieFront,
@@ -1455,15 +1545,44 @@ impl Activity {
         Self::ToeTouch,
         Self::Stretch,
         Self::Gaze,
+        Self::SitDoze,
     ];
+
+    /// Whether she chooses it (it's a want of hers: [`Want::ALL`] lists
+    /// it), rather than only settling into it as something she chose
+    /// runs its course.
+    #[cfg(test)]
+    pub fn chosen(self) -> bool {
+        match self {
+            Self::Sit
+            | Self::LieBack
+            | Self::LieFront
+            | Self::Jacks
+            | Self::ToeTouch
+            | Self::Stretch
+            | Self::Gaze => true,
+            Self::SitDoze => false,
+        }
+    }
 
     /// Whether it's rest (sitting, lying, gazing), not exercise: what
     /// doesn't answer restlessness. Resting in a pretty room eases her
     /// want of beauty.
     pub fn restful(self) -> bool {
         match self {
-            Self::Sit | Self::LieBack | Self::LieFront | Self::Gaze => true,
+            Self::Sit | Self::LieBack | Self::LieFront | Self::Gaze | Self::SitDoze => true,
             Self::Jacks | Self::ToeTouch | Self::Stretch => false,
+        }
+    }
+
+    /// Whether her mood lingers over its length (phase 5c M8: see
+    /// [`Stillness::linger`]): sitting, lying back, gazing, dozing where
+    /// she sits. Not exercise, nor lying on her front kicking her feet
+    /// (twice a second: a longer kick would draw the eye longer).
+    pub fn lingers(self) -> bool {
+        match self {
+            Self::Sit | Self::LieBack | Self::Gaze | Self::SitDoze => true,
+            Self::LieFront | Self::Jacks | Self::ToeTouch | Self::Stretch => false,
         }
     }
 
@@ -1477,6 +1596,7 @@ impl Activity {
             Self::ToeTouch => (5_000, 9_000),
             Self::Stretch => (2_000, 4_000),
             Self::Gaze => (4_000, 10_000),
+            Self::SitDoze => (15_000, 40_000),
         }
     }
 
@@ -1487,7 +1607,19 @@ impl Activity {
             Self::LieFront => 500,
             Self::Jacks => 450,
             Self::ToeTouch => 900,
-            Self::Sit | Self::Stretch | Self::Gaze => 0,
+            Self::Sit | Self::Stretch | Self::Gaze | Self::SitDoze => 0,
+        }
+    }
+
+    /// Its frame `elapsed` ms in: alternating on its period; dozing where
+    /// she sits, her head sinking (frame 0) for [`SIT_DOZE_NOD_MS`], then
+    /// on her knees (frame 1) and held.
+    fn frame(self, elapsed: u64) -> u8 {
+        match self {
+            Self::SitDoze => u8::from(elapsed >= SIT_DOZE_NOD_MS),
+            _ => elapsed
+                .checked_div(self.period())
+                .map_or(0, |n| (n % 2) as u8),
         }
     }
 
@@ -1500,9 +1632,14 @@ impl Activity {
             Self::ToeTouch => (Pose::ToeTouch(frame), Face::Vacant, None),
             Self::Stretch => (Pose::Stretch, Face::Blink, Some(Bubble::Stretch)),
             Self::Gaze => (Pose::Gaze, Face::Curious, Some(Bubble::Ooh)),
+            Self::SitDoze => (Pose::SitDoze(frame), Face::Blink, Some(Bubble::Zzz)),
         }
     }
 }
+
+/// Dozing off where she sits: how long her head takes to sink onto her
+/// knees.
+const SIT_DOZE_NOD_MS: u64 = USE_FRAME_MS;
 
 /// A speech or thought bubble.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1657,6 +1794,13 @@ pub(super) struct Osaka {
     needs: Needs,
     /// Her mood this visit.
     mood: Mood,
+    /// Her stillness levers (phase 5c): how her mood lingers and settles,
+    /// her daydreams' musings, where her homework nods off, whether
+    /// nearer spots draw her. [`stillness::SHIPPED`]; tests set others.
+    pub(super) stillness: Stillness,
+    /// How many times she has settled further into the still act she's
+    /// at (0: she chose it): see [`Osaka::settle_in`].
+    settled: u8,
     /// Her last few choices (repeating herself is discouraged).
     recent: Vec<Want>,
     /// Where she's going to poke the scrollback accordion (standing on
@@ -2047,6 +2191,8 @@ impl Osaka {
             late: false,
             needs: Needs::default(),
             mood: Mood::Ordinary,
+            stillness: stillness::SHIPPED,
+            settled: 0,
             recent: Vec::new(),
             decided: now,
             errand: None,
@@ -2441,9 +2587,16 @@ impl Osaka {
                 what, since, until, ..
             } => next_frame(what, since, now).min(until),
             // As each key of a riddle ends.
-            Act::SpaceOut { since, until, play } => play
+            // A daydream session's next musing.
+            Act::SpaceOut {
+                since,
+                until,
+                play,
+                session,
+            } => play
                 .and_then(|play| play.next_end(since, until, now))
                 .unwrap_or(until)
+                .min(session.map_or(until, |s| s.next))
                 .min(until),
             // On the frame grid from the start of the part playing (the
             // prelude, the body or the coda: what bobs and what's on TV
@@ -2640,6 +2793,28 @@ impl Osaka {
         if rolls && let Some((glance, x)) = self.hour_glance(now, quiet, false) {
             return self.glance_up(glance, x, now);
         }
+        // Her daydream session's musings (phase 5c B6): as many as her
+        // mood's whim says. With none, she only spaces out: no riddle or
+        // musing rolls. (Her rare musing and a glance at her clock, above,
+        // aren't a musing of hers: they keep to their own odds in every
+        // mood, and hold no more.)
+        let (lo, hi) = self.stillness.musings.of(self.mood);
+        let musings = lo
+            + self
+                .whims
+                .below("daydream", u64::from(hi.saturating_sub(lo)) + 1) as u8;
+        if rolls && musings == 0 {
+            tracing::debug!("houseguest: a daydream with nothing to say");
+            return self.set(
+                Act::SpaceOut {
+                    since: now,
+                    until: now + self.lingered(true, rng.range(SPACE_OUT_MS.0, SPACE_OUT_MS.1)),
+                    play: None,
+                    session: None,
+                },
+                now,
+            );
+        }
         // Cued, a riddle: whatever she was saying stops for it.
         let cued = !rolls;
         if cued {
@@ -2669,27 +2844,85 @@ impl Osaka {
                 Some(Play::riddle(which))
             }
             None => {
-                let (tints, whims) = (self.tints(), self.whims);
-                let seasonal = [(tints.panic, mind::PANIC), (tints.december, mind::DECEMBER)];
-                let line = seasonal
-                    .into_iter()
-                    .filter(|&(on, _)| on)
-                    .find_map(|(_, pool)| self.lines.pick(pool, whims, now))
-                    .or_else(|| self.lines.pick(mind::MUSINGS, whims, now));
-                if let Some(line) = line {
-                    self.say(line, now);
-                }
+                let whims = self.whims;
+                self.say_musing(whims, now);
                 None
             }
         };
+        // A riddle is all the session she has; a musing has the rest of
+        // hers to come, the next a whim's gap on.
+        let session = (play.is_none() && musings > 1).then(|| Session {
+            left: musings - 1,
+            next: now + self.musing_gap(self.whims, 0),
+            said: 1,
+            whims: self.whims,
+        });
         self.set(
             Act::SpaceOut {
                 since: now,
-                until: now + rng.range(SPACE_OUT_MS.0, SPACE_OUT_MS.1),
+                until: now + self.lingered(true, rng.range(SPACE_OUT_MS.0, SPACE_OUT_MS.1)),
                 play,
+                session,
             },
             now,
         );
+    }
+
+    /// Say a musing at `now`, drawn from `whims`: the season's (her
+    /// panic before exams, December's), else one of her musings; nothing
+    /// if every one of them is cooling.
+    fn say_musing(&mut self, whims: Whims, now: u64) {
+        let tints = self.tints();
+        let seasonal = [(tints.panic, mind::PANIC), (tints.december, mind::DECEMBER)];
+        let line = seasonal
+            .into_iter()
+            .filter(|&(on, _)| on)
+            .find_map(|(_, pool)| self.lines.pick(pool, whims, now))
+            .or_else(|| self.lines.pick(mind::MUSINGS, whims, now));
+        if let Some(line) = line {
+            self.say(line, now);
+        }
+    }
+
+    /// The gap after a daydream session's `k`th musing (counting from 0),
+    /// drawn from its decision's `whims`.
+    fn musing_gap(&self, whims: Whims, k: u8) -> u64 {
+        let (lo, hi) = self.stillness.musing_gap;
+        lo + whims
+            .series("daydream", u64::from(k))
+            .below("gap", hi.saturating_sub(lo) + 1)
+    }
+
+    /// Her daydream session's next musing is due at `at` (phase 5c B6):
+    /// said now, the `said`th, drawn from the session's whims, unless
+    /// she's saying something or looking up at the chat, when it waits
+    /// for that to be over. The last one said, the session is over: she
+    /// spaces out to the end.
+    fn muse_on(&mut self, session: Session, at: u64) {
+        let speaking = self.speech.map_or(0, |(_, until)| until);
+        let looking = self.looking_up.map_or(0, |look| look.until);
+        let busy = speaking.max(looking);
+        let next = if busy > at {
+            Some(Session {
+                next: busy,
+                ..session
+            })
+        } else {
+            tracing::debug!(said = session.said, "houseguest: muses on");
+            self.say_musing(
+                session.whims.series("daydream", u64::from(session.said)),
+                at,
+            );
+            (session.left > 1).then(|| Session {
+                left: session.left - 1,
+                next: at + self.musing_gap(session.whims, session.said),
+                said: session.said + 1,
+                whims: session.whims,
+            })
+        };
+        if let Act::SpaceOut { session, .. } = &mut self.act {
+            *session = next;
+        }
     }
 
     /// Her glance up at her clock of an afternoon (see
@@ -2708,8 +2941,9 @@ impl Osaka {
         self.set(
             Act::SpaceOut {
                 since: now,
-                until: now + rng.range(SPACE_OUT_MS.0, SPACE_OUT_MS.1),
+                until: now + self.lingered(true, rng.range(SPACE_OUT_MS.0, SPACE_OUT_MS.1)),
                 play: Some(Play::plain(ScriptId::Escalator)),
+                session: None,
             },
             now,
         );
@@ -3222,6 +3456,9 @@ impl Osaka {
         // isn't cut by this.)
         self.looking_up = None;
         self.stir_until = 0;
+        // Anything she's set at is chosen afresh, unless she's settling
+        // into it (which counts itself, once set: see `settle_in`).
+        self.settled = 0;
         self.act = act;
         self.act_since = at;
         self.act_since_game = self.game_at(at);
@@ -3571,8 +3808,14 @@ impl Osaka {
                 }
                 self.decide(at, terrain, chances, rng)
             }
-            // On to the next key of her riddle.
-            Act::SpaceOut { until, .. } if at < until => self.act_due = self.first_due(at),
+            // On to her daydream session's next musing, or the next key
+            // of her riddle.
+            Act::SpaceOut { until, session, .. } if at < until => {
+                if let Some(session) = session.filter(|s| s.next <= at) {
+                    self.muse_on(session, at);
+                }
+                self.act_due = self.first_due(at);
+            }
             Act::Stand { .. } | Act::SpaceOut { .. } | Act::Admire { .. } | Act::PutBack { .. } => {
                 self.decide(at, terrain, chances, rng)
             }
@@ -3589,6 +3832,7 @@ impl Osaka {
                         since: at,
                         until: at + rng.range(1500, 3000),
                         play: None,
+                        session: None,
                     },
                     at,
                 );
@@ -4080,7 +4324,9 @@ impl Osaka {
                 {
                     self.events.push(HomeEvent::Used(id));
                 }
-                let length = rng.range(lo, hi);
+                // A still use she chose, as long as her mood lingers over
+                // it (not a trial: a moment's sit is a moment's).
+                let length = self.lingered(!trying && seat.what.lingers(), rng.range(lo, hi));
                 let whole = if trying {
                     let (lo, hi) = usual;
                     lo.midpoint(hi)
@@ -4109,6 +4355,9 @@ impl Osaka {
                     own.trial_branch()
                 } else if own == ScriptId::LookOut {
                     self.look_out_branch(at)
+                } else if own == ScriptId::Homework {
+                    // Where her homework nods off: her mood's (phase 5c M8).
+                    self.stillness.nod_off.of(self.mood).branch()
                 } else {
                     0
                 };
@@ -4374,6 +4623,7 @@ impl Osaka {
                     branch: glance.branch(),
                     ..Play::plain(ScriptId::ClockGlance)
                 }),
+                session: None,
             },
             at,
         );
@@ -4917,6 +5167,7 @@ impl Osaka {
                 since: at,
                 until: at + DASH_FORGOT_MS,
                 play: Some(Play::plain(ScriptId::DashForgot)),
+                session: None,
             },
             at,
         );
@@ -5024,18 +5275,11 @@ impl Osaka {
         chances: &Chances,
         at: u64,
     ) -> Option<Decision> {
-        if self.episode.is_some() || self.just_set.is_some() || self.heading.is_some() {
-            return None;
-        }
-        let owed = self.calendar_owed(at);
-        let greeting = self.calendar_greeting(at);
-        let setsubun = owed.filter(|&(_, owed)| owed == Owed::Setsubun);
-        // Her sunrise, if it's owed this visit and her TV is where she
-        // can get to it.
-        let tv = self.sunrise_tv(chances, terrain);
-        if greeting.is_none() && setsubun.is_none() && tv.is_none() {
-            return None;
-        }
+        let CalendarDue {
+            greeting,
+            setsubun,
+            tv,
+        } = self.calendar_due(chances, terrain, at)?;
         // Not over what she's saying ("I'm home!", "...I'm OK.",
         // "Mornin'."): she stands until she's said it, and it's next.
         if let Some((_, until)) = self.speech.filter(|&(_, until)| until > at) {
@@ -5049,6 +5293,7 @@ impl Osaka {
                     since: at,
                     until: at + speech_ms(greeting.2).max(SPACE_OUT_MS.0),
                     play: None,
+                    session: None,
                 },
                 at,
             );
@@ -5079,12 +5324,34 @@ impl Osaka {
         Some(Decision::of(Bucket::Owed, "calendar/sunrise"))
     }
 
+    /// What her calendar has for her to do at `at` (see
+    /// [`Osaka::calendar_beat`], which does it), if anything: never in
+    /// the middle of moving a piece of her home, or on her way somewhere.
+    fn calendar_due(&self, chances: &Chances, terrain: &Terrain, at: u64) -> Option<CalendarDue> {
+        if self.episode.is_some() || self.just_set.is_some() || self.heading.is_some() {
+            return None;
+        }
+        let greeting = self.calendar_greeting(at);
+        let setsubun = self
+            .calendar_owed(at)
+            .filter(|&(_, owed)| owed == Owed::Setsubun);
+        // Her sunrise, if it's owed this visit and her TV is where she
+        // can get to it.
+        let tv = self.sunrise_tv(chances, terrain);
+        (greeting.is_some() || setsubun.is_some() || tv.is_some()).then_some(CalendarDue {
+            greeting,
+            setsubun,
+            tv,
+        })
+    }
+
     /// Setsubun's beans from `at`, on the spot: always as long.
     fn setsubun(at: u64) -> Act {
         Act::SpaceOut {
             since: at,
             until: at + SETSUBUN_MS,
             play: Some(Play::plain(ScriptId::Setsubun)),
+            session: None,
         }
     }
 
@@ -5360,6 +5627,7 @@ impl Osaka {
                 play: Some(play),
                 since,
                 until,
+                ..
             }
             | Act::Idle {
                 play: Some(play),
@@ -5648,11 +5916,12 @@ impl Osaka {
     }
 
     /// How what she chooses, `want` by `method` (a name in
-    /// [`mind::methods`]), comes to ease what it serves: every want that
-    /// serves anything has a way, so none is chosen for nothing. Matched
-    /// with no wildcard over wants, so a new one won't compile without
-    /// its way; a method this doesn't know is `None` (the class test
-    /// fails on it).
+    /// [`mind::methods`], or [`SETTLE_IN`]: settled into where she is,
+    /// from a still act she chose), comes to ease what it serves: every
+    /// want that serves anything has a way, so none is chosen for
+    /// nothing. Matched with no wildcard over wants, so a new one won't
+    /// compile without its way; a method this doesn't know is `None` (the
+    /// class test fails on it).
     #[cfg(test)]
     pub(super) fn credit_path(want: Want, method: &str) -> Option<CreditPath> {
         match want {
@@ -5661,15 +5930,23 @@ impl Osaka {
                 "space-out" | "space-out/muse" => Some(CreditPath::By(Via::Share)),
                 _ => None,
             },
+            // What she settles into is credited by its share, as
+            // chosen.
+            Want::Idle(Activity::Sit | Activity::LieBack) => match method {
+                "idle" | SETTLE_IN => Some(CreditPath::By(Via::Share)),
+                _ => None,
+            },
             Want::Idle(
-                Activity::Sit
-                | Activity::LieBack
-                | Activity::LieFront
+                Activity::LieFront
                 | Activity::Jacks
                 | Activity::ToeTouch
                 | Activity::Stretch
                 | Activity::Gaze,
             ) => (method == "idle").then_some(CreditPath::By(Via::Share)),
+            // Never chosen: only settled into, from a sit.
+            Want::Idle(Activity::SitDoze) => {
+                (method == SETTLE_IN).then_some(CreditPath::By(Via::Share))
+            }
             Want::Walk => (method == "walk/along").then_some(CreditPath::By(Via::SetOff)),
             Want::Travel => match method {
                 "travel/link" | "travel/door" => Some(CreditPath::By(Via::SetOff)),
@@ -5678,6 +5955,7 @@ impl Osaka {
             Want::Work => (method == "work").then_some(CreditPath::By(Via::Shift)),
             Want::Pull => (method == "pull").then_some(CreditPath::By(Via::Whole)),
             Want::Swap => (method == "swap").then_some(CreditPath::By(Via::Whole)),
+            Want::Use(Use::Nap) if method == SETTLE_IN => Some(CreditPath::By(Via::Share)),
             Want::Use(
                 Use::Lounge
                 | Use::Nap
@@ -5885,6 +6163,7 @@ impl Osaka {
                 since,
                 until,
                 play: Some(play),
+                ..
             }
             | Act::Idle {
                 since,
@@ -5917,7 +6196,9 @@ impl Osaka {
             Act::Use { seat, .. } if seat.what == Use::LookOut => "spacing out",
             Act::Use { .. } => "furniture",
             Act::Idle { what, .. } => match what {
-                Activity::Sit | Activity::LieBack | Activity::LieFront => "floor rest",
+                Activity::Sit | Activity::LieBack | Activity::LieFront | Activity::SitDoze => {
+                    "floor rest"
+                }
                 Activity::Gaze => "spacing out",
                 Activity::Jacks | Activity::ToeTouch | Activity::Stretch => "exercise",
             },
@@ -6148,6 +6429,9 @@ impl Osaka {
     ) -> Decision {
         let whims = Whims(self.mind.next());
         self.whims = whims;
+        // What she just finished, and what she chose it for: what she
+        // might settle further from (read before it's credited).
+        let ended = (self.act.clone(), self.credit);
         // What she just finished counts before she chooses anew.
         self.credit_done(at);
         self.got_what_she_came_for(at);
@@ -6225,6 +6509,7 @@ impl Osaka {
             episode: self.episode,
             just_set: self.just_set,
             may_arrange: !self.to_mend(&chances.broken).is_empty(),
+            near: self.stillness.near,
         };
         // With her wall clock where she can see it, her routine's first
         // key is a glance up at it (D7): "Oh! It's late!", "Time for
@@ -6250,6 +6535,19 @@ impl Osaka {
         }
         if to_school {
             return self.go_out(Routine::School, whims, at);
+        }
+        // A still act she chose that has run its course: she may settle
+        // further where she is (phase 5c M7), after her routine and
+        // (below) anything she owes, is moving or made, and before
+        // anything new. Watching the chat as it ran out, she settles
+        // first, and watches on in her new pose, unless something of
+        // those waits: then she stands the watch out, and it's next.
+        let settle = self.settling(&ended, terrain, chances, whims, at);
+        if at < self.watch_until
+            && let Some(settle) = settle
+            && !self.owes_before_settling(terrain, chances, at)
+        {
+            return self.settle_in(settle, chances, at, rng);
         }
         if at < self.watch_until {
             self.facing = toward(self.x, self.watch_x);
@@ -6394,6 +6692,12 @@ impl Osaka {
                 };
             }
         }
+        if let Some(settle) = settle {
+            return Decision {
+                heading,
+                ..self.settle_in(settle, chances, at, rng)
+            };
+        }
         // What's on offer: each want one of whose methods binds, with
         // what it binds.
         let mut offers: Vec<(Want, &'static str, Bind)> = Want::ALL
@@ -6505,8 +6809,9 @@ impl Osaka {
             },
             Bind::Here(Here::SpaceOut) => Act::SpaceOut {
                 since: at,
-                until: at + rng.range(SPACE_OUT_MS.0, SPACE_OUT_MS.1),
+                until: at + self.lingered(true, rng.range(SPACE_OUT_MS.0, SPACE_OUT_MS.1)),
                 play: None,
+                session: None,
             },
             Bind::Here(Here::Muse) => {
                 self.muse(at, rng);
@@ -6618,6 +6923,158 @@ impl Osaka {
             }
         }
         None
+    }
+
+    /// What she'd settle into where she is (phase 5c M7, D4), `ended`
+    /// (her act, and the want she was at it for) having run its course
+    /// at `at`, on calm floor: spacing out (musing, a riddle, her rare
+    /// musing) or gazing, to sitting; sitting, to lying back, or (on a
+    /// whim, [`Stillness::sit_doze`]) dozing off where she sits; lounging,
+    /// to a nap on the same sofa, from where she sits (as napping on it
+    /// would be offered her now: [`mind::places`]). As often as her
+    /// mood's odds ([`Stillness::settle`]) on her decision's `whims`,
+    /// salted with how far she has settled already. Nothing else
+    /// settles: a lying doze is as far as it goes; nor what she didn't
+    /// choose (a glance at her clock, Setsubun, the moment after a swap,
+    /// a trial sit) or was cut short of, nor anything over text.
+    fn settling(
+        &self,
+        ended: &(Act, Option<Want>),
+        terrain: &Terrain,
+        chances: &Chances,
+        whims: Whims,
+        at: u64,
+    ) -> Option<Settle> {
+        let depth = u64::from(self.settled);
+        let odds = self.stillness.settle.of(self.mood);
+        if !terrain.restful(self.x, self.y) || !whims.odds("settle in", depth, odds) {
+            return None;
+        }
+        let trying = self.episode.is_some_and(|e| e.trying);
+        match ended {
+            (
+                Act::SpaceOut {
+                    until, play: None, ..
+                },
+                Some(Want::SpaceOut),
+            ) if *until <= at => Some(Settle::Idle(Activity::Sit)),
+            (
+                Act::SpaceOut {
+                    until,
+                    play: Some(play),
+                    ..
+                },
+                Some(Want::SpaceOut),
+            ) if *until <= at && matches!(play.own, ScriptId::Riddle | ScriptId::Escalator) => {
+                Some(Settle::Idle(Activity::Sit))
+            }
+            (
+                Act::Idle {
+                    what,
+                    until,
+                    play: None,
+                    ..
+                },
+                Some(Want::Idle(chose)),
+            ) if what == chose && *until <= at => match what {
+                Activity::Gaze => Some(Settle::Idle(Activity::Sit)),
+                Activity::Sit => {
+                    let doze = whims.odds("settle doze", depth, self.stillness.sit_doze);
+                    Some(Settle::Idle(if doze {
+                        Activity::SitDoze
+                    } else {
+                        Activity::LieBack
+                    }))
+                }
+                Activity::LieBack
+                | Activity::LieFront
+                | Activity::Jacks
+                | Activity::ToeTouch
+                | Activity::Stretch
+                | Activity::SitDoze => None,
+            },
+            (Act::Use { seat, until, .. }, Some(Want::Use(Use::Lounge)))
+                if seat.what == Use::Lounge && *until <= at && !trying =>
+            {
+                let nap = chances.seats.iter().find(|s| {
+                    s.what == Use::Nap && s.piece == seat.piece && (s.x, s.y) == (seat.x, seat.y)
+                })?;
+                mind::places(Use::Nap, chances, whims)
+                    .contains(&mind::Place::Seat(*nap))
+                    .then_some(Settle::Use(*nap))
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether, at `at`, something comes before anything she'd settle
+    /// into ([`Osaka::choose_next`]'s order after her watch): what her
+    /// calendar has for her, her day off said, a beat she owes, the next
+    /// hop of her way somewhere (or to a piece she made), the piece
+    /// she's moving or has just set down, or a piece she made and hasn't
+    /// finished with that she can get to. Read only as her watch decides
+    /// whether she settles first, so none of them waits a whole settled
+    /// act behind it; each is the same test as where it's done (a
+    /// moving piece let go of, or a way that's gone, she stands the
+    /// watch out for nothing: no more).
+    fn owes_before_settling(&self, terrain: &Terrain, chances: &Chances, at: u64) -> bool {
+        let day_off = self.day_off
+            && self
+                .day(at)
+                .is_some_and(|day| day.slot == routine::Slot::Morning)
+            && self.speech.is_none_or(|(_, until)| until <= at);
+        let leftover = chances.mine.iter().any(|m| {
+            !(m.done && m.used) && self.tries_at(m.id) < TRIES && chances.next_for(m).is_some()
+        });
+        self.calendar_due(chances, terrain, at).is_some()
+            || day_off
+            || !self.owed.is_empty()
+            || self
+                .heading
+                .as_ref()
+                .is_some_and(|h| self.hopping || h.mine())
+            || self.episode.is_some()
+            || self.just_set.is_some()
+            || leftover
+    }
+
+    /// Settle into `settle` at `at`, where she is and facing as she is
+    /// (see [`Osaka::settling`]): a continuation of what she chose, not
+    /// a new choice, so it skips the roll and isn't one of her recent
+    /// choices; it eases her as its own want. Watching the chat, she
+    /// watches on in her new pose (unless she dozes off: a doze wears no
+    /// look). On a piece she faces as its seat does, which is how she
+    /// faced on it but for a look at the chat; and the one use she
+    /// settles into, a nap, is a doze, whose look is over, turning her
+    /// back to the seat as any look's end does.
+    fn settle_in(&mut self, settle: Settle, chances: &Chances, at: u64, rng: &mut Rng) -> Decision {
+        let (look, facing, depth) = (self.looking_up, self.facing, self.settled + 1);
+        let want = match settle {
+            Settle::Idle(what) => {
+                let act = self.idle_from(what, at, rng);
+                self.set(act, at);
+                self.facing = facing;
+                Want::Idle(what)
+            }
+            Settle::Use(seat) => {
+                self.start_job(Job::Use(seat), at, chances, rng);
+                Want::Use(seat.what)
+            }
+        };
+        self.credit = Some(want);
+        self.settled = depth;
+        if at < self.watch_until && !self.acting(at).0.dozes() {
+            self.looking_up = Some(look.unwrap_or(LookUp {
+                since: at.saturating_sub(LOOK_MS),
+                hidden: at,
+                until: self.watch_until,
+                step: 2,
+                back: None,
+            }));
+        }
+        tracing::info!(act = %self.act_name(), depth, "houseguest: settles in where she is");
+        // Not a roll: no want chosen (a census counts those as choices).
+        Decision::of(Bucket::Continuation, SETTLE_IN)
     }
 
     /// Times she has set off for piece `id` (since it was crumpled).
@@ -7155,7 +7612,6 @@ impl Osaka {
     }
 
     fn idle_act(&mut self, what: Activity, at: u64, rng: &mut Rng) -> Act {
-        let (lo, hi) = what.duration();
         if matches!(what, Activity::Sit | Activity::LieBack | Activity::LieFront) {
             // Sitting and lying face either way.
             self.facing = if rng.below(2) == 0 {
@@ -7164,11 +7620,29 @@ impl Osaka {
                 Facing::Right
             };
         }
+        self.idle_from(what, at, rng)
+    }
+
+    /// Doing `what` on the spot from `at`, as long as she draws for it
+    /// (lingered by her mood, if it lingers), facing as she is.
+    fn idle_from(&self, what: Activity, at: u64, rng: &mut Rng) -> Act {
+        let (lo, hi) = what.duration();
         Act::Idle {
             what,
             since: at,
-            until: at + rng.range(lo, hi),
+            until: at + self.lingered(what.lingers(), rng.range(lo, hi)),
             play: None,
+        }
+    }
+
+    /// `ms`, drawn for a still act she chose, as long as her mood
+    /// lingers over it if it `lingers` (phase 5c M8: see
+    /// [`Stillness::linger`]).
+    fn lingered(&self, lingers: bool, ms: u64) -> u64 {
+        if lingers {
+            self.stillness.lingered(self.mood, ms)
+        } else {
+            ms
         }
     }
 
@@ -7410,6 +7884,7 @@ impl Osaka {
                 since,
                 until,
                 play: Some(play),
+                ..
             }
             | Act::Idle {
                 since,
@@ -8169,6 +8644,8 @@ impl Osaka {
             Pose::Sleep(_) => Pose::Sleep(1),
             Pose::Nap(_) => Pose::Nap(1),
             Pose::LieBack(_) => Pose::LieBack(1),
+            // Dozing where she sits, her head comes up off her knees.
+            Pose::SitDoze(_) => Pose::SitDoze(0),
             other => other,
         };
         (turned, Face::Blink, bubble)
@@ -8202,10 +8679,7 @@ impl Osaka {
                 self.stirring(look, now)
             }
             Act::Idle { what, since, .. } => {
-                let frame = now
-                    .saturating_sub(since)
-                    .checked_div(what.period())
-                    .map_or(0, |n| (n % 2) as u8);
+                let frame = what.frame(now.saturating_sub(since));
                 self.stirring(what.look(frame), now)
             }
             Act::Use {
@@ -8259,6 +8733,7 @@ impl Osaka {
                 since,
                 until,
                 play: Some(play),
+                ..
             } => play.key(since, until, now).map_or(
                 (Pose::Stand, Face::Vacant, Some(Bubble::Dots)),
                 |(key, elapsed)| key.look(elapsed, Pose::Stand, &play),
@@ -8403,6 +8878,9 @@ fn route(terrain: &Terrain, from: usize, to: usize) -> Option<Link> {
 /// for a held pose.
 fn next_frame(what: Activity, since: u64, now: u64) -> u64 {
     let period = what.period();
+    if what == Activity::SitDoze && now < since + SIT_DOZE_NOD_MS {
+        return since + SIT_DOZE_NOD_MS;
+    }
     if period == 0 {
         return u64::MAX;
     }
@@ -8475,7 +8953,10 @@ mod tests {
                 osaka.muse(0, &mut rng);
                 let span = alone.range(SPACE_OUT_MS.0, SPACE_OUT_MS.1);
                 assert_eq!(rng.0, alone.0, "seed {seed}: one body draw");
-                let Act::SpaceOut { since, until, play } = osaka.act else {
+                let Act::SpaceOut {
+                    since, until, play, ..
+                } = osaka.act
+                else {
                     panic!("seed {seed}: spacing out");
                 };
                 assert_eq!((since, until), (0, span), "seed {seed}");
@@ -10045,6 +10526,7 @@ mod tests {
                 since: 0,
                 until: far,
                 play: None,
+                session: None,
             },
         ];
         for act in acts {
@@ -13366,6 +13848,7 @@ mod tests {
                 since: 0,
                 until: 20_000,
                 play: None,
+                session: None,
             };
             osaka.set(
                 Act::Stand {
@@ -14240,6 +14723,7 @@ mod tests {
                     since: 0,
                     until: 60_000,
                     play: None,
+                    session: None,
                 },
                 Want::SpaceOut,
                 true,
@@ -14647,6 +15131,7 @@ mod tests {
                     since: 0,
                     until: DASH_FORGOT_MS,
                     play: Some(Play::plain(ScriptId::DashForgot)),
+                    session: None,
                 },
                 &calm,
             ),
@@ -14699,6 +15184,7 @@ mod tests {
                 since: 0,
                 until,
                 play: Some(Play::riddle(0)),
+                session: None,
             };
             osaka.set(act.clone(), 0);
             for &line in lines {
@@ -14748,6 +15234,7 @@ mod tests {
                 since: 0,
                 until: 7_000,
                 play: None,
+                session: None,
             },
             0,
         );
@@ -14798,6 +15285,7 @@ mod tests {
                 since: 0,
                 until: 60_000,
                 play: None,
+                session: None,
             },
             0,
         );
@@ -14900,5 +15388,1239 @@ mod tests {
         osaka.tick(shown + LOOK_MS, None, &terrain, &chances, &mut rng);
         assert_eq!(osaka.appearance(shown + LOOK_MS).1, Face::Vacant);
         assert_eq!(osaka.act, act, "lounging on");
+    }
+
+    // Phase 5c step 7: the stillness levers, each turned on in its test
+    // (they ship neutral until the band is tuned).
+
+    use super::super::stillness::{ByMood, NodOff};
+
+    /// The design's starting levers, settling as often as `settle` and
+    /// dozing where she sits from a sit as often as `sit_doze`.
+    fn levers(settle: f64, sit_doze: f64) -> Stillness {
+        Stillness {
+            settle: ByMood::all(settle),
+            sit_doze,
+            ..Stillness::STARTING
+        }
+    }
+
+    /// Her at `(20, 15)` on [`floor_at`]`(15)`, facing left, in `mood`
+    /// with the levers `still`, at `act` (from 0, to 10 s) for `want`.
+    fn at_still(still: Stillness, mood: Mood, act: Act, want: Want, rng: &mut Rng) -> Osaka {
+        let mut osaka = Osaka::standing_at(20, 15, 0, rng);
+        osaka.set_mood(mood);
+        osaka.stillness = still;
+        osaka.facing = Facing::Left;
+        osaka.credit = Some(want);
+        osaka.set(act, 0);
+        osaka
+    }
+
+    fn idle_until(what: Activity, until: u64) -> Act {
+        Act::Idle {
+            what,
+            since: 0,
+            until,
+            play: None,
+        }
+    }
+
+    fn spacing_out(until: u64, play: Option<Play>) -> Act {
+        Act::SpaceOut {
+            since: 0,
+            until,
+            play,
+            session: None,
+        }
+    }
+
+    /// A sofa's seat at `(20, 15)` facing left, for `what`.
+    fn sofa_seat(what: Use) -> Seat {
+        Seat {
+            x: 20,
+            y: 15,
+            facing: Facing::Left,
+            ..seat_for(what, Furniture::Sofa)
+        }
+    }
+
+    fn lounging(until: u64) -> Act {
+        Act::Use {
+            seat: sofa_seat(Use::Lounge),
+            since: 0,
+            until,
+            whole: until,
+            play: Play::of(Use::Lounge, None),
+            grievance: None,
+        }
+    }
+
+    /// What she's at, as settling cares: the activity, or the use and
+    /// its seat.
+    fn settled_at(osaka: &Osaka) -> Option<(Want, Option<Seat>)> {
+        match osaka.act {
+            Act::Idle {
+                what, play: None, ..
+            } => Some((Want::Idle(what), None)),
+            Act::Use { seat, .. } => Some((Want::Use(seat.what), Some(seat))),
+            _ => None,
+        }
+    }
+
+    /// A still act she chose that runs its course settles further where
+    /// she is, as often as her mood's odds (here always, in every mood):
+    /// spacing out (musing or a riddle) or gazing, to sitting; sitting,
+    /// to lying back or (on its whim) dozing where she sits; lounging, to
+    /// a nap from the same seat. She doesn't move or turn, sets off for
+    /// nothing, and it's no choice of hers (not one she rolled, nor one
+    /// her recent choices remember): a continuation, eased as its own
+    /// want, the act she settled from eased whole.
+    #[test]
+    fn a_still_act_that_runs_its_course_settles_in_where_she_is() {
+        let terrain = floor_at(15);
+        let chances = Chances {
+            seats: vec![sofa_seat(Use::Lounge), sofa_seat(Use::Nap)],
+            ..Chances::default()
+        };
+        let sit = Want::Idle(Activity::Sit);
+        let cases: Vec<(&str, Act, Want, f64, Want)> = vec![
+            (
+                "space out",
+                spacing_out(10_000, None),
+                Want::SpaceOut,
+                0.0,
+                sit,
+            ),
+            (
+                "riddle",
+                spacing_out(10_000, Some(Play::riddle(0))),
+                Want::SpaceOut,
+                0.0,
+                sit,
+            ),
+            (
+                "gaze",
+                idle_until(Activity::Gaze, 10_000),
+                Want::Idle(Activity::Gaze),
+                0.0,
+                sit,
+            ),
+            (
+                "sit, lying back",
+                idle_until(Activity::Sit, 10_000),
+                sit,
+                0.0,
+                Want::Idle(Activity::LieBack),
+            ),
+            (
+                "sit, dozing",
+                idle_until(Activity::Sit, 10_000),
+                sit,
+                1.0,
+                Want::Idle(Activity::SitDoze),
+            ),
+            (
+                "lounge",
+                lounging(10_000),
+                Want::Use(Use::Lounge),
+                0.0,
+                Want::Use(Use::Nap),
+            ),
+        ];
+        for mood in Mood::ALL {
+            for (name, act, want, sit_doze, into) in &cases {
+                let at = format!("{name} {mood:?}");
+                let mut rng = Rng(5);
+                let mut osaka =
+                    at_still(levers(1.0, *sit_doze), mood, act.clone(), *want, &mut rng);
+                let (decided, set_offs) = (osaka.decisions.len(), osaka.set_offs);
+                osaka.tick(10_000, None, &terrain, &chances, &mut rng);
+                let decision = osaka.decisions.last().expect("decided");
+                assert_eq!(osaka.decisions.len(), decided + 1, "{at}");
+                assert_eq!(
+                    (decision.bucket, decision.method, decision.want),
+                    (Bucket::Continuation, "settle in", None),
+                    "{at}: a continuation, not a roll"
+                );
+                let (now, seat) =
+                    settled_at(&osaka).unwrap_or_else(|| panic!("{at}: {:?}", osaka.act));
+                assert_eq!(now, *into, "{at}");
+                if let Some(seat) = seat {
+                    assert_eq!(seat, sofa_seat(Use::Nap), "{at}: the same sofa's seat");
+                    assert!(
+                        mind::places(Use::Nap, &chances, osaka.whims)
+                            .contains(&mind::Place::Seat(seat)),
+                        "{at}: a nap there is on offer"
+                    );
+                }
+                assert_eq!((osaka.x, osaka.y), (20, 15), "{at}: where she was");
+                assert_eq!(osaka.facing, Facing::Left, "{at}: facing as she was");
+                assert_eq!(osaka.set_offs, set_offs, "{at}: no set-off");
+                assert!(osaka.choices.is_empty(), "{at}: no choice");
+                assert!(osaka.recent.is_empty(), "{at}: not a recent choice");
+                assert_eq!(osaka.credit, Some(*into), "{at}: eased as itself");
+                assert_eq!(
+                    Osaka::credit_path(*into, SETTLE_IN),
+                    Some(CreditPath::By(Via::Share)),
+                    "{at}: its credit path"
+                );
+                assert_eq!(osaka.credited.last(), Some(&(*want, 1.0, 10_000)), "{at}");
+                // Run to its end, it eases her whole, as itself.
+                let (Act::Idle { until, .. } | Act::Use { until, .. }) = osaka.act else {
+                    panic!("{at}");
+                };
+                osaka.tick(until, None, &terrain, &chances, &mut rng);
+                assert!(
+                    osaka.credited.contains(&(*into, 1.0, until)),
+                    "{at}: {:?}",
+                    osaka.credited
+                );
+            }
+        }
+    }
+
+    /// Each mood has its own odds of settling in: here a lazy Osaka
+    /// always settles and every other mood never does.
+    #[test]
+    fn her_mood_has_its_own_odds_of_settling_in() {
+        let terrain = floor_at(15);
+        let chances = Chances::default();
+        let still = Stillness {
+            settle: ByMood {
+                lazy: 1.0,
+                ..ByMood::all(0.0)
+            },
+            ..Stillness::STARTING
+        };
+        for mood in Mood::ALL {
+            for seed in 0..8 {
+                let mut rng = Rng(seed);
+                let mut osaka = at_still(
+                    still,
+                    mood,
+                    spacing_out(10_000, None),
+                    Want::SpaceOut,
+                    &mut rng,
+                );
+                osaka.tick(10_000, None, &terrain, &chances, &mut rng);
+                let settled = osaka.decisions.last().map(|d| d.method) == Some(SETTLE_IN);
+                assert_eq!(settled, mood == Mood::Lazy, "{mood:?} seed {seed}");
+            }
+        }
+    }
+
+    /// A daydream with no musings in it (a mood's whim of none, phase 5c
+    /// B6) says no riddle or musing, but her rare musing and a glance up
+    /// at her clock aren't musings of hers: they come exactly as they
+    /// would with a musing to say.
+    #[test]
+    fn a_silent_daydream_keeps_her_rare_musing_and_clock_glance() {
+        let open = (0..1000)
+            .map(|seed| {
+                Rares::draw(
+                    seed,
+                    &[ScriptId::Escalator],
+                    Pity::default(),
+                    rarity::DAY_WINDOW,
+                )
+            })
+            .find(|r| r.allows(ScriptId::Escalator))
+            .expect("a day in seven or so");
+        let silent = Stillness {
+            musings: ByMood::all((0, 0)),
+            ..Stillness::NEUTRAL
+        };
+        let mut came = [0; 2];
+        for seed in 0..300 {
+            for (i, rare) in [ScriptId::Escalator, ScriptId::ClockGlance]
+                .into_iter()
+                .enumerate()
+            {
+                let daydream = |still: Stillness| {
+                    let mut rng = Rng(seed);
+                    let mut osaka = Osaka::standing_at(20, 10, 0, &mut rng);
+                    osaka.stillness = still;
+                    osaka.whims = Whims(seed);
+                    if rare == ScriptId::Escalator {
+                        osaka.set_rares(open.clone(), Some(0), vec![ScriptId::Escalator]);
+                    } else {
+                        osaka.read_clock(Some(clock_at(1, 15, 0)));
+                        osaka.clock_on = Some(clock_on(20, 10));
+                    }
+                    osaka.muse(0, &mut rng);
+                    (osaka.plays().map(|p| p.own), osaka.speech.is_some())
+                };
+                let (with, _) = daydream(Stillness::NEUTRAL);
+                let (without, speaks) = daydream(silent);
+                assert_eq!(
+                    without == Some(rare),
+                    with == Some(rare),
+                    "seed {seed} {rare:?}: {without:?} silent, {with:?} with a musing"
+                );
+                if without == Some(rare) {
+                    came[i] += 1;
+                } else {
+                    assert_eq!((without, speaks), (None, false), "seed {seed}: silent");
+                }
+            }
+        }
+        assert!(came.iter().all(|&n| n >= 20), "{came:?} in 300");
+    }
+
+    /// Settling goes on as far as it goes and stops there: spacing out
+    /// to sitting, sitting to lying back, and a lying doze ends with a
+    /// fresh choice. Each settled act is drawn as long as its own
+    /// activity, lingered as her mood lingers.
+    #[test]
+    fn settling_in_runs_its_chain_to_its_end() {
+        let terrain = floor_at(15);
+        let chances = Chances::default();
+        for mood in Mood::ALL {
+            let mut rng = Rng(9);
+            let mut osaka = at_still(
+                levers(1.0, 0.0),
+                mood,
+                spacing_out(10_000, None),
+                Want::SpaceOut,
+                &mut rng,
+            );
+            let mut chain = Vec::new();
+            let mut now = 10_000;
+            for _ in 0..3 {
+                osaka.tick(now, None, &terrain, &chances, &mut rng);
+                let decision = osaka.decisions.last().expect("decided");
+                chain.push((decision.method, osaka.credit));
+                let Act::Idle {
+                    what, since, until, ..
+                } = osaka.act
+                else {
+                    break;
+                };
+                let (lo, hi) = what.duration();
+                let linger = if what.lingers() {
+                    osaka.stillness.linger.of(mood)
+                } else {
+                    1.0
+                };
+                let drawn = (until - since) as f64 / linger;
+                assert!(
+                    (lo as f64 - 1.0..=hi as f64 + 1.0).contains(&drawn),
+                    "{mood:?} {what:?}: {} ms at ×{linger}",
+                    until - since
+                );
+                now = until;
+            }
+            let sit = Want::Idle(Activity::Sit);
+            let lie = Want::Idle(Activity::LieBack);
+            assert_eq!(
+                chain[..2],
+                [("settle in", Some(sit)), ("settle in", Some(lie))],
+                "{mood:?}"
+            );
+            assert_ne!(
+                chain[2].0, "settle in",
+                "{mood:?}: a doze is as far as it goes"
+            );
+        }
+    }
+
+    /// Only a still act she chose, that ran its course, on calm floor,
+    /// settles (however sure the odds): not one she was startled out of,
+    /// nor what she didn't choose (the moment after a swap, a glance at
+    /// her clock, Setsubun, a trial sit), nor exercise or kicking her
+    /// feet, nor at odds of nothing (the neutral levers), nor past her
+    /// bedtime, nor over text (where she'd only pass).
+    #[test]
+    fn settling_in_is_only_for_a_still_act_she_chose_that_ran_its_course() {
+        let terrain = floor_at(15);
+        let chances = Chances {
+            seats: vec![sofa_seat(Use::Lounge), sofa_seat(Use::Nap)],
+            ..Chances::default()
+        };
+        let glance = Play {
+            branch: ClockGlance::Hour(15).branch(),
+            ..Play::plain(ScriptId::ClockGlance)
+        };
+        let cases: Vec<(&str, Act, Option<Want>, Stillness)> = vec![
+            (
+                "after a swap",
+                spacing_out(10_000, None),
+                None,
+                levers(1.0, 0.0),
+            ),
+            (
+                "a glance",
+                spacing_out(10_000, Some(glance)),
+                Some(Want::SpaceOut),
+                levers(1.0, 0.0),
+            ),
+            (
+                "setsubun",
+                spacing_out(10_000, Some(Play::plain(ScriptId::Setsubun))),
+                Some(Want::SpaceOut),
+                levers(1.0, 0.0),
+            ),
+            (
+                "lie front",
+                idle_until(Activity::LieFront, 10_000),
+                Some(Want::Idle(Activity::LieFront)),
+                levers(1.0, 0.0),
+            ),
+            (
+                "jacks",
+                idle_until(Activity::Jacks, 10_000),
+                Some(Want::Idle(Activity::Jacks)),
+                levers(1.0, 0.0),
+            ),
+            (
+                "neutral levers",
+                spacing_out(10_000, None),
+                Some(Want::SpaceOut),
+                Stillness::NEUTRAL,
+            ),
+            (
+                "odds of nothing",
+                idle_until(Activity::Sit, 10_000),
+                Some(Want::Idle(Activity::Sit)),
+                levers(0.0, 0.0),
+            ),
+        ];
+        for (name, act, want, still) in cases {
+            let mut rng = Rng(5);
+            let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+            osaka.stillness = still;
+            osaka.credit = want;
+            osaka.set(act, 0);
+            osaka.tick(10_000, None, &terrain, &chances, &mut rng);
+            let method = osaka.decisions.last().map(|d| d.method);
+            assert_ne!(method, Some("settle in"), "{name}");
+        }
+        // Deciding before it has run its course (as the stage's tests
+        // make her).
+        let mut rng = Rng(5);
+        let mut osaka = at_still(
+            levers(1.0, 0.0),
+            Mood::Ordinary,
+            spacing_out(10_000, None),
+            Want::SpaceOut,
+            &mut rng,
+        );
+        osaka.decide(5_000, &terrain, &chances, &mut rng);
+        let method = osaka.decisions.last().map(|d| d.method);
+        assert_ne!(method, Some("settle in"), "before its end");
+        // Startled out of it (it didn't run its course).
+        let mut rng = Rng(5);
+        let mut osaka = at_still(
+            levers(1.0, 0.0),
+            Mood::Ordinary,
+            spacing_out(10_000, None),
+            Want::SpaceOut,
+            &mut rng,
+        );
+        osaka.interrupt(Cause::Shaken, 5_000);
+        osaka.tick(5_000 + LOOK_MS, None, &terrain, &chances, &mut rng);
+        assert!(
+            osaka.decisions.iter().all(|d| d.method != "settle in"),
+            "startled: {:?}",
+            osaka.decisions
+        );
+        // A trial sit, on the sofa she has set down: she makes up her
+        // mind about it (keeping it there, or trying it elsewhere), and
+        // doesn't settle in.
+        let mut osaka = at_still(
+            levers(1.0, 0.0),
+            Mood::Ordinary,
+            lounging(10_000),
+            Want::Use(Use::Lounge),
+            &mut rng,
+        );
+        osaka.episode = Some(trial_episode());
+        osaka.tick(10_000, None, &terrain, &chances, &mut rng);
+        let method = osaka.decisions.last().map(|d| d.method);
+        assert_ne!(method, Some("settle in"), "a trial sit: {method:?}");
+        // (Asked outright, too.)
+        let mut osaka = at_still(
+            levers(1.0, 0.0),
+            Mood::Ordinary,
+            lounging(10_000),
+            Want::Use(Use::Lounge),
+            &mut rng,
+        );
+        osaka.episode = Some(trial_episode());
+        assert!(
+            osaka
+                .settling(
+                    &(lounging(10_000), Some(Want::Use(Use::Lounge))),
+                    &terrain,
+                    &chances,
+                    Whims(1),
+                    10_000
+                )
+                .is_none(),
+            "a trial sit"
+        );
+        // Over text, asked outright (her tick moves her off it first):
+        // only on calm floor does the same ask settle.
+        let osaka = at_still(
+            levers(1.0, 0.0),
+            Mood::Ordinary,
+            spacing_out(10_000, None),
+            Want::SpaceOut,
+            &mut rng,
+        );
+        let ended = (spacing_out(10_000, None), Some(Want::SpaceOut));
+        for graphics in [false, true] {
+            use tuirealm::ratatui::buffer::Buffer;
+            use tuirealm::ratatui::style::Style;
+            let mut buf = Buffer::empty(Rect::new(0, 0, 40, 20));
+            buf.set_string(0, 15, "─".repeat(40), Style::default());
+            for row in 11..15 {
+                buf.set_string(0, row, "x".repeat(40), Style::default());
+            }
+            // Text is no calm floor in line art, where her image hides
+            // it; in ASCII it is.
+            let busy = Terrain::read(&buf, &[], graphics);
+            assert_eq!(busy.restful(20, 15), !graphics);
+            assert_eq!(
+                osaka
+                    .settling(&ended, &busy, &chances, Whims(1), 10_000)
+                    .is_some(),
+                !graphics,
+                "over text, graphics {graphics}"
+            );
+        }
+        assert_eq!(
+            osaka.settling(&ended, &terrain, &chances, Whims(1), 10_000),
+            Some(Settle::Idle(Activity::Sit)),
+            "on calm floor"
+        );
+        // Past her bedtime: to bed.
+        let mut osaka = at_still(
+            levers(1.0, 0.0),
+            Mood::Ordinary,
+            spacing_out(10_000, None),
+            Want::SpaceOut,
+            &mut rng,
+        );
+        osaka.set_clock(monday_at(23, 0).day(0));
+        osaka.tick(10_000, Some(monday_at(23, 0)), &terrain, &chances, &mut rng);
+        let method = osaka.decisions.last().map(|d| d.method);
+        assert_ne!(method, Some("settle in"), "at bedtime: {method:?}");
+    }
+
+    /// Lounging settles into a nap only from the same seat of the same
+    /// sofa, as napping there is on offer: with no nap seat, the nap seat
+    /// somewhere else, or another piece's there, she chooses afresh.
+    #[test]
+    fn a_lounge_settles_into_a_nap_only_on_the_same_seat() {
+        let terrain = floor_at(15);
+        let elsewhere = Seat {
+            x: 28,
+            ..sofa_seat(Use::Nap)
+        };
+        let another_piece = Seat {
+            piece: PieceRef::Real(Furniture::Bed),
+            item: Furniture::Bed,
+            ..sofa_seat(Use::Nap)
+        };
+        for (name, seats) in [
+            ("no nap seat", vec![sofa_seat(Use::Lounge)]),
+            ("another seat", vec![sofa_seat(Use::Lounge), elsewhere]),
+            (
+                "another piece's seat there",
+                vec![sofa_seat(Use::Lounge), another_piece],
+            ),
+        ] {
+            let chances = Chances {
+                seats,
+                ..Chances::default()
+            };
+            let mut rng = Rng(5);
+            let mut osaka = at_still(
+                levers(1.0, 0.0),
+                Mood::Lazy,
+                lounging(10_000),
+                Want::Use(Use::Lounge),
+                &mut rng,
+            );
+            osaka.tick(10_000, None, &terrain, &chances, &mut rng);
+            let method = osaka.decisions.last().map(|d| d.method);
+            assert_ne!(method, Some("settle in"), "{name}");
+        }
+    }
+
+    /// Lounging on a sofa she made, with her real one elsewhere: napping
+    /// on hers is on offer only on the whim that has her go for the one
+    /// she made ([`mind::places`]), and she settles into it exactly then.
+    #[test]
+    fn a_lounge_on_a_sofa_she_made_settles_as_napping_there_is_offered() {
+        let terrain = floor_at(15);
+        let made = |what: Use| Seat {
+            piece: PieceRef::Made(MadeId(0)),
+            ..sofa_seat(what)
+        };
+        let real = Seat {
+            x: 30,
+            ..sofa_seat(Use::Nap)
+        };
+        let chances = Chances {
+            seats: vec![made(Use::Lounge), made(Use::Nap), real],
+            ..Chances::default()
+        };
+        let mut seen = [false; 2];
+        for seed in 0..60 {
+            let mut rng = Rng(seed);
+            let mut osaka = at_still(
+                levers(1.0, 0.0),
+                Mood::Lazy,
+                Act::Use {
+                    seat: made(Use::Lounge),
+                    since: 0,
+                    until: 10_000,
+                    whole: 10_000,
+                    play: Play::of(Use::Lounge, None),
+                    grievance: None,
+                },
+                Want::Use(Use::Lounge),
+                &mut rng,
+            );
+            osaka.tick(10_000, None, &terrain, &chances, &mut rng);
+            let settled = osaka.decisions.last().map(|d| d.method) == Some("settle in");
+            let offered = mind::places(Use::Nap, &chances, osaka.whims)
+                .contains(&mind::Place::Seat(made(Use::Nap)));
+            assert_eq!(settled, offered, "seed {seed}");
+            seen[usize::from(settled)] = true;
+        }
+        assert_eq!(seen, [true; 2], "both ways");
+    }
+
+    /// A still act that runs its course while she watches the chat
+    /// (looking up where she is) settles first, and the watch goes on in
+    /// her new pose: her look carried over (puzzled still, then the
+    /// plain watching face) until the watch is over, turned to the chat
+    /// throughout. Settling into a doze, she wears no look. With odds of
+    /// nothing, she stands to watch the rest, as after any look.
+    #[test]
+    fn settling_in_during_her_watch_watches_on_in_the_new_pose() {
+        let terrain = floor_at(15);
+        let chances = Chances::default();
+        let line = 8_000;
+        let end = 10_000;
+        let watching = |still: Stillness, act: Act, want: Want| {
+            let mut rng = Rng(5);
+            let mut osaka = at_still(still, Mood::Ordinary, act, want, &mut rng);
+            osaka.tick(line, None, &terrain, &chances, &mut rng);
+            osaka.look(line, 39, false, &terrain);
+            assert!(osaka.looking_up.is_some(), "looking up");
+            osaka.tick(end, None, &terrain, &chances, &mut rng);
+            (osaka, rng)
+        };
+        let (mut osaka, mut rng) =
+            watching(levers(1.0, 0.0), spacing_out(end, None), Want::SpaceOut);
+        assert_eq!(osaka.decisions.last().map(|d| d.method), Some("settle in"));
+        assert!(matches!(
+            osaka.act,
+            Act::Idle {
+                what: Activity::Sit,
+                ..
+            }
+        ));
+        assert_eq!(osaka.facing, Facing::Right, "turned to the chat");
+        assert_eq!(
+            osaka.appearance(end),
+            (Pose::Sit, Face::Curious, Some(Bubble::Huh)),
+            "puzzled still, sitting"
+        );
+        let plain = line + LOOK_MS;
+        osaka.tick(plain, None, &terrain, &chances, &mut rng);
+        assert_eq!(osaka.appearance(plain), (Pose::Sit, Face::Vacant, None));
+        assert!(osaka.looking_up.is_some(), "watching on");
+        osaka.tick(line + WATCH_MS, None, &terrain, &chances, &mut rng);
+        assert!(osaka.looking_up.is_none(), "the watch is over");
+        assert!(matches!(osaka.act, Act::Idle { .. }), "sitting on");
+        assert_eq!(osaka.facing, Facing::Right);
+        // Into a doze (lying back, or dozing where she sits): no look,
+        // whether her tick decides (ending any look she nods off under)
+        // or the stage has her decide outright.
+        for (sit_doze, into) in [(0.0, Activity::LieBack), (1.0, Activity::SitDoze)] {
+            let (osaka, _) = watching(
+                levers(1.0, sit_doze),
+                idle_until(Activity::Sit, end),
+                Want::Idle(Activity::Sit),
+            );
+            assert_eq!(osaka.decisions.last().map(|d| d.method), Some("settle in"));
+            assert!(
+                matches!(osaka.act, Act::Idle { what, .. } if what == into),
+                "{into:?}"
+            );
+            assert!(osaka.appearance(end).0.dozes(), "{into:?}");
+            assert!(osaka.looking_up.is_none(), "{into:?}: a doze wears no look");
+            let mut rng = Rng(5);
+            let mut osaka = at_still(
+                levers(1.0, sit_doze),
+                Mood::Ordinary,
+                idle_until(Activity::Sit, end),
+                Want::Idle(Activity::Sit),
+                &mut rng,
+            );
+            osaka.tick(line, None, &terrain, &chances, &mut rng);
+            osaka.look(line, 39, false, &terrain);
+            osaka.decide(end, &terrain, &chances, &mut rng);
+            assert_eq!(osaka.decisions.last().map(|d| d.method), Some("settle in"));
+            assert!(
+                osaka.looking_up.is_none(),
+                "{into:?}, decided: a doze wears no look"
+            );
+        }
+        // Lounging into a nap on the same sofa: turned to the chat as she
+        // lounged, then (a nap is a doze, its look over) back to the
+        // seat's facing, as any look's end turns her.
+        let sofa = Chances {
+            seats: vec![sofa_seat(Use::Lounge), sofa_seat(Use::Nap)],
+            ..Chances::default()
+        };
+        let mut rng = Rng(5);
+        let mut osaka = at_still(
+            levers(1.0, 0.0),
+            Mood::Ordinary,
+            lounging(end),
+            Want::Use(Use::Lounge),
+            &mut rng,
+        );
+        osaka.tick(line, None, &terrain, &sofa, &mut rng);
+        osaka.look(line, 39, false, &terrain);
+        assert_eq!(osaka.facing, Facing::Right, "lounging, turned to the chat");
+        osaka.tick(end, None, &terrain, &sofa, &mut rng);
+        assert_eq!(osaka.decisions.last().map(|d| d.method), Some("settle in"));
+        assert!(matches!(osaka.act, Act::Use { seat, .. } if seat.what == Use::Nap));
+        assert!(osaka.looking_up.is_none(), "a nap wears no look");
+        assert_eq!(osaka.facing, Facing::Left, "as the seat faces");
+        // Odds of nothing: she stands to watch.
+        let (osaka, _) = watching(levers(0.0, 0.0), spacing_out(end, None), Want::SpaceOut);
+        assert_eq!(
+            osaka.decisions.last().map(|d| d.method),
+            Some("watching chat")
+        );
+        assert!(matches!(osaka.act, Act::Stand { .. }));
+    }
+
+    /// Settling comes after what she owes, is moving or made (phase 5c
+    /// M7), however sure the odds, and whether or not she was watching
+    /// the chat as her still act ran out: a beat she owes (a glance
+    /// toward what she lost), the piece she's moving (here, waiting to
+    /// see where it went) or has just set down (she sits back down to
+    /// it), a piece she made and hasn't finished with. Watching, she stands the rest of the
+    /// watch out (as she did before settling was), and what she owes
+    /// comes next.
+    #[test]
+    fn settling_in_waits_behind_what_she_owes() {
+        let terrain = floor_at(15);
+        let line = 8_000;
+        let end = 10_000;
+        let heap = Mine {
+            id: MadeId(0),
+            purpose: Use::Lounge,
+            done: false,
+            used: false,
+            at: (26, 15),
+        };
+        let heap_seat = Seat {
+            x: 26,
+            y: 15,
+            piece: PieceRef::Made(MadeId(0)),
+            ..seat_for(Use::Crumple, Furniture::Sofa)
+        };
+        type Setup = fn(&mut Osaka);
+        let cases: Vec<(&str, Setup, Chances, &str)> = vec![
+            (
+                "a beat she owes",
+                |o| o.owe(Loss::Tear, (26, 15)),
+                Chances::default(),
+                "beat",
+            ),
+            (
+                "a piece she made",
+                |_| {},
+                Chances {
+                    mine: vec![heap],
+                    seats: vec![heap_seat],
+                    ..Chances::default()
+                },
+                "leftover",
+            ),
+            (
+                "moving a piece",
+                |o| {
+                    o.episode = Some(Episode {
+                        trying: false,
+                        ..trial_episode()
+                    })
+                },
+                Chances::default(),
+                "waiting",
+            ),
+            (
+                "a piece just set down",
+                |o| o.just_set = Some((Furniture::Sofa, Use::Lounge)),
+                Chances {
+                    seats: vec![Seat {
+                        x: 26,
+                        ..sofa_seat(Use::Lounge)
+                    }],
+                    ..Chances::default()
+                },
+                "arrange/use-it",
+            ),
+        ];
+        for (name, setup, chances, owed) in &cases {
+            for watching in [false, true] {
+                let at = format!("{name}, watching {watching}");
+                let mut rng = Rng(5);
+                let mut osaka = at_still(
+                    levers(1.0, 0.0),
+                    Mood::Ordinary,
+                    spacing_out(end, None),
+                    Want::SpaceOut,
+                    &mut rng,
+                );
+                if watching {
+                    osaka.tick(line, None, &terrain, chances, &mut rng);
+                    osaka.look(line, 39, false, &terrain);
+                    assert!(osaka.looking_up.is_some(), "{at}: looking up");
+                }
+                setup(&mut osaka);
+                osaka.tick(end, None, &terrain, chances, &mut rng);
+                let mut methods: Vec<_> = osaka.decisions.iter().map(|d| d.method).collect();
+                if watching {
+                    assert_eq!(methods.last(), Some(&"watching chat"), "{at}");
+                    osaka.tick(line + WATCH_MS, None, &terrain, chances, &mut rng);
+                    methods = osaka.decisions.iter().map(|d| d.method).collect();
+                }
+                assert_eq!(methods.last(), Some(owed), "{at}: {methods:?}");
+                assert!(!methods.contains(&"settle in"), "{at}: {methods:?}");
+            }
+        }
+    }
+
+    /// Dozing where she sits: her head sinks (the first frame) and then
+    /// rests on her knees, held, eyes shut, zzz; a chat line only stirs
+    /// her.
+    #[test]
+    fn dozing_where_she_sits_nods_then_holds() {
+        let terrain = floor_at(15);
+        let chances = Chances::default();
+        let mut rng = Rng(5);
+        let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+        osaka.set(idle_until(Activity::SitDoze, 30_000), 0);
+        assert_eq!(
+            osaka.appearance(0),
+            (Pose::SitDoze(0), Face::Blink, Some(Bubble::Zzz))
+        );
+        assert_eq!(osaka.first_due(0), SIT_DOZE_NOD_MS);
+        osaka.tick(SIT_DOZE_NOD_MS, None, &terrain, &chances, &mut rng);
+        for at in (SIT_DOZE_NOD_MS..30_000).step_by(700) {
+            assert_eq!(osaka.appearance(at).0, Pose::SitDoze(1), "{at}");
+        }
+        assert_eq!(osaka.first_due(SIT_DOZE_NOD_MS), 30_000, "held");
+        osaka.look(5_000, 0, false, &terrain);
+        assert_eq!(osaka.watch_until, 0, "a stir, not a look");
+        // Stirring, her head comes up off her knees a moment, "Mm?".
+        assert_eq!(
+            osaka.appearance(5_000),
+            (Pose::SitDoze(0), Face::Blink, Some(Bubble::Say(STIRRED)))
+        );
+    }
+
+    /// Her mood lingers over the still acts she chooses (each drawn as
+    /// before, then times her mood's linger), the whole of the design's
+    /// list and nothing else: sitting, lying back, gazing, dozing where
+    /// she sits; spacing out (plain, a musing, her rare musing); and the
+    /// still uses (lounging, napping, a day's sleep, watching, reading,
+    /// looking out). Not lying on her front, exercise, homework (its
+    /// nod-off moves instead), chores, a snack, the cat, nor a trial sit.
+    /// Without the levers, nothing lingers.
+    #[test]
+    fn her_mood_lingers_over_the_still_acts_she_chooses() {
+        let terrain = floor_at(15);
+        let lingering = Stillness {
+            linger: ByMood {
+                ordinary: 1.25,
+                lazy: 2.0,
+                industrious: 0.5,
+                dreamy: 1.5,
+            },
+            ..Stillness::NEUTRAL
+        };
+        // How long `start` sets her at, from a fresh Osaka with `still`
+        // in `mood` (her body's stream and her whims the same each time).
+        let length = |still: Stillness, mood: Mood, start: &dyn Fn(&mut Osaka, &mut Rng)| {
+            let mut rng = Rng(11);
+            let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+            osaka.set_mood(mood);
+            osaka.stillness = still;
+            osaka.splice_rows = &[];
+            osaka.whims = Whims(11);
+            start(&mut osaka, &mut rng);
+            match osaka.act {
+                Act::Idle { since, until, .. }
+                | Act::SpaceOut { since, until, .. }
+                | Act::Use { since, until, .. } => until - since,
+                ref other => panic!("{other:?}"),
+            }
+        };
+        type Start<'a> = Box<dyn Fn(&mut Osaka, &mut Rng) + 'a>;
+        let mut cases: Vec<(String, Start, bool)> = Vec::new();
+        for what in Activity::ALL {
+            let lingers = matches!(
+                what,
+                Activity::Sit | Activity::LieBack | Activity::Gaze | Activity::SitDoze
+            );
+            cases.push((
+                format!("{what:?}"),
+                Box::new(move |o: &mut Osaka, rng: &mut Rng| o.idle(what, 0, rng)),
+                lingers,
+            ));
+        }
+        let terrain = &terrain;
+        cases.push((
+            "space out".into(),
+            Box::new(move |o: &mut Osaka, rng: &mut Rng| {
+                assert!(o.plan(
+                    Want::SpaceOut,
+                    Bind::Here(Here::SpaceOut),
+                    0,
+                    terrain,
+                    0,
+                    rng
+                ));
+            }),
+            true,
+        ));
+        cases.push((
+            "muse".into(),
+            Box::new(|o: &mut Osaka, rng: &mut Rng| o.muse(0, rng)),
+            true,
+        ));
+        cases.push((
+            "rare musing".into(),
+            Box::new(|o: &mut Osaka, rng: &mut Rng| {
+                o.cue(Some(Cue::Script(ScriptId::Escalator)));
+                o.muse(0, rng);
+                assert_eq!(o.plays().map(|p| p.own), Some(ScriptId::Escalator));
+            }),
+            true,
+        ));
+        let using = |what: Use, trying: bool| {
+            let item = Furniture::ALL
+                .into_iter()
+                .find(|item| item.spec().uses.contains(&what))
+                .unwrap_or(Furniture::Sofa);
+            move |o: &mut Osaka, rng: &mut Rng| {
+                o.episode = trying.then(trial_episode);
+                let seat = Seat {
+                    x: 20,
+                    y: 15,
+                    ..seat_for(what, item)
+                };
+                o.start_job(Job::Use(seat), 0, &Chances::default(), rng);
+            }
+        };
+        for what in Use::ALL {
+            let lingers = matches!(
+                what,
+                Use::Lounge | Use::Nap | Use::Sleep | Use::Watch | Use::Read | Use::LookOut
+            );
+            cases.push((format!("{what:?}"), Box::new(using(what, false)), lingers));
+        }
+        cases.push((
+            "trial sit".into(),
+            Box::new(using(Use::Lounge, true)),
+            false,
+        ));
+        for mood in Mood::ALL {
+            for (name, start, lingers) in &cases {
+                let plain = length(Stillness::NEUTRAL, mood, start.as_ref());
+                let long = length(lingering, mood, start.as_ref());
+                let times = if *lingers {
+                    lingering.linger.of(mood)
+                } else {
+                    1.0
+                };
+                assert_eq!(
+                    long,
+                    (plain as f64 * times).round() as u64,
+                    "{name} {mood:?}"
+                );
+            }
+        }
+        // The band's guard reads the lingered tables.
+        let slot = Some(routine::Slot::Afternoon);
+        let longest = longest_still_ms_with(slot, &lingering);
+        assert!(
+            longest >= use_duration_in(Use::Sleep, slot).1 * 2,
+            "a lazy day's sleep, lingered: {longest}"
+        );
+        assert!(
+            longest <= 2 * longest_still_ms_with(slot, &Stillness::NEUTRAL),
+            "{longest}"
+        );
+    }
+
+    /// The band's guard sees a chain she settles along as one still
+    /// stretch (phase 5c M7, B5), once any mood settles in: spacing out
+    /// or gazing, sitting, then lying back or dozing where she sits;
+    /// lounging, then napping on the same sofa; each link as long as its
+    /// longest, lingered as the most lingering mood lingers.
+    #[test]
+    fn the_band_guard_sees_her_settling_chains_whole() {
+        let slot = Some(routine::Slot::Afternoon);
+        let lingering = Stillness {
+            linger: ByMood::all(1.5),
+            ..Stillness::NEUTRAL
+        };
+        assert_eq!(settle_chains_ms(slot, &lingering), [0, 0], "none settle");
+        let settling = Stillness {
+            settle: ByMood {
+                lazy: 0.5,
+                ..ByMood::all(0.0)
+            },
+            ..lingering
+        };
+        let l = |ms: u64| (ms as f64 * 1.5).round() as u64;
+        let longest = |what: Activity| l(what.duration().1);
+        let space_out = l(SPACE_OUT_MS.1).max(longest(Activity::Gaze));
+        let doze = longest(Activity::LieBack).max(longest(Activity::SitDoze));
+        let [here, sofa] = settle_chains_ms(slot, &settling);
+        assert_eq!(here, space_out + longest(Activity::Sit) + doze);
+        let (lounge, nap) = (
+            use_duration_in(Use::Lounge, slot).1,
+            use_duration_in(Use::Nap, slot).1,
+        );
+        assert!(
+            sofa >= l(lounge) + l(nap),
+            "{sofa}: with their preludes and codas"
+        );
+        assert!(longest_still_ms_with(slot, &settling) >= here.max(sofa));
+    }
+
+    /// Her homework nods off where her mood has it (phase 5c M8): a
+    /// third of the way through lazy, halfway ordinary (and dreamy), five
+    /// sixths industrious; with the neutral levers, halfway in every
+    /// mood. Nodding, then asleep on the paper, for half what's
+    /// left each.
+    #[test]
+    fn her_homework_nods_off_where_her_mood_has_it() {
+        for (still, mood, write) in [
+            (Stillness::STARTING, Mood::Lazy, (1, 3)),
+            (Stillness::STARTING, Mood::Ordinary, (1, 2)),
+            (Stillness::STARTING, Mood::Dreamy, (1, 2)),
+            (Stillness::STARTING, Mood::Industrious, (5, 6)),
+            (Stillness::NEUTRAL, Mood::Lazy, (1, 2)),
+            (Stillness::NEUTRAL, Mood::Industrious, (1, 2)),
+        ] {
+            let at = format!("{mood:?} neutral {}", still == Stillness::NEUTRAL);
+            let mut rng = Rng(3);
+            let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+            osaka.set_mood(mood);
+            osaka.stillness = still;
+            osaka.splice_rows = &[];
+            let seat = Seat {
+                x: 20,
+                y: 15,
+                ..seat_for(Use::Homework, Furniture::Desk)
+            };
+            osaka.start_job(Job::Use(seat), 0, &Chances::default(), &mut rng);
+            let Act::Use { until, play, .. } = osaka.act else {
+                panic!("{at}: homework");
+            };
+            assert_eq!(play.branch, still.nod_off.of(mood).branch(), "{at}");
+            let nods = until * write.0 / write.1;
+            let sleeps = nods + (until - nods) / 2;
+            let pose = |t: u64| osaka.appearance(t).0;
+            assert!(
+                matches!(pose(nods - 1), Pose::Homework(0 | 1)),
+                "{at}: writing just before {nods}: {:?}",
+                pose(nods - 1)
+            );
+            assert_eq!(pose(nods + 1), Pose::Homework(2), "{at}: nodding");
+            assert_eq!(pose(sleeps + 1), Pose::Homework(3), "{at}: asleep");
+        }
+        assert_eq!(
+            NodOff::Half.branch(),
+            0,
+            "halfway is as homework always was"
+        );
+    }
+
+    /// A daydream session (phase 5c B6) says its musings in turn: the
+    /// first as she sets about it, each next one a gap on, as many as her
+    /// mood's whim says while the daydream lasts (a dreamy Osaka's three,
+    /// here, an industrious one's none); a musing due while she says
+    /// something or looks up at the chat waits for it to be over. Her
+    /// body's stream draws only the daydream's length. A riddle is all
+    /// its session, and a session of none says nothing.
+    #[test]
+    fn a_daydream_session_says_its_musings_in_turn() {
+        let terrain = floor_at(15);
+        let chances = Chances::default();
+        let levers = Stillness {
+            musings: ByMood {
+                dreamy: (3, 3),
+                industrious: (0, 0),
+                ..ByMood::all((1, 1))
+            },
+            musing_gap: (12_000, 12_000),
+            linger: ByMood::all(6.0),
+            ..Stillness::NEUTRAL
+        };
+        // The lines she says from 0 to her daydream's end in `mood`, and
+        // when each begins, with a chat line at `chat` if any.
+        let said = |mood: Mood, whims: u64, chat: Option<u64>| {
+            let mut rng = Rng(whims);
+            let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+            osaka.set_mood(mood);
+            osaka.stillness = levers;
+            osaka.whims = Whims(whims);
+            osaka.credit = Some(Want::SpaceOut);
+            osaka.muse(0, &mut rng);
+            // One body draw: the daydream's length.
+            let mut alone = Rng(whims);
+            let _ = Osaka::standing_at(20, 15, 0, &mut alone);
+            let _ = alone.range(SPACE_OUT_MS.0, SPACE_OUT_MS.1);
+            assert_eq!(rng.0, alone.0, "{whims}: one body draw");
+            let Act::SpaceOut {
+                until,
+                play,
+                session,
+                ..
+            } = osaka.act
+            else {
+                panic!("spacing out");
+            };
+            let mut lines: Vec<(u64, &'static str)> = Vec::new();
+            let mut now = 0;
+            while now < until {
+                if chat == Some(now) {
+                    osaka.look(now, 0, false, &terrain);
+                }
+                osaka.tick(now, None, &terrain, &chances, &mut rng);
+                if let (_, _, Some(Bubble::Say(text))) = osaka.appearance(now)
+                    && lines.last().is_none_or(|&(_, last)| last != text)
+                {
+                    lines.push((now, text));
+                }
+                now += 250;
+            }
+            (lines, play, session, until, osaka)
+        };
+        let mut sessions = 0;
+        for whims in 0..40 {
+            let (lines, play, session, until, osaka) = said(Mood::Dreamy, whims, None);
+            if play.is_some() {
+                assert_eq!(session, None, "{whims}: a riddle is all its session");
+                continue;
+            }
+            sessions += 1;
+            assert!(until >= 36_000, "{whims}: lasts long enough ({until})");
+            assert_eq!(
+                lines.iter().map(|&(at, _)| at).collect::<Vec<_>>(),
+                [0, 12_000, 24_000],
+                "{whims}: {lines:?}"
+            );
+            for (_, line) in &lines {
+                assert!(mind::MUSINGS.lines.contains(line), "{whims}: {line}");
+            }
+            let mut distinct: Vec<_> = lines.iter().map(|&(_, l)| l).collect();
+            distinct.dedup();
+            assert_eq!(distinct.len(), 3, "{whims}: three musings");
+            assert!(
+                matches!(osaka.act, Act::SpaceOut { session: None, .. }),
+                "{whims}: said them all"
+            );
+            // A chat line just before the second: it waits for her look.
+            let (late, ..) = said(Mood::Dreamy, whims, Some(11_000));
+            let look = 11_000 + WATCH_MS.max(LOOK_MS);
+            assert_eq!(
+                late.iter().map(|&(at, _)| at).collect::<Vec<_>>(),
+                [0, look, look + 12_000],
+                "{whims}: {late:?}"
+            );
+            // Industrious, her mood's none: nothing to say.
+            let (silent, play, session, ..) = said(Mood::Industrious, whims, None);
+            assert!(silent.is_empty(), "{whims}: {silent:?}");
+            assert_eq!((play, session), (None, None));
+        }
+        assert!(sessions >= 10, "{sessions} sessions in 40");
+    }
+
+    /// Each musing of a daydream session after the first, and the gap
+    /// before it, is drawn from her decision's whims for its place in
+    /// the session (phase 5c B6: `whims.series("daydream", k)`): the
+    /// gap after the `k`th musing (from 0) by the `k`th of the series,
+    /// the `k`th musing by the `k`th; so replayed from those whims, the
+    /// same musings at the same times. Those that don't fit before the
+    /// daydream's end go unsaid.
+    #[test]
+    fn each_musing_of_a_session_is_drawn_by_its_place() {
+        let terrain = floor_at(15);
+        let chances = Chances::default();
+        let (lo, hi) = (12_000, 20_000);
+        let still = Stillness {
+            musings: ByMood::all((3, 3)),
+            musing_gap: (lo, hi),
+            linger: ByMood::all(6.0),
+            ..Stillness::NEUTRAL
+        };
+        let (mut checked, mut gaps) = (0, std::collections::BTreeSet::new());
+        for seed in 0..40 {
+            let mut rng = Rng(seed);
+            let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+            osaka.stillness = still;
+            let w = Whims(seed);
+            osaka.whims = w;
+            osaka.credit = Some(Want::SpaceOut);
+            osaka.muse(0, &mut rng);
+            let Act::SpaceOut {
+                until, play: None, ..
+            } = osaka.act
+            else {
+                continue;
+            };
+            let Some((first, _)) = osaka.speech else {
+                continue;
+            };
+            // Replayed: from her lines as they stood after the first.
+            let mut lines = osaka.lines.clone();
+            let gap = |k: u64| lo + w.series("daydream", k).below("gap", hi - lo + 1);
+            let mut want = vec![(0, first)];
+            let mut at = 0;
+            for k in 1..3 {
+                at += gap(k - 1);
+                gaps.insert(gap(k - 1));
+                if at >= until {
+                    break;
+                }
+                let line = lines
+                    .pick(mind::MUSINGS, w.series("daydream", k), at)
+                    .expect("a fresh musing");
+                want.push((at.div_ceil(250) * 250, line));
+            }
+            let mut got: Vec<(u64, &'static str)> = Vec::new();
+            let mut now = 0;
+            while now < until {
+                osaka.tick(now, None, &terrain, &chances, &mut rng);
+                if let (_, _, Some(Bubble::Say(text))) = osaka.appearance(now)
+                    && got.last().is_none_or(|&(_, last)| last != text)
+                {
+                    got.push((now, text));
+                }
+                now += 250;
+            }
+            assert_eq!(got, want, "seed {seed}");
+            checked += 1;
+        }
+        assert!(checked >= 10, "{checked} sessions");
+        assert!(gaps.len() >= 10, "the gaps vary: {gaps:?}");
     }
 }

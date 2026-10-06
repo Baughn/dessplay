@@ -1781,6 +1781,7 @@ fn every_scene_has_a_spot_in_the_stage_room() {
                         Scene::Door => doored && moved_on,
                         Scene::Sit => posed(Pose::Sit),
                         Scene::LieBack => posed(Pose::LieBack(0)),
+                        Scene::SitDoze => posed(Pose::SitDoze(0)),
                         Scene::LieFront => posed(Pose::LieFront(0)),
                         Scene::Jacks => posed(Pose::Jack(0)),
                         Scene::ToeTouch => posed(Pose::ToeTouch(0)),
@@ -7959,6 +7960,9 @@ fn every_want_can_be_cued() {
             Want::Idle(Activity::ToeTouch) => &[Scene::ToeTouch],
             Want::Idle(Activity::Stretch) => &[Scene::Stretch],
             Want::Idle(Activity::Gaze) => &[Scene::Gaze],
+            // Not a want she has (not in `Want::ALL`): she only settles
+            // into it from sitting, but the stage can show it.
+            Want::Idle(Activity::SitDoze) => &[Scene::SitDoze],
             Want::Travel => &[
                 Scene::ClimbUp,
                 Scene::ClimbDown,
@@ -8625,8 +8629,14 @@ fn a_made_sofa_mostly_faces_the_tv() {
     let mut rng = super::Rng(7);
     let facing = (0..6000)
         .filter(|_| {
-            pick_build(Use::Lounge, Furniture::Sofa, &chances, Whims(rng.next()))
-                .is_some_and(|b| b.x == 30)
+            pick_build(
+                Use::Lounge,
+                Furniture::Sofa,
+                &chances,
+                Whims(rng.next()),
+                None,
+            )
+            .is_some_and(|b| b.x == 30)
         })
         .count();
     assert!(
@@ -11579,3 +11589,4 @@ mod dash;
 mod golden;
 mod rain;
 mod rares;
+mod stillness;

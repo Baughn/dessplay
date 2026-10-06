@@ -422,7 +422,7 @@ fn simulate_with(
 /// The visit `guest`, just arrived in `room`, goes on to have for
 /// `minutes`, showing `watch` her at every step (before it); and her at
 /// its end.
-fn visit_from(
+pub(super) fn visit_from(
     room: &Room,
     mut guest: Guest,
     minutes: u64,
@@ -1484,7 +1484,7 @@ pub(super) fn at_afternoon(room: Room) -> Room {
 /// mode puts them, each shown out of its box; her wall clock is already
 /// sent (no parcel comes); a room with no TV holds its first back on
 /// order ([`HELD_BACK`]); no shopping. The real date is none.
-fn fed_afternoon(room: &Room, seed: u64, graphics: bool, mood: Mood) -> Guest {
+pub(super) fn fed_afternoon(room: &Room, seed: u64, graphics: bool, mood: Mood) -> Guest {
     let start = room.start.expect("a fed room starts at a time");
     let unfed = Room {
         start: None,

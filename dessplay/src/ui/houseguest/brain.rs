@@ -682,6 +682,11 @@ impl Want {
                 row(4.0, &[(Need::Sleepy, 0.15), (Need::Comfort, 0.3)])
             }
             Self::Idle(Activity::Sit) => row(4.0, &[(Need::Sleepy, 0.1), (Need::Comfort, 0.3)]),
+            // Never chosen (not in [`Want::ALL`]): settled into from
+            // sitting, it eases her as the doze it is.
+            Self::Idle(Activity::SitDoze) => {
+                row(4.0, &[(Need::Sleepy, 0.15), (Need::Comfort, 0.3)])
+            }
             Self::Idle(Activity::Jacks | Activity::ToeTouch) => row(6.0, &[(Need::Restless, 0.5)]),
             // Kicking her feet, humming.
             Self::Idle(Activity::LieFront) => {
@@ -919,7 +924,12 @@ mod tests {
             Want::Pull,
             Want::Swap,
         ];
-        offers.extend(Activity::ALL.iter().map(|&a| Want::Idle(a)));
+        offers.extend(
+            Activity::ALL
+                .iter()
+                .filter(|a| a.chosen())
+                .map(|&a| Want::Idle(a)),
+        );
         offers
     }
 
@@ -1090,7 +1100,7 @@ mod tests {
             assert!(Want::ALL.iter().any(|&w| kind(w) == k), "kind {k} missing");
         }
         for a in Activity::ALL {
-            assert!(Want::ALL.contains(&Want::Idle(a)), "{a:?}");
+            assert_eq!(Want::ALL.contains(&Want::Idle(a)), a.chosen(), "{a:?}");
         }
         for furniture in Furniture::ALL {
             for &what in furniture.spec().uses {
