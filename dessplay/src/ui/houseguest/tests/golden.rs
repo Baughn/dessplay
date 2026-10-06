@@ -116,11 +116,19 @@ fn times(seed: u64, n: u64, from: u64, (lo, hi): (u64, u64)) -> Vec<u64> {
 /// says the screen could change, with `world(now, step)` the frame, its
 /// view, and whether local input arrives on this step; the stage cues
 /// each of `cues` when its time comes.
+///
+/// `events` are the times at which `world` changes (a chat line, a key
+/// press, a focus change, text arriving): a step that would cross one
+/// (or a cue's time) is cut at it, so each lands at its own moment, as
+/// in the client, not at the first step past it, whose length her wakes
+/// set (a wake that changes only how she looks would move what she
+/// does). The census drivers do the same (`census::Room::step_from`).
 fn drive(
     guest: &mut Guest,
     trace: &mut Trace,
     until: u64,
     cues: &[(u64, Scene)],
+    events: &[&[u64]],
     mut world: impl FnMut(u64, u64) -> (Buffer, IdleView, bool),
 ) {
     let mut now = 0;
@@ -128,10 +136,11 @@ fn drive(
     let frame = paint(guest, &real, &view, now);
     trace.frame(guest, &frame, &real, now);
     while now < until {
-        let step = guest
+        let tick = guest
             .next_tick(now)
             .map_or(1000, |d| d.as_millis() as u64)
             .clamp(1, 1000);
+        let step = step_to(now, tick, cues, events);
         now += step;
         let (real, view, input) = world(now, step);
         if input {
@@ -146,6 +155,18 @@ fn drive(
             trace.frame(guest, &frame, &real, now);
         }
     }
+}
+
+/// The step from `now`: `tick` long, but cut at the next of `cues`' or
+/// `events`' times if it would cross one.
+fn step_to(now: u64, tick: u64, cues: &[(u64, Scene)], events: &[&[u64]]) -> u64 {
+    let next = cues
+        .iter()
+        .map(|&(t, _)| t)
+        .chain(events.iter().flat_map(|times| times.iter().copied()))
+        .filter(|&t| t > now)
+        .min();
+    next.map_or(tick, |t| tick.min(t - now))
 }
 
 fn arrived_within(times: &[u64], now: u64, step: u64) -> bool {
@@ -173,16 +194,23 @@ fn stage_room(seed: u64, graphics: bool, fed: bool) -> u64 {
         (215_000, Scene::MakeBed),
         (255_000, Scene::Parcel),
     ];
-    drive(&mut guest, &mut trace, 300_000, &cues, |now, step| {
-        if arrived_within(&chats, now, step) {
-            mark.synced += 1;
-        }
-        let view = IdleView {
-            chat_mark: mark,
-            ..view.clone()
-        };
-        (real.clone(), view, false)
-    });
+    drive(
+        &mut guest,
+        &mut trace,
+        300_000,
+        &cues,
+        &[&chats],
+        |now, step| {
+            if arrived_within(&chats, now, step) {
+                mark.synced += 1;
+            }
+            let view = IdleView {
+                chat_mark: mark,
+                ..view.clone()
+            };
+            (real.clone(), view, false)
+        },
+    );
     trace.finish(
         &guest,
         &format!("stage-{seed}-{graphics}{}", unfed_tag(fed)),
@@ -234,25 +262,32 @@ fn resident(seed: u64, graphics: bool, fed: bool) -> u64 {
     let chats = times(seed ^ 2, 6, 0, (15_000, 40_000));
     let mut mark = ChatMark::default();
     let mut trace = Trace::new();
-    drive(&mut guest, &mut trace, 180_000, &cues, |now, step| {
-        if arrived_within(&chats, now, step) {
-            mark.synced += 1;
-        }
-        // Each focus change cycles: none, the Users pane, the chat, the
-        // Playlist pane.
-        let changes = focus_at.iter().filter(|&&t| t <= now).count();
-        let focus = match changes % 4 {
-            0 => None,
-            1 => Some(panes[1].1),
-            2 => Some(panes[0].1),
-            _ => Some(panes[2].1),
-        };
-        let view = IdleView {
-            chat_mark: mark,
-            ..resident_view(w, h, focus)
-        };
-        (real.clone(), view, arrived_within(&presses, now, step))
-    });
+    drive(
+        &mut guest,
+        &mut trace,
+        180_000,
+        &cues,
+        &[&chats, &focus_at, &presses],
+        |now, step| {
+            if arrived_within(&chats, now, step) {
+                mark.synced += 1;
+            }
+            // Each focus change cycles: none, the Users pane, the chat, the
+            // Playlist pane.
+            let changes = focus_at.iter().filter(|&&t| t <= now).count();
+            let focus = match changes % 4 {
+                0 => None,
+                1 => Some(panes[1].1),
+                2 => Some(panes[0].1),
+                _ => Some(panes[2].1),
+            };
+            let view = IdleView {
+                chat_mark: mark,
+                ..resident_view(w, h, focus)
+            };
+            (real.clone(), view, arrived_within(&presses, now, step))
+        },
+    );
     trace.finish(
         &guest,
         &format!("resident-{seed}-{graphics}{}", unfed_tag(fed)),
@@ -282,16 +317,23 @@ fn furnished(seed: u64, graphics: bool, fed: bool) -> u64 {
     let chats = times(seed, 10, 0, (30_000, 90_000));
     let mut mark = ChatMark::default();
     let mut trace = Trace::new();
-    drive(&mut guest, &mut trace, 600_000, &[], |now, step| {
-        if arrived_within(&chats, now, step) {
-            mark.synced += 1;
-        }
-        let view = IdleView {
-            chat_mark: mark,
-            ..view.clone()
-        };
-        (real.clone(), view, false)
-    });
+    drive(
+        &mut guest,
+        &mut trace,
+        600_000,
+        &[],
+        &[&chats],
+        |now, step| {
+            if arrived_within(&chats, now, step) {
+                mark.synced += 1;
+            }
+            let view = IdleView {
+                chat_mark: mark,
+                ..view.clone()
+            };
+            (real.clone(), view, false)
+        },
+    );
     trace.finish(
         &guest,
         &format!("furnished-{seed}-{graphics}{}", unfed_tag(fed)),
@@ -311,20 +353,27 @@ fn errand(seed: u64, graphics: bool, fed: bool) -> u64 {
     let arrivals = times(seed, 4, 0, (5_000, 20_000));
     let presses = times(seed ^ 1, 3, 70_000, (5_000, 20_000));
     let mut trace = Trace::new();
-    drive(&mut guest, &mut trace, 150_000, &[], |now, step| {
-        let unseen = arrivals.iter().filter(|&&a| a <= now).count();
-        let (real, accordion) = accordion_room(w, h, unseen);
-        let base = IdleView {
-            busy: Some(Busy::Playing),
-            resident,
-            focus: resident.then_some(chat),
-            chat,
-            nooks: nooks(w, h)[1..].to_vec(),
-            ..view(bottom_strip(w, h))
-        };
-        let view = scrolled_back(base, accordion, unseen);
-        (real, view, arrived_within(&presses, now, step))
-    });
+    drive(
+        &mut guest,
+        &mut trace,
+        150_000,
+        &[],
+        &[&arrivals, &presses],
+        |now, step| {
+            let unseen = arrivals.iter().filter(|&&a| a <= now).count();
+            let (real, accordion) = accordion_room(w, h, unseen);
+            let base = IdleView {
+                busy: Some(Busy::Playing),
+                resident,
+                focus: resident.then_some(chat),
+                chat,
+                nooks: nooks(w, h)[1..].to_vec(),
+                ..view(bottom_strip(w, h))
+            };
+            let view = scrolled_back(base, accordion, unseen);
+            (real, view, arrived_within(&presses, now, step))
+        },
+    );
     trace.finish(
         &guest,
         &format!("errand-{seed}-{graphics}{}", unfed_tag(fed)),
@@ -384,16 +433,23 @@ fn homework_evening(seed: u64, graphics: bool, _: bool) -> u64 {
     let chats = times(seed, 6, 0, (40_000, 120_000));
     let mut mark = ChatMark::default();
     let mut trace = Trace::new();
-    drive(&mut guest, &mut trace, 600_000, &[], |now, step| {
-        if arrived_within(&chats, now, step) {
-            mark.synced += 1;
-        }
-        let view = IdleView {
-            chat_mark: mark,
-            ..view.clone()
-        };
-        (real.clone(), view, false)
-    });
+    drive(
+        &mut guest,
+        &mut trace,
+        600_000,
+        &[],
+        &[&chats],
+        |now, step| {
+            if arrived_within(&chats, now, step) {
+                mark.synced += 1;
+            }
+            let view = IdleView {
+                chat_mark: mark,
+                ..view.clone()
+            };
+            (real.clone(), view, false)
+        },
+    );
     trace.finish(&guest, &format!("evening-{seed}-{graphics}"))
 }
 
@@ -410,16 +466,23 @@ fn tucked_in(seed: u64, graphics: bool, _: bool) -> u64 {
     let chats = times(seed, 2, 30_000, (40_000, 100_000));
     let mut mark = ChatMark::default();
     let mut trace = Trace::new();
-    drive(&mut guest, &mut trace, 300_000, &[], |now, step| {
-        if arrived_within(&chats, now, step) {
-            mark.synced += 1;
-        }
-        let view = IdleView {
-            chat_mark: mark,
-            ..view.clone()
-        };
-        (real.clone(), view, false)
-    });
+    drive(
+        &mut guest,
+        &mut trace,
+        300_000,
+        &[],
+        &[&chats],
+        |now, step| {
+            if arrived_within(&chats, now, step) {
+                mark.synced += 1;
+            }
+            let view = IdleView {
+                chat_mark: mark,
+                ..view.clone()
+            };
+            (real.clone(), view, false)
+        },
+    );
     trace.finish(&guest, &format!("tucked-{seed}-{graphics}"))
 }
 
@@ -436,16 +499,23 @@ fn weekend(seed: u64, graphics: bool, _: bool) -> u64 {
     let chats = times(seed, 6, 0, (40_000, 120_000));
     let mut mark = ChatMark::default();
     let mut trace = Trace::new();
-    drive(&mut guest, &mut trace, 600_000, &[], |now, step| {
-        if arrived_within(&chats, now, step) {
-            mark.synced += 1;
-        }
-        let view = IdleView {
-            chat_mark: mark,
-            ..view.clone()
-        };
-        (real.clone(), view, false)
-    });
+    drive(
+        &mut guest,
+        &mut trace,
+        600_000,
+        &[],
+        &[&chats],
+        |now, step| {
+            if arrived_within(&chats, now, step) {
+                mark.synced += 1;
+            }
+            let view = IdleView {
+                chat_mark: mark,
+                ..view.clone()
+            };
+            (real.clone(), view, false)
+        },
+    );
     trace.finish(&guest, &format!("weekend-{seed}-{graphics}"))
 }
 
@@ -457,16 +527,23 @@ fn three_minutes_from(seed: u64, graphics: bool, at: routine::GameTime) -> (Gues
     let chats = times(seed, 3, 20_000, (30_000, 60_000));
     let mut mark = ChatMark::default();
     let mut trace = Trace::new();
-    drive(&mut guest, &mut trace, 180_000, &[], |now, step| {
-        if arrived_within(&chats, now, step) {
-            mark.synced += 1;
-        }
-        let view = IdleView {
-            chat_mark: mark,
-            ..view.clone()
-        };
-        (real.clone(), view, false)
-    });
+    drive(
+        &mut guest,
+        &mut trace,
+        180_000,
+        &[],
+        &[&chats],
+        |now, step| {
+            if arrived_within(&chats, now, step) {
+                mark.synced += 1;
+            }
+            let view = IdleView {
+                chat_mark: mark,
+                ..view.clone()
+            };
+            (real.clone(), view, false)
+        },
+    );
     (guest, trace)
 }
 
@@ -522,7 +599,7 @@ fn dash_home(seed: u64, graphics: bool, _: bool) -> u64 {
         sprite::Facing::Right
     )));
     let mut trace = Trace::new();
-    drive(&mut guest, &mut trace, 180_000, &[], |_, _| {
+    drive(&mut guest, &mut trace, 180_000, &[], &[], |_, _| {
         (real.clone(), view.clone(), false)
     });
     trace.finish(&guest, &format!("dash-{seed}-{graphics}"))
@@ -559,16 +636,66 @@ fn check_fed(name: &str, scene: SceneFn, fed: bool, want: &[(u64, u64, u64)]) {
     );
 }
 
+/// The golden driver lands a step on every event's own time and every
+/// cue's (as the census drivers do), however her wakes fall, in both
+/// modes: on the stage room, where her wakes are densest, with events at
+/// odd moments no wake of hers would hit, a few at once and one past the
+/// end.
+#[test]
+fn the_golden_driver_steps_to_every_event() {
+    for graphics in [false, true] {
+        for seed in 0..2u64 {
+            let at = format!("graphics={graphics} seed={seed}");
+            let mut ui = stage_ui();
+            let (real, view) = real_frame(&mut ui, 100, 30);
+            let mut guest = guest_of(seed, true);
+            if graphics {
+                guest.set_picker(kitty());
+            }
+            let chats = times(seed, 8, 0, (3_001, 9_007));
+            let presses = [7_777, 7_777, 12_345, 33_333];
+            let cues = [(20_011, Scene::Sneeze), (41_003, Scene::Swap)];
+            let until = 60_000;
+            let mut stepped = Vec::new();
+            let mut trace = Trace::new();
+            drive(
+                &mut guest,
+                &mut trace,
+                until,
+                &cues,
+                &[&chats, &presses, &[until + 1]],
+                |now, step| {
+                    stepped.push((now, step));
+                    (real.clone(), view.clone(), false)
+                },
+            );
+            let landed: Vec<u64> = stepped.iter().map(|&(now, _)| now).collect();
+            let due = chats
+                .iter()
+                .chain(&presses)
+                .chain(cues.iter().map(|(t, _)| t))
+                .filter(|&&t| t <= until);
+            for &t in due {
+                assert!(landed.contains(&t), "{at}: no step lands on {t} ms");
+            }
+            assert!(
+                stepped.windows(2).all(|w| w[1].0 == w[0].0 + w[1].1),
+                "{at}: steps add up"
+            );
+        }
+    }
+}
+
 #[test]
 fn golden_stage_room() {
     check(
         "stage",
         stage_room,
         &[
-            (0, 0x0270e14af0e05dd9, 0x0ad0c12ab61fb43d),
-            (1, 0xa8ba9b504386b251, 0x1006227d18f977ca),
-            (2, 0xdc519850c477a992, 0xc21ef860dfc4acc5),
-            (3, 0x441bc7fa33ec5451, 0xbff58f68a71b1495),
+            (0, 0x421e7489bda72b5f, 0x1ff2a8e8f9f591f8),
+            (1, 0x60e3b2efb489fb8e, 0xbc7be947b2fe6b15),
+            (2, 0x120f65aceca55eb8, 0xfb57041c4742089d),
+            (3, 0x25658d9fa4f3da3e, 0xfe443ceed6c8084b),
         ],
     );
 }
@@ -579,10 +706,10 @@ fn golden_resident() {
         "resident",
         resident,
         &[
-            (0, 0xef8108a59efdd093, 0x760719e750d89d80),
-            (1, 0x3946eb0ced311d88, 0x3ccff99ad147d042),
-            (2, 0x3fd02d8e1b229eb1, 0x9751ae0c41204850),
-            (3, 0xd0c768a569f578fc, 0x7f76d6fd6389bbe4),
+            (0, 0x31235f8d42f7de07, 0x5e276a5ab3e1ad94),
+            (1, 0x0e4cc86dbb04cd82, 0xd6b9e217c880dce5),
+            (2, 0x223771ac0461fc73, 0x8134429bf025a12c),
+            (3, 0xbf464868fad11801, 0x4ed39987f8bdab27),
         ],
     );
 }
@@ -607,10 +734,10 @@ fn golden_errand() {
         "errand",
         errand,
         &[
-            (0, 0xa115268dd34741af, 0x84a48e0354dec3ca),
-            (1, 0xc7fad0f2931b48d7, 0x4fe518d36acfeb16),
-            (2, 0x1e3dd842f4ca4668, 0x20d410417a6fc48e),
-            (3, 0x5e2869bb1b21785a, 0xa97e809ef43467fa),
+            (0, 0x7ef41b6f44466ee1, 0x21d600e1fc53a86a),
+            (1, 0x22b77e96bb1e6b40, 0x28089f629cc9dd84),
+            (2, 0x853a5f641f5d8378, 0x95ae070706e62dc6),
+            (3, 0xa5d5b4ba51f32984, 0xe34a13e73adaaa7d),
         ],
     );
 }
@@ -731,12 +858,15 @@ fn golden_dash_home() {
 /// otherwise; the trace diff is in that commit), with its review's fixes
 /// (seed 1 in ASCII: the stage placing her mid-read, the strip is back in
 /// its line the frame she's placed, not the next; one frame, nothing else
-/// changed; the trace diff is in that commit).
+/// changed; the trace diff is in that commit), and phase 5c step 8c's
+/// driver, which cuts a step at each event's own time (each seed and
+/// mode first differs at the swap cued at 45 s, where it was painted at
+/// the first step past it; the trace diff is in that commit).
 const UNFED_STAGE: [(u64, u64, u64); 4] = [
-    (0, 0x0ed7f241b31e0bc5, 0x49cd447ae4b57fa3),
-    (1, 0x155e9624d07ffd0f, 0xe957f13f5c8fdeca),
-    (2, 0xc865bf7573027792, 0x5af8a5b46c717c63),
-    (3, 0x56e2c7425230f57d, 0xe48e490acf4ea8ba),
+    (0, 0xe3f24605fe8d5031, 0x3975e5fbd6200026),
+    (1, 0x05125573bff4df28, 0xd292feb50a16fd02),
+    (2, 0x7515ebeb64a221e2, 0x82e495fe577ab4c9),
+    (3, 0xcdc1d12e2473e914, 0xe013e49a02f79816),
 ];
 
 /// The resident's tables at the end of phase 5b step 3, but for step 5a's
@@ -768,12 +898,16 @@ const UNFED_STAGE: [(u64, u64, u64); 4] = [
 /// is in that commit), with its review's fixes (seed 1 in both modes and
 /// 3 in line art: a key press mid-pull in the chat, her line is put back
 /// and the same frame's heave no longer pulls it out again from home; one
-/// frame, nothing else changed; the trace diff is in that commit).
+/// frame, nothing else changed; the trace diff is in that commit), and
+/// step 8c's driver, which cuts a step at each event's own time (each
+/// seed and mode first differs at a key press or a cue, at its own time
+/// where it was the first step past it; the trace diff is in that
+/// commit).
 const UNFED_RESIDENT: [(u64, u64, u64); 4] = [
-    (0, 0x7462942ea4af180c, 0xd3539fd66e15e165),
-    (1, 0x3a8f910536e41b12, 0xff9187e108c2753d),
-    (2, 0x8834bc0ba115685f, 0x04d953d6fde79d57),
-    (3, 0xa674079e1183817d, 0x35f822892851a36b),
+    (0, 0x7f539c71b2b52770, 0x6eddc226d0c0bc33),
+    (1, 0x4cc5fed2c8a6a590, 0x97352ac19d357303),
+    (2, 0xb65fbe195a178214, 0xbe66f88da63b7161),
+    (3, 0x916bdb149d26150c, 0xb8dc3049369f1498),
 ];
 
 /// The furnished home's tables at the end of phase 5b step 3, but for step
@@ -798,10 +932,14 @@ const UNFED_RESIDENT: [(u64, u64, u64); 4] = [
 /// (seeds 1-3 in both modes first differ at a watch from beside the TV,
 /// cross-legged where she sat hugging her knees; seed 0 at her first
 /// decision with reading on her back on offer, choosing otherwise; the
-/// trace diff is in that commit).
+/// trace diff is in that commit), and step 8c's driver, which cuts a
+/// step at each event's own time (seed 1 in both modes: every frame the
+/// same, her empty home's once-a-second steps re-phased at a chat line,
+/// so the run's last step ends at another moment and her ledger's clock
+/// reads a minute on; the trace diff is in that commit).
 const UNFED_FURNISHED: [(u64, u64, u64); 4] = [
     (0, 0x1b81660042281504, 0x7986a02014324ead),
-    (1, 0x085356f9b25a7b2f, 0x5b2b9aebee56902c),
+    (1, 0x5130a026cbbfd393, 0x097fbf66361dd108),
     (2, 0xec8ceebb5a3e8cf3, 0x418da866aa0e1677),
     (3, 0xa01ef62ff7dd7b46, 0x6305a1da02e0eaeb),
 ];
@@ -816,12 +954,15 @@ const UNFED_FURNISHED: [(u64, u64, u64); 4] = [
 /// 3 s, seeds 1 and 3 in both modes, nothing else changed; the trace
 /// diff is in that commit), and step 10a's floor acts (seeds 1 and 3 in
 /// both modes first differ at her first decision with reading on her back
-/// on offer, choosing otherwise; the trace diff is in that commit).
+/// on offer, choosing otherwise; the trace diff is in that commit), and
+/// step 8c's driver, which cuts a step at each event's own time (each
+/// seed and mode first differs at a key press, at its own time where it
+/// was the first step past it; the trace diff is in that commit).
 const UNFED_ERRAND: [(u64, u64, u64); 4] = [
-    (0, 0xa115268dd34741af, 0x84a48e0354dec3ca),
-    (1, 0xc7fad0f2931b48d7, 0x4fe518d36acfeb16),
-    (2, 0x1e3dd842f4ca4668, 0x20d410417a6fc48e),
-    (3, 0xfa3f832018263a3f, 0x7d1bed98f79968c3),
+    (0, 0x7ef41b6f44466ee1, 0x21d600e1fc53a86a),
+    (1, 0x22b77e96bb1e6b40, 0x28089f629cc9dd84),
+    (2, 0x853a5f641f5d8378, 0x95ae070706e62dc6),
+    (3, 0x769321f809c2a1d6, 0xd7c55070029e5a18),
 ];
 
 #[test]

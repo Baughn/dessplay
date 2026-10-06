@@ -1,6 +1,6 @@
 # Testing Strategy
 
-Last updated: 2026-10-06
+Last updated: 2026-10-07
 
 ## Table of Contents
 
@@ -805,19 +805,18 @@ byte-identical. The seed-7 snapshot (`osaka_at_home_seed_7`, an insta
 snapshot) has no trace: re-accept it with `cargo insta review` only
 once the commit explains why it moved.
 
-The golden driver delivers a chat line, key press, focus change or cue
-at the first step past its time, and a step's length is set by her
-wakes. The censuses don't (below): their cells are measurements, and a
-wake that changes only how she looks would move when a line lands, and
-so the cell. A golden hash is meant to move on any change to what she
-does, and moves the same way at every run of a seed, so the goldens
-keep the crossing. Its cost is diagnostic: a change that only adds a
-wake (a blink) can move a trace past the frames it draws differently,
-so its diff reads further than the change. Cutting the golden driver
-at those times would be one deliberate re-record (not made yet). The
-property tests' drivers (`tests.rs`) deliver the same way; they check
-invariants on every frame at drawn times and measure nothing across
-builds.
+The golden driver (`drive`) cuts a step at each chat line's, key
+press's, focus change's, text arrival's and cue's own time (each scene
+hands it its times), as the census drivers do (below): a step's length
+is otherwise set by her wakes, so a wake that changes only how she
+looks (a blink) would move when an event lands, and with it what she
+does, and a trace diff would read further than the change. A key press
+or a cue paints a frame at its moment; a chat line or a focus change is
+seen at her next paint, as in the census.
+`the_golden_driver_steps_to_every_event` holds it to that. (It landed as one deliberate re-record
+in phase 5c step 8c, alone.) The property tests' drivers (`tests.rs`)
+still deliver at the first step past a time; they check invariants on
+every frame at drawn times and measure nothing across builds.
 
 The sofa census (`sofa_census`, ignored; run with `--release --ignored
 --nocapture`) is the migration's checkpoint bench: what became of every
