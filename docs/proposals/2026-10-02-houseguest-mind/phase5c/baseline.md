@@ -938,3 +938,55 @@ Industrious ÷ lazy (both chats pooled): stage 1.15 (10a 1.17), home 1.56, resid
   the text is; the stage's placement putting the strip back the same frame) left every line of the
   band at full strength identical to the digit (re-run, 190 visits a cell): they move single frames,
   never what she chooses, in these rooms.
+
+
+## Step 11: the window, measured (2026-10-06)
+
+**Measured 2026-10-06** on step 11's tree (before its commit): the window hung low (bottom row the
+floor − 2), leaning on its sill for 60–180 s with up to three musings on the sky, base 8 → 3. The
+levers are still `Stillness::NEUTRAL` (no settling in: sitting in front of the window and watching
+the clouds are built but inert).
+
+**The band at full strength** (`CENSUS_BAND_SEEDS=190`, as for 10a): every line identical to step
+10b's, digit for digit. None of the band's rooms owns a window.
+
+**The day census** (`day_census`, 6 runs a room, a game week each; the home is the census home with a
+clock and a window):
+
+| | Before (step 10b) | Step 11 (base 3) | Base 6 (measured, not shipped) |
+|---|---|---|---|
+| Look-outs, home, 42 game days | 683 (about 16 a day) | 14 (one in three days) | 82 (about two a day) |
+| Afternoon hour glances, home | 4 | 2 | 4 |
+| Afternoon hour glances, stage / resident | 2 / 9 | 2 / 9 | 2 / 9 |
+
+The design aimed at "a few a game day"; its base 3 gives one in three days, since a want at 3 seldom
+makes the top four. The glance stays starved by its own gates (decisions.md, "Her window is a long
+daydream").
+
+**Printed beside the band** (new `printed_rooms`, `CENSUS_ROOMS=printed CENSUS_MINUTES=9
+CENSUS_MODES=line fed_afternoon_census`, 20 sets × 4 visits): moving % in sight (σ of a 4-visit mean)
+/ set-offs a minute in sight.
+
+| Room | Mood | Quiet | Chat |
+|---|---|---|---|
+| home + window | Ordinary | 48.1 (6.33) / 2.28 | 43.0 (5.58) / 2.38 |
+| home + window | Lazy | 35.7 (4.47) / 1.55 | 33.9 (5.73) / 1.73 |
+| home + window | Industrious | 52.9 (4.83) / 2.65 | 51.2 (4.93) / 2.89 |
+| home + window | Dreamy | 46.0 (4.71) / 2.28 | 42.3 (6.18) / 2.30 |
+| home, TV only | Ordinary | 50.2 (3.80) / 1.86 | 47.5 (3.66) / 2.09 |
+| home, TV only | Lazy | 45.2 (4.60) / 1.72 | 43.0 (4.39) / 1.93 |
+| home, TV only | Industrious | 52.4 (2.89) / 1.97 | 50.0 (3.38) / 2.20 |
+| home, TV only | Dreamy | 46.9 (3.36) / 1.70 | 42.1 (3.73) / 1.87 |
+| resident, text low | Ordinary | 44.2 (3.92) / 3.19 | 42.2 (3.56) / 3.30 |
+| resident, text low | Lazy | 39.4 (3.20) / 2.77 | 38.0 (3.40) / 2.91 |
+| resident, text low | Industrious | 48.7 (2.59) / 3.32 | 44.6 (3.26) / 3.38 |
+| resident, text low | Dreamy | 42.2 (2.20) / 3.07 | 39.7 (3.26) / 3.33 |
+
+- **The windowed home reads as the band's home** (within noise in every cell): at base 3 no
+  afternoon look-out shows in 640 visits' "where her time went"; the window adds nothing to her
+  afternoon until its base or the tuning gives it room.
+- **The TV-only home** moves about as much as the furnished one, with fewer set-offs (1.7–2.2 a
+  minute against 1.5–2.9), so a set-off moves her longer there; lazy reads 45 (the furnished 34).
+- **The resident with text low** (its chat's last ten rows, ending at one column, beside her floor):
+  she pulls there (to text 11.8% in sight ordinary quiet), which adds 6–7 points and about 0.5
+  set-offs a minute to the band's resident in every mood; industrious ÷ lazy is 1.21 pooled.
