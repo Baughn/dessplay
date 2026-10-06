@@ -37,6 +37,8 @@ Add new days at the top. Add new entries at the bottom of existing days.
 - Changed: Osaka's window hangs lower; she leans on the sill and
   daydreams there for a long while, musing on the sky. It can hang
   behind her sofa.
+- Fixed: Osaka's window no longer hides wholly behind her sofa; only its
+  corner tucks behind it, so she can still lean on the sill.
 
 ## 2026-10-05
 

@@ -623,8 +623,9 @@ fn look_out_seats(guest: &Guest) -> Vec<room::Seat> {
 /// it was hung to face from first, on its floor. Hung where a piece that
 /// stands would be under it, it hangs beside that piece instead (her lamp),
 /// and she leans at it there, clear of the lamp; over her sofa it may
-/// hang, and she leans at it from its free side, never in front of the
-/// sofa (wholly behind the sofa, from nowhere: nothing binds). Without a
+/// hang with its corner behind it, and she leans at it from its free
+/// side, never in front of the sofa (hung wholly behind the sofa, it
+/// hangs with only its corner behind it instead). Without a
 /// window, or with it still in its box, there's nothing to look out of
 /// (only the box to unpack), and nothing binds. Her wall clock is offered
 /// as where it hangs only out of its box. Quiet panes or text-dense, in
@@ -703,18 +704,19 @@ fn she_looks_out_only_of_a_window_she_can_reach() {
                 "{at}: hung facing left"
             );
             // Hung over a piece that stands: beside her lamp, clear of
-            // it, leaning at it from either end; over her sofa, wholly
-            // behind it (nowhere to lean but in front of the sofa:
-            // nothing binds), or half behind it, from its free end.
-            // (On the 50-wide pane: the sofa at 550 stands on 22..31, the
-            // window at 550 hangs on 25..29, wholly in front of it; the
-            // sofa at 359 on 15..24, the window at 478 on 22..26, its two
-            // left columns behind the sofa.)
-            for (piece, x, hung_at, reachable, facing) in [
-                (Furniture::Lamp, 550, 550, true, sprite::Facing::Right),
-                (Furniture::Lamp, 550, 550, true, sprite::Facing::Left),
-                (Furniture::Sofa, 550, 550, false, sprite::Facing::Right),
-                (Furniture::Sofa, 359, 478, true, sprite::Facing::Right),
+            // it, leaning at it from either end; over her sofa with its
+            // corner behind it, from its free end (hung wholly behind it,
+            // it hangs with its corner behind it instead: never out of
+            // reach). (On the 50-wide pane: the sofa at 550 stands on
+            // 22..31, the window at 550 would hang on 25..29, wholly
+            // behind it, so it hangs on 29..33; the sofa at 359 on 15..24,
+            // the window at 478 on 22..26, its two left columns behind
+            // the sofa.)
+            for (piece, x, hung_at, facing) in [
+                (Furniture::Lamp, 550, 550, sprite::Facing::Right),
+                (Furniture::Lamp, 550, 550, sprite::Facing::Left),
+                (Furniture::Sofa, 550, 550, sprite::Facing::Right),
+                (Furniture::Sofa, 359, 478, sprite::Facing::Right),
             ] {
                 let at = format!("{at} over her {piece:?} at {x} hung at {hung_at} {facing:?}");
                 let mut guest = home_at(
@@ -751,11 +753,6 @@ fn she_looks_out_only_of_a_window_she_can_reach() {
                     "{at}: {window:?} {below:?}"
                 );
                 let seats = look_out_seats(&guest);
-                if !reachable {
-                    assert!(seats.is_empty(), "{at}: {seats:?}");
-                    assert_eq!(offered(&guest), 0, "{at}");
-                    continue;
-                }
                 assert_eq!(seats.len(), 1, "{at}: {seats:?} {window:?} {below:?}");
                 assert_eq!(offered(&guest), 32, "{at}");
                 let seat = seats[0];

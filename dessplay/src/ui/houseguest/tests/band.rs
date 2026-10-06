@@ -69,10 +69,14 @@ use dessplay_core::test_support::census_band_seeds;
 
 /// How long each band visit runs (minutes): the warm-up and then twice
 /// her longest still act (B5), so a visit's reading isn't one act's
-/// luck. Today that's a day's sleep, 3 minutes at most: 3 + 2 × 3.
+/// luck. Today that's a day's sleep or a look out of her window, 3
+/// minutes at most: 3 + 2 × 3, with no headroom.
 /// [`band_visits_outlast_her_longest_still_act_twice`] holds it to that.
-/// Lingering as the design starts it makes a lazy day's sleep 4.5
-/// minutes, so a tuning that lands it makes this 12.
+/// Lingering as the design starts it makes a lazy day's sleep (or look
+/// out) 4.5 minutes, so a tuning that lands it makes this 12; with
+/// settling on too, her window's chain (leaning on the sill, sitting in
+/// front of it, dozing or watching the clouds: about 6.1 minutes lazy)
+/// sets it: 3 + 2 × 6.1, so 16 (phase 5c step 11; baseline.md).
 const BAND_MINUTES: u64 = 9;
 
 /// The seeds a cell runs at the gate (`CENSUS_BAND_SEEDS` overrides):

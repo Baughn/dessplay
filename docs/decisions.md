@@ -4096,9 +4096,12 @@ borrow would have joined it; both are now caught out.
 ## Her window hangs low for her to lean on (2026-10-06)
 
 **Rule:** The window's bottom row is 2 rows above the floor (it was 4),
-its sill at her chest. It may share cells with a sofa (drawn behind it)
-and with nothing else that stands: one predicate,
-`Furniture::may_overlap`, says so of that pair, and every placement
+its sill at her chest. It may share cells with a sofa (drawn behind it),
+only while she could still lean on its sill from an end clear of the
+sofa (the sofa covers a corner of it, never its middle), and with
+nothing else that stands, nor with a sofa still in its box: one
+predicate, `Shown::may_overlap` (on the pieces as they stand, through
+`Furniture::may_overlap` for the pair), says so, and every placement
 reads it both ways round. See [design.md](design.md#houseguest).
 
 **Why:** the user's call on the art (phase 5c, round 2): "I think it has
@@ -4106,6 +4109,18 @@ to be lower. The window being drawn behind the sofa would look fine from
 a design perspective, unlike other furniture." Leaning on the sill, chin
 in her hands (`SillLean`), is the daydream the user asked the window to
 be; at 4 rows up she could only gaze up at it.
+
+**Why only its corner** (review of step 11): a first cut let the window
+share any cells with a sofa, so a 4-wide window could hang wholly inside
+the 9-wide sofa's top two rows: hidden, and out of her reach, as any
+older home whose window hung over its sofa (natural at the old height)
+loaded. The user's words were for the sofa covering the window's
+corner ("as on the sheet": two of its columns), so the predicate asks
+what makes the corner a corner: an end of the window she can lean at
+clear of the sofa. That ties the overlap to its one purpose, so no
+placement can make a window she can't see or reach for the sofa's sake.
+A parcel is a box, not a sofa: the window shares nothing with it, so a
+sofa never comes in under her window (she can move it there).
 
 **Why one predicate, read everywhere a piece goes** (the class, not the
 report): the wall lane used to be packed on its own, which was safe
@@ -4117,14 +4132,24 @@ only while every hung piece cleared the tallest standing one. Now:
   (`None`), never the piece's;
 - the layout (`Home::laid_on`) hangs a hung piece that meets a standing
   one it may not overlap at the nearest place between its neighbours on
-  the wall that meets none, in order, else in the closet alone. So no
-  frame can show the window over her TV, however the home came to be:
-  an older home's window, saved at the old height over a piece that
-  stands, loads unchanged and shows beside it (nothing is rewritten: the
-  record has no hang);
+  the wall that meets none, in order, preferring a place she could lean
+  at it from an end clear of what stands (nearest first, so a window
+  shifted off her TV doesn't land squeezed between the TV and her lamp
+  when the wall has room past the lamp), else in the closet alone. So
+  no frame can show the window over her TV, or hidden behind her sofa,
+  however the home came to be: an older home's window, saved at the
+  old height over a piece that stands, loads unchanged and shows beside
+  it, or with only its corner behind the sofa (nothing is rewritten:
+  the record has no hang);
 - putting her home right (`rules::evaluate`) refuses a move that would
-  shift a hung piece (a piece set down under the window), and its frame
-  test reads the same predicate for the piece and none for her box;
+  push a hung piece further from where its wall alone would hang it
+  (`Home::hung_shifts`: a piece set down under the window), or that
+  sets the moved piece itself where it can't hang; a move that lets a
+  pushed window back (her TV moved off its place) is a repair like any
+  other (a first cut refused any move after which a hung piece lay
+  elsewhere, so she'd move her bed rather than the TV under her
+  window). Its frame test reads the same predicate for the piece and
+  none for her box;
 - a delivery is refused at a wall where the parcel's piece would meet
   the window, or the window would meet a standing piece (the sofa
   aside), through the same cell test.
@@ -4132,16 +4157,27 @@ only while every hung piece cleared the tallest standing one. Now:
 **Why drawn as one image with the sofa:** in line art two images over
 the same cells each hide the other's cells behind their placeholders, so
 pieces whose footprints meet are painted as one image (back to front:
-anything hung behind a standing piece first), as her box already takes
-in what it overlaps. In ASCII the sofa's glyphs are drawn after the
-window's. Nothing else ever overlapped, so both orders are unchanged
-for every other home (every golden trace byte-identical).
+each hung piece behind a standing one first), as her box and her door
+already take in what they overlap, in the same order. The one image's
+box takes in cells that are neither's (under the window's free end,
+beside the sofa's): if text is there, it isn't the image's to derez, and
+the two are drawn each alone. In ASCII the sofa's glyphs are drawn after
+the window's, and what she painted over what (the dissolve's cells) is
+read off the screen before either is drawn, one cell each, the front
+piece's: otherwise the sofa's cells over the window would "rain back"
+to the window's glyph. Nothing else ever overlapped, so both orders are
+unchanged for every other home (every golden trace byte-identical).
 
 **Why she leans from just outside an end:** her face over the glass,
 her box takes in the window's end columns (her own window's cells are
 exempt from the room she needs, `clear_of`'s `of`), and a sofa the
 window hangs behind blocks that end, so she leans from the free one
-(none, with the window wholly behind a sofa: she can't reach it).
+(the overlap rule keeps one free). The two ends mirror each other (her
+box centred a column outside either end): the approved sheet's facing-
+left lean is exactly that, and her box mirrors about its middle column,
+so facing right is its mirror image (the sheet's facing-right figure
+stood a column further in, which would put her box over a sofa covering
+the window's other corner).
 
 **Sibling, made pieces:** a makeshift piece must stay clear of her real
 pieces (`tend_made`) but was offered wherever the text and her room
@@ -4176,11 +4212,21 @@ and the session lives on `Osaka::sill` beside her act, cleared with it
 in `set` (no new field on every `Act::Use`). The pools are one per sky
 (at least four lines each, all five skies), cooling as any line does.
 
-**Why up to three by whim, not by mood:** the levers that separate moods
-(lingering, settling) are the stillness band's tuning; the sill's count
-isn't one of them. Its length lingers through the length she draws, so
-the band's guard sees it (`longest_still_ms`: 180 s, within the band's
-9 minutes).
+**Why up to three by her mood's lever:** how many musings she has is
+the stillness band's to tune, as a daydream's are, so it's a lever of
+its own (`Stillness::sill`, from–to by mood, three at most), not B6's
+daydream count (which ships at one: the sill would always say one).
+`NEUTRAL` ships it as built, none to three by whim in every mood;
+`STARTING` follows the daydreams' spread. Its length lingers through the
+length she draws, so the band's guard sees it (`longest_still_ms`:
+180 s, within the band's 9 minutes; with lingering and settling on, the
+sill's chain sets the visit length, see baseline.md).
+
+**Why sitting in front of it doesn't turn her:** her face is up at its
+sky, chin in her hands, as aimed at the window as the lean is, so a
+chat line has her look up in place (`Pose::turns`). Lying back to watch
+the clouds takes its facing from the look-out seat she sits at, not
+from however she was last turned, so her head is under the glass.
 
 **Why cloud-watching is a pose of its own** (`Pose::CloudWatch`): a doze
 is read from the pose drawn (`Pose::dozes`: a chat line stirs a doze,
@@ -4204,17 +4250,21 @@ the clouds come with settling on, so the changelog doesn't claim them.
 **Measured (the day census, 6 runs a room, a game week each):** in the
 census home with a window, 14 look-outs in the 42 game days (683 before:
 about 16 a day, now one in three days); at base 6 it would be 82 (about
-two a day, the "few a game day" the design aimed at). Base 3 is the
-design's number, kept: the rest is the user's call. Her afternoon glance
-at her clock is still starved: 2 "Three-ish." in the home's 42 days (4
-before), 2 on the stage, 9 in the resident's; at base 6, 4. The design's
-fallback (the hour glance rolling once per daydream session) is how it
-already rolls (a daydream's first musing only, B6); rolling it at the
-sill too would feed it nothing at a look-out every third day, and a
-glance is its own act, so it would end her lean. Not built: the
-starving is in the glance's own gates (her clock on the strip she
-stands on, of an afternoon, once a visit, a musing in three of a
-spacing-out bound to muse one in three).
+two a day, the "few a game day" the design aimed at). With the corner
+rule (review) the census home's window, given wherever a gift lands, is
+never hidden behind its sofa: 35 look-outs in 42 days (0.8 a day). Her
+window is offered (in reach) at about 4200 of her decisions' steps, in
+her top four at 172, chosen at 35: it's rare by its score (base 3), not
+by reach. Base 3 is the design's number, kept: the rest is the user's
+call. Her afternoon glance at her clock is still starved: 1–2
+"Three-ish." in the home's 42 days (4 before), 2 on the stage, 9 in the
+resident's. The design's fallback, read as lifting the glance's once a
+visit so it rolls once per daydream session (it rolls only on a
+session's first musing, B6), was measured: the same 1 / 2 / 9, since
+the once a visit never binds (she glances far less than once a visit).
+So it's not built: the starving is in the glance's other gates (her
+clock on the strip she stands on, of an afternoon, quiet, a musing in
+three, on a daydream's start), and which to ease is the user's call.
 
 ## Houseguest chooses by needs among the top few (2026-09-28)
 

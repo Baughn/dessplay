@@ -985,8 +985,60 @@ CENSUS_MODES=line fed_afternoon_census`, 20 sets × 4 visits): moving % in sight
 - **The windowed home reads as the band's home** (within noise in every cell): at base 3 no
   afternoon look-out shows in 640 visits' "where her time went"; the window adds nothing to her
   afternoon until its base or the tuning gives it room.
-- **The TV-only home** moves about as much as the furnished one, with fewer set-offs (1.7–2.2 a
-  minute against 1.5–2.9), so a set-off moves her longer there; lazy reads 45 (the furnished 34).
+- **The TV-only home** moves about as much as the furnished one, with fewer set-offs but for lazy
+  (ordinary quiet 1.86 against 2.28, industrious 1.97 against 2.65, dreamy 1.70 against 2.28; lazy
+  1.72 against 1.55), so a set-off moves her longer there; lazy reads 45 (the furnished 34).
 - **The resident with text low** (its chat's last ten rows, ending at one column, beside her floor):
   she pulls there (to text 11.8% in sight ordinary quiet), which adds 6–7 points and about 0.5
   set-offs a minute to the band's resident in every mood; industrious ÷ lazy is 1.21 pooled.
+
+## Step 11 review fixes, measured (2026-10-06)
+
+**Measured 2026-10-06** on the review fixes (a follow-up commit: step 11's was already pushed): her window
+may share cells with a sofa only with its corner behind it (she can still lean from an end clear of
+the sofa), never with a parcel; a window that can't hang where it was hung hangs where she can lean
+at it first; the sill's musings are a lever (`Stillness::sill`, `NEUTRAL` none to three as built).
+Every golden trace byte-identical.
+
+**The band at full strength** (`CENSUS_BAND_SEEDS=190`): every N=190 line identical to step 11's.
+
+**The day census** (6 runs a room, a game week each), with new counts of her look-out offered (a
+step whose decisions offered it: her window in reach) and in her top four:
+
+| Home with a window, 42 game days | Step 11 | Review fixes |
+|---|---|---|
+| Look-outs | 14 | 35 (0.8 a day) |
+| On offer / in her top four | | 4212 / 172 |
+| Afternoon hour glances (home / stage / resident) | 2 / 2 / 9 | 1 / 2 / 9 |
+
+- The census home's window comes as a gift wherever it lands; under step 11 it could hang wholly
+  behind the sofa (out of reach), so part of the drop was reach. Now it's offered at nearly every
+  decision and rare by its score: in her top four at 4% of the steps it's on offer, chosen at a
+  fifth of those. The base (3) is the user's call: about two a day at base 6 (step 11's
+  measurement).
+- **The glance:** the same run with `hour_glanced` (once a visit) lifted, so the glance rolls once
+  per daydream session, gives the same 1 / 2 / 9: the gate never binds. D6's fallback can't feed it;
+  not built. What starves it is the rest of its gates (the clock on her strip, an afternoon, quiet,
+  a musing in three, a daydream's start), the user's call.
+
+**Printed** (`CENSUS_ROOMS=printed CENSUS_MINUTES=9 CENSUS_MODES=line fed_afternoon_census`, 20 sets ×
+4 visits): moving % in sight (σ) / set-offs a minute. The afternoon rooms read as step 11's (home +
+window ordinary quiet 48.4 / 2.28, chat 43.2 / 2.38; dreamy 46.2 / 2.28, 42.2 / 2.30; lazy and
+industrious and the other two rooms identical). New, the windowed home of an evening (from 18:00,
+her look-out ×2 from dusk), where her daydream at the sill shows:
+
+| Mood | Quiet | Chat | Look-out, % of the visit (quiet, chat) |
+|---|---|---|---|
+| Ordinary | 36.5 (5.78) / 1.78 | 33.9 (5.10) / 1.93 | 2.8, 2.4 |
+| Lazy | 29.6 (5.30) / 1.31 | 30.3 (4.71) / 1.45 | 4.0, 2.2 |
+| Industrious | 38.5 (6.66) / 2.06 | 38.2 (5.11) / 2.24 | under 1.1, under 1.3 (not listed) |
+| Dreamy | 32.3 (4.11) / 1.60 | 31.1 (5.11) / 1.81 | 4.4, 4.4 |
+
+The evening is stiller than the afternoon in every mood (her bed by day, `use:Sleep`, takes 28% of
+the visit there), so it's no band reading; it shows the sill session runs, a few % of her time.
+
+**Hand-off for the band's tuning:** the window's look-out (180 s) now ties a day's sleep as her
+longest still act, so the guard (`band_visits_outlast_her_longest_still_act_twice`) has no headroom
+at 9 minutes. With `STARTING`'s lazy linger (×1.5) the look-out alone is 270 s (BAND_MINUTES 12),
+and with settling on too the sill's chain (270 + 37.5 sitting in front of it + 60 watching the
+clouds = 367.5 s) needs 3 + 2 × 6.1, so BAND_MINUTES 16.

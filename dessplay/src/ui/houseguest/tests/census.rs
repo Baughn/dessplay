@@ -1525,11 +1525,13 @@ const WINDOWED_HOME: [Furniture; 8] = [
 /// Rooms the fed afternoon prints beside the band's own (phase 5c D2,
 /// D6; step 4's hand-off), judged by nothing: the census home with her
 /// window ([`WINDOWED_HOME`]); the home's screen with only a TV (her
-/// first piece: watching from the floor); and the resident's with its
+/// first piece: watching from the floor); the resident's with its
 /// chat's text low in the chat pane, at her floors' heights (the band's
 /// resident has all its text above her reach, so she never pulls or
-/// swaps there).
-fn printed_rooms() -> [Room; 3] {
+/// swaps there); and the windowed home again of an evening (from 18:00,
+/// [`EVENING`]: her look-out likelier from dusk), so her daydream at the
+/// sill shows in a print while her afternoon has almost none of it.
+fn printed_rooms() -> [Room; 4] {
     let windowed = Room {
         name: "home+window",
         owns: &WINDOWED_HOME,
@@ -1554,8 +1556,22 @@ fn printed_rooms() -> [Room; 3] {
         real,
         ..resident_room()
     };
-    [windowed, tv_only, low_text].map(at_afternoon)
+    let evening = Room {
+        name: "home+window, evening",
+        start: Some(EVENING),
+        owns: &WINDOWED_HOME,
+        ..furnished_room()
+    };
+    let [windowed, tv_only, low_text] = [windowed, tv_only, low_text].map(at_afternoon);
+    [windowed, tv_only, low_text, evening]
 }
+
+/// A Tuesday evening (from 18:00, after dusk): her window's evening.
+const EVENING: GameTime = GameTime {
+    day: 1,
+    h: 18,
+    m: 0,
+};
 
 /// `room` fed from [`AFTERNOON`].
 pub(super) fn at_afternoon(room: Room) -> Room {
@@ -2002,6 +2018,10 @@ fn live_for(room: &Room, seed: u64, date: Option<chrono::NaiveDate>, until: u64)
     );
     let mut drawn: Option<u64> = None;
     let mut set_offs = 0;
+    // Her decisions and the wants offered her so far this visit (a new
+    // visit's start afresh): her look-out offered (her window in reach)
+    // and among her top four, against how often she looks out.
+    let (mut decided, mut offered) = (0, 0);
     while now < until {
         let day = guest.day(now).expect("fed, and met");
         let off = usize::from(!day.school_day);
@@ -2097,6 +2117,24 @@ fn live_for(room: &Room, seed: u64, date: Option<chrono::NaiveDate>, until: u64)
                 }
             }
             playing = plays.map(|(since, _)| since);
+            let look_out = Want::Use(room::Use::LookOut);
+            let (decisions, factored) = (&visit.osaka.decisions, &visit.osaka.factored);
+            if decisions.len() < decided || factored.len() < offered {
+                (decided, offered) = (0, 0);
+            }
+            if factored[offered..]
+                .iter()
+                .any(|&(want, ..)| want == look_out)
+            {
+                events.push("look-out on offer".to_owned());
+            }
+            if decisions[decided..]
+                .iter()
+                .any(|d| d.top.iter().any(|&(want, _)| want == look_out))
+            {
+                events.push("look-out in her top four".to_owned());
+            }
+            (decided, offered) = (decisions.len(), factored.len());
             if let Some((day, rares)) = visit.osaka.rares_today()
                 && drawn != Some(day)
             {

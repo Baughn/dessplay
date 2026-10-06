@@ -410,12 +410,12 @@ pub(super) struct Frame<'a> {
 }
 
 impl Frame<'_> {
-    /// Whether `(x, y)` is free for `who` with her pieces where `laid`
+    /// Whether `(x, y)` is free for `at`, one of her pieces as `laid`
     /// has them: not blocked, not under a makeshift piece or another of
-    /// hers it may not overlap (her window and a sofa may: see
-    /// [`Furniture::may_overlap`]).
-    fn clear(&self, laid: &[Shown], who: Furniture, x: i32, y: i32) -> bool {
-        self.free(laid, who, Some(who), x, y)
+    /// hers it may not overlap (her window and a sofa covering its
+    /// corner may: see [`Shown::may_overlap`]).
+    fn clear(&self, laid: &[Shown], at: &Shown, x: i32, y: i32) -> bool {
+        self.free(laid, at.item, Some(at), x, y)
     }
 
     /// Whether `(x, y)` is free for her, using `who` with her pieces where
@@ -425,14 +425,7 @@ impl Frame<'_> {
         self.free(laid, who, None, x, y)
     }
 
-    fn free(
-        &self,
-        laid: &[Shown],
-        who: Furniture,
-        over: Option<Furniture>,
-        x: i32,
-        y: i32,
-    ) -> bool {
+    fn free(&self, laid: &[Shown], who: Furniture, over: Option<&Shown>, x: i32, y: i32) -> bool {
         let (Ok(ux), Ok(uy)) = (u16::try_from(x), u16::try_from(y)) else {
             return false;
         };
@@ -442,7 +435,7 @@ impl Frame<'_> {
             && !laid.iter().any(|s| {
                 s.item != who
                     && s.rect().contains(cell)
-                    && !over.is_some_and(|over| over.may_overlap(s.item))
+                    && !over.is_some_and(|at| at.may_overlap(s))
             })
     }
 }
@@ -458,6 +451,9 @@ struct Before {
     roles: Vec<(Strip, Role)>,
     /// Every piece that spoils its room, and the room.
     spoilt: Vec<(Strip, Furniture)>,
+    /// How far each hung piece hangs from where its wall alone would hang
+    /// it (see [`Home::hung_shifts`]).
+    shifts: Vec<(Furniture, Option<u32>)>,
     /// Her pieces that show, and whether she'd fit to use each.
     showing: Vec<(Shown, bool)>,
 }
@@ -474,6 +470,7 @@ impl Before {
             .map(|&(strip, _)| (strip, room::role_of(&laid, strip)))
             .collect();
         let spoilt = spoilt(&laid);
+        let shifts = home.hung_shifts(&strips);
         let showing = frame
             .shown
             .iter()
@@ -490,6 +487,7 @@ impl Before {
             broken,
             roles,
             spoilt,
+            shifts,
             showing,
         }
     }
@@ -547,7 +545,7 @@ fn evaluate(
     };
     let slot = scratch.props.get_mut(i)?;
     *slot = moved;
-    let laid = scratch.laid_on(&before.strips);
+    let (laid, shifts) = scratch.laid_and_shifted(&before.strips);
     if let Some(slot) = scratch.props.get_mut(i) {
         *slot = old;
     }
@@ -562,18 +560,12 @@ fn evaluate(
     }
     let at = *laid.iter().find(|s| s.item == piece)?;
     // Nothing goes under a piece hung low that it may not overlap (her
-    // window: phase 5c D6): every other hung piece lays where it did (one
-    // a piece set down under it would have moved aside).
-    let hung_moved = laid
-        .iter()
-        .filter(|a| a.lane() == room::Lane::Wall && a.item != piece)
-        .any(|a| {
-            !before
-                .laid
-                .iter()
-                .any(|b| (b.item, b.strip, b.left) == (a.item, a.strip, a.left))
-        });
-    if hung_moved {
+    // window: phase 5c D6), nor is a hung piece set down where it can't
+    // hang: no other hung piece hangs further from where its wall alone
+    // would hang it than it did (one set down under it pushes it aside;
+    // one moved off from under it may let it back), and the piece hangs
+    // just where it's set down.
+    if pushes_hung(&before.shifts, &shifts, piece) {
         return None;
     }
     // It mends the rule (the settled flags are unchanged by a move).
@@ -653,13 +645,34 @@ fn evaluate(
     Some((repair, laid))
 }
 
+/// Whether a move of `piece` pushes a hung piece aside, its wall's
+/// pieces `before` and `after` it hung as far from where their walls
+/// alone would hang them as each list says (see [`Home::hung_shifts`]):
+/// another further than it was (left out: furthest of all), or `piece`
+/// itself at all.
+fn pushes_hung(
+    before: &[(Furniture, Option<u32>)],
+    after: &[(Furniture, Option<u32>)],
+    piece: Furniture,
+) -> bool {
+    let far = |shifts: &[(Furniture, Option<u32>)], item: Furniture| {
+        shifts
+            .iter()
+            .find(|(i, _)| *i == item)
+            .map_or(0, |(_, d)| d.unwrap_or(u32::MAX))
+    };
+    after
+        .iter()
+        .any(|&(item, _)| item == piece || far(after, item) > far(before, item))
+}
+
 /// Whether, her pieces laid out as `laid` with `piece` moved, `piece`
 /// stands on blank, free cells where she'd fit to use it, and every
 /// other piece that showed still fits (and she'd still fit to use those
 /// she would before).
 fn fits_now(frame: &Frame, before: &Before, laid: &[Shown], piece: Furniture) -> bool {
     let fit = |at: &Shown| {
-        let clear = |x: i32, y: i32| frame.clear(laid, at.item, x, y);
+        let clear = |x: i32, y: i32| frame.clear(laid, at, x, y);
         room::fits(frame.buf, at, &clear)
     };
     let room = |at: &Shown| {
@@ -1432,6 +1445,11 @@ mod tests {
 
     /// `home` with `repair` made, laid out on `nooks`.
     fn made(home: &Home, repair: &Repair, nooks: &[(Nook, Rect)]) -> Vec<Shown> {
+        made_home(home, repair).layout(nooks)
+    }
+
+    /// `home` with `repair` made.
+    fn made_home(home: &Home, repair: &Repair) -> Home {
         let mut after = home.clone();
         let prop = after
             .props
@@ -1441,7 +1459,7 @@ mod tests {
         prop.strip = repair.to.strip;
         prop.anchor = Some(repair.to.anchor);
         prop.facing = repair.to.facing;
-        after.layout(nooks)
+        after
     }
 
     fn laid(at: &[Shown], item: Furniture) -> Shown {
@@ -1783,6 +1801,63 @@ mod tests {
         }
     }
 
+    /// A TV that stands where her window was hung (the window hung aside,
+    /// clear of it: phase 5c D6) may still go: moving it off lets the
+    /// window back to its own place, which pushes nothing aside.
+    #[test]
+    fn a_tv_under_her_window_may_go_and_the_window_hangs_back() {
+        let bed = at(Bed, Nook::Users, Side::Left, 0, Facing::Right);
+        let tv = unsettled(at(Tv, Nook::Users, Side::Left, 12, Facing::Left));
+        let window = at(Window, Nook::Users, Side::Left, 13, Facing::Right);
+        let mut home = Home::default();
+        for p in [bed, tv, window] {
+            assert!(home.add(p));
+        }
+        let laid = home.clone().layout(&panes(40));
+        assert_ne!(laid_left(&laid, Window), 14, "hung aside: {laid:?}");
+        let (home, repairs) = mend(40, &[bed, tv, window], &[], APART);
+        assert!(!repairs.is_empty());
+        for r in &repairs {
+            assert_eq!((r.piece, r.to.strip), (Tv, Strip::Bottom(Nook::Playlist)));
+            let after = made(&home, r, &panes(40));
+            assert_eq!(laid_left(&after, Window), 14, "{r:?}: back: {after:?}");
+        }
+    }
+
+    /// Where her window and a sofa covering its corner meet, a cell is
+    /// free for either piece (each may overlap the other) but not for her
+    /// box, which overlaps no piece of hers ([`Frame::clear`] against
+    /// [`Frame::room`]).
+    #[test]
+    fn her_box_shares_no_cell_with_a_piece_that_its_neighbour_may() {
+        let sofa = at(Sofa, Nook::Users, Side::Left, 0, Facing::Right);
+        let window = at(Window, Nook::Users, Side::Left, 7, Facing::Right);
+        let mut home = Home::default();
+        for p in [sofa, window] {
+            assert!(home.add(p));
+        }
+        let nooks = panes(40);
+        let buf = frame(40, &[]);
+        let pieces = home.layout(&nooks);
+        let frame = Frame {
+            buf: &buf,
+            nooks: &nooks,
+            blocked: &|_, _| false,
+            shown: &pieces,
+            made: &[],
+        };
+        let (s, w) = (laid(&pieces, Sofa), laid(&pieces, Window));
+        let shared = w.rect().intersection(s.rect());
+        assert!(!shared.is_empty(), "{pieces:?}");
+        let (x, y) = (i32::from(shared.x), i32::from(shared.y));
+        assert!(frame.clear(&pieces, &s, x, y) && frame.clear(&pieces, &w, x, y));
+        assert!(!frame.room(&pieces, Sofa, x, y) && !frame.room(&pieces, Window, x, y));
+    }
+
+    fn laid_left(at: &[Shown], item: Furniture) -> i32 {
+        laid(at, item).left
+    }
+
     /// A TV delivered to a strip of its own comes to the sofa she has
     /// settled, not the sofa to it, anchored from the sofa's wall.
     #[test]
@@ -2096,6 +2171,7 @@ mod tests {
         // window and a sofa may), or for her box using it (`her`: of all).
         let free = |at: &[Shown], who: Furniture, her: bool| {
             let at = at.to_vec();
+            let piece = at.iter().find(|s| s.item == who).copied();
             move |x: i32, y: i32| {
                 let cell = (x as u16, y as u16).into();
                 x >= 0
@@ -2105,7 +2181,7 @@ mod tests {
                     && !at.iter().any(|s| {
                         s.item != who
                             && s.rect().contains(cell)
-                            && (her || !who.may_overlap(s.item))
+                            && (her || !piece.is_some_and(|p| p.may_overlap(s)))
                     })
             }
         };
@@ -2145,16 +2221,25 @@ mod tests {
         prop_assert!(room::fits(buf, &at, &mine), "{:?}", r);
         prop_assert!(room::roomy(buf, &at, &room_for(&after, r.piece)), "{:?}", r);
         // Nothing went under her window, low: every other hung piece
-        // lays where it did.
-        for a in after
-            .iter()
-            .filter(|a| a.lane() == room::Lane::Wall && a.item != r.piece)
-        {
+        // hangs no further from where its wall alone would hang it than
+        // it did, and the piece just where it's set down.
+        let shifts = |home: &Home| {
+            let mut home = home.clone();
+            home.layout(nooks);
+            home.hung_shifts(&all)
+        };
+        let (was_shifted, now_shifted) = (shifts(home), shifts(&made_home(home, r)));
+        let far = |list: &[(Furniture, Option<u32>)], item: Furniture| {
+            list.iter()
+                .find(|(i, _)| *i == item)
+                .map_or(0, |(_, d)| d.unwrap_or(u32::MAX))
+        };
+        prop_assert_eq!(far(&now_shifted, r.piece), 0, "{:?}", r);
+        for &(item, _) in &now_shifted {
             prop_assert!(
-                laid.iter()
-                    .any(|b| (b.item, b.strip, b.left) == (a.item, a.strip, a.left)),
-                "{:?} moved by {:?}",
-                a,
+                far(&now_shifted, item) <= far(&was_shifted, item),
+                "{:?} pushed by {:?}",
+                item,
                 r
             );
         }

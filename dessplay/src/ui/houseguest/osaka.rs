@@ -1523,7 +1523,9 @@ pub(super) fn longest_still_ms(slot: Option<routine::Slot>) -> u64 {
 /// settles in, each chain she can settle along (spacing out or gazing,
 /// then sitting, then lying back or dozing where she sits; lounging,
 /// then napping on the same sofa; reading on her back, then dozing under
-/// the book) as long as its links together.
+/// the book; leaning on her window's sill, then sitting in front of it,
+/// then dozing there or watching the clouds) as long as its links
+/// together.
 #[cfg(test)]
 pub(super) fn longest_still_ms_with(slot: Option<routine::Slot>, still: &Stillness) -> u64 {
     let linger = |lingers: bool, ms: u64| still.lingered_most(lingers, ms);
@@ -1550,8 +1552,9 @@ pub(super) fn longest_still_ms_with(slot: Option<routine::Slot>, still: &Stillne
 /// lounging, then napping on the same sofa (each with the longest
 /// prelude and coda any splice row may wrap it in); reading on her
 /// back, then dozing under the book; leaning on her window's sill, then
-/// sitting in front of it, then dozing there or watching the clouds. Each link is as long as its
-/// longest, lingered as the most lingering mood lingers.
+/// sitting in front of it, then dozing there or watching the clouds.
+/// Each link is as long as its longest, lingered as the most lingering
+/// mood lingers.
 #[cfg(test)]
 pub(super) fn settle_chains_ms(slot: Option<routine::Slot>, still: &Stillness) -> [u64; 4] {
     if !still.settles() {
@@ -1833,7 +1836,7 @@ const SIT_DOZE_NOD_MS: u64 = USE_FRAME_MS;
 /// M8).
 const GAZE_OOH_MS: u64 = 3_000;
 /// The most musings on the sky she has leaning on her window's sill,
-/// after its first line (phase 5c D6).
+/// after its first line (phase 5c D6), whatever [`Stillness::sill`] says.
 const SILL_MUSINGS: u8 = 3;
 
 /// A speech or thought bubble.
@@ -4817,9 +4820,10 @@ impl Osaka {
 
     /// Leaning on her window's sill, a look-out she chose just begun
     /// (phase 5c D6): after the sky's line, up to three musings on
-    /// the sky to come (as many as her decision's whim says), the first a
-    /// whim's gap after the line (see [`Osaka::sill_on`]). Not on a trial
-    /// (a moment's look) or a cued script other than her own.
+    /// the sky to come (as many as her decision's whim draws from her
+    /// mood's [`Stillness::sill`]), the first a whim's gap after the line
+    /// (see [`Osaka::sill_on`]). Not on a trial (a moment's look) or a
+    /// cued script other than her own.
     fn lean_on_the_sill(&mut self) {
         let Act::Use {
             seat, since, play, ..
@@ -4827,13 +4831,21 @@ impl Osaka {
         else {
             return;
         };
+        // A trial (3.5-5 s) would end before a first musing could come
+        // (15 s in at the least), and `set` drops the session with its
+        // act: this only says so.
         let trying = self.episode.is_some_and(|e| e.trying);
         if seat.what != Use::LookOut || play.own != ScriptId::LookOut || trying {
             return;
         }
-        let musings = self.whims.below("sill", u64::from(SILL_MUSINGS) + 1) as u8;
+        let (lo, hi) = self.stillness.sill.of(self.mood);
+        let musings = (lo
+            + self
+                .whims
+                .below("sill", u64::from(hi.saturating_sub(lo)) + 1) as u8)
+            .min(SILL_MUSINGS);
         if musings == 0 {
-            tracing::debug!("houseguest: at her sill with nothing to muse");
+            tracing::trace!("houseguest: at her sill with nothing to muse");
             return;
         }
         let next = play.body_start(since) + script::LOOK_OUT_LINE_MS + self.sill_gap(self.whims, 0);
@@ -4872,9 +4884,7 @@ impl Osaka {
                 ..session
             })
         } else {
-            let sky = self
-                .day(at)
-                .map_or(super::art::Sky::Day, |day| super::art::Sky::at(day.minute));
+            let sky = self.sky_at(at);
             let whims = session.whims.series("sill", u64::from(session.said));
             if let Some(line) = self.lines.pick(mind::sky_musings(sky), whims, at) {
                 tracing::debug!(said = session.said, line, "houseguest: muses at her sill");
@@ -5864,11 +5874,16 @@ impl Osaka {
     /// lines of the sky her clock shows (unfed, the day's: her window
     /// shows a day sky then), drawn from her latest decision's whims.
     fn look_out_branch(&self, at: u64) -> u8 {
-        let sky = self
-            .day(at)
-            .map_or(super::art::Sky::Day, |day| super::art::Sky::at(day.minute));
         // Six: as even over two lines as over three.
-        script::look_out_branch(sky, self.whims.below_at("look-out", 0, 6))
+        script::look_out_branch(self.sky_at(at), self.whims.below_at("look-out", 0, 6))
+    }
+
+    /// The sky her window shows at `at`, by her clock (unfed, the day's).
+    /// The one reading for her look-out's line, her musings at the sill
+    /// and her line watching the clouds.
+    fn sky_at(&self, at: u64) -> super::art::Sky {
+        self.day(at)
+            .map_or(super::art::Sky::Day, |day| super::art::Sky::at(day.minute))
     }
 
     /// Her meal's line, on her first snack of a morning or an evening by
@@ -7745,7 +7760,14 @@ impl Osaka {
                 self.set(act, at);
                 self.facing = facing;
                 if what == Activity::CloudWatch {
-                    self.watch_the_clouds(at);
+                    // Facing her window as its look-out seat has her,
+                    // whichever way she last turned to the chat.
+                    let toward = chances
+                        .seats
+                        .iter()
+                        .find(|s| s.what == Use::LookOut && (s.x, s.y) == (self.x, self.y))
+                        .map_or(facing, |s| s.facing);
+                    self.watch_the_clouds(toward, depth, at);
                 }
                 Want::Idle(what)
             }
@@ -7771,18 +7793,17 @@ impl Osaka {
     }
 
     /// Lying back under her window at `at` to watch the clouds (phase 5c
-    /// D6): turned over end to end from how she sat facing it, so her
-    /// head's under the glass, and saying her one line of it, the sky's
-    /// as it is (none, if every one of its lines is cooling).
-    fn watch_the_clouds(&mut self, at: u64) {
-        self.facing = match self.facing {
+    /// D6), settled in `depth` deep: turned over end to end from facing
+    /// it (`toward`, as its look-out seat has her), so her head's under
+    /// the glass, and saying her one line of it, the sky's as it is
+    /// (none, if every one of its lines is cooling).
+    fn watch_the_clouds(&mut self, toward: Facing, depth: u8, at: u64) {
+        self.facing = match toward {
             Facing::Right => Facing::Left,
             Facing::Left => Facing::Right,
         };
-        let sky = self
-            .day(at)
-            .map_or(super::art::Sky::Day, |day| super::art::Sky::at(day.minute));
-        let whims = self.whims.series("clouds", u64::from(self.settled));
+        let sky = self.sky_at(at);
+        let whims = self.whims.series("clouds", u64::from(depth));
         if let Some(line) = self.lines.pick(mind::sky_musings(sky), whims, at) {
             self.say(line, at);
         }
@@ -18486,7 +18507,8 @@ mod tests {
                 let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
                 osaka.splice_rows = &[];
                 osaka.whims = Whims(whims);
-                // 16:58 on a Monday: her dusk comes 12 s in.
+                // 16:58 on a Monday: her dusk comes 20 s in (two game
+                // minutes at 6x), by her second musing at the latest.
                 let clock = clock_at(0, 16, 58);
                 osaka.read_clock(Some(clock));
                 osaka.credit = Some(Want::Use(Use::LookOut));
@@ -18580,6 +18602,7 @@ mod tests {
             assert!(matches!(osaka.act, Act::Use { seat, .. } if seat == sill_seat()));
             let look_over = line + LOOK_MS;
             let mut now = line;
+            let mut mused = None;
             while now < look_over + 30_000 {
                 now = osaka.due();
                 osaka.tick(now, None, &terrain, &chances, &mut rng);
@@ -18592,9 +18615,18 @@ mod tests {
                         when >= look_over,
                         "whims {whims}: mused at {when} under her look"
                     );
+                    mused = Some(when);
                     break;
                 }
             }
+            // Held, not dropped: it comes once her look is over, a gap
+            // after at most, while she still leans there.
+            let when = mused.unwrap_or_else(|| panic!("whims {whims}: her musing was dropped"));
+            assert!(
+                when < look_over + Stillness::NEUTRAL.musing_gap.1,
+                "whims {whims}: mused at {when}, her look over at {look_over}"
+            );
+            assert!(matches!(osaka.act, Act::Use { seat, .. } if seat == sill_seat()));
         }
         assert!(checked >= 8, "only {checked} mused");
     }
@@ -18679,6 +18711,152 @@ mod tests {
         }
     }
 
+    /// In front of her window (phase 5c D6) a chat line from the far side
+    /// doesn't turn her (her face is up at its sky, her chin in her
+    /// hands), and lying back from there to watch the clouds she lies
+    /// with her head under the glass however she was turned: turned end
+    /// to end from facing it as its look-out seat has her.
+    #[test]
+    fn in_front_of_her_window_she_keeps_to_it_and_lies_back_under_it() {
+        let terrain = floor_at(15);
+        let windowed = Chances {
+            seats: vec![sill_seat()],
+            ..Chances::default()
+        };
+        let mut rng = Rng(5);
+        let mut osaka = at_still(
+            levers(1.0, 0.0),
+            Mood::Dreamy,
+            idle_until(Activity::UnderSill, 10_000),
+            Want::Idle(Activity::UnderSill),
+            &mut rng,
+        );
+        assert_eq!(osaka.facing, sill_seat().facing);
+        // A line from the right, the far side from her window.
+        osaka.look(2_000, 100, false, &terrain);
+        assert_eq!(osaka.facing, sill_seat().facing, "she keeps to it");
+        // Turned all the same (as an older visit might have left her).
+        for turned in [Facing::Left, Facing::Right] {
+            let mut lying = osaka.clone();
+            lying.facing = turned;
+            lying.tick(10_000, None, &terrain, &windowed, &mut rng);
+            assert!(
+                matches!(
+                    lying.act,
+                    Act::Idle {
+                        what: Activity::CloudWatch,
+                        ..
+                    }
+                ),
+                "{turned:?}: {:?}",
+                lying.act
+            );
+            assert_eq!(
+                lying.facing,
+                Facing::Right,
+                "{turned:?}: head under the glass"
+            );
+        }
+    }
+
+    /// Her sill's session ends with her look-out (phase 5c D6): cut short
+    /// by another use before her first musing, she says nothing of the
+    /// sky there, and nothing calls her sooner for it.
+    #[test]
+    fn her_sill_session_ends_with_her_look_out() {
+        let terrain = floor_at(15);
+        let chances = Chances::default();
+        let lounge = Seat {
+            x: 20,
+            y: 15,
+            ..seat_for(Use::Lounge, Furniture::Sofa)
+        };
+        let mut checked = 0;
+        for whims in 0..32u64 {
+            let mut rng = Rng(5);
+            let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+            osaka.splice_rows = &[];
+            osaka.whims = Whims(whims);
+            osaka.credit = Some(Want::Use(Use::LookOut));
+            osaka.start_job(Job::Use(sill_seat()), 0, &chances, &mut rng);
+            let Some(session) = osaka.sill else { continue };
+            checked += 1;
+            let cut = 5_000;
+            assert!(session.next > cut, "whims {whims}: {session:?}");
+            osaka.credit = Some(Want::Use(Use::Lounge));
+            osaka.start_job(Job::Use(lounge), cut, &chances, &mut rng);
+            assert!(osaka.sill.is_none(), "whims {whims}: left behind");
+            let Act::Use { until, .. } = osaka.act else {
+                panic!("whims {whims}: {:?}", osaka.act);
+            };
+            let mut now = cut;
+            while now + 1 < until.min(cut + 60_000) {
+                now = osaka.due().min(until - 1);
+                osaka.tick(now, None, &terrain, &chances, &mut rng);
+            }
+            assert!(
+                !osaka
+                    .said_lines()
+                    .iter()
+                    .any(|(pool, ..)| *pool == mind::PoolId::Sky),
+                "whims {whims}: the sky from her sofa"
+            );
+        }
+        assert!(checked >= 8, "only {checked} with musings to come");
+    }
+
+    /// How many musings she has at her sill is her mood's (phase 5c D6,
+    /// [`Stillness::sill`]): exactly as many as a table that fixes them
+    /// says, three at most.
+    #[test]
+    fn her_mood_says_how_much_she_muses_at_her_sill() {
+        let terrain = floor_at(15);
+        let chances = Chances::default();
+        let table = Stillness {
+            sill: ByMood {
+                ordinary: (0, 0),
+                lazy: (1, 1),
+                industrious: (2, 2),
+                dreamy: (3, 9),
+            },
+            ..Stillness::NEUTRAL
+        };
+        for mood in Mood::ALL {
+            let want = match mood {
+                Mood::Ordinary => 0,
+                Mood::Lazy => 1,
+                Mood::Industrious => 2,
+                Mood::Dreamy => 3,
+            };
+            for whims in 0..8u64 {
+                let at = format!("{mood:?} whims {whims}");
+                let mut rng = Rng(5);
+                let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+                osaka.set_mood(mood);
+                osaka.stillness = table;
+                osaka.splice_rows = &[];
+                osaka.whims = Whims(whims);
+                osaka.credit = Some(Want::Use(Use::LookOut));
+                osaka.start_job(Job::Use(sill_seat()), 0, &chances, &mut rng);
+                assert_eq!(osaka.sill.map_or(0, |s| s.left), want, "{at}");
+                let Act::Use { until, .. } = osaka.act else {
+                    panic!("{at}: {:?}", osaka.act);
+                };
+                let mut now = 0;
+                while now + 1 < until {
+                    now = osaka.due().min(until - 1);
+                    osaka.tick(now, None, &terrain, &chances, &mut rng);
+                }
+                let said = osaka
+                    .said_lines()
+                    .iter()
+                    .filter(|(pool, ..)| *pool == mind::PoolId::Sky)
+                    .count();
+                assert!(said <= usize::from(want), "{at}: {said}");
+            }
+        }
+    }
+
     /// Watching the clouds (phase 5c D6) is lying back with her eyes
     /// open, held: curious, no Zzz, one line at most (the sky's, as she
     /// lies back), never a doze, so a chat line has her look up where she
@@ -18716,7 +18894,13 @@ mod tests {
             let (pose, face, bubble) = osaka.appearance(t);
             assert_eq!(pose, Pose::CloudWatch, "{t}");
             assert!(!pose.dozes(), "{t}");
-            assert!(matches!(face, Face::Curious | Face::Blink), "{t}: {face:?}");
+            // Her eyes open throughout: shut only for a slow blink's
+            // moment, as on any pose she holds.
+            assert_eq!(osaka.look_at(t).1, Face::Curious, "{t}");
+            assert!(
+                face == Face::Curious || (face == Face::Blink && osaka.held_blink(t)),
+                "{t}: {face:?}"
+            );
             assert_ne!(bubble, Some(Bubble::Zzz), "{t}");
             if bubble.is_some() && was.is_none() {
                 lines += 1;

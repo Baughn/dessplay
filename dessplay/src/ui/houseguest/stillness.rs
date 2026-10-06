@@ -1,7 +1,8 @@
 //! Her stillness levers (phase 5c, D4 as amended by M6–M8 and B6): how a
 //! mood stretches the still acts she chooses (lingering), how often a
 //! still act that ran its course settles further where she is (settling
-//! in), how many musings a daydream holds, where her homework nods off,
+//! in), how many musings a daydream (and her window's sill) holds, where
+//! her homework nods off,
 //! and whether nearer spots draw her. One table holds them all, so the
 //! tuning that pins the stillness band changes values here and nowhere
 //! else.
@@ -108,6 +109,10 @@ pub(super) struct Stillness {
     /// The gap between one musing of a session and the next (ms, from
     /// and to).
     pub musing_gap: (u64, u64),
+    /// The musings on the sky she has leaning on her window's sill, after
+    /// its first line (from, to: both included; three at most, phase 5c
+    /// D6), each [`Stillness::musing_gap`] after the last.
+    pub sill: ByMood<(u8, u8)>,
     /// Where her homework nods off.
     pub nod_off: ByMood<NodOff>,
     /// Nearer spots: a line to pull, letters to swap or text to make a
@@ -126,6 +131,8 @@ impl Stillness {
         sit_doze: 0.0,
         musings: ByMood::all((1, 1)),
         musing_gap: (12_000, 20_000),
+        // As it was built (phase 5c step 11): none to three, by a whim.
+        sill: ByMood::all((0, 3)),
         nod_off: ByMood::all(NodOff::Half),
         near: false,
     };
@@ -161,6 +168,13 @@ impl Stillness {
             dreamy: (2, 4),
         },
         musing_gap: (12_000, 20_000),
+        // As her daydreams' musings, three at most.
+        sill: ByMood {
+            ordinary: (1, 3),
+            lazy: (0, 2),
+            industrious: (0, 1),
+            dreamy: (2, 3),
+        },
         nod_off: ByMood {
             ordinary: NodOff::Half,
             lazy: NodOff::Third,

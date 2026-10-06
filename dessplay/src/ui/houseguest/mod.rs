@@ -3473,17 +3473,12 @@ fn seat_spot(terrain: &Terrain, x: i32, y: i32) -> bool {
 /// hangs low: phase 5c D6): where she stands to look out of it, not in
 /// front of a sofa it hangs behind, nor anything beside it.
 fn clear_of(shown: &[Shown], of: &Shown, x: i32, y: i32) -> bool {
-    let half = sprite::WIDTH / 2;
-    let (Ok(left), Ok(top)) = (u16::try_from(x - half), u16::try_from(y - sprite::HEIGHT)) else {
-        return false;
-    };
-    let width = u16::try_from(sprite::WIDTH).unwrap_or(u16::MAX);
-    let height = u16::try_from(sprite::HEIGHT + 1).unwrap_or(u16::MAX);
-    let her = Rect::new(left, top, width, height);
-    shown
-        .iter()
-        .filter(|s| *s != of)
-        .all(|s| !s.cover().intersects(her))
+    room::her_box(x, y).is_some_and(|her| {
+        shown
+            .iter()
+            .filter(|s| *s != of)
+            .all(|s| !s.cover().intersects(her))
+    })
 }
 
 fn spots_for(piece: &Shown, shown: &[Shown], terrain: &Terrain, cat: bool) -> Vec<room::Seat> {
@@ -4037,20 +4032,19 @@ fn screen_glyphs(channel: art::Channel) -> [char; 2] {
     }
 }
 
-/// `pieces` back to front: anything hung that a piece standing overlaps
-/// (her window, low, behind her sofa: phase 5c D6) before them all, so
-/// the sofa is drawn over it; otherwise as they are.
+/// `pieces` back to front: each hung piece that a piece standing
+/// overlaps (her window, low, behind her sofa: phase 5c D6) first, so
+/// the sofa is drawn over it; the rest as they are (no other two share a
+/// cell).
 fn back_to_front(pieces: &[Shown]) -> Vec<Shown> {
-    let behind = pieces.iter().any(|hung| {
+    let behind = |hung: &Shown| {
         hung.lane() == room::Lane::Wall
             && pieces
                 .iter()
                 .any(|s| s.lane() == room::Lane::Floor && hung.rect().intersects(s.rect()))
-    });
-    let mut out = pieces.to_vec();
-    if behind {
-        out.sort_by_key(|p| p.lane() != room::Lane::Wall);
-    }
+    };
+    let (mut out, rest): (Vec<Shown>, Vec<Shown>) = pieces.iter().partition(|p| behind(p));
+    out.extend(rest);
     out
 }
 
@@ -4143,7 +4137,32 @@ fn draw_props(
                                 prop_layer(prop, look)
                             })
                             .collect();
-                        if graphics.paint_layers(buf, &layers, &|_, _| true).is_some() {
+                        // Only its pieces' own cells, and what's blank or
+                        // a line it redraws between them, are the image's
+                        // to cover: text there (under the window beside
+                        // the sofa's end) is no one's to derez.
+                        let bounds = group
+                            .iter()
+                            .map(Shown::cover)
+                            .reduce(|a, b| a.union(b))
+                            .unwrap_or_default();
+                        let theirs = |x: u16, y: u16| {
+                            group.iter().any(|p| p.cover().contains((x, y).into()))
+                        };
+                        let text: Vec<(i32, i32)> = bounds
+                            .positions()
+                            .filter(|&at| {
+                                !theirs(at.x, at.y)
+                                    && buf.cell(at).is_some_and(|c| {
+                                        c.symbol().chars().next().is_some_and(|c| {
+                                            !c.is_whitespace() && graphics::strokes(c).is_none()
+                                        })
+                                    })
+                            })
+                            .map(|at| (i32::from(at.x), i32::from(at.y)))
+                            .collect();
+                        let open = |x: i32, y: i32| !text.contains(&(x, y));
+                        if graphics.paint_layers(buf, &layers, &open).is_some() {
                             vec![true; group.len()]
                         } else {
                             // Not all of it hers to cover: each alone.
@@ -4172,9 +4191,14 @@ fn draw_props(
             }
         }
         None => {
-            for prop in &shown {
+            // What's under each, before any is painted: where her sofa
+            // covers her window's corner, what's under both is the screen's.
+            let unders: Vec<(Shown, Vec<Under>)> =
+                shown.iter().map(|p| (*p, unders_of(buf, p))).collect();
+            for (prop, cells) in unders {
+                let prop = &prop;
                 let ink = prop_ink(prop.item, truecolor);
-                for (x, y, glyph, under) in unders_of(buf, prop) {
+                for (x, y, glyph, under) in cells {
                     // Makeshift, it's its own letters in their own colours.
                     let ink = prop
                         .scrap
@@ -4196,6 +4220,11 @@ fn draw_props(
             }
         }
     }
+    // A cell a piece in front painted over is that piece's alone.
+    let mut seen = std::collections::HashSet::new();
+    painted.reverse();
+    painted.retain(|f: &Frozen| seen.insert((f.x, f.y)));
+    painted.reverse();
     painted
 }
 

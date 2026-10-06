@@ -211,7 +211,8 @@ impl Pose {
     /// end, the very change looking up in place spares her (on her back
     /// the user's approved art keeps her facing; on her front, held to
     /// that too, pending the user's word). Not at a piece her pose is
-    /// aimed at (the desk she writes or eats at, the sill she leans on):
+    /// aimed at (the desk she writes or eats at, the sill she leans on or
+    /// sits in front of):
     /// mirrored, she'd reach into the air with the piece behind her. She
     /// looks with her face and bubble alone there. Wildcard-free, so a
     /// new pose doesn't compile until it's classed.
@@ -224,7 +225,13 @@ impl Pose {
             | Self::FloorHomework(_)
             | Self::LieRead(_)
             | Self::CloudWatch => false,
-            Self::Homework(_) | Self::Chopsticks(_) | Self::PaperDesk(_) | Self::SillLean => false,
+            Self::Homework(_)
+            | Self::Chopsticks(_)
+            | Self::PaperDesk(_)
+            | Self::SillLean
+            // In front of her window, chin in her hands, her face up at
+            // its sky.
+            | Self::UnderSill => false,
             Self::Stand
             | Self::Walk(_)
             | Self::Climb { .. }
@@ -246,7 +253,6 @@ impl Pose {
             | Self::Pet(_)
             | Self::ReadStrip(_)
             | Self::CrossLegged
-            | Self::UnderSill
             | Self::SitDoze(_) => true,
         }
     }

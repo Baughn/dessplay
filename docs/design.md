@@ -1604,7 +1604,9 @@ this section states what is built.
   sinking onto her knees); lounging, to a nap from the same seat of the
   same sofa (when napping there is on offer); leaning on her window's
   sill, to sitting in front of it, then to dozing there or watching the
-  clouds under it (see *Her window and wall clock*). Lying back, a doze,
+  clouds under it (see *Her window and wall clock*). (Its odds ship at 0
+  in every mood until the stillness band is tuned, so for now none of
+  these happen.) Lying back, a doze,
   watching the clouds and a nap are as far as it goes. Like a leftover or a heading it's a
   continuation of what she chose, not a new choice: it skips the roll,
   isn't one of her recent choices, and eases her as its own want
@@ -1797,15 +1799,22 @@ this section states what is built.
   own: hung pieces stand in anchor order among themselves, by the same
   rules, and may hang over pieces that stand. The window hangs lower,
   its bottom row 2 rows above the floor (its sill at her chest, so she
-  can lean on it), among the pieces that stand: it may hang behind a
-  sofa (the sofa drawn in front of it, in line art one image with it),
-  and over nothing else that stands. One rule says which pieces may
-  share cells (her window and a sofa), both ways round: hung where
-  something else stands, the window hangs at the nearest stretch of its
-  wall clear of it, keeping its order (else it's in the closet alone, as
-  an older home's window, hung higher, over her TV, shows beside it);
-  a piece that stands, delivered or moved, never comes under it, nor
-  does a window come in over one, but for a sofa
+  can lean on it), among the pieces that stand: it may hang with its
+  corner behind a sofa (the sofa drawn in front of it, in line art one
+  image with it, if nothing but blank cells or lines lies between
+  them), so long as she could still lean on its sill from an end clear
+  of the sofa, and over nothing else that stands (nor a sofa still in
+  its box). One rule says which pieces may share cells (her window and
+  a sofa covering its corner), both ways round: hung where something
+  else stands, or wholly behind a sofa, the window hangs at the nearest
+  place on its wall where it may, keeping its order, where she could
+  lean on it from an end if there's any such place (else it's in the
+  closet alone, as an older home's window, hung higher, over her TV,
+  shows beside it, and one over her sofa with only its corner behind
+  it); a piece that stands, delivered or moved, never comes under it,
+  nor does a window come in over one, but for a sofa covering its
+  corner, and no move of hers pushes it aside. Nothing is made where it
+  would meet a piece of hers
   (why: [decisions](decisions.md#her-window-hangs-low-for-her-to-lean-on-2026-10-06)). It needs no floor beneath
   it, and the wall never moves a room: a hung piece its wall doesn't
   hold (too low, or crowded: in anchor order, each that fits beside
@@ -2219,16 +2228,19 @@ this section states what is built.
   face from, and never in front of a sofa it hangs behind), for her long
   daydream: one to three minutes (as long again as her mood lingers),
   curious, first saying what the sky shows ("Sunny!", "Pretty...",
-  "Stars!"), then musing on it up to three times as her whim says ("That
+  "Stars!"), then musing on it up to three times, as many as her mood's
+  share says (for now none to three, by her whim, in every mood) ("That
   one's a cat.", "The moon's followin' me."), each a gap on, from the sky
   as it is as she says it, waiting while she speaks or looks up at the
   chat. It's rarer than her other daydreams (its base 3), answers
   daydreams and fun, twice as likely from 17:00 to 05:00. Settling in
   from the sill, she sits down in front of it (chin in her hands, looking
-  up), then dozes off there or, on the doze's other side, lies back under
-  it watching the clouds (eyes open, held, one line of the sky at most;
-  turned so her head's under the glass): watching the clouds is only
-  ever under her window, and is no doze (a chat line has her look up)
+  up; a chat line has her look up without turning from it), then dozes
+  off there or, on the doze's other side, lies back under it watching the
+  clouds (eyes open, held, one line of the sky at most; turned so her
+  head's under the glass, however she was turned): watching the clouds
+  is only ever under her window, and is no doze (a chat line has her
+  look up). Settling in ships off for now (see *Settling in*)
   (why: [decisions](decisions.md#her-window-is-a-long-daydream-2026-10-06)).
   With her wall clock on the strip she stands on, she glances up
   at it before going to bed ("Oh! It's late!") and as she leaves for
