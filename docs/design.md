@@ -1482,6 +1482,29 @@ this section states what is built.
   the book, open over her eyes. Watching the TV from beside it (not
   from a sofa), she sits cross-legged
   (why: [decisions](decisions.md#homework-on-the-floor-and-the-paper-desk-2026-10-06)).
+- **A borrowed line** (phase 5c, HG #72): wanting a read with no
+  bookshelf standing, while a line in reach lends a strip (at least
+  five glyphs, as for a pull, and room in the text layer), she borrows
+  one a third of the time and reads on her back the rest (one whim
+  decides, so she's offered the one or the other). She walks to the
+  line (a line on her own floor if hers has one, whatever the levers;
+  the chat a tenth as likely, as for any read), takes hold of it, and
+  reels a strip off the end nearest her into her hands, hand over hand
+  as for makeshift furniture (up to 6 glyphs, leaving at least two).
+  She sits right there beside the tear, facing it, reading the strip
+  (as long as a read at a bookshelf, lingered as one), then slides it
+  back the way it came, a cell a step, and the line is whole. She
+  stays put from taking hold to letting go: the walk is her one
+  set-off. Reading it she looks up at a chat line where she is; tearing
+  it off or sliding it back, a line stops her. **She never leaves it
+  torn:** text is out of its line only while she holds it; the moment
+  she doesn't (cut short, her grip lost because it changed or scrolled
+  under her, someone at the keys, moved on), what of it is out goes
+  back before the frame shows it, and she owes a glance at it for
+  dropping it ("...never mind.", as for torn text she drops making a
+  piece); nothing dropped once it's slid back, nothing owed. A goodbye, her room going, a resize or switching off
+  take her text layer with the visit. Nothing of it is kept
+  (why: [decisions](decisions.md#a-borrowed-line-to-read-2026-10-06)).
 - **A slow blink** on a pose she holds with her eyes open (sitting,
   lounging, watching, reading, writing her homework, gazing or looking
   out; not standing, nor anything that moves, dozes, eats or busies her
@@ -1587,7 +1610,7 @@ this section states what is built.
   the length she draws for a still act she chose (sitting, lying back,
   gazing, dozing where she sits, spacing out (her rare musing too),
   lounging, napping, a day's sleep, reading (on her back too, and the
-  doze under the book), looking out); not
+  doze under the book, and a borrowed strip), looking out); not
   exercise, lying on her front, chores, a snack, the cat, homework (on
   the floor too; her
   mood moves where it nods off instead), her night or a trial sit, nor
@@ -1970,7 +1993,8 @@ this section states what is built.
   it into shape over 4–6 s ("scrunch...", "There!"), and goes straight
   to using it for what she made it for (any of the real piece's uses).
   Interrupted while reeling (a chat line, losing her grip
-  when the text changes), she lets it go and it all goes back. **What
+  when the text changes, someone at the keys in the chat), she lets it
+  go and it all goes back. **What
   she made it for stays on the piece**: interrupted while crumpling it
   or on her way to use it (a chat line, being startled), she comes back
   to it, once nothing more pressing holds her (an errand, watching the
@@ -2208,9 +2232,10 @@ this section states what is built.
     chat pane — a pull or swap there, a climb or hop or door that lands
     her there, a walk along a floor into it — is a tenth as likely.
   - **Local input** puts back at once everything she moved in the chat
-    (swapped letters, a sneeze's scatter, pulled lines); nothing
-    scheduled for them is owed any more, and if she was at it, she looks
-    up, caught out. What she moved elsewhere stays.
+    (swapped letters, a sneeze's scatter, pulled lines, text she's
+    tearing off or a strip she borrowed); nothing scheduled for them is
+    owed any more, and if she was at it, she looks up, caught out. What
+    she moved elsewhere stays.
   - A **held chat selection** protects the chat pane (as well as the
     focused one) instead of ending the visit. Overlays still end it, as does switching visits off.
 - **The scrollback accordion** (see [Chat](#chat)): when a poke is due

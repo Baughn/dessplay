@@ -87,8 +87,7 @@ pub(super) enum Pose {
     /// on the cube (3) (phase 5c D5).
     PaperDesk(u8),
     /// Sitting on the floor reading a strip of text she tore off a line
-    /// (frame 1 reads along it). Phase 5c art, not yet wired.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// (frame 1 reads along it), beside the tear (phase 5c D5).
     ReadStrip(u8),
     /// Sitting cross-legged on the floor, side-on: watching the TV away
     /// from a sofa (phase 5c D5).

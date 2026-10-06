@@ -98,22 +98,135 @@ impl Build {
     /// The column beside her box where her hands are: each glyph she
     /// reels in vanishes into them from here.
     pub fn hand(&self) -> u16 {
-        let half = WIDTH / 2;
-        let x = match self.side {
-            Side::Left => self.x - half - 1,
-            Side::Right => self.x + half + 1,
-        };
-        x.clamp(0, i32::from(u16::MAX)) as u16
+        hand(self.x, self.side)
     }
 
     /// Reeling steps until every glyph is in her hands.
     pub fn steps(&self) -> u16 {
-        let hand = self.hand();
-        self.cells
-            .iter()
-            .map(|&c| c.abs_diff(hand) + 1)
-            .max()
-            .unwrap_or(0)
+        steps(&self.cells, self.hand())
+    }
+}
+
+/// The column beside her box, standing at `x`, on `side`: where her
+/// hands are as she reels text in.
+fn hand(x: i32, side: Side) -> u16 {
+    let half = WIDTH / 2;
+    let x = match side {
+        Side::Left => x - half - 1,
+        Side::Right => x + half + 1,
+    };
+    x.clamp(0, i32::from(u16::MAX)) as u16
+}
+
+/// Reeling steps until every glyph at `cells` is in her hands at
+/// column `hand`.
+fn steps(cells: &[u16], hand: u16) -> u16 {
+    cells
+        .iter()
+        .map(|&c| c.abs_diff(hand) + 1)
+        .max()
+        .unwrap_or(0)
+}
+
+/// Most glyphs she tears off a line to read (phase 5c D5, HG #72): a
+/// strip of it, not the line.
+pub(super) const STRIP_GLYPHS: usize = 6;
+/// The fewest glyphs worth reading.
+const STRIP_MIN: usize = 3;
+/// Glyphs she always leaves on a line she borrows a strip of.
+const STRIP_LEAVES: usize = 2;
+
+impl Pull {
+    /// Whether she can borrow a strip of it to read: long enough to tear
+    /// [`STRIP_MIN`] glyphs off and leave [`STRIP_LEAVES`].
+    pub fn lends(&self) -> bool {
+        self.cells.len() >= STRIP_MIN + STRIP_LEAVES
+    }
+
+    /// The columns of the strip she borrows, nearest her first: the end
+    /// of the line nearest her, up to [`STRIP_GLYPHS`], leaving
+    /// [`STRIP_LEAVES`]. The same for the same line (her act keeps the
+    /// line, and this is how both she and the guest know the strip).
+    pub fn strip(&self) -> Vec<u16> {
+        let count = self
+            .cells
+            .len()
+            .saturating_sub(STRIP_LEAVES)
+            .min(STRIP_GLYPHS);
+        match self.side {
+            Side::Right => self.cells.iter().take(count).copied().collect(),
+            Side::Left => self.cells.iter().rev().take(count).copied().collect(),
+        }
+    }
+
+    /// The column beside her box where her hands are, reeling a strip in.
+    pub fn hand(&self) -> u16 {
+        hand(self.x, self.side)
+    }
+
+    /// Reeling steps until the whole strip is in her hands (and as many
+    /// to slide it back).
+    pub fn strip_steps(&self) -> u16 {
+        steps(&self.strip(), self.hand())
+    }
+}
+
+/// Text she has torn off a line and holds, a hole where it was (see
+/// `Osaka::holding`): to make a piece of, or a strip she borrowed to
+/// read and slides back. While she holds it, it's hers; the moment she
+/// doesn't, the guest puts back whatever of it is still out.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum Held {
+    Build(Build),
+    Strip(Pull),
+}
+
+impl Held {
+    /// The source cells of the glyphs she holds (or is reeling in).
+    pub fn sources(&self) -> Vec<(u16, u16)> {
+        let (row, cells) = match self {
+            Self::Build(build) => (build.row, build.cells.clone()),
+            Self::Strip(pull) => (pull.row, pull.strip()),
+        };
+        cells.into_iter().map(|c| (c, row)).collect()
+    }
+
+    /// A cell of the middle of it (where she glances, losing it).
+    pub fn middle(&self) -> (i32, i32) {
+        let sources = self.sources();
+        let (x, y) = sources.get(sources.len() / 2).copied().unwrap_or_default();
+        (i32::from(x), i32::from(y))
+    }
+}
+
+/// Her grip on the text her act is at (see `Osaka::grip`): the line as
+/// she found it while she takes hold of it, then every glyph she has out
+/// of it. The guest checks it each paint, against the real frame and her
+/// text layer: slipped, she's lost her grip (the text changed or
+/// scrolled under her), never reeling in, reading or heaving whatever
+/// took its place.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum Grip<'a> {
+    /// Taking hold, nothing moved yet: the line's glyphs at `cells` on
+    /// `row` still read `glyphs`.
+    Line {
+        row: u16,
+        cells: &'a [u16],
+        glyphs: &'a str,
+    },
+    /// In hand: every glyph from these source cells still out of its
+    /// line (moved, or torn off).
+    InHand(Vec<(u16, u16)>),
+}
+
+impl Grip<'_> {
+    /// Whether she still has it, the real frame `buf` read and her
+    /// `layer` validated against it.
+    pub fn holds(&self, buf: &Buffer, layer: &TextLayer) -> bool {
+        match self {
+            Self::Line { row, cells, glyphs } => glyphs_at(buf, *row, cells) == *glyphs,
+            Self::InHand(sources) => layer.holds_all(sources),
+        }
     }
 }
 
@@ -130,6 +243,9 @@ pub(super) enum Job {
     Lift(Lift),
     /// Set the piece in her pocket down where it's right.
     SetDown(SetDown),
+    /// Borrow a strip of a line to read beside where she tore it, and
+    /// slide it back (phase 5c D5, HG #72).
+    Borrow(Pull),
 }
 
 /// Lifting `repair.piece`, standing at `(x, y)` (beside it on its
@@ -165,6 +281,7 @@ impl Job {
             Self::Use(seat) => JobRef::Use(seat),
             Self::Lift(lift) => JobRef::Lift(lift),
             Self::SetDown(set) => JobRef::SetDown(set),
+            Self::Borrow(p) => JobRef::Borrow(p),
         }
     }
 
@@ -202,13 +319,14 @@ pub(super) enum JobRef<'a> {
     Use(&'a super::room::Seat),
     Lift(&'a Lift),
     SetDown(&'a SetDown),
+    Borrow(&'a Pull),
 }
 
 impl JobRef<'_> {
     /// Where she stands to do it.
     pub fn spot(self) -> (i32, i32) {
         match self {
-            Self::Pull(p) => (p.x, p.y),
+            Self::Pull(p) | Self::Borrow(p) => (p.x, p.y),
             Self::Swap(s) => (s.x, s.y),
             Self::Build(b) => (b.x, b.y),
             Self::Use(seat) => (seat.x, seat.y),
@@ -217,9 +335,24 @@ impl JobRef<'_> {
         }
     }
 
+    /// The cells of the text it's about, if it's about text: a line's
+    /// glyphs where they stand in it (a borrow's strip, a build's
+    /// glyphs), a swap's two letters where they came from and where
+    /// they are.
+    pub fn text_cells(self) -> Vec<(u16, u16)> {
+        let on = |row: u16, cells: Vec<u16>| cells.into_iter().map(|c| (c, row)).collect();
+        match self {
+            Self::Pull(p) => on(p.row, p.cells.clone()),
+            Self::Borrow(p) => on(p.row, p.strip()),
+            Self::Build(b) => on(b.row, b.cells.clone()),
+            Self::Swap(s) => vec![s.a.source, s.a.at, s.b.source, s.b.at],
+            Self::Use(_) | Self::Lift(_) | Self::SetDown(_) => Vec::new(),
+        }
+    }
+
     pub fn side(self) -> Side {
         match self {
-            Self::Pull(p) => p.side,
+            Self::Pull(p) | Self::Borrow(p) => p.side,
             Self::Swap(s) => s.side,
             Self::Build(b) => b.side,
             Self::Use(seat) => match seat.facing {
@@ -234,7 +367,7 @@ impl JobRef<'_> {
     /// Which of her box rows her hands work at (0 = top).
     pub fn box_row(self) -> u8 {
         let (row, y) = match self {
-            Self::Pull(p) => (p.row, p.y),
+            Self::Pull(p) | Self::Borrow(p) => (p.row, p.y),
             Self::Swap(s) => (s.row, s.y),
             Self::Build(b) => (b.row, b.y),
             Self::Use(_) => return 1,
@@ -276,6 +409,18 @@ pub(super) enum LayerOp {
         hand: u16,
         step: u16,
     },
+    /// [`LayerOp::Reel`] run backwards: the glyphs from `cells` on `row`
+    /// (nearest her hands first) out of her hands at column `hand`, as
+    /// they were `step` cells into reeling them in (0: home, the line
+    /// whole). Sliding back a strip she borrowed to read (phase 5c D5):
+    /// a step at a time, farthest first, each into the cell its
+    /// neighbour leaves.
+    Unreel {
+        row: u16,
+        cells: Vec<u16>,
+        hand: u16,
+        step: u16,
+    },
     /// Make `piece` of the glyphs torn from `cells` on `row`, for
     /// `purpose` (refused unless every one of them is still torn off).
     Make {
@@ -290,7 +435,10 @@ impl LayerOp {
     /// Whether a refusal means she lost her grip on something she was
     /// holding (the text changed under her hands).
     pub fn grips(&self) -> bool {
-        matches!(self, Self::Pull { .. } | Self::Reel { .. })
+        matches!(
+            self,
+            Self::Pull { .. } | Self::Reel { .. } | Self::Unreel { .. }
+        )
     }
 
     /// The source cells it's about.
@@ -298,6 +446,7 @@ impl LayerOp {
         match self {
             Self::Pull { row, cells, .. }
             | Self::Reel { row, cells, .. }
+            | Self::Unreel { row, cells, .. }
             | Self::Make { row, cells, .. } => cells.iter().map(|&c| (c, *row)).collect(),
             Self::Swap { a, b } => vec![a.source, b.source],
             Self::Knock { source, .. } | Self::Fall { source } => vec![*source],
@@ -342,6 +491,13 @@ pub(super) fn apply(op: &LayerOp, layer: &mut TextLayer, buf: &Buffer, protected
             // Nearest first: each moves into the cell its neighbour left.
             for &c in cells {
                 let source = (c, *row);
+                // Past the first step every glyph is already hers (moved
+                // or torn off): one that went back to its line under her
+                // (it changed, or scrolled) is lost, never taken afresh.
+                if *step > 1 && !layer.holds_all(&[source]) {
+                    ok = false;
+                    continue;
+                }
                 // Cells until its near edge is at her hands (a wide
                 // glyph's second half must never reach her box).
                 let wide = buf.cell(source).map_or(1, |cell| width(cell).max(1) as u16);
@@ -363,6 +519,32 @@ pub(super) fn apply(op: &LayerOp, layer: &mut TextLayer, buf: &Buffer, protected
             }
             ok
         }
+        LayerOp::Unreel {
+            row,
+            cells,
+            hand,
+            step,
+        } => {
+            let mut ok = true;
+            // Farthest first: each moves into the cell its neighbour
+            // (farther out) just left.
+            for &c in cells.iter().rev() {
+                let source = (c, *row);
+                // As far as `Reel` reckons it: past this, in her hands.
+                let wide = buf.cell(source).map_or(1, |cell| width(cell).max(1) as u16);
+                let far = if c > *hand {
+                    c - *hand
+                } else {
+                    (*hand + 1).saturating_sub(c + wide)
+                };
+                if *step > far {
+                    continue;
+                }
+                let x = if c > *hand { c - step } else { c + step };
+                ok &= layer.give_back(buf, protected, source, (x, *row));
+            }
+            ok
+        }
         LayerOp::Pull { row, cells, offset } => {
             let mut ok = true;
             // Leading glyph first: each moves into the cell (or hole) its
@@ -374,6 +556,13 @@ pub(super) fn apply(op: &LayerOp, layer: &mut TextLayer, buf: &Buffer, protected
             };
             for c in order {
                 let source = (c, *row);
+                // Past the first cell every glyph is already moved: one
+                // that went back to its line under her is lost, never
+                // pulled afresh.
+                if offset.unsigned_abs() > 1 && layer.at_of(source).is_none() {
+                    ok = false;
+                    continue;
+                }
                 let Some(x) = c.checked_add_signed(*offset) else {
                     ok = false;
                     continue;
@@ -758,6 +947,127 @@ mod tests {
         assert_eq!(gaps, vec![(10, 0), (11, 1), (12, 2), (13, 3)]);
     }
 
+    /// A borrowed strip is the end of the line nearest her: at most six
+    /// glyphs, and at least two left on the line, so a line lends one
+    /// only from five glyphs up. On either side of her.
+    #[test]
+    fn a_strip_is_the_near_end_leaving_two_on_the_line() {
+        for side in [Side::Left, Side::Right] {
+            for len in 3..12u16 {
+                let cells: Vec<u16> = (10..10 + len).collect();
+                let pull = Pull {
+                    x: 0,
+                    y: 0,
+                    row: 0,
+                    side,
+                    cells: cells.clone(),
+                    glyphs: String::new(),
+                    gap: 0,
+                };
+                let at = format!("{side:?} len={len}");
+                assert_eq!(pull.lends(), len >= 5, "{at}");
+                let count = usize::from(len.saturating_sub(2)).min(6);
+                let mut strip = pull.strip();
+                strip.sort_unstable();
+                let near_end = match side {
+                    Side::Right => cells[..count].to_vec(),
+                    Side::Left => cells[cells.len() - count..].to_vec(),
+                };
+                assert_eq!(strip, near_end, "{at}");
+            }
+        }
+    }
+
+    /// Sliding a borrowed strip back runs its reel backwards (phase 5c
+    /// D5): each step of [`LayerOp::Unreel`] leaves the layer as that
+    /// step of [`LayerOp::Reel`] did, the same glyphs out of their line
+    /// by the same cells, and its last step puts the line back whole. On
+    /// either side of her, with slack and without, wide glyphs among
+    /// them.
+    #[test]
+    fn a_strip_slides_back_the_way_it_came() {
+        let rooms = [
+            [
+                "│                                      ",
+                "│kim: hello there                      ",
+                "│                                      ",
+                "│                                      ",
+                "└──────────────────────────────────────",
+            ],
+            [
+                "│                                      ",
+                "│                kim: hello there      ",
+                "│                                      ",
+                "│                                      ",
+                "└──────────────────────────────────────",
+            ],
+            [
+                "│                                      ",
+                "│kim: hi 日本 xy                       ",
+                "│                                      ",
+                "│                                      ",
+                "└──────────────────────────────────────",
+            ],
+        ];
+        let state = |layer: &TextLayer| {
+            let mut entries: Vec<_> = layer.entries().iter().map(|d| (d.source, d.at)).collect();
+            entries.sort_unstable();
+            let mut holes: Vec<_> = layer.holes().collect();
+            holes.sort_unstable();
+            (entries, holes)
+        };
+        let mut seen = Vec::new();
+        for rows in rooms {
+            let buf = room(&rows);
+            let terrain = Terrain::read(&buf, &[], true);
+            for pull in pulls(&buf, &terrain, &[]).iter().filter(|p| p.lends()) {
+                let at = format!("{rows:?} at {} gap {}", pull.x, pull.gap);
+                let (row, cells, hand) = (pull.row, pull.strip(), pull.hand());
+                let mut layer = TextLayer::default();
+                let mut reeled = vec![state(&layer)];
+                for step in 1..=pull.strip_steps() {
+                    let op = LayerOp::Reel {
+                        row,
+                        cells: cells.clone(),
+                        hand,
+                        step,
+                    };
+                    assert!(apply(&op, &mut layer, &buf, &[]), "{at}: reel {step}");
+                    reeled.push(state(&layer));
+                }
+                assert!(layer.torn_intact(&cells.iter().map(|&c| (c, row)).collect::<Vec<_>>()));
+                for step in (0..pull.strip_steps()).rev() {
+                    let op = LayerOp::Unreel {
+                        row,
+                        cells: cells.clone(),
+                        hand,
+                        step,
+                    };
+                    assert!(apply(&op, &mut layer, &buf, &[]), "{at}: unreel {step}");
+                    assert_eq!(
+                        state(&layer),
+                        reeled[usize::from(step)],
+                        "{at}: step {step}"
+                    );
+                }
+                assert!(layer.is_empty(), "{at}: whole");
+                seen.push((rows[1], pull.side, pull.gap));
+            }
+        }
+        // Each room, each side.
+        for (i, side) in [
+            (0, Side::Left),
+            (1, Side::Right),
+            (1, Side::Left),
+            (2, Side::Left),
+        ] {
+            assert!(
+                seen.iter().any(|&(r, s, _)| r == rooms[i][1] && s == side),
+                "{seen:?}"
+            );
+        }
+    }
+
     #[test]
     fn a_line_she_would_have_to_stand_on_is_not() {
         let buf = room(&[
@@ -905,6 +1215,70 @@ mod tests {
         let mut loose = loose(&buf, &[], 7, 4);
         loose.sort_unstable();
         assert_eq!(loose, vec![(3, 0), (3, 1), (4, 0), (4, 1)]);
+    }
+
+    /// Text she has in hand (reeling it in, heaving a line) that goes
+    /// back to its line under her (it changed, or scrolled: her layer
+    /// validated against the new frame) is lost: her next step is
+    /// refused, never taking whatever now stands there afresh. With the
+    /// frame unchanged, the step goes on.
+    #[test]
+    fn text_gone_back_under_her_is_never_taken_afresh() {
+        let buf = room(&["abcdefgh      "]);
+        let changed = room(&["stuvwxyz      "]);
+        let row = 0;
+        let sources = |cells: &[u16]| cells.iter().map(|&c| (c, row)).collect::<Vec<_>>();
+        // Reeling a strip in to her hands at column 9.
+        let cells = vec![7, 6, 5, 4, 3, 2];
+        let reel = |step| LayerOp::Reel {
+            row,
+            cells: cells.clone(),
+            hand: 9,
+            step,
+        };
+        for change in [false, true] {
+            let mut layer = TextLayer::default();
+            for step in 1..=2 {
+                assert!(apply(&reel(step), &mut layer, &buf, &[]), "reel {step}");
+            }
+            let frame = if change { &changed } else { &buf };
+            layer.validate(frame, &[]);
+            assert_eq!(
+                apply(&reel(3), &mut layer, frame, &[]),
+                !change,
+                "reel on, changed: {change}"
+            );
+            assert_eq!(
+                layer.holds_any(&sources(&cells)),
+                !change,
+                "changed: {change}"
+            );
+        }
+        // Heaving a line on her right towards her.
+        let buf = room(&["      hi kim"]);
+        let changed = room(&["      yo bob"]);
+        let cells = vec![6, 7, 9, 10, 11];
+        let pull = |offset| LayerOp::Pull {
+            row,
+            cells: cells.clone(),
+            offset,
+        };
+        for change in [false, true] {
+            let mut layer = TextLayer::default();
+            assert!(apply(&pull(-1), &mut layer, &buf, &[]));
+            let frame = if change { &changed } else { &buf };
+            layer.validate(frame, &[]);
+            assert_eq!(
+                apply(&pull(-2), &mut layer, frame, &[]),
+                !change,
+                "heave on, changed: {change}"
+            );
+            assert_eq!(
+                layer.holds_any(&sources(&cells)),
+                !change,
+                "changed: {change}"
+            );
+        }
     }
 
     #[test]

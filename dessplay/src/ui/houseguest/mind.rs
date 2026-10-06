@@ -27,6 +27,12 @@ const MAKESHIFT_ODDS: u64 = 20;
 /// watch the TV from it.
 const FACING_TV: f64 = 5.0;
 
+/// Where no bookshelf stands and there's a line in reach to borrow a
+/// strip of, she reads that one decision in this many ([`borrow`]), and
+/// on her back with a book the rest ([`lie_read`]): the borrow takes a
+/// walk to the line, the book is read on the spot (phase 5c D5).
+const BORROW_ODDS: u64 = 3;
+
 /// The decision's one draw from her mind's stream. Each choice made from
 /// it hashes it with its own label (and a salt, for one of many), so no
 /// two choices share a number.
@@ -222,6 +228,8 @@ impl Bind {
             Self::Job(Job::Use(seat)) if seat.makeshift() => Spot::Made,
             Self::Job(Job::Use(seat)) => Spot::Real(seat.item),
             Self::Job(Job::Build(_)) => Spot::Made,
+            // Sat on the floor beside the tear, reading the strip.
+            Self::Job(Job::Borrow(_)) => Spot::Floor,
             Self::Here(Here::Idle(_) | Here::FloorHomework { .. }) => Spot::Floor,
             _ => Spot::Any,
         }
@@ -274,6 +282,16 @@ const USE: &[Method] = &[
     m("use/made", use_made),
     m("use/make", use_make),
 ];
+/// Reading: as any use (her bookshelf), or where none stands, a strip
+/// borrowed off a line (phase 5c D5, HG #72).
+const READ: &[Method] = &[
+    m("use/finish-my-heap", finish_my_heap),
+    m("use/mine", use_mine),
+    m("use/real", use_real),
+    m("use/made", use_made),
+    m("use/make", use_make),
+    m("use/borrow", borrow),
+];
 
 /// Each want's methods, in the order she tries them.
 pub(super) fn methods(want: Want) -> &'static [Method] {
@@ -291,6 +309,7 @@ pub(super) fn methods(want: Want) -> &'static [Method] {
         Want::Swap => SWAP,
         // A heap is crumpled as a step of what she made it for.
         Want::Use(Use::Crumple) => &[],
+        Want::Use(Use::Read) => READ,
         Want::Use(_) => USE,
         Want::Arrange => ARRANGE,
     }
@@ -328,9 +347,54 @@ fn floor_homework_book(c: &Ctx, w: Whims, _: Want) -> Option<Bind> {
 }
 
 /// Reading on her back, where no bookshelf stands (a real one, boxed or
-/// not: phase 5c D5).
-fn lie_read(c: &Ctx, _: Whims, _: Want) -> Option<Bind> {
-    (!c.chances.stands(Furniture::Bookshelf)).then_some(Bind::Here(Here::Idle(Activity::LieRead)))
+/// not: phase 5c D5), unless she borrows a strip of a line to read
+/// instead ([`borrows_now`]).
+fn lie_read(c: &Ctx, w: Whims, _: Want) -> Option<Bind> {
+    (!c.chances.stands(Furniture::Bookshelf) && !borrows_now(c, w))
+        .then_some(Bind::Here(Here::Idle(Activity::LieRead)))
+}
+
+/// Whether, wanting a read where no bookshelf stands, she borrows a
+/// strip of a line this decision ([`borrow`]) rather than reading on her
+/// back ([`lie_read`]): one in [`BORROW_ODDS`], while a line lends one.
+/// One whim for both, so she's offered the one or the other.
+fn borrows_now(c: &Ctx, w: Whims) -> bool {
+    !c.chances.borrows.is_empty() && w.chance("borrow", 0, 1, BORROW_ODDS)
+}
+
+/// A strip of a line to read, where no bookshelf stands (phase 5c D5,
+/// HG #72), on her whim ([`borrows_now`]): she reads it sat beside the
+/// tear, so it's one walk there. A line on her own floor strictly
+/// first, if it has any (whatever the stillness levers say: the borrow
+/// is a walk, and a short one); among them, those into the chat a tenth
+/// as likely, and nearer ones likelier if nearer spots draw her
+/// ([`Near`]).
+fn borrow(c: &Ctx, w: Whims, want: Want) -> Option<Bind> {
+    if want != Want::Use(Use::Read) || c.chances.stands(Furniture::Bookshelf) || !borrows_now(c, w)
+    {
+        return None;
+    }
+    let lines = &c.chances.borrows;
+    let mine = |i: &usize| {
+        lines
+            .get(*i)
+            .is_some_and(|p| c.terrain.platform_at(p.x, p.y) == Some(c.here))
+    };
+    let own: Vec<usize> = (0..lines.len()).filter(mine).collect();
+    let among: Vec<usize> = if own.is_empty() {
+        (0..lines.len()).collect()
+    } else {
+        own
+    };
+    let line = |j: usize| among.get(j).and_then(|&i| lines.get(i));
+    let j = pick_near(
+        Near::of(c),
+        among.len(),
+        |j| line(j).map_or((0, 0), |p| (p.x, p.y)),
+        |j| chat_weight(line(j).is_some_and(|p| c.chances.in_chat((p.x, p.y)))),
+        |n| w.below("borrow line", n),
+    )?;
+    line(j).cloned().map(|p| Bind::Job(Job::Borrow(p)))
 }
 
 /// The first of `want`'s methods that binds, by name, with what it
@@ -1338,6 +1402,13 @@ impl Heading {
                 .max_by_key(|p| p.row)
                 .cloned()
                 .map(Job::Pull),
+            Job::Borrow(was) => chances
+                .borrows
+                .iter()
+                .filter(|p| near(p.row) && p.cells == was.cells && p.glyphs == was.glyphs)
+                .max_by_key(|p| p.row)
+                .cloned()
+                .map(Job::Borrow),
             Job::Swap(was) => chances
                 .swaps
                 .iter()
@@ -1383,7 +1454,7 @@ impl Heading {
     /// The text row she set off for (0 for a piece).
     fn row(&self) -> u16 {
         match &self.job {
-            Job::Pull(p) => p.row,
+            Job::Pull(p) | Job::Borrow(p) => p.row,
             Job::Swap(s) => s.row,
             Job::Build(b) => b.row,
             Job::Use(_) | Job::Lift(_) | Job::SetDown(_) => 0,
@@ -1788,6 +1859,22 @@ mod tests {
             found(vec![pull(17, "abc"), pull(19, "abc")]),
             Some(Job::Pull(pull(19, "abc")))
         );
+        // A line she set off to borrow a strip of, likewise, among those
+        // she could borrow from.
+        let set_off = Heading {
+            want: Want::Use(Use::Read),
+            job: Job::Borrow(pull(20, "abc")),
+        };
+        let lending = |borrows| Chances {
+            borrows,
+            ..Chances::default()
+        };
+        assert_eq!(
+            set_off.find(&lending(vec![pull(18, "abc")])),
+            Some(Job::Borrow(pull(18, "abc")))
+        );
+        assert_eq!(set_off.find(&lending(vec![pull(20, "abd")])), None);
+        assert_eq!(set_off.find(&offering(vec![pull(20, "abc")])), None);
     }
 
     // Phase 5c M6: nearer spots, turned on in each test (they ship off).
@@ -2227,6 +2314,93 @@ mod tests {
                     "graphics={graphics}"
                 );
             }
+        }
+    }
+
+    /// Wanting a read where no bookshelf stands, with a line in reach to
+    /// borrow a strip of (phase 5c D5, HG #72), she borrows one a third
+    /// of the time and reads on her back the rest: one whim for both, so
+    /// exactly one of the two is offered. The line is on her own floor
+    /// if hers has one, whatever the stillness levers say (one walk,
+    /// and a short one), and on another only if hers has none. A
+    /// bookshelf, boxed or not, rules both out; with no line to borrow,
+    /// she reads on her back.
+    #[test]
+    fn she_borrows_a_line_to_read_only_where_no_bookshelf_stands() {
+        let read = Want::Use(Use::Read);
+        let lie = Want::Idle(Activity::LieRead);
+        let line = |x: i32, y: i32| Pull {
+            cells: vec![2, 3, 4, 5, 6, 7],
+            ..pull_at(x, y)
+        };
+        for graphics in [false, true] {
+            let terrain = two_floors(graphics);
+            let at = format!("graphics={graphics}");
+            let mine = line(30, 10);
+            let below = line(30, 25);
+            let both = Chances {
+                borrows: vec![below.clone(), mine.clone()],
+                ..Chances::default()
+            };
+            let shelf = Chances {
+                real: vec![Furniture::Bookshelf],
+                ..both.clone()
+            };
+            let downstairs = Chances {
+                borrows: vec![below.clone()],
+                ..Chances::default()
+            };
+            let none = Chances::default();
+            let mut borrowed = 0;
+            const N: u64 = 3000;
+            for near in [false, true] {
+                for w in 0..N {
+                    let whims = Whims(w);
+                    let c = at_twelve(&terrain, &shelf, near);
+                    assert_eq!(bind(&c, whims, read), None, "{at}");
+                    assert_eq!(bind(&c, whims, lie), None, "{at}");
+                    let c = at_twelve(&terrain, &both, near);
+                    match (bind(&c, whims, read), bind(&c, whims, lie)) {
+                        (Some(("use/borrow", Bind::Job(Job::Borrow(p)))), None) => {
+                            assert_eq!(p, mine, "{at}: her own floor's line");
+                            borrowed += 1;
+                        }
+                        (None, Some(("lie-read", _))) => {}
+                        other => panic!("{at} w={w}: one or the other, {other:?}"),
+                    }
+                    let c = at_twelve(&terrain, &downstairs, near);
+                    if let Some(bound) = bind(&c, whims, read) {
+                        assert_eq!(
+                            bound,
+                            ("use/borrow", Bind::Job(Job::Borrow(below.clone()))),
+                            "{at}: the other floor's, hers having none"
+                        );
+                    }
+                    let c = at_twelve(&terrain, &none, near);
+                    assert_eq!(bind(&c, whims, read), None, "{at}: nothing to borrow");
+                    assert!(bind(&c, whims, lie).is_some(), "{at}: a book, then");
+                }
+            }
+            let share = f64::from(borrowed) / (2 * N) as f64;
+            assert!((0.28..0.39).contains(&share), "{at}: borrowed {share}");
+            // A line into the chat a tenth as likely as one out of it.
+            let chatty = line(40, 10);
+            let chat = Chances {
+                borrows: vec![mine.clone(), chatty.clone()],
+                chat: Some(tuirealm::ratatui::layout::Rect::new(35, 0, 10, 12)),
+                ..Chances::default()
+            };
+            let (mut quiet, mut loud) = (0u32, 0u32);
+            for w in 0..N {
+                let c = at_twelve(&terrain, &chat, false);
+                match bind(&c, Whims(w), read) {
+                    Some((_, Bind::Job(Job::Borrow(p)))) if p == mine => quiet += 1,
+                    Some((_, Bind::Job(Job::Borrow(p)))) if p == chatty => loud += 1,
+                    _ => {}
+                }
+            }
+            let into = f64::from(loud) / f64::from(quiet + loud).max(1.0);
+            assert!((0.04..0.16).contains(&into), "{at}: into the chat {into}");
         }
     }
 

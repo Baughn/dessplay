@@ -364,6 +364,15 @@ fn what_she_chooses_eases_what_it_serves() {
             note(want, "use/made", Err("nothing made to use".into()));
         }
     }
+    // Reading where no bookshelf stands: a strip borrowed off a line of
+    // the stage room's text, read beside the tear and slid back.
+    let mut room = stage_room(8, &[]);
+    let read = Want::Use(Use::Read);
+    note(
+        read,
+        "use/borrow",
+        check(&mut room, read, "use/borrow", 5 * MINUTE),
+    );
     // Arranging: her sofa turned from her TV, felt as she lounges, and her
     // home on her mind; lifted, carried, set down, and sat back down to.
     {

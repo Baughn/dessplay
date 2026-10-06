@@ -202,6 +202,68 @@ impl TextLayer {
         self.torn.retain(|t| !sources.contains(&t.source));
     }
 
+    /// Whether every glyph from `sources` is out of its line: torn off,
+    /// or moved.
+    pub fn holds_all(&self, sources: &[(u16, u16)]) -> bool {
+        sources.iter().all(|&s| self.holds_one(s))
+    }
+
+    /// Whether the glyph from `source` is out of its line.
+    fn holds_one(&self, s: (u16, u16)) -> bool {
+        self.torn.iter().any(|t| t.source == s) || self.entries.iter().any(|d| d.source == s)
+    }
+
+    /// Whether any glyph from `sources` is out of its line: torn off, or
+    /// moved.
+    pub fn holds_any(&self, sources: &[(u16, u16)]) -> bool {
+        sources.iter().any(|&s| self.holds_one(s))
+    }
+
+    /// The glyph from `source`, torn off or moved, out of her hands to
+    /// `to` (home when `to == source`): a reel run backwards (see
+    /// `scenes::LayerOp::Unreel`). Refused, changing nothing, unless it
+    /// fits there as [`Self::shift`] checks, or (home) no other glyph
+    /// sits in its hole. One neither torn nor moved is refused unless
+    /// `to` is its home (where it is).
+    pub fn give_back(
+        &mut self,
+        buf: &Buffer,
+        protected: &[Rect],
+        source: (u16, u16),
+        to: (u16, u16),
+    ) -> bool {
+        let Some(index) = self.torn.iter().position(|t| t.source == source) else {
+            return if self.at_of(source).is_some() {
+                self.shift(buf, protected, source, to)
+            } else {
+                to == source
+            };
+        };
+        let torn = self.torn.remove(index);
+        let ok = if to == source {
+            let home: Vec<_> = torn.cells().collect();
+            !self
+                .entries
+                .iter()
+                .any(|d| d.at_cells().any(|c| home.contains(&c)))
+        } else {
+            let entry = Displaced {
+                source,
+                expected: torn.expected.clone(),
+                at: to,
+            };
+            let fits = self.fits(buf, protected, &entry, None);
+            if fits {
+                self.entries.push(entry);
+            }
+            fits
+        };
+        if !ok {
+            self.torn.insert(index, torn);
+        }
+        ok
+    }
+
     /// Where an entry that came from `source` sits now.
     pub fn at_of(&self, source: (u16, u16)) -> Option<(u16, u16)> {
         self.entries
@@ -567,6 +629,22 @@ mod tests {
         let mut buf = Buffer::with_lines(rows.iter().copied());
         super::super::cells::sanitize(&mut buf);
         buf
+    }
+
+    /// A torn glyph given back home (a slid-back strip's last step)
+    /// never lands under another glyph moved into its hole: refused,
+    /// it's still out. With its hole clear, home it goes.
+    #[test]
+    fn a_glyph_given_back_home_never_lands_on_another() {
+        let real = text(&["abcdefgh"]);
+        let mut layer = TextLayer::default();
+        assert!(layer.tear(&real, &[], &[(2, 0)]));
+        assert!(layer.take(&real, &[], (4, 0), (2, 0)), "into the hole");
+        assert!(!layer.give_back(&real, &[], (2, 0), (2, 0)));
+        assert!(layer.torn_intact(&[(2, 0)]), "still out");
+        layer.unreel(&[(4, 0)]);
+        assert!(layer.give_back(&real, &[], (2, 0), (2, 0)));
+        assert!(layer.is_empty(), "home");
     }
 
     #[test]

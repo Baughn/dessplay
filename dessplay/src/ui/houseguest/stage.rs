@@ -101,6 +101,9 @@ pub enum Scene {
     Work,
     /// Reading beside her bookshelf.
     Read,
+    /// Borrowing a strip of a line to read beside the tear, then sliding
+    /// it back (as she does where she has no bookshelf).
+    Borrow,
     /// A snack from her fridge.
     Snack,
     /// Petting the cat in his bed (he's home for it).
@@ -154,7 +157,7 @@ pub enum Scene {
 
 impl Scene {
     /// Every scene, in menu order.
-    pub const ALL: [Scene; 54] = [
+    pub const ALL: [Scene; 55] = [
         Self::Arrive,
         Self::Pull,
         Self::Swap,
@@ -190,6 +193,7 @@ impl Scene {
         Self::Surf,
         Self::Work,
         Self::Read,
+        Self::Borrow,
         Self::Snack,
         Self::Pet,
         Self::ChopsticksClean,
@@ -249,6 +253,7 @@ impl Scene {
             Self::Surf => "channel surfing",
             Self::Work => "part-time job",
             Self::Read => "read",
+            Self::Borrow => "read a borrowed line",
             Self::Snack => "snack",
             Self::Pet => "pet the cat",
             Self::ChopsticksClean => "chopsticks, clean split",
@@ -356,6 +361,7 @@ impl Scene {
             | Self::Parcel
             | Self::Work
             | Self::Read
+            | Self::Borrow
             | Self::Pet
             | Self::MakeSofa
             | Self::MakeBed
@@ -507,11 +513,11 @@ pub(super) fn direct(
             );
             Ok(format!("{name}: {}", repair.label()))
         }
-        Scene::Pull | Scene::Swap => {
-            let jobs: Vec<Job> = if scene == Scene::Pull {
-                chances.pulls.iter().cloned().map(Job::Pull).collect()
-            } else {
-                chances.swaps.iter().cloned().map(Job::Swap).collect()
+        Scene::Pull | Scene::Swap | Scene::Borrow => {
+            let jobs: Vec<Job> = match scene {
+                Scene::Pull => chances.pulls.iter().cloned().map(Job::Pull).collect(),
+                Scene::Borrow => chances.borrows.iter().cloned().map(Job::Borrow).collect(),
+                _ => chances.swaps.iter().cloned().map(Job::Swap).collect(),
             };
             let job = pick(&jobs, rng).ok_or_else(|| format!("{name}: no text in reach here"))?;
             let (x, y) = job.spot();

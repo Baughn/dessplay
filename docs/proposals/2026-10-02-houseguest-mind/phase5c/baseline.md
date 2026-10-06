@@ -905,3 +905,36 @@ Industrious ÷ lazy (both chats pooled): stage 1.17, home 1.56, resident 1.25 (c
   the levers neutral nothing in it separates the moods. No re-tune while the band is ignored, but
   8b's open stage question now has to recover this spread as well as reach the band.
 
+
+## Step 10b: a borrowed line, measured (2026-10-06)
+
+**Measured 2026-10-06** on step 10b's tree (before its commit): with no bookshelf and a line that
+lends a strip, a read is a borrowed strip one decision in three (reading on her back the rest). The
+levers are still `Stillness::NEUTRAL`. The band at full strength, as for 10a (190 visits a cell, 9
+minutes, line art, about 6 minutes' wall). Moving % in sight / set-offs a minute in sight, with
+step 10a's after each.
+
+| Room | Mood | Quiet (10b) | Quiet (10a) | Chat (10b) | Chat (10a) | Band | Cap |
+|---|---|---|---|---|---|---|---|
+| stage | Lazy | 24.8 / 4.03 | 24.9 / 3.98 | 25.0 / 4.07 | 25.3 / 4.04 | 5–17 | 1.5 |
+| stage | Ordinary | 27.0 / 4.40 | 27.7 / 4.33 | 28.7 / 4.54 | 28.5 / 4.49 | 8–26 | 2.25 |
+| stage | Dreamy | 25.0 / 4.27 | 26.1 / 4.29 | 27.6 / 4.53 | 27.3 / 4.51 | 8–26 | 2.25 |
+| stage | Industrious | 29.5 / 4.60 | 29.3 / 4.65 | 27.9 / 4.77 | 29.4 / 4.83 | 12–31 | 3.0 |
+| home | every mood | as 10a | | as 10a | | | |
+| resident | every mood | as 10a | | as 10a | | | |
+
+Industrious ÷ lazy (both chats pooled): stage 1.15 (10a 1.17), home 1.56, resident 1.25.
+
+- **The home and the resident are byte-for-byte 10a's numbers**: the home has a bookshelf, and the
+  band's resident room has no line in her reach at all (`resident_room`: its text lies above her).
+- **The stage is within noise** (every cell within about 1.5 points and 0.07 set-offs a minute of
+  10a, under one pooled σ but the industrious chat share, 1.5 points down). Its dreamy quiet share
+  (25.0) now reads inside its band, a noise-level move across the 26 ceiling. The borrow adds a walk
+  where the book was read on the spot, but it is a third of a want that was seldom her pick; the
+  set-off counts didn't move.
+- No cell left its band (none was in it but the stage's industrious share, still in). Nothing
+  re-tuned.
+- **Its review fixes** (her grip held from taking hold to letting go; a key press judged by where
+  the text is; the stage's placement putting the strip back the same frame) left every line of the
+  band at full strength identical to the digit (re-run, 190 visits a cell): they move single frames,
+  never what she chooses, in these rooms.

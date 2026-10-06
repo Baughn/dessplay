@@ -1872,6 +1872,8 @@ fn every_scene_has_a_spot_in_the_stage_room() {
                         Scene::Shopping => guest.ledger.ordered.is_some(),
                         Scene::Work => went_out || gone,
                         Scene::Read => posed(Pose::Read(0)),
+                        // Torn off and read beside the tear.
+                        Scene::Borrow => posed(Pose::ReadStrip(0)),
                         Scene::Snack => posed(Pose::Eat(0)),
                         Scene::Pet => posed(Pose::Pet(0)),
                         Scene::LookOut => visit
@@ -6369,6 +6371,87 @@ fn a_key_press_shakes_off_what_she_moved_in_the_chat() {
     }
 }
 
+/// Tearing text off a chat line (for furniture, or a strip to read) when
+/// someone presses a key: what she had of it is back in its line at
+/// once, and she's caught out, as at any mischief in the chat; she
+/// doesn't tear it off again. What counts is where the text is, not
+/// where she stands: text in the chat with her feet out of it catches
+/// her out; her feet in the chat with the text out of it doesn't, and
+/// she reels on, as she does with the chat well away. In both modes.
+#[test]
+fn a_key_press_catches_her_out_tearing_text_in_the_chat() {
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum Chat {
+        AroundHer,
+        TextOnly,
+        FeetOnly,
+        Away,
+    }
+    for graphics in [false, true] {
+        for scene in [Scene::MakeSofa, Scene::Borrow] {
+            for place in [Chat::AroundHer, Chat::TextOnly, Chat::FeetOnly, Chat::Away] {
+                let at = format!("graphics={graphics} {scene:?} {place:?}");
+                let mut ui = stage_ui();
+                let (real, mut view) = real_frame(&mut ui, 100, 30);
+                view.resident = true;
+                view.busy = Some(Busy::Playing);
+                let mut guest = Guest::new(2);
+                if graphics {
+                    guest.set_picker(kitty());
+                }
+                guest.cue(scene);
+                let mut now = 0;
+                paint(&mut guest, &real, &view, now);
+                let held = loop {
+                    assert!(now < 30_000, "{at}: never reeled");
+                    tick(&mut guest, &real, &view, &mut now);
+                    let visit = visit_of(&guest);
+                    if let Some(held) = visit.osaka.holding()
+                        && visit.layer.holes().count() >= 2
+                    {
+                        break held;
+                    }
+                };
+                let visit = visit_of(&guest);
+                let (x, y) = (visit.osaka.x, visit.osaka.y);
+                let sources = held.sources();
+                let row = sources[0].1;
+                let feet = u16::try_from(y).expect("on screen");
+                assert_ne!(row, feet, "{at}: the text off her feet's row");
+                let left = u16::try_from(x - 20).unwrap_or(0);
+                view.chat = match place {
+                    Chat::AroundHer => {
+                        let top = u16::try_from(y - 6).unwrap_or(0);
+                        Rect::new(left, top, 40, 7)
+                    }
+                    Chat::TextOnly => Rect::new(left, row, 40, 1),
+                    Chat::FeetOnly => Rect::new(left, feet, 40, 1),
+                    Chat::Away => Rect::new(0, 0, 1, 1),
+                }
+                .intersection(real.area);
+                let caught = matches!(place, Chat::AroundHer | Chat::TextOnly);
+                guest.activity(now);
+                tick(&mut guest, &real, &view, &mut now);
+                let visit = visit_of(&guest);
+                if caught {
+                    assert_eq!(visit.osaka.holding(), None, "{at}: caught out");
+                    assert!(visit.osaka.looking(), "{at}: looks up");
+                    // And it stays in its line.
+                    let until = now + 2_000;
+                    while now < until {
+                        tick(&mut guest, &real, &view, &mut now);
+                        let visit = visit_of(&guest);
+                        assert!(!visit.layer.holds_any(&sources), "{at}: torn again");
+                    }
+                } else {
+                    assert_eq!(visit.osaka.holding(), Some(held), "{at}: reels on");
+                    assert!(visit.layer.holds_any(&sources), "{at}: still hers");
+                }
+            }
+        }
+    }
+}
+
 /// Focusing the pane she's in: what of her was there rains away at once
 /// (no startled beat), the pane is itself again once the rain is done,
 /// and she steps out of her door somewhere else.
@@ -7470,6 +7553,575 @@ fn an_interrupted_reel_puts_the_text_back() {
             let at = (x, build.row);
             assert_eq!(frame[at], real[at], "graphics={graphics}: {at:?} back");
         }
+    }
+}
+
+/// One tick of her visit on (at most 100 ms), painted: the frame.
+fn tick(guest: &mut Guest, real: &Buffer, view: &IdleView, now: &mut u64) -> Buffer {
+    *now += guest
+        .next_tick(*now)
+        .map_or(100, |d| d.as_millis() as u64)
+        .clamp(1, 100);
+    guest.advance(*now);
+    paint(guest, real, view, *now)
+}
+
+/// The strip she holds, borrowed to read, if she does: its source cells.
+fn strip_held(guest: &Guest) -> Option<Vec<(u16, u16)>> {
+    let State::Visiting(visit) = &guest.state else {
+        return None;
+    };
+    match visit.osaka.holding()? {
+        held @ scenes::Held::Strip(_) => Some(held.sources()),
+        scenes::Held::Build(_) => None,
+    }
+}
+
+/// Where no bookshelf stands she borrows a strip of a line to read
+/// (phase 5c D5, HG #72): she walks to the line (her one set-off: no
+/// step from tearing the strip off to sliding it back, all of it still
+/// for the census), tears the strip off hand over hand, sits beside the
+/// tear reading it (its glyphs out of the line, the holes beside her
+/// box, facing them, reading along it now and then), then slides it
+/// back the way it came. Once she's done the line is whole, as the real
+/// frame has it, and nothing is owed for it. In both drawing modes, on
+/// the stage room's text.
+#[test]
+fn she_reads_a_borrowed_strip_beside_the_tear_and_slides_it_back() {
+    use super::sprite::{Facing, Pose};
+    for graphics in [false, true] {
+        for seed in 0..3u64 {
+            let at = format!("graphics={graphics} seed={seed}");
+            let mut ui = stage_ui();
+            let (real, view) = real_frame(&mut ui, 100, 30);
+            let mut guest = Guest::new(seed);
+            if graphics {
+                guest.set_picker(kitty());
+            }
+            guest.cue(Scene::Borrow);
+            let mut now = 0;
+            paint(&mut guest, &real, &view, now);
+            assert!(
+                matches!(guest.cue_note(), Some(Ok(_))),
+                "{at}: {:?}",
+                guest.cue_note()
+            );
+            let set_offs = visit_of(&guest).osaka.set_offs;
+            let mut strip: Option<Vec<(u16, u16)>> = None;
+            let mut spot = None;
+            let mut frames = std::collections::BTreeSet::new();
+            let mut slid = false;
+            loop {
+                assert!(now < 120_000, "{at}: never done with it");
+                let frame = tick(&mut guest, &real, &view, &mut now);
+                let visit = visit_of(&guest);
+                let held = strip_held(&guest);
+                let Some(sources) = held else {
+                    if strip.is_some() {
+                        break;
+                    }
+                    continue;
+                };
+                let pull = match visit.osaka.holding() {
+                    Some(scenes::Held::Strip(pull)) => pull,
+                    other => panic!("{at}: {other:?}"),
+                };
+                // From taking hold of it to letting go, she stays where
+                // she tore it, and is still.
+                let here = (visit.osaka.x, visit.osaka.y);
+                assert_eq!(here, (pull.x, pull.y), "{at}: at the line's end");
+                assert_eq!(*spot.get_or_insert(here), here, "{at}: never a step");
+                assert_eq!(visit.osaka.census_motion(now), None, "{at}: still");
+                strip.get_or_insert_with(|| sources.clone());
+                let (pose, ..) = visit.osaka.appearance(now);
+                match pose {
+                    Pose::ReadStrip(f) => {
+                        assert!(!slid, "{at}: reading after sliding it back");
+                        frames.insert(f);
+                        // The whole strip is out of its line: holes,
+                        // beside her box, and she faces them.
+                        assert!(visit.layer.torn_intact(&sources), "{at}");
+                        let mut holes: Vec<_> = visit.layer.holes().collect();
+                        holes.sort_unstable();
+                        let mut want = sources.clone();
+                        want.sort_unstable();
+                        assert_eq!(holes, want, "{at}: just the strip");
+                        for &cell in &sources {
+                            assert_eq!(frame[cell].symbol(), " ", "{at}: {cell:?} torn");
+                        }
+                        // A strip: at most six glyphs, the end of the
+                        // line nearest her, at least two left on it, as
+                        // the real frame has them.
+                        assert!(sources.len() <= 6, "{at}: {} glyphs", sources.len());
+                        assert!(sources.len() + 2 <= pull.cells.len(), "{at}: two left");
+                        let near_end = match pull.side {
+                            scenes::Side::Right => pull.cells[..sources.len()].to_vec(),
+                            scenes::Side::Left => {
+                                pull.cells[pull.cells.len() - sources.len()..].to_vec()
+                            }
+                        };
+                        let mut cols: Vec<u16> = sources.iter().map(|&(x, _)| x).collect();
+                        cols.sort_unstable();
+                        assert_eq!(cols, near_end, "{at}: the end nearest her");
+                        for &c in pull.cells.iter().filter(|c| !cols.contains(c)) {
+                            let cell = (c, pull.row);
+                            assert_eq!(frame[cell], real[cell], "{at}: {cell:?} left");
+                        }
+                        let toward = match pull.side {
+                            scenes::Side::Left => Facing::Left,
+                            scenes::Side::Right => Facing::Right,
+                        };
+                        assert_eq!(visit.osaka.facing, toward, "{at}: facing the tear");
+                        let edge = match pull.side {
+                            scenes::Side::Left => pull.x - 3,
+                            scenes::Side::Right => pull.x + 3,
+                        };
+                        let near = sources
+                            .iter()
+                            .map(|&(x, _)| (i32::from(x) - edge).abs())
+                            .min()
+                            .unwrap_or(i32::MAX);
+                        assert!(near <= i32::from(scenes::PULL_GAP), "{at}: beside her box");
+                    }
+                    Pose::Pull { .. } => {
+                        // Read: back it goes, the way it came, a cell a
+                        // step (not mended in a blink).
+                        if !frames.is_empty() {
+                            slid |= visit
+                                .layer
+                                .entries()
+                                .iter()
+                                .any(|d| sources.contains(&d.source) && d.at != d.source);
+                        }
+                    }
+                    other => panic!("{at}: {other:?} borrowing"),
+                }
+            }
+            assert_eq!(frames.len(), 2, "{at}: read along it");
+            assert!(slid, "{at}: slid it back, a cell a step");
+            let strip = strip.expect("a strip");
+            // Whole again, as the real frame has it, and nothing owed.
+            let frame = paint(&mut guest, &real, &view, now);
+            let visit = visit_of(&guest);
+            assert!(!visit.layer.holds_any(&strip), "{at}: back in its line");
+            for &cell in &strip {
+                assert_eq!(frame[cell], real[cell], "{at}: {cell:?} back");
+            }
+            assert!(
+                !visit.osaka.beats.iter().any(|b| b.loss == mind::Loss::Tear),
+                "{at}: nothing lost"
+            );
+            assert_eq!(visit.osaka.set_offs, set_offs + 1, "{at}: one walk");
+            let walk = visit.osaka.set_off_log.last().expect("the walk");
+            assert_eq!(walk.purpose, "to text", "{at}");
+        }
+    }
+}
+
+/// A chat line while she reads the strip she borrowed: she looks up
+/// where she is (phase 5c B1), the strip still in her hands, and reads
+/// on, turned back to the tear once she's looked. A line while she's
+/// tearing it off, or sliding it back, stops her: what of it was off
+/// goes back at once, and she's sorry ("...never mind", a
+/// [`mind::Loss::Tear`]). Her read running out while she's looked up
+/// at the chat, she turns back to the line to slide it back. In both
+/// modes, on the stage room's text.
+#[test]
+fn chat_while_she_reads_a_borrowed_strip_looks_up_and_a_cut_tear_mends() {
+    use super::sprite::{Facing, Pose};
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum When {
+        Reading,
+        Reeling,
+        Sliding,
+    }
+    for graphics in [false, true] {
+        for when in [When::Reading, When::Reeling, When::Sliding] {
+            let at = format!("graphics={graphics} {when:?}");
+            let mut ui = stage_ui();
+            let (real, view) = real_frame(&mut ui, 100, 30);
+            let mut guest = Guest::new(4);
+            if graphics {
+                guest.set_picker(kitty());
+            }
+            guest.cue(Scene::Borrow);
+            let mut now = 0;
+            paint(&mut guest, &real, &view, now);
+            // Into her reading, or a couple of glyphs into reeling it in.
+            let strip = loop {
+                assert!(now < 60_000, "{at}: never got there");
+                tick(&mut guest, &real, &view, &mut now);
+                let visit = visit_of(&guest);
+                let Some(sources) = strip_held(&guest) else {
+                    continue;
+                };
+                let (pose, ..) = visit.osaka.appearance(now);
+                let there = if when == When::Reeling {
+                    visit.layer.holes().count() >= 2 && visit.osaka.reading_strip().is_none()
+                } else {
+                    matches!(pose, Pose::ReadStrip(_))
+                };
+                if there {
+                    break sources;
+                }
+            };
+            let facing = visit_of(&guest).osaka.facing;
+            let mut chat = view.clone();
+            // The chat behind her, as she faces the tear: she turns to it.
+            let x = u16::try_from(visit_of(&guest).osaka.x).unwrap_or(0);
+            chat.chat = match facing {
+                Facing::Left => Rect::new(x + 4, 0, 10, 10),
+                Facing::Right => Rect::new(x.saturating_sub(14), 0, 10, 10),
+            };
+            if when == When::Sliding {
+                // A line a second while she reads (looked up all the
+                // while), until her read runs out: turned to the chat,
+                // she turns back to the line to slide it back.
+                let mut last = 0;
+                loop {
+                    assert!(now < 300_000, "{at}: never done reading");
+                    if visit_of(&guest).osaka.reading_strip().is_some() && now >= last + 1_000 {
+                        chat.chat_mark.synced += 1;
+                        last = now;
+                    }
+                    tick(&mut guest, &real, &chat, &mut now);
+                    let visit = visit_of(&guest);
+                    assert_eq!(strip_held(&guest).as_ref(), Some(&strip), "{at}: held");
+                    if visit.osaka.reading_strip().is_none() {
+                        break;
+                    }
+                    assert!(visit.osaka.looking_up_at_chat(), "{at}: looked up at {now}");
+                }
+                let visit = visit_of(&guest);
+                assert_eq!(visit.osaka.facing, facing, "{at}: back to the line");
+                assert!(visit.layer.holds_any(&strip), "{at}: sliding it back");
+            }
+            chat.chat_mark.synced += 1;
+            let frame = tick(&mut guest, &real, &chat, &mut now);
+            let visit = visit_of(&guest);
+            if when == When::Reading {
+                assert!(visit.osaka.looking_up_at_chat(), "{at}: looks up");
+                assert_ne!(visit.osaka.facing, facing, "{at}: turned to the chat");
+                let until = now + 3_000;
+                while now < until {
+                    tick(&mut guest, &real, &chat, &mut now);
+                    assert_eq!(strip_held(&guest).as_ref(), Some(&strip), "{at}");
+                    let visit = visit_of(&guest);
+                    assert!(visit.layer.torn_intact(&strip), "{at}: still hers");
+                }
+                // Once she's looked, back to the tear, reading on.
+                while visit_of(&guest).osaka.looking_up_at_chat() {
+                    assert!(now < until + 20_000, "{at}: a look without end");
+                    tick(&mut guest, &real, &chat, &mut now);
+                }
+                assert!(
+                    visit_of(&guest).osaka.reading_strip().is_some(),
+                    "{at}: reading on"
+                );
+                assert_eq!(visit_of(&guest).osaka.facing, facing, "{at}: to the tear");
+            } else {
+                assert_eq!(strip_held(&guest), None, "{at}: let go");
+                assert!(
+                    !visit.osaka.looking_up_at_chat(),
+                    "{at}: stopped, not looking up"
+                );
+                assert!(!visit.layer.holds_any(&strip), "{at}: back at once");
+                for &cell in &strip {
+                    assert_eq!(frame[cell], real[cell], "{at}: {cell:?} back");
+                }
+                assert!(
+                    visit.osaka.beats.iter().any(|b| b.loss == mind::Loss::Tear),
+                    "{at}: sorry about it"
+                );
+            }
+        }
+    }
+}
+
+/// What can happen to her while she holds text torn off its line.
+#[derive(Clone, Copy, Debug)]
+enum BorrowCut {
+    Nothing,
+    /// A chat line arrives.
+    Chat,
+    /// Someone at the keys: a visitor's goodbye, a resident shaken.
+    Input,
+    /// Her pane is focused (a resident moves out of it).
+    Focus,
+    /// The terminal is resized.
+    Resize,
+    /// Too small for her: her room is gone.
+    Shrink,
+    /// The houseguest is switched off.
+    SwitchOff,
+    /// The text scrolls a row under her (at `cut_at`).
+    Scroll,
+    /// The text scrolls a row under her the first frame she's reeling
+    /// it in or sliding it back (some of it out, not sat reading).
+    ScrollHeld,
+    /// The text scrolls a row under her the first frame she's taking
+    /// hold of it (nothing of it out yet).
+    ScrollBraced,
+    /// The stage puts her somewhere else.
+    Placed,
+    /// Her routine cuts in (her clock fed, skipped to its next
+    /// boundary: bed, school, ...).
+    Routine,
+}
+
+const BORROW_CUTS: [BorrowCut; 12] = [
+    BorrowCut::Nothing,
+    BorrowCut::Chat,
+    BorrowCut::Input,
+    BorrowCut::Focus,
+    BorrowCut::Resize,
+    BorrowCut::Shrink,
+    BorrowCut::SwitchOff,
+    BorrowCut::Scroll,
+    BorrowCut::ScrollHeld,
+    BorrowCut::ScrollBraced,
+    BorrowCut::Placed,
+    BorrowCut::Routine,
+];
+
+/// `real` scrolled up a row.
+fn scrolled_up(real: &Buffer) -> Buffer {
+    let mut out = real.clone();
+    let area = real.area;
+    for y in 0..area.height {
+        for x in 0..area.width {
+            let below = if y + 1 < area.height {
+                real[(x, y + 1)].clone()
+            } else {
+                tuirealm::ratatui::buffer::Cell::default()
+            };
+            out[(x, y)] = below;
+        }
+    }
+    out
+}
+
+/// The text she holds torn off its line, if she does (see
+/// `Osaka::holding`).
+fn held_text(guest: &Guest) -> Option<scenes::Held> {
+    let State::Visiting(visit) = &guest.state else {
+        return None;
+    };
+    visit.osaka.holding()
+}
+
+/// One run of [`whatever_ends_a_borrowed_read_the_text_is_whole`]:
+/// `scene` cued (a borrow, or tearing text for a sofa), `cut` at
+/// `cut_at`.
+fn held_text_ends_whole(
+    seed: u64,
+    graphics: bool,
+    resident: bool,
+    scene: Scene,
+    cut: BorrowCut,
+    cut_at: u64,
+) -> Result<(), TestCaseError> {
+    let mut ui = stage_ui();
+    let (mut real, mut view) = real_frame(&mut ui, 100, 30);
+    view.resident = resident;
+    let mut guest = Guest::new(seed);
+    if graphics {
+        guest.set_picker(kitty());
+    }
+    if matches!(cut, BorrowCut::Routine) {
+        guest.set_feed_clock(true);
+        guest.set_date(date(2026, 6, 17));
+    }
+    guest.cue(scene);
+    let mut now = 0;
+    paint(&mut guest, &real, &view, now);
+    // The first text she held, the real glyphs it was torn from, and by
+    // when she must be done with it: brace, reel, the longest still act
+    // she has (a read lingered), slide, and slack for looks.
+    let mut first: Option<(scenes::Held, Vec<tuirealm::ratatui::buffer::Cell>, u64)> = None;
+    let mut cut_done = false;
+    let mut ended = false;
+    let horizon = |first: &Option<(scenes::Held, Vec<_>, u64)>| match first {
+        Some((.., deadline)) => *deadline,
+        None => 100_000,
+    };
+    while now < horizon(&first) && !ended {
+        let due = match cut {
+            BorrowCut::ScrollHeld => {
+                held_text(&guest).is_some()
+                    && matches!(&guest.state, State::Visiting(visit)
+                        if visit.layer.holes().count() >= 1 && visit.osaka.reading_strip().is_none())
+            }
+            BorrowCut::ScrollBraced => {
+                held_text(&guest).is_some()
+                    && matches!(&guest.state, State::Visiting(visit) if visit.layer.holes().count() == 0)
+            }
+            _ => now >= cut_at,
+        };
+        if !cut_done && due {
+            cut_done = true;
+            let (x, y) = match &guest.state {
+                State::Visiting(visit) => (visit.osaka.x, visit.osaka.y),
+                _ => (50, 15),
+            };
+            match cut {
+                BorrowCut::Nothing => {}
+                BorrowCut::Chat => view.chat_mark.synced += 1,
+                BorrowCut::Input => guest.activity(now),
+                BorrowCut::Focus => {
+                    let left = u16::try_from(x - 12).unwrap_or(0);
+                    let top = u16::try_from(y - 8).unwrap_or(0);
+                    view.focus = Some(Rect::new(left, top, 24, 10).intersection(real.area));
+                }
+                BorrowCut::Resize => {
+                    let mut ui = stage_ui();
+                    let (r, mut v) = real_frame(&mut ui, 80, 24);
+                    v.resident = resident;
+                    (real, view) = (r, v);
+                }
+                BorrowCut::Shrink => real = Buffer::empty(Rect::new(0, 0, 20, 8)),
+                BorrowCut::SwitchOff => view.delay = None,
+                BorrowCut::Scroll | BorrowCut::ScrollHeld | BorrowCut::ScrollBraced => {
+                    real = scrolled_up(&real);
+                }
+                BorrowCut::Placed => guest.cue(Scene::Sit),
+                BorrowCut::Routine => guest.skip_clock(now),
+            }
+        }
+        let before = held_text(&guest);
+        let frame = tick(&mut guest, &real, &view, &mut now);
+        let held = held_text(&guest);
+        let State::Visiting(visit) = &guest.state else {
+            // Her visit over, its text with it.
+            return Ok(());
+        };
+        if let Some(held) = &held
+            && first.is_none()
+        {
+            let glyphs = held.sources().iter().map(|&c| real[c].clone()).collect();
+            let deadline = now + osaka::longest_still_ms(None) + 60_000;
+            first = Some((held.clone(), glyphs, deadline));
+        }
+        // While she holds it, it's the text she took hold of: changed or
+        // scrolled under her, she's lost it, the frame it happens.
+        if let (Some(held), Some((took, glyphs, _))) = (&held, &first)
+            && held == took
+        {
+            for (&cell, glyph) in held.sources().iter().zip(glyphs) {
+                prop_assert_eq!(
+                    real.cell(cell),
+                    Some(glyph),
+                    "{:?} at {}: holding {:?}, changed under her",
+                    cut,
+                    now,
+                    cell
+                );
+            }
+        }
+        // Sat reading it, the whole strip is out of its line.
+        if let (Some(held @ scenes::Held::Strip(_)), Some(_)) = (&held, visit.osaka.reading_strip())
+        {
+            prop_assert!(
+                visit.layer.torn_intact(&held.sources()),
+                "{:?} at {}: reading a strip that's gone",
+                cut,
+                now
+            );
+        }
+        // The frame she stops holding text (let go, or onto other text),
+        // what of it she doesn't hold now is back in its line, unless
+        // she made a piece of it.
+        if let Some(old) = &before
+            && held.as_ref() != Some(old)
+        {
+            let now_held = held.as_ref().map(scenes::Held::sources).unwrap_or_default();
+            let out: Vec<(u16, u16)> = old
+                .sources()
+                .into_iter()
+                .filter(|c| !now_held.contains(c))
+                .collect();
+            let made = visit.made.iter().any(|m| m.torn == old.sources());
+            prop_assert!(
+                made || !visit.layer.holds_any(&out),
+                "{:?} at {}: {:?} left out",
+                cut,
+                now,
+                old
+            );
+            // And the frame shows it so, where she isn't stood over it
+            // (a focused pane rains what of hers it had away: her text
+            // too, for the rain's length, by design).
+            if !made && !matches!(cut, BorrowCut::Focus) {
+                let (x, y) = (visit.osaka.x, visit.osaka.y);
+                for &cell in out
+                    .iter()
+                    .filter(|&&c| !osaka::box_meets(Rect::new(c.0, c.1, 1, 1), (x, y)))
+                {
+                    prop_assert_eq!(
+                        frame.cell(cell),
+                        real.cell(cell),
+                        "{:?} at {}: {:?} not back in the frame",
+                        cut,
+                        now,
+                        cell
+                    );
+                }
+            }
+            if first.as_ref().is_some_and(|(took, ..)| took == old) {
+                ended = true;
+            }
+        }
+    }
+    // Begun, it ended (by her, or with her visit).
+    prop_assert!(
+        first.is_none() || ended,
+        "{:?}: still holding it at {}",
+        cut,
+        now
+    );
+    Ok(())
+}
+
+/// The run the gate once caught: the focus cut lands before she reaches
+/// the line, she gets on with other things, and decides on a borrow of
+/// her own only near the old fixed horizon. Her borrow runs its course.
+#[test]
+fn a_borrow_begun_late_is_seen_to_its_end() {
+    held_text_ends_whole(
+        18_183_236_384_193_791_226,
+        false,
+        true,
+        Scene::Borrow,
+        BorrowCut::Focus,
+        741,
+    )
+    .unwrap();
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(dessplay_core::test_support::proptest_cases(24)))]
+
+    /// Whatever ends a borrowed read (phase 5c D5) — the read run out, a
+    /// chat line, someone at the keys, her pane focused, a resize, her
+    /// room gone, the houseguest switched off, the text scrolling under
+    /// her (while she reels it in or reads it), the stage, her routine —
+    /// the text is whole again the very frame she stops holding the
+    /// strip (or her visit, and her text with it, is gone). Text out of
+    /// its line only while she holds it: never left torn. The same for
+    /// text she tears off for a makeshift piece (until it's made). And
+    /// while she holds text it's the text she took hold of: changed or
+    /// scrolled under her, she's lost her grip on it the same frame.
+    #[test]
+    fn whatever_ends_a_borrowed_read_the_text_is_whole(
+        seed in any::<u64>(),
+        graphics in any::<bool>(),
+        resident in any::<bool>(),
+        building in proptest::bool::weighted(0.25),
+        cut in 0..BORROW_CUTS.len(),
+        cut_at in 0u64..50_000,
+    ) {
+        let scene = if building { Scene::MakeSofa } else { Scene::Borrow };
+        held_text_ends_whole(seed, graphics, resident, scene, BORROW_CUTS[cut], cut_at)?;
     }
 }
 

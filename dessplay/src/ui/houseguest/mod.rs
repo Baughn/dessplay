@@ -431,8 +431,9 @@ struct Visit {
     made: Vec<Made>,
     /// The next piece she makes.
     next_made: room::MadeId,
-    /// The text she was reeling in at the last paint.
-    reel: Option<scenes::Build>,
+    /// The text she held torn off its line at the last paint (see
+    /// `Osaka::holding`).
+    reel: Option<scenes::Held>,
     /// The flap a parcel just came in through, and when.
     flap: Option<(room::Flap, u64)>,
     /// The rules of her home broken in the last frame.
@@ -2082,27 +2083,17 @@ impl Guest {
                         visit.made.push(made_of(buf, *row, cells, piece, *purpose));
                     }
                 }
-                if !gripped {
+                // The text she's at changed or scrolled under her (the
+                // line she's taking hold of, or what of it she has out,
+                // gone back to its line): she's lost it, this frame.
+                let slipped = visit
+                    .osaka
+                    .grip()
+                    .is_some_and(|grip| !grip.holds(buf, &visit.layer));
+                if !gripped || slipped {
                     visit.osaka.lost_grip(now);
                 }
-                // Text she was reeling in and never made anything of (she
-                // was interrupted, or lost her grip) goes back.
-                let reeling = visit.osaka.reeling().cloned();
-                if let Some(old) = visit.reel.take()
-                    && reeling.as_ref() != Some(&old)
-                {
-                    let sources: Vec<(u16, u16)> =
-                        old.cells.iter().map(|&c| (c, old.row)).collect();
-                    if !visit.made.iter().any(|m| m.torn == sources) {
-                        tracing::debug!("houseguest: dropped the text she was reeling in");
-                        visit.layer.unreel(&sources);
-                        let middle = old.cells.get(old.cells.len() / 2).copied().unwrap_or(0);
-                        visit
-                            .osaka
-                            .owe(mind::Loss::Tear, (i32::from(middle), i32::from(old.row)));
-                    }
-                }
-                visit.reel = reeling;
+                let_go(visit);
                 let mut protected = visit.solid(&view.protected);
                 visit.terrain = Terrain::read(buf, &protected, self.graphics.is_some());
                 visit.terrain.furnish(visit.shown.iter().map(Shown::cover));
@@ -2127,12 +2118,19 @@ impl Guest {
                     self.quiet_since = now;
                     return Rains::ToPaint;
                 }
+                // Moved on just now (text came up where she stays, her
+                // pane was focused): what she held goes back before the
+                // frame shows it.
+                let_go(visit);
                 // A line she moved isn't hers to pull again (it's
                 // protected), but its letters are hers to swap where
                 // they now sit: swaps read the frame with her layer on.
                 // Text reads keep every piece solid.
                 protected.extend(visit.shown.iter().map(Shown::cover));
                 let pulls = scenes::pulls(buf, &visit.terrain, &protected);
+                // The stage places her after her text is drawn: the
+                // frame as it was, to draw again if that let go of text.
+                let unpainted = self.cue.is_some().then(|| buf.clone());
                 let mut layer = visit.layer.paint(buf);
                 let mut holes = base;
                 holes.extend(runs(visit.layer.holes()));
@@ -2140,6 +2138,7 @@ impl Guest {
                 let mut solid = protected.clone();
                 solid.extend(visit.ghost);
                 let builds = builds(buf, visit, &pulls, &solid);
+                let borrows = borrows(visit, &pulls);
                 let (lift_at, judged) = arranging(visit);
                 let beauty_here =
                     beauty_at(&visit.shown, &view.nooks, (visit.osaka.x, visit.osaka.y));
@@ -2161,6 +2160,7 @@ impl Guest {
                         ),
                         real: real_kinds(&visit.shown),
                         builds: builds.clone(),
+                        borrows: borrows.clone(),
                         mine: visit.made.iter().filter_map(Made::mine).collect(),
                         advert: advert(&self.ledger, self.shop_now, visit.osaka.needs()),
                         furnished: !self.ledger.home.props.is_empty(),
@@ -2176,6 +2176,18 @@ impl Guest {
                         stage::direct(scene, buf, &protected, visit, &offered, now, &mut self.rng);
                     tracing::info!(?note, "houseguest cued");
                     self.note = Some(note);
+                    // Placed, she let go of what she held: back before
+                    // the frame shows it, as for anything that moves her
+                    // on (what she could do with the text refreshes on
+                    // the next frame).
+                    let held = visit.reel.clone();
+                    let_go(visit);
+                    if visit.reel != held
+                        && let Some(unpainted) = unpainted
+                    {
+                        *buf = unpainted;
+                        layer = visit.layer.paint(buf);
+                    }
                 }
                 if pulls.len() != visit.chances.pulls.len()
                     || swaps.len() != visit.chances.swaps.len()
@@ -2198,6 +2210,7 @@ impl Guest {
                     ),
                     real: real_kinds(&visit.shown),
                     builds,
+                    borrows,
                     mine: visit.made.iter().filter_map(Made::mine).collect(),
                     advert: advert(&self.ledger, self.shop_now, visit.osaka.needs()),
                     furnished: !self.ledger.home.props.is_empty(),
@@ -3613,6 +3626,43 @@ fn made_of(buf: &Buffer, row: u16, cells: &[u16], piece: &Shown, purpose: room::
         purpose,
         used: false,
     }
+}
+
+/// Text she held torn off its line at the last look and doesn't now
+/// (see `Osaka::holding`), however she came to let go of it
+/// (interrupted, her grip lost, moved on, put somewhere), goes back:
+/// what she was reeling in and never made anything of, and what of a
+/// strip she borrowed she hadn't slid back yet (once she has, there's
+/// nothing to put back). She's sorry about what she dropped. Called as
+/// the paint reads the frame (for what moved her on between paints) and
+/// again after the paint's own checks (for what moved her on there), so
+/// no frame shows text out that she isn't holding.
+fn let_go(visit: &mut Visit) {
+    let holding = visit.osaka.holding();
+    if let Some(old) = visit.reel.take()
+        && holding.as_ref() != Some(&old)
+    {
+        let sources = old.sources();
+        let dropped = match &old {
+            scenes::Held::Build(_) => !visit.made.iter().any(|m| m.torn == sources),
+            scenes::Held::Strip(_) => visit.layer.holds_any(&sources),
+        };
+        if dropped {
+            tracing::info!("houseguest: dropped the text she held; it's back in its line");
+            visit.layer.unreel(&sources);
+            visit.osaka.owe(mind::Loss::Tear, old.middle());
+        }
+    }
+    visit.reel = holding;
+}
+
+/// Lines she could borrow a strip of to read this frame (phase 5c D5):
+/// those long enough, while the text layer has room for the strip.
+fn borrows(visit: &Visit, pulls: &[scenes::Pull]) -> Vec<scenes::Pull> {
+    if visit.layer.cells().count() + scenes::STRIP_GLYPHS > layer::CAP {
+        return Vec::new();
+    }
+    pulls.iter().filter(|p| p.lends()).cloned().collect()
 }
 
 /// Makeshift pieces she could make this frame: of each kind she hasn't

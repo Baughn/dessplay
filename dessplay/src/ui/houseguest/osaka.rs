@@ -12,7 +12,7 @@ use super::rarity::{self, Pity, Rares};
 use super::room::{Furniture, MadeId, PieceRef, Seat, Use};
 use super::routine::{self, DayTime};
 use super::rules::{Grievance, Placement, Repair, TIE_CELLS, Trials};
-use super::scenes::{Build, Job, JobRef, LayerOp, Lift, Pull, SetDown, Side, Swap};
+use super::scenes::{Build, Grip, Held, Job, JobRef, LayerOp, Lift, Pull, SetDown, Side, Swap};
 use super::script::{
     self, CHANNEL_FRAME_MS, Chat, ClockGlance, Cue, Play, Prop, ScriptId, SpliceCtx, SpliceId,
     Surface,
@@ -39,6 +39,9 @@ pub(super) struct Chances {
     pub real: Vec<Furniture>,
     /// Makeshift furniture she could make of text, for each use.
     pub builds: Vec<super::scenes::Build>,
+    /// Lines she could borrow a strip of to read (long enough, with room
+    /// in her text layer for the strip): see `mind::borrow`.
+    pub borrows: Vec<Pull>,
     /// The makeshift pieces she has made this visit.
     pub mine: Vec<Mine>,
     /// What the shopping channel would sell her, were she to watch now.
@@ -512,6 +515,22 @@ struct Session {
     whims: Whims,
 }
 
+/// Where she is in borrowing a strip of a line to read (see
+/// [`Act::Borrow`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Borrowing {
+    /// Taking hold of the line's end.
+    Brace,
+    /// Reeling the strip in to her hands, `step` cells so far (as she
+    /// tears text for furniture).
+    Reel(u16),
+    /// Sat beside the tear, reading the strip, until `until`.
+    Read { until: u64 },
+    /// Sliding it back: the strip as it was `step` cells into reeling
+    /// it in (0: the line whole).
+    Slide(u16),
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Act {
     Stand {
@@ -648,6 +667,16 @@ enum Act {
         ripped: bool,
         step: u16,
     },
+    /// Borrowing a strip of the line `pull` to read (phase 5c D5, HG
+    /// #72): tearing it off and reeling it in, reading it sat beside the
+    /// tear, sliding it back ([`Borrowing`]). `since`: the phase's start.
+    /// Whatever ends it, the guest puts back what of the strip is still
+    /// out (see [`Osaka::holding`]).
+    Borrow {
+        pull: Pull,
+        since: u64,
+        phase: Borrowing,
+    },
     /// Using a piece of her furniture, at `seat`, playing `play` (its
     /// own script, or on a watch the shopping channel's, with what that
     /// sold her, or surfing; and any prelude and coda spliced round it).
@@ -728,6 +757,8 @@ pub struct Served {
     /// is that decision's; one between decisions, the next's.
     pub decision: usize,
     pub via: Via,
+    /// Where it had her, as her needs care.
+    pub spot: Spot,
 }
 
 /// What her body does while she's moving, as the census counts it (see
@@ -850,6 +881,9 @@ fn census_moves(act: &Act) -> Moves {
         | Act::Home { .. }
         | Act::Poke { .. }
         | Act::Tear { .. }
+        // Tearing a strip off, reading it, sliding it back: all in
+        // place (the walk to the line is the set-off).
+        | Act::Borrow { .. }
         | Act::Use { .. }
         | Act::Lift { .. }
         | Act::SetDown { .. } => Moves::Still,
@@ -1071,6 +1105,7 @@ impl Act {
                 Some(JobRef::Swap(swap))
             }
             Self::Tear { build, .. } => Some(JobRef::Build(build)),
+            Self::Borrow { pull, .. } => Some(JobRef::Borrow(pull)),
             Self::Use { seat, .. } => Some(JobRef::Use(seat)),
             Self::Lift { lift, .. } => Some(JobRef::Lift(lift)),
             Self::SetDown { set, .. } => Some(JobRef::SetDown(set)),
@@ -1118,10 +1153,18 @@ impl Act {
                 };
                 (Stays::Job, on_chat)
             }
+            // Reading the strip she sits still, on the calm spot she
+            // tore it from: she looks up where she is. Tearing it off
+            // and sliding it back, she's at the text: she stops.
+            Self::Borrow {
+                phase: Borrowing::Read { .. },
+                ..
+            } => (Stays::Job, OnChat::LooksUp),
             Self::Lift { .. }
             | Self::SetDown { .. }
             | Self::Pull { .. }
             | Self::Tear { .. }
+            | Self::Borrow { .. }
             | Self::Swap { .. }
             | Self::Giggle { .. }
             | Self::Innocent { .. } => (Stays::Job, OnChat::Look),
@@ -2575,6 +2618,7 @@ impl Osaka {
                         JobRef::Pull(_) => "a pull".to_owned(),
                         JobRef::Swap(_) => "a swap".to_owned(),
                         JobRef::Build(build) => format!("making a {:?}", build.piece.item),
+                        JobRef::Borrow(_) => "a strip to read".to_owned(),
                         JobRef::Use(seat) => format!("{:?} ({:?})", seat.what, seat.item),
                         JobRef::Lift(l) => format!("lifting the {}", l.repair.piece.spec().name),
                         JobRef::SetDown(s) => format!("setting the {} down", s.piece.spec().name),
@@ -2711,6 +2755,15 @@ impl Osaka {
                 since + WINDUP_MS + if knocked { RECOIL_MS } else { 0 }
             }
             Act::Tear { since, ripped, .. } => since + if ripped { REEL_MS } else { BRACE_MS },
+            Act::Borrow { since, phase, .. } => match phase {
+                Borrowing::Brace => since + BRACE_MS,
+                Borrowing::Reel(_) | Borrowing::Slide(_) => since + REEL_MS,
+                // On her reading's frames.
+                Borrowing::Read { until } => {
+                    let frames = now.saturating_sub(since) / USE_FRAME_MS + 1;
+                    (since + frames * USE_FRAME_MS).min(until)
+                }
+            },
             // An activity's own script wakes her as each key ends, and
             // on a key's frames while it bobs (her homework on the floor,
             // writing); a held one (her night on the floor) only as it
@@ -3686,8 +3739,12 @@ impl Osaka {
 
     fn set(&mut self, act: Act, at: u64) {
         tracing::trace!(?act, x = self.x, y = self.y, "houseguest act");
-        // Leaving what she chose (pulling on is still pulling).
-        let pulling_on = matches!((&self.act, &act), (Act::Pull { .. }, Act::Pull { .. }));
+        // Leaving what she chose (pulling on is still pulling; the next
+        // phase of a borrow is still the borrow).
+        let pulling_on = matches!(
+            (&self.act, &act),
+            (Act::Pull { .. }, Act::Pull { .. }) | (Act::Borrow { .. }, Act::Borrow { .. })
+        );
         if !pulling_on {
             self.credit_done(at);
         }
@@ -4052,6 +4109,9 @@ impl Osaka {
                     purpose: build.then,
                 });
                 self.pursue(Job::Use(seat), at);
+            }
+            Act::Borrow { pull, phase, .. } => {
+                self.borrowing(pull, phase, at, terrain, chances, rng)
             }
             Act::Dazed { .. } => {
                 // Said in place of a hello when it's her entrance.
@@ -4667,6 +4727,12 @@ impl Osaka {
                     }
                 }
             }
+            // At the line's end: take hold of it, to borrow a strip.
+            Job::Borrow(pull) => Act::Borrow {
+                pull,
+                since: at,
+                phase: Borrowing::Brace,
+            },
             // At the line's end: brace to tear it.
             Job::Build(build) => Act::Tear {
                 build,
@@ -6004,6 +6070,78 @@ impl Osaka {
         self.lines.carry(spent);
     }
 
+    /// The next beat of borrowing a strip of `pull` to read, in `phase`
+    /// now (phase 5c D5, HG #72): hand over hand, the strip comes in
+    /// off the line (a cell a step, as she tears text for furniture);
+    /// she reads it sat beside the tear, as long as a read at a
+    /// bookshelf and lingered by her mood as one is; then she slides it
+    /// back the way it came, and once the line is whole, chooses again.
+    fn borrowing(
+        &mut self,
+        pull: Pull,
+        phase: Borrowing,
+        at: u64,
+        terrain: &Terrain,
+        chances: &Chances,
+        rng: &mut Rng,
+    ) {
+        let steps = pull.strip_steps();
+        let next = match phase {
+            Borrowing::Brace => {
+                tracing::info!(
+                    row = pull.row,
+                    glyphs = pull.strip().len(),
+                    side = ?pull.side,
+                    "houseguest: borrowing a strip of a line to read"
+                );
+                Borrowing::Reel(1)
+            }
+            Borrowing::Reel(step) if step < steps => Borrowing::Reel(step + 1),
+            Borrowing::Reel(_) => {
+                let slot = self.day(at).map(|day| day.slot);
+                let (lo, hi) = use_duration_in(Use::Read, slot);
+                let until = at + self.lingered(Use::Read.lingers(), rng.range(lo, hi));
+                tracing::debug!(until, "houseguest: reading the strip beside the tear");
+                Borrowing::Read { until }
+            }
+            Borrowing::Read { until } if at < until => {
+                self.act_due = self.first_due(at);
+                return;
+            }
+            Borrowing::Read { .. } => {
+                tracing::debug!("houseguest: sliding the strip back");
+                // Back to the line, whatever the chat turned her to.
+                self.facing = side_facing(pull.side);
+                Borrowing::Slide(steps.saturating_sub(1))
+            }
+            Borrowing::Slide(0) => return self.decide(at, terrain, chances, rng),
+            Borrowing::Slide(step) => Borrowing::Slide(step - 1),
+        };
+        match next {
+            Borrowing::Reel(step) => self.ops.push(LayerOp::Reel {
+                row: pull.row,
+                cells: pull.strip(),
+                hand: pull.hand(),
+                step,
+            }),
+            Borrowing::Slide(step) => self.ops.push(LayerOp::Unreel {
+                row: pull.row,
+                cells: pull.strip(),
+                hand: pull.hand(),
+                step,
+            }),
+            Borrowing::Brace | Borrowing::Read { .. } => {}
+        }
+        self.set(
+            Act::Borrow {
+                pull,
+                since: at,
+                phase: next,
+            },
+            at,
+        );
+    }
+
     fn finish_pull(&mut self, at: u64) {
         self.credit_whole(Want::Pull, Via::Whole, at);
         self.set(Act::Admire { until: at + 2000 }, at);
@@ -6070,6 +6208,17 @@ impl Osaka {
             (Act::Pull { offset, goal, .. }, Want::Pull) => {
                 (f64::from(*offset) / f64::from((*goal).max(1)), Spot::Any)
             }
+            // A strip she borrowed to read: by the share of her reading
+            // done (none before she sits down with it, all of it once
+            // she's sliding it back), on the floor.
+            (Act::Borrow { since, phase, .. }, Want::Use(Use::Read)) => {
+                let done = match *phase {
+                    Borrowing::Brace | Borrowing::Reel(_) => 0.0,
+                    Borrowing::Read { until } => span(*since, until),
+                    Borrowing::Slide(_) => 1.0,
+                };
+                (done, Spot::Floor)
+            }
             // A glance up at her clock, though her musing chose it, is a
             // glance: it eases nothing.
             (
@@ -6104,6 +6253,8 @@ impl Osaka {
             // Unpacking a parcel and crumpling text are chores, not using
             // her things.
             Act::Use { seat, .. } => !matches!(seat.what, Use::Unpack | Use::Crumple),
+            // Reading the strip she borrowed, sat on the floor.
+            Act::Borrow { .. } => true,
             // Spacing out is done on her feet: not resting.
             _ => false,
         };
@@ -6151,6 +6302,7 @@ impl Osaka {
             share,
             decision: self.decisions.len(),
             via,
+            spot,
         });
         for &(need, amount) in want.def().serves {
             let fresh = if need == Need::Fun {
@@ -6213,6 +6365,9 @@ impl Osaka {
             Want::Pull => (method == "pull").then_some(CreditPath::By(Via::Whole)),
             Want::Swap => (method == "swap").then_some(CreditPath::By(Via::Whole)),
             Want::Use(Use::Nap) if method == SETTLE_IN => Some(CreditPath::By(Via::Share)),
+            // A strip borrowed off a line, where no bookshelf stands: by
+            // the share of her reading done, as she leaves it.
+            Want::Use(Use::Read) if method == "use/borrow" => Some(CreditPath::By(Via::Share)),
             Want::Use(
                 Use::Lounge
                 | Use::Nap
@@ -6308,10 +6463,85 @@ impl Osaka {
         }
     }
 
+    /// The text she holds torn off its line (or is reeling in, or
+    /// sliding back), while she does: text for a makeshift piece, or a
+    /// strip she borrowed to read. The same all the while she's at it,
+    /// so the guest can tell the moment she isn't, however that came
+    /// about, and put back what of it is still out.
+    pub fn holding(&self) -> Option<Held> {
+        match &self.act {
+            Act::Tear { build, .. } => Some(Held::Build(build.clone())),
+            Act::Borrow { pull, .. } => Some(Held::Strip(pull.clone())),
+            _ => None,
+        }
+    }
+
+    /// Her grip on the text her act is at, while she has one (see
+    /// [`Grip`]): the line as she found it while she takes hold (a pull
+    /// not yet heaved, a tear or a borrow braced for), then every glyph
+    /// she has out of it (heaving, reeling in, reading the strip, sliding
+    /// it back until the last of it is home). The guest checks it each
+    /// paint: slipped, she's lost her grip ([`Osaka::lost_grip`]).
+    pub fn grip(&self) -> Option<Grip<'_>> {
+        let hand =
+            |row: u16, cells: &[u16]| Grip::InHand(cells.iter().map(|&c| (c, row)).collect());
+        match &self.act {
+            Act::Pull {
+                pull, offset: 0, ..
+            } => Some(Grip::Line {
+                row: pull.row,
+                cells: &pull.cells,
+                glyphs: &pull.glyphs,
+            }),
+            Act::Pull { pull, .. } => Some(hand(pull.row, &pull.cells)),
+            Act::Tear {
+                build,
+                ripped: false,
+                ..
+            } => Some(Grip::Line {
+                row: build.row,
+                cells: &build.cells,
+                glyphs: &build.glyphs,
+            }),
+            Act::Tear { build, .. } => Some(hand(build.row, &build.cells)),
+            Act::Borrow {
+                pull,
+                phase: Borrowing::Brace,
+                ..
+            } => Some(Grip::Line {
+                row: pull.row,
+                cells: &pull.cells,
+                glyphs: &pull.glyphs,
+            }),
+            Act::Borrow {
+                phase: Borrowing::Slide(0),
+                ..
+            } => None,
+            Act::Borrow { pull, .. } => Some(hand(pull.row, &pull.strip())),
+            _ => None,
+        }
+    }
+
     /// The makeshift piece she's tearing text off for, while she is.
+    #[cfg(test)]
     pub fn reeling(&self) -> Option<&Build> {
         match &self.act {
             Act::Tear { build, .. } => Some(build),
+            _ => None,
+        }
+    }
+
+    /// The line she's reading a strip of, sat beside the tear, while she
+    /// is: the whole strip is in her hands now (the guest checks it still
+    /// is: see [`Osaka::grip`]).
+    #[cfg(test)]
+    pub fn reading_strip(&self) -> Option<&Pull> {
+        match &self.act {
+            Act::Borrow {
+                pull,
+                phase: Borrowing::Read { .. },
+                ..
+            } => Some(pull),
             _ => None,
         }
     }
@@ -6452,6 +6682,12 @@ impl Osaka {
             // Gazing out of the window is spacing out, as gazing up is.
             Act::Use { seat, .. } if seat.what == Use::LookOut => "spacing out",
             Act::Use { .. } => "furniture",
+            // Reading a strip she borrowed, sat on the floor; tearing it
+            // off and sliding it back, at the text.
+            Act::Borrow {
+                phase: Borrowing::Read { .. },
+                ..
+            } => "floor rest",
             Act::Idle { what, .. } => match what {
                 // On the floor, at her homework or a book too.
                 Activity::Sit
@@ -6479,6 +6715,7 @@ impl Osaka {
             | Act::Giggle { .. }
             | Act::Innocent { .. }
             | Act::Tear { .. }
+            | Act::Borrow { .. }
             | Act::Sneeze { .. }
             | Act::PutBack { .. }
             | Act::Admire { .. } => "mischief",
@@ -6534,7 +6771,7 @@ impl Osaka {
     #[cfg(test)]
     pub fn census_purpose(&self) -> &'static str {
         let kind = |job: &Job| match job {
-            Job::Pull(_) | Job::Swap(_) | Job::Build(_) => "to text",
+            Job::Pull(_) | Job::Swap(_) | Job::Build(_) | Job::Borrow(_) => "to text",
             Job::Use(_) => "to seat",
             Job::Lift(_) | Job::SetDown(_) => "to home",
         };
@@ -6644,10 +6881,13 @@ impl Osaka {
         }
     }
 
-    /// The text she was pulling changed under her (someone scrolled the
-    /// chat): she lets go and stares.
+    /// The text she was pulling, tearing or reading a strip of changed
+    /// under her (someone scrolled the chat): she lets go and stares.
     pub fn lost_grip(&mut self, now: u64) {
-        if matches!(self.act.job(), Some(JobRef::Pull(_) | JobRef::Build(_))) {
+        if matches!(
+            self.act.job(),
+            Some(JobRef::Pull(_) | JobRef::Build(_) | JobRef::Borrow(_))
+        ) {
             tracing::trace!("houseguest lost her grip");
             self.interrupt(Cause::LostGrip, now);
         }
@@ -8151,6 +8391,8 @@ impl Osaka {
         let back = match (was, &self.act) {
             (Some(was), _) => was.back,
             (None, Act::Use { seat, .. }) => Some(seat.facing),
+            // To the tear she reads beside.
+            (None, Act::Borrow { pull, .. }) => Some(side_facing(pull.side)),
             (None, _) => None,
         };
         // What she says about her home she says to its end first.
@@ -8819,8 +9061,13 @@ impl Osaka {
                 .iter()
                 .any(|&(x, y)| chat.contains((x, y).into()))
         });
+        // At text in the chat (pulling, swapping, tearing it off, or a
+        // strip of it to read): what she had of it went back. Where the
+        // text is counts, as for what went back, not where she stands.
         let busy_there = self.act.at_job().is_some_and(|job| {
-            matches!(job, JobRef::Pull(_) | JobRef::Swap(_)) && holds(chat, job.spot())
+            job.text_cells()
+                .iter()
+                .any(|&(x, y)| chat.contains((x, y).into()))
         });
         if busy_there {
             tracing::debug!("houseguest: shaken off in the chat");
@@ -9091,6 +9338,23 @@ impl Osaka {
                 if ripped { Face::Happy } else { Face::Curious },
                 None,
             ),
+            // Hand over hand at the line, in and back out; between, sat
+            // beside the tear reading the strip, along it now and then.
+            Act::Borrow { phase, since, .. } => {
+                let pull = |step: u16| Pose::Pull {
+                    heaving: step % 2 == 1,
+                    row: self.hands_row(),
+                };
+                match phase {
+                    Borrowing::Brace => (pull(0), Face::Curious, None),
+                    Borrowing::Reel(step) => (pull(step), Face::Happy, None),
+                    Borrowing::Read { .. } => {
+                        let frame = (now.saturating_sub(since) / USE_FRAME_MS % 2) as u8;
+                        (Pose::ReadStrip(frame), Face::Vacant, None)
+                    }
+                    Borrowing::Slide(step) => (pull(step), Face::Pleased, None),
+                }
+            }
             Act::SpaceOut {
                 since,
                 until,
@@ -17002,6 +17266,11 @@ mod tests {
                 Act::Idle { since, until, .. }
                 | Act::SpaceOut { since, until, .. }
                 | Act::Use { since, until, .. } => until - since,
+                Act::Borrow {
+                    since,
+                    phase: Borrowing::Read { until },
+                    ..
+                } => until - since,
                 ref other => panic!("{other:?}"),
             }
         };
@@ -17070,6 +17339,31 @@ mod tests {
             }),
             true,
         ));
+        // A strip borrowed off a line, all in her hands: her read of it.
+        cases.push((
+            "a borrowed strip".into(),
+            Box::new(move |o: &mut Osaka, rng: &mut Rng| {
+                let pull = Pull {
+                    x: 20,
+                    y: 15,
+                    row: 13,
+                    side: Side::Right,
+                    cells: (24..32).collect(),
+                    glyphs: "abcdefgh".into(),
+                    gap: 0,
+                };
+                let steps = pull.strip_steps();
+                o.borrowing(
+                    pull,
+                    Borrowing::Reel(steps),
+                    0,
+                    terrain,
+                    &Chances::default(),
+                    rng,
+                );
+            }),
+            true,
+        ));
         let using = |what: Use, trying: bool| {
             let item = Furniture::ALL
                 .into_iter()
@@ -17124,6 +17418,53 @@ mod tests {
             longest <= 2 * longest_still_ms_with(slot, &Stillness::NEUTRAL),
             "{longest}"
         );
+    }
+
+    /// A strip she borrowed to read (phase 5c D5) eases what reading
+    /// does by the share of her reading done: none while she braces or
+    /// reels it in, the share of the read so far, all of it once she's
+    /// sliding it back; on the floor, and as rest (her room's beauty
+    /// eases her too). The census has her at floor rest while she reads,
+    /// at mischief at the text.
+    #[test]
+    fn a_borrowed_read_is_credited_by_the_share_read_as_floor_rest() {
+        let pull = Pull {
+            x: 20,
+            y: 15,
+            row: 13,
+            side: Side::Right,
+            cells: (24..32).collect(),
+            glyphs: "abcdefgh".into(),
+            gap: 0,
+        };
+        let read = Want::Use(Use::Read);
+        let (since, until, at) = (1_000, 11_000, 6_000);
+        let cases = [
+            (Borrowing::Brace, 0.0, "mischief"),
+            (Borrowing::Reel(2), 0.0, "mischief"),
+            (Borrowing::Read { until }, 0.5, "floor rest"),
+            (Borrowing::Slide(1), 1.0, "mischief"),
+        ];
+        for (phase, share, group) in cases {
+            let mut rng = Rng(3);
+            let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+            osaka.beauty_here = 1.0;
+            osaka.credit = Some(read);
+            osaka.act = Act::Borrow {
+                pull: pull.clone(),
+                since,
+                phase,
+            };
+            assert_eq!(osaka.census_group(), group, "{phase:?}");
+            let mut want = osaka.clone();
+            osaka.credit_done(at);
+            assert_eq!(osaka.credited, vec![(read, share, at)], "{phase:?}");
+            let spots: Vec<Spot> = osaka.served.iter().map(|s| s.spot).collect();
+            assert_eq!(spots, vec![Spot::Floor], "{phase:?}: on the floor");
+            want.serve(read, share, Spot::Floor, Via::Share, at);
+            want.needs.serve(Need::Beauty, share);
+            assert_eq!(osaka.needs, want.needs, "{phase:?}: on the floor, resting");
+        }
     }
 
     /// The band's guard sees a chain she settles along as one still

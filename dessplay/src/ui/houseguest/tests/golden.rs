@@ -566,9 +566,9 @@ fn golden_stage_room() {
         stage_room,
         &[
             (0, 0x0270e14af0e05dd9, 0x0ad0c12ab61fb43d),
-            (1, 0xb4f5ae872739deae, 0x1006227d18f977ca),
+            (1, 0xa8ba9b504386b251, 0x1006227d18f977ca),
             (2, 0xdc519850c477a992, 0xc21ef860dfc4acc5),
-            (3, 0x5c9ab96c9f33e061, 0xbff58f68a71b1495),
+            (3, 0x441bc7fa33ec5451, 0xbff58f68a71b1495),
         ],
     );
 }
@@ -579,10 +579,10 @@ fn golden_resident() {
         "resident",
         resident,
         &[
-            (0, 0xdcdde0e9759633db, 0xaa1ea432da2f694c),
-            (1, 0xc48054ccb7794dc7, 0x38712f820f2c9484),
-            (2, 0xa51ce59eb9dc79a6, 0xecb2af2797656c23),
-            (3, 0x641566b08f7d4261, 0x28262701d8e842c0),
+            (0, 0xef8108a59efdd093, 0x760719e750d89d80),
+            (1, 0x3946eb0ced311d88, 0x3ccff99ad147d042),
+            (2, 0x3fd02d8e1b229eb1, 0x9751ae0c41204850),
+            (3, 0xd0c768a569f578fc, 0x7f76d6fd6389bbe4),
         ],
     );
 }
@@ -725,12 +725,18 @@ fn golden_dash_home() {
 /// as likely, with no real piece of its kind), with its review's stand
 /// under a live watch facing the chat (seed 1 in line art: landing from a
 /// climb a line came during, she faces the chat at once, not a beat
-/// later; nothing else changed; the trace diffs are in that commit).
+/// later; nothing else changed; the trace diffs are in that commit), and
+/// step 10b's borrowed line (seeds 0, 1 and 3 in ASCII first differ at a
+/// decision with a line to borrow a strip of on offer, choosing
+/// otherwise; the trace diff is in that commit), with its review's fixes
+/// (seed 1 in ASCII: the stage placing her mid-read, the strip is back in
+/// its line the frame she's placed, not the next; one frame, nothing else
+/// changed; the trace diff is in that commit).
 const UNFED_STAGE: [(u64, u64, u64); 4] = [
-    (0, 0x8d96e94ca5f136a6, 0x49cd447ae4b57fa3),
-    (1, 0xec73d252a7e14039, 0xe957f13f5c8fdeca),
+    (0, 0x0ed7f241b31e0bc5, 0x49cd447ae4b57fa3),
+    (1, 0x155e9624d07ffd0f, 0xe957f13f5c8fdeca),
     (2, 0xc865bf7573027792, 0x5af8a5b46c717c63),
-    (3, 0x7ebe656832021eda, 0xe48e490acf4ea8ba),
+    (3, 0x56e2c7425230f57d, 0xe48e490acf4ea8ba),
 ];
 
 /// The resident's tables at the end of phase 5b step 3, but for step 5a's
@@ -753,12 +759,21 @@ const UNFED_STAGE: [(u64, u64, u64); 4] = [
 /// ASCII, its one frame of a blink under her "!" gone; the trace diffs are
 /// in that commit), and step 10a's floor acts (seeds 0, 1 and 3 in both
 /// modes first differ at her first decision with reading on her back on
-/// offer, choosing otherwise; the trace diff is in that commit).
+/// offer, choosing otherwise; the trace diff is in that commit), and step
+/// 10b's borrowed line and keys catching her out tearing chat text (seeds
+/// 0, 1 and 3 in ASCII, 1 and 3 in line art, first differ at a decision
+/// with a line to borrow a strip of on offer, choosing otherwise; seed 2
+/// in both modes and 0 in line art at a key press while she tears chat
+/// text for furniture: caught out, where she had torn on; the trace diff
+/// is in that commit), with its review's fixes (seed 1 in both modes and
+/// 3 in line art: a key press mid-pull in the chat, her line is put back
+/// and the same frame's heave no longer pulls it out again from home; one
+/// frame, nothing else changed; the trace diff is in that commit).
 const UNFED_RESIDENT: [(u64, u64, u64); 4] = [
-    (0, 0x34e8e36036b4a005, 0x0cec4921c359cb97),
-    (1, 0x0bc70aa37eb68e1e, 0x83d46a07c103f19d),
-    (2, 0x982f046e42548829, 0xd7697fc6058fdd89),
-    (3, 0xea2829df5cd52965, 0x888f2286736251b1),
+    (0, 0x7462942ea4af180c, 0xd3539fd66e15e165),
+    (1, 0x3a8f910536e41b12, 0xff9187e108c2753d),
+    (2, 0x8834bc0ba115685f, 0x04d953d6fde79d57),
+    (3, 0xa674079e1183817d, 0x35f822892851a36b),
 ];
 
 /// The furnished home's tables at the end of phase 5b step 3, but for step

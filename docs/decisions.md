@@ -3983,6 +3983,116 @@ then the desk" the rule, either gate making the desk on the ache, or
 leave making's ×3 off the desk until the ache; both are design changes,
 left to the user.
 
+## A borrowed line to read (2026-10-06)
+
+**Rule:** With no bookshelf standing and a line in reach that lends a
+strip, wanting a read she borrows a strip of it one decision in three
+(reading on her back the rest): she walks to it, reels the strip off
+into her hands, reads it sat beside the tear, and slides it back. Text
+is out of its line only while she holds it. A key press while she
+tears chat text (for furniture, or to read) catches her out, as at her
+other mischief there. See [design.md](design.md#houseguest).
+
+**Why a method of `Use::Read`, split with reading on her back by one
+whim** (phase 5c D5 as amended by M10): HG #72 is reading, so the borrow
+is reading's own method (`use/borrow`, after the bookshelf's), with
+reading's row, factors and fun. Reading on her back (step 10a) is an
+activity, a different want, so "tried in an order" can't be a method
+order: both would be offered and a bare room's reading would double.
+One whim (`borrows_now`) gates both: when a line lends a strip, one
+decision in three offers the borrow and not the book, the rest the book
+and not the borrow; with no line to borrow, always the book. The borrow
+is the rarer because it's a walk and the book is read on the spot
+(stillness: a walk is a set-off, and her movement draws the eye). Her
+base for it is reading's 8 against the book's 6, so where it's offered
+it draws a little more than the book would have.
+
+**Why beside the tear, her own floor first** (character m3): read where
+she tore it, sliding it back costs no second walk, so a borrow is one
+set-off. A line on her own floor is taken strictly first, whatever
+`Stillness::near` says: it's the method's rule (one short walk), not a
+lever to tune.
+
+**Why her holding the strip is what keeps the text torn, not a flag of
+the act's phases** (the class: never leave it torn): the act names what
+she holds (`Osaka::holding`: text she's tearing for a piece, or a
+borrowed strip, the same value all the while), and the guest puts back
+whatever of it is out the moment she doesn't hold it, however that
+came about: a chat line, her grip lost (a refused reel or slide step,
+or the strip she reads changed or scrolled under her), someone at the
+keys, text coming up where she sits, her pane focused, the stage
+placing her. It looks twice a paint, as it reads the frame and after
+the paint's own checks (recheck, eviction), so no frame shows text out
+she has let go of (without the second look the property fails: text
+scrolled up where she sits moves her on mid-paint, and the strip stays
+out a frame). A goodbye, her
+room going, a resize or switching off end the visit, and its text
+layer with it. A loss is owed only for text actually dropped: a strip
+slid back leaves nothing to put back. The stage's cue places her after
+the frame's text is drawn, so a cue that ends her hold looks a third
+time and draws the frame's text again from the frame as it came (a
+review found the strip left out a frame there; the property has no
+exception for it now).
+
+**Why her grip is checked from taking hold to letting go, for all text
+she holds** (review of step 10b): the first cut checked only the strip
+she sat reading. Reeling it in, a line that scrolled under her had its
+glyphs dropped by the layer's validation, and the next reel step tore
+whatever now stood in those cells: she'd read a strip of another line.
+Tearing for a piece and pulling a line had the same gap (a key press's
+put-back in the chat, then the same frame's pull step heaving the line
+off again from home). The class is "she goes on with text she has lost",
+so it's closed twice over: `Osaka::grip` names, for every act at text,
+what must still hold (the line as she found it while bracing, every
+glyph out of its line once any has moved) and the paint checks it after
+the frame's ops, every frame, against the real frame and her layer; and
+a reel step past the first, or a heave past the first cell, refuses a
+glyph that isn't already hers rather than taking it afresh (the same
+paint's validation can drop one the moment before that step runs, which
+no after-the-fact check can see). Five resident goldens moved by a
+frame at a key press mid-pull: the line no longer flickers back out.
+
+**Why a key press catches her out by where the text is** (review of
+step 10b): what goes back is the text in the chat (`drop_in` keys on its
+cells), so whether she was at it there is read off the same cells
+(`JobRef::text_cells`), not off where her feet are. By her feet, text
+outside the chat with her standing on its border caught her out for
+nothing, and text in the chat with her feet outside it went back under
+her while she reeled on and tore it straight off again.
+
+**Why the borrow's start and a forced put-back log at info:** both
+change what's in the user's panes (text leaves a line; text comes
+back). Its other beats (reading, sliding back) log at debug, as a tear's
+do.
+
+**Open: does she turn to the chat when she looks up from a strip?**
+`ReadStrip` keeps the art commit's turning rule, so a chat line turns
+her (strip and all) toward it, and she turns back to the tear when the
+look ends. The desk and the sill keep her facing what she's at; if the
+strip should too, `ReadStrip` moves to the non-turning arm of
+`Pose::turns` (and `look_up`'s borrow arm loses its turn-back). Left
+for the user.
+
+**Why the slide back is a reel run backwards** (M8: "name the
+slide-back"): `LayerOp::Unreel { step }` leaves the layer exactly as
+`Reel { step }` did, farthest glyph first, so the strip goes back the
+way it came, a cell a step, the line whole at step 0. An instant mend
+would read as a blink of text reappearing; the reel in already shows
+that the motion is cheap in attention (all in place, beside her).
+
+**Why the strip is static art:** `ReadStrip` holds the approved strip
+part (two fixed text colours). Drawing it from the real torn glyphs is
+a wiring option the art left open; not taken: it needs a procedural
+part per frame, for a strip a few cells wide that reads as text either
+way.
+
+**Why a key press catches her out tearing chat text:** local input puts
+back what she moved in the chat and catches her out if she was at it;
+`shaken` knew pulls and swaps only, so a resident tearing chat text for
+a piece had what she held put back under her and tore it straight off
+again (the goldens' resident runs, at a key press about 143 s in). The
+borrow would have joined it; both are now caught out.
+
 ## Houseguest chooses by needs among the top few (2026-09-28)
 
 **Rule:** Her next act is a weighted-random pick among the four

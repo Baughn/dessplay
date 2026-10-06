@@ -26,6 +26,14 @@ Add new days at the top. Add new entries at the bottom of existing days.
   lying on her back, and dozes under the book.
 - Changed: she watches TV cross-legged when she isn't watching from a
   sofa.
+- Added: with no bookshelf, Osaka sometimes borrows a line of text to
+  read, and slides it back when she's done.
+- Fixed: a key press while a resident Osaka tears chat text off to build
+  with now catches her out, as it does at her other mischief in the
+  chat, instead of her tearing it straight off again.
+- Fixed: when text scrolls or changes under Osaka while she pulls it or
+  tears it off, she lets go, instead of carrying on with whatever text
+  took its place.
 
 ## 2026-10-05
 
