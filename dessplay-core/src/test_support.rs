@@ -47,6 +47,18 @@ pub fn proptest_cases(default: u32) -> u32 {
         .unwrap_or(default)
 }
 
+/// Seeds a census band test runs a cell at (the houseguest's stillness
+/// band): `default` at the gate, where its thresholds widen to stay 3σ
+/// from the aim; `CENSUS_BAND_SEEDS` wins, for the full-strength check
+/// at step boundaries, where they narrow to the band itself.
+pub fn census_band_seeds(default: u64) -> u64 {
+    std::env::var("CENSUS_BAND_SEEDS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(default)
+}
+
 /// Number of distinct actors scripts draw from.
 pub const ACTORS: u8 = 4;
 /// Number of distinct files scripts draw from.

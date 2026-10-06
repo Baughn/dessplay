@@ -1,5 +1,6 @@
 # Nextest configuration. The default profile is the stop-hook / dev gate;
 # `--profile full` (or --ignore-default-filter) includes perf tests.
+# `--profile band` gives the houseguest's full-strength stillness band minutes a test.
 # Ignored OS/socket tests still require explicit --run-ignored selection.
 
 [profile.default]
@@ -26,3 +27,11 @@ slow-timeout = { period = "60s", terminate-after = 2 }
 # Include perf regression tests; ignored tests still need --run-ignored.
 default-filter = "all()"
 slow-timeout = { period = "60s", terminate-after = 2 }
+
+[profile.band]
+# The houseguest's stillness band at full strength (tests/band.rs:
+# CENSUS_BAND_SEEDS=<n> --release --run-ignored only): minutes a test. At
+# N=187 a band test took 2–4 min and the stage's spread (four cells) 6.4;
+# its own full strength, N=364, about doubles that. Kill at 20 min. At
+# the gate's seeds the band tests run about 3 s and keep the default 60 s.
+slow-timeout = { period = "300s", terminate-after = 4 }

@@ -37,7 +37,7 @@ const SEEDS: u64 = 16;
 /// her arrival's run of walks, at her arrival's needs, is a far bigger
 /// share of a short census visit than of an evening. The censuses print
 /// it apart.
-const WARM_MS: u64 = 3 * 60_000;
+pub(super) const WARM_MS: u64 = 3 * 60_000;
 
 /// A room to visit: the frame and view at `now`, and whether a chat line
 /// arrives on this step.
@@ -254,12 +254,12 @@ pub(super) struct Visit {
 
 impl Visit {
     /// Milliseconds moving in sight after the warm-up.
-    fn moving(&self) -> u64 {
+    pub(super) fn moving(&self) -> u64 {
         self.motion.values().sum()
     }
 
     /// Her set-offs after the warm-up.
-    fn set_off_count(&self) -> usize {
+    pub(super) fn set_off_count(&self) -> usize {
         self.set_offs.values().sum()
     }
 }
@@ -1065,12 +1065,7 @@ fn visit_census() {
         }
     }
     for (room, mood, quiet, graphics) in cells {
-        let room = &Room {
-            real: room.real.clone(),
-            view: room.view.clone(),
-            chat_every: if quiet { None } else { room.chat_every },
-            ..*room
-        };
+        let room = &with_chat(room, quiet);
         let started = std::time::Instant::now();
         let visits: Vec<Visit> = std::thread::scope(|scope| {
             let runs: Vec<_> = (0..SEEDS)
@@ -1210,8 +1205,18 @@ fn census_chats() -> Vec<bool> {
     }
 }
 
+/// `room` quiet, or with a chat line at its census cadence.
+pub(super) fn with_chat(room: &Room, quiet: bool) -> Room {
+    Room {
+        real: room.real.clone(),
+        view: room.view.clone(),
+        chat_every: if quiet { None } else { room.chat_every },
+        ..*room
+    }
+}
+
 /// The census's name for `room`'s chat: "quiet", or its cadence.
-fn chat_name(room: &Room) -> String {
+pub(super) fn chat_name(room: &Room) -> String {
     room.chat_every.map_or("quiet".to_owned(), |every| {
         format!("chat/{}s", every / 1000)
     })
@@ -1461,10 +1466,15 @@ const HELD_BACK: u64 = 1_000;
 /// The fed afternoon's rooms (phase 5c, B4): the visit census's, from
 /// [`AFTERNOON`], each as set (the stage with nothing, its TV held back).
 fn afternoon_rooms() -> [Room; 3] {
-    [stage_room(), furnished_room(), resident_room()].map(|room| Room {
+    [stage_room(), furnished_room(), resident_room()].map(at_afternoon)
+}
+
+/// `room` fed from [`AFTERNOON`].
+pub(super) fn at_afternoon(room: Room) -> Room {
+    Room {
         start: Some(AFTERNOON),
         ..room
-    })
+    }
 }
 
 /// Her in `room` from `seed`, drawn in line art if `graphics`, fed her
@@ -1517,7 +1527,13 @@ fn fed_afternoon(room: &Room, seed: u64, graphics: bool, mood: Mood) -> Guest {
 /// only grow), in `mood`; and at its end her room is as it was set: the
 /// same pieces, none boxed, nothing on order but what was held back.
 /// (Where they stand may change: putting her home right is hers to do.)
-fn afternoon(room: &Room, seed: u64, graphics: bool, mood: Mood, minutes: u64) -> (Visit, Guest) {
+pub(super) fn afternoon(
+    room: &Room,
+    seed: u64,
+    graphics: bool,
+    mood: Mood,
+    minutes: u64,
+) -> (Visit, Guest) {
     let guest = fed_afternoon(room, seed, graphics, mood);
     let pieces = |guest: &Guest| {
         let mut pieces: Vec<(Furniture, bool)> = guest
@@ -1550,8 +1566,9 @@ fn afternoon(room: &Room, seed: u64, graphics: bool, mood: Mood, minutes: u64) -
 /// Her moving on fed afternoons (phase 5c, D1 and B4/B5): each census
 /// room fed at Tuesday 13:00 ([`fed_afternoon`]: as set, no shopping, her
 /// mood forced and checked at every step), in each mood, quiet and at
-/// the room's chat cadence, in ASCII and line art, for fifteen minutes,
-/// at `CENSUS_SETS` (20) disjoint sets of `CENSUS_SET_SEEDS` (4) seeds.
+/// the room's chat cadence, in ASCII and line art, for fifteen minutes
+/// (`CENSUS_MINUTES`), at `CENSUS_SETS` (20) disjoint sets of
+/// `CENSUS_SET_SEEDS` (4) seeds.
 /// Prints each cell's moving in sight (from minute 3, the warm-up apart)
 /// with the σ of a set's mean, by what for and how; set-offs a minute in
 /// sight; what chat lines stopped her; still-but-busy time, exercise
@@ -1565,13 +1582,17 @@ fn afternoon(room: &Room, seed: u64, graphics: bool, mood: Mood, minutes: u64) -
 #[test]
 #[ignore = "the fed afternoon census: run by hand in release with --nocapture"]
 fn fed_afternoon_census() {
-    const MINUTES: u64 = 15;
     let knob = |name: &str, default: u64| {
         std::env::var(name)
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(default)
     };
+    // `CENSUS_MINUTES` sets the visit's length: 15 for baseline.md's
+    // tables; the stillness band's `BASELINE` and `TUNED` rows are read
+    // at the band's own length (`band::BAND_MINUTES`), since a shorter
+    // visit reads busier (her arrival spills past the warm-up).
+    let minutes = knob("CENSUS_MINUTES", 15);
     let (sets, set) = (knob("CENSUS_SETS", 20), knob("CENSUS_SET_SEEDS", 4));
     let modes = match std::env::var("CENSUS_MODES").as_deref() {
         Ok("ascii") => vec![false],
@@ -1593,12 +1614,7 @@ fn fed_afternoon_census() {
         for mood in Mood::ALL {
             for quiet in [true, false] {
                 for &graphics in &modes {
-                    let room = &Room {
-                        real: room.real.clone(),
-                        view: room.view.clone(),
-                        chat_every: if quiet { None } else { room.chat_every },
-                        ..room
-                    };
+                    let room = &with_chat(&room, quiet);
                     let started = std::time::Instant::now();
                     let seeds: Vec<u64> = (0..sets * set).collect();
                     let runs: Vec<(Visit, f64)> = seeds
@@ -1611,7 +1627,7 @@ fn fed_afternoon_census() {
                                         scope.spawn(move || {
                                             let started = std::time::Instant::now();
                                             let (visit, _) =
-                                                afternoon(room, seed, graphics, mood, MINUTES);
+                                                afternoon(room, seed, graphics, mood, minutes);
                                             (visit, started.elapsed().as_secs_f64())
                                         })
                                     })
@@ -1631,10 +1647,10 @@ fn fed_afternoon_census() {
                         mode_name(graphics)
                     );
                     eprintln!(
-                        "\n== fed afternoon: {cell} ({} visits × {MINUTES} min; {:.1} s; {:.1} ms a sim-minute)",
+                        "\n== fed afternoon: {cell} ({} visits × {minutes} min; {:.1} s; {:.1} ms a sim-minute)",
                         visits.len(),
                         started.elapsed().as_secs_f64(),
-                        1000.0 * cpu / (visits.len() as u64 * MINUTES) as f64
+                        1000.0 * cpu / (visits.len() as u64 * minutes) as f64
                     );
                     table.push((cell, motion_summary(&visits, set as usize)));
                 }

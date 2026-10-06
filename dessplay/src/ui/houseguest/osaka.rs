@@ -1330,6 +1330,40 @@ fn use_duration_in(what: Use, slot: Option<routine::Slot>) -> (u64, u64) {
     }
 }
 
+/// The longest a still act she chooses can run at her routine's `slot`
+/// (ms): any use (her day's sleep, today) with the longest prelude and
+/// coda any splice row may wrap it in, anything she does on the spot, or
+/// spacing out. The stillness band's visits must outlast it twice over
+/// (phase 5c, B5), so a lengthened act shows there.
+///
+/// It reads the length tables themselves, so an act lengthened anywhere
+/// else (phase 5c step 7's mood linger and settling in, for one) must
+/// draw its length through these tables, or this must read what it
+/// draws through: else the band's guard can't see it.
+#[cfg(test)]
+pub(super) fn longest_still_ms(slot: Option<routine::Slot>) -> u64 {
+    let wrap = |what: Use, part: script::Part| {
+        SpliceId::ALL
+            .iter()
+            .map(|id| id.row())
+            .filter(|row| row.at == part && row.around.contains(&what))
+            .flat_map(|row| row.lens.iter().copied())
+            .max()
+            .unwrap_or(0)
+    };
+    let uses = Use::ALL.map(|what| {
+        wrap(what, script::Part::Before)
+            + use_duration_in(what, slot).1
+            + wrap(what, script::Part::After)
+    });
+    let here = Activity::ALL.map(|what| what.duration().1);
+    uses.into_iter()
+        .chain(here)
+        .chain([SPACE_OUT_MS.1])
+        .max()
+        .unwrap_or(0)
+}
+
 /// Animation frame period for `what`.
 pub(super) const USE_FRAME_MS: u64 = 1400;
 

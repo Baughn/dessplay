@@ -1,6 +1,6 @@
 # Testing Strategy
 
-Last updated: 2026-10-05
+Last updated: 2026-10-06
 
 ## Table of Contents
 
@@ -820,6 +820,26 @@ what she did while here and awake, and what happened (arrivals,
 departures and returns, dashes, goodbyes, vignettes, glances at her
 clock, looking out of her window, the calendar, rare things first
 seen). It found the lunch lost to a chat line at her fridge.
+
+The **stillness band** (`tests/band.rs`, phase 5c) holds how much she
+moves on a fed afternoon to a band per room and mood, quiet and at the
+room's chat cadence: moving in sight after the warm-up as a pooled share
+of her time in sight, and a cap on her set-offs a minute. Every threshold
+stands at least 3σ (of the mean of the visits run) from the cell's aim.
+At the gate's two seeds a cell that makes 3σ 13–34 points, so the gate
+checks little: no share floor is above 10 (most are below zero, so "too
+still" all but never fails), the stage's share check can't fail at all,
+and what's left is the set-off cap and a gross excess of moving in the
+home and resident. Passing at the gate is not evidence the band is met.
+`CENSUS_BAND_SEEDS=<n>` (`test_support::census_band_seeds`, like
+`proptest_cases`) runs the full-strength check at step boundaries, in
+release under `--profile band` (minutes a test), where the thresholds
+narrow to the band itself: each line prints the N that takes (187 for
+the band, 364 for the stage's spread between moods, at the baseline's
+σ), and the run uses the largest. The per-room spread runs only then.
+The band tests run in **line art only**, an exemption from looping both
+drawing modes: the band is pinned in what the user's client draws, and
+the home and resident run identically in either mode.
 
 ### Whole-App TUI Tests
 

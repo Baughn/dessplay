@@ -11301,6 +11301,7 @@ proptest! {
 }
 
 mod away;
+mod band;
 mod calendar;
 mod census;
 mod clock;
