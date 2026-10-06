@@ -33,6 +33,10 @@ pub(super) struct Chances {
     pub loose: Vec<(u16, u16)>,
     /// Her furniture, and where she'd go to use it.
     pub seats: Vec<Seat>,
+    /// The kinds of her real furniture shown (boxed or not): what stands
+    /// in her room, whether or not she could get to it to use it now (a
+    /// seat behind text drops out of `seats`, its piece still stands).
+    pub real: Vec<Furniture>,
     /// Makeshift furniture she could make of text, for each use.
     pub builds: Vec<super::scenes::Build>,
     /// The makeshift pieces she has made this visit.
@@ -144,6 +148,8 @@ impl Judged {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Mine {
     pub id: MadeId,
+    /// The kind of piece it is.
+    pub item: Furniture,
     pub purpose: Use,
     /// Crumpled into shape.
     pub done: bool,
@@ -244,22 +250,33 @@ fn night_seats<'a>(chances: &'a Chances, terrain: &'a Terrain) -> impl Iterator<
     })
 }
 
-/// A spot on its floor just beside the piece she's in at `seat` (her bed,
-/// her sofa), where she may stay: the side nearer first.
+/// A spot on its floor just beside the piece she's at from `seat` (her
+/// bed, her sofa; or a desk she sits beside), where she may stay: the
+/// side nearer first.
 fn beside(seat: &Seat, terrain: &Terrain) -> Option<(i32, i32)> {
+    // Where in the piece (facing right) she's seated, and whether she
+    // faces away from the piece's own facing (`Shown::seat`'s inverse).
     let (cols, sit) = match seat.piece {
         PieceRef::Made(_) => (
             i32::from(super::scrap::footprint(seat.item).0),
-            super::scrap::SEAT,
+            Some(super::scrap::sit(seat.item)),
         ),
-        PieceRef::Real(item) => {
-            let cols = i32::from(item.spec().footprint.0);
-            (cols, item.spec().sit.map_or(cols / 2, |(col, _)| col))
-        }
+        PieceRef::Real(item) => (i32::from(item.spec().footprint.0), item.spec().sit),
     };
-    let left = match seat.facing {
-        Facing::Right => seat.x - sit,
-        Facing::Left => seat.x - (cols - 1 - sit),
+    let left = match sit {
+        Some((col, flip)) => {
+            let facing = match (seat.facing, flip) {
+                (facing, false) => facing,
+                (Facing::Right, true) => Facing::Left,
+                (Facing::Left, true) => Facing::Right,
+            };
+            match facing {
+                Facing::Right => seat.x - col,
+                Facing::Left => seat.x - (cols - 1 - col),
+            }
+        }
+        // Centred, whichever way it faces.
+        None => seat.x - cols / 2,
     };
     let half = sprite::WIDTH / 2;
     let floor = terrain.platform_at(seat.x, seat.y);
@@ -333,6 +350,14 @@ impl Chances {
     /// Whether `spot` is in the chat pane (and she's resident).
     pub(super) fn in_chat(&self, spot: (i32, i32)) -> bool {
         self.chat.is_some_and(|chat| holds(chat, spot))
+    }
+
+    /// Whether a piece like `item` stands in her room: a real one shown
+    /// (boxed or not), or one she made this visit (a heap or in shape).
+    /// Read off the pieces, not their seats (phase 5c M10: a desk whose
+    /// seat text blocks still stands there).
+    pub(super) fn stands(&self, item: Furniture) -> bool {
+        self.real.contains(&item) || self.mine.iter().any(|m| m.item == item)
     }
 
     /// Where she'd use a piece she made for its next step: crumpling it
@@ -412,6 +437,8 @@ const WAIT_MS: u64 = 300;
 const UNREACHED_MS: u64 = 2000;
 /// Lifting a piece.
 const HUP: &str = line!("Hup!");
+/// Her homework on the floor over, the first time a visit (phase 5c D5).
+pub(super) const MY_BACK: &str = line!("My back...");
 /// Trying a piece where she has set it down.
 const HMM: &str = line!("hmm...");
 /// Using a piece she's trying where it stands: a moment.
@@ -1451,7 +1478,8 @@ pub(super) fn longest_still_ms(slot: Option<routine::Slot>) -> u64 {
 /// lingers over as long as the most lingering mood's, and, if any mood
 /// settles in, each chain she can settle along (spacing out or gazing,
 /// then sitting, then lying back or dozing where she sits; lounging,
-/// then napping on the same sofa) as long as its links together.
+/// then napping on the same sofa; reading on her back, then dozing under
+/// the book) as long as its links together.
 #[cfg(test)]
 pub(super) fn longest_still_ms_with(slot: Option<routine::Slot>, still: &Stillness) -> u64 {
     let linger = |lingers: bool, ms: u64| still.lingered_most(lingers, ms);
@@ -1460,7 +1488,7 @@ pub(super) fn longest_still_ms_with(slot: Option<routine::Slot>, still: &Stillne
             + linger(what.lingers(), use_duration_in(what, slot).1)
             + splice_wrap_ms(what, script::Part::After)
     };
-    let doing = |what: Activity| linger(what.lingers(), what.duration().1);
+    let doing = |what: Activity| linger(what.lingers(), what.duration_in(slot).1);
     let space_out = linger(true, SPACE_OUT_MS.1);
     Use::ALL
         .map(using)
@@ -1476,15 +1504,16 @@ pub(super) fn longest_still_ms_with(slot: Option<routine::Slot>, still: &Stillne
 /// her routine's `slot` (ms; none, if no mood settles in): spacing out
 /// or gazing, then sitting, then lying back or dozing where she sits;
 /// lounging, then napping on the same sofa (each with the longest
-/// prelude and coda any splice row may wrap it in). Each link is as
-/// long as its longest, lingered as the most lingering mood lingers.
+/// prelude and coda any splice row may wrap it in); reading on her
+/// back, then dozing under the book. Each link is as long as its
+/// longest, lingered as the most lingering mood lingers.
 #[cfg(test)]
-pub(super) fn settle_chains_ms(slot: Option<routine::Slot>, still: &Stillness) -> [u64; 2] {
+pub(super) fn settle_chains_ms(slot: Option<routine::Slot>, still: &Stillness) -> [u64; 3] {
     if !still.settles() {
-        return [0; 2];
+        return [0; 3];
     }
     let linger = |lingers: bool, ms: u64| still.lingered_most(lingers, ms);
-    let doing = |what: Activity| linger(what.lingers(), what.duration().1);
+    let doing = |what: Activity| linger(what.lingers(), what.duration_in(slot).1);
     let using = |what: Use| {
         splice_wrap_ms(what, script::Part::Before)
             + linger(what.lingers(), use_duration_in(what, slot).1)
@@ -1495,6 +1524,7 @@ pub(super) fn settle_chains_ms(slot: Option<routine::Slot>, still: &Stillness) -
     [
         into_sit + doing(Activity::Sit) + from_sit,
         using(Use::Lounge) + using(Use::Nap),
+        doing(Activity::LieRead) + doing(Activity::BookDoze),
     ]
 }
 
@@ -1545,13 +1575,24 @@ pub(super) enum Activity {
     /// Dozing off where she sits, her head sinking onto her knees: only
     /// ever settled into from sitting (phase 5c M7), never chosen.
     SitDoze,
+    /// Her homework lying on the floor (phase 5c D5), where no desk
+    /// stands: on her front writing on a paper out in front of her, or on
+    /// her back reading the set text over her face, then nodding off
+    /// where her mood has her (its own script: [`ScriptId::FloorHomework`]).
+    FloorHomework,
+    /// Reading lying on her back, the book held over her face (phase 5c
+    /// D5), where no bookshelf stands.
+    LieRead,
+    /// Dozing under the book, open over her eyes: only ever settled into
+    /// from reading on her back (phase 5c M7), never chosen.
+    BookDoze,
 }
 
 impl Activity {
     /// Every activity: those she chooses, and those she only settles
     /// into ([`Activity::chosen`]).
     #[cfg(test)]
-    pub const ALL: [Activity; 8] = [
+    pub const ALL: [Activity; 11] = [
         Self::Sit,
         Self::LieBack,
         Self::LieFront,
@@ -1560,6 +1601,9 @@ impl Activity {
         Self::Stretch,
         Self::Gaze,
         Self::SitDoze,
+        Self::FloorHomework,
+        Self::LieRead,
+        Self::BookDoze,
     ];
 
     /// Whether she chooses it (it's a want of hers: [`Want::ALL`] lists
@@ -1574,8 +1618,10 @@ impl Activity {
             | Self::Jacks
             | Self::ToeTouch
             | Self::Stretch
-            | Self::Gaze => true,
-            Self::SitDoze => false,
+            | Self::Gaze
+            | Self::FloorHomework
+            | Self::LieRead => true,
+            Self::SitDoze | Self::BookDoze => false,
         }
     }
 
@@ -1584,23 +1630,41 @@ impl Activity {
     /// want of beauty.
     pub fn restful(self) -> bool {
         match self {
-            Self::Sit | Self::LieBack | Self::LieFront | Self::Gaze | Self::SitDoze => true,
+            Self::Sit
+            | Self::LieBack
+            | Self::LieFront
+            | Self::Gaze
+            | Self::SitDoze
+            | Self::FloorHomework
+            | Self::LieRead
+            | Self::BookDoze => true,
             Self::Jacks | Self::ToeTouch | Self::Stretch => false,
         }
     }
 
     /// Whether her mood lingers over its length (phase 5c M8: see
     /// [`Stillness::linger`]): sitting, lying back, gazing, dozing where
-    /// she sits. Not exercise, nor lying on her front kicking her feet
-    /// (twice a second: a longer kick would draw the eye longer).
+    /// she sits, reading on her back, dozing under the book. Not
+    /// exercise, nor lying on her front kicking her feet (twice a second:
+    /// a longer kick would draw the eye longer), nor her homework on the
+    /// floor, whose nod-off her mood moves instead (as at her desk).
     pub fn lingers(self) -> bool {
         match self {
-            Self::Sit | Self::LieBack | Self::Gaze | Self::SitDoze => true,
-            Self::LieFront | Self::Jacks | Self::ToeTouch | Self::Stretch => false,
+            Self::Sit
+            | Self::LieBack
+            | Self::Gaze
+            | Self::SitDoze
+            | Self::LieRead
+            | Self::BookDoze => true,
+            Self::LieFront | Self::Jacks | Self::ToeTouch | Self::Stretch | Self::FloorHomework => {
+                false
+            }
         }
     }
 
-    /// How long she keeps at it (ms range).
+    /// How long she keeps at it (ms range): her homework on the floor as
+    /// long as at her desk, reading on her back as long as at her
+    /// bookshelf.
     pub(super) fn duration(self) -> (u64, u64) {
         match self {
             Self::Sit => (10_000, 25_000),
@@ -1611,17 +1675,47 @@ impl Activity {
             Self::Stretch => (2_000, 4_000),
             Self::Gaze => (4_000, 10_000),
             Self::SitDoze => (15_000, 40_000),
+            Self::FloorHomework => use_duration(Use::Homework),
+            Self::LieRead => use_duration(Use::Read),
+            Self::BookDoze => (15_000, 40_000),
         }
     }
 
-    /// Animation frame period; 0 for a held pose.
+    /// How long she keeps at it at her routine's `slot` (ms range;
+    /// `None`: no routine reaches her): her homework on the floor at
+    /// homework time as long as at her desk then.
+    pub(super) fn duration_in(self, slot: Option<routine::Slot>) -> (u64, u64) {
+        match self {
+            Self::FloorHomework => use_duration_in(Use::Homework, slot),
+            Self::Sit
+            | Self::LieBack
+            | Self::LieFront
+            | Self::Jacks
+            | Self::ToeTouch
+            | Self::Stretch
+            | Self::Gaze
+            | Self::SitDoze
+            | Self::LieRead
+            | Self::BookDoze => self.duration(),
+        }
+    }
+
+    /// Animation frame period; 0 for a held pose. Reading on her back,
+    /// a page turns as often as at her bookshelf; her homework on the
+    /// floor is its script's.
     fn period(self) -> u64 {
         match self {
             Self::LieBack => 1400,
             Self::LieFront => 500,
             Self::Jacks => 450,
             Self::ToeTouch => 900,
-            Self::Sit | Self::Stretch | Self::Gaze | Self::SitDoze => 0,
+            Self::LieRead => USE_FRAME_MS,
+            Self::Sit
+            | Self::Stretch
+            | Self::Gaze
+            | Self::SitDoze
+            | Self::FloorHomework
+            | Self::BookDoze => 0,
         }
     }
 
@@ -1650,6 +1744,11 @@ impl Activity {
             Self::Gaze if frame == 0 => (Pose::Gaze, Face::Curious, Some(Bubble::Ooh)),
             Self::Gaze => (Pose::Gaze, Face::Curious, None),
             Self::SitDoze => (Pose::SitDoze(frame), Face::Blink, Some(Bubble::Zzz)),
+            // Its script poses her (this is its host: on her front,
+            // writing).
+            Self::FloorHomework => (Pose::FloorHomework(frame), Face::Vacant, None),
+            Self::LieRead => (Pose::LieRead(frame), Face::Vacant, None),
+            Self::BookDoze => (Pose::LieRead(2), Face::Blink, Some(Bubble::Zzz)),
         }
     }
 }
@@ -1830,6 +1929,10 @@ pub(super) struct Osaka {
     /// How many times she has settled further into the still act she's
     /// at (0: she chose it): see [`Osaka::settle_in`].
     settled: u8,
+    /// Her back aches from her homework on the floor (phase 5c D5): set
+    /// for the visit the first time one ends, when she says so; from then
+    /// on a desk of her own making draws her the more.
+    pub(super) ached: bool,
     /// Her last few choices (repeating herself is discouraged).
     recent: Vec<Want>,
     /// Where she's going to poke the scrollback accordion (standing on
@@ -2225,6 +2328,7 @@ impl Osaka {
             mood: Mood::Ordinary,
             stillness: stillness::SHIPPED,
             settled: 0,
+            ached: false,
             recent: Vec::new(),
             decided: now,
             errand: None,
@@ -2607,14 +2711,29 @@ impl Osaka {
                 since + WINDUP_MS + if knocked { RECOIL_MS } else { 0 }
             }
             Act::Tear { since, ripped, .. } => since + if ripped { REEL_MS } else { BRACE_MS },
-            // Her night on the floor wakes only as a key ends (it's held
-            // still); any other activity on its frames.
+            // An activity's own script wakes her as each key ends, and
+            // on a key's frames while it bobs (her homework on the floor,
+            // writing); a held one (her night on the floor) only as it
+            // ends. Any other activity, on its frames.
             Act::Idle {
                 play: Some(play),
                 since,
                 until,
                 ..
-            } => play.next_end(since, until, now).unwrap_or(until).min(until),
+            } => {
+                let key_end = play.next_end(since, until, now).unwrap_or(until);
+                let grid = match play.key(since, until, now) {
+                    Some((
+                        script::Key {
+                            pose: script::Posed::Bob(_, period),
+                            ..
+                        },
+                        _,
+                    )) => play.next_frame(since, until, now, *period),
+                    _ => u64::MAX,
+                };
+                key_end.min(grid).min(until)
+            }
             Act::Idle {
                 what, since, until, ..
             } => next_frame(what, since, now).min(until),
@@ -3587,6 +3706,12 @@ impl Osaka {
         // Anything she's set at is chosen afresh, unless she's settling
         // into it (which counts itself, once set: see `settle_in`).
         self.settled = 0;
+        // Standing while a chat watch is live she's drawn side-on
+        // watching it (see `acting`), so whatever stood her (her "I'm
+        // home!", her back aching, the watch's own stand) she faces it.
+        if matches!(act, Act::Stand { .. }) && at < self.watch_until {
+            self.facing = toward(self.x, self.watch_x);
+        }
         self.act = act;
         self.act_since = at;
         self.act_since_game = self.game_at(at);
@@ -4356,7 +4481,7 @@ impl Osaka {
                 // waits for one it does). A splice waits for a use it
                 // wraps that isn't her night's sleep (nothing wraps that).
                 let cued = self.cued.take_if(|cue| {
-                    cue.plays_on(seat.what, trying, grievance.is_some())
+                    cue.plays_on(seat.what, trying, grievance.is_some(), seat.makeshift())
                         && !(sleeps_here && at_night && matches!(cue, Cue::Splice(..)))
                 });
                 let night = sleeps_here
@@ -4385,6 +4510,7 @@ impl Osaka {
                 };
                 let ctx = SpliceCtx {
                     what: seat.what,
+                    makeshift: seat.makeshift(),
                     trying,
                     quiet: quiet <= at,
                     day,
@@ -6066,9 +6192,17 @@ impl Osaka {
                 | Activity::Stretch
                 | Activity::Gaze,
             ) => (method == "idle").then_some(CreditPath::By(Via::Share)),
-            // Never chosen: only settled into, from a sit.
-            Want::Idle(Activity::SitDoze) => {
+            // Never chosen: only settled into, from a sit, or from
+            // reading on her back.
+            Want::Idle(Activity::SitDoze | Activity::BookDoze) => {
                 (method == SETTLE_IN).then_some(CreditPath::By(Via::Share))
+            }
+            Want::Idle(Activity::FloorHomework) => match method {
+                "floor-homework" | "floor-homework/book" => Some(CreditPath::By(Via::Share)),
+                _ => None,
+            },
+            Want::Idle(Activity::LieRead) => {
+                (method == "lie-read").then_some(CreditPath::By(Via::Share))
             }
             Want::Walk => (method == "walk/along").then_some(CreditPath::By(Via::SetOff)),
             Want::Travel => match method {
@@ -6319,9 +6453,14 @@ impl Osaka {
             Act::Use { seat, .. } if seat.what == Use::LookOut => "spacing out",
             Act::Use { .. } => "furniture",
             Act::Idle { what, .. } => match what {
-                Activity::Sit | Activity::LieBack | Activity::LieFront | Activity::SitDoze => {
-                    "floor rest"
-                }
+                // On the floor, at her homework or a book too.
+                Activity::Sit
+                | Activity::LieBack
+                | Activity::LieFront
+                | Activity::SitDoze
+                | Activity::FloorHomework
+                | Activity::LieRead
+                | Activity::BookDoze => "floor rest",
                 Activity::Gaze => "spacing out",
                 Activity::Jacks | Activity::ToeTouch | Activity::Stretch => "exercise",
             },
@@ -6464,6 +6603,14 @@ impl Osaka {
     pub fn answered_until(&self) -> Option<u64> {
         let (span, until) = self.answering?;
         (self.use_span() == Some(span)).then_some(until)
+    }
+
+    /// Whether she's looking up at the chat where she is, from a still
+    /// act (phase 5c B1). (On her feet, a watch is a decision of its
+    /// own, "watching chat".)
+    #[cfg(test)]
+    pub fn looking_up_at_chat(&self) -> bool {
+        self.looking_up.is_some()
     }
 
     /// Whether she's stopped to look (at the chat, or startled).
@@ -6659,6 +6806,26 @@ impl Osaka {
         if to_school {
             return self.go_out(Routine::School, whims, at);
         }
+        // Her homework on the floor over, the floor was hard on her back
+        // (phase 5c D5): the first time a visit, she says so, standing a
+        // moment while it shows (after her routine: bed and school come
+        // first, and the next one aches instead).
+        if !self.ached
+            && matches!(
+                ended.0,
+                Act::Idle {
+                    what: Activity::FloorHomework,
+                    ..
+                }
+            )
+        {
+            self.ached = true;
+            tracing::info!("houseguest: her back aches from homework on the floor");
+            self.say(MY_BACK, at);
+            let until = self.speech.map_or(at, |(_, until)| until);
+            self.set(Act::Stand { until }, at);
+            return Decision::reflex("ached");
+        }
         // A still act she chose that has run its course: she may settle
         // further where she is (phase 5c M7), after her routine and
         // (below) anything she owes, is moving or made, and before
@@ -6673,8 +6840,8 @@ impl Osaka {
             return self.settle_in(settle, chances, at, rng);
         }
         if at < self.watch_until {
-            self.facing = toward(self.x, self.watch_x);
-            // Standing the rest of it out in one: the watch is never more
+            // Standing the rest of it out in one, facing it (`set`
+            // turns a stand under a live watch): the watch is never more
             // than `WATCH_MS` ahead (each line sets it from its own time),
             // so there's no long watch to break up.
             self.set(
@@ -6848,6 +7015,7 @@ impl Osaka {
             offers.retain(|&(want, name, _)| want == only && (name == by || name == "heading"));
         }
         let (day, date) = (self.day(at), self.clock.and_then(|clock| clock.date));
+        let ached = self.ached;
         #[cfg(test)]
         let factored = std::cell::RefCell::new(Vec::new());
         for attempt in 0.. {
@@ -6867,7 +7035,11 @@ impl Osaka {
                 } else {
                     1.0
                 };
-                let times = brain::factor(want, into_chat, day.as_ref(), date);
+                let made = offers
+                    .iter()
+                    .find(|(w, ..)| *w == want)
+                    .map_or(1.0, |(_, _, bind)| making(bind, chances, ached));
+                let times = brain::factor(want, into_chat, day.as_ref(), date) * made;
                 #[cfg(test)]
                 factored.borrow_mut().push((want, into_chat, times));
                 times * inertia
@@ -6945,6 +7117,7 @@ impl Osaka {
                 knocked: false,
             },
             Bind::Here(Here::Idle(what)) => self.idle_act(what, at, rng),
+            Bind::Here(Here::FloorHomework { book }) => self.floor_homework_act(book, at, rng),
             Bind::WalkTo(to) => {
                 self.facing = toward(self.x, to);
                 Act::Walk {
@@ -7054,7 +7227,8 @@ impl Osaka {
     /// musing) or gazing, to sitting; sitting, to lying back, or (on a
     /// whim, [`Stillness::sit_doze`]) dozing off where she sits; lounging,
     /// to a nap on the same sofa, from where she sits (as napping on it
-    /// would be offered her now: [`mind::places`]). As often as her
+    /// would be offered her now: [`mind::places`]); reading on her back,
+    /// to a doze under the book. As often as her
     /// mood's odds ([`Stillness::settle`]) on her decision's `whims`,
     /// salted with how far she has settled already. Nothing else
     /// settles: a lying doze is as far as it goes; nor what she didn't
@@ -7109,12 +7283,19 @@ impl Osaka {
                         Activity::LieBack
                     }))
                 }
+                // Reading on her back, she dozes off under the book.
+                Activity::LieRead => Some(Settle::Idle(Activity::BookDoze)),
+                // Her homework on the floor nods off in its own script
+                // (as at her desk), never settled from (it plays: no
+                // arm here sees it).
                 Activity::LieBack
                 | Activity::LieFront
                 | Activity::Jacks
                 | Activity::ToeTouch
                 | Activity::Stretch
-                | Activity::SitDoze => None,
+                | Activity::SitDoze
+                | Activity::FloorHomework
+                | Activity::BookDoze => None,
             },
             (Act::Use { seat, until, .. }, Some(Want::Use(Use::Lounge)))
                 if seat.what == Use::Lounge && *until <= at && !trying =>
@@ -7735,15 +7916,55 @@ impl Osaka {
     }
 
     fn idle_act(&mut self, what: Activity, at: u64, rng: &mut Rng) -> Act {
-        if matches!(what, Activity::Sit | Activity::LieBack | Activity::LieFront) {
-            // Sitting and lying face either way.
-            self.facing = if rng.below(2) == 0 {
-                Facing::Left
-            } else {
-                Facing::Right
-            };
+        if what == Activity::FloorHomework {
+            return self.floor_homework_act(false, at, rng);
+        }
+        if matches!(
+            what,
+            Activity::Sit | Activity::LieBack | Activity::LieFront | Activity::LieRead
+        ) {
+            self.face_either_way(rng);
         }
         self.idle_from(what, at, rng)
+    }
+
+    /// Sitting and lying, she faces either way.
+    fn face_either_way(&mut self, rng: &mut Rng) {
+        self.facing = if rng.below(2) == 0 {
+            Facing::Left
+        } else {
+            Facing::Right
+        };
+    }
+
+    /// Her homework on the floor from `at` (phase 5c D5): on her front
+    /// writing on the paper out in front of her, or (`book`) on her back
+    /// reading the set text over her face; nodding off where her mood
+    /// has her, as at her desk (see [`script::floor_homework_branch`]),
+    /// and as long as at her desk (at homework time, as long as then).
+    /// Facing either way, as lying does.
+    fn floor_homework_act(&mut self, book: bool, at: u64, rng: &mut Rng) -> Act {
+        self.face_either_way(rng);
+        let slot = self.day(at).map(|day| day.slot);
+        let (lo, hi) = Activity::FloorHomework.duration_in(slot);
+        let nod = self.stillness.nod_off.of(self.mood);
+        tracing::debug!(book, "houseguest: homework on the floor");
+        Act::Idle {
+            what: Activity::FloorHomework,
+            since: at,
+            until: at + rng.range(lo, hi),
+            play: Some(Play {
+                branch: script::floor_homework_branch(nod, book),
+                ..Play::plain(ScriptId::FloorHomework)
+            }),
+        }
+    }
+
+    /// The stage: her homework on the floor, now (on her back with the
+    /// set text, if `book`).
+    pub fn floor_homework(&mut self, book: bool, at: u64, rng: &mut Rng) {
+        let act = self.floor_homework_act(book, at, rng);
+        self.set(act, at);
     }
 
     /// Doing `what` on the spot from `at`, as long as she draws for it
@@ -8829,17 +9050,19 @@ impl Osaka {
                 grievance,
                 ..
             } => {
-                // Watching from a sofa, she sits on it.
+                // Watching from a sofa, she sits on it; from the floor,
+                // cross-legged (phase 5c D5).
                 let host = if seat.item == Furniture::Sofa {
                     Pose::Lounge
                 } else {
-                    Pose::Sit
+                    Pose::CrossLegged
                 };
                 let (pose, face, bubble) = play
                     .key(since, until, now)
                     .map_or((host, Face::Vacant, None), |(key, elapsed)| {
                         key.look(elapsed, host, &play)
                     });
+                let pose = at_seat(pose, seat);
                 // Answering the chat, she beams.
                 let answering = self
                     .answering
@@ -9011,6 +9234,47 @@ fn route(terrain: &Terrain, from: usize, to: usize) -> Option<Link> {
         }
     }
     None
+}
+
+/// How much likelier an offer is for making what it binds her to (phase
+/// 5c D5): a piece of a kind she owns no real one of ([`Chances::real`])
+/// [`MAKESHIFT_DRAW`] times as likely; a paper desk with none standing,
+/// as much again while her back aches from homework on the floor
+/// (`ached`; with a real desk standing, her back is nothing to making
+/// another). Anything else, 1.
+/// Above 1 always, so it never pushes the want itself out of her best
+/// few (`brain::choose`).
+fn making(bind: &Bind, chances: &Chances, ached: bool) -> f64 {
+    let Bind::Job(Job::Build(build)) = bind else {
+        return 1.0;
+    };
+    let item = build.piece.item;
+    if chances.real.contains(&item) {
+        return 1.0;
+    }
+    let back = if ached && item == Furniture::Desk {
+        MAKESHIFT_DRAW
+    } else {
+        1.0
+    };
+    MAKESHIFT_DRAW * back
+}
+
+/// How much likelier making a piece is while she owns no real one of
+/// its kind (phase 5c D5), and making a desk again while her back aches.
+pub(super) const MAKESHIFT_DRAW: f64 = 3.0;
+
+/// Her pose `pose` (as a use's script poses her) at `seat`: at her paper
+/// desk (phase 5c D5), kneeling beside it, where the script has her on
+/// her stool at a real desk. The one place a made piece's pose differs
+/// from its real kind's.
+fn at_seat(pose: Pose, seat: Seat) -> Pose {
+    match pose {
+        Pose::Homework(frame) if seat.makeshift() && seat.item == Furniture::Desk => {
+            Pose::PaperDesk(frame)
+        }
+        other => other,
+    }
 }
 
 /// The next animation-frame boundary of `what` after `now`, or far away
@@ -9303,9 +9567,9 @@ mod tests {
         /// A use, on a sofa or not, its advert, and its spans.
         type Case = (Use, bool, Option<Furniture>, Vec<Span>);
         let pitch = Furniture::Lamp.spec().pitch;
-        let snow: Body = |t| (Pose::Sit, Some(Prop::Tv(Channel::Snow(tv(t)))));
+        let snow: Body = |t| (Pose::CrossLegged, Some(Prop::Tv(Channel::Snow(tv(t)))));
         let snow_on_sofa: Body = |t| (Pose::Lounge, Some(Prop::Tv(Channel::Snow(tv(t)))));
-        let selling: Body = |t| (Pose::Sit, Some(Prop::Tv(Channel::Shopping(tv(t)))));
+        let selling: Body = |t| (Pose::CrossLegged, Some(Prop::Tv(Channel::Shopping(tv(t)))));
         let selling_on_sofa: Body = |t| (Pose::Lounge, Some(Prop::Tv(Channel::Shopping(tv(t)))));
         let sold = |body: Body, length: u64| {
             vec![
@@ -10364,7 +10628,11 @@ mod tests {
         let length = use_duration(Use::Watch).0;
         let play = Play::plain(ScriptId::Surf);
         for sofa in [false, true] {
-            let host = if sofa { Pose::Lounge } else { Pose::Sit };
+            let host = if sofa {
+                Pose::Lounge
+            } else {
+                Pose::CrossLegged
+            };
             let mut at = |t| {
                 let use_ = Played {
                     what: Use::Watch,
@@ -10917,6 +11185,26 @@ mod tests {
             assert_eq!(length(Use::Homework, afternoon, seed), (unfed, drawn));
             for what in [Use::Read, Use::Watch, Use::Lounge] {
                 assert_eq!(length(what, homework_time, seed), length(what, None, seed));
+            }
+            // Her homework on the floor (phase 5c D5), as long as at her
+            // desk, at its times.
+            for (clock, (lo, hi)) in [
+                (None, (30_000, 60_000)),
+                (homework_time, (120_000, 240_000)),
+                (afternoon, (30_000, 60_000)),
+            ] {
+                let mut rng = Rng(seed);
+                let mut osaka = Osaka::standing_at(10, 10, 0, &mut rng);
+                osaka.read_clock(clock);
+                osaka.floor_homework(seed % 2 == 0, 1000, &mut rng);
+                let Act::Idle { since, until, .. } = osaka.act else {
+                    panic!("homework on the floor: {:?}", osaka.act);
+                };
+                assert!(
+                    (lo..hi).contains(&(until - since)),
+                    "seed {seed} {clock:?}: {}",
+                    until - since
+                );
             }
         }
     }
@@ -15965,6 +16253,13 @@ mod tests {
                 0.0,
                 Want::Use(Use::Nap),
             ),
+            (
+                "reading on her back",
+                idle_until(Activity::LieRead, 10_000),
+                Want::Idle(Activity::LieRead),
+                0.0,
+                Want::Idle(Activity::BookDoze),
+            ),
         ];
         for mood in Mood::ALL {
             for (name, act, want, sit_doze, into) in &cases {
@@ -16558,6 +16853,7 @@ mod tests {
         let end = 10_000;
         let heap = Mine {
             id: MadeId(0),
+            item: Furniture::Sofa,
             purpose: Use::Lounge,
             done: false,
             used: false,
@@ -16712,9 +17008,16 @@ mod tests {
         type Start<'a> = Box<dyn Fn(&mut Osaka, &mut Rng) + 'a>;
         let mut cases: Vec<(String, Start, bool)> = Vec::new();
         for what in Activity::ALL {
+            // Her homework on the floor nods off where her mood has it
+            // instead (as at her desk).
             let lingers = matches!(
                 what,
-                Activity::Sit | Activity::LieBack | Activity::Gaze | Activity::SitDoze
+                Activity::Sit
+                    | Activity::LieBack
+                    | Activity::Gaze
+                    | Activity::SitDoze
+                    | Activity::LieRead
+                    | Activity::BookDoze
             );
             cases.push((
                 format!("{what:?}"),
@@ -16723,6 +17026,22 @@ mod tests {
             ));
         }
         let terrain = &terrain;
+        for book in [false, true] {
+            cases.push((
+                format!("floor homework, book {book}"),
+                Box::new(move |o: &mut Osaka, rng: &mut Rng| {
+                    assert!(o.plan(
+                        Want::Idle(Activity::FloorHomework),
+                        Bind::Here(Here::FloorHomework { book }),
+                        0,
+                        terrain,
+                        0,
+                        rng
+                    ));
+                }),
+                false,
+            ));
+        }
         cases.push((
             "space out".into(),
             Box::new(move |o: &mut Osaka, rng: &mut Rng| {
@@ -16810,8 +17129,9 @@ mod tests {
     /// The band's guard sees a chain she settles along as one still
     /// stretch (phase 5c M7, B5), once any mood settles in: spacing out
     /// or gazing, sitting, then lying back or dozing where she sits;
-    /// lounging, then napping on the same sofa; each link as long as its
-    /// longest, lingered as the most lingering mood lingers.
+    /// lounging, then napping on the same sofa; reading on her back,
+    /// then dozing under the book; each link as long as its longest,
+    /// lingered as the most lingering mood lingers.
     #[test]
     fn the_band_guard_sees_her_settling_chains_whole() {
         let slot = Some(routine::Slot::Afternoon);
@@ -16819,7 +17139,7 @@ mod tests {
             linger: ByMood::all(1.5),
             ..Stillness::NEUTRAL
         };
-        assert_eq!(settle_chains_ms(slot, &lingering), [0, 0], "none settle");
+        assert_eq!(settle_chains_ms(slot, &lingering), [0, 0, 0], "none settle");
         let settling = Stillness {
             settle: ByMood {
                 lazy: 0.5,
@@ -16831,8 +17151,12 @@ mod tests {
         let longest = |what: Activity| l(what.duration().1);
         let space_out = l(SPACE_OUT_MS.1).max(longest(Activity::Gaze));
         let doze = longest(Activity::LieBack).max(longest(Activity::SitDoze));
-        let [here, sofa] = settle_chains_ms(slot, &settling);
+        let [here, sofa, book] = settle_chains_ms(slot, &settling);
         assert_eq!(here, space_out + longest(Activity::Sit) + doze);
+        assert_eq!(
+            book,
+            longest(Activity::LieRead) + longest(Activity::BookDoze)
+        );
         let (lounge, nap) = (
             use_duration_in(Use::Lounge, slot).1,
             use_duration_in(Use::Nap, slot).1,
@@ -16841,7 +17165,7 @@ mod tests {
             sofa >= l(lounge) + l(nap),
             "{sofa}: with their preludes and codas"
         );
-        assert!(longest_still_ms_with(slot, &settling) >= here.max(sofa));
+        assert!(longest_still_ms_with(slot, &settling) >= here.max(sofa).max(book));
     }
 
     /// Her homework nods off where her mood has it (phase 5c M8): a
@@ -17062,5 +17386,513 @@ mod tests {
         }
         assert!(checked >= 10, "{checked} sessions");
         assert!(gaps.len() >= 10, "the gaps vary: {gaps:?}");
+    }
+
+    // Phase 5c D5: her homework and a book on the floor, the paper desk,
+    // making while she owns no real piece, watching cross-legged.
+
+    /// A paper desk she made, in shape, to do her homework at: she
+    /// kneels beside it at `(20, 15)`, facing left toward it.
+    fn paper_desk_seat() -> Seat {
+        Seat {
+            what: Use::Homework,
+            item: Furniture::Desk,
+            piece: PieceRef::Made(MadeId(0)),
+            x: 20,
+            y: 15,
+            facing: Facing::Left,
+        }
+    }
+
+    /// Her homework on the floor, either way (on her front writing, on
+    /// her back with the set text), writes (or reads) bobbing on the use
+    /// frame, nods off where her mood has it (as at her desk: a third
+    /// lazy, half ordinary and dreamy, five sixths industrious; half in
+    /// every mood with the neutral levers), dots then asleep: her head
+    /// on her arms, or the book open over her eyes. She doesn't linger
+    /// over it (its nod-off moves instead). A chat line has her look up
+    /// where she is while she writes, and only stirs her dozing.
+    #[test]
+    fn her_homework_on_the_floor_nods_off_where_her_mood_has_it() {
+        let terrain = floor_at(15);
+        for book in [false, true] {
+            let (at_it, dozed) = if book {
+                (Pose::LieRead as fn(u8) -> Pose, Pose::LieRead(2))
+            } else {
+                (
+                    Pose::FloorHomework as fn(u8) -> Pose,
+                    Pose::FloorHomework(2),
+                )
+            };
+            for (still, mood, write) in [
+                (Stillness::STARTING, Mood::Lazy, (1, 3)),
+                (Stillness::STARTING, Mood::Ordinary, (1, 2)),
+                (Stillness::STARTING, Mood::Dreamy, (1, 2)),
+                (Stillness::STARTING, Mood::Industrious, (5, 6)),
+                (Stillness::NEUTRAL, Mood::Lazy, (1, 2)),
+                (Stillness::NEUTRAL, Mood::Industrious, (1, 2)),
+            ] {
+                let at = format!(
+                    "book {book} {mood:?} neutral {}",
+                    still == Stillness::NEUTRAL
+                );
+                let mut rng = Rng(3);
+                let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+                osaka.set_mood(mood);
+                osaka.stillness = still;
+                osaka.floor_homework(book, 0, &mut rng);
+                let Act::Idle {
+                    what,
+                    until,
+                    play: Some(play),
+                    ..
+                } = osaka.act
+                else {
+                    panic!("{at}: {:?}", osaka.act);
+                };
+                assert_eq!(what, Activity::FloorHomework, "{at}");
+                assert_eq!(play.own, ScriptId::FloorHomework, "{at}");
+                assert_eq!(
+                    play.branch,
+                    script::floor_homework_branch(still.nod_off.of(mood), book),
+                    "{at}"
+                );
+                let (lo, hi) = use_duration(Use::Homework);
+                assert!((lo..hi).contains(&until), "{at}: as long as at her desk");
+                let nods = until * write.0 / write.1;
+                let sleeps = nods + (until - nods) / 2;
+                let look = |t: u64| osaka.appearance(t);
+                for t in (0..nods).step_by(350) {
+                    let frame = (t / USE_FRAME_MS % 2) as u8;
+                    assert_eq!(look(t).0, at_it(frame), "{at}: at it, {t}");
+                }
+                assert_eq!(
+                    look(nods + 1),
+                    (dozed, Face::Blink, Some(Bubble::Dots)),
+                    "{at}"
+                );
+                assert_eq!(
+                    look(sleeps + 1),
+                    (dozed, Face::Blink, Some(Bubble::Zzz)),
+                    "{at}"
+                );
+                // Her wakeups fall on its frames, then on its keys.
+                assert_eq!(osaka.first_due(0), USE_FRAME_MS.min(nods), "{at}");
+                // Looking up from writing in place, the act running on.
+                let mut writing = osaka.clone();
+                writing.look(1_000, 0, false, &terrain);
+                assert!(
+                    matches!(
+                        writing.act,
+                        Act::Idle {
+                            what: Activity::FloorHomework,
+                            ..
+                        }
+                    ),
+                    "{at}: looked up where she was"
+                );
+                assert!(writing.watch_until > 1_000, "{at}: watching");
+                // Dozing, a line only stirs her.
+                let mut dozing = osaka.clone();
+                dozing.look(sleeps + 1, 0, false, &terrain);
+                assert_eq!(dozing.watch_until, 0, "{at}: a stir, not a look");
+                assert_eq!(
+                    dozing.appearance(sleeps + 1),
+                    (dozed, Face::Blink, Some(Bubble::Say(STIRRED))),
+                    "{at}"
+                );
+            }
+        }
+    }
+
+    /// Reading on her back, a page turns on the use frame (as at her
+    /// bookshelf), the book held over her face; settled into from it,
+    /// she dozes under it, the book open over her eyes, and a line only
+    /// stirs her.
+    #[test]
+    fn reading_on_her_back_turns_pages_then_dozes_under_the_book() {
+        let terrain = floor_at(15);
+        let chances = Chances::default();
+        let mut rng = Rng(5);
+        let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+        osaka.set(idle_until(Activity::LieRead, 30_000), 0);
+        for t in (0..30_000).step_by(350) {
+            let frame = (t / USE_FRAME_MS % 2) as u8;
+            assert_eq!(
+                osaka.appearance(t),
+                (Pose::LieRead(frame), Face::Vacant, None),
+                "{t}"
+            );
+        }
+        assert_eq!(osaka.first_due(0), USE_FRAME_MS);
+        osaka.set(idle_until(Activity::BookDoze, 30_000), 0);
+        osaka.tick(1, None, &terrain, &chances, &mut rng);
+        for t in (0..30_000).step_by(700) {
+            assert_eq!(
+                osaka.appearance(t),
+                (Pose::LieRead(2), Face::Blink, Some(Bubble::Zzz)),
+                "{t}"
+            );
+        }
+        assert_eq!(osaka.first_due(1), 30_000, "held");
+        osaka.look(5_000, 0, false, &terrain);
+        assert_eq!(osaka.watch_until, 0, "a stir, not a look");
+        assert_eq!(
+            osaka.appearance(5_000),
+            (Pose::LieRead(2), Face::Blink, Some(Bubble::Say(STIRRED)))
+        );
+    }
+
+    /// Her homework on the floor over, her back aches, the first time a
+    /// visit: she says so ("My back..."), standing while it shows, a
+    /// reflex and not a choice; from then on, as long as the visit, it
+    /// aches (a second one ends quietly). Cut off by her routine (her
+    /// bedtime), it doesn't ache yet.
+    #[test]
+    fn her_back_aches_once_a_visit_after_homework_on_the_floor() {
+        let terrain = floor_at(15);
+        let chances = Chances::default();
+        for book in [false, true] {
+            let mut rng = Rng(7);
+            let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+            osaka.floor_homework(book, 0, &mut rng);
+            osaka.credit = Some(Want::Idle(Activity::FloorHomework));
+            let Act::Idle { until, .. } = osaka.act else {
+                panic!("homework");
+            };
+            assert!(!osaka.ached);
+            osaka.tick(until, None, &terrain, &chances, &mut rng);
+            let decision = osaka.decisions.last().expect("decided");
+            assert_eq!(decision.method, "ached", "book {book}");
+            assert_eq!(decision.want, None, "book {book}: not a choice");
+            assert!(osaka.ached, "book {book}");
+            let (said, shows) = osaka.speech.expect("said");
+            assert_eq!(said, MY_BACK, "book {book}");
+            assert_eq!(osaka.act, Act::Stand { until: shows }, "book {book}");
+            assert_eq!(osaka.appearance(until).2, Some(Bubble::Say(MY_BACK)));
+            // Credited as the homework it was.
+            assert!(
+                osaka
+                    .credited
+                    .iter()
+                    .any(|&(w, share, _)| w == Want::Idle(Activity::FloorHomework) && share == 1.0),
+                "book {book}: {:?}",
+                osaka.credited
+            );
+            // Again, later in the visit: nothing said.
+            let again = shows + 1_000;
+            osaka.floor_homework(book, again, &mut rng);
+            osaka.credit = Some(Want::Idle(Activity::FloorHomework));
+            let Act::Idle { until, .. } = osaka.act else {
+                panic!("homework again");
+            };
+            let decided = osaka.decisions.len();
+            osaka.tick(until, None, &terrain, &chances, &mut rng);
+            assert!(
+                osaka.decisions[decided..]
+                    .iter()
+                    .all(|d| d.method != "ached"),
+                "book {book}: {:?}",
+                osaka.decisions[decided..]
+                    .iter()
+                    .map(|d| d.method)
+                    .collect::<Vec<_>>()
+            );
+            assert_ne!(osaka.speech.map(|(said, _)| said), Some(MY_BACK));
+        }
+        // Her bedtime cuts it: to bed, her back not aching yet.
+        let far = 10 * BED;
+        let homework = Act::Idle {
+            what: Activity::FloorHomework,
+            since: 0,
+            until: far,
+            play: Some(Play::plain(ScriptId::FloorHomework)),
+        };
+        let (mut osaka, mut rng) = at_bedtime(homework, far);
+        osaka.tick(
+            BED,
+            Some(monday_at(22, 0)),
+            &blank_terrain(),
+            &chances,
+            &mut rng,
+        );
+        assert!(
+            osaka.decisions.iter().all(|d| d.method != "ached"),
+            "{:?}",
+            osaka.decisions
+        );
+        assert!(!osaka.ached);
+    }
+
+    /// Standing while a chat watch is live she's drawn side-on watching
+    /// it, so she faces it, however she came to stand: home from school
+    /// ("I'm home!") just after a line she was out of sight for (the
+    /// watch set, nothing turned), or her back aching as her homework on
+    /// the floor ends under a watch (lying, she'd never turn to a line;
+    /// the watch is set here, as her script dozes her before its end),
+    /// each a reflex before the watch's own stand, facing away from the
+    /// chat as she was.
+    #[test]
+    fn standing_under_a_live_watch_she_faces_the_chat() {
+        let terrain = floor_at(15);
+        let chances = Chances::default();
+        for case in ["home", "ached paper", "ached book"] {
+            let mut rng = Rng(7);
+            let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+            let at = match case {
+                "home" => {
+                    osaka.returning = Some(Routine::School);
+                    1_000
+                }
+                _ => {
+                    osaka.floor_homework(case == "ached book", 0, &mut rng);
+                    let Act::Idle { until, .. } = osaka.act else {
+                        panic!("{case}: homework");
+                    };
+                    until
+                }
+            };
+            osaka.facing = Facing::Right;
+            // The chat on her left, its line seen a moment ago.
+            osaka.watch_until = at + 3_000;
+            osaka.watch_x = 0;
+            osaka.tick(at, None, &terrain, &chances, &mut rng);
+            let method = osaka.decisions.last().map(|d| d.method);
+            let want = if case == "home" {
+                "routine/home"
+            } else {
+                "ached"
+            };
+            assert_eq!(method, Some(want), "{case}");
+            assert!(matches!(osaka.act, Act::Stand { .. }), "{case}");
+            assert_eq!(osaka.appearance(at).0, Pose::Side, "{case}");
+            assert_eq!(osaka.facing, Facing::Left, "{case}: facing the chat");
+        }
+    }
+
+    /// The spot just beside a piece, found from a seat at it, is just
+    /// beside the piece itself ([`Shown::beside`]), whichever way it
+    /// faces: a seat in it (a bed, a sofa) or beside it, turned to it (a
+    /// desk, real or paper), real or made.
+    #[test]
+    fn beside_a_seat_is_beside_its_piece() {
+        use super::super::room::Shown;
+        use tuirealm::ratatui::buffer::Buffer;
+        use tuirealm::ratatui::layout::Rect;
+        use tuirealm::ratatui::style::Style;
+        let mut buf = Buffer::empty(Rect::new(0, 0, 100, 20));
+        buf.set_string(0, 15, "─".repeat(100), Style::default());
+        let terrain = Terrain::read(&buf, &[], false);
+        for (item, what) in [
+            (Furniture::Desk, Use::Homework),
+            (Furniture::Bed, Use::Sleep),
+            (Furniture::Sofa, Use::Lounge),
+        ] {
+            for made in [false, true] {
+                for facing in [Facing::Right, Facing::Left] {
+                    let piece = Shown {
+                        item,
+                        facing,
+                        boxed: false,
+                        strip: None,
+                        left: 40,
+                        floor: 15,
+                        scrap: made.then(|| super::super::scrap::Scrap::new(MadeId(0), &[], 0)),
+                    };
+                    let seat = piece.seat(what, 0);
+                    let spot = beside(&seat, &terrain);
+                    assert!(
+                        spot.is_some_and(|(x, y)| y == 15 && piece.beside().contains(&x)),
+                        "{item:?} made={made} {facing:?}: {spot:?}, not one of {:?}",
+                        piece.beside()
+                    );
+                }
+            }
+        }
+    }
+
+    /// Making a piece is [`MAKESHIFT_DRAW`] times as likely while she
+    /// owns no real one of its kind (boxed counts as owned), and no
+    /// likelier once she does; making a paper desk with no real one, as
+    /// much again while her back aches from homework on the floor (and
+    /// only a desk; with a real desk, her back draws her to that).
+    /// Nothing but making is: every other bind is as likely as ever.
+    #[test]
+    fn making_draws_her_only_while_she_owns_no_real_piece() {
+        use super::super::room::Shown;
+        use super::super::scenes::Side;
+        let build = |item: Furniture, then: Use| {
+            Bind::Job(Job::Build(Build {
+                x: 20,
+                y: 15,
+                row: 13,
+                side: Side::Left,
+                cells: vec![1, 2, 3, 4, 5],
+                glyphs: "hello".into(),
+                piece: Shown {
+                    item,
+                    facing: Facing::Right,
+                    boxed: false,
+                    strip: None,
+                    left: 17,
+                    floor: 15,
+                    scrap: Some(super::super::scrap::Scrap::new(MadeId(0), &[], 0)),
+                },
+                then,
+            }))
+        };
+        let owning = |real: &[Furniture]| Chances {
+            real: real.to_vec(),
+            ..Chances::default()
+        };
+        let none = owning(&[Furniture::Tv]);
+        for (item, then) in [
+            (Furniture::Sofa, Use::Lounge),
+            (Furniture::Bed, Use::Sleep),
+            (Furniture::Desk, Use::Homework),
+        ] {
+            let bind = build(item, then);
+            assert_eq!(making(&bind, &none, false), MAKESHIFT_DRAW, "{item:?}");
+            assert_eq!(making(&bind, &owning(&[item]), false), 1.0, "{item:?}");
+            let ached = if item == Furniture::Desk {
+                MAKESHIFT_DRAW
+            } else {
+                1.0
+            };
+            assert_eq!(
+                making(&bind, &none, true),
+                MAKESHIFT_DRAW * ached,
+                "{item:?} aching"
+            );
+            // Owning a real one, her back is nothing to making another.
+            assert_eq!(making(&bind, &owning(&[item]), true), 1.0, "{item:?}");
+        }
+        for bind in [
+            Bind::Here(Here::FloorHomework { book: false }),
+            Bind::Here(Here::Idle(Activity::Sit)),
+            Bind::Job(Job::Use(paper_desk_seat())),
+            Bind::WalkTo(3),
+        ] {
+            assert_eq!(making(&bind, &none, true), 1.0, "{bind:?}");
+        }
+        // Above 1 always, so it never pushes the want itself out of her
+        // best few.
+        const _: () = assert!(MAKESHIFT_DRAW > 1.0);
+    }
+
+    /// Her choosing weighs making by what she owns and her back (phase 5c
+    /// D5, through her decision's own factors): an offer to make a paper
+    /// desk for her homework weighs its want's factor [`MAKESHIFT_DRAW`]
+    /// times while no real desk stands, as much again while her back
+    /// aches; with a real desk standing (boxed counts), its factor alone,
+    /// aching or not.
+    #[test]
+    fn her_choice_weighs_making_a_desk_by_what_she_owns_and_her_back() {
+        use super::super::room::Shown;
+        use super::super::scenes::Side;
+        let terrain = floor_at(15);
+        let want = Want::Use(Use::Homework);
+        let desk = Build {
+            x: 30,
+            y: 15,
+            row: 13,
+            side: Side::Left,
+            cells: vec![1, 2, 3, 4, 5],
+            glyphs: "hello".into(),
+            piece: Shown {
+                item: Furniture::Desk,
+                facing: Facing::Right,
+                boxed: false,
+                strip: None,
+                left: 28,
+                floor: 15,
+                scrap: Some(super::super::scrap::Scrap::new(MadeId(0), &[], 0)),
+            },
+            then: Use::Homework,
+        };
+        let base = brain::factor(want, false, None, None);
+        for (real, ached, times) in [
+            (&[][..], false, MAKESHIFT_DRAW),
+            (&[][..], true, MAKESHIFT_DRAW * MAKESHIFT_DRAW),
+            (&[Furniture::Desk][..], false, 1.0),
+            (&[Furniture::Desk][..], true, 1.0),
+        ] {
+            let at = format!("real {real:?} ached {ached}");
+            let chances = Chances {
+                real: real.to_vec(),
+                builds: vec![desk.clone()],
+                ..Chances::default()
+            };
+            let mut rng = Rng(5);
+            let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+            osaka.ached = ached;
+            osaka.offer_only = Some((want, "use/make"));
+            osaka.tick(100, None, &terrain, &chances, &mut rng);
+            let weighed: Vec<f64> = osaka
+                .factored
+                .iter()
+                .filter(|&&(w, into_chat, _)| w == want && !into_chat)
+                .map(|&(_, _, times)| times)
+                .collect();
+            assert!(!weighed.is_empty(), "{at}: never weighed");
+            assert!(
+                weighed.iter().all(|&t| t == base * times),
+                "{at}: {weighed:?}, not {base} × {times}"
+            );
+        }
+    }
+
+    /// At her paper desk she kneels beside it (her homework's script's
+    /// stool poses, resolved for it: writing, nodding, asleep on the
+    /// cube), and never splits chopsticks there, rolled however surely or
+    /// cued (a cue waits for a real desk); at a real desk, on her stool,
+    /// and the chopsticks play as ever.
+    #[test]
+    fn at_her_paper_desk_she_kneels_and_splits_no_chopsticks() {
+        let real = Seat {
+            x: 20,
+            y: 15,
+            ..seat_for(Use::Homework, Furniture::Desk)
+        };
+        for (seat, made) in [(paper_desk_seat(), true), (real, false)] {
+            let at = format!("made {made}");
+            let mut rng = Rng(3);
+            let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+            osaka.splices_sure = true;
+            osaka.whims = Whims(3);
+            osaka.start_job(Job::Use(seat), 0, &Chances::default(), &mut rng);
+            let Act::Use {
+                since, until, play, ..
+            } = osaka.act
+            else {
+                panic!("{at}: {:?}", osaka.act);
+            };
+            let chopsticks = play
+                .before
+                .is_some_and(|s| s.splice == SpliceId::Chopsticks);
+            assert_eq!(chopsticks, !made, "{at}: {play:?}");
+            let body = play.body_start(since);
+            for t in (body..until).step_by(500) {
+                let pose = osaka.appearance(t).0;
+                if made {
+                    assert!(matches!(pose, Pose::PaperDesk(_)), "{at} {t}: {pose:?}");
+                } else {
+                    assert!(matches!(pose, Pose::Homework(_)), "{at} {t}: {pose:?}");
+                }
+            }
+            // Cued, the chopsticks wait for a use they wrap.
+            let mut cued = Osaka::standing_at(20, 15, 0, &mut rng);
+            let cue = Cue::Splice(SpliceId::Chopsticks, Some(0));
+            cued.cue(Some(cue));
+            cued.start_job(Job::Use(seat), 0, &Chances::default(), &mut rng);
+            let Act::Use { play, .. } = cued.act else {
+                panic!("{at}: {:?}", cued.act);
+            };
+            let played = play
+                .before
+                .is_some_and(|s| s.splice == SpliceId::Chopsticks);
+            assert_eq!(played, !made, "{at}: cued");
+            assert_eq!(cued.cued == Some(cue), made, "{at}: the cue waits");
+        }
     }
 }

@@ -182,6 +182,11 @@ pub(super) enum Here {
     Muse,
     Sneeze,
     Idle(Activity),
+    /// Her homework on the floor ([`Activity::FloorHomework`]): on her
+    /// front writing, or (`book`) on her back reading the set text.
+    FloorHomework {
+        book: bool,
+    },
 }
 
 /// What a method binds: what her body does next.
@@ -217,7 +222,7 @@ impl Bind {
             Self::Job(Job::Use(seat)) if seat.makeshift() => Spot::Made,
             Self::Job(Job::Use(seat)) => Spot::Real(seat.item),
             Self::Job(Job::Build(_)) => Spot::Made,
-            Self::Here(Here::Idle(_)) => Spot::Floor,
+            Self::Here(Here::Idle(_) | Here::FloorHomework { .. }) => Spot::Floor,
             _ => Spot::Any,
         }
     }
@@ -244,6 +249,12 @@ const STAND: &[Method] = &[m("stand", |_, _, _| Some(Bind::Here(Here::Stand)))];
 const SPACE_OUT: &[Method] = &[m("space-out/muse", muse), m("space-out", space_out)];
 const SNEEZE: &[Method] = &[m("sneeze", |_, _, _| Some(Bind::Here(Here::Sneeze)))];
 const IDLE: &[Method] = &[m("idle", idle)];
+/// The set text on her back now and then, else writing on her front.
+const FLOOR_HOMEWORK: &[Method] = &[
+    m("floor-homework/book", floor_homework_book),
+    m("floor-homework", floor_homework),
+];
+const LIE_READ: &[Method] = &[m("lie-read", lie_read)];
 const WALK: &[Method] = &[m("walk/along", walk)];
 const TRAVEL: &[Method] = &[m("travel/link", take_link), m("travel/door", door_away)];
 const WORK: &[Method] = &[m("work", work)];
@@ -270,6 +281,8 @@ pub(super) fn methods(want: Want) -> &'static [Method] {
         Want::Stand => STAND,
         Want::SpaceOut => SPACE_OUT,
         Want::Sneeze => SNEEZE,
+        Want::Idle(Activity::FloorHomework) => FLOOR_HOMEWORK,
+        Want::Idle(Activity::LieRead) => LIE_READ,
         Want::Idle(_) => IDLE,
         Want::Walk => WALK,
         Want::Travel => TRAVEL,
@@ -298,6 +311,26 @@ fn idle(_: &Ctx, _: Whims, want: Want) -> Option<Bind> {
         Want::Idle(what) => Some(Bind::Here(Here::Idle(what))),
         _ => None,
     }
+}
+
+/// Her homework on the floor, on her front writing, where no desk
+/// stands (phase 5c D5): a real one, boxed or not, or one she made (the
+/// pieces shown, not their seats: M10).
+fn floor_homework(c: &Ctx, _: Whims, _: Want) -> Option<Bind> {
+    (!c.chances.stands(Furniture::Desk)).then_some(Bind::Here(Here::FloorHomework { book: false }))
+}
+
+/// Her homework on the floor (as [`floor_homework`]), on her back
+/// reading the set text: one time in three.
+fn floor_homework_book(c: &Ctx, w: Whims, _: Want) -> Option<Bind> {
+    (!c.chances.stands(Furniture::Desk) && w.chance("homework book", 0, 1, 3))
+        .then_some(Bind::Here(Here::FloorHomework { book: true }))
+}
+
+/// Reading on her back, where no bookshelf stands (a real one, boxed or
+/// not: phase 5c D5).
+fn lie_read(c: &Ctx, _: Whims, _: Want) -> Option<Bind> {
+    (!c.chances.stands(Furniture::Bookshelf)).then_some(Bind::Here(Here::Idle(Activity::LieRead)))
 }
 
 /// The first of `want`'s methods that binds, by name, with what it
@@ -698,8 +731,7 @@ impl Loss {
     /// What she might say: lines from the beat pool, and how often.
     pub fn says(self) -> Option<Pool> {
         match self {
-            Self::Piece(Furniture::Bed) => Some(MY_BED),
-            Self::Piece(_) => Some(MY_SOFA),
+            Self::Piece(item) => item.lost_made(),
             Self::Tear => Some(NEVER_MIND),
             Self::Heading => None,
             Self::LetBe => Some(NAH),
@@ -741,8 +773,34 @@ impl Loss {
 
 /// Her bed, gone before she slept in it.
 const MY_BED: Pool = Pool::beat(&[line!("...my bed.")], 1, 1);
-/// Her sofa (or any other piece), gone before she used it.
+/// Her sofa, gone before she used it.
 const MY_SOFA: Pool = Pool::beat(&[line!("...my sofa.")], 1, 1);
+/// Her paper desk, gone before she did her homework at it.
+const MY_DESK: Pool = Pool::beat(&[line!("...my desk.")], 1, 1);
+
+impl Furniture {
+    /// What she might say of one she made, gone before she used it:
+    /// each kind she makes its own line (`None`: a kind she never makes,
+    /// not in [`MAKES`]). Wildcard-free, so a new kind says.
+    ///
+    /// [`MAKES`]: super::scrap::MAKES
+    fn lost_made(self) -> Option<Pool> {
+        match self {
+            Self::Sofa => Some(MY_SOFA),
+            Self::Bed => Some(MY_BED),
+            Self::Desk => Some(MY_DESK),
+            Self::Tv
+            | Self::Bookshelf
+            | Self::Fridge
+            | Self::CatBed
+            | Self::Lamp
+            | Self::Plant
+            | Self::Poster
+            | Self::Window
+            | Self::Clock => None,
+        }
+    }
+}
 /// Text she was tearing off, put back.
 const NEVER_MIND: Pool = Pool::beat(&[line!("...never mind.")], 1, 4);
 /// A piece she made, let be.
@@ -1422,6 +1480,7 @@ mod tests {
             distinct(PoolId::Beat),
             [
                 "...my bed.",
+                "...my desk.",
                 "...my sofa.",
                 "...never mind.",
                 "Ah, right!",
@@ -2042,6 +2101,150 @@ mod tests {
                 any.iter().all(|&n| (850..=1150).contains(&n)),
                 "graphics {graphics}: {any:?}"
             );
+        }
+    }
+
+    // Phase 5c D5: her homework and a book on the floor.
+
+    /// A desk standing in her room, of each kind there is: a real one
+    /// shown (its seat on offer, or not: text over where she'd sit drops
+    /// the seat, M10), boxed, or one she made (a heap, or in shape).
+    fn desks() -> Vec<(&'static str, Chances)> {
+        let desk_seat = Seat {
+            what: Use::Homework,
+            item: Furniture::Desk,
+            piece: PieceRef::Real(Furniture::Desk),
+            x: 40,
+            y: 10,
+            facing: super::super::sprite::Facing::Left,
+        };
+        let made = |done: bool| super::super::osaka::Mine {
+            id: super::super::room::MadeId(0),
+            item: Furniture::Desk,
+            purpose: Use::Homework,
+            done,
+            used: false,
+            at: (40, 10),
+        };
+        vec![
+            (
+                "a real desk, its seat on offer",
+                Chances {
+                    real: vec![Furniture::Desk],
+                    seats: vec![desk_seat],
+                    ..Chances::default()
+                },
+            ),
+            (
+                "a real desk, its seat behind text",
+                Chances {
+                    real: vec![Furniture::Desk],
+                    ..Chances::default()
+                },
+            ),
+            (
+                "a heap of a desk she's making",
+                Chances {
+                    mine: vec![made(false)],
+                    ..Chances::default()
+                },
+            ),
+            (
+                "a paper desk she made",
+                Chances {
+                    mine: vec![made(true)],
+                    ..Chances::default()
+                },
+            ),
+        ]
+    }
+
+    /// Her homework on the floor (either way: on her front writing, on
+    /// her back with the set text) is on offer only where no desk stands
+    /// (real, boxed or not, or one she made), read off the pieces shown,
+    /// not their seats: a desk whose seat text blocks still stands there
+    /// (phase 5c M10). With none, it binds, with the set text one time in
+    /// three. In each drawing mode.
+    #[test]
+    fn her_homework_is_on_the_floor_only_where_no_desk_stands() {
+        let want = Want::Idle(Activity::FloorHomework);
+        for graphics in [false, true] {
+            let terrain = two_floors(graphics);
+            for (name, chances) in desks() {
+                let c = at_twelve(&terrain, &chances, false);
+                for w in 0..200 {
+                    assert_eq!(bind(&c, Whims(w), want), None, "{name} graphics={graphics}");
+                }
+            }
+            let bare = Chances {
+                real: vec![Furniture::Bookshelf, Furniture::Sofa],
+                ..Chances::default()
+            };
+            let c = at_twelve(&terrain, &bare, false);
+            let mut book = 0;
+            for w in 0..3000 {
+                match bind(&c, Whims(w), want) {
+                    Some((
+                        "floor-homework/book",
+                        Bind::Here(Here::FloorHomework { book: true }),
+                    )) => {
+                        book += 1;
+                    }
+                    Some(("floor-homework", Bind::Here(Here::FloorHomework { book: false }))) => {}
+                    other => panic!("graphics={graphics}: {other:?}"),
+                }
+            }
+            assert!((850..1150).contains(&book), "graphics={graphics}: {book}");
+            assert_eq!(
+                Bind::Here(Here::FloorHomework { book: false }).on(),
+                Spot::Floor
+            );
+        }
+    }
+
+    /// Reading on her back is on offer only where no bookshelf stands
+    /// (boxed or not, its seat on offer or not), and binds there always.
+    #[test]
+    fn she_reads_on_her_back_only_where_no_bookshelf_stands() {
+        let want = Want::Idle(Activity::LieRead);
+        for graphics in [false, true] {
+            let terrain = two_floors(graphics);
+            let shelf = Chances {
+                real: vec![Furniture::Bookshelf],
+                ..Chances::default()
+            };
+            let none = Chances {
+                real: vec![Furniture::Desk, Furniture::Tv],
+                ..Chances::default()
+            };
+            for w in 0..200 {
+                let c = at_twelve(&terrain, &shelf, false);
+                assert_eq!(bind(&c, Whims(w), want), None, "graphics={graphics}");
+                let c = at_twelve(&terrain, &none, false);
+                assert_eq!(
+                    bind(&c, Whims(w), want),
+                    Some(("lie-read", Bind::Here(Here::Idle(Activity::LieRead)))),
+                    "graphics={graphics}"
+                );
+            }
+        }
+    }
+
+    /// Each kind she makes says its own line, gone before she used it
+    /// (her paper desk, "...my desk.", not the sofa's); a kind she never
+    /// makes says nothing.
+    #[test]
+    fn each_piece_she_makes_is_missed_by_name() {
+        use super::super::scrap::MAKES;
+        let said = |item: Furniture| Loss::Piece(item).says().map(|pool| pool.lines);
+        assert_eq!(said(Furniture::Desk), Some(&[line!("...my desk.")][..]));
+        let mut lines: Vec<_> = MAKES.iter().map(|&item| said(item)).collect();
+        assert!(lines.iter().all(Option::is_some), "{lines:?}");
+        lines.sort();
+        lines.dedup();
+        assert_eq!(lines.len(), MAKES.len(), "{lines:?}");
+        for item in Furniture::ALL.into_iter().filter(|i| !MAKES.contains(i)) {
+            assert_eq!(said(item), None, "{item:?}");
         }
     }
 }

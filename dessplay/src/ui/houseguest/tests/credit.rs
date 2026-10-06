@@ -264,10 +264,18 @@ fn what_she_chooses_eases_what_it_serves() {
     }
     // (Those she only settles into are credited as they end: osaka.rs's
     // settling tests.)
+    // (The stage room has no desk and no bookshelf: her homework and a
+    // book on the floor bind there.)
     for what in Activity::ALL.into_iter().filter(|a| a.chosen()) {
-        let mut room = stage_room(2, &[]);
         let want = Want::Idle(what);
-        note(want, "idle", check(&mut room, want, "idle", 3 * MINUTE));
+        for method in mind::methods(want) {
+            let mut room = stage_room(2, &[]);
+            note(
+                want,
+                method.name,
+                check(&mut room, want, method.name, 5 * MINUTE),
+            );
+        }
     }
     let mut room = stage_room(3, &[]);
     note(
@@ -429,11 +437,11 @@ fn what_she_chooses_eases_what_it_serves() {
     // What no makeshift piece offers here: a made sofa offers lounging and
     // napping, and watching only where it would face her TV (none of the
     // stage room's text is on her TV's floor, so that is driven nowhere:
-    // it's credited as any use of a made piece); a made bed, sleep.
+    // it's credited as any use of a made piece); a made bed, sleep; a
+    // paper desk, homework.
     assert_eq!(
         unmade,
         [
-            Use::Homework,
             Use::Watch,
             Use::Unpack,
             Use::Read,

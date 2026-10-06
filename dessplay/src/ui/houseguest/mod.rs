@@ -540,6 +540,7 @@ impl Made {
         let scrap = self.piece.scrap?;
         Some(osaka::Mine {
             id: scrap.id,
+            item: self.piece.item,
             purpose: self.purpose,
             done: scrap.done(),
             used: self.used,
@@ -2158,6 +2159,7 @@ impl Guest {
                             &visit.terrain,
                             self.cat_now || cat_home(&self.ledger, visit.kind),
                         ),
+                        real: real_kinds(&visit.shown),
                         builds: builds.clone(),
                         mine: visit.made.iter().filter_map(Made::mine).collect(),
                         advert: advert(&self.ledger, self.shop_now, visit.osaka.needs()),
@@ -2194,6 +2196,7 @@ impl Guest {
                         &visit.terrain,
                         self.cat_now || cat_home(&self.ledger, visit.kind),
                     ),
+                    real: real_kinds(&visit.shown),
                     builds,
                     mine: visit.made.iter().filter_map(Made::mine).collect(),
                     advert: advert(&self.ledger, self.shop_now, visit.osaka.needs()),
@@ -3414,6 +3417,16 @@ fn place_gift(
     };
     *note = Some(result);
     home.project(buf, &view.nooks, blocked)
+}
+
+/// The kinds of her real pieces `shown` (boxed or not): what stands in
+/// her room ([`osaka::Chances::real`]).
+fn real_kinds(shown: &[Shown]) -> Vec<Furniture> {
+    shown
+        .iter()
+        .filter(|s| s.scrap.is_none())
+        .map(|s| s.item)
+        .collect()
 }
 
 /// Where she could go to use each piece shown: in front of it on its

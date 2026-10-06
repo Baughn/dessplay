@@ -350,7 +350,8 @@ fn named(play: Play, lamp: bool) -> Vec<(bool, String)> {
         | ScriptId::Chopsticks
         | ScriptId::Andagi
         | ScriptId::NoMelon
-        | ScriptId::Scary => None,
+        | ScriptId::Scary
+        | ScriptId::FloorHomework => None,
     };
     let splices = [play.before, play.after]
         .into_iter()

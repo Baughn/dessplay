@@ -3887,6 +3887,102 @@ lever, or a different rule for the stage, is the user's choice
 thing on screen half as long again. It joins the list when the picture
 lands.
 
+## Homework on the floor and the paper desk (2026-10-06)
+
+**Rule:** With no desk standing she does her homework lying on the floor
+(on her front writing, or one time in three on her back with the set
+text), nodding off where her mood has her; the first one a visit ends
+with "My back..." and her back aching for the visit. With no bookshelf
+standing she reads on her back, and may settle into a doze under the
+book. She can make a paper desk (a low 4×2 cube of torn text) and kneel
+beside it for her homework. Making a piece is three times as likely
+while she owns no real one of its kind, a paper desk three times again
+while her back aches (still with no real desk). Watching the TV from
+beside it rather than from a sofa she sits cross-legged. See
+[design.md](design.md#houseguest).
+
+**Why the floor ones are activities with their own methods** (phase 5c
+D5 as amended by M10): `IDLE` binds unconditionally, so floor homework
+and reading on her back each get a guarded method of their own. The
+guard reads the pieces shown (`Chances::real`, and what she made), not
+their seats: a desk whose seat text blocks still stands in the room,
+and homework on the floor beside it would read as a bug. Reading on her
+back is an activity, not a method of reading at a bookshelf, because a
+use is bound to a piece and a seat she walks to; on the floor there's
+neither, and the activity path brings its credit, its look-up-in-place
+and the census with it (phase 5c 10b's borrowed line, which walks to
+text, is the method of `Use::Read`).
+
+**Why base 6, not the desk's and bookshelf's 8:** the floor is the
+lesser place (lying on her front, the nearest pose, is 6), and at 8 the
+two crowded out the rest of a bare room's floor: with needs low and
+sleepiness high, each scored 0.8 against a doze's 0.69, and lying back
+fell out of her best four altogether (`sleepiness_draws_her_to_lie_down`
+read 0 doze both ways). Neither keeps the chat's factor: what she does
+on the spot never takes her into the chat.
+
+**Why her homework on the floor nods off in its own script, and reading
+on her back settles:** homework at a desk already moves its nod-off by
+mood instead of lingering (M8), and the floor follows the desk, so its
+doze shows with the levers she ships with. Reading at a bookshelf
+doesn't doze, so on her back the doze is a settling-in (as sitting's
+doze is), shown when settling ships. An activity's own script (her
+night on the floor had the only one, held still) now wakes her on a
+key's frames while it bobs, so the writing animates.
+
+**Why "My back..." once a visit, and only on an end:** the line is the
+moment the ache is set, so it's said once; her routine cutting the
+homework off (bed, school) sends her on at once, and the next one aches
+instead. The ache makes the desk likelier still (the brief: "its
+discomfort drives a makeshift desk"), but only while no real desk
+stands: with one, her back draws her to it, not to making another (a
+real desk can arrive mid-visit, after the ache). It isn't what first
+makes the desk: see "Measured, not resolved" below. The ache lasts the
+visit (D5's "for the visit"), so across a night's sleep inside one
+visit it still aches; whether a night should cure it is the user's
+call.
+
+**Why the desk is `Furniture::Desk` in `MAKES`, not a new kind:** made
+pieces live only in the visit, so reusing the kind needs no ledger
+change. Each kind she makes now names its own shape, size, seat and
+line (`scrap::Made`, `Furniture::lost_made`), wildcard-free: before, a
+third kind would have silently taken the sofa's. She kneels beside it,
+not in it (her box centred a column past its end, facing it, as at a
+real desk), so homework's stool poses resolve to kneeling there in one
+place (`at_seat`). The chopsticks are drawn on her stool, so a splice
+row says whether it may wrap a made piece's use, and one predicate
+(`Splice::wraps`) answers for a rolled splice and for a stage cue (which
+then waits for a real desk).
+
+**Why a stand under a live watch faces the chat, wherever it's set:**
+standing while a watch is live she's drawn side-on watching it, but
+only the watch's own stand turned her; a reflex that stood her first
+("I'm home!", landing from a climb a line came during; "My back..."
+too, were a watch live as her homework on the floor ends)
+kept whatever way she happened to face, half the time away from the
+chat, until the watch's own stand a beat later. One rule where an act
+is set (`Osaka::set`) covers every such stand, now and to come.
+
+**Why making ×3 is a want factor while she owns none** (critique C4):
+with no real piece of a kind on offer, making it is the only place for
+that use, so a weighted pick among places would change nothing; a factor
+on the want, when its bind is making, does. It's above 1, so it never
+pushes that want out of her best few. "Owns" is read off the frame: a
+real piece shown, boxed or not (one closeted for want of room offers her
+nothing either).
+
+**Measured, not resolved** (for the user): she can only make the desk
+where there's text to tear (no text, no offer to make it), and wherever
+she can, the desk comes first. Homework at a desk (base 8, made with
+making's ×3) against homework on the floor (base 6) is about 4–5× at any
+hour (both carry homework time's ×3, which cancels), so she usually
+makes the paper desk at her first homework of a visit, before any
+homework on the floor; her back's ×3 then mostly lands on a desk she has
+already made. The ache doesn't order the two. To make "a sore back,
+then the desk" the rule, either gate making the desk on the ache, or
+leave making's ×3 off the desk until the ache; both are design changes,
+left to the user.
+
 ## Houseguest chooses by needs among the top few (2026-09-28)
 
 **Rule:** Her next act is a weighted-random pick among the four

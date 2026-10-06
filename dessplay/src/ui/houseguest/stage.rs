@@ -63,6 +63,17 @@ pub enum Scene {
     Stretch,
     /// Gaze up at something.
     Gaze,
+    /// Homework lying on the floor, on her front, writing (where she has
+    /// no desk), nodding off.
+    FloorHomework,
+    /// Homework lying on the floor, on her back, reading the set text,
+    /// nodding off under the book.
+    BookHomework,
+    /// Reading lying on her back (where she has no bookshelf).
+    LieRead,
+    /// Dozing under the book, open over her eyes (she only settles into
+    /// it, from reading on her back).
+    BookDoze,
     /// Space out, saying something first.
     Muse,
     /// Space out, telling a riddle (and answering it herself).
@@ -104,6 +115,9 @@ pub enum Scene {
     MakeSofa,
     /// Tear text off a line and crumple it into a makeshift bed.
     MakeBed,
+    /// Tear text off a line and crumple it into a paper desk, then do
+    /// her homework at it.
+    MakeDesk,
     /// Her sofa turned away from her TV (she gets both if she hasn't
     /// them): she's felt it, and turns it round.
     Arrange,
@@ -140,7 +154,7 @@ pub enum Scene {
 
 impl Scene {
     /// Every scene, in menu order.
-    pub const ALL: [Scene; 49] = [
+    pub const ALL: [Scene; 54] = [
         Self::Arrive,
         Self::Pull,
         Self::Swap,
@@ -159,6 +173,10 @@ impl Scene {
         Self::ToeTouch,
         Self::Stretch,
         Self::Gaze,
+        Self::FloorHomework,
+        Self::BookHomework,
+        Self::LieRead,
+        Self::BookDoze,
         Self::Muse,
         Self::Riddle,
         Self::Lounge,
@@ -179,6 +197,7 @@ impl Scene {
         Self::Andagi,
         Self::MakeSofa,
         Self::MakeBed,
+        Self::MakeDesk,
         Self::Arrange,
         Self::DashIn,
         Self::DashForgot,
@@ -213,6 +232,10 @@ impl Scene {
             Self::ToeTouch => "toe touches",
             Self::Stretch => "stretch",
             Self::Gaze => "gaze",
+            Self::FloorHomework => "homework on the floor",
+            Self::BookHomework => "homework on her back",
+            Self::LieRead => "read on her back",
+            Self::BookDoze => "doze under the book",
             Self::Muse => "muse",
             Self::Riddle => "tell a riddle",
             Self::Lounge => "sit on the sofa",
@@ -233,6 +256,7 @@ impl Scene {
             Self::Andagi => "sata andagi",
             Self::MakeSofa => "make a sofa of text",
             Self::MakeBed => "make a bed of text",
+            Self::MakeDesk => "make a desk of text",
             Self::Arrange => "turn the sofa round",
             Self::DashIn => "dash home for lunch",
             Self::DashForgot => "dash home, forgetful",
@@ -321,6 +345,10 @@ impl Scene {
             | Self::ToeTouch
             | Self::Stretch
             | Self::Gaze
+            | Self::FloorHomework
+            | Self::BookHomework
+            | Self::LieRead
+            | Self::BookDoze
             | Self::Muse
             | Self::Lounge
             | Self::Nap
@@ -331,6 +359,7 @@ impl Scene {
             | Self::Pet
             | Self::MakeSofa
             | Self::MakeBed
+            | Self::MakeDesk
             | Self::Arrange
             | Self::LookOut => None,
         }
@@ -346,6 +375,9 @@ impl Scene {
             Self::ToeTouch => Activity::ToeTouch,
             Self::Stretch => Activity::Stretch,
             Self::Gaze => Activity::Gaze,
+            Self::FloorHomework => Activity::FloorHomework,
+            Self::LieRead => Activity::LieRead,
+            Self::BookDoze => Activity::BookDoze,
             _ => return None,
         })
     }
@@ -513,11 +545,11 @@ pub(super) fn direct(
             osaka.pursue(job, now);
             Ok(format!("{name} at ({}, {})", seat.x, seat.y))
         }
-        Scene::MakeSofa | Scene::MakeBed => {
-            let item = if scene == Scene::MakeSofa {
-                Furniture::Sofa
-            } else {
-                Furniture::Bed
+        Scene::MakeSofa | Scene::MakeBed | Scene::MakeDesk => {
+            let item = match scene {
+                Scene::MakeSofa => Furniture::Sofa,
+                Scene::MakeBed => Furniture::Bed,
+                _ => Furniture::Desk,
             };
             let builds: Vec<_> = chances
                 .builds
@@ -645,6 +677,7 @@ pub(super) fn direct(
             }
             match scene.activity() {
                 Some(what) => osaka.idle(what, now, rng),
+                None if scene == Scene::BookHomework => osaka.floor_homework(true, now, rng),
                 None => osaka.muse(now, rng),
             }
             Ok(name.into())

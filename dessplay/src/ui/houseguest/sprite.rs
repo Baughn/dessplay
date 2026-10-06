@@ -78,23 +78,20 @@ pub(super) enum Pose {
     /// On her stool at the desk, splitting disposable chopsticks: frame
     /// 0 still joined, 1 split cleanly, 2 split badly (let down).
     Chopsticks(u8),
-    /// Homework on the floor where there's no desk: lying on her front
-    /// over a paper, writing (frame 0–1), then dozing face-down on it
-    /// (2). Phase 5c art, not yet wired.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// Homework on the floor where there's no desk: lying on her front,
+    /// writing on a paper out in front of her (frame 0–1), then dozing
+    /// with her head on her arms (2) (phase 5c D5).
     FloorHomework(u8),
     /// Homework at her paper desk (a low cube of crumpled text), kneeling
     /// beside it, side-on: writing (frame 0–1), nodding off (2), asleep
-    /// on the cube (3). Phase 5c art, not yet wired.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// on the cube (3) (phase 5c D5).
     PaperDesk(u8),
     /// Sitting on the floor reading a strip of text she tore off a line
     /// (frame 1 reads along it). Phase 5c art, not yet wired.
     #[cfg_attr(not(test), allow(dead_code))]
     ReadStrip(u8),
-    /// Sitting cross-legged on the floor, side-on (before the TV).
-    /// Phase 5c art, not yet wired.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// Sitting cross-legged on the floor, side-on: watching the TV away
+    /// from a sofa (phase 5c D5).
     CrossLegged,
     /// Standing at ease under the window, hands behind her back, looking
     /// up and out. Phase 5c art, not yet wired.
@@ -108,9 +105,8 @@ pub(super) enum Pose {
     /// (frame 1 lower): settled into from sitting (phase 5c).
     SitDoze(u8),
     /// Lying on her back reading, an open book held up over her face
-    /// (frame 1 turns a page); dozed off with it open on her face (2).
-    /// Phase 5c art, not yet wired.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// (frame 1 turns a page); dozed off with it open over her eyes (2)
+    /// (phase 5c D5).
     LieRead(u8),
 }
 

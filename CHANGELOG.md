@@ -20,6 +20,12 @@ Add new days at the top. Add new entries at the bottom of existing days.
 - Added: Osaka blinks now and then while she sits, lounges, reads or gazes
   up, so a long rest looks restful rather than frozen. Gazing up, she says
   "ooh" only at first.
+- Added: with no desk, Osaka does her homework lying on the floor, or
+  tears off some text and builds a paper desk to kneel at (all the more
+  once the floor has given her a sore back). With no bookshelf she reads
+  lying on her back, and dozes under the book.
+- Changed: she watches TV cross-legged when she isn't watching from a
+  sofa.
 
 ## 2026-10-05
 

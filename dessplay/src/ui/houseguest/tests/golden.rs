@@ -565,10 +565,10 @@ fn golden_stage_room() {
         "stage",
         stage_room,
         &[
-            (0, 0x7f83fec767e74862, 0x1794b93ffc8d66d8),
-            (1, 0xd09959b194fcc713, 0x8536be75145c26d8),
-            (2, 0x9591c00017d66914, 0x79e04ffa0cf74262),
-            (3, 0x67269c72721ff0fb, 0xd0481ce9d956912a),
+            (0, 0x0270e14af0e05dd9, 0x0ad0c12ab61fb43d),
+            (1, 0xb4f5ae872739deae, 0x1006227d18f977ca),
+            (2, 0xdc519850c477a992, 0xc21ef860dfc4acc5),
+            (3, 0x5c9ab96c9f33e061, 0xbff58f68a71b1495),
         ],
     );
 }
@@ -579,10 +579,10 @@ fn golden_resident() {
         "resident",
         resident,
         &[
-            (0, 0xe4ea2684cb927940, 0xc5924ae43095cb89),
-            (1, 0x4d55b70cce594b8e, 0x38712f820f2c9484),
-            (2, 0x950e8274aad0baa5, 0x19a6e8a505632e3d),
-            (3, 0x508efaa9039319cb, 0x2f85593bf91dd66c),
+            (0, 0xdcdde0e9759633db, 0xaa1ea432da2f694c),
+            (1, 0xc48054ccb7794dc7, 0x38712f820f2c9484),
+            (2, 0xa51ce59eb9dc79a6, 0xecb2af2797656c23),
+            (3, 0x641566b08f7d4261, 0x28262701d8e842c0),
         ],
     );
 }
@@ -593,10 +593,10 @@ fn golden_furnished_home() {
         "furnished",
         furnished,
         &[
-            (0, 0x78e58429f3a27a2a, 0xfa72b74bcd513170),
-            (1, 0xd9dd7e616e7d6dd1, 0x2aabb1351b20e89b),
-            (2, 0xe7ac43051b49c57a, 0xe0a6bf4d2bc40e77),
-            (3, 0x195e3cf9e6f66b02, 0x4a1f34cf3a57f2d0),
+            (0, 0x6c50fe5e6d16644c, 0x9ee80e5ca6e4d562),
+            (1, 0x5a02bce3d4bc859d, 0x1927e2c80d7c9b35),
+            (2, 0x5ae2d35ed27fdd26, 0xe072a8ed29476dfb),
+            (3, 0x08955dbc788f88dd, 0x8fc74ed7012dd701),
         ],
     );
 }
@@ -608,9 +608,9 @@ fn golden_errand() {
         errand,
         &[
             (0, 0xa115268dd34741af, 0x84a48e0354dec3ca),
-            (1, 0x25af335efba3a77b, 0xa19648a98946d58e),
+            (1, 0xc7fad0f2931b48d7, 0x4fe518d36acfeb16),
             (2, 0x1e3dd842f4ca4668, 0x20d410417a6fc48e),
-            (3, 0x7b72e3b19661f820, 0x80cd5be7de17a456),
+            (3, 0x5e2869bb1b21785a, 0xa97e809ef43467fa),
         ],
     );
 }
@@ -649,10 +649,10 @@ fn golden_weekend() {
         "weekend",
         weekend,
         &[
-            (0, 0xc78a2230b908b857, 0x0121e3d716edbf8b),
+            (0, 0x062d1f46d304d236, 0x94e178905ebd63cc),
             (1, 0xe6f13b1ffa672c63, 0x861f622b965f241f),
-            (2, 0x2c94f7654da230f2, 0x324a1c03b6ca5b35),
-            (3, 0xd99eff5817f454a4, 0xdf66e086a8fdac40),
+            (2, 0x1e7439fc48d10fd7, 0x86f1bfc6825e3d71),
+            (3, 0xdb5b9f3401a29980, 0x87f27acc92d9fab0),
         ],
     );
 }
@@ -678,8 +678,8 @@ fn golden_home_from_school() {
         home_from_school,
         &[
             (0, 0x000795126138beb6, 0xb650bf0ab5ebd845),
-            (1, 0x9e3cf147d29514ae, 0x6ea3e6ed9619c3f9),
-            (2, 0xfe06d9555e35472d, 0x5875f8f39085d2ff),
+            (1, 0xfb969477fbc30e9e, 0x13c4cfd8af0b944d),
+            (2, 0xd3e4723f6d9b2432, 0x626f4248bb4b294b),
             (3, 0xcdd830678a84442f, 0x684bcfe2aaf4e49b),
         ],
     );
@@ -719,12 +719,18 @@ fn golden_dash_home() {
 /// shifts; seed 0 in line art and seed 3 in ASCII then choose otherwise),
 /// and its review's credit fix (an easing lands on her needs as they are:
 /// seeds 0, 1 and 3 in both modes and 2 in ASCII first differ at a
-/// decision, choosing otherwise; the trace diffs are in that commit).
+/// decision, choosing otherwise; the trace diffs are in that commit), and
+/// step 10a's floor acts, paper desk and makeshift draw (each seed and
+/// mode first differs at her first decision where making is three times
+/// as likely, with no real piece of its kind), with its review's stand
+/// under a live watch facing the chat (seed 1 in line art: landing from a
+/// climb a line came during, she faces the chat at once, not a beat
+/// later; nothing else changed; the trace diffs are in that commit).
 const UNFED_STAGE: [(u64, u64, u64); 4] = [
-    (0, 0x6ced8c8ab211dfbd, 0xa560392316f63baa),
-    (1, 0xa51be88372d650ee, 0xf080a21cdf07145a),
-    (2, 0x385a1a6f622c5d83, 0x079d7aabf37478de),
-    (3, 0x803711c1f86db531, 0x4443c8c3c14e3f6b),
+    (0, 0x8d96e94ca5f136a6, 0x49cd447ae4b57fa3),
+    (1, 0xec73d252a7e14039, 0xe957f13f5c8fdeca),
+    (2, 0xc865bf7573027792, 0x5af8a5b46c717c63),
+    (3, 0x7ebe656832021eda, 0xe48e490acf4ea8ba),
 ];
 
 /// The resident's tables at the end of phase 5b step 3, but for step 5a's
@@ -745,12 +751,14 @@ const UNFED_STAGE: [(u64, u64, u64); 4] = [
 /// at which she acts on what changed sooner, so what follows shifts), and
 /// its review's look fix (a line come mid-blink ends the blink: seed 1 in
 /// ASCII, its one frame of a blink under her "!" gone; the trace diffs are
-/// in that commit).
+/// in that commit), and step 10a's floor acts (seeds 0, 1 and 3 in both
+/// modes first differ at her first decision with reading on her back on
+/// offer, choosing otherwise; the trace diff is in that commit).
 const UNFED_RESIDENT: [(u64, u64, u64); 4] = [
-    (0, 0x03f9b708a79947a0, 0xef873c49a1716468),
-    (1, 0xac73d82a1936dac7, 0xe524039d4d473c83),
+    (0, 0x34e8e36036b4a005, 0x0cec4921c359cb97),
+    (1, 0x0bc70aa37eb68e1e, 0x83d46a07c103f19d),
     (2, 0x982f046e42548829, 0xd7697fc6058fdd89),
-    (3, 0xfdae7253a9775155, 0xc9363c4d2ac5acda),
+    (3, 0xea2829df5cd52965, 0x888f2286736251b1),
 ];
 
 /// The furnished home's tables at the end of phase 5b step 3, but for step
@@ -771,12 +779,16 @@ const UNFED_RESIDENT: [(u64, u64, u64); 4] = [
 /// blink's tail after her look is over no longer shows: seed 3, both
 /// modes; and an easing lands on her needs as they are: every seed and
 /// mode first differs at a decision, choosing otherwise; the trace diffs
-/// are in that commit).
+/// are in that commit), and step 10a's floor acts and cross-legged TV
+/// (seeds 1-3 in both modes first differ at a watch from beside the TV,
+/// cross-legged where she sat hugging her knees; seed 0 at her first
+/// decision with reading on her back on offer, choosing otherwise; the
+/// trace diff is in that commit).
 const UNFED_FURNISHED: [(u64, u64, u64); 4] = [
-    (0, 0x5195e1f31ed5dd66, 0xe138dd7fdb0fac4c),
-    (1, 0xc688b8e0180077b0, 0xb973162ad46b24d8),
-    (2, 0x46335ed7766b40ed, 0x7581949368fe0ba6),
-    (3, 0x64786cea82132375, 0xbb5bdf25945d10b2),
+    (0, 0x1b81660042281504, 0x7986a02014324ead),
+    (1, 0x085356f9b25a7b2f, 0x5b2b9aebee56902c),
+    (2, 0xec8ceebb5a3e8cf3, 0x418da866aa0e1677),
+    (3, 0xa01ef62ff7dd7b46, 0x6305a1da02e0eaeb),
 ];
 
 /// The errand's tables at the end of phase 5b step 3, but for step 5a's
@@ -787,12 +799,14 @@ const UNFED_FURNISHED: [(u64, u64, u64); 4] = [
 /// both modes, nothing else changed; the trace diff is in that commit),
 /// and step 8's quieter gaze (one frame inserted as her "ooh" goes after
 /// 3 s, seeds 1 and 3 in both modes, nothing else changed; the trace
-/// diff is in that commit).
+/// diff is in that commit), and step 10a's floor acts (seeds 1 and 3 in
+/// both modes first differ at her first decision with reading on her back
+/// on offer, choosing otherwise; the trace diff is in that commit).
 const UNFED_ERRAND: [(u64, u64, u64); 4] = [
     (0, 0xa115268dd34741af, 0x84a48e0354dec3ca),
-    (1, 0x25af335efba3a77b, 0xa19648a98946d58e),
+    (1, 0xc7fad0f2931b48d7, 0x4fe518d36acfeb16),
     (2, 0x1e3dd842f4ca4668, 0x20d410417a6fc48e),
-    (3, 0xc7e40f76fbc03603, 0xb020c495bc09f166),
+    (3, 0xfa3f832018263a3f, 0x7d1bed98f79968c3),
 ];
 
 #[test]

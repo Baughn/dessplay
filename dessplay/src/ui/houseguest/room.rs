@@ -968,7 +968,13 @@ impl Shown {
             Facing::Left => Facing::Right,
         };
         let (x, facing) = match what {
-            _ if self.scrap.is_some() => (mirrored(super::scrap::SEAT), self.facing),
+            // A heap she crumples, bending over its middle.
+            Use::Crumple if self.scrap.is_some() => (mirrored(cols / 2), self.facing),
+            // In a makeshift piece, or beside it, as its kind has her.
+            _ if self.scrap.is_some() => match super::scrap::sit(self.item) {
+                (col, false) => (mirrored(col), self.facing),
+                (col, true) => (mirrored(col), flip(self.facing)),
+            },
             Use::Lounge | Use::Nap | Use::Sleep | Use::Homework => match self.item.spec().sit {
                 Some((col, false)) => (mirrored(col), self.facing),
                 Some((col, true)) => (mirrored(col), flip(self.facing)),

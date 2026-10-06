@@ -1,5 +1,5 @@
 //! Makeshift furniture: text she tore off a line and crumpled into a
-//! sofa or a bed, for when she has no real one.
+//! sofa, a bed or a paper desk, for when she has no real one.
 //!
 //! The torn glyphs leave holes in their line (the text layer keeps them)
 //! and live on in the piece, drawn as shreds of the alien glyphs her
@@ -70,20 +70,25 @@ impl Scrap {
             Facing::Right => dx,
             Facing::Left => cols - 1 - dx,
         };
-        let drawn = match item {
+        let drawn = match Made::of(item) {
             // A pillow at the head end, the mattress below.
-            Furniture::Bed => dy == rows - 1 || (dy == rows - 2 && dx == 0),
-            // The paper desk (phase 5c art): a solid cube.
-            Furniture::Desk => true,
+            Made::Bed => dy == rows - 1 || (dy == rows - 2 && dx == 0),
+            // The paper desk (phase 5c D5): a solid cube.
+            Made::Desk => true,
             // The backrest, arms, and seat.
-            _ => match rows - 1 - dy {
+            Made::Sofa => match rows - 1 - dy {
                 0 => true,
                 1 => dx == 0 || dx == cols - 1,
                 _ => (1..cols - 1).contains(&dx),
             },
         };
-        // Loose, it's only a heap in the middle of the bottom row.
-        let loose = !self.done() && (dy != rows - 1 || !(2..cols - 2).contains(&dx));
+        // Loose, it's only a heap in the middle of the bottom row (all
+        // but its ends: the desk's is four wide).
+        let middle = match Made::of(item) {
+            Made::Desk => 1..cols - 1,
+            Made::Sofa | Made::Bed => 2..cols - 2,
+        };
+        let loose = !self.done() && (dy != rows - 1 || !middle.contains(&dx));
         if !drawn || loose || self.len == 0 {
             return None;
         }
@@ -93,22 +98,63 @@ impl Scrap {
 }
 
 /// The pieces she can make.
-pub(super) const MAKES: [Furniture; 2] = [Furniture::Sofa, Furniture::Bed];
+pub(super) const MAKES: [Furniture; 3] = [Furniture::Sofa, Furniture::Bed, Furniture::Desk];
 
-/// A makeshift piece's size in cells (columns, rows): the sofa 7×3, the
-/// bed 7×2. Using one, her five-column box is centred on column
-/// [`SEAT`].
-pub(super) fn footprint(item: Furniture) -> (u16, u16) {
-    match item {
-        Furniture::Bed => (7, 2),
-        // Phase 5c art: the paper desk, a low cube she sits beside.
-        Furniture::Desk => (4, 2),
-        _ => (7, 3),
+/// What shape a makeshift piece takes: each kind she makes its own, so
+/// a kind added to [`MAKES`] doesn't compile until its shape, size and
+/// seat are given here (rather than taking the sofa's unseen). A kind
+/// she never makes is drawn as a sofa, were it ever asked for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Made {
+    Sofa,
+    Bed,
+    Desk,
+}
+
+impl Made {
+    /// The shape `item` takes, made. Wildcard-free.
+    fn of(item: Furniture) -> Self {
+        match item {
+            Furniture::Sofa => Self::Sofa,
+            Furniture::Bed => Self::Bed,
+            Furniture::Desk => Self::Desk,
+            // Never made (not in `MAKES`).
+            Furniture::Tv
+            | Furniture::Lamp
+            | Furniture::Bookshelf
+            | Furniture::Fridge
+            | Furniture::CatBed
+            | Furniture::Plant
+            | Furniture::Poster
+            | Furniture::Clock
+            | Furniture::Window => Self::Sofa,
+        }
     }
 }
 
-/// The column (facing right) her box is centred on, using one.
-pub(super) const SEAT: i32 = 3;
+/// A makeshift piece's size in cells (columns, rows): the sofa 7×3, the
+/// bed 7×2, the paper desk a low 4×2 cube. Using one, her five-column
+/// box is centred as [`sit`] says.
+pub(super) fn footprint(item: Furniture) -> (u16, u16) {
+    match Made::of(item) {
+        Made::Bed => (7, 2),
+        Made::Desk => (4, 2),
+        Made::Sofa => (7, 3),
+    }
+}
+
+/// Where her box is centred using a makeshift `item` for what it's for:
+/// the column (facing right), and whether she faces back toward it from
+/// there. In the sofa and the bed, at column 3; beside the paper desk, a
+/// column past its end, kneeling facing it (as at a real desk, phase 5c
+/// D5). Crumpling a heap, she bends over its middle (see
+/// [`super::room::Shown::seat`]).
+pub(super) fn sit(item: Furniture) -> (i32, bool) {
+    match Made::of(item) {
+        Made::Sofa | Made::Bed => (3, false),
+        Made::Desk => (4, true),
+    }
+}
 
 /// Which part of a piece to draw (see [`super::art::Layer`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -184,15 +230,15 @@ static SOFA: [Heap; 4] = [
     heap(10.0, 94.0, 11.0, 28.0, false),
     heap(130.0, 94.0, 11.0, 28.0, false),
 ];
-/// The paper desk (phase 5c art, not yet in [`MAKES`]): a low cube,
-/// 80 × 84, its top 48 units up (where her paper lies).
+/// The paper desk (phase 5c D5): a low cube, 80 × 84, its top 48 units
+/// up (where her paper lies).
 static DESK: [Heap; 1] = [block(40.0, 61.0, 35.0, 22.0)];
 
 fn heaps(item: Furniture) -> &'static [Heap] {
-    match item {
-        Furniture::Bed => &BED,
-        Furniture::Desk => &DESK,
-        _ => &SOFA,
+    match Made::of(item) {
+        Made::Bed => &BED,
+        Made::Desk => &DESK,
+        Made::Sofa => &SOFA,
     }
 }
 
@@ -481,6 +527,18 @@ mod tests {
         rows.push((Furniture::Sofa, STAGES, Some(Pose::Nap(1)), Facing::Left));
         rows.push((Furniture::Bed, STAGES, Some(Pose::Sleep(0)), Facing::Right));
         rows.push((Furniture::Bed, STAGES, Some(Pose::Sleep(1)), Facing::Left));
+        rows.push((
+            Furniture::Desk,
+            STAGES,
+            Some(Pose::PaperDesk(0)),
+            Facing::Right,
+        ));
+        rows.push((
+            Furniture::Desk,
+            STAGES,
+            Some(Pose::PaperDesk(3)),
+            Facing::Left,
+        ));
         let mut sheet = image::RgbaImage::from_pixel(
             scales.iter().map(|&s| span(s)).sum(),
             row_h * rows.len() as u32,
@@ -520,9 +578,11 @@ mod tests {
                 layers.extend(render(item, &scrap, part, facing, LINE, pw, ph).map(|i| (i, false)));
                 if let Some(pose) = pose {
                     let rig = Rig::for_pose(pose, Face::Blink);
-                    let her_facing = match (item, facing) {
-                        (Furniture::Bed, f) => f,
-                        (_, f) => f,
+                    // Beside the desk, she faces back toward it.
+                    let her_facing = match (sit(item).1, facing) {
+                        (false, f) => f,
+                        (true, Facing::Right) => Facing::Left,
+                        (true, Facing::Left) => Facing::Right,
                     };
                     layers.push((
                         render_her(&rig, her_facing, LINE, w * 5, h * 4 + h / 2).unwrap(),
@@ -534,9 +594,10 @@ mod tests {
                 }
                 for (image, her) in layers {
                     let (x, y) = if her {
+                        let seat = sit(item).0;
                         let c = match facing {
-                            Facing::Right => SEAT,
-                            Facing::Left => cols as i32 - 1 - SEAT,
+                            Facing::Right => seat,
+                            Facing::Left => cols as i32 - 1 - seat,
                         };
                         (
                             i64::from(px) + i64::from(w) * i64::from(c - 2),

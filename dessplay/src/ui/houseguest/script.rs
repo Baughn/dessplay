@@ -269,11 +269,19 @@ pub(super) enum ScriptId {
     /// or the hour, roughly, of an afternoon ("Three-ish."), each its
     /// branch (see [`ClockGlance`]).
     ClockGlance,
+    /// Her homework on the floor (phase 5c D5), where no desk stands: on
+    /// her front writing (or on her back reading the set text), then
+    /// nodding off as at her desk, each a branch (see
+    /// [`floor_homework_branch`]). Played on [`Activity::FloorHomework`],
+    /// never chosen as a use's.
+    ///
+    /// [`Activity::FloorHomework`]: super::osaka::Activity::FloorHomework
+    FloorHomework,
 }
 
 impl ScriptId {
     #[cfg(test)]
-    pub const ALL: [ScriptId; 26] = [
+    pub const ALL: [ScriptId; 27] = [
         Self::Lounge,
         Self::Nap,
         Self::Sleep,
@@ -300,6 +308,7 @@ impl ScriptId {
         Self::Scary,
         Self::LookOut,
         Self::ClockGlance,
+        Self::FloorHomework,
     ];
 
     /// How rare it is (phase 5b D6): only a Rare or Legendary script
@@ -329,7 +338,8 @@ impl ScriptId {
             | Self::DashLunch
             | Self::DashForgot
             | Self::LookOut
-            | Self::ClockGlance => Rarity::Common,
+            | Self::ClockGlance
+            | Self::FloorHomework => Rarity::Common,
         }
     }
 
@@ -368,6 +378,7 @@ impl ScriptId {
             Self::Scary => SCARY,
             Self::LookOut => LOOK_OUT,
             Self::ClockGlance => CLOCK_GLANCE,
+            Self::FloorHomework => FLOOR_HOMEWORK,
         }
     }
 
@@ -411,7 +422,8 @@ impl ScriptId {
             | Self::Escalator
             | Self::Scary
             | Self::LookOut
-            | Self::ClockGlance => Chat::Look,
+            | Self::ClockGlance
+            | Self::FloorHomework => Chat::Look,
         }
     }
 
@@ -445,12 +457,14 @@ impl ScriptId {
             | Self::Escalator
             | Self::Scary
             | Self::LookOut
-            | Self::ClockGlance => 0,
+            | Self::ClockGlance
+            | Self::FloorHomework => 0,
         }
     }
 
     /// The use it plays on as that use's own script (`None`: it plays
-    /// spacing out, or spliced round a use). Wildcard-free, so a new
+    /// spacing out, spliced round a use, or on the floor as an activity's
+    /// own). Wildcard-free, so a new
     /// script doesn't compile until it says (the lints hold each to its
     /// host). Her night's plays on whatever she sleeps on, a sofa's nap
     /// and the floor too; as the stage cues it, on her bed.
@@ -475,7 +489,8 @@ impl ScriptId {
             | Self::NoMelon
             | Self::Escalator
             | Self::Scary
-            | Self::ClockGlance => {
+            | Self::ClockGlance
+            | Self::FloorHomework => {
                 return None;
             }
         })
@@ -492,6 +507,7 @@ impl ScriptId {
             | Self::ClockGlance => Host::SpaceOut,
             Self::Night | Self::Dream => Host::Night,
             Self::Chopsticks | Self::Andagi | Self::NoMelon | Self::Scary => Host::Splice,
+            Self::FloorHomework => Host::Floor,
             Self::Lounge
             | Self::Nap
             | Self::Sleep
@@ -525,6 +541,7 @@ impl ScriptId {
         Some(match self {
             Self::Chopsticks | Self::Andagi | Self::NoMelon | Self::Scary => return None,
             Self::Riddle | Self::Escalator => SPACE_OUT_MS.0,
+            Self::FloorHomework => super::osaka::Activity::FloorHomework.duration().0,
             // Begun only with room for it all before she wakes.
             Self::Dream => DREAM_MS,
             // Built directly, always as long.
@@ -580,6 +597,7 @@ impl ScriptId {
             Self::Scary => Scene::Scary,
             Self::LookOut => Scene::LookOut,
             Self::ClockGlance => Scene::ClockGlance,
+            Self::FloorHomework => Scene::FloorHomework,
         }
     }
 
@@ -611,6 +629,9 @@ pub(super) enum Host {
     /// Her night's sleep: a use of her bed, her sofa or a makeshift
     /// heap, or lying on the floor (see [`Surface`]).
     Night,
+    /// Something she does on the floor, as its own script (her homework
+    /// there: phase 5c D5).
+    Floor,
 }
 
 /// What a chat line arriving while a script plays does.
@@ -740,6 +761,7 @@ impl SpliceId {
                 name: "chopsticks",
                 salt: 1,
                 around: &[Use::Homework],
+                made: false,
                 at: Part::Before,
                 // In exam season, before every homework (A23): still
                 // only once in its ten minutes' cooling.
@@ -752,6 +774,7 @@ impl SpliceId {
                 name: "sata andagi",
                 salt: 2,
                 around: &[Use::Snack],
+                made: true,
                 at: Part::After,
                 chance: |_| (1, 4),
                 when: |_| true,
@@ -761,6 +784,7 @@ impl SpliceId {
                 name: "no melon",
                 salt: 3,
                 around: &[Use::Snack],
+                made: true,
                 at: Part::After,
                 chance: |_| (1, 3),
                 when: |_| true,
@@ -770,6 +794,7 @@ impl SpliceId {
                 name: "scary story",
                 salt: 4,
                 around: &[Use::Lounge, Use::Read],
+                made: true,
                 at: Part::After,
                 chance: |_| (1, 2),
                 // From 22:00 until her bedtime (by her routine: never
@@ -785,6 +810,7 @@ impl SpliceId {
                 name: "test snack",
                 salt: 100,
                 around: TEST_AROUND,
+                made: true,
                 at: Part::Before,
                 chance: |_| (1, 1),
                 when: |_| true,
@@ -795,6 +821,7 @@ impl SpliceId {
                 name: "test sleep",
                 salt: 101,
                 around: TEST_AROUND,
+                made: true,
                 at: Part::After,
                 chance: |_| (1, 2),
                 when: |_| true,
@@ -805,6 +832,7 @@ impl SpliceId {
                 name: "test bedtime",
                 salt: 102,
                 around: TEST_AROUND,
+                made: true,
                 at: Part::Before,
                 chance: |_| (1, 2),
                 when: |_| true,
@@ -878,6 +906,10 @@ pub(super) struct Splice {
     /// The uses it may wrap. Never unpacking or crumpling: what comes of
     /// those happens as the use ends, after any coda (a lint holds it).
     pub around: &'static [Use],
+    /// Whether it may wrap a use of a piece she made: not the
+    /// chopsticks, whose drawings are of her on her stool at a real desk
+    /// (phase 5c D5: at her paper desk she kneels).
+    pub made: bool,
     /// Before or after.
     pub at: Part,
     /// `n` uses in `d` it wraps (of those `when` allows), as the use
@@ -891,11 +923,22 @@ pub(super) struct Splice {
     pub lens: &'static [u64],
 }
 
+impl Splice {
+    /// Whether it may wrap a use for `what`, of a piece she made if
+    /// `makeshift`: the one test of it, rolled or cued (see
+    /// [`splices`], [`Cue::plays_on`]).
+    pub fn wraps(&self, what: Use, makeshift: bool) -> bool {
+        self.around.contains(&what) && (self.made || !makeshift)
+    }
+}
+
 /// What a splice row sees as the use it would wrap starts.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct SpliceCtx<'a> {
     /// What she's using it for.
     pub what: Use,
+    /// The piece she's using is one she made.
+    pub makeshift: bool,
     /// She's only trying the piece where it stands: no splice.
     pub trying: bool,
     /// She has stopped saying anything (a prelude's first key would be
@@ -933,18 +976,19 @@ pub(super) enum Cue {
 impl Cue {
     /// Whether it plays on a use of `what` as it starts: never a trial
     /// sit (a moment on a piece she's trying where it stands is all
-    /// that is); a splice round a use it wraps; a script on a use of its
+    /// that is); a splice round a use it wraps (of a piece she made if
+    /// `makeshift`: see [`Splice::wraps`]); a script on a use of its
     /// piece, and surfing or the shopping channel only with nothing
     /// about her home on her mind (`grieved`), which would show over
     /// them. A riddle never: it waits for her to muse.
-    pub fn plays_on(self, what: Use, trying: bool, grieved: bool) -> bool {
+    pub fn plays_on(self, what: Use, trying: bool, grieved: bool, makeshift: bool) -> bool {
         !trying
             && match self {
                 Self::Script(id) => {
                     id.played_on() == Some(what)
                         && !(grieved && matches!(id, ScriptId::Surf | ScriptId::Shopping))
                 }
-                Self::Splice(id, _) => id.row().around.contains(&what),
+                Self::Splice(id, _) => id.row().wraps(what, makeshift),
             }
     }
 }
@@ -986,7 +1030,7 @@ pub(super) fn splices(
             Part::Before => &mut wrapped.0,
             Part::After => &mut wrapped.1,
         };
-        if slot.is_some() || !row.around.contains(&ctx.what) {
+        if slot.is_some() || !row.wraps(ctx.what, ctx.makeshift) {
             continue;
         }
         if forced.is_none() {
@@ -1381,6 +1425,64 @@ const fn homework(write: (u64, u64), nod: (u64, u64)) -> [Key; 3] {
             bubble(Bubble::Zzz),
         ),
     ]
+}
+
+/// Her homework on the floor (phase 5c D5): on her front writing on
+/// the paper out in front of her (branches 0 to 2), or on her back
+/// reading the set text over her face (3 to 5); each nodding off where
+/// her mood has her, at [`HOMEWORK`]'s shares in `stillness::NodOff`'s
+/// order (see [`floor_homework_branch`]), then asleep: her head down on
+/// her arms, or the book open over her eyes.
+const FLOOR_HOMEWORK: &[&[Key]] = &[
+    &floor_homework(Pose::FloorHomework, Pose::FloorHomework(2), (1, 2), (3, 4)),
+    &floor_homework(Pose::FloorHomework, Pose::FloorHomework(2), (1, 3), (2, 3)),
+    &floor_homework(
+        Pose::FloorHomework,
+        Pose::FloorHomework(2),
+        (5, 6),
+        (11, 12),
+    ),
+    &floor_homework(Pose::LieRead, Pose::LieRead(2), (1, 2), (3, 4)),
+    &floor_homework(Pose::LieRead, Pose::LieRead(2), (1, 3), (2, 3)),
+    &floor_homework(Pose::LieRead, Pose::LieRead(2), (5, 6), (11, 12)),
+];
+
+/// Her homework on the floor as [`HOMEWORK`] is at her desk: at it in
+/// `at`'s frames up to `write` of the way through the body, nodding in
+/// `dozed` up to `nod` (her eyes shut), then asleep in it.
+const fn floor_homework(
+    at: fn(u8) -> Pose,
+    dozed: Pose,
+    write: (u64, u64),
+    nod: (u64, u64),
+) -> [Key; 3] {
+    [
+        key(
+            Span::Upto(write.0, write.1),
+            Posed::Bob(at, USE_FRAME_MS),
+            Face::Vacant,
+            None,
+        ),
+        key(
+            Span::Upto(nod.0, nod.1),
+            Posed::Still(dozed),
+            Face::Blink,
+            bubble(Bubble::Dots),
+        ),
+        key(
+            Span::Rest,
+            Posed::Still(dozed),
+            Face::Blink,
+            bubble(Bubble::Zzz),
+        ),
+    ]
+}
+
+/// The branch of [`ScriptId::FloorHomework`] her homework on the floor
+/// plays: nodding off at `nod`, on her front writing, or (`book`) on her
+/// back reading.
+pub(super) fn floor_homework_branch(nod: super::stillness::NodOff, book: bool) -> u8 {
+    nod.branch() + if book { 3 } else { 0 }
 }
 
 const WATCH: &[&[Key]] = &[&[shows(
@@ -2156,6 +2258,7 @@ mod tests {
             ScriptId::Scary => 23,
             ScriptId::LookOut => 24,
             ScriptId::ClockGlance => 25,
+            ScriptId::FloorHomework => 26,
         }
     }
 
@@ -2234,11 +2337,12 @@ mod tests {
             ScriptId::Scary => spliced(SpliceId::Scary),
             ScriptId::LookOut => Play::of(Use::LookOut, None),
             ScriptId::ClockGlance => Play::plain(ScriptId::ClockGlance),
+            ScriptId::FloorHomework => Play::plain(ScriptId::FloorHomework),
         };
         for id in ScriptId::ALL {
             let play = player(id);
             let plays = match id.host() {
-                Host::Use | Host::SpaceOut | Host::Night => play.own,
+                Host::Use | Host::SpaceOut | Host::Night | Host::Floor => play.own,
                 Host::Splice => {
                     let splice = play.after.unwrap().splice;
                     assert!(SpliceId::ALL.contains(&splice), "{id:?}: not a row's");
@@ -2468,6 +2572,7 @@ mod tests {
                 let none = Rares::none();
                 let ctx = SpliceCtx {
                     what: Use::Homework,
+                    makeshift: false,
                     trying: false,
                     quiet: true,
                     day: None,
@@ -2497,6 +2602,7 @@ mod tests {
         let none = Rares::none();
         let ctx = SpliceCtx {
             what,
+            makeshift: false,
             trying,
             quiet,
             day: None,
@@ -2572,6 +2678,7 @@ mod tests {
         let none = Rares::none();
         let ctx = SpliceCtx {
             what: Use::Homework,
+            makeshift: false,
             trying: false,
             quiet: true,
             day: None,
@@ -2609,6 +2716,7 @@ mod tests {
             let none = Rares::none();
             let ctx = SpliceCtx {
                 what,
+                makeshift: false,
                 trying: false,
                 quiet,
                 day: None,
@@ -2950,6 +3058,7 @@ mod tests {
         let none = Rares::none();
         let ctx = |what, exams| SpliceCtx {
             what,
+            makeshift: false,
             trying: false,
             quiet: true,
             day: None,
@@ -3005,6 +3114,7 @@ mod tests {
         let none = Rares::none();
         let ctx = SpliceCtx {
             what: Use::Homework,
+            makeshift: false,
             trying: false,
             quiet: true,
             day: None,
@@ -3246,6 +3356,7 @@ mod tests {
         let roll = |rares: &Rares, what, day, sure, w| {
             let ctx = SpliceCtx {
                 what,
+                makeshift: false,
                 trying: false,
                 quiet: true,
                 day,
@@ -3278,6 +3389,7 @@ mod tests {
                         let commons = [SpliceId::Chopsticks, SpliceId::Andagi];
                         let ctx = SpliceCtx {
                             what,
+                            makeshift: false,
                             trying: false,
                             quiet: true,
                             day,
@@ -3329,6 +3441,7 @@ mod tests {
             for what in id.row().around {
                 let ctx = SpliceCtx {
                     what: *what,
+                    makeshift: false,
                     trying: false,
                     quiet: true,
                     day: None,

@@ -1841,6 +1841,12 @@ fn every_scene_has_a_spot_in_the_stage_room() {
                         Scene::ToeTouch => posed(Pose::ToeTouch(0)),
                         Scene::Stretch => posed(Pose::Stretch),
                         Scene::Gaze => posed(Pose::Gaze),
+                        Scene::FloorHomework => posed(Pose::FloorHomework(0)),
+                        // On her back, reading the set text, or a book;
+                        // dozing under it.
+                        Scene::BookHomework | Scene::LieRead | Scene::BookDoze => {
+                            posed(Pose::LieRead(0))
+                        }
                         Scene::Muse => said,
                         Scene::Riddle => visit
                             .osaka
@@ -1858,7 +1864,7 @@ fn every_scene_has_a_spot_in_the_stage_room() {
                         Scene::Watch => used == Some(Furniture::Tv),
                         // Torn off and taking shape (the whole scene runs
                         // past the cap; see she_makes_furniture_of_text).
-                        Scene::MakeSofa | Scene::MakeBed => visit
+                        Scene::MakeSofa | Scene::MakeBed | Scene::MakeDesk => visit
                             .made
                             .iter()
                             .any(|m| m.piece.scrap.is_some_and(|s| s.stage > 0)),
@@ -3202,6 +3208,13 @@ fn every_decision_reads_the_routine_at_its_own_moment() {
     guest.set_date(date(2026, 6, 17));
     guest.cue(Scene::Arrive);
     paint(&mut guest, &real, &view, 0);
+    // Standing about throughout: short acts of one wakeup each, so there
+    // are decisions in the gap to read (a long still act, her homework at
+    // its time, would span it; walking would spend the tick's events a
+    // step at a time).
+    if let State::Visiting(visit) = &mut guest.state {
+        visit.osaka.offer_only = Some((brain::Want::Stand, "stand"));
+    }
     let mut now = 0;
     while now < 20_000 {
         now += 500;
@@ -7692,6 +7705,161 @@ fn an_interrupted_crumple_keeps_its_purpose() {
     }
 }
 
+/// Her paper desk (phase 5c D5), in the stage room's text: she tears a
+/// strip off a line, crumples it into a low cube, and does her homework
+/// at it, kneeling beside it (her box centred one column past its end,
+/// facing it: in it, she'd kneel inside the cube), all its use long;
+/// and it's used. In both drawing modes. (That she never splits
+/// chopsticks there is pinned in osaka.rs, by
+/// `at_her_paper_desk_she_kneels_and_splits_no_chopsticks`: here she's
+/// still saying hello as she starts, and a prelude waits for quiet, so
+/// none would roll anyway.)
+#[test]
+fn she_makes_a_paper_desk_and_kneels_beside_it_for_her_homework() {
+    use super::room::Use;
+    use super::sprite::{Facing, Pose};
+    for graphics in [false, true] {
+        for seed in 0..3u64 {
+            let at = format!("graphics={graphics} seed={seed}");
+            let mut ui = stage_ui();
+            let (real, view) = real_frame(&mut ui, 100, 30);
+            let mut guest = Guest::new(seed);
+            if graphics {
+                guest.set_picker(kitty());
+            }
+            guest.cue(Scene::MakeDesk);
+            paint(&mut guest, &real, &view, 0);
+            let mut now = 0;
+            let mut knelt = None;
+            while now < 120_000 && knelt.is_none() {
+                now += guest
+                    .next_tick(now)
+                    .map_or(100, |d| d.as_millis() as u64)
+                    .clamp(1, 100);
+                guest.advance(now);
+                paint(&mut guest, &real, &view, now);
+                let visit = visit_of(&guest);
+                if let Some(seat) = visit.osaka.seat()
+                    && seat.makeshift()
+                    && seat.what == Use::Homework
+                {
+                    knelt = Some((seat, now));
+                }
+            }
+            let (seat, from) = knelt.unwrap_or_else(|| panic!("{at}: no homework at a paper desk"));
+            assert_eq!(seat.item, Furniture::Desk, "{at}");
+            let visit = visit_of(&guest);
+            let desk = visit
+                .made
+                .iter()
+                .find(|m| m.piece.piece() == seat.piece)
+                .expect("the desk stands");
+            let (left, cols) = (desk.piece.left, i32::from(desk.piece.size().0));
+            assert!(
+                seat.x == left - 1 || seat.x == left + cols,
+                "{at}: one past its end ({}, {left}+{cols})",
+                seat.x
+            );
+            let toward = if seat.x < left {
+                Facing::Right
+            } else {
+                Facing::Left
+            };
+            assert_eq!(seat.facing, toward, "{at}: facing it");
+            assert!(visit.osaka.plays().is_some(), "{at}: playing");
+            // Kneeling at it, its whole use long.
+            let mut used = false;
+            let mut now = from;
+            while visit_of(&guest).osaka.seat() == Some(seat) {
+                let (pose, ..) = visit_of(&guest).osaka.appearance(now);
+                assert!(
+                    matches!(pose, Pose::PaperDesk(_)),
+                    "{at} at {now}: {pose:?}"
+                );
+                used |= visit_of(&guest)
+                    .made
+                    .iter()
+                    .any(|m| m.piece.piece() == seat.piece && m.used);
+                now += guest
+                    .next_tick(now)
+                    .map_or(100, |d| d.as_millis() as u64)
+                    .clamp(1, 100);
+                guest.advance(now);
+                paint(&mut guest, &real, &view, now);
+                assert!(now < from + 300_000, "{at}: homework without end");
+            }
+            assert!(used, "{at}: used");
+        }
+    }
+}
+
+/// What stands in her room, for "no desk standing" (phase 5c D5, M10)
+/// and making's draw, is read off the pieces shown: a real desk counts,
+/// boxed or not, and a paper desk she made isn't a real one. Through the
+/// guest: her desk in its box, at homework time, under text-dense panes,
+/// stands in her room every frame it's shown, and homework on the floor
+/// is never so much as offered (boxed and unpacked alike). In both
+/// drawing modes.
+#[test]
+fn a_real_desk_stands_boxed_or_not_and_a_paper_one_is_not_real() {
+    use super::brain::Want;
+    use super::osaka::Activity;
+    let desk = |boxed: bool, made: bool| Shown {
+        item: Furniture::Desk,
+        facing: super::sprite::Facing::Right,
+        boxed,
+        strip: None,
+        left: 10,
+        floor: 15,
+        scrap: made.then(|| super::scrap::Scrap::new(super::room::MadeId(0), &[], 0)),
+    };
+    assert_eq!(
+        super::real_kinds(&[desk(false, false), desk(true, false), desk(false, true)]),
+        vec![Furniture::Desk, Furniture::Desk]
+    );
+    for graphics in [false, true] {
+        let (mut guest, real, view) = given(5, true, graphics, &[Furniture::Desk]);
+        for prop in &mut guest.ledger.home.props {
+            prop.boxed |= prop.item == Furniture::Desk;
+        }
+        // Monday 21:00 on: homework time.
+        guest.set_feed_clock(true);
+        guest.ledger.clock = 5 * 60;
+        let (mut boxed, mut unboxed) = (false, false);
+        let mut now = 0;
+        while now < 4 * 60_000 {
+            now += guest
+                .next_tick(now)
+                .map_or(1000, |d| d.as_millis() as u64)
+                .clamp(1, 1000);
+            if guest.advance(now) {
+                paint(&mut guest, &real, &view, now);
+            }
+            let visit = visit_of(&guest);
+            let shown = visit
+                .shown
+                .iter()
+                .find(|s| s.item == Furniture::Desk && s.scrap.is_none());
+            let shown = shown.unwrap_or_else(|| panic!("graphics {graphics}: no desk at {now}"));
+            boxed |= shown.boxed;
+            unboxed |= !shown.boxed;
+            assert!(
+                visit.chances.real.contains(&Furniture::Desk),
+                "graphics {graphics} at {now}: boxed {}: {:?}",
+                shown.boxed,
+                visit.chances.real
+            );
+            let floor = Want::Idle(Activity::FloorHomework);
+            assert!(
+                visit.osaka.factored.iter().all(|&(w, ..)| w != floor),
+                "graphics {graphics} at {now}: homework on the floor offered"
+            );
+        }
+        assert!(boxed, "graphics {graphics}: never seen boxed");
+        assert!(unboxed, "graphics {graphics}: never unpacked");
+    }
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(dessplay_core::test_support::proptest_cases(8)))]
 
@@ -7704,13 +7872,14 @@ proptest! {
     /// and run on after it (a chat line no longer cuts a still use short,
     /// phase 5c B1, so a day's sleep on the bed she made runs its course
     /// while the sofa waits). She makes a sofa, chat keeps arriving every
-    /// 20-40 s, and she may be sent to make a bed.
+    /// 20-40 s, and she may be sent to make a bed, and a paper desk.
     #[test]
     fn every_made_piece_is_used_or_let_go(
         seed in 0u64..1000,
         graphics in any::<bool>(),
         gaps in proptest::collection::vec(20_000u64..40_000, 12),
         bed_at in proptest::option::of(0u64..90_000),
+        desk_at in proptest::option::of(0u64..90_000),
     ) {
         use super::room::{MadeId, PieceRef, Use};
         // Between tries: a chat gap, the watch after it, and a walk. Not
@@ -7737,7 +7906,7 @@ proptest! {
             *t += gap;
             Some(*t)
         }).peekable();
-        let mut bed_at = bed_at;
+        let (mut bed_at, mut desk_at) = (bed_at, desk_at);
         // Each piece she has made: where she is with it, and since when.
         let mut made: Vec<(MadeId, (bool, u8), u64)> = Vec::new();
         // Those she used, and those gone before she did.
@@ -7782,6 +7951,10 @@ proptest! {
             if bed_at.is_some_and(|t| t <= now) {
                 bed_at = None;
                 guest.cue(Scene::MakeBed);
+            }
+            if desk_at.is_some_and(|t| t <= now) {
+                desk_at = None;
+                guest.cue(Scene::MakeDesk);
             }
             paint(&mut guest, &real, &view, now);
             let State::Visiting(visit) = &guest.state else {
@@ -7856,7 +8029,8 @@ fn her_decisions_explain_themselves() {
     guest.cue(Scene::Arrive);
     paint(&mut guest, &real, &view, 0);
     let mut now = 0;
-    while now < 180_000 {
+    // Long enough for a score of decisions however still she is.
+    while now < 360_000 {
         now += guest
             .next_tick(now)
             .map_or(1000, |d| d.as_millis() as u64)
@@ -8033,6 +8207,10 @@ fn every_want_can_be_cued() {
             // Not a want she has (not in `Want::ALL`): she only settles
             // into it from sitting, but the stage can show it.
             Want::Idle(Activity::SitDoze) => &[Scene::SitDoze],
+            Want::Idle(Activity::FloorHomework) => &[Scene::FloorHomework, Scene::BookHomework],
+            Want::Idle(Activity::LieRead) => &[Scene::LieRead],
+            // Settled into from reading on her back.
+            Want::Idle(Activity::BookDoze) => &[Scene::BookDoze],
             Want::Travel => &[
                 Scene::ClimbUp,
                 Scene::ClimbDown,
@@ -8053,7 +8231,7 @@ fn every_want_can_be_cued() {
             Want::Use(Use::Read) => &[Scene::Read],
             Want::Use(Use::Snack) => &[Scene::Snack],
             Want::Use(Use::Pet) => &[Scene::Pet],
-            Want::Use(Use::Crumple) => &[Scene::MakeSofa, Scene::MakeBed],
+            Want::Use(Use::Crumple) => &[Scene::MakeSofa, Scene::MakeBed, Scene::MakeDesk],
             Want::Use(Use::LookOut) => &[Scene::LookOut],
             Want::Arrange => &[Scene::Arrange],
         };
@@ -8431,6 +8609,9 @@ fn chat_mid_clamber_doesnt_drop_her() {
         }
         view.chat_mark.synced += 1;
         let until = now + 10_000;
+        // Over onto the far floor at some tick after the line (what she
+        // does once there is her own), and never falling.
+        let mut over = None;
         while now < until {
             now += guest
                 .next_tick(now)
@@ -8438,17 +8619,17 @@ fn chat_mid_clamber_doesnt_drop_her() {
                 .clamp(1, 100);
             guest.advance(now);
             paint(&mut guest, &real, &view, now);
-            let (pose, ..) = her(&guest, now);
+            let (pose, x, y) = her(&guest, now);
             assert!(
                 !matches!(pose, Pose::Fall | Pose::Dazed),
                 "{at}: {pose:?} at {now}"
             );
+            if over.is_none() && y == to.y && (to.x0..=to.x1).contains(&x) {
+                over = Some(now);
+            }
         }
         let (_, x, y) = her(&guest, now);
-        assert!(
-            y == to.y && (to.x0..=to.x1).contains(&x),
-            "{at}: over onto {to:?}, but at ({x}, {y})"
-        );
+        assert!(over.is_some(), "{at}: over onto {to:?}, but at ({x}, {y})");
     }
 }
 
@@ -11266,7 +11447,8 @@ proptest! {
     /// on text-dense floors never keeps her over text: where her image
     /// hides text she doesn't stop to look (only text coming up under her
     /// startles her there, and briefly), and no text stays hidden behind
-    /// her for long; she goes on somewhere calm and watches it from there.
+    /// her for long; she goes on somewhere calm and watches it from there
+    /// (or, at a still act on calm floor, watches it where she is).
     #[test]
     fn a_lively_chat_never_keeps_her_over_text(
         seed in any::<u64>(),
@@ -11318,10 +11500,13 @@ proptest! {
                     } else {
                         over = None;
                     }
-                    watched |= osaka
-                        .decisions
-                        .iter()
-                        .any(|d| d.method == "watching chat");
+                    // Watching on her feet, or (phase 5c B1) from a still
+                    // act on calm floor, where she is.
+                    watched |= osaka.looking_up_at_chat()
+                        || osaka
+                            .decisions
+                            .iter()
+                            .any(|d| d.method == "watching chat");
                     Ok(true)
                 },
             )?;

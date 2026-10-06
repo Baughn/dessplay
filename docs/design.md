@@ -1461,6 +1461,27 @@ this section states what is built.
   at something ("ooh" for its first 3 s, then quietly). Standing still facing the viewer is short and rare; watching the
   chat on her feet, she stands side-on facing it (from a still act she
   watches where she is).
+- **Homework and a book on the floor** (phase 5c): with no desk standing
+  in her room (a real one, boxed or not, or a paper desk she made;
+  judged on the pieces shown, not on whether she can get to one's seat),
+  she does her homework lying on the floor: on her front writing on a
+  paper out in front of her, or one time in three on her back reading
+  the set text held over her face; as long as at a desk, at its times
+  (three times as likely at homework time, twice in exams and panic
+  week), nodding off where her mood has her as at her desk (dots, then
+  asleep: her head on her arms, or the book open over her eyes). It's a
+  lesser thing than her own desk (base 6, as lying on her front is;
+  homework at a desk is 8), answering *daydreams* 0.3 and *comfort*
+  0.1 (on the floor). The first time one ends in a visit, the floor was
+  hard on her back: she says "My back...", standing while it shows, and
+  her back aches for the rest of the visit (her routine cutting it off
+  first doesn't count). With no bookshelf standing, she reads lying on
+  her back, the book held over her face, a page turning on the use
+  frame (base 6; *fun* 0.5, *daydreams* 0.2; twice as likely on an
+  evening before a day off); she may settle from it into a doze under
+  the book, open over her eyes. Watching the TV from beside it (not
+  from a sofa), she sits cross-legged
+  (why: [decisions](decisions.md#homework-on-the-floor-and-the-paper-desk-2026-10-06)).
 - **A slow blink** on a pose she holds with her eyes open (sitting,
   lounging, watching, reading, writing her homework, gazing or looking
   out; not standing, nor anything that moves, dozes, eats or busies her
@@ -1555,6 +1576,8 @@ this section states what is built.
   isn't one of her recent choices, and eases her as its own want
   (dozing where she sits as lying back does). It comes after her
   routine, a beat she owes, a heading and a piece she's moving or made.
+  Reading on her back settles into a doze under the book (as lying back
+  does, as far as it goes).
   Watching the chat as the act ran out, she settles first and watches on
   in her new pose (a doze, a nap included, wears no look: on a sofa she
   faces as its seat does), unless one of those is waiting: then she
@@ -1563,8 +1586,10 @@ this section states what is built.
   trial sit), nor what was cut short. **Lingering**: her mood stretches
   the length she draws for a still act she chose (sitting, lying back,
   gazing, dozing where she sits, spacing out (her rare musing too),
-  lounging, napping, a day's sleep, reading, looking out); not
-  exercise, lying on her front, chores, a snack, the cat, homework (her
+  lounging, napping, a day's sleep, reading (on her back too, and the
+  doze under the book), looking out); not
+  exercise, lying on her front, chores, a snack, the cat, homework (on
+  the floor too; her
   mood moves where it nods off instead), her night or a trial sit, nor
   watching until her TV holds a picture (its static is animated). **A
   daydream** (a musing spacing-out) holds as many musings as her mood's
@@ -1609,7 +1634,7 @@ this section states what is built.
   same trip, not a fresh choice
   (why: [decisions](decisions.md#her-mind-is-a-table-and-a-heading-2026-10-02)).
   **Nothing she loses goes unremarked**: a piece she made, gone before
-  she used it ("...my sofa." / "...my bed."); text she was tearing
+  she used it ("...my sofa." / "...my bed." / "...my desk."); text she was tearing
   off, put back ("...never mind." one time in four); where she was
   heading, gone or given up for something else; a piece she let be
   after her tries ("Nah." one time in two). Each owes a beat: a glance
@@ -1761,11 +1786,12 @@ this section states what is built.
   a piece and sits on the sofa, naps on it hugging the cushion
   (something she does awake too, and more when she's sleepy, taking a
   little off), sleeps in bed (answers *sleepy* far
-  better than a doze on a border or a nap), does homework at the desk (nodding
+  better than a doze on a border or a nap), does homework at the desk (or
+  at a paper desk she made, kneeling beside it: never the chopsticks there) (nodding
   off onto the paper halfway through; one time in three she splits a
   pair of disposable chopsticks first, cleanly, a twinkle and "hehe", or
   badly, crestfallen: "Hold 'em by the ends!", even odds), or watches the TV from beside
-  it, or from a sofa that **faces** it (the two on one strip, 2–14
+  it, cross-legged on the floor, or from a sofa that **faces** it (the two on one strip, 2–14
   cells between them, judged on the strip, so something splitting the
   floor between them doesn't matter; the sofa turned toward the TV,
   while the TV, seen from the front, may be turned either way; a
@@ -1931,7 +1957,8 @@ this section states what is built.
   home takes the cheapest way
   (why: [decisions](decisions.md#she-tries-a-piece-in-a-spot-or-two-2026-10-03)).
 - **Makeshift furniture**: wanting to sit on a sofa (or watch the TV
-  from one) or sleep in a bed and having none, she makes one of text.
+  from one), sleep in a bed or do her homework at a desk and having
+  none, she makes one of text.
   At a line that ends beside her box at chest height (as for a pull),
   where the piece fits centred under her, she braces and tears off the
   end nearest her ("Rrrip!"): 5–10 glyphs, leaving at least two. Hand
@@ -1952,7 +1979,9 @@ this section states what is built.
   each time she can't get to it, is a try; after three without
   progress (crumpling it into shape is progress) she lets it be, and
   it's offered like any other piece. A makeshift sofa is 7×3
-  cells, a makeshift bed 7×2; each stands on a floor over blank cells
+  cells, a makeshift bed 7×2, a paper desk a low 4×2 cube she kneels
+  beside to do her homework at (her box centred one column past its
+  end, facing it; she bends over its middle to crumple it); each stands on a floor over blank cells
   like her real pieces (and is solid to text the same way), and is
   drawn as shreds of the alien glyphs her image derezzes text into, in
   the torn text's own colours (in ASCII, its own letters, jumbled). Once
@@ -1967,10 +1996,15 @@ this section states what is built.
   visit and doesn't make a second while the first stands. **A real
   piece comes first**: when a real one of its kind is on offer for what
   she wants, she goes for the makeshift one (or makes one) only one
-  time in twenty, and then that's where she goes. Making one in the
+  time in twenty, and then that's where she goes. **While she owns no
+  real piece of its kind** (none shown, boxed or not), what she'd make
+  one for is three times as likely when making it is how she'd go about
+  it; a paper desk (with no real desk standing) three times as likely
+  again while her back aches from homework on the floor. Making one in the
   chat is a tenth as likely, like anything else there, and a sofa is
   five times as likely to be made where it would face her TV
-  (why: [decisions](decisions.md#houseguest-makes-furniture-of-torn-off-text-2026-10-01)).
+  (why: [decisions](decisions.md#houseguest-makes-furniture-of-torn-off-text-2026-10-01),
+  [decisions](decisions.md#homework-on-the-floor-and-the-paper-desk-2026-10-06)).
 - **Her clock** (phase 5b): she has a game clock of her own, running
   six times faster than real time, only while dessplay is open, from
   her first meeting on (whatever the Visits setting; before it, it

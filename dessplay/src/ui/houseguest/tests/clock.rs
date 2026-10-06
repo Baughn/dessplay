@@ -942,6 +942,10 @@ fn she_glances_at_her_clock_as_her_routine_turns() {
                         };
                         let (_, users) = view.nooks[0];
                         visit.osaka.place(25, i32::from(users.bottom()) - 1, now);
+                        // Standing there until the turn (not setting off
+                        // anywhere in its last seconds: what's measured
+                        // is the glance from where she's put).
+                        visit.osaka.offer_only = Some((brain::Want::Stand, "stand"));
                         if hung {
                             let nook = if mine { Nook::Users } else { Nook::Playlist };
                             assert!(guest.ledger.home.add(room::Prop::new(

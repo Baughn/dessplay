@@ -348,7 +348,7 @@ pub(super) fn quality(need: Need, spot: Spot) -> f64 {
 /// Where her fun comes from: each wears thin with use (its tolerance
 /// rises) and fresh again with time, so she varies what she enjoys.
 /// Every want that serves [`Need::Fun`] is one (a lint holds it).
-const FUN_SOURCES: [Want; 7] = [
+const FUN_SOURCES: [Want; 8] = [
     Want::Use(Use::Watch),
     Want::Use(Use::Read),
     Want::Use(Use::Pet),
@@ -356,6 +356,7 @@ const FUN_SOURCES: [Want; 7] = [
     Want::Use(Use::Snack),
     Want::Swap,
     Want::Use(Use::LookOut),
+    Want::Idle(Activity::LieRead),
 ];
 /// A whole use of a fun source raises its tolerance by this.
 const TOLERANCE_PER_USE: f64 = 0.6;
@@ -590,12 +591,25 @@ const WATCH_FACTORS: &[Factor] = &[
 /// summer's panic week.
 const HOMEWORK_FACTORS: &[Factor] = &[
     CHAT,
-    Factor::Clock(When::In(SlotSet::of(&[Slot::Homework])), BOOST_STRONG),
+    HOMEWORK_TIME,
     Factor::Season(routine::EXAMS, BOOST),
     Factor::Season(routine::PANIC_WEEK, BOOST),
 ];
+/// Homework on the floor, as at her desk, but where she lies is on the
+/// spot, never into the chat (phase 5c D5).
+const FLOOR_HOMEWORK_FACTORS: &[Factor] = &[
+    HOMEWORK_TIME,
+    Factor::Season(routine::EXAMS, BOOST),
+    Factor::Season(routine::PANIC_WEEK, BOOST),
+];
+/// Homework's own time: its slot on a school night.
+const HOMEWORK_TIME: Factor = Factor::Clock(When::In(SlotSet::of(&[Slot::Homework])), BOOST_STRONG);
 /// A book on an evening before a day off.
-const READ_FACTORS: &[Factor] = &[CHAT, Factor::Clock(When::EveningOff, BOOST)];
+const READ_FACTORS: &[Factor] = &[CHAT, BOOK_TIME];
+/// A book on her back, as at her bookshelf, on the spot (phase 5c D5).
+const LIE_READ_FACTORS: &[Factor] = &[BOOK_TIME];
+/// A book's own time: an evening before a day off.
+const BOOK_TIME: Factor = Factor::Clock(When::EveningOff, BOOST);
 /// A stretch in the morning.
 const STRETCH_FACTORS: &[Factor] = &[Factor::Clock(
     When::In(SlotSet::of(&[Slot::Morning])),
@@ -633,7 +647,7 @@ const fn in_chat(def: DesireDef) -> DesireDef {
 
 impl Want {
     /// Every want there is (the order she considers them in).
-    pub const ALL: [Want; 27] = [
+    pub const ALL: [Want; 29] = [
         Self::Stand,
         Self::SpaceOut,
         Self::Sneeze,
@@ -644,6 +658,8 @@ impl Want {
         Self::Idle(Activity::ToeTouch),
         Self::Idle(Activity::Stretch),
         Self::Idle(Activity::Gaze),
+        Self::Idle(Activity::FloorHomework),
+        Self::Idle(Activity::LieRead),
         Self::Walk,
         Self::Travel,
         Self::Pull,
@@ -693,6 +709,25 @@ impl Want {
                 row(6.0, &[(Need::Daydreams, 0.3), (Need::Comfort, 0.2)])
             }
             Self::Idle(Activity::Gaze) => with(row(6.0, &[(Need::Daydreams, 0.5)]), GAZE_FACTORS),
+            // Her homework where she has no desk, lying on the floor (phase
+            // 5c D5): at its times as at her desk, but a lesser thing than
+            // her own desk (as lying on her front is), and the floor is
+            // hard on her back.
+            Self::Idle(Activity::FloorHomework) => with(
+                row(6.0, &[(Need::Daydreams, 0.3), (Need::Comfort, 0.1)]),
+                FLOOR_HOMEWORK_FACTORS,
+            ),
+            // A book where she has no bookshelf, on her back: what a book
+            // answers at her bookshelf, at its time, a lesser thing.
+            Self::Idle(Activity::LieRead) => with(
+                row(6.0, &[(Need::Fun, 0.5), (Need::Daydreams, 0.2)]),
+                LIE_READ_FACTORS,
+            ),
+            // Never chosen (not in [`Want::ALL`]): settled into from
+            // reading on her back, it eases her as a doze.
+            Self::Idle(Activity::BookDoze) => {
+                row(4.0, &[(Need::Sleepy, 0.15), (Need::Comfort, 0.3)])
+            }
             Self::Walk => row(14.0, &[(Need::Restless, 0.4)]),
             Self::Travel => in_chat(row(10.0, &[(Need::Restless, 0.4)])),
             Self::Pull => in_chat(row(16.0, &[(Need::Tidy, 0.6)])),
@@ -1374,8 +1409,12 @@ mod tests {
             match want {
                 Want::Use(Use::Snack | Use::Lounge) => day.slot == Slot::Afternoon,
                 Want::Use(Use::Watch) => day.slot == Slot::Evening,
-                Want::Use(Use::Homework) => day.slot == Slot::Homework,
-                Want::Use(Use::Read) => day.slot == Slot::Evening && !day.night_before_school,
+                Want::Use(Use::Homework) | Want::Idle(Activity::FloorHomework) => {
+                    day.slot == Slot::Homework
+                }
+                Want::Use(Use::Read) | Want::Idle(Activity::LieRead) => {
+                    day.slot == Slot::Evening && !day.night_before_school
+                }
                 Want::Idle(Activity::Stretch) => day.slot == Slot::Morning,
                 Want::Idle(Activity::Gaze) | Want::Use(Use::LookOut) => {
                     day.minute >= 17 * 60 || day.minute < 5 * 60
@@ -1405,7 +1444,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!(seen.len(), 8, "{seen:?}");
+        assert_eq!(seen.len(), 10, "{seen:?}");
         // Read's evening is before a day off: Friday's, not Thursday's.
         let thursday = day_at(10, 19 * 60, false);
         let friday = day_at(11, 19 * 60, false);
@@ -1428,6 +1467,11 @@ mod tests {
         ] {
             let up = |want: Want| factor(want, false, Some(&afternoon), date) > 1.0;
             assert_eq!(up(homework), homework_up, "{date:?}");
+            assert_eq!(
+                up(Want::Idle(Activity::FloorHomework)),
+                homework_up,
+                "{date:?}: on the floor"
+            );
             assert_eq!(up(Want::Sneeze), sneeze_up, "{date:?}");
             // The date's, whatever the time of day (her mind is given a
             // date only with her day: see `Osaka::choose_next`).
