@@ -436,3 +436,46 @@ the user's redraws:
   lengths go through `use_duration_in`, `Activity::duration` or `SPACE_OUT_MS` (or `longest_still_ms`
   learns what they use). Step 8 fills all 24 `TUNED` rows from one 9-minute line-art census. Step 11
   adds a TV-only home print and a home or resident with text at her floors' heights.
+
+## Round-3 amendments (2026-10-06): the band rule, after step 8's stop
+
+Step 8's tuning stopped ([baseline.md, "Step 8: tuning stopped"](phase5c/baseline.md)): with every
+lever on, the shares fell well below the old floors on the stage and resident, while M3's per-room
+set-off cap (frozen at the baseline's seconds moved per set-off) held the home at about 1 set-off a
+minute. Steps 5–7 shipped (the 5 s watch, looking up in place, the levers landed neutral); step 8
+shipped the slow blink and the credit-ordering fix only.
+
+**The user's call: per-mood set-off caps.** A set-off draws the eye the same in any room, so the band
+becomes, in every room and both chat conditions:
+
+| Mood | Set-offs a minute in sight (cap) | Share ceiling | Share floor ("not dead") |
+|---|---|---|---|
+| Lazy | ≤ 1.5 | 17 | 5 |
+| Ordinary, Dreamy | ≤ 2.25 | 26 | 8 |
+| Industrious | ≤ 3.0 | 31 | 12 |
+
+plus industrious ÷ lazy ≥ 1.6 per room (full strength only). This replaces D2's floors, B5's floors and
+M3's per-room cap formula. The gate keeps its 2 seeds; full strength remains the real check (the
+user: "I'll know to check them if something feels off").
+
+Decided in steps 5–8 unless the user objects (each in decisions.md):
+- A line she can't look at within its 5 s (climbing, through a door, a far calm spot, the andagi
+  playing on) is let go, not watched late.
+- LieFront keeps its facing at a look (turning flips her body end to end); a grievance plays out
+  first, then the look.
+- A silent daydream still lets the escalator and the hour glance through (5b's frequencies kept).
+- Spacing out doesn't blink (a vacant stare); homework blinks on its writing frames.
+
+Steps from here, renumbered (the art "wiring" step folds into the steps that use each pose):
+8b. The retune to this rule: the census and band harnesses deliver chat lines at their own times
+    (re-measure first), then tune from step 8's move 7; Watch stays out of lingering until D7's held
+    picture (step 12); `BAND_MINUTES` 12 if lingering lands; fill `TUNED`, un-ignore the band.
+10a. D5 part 1: floor homework (`FloorHomework`), reading on her back (`LieRead`: floor reading where
+    no bookshelf, homework with a book), the paper desk (`PaperDesk`), more makeshift, `ached`,
+    cross-legged TV (`CrossLegged`).
+10b. D5 part 2: reading a borrowed line (`use/borrow`, `ReadStrip`).
+11. D6, the window: the lower hang with the sofa exception, the sill lean (`SillLean`), `UnderSill`
+    and `SitDoze` before it, cloud-watching under it only; glance re-check; the band re-read on a
+    windowed home; a TV-only home and a text-filled home or resident printed.
+12. D7, the TV picture, after its own two-lens critique.
+13. Census pass and docs.
