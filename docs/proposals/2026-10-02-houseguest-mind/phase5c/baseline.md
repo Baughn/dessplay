@@ -455,7 +455,7 @@ What moved:
   a look, chat adds movement in the home and resident (home, lazy: 2.06 set-offs a minute against
   1.51 quiet): expected, not a regression.
 - **Chat no longer lowers the share.** Chat minus quiet was −10 to +2 points with the 15 s watch
-  (most of the home and resident 4–10 below quiet); now it's −3 to +3. The restarts barely move
+  (most of the home and resident 4–10 below quiet); now it's −2.7 to +3.2. The restarts barely move
   (0.48–1.13 a minute, against 0.47–1.17): each line still cuts what it cuts. What changed is the
   stand that followed.
 - **Exercise** in place rises a little with chat (the stage's industrious 7.4 → 10.2%; 8.4% in the
@@ -475,3 +475,64 @@ What moved:
   its band and its cap, and each room's spread under 1.6 (stage 1.46, home 1.47, resident 1.23). The
   most visits a band line asks for is now 190 (the stage's lazy with chat; 187 before), and the
   stage's spread 356.
+
+## After looking up in place (step 6)
+
+**Measured 2026-10-06**, on step 6 with its review fixes (change `pzwwwpsnxyzv`: in a still act she
+looks up where she is; a doze stirs, and sets no watch; Setsubun's beans and a dash home are cut as
+before; at her desk she keeps facing it; her look waits for a grievance; what she's saying shows over
+the look), the same census as step 5's (9-minute visits, line art, 20 sets × 4 seeds, release).
+"Before the fixes" is the same census on step 6 as first built (before its review), kept for
+comparison. `tests/band.rs`'s `BASELINE` stays step 5's rows; these are for comparison. "Cuts/min"
+are the lines logged as cuts (an in-place look is one that cut nothing, "still"; a stir isn't logged,
+as at night, so part of the drop is stirs no longer counted); "of them still" the looks and passes
+that cut no trip, in place or standing.
+
+```text
+CENSUS_MINUTES=9 CENSUS_MODES=line \
+  cargo test --release -p dessplay --lib fed_afternoon_census -- --ignored --nocapture
+```
+
+| Room | Mood | Chat | Moving % | σ (N=4) | a visit | Set-offs/min | σ | Before the fixes: moving % | set-offs/min | Step 5: moving % | set-offs/min | Exercise % (step 5) | Cuts/min (step 5) | of them still | Restarts/min (step 5) |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| stage | Ordinary | quiet | **32.5** | 6.98 | 4.8–72.8 | **4.96** | 0.67 | 32.5 | 4.96 | 32.5 | 4.96 | 6.7 (6.7) | – | – | – |
+| stage | Ordinary | chat/45s | **28.7** | 7.28 | 4.4–68.8 | **4.92** | 0.55 | 28.9 | 4.92 | 30.7 | 5.32 | 6.4 (5.6) | 1.23 (1.41) | 0.74 | 0.64 (0.97) |
+| stage | Lazy | quiet | **21.8** | 6.55 | 2.3–72.1 | **4.19** | 0.30 | 21.8 | 4.19 | 21.8 | 4.19 | 1.8 (1.8) | – | – | – |
+| stage | Lazy | chat/45s | **23.7** | 7.95 | 4.6–72.5 | **4.19** | 0.48 | 23.7 | 4.16 | 24.6 | 4.74 | 1.3 (1.2) | 0.97 (1.41) | 0.52 | 0.53 (1.13) |
+| stage | Industrious | quiet | **34.9** | 6.93 | 12.8–64.1 | **5.11** | 0.51 | 34.9 | 5.11 | 34.9 | 5.11 | 11.2 (11.2) | – | – | – |
+| stage | Industrious | chat/45s | **35.7** | 7.39 | 15.4–77.0 | **5.59** | 0.71 | 35.6 | 5.57 | 35.3 | 5.66 | 10.0 (10.2) | 1.33 (1.39) | 0.73 | 0.68 (0.83) |
+| stage | Dreamy | quiet | **27.8** | 5.25 | 9.6–75.2 | **4.86** | 0.43 | 27.8 | 4.86 | 27.8 | 4.86 | 3.6 (3.6) | – | – | – |
+| stage | Dreamy | chat/45s | **28.2** | 7.95 | 5.7–66.1 | **4.92** | 0.55 | 28.5 | 4.94 | 29.5 | 5.24 | 3.1 (2.9) | 1.23 (1.41) | 0.73 | 0.56 (0.92) |
+| home | Ordinary | quiet | **48.4** | 5.16 | 20.3–76.0 | **2.33** | 0.20 | 48.4 | 2.33 | 48.4 | 2.33 | 4.7 (4.7) | – | – | – |
+| home | Ordinary | chat/90s | **44.9** | 6.20 | 16.3–75.0 | **2.47** | 0.27 | 44.2 | 2.46 | 48.6 | 2.67 | 4.6 (4.4) | 0.66 (0.75) | 0.27 | 0.30 (0.49) |
+| home | Lazy | quiet | **35.8** | 4.65 | 15.8–57.6 | **1.51** | 0.18 | 35.8 | 1.51 | 35.8 | 1.51 | 1.3 (1.3) | – | – | – |
+| home | Lazy | chat/90s | **34.0** | 4.73 | 11.6–59.4 | **1.68** | 0.21 | 33.8 | 1.68 | 39.0 | 2.06 | 1.1 (1.0) | 0.52 (0.78) | 0.22 | 0.26 (0.58) |
+| home | Industrious | quiet | **53.4** | 6.26 | 22.5–73.2 | **2.72** | 0.26 | 53.4 | 2.72 | 53.4 | 2.72 | 6.6 (6.6) | – | – | – |
+| home | Industrious | chat/90s | **51.7** | 4.27 | 24.2–75.9 | **2.86** | 0.31 | 51.8 | 2.85 | 54.0 | 3.08 | 6.4 (6.8) | 0.73 (0.77) | 0.26 | 0.34 (0.48) |
+| home | Dreamy | quiet | **46.1** | 4.11 | 26.6–71.2 | **2.27** | 0.17 | 46.1 | 2.27 | 46.1 | 2.27 | 3.6 (3.6) | – | – | – |
+| home | Dreamy | chat/90s | **42.4** | 5.17 | 22.0–63.1 | **2.38** | 0.16 | 42.3 | 2.37 | 47.7 | 2.61 | 2.9 (2.6) | 0.65 (0.77) | 0.25 | 0.32 (0.53) |
+| resident | Ordinary | quiet | **38.8** | 4.97 | 17.9–58.3 | **2.79** | 0.20 | 38.8 | 2.79 | 38.8 | 2.79 | 6.8 (6.8) | – | – | – |
+| resident | Ordinary | chat/60s | **35.6** | 3.32 | 14.9–59.5 | **2.99** | 0.17 | 35.7 | 3.00 | 37.8 | 3.14 | 6.3 (6.8) | 1.02 (1.10) | 0.54 | 0.39 (0.69) |
+| resident | Lazy | quiet | **32.3** | 3.71 | 12.8–51.0 | **2.31** | 0.12 | 32.3 | 2.31 | 32.3 | 2.31 | 2.1 (2.1) | – | – | – |
+| resident | Lazy | chat/60s | **30.6** | 4.10 | 12.3–53.5 | **2.61** | 0.15 | 30.5 | 2.59 | 35.0 | 2.78 | 1.6 (1.3) | 0.90 (1.04) | 0.46 | 0.35 (0.80) |
+| resident | Industrious | quiet | **43.9** | 5.43 | 23.4–65.9 | **2.92** | 0.16 | 43.9 | 2.92 | 43.9 | 2.92 | 9.1 (9.1) | – | – | – |
+| resident | Industrious | chat/60s | **38.6** | 4.21 | 11.8–58.3 | **3.03** | 0.18 | 38.6 | 3.02 | 41.2 | 3.20 | 9.1 (9.1) | 1.08 (1.10) | 0.56 | 0.37 (0.64) |
+| resident | Dreamy | quiet | **36.6** | 4.65 | 17.6–56.4 | **2.70** | 0.22 | 36.6 | 2.70 | 36.6 | 2.70 | 4.1 (4.1) | – | – | – |
+| resident | Dreamy | chat/60s | **32.5** | 4.30 | 13.1–53.7 | **2.80** | 0.23 | 32.9 | 2.82 | 35.1 | 3.01 | 3.7 (3.6) | 0.99 (1.10) | 0.53 | 0.38 (0.66) |
+
+What moved:
+- **Quiet cells are identical**, number for number: no line comes there.
+- **The review fixes move the chat cells by at most 0.7 points** (home, ordinary: 44.2 → 44.9) and
+  set-offs by at most 0.03 a minute, inside a 4-visit σ of 3.3–8.0 points.
+- **Chat now lowers the share, as intended.** Chat minus quiet is −1.7 to −5.3 points in the home
+  and resident (every cell below quiet), and −3.8 to +1.9 on the stage; at step 5 it was −2.7 to
+  +3.2. Against step 5 the chat cells fall by 2.2–5.3 points in the home and resident (most in the
+  home, dreamy), and by −0.4 to 2.0 on the stage.
+- **Restarts after a line roughly halve** (stage 0.53–0.68 a minute against 0.83–1.13; home
+  0.26–0.34 against 0.48–0.58; resident 0.35–0.39 against 0.64–0.80): a still act no longer ends at
+  a line. Set-offs fall by 0.07–0.55 a minute; chat still adds a few over quiet (home, lazy: 1.68
+  against 1.51; the restarts left are lines that cut a walk or a standing moment, which chat cuts as
+  before).
+- **Exercise** is within ±0.8 points of step 5's, inside minor 8's 3 points.
+- **Every home and resident cell is still over its ceiling**, and the line-art stage over its band;
+  the levers (steps 7–8) are what bring them in.
