@@ -3462,7 +3462,10 @@ it, so no visit's end can lose it.
 
 **Rule:** Asleep for the night, a chat line makes her stir ("mm...", a
 blink, turning over) and sleep on, whatever it asks. By day, a nap or a
-doze still looks at the chat. See [design.md](design.md#houseguest).
+doze still looks at the chat (until 2026-10-06: since then a doze by day
+stirs too, saying "Mm?"; see
+[In a still act she looks up where she is](#in-a-still-act-she-looks-up-where-she-is-2026-10-06)).
+See [design.md](design.md#houseguest).
 
 **Why:** a watch party chats most at night, which is exactly when she's
 asleep. If each line woke her she'd never sleep through a session, and
@@ -3615,6 +3618,77 @@ decisions (often a walk, 5 s after the line instead of 15), so in the
 resident (home, lazy: 2.06 a minute against 1.51) where before it took
 some away: expected, not a regression; looking up in place is what is
 meant to make chat cost her no movement.
+
+## In a still act she looks up where she is (2026-10-06)
+
+**Rule:** A chat line during a still act on calm floor (sitting, lying
+or gazing on the floor, spacing out, or a piece she rests at: lounging,
+napping, a day's sleep, homework, watching TV, reading, looking out of
+the window) doesn't stop it: she looks up where she is, in its pose,
+turned to the chat unless she's lying down or at her desk or a sill
+(`!`, `?`, then watching plain-faced until her watch ends), and the act
+runs on with its own time and what it eases her by; at a piece she
+turns back to it after. Dozing, she only stirs ("Mm?", as at night),
+with no watch after. Walking, pulling, chores, mischief, making, moving
+a piece, exercise, standing about, Setsubun's beans, a dash home and
+anything over text are cut as before. See
+[design.md](design.md#houseguest).
+
+**Why:** the user, for phase 5c (stillness): "the act of looking is
+there solely to draw attention, which only happens during change." The
+old look stood her up: from a sofa, a nap or her homework she got up to
+a standing side view for the look and the watch, then chose afresh
+(often a walk), so each chat line cost her the act and two of the
+biggest changes her sprite makes (lying or sitting to standing, and
+back down to something else). With the phase's longer still acts, those
+acts catch more lines. Looking up in place keeps the look (the turn,
+`!`, `?`), which is the part that tells the viewer she noticed, and
+drops the getting up. The andagi answer and the night's stir already
+reacted in place this way.
+
+The classes are fixed in one place: the act's chat class (still or not,
+by the act and, for a use, by what the piece is used for) and, for
+dozing, the pose she's drawn in at the line (so nodding off over her
+homework stirs, and new doze poses class themselves; nodding off under
+a look ends it, since a doze never wears one). A script can override a
+still act's class: Setsubun's beans are thrown on the spot (a
+SpaceOut), but they're throwing, not stillness, and the dash home for
+something forgotten is a dash, so both are cut as before (a script's
+own chat class, `Chat::Stop`, beside the act's). Lying down she keeps
+her facing: on her back her head is already at the end away from her
+facing, and turning over to face the chat would be the very change this
+removes (the user approved the art that way). Lying on her front is
+held to the same, as the same end-to-end flip, *pending the user's
+word* (the approved sheet turned only Sit, CrossLegged, UnderSill and
+Lounge, and exempted lying on her back). Poses aimed at a piece (her
+homework and chopsticks at the desk, the paper desk, leaning on a sill)
+keep their facing too: mirrored, her arms would reach into the air with
+the desk behind her; she looks with her face and bubble alone. At a
+piece she turns back to the seat's facing once her watch is over, or
+she'd sit with her back to her desk or TV for the rest of it.
+
+What her act says under the look is hidden; every line her act's
+script said under it is said once the look is over, in turn (a
+riddle's question, then its answer: the answer alone would be a
+punchline without its setup), or as the act ends if it runs out first
+(a short spacing out ends inside the look's 4 s). What she's saying
+herself shows over the look, as it did over the standing look. A line
+as she says what's wrong with her home doesn't cut it short: the look
+waits until she has said it (two frames), so it is felt and the `!`
+still shows; before, a chat line cut it short and it wasn't felt (this
+ordering is the implementer's call, open to the user). A stir sets no
+watch: she never turned to the chat, so waking just after she gets on
+with her day rather than standing to watch it. A chat line no longer
+cuts a still use, so a day's sleep on a bed she made runs its course
+while another piece she made waits (the made-piece property pauses the
+other pieces' waits while she uses one she made).
+
+Rejected: resuming the act after a standing look (the design's first
+answer, D3): it still stood her up and lay her down again for every
+line, and needed guards for a moved seat, the routine, a script
+replayed from its start and credit scaled by what was left. The census
+counts an in-place look as a look that cut nothing (no restart after
+it); a stir isn't counted as a look, as at night.
 
 ## Houseguest chooses by needs among the top few (2026-09-28)
 

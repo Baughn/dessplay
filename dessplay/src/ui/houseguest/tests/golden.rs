@@ -565,10 +565,10 @@ fn golden_stage_room() {
         "stage",
         stage_room,
         &[
-            (0, 0x889dfb317bc6d79e, 0x742ca1584ccc5831),
-            (1, 0x51c932ed3406365b, 0x18fcc24936e8ec76),
-            (2, 0x656cab3a94977cfd, 0x88c96c8c09ce5c37),
-            (3, 0x6543df01a0902857, 0xe70f7f22a9c5edbd),
+            (0, 0x8e37277226ead383, 0xa638d5ab3bc20d84),
+            (1, 0x8378261b849067ad, 0x584863db31ca6d5d),
+            (2, 0x3a0b2a5ebd8a14b4, 0xa2cc2fdff704159f),
+            (3, 0xb0d0bbf8cdca1ae3, 0x4a9cd26351aa4c8a),
         ],
     );
 }
@@ -579,10 +579,10 @@ fn golden_resident() {
         "resident",
         resident,
         &[
-            (0, 0x643efaae20d19e4a, 0xe73a092722096412),
-            (1, 0xf7a2bb6ab76b3741, 0x77b2d72069c6a6d1),
-            (2, 0x674af2bdb4c15c49, 0x4db5dba4b01da43b),
-            (3, 0x66c8dfc5555ca333, 0x063c814d6edb6e9c),
+            (0, 0x3e09715b9b6841b6, 0x97c2034837af0a75),
+            (1, 0x4d55b70cce594b8e, 0x62ac2a0c5e984e26),
+            (2, 0x950e8274aad0baa5, 0x5a8be56b4cb47bb7),
+            (3, 0xc252b1f5fe7a44d4, 0x2f85593bf91dd66c),
         ],
     );
 }
@@ -593,10 +593,10 @@ fn golden_furnished_home() {
         "furnished",
         furnished,
         &[
-            (0, 0x90df96981a3edac9, 0x4d1b5e4062017f80),
-            (1, 0x75fbb3a23c1dd4fc, 0x5d5d72a3f4409792),
-            (2, 0xa15ecfed7b9234ee, 0x61d2f3c0413e928a),
-            (3, 0x96e7f982f9b8379a, 0x713c9005b1bd357b),
+            (0, 0xe4c5a1fc4f3a728d, 0xc8812b86f9260429),
+            (1, 0xeea3ce64c8b3f9d7, 0x5a799667fb165a0c),
+            (2, 0x1b7769e236d43699, 0x991526bb3786739c),
+            (3, 0xaf69eb9e42232ef2, 0x0f4f43e33ebfe175),
         ],
     );
 }
@@ -621,10 +621,10 @@ fn golden_homework_evening() {
         "evening",
         homework_evening,
         &[
-            (0, 0xb4332fbae54f5a66, 0xab55063da2ef38d9),
-            (1, 0x1c4da6e1a6ede223, 0x183bb725795d304d),
-            (2, 0x5da013d615ac9b3d, 0xef40e024300937de),
-            (3, 0x19af214c6c9cc8a2, 0xc14a3ab618e513b0),
+            (0, 0xc2463bc87bf37ae3, 0x61551775e222df29),
+            (1, 0xf9dc9949821bbab4, 0x7649a8741213bd97),
+            (2, 0x7b9496827540b4c9, 0xfbb198482386513b),
+            (3, 0xa0125f8a312dc082, 0x2f2299c80ae0c98a),
         ],
     );
 }
@@ -649,10 +649,10 @@ fn golden_weekend() {
         "weekend",
         weekend,
         &[
-            (0, 0x0da0a3fc03bf9d48, 0xd525110293bb4bea),
-            (1, 0x7d10ae0ea20264c5, 0xb767c244d73d55ce),
-            (2, 0xcd5b19842da1d401, 0x323a8d330e59fd39),
-            (3, 0x55aeb50b0bb3791f, 0xded4742945714aae),
+            (0, 0xc4ce4c0d5734f350, 0x387a73e3a10e24b7),
+            (1, 0x8308396f64fff0cd, 0xcf1821daf419b674),
+            (2, 0xc1d19f8a13c5e02b, 0x20e47bee7807e9e5),
+            (3, 0x489a373003d045d8, 0x0f70b967cc2ab0a8),
         ],
     );
 }
@@ -677,10 +677,10 @@ fn golden_home_from_school() {
         "home",
         home_from_school,
         &[
-            (0, 0xf14b3b39e8dc1d28, 0xbdad2644113a5df4),
-            (1, 0x7f173be224fa8e9a, 0x379014716b2c2962),
-            (2, 0xfe241c5c850650f7, 0x2de579a4ca5d9a1a),
-            (3, 0xd301f6e9bf18d652, 0x444d2b6ab597ea61),
+            (0, 0x014c8b8870c58247, 0x62ce3dfa4bcd509c),
+            (1, 0x2a3390fb3368c016, 0xea784a17d8806f35),
+            (2, 0x8221f1a2df32b015, 0x17d707490c7546f2),
+            (3, 0xcdd830678a84442f, 0x684bcfe2aaf4e49b),
         ],
     );
 }
@@ -708,12 +708,15 @@ fn golden_dash_home() {
 /// seeds 1 and 2 in ASCII, out at work as the stage sends a parcel; the
 /// trace diff is in that commit), and phase 5c step 5's shorter watch
 /// (5 s after a chat line, not 15: each seed and mode first differs 5 s
-/// after a line; the trace diff is in that commit).
+/// after a line; the trace diff is in that commit), and step 6's looking
+/// up in place (each seed and mode first differs at a chat line during a
+/// use, where she looks up from it or, dozing, stirs; the trace diff is
+/// in that commit).
 const UNFED_STAGE: [(u64, u64, u64); 4] = [
-    (0, 0x74b4400889966361, 0x2e7b86ea8de9bdc2),
-    (1, 0xee3764a87eb7e577, 0x1fc17c8bac4a8bfc),
-    (2, 0x212e412c06111228, 0xcee815927b2945bc),
-    (3, 0x51578248e94a3e52, 0x10c0af874e78d72b),
+    (0, 0xe19fde0681e75356, 0xff56d4d803efcc3d),
+    (1, 0x2e4ff793ffc72f2c, 0x7b235e46afa3ea8c),
+    (2, 0x4c3b7e6fabb3a5eb, 0xcfdc401178c618c4),
+    (3, 0x0c47a5591ee0b632, 0xcbcb13e154fcb459),
 ];
 
 /// The resident's tables at the end of phase 5b step 3, but for step 5a's
@@ -724,12 +727,15 @@ const UNFED_STAGE: [(u64, u64, u64); 4] = [
 /// changed; the trace diff is in that commit), and step 5's shorter
 /// watch (5 s after a chat line, not 15: each seed and mode first
 /// differs 5 s after a line, or, a line come as she climbed, at her
-/// landing past its watch; the trace diff is in that commit).
+/// landing past its watch; the trace diff is in that commit), and step
+/// 6's looking up in place (each seed and mode first differs at a chat
+/// line during a use, where she looks up from it or, dozing, stirs; the
+/// trace diff is in that commit).
 const UNFED_RESIDENT: [(u64, u64, u64); 4] = [
-    (0, 0x326529d390d3a5c6, 0x82b07905bda21ae9),
-    (1, 0xbd4529c24234f374, 0x99a7ee6f2a3cb2c8),
-    (2, 0x72767066809dde53, 0xdb5de2f9e14cf0f6),
-    (3, 0xc6feb94e7f75ca62, 0x33366fc6128385c4),
+    (0, 0x03f9b708a79947a0, 0x8b58862216754d81),
+    (1, 0xd24da414de222bd5, 0x28559de2892f5f50),
+    (2, 0xc7d8465481a60cac, 0xd7697fc6058fdd89),
+    (3, 0x51f202e791a50d29, 0xdef6434538d79236),
 ];
 
 /// The furnished home's tables at the end of phase 5b step 3, but for
@@ -737,12 +743,16 @@ const UNFED_RESIDENT: [(u64, u64, u64); 4] = [
 /// back, ends as she next decides: its trace diff is in that commit),
 /// and phase 5c step 5's shorter watch (5 s after a chat line, not 15:
 /// each seed and mode first differs 5 s after a line; the trace diff is
-/// in that commit).
+/// in that commit), and step 6's looking up in place (each seed and mode
+/// first differs at a chat line during a use, where she looks up from
+/// it; with its review fixes, seed 0 looks up from her homework still
+/// facing her desk, and seed 3 looks up only once she has said what's
+/// wrong with her home; the trace diff is in that commit).
 const UNFED_FURNISHED: [(u64, u64, u64); 4] = [
-    (0, 0x36df3515457925ec, 0x767ebc4ef63dde7a),
-    (1, 0xc9000edffd8c4e0f, 0xa7b6f996afabf472),
-    (2, 0x3b1fb00c9647d2f1, 0x3b6462870453afcc),
-    (3, 0x600c573abc6a4a32, 0x0c51d9e2e6311b6a),
+    (0, 0xc83c0b5d764c677b, 0x8020f0ea141c6487),
+    (1, 0x03e650a167dc29eb, 0xc455bb26b27aa028),
+    (2, 0xce59a4154ce28ff6, 0xd129122a535bef06),
+    (3, 0xe519e6f646ff6349, 0x06b3ecfae6e815ac),
 ];
 
 /// The errand's tables at the end of phase 5b step 3, but for step 5a's

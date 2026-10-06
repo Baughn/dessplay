@@ -371,17 +371,26 @@ impl ScriptId {
         }
     }
 
-    /// What a chat line arriving while it plays does: what any does
-    /// (she stops and looks), or, a line asking her something, gets
-    /// this answer said toward the chat while she plays on. Only a
-    /// splice's script answers, and only her night's stirs (see
-    /// [`Osaka::look`]). Wildcard-free.
+    /// What a chat line arriving while it plays does: what it does to
+    /// the act hosting it (she looks, up from it where she is or
+    /// standing, by the act's own class); or it stops the script though
+    /// its act is still; or, a line asking her something, gets this
+    /// answer said toward the chat while she plays on; or it only stirs
+    /// her. Only a splice's script answers, and only her night's stirs
+    /// (see [`Osaka::look`]). This layer says what's particular to a
+    /// script; whether the act hosting it is still enough to look up
+    /// from in place is the act's class (`OnChat` in osaka.rs, phase 5c
+    /// B1), and a dozing pose stirs whatever the script ([`Pose::dozes`]).
+    /// Wildcard-free.
     ///
     /// [`Osaka::look`]: super::osaka::Osaka::look
+    /// [`Pose::dozes`]: super::sprite::Pose::dozes
     pub fn on_chat(self) -> Chat {
         match self {
             Self::Andagi => Chat::Answer(SATA_ANDAGI),
             Self::Night | Self::Dream => Chat::Stir,
+            // Thrown on the spot, but thrown; and dashing home is a dash.
+            Self::Setsubun | Self::DashForgot => Chat::Stop,
             Self::Lounge
             | Self::Nap
             | Self::Sleep
@@ -397,8 +406,6 @@ impl ScriptId {
             | Self::Surf
             | Self::Chopsticks
             | Self::DashLunch
-            | Self::DashForgot
-            | Self::Setsubun
             | Self::FirstSunrise
             | Self::NoMelon
             | Self::Escalator
@@ -609,8 +616,13 @@ pub(super) enum Host {
 /// What a chat line arriving while a script plays does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Chat {
-    /// She stops and looks, as at any.
+    /// As at any act: she looks, up from it where she is if it's still
+    /// (on calm floor), or stopping it and standing to look (by the act's
+    /// class, `OnChat` in osaka.rs).
     Look,
+    /// She stops it and stands to look, though the act hosting it is
+    /// still (a spacing out that isn't: Setsubun's beans, a dash home).
+    Stop,
     /// A line asking her something gets this said toward the chat, and
     /// she plays on; any other, she stops and looks.
     Answer(&'static str),
@@ -2738,7 +2750,7 @@ mod tests {
             match id.on_chat() {
                 Chat::Answer(_) => assert_eq!(id.host(), Host::Splice, "{id:?}"),
                 Chat::Stir => assert!(id.is_night(), "{id:?}"),
-                Chat::Look => assert!(!id.is_night(), "{id:?}"),
+                Chat::Look | Chat::Stop => assert!(!id.is_night(), "{id:?}"),
             }
             assert_eq!(id.is_night(), id.host() == Host::Night, "{id:?}");
         }

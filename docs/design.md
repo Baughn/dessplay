@@ -1390,14 +1390,38 @@ this section states what is built.
   changed since the input shows the real UI at once, and a settled cell
   never shows noise again. Asleep for the night (or up in it), the
   startled face is a sleepy blink.
-- A **chat or IRC line** from anyone does not end a visit: she stops,
-  turns toward the chat pane with a `!` then a `?`, and keeps watching
+- A **chat or IRC line** from anyone does not end a visit: in a still
+  act she looks up where she is (below); otherwise she stops, turns
+  toward the chat pane with a `!` then a `?`, and keeps watching
   until chat has been quiet for 5 s (a second past her 4 s look; each
   line renews it), then carries on
   (why: [decisions](decisions.md#line-art-osaka-passes-text-and-watches-chat-briefly-2026-09-30),
   [5 s](decisions.md#a-chat-lines-watch-is-5-s-2026-10-06)).
-  **There are two exceptions.** Asleep for the night, a line only makes
-  her stir and sleep on (see *Her night*)
+  **In a still act she looks up where she is**: sitting, lying or
+  gazing on the floor, spacing out, or at a piece she rests at
+  (lounging, napping, a day's sleep, homework, watching TV, reading,
+  looking out of the window). Her act runs on, its time and what it
+  eases her by unchanged: in its own pose she turns to the chat (lying
+  down she doesn't turn over, and at her desk or a sill she keeps
+  facing it), `!` then `?`, then watches plain-faced until her watch is
+  over, her act's own bubble hidden meanwhile (what she's saying shows
+  over it, as over any look), and is at it as before (at a piece,
+  turned back to it). What her act's script said under the look (a
+  riddle's question and answer) she says once the look is over, line
+  by line, or as the act ends if it ends first. A line as she says
+  what's wrong with her home doesn't cut that short: her look waits
+  until she has said it. Dozing (lying back, napping, asleep by day,
+  nodding off over her homework), a line only makes her stir as at
+  night ("Mm?", a blink, turning over a moment) and doze on; a stir
+  isn't a look, so no watch follows it; and nodding off under a look
+  ends it. If the act ends while she watches, she stands and watches
+  the rest. Walking, pulling, chores (unpacking, crumpling, a snack,
+  petting the cat), her mischief, making, moving a piece, exercise,
+  standing about, Setsubun's beans, dashing home for something she
+  forgot, and anything over text she stops as before
+  (why: [decisions](decisions.md#in-a-still-act-she-looks-up-where-she-is-2026-10-06)).
+  **Two more cases.** Asleep for the night, a line only makes her stir
+  and sleep on (see *Her night*)
   (why: [decisions](decisions.md#chat-at-night-makes-her-stir-not-wake-2026-10-04)).
   The other is the sata andagi after a snack (see Using her
   furniture): a line that asks her something (it ends in `?`, trailing
@@ -1435,7 +1459,8 @@ this section states what is built.
   lying on her back (dozing, "zzz") or stomach (feet kicking, "~"),
   jumping jacks ("1, 2!"), toe touches, a big stretch ("nnn~"), gazing up
   at something ("ooh"). Standing still facing the viewer is short and rare; watching the
-  chat, she stands side-on facing it.
+  chat on her feet, she stands side-on facing it (from a still act she
+  watches where she is).
 - **Tidying**: when a line ends beside where her box could stand on a
   floor — against it or up to three blank cells off — at chest height
   (box rows 1–2), on either side of her, she may
@@ -1752,7 +1777,8 @@ this section states what is built.
   not in here.") for two of the use's frames, from the first frame
   after anything she was saying (nothing else she says cuts it short).
   Once its two frames have passed with her still on the piece she has
-  felt it (said, whether or not the bubble found room to show); a use
+  felt it (said, whether or not the bubble found room to show; a chat
+  line, which she looks up at from the piece, doesn't hide it); a use
   cut short before then doesn't count. **Each rule is felt once a visit**, the first broken
   one of a use, and forgotten when she leaves (nothing is kept). It
   doesn't draw on her beat lines. Watching the TV with a grievance due,

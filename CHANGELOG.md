@@ -14,6 +14,9 @@ Add new days at the top. Add new entries at the bottom of existing days.
 - Changed: after glancing at a chat line, Osaka gets back to what she was
   doing sooner, and lets a line go by if she can't look at it within a few
   seconds (say, while climbing or out of the room).
+- Changed: when a chat line comes while Osaka is sitting, lying or
+  lounging, she looks up where she is instead of getting up (and a doze
+  just stirs).
 
 ## 2026-10-05
 

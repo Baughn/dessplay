@@ -309,6 +309,100 @@ fn she_watches_the_chat_until_five_seconds_after_its_last_line() {
     }
 }
 
+/// A chat line while she sits on the floor (phase 5c B1): she looks up
+/// where she sits, `!` drawn beside her, her pose kept; dozing on her
+/// back, she only stirs ("Mm?" beside her). Either way her act runs on:
+/// she decides nothing until at least its shortest length is out. In
+/// both drawing modes.
+#[test]
+fn a_chat_line_finds_her_looking_up_where_she_sits_or_stirring_where_she_dozes() {
+    use osaka::{Activity, Bubble};
+    use sprite::{Face, Pose};
+    let real = rooms(80, 24);
+    let quiet = view(bottom_strip(80, 24));
+    let chatty = IdleView {
+        chat_mark: ChatMark {
+            synced: 1,
+            ..ChatMark::default()
+        },
+        ..quiet.clone()
+    };
+    let shows = |frame: &Buffer, text: &str| {
+        let area = frame.area;
+        (area.top()..area.bottom()).any(|y| {
+            let row: String = (area.left()..area.right())
+                .map(|x| frame[(x, y)].symbol().to_owned())
+                .collect();
+            row.contains(text)
+        })
+    };
+    for graphics in [false, true] {
+        // Her shortest sit, and her shortest lie on her back.
+        for what in [Activity::Sit, Activity::LieBack] {
+            let (shortest, _) = what.duration();
+            let case = format!("graphics {graphics}, {what:?}");
+            let mut guest = Guest::new(5);
+            if graphics {
+                guest.set_picker(kitty());
+            }
+            run(&mut guest, &real, &quiet, 0, 30_000);
+            let start = run_until(&mut guest, &real, &quiet, 30_000, 600_000, |guest, _| {
+                let State::Visiting(visit) = &guest.state else {
+                    return false;
+                };
+                let osaka = &visit.osaka;
+                osaka.act_name() == "Stand" && visit.terrain.restful(osaka.x, osaka.y)
+            })
+            .unwrap_or_else(|| panic!("{case}: never stood on calm floor"));
+            let n = match &mut guest.state {
+                State::Visiting(visit) => {
+                    visit.osaka.idle(what, start, &mut Rng(1));
+                    visit.osaka.decisions.len()
+                }
+                _ => panic!("visiting"),
+            };
+            let line = start + 1_000;
+            run(&mut guest, &real, &quiet, start, line);
+            let frame = paint(&mut guest, &real, &chatty, line);
+            let osaka = &visit_of(&guest).osaka;
+            assert_eq!(osaka.act_name(), "Idle", "{case}: at it still");
+            match what {
+                Activity::Sit => {
+                    assert_eq!(
+                        osaka.appearance(line),
+                        (Pose::Sit, Face::Surprised, Some(Bubble::Bang)),
+                        "{case}"
+                    );
+                    assert!(shows(&frame, "!"), "{case}: `!` drawn");
+                }
+                _ => {
+                    assert_eq!(
+                        osaka.appearance(line),
+                        (Pose::LieBack(1), Face::Blink, Some(Bubble::Say("Mm?"))),
+                        "{case}"
+                    );
+                    assert!(shows(&frame, "Mm?"), "{case}: `Mm?` drawn");
+                }
+            }
+            let decided = run_until(
+                &mut guest,
+                &real,
+                &chatty,
+                line,
+                start + 60_000,
+                |guest, _| visit_of(guest).osaka.decisions.len() > n,
+            )
+            .unwrap_or_else(|| panic!("{case}: never decided"));
+            assert!(
+                decided >= start + shortest,
+                "{case}: decided at {decided}, {} ms in: {:?}",
+                decided - start,
+                visit_of(&guest).osaka.decisions.last()
+            );
+        }
+    }
+}
+
 #[test]
 fn a_resize_during_the_dissolve_ends_it_at_once() {
     let real = rooms(80, 24);
@@ -7543,8 +7637,12 @@ proptest! {
     /// new she'd choose: while one waits that she can get to and hasn't
     /// let be, she chooses nothing else; and while one waits, she keeps
     /// at it (another try, or progress) until it's used, gone (its text
-    /// changed), or let be after a few tries. She makes a sofa, chat
-    /// keeps arriving every 20-40 s, and she may be sent to make a bed.
+    /// changed), or let be after a few tries. Using a piece she made is
+    /// keeping at what she made: the others' waits pause while she does,
+    /// and run on after it (a chat line no longer cuts a still use short,
+    /// phase 5c B1, so a day's sleep on the bed she made runs its course
+    /// while the sofa waits). She makes a sofa, chat keeps arriving every
+    /// 20-40 s, and she may be sent to make a bed.
     #[test]
     fn every_made_piece_is_used_or_let_go(
         seed in 0u64..1000,
@@ -7574,7 +7672,10 @@ proptest! {
         // Those she used, and those gone before she did.
         let (mut used, mut lost): (Vec<MadeId>, Vec<MadeId>) = (Vec::new(), Vec::new());
         let mut now = 0;
+        // Whether she was at a use of a piece she made last frame.
+        let mut was_using_made = false;
         while now < 180_000 {
+            let last = now;
             now += guest
                 .next_tick(now)
                 .map_or(1000, |d| d.as_millis() as u64)
@@ -7623,6 +7724,17 @@ proptest! {
                     None => made.push((m.id, state, now)),
                 }
             }
+            // At a use of a piece she made since the last frame: keeping
+            // at what she made, so the others' waits pause meanwhile.
+            if was_using_made {
+                for (.., since) in &mut made {
+                    *since = (*since + (now - last)).min(now);
+                }
+            }
+            was_using_made = visit
+                .osaka
+                .seat()
+                .is_some_and(|s| s.makeshift() && s.what != Use::Crumple);
             // A piece gone before she used it is mourned (a beat owed).
             for &(id, ..) in &made {
                 let here = visit.made.iter().filter_map(Made::mine).any(|m| m.id == id);
@@ -8936,10 +9048,57 @@ fn the_repair_is_worked_out_again_only_when_it_may_have_changed() {
     }
 }
 
-/// Cut short before it has all shown — a chat line, as she says it —
-/// a grievance isn't felt: nesting stays put.
+/// Cut short before it has all shown — the stage putting her somewhere
+/// else, as she says it — a grievance isn't felt: nesting stays put.
 #[test]
 fn a_grievance_cut_short_is_not_felt() {
+    use super::room::Side;
+    use sprite::Facing;
+    let line = rules::RULES[0].grievance;
+    for graphics in [false, true] {
+        let (mut guest, real, view) = rule_home(
+            &[
+                (Furniture::Tv, Side::Left, 0, Facing::Right, true),
+                (Furniture::Sofa, Side::Left, 12, Facing::Right, true),
+            ],
+            graphics,
+            2,
+        );
+        guest.cue(Scene::Lounge);
+        paint(&mut guest, &real, &view, 0);
+        let from = run_until(&mut guest, &real, &view, 0, 20_000, |guest, now| {
+            look_now(guest, now).1 == Some(osaka::Bubble::Say(line))
+        })
+        .unwrap_or_else(|| panic!("graphics {graphics}: never said it"));
+        let now = from + osaka::GRIEVANCE_MS / 2;
+        let _ = run(&mut guest, &real, &view, from, now);
+        guest.advance(now + 1);
+        match &mut guest.state {
+            State::Visiting(visit) => {
+                let (x, y) = (visit.osaka.x, visit.osaka.y);
+                visit.osaka.place(x, y, now + 1);
+            }
+            _ => panic!("visiting"),
+        }
+        paint(&mut guest, &real, &view, now + 1);
+        let State::Visiting(visit) = &guest.state else {
+            panic!("visiting");
+        };
+        assert!(visit.osaka.use_span().is_none(), "put elsewhere");
+        assert!(felt(&guest).is_empty(), "graphics {graphics}");
+        assert_eq!(guest.broken(), "faces(sofa,TV)");
+        assert_ne!(look_now(&guest, now + 1).1, Some(osaka::Bubble::Say(line)));
+        let _ = run(&mut guest, &real, &view, now + 1, now + 3_000);
+        assert_eq!(nesting(&guest), 0.0, "graphics {graphics}");
+    }
+}
+
+/// A chat line as she says what's wrong with her home, lounging (phase
+/// 5c B1): what she says about her home isn't cut short: it shows to its
+/// end, and she has felt it; then she looks up from the sofa where she
+/// is (`!`), her look having waited for it.
+#[test]
+fn a_chat_line_doesnt_cut_a_grievance_short() {
     use super::room::Side;
     use sprite::Facing;
     let line = rules::RULES[0].grievance;
@@ -8963,15 +9122,27 @@ fn a_grievance_cut_short_is_not_felt() {
         view.chat_mark.synced += 1;
         guest.advance(now + 1);
         paint(&mut guest, &real, &view, now + 1);
-        let State::Visiting(visit) = &guest.state else {
-            panic!("visiting");
-        };
-        assert!(visit.osaka.use_span().is_none(), "she looked up");
-        assert!(felt(&guest).is_empty(), "graphics {graphics}");
-        assert_eq!(guest.broken(), "faces(sofa,TV)");
-        assert_ne!(look_now(&guest, now + 1).1, Some(osaka::Bubble::Say(line)));
-        let _ = run(&mut guest, &real, &view, now + 1, now + 3_000);
-        assert_eq!(nesting(&guest), 0.0, "graphics {graphics}");
+        assert!(
+            visit_of(&guest).osaka.use_span().is_some(),
+            "graphics {graphics}: still lounging"
+        );
+        assert_eq!(
+            look_now(&guest, now + 1),
+            (sprite::Face::Curious, Some(osaka::Bubble::Say(line))),
+            "graphics {graphics}: still saying it"
+        );
+        let shown = from + osaka::GRIEVANCE_MS;
+        let _ = run(&mut guest, &real, &view, now + 1, shown + 100);
+        assert_eq!(felt(&guest).len(), 1, "graphics {graphics}");
+        assert!(
+            visit_of(&guest).osaka.use_span().is_some(),
+            "graphics {graphics}: lounging on"
+        );
+        assert_eq!(
+            look_now(&guest, shown + 100),
+            (sprite::Face::Surprised, Some(osaka::Bubble::Bang)),
+            "graphics {graphics}: looks up once it's said"
+        );
     }
 }
 

@@ -115,6 +115,92 @@ pub(super) enum Pose {
     LieRead(u8),
 }
 
+impl Pose {
+    /// Whether she's dozing in it (eyes shut, nodding off or asleep): a
+    /// chat line only stirs her (phase 5c B1). Wildcard-free, so a new
+    /// pose doesn't compile until it's classed. (Lying back is a doze;
+    /// cloud-watching, when it comes, holds it with her eyes open and
+    /// must be told apart.)
+    pub fn dozes(self) -> bool {
+        match self {
+            Self::LieBack(_) | Self::Nap(_) | Self::Sleep(_) | Self::SitDoze(_) => true,
+            // Nodding off onto the paper, then asleep on it.
+            Self::Homework(frame) => frame >= 2,
+            Self::PaperDesk(frame) => frame >= 2,
+            Self::FloorHomework(frame) | Self::LieRead(frame) => frame >= 2,
+            Self::Stand
+            | Self::Walk(_)
+            | Self::Climb { .. }
+            | Self::Fall
+            | Self::Dazed
+            | Self::Peer
+            | Self::Pull { .. }
+            | Self::Sit
+            | Self::LieFront(_)
+            | Self::Jack(_)
+            | Self::ToeTouch(_)
+            | Self::Stretch
+            | Self::Gaze
+            | Self::Side
+            | Self::Lounge
+            | Self::Carry(_)
+            | Self::Read(_)
+            | Self::Eat(_)
+            | Self::EatAndagi(_)
+            | Self::Pet(_)
+            | Self::Chopsticks(_)
+            | Self::ReadStrip(_)
+            | Self::CrossLegged
+            | Self::SillLean
+            | Self::UnderSill => false,
+        }
+    }
+
+    /// Whether, looking up at a chat line in it, she turns her body to
+    /// the chat (phase 5c B1). Not lying: turning would flip her end to
+    /// end, the very change looking up in place spares her (on her back
+    /// the user's approved art keeps her facing; on her front, held to
+    /// that too, pending the user's word). Not at a piece her pose is
+    /// aimed at (the desk she writes or eats at, the sill she leans on):
+    /// mirrored, she'd reach into the air with the piece behind her. She
+    /// looks with her face and bubble alone there. Wildcard-free, so a
+    /// new pose doesn't compile until it's classed.
+    pub fn turns(self) -> bool {
+        match self {
+            Self::LieBack(_)
+            | Self::LieFront(_)
+            | Self::Nap(_)
+            | Self::Sleep(_)
+            | Self::FloorHomework(_)
+            | Self::LieRead(_) => false,
+            Self::Homework(_) | Self::Chopsticks(_) | Self::PaperDesk(_) | Self::SillLean => false,
+            Self::Stand
+            | Self::Walk(_)
+            | Self::Climb { .. }
+            | Self::Fall
+            | Self::Dazed
+            | Self::Peer
+            | Self::Pull { .. }
+            | Self::Sit
+            | Self::Jack(_)
+            | Self::ToeTouch(_)
+            | Self::Stretch
+            | Self::Gaze
+            | Self::Side
+            | Self::Lounge
+            | Self::Carry(_)
+            | Self::Read(_)
+            | Self::Eat(_)
+            | Self::EatAndagi(_)
+            | Self::Pet(_)
+            | Self::ReadStrip(_)
+            | Self::CrossLegged
+            | Self::UnderSill
+            | Self::SitDoze(_) => true,
+        }
+    }
+}
+
 /// Her face, drawn into the head of frontal poses.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) enum Face {

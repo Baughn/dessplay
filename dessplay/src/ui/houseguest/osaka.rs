@@ -422,6 +422,8 @@ const RETRIES: u8 = 5;
 pub(super) const OK: &str = line!("...I'm OK.");
 /// Stirring at a chat line in the night.
 pub(super) const MM: &str = line!("mm...");
+/// Stirring at a chat line dozing by day (phase 5c B1).
+pub(super) const STIRRED: &str = line!("Mm?");
 /// Spacing out, musing or not (ms range).
 pub(super) const SPACE_OUT_MS: (u64, u64) = (6000, 14_000);
 /// A glance up at her wall clock (phase 5b D7): a moment, spacing out.
@@ -846,6 +848,14 @@ enum Stays {
 enum OnChat {
     /// She looks up at once, letting go of what she was at.
     Look,
+    /// A still act (resting on the spot, spacing out, using a piece to
+    /// rest at): on calm floor she looks up where she is and the act
+    /// runs on, or, dozing, only stirs (see [`Osaka::look_up`]). Over
+    /// text she passes on, as from any act. (A script that stops at a
+    /// line, [`Chat::Stop`], makes its still act [`OnChat::Look`].) (Phase 5c B1: looking draws
+    /// the eye, which is only worth it for a change; getting up and
+    /// settling back down is the biggest change her sprite makes.)
+    LooksUp,
     /// On a pole or in the air: whatever comes up runs its course
     /// first, and she looks once she's on a floor.
     Landed,
@@ -1011,18 +1021,45 @@ impl Act {
     }
 
     fn props(&self) -> ActProps {
+        // A script that stops at a chat line though the act hosting it
+        // is still (Setsubun's beans, a dash home: see `ScriptId::on_chat`).
+        let stops = match self {
+            Self::Use { play, .. }
+            | Self::SpaceOut {
+                play: Some(play), ..
+            }
+            | Self::Idle {
+                play: Some(play), ..
+            } => play.own.on_chat() == Chat::Stop,
+            _ => false,
+        };
         let (stays, on_chat) = match self {
-            Self::Use { .. }
-            | Self::Lift { .. }
+            Self::Use { seat, .. } => {
+                let on_chat = match seat.what {
+                    Use::Lounge
+                    | Use::Nap
+                    | Use::Sleep
+                    | Use::Homework
+                    | Use::Watch
+                    | Use::Read
+                    | Use::LookOut => OnChat::LooksUp,
+                    // Chores: unpacking, crumpling text, a snack, petting
+                    // the cat.
+                    Use::Unpack | Use::Crumple | Use::Snack | Use::Pet => OnChat::Look,
+                };
+                (Stays::Job, on_chat)
+            }
+            Self::Lift { .. }
             | Self::SetDown { .. }
             | Self::Pull { .. }
             | Self::Tear { .. }
             | Self::Swap { .. }
             | Self::Giggle { .. }
             | Self::Innocent { .. } => (Stays::Job, OnChat::Look),
-            Self::Stand { .. } | Self::SpaceOut { .. } | Self::Idle { .. } => {
-                (Stays::Rest, OnChat::Look)
-            }
+            // Resting on the spot, not exercising.
+            Self::Idle { what, .. } if what.restful() => (Stays::Rest, OnChat::LooksUp),
+            Self::SpaceOut { .. } => (Stays::Rest, OnChat::LooksUp),
+            Self::Stand { .. } | Self::Idle { .. } => (Stays::Rest, OnChat::Look),
             Self::Walk { .. }
             | Self::Peer { .. }
             | Self::Dazed { .. }
@@ -1037,6 +1074,10 @@ impl Act {
                 (Stays::Pass, OnChat::Landed)
             }
             Self::Out { .. } | Self::Away { .. } | Self::Door { .. } => (Stays::Pass, OnChat::Back),
+        };
+        let on_chat = match on_chat {
+            OnChat::LooksUp if stops => OnChat::Look,
+            other => other,
         };
         ActProps { stays, on_chat }
     }
@@ -1427,7 +1468,7 @@ impl Activity {
     }
 
     /// How long she keeps at it (ms range).
-    fn duration(self) -> (u64, u64) {
+    pub(super) fn duration(self) -> (u64, u64) {
         match self {
             Self::Sit => (10_000, 25_000),
             Self::LieBack => (15_000, 40_000),
@@ -1514,6 +1555,44 @@ struct Felt {
     let_go: bool,
 }
 
+/// Her look up at a chat line where she is, over a still act that runs
+/// on (phase 5c B1; see [`Osaka::look_up`]): startled (`!`) for
+/// [`SURPRISED_MS`] from the line, puzzled (`?`) to [`LOOK_MS`], then
+/// watching, plain-faced, until `until` (the line's watch). Tied to the
+/// act: any other act has its own look ([`Osaka::set`] ends it).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct LookUp {
+    /// When the look began: as the line came (the latest, in a lively
+    /// chat), or, a line coming as she says what's wrong with her home,
+    /// once she has said it (the look waits for it).
+    since: u64,
+    /// Since when what her act's script says is hidden and unsaid: the
+    /// first look's, while each next comes before the last one's look is
+    /// over (what the act said under them all is said after the last).
+    hidden: u64,
+    /// Her watch's end, as the line set it (never before the look's
+    /// `?` is over).
+    until: u64,
+    /// The look's next moment to handle: 0, out of her startle; 1, the
+    /// look over (what her act said under it said now); 2, the watch
+    /// over.
+    step: u8,
+    /// Her facing to turn back to once it's over: a piece's seat's (she
+    /// sits to it), or none (where she turned, she stays turned).
+    back: Option<Facing>,
+}
+
+impl LookUp {
+    /// When its next moment is.
+    fn due(&self) -> u64 {
+        match self.step {
+            0 => self.since + SURPRISED_MS,
+            1 => self.since + LOOK_MS,
+            _ => self.until,
+        }
+    }
+}
+
 /// The houseguest.
 #[derive(Clone, Debug)]
 pub(super) struct Osaka {
@@ -1530,6 +1609,13 @@ pub(super) struct Osaka {
     /// While a chat conversation continues she stands watching it.
     watch_until: u64,
     watch_x: i32,
+    /// Looking up at the chat where she is, over a still act.
+    looking_up: Option<LookUp>,
+    /// What her act's script said under her look, still to say once
+    /// what she's saying now is over, in turn (see
+    /// [`Osaka::say_what_her_look_hid`]). Anything else she says, or
+    /// hushing her, lets it go.
+    unsaid: Vec<&'static str>,
     /// A job on another floor she's making her way towards, and what
     /// she wants there (see [`Osaka::drop_heading`]).
     heading: Option<Heading>,
@@ -1942,6 +2028,8 @@ impl Osaka {
             next_blink: now + rng.range(4000, 9000),
             blink_until: 0,
             watch_until: 0,
+            looking_up: None,
+            unsaid: Vec::new(),
             watch_x: x,
             heading: None,
             hopping: false,
@@ -2414,7 +2502,9 @@ impl Osaka {
         let talk = self.talk_due().unwrap_or(u64::MAX);
         let snack = self.snack_due().unwrap_or(u64::MAX);
         let dream = self.dream_due().unwrap_or(u64::MAX);
+        let look_up = self.looking_up.map_or(u64::MAX, |look| look.due());
         self.pose_due()
+            .min(look_up)
             .min(self.pending_due())
             .min(hush)
             .min(cut)
@@ -2469,6 +2559,7 @@ impl Osaka {
     /// isn't said: its record goes, and it doesn't cool. (A door line
     /// the decision after the door speaks over, say.)
     fn hush(&mut self, now: u64) {
+        self.unsaid.clear();
         if let Some((text, until)) = self.speech.take()
             && until == now + speech_ms(text)
         {
@@ -3062,6 +3153,15 @@ impl Osaka {
                 && until == due
             {
                 self.speech = None;
+                // What her act said under her look, said on in turn.
+                if let Some((&next, rest)) = std::mem::take(&mut self.unsaid).split_first() {
+                    self.say(next, due);
+                    self.unsaid = rest.to_vec();
+                }
+                continue;
+            }
+            if self.looking_up.is_some_and(|look| look.due() == due) {
+                self.looking_up_moves(due);
                 continue;
             }
             if self.pending_due() == due {
@@ -3083,6 +3183,12 @@ impl Osaka {
                 continue;
             }
             self.fire(due, terrain, chances, rng);
+            // Nodded off under her look: a doze wears none (a line now
+            // would only stir her).
+            if self.looking_up.is_some() && self.acting(due).0.dozes() {
+                tracing::trace!("houseguest: nodded off under her look; it's over");
+                self.end_look();
+            }
             // A rare script's first key, shown as it begins.
             self.note_seen(due);
             if self.latch_lamp(due) {
@@ -3110,6 +3216,12 @@ impl Osaka {
         self.got_what_she_came_for(at);
         #[cfg(test)]
         let was_moving = census_moves(&self.act).trip();
+        // A look up from her act, or a stir in it, goes with it: any
+        // other act has its own look. (Her night never sets an act
+        // mid-sleep, a Dream changing hers in place, so the night's stir
+        // isn't cut by this.)
+        self.looking_up = None;
+        self.stir_until = 0;
         self.act = act;
         self.act_since = at;
         self.act_since_game = self.game_at(at);
@@ -3171,6 +3283,21 @@ impl Osaka {
     }
 
     fn fire(&mut self, at: u64, terrain: &Terrain, chances: &Chances, rng: &mut Rng) {
+        // Her still act running its course before her look's `?` is
+        // over: what it said under the look is said as it ends (she
+        // stands to watch the rest). Only here, where it runs out: put
+        // elsewhere, or called away, it goes unsaid.
+        let runs_out = matches!(
+            self.act,
+            Act::Idle { until, .. } | Act::Use { until, .. } | Act::SpaceOut { until, .. }
+                if at >= until
+        );
+        if runs_out
+            && let Some(look) = self.looking_up
+            && look.step < 2
+        {
+            self.say_what_her_look_hid(look.hidden, at, at);
+        }
         match self.act.clone() {
             Act::Idle { until, .. } => {
                 if at < until {
@@ -4587,8 +4714,14 @@ impl Osaka {
     /// and she sleeps on.
     fn stir(&mut self, now: u64) {
         tracing::info!("houseguest: stirs in her sleep");
-        self.say(MM, now);
-        self.stir_until = now + speech_ms(MM);
+        self.stir_saying(MM, now);
+    }
+
+    /// She stirs at `now`, murmuring `line`: turned over a moment,
+    /// blinking, while she says it (see [`Osaka::stirring`]).
+    fn stir_saying(&mut self, line: &'static str, now: u64) {
+        self.say(line, now);
+        self.stir_until = now + speech_ms(line);
     }
 
     /// A night act begins at `at` (her bed, her sofa, the floor; or a
@@ -6936,8 +7069,19 @@ impl Osaka {
 
     /// She's saying what's wrong with her home.
     fn grumbling(&self, now: u64) -> bool {
-        matches!(self.act, Act::Use { grievance: Some((_, from)), .. }
-            if (from..from + GRIEVANCE_MS).contains(&now))
+        self.grievance_span()
+            .is_some_and(|(from, to)| (from..to).contains(&now))
+    }
+
+    /// When her act has her say what's wrong with her home, if it does.
+    fn grievance_span(&self) -> Option<(u64, u64)> {
+        match self.act {
+            Act::Use {
+                grievance: Some((_, from)),
+                ..
+            } => Some((from, from + GRIEVANCE_MS)),
+            _ => None,
+        }
     }
 
     /// A rule of her home she has felt is broken still (and she hasn't
@@ -7066,6 +7210,8 @@ impl Osaka {
         // lets go of where she was heading.
         #[cfg(test)]
         let cut = self.census_cut();
+        // A stir isn't a look: it sets no watch (she never turned to it).
+        let watched = self.watch_until;
         self.watch_until = now + WATCH_MS;
         // Wherever she is on her way, chat interrupts the trip: where she
         // was heading competes again once she's watched it.
@@ -7106,16 +7252,35 @@ impl Osaka {
             .night_play()
             .is_some_and(|(play, ..)| play.own.on_chat() == Chat::Stir)
         {
+            self.watch_until = watched;
             return self.stir(now);
         }
-        self.facing = toward(self.x, chat_x);
         if asks && let Some(answer) = self.answer(now) {
             tracing::info!(answer, "houseguest: answers the chat, playing on");
+            self.facing = toward(self.x, chat_x);
             self.say(answer, now);
             self.answering = self.use_span().map(|span| (span, now + speech_ms(answer)));
             return;
         }
         let passing = !terrain.restful(self.x, self.y);
+        // In a still act on calm floor, she looks up where she is, and
+        // it runs on; dozing, she only stirs (no watch, and not a look
+        // for the census: as at night).
+        if !passing && self.act.props().on_chat == OnChat::LooksUp {
+            if self.acting(now).0.dozes() {
+                self.watch_until = watched;
+                return self.stir_dozing(now);
+            }
+            self.look_up(now, chat_x);
+            // A look that cut nothing, for the census.
+            #[cfg(test)]
+            {
+                self.chat_owed = None;
+                self.chat_cuts.push((now, false, cut));
+            }
+            return;
+        }
+        self.facing = toward(self.x, chat_x);
         if passing {
             tracing::trace!(
                 x = self.x,
@@ -7134,6 +7299,143 @@ impl Osaka {
         }
     }
 
+    /// Dozing by day in a still act (lying back, napping, asleep, nodding
+    /// off over her homework: whatever pose [`Pose::dozes`]), a chat
+    /// line only stirs her, as at night: turned over a moment, blinking,
+    /// "Mm?" (phase 5c B1). Any look she was under is over (her tick
+    /// ends one as she nods off; this is the same end if it hasn't run).
+    fn stir_dozing(&mut self, now: u64) {
+        tracing::info!("houseguest: stirs at the chat, dozing");
+        self.end_look();
+        self.stir_saying(STIRRED, now);
+    }
+
+    /// A chat line at `now` (the chat's middle at column `chat_x`) in a
+    /// still act on calm floor ([`OnChat::LooksUp`]), not dozing: she
+    /// looks up where she is, and her act runs on, its clock and what it
+    /// eases her by as they were (phase 5c B1). In her act's own pose she
+    /// turns to the chat where the pose turns ([`Pose::turns`]: not lying,
+    /// not at her desk), startled (`!`), then puzzled (`?`), then watches
+    /// plain-faced until her watch is over, her act's own bubble hidden
+    /// meanwhile (what she's saying shows on over it, as over any look);
+    /// then she's at it as before, turned back to a piece she sits to.
+    /// What her act's script said under the look (a riddle's question
+    /// and answer) she says once it's over, in turn. A line coming as she
+    /// says what's wrong with her home, the look waits for her to have
+    /// said it. Each line of a lively chat looks again. If her act ends
+    /// while she watches, she stands to watch, as after any look.
+    fn look_up(&mut self, now: u64, chat_x: i32) {
+        let pose = self.acting(now).0;
+        tracing::info!(act = %self.act_name(), "houseguest: looks up at the chat where she is");
+        let was = self.looking_up;
+        // Turned back once it's over only to a piece's seat (and to the
+        // seat's facing, however many lines turned her since).
+        let back = match (was, &self.act) {
+            (Some(was), _) => was.back,
+            (None, Act::Use { seat, .. }) => Some(seat.facing),
+            (None, _) => None,
+        };
+        // What she says about her home she says to its end first.
+        let since = match self.grievance_span() {
+            Some((from, to)) if from < now + LOOK_MS && now < to => to,
+            _ => now,
+        };
+        let hidden = match was {
+            Some(was) if was.step < 2 => was.hidden,
+            _ => since,
+        };
+        if pose.turns() {
+            self.facing = toward(self.x, chat_x);
+        }
+        self.looking_up = Some(LookUp {
+            since,
+            hidden,
+            until: self.watch_until.max(since + LOOK_MS),
+            step: 0,
+            back,
+        });
+    }
+
+    /// Her look up from her act is over: turned back to the piece she
+    /// sits to, if she turned from one.
+    fn end_look(&mut self) {
+        if let Some(back) = self.looking_up.take().and_then(|look| look.back) {
+            self.facing = back;
+        }
+    }
+
+    /// Her look up from her act reached its next moment, `at`: out of
+    /// her startle; the look over, what her act's script said under it
+    /// said now; the watch over, back to her act (turned back to the
+    /// piece she sits to).
+    fn looking_up_moves(&mut self, at: u64) {
+        let Some(look) = &mut self.looking_up else {
+            return;
+        };
+        look.step += 1;
+        match look.step {
+            1 => {}
+            2 => {
+                let (from, to) = (look.hidden, look.since + LOOK_MS);
+                self.say_what_her_look_hid(from, to, at);
+            }
+            _ => {
+                self.end_look();
+                tracing::trace!("houseguest: back to what she was at after the chat");
+            }
+        }
+    }
+
+    /// Say at `at` what her act's script said from `from` to `to`, under
+    /// her look: each line in turn, the first now and each next as the
+    /// one before is over (a riddle's question, then its answer: never a
+    /// punchline without its setup).
+    fn say_what_her_look_hid(&mut self, from: u64, to: u64, at: u64) {
+        let lines = self.script_lines_in(from, to);
+        if let Some((&first, rest)) = lines.split_first() {
+            tracing::debug!(?lines, "houseguest: says what her act said under her look");
+            self.say(first, at);
+            self.unsaid = rest.to_vec();
+        }
+    }
+
+    /// The lines her act's script says from `from` to `to` (a key's line
+    /// showing then, by its keys' own timing), in order, each once.
+    fn script_lines_in(&self, from: u64, to: u64) -> Vec<&'static str> {
+        let (since, until, play) = match self.act {
+            Act::Use {
+                since, until, play, ..
+            } => (since, until, play),
+            Act::SpaceOut {
+                since,
+                until,
+                play: Some(play),
+            }
+            | Act::Idle {
+                since,
+                until,
+                play: Some(play),
+                ..
+            } => (since, until, play),
+            _ => return Vec::new(),
+        };
+        let mut lines: Vec<&'static str> = Vec::new();
+        let mut at = from;
+        while at < to {
+            if let Some((key, elapsed)) = play.key(since, until, at)
+                && let (_, _, Some(Bubble::Say(text))) = key.look(elapsed, Pose::Stand, &play)
+                && lines.last() != Some(&text)
+            {
+                lines.push(text);
+            }
+            match play.next_end(since, until, at) {
+                Some(end) if end > at => at = end,
+                _ => break,
+            }
+        }
+        lines
+    }
+
     /// What she'd answer a line asking her something at `now`: the
     /// answer of the splice playing then, if it has one.
     fn answer(&self, now: u64) -> Option<&'static str> {
@@ -7150,7 +7452,7 @@ impl Osaka {
             .on_chat()
         {
             Chat::Answer(answer) => Some(answer),
-            Chat::Look | Chat::Stir => None,
+            Chat::Look | Chat::Stop | Chat::Stir => None,
         }
     }
 
@@ -7818,6 +8120,24 @@ impl Osaka {
     /// Her pose, face and bubble at `now`.
     pub fn appearance(&self, now: u64) -> (Pose, Face, Option<Bubble>) {
         let (pose, face, bubble) = self.acting(now);
+        // Looking up at the chat from her act, in its pose: startled,
+        // puzzled, then watching plain-faced, her act's own bubble hidden
+        // (what she's saying shows over it, as over any look). Not before
+        // it begins (it waits for what she says about her home, which
+        // isn't cut short: begun under the look, it shows over it), and
+        // never on a doze.
+        let (face, bubble) = match self.looking_up {
+            Some(look) if now >= look.since && !self.grumbling(now) && !pose.dozes() => {
+                if now < look.since + SURPRISED_MS {
+                    (Face::Surprised, Some(Bubble::Bang))
+                } else if now < look.since + LOOK_MS {
+                    (Face::Curious, Some(Bubble::Huh))
+                } else {
+                    (Face::Vacant, None)
+                }
+            }
+            _ => (face, bubble),
+        };
         // Up groggy in the night, she blinks her way about.
         let face = if self.groggy_at(now) {
             Face::Blink
@@ -7833,8 +8153,9 @@ impl Osaka {
         (pose, face, speech.or(bubble))
     }
 
-    /// How she looks asleep for the night (`look`), stirring at a chat
-    /// line if she is at `now`: turned over, held there, blinking.
+    /// How she looks dozing (`look`: asleep for the night, or by day),
+    /// stirring at a chat line if she is at `now`: turned over, held
+    /// there, blinking.
     fn stirring(
         &self,
         look: (Pose, Face, Option<Bubble>),
@@ -7885,7 +8206,7 @@ impl Osaka {
                     .saturating_sub(since)
                     .checked_div(what.period())
                     .map_or(0, |n| (n % 2) as u8);
-                what.look(frame)
+                self.stirring(what.look(frame), now)
             }
             Act::Use {
                 seat,
@@ -7917,8 +8238,8 @@ impl Osaka {
                     Some((line, from)) if (from..from + GRIEVANCE_MS).contains(&now) => {
                         (pose, Face::Curious, Some(Bubble::Say(line)))
                     }
-                    _ if play.own.is_night() => self.stirring((pose, face, bubble), now),
-                    _ => (pose, face, bubble),
+                    // Dozing (for the night, or by day), she may stir.
+                    _ => self.stirring((pose, face, bubble), now),
                 }
             }
             // Bent to the piece, bobbing.
@@ -10270,13 +10591,13 @@ mod tests {
         assert!(!osaka.sleeping(), "awake at 07:00: {:?}", osaka.act);
     }
 
-    /// Only her night's sleep stirs at a chat line (A13): a sleep or a
-    /// nap by day she wakes from to look, as ever; asleep for the night,
-    /// in her bed, on her sofa or on the floor, she murmurs, blinks,
-    /// turns over and sleeps on, whatever the line asks, not even turning
-    /// to it.
+    /// Asleep, she stirs at a chat line and sleeps on, whatever the line
+    /// asks, not even turning to it: for the night (A13), in her bed, on
+    /// her sofa or on the floor, she murmurs ("mm..."), blinks and turns
+    /// over; by day (phase 5c B1, a sleep or a nap), she does the same
+    /// saying "Mm?".
     #[test]
-    fn only_her_nights_sleep_stirs() {
+    fn her_sleep_stirs_by_night_and_by_day() {
         let terrain = floor_at(15);
         for (what, item) in [(Use::Sleep, Furniture::Bed), (Use::Nap, Furniture::Sofa)] {
             for night in [false, true] {
@@ -10309,22 +10630,24 @@ mod tests {
                         },
                         0,
                     );
-                    osaka.look(5_000, 0, asks, &terrain);
+                    // On her own pose's frame 0, so the turn shows.
+                    let plain = osaka.clone();
+                    let line = (5_000..15_000)
+                        .find(|&t| matches!(plain.appearance(t).0, Pose::Sleep(0) | Pose::Nap(0)))
+                        .unwrap_or_else(|| panic!("{at}: never on frame 0"));
+                    osaka.look(line, 0, asks, &terrain);
                     assert_eq!(osaka.sleeping(), night, "{at}");
-                    if night {
-                        assert!(matches!(osaka.act, Act::Use { .. }), "{at}");
-                        assert_eq!(osaka.facing, Facing::Right, "{at}: not turned to it");
-                        let (pose, face, said) = osaka.appearance(5_000);
-                        assert!(matches!(pose, Pose::Sleep(1) | Pose::Nap(1)), "{at}");
-                        assert_eq!(face, Face::Blink, "{at}");
-                        assert_eq!(said, Some(Bubble::Say(MM)), "{at}");
-                        // Over, she's asleep as before.
-                        let after = 5_000 + speech_ms(MM);
-                        let (_, _, said) = osaka.appearance(after);
-                        assert_eq!(said, Some(Bubble::Zzz), "{at}");
-                    } else {
-                        assert!(osaka.looking(), "{at}: {:?}", osaka.act);
-                    }
+                    let murmur = if night { MM } else { STIRRED };
+                    assert!(matches!(osaka.act, Act::Use { .. }), "{at}");
+                    assert_eq!(osaka.facing, Facing::Right, "{at}: not turned to it");
+                    let (pose, face, said) = osaka.appearance(line);
+                    assert!(matches!(pose, Pose::Sleep(1) | Pose::Nap(1)), "{at}");
+                    assert_eq!(face, Face::Blink, "{at}");
+                    assert_eq!(said, Some(Bubble::Say(murmur)), "{at}");
+                    // Over, she's asleep as before.
+                    let after = line + speech_ms(murmur);
+                    let (_, _, said) = osaka.appearance(after);
+                    assert_eq!(said, Some(Bubble::Zzz), "{at}");
                 }
             }
         }
@@ -13869,5 +14192,713 @@ mod tests {
         );
         assert!(matches!(osaka.act, Act::Use { seat, .. } if seat.what == Use::LookOut));
         assert_eq!(osaka.census_group(), "spacing out");
+    }
+
+    /// The still acts (phase 5c B1) as tests start them: `set` at 0,
+    /// lasting to 60 s, her at `(20, 15)` on [`floor_at`]`(15)` facing
+    /// right (a piece's seat facing right too), each with the want that
+    /// chose it, and whether she turns her body to the chat in its pose
+    /// (not lying, which would turn her over end to end; not at her
+    /// desk, where her pose is aimed at it).
+    fn still_acts() -> Vec<(&'static str, Act, Want, bool)> {
+        let using = |what: Use, item: Furniture| Act::Use {
+            seat: Seat {
+                x: 20,
+                y: 15,
+                facing: Facing::Right,
+                ..seat_for(what, item)
+            },
+            since: 0,
+            until: 60_000,
+            whole: 60_000,
+            play: Play::of(what, None),
+            grievance: None,
+        };
+        let idle = |what: Activity| Act::Idle {
+            what,
+            since: 0,
+            until: 60_000,
+            play: None,
+        };
+        vec![
+            ("sit", idle(Activity::Sit), Want::Idle(Activity::Sit), true),
+            (
+                "lie front",
+                idle(Activity::LieFront),
+                Want::Idle(Activity::LieFront),
+                false,
+            ),
+            (
+                "gaze",
+                idle(Activity::Gaze),
+                Want::Idle(Activity::Gaze),
+                true,
+            ),
+            (
+                "space out",
+                Act::SpaceOut {
+                    since: 0,
+                    until: 60_000,
+                    play: None,
+                },
+                Want::SpaceOut,
+                true,
+            ),
+            (
+                "lounge",
+                using(Use::Lounge, Furniture::Sofa),
+                Want::Use(Use::Lounge),
+                true,
+            ),
+            (
+                "watch",
+                using(Use::Watch, Furniture::Tv),
+                Want::Use(Use::Watch),
+                true,
+            ),
+            (
+                "read",
+                using(Use::Read, Furniture::Bookshelf),
+                Want::Use(Use::Read),
+                true,
+            ),
+            // Writing (the first half of its body).
+            (
+                "homework",
+                using(Use::Homework, Furniture::Desk),
+                Want::Use(Use::Homework),
+                false,
+            ),
+            (
+                "look out",
+                using(Use::LookOut, Furniture::Window),
+                Want::Use(Use::LookOut),
+                true,
+            ),
+        ]
+    }
+
+    /// A chat line in a still act on calm floor (phase 5c B1): she looks
+    /// up where she is, the act running on. In its own pose, turned to
+    /// the chat (where the pose turns: not lying, not at her desk), `!` startled, then
+    /// `?`, then a plain watching face until 5 s after the line; then
+    /// her act's own look again (a piece's facing back to it). Its
+    /// clock runs on: she decides only at its own end, it eases her as a
+    /// whole, and the census logs a look that cut nothing (no restart).
+    #[test]
+    fn a_still_act_looks_up_where_she_is_through_a_chat_line() {
+        let terrain = floor_at(15);
+        let chances = Chances::default();
+        for (name, act, want, turns) in still_acts() {
+            let mut rng = Rng(3);
+            let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+            osaka.facing = Facing::Right;
+            osaka.credit = Some(want);
+            osaka.set(act.clone(), 0);
+            osaka.tick(4_000, None, &terrain, &chances, &mut rng);
+            let plain = osaka.clone();
+            let own = |at: u64| plain.appearance(at).0;
+            let line = 5_000;
+            osaka.look(line, 0, false, &terrain);
+            assert_eq!(osaka.act, act, "{name}: the act runs on");
+            let turned = if turns { Facing::Left } else { Facing::Right };
+            assert_eq!(osaka.facing, turned, "{name}: turned to the chat");
+            assert_eq!(
+                osaka.appearance(line),
+                (own(line), Face::Surprised, Some(Bubble::Bang)),
+                "{name}"
+            );
+            let curious = line + SURPRISED_MS;
+            osaka.tick(curious, None, &terrain, &chances, &mut rng);
+            assert_eq!(
+                osaka.appearance(curious),
+                (own(curious), Face::Curious, Some(Bubble::Huh)),
+                "{name}"
+            );
+            let watching = line + LOOK_MS;
+            osaka.tick(watching, None, &terrain, &chances, &mut rng);
+            assert_eq!(
+                osaka.appearance(watching),
+                (own(watching), Face::Vacant, None),
+                "{name}: watching"
+            );
+            let over = line + WATCH_MS;
+            osaka.tick(over, None, &terrain, &chances, &mut rng);
+            assert_eq!(osaka.act, act, "{name}: still at it");
+            assert_eq!(osaka.appearance(over), plain.appearance(over), "{name}");
+            let facing = if matches!(act, Act::Use { .. }) {
+                Facing::Right
+            } else {
+                turned
+            };
+            assert_eq!(osaka.facing, facing, "{name}: as she was at it");
+            assert!(osaka.due() > over, "{name}: the look's moments all handled");
+            let n = osaka.decisions.len();
+            osaka.tick(59_999, None, &terrain, &chances, &mut rng);
+            assert_eq!(osaka.act, act, "{name}: at it to its end");
+            assert_eq!(osaka.decisions.len(), n, "{name}");
+            osaka.tick(60_000, None, &terrain, &chances, &mut rng);
+            assert_eq!(osaka.decisions.len(), n + 1, "{name}: decides at its end");
+            assert_eq!(osaka.credited, [(want, 1.0, 60_000)], "{name}: as a whole");
+            assert_eq!(osaka.chat_cuts, [(line, false, None)], "{name}");
+            assert_eq!(osaka.after_chat, None, "{name}: no restart");
+        }
+    }
+
+    /// Asked something (a line that `asks`) in a still act with nothing
+    /// to answer, she looks up in place as at any line; and each line of
+    /// a lively chat looks again (`!` from it), watched until 5 s after
+    /// the last, a piece's facing back after it.
+    #[test]
+    fn each_line_of_a_lively_chat_looks_up_again_in_place() {
+        let terrain = floor_at(15);
+        let chances = Chances::default();
+        for (name, act, _, _) in still_acts() {
+            let mut rng = Rng(3);
+            let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+            osaka.facing = Facing::Right;
+            osaka.set(act.clone(), 0);
+            osaka.look(5_000, 0, true, &terrain);
+            osaka.tick(7_000, None, &terrain, &chances, &mut rng);
+            osaka.look(7_000, 0, false, &terrain);
+            assert_eq!(osaka.act, act, "{name}");
+            assert_eq!(osaka.appearance(7_000).2, Some(Bubble::Bang), "{name}");
+            osaka.tick(7_000 + LOOK_MS, None, &terrain, &chances, &mut rng);
+            assert_eq!(osaka.appearance(7_000 + LOOK_MS).1, Face::Vacant, "{name}");
+            osaka.tick(7_000 + WATCH_MS - 1, None, &terrain, &chances, &mut rng);
+            assert_eq!(
+                osaka.appearance(7_000 + WATCH_MS - 1).1,
+                Face::Vacant,
+                "{name}"
+            );
+            osaka.tick(7_000 + WATCH_MS, None, &terrain, &chances, &mut rng);
+            assert_eq!(osaka.act, act, "{name}");
+            if matches!(act, Act::Use { .. }) {
+                assert_eq!(osaka.facing, Facing::Right, "{name}: back to the piece");
+            }
+            assert_eq!(osaka.chat_cuts.len(), 2, "{name}");
+        }
+    }
+
+    /// Dozing (lying back on the floor, napping, asleep by day, asleep
+    /// over her homework), a chat line only stirs her, as at night: she
+    /// blinks and turns over a moment (the line comes as her own pose
+    /// is on its frame 0, so the turn shows), saying "Mm?", not turning
+    /// to it, and dozes on; her act runs to its own end. A stir isn't a
+    /// look: the census logs none, and it sets no watch.
+    #[test]
+    fn a_doze_stirs_at_a_chat_line_and_dozes_on() {
+        let terrain = floor_at(15);
+        let chances = Chances::default();
+        let using = |what: Use, item: Furniture| Act::Use {
+            seat: Seat {
+                x: 20,
+                y: 15,
+                facing: Facing::Right,
+                ..seat_for(what, item)
+            },
+            since: 0,
+            until: 60_000,
+            whole: 60_000,
+            play: Play::of(what, None),
+            grievance: None,
+        };
+        let dozes = [
+            (
+                "lie back",
+                Act::Idle {
+                    what: Activity::LieBack,
+                    since: 0,
+                    until: 60_000,
+                    play: None,
+                },
+                5_000,
+                Pose::LieBack(1),
+            ),
+            ("nap", using(Use::Nap, Furniture::Sofa), 5_000, Pose::Nap(1)),
+            (
+                "sleep",
+                using(Use::Sleep, Furniture::Bed),
+                5_000,
+                Pose::Sleep(1),
+            ),
+            // Asleep over it (its body's last quarter).
+            (
+                "homework",
+                using(Use::Homework, Furniture::Desk),
+                50_000,
+                Pose::Homework(3),
+            ),
+        ];
+        for (name, act, from, stirred) in dozes {
+            let mut rng = Rng(3);
+            let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+            osaka.facing = Facing::Right;
+            osaka.set(act.clone(), 0);
+            let plain = osaka.clone();
+            // Her own pose's frame 0 (asleep over her homework has one).
+            let line = (from..from + 10_000)
+                .find(|&t| {
+                    matches!(
+                        plain.appearance(t).0,
+                        Pose::LieBack(0) | Pose::Nap(0) | Pose::Sleep(0) | Pose::Homework(3)
+                    )
+                })
+                .unwrap_or_else(|| panic!("{name}: never on frame 0"));
+            osaka.tick(line - 1, None, &terrain, &chances, &mut rng);
+            osaka.look(line, 0, false, &terrain);
+            assert_eq!(osaka.act, act, "{name}: dozes on");
+            assert_eq!(osaka.facing, Facing::Right, "{name}: not turned to it");
+            assert_eq!(osaka.watch_until, 0, "{name}: a stir sets no watch");
+            assert_eq!(
+                osaka.appearance(line),
+                (stirred, Face::Blink, Some(Bubble::Say(STIRRED))),
+                "{name}"
+            );
+            let after = line + speech_ms(STIRRED);
+            osaka.tick(after, None, &terrain, &chances, &mut rng);
+            assert_eq!(osaka.appearance(after), plain.appearance(after), "{name}");
+            let n = osaka.decisions.len();
+            osaka.tick(59_999, None, &terrain, &chances, &mut rng);
+            assert_eq!((&osaka.act, osaka.decisions.len()), (&act, n), "{name}");
+            assert!(osaka.chat_cuts.is_empty(), "{name}: {:?}", osaka.chat_cuts);
+        }
+        // Looking up from her homework as she writes, she nods off under
+        // her look; the next line finds her dozing: it stirs her, and her
+        // look is over (a stir shows, never hidden under a look).
+        let mut rng = Rng(3);
+        let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+        osaka.facing = Facing::Right;
+        let act = using(Use::Homework, Furniture::Desk);
+        osaka.set(act.clone(), 0);
+        osaka.look(29_000, 0, false, &terrain);
+        assert_eq!(osaka.appearance(29_000).2, Some(Bubble::Bang));
+        osaka.tick(31_000, None, &terrain, &chances, &mut rng);
+        osaka.look(31_000, 0, false, &terrain);
+        assert_eq!(osaka.act, act);
+        assert_eq!(
+            osaka.appearance(31_000),
+            (Pose::Homework(2), Face::Blink, Some(Bubble::Say(STIRRED))),
+            "stirred over the look"
+        );
+        assert_eq!(osaka.facing, Facing::Right, "back to her desk");
+        let after = 31_000 + speech_ms(STIRRED);
+        osaka.tick(after, None, &terrain, &chances, &mut rng);
+        assert_eq!(osaka.appearance(after).1, Face::Blink, "dozing on");
+    }
+
+    /// What isn't still is cut by a chat line, as ever (phase 5c B1):
+    /// walking, pulling, chores (unpacking, crumpling, a snack, petting
+    /// the cat), exercise, standing about, her mischief (swapping
+    /// letters, giggling at it), making (tearing text), moving a piece
+    /// (lifting it, setting it down), Setsubun's beans (thrown on the
+    /// spot, but thrown) and dashing home for what she forgot (a dash);
+    /// and a still act over text (in line art, where her image hides
+    /// it) passes on at once.
+    #[test]
+    fn what_isnt_still_or_calm_is_cut_by_a_chat_line() {
+        use tuirealm::ratatui::buffer::Buffer;
+        use tuirealm::ratatui::layout::Rect;
+        use tuirealm::ratatui::style::Style;
+        let calm = floor_at(15);
+        let mut buf = Buffer::empty(Rect::new(0, 0, 40, 20));
+        buf.set_string(0, 15, "─".repeat(40), Style::default());
+        for row in 11..15 {
+            buf.set_string(0, row, "x".repeat(40), Style::default());
+        }
+        let wordy = Terrain::read(&buf, &[], true);
+        assert!(!wordy.restful(20, 15));
+        let using = |what: Use, item: Furniture| Act::Use {
+            seat: Seat {
+                x: 20,
+                y: 15,
+                facing: Facing::Right,
+                ..seat_for(what, item)
+            },
+            since: 0,
+            until: 60_000,
+            whole: 60_000,
+            play: Play::of(what, None),
+            grievance: None,
+        };
+        let idle = |what: Activity| Act::Idle {
+            what,
+            since: 0,
+            until: 60_000,
+            play: None,
+        };
+        let swap = Swap {
+            x: 20,
+            y: 15,
+            row: 13,
+            side: Side::Right,
+            a: Placed::home((22, 13)),
+            b: Placed::home((23, 13)),
+            glyphs: "ab".to_owned(),
+        };
+        let episode = trial_episode();
+        let build = Build {
+            x: 20,
+            y: 15,
+            row: 13,
+            side: Side::Right,
+            cells: vec![22, 23, 24],
+            glyphs: "abc".to_owned(),
+            piece: super::super::room::Shown {
+                item: Furniture::Sofa,
+                facing: Facing::Left,
+                boxed: false,
+                strip: None,
+                left: 22,
+                floor: 15,
+                scrap: None,
+            },
+            then: Use::Lounge,
+        };
+        let mut cut: Vec<(&str, Act, &Terrain)> = vec![
+            (
+                "walk",
+                Act::Walk {
+                    to: 30,
+                    then: Then::Nothing,
+                },
+                &calm,
+            ),
+            (
+                "pull",
+                Act::Pull {
+                    pull: census_pull(),
+                    offset: 0,
+                    goal: 3,
+                    heaving: false,
+                },
+                &calm,
+            ),
+            ("unpack", using(Use::Unpack, Furniture::Sofa), &calm),
+            ("crumple", using(Use::Crumple, Furniture::Sofa), &calm),
+            ("snack", using(Use::Snack, Furniture::Fridge), &calm),
+            ("pet", using(Use::Pet, Furniture::CatBed), &calm),
+            ("jacks", idle(Activity::Jacks), &calm),
+            ("toe touch", idle(Activity::ToeTouch), &calm),
+            ("stretch", idle(Activity::Stretch), &calm),
+            ("stand", Act::Stand { until: 60_000 }, &calm),
+            (
+                "swap",
+                Act::Swap {
+                    swap: swap.clone(),
+                    until: 60_000,
+                    back: false,
+                },
+                &calm,
+            ),
+            (
+                "giggle",
+                Act::Giggle {
+                    swap,
+                    until: 60_000,
+                    revert: 60_000,
+                },
+                &calm,
+            ),
+            (
+                "tear",
+                Act::Tear {
+                    build,
+                    since: 0,
+                    ripped: false,
+                    step: 0,
+                },
+                &calm,
+            ),
+            (
+                "lift",
+                Act::Lift {
+                    lift: Lift {
+                        repair: episode.repair,
+                        trials: Trials::default(),
+                        x: 20,
+                        y: 15,
+                        side: Side::Right,
+                    },
+                    since: 0,
+                    until: 60_000,
+                },
+                &calm,
+            ),
+            (
+                "set down",
+                Act::SetDown {
+                    set: SetDown {
+                        piece: Furniture::Sofa,
+                        to: episode.repair.to,
+                        x: 20,
+                        y: 15,
+                        side: Side::Right,
+                    },
+                    since: 0,
+                    until: 60_000,
+                },
+                &calm,
+            ),
+            ("setsubun", Osaka::setsubun(0), &calm),
+            (
+                "dash forgot",
+                Act::SpaceOut {
+                    since: 0,
+                    until: DASH_FORGOT_MS,
+                    play: Some(Play::plain(ScriptId::DashForgot)),
+                },
+                &calm,
+            ),
+        ];
+        for (name, act, ..) in still_acts() {
+            cut.push((name, act, &wordy));
+        }
+        for (name, act, terrain) in cut {
+            let mut rng = Rng(3);
+            let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+            osaka.set(act, 0);
+            osaka.look(5_000, 0, false, terrain);
+            assert!(
+                matches!(osaka.act, Act::Look { .. }),
+                "{name}: {:?}",
+                osaka.act
+            );
+        }
+    }
+
+    /// A riddle she's telling when a chat line comes: what it said under
+    /// her look is said after it, in order (the question again, then the
+    /// answer: never a punchline without its setup); a line after the
+    /// answer has shown owes nothing. Across a lively chat, what the act
+    /// said under every look is said after the last. And her act ending
+    /// under her look (spacing out runs out), what it said under it is
+    /// said as it ends.
+    #[test]
+    fn a_riddles_answer_under_her_look_is_said_after_it() {
+        let terrain = floor_at(15);
+        let chances = Chances::default();
+        let (question, answer) = RIDDLES[0];
+        // (until, lines, when the first owed line is said, what's owed)
+        let cases: [(u64, &[u64], u64, &[&str]); 4] = [
+            (14_000, &[1_000], 1_000 + LOOK_MS, &[question, answer]),
+            (14_000, &[script::RIDDLE_ANSWERED_MS + 500], 0, &[]),
+            (
+                14_000,
+                &[2_000, 5_800],
+                5_800 + LOOK_MS,
+                &[question, answer],
+            ),
+            (7_000, &[4_000], 7_000, &[answer]),
+        ];
+        for (until, lines, said_at, owed) in cases {
+            let case = format!("until {until}, lines {lines:?}");
+            let mut rng = Rng(3);
+            let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+            let act = Act::SpaceOut {
+                since: 0,
+                until,
+                play: Some(Play::riddle(0)),
+            };
+            osaka.set(act.clone(), 0);
+            for &line in lines {
+                osaka.tick(line, None, &terrain, &chances, &mut rng);
+                osaka.look(line, 0, false, &terrain);
+            }
+            let last = *lines.last().unwrap();
+            if owed.is_empty() {
+                let after = last + LOOK_MS;
+                osaka.tick(after, None, &terrain, &chances, &mut rng);
+                assert_eq!(osaka.act, act, "{case}");
+                assert_eq!(osaka.appearance(after).2, None, "{case}");
+                continue;
+            }
+            let mut at = said_at;
+            for &text in owed {
+                osaka.tick(at, None, &terrain, &chances, &mut rng);
+                assert_eq!(
+                    osaka.appearance(at).2,
+                    Some(Bubble::Say(text)),
+                    "{case}: at {at}"
+                );
+                at += speech_ms(text);
+            }
+            osaka.tick(at, None, &terrain, &chances, &mut rng);
+            assert!(
+                !owed.contains(&match osaka.appearance(at).2 {
+                    Some(Bubble::Say(text)) => text,
+                    _ => "",
+                }),
+                "{case}: said once"
+            );
+        }
+    }
+
+    /// Her still act runs out while she watches the chat from it: she
+    /// stands to watch the rest of it, side-on, as after any look (step
+    /// 7's settle-in will restate this).
+    #[test]
+    fn a_still_act_ending_under_her_watch_stands_to_watch() {
+        let terrain = floor_at(15);
+        let chances = Chances::default();
+        let mut rng = Rng(3);
+        let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+        osaka.set(
+            Act::SpaceOut {
+                since: 0,
+                until: 7_000,
+                play: None,
+            },
+            0,
+        );
+        osaka.look(5_000, 0, false, &terrain);
+        assert!(matches!(osaka.act, Act::SpaceOut { .. }));
+        osaka.tick(7_000, None, &terrain, &chances, &mut rng);
+        assert_eq!(osaka.act, Act::Stand { until: 10_000 });
+        assert_eq!(osaka.appearance(7_000), (Pose::Side, Face::Vacant, None));
+        assert_eq!(osaka.facing, Facing::Left, "facing the chat");
+    }
+
+    /// A stir isn't a look: it sets no watch. Her doze running out just
+    /// after one, she gets on with her day, not standing to watch a chat
+    /// she never turned to.
+    #[test]
+    fn a_doze_ending_after_a_stir_doesnt_stand_to_watch() {
+        let terrain = floor_at(15);
+        let chances = Chances::default();
+        let mut rng = Rng(3);
+        let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+        osaka.set(
+            Act::Idle {
+                what: Activity::LieBack,
+                since: 0,
+                until: 7_000,
+                play: None,
+            },
+            0,
+        );
+        osaka.look(5_000, 0, false, &terrain);
+        assert_eq!(osaka.appearance(5_000).2, Some(Bubble::Say(STIRRED)));
+        osaka.tick(7_000, None, &terrain, &chances, &mut rng);
+        let decided = osaka.decisions.last().expect("decided at its end");
+        assert_eq!(decided.at, 7_000);
+        assert_ne!(decided.method, "watching chat", "{decided:?}");
+    }
+
+    /// What she's saying as a chat line comes shows on over her look
+    /// (as over the standing look before it): only her act's own bubble
+    /// is hidden under it.
+    #[test]
+    fn what_shes_saying_shows_over_her_look() {
+        let terrain = floor_at(15);
+        let mut rng = Rng(3);
+        let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+        osaka.set(
+            Act::SpaceOut {
+                since: 0,
+                until: 60_000,
+                play: None,
+            },
+            0,
+        );
+        osaka.say(OK, 4_500);
+        osaka.look(5_000, 0, false, &terrain);
+        assert_eq!(
+            osaka.appearance(5_000),
+            (Pose::Stand, Face::Surprised, Some(Bubble::Say(OK)))
+        );
+        let curious = 5_000 + SURPRISED_MS;
+        assert_eq!(
+            osaka.appearance(curious),
+            (Pose::Stand, Face::Curious, Some(Bubble::Say(OK)))
+        );
+        let over = 4_500 + speech_ms(OK);
+        assert_eq!(
+            osaka.appearance(over),
+            (Pose::Stand, Face::Curious, Some(Bubble::Huh))
+        );
+    }
+
+    /// Nodding off over her homework under her look, the look is over:
+    /// a doze never wears one. At the nod-off she shows her act's own
+    /// look, as if no line had come.
+    #[test]
+    fn nodding_off_under_her_look_ends_it() {
+        let terrain = floor_at(15);
+        let chances = Chances::default();
+        let mut rng = Rng(3);
+        let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+        osaka.facing = Facing::Right;
+        let seat = Seat {
+            x: 20,
+            y: 15,
+            facing: Facing::Right,
+            ..seat_for(Use::Homework, Furniture::Desk)
+        };
+        osaka.set(
+            Act::Use {
+                seat,
+                since: 0,
+                until: 60_000,
+                whole: 60_000,
+                play: Play::of(Use::Homework, None),
+                grievance: None,
+            },
+            0,
+        );
+        let plain = osaka.clone();
+        let nod = (20_000..50_000)
+            .find(|&t| plain.appearance(t).0.dozes())
+            .expect("nods off");
+        osaka.tick(nod - 2_000, None, &terrain, &chances, &mut rng);
+        osaka.look(nod - 2_000, 0, false, &terrain);
+        assert_eq!(osaka.appearance(nod - 2_000).2, Some(Bubble::Bang));
+        osaka.tick(nod, None, &terrain, &chances, &mut rng);
+        assert_eq!(osaka.appearance(nod), plain.appearance(nod));
+        assert_eq!(osaka.facing, Facing::Right);
+        assert!(osaka.looking_up.is_none(), "the look is over");
+    }
+
+    /// A chat line as she says what's wrong with her home: she says it
+    /// to its end (and feels it), then looks up, `!` and `?` in full,
+    /// then watches; her look waits for it, rather than being lost
+    /// under it.
+    #[test]
+    fn a_look_up_waits_for_her_grievance() {
+        let terrain = floor_at(15);
+        let chances = Chances::default();
+        let line = FELT.rule().map(|r| r.grievance).unwrap();
+        let mut rng = Rng(3);
+        let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+        let seat = Seat {
+            x: 20,
+            y: 15,
+            facing: Facing::Right,
+            ..seat_for(Use::Lounge, Furniture::Sofa)
+        };
+        let from = USE_FRAME_MS;
+        let act = Act::Use {
+            seat,
+            since: 0,
+            until: 60_000,
+            whole: 60_000,
+            play: Play::of(Use::Lounge, None),
+            grievance: Some((FELT, from)),
+        };
+        osaka.set(act.clone(), 0);
+        let chat = from + 500;
+        osaka.tick(chat, None, &terrain, &chances, &mut rng);
+        osaka.look(chat, 0, false, &terrain);
+        assert_eq!(osaka.appearance(chat).2, Some(Bubble::Say(line)));
+        let shown = from + GRIEVANCE_MS;
+        osaka.tick(shown, None, &terrain, &chances, &mut rng);
+        assert!(osaka.has_felt(FELT), "felt");
+        assert_eq!(osaka.appearance(shown).1, Face::Surprised);
+        assert_eq!(osaka.appearance(shown).2, Some(Bubble::Bang));
+        osaka.tick(shown + SURPRISED_MS, None, &terrain, &chances, &mut rng);
+        assert_eq!(osaka.appearance(shown + SURPRISED_MS).2, Some(Bubble::Huh));
+        osaka.tick(shown + LOOK_MS, None, &terrain, &chances, &mut rng);
+        assert_eq!(osaka.appearance(shown + LOOK_MS).1, Face::Vacant);
+        assert_eq!(osaka.act, act, "lounging on");
     }
 }
