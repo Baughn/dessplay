@@ -881,6 +881,23 @@ fn motion_summary(visits: &[Visit], set: usize) -> MotionRow {
         per_min(visits.iter().map(|v| v.exercise_starts).sum()),
         per_min(visits.iter().map(|v| v.bubbles).sum()),
     );
+    let mut time: BTreeMap<&str, u64> = BTreeMap::new();
+    for v in visits {
+        for (k, &ms) in &v.time {
+            *time.entry(k.as_str()).or_default() += ms;
+        }
+    }
+    let whole: u64 = time.values().sum();
+    let mut time: Vec<(&str, u64)> = time.into_iter().collect();
+    time.sort_by_key(|(_, ms)| std::cmp::Reverse(*ms));
+    eprintln!(
+        "  where her time went (% of the visit, warm-up too): {}",
+        time.iter()
+            .filter(|(_, ms)| pct(*ms, whole) >= 1.0)
+            .map(|(k, ms)| format!("{k} {:.1}", pct(*ms, whole)))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
     let all: u64 = visits
         .iter()
         .map(|v| v.sight[0] + v.sight[1] + v.hidden + v.asleep)

@@ -1458,9 +1458,19 @@ this section states what is built.
 - **Activities** keep her busy on the spot: sitting hugging her knees,
   lying on her back (dozing, "zzz") or stomach (feet kicking, "~"),
   jumping jacks ("1, 2!"), toe touches, a big stretch ("nnn~"), gazing up
-  at something ("ooh"). Standing still facing the viewer is short and rare; watching the
+  at something ("ooh" for its first 3 s, then quietly). Standing still facing the viewer is short and rare; watching the
   chat on her feet, she stands side-on facing it (from a still act she
   watches where she is).
+- **A slow blink** on a pose she holds with her eyes open (sitting,
+  lounging, watching, reading, writing her homework, gazing or looking
+  out; not standing, nor anything that moves, dozes, eats or busies her
+  hands): 150 ms every 6–12 s of the act, each gap drawn from the whims
+  of the decision that set it, never from either random stream or the
+  wall clock. Standing still has its own quicker blink; spacing out, a
+  vacant stare, has none. Never while she looks up at a chat line: a
+  line come mid-blink ends it at once, and a blink begun under her look
+  shows none of itself after. It changes only how she looks: it wakes
+  the shell, but it is no event of hers.
 - **Tidying**: when a line ends beside where her box could stand on a
   floor — against it or up to three blank cells off — at chest height
   (box rows 1–2), on either side of her, she may
@@ -1528,7 +1538,9 @@ this section states what is built.
   eased by how much she does of what she chose: an activity or a use by the share of its time she gets through
   before it ends or is interrupted, a pull by how far she pulls it (all
   of it when she runs out of floor), a swap once the letters swap;
-  walking and travel as she sets off. A choice she never gets to eases
+  walking and travel as she sets off. The easing lands on her needs as
+  they are at that moment (each brought up to it first), not as they
+  were when she chose. A choice she never gets to eases
   nothing. Needs only weight choices: nothing is ever ruled out,
   and nothing bad happens when a need is high
   (why: [decisions](decisions.md#houseguest-chooses-by-needs-among-the-top-few-2026-09-28)).

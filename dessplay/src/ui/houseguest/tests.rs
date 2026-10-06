@@ -309,6 +309,60 @@ fn she_watches_the_chat_until_five_seconds_after_its_last_line() {
     }
 }
 
+/// Holding a pose (phase 5c Q3), sitting on the floor or lounging on
+/// her sofa, her slow blink is drawn, in both drawing modes: the shell is
+/// woken as each blink starts and as it ends, `advance` says so each
+/// time, and each time the frame differs from the one before.
+#[test]
+fn her_slow_blink_is_drawn_where_she_holds_still() {
+    use sprite::Face;
+    for graphics in [false, true] {
+        for scene in [Scene::Sit, Scene::Lounge] {
+            let at = format!("{scene:?} graphics={graphics}");
+            let mut ui = stage_ui();
+            let (real, view) = real_frame(&mut ui, 100, 30);
+            let mut guest = Guest::new(3);
+            if graphics {
+                guest.set_picker(kitty());
+            }
+            guest.cue(scene);
+            let mut now = 0;
+            let mut last = paint(&mut guest, &real, &view, now);
+            let mut blinking = false;
+            let (mut began, mut ended) = (0, 0);
+            while now < 120_000 && ended < 2 {
+                now += guest
+                    .next_tick(now)
+                    .map_or(1000, |d| d.as_millis() as u64)
+                    .clamp(1, 1000);
+                let changed = guest.advance(now);
+                let frame = if changed {
+                    paint(&mut guest, &real, &view, now)
+                } else {
+                    last.clone()
+                };
+                let State::Visiting(visit) = &guest.state else {
+                    panic!("{at}: visiting");
+                };
+                let (pose, face, _) = visit.osaka.appearance(now);
+                let blinks = face == Face::Blink && pose.holds();
+                if blinks != blinking {
+                    assert!(changed, "{at}: at {now}, the blink's edge unseen");
+                    assert_ne!(frame, last, "{at}: at {now}, the blink's edge undrawn");
+                    if blinks {
+                        began += 1;
+                    } else if began > 0 {
+                        ended += 1;
+                    }
+                }
+                blinking = blinks;
+                last = frame;
+            }
+            assert!(ended >= 2, "{at}: {began} blinks begun, {ended} ended");
+        }
+    }
+}
+
 /// A chat line while she sits on the floor (phase 5c B1): she looks up
 /// where she sits, `!` drawn beside her, her pose kept; dozing on her
 /// back, she only stirs ("Mm?" beside her). Either way her act runs on:
@@ -2039,6 +2093,13 @@ fn she_says_a_line_and_then_stops() {
 
 /// Over long visits her needs show: she dozes more in a visit's second
 /// half than its first, no one thing takes over, and she still tidies.
+/// Over twelve visits: since her needs are eased as they are when what
+/// she did is credited (phase 5c step 8; before, an easing landed on her
+/// needs as they were when she chose, and a need that rose to full
+/// meanwhile came back full), a doze early eases her sleepiness where it
+/// had been lost, and one visit's halves vary more. The first four
+/// visits, the old sample, now doze less late (0.7×); twelve doze 1.3×
+/// as much late, forty 2× (34 of the 40 more late).
 #[test]
 fn her_needs_shape_long_visits() {
     use super::brain::Want;
@@ -2048,7 +2109,7 @@ fn her_needs_shape_long_visits() {
     let half = 10 * 60_000;
     let (mut early, mut late) = (0u64, 0u64);
     let mut choices: Vec<Want> = Vec::new();
-    for seed in 0..4u64 {
+    for seed in 0..12u64 {
         // Her needs alone: her routine would have her afternoon (16:00 to
         // 18:00, these twenty minutes) slow her sleepiness by design.
         let mut guest = Guest::new(seed).unfed();
@@ -2082,8 +2143,8 @@ fn her_needs_shape_long_visits() {
         choices.extend(&visit.osaka.choices);
     }
     // The direction only: how much more is the brain's to say (brain.rs,
-    // `sleepiness_draws_her_to_lie_down`); four whole visits are too few
-    // to pin a ratio that any change to her paths reshuffles.
+    // `sleepiness_draws_her_to_lie_down`); twelve whole visits are too
+    // few to pin a ratio that any change to her paths reshuffles.
     assert!(late > early, "dozing: {early} ms early, {late} ms late");
     let most = choices
         .iter()
@@ -7652,8 +7713,17 @@ proptest! {
         bed_at in proptest::option::of(0u64..90_000),
     ) {
         use super::room::{MadeId, PieceRef, Use};
-        // Between tries: a chat gap, the watch after it, and a walk.
+        // Between tries: a chat gap, the watch after it, and a walk. Not
+        // a still act's length (phase 5c M9): she takes none while a
+        // piece waits, and making is never still.
         const BOUND: u64 = 90_000;
+        // The run, and the sofa's making from its cue at 0: at its
+        // crumple within 60 s (`an_interrupted_crumple_keeps_its_purpose`)
+        // and the crumple's longest, 6 s. The run outlasts both, so the
+        // bound is put to the test (once the sofa is made, at least).
+        const RUN_MS: u64 = 180_000;
+        const MAKE_MS: u64 = 66_000;
+        const _: () = assert!(RUN_MS > BOUND + MAKE_MS);
         let at = format!("seed {seed} graphics={graphics}");
         let mut ui = stage_ui();
         let (real, mut view) = real_frame(&mut ui, 100, 30);
@@ -7675,7 +7745,7 @@ proptest! {
         let mut now = 0;
         // Whether she was at a use of a piece she made last frame.
         let mut was_using_made = false;
-        while now < 180_000 {
+        while now < RUN_MS {
             let last = now;
             now += guest
                 .next_tick(now)

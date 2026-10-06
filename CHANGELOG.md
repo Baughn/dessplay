@@ -17,6 +17,9 @@ Add new days at the top. Add new entries at the bottom of existing days.
 - Changed: when a chat line comes while Osaka is sitting, lying or
   lounging, she looks up where she is instead of getting up (and a doze
   just stirs).
+- Added: Osaka blinks now and then while she sits, lounges, reads or gazes
+  up, so a long rest looks restful rather than frozen. Gazing up, she says
+  "ooh" only at first.
 
 ## 2026-10-05
 

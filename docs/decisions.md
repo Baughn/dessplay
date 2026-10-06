@@ -3775,6 +3775,71 @@ on offer. Wandering keeps no distance weight: shorter wanders lower the
 share without lowering how often she sets off, which the band's cap
 counts.
 
+## A slow blink on a pose she holds (2026-10-06)
+
+**Rule:** On a pose she holds with her eyes open she blinks for 150 ms
+every 6–12 s of the act, the gaps drawn from her deciding whims; not
+while she looks up at the chat. Gazing says "ooh" for its first 3 s
+only. See [design.md](design.md#houseguest).
+
+**Why:** only standing blinked, so a minutes-long sit, lounge or read
+read as frozen rather than still (phase 5c, Q3; the user chose a slow
+blink). Slow and brief, so it reads as alive without drawing the eye
+the way setting off does: the whole of phase 5c is about attention, and
+a blink every few seconds, or a lasting bubble, would undo it. A gaze's
+"ooh" is its moment of noticing; held for a whole long gaze the bubble
+would be the busiest thing on screen (synthesis M8).
+
+**A pure schedule from her whims**, not her body's stream and not the
+wall clock: drawing it from the body's stream would shift every later
+length she draws, so a blink would change what she does; from the wall
+clock it wouldn't be reproducible. As a schedule it can't change her
+behaviour, only how she looks, so the tick reports it without making
+it an event (it wakes the shell; nothing of hers fires). Under her look
+up at a chat line her face is the look's: that's all attention, so a
+line come mid-blink cuts it, and a blink begun under the look shows
+none of its remainder once the look is over (a stray tail of a blink
+after the look would read as a flinch).
+
+**Not on spacing out.** Its pose is standing, but the stand's own
+quicker blink belongs to standing idle; spacing out is a vacant stare,
+and an unblinking stare is the joke. Q3's list of held poses didn't
+name it either. If phase 5c's tuning makes it one of her long still
+acts (M2, D4), that's the moment to look again.
+
+**Measured consequence:** two kinds, told apart. The blink's wakes
+change only how she looks, but the golden and census harnesses deliver
+a chat line or a cue at the first step that crosses it, so the extra
+steps let some land sooner: harness quantisation, not her (in the
+client a line arrives when it arrives). The gaze's 3 s frame is
+different: it's a new event of hers (her "ooh" going), and at her own
+events she acts on a world change she has seen (a pane gaining focus,
+say) sooner, in the client too; resident seed 3 in ASCII goes to her
+door 3 s sooner that way.
+
+## An easing lands on her needs as they are (2026-10-06)
+
+**Rule:** What she did eases her needs as they are when it's credited:
+each is brought up to that moment first. See
+[design.md](design.md#houseguest).
+
+**Why:** needs rose only as she decided, and a credit (an act settled
+as she leaves it, a shift as she comes home, a pull as she finishes)
+landed on them as they were at her last decision. A need that rose to
+full over a long act then came back full, its easing lost; one eased
+below empty lost the excess, which rising afterwards didn't give back.
+Phase 5c step 2 found it and held the fix for step 8, because her rates
+had been tuned with the easing lost and `her_needs_shape_long_visits`
+("she dozes more in a visit's second half") failed with it alone.
+Step 8's tuning stopped (M3's cap waits on the user), so the fix landed
+on its own in step 8's review, rather than waiting on a retune: a known
+wrong order shouldn't wait on numbers. The long-visit claim was
+measured, not retuned: over its old four visits she now dozes less late
+(0.7×), over twelve 1.3× as much late, over forty 2× (34 of 40 more
+late). So the rule's shape holds and four visits were too few to carry
+it; the test runs twelve. Its census effect is under 2 points a cell
+(phase5c/baseline.md).
+
 ## Houseguest chooses by needs among the top few (2026-09-28)
 
 **Rule:** Her next act is a weighted-random pick among the four

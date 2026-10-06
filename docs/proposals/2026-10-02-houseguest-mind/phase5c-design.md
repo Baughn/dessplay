@@ -357,7 +357,9 @@ section first.
   - The houseguest stays pure: the request and the file I/O live in the shell/session side, the guest
     only receives `Option<Arc<RgbaImage>>` with a timestamp; tests use a fixed picture.
 - **Test:** no act longer than 30 s flips cells faster than `USE_FRAME_MS` after its first 10 s (both
-  modes), which also guards against future animation churn.
+  modes), which also guards against future animation churn. The slow blink (step 8: her face
+  alone, 150 ms every 6–12 s on a pose she holds) is exempt: count pose, prop and bubble
+  changes, or cells outside her face, not the blink's two flips.
 
 ### Steps, renumbered
 
@@ -419,6 +421,8 @@ the user's redraws:
   needs should rise to the credit's moment before it lands (`rise_to` at the top of `serve`); landing
   it alone collapses late-visit dozing in `her_needs_shape_long_visits` (rates were tuned while credits
   were lost), so it lands with the tuning, un-ignoring `a_credit_eases_her_needs_as_they_are`.
+  *(Landed alone in step 8's review, the tuning having stopped: the long-visit claim holds over
+  twelve visits, four having been too few; see baseline.md, "Step 8: tuning stopped".)*
   SpaceOut stays not restful for Beauty ("done on her feet").
 - **Step 3**'s baseline: [phase5c/baseline.md](phase5c/baseline.md). Every home and resident cell is
   over its ceiling (lazy 29–35, ordinary/dreamy 28–47, industrious 35–51); the line-art stage is near

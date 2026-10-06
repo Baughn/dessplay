@@ -9,6 +9,9 @@ deterministic: the fed census run twice gave identical tables. Paths are relativ
 (step 5: the 5 s watch, 9-minute visits, at the end). The other tables are the 15 s watch (the fed
 afternoon's over 15 minutes).
 
+**Step 8's tuning stopped short of the band:** [Step 8: tuning stopped](#step-8-tuning-stopped-2026-10-06)
+has every move tried, and why M3's cap and the levers can't both be met in every room.
+
 Re-measured after the step's review, which tightened the definitions below. Her arrival is now a
 set-off (the warm-up's rate rises by about 0.2 a minute). A heave is only the beat she steps back (the
 stage's share falls by about 0.2 points). Lines that came while she was in a door or aloft now count as
@@ -536,3 +539,146 @@ What moved:
 - **Exercise** is within ±0.8 points of step 5's, inside minor 8's 3 points.
 - **Every home and resident cell is still over its ceiling**, and the line-art stage over its band;
   the levers (steps 7–8) are what bring them in.
+
+
+## Step 8: tuning stopped (2026-10-06)
+
+**Measured 2026-10-06** on step 7 (the levers landed neutral), the same census as step 6's
+(`CENSUS_MINUTES=9 CENSUS_MODES=line fed_afternoon_census`, 20 sets × 4 seeds, release), one run
+per move in synthesis M5's order. **Stopped by the stop rule**: no setting of M5's levers puts
+every cell inside its band and under M3's set-off cap, because the cap and the levers pull the
+rooms apart (below). None of these values ships: the commit that adds this section ships the
+slow blink and, from its review, the credit fix (move 1) alone; the levers stay
+`Stillness::NEUTRAL`. The values tried are listed here in full.
+
+### The moves, in order
+
+Each column adds its move to the one before; cells are moving % in sight / set-offs a minute.
+
+1. **credit**: needs rise to the credit's moment before it lands (`rise_to` at the top of
+   `serve`, step 2's hand-off).
+2. **needs, bases**: `rise_ms` Restless 90 → 300 s, Tidy 60 → 240 s, Mischief 4 → 8 min; Walk
+   14 → 9, Travel 10 → 7 (M4).
+3. **near**: `Stillness.near` on (pull, swap and pick_build on her floor first; seats weighted).
+4. **lengths**, half way from today's to D4's list: SpaceOut 13–37 s, Sit 20–57, LieBack 27–80,
+   SitDoze 27–80, Gaze 7–17, Lounge 27–60, Nap 45–105, Watch 32–82, Read 30–65, Homework 37–75
+   (LieFront, Sleep and the homework slot's 120–240 s unchanged).
+5. **space out, stand**: SpaceOut `own_sake: true`; a chosen Stand 3–8 s (was 2–5).
+6. **linger, settle, sessions**: `Stillness::STARTING` (linger Lazy 1.5, Ordinary 1.0, Dreamy
+   1.0, Industrious 0.7; settle Lazy 0.6, Ordinary 0.35, Dreamy 0.35, Industrious 0.15; sitting
+   dozes half the time; musings Dreamy 2–4, Ordinary 1–3, Lazy 0–2, Industrious 0–1; nod-off by
+   mood).
+7. **5 + idle shorter, tidy 150 s**: the floor's still acts back toward today's (SpaceOut 10–28 s,
+   Sit 15–40, LieBack and SitDoze 20–60, Gaze 6–14), Tidy 240 → 150 s, Mischief 8 → 6 min, to
+   bring the stage and resident up.
+
+| Room | Mood | Chat | step 7 | 1. credit | 2. needs, bases | 3. near | 4. lengths | 5. space out, stand | 6. linger, settle, sessions | 7. idle shorter, tidy 150 s | Band | M3 cap |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| stage | Ordinary | quiet | 32.5 / 4.96 | 30.6 / 4.87 | 24.5 / 4.02 | 18.5 / 3.71 | 13.7 / 2.69 | 13.2 / 2.35 | 10.7 / 1.99 | 10.8 / 2.11 | 16–26 | 3.43 |
+| stage | Ordinary | chat | 28.7 / 4.92 | 29.4 / 5.15 | 24.6 / 4.28 | 16.0 / 3.80 | 12.9 / 2.83 | 10.2 / 2.43 | 10.5 / 2.19 | 9.8 / 2.28 | 16–26 | 3.90 |
+| stage | Lazy | quiet | 21.8 / 4.19 | 21.7 / 4.18 | 22.4 / 3.40 | 12.3 / 2.83 | 11.7 / 2.07 | 11.4 / 1.94 | 6.2 / 1.06 | 6.9 / 1.20 | 11–17 | 2.88 |
+| stage | Lazy | chat | 23.7 / 4.19 | 24.8 / 4.42 | 21.6 / 3.54 | 13.5 / 3.23 | 12.2 / 2.32 | 10.6 / 2.29 | 6.2 / 1.29 | 6.7 / 1.46 | 11–17 | 2.89 |
+| stage | Industrious | quiet | 34.9 / 5.11 | 33.0 / 5.07 | 23.7 / 4.52 | 19.0 / 3.80 | 15.1 / 2.92 | 13.3 / 2.59 | 14.9 / 2.73 | 14.4 / 2.89 | 20–31 | 4.39 |
+| stage | Industrious | chat | 35.7 / 5.59 | 36.5 / 5.49 | 26.3 / 4.84 | 16.3 / 3.85 | 14.8 / 3.26 | 12.5 / 2.78 | 12.6 / 2.86 | 12.6 / 2.92 | 20–31 | 4.81 |
+| stage | Dreamy | quiet | 27.8 / 4.86 | 27.2 / 4.69 | 20.2 / 3.81 | 15.4 / 3.30 | 13.0 / 2.38 | 11.7 / 2.21 | 10.5 / 1.86 | 9.6 / 1.93 | 16–26 | 3.93 |
+| stage | Dreamy | chat | 28.2 / 4.92 | 30.2 / 5.02 | 21.4 / 3.95 | 12.4 / 3.34 | 10.0 / 2.65 | 9.4 / 2.34 | 8.9 / 1.99 | 8.7 / 2.03 | 16–26 | 4.00 |
+| home | Ordinary | quiet | 48.4 / 2.33 | 48.0 / 2.28 | 34.9 / 1.78 | 34.9 / 1.79 | 25.4 / 1.53 | 25.6 / 1.52 | 21.8 / 1.36 | 23.3 / 1.46 | 16–26 | 1.08 |
+| home | Ordinary | chat | 44.9 / 2.47 | 43.1 / 2.41 | 31.5 / 1.94 | 31.1 / 1.92 | 25.8 / 1.68 | 24.8 / 1.66 | 22.3 / 1.50 | 22.7 / 1.51 | 16–26 | 1.24 |
+| home | Lazy | quiet | 35.8 / 1.51 | 35.7 / 1.55 | 24.5 / 1.26 | 24.8 / 1.26 | 18.5 / 0.97 | 17.9 / 0.97 | 10.4 / 0.57 | 10.9 / 0.60 | 11–17 | 0.63 |
+| home | Lazy | chat | 34.0 / 1.68 | 33.4 / 1.73 | 24.0 / 1.42 | 24.1 / 1.42 | 19.7 / 1.11 | 19.0 / 1.10 | 11.1 / 0.69 | 11.3 / 0.71 | 11–17 | 0.79 |
+| home | Industrious | quiet | 53.4 / 2.72 | 52.8 / 2.73 | 38.3 / 2.36 | 38.4 / 2.35 | 33.4 / 2.05 | 31.8 / 2.00 | 34.6 / 2.13 | 35.9 / 2.24 | 20–31 | 1.53 |
+| home | Industrious | chat | 51.7 / 2.86 | 51.4 / 2.96 | 37.1 / 2.57 | 37.0 / 2.59 | 30.4 / 2.25 | 27.8 / 2.11 | 31.3 / 2.32 | 33.6 / 2.41 | 20–31 | 1.71 |
+| home | Dreamy | quiet | 46.1 / 2.27 | 46.2 / 2.29 | 30.1 / 1.75 | 30.0 / 1.73 | 23.7 / 1.49 | 23.6 / 1.46 | 19.7 / 1.29 | 21.0 / 1.31 | 16–26 | 1.11 |
+| home | Dreamy | chat | 42.4 / 2.38 | 42.4 / 2.36 | 30.1 / 1.99 | 29.9 / 1.96 | 23.3 / 1.62 | 21.8 / 1.57 | 18.8 / 1.39 | 19.9 / 1.45 | 16–26 | 1.23 |
+| resident | Ordinary | quiet | 38.8 / 2.79 | 38.8 / 2.82 | 23.3 / 2.32 | 22.7 / 2.33 | 16.8 / 1.73 | 15.8 / 1.67 | 14.0 / 1.48 | 15.0 / 1.51 | 16–26 | 1.62 |
+| resident | Ordinary | chat | 35.6 / 2.99 | 34.8 / 3.04 | 22.0 / 2.49 | 21.2 / 2.52 | 16.1 / 1.84 | 14.3 / 1.82 | 13.2 / 1.66 | 14.1 / 1.69 | 16–26 | 1.87 |
+| resident | Lazy | quiet | 32.3 / 2.31 | 33.8 / 2.45 | 25.6 / 2.14 | 25.3 / 2.14 | 14.0 / 1.24 | 13.3 / 1.18 | 7.8 / 0.64 | 8.3 / 0.66 | 11–17 | 1.07 |
+| resident | Lazy | chat | 30.6 / 2.61 | 32.1 / 2.60 | 24.4 / 2.27 | 24.2 / 2.26 | 15.1 / 1.48 | 13.4 / 1.39 | 6.9 / 0.70 | 7.3 / 0.73 | 11–17 | 1.19 |
+| resident | Industrious | quiet | 43.9 / 2.92 | 41.5 / 2.84 | 25.6 / 2.32 | 23.1 / 2.30 | 19.6 / 1.77 | 18.4 / 1.67 | 20.1 / 1.71 | 20.1 / 1.73 | 20–31 | 2.00 |
+| resident | Industrious | chat | 38.6 / 3.03 | 38.2 / 3.02 | 23.4 / 2.49 | 22.1 / 2.52 | 17.5 / 1.90 | 17.2 / 1.80 | 18.1 / 1.89 | 17.7 / 1.89 | 20–31 | 2.33 |
+| resident | Dreamy | quiet | 36.6 / 2.70 | 36.6 / 2.64 | 20.1 / 2.30 | 19.9 / 2.31 | 14.0 / 1.64 | 12.8 / 1.58 | 11.4 / 1.36 | 11.7 / 1.39 | 16–26 | 1.66 |
+| resident | Dreamy | chat | 32.5 / 2.80 | 31.7 / 2.82 | 18.5 / 2.40 | 17.8 / 2.42 | 12.5 / 1.73 | 12.0 / 1.69 | 10.7 / 1.48 | 11.8 / 1.54 | 16–26 | 1.93 |
+
+| stage industrious ÷ lazy | 1.55 | 1.49 | 1.14 | 1.37 | 1.25 | 1.17 | 2.22 | 1.99 |
+| home industrious ÷ lazy | 1.51 | 1.51 | 1.55 | 1.54 | 1.67 | 1.62 | 3.07 | 3.13 |
+| resident industrious ÷ lazy | 1.31 | 1.21 | 0.98 | 0.91 | 1.27 | 1.33 | 2.60 | 2.42 |
+
+### Why it stops
+
+**M3's cap freezes each room's moving seconds per set-off at the baseline's**, so it caps the
+share: the most a cell can move under its cap is the cap × the seconds a set-off moves her now.
+The levers shorten her trips without any walk getting faster: once she no longer wanders off and
+travels (Restless 300 s, Walk 9), what's left is the short walk from where she is to a seat or a
+line (home: a set-off moved her 12.5 s at the baseline and 9.6 s now; resident 8.3 → 6.0; stage
+3.9 → 3.1; the ratio hardly moves between moves 3 and 7). In move 7:
+
+| Room | Mood | Chat | Moving % | Set-offs/min | M3 cap | s moving a set-off (baseline) | most % under the cap | Band | Fits? |
+|---|---|---|---|---|---|---|---|---|---|
+| stage | Ordinary | quiet | 10.8 | 2.11 | 3.43 | 3.1 (3.9) | 17.6 | 16–26 | yes |
+| stage | Ordinary | chat | 9.8 | 2.28 | 3.90 | 2.6 (3.5) | 16.8 | 16–26 | yes |
+| stage | Lazy | quiet | 6.9 | 1.20 | 2.88 | 3.5 (3.1) | 16.6 | 11–17 | yes |
+| stage | Lazy | chat | 6.7 | 1.46 | 2.89 | 2.8 (3.1) | 13.3 | 11–17 | yes |
+| stage | Industrious | quiet | 14.4 | 2.89 | 4.39 | 3.0 (4.1) | 21.9 | 20–31 | yes |
+| stage | Industrious | chat | 12.6 | 2.92 | 4.81 | 2.6 (3.7) | 20.8 | 20–31 | yes |
+| stage | Dreamy | quiet | 9.6 | 1.93 | 3.93 | 3.0 (3.4) | 19.6 | 16–26 | yes |
+| stage | Dreamy | chat | 8.7 | 2.03 | 4.00 | 2.6 (3.4) | 17.1 | 16–26 | yes |
+| home | Ordinary | quiet | 23.3 | 1.46 | 1.08 | 9.6 (12.5) | 17.3 | 16–26 | yes |
+| home | Ordinary | chat | 22.7 | 1.51 | 1.24 | 9.0 (10.9) | 18.6 | 16–26 | yes |
+| home | Lazy | quiet | 10.9 | 0.60 | 0.63 | 10.9 (14.2) | 11.5 | 11–17 | barely |
+| home | Lazy | chat | 11.3 | 0.71 | 0.79 | 9.5 (11.4) | 12.6 | 11–17 | yes |
+| home | Industrious | quiet | 35.9 | 2.24 | 1.53 | 9.6 (11.8) | 24.5 | 20–31 | yes |
+| home | Industrious | chat | 33.6 | 2.41 | 1.71 | 8.4 (10.5) | 23.9 | 20–31 | yes |
+| home | Dreamy | quiet | 21.0 | 1.31 | 1.11 | 9.6 (12.2) | 17.8 | 16–26 | yes |
+| home | Dreamy | chat | 19.9 | 1.45 | 1.23 | 8.2 (11.0) | 16.9 | 16–26 | yes |
+| resident | Ordinary | quiet | 15.0 | 1.51 | 1.62 | 6.0 (8.3) | 16.1 | 16–26 | barely |
+| resident | Ordinary | chat | 14.1 | 1.69 | 1.87 | 5.0 (7.2) | 15.6 | 16–26 | no |
+| resident | Lazy | quiet | 8.3 | 0.66 | 1.07 | 7.5 (8.4) | 13.5 | 11–17 | yes |
+| resident | Lazy | chat | 7.3 | 0.73 | 1.19 | 6.0 (7.6) | 11.9 | 11–17 | yes |
+| resident | Industrious | quiet | 20.1 | 1.73 | 2.00 | 7.0 (9.0) | 23.2 | 20–31 | yes |
+| resident | Industrious | chat | 17.7 | 1.89 | 2.33 | 5.6 (7.7) | 21.8 | 20–31 | yes |
+| resident | Dreamy | quiet | 11.7 | 1.39 | 1.66 | 5.1 (8.1) | 14.0 | 16–26 | no |
+| resident | Dreamy | chat | 11.8 | 1.54 | 1.93 | 4.6 (7.0) | 14.8 | 16–26 | no |
+
+- **The rooms need opposite moves.** The stage's ordinary cell must set off about 3.3 times a
+  minute to clear 16%, the home's at most 1.08: three to one, from one shared table of lengths.
+  At today's lengths (move 3) the ratio was 2.1, and longer still acts lower it (the stage's
+  rate falls faster: its uses are made pieces close to her, with the rest of its set-offs short
+  hops to text). The stage and resident are time-limited now, not need-limited: Tidy 150 s and
+  Mischief 6 min (move 7) moved the stage's to-text share by 0.1 point.
+- **Cells with no window at all** (the most under the cap at or below the floor): resident
+  dreamy (14.0, 14.8 against 16), resident ordinary at its chat cadence (15.6). Barely: home lazy
+  quiet (11.5 against 11), resident ordinary quiet (16.1 against 16).
+- **What did land:** the spread between moods (industrious ÷ lazy 2.0 / 3.1 / 2.4 against 1.6),
+  from move 6 alone; and exercise fell in every cell (industrious stage by 8 points), inside
+  minor 8's +3.
+- **Not levers:** seat nearness off moved nothing (her seats are mostly one of a kind); the
+  credit fix moved every cell by 2 points or less.
+
+### What else the attempt showed
+
+- **The band's guard** (`band_visits_outlast_her_longest_still_act_twice`): with Lazy's linger
+  1.5 a day's sleep is 270 s, so `BAND_MINUTES` must be 12 (3 + 2 × 4.5) for any landing of
+  `STARTING`'s lingering; the Lounge + Nap settle chain at move 4's lengths is 247 s.
+- **The credit fix** landed alone in step 8's review (decisions.md, "An easing lands on her
+  needs as they are"), `a_credit_eases_her_needs_as_they_are` un-ignored. With every lever on
+  (move 7) `her_needs_shape_long_visits` passed over its four visits; with the fix alone it
+  failed there, as step 2 found. Measured rather than retuned: the four visits doze 0.7× as much
+  late, twelve 1.3×, forty 2× (34 of 40 more late), so the test now runs twelve.
+- **Chat lines in the census and band harnesses** arrive at the first step that crosses them,
+  so a wake that changes only how she looks (the slow blink's) moves the chat cells a little
+  (home dreamy chat 2.34 → 2.26 set-offs a minute; stage dreamy chat 31.1 / 4.27 → 30.8 /
+  4.53). Stepping to the next line's own time fixes that, but changes the driver `BASELINE`
+  was measured with; it belongs at the start of the retune, with everything re-measured.
+- `sleepiness_draws_her_to_lie_down` fails at Walk 9 / Travel 7 with Restless 300 s (it reads the
+  bases); `a_restless_osaka_mostly_moves` passes.
+
+### For the user
+
+The cap is M3's (step 4): the baseline's rate × target ÷ baseline share, so a lever that only
+shortens walks fails it. These levers shorten walks by keeping her near her things, not by
+gaming the measure. The choice is the user's:
+- recompute the cap from the tuned seconds per set-off (or restore D2's × 1.15 slack, which
+  alone isn't enough for the resident's dreamy cells);
+- or keep the cap, and accept per-room floors below the band where the room has her things close
+  (the resident, the stage), or a mood lever beyond lengths and settling;
+- or judge set-offs alone (onsets are what draw the eye) and the share only as a ceiling.

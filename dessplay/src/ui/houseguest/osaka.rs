@@ -378,6 +378,12 @@ const WATCH_MS: u64 = 5_000;
 // chat" after a look, and the census's restarts, rely on it.
 const _: () = assert!(WATCH_MS > LOOK_MS);
 const BLINK_MS: u64 = 150;
+/// On a pose she holds (phase 5c Q3, [`Pose::holds`]), a slow blink of
+/// [`BLINK_MS`] every this long (ms, from and to).
+const HELD_BLINK_GAP_MS: (u64, u64) = (6_000, 12_000);
+/// How many slow blinks ahead, unseen, her next wakeup is looked for
+/// ([`Osaka::wakes_at`]): six minutes of them at the least.
+const HELD_BLINK_LOOKAHEAD: usize = 64;
 /// Reaching for two letters (and back again).
 const FIDDLE_MS: u64 = 700;
 /// How long a swap stays before she swaps it back.
@@ -1339,6 +1345,14 @@ pub(super) fn talk_gap(whims: Whims, k: u64) -> u64 {
     lo + whims.below_at("sleep-talk-gap", k, hi - lo + 1)
 }
 
+/// The gap before her `k`th slow blink on a pose she holds (the 0th:
+/// after her act's start), drawn from the whims of the decision that set
+/// the act: a pure schedule, no draw from either stream.
+pub(super) fn held_blink_gap(whims: Whims, k: u64) -> u64 {
+    let (lo, hi) = HELD_BLINK_GAP_MS;
+    lo + whims.below_at("held blink", k, hi - lo + 1)
+}
+
 /// Her night (phase 5b step 4b), from her first night act of it to the
 /// morning: what of it carries across whatever gets her out of bed
 /// before her wake time (an errand, her midnight snack), and her current
@@ -1613,10 +1627,12 @@ impl Activity {
 
     /// Its frame `elapsed` ms in: alternating on its period; dozing where
     /// she sits, her head sinking (frame 0) for [`SIT_DOZE_NOD_MS`], then
-    /// on her knees (frame 1) and held.
+    /// on her knees (frame 1) and held; gazing, "ooh" (frame 0) for
+    /// [`GAZE_OOH_MS`], then quiet (frame 1).
     fn frame(self, elapsed: u64) -> u8 {
         match self {
             Self::SitDoze => u8::from(elapsed >= SIT_DOZE_NOD_MS),
+            Self::Gaze => u8::from(elapsed >= GAZE_OOH_MS),
             _ => elapsed
                 .checked_div(self.period())
                 .map_or(0, |n| (n % 2) as u8),
@@ -1631,7 +1647,8 @@ impl Activity {
             Self::Jacks => (Pose::Jack(frame), Face::Happy, Some(Bubble::Count)),
             Self::ToeTouch => (Pose::ToeTouch(frame), Face::Vacant, None),
             Self::Stretch => (Pose::Stretch, Face::Blink, Some(Bubble::Stretch)),
-            Self::Gaze => (Pose::Gaze, Face::Curious, Some(Bubble::Ooh)),
+            Self::Gaze if frame == 0 => (Pose::Gaze, Face::Curious, Some(Bubble::Ooh)),
+            Self::Gaze => (Pose::Gaze, Face::Curious, None),
             Self::SitDoze => (Pose::SitDoze(frame), Face::Blink, Some(Bubble::Zzz)),
         }
     }
@@ -1640,6 +1657,9 @@ impl Activity {
 /// Dozing off where she sits: how long her head takes to sink onto her
 /// knees.
 const SIT_DOZE_NOD_MS: u64 = USE_FRAME_MS;
+/// Gazing up, how long she says "ooh" before gazing on quietly (phase 5c
+/// M8).
+const GAZE_OOH_MS: u64 = 3_000;
 
 /// A speech or thought bubble.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1743,6 +1763,15 @@ pub(super) struct Osaka {
     act_due: u64,
     next_blink: u64,
     blink_until: u64,
+    /// The moment of her last tick: her next slow blink's edge is the
+    /// first after it ([`Osaka::wakes_at`]).
+    ticked: u64,
+    /// Whether a slow blink showed at her last tick, so the next tick
+    /// can say whether how she looks changed.
+    blink_shown: bool,
+    /// When her last look up from her act ended: a slow blink begun
+    /// before then, begun under it, shows none of its remainder.
+    look_ended: u64,
     /// While a chat conversation continues she stands watching it.
     watch_until: u64,
     watch_x: i32,
@@ -2171,6 +2200,9 @@ impl Osaka {
             act_due: now,
             next_blink: now + rng.range(4000, 9000),
             blink_until: 0,
+            ticked: now,
+            blink_shown: false,
+            look_ended: 0,
             watch_until: 0,
             looking_up: None,
             unsaid: Vec::new(),
@@ -2486,9 +2518,9 @@ impl Osaka {
 
     /// Her needs brought up to `at`: each rises with the time since they
     /// last were (by what was rising them, her mood and her routine's
-    /// pace; the night she slept at its own). Done as she decides. (Not
-    /// yet before anything eases her, which would have the easing land
-    /// on her needs as they are: see [`Osaka::serve`].)
+    /// pace; the night she slept at its own). Done as she decides, and
+    /// before anything eases her ([`Osaka::serve`]), so an easing lands
+    /// on her needs as they are.
     fn rise_to(&mut self, at: u64) {
         self.count_sleep(at);
         let rising = Rising {
@@ -2645,6 +2677,14 @@ impl Osaka {
             Act::Climb { .. } => now + CLIMB_MS,
             Act::Fall { from_y, since, .. } => fall_time(since, (self.y - from_y + 1) as u64),
         }
+    }
+
+    /// When she next needs a tick: anything [`Osaka::due`], or the next
+    /// edge of a slow blink on a pose she holds (which changes only how
+    /// she looks, so it's no event of hers: see [`Osaka::tick`]).
+    pub fn wakes_at(&self) -> u64 {
+        self.next_held_blink()
+            .map_or(self.due(), |blink| blink.min(self.due()))
     }
 
     /// When her pose, speech, or the text layer next changes, or her
@@ -3359,7 +3399,7 @@ impl Osaka {
             let due = self.due();
             if due > now {
                 self.note_seen(now);
-                return changed;
+                return self.blinks_by(now) || changed;
             }
             // Her routine first: a boundary is handled before anything
             // else due with it, and never fires her act.
@@ -3421,7 +3461,7 @@ impl Osaka {
             // would only stir her).
             if self.looking_up.is_some() && self.acting(due).0.dozes() {
                 tracing::trace!("houseguest: nodded off under her look; it's over");
-                self.end_look();
+                self.end_look(due);
             }
             // A rare script's first key, shown as it begins.
             self.note_seen(due);
@@ -3434,7 +3474,95 @@ impl Osaka {
         self.act_due = self.act_due.max(now);
         self.next_blink = self.next_blink.max(now);
         self.note_seen(now);
+        self.blinks_by(now) || changed
+    }
+
+    /// Her tick at `now` done: whether a slow blink on a pose she holds
+    /// began or ended since her last (how she looks changed, though no
+    /// event of hers came: it's drawn from a pure schedule, see
+    /// [`Osaka::held_blink`]).
+    fn blinks_by(&mut self, now: u64) -> bool {
+        let shown = self.held_blink(now);
+        let changed = shown != self.blink_shown;
+        self.blink_shown = shown;
+        self.ticked = self.ticked.max(now);
         changed
+    }
+
+    /// Her slow blinks' starts on a pose she holds (phase 5c Q3), as her
+    /// act runs: the `k`th the gaps `0..=k` after it began, each drawn
+    /// from the whims of the decision that set it (her whims change only
+    /// as she decides, which sets her act: so acts one decision chains,
+    /// a walk and then the seat, a settling in, restart the same gaps
+    /// from their own starts). None but in a still act with an end she
+    /// holds a pose in (sitting, gazing, a use), and none past its end.
+    fn held_blinks(&self) -> impl Iterator<Item = u64> + use<> {
+        let until = match self.act {
+            Act::Idle { until, .. } | Act::Use { until, .. } => until,
+            _ => 0,
+        };
+        let whims = self.whims;
+        (0..)
+            .scan(self.act_since, move |at, k| {
+                *at += held_blink_gap(whims, k);
+                Some(*at)
+            })
+            .take_while(move |&at| at < until)
+    }
+
+    /// What shows of a slow blink beginning at `start` (from, to): any
+    /// only if she holds her pose there with her eyes open
+    /// ([`Pose::holds`]), and none of it while she looks up at the chat
+    /// (her look is all attention): a look come mid-blink ends it, and
+    /// one begun before it hides it all, its end too.
+    fn held_window(&self, start: u64) -> Option<(u64, u64)> {
+        let (pose, face, _) = self.look_at(start);
+        if !pose.holds() || !matches!(face, Face::Vacant | Face::Curious) {
+            return None;
+        }
+        let end = match self.looking_up {
+            Some(look) if look.since <= start => return None,
+            Some(look) => look.since.min(start + BLINK_MS),
+            None => start + BLINK_MS,
+        };
+        (start >= self.look_ended).then_some((start, end))
+    }
+
+    /// Whether she's in a slow blink at `now` (see [`Osaka::held_blinks`]).
+    fn held_blink(&self, now: u64) -> bool {
+        self.held_blinks()
+            .find(|&start| now < start + BLINK_MS)
+            .and_then(|start| self.held_window(start))
+            .is_some_and(|(from, to)| from <= now && now < to)
+    }
+
+    /// The next edge (a start or an end) of a slow blink that shows, after
+    /// her last tick and before her next event ([`Osaka::due`]): an edge
+    /// past it would lose to it in [`Osaka::wakes_at`] and is found again
+    /// at its tick. So the search is a few blinks long however long her
+    /// act (a night's sleep) or its end (none, for an act without one).
+    ///
+    /// An act with no end and no event coming (none has one yet) would
+    /// make that search endless where no blink shows: past
+    /// [`HELD_BLINK_LOOKAHEAD`] blinks unseen it wakes her at the last
+    /// one's start instead, a tick that changes nothing.
+    fn next_held_blink(&self) -> Option<u64> {
+        let (after, due) = (self.ticked, self.due());
+        let ahead = self
+            .held_blinks()
+            .take_while(|&start| start < due)
+            .skip_while(|&start| start + BLINK_MS <= after);
+        for (k, start) in ahead.enumerate() {
+            if k == HELD_BLINK_LOOKAHEAD {
+                return Some(start);
+            }
+            if let Some((from, to)) = self.held_window(start)
+                && to > after
+            {
+                return Some(if from > after { from } else { to });
+            }
+        }
+        None
     }
 
     fn set(&mut self, act: Act, at: u64) {
@@ -5876,18 +6004,13 @@ impl Osaka {
     }
 
     /// `want`'s needs eased at `at` by `share` of what it answers, as
-    /// well as `spot` answers each (eased `via`).
-    ///
-    /// Her needs are not brought up to `at` first (see
-    /// [`Osaka::rise_to`]): they rise only as she decides, so an easing
-    /// lands on them as they were when she last chose, and a need that
-    /// rose to full meanwhile refills at once. Rising first is the fix
-    /// (one call here: `self.rise_to(at)`), held back for a retune: her
-    /// needs' rates and serves were tuned with the easing lost, and with
-    /// it landing she dozes far less late in a visit
-    /// (`her_needs_shape_long_visits`); see
-    /// `a_credit_eases_her_needs_as_they_are`, ignored until then.
+    /// well as `spot` answers each (eased `via`): on her needs as they
+    /// are at `at`, brought up to it first ([`Osaka::rise_to`]), not as
+    /// they were when she last chose (where an easing landed on needs
+    /// that went on rising over it, and a need that rose to full
+    /// meanwhile came back full).
     fn serve(&mut self, want: Want, share: f64, spot: Spot, via: Via, at: u64) {
+        self.rise_to(at);
         tracing::trace!(
             ?want,
             share,
@@ -7780,7 +7903,7 @@ impl Osaka {
     /// ends one as she nods off; this is the same end if it hasn't run).
     fn stir_dozing(&mut self, now: u64) {
         tracing::info!("houseguest: stirs at the chat, dozing");
-        self.end_look();
+        self.end_look(now);
         self.stir_saying(STIRRED, now);
     }
 
@@ -7832,9 +7955,12 @@ impl Osaka {
 
     /// Her look up from her act is over: turned back to the piece she
     /// sits to, if she turned from one.
-    fn end_look(&mut self) {
-        if let Some(back) = self.looking_up.take().and_then(|look| look.back) {
-            self.facing = back;
+    fn end_look(&mut self, at: u64) {
+        if let Some(look) = self.looking_up.take() {
+            self.look_ended = at;
+            if let Some(back) = look.back {
+                self.facing = back;
+            }
         }
     }
 
@@ -7854,7 +7980,7 @@ impl Osaka {
                 self.say_what_her_look_hid(from, to, at);
             }
             _ => {
-                self.end_look();
+                self.end_look(at);
                 tracing::trace!("houseguest: back to what she was at after the chat");
             }
         }
@@ -8594,6 +8720,19 @@ impl Osaka {
 
     /// Her pose, face and bubble at `now`.
     pub fn appearance(&self, now: u64) -> (Pose, Face, Option<Bubble>) {
+        let (pose, face, bubble) = self.look_at(now);
+        // On a pose she holds, now and then a slow blink.
+        let face = if self.held_blink(now) {
+            Face::Blink
+        } else {
+            face
+        };
+        (pose, face, bubble)
+    }
+
+    /// How she looks at `now`, but for her slow blink on a pose she holds
+    /// (see [`Osaka::appearance`]).
+    fn look_at(&self, now: u64) -> (Pose, Face, Option<Bubble>) {
         let (pose, face, bubble) = self.acting(now);
         // Looking up at the chat from her act, in its pose: startled,
         // puzzled, then watching plain-faced, her act's own bubble hidden
@@ -8880,6 +9019,9 @@ fn next_frame(what: Activity, since: u64, now: u64) -> u64 {
     let period = what.period();
     if what == Activity::SitDoze && now < since + SIT_DOZE_NOD_MS {
         return since + SIT_DOZE_NOD_MS;
+    }
+    if what == Activity::Gaze && now < since + GAZE_OOH_MS {
+        return since + GAZE_OOH_MS;
     }
     if period == 0 {
         return u64::MAX;
@@ -13877,8 +14019,6 @@ mod tests {
         /// is spent either way. A need that rose to full while she was at
         /// it is eased all the same.
         #[test]
-        #[ignore = "her needs rise only as she decides (see Osaka::serve): the fix is held \
-                    back for a retune, as with it her_needs_shape_long_visits fails"]
         fn a_credit_eases_her_needs_as_they_are(
             level in 0.0f64..=1.0,
             stretch in 0u64..600_000,
@@ -14826,6 +14966,304 @@ mod tests {
             assert_eq!(osaka.credited, [(want, 1.0, 60_000)], "{name}: as a whole");
             assert_eq!(osaka.chat_cuts, [(line, false, None)], "{name}");
             assert_eq!(osaka.after_chat, None, "{name}: no restart");
+        }
+    }
+
+    /// The slow blinks a held act set at 0 with `whims` would have, from
+    /// the schedule alone (starts, before `until`).
+    fn held_blink_starts(whims: Whims, until: u64) -> Vec<u64> {
+        let mut starts = Vec::new();
+        let mut at = 0;
+        for k in 0.. {
+            at += held_blink_gap(whims, k);
+            if at >= until {
+                break;
+            }
+            starts.push(at);
+        }
+        starts
+    }
+
+    /// On a pose she holds (phase 5c Q3: sitting, lounging, watching,
+    /// reading, writing her homework, a long gaze, looking out), she
+    /// blinks slowly: for `BLINK_MS` every 6–12 s of the act, each gap
+    /// drawn from the whims of the decision that set it, never from
+    /// either stream. Her wakeups land on each blink's start and end and
+    /// nowhere else her act doesn't ask for, and a tick there says how
+    /// she looks changed. Homework blinks only while she writes (its
+    /// first half), never nodding off or asleep on the paper. Other
+    /// whims blink at other moments.
+    #[test]
+    fn a_held_pose_blinks_slowly_on_her_whims() {
+        let terrain = floor_at(15);
+        let chances = Chances::default();
+        let held = [
+            "sit", "gaze", "lounge", "watch", "read", "homework", "look out",
+        ];
+        let mut firsts = std::collections::BTreeSet::new();
+        for (name, act, _, _) in still_acts() {
+            if !held.contains(&name) {
+                continue;
+            }
+            for seed in [1u64, 2, 3] {
+                let at = format!("{name} whims {seed}");
+                let mut rng = Rng(3);
+                let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+                osaka.facing = Facing::Right;
+                osaka.whims = Whims(seed);
+                osaka.set(act.clone(), 0);
+                let until = if name == "homework" { 30_000 } else { 60_000 };
+                let starts = held_blink_starts(Whims(seed), until);
+                assert!(starts.len() >= 2, "{at}: {starts:?}");
+                assert!((6_000..=12_000).contains(&starts[0]), "{at}: {starts:?}");
+                firsts.insert(starts[0]);
+                for pair in starts.windows(2) {
+                    let gap = pair[1] - pair[0];
+                    assert!((6_000..=12_000).contains(&gap), "{at}: {gap}");
+                }
+                let edges: Vec<u64> = starts.iter().flat_map(|&s| [s, s + 150]).collect();
+                let streams = (rng.0, osaka.mind.0);
+                let mut now = 0;
+                let mut woke = Vec::new();
+                while now < 59_000 {
+                    let wake = osaka.wakes_at();
+                    assert!(wake > now, "{at}: wakes at {wake} by {now}");
+                    let event = osaka.due();
+                    now = wake.min(59_000);
+                    let changed = osaka.tick(now, None, &terrain, &chances, &mut rng);
+                    if wake < event && now == wake {
+                        assert!(changed, "{at}: a blink's edge at {now} changed nothing");
+                        woke.push(now);
+                    }
+                }
+                assert_eq!(woke, edges, "{at}: woken for each blink's edges");
+                assert_eq!((rng.0, osaka.mind.0), streams, "{at}: nothing drawn");
+                for &start in &starts {
+                    // 150 ms (phase 5c Q3), as the spec has it.
+                    for (t, blinks) in [
+                        (start - 1, false),
+                        (start, true),
+                        (start + 149, true),
+                        (start + 150, false),
+                    ] {
+                        let face = osaka.appearance(t).1;
+                        assert_eq!(face == Face::Blink, blinks, "{at}: {face:?} at {t}");
+                    }
+                }
+            }
+        }
+        assert!(firsts.len() > 1, "every whims blinks alike: {firsts:?}");
+    }
+
+    /// No slow blink where she doesn't hold still with her eyes open:
+    /// standing (her own quicker blink), spacing out, kicking her feet,
+    /// touching her toes, eating, petting the cat, dozing, asleep over her
+    /// homework, smiling pleased with her surfing; nor while she looks up at a
+    /// chat line, startled, puzzled and watching. No wakeup comes for
+    /// one either.
+    #[test]
+    fn no_slow_blink_where_she_doesnt_hold_still() {
+        let terrain = floor_at(15);
+        let chances = Chances::default();
+        let idle = |what: Activity| Act::Idle {
+            what,
+            since: 0,
+            until: 60_000,
+            play: None,
+        };
+        let playing = |what: Use, item: Furniture, play: Play| Act::Use {
+            seat: Seat {
+                x: 20,
+                y: 15,
+                facing: Facing::Right,
+                ..seat_for(what, item)
+            },
+            since: 0,
+            until: 60_000,
+            whole: 60_000,
+            play,
+            grievance: None,
+        };
+        let using = |what: Use, item: Furniture| playing(what, item, Play::of(what, None));
+        let homework = still_acts()
+            .into_iter()
+            .find(|(name, ..)| *name == "homework")
+            .map(|(_, act, ..)| act)
+            .expect("homework");
+        let acts = [
+            (
+                "space out",
+                Act::SpaceOut {
+                    since: 0,
+                    until: 60_000,
+                    play: None,
+                    session: None,
+                },
+                0,
+            ),
+            ("lie front", idle(Activity::LieFront), 0),
+            ("lie back", idle(Activity::LieBack), 0),
+            ("sit doze", idle(Activity::SitDoze), 0),
+            ("homework asleep", homework, 30_000),
+            ("snack", using(Use::Snack, Furniture::Fridge), 0),
+            ("pet", using(Use::Pet, Furniture::CatBed), 0),
+            ("toe touch", idle(Activity::ToeTouch), 0),
+            // Pleased with her surfing, humming (eyes smiling shut).
+            (
+                "surfed",
+                playing(Use::Watch, Furniture::Tv, Play::plain(ScriptId::Surf)),
+                4 * script::SURF_MS,
+            ),
+        ];
+        for (name, act, from) in acts {
+            let mut rng = Rng(3);
+            let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+            osaka.whims = Whims(1);
+            osaka.set(act, 0);
+            let mut now = from;
+            osaka.tick(now, None, &terrain, &chances, &mut rng);
+            while now < 59_000 {
+                assert_eq!(osaka.wakes_at(), osaka.due(), "{name}: a wakeup at {now}");
+                // Awake, she never blinks there (a doze's eyes are shut
+                // anyway).
+                if matches!(
+                    name,
+                    "space out" | "lie front" | "snack" | "pet" | "toe touch" | "surfed"
+                ) {
+                    assert_ne!(osaka.appearance(now).1, Face::Blink, "{name}: at {now}");
+                }
+                now = (now + 50).min(osaka.due()).max(now + 1);
+                osaka.tick(now, None, &terrain, &chances, &mut rng);
+            }
+        }
+        // Sitting, a line at each blink's start: she looks up, and her
+        // look's faces hold through it, blink or no blink due.
+        let starts = held_blink_starts(Whims(1), 60_000);
+        for &start in starts.iter().take(3) {
+            let mut rng = Rng(3);
+            let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+            osaka.whims = Whims(1);
+            osaka.set(idle(Activity::Sit), 0);
+            osaka.tick(start - 10, None, &terrain, &chances, &mut rng);
+            osaka.look(start, 0, false, &terrain);
+            for (t, face) in [
+                (start, Face::Surprised),
+                (start + BLINK_MS / 2, Face::Surprised),
+            ] {
+                osaka.tick(t, None, &terrain, &chances, &mut rng);
+                assert_eq!(osaka.appearance(t).1, face, "a line at {start}, at {t}");
+            }
+        }
+        // A line come mid-blink: the blink is over at once, her startle
+        // all there is; and no wakeup comes for the blink's end, unseen.
+        for &start in starts.iter().take(3) {
+            let line = start + 75;
+            let mut rng = Rng(3);
+            let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+            osaka.whims = Whims(1);
+            osaka.set(idle(Activity::Sit), 0);
+            osaka.tick(start, None, &terrain, &chances, &mut rng);
+            assert_eq!(
+                osaka.appearance(start).1,
+                Face::Blink,
+                "blinking at {start}"
+            );
+            osaka.look(line, 0, false, &terrain);
+            osaka.tick(line, None, &terrain, &chances, &mut rng);
+            for t in line..start + 150 {
+                assert_eq!(
+                    osaka.appearance(t).1,
+                    Face::Surprised,
+                    "a line at {line}, mid-blink, at {t}"
+                );
+            }
+            assert!(
+                osaka.wakes_at() > start + 150,
+                "a line at {line}: a wakeup for a blink unseen"
+            );
+        }
+        // Her look over mid-blink (begun under it): no blink's remainder
+        // shows after it, nor wakes her.
+        for &start in starts.iter().take(3) {
+            let line = start + 50 - WATCH_MS;
+            let mut rng = Rng(3);
+            let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+            osaka.whims = Whims(1);
+            osaka.set(idle(Activity::Sit), 0);
+            osaka.tick(line - 10, None, &terrain, &chances, &mut rng);
+            osaka.look(line, 0, false, &terrain);
+            let mut now = line;
+            while osaka.looking_up.is_some() {
+                now = osaka.wakes_at();
+                osaka.tick(now, None, &terrain, &chances, &mut rng);
+            }
+            assert!(
+                (start..start + 150).contains(&now),
+                "her look over at {now}, not mid-blink at {start}"
+            );
+            assert!(
+                osaka.wakes_at() > start + 150,
+                "a wakeup at a blink's end unseen"
+            );
+            for t in now..start + 150 {
+                assert_ne!(
+                    osaka.appearance(t).1,
+                    Face::Blink,
+                    "her look over at {now}, at {t}"
+                );
+            }
+        }
+        // The look's plain watch, over a blink due in it.
+        let start = starts[0];
+        let line = start - LOOK_MS - 100;
+        let mut rng = Rng(3);
+        let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+        osaka.whims = Whims(1);
+        osaka.set(idle(Activity::Sit), 0);
+        osaka.tick(line - 10, None, &terrain, &chances, &mut rng);
+        osaka.look(line, 0, false, &terrain);
+        osaka.tick(start, None, &terrain, &chances, &mut rng);
+        assert_eq!(
+            osaka.appearance(start),
+            (Pose::Sit, Face::Vacant, None),
+            "watching the chat at {start}"
+        );
+        assert!(
+            osaka.wakes_at() > start + BLINK_MS,
+            "no wakeup for a blink unseen"
+        );
+    }
+
+    /// A gaze says "ooh" as it begins, for its first 3 s, then gazes on
+    /// curious and quiet (phase 5c M8): her tick comes as the bubble goes.
+    #[test]
+    fn a_gaze_says_ooh_then_gazes_on_quietly() {
+        let terrain = floor_at(15);
+        let chances = Chances::default();
+        let mut rng = Rng(3);
+        let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+        osaka.set(
+            Act::Idle {
+                what: Activity::Gaze,
+                since: 0,
+                until: 60_000,
+                play: None,
+            },
+            0,
+        );
+        for t in [0, 1_000, 2_999] {
+            assert_eq!(
+                osaka.appearance(t),
+                (Pose::Gaze, Face::Curious, Some(Bubble::Ooh)),
+                "{t}"
+            );
+        }
+        assert_eq!(osaka.due(), 3_000, "a tick as the bubble goes");
+        assert!(osaka.tick(3_000, None, &terrain, &chances, &mut rng));
+        for t in [3_000, 5_000, 59_000] {
+            let (pose, face, bubble) = osaka.appearance(t);
+            assert_eq!((pose, bubble), (Pose::Gaze, None), "{t}");
+            assert!(matches!(face, Face::Curious | Face::Blink), "{t}: {face:?}");
         }
     }
 

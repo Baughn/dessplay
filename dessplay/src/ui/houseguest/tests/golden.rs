@@ -565,10 +565,10 @@ fn golden_stage_room() {
         "stage",
         stage_room,
         &[
-            (0, 0x8e37277226ead383, 0xa638d5ab3bc20d84),
-            (1, 0x8378261b849067ad, 0x584863db31ca6d5d),
-            (2, 0x3a0b2a5ebd8a14b4, 0xa2cc2fdff704159f),
-            (3, 0xb0d0bbf8cdca1ae3, 0x4a9cd26351aa4c8a),
+            (0, 0x7f83fec767e74862, 0x1794b93ffc8d66d8),
+            (1, 0xd09959b194fcc713, 0x8536be75145c26d8),
+            (2, 0x9591c00017d66914, 0x79e04ffa0cf74262),
+            (3, 0x67269c72721ff0fb, 0xd0481ce9d956912a),
         ],
     );
 }
@@ -579,10 +579,10 @@ fn golden_resident() {
         "resident",
         resident,
         &[
-            (0, 0x3e09715b9b6841b6, 0x97c2034837af0a75),
-            (1, 0x4d55b70cce594b8e, 0x62ac2a0c5e984e26),
-            (2, 0x950e8274aad0baa5, 0x5a8be56b4cb47bb7),
-            (3, 0xc252b1f5fe7a44d4, 0x2f85593bf91dd66c),
+            (0, 0xe4ea2684cb927940, 0xc5924ae43095cb89),
+            (1, 0x4d55b70cce594b8e, 0x38712f820f2c9484),
+            (2, 0x950e8274aad0baa5, 0x19a6e8a505632e3d),
+            (3, 0x508efaa9039319cb, 0x2f85593bf91dd66c),
         ],
     );
 }
@@ -593,10 +593,10 @@ fn golden_furnished_home() {
         "furnished",
         furnished,
         &[
-            (0, 0xe4c5a1fc4f3a728d, 0xc8812b86f9260429),
-            (1, 0xeea3ce64c8b3f9d7, 0x5a799667fb165a0c),
-            (2, 0x1b7769e236d43699, 0x991526bb3786739c),
-            (3, 0xaf69eb9e42232ef2, 0x0f4f43e33ebfe175),
+            (0, 0x78e58429f3a27a2a, 0xfa72b74bcd513170),
+            (1, 0xd9dd7e616e7d6dd1, 0x2aabb1351b20e89b),
+            (2, 0xe7ac43051b49c57a, 0xe0a6bf4d2bc40e77),
+            (3, 0x195e3cf9e6f66b02, 0x4a1f34cf3a57f2d0),
         ],
     );
 }
@@ -608,9 +608,9 @@ fn golden_errand() {
         errand,
         &[
             (0, 0xa115268dd34741af, 0x84a48e0354dec3ca),
-            (1, 0xe0f41b1ece93757c, 0x827f3f555bf64164),
+            (1, 0x25af335efba3a77b, 0xa19648a98946d58e),
             (2, 0x1e3dd842f4ca4668, 0x20d410417a6fc48e),
-            (3, 0xc2e68cc1c3988003, 0x648adf4edb47be5a),
+            (3, 0x7b72e3b19661f820, 0x80cd5be7de17a456),
         ],
     );
 }
@@ -621,10 +621,10 @@ fn golden_homework_evening() {
         "evening",
         homework_evening,
         &[
-            (0, 0xc2463bc87bf37ae3, 0x61551775e222df29),
-            (1, 0xf9dc9949821bbab4, 0x7649a8741213bd97),
-            (2, 0x7b9496827540b4c9, 0xfbb198482386513b),
-            (3, 0xa0125f8a312dc082, 0x2f2299c80ae0c98a),
+            (0, 0x876ea56886723d82, 0xa5cab324d4c159c6),
+            (1, 0x2b7d28f3784a5dc7, 0x2cb59310a593e59c),
+            (2, 0x774073234f16be7e, 0xce0d3b4cbec3c985),
+            (3, 0x0e940ff5e6294baa, 0x256afa3dcadf273e),
         ],
     );
 }
@@ -649,10 +649,10 @@ fn golden_weekend() {
         "weekend",
         weekend,
         &[
-            (0, 0xc4ce4c0d5734f350, 0x387a73e3a10e24b7),
-            (1, 0x8308396f64fff0cd, 0xcf1821daf419b674),
-            (2, 0xc1d19f8a13c5e02b, 0x20e47bee7807e9e5),
-            (3, 0x489a373003d045d8, 0x0f70b967cc2ab0a8),
+            (0, 0xc78a2230b908b857, 0x0121e3d716edbf8b),
+            (1, 0xe6f13b1ffa672c63, 0x861f622b965f241f),
+            (2, 0x2c94f7654da230f2, 0x324a1c03b6ca5b35),
+            (3, 0xd99eff5817f454a4, 0xdf66e086a8fdac40),
         ],
     );
 }
@@ -666,7 +666,7 @@ fn golden_school_morning() {
             (0, 0x78ccce965e42be1f, 0x343dd7e1638e6f82),
             (1, 0x3f90b25eba234732, 0x1ff902c5b3cc9894),
             (2, 0x12714caaef695715, 0x17e75178cc58e115),
-            (3, 0x263af0d80a57ee7d, 0x964ab390f8540262),
+            (3, 0x457e0f12b590c556, 0xe54342c5fcee6435),
         ],
     );
 }
@@ -677,9 +677,9 @@ fn golden_home_from_school() {
         "home",
         home_from_school,
         &[
-            (0, 0x014c8b8870c58247, 0x62ce3dfa4bcd509c),
-            (1, 0x2a3390fb3368c016, 0xea784a17d8806f35),
-            (2, 0x8221f1a2df32b015, 0x17d707490c7546f2),
+            (0, 0x000795126138beb6, 0xb650bf0ab5ebd845),
+            (1, 0x9e3cf147d29514ae, 0x6ea3e6ed9619c3f9),
+            (2, 0xfe06d9555e35472d, 0x5875f8f39085d2ff),
             (3, 0xcdd830678a84442f, 0x684bcfe2aaf4e49b),
         ],
     );
@@ -702,57 +702,81 @@ fn golden_dash_home() {
 // ---- Unfed: as she was before the clock fed her (A5) ----
 
 /// The stage room's tables at the end of phase 5b step 3, but for step 5a's
-/// hidden-goodbye fix (no placement recorded of her hidden behind her
-/// door: its trace diff is in that commit), and step 5b's parcels (one
-/// waits while she's out of sight, and for her "I'm home!" from work:
-/// seeds 1 and 2 in ASCII, out at work as the stage sends a parcel; the
-/// trace diff is in that commit), and phase 5c step 5's shorter watch
-/// (5 s after a chat line, not 15: each seed and mode first differs 5 s
-/// after a line; the trace diff is in that commit), and step 6's looking
-/// up in place (each seed and mode first differs at a chat line during a
-/// use, where she looks up from it or, dozing, stirs; the trace diff is
-/// in that commit).
+/// hidden-goodbye fix (no placement recorded of her hidden behind her door:
+/// its trace diff is in that commit), and step 5b's parcels (one waits
+/// while she's out of sight, and for her "I'm home!" from work: seeds 1 and
+/// 2 in ASCII, out at work as the stage sends a parcel; the trace diff is
+/// in that commit), and phase 5c step 5's shorter watch (5 s after a chat
+/// line, not 15: each seed and mode first differs 5 s after a line; the
+/// trace diff is in that commit), and step 6's looking up in place (each
+/// seed and mode first differs at a chat line during a use, where she looks
+/// up from it or, dozing, stirs; the trace diff is in that commit), and
+/// step 8's slow blink (on a pose she holds, a frame inserted as each blink
+/// begins and one as it ends; gazing, one as her "ooh" goes after 3 s:
+/// the blink's wakes let a chat line or a cue, which the harness delivers
+/// at the step that crosses it, land sooner, and the "ooh" going is an
+/// event of hers at which she acts on what changed sooner, so what follows
+/// shifts; seed 0 in line art and seed 3 in ASCII then choose otherwise),
+/// and its review's credit fix (an easing lands on her needs as they are:
+/// seeds 0, 1 and 3 in both modes and 2 in ASCII first differ at a
+/// decision, choosing otherwise; the trace diffs are in that commit).
 const UNFED_STAGE: [(u64, u64, u64); 4] = [
-    (0, 0xe19fde0681e75356, 0xff56d4d803efcc3d),
-    (1, 0x2e4ff793ffc72f2c, 0x7b235e46afa3ea8c),
-    (2, 0x4c3b7e6fabb3a5eb, 0xcfdc401178c618c4),
-    (3, 0x0c47a5591ee0b632, 0xcbcb13e154fcb459),
+    (0, 0x6ced8c8ab211dfbd, 0xa560392316f63baa),
+    (1, 0xa51be88372d650ee, 0xf080a21cdf07145a),
+    (2, 0x385a1a6f622c5d83, 0x079d7aabf37478de),
+    (3, 0x803711c1f86db531, 0x4443c8c3c14e3f6b),
 ];
 
 /// The resident's tables at the end of phase 5b step 3, but for step 5a's
-/// hidden-goodbye fix (no placement recorded of her hidden behind her
-/// door: its trace diff is in that commit), and phase 5c step 1's
-/// rain-out fix (the tick a focused pane's rain ends on is drawn: one
-/// frame inserted at each rain's end, every seed and mode, nothing else
-/// changed; the trace diff is in that commit), and step 5's shorter
-/// watch (5 s after a chat line, not 15: each seed and mode first
-/// differs 5 s after a line, or, a line come as she climbed, at her
-/// landing past its watch; the trace diff is in that commit), and step
-/// 6's looking up in place (each seed and mode first differs at a chat
-/// line during a use, where she looks up from it or, dozing, stirs; the
-/// trace diff is in that commit).
+/// hidden-goodbye fix (no placement recorded of her hidden behind her door:
+/// its trace diff is in that commit), and phase 5c step 1's rain-out fix
+/// (the tick a focused pane's rain ends on is drawn: one frame inserted at
+/// each rain's end, every seed and mode, nothing else changed; the trace
+/// diff is in that commit), and step 5's shorter watch (5 s after a chat
+/// line, not 15: each seed and mode first differs 5 s after a line, or, a
+/// line come as she climbed, at her landing past its watch; the trace diff
+/// is in that commit), and step 6's looking up in place (each seed and mode
+/// first differs at a chat line during a use, where she looks up from it
+/// or, dozing, stirs; the trace diff is in that commit), and step 8's slow
+/// blink (on a pose she holds, a frame inserted as each blink begins and
+/// one as it ends; gazing, one as her "ooh" goes after 3 s: the blink's
+/// wakes let a chat line or a cue, which the harness delivers at the step
+/// that crosses it, land sooner, and the "ooh" going is an event of hers
+/// at which she acts on what changed sooner, so what follows shifts), and
+/// its review's look fix (a line come mid-blink ends the blink: seed 1 in
+/// ASCII, its one frame of a blink under her "!" gone; the trace diffs are
+/// in that commit).
 const UNFED_RESIDENT: [(u64, u64, u64); 4] = [
-    (0, 0x03f9b708a79947a0, 0x8b58862216754d81),
-    (1, 0xd24da414de222bd5, 0x28559de2892f5f50),
-    (2, 0xc7d8465481a60cac, 0xd7697fc6058fdd89),
-    (3, 0x51f202e791a50d29, 0xdef6434538d79236),
+    (0, 0x03f9b708a79947a0, 0xef873c49a1716468),
+    (1, 0xac73d82a1936dac7, 0xe524039d4d473c83),
+    (2, 0x982f046e42548829, 0xd7697fc6058fdd89),
+    (3, 0xfdae7253a9775155, 0xc9363c4d2ac5acda),
 ];
 
-/// The furnished home's tables at the end of phase 5b step 3, but for
-/// step 4b's fix to her part-time job's end (a shift cut short, out or
-/// back, ends as she next decides: its trace diff is in that commit),
-/// and phase 5c step 5's shorter watch (5 s after a chat line, not 15:
-/// each seed and mode first differs 5 s after a line; the trace diff is
-/// in that commit), and step 6's looking up in place (each seed and mode
-/// first differs at a chat line during a use, where she looks up from
-/// it; with its review fixes, seed 0 looks up from her homework still
-/// facing her desk, and seed 3 looks up only once she has said what's
-/// wrong with her home; the trace diff is in that commit).
+/// The furnished home's tables at the end of phase 5b step 3, but for step
+/// 4b's fix to her part-time job's end (a shift cut short, out or back,
+/// ends as she next decides: its trace diff is in that commit), and phase
+/// 5c step 5's shorter watch (5 s after a chat line, not 15: each seed and
+/// mode first differs 5 s after a line; the trace diff is in that commit),
+/// and step 6's looking up in place (each seed and mode first differs at a
+/// chat line during a use, where she looks up from it; with its review
+/// fixes, seed 0 looks up from her homework still facing her desk, and seed
+/// 3 looks up only once she has said what's wrong with her home; the trace
+/// diff is in that commit), and step 8's slow blink (on a pose she holds, a
+/// frame inserted as each blink begins and one as it ends; gazing, one as
+/// her "ooh" goes after 3 s: the blink's wakes let a chat line or a cue,
+/// which the harness delivers at the step that crosses it, land sooner,
+/// and the "ooh" going is an event of hers at which she acts on what
+/// changed sooner, so what follows shifts), and its review's fixes (a
+/// blink's tail after her look is over no longer shows: seed 3, both
+/// modes; and an easing lands on her needs as they are: every seed and
+/// mode first differs at a decision, choosing otherwise; the trace diffs
+/// are in that commit).
 const UNFED_FURNISHED: [(u64, u64, u64); 4] = [
-    (0, 0xc83c0b5d764c677b, 0x8020f0ea141c6487),
-    (1, 0x03e650a167dc29eb, 0xc455bb26b27aa028),
-    (2, 0xce59a4154ce28ff6, 0xd129122a535bef06),
-    (3, 0xe519e6f646ff6349, 0x06b3ecfae6e815ac),
+    (0, 0x5195e1f31ed5dd66, 0xe138dd7fdb0fac4c),
+    (1, 0xc688b8e0180077b0, 0xb973162ad46b24d8),
+    (2, 0x46335ed7766b40ed, 0x7581949368fe0ba6),
+    (3, 0x64786cea82132375, 0xbb5bdf25945d10b2),
 ];
 
 /// The errand's tables at the end of phase 5b step 3, but for step 5a's
@@ -760,12 +784,15 @@ const UNFED_FURNISHED: [(u64, u64, u64); 4] = [
 /// door: its trace diff is in that commit), and phase 5c step 1's
 /// rain-out fix (the tick a focused pane's rain ends on is drawn: one
 /// frame inserted at the rain's end, seeds 1 and 3 (the residents) in
-/// both modes, nothing else changed; the trace diff is in that commit).
+/// both modes, nothing else changed; the trace diff is in that commit),
+/// and step 8's quieter gaze (one frame inserted as her "ooh" goes after
+/// 3 s, seeds 1 and 3 in both modes, nothing else changed; the trace
+/// diff is in that commit).
 const UNFED_ERRAND: [(u64, u64, u64); 4] = [
     (0, 0xa115268dd34741af, 0x84a48e0354dec3ca),
-    (1, 0xe0f41b1ece93757c, 0x827f3f555bf64164),
+    (1, 0x25af335efba3a77b, 0xa19648a98946d58e),
     (2, 0x1e3dd842f4ca4668, 0x20d410417a6fc48e),
-    (3, 0x11bd15f445a20504, 0x627e6797aa8f8636),
+    (3, 0xc7e40f76fbc03603, 0xb020c495bc09f166),
 ];
 
 #[test]

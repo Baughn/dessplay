@@ -49,7 +49,9 @@
 //! text-locality levers). Deferred to the band's re-read on a windowed
 //! home (phase 5c step 11, minor 9).
 //!
-//! Ignored until phase 5c's tuning (step 8) meets the band.
+//! Ignored until the tuning meets the band: step 8 stopped short of it,
+//! on M3's set-off cap, which waits on the user (phase5c/baseline.md,
+//! "Step 8: tuning stopped").
 
 use super::census::{
     Room, Visit, WARM_MS, afternoon, at_afternoon, chat_name, furnished_room, resident_room,
@@ -221,7 +223,7 @@ const BASELINE: [(&str, Mood, bool, [f64; 4]); 24] = [
     ("resident", Mood::Dreamy, false, [35.1, 4.00, 3.01, 0.20]),
 ];
 
-/// The tuned cells, which step 8 fills from one tuned census read at
+/// The tuned cells, which the tuning fills from one tuned census read at
 /// [`BAND_MINUTES`] (`CENSUS_MINUTES=9 CENSUS_MODES=line`, line art):
 /// moving %, σ of a 4-visit mean, set-offs a minute, its σ, by room,
 /// mood and quiet. Empty, or every cell once
@@ -515,7 +517,7 @@ fn band_cells_are_whole_and_tuned_inside_the_band() {
 macro_rules! band {
     ($($name:ident: $room:ident $mood:ident;)*) => {$(
         #[test]
-        #[ignore = "5c: un-ignored when step 8 meets the band"]
+        #[ignore = "5c: ignored until the user decides M3's set-off cap (phase5c/baseline.md, Step 8: tuning stopped)"]
         fn $name() {
             band_cell($room(), Mood::$mood);
         }

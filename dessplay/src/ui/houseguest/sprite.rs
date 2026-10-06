@@ -155,6 +155,57 @@ impl Pose {
         }
     }
 
+    /// Whether it's a pose she holds still with her eyes open for long
+    /// (phase 5c Q3): sitting, lounging, gazing (out of the window too),
+    /// reading (not on her back, the book over her face), writing her
+    /// homework, cross-legged, at the sill. There a slow blink keeps a
+    /// minutes-long hold from reading as frozen (see
+    /// `Osaka::appearance`). Not standing (her own quicker blink), not
+    /// anything that moves, dozes, eats or busies her hands.
+    /// Wildcard-free, so a new pose doesn't compile until it's classed.
+    pub fn holds(self) -> bool {
+        match self {
+            Self::Sit
+            | Self::Gaze
+            | Self::Lounge
+            | Self::Read(_)
+            | Self::ReadStrip(_)
+            | Self::CrossLegged
+            | Self::SillLean
+            | Self::UnderSill => true,
+            // Writing: not nodding off or asleep on the paper. (Her face
+            // there is shut, which `Osaka::held_blink_shows` checks too;
+            // the pose is classed on its own, as a nodding pose doesn't
+            // hold whatever face a later frame gives it.)
+            Self::Homework(frame) | Self::PaperDesk(frame) | Self::FloorHomework(frame) => {
+                frame < 2
+            }
+            Self::Stand
+            | Self::Walk(_)
+            | Self::Climb { .. }
+            | Self::Fall
+            | Self::Dazed
+            | Self::Peer
+            | Self::Pull { .. }
+            | Self::LieBack(_)
+            | Self::LieFront(_)
+            | Self::Jack(_)
+            | Self::ToeTouch(_)
+            | Self::Stretch
+            | Self::Side
+            | Self::Nap(_)
+            | Self::Sleep(_)
+            | Self::Carry(_)
+            | Self::Eat(_)
+            | Self::EatAndagi(_)
+            | Self::Pet(_)
+            | Self::Chopsticks(_)
+            | Self::SitDoze(_)
+            // On her back the book is held over her face.
+            | Self::LieRead(_) => false,
+        }
+    }
+
     /// Whether, looking up at a chat line in it, she turns her body to
     /// the chat (phase 5c B1). Not lying: turning would flip her end to
     /// end, the very change looking up in place spares her (on her back

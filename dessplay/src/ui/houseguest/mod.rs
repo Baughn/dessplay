@@ -1794,7 +1794,7 @@ impl Guest {
                     .map(|(_, since)| since + FLAP_MS)
                     .into_iter()
                     .chain(self.next_quarter(&visit.shown, now))
-                    .fold(visit.osaka.due(), u64::min),
+                    .fold(visit.osaka.wakes_at(), u64::min),
             ),
             State::Leaving(leaving) => Some(leaving.dissolve.next_frame(now)),
         };
