@@ -211,6 +211,104 @@ fn a_chat_message_makes_her_look_not_leave() {
     let _ = frame;
 }
 
+/// A chat line stops her on her way: she looks, then watches the chat
+/// until it has been quiet for 5 s, and then gets back to her own
+/// business. A lively chat holds her: each line renews the watch,
+/// whether it comes during the last one's look (2 s apart) or after it,
+/// in the watch (4.5 s apart), and it's the last line's 5 s that let her
+/// go. In both drawing modes.
+#[test]
+fn she_watches_the_chat_until_five_seconds_after_its_last_line() {
+    let real = rooms(80, 24);
+    let quiet = view(bottom_strip(80, 24));
+    for graphics in [false, true] {
+        for (seed, gap) in [5, 7, 11]
+            .into_iter()
+            .flat_map(|s| [(s, 4_500), (s, 2_000)])
+        {
+            let case = format!("graphics {graphics}, seed {seed}, lines {gap} ms apart");
+            let mut guest = Guest::new(seed);
+            if graphics {
+                guest.set_picker(kitty());
+            }
+            run(&mut guest, &real, &quiet, 0, 30_000);
+            // Wandering (a walk is cut by a line, whatever else changes
+            // how she looks up; a wander keeps her in the room, on its
+            // floor).
+            let start = run_until(&mut guest, &real, &quiet, 30_000, 600_000, |guest, _| {
+                let State::Visiting(visit) = &guest.state else {
+                    return false;
+                };
+                let osaka = &visit.osaka;
+                osaka.act_name() == "Walk"
+                    && osaka
+                        .decisions
+                        .last()
+                        .is_some_and(|d| d.method.starts_with("walk/"))
+            })
+            .unwrap_or_else(|| panic!("{case}: never wandered"));
+            // Lines `gap` apart: 4.5 s, each after the last one's look
+            // (4 s), inside its watch; 2 s, each during the last one's
+            // look.
+            let lines = [start + 1, start + 1 + gap, start + 1 + 2 * gap];
+            let last = lines[lines.len() - 1];
+            let mut mark = ChatMark::default();
+            let mut now = start;
+            let mut next = 0;
+            while now < last + 8_000 {
+                let due = lines.get(next).copied().unwrap_or(u64::MAX);
+                now += guest
+                    .next_tick(now)
+                    .map_or(100, |d| d.as_millis() as u64)
+                    .clamp(1, 100)
+                    .min(due.saturating_sub(now).max(1));
+                guest.advance(now);
+                let line = now == due;
+                if line {
+                    mark.synced += 1;
+                    next += 1;
+                }
+                let view = IdleView {
+                    chat_mark: mark,
+                    ..quiet.clone()
+                };
+                paint(&mut guest, &real, &view, now);
+                if line {
+                    let osaka = &visit_of(&guest).osaka;
+                    assert!(
+                        osaka.looking(),
+                        "{case}: looks at {now} (line {next} from {start}), {} {:?}",
+                        osaka.act_name(),
+                        osaka.decisions.iter().rev().take(4).collect::<Vec<_>>()
+                    );
+                }
+            }
+            let after: Vec<_> = visit_of(&guest)
+                .osaka
+                .decisions
+                .iter()
+                .filter(|d| d.at > lines[0])
+                .map(|d| (d.at, d.method))
+                .collect();
+            let watched = |&&(_, method): &&(u64, &str)| method == "watching chat";
+            let (lively, on): (Vec<_>, Vec<_>) =
+                after.iter().partition(|&&(at, _)| at < last + 5_000);
+            assert!(
+                !lively.is_empty() && lively.iter().all(watched),
+                "{case}: watched between the lines and after: {after:?}"
+            );
+            let back = on
+                .first()
+                .unwrap_or_else(|| panic!("{case}: still watching: {after:?}"));
+            assert!(
+                !watched(back) && back.0 == last + 5_000,
+                "{case}: back to her own business 5 s after the last line ({}): {after:?}",
+                last + 5_000
+            );
+        }
+    }
+}
+
 #[test]
 fn a_resize_during_the_dissolve_ends_it_at_once() {
     let real = rooms(80, 24);

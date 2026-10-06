@@ -2166,7 +2166,9 @@ fn day_census() {
 /// stage (doors, text, chat) and in the home (a TV, so a wall clock would
 /// come if it weren't already sent): her time is all in sight (the
 /// warm-up apart), out of sight or asleep, step by step; out of sight shows on the
-/// stage; the warm-up's set-offs are her log's before minute 3 (her
+/// stage (over two seeds: whether one seed's four minutes take her out of
+/// sight is its luck; seed 0's line art stopped doing so with the 5 s
+/// watch); the warm-up's set-offs are her log's before minute 3 (her
 /// arrival's among them) and the rest are the table's; the chat lines
 /// that stopped her after the warm-up are the table's; moving is part of
 /// her time in sight. And [`afternoon`]'s own checks hold: the forced
@@ -2181,8 +2183,7 @@ fn the_fed_afternoon_tallies_add_up() {
                 start: Some(AFTERNOON),
                 ..room
             };
-            {
-                let seed = 0;
+            for seed in 0..2 {
                 let at = format!("{} seed {seed} graphics={graphics}", room.name);
                 let (visit, guest) = afternoon(&room, seed, graphics, Mood::Ordinary, MINUTES);
                 let State::Visiting(her) = &guest.state else {

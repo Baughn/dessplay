@@ -367,8 +367,15 @@ const PEER_MS: u64 = 1200;
 /// "!" then "?" when a chat message arrives.
 const SURPRISED_MS: u64 = 1200;
 pub(super) const LOOK_MS: u64 = 4000;
-/// A conversation keeps her watching until it's been quiet this long.
-const WATCH_MS: u64 = 15_000;
+/// A conversation keeps her watching until it's been quiet this long
+/// (counted from the line, so past her look, `LOOK_MS`, by a second; a
+/// lively chat renews it with each line). Counted from the line also when
+/// her look is put off (aloft, in a door, passing over text, answering
+/// with the andagi): if she can't watch within it, the line is let go.
+const WATCH_MS: u64 = 5_000;
+// A line's look is followed by a watch: the tests that read "watching
+// chat" after a look, and the census's restarts, rely on it.
+const _: () = assert!(WATCH_MS > LOOK_MS);
 const BLINK_MS: u64 = 150;
 /// Reaching for two letters (and back again).
 const FIDDLE_MS: u64 = 700;
@@ -6113,9 +6120,12 @@ impl Osaka {
         }
         if at < self.watch_until {
             self.facing = toward(self.x, self.watch_x);
+            // Standing the rest of it out in one: the watch is never more
+            // than `WATCH_MS` ahead (each line sets it from its own time),
+            // so there's no long watch to break up.
             self.set(
                 Act::Stand {
-                    until: self.watch_until.min(at + 5000),
+                    until: self.watch_until,
                 },
                 at,
             );
@@ -7043,13 +7053,14 @@ impl Osaka {
     /// her image hides text (`terrain`, as last read), where she only
     /// passes: there the chat still interrupts what she was at, but she
     /// doesn't stop; she chooses at once, which takes her on to somewhere
-    /// calm, and watches it from there. (Stopping for each line of a
-    /// lively chat would keep her over text for as long as it went on.)
-    /// A line that `asks` her something, arriving as a splice that
-    /// answers plays (the andagi), gets its answer instead: she turns to
-    /// the chat and says it, beaming, and plays on, the splice neither
-    /// stopped nor cut short (and she watches the chat a while after it,
-    /// as after any line).
+    /// calm, and watches it from there if she's there within its watch.
+    /// (Stopping for each line of a lively chat would keep her over text
+    /// for as long as it went on.) A line that `asks` her something,
+    /// arriving as a splice that answers plays (the andagi), gets its
+    /// answer instead: she turns to the chat and says it, beaming, and
+    /// plays on, the splice neither stopped nor cut short (and she watches
+    /// the chat after it if its watch is still running then). The watch
+    /// runs from `now` whatever puts it off (`WATCH_MS`).
     pub fn look(&mut self, now: u64, chat_x: i32, asks: bool, terrain: &Terrain) {
         // What the line cuts, for the census: read before anything here
         // lets go of where she was heading.
@@ -7070,7 +7081,8 @@ impl Osaka {
         for (due, _) in &mut self.pending {
             *due = now;
         }
-        // Out, or on her way: she'll see it when she's back.
+        // Out, or on her way: she'll see it when she's back, if she's
+        // back within its watch.
         if self.act.props().on_chat == OnChat::Back {
             #[cfg(test)]
             {
@@ -7084,7 +7096,9 @@ impl Osaka {
             {
                 self.chat_owed = Some(cut);
             }
-            return; // She looks once she has landed (decide watches).
+            // She watches once she has landed (decide watches), if she
+            // lands within the watch.
+            return;
         }
         // Asleep for the night, a line only stirs her, whatever it asks
         // (A13): she doesn't even turn to it.
@@ -9027,8 +9041,8 @@ mod tests {
     /// and plays on: the use neither stopped nor cut short, the coda's
     /// own look back once she's said it. Told anything else then, or
     /// asked anything in the snack itself, she stops and looks. Either
-    /// way she watches the chat a while, and mischief she owes goes back
-    /// at once.
+    /// way her watch runs from the line (so after the andagi, only if it
+    /// ended within 5 s of it), and mischief she owes goes back at once.
     #[test]
     fn asked_as_the_andagi_plays_she_answers_and_plays_on() {
         use super::super::scenes::LayerOp;
@@ -13540,6 +13554,114 @@ mod tests {
         osaka.decide(now + WATCH_MS, &terrain, &chances, &mut rng);
         assert_eq!(osaka.chat_cuts.len(), cuts, "lapsed");
         assert_eq!(osaka.chat_owed, None);
+    }
+
+    /// Her ticks from `now`, 100 ms apart, until she has made a decision
+    /// after the `n`th (at most 30 s on): that decision.
+    fn next_decision(
+        osaka: &mut Osaka,
+        mut now: u64,
+        n: usize,
+        terrain: &Terrain,
+        rng: &mut Rng,
+    ) -> Decision {
+        let chances = Chances::default();
+        let bound = now + 30_000;
+        while osaka.decisions.len() <= n {
+            now += 100;
+            assert!(now < bound, "no decision: {:?}", osaka.act);
+            osaka.tick(now, None, terrain, &chances, rng);
+        }
+        osaka.decisions[n].clone()
+    }
+
+    /// The watch is counted from the line, whatever puts her look off:
+    /// a line that comes while she's on a pole is watched once she has
+    /// landed only if she lands within 5 s of it, until 5 s after it;
+    /// landing later, she lets it go and never turns to it (looking draws
+    /// the eye, which is only worth it while the chat is changing). The
+    /// same holds for the line she sees from a door (see
+    /// `the_census_counts_her_restarts_after_a_chat_line`) and for the
+    /// line the andagi answers.
+    #[test]
+    fn a_line_put_off_by_a_climb_is_watched_only_inside_its_five_seconds() {
+        use super::super::sprite::Pose;
+        let terrain = floor_at(15);
+        // Twelve rungs land her 6.8 s after the line (500 ms a rung, then
+        // her 800 ms stand); three, 2.3 s after it.
+        for (rows, watched) in [(12, false), (3, true)] {
+            let case = format!("{rows} rungs");
+            let mut rng = Rng(1);
+            let mut osaka = Osaka::standing_at(20, 15 - rows, 0, &mut rng);
+            osaka.offer_only = Some((Want::Walk, "walk/along"));
+            osaka.set(Act::Climb { to_y: 15 }, 1000);
+            osaka.look(1000, 39, false, &terrain);
+            assert!(matches!(osaka.act, Act::Climb { .. }), "{case}: climbs on");
+            let n = osaka.decisions.len();
+            let landed = next_decision(&mut osaka, 1000, n, &terrain, &mut rng);
+            assert_eq!(osaka.y, 15, "{case}: landed");
+            assert_eq!(landed.at < 1000 + WATCH_MS, watched, "{case}: {landed:?}");
+            if !watched {
+                assert_ne!(landed.method, "watching chat", "{case}");
+                assert_ne!(osaka.appearance(landed.at).0, Pose::Side, "{case}");
+                continue;
+            }
+            assert_eq!(landed.method, "watching chat", "{case}");
+            assert_eq!(osaka.facing, Facing::Right, "{case}: turned to the chat");
+            assert_eq!(osaka.appearance(landed.at).0, Pose::Side, "{case}");
+            let back = next_decision(&mut osaka, landed.at, n + 1, &terrain, &mut rng);
+            assert_eq!(
+                (back.at, back.method),
+                (1000 + WATCH_MS, "walk/along"),
+                "{case}: back to her business 5 s after the line"
+            );
+        }
+    }
+
+    /// Over text (line art) a line doesn't stop her: she goes on to the
+    /// nearest calm spot at once, and watches from there only if she gets
+    /// there within 5 s of the line, until 5 s after it; from further
+    /// away, she lets the line go and carries on.
+    #[test]
+    fn a_line_over_text_is_watched_from_the_calm_spot_only_inside_its_five_seconds() {
+        use tuirealm::ratatui::buffer::Buffer;
+        use tuirealm::ratatui::layout::Rect;
+        use tuirealm::ratatui::style::Style;
+        // Text over the floor's first so many columns: from x = 4, a calm
+        // spot 32 cells on (10.7 s at a walk), or 8 (2.7 s).
+        for (text, watched) in [(34u16, false), (10, true)] {
+            let case = format!("text over {text} columns");
+            let mut buf = Buffer::empty(Rect::new(0, 0, 60, 20));
+            buf.set_string(0, 15, "─".repeat(60), Style::default());
+            for row in 11..15 {
+                buf.set_string(0, row, "x".repeat(text.into()), Style::default());
+            }
+            let terrain = Terrain::read(&buf, &[], true);
+            assert!(!terrain.restful(4, 15), "{case}: on text");
+            let mut rng = Rng(1);
+            let mut osaka = Osaka::standing_at(4, 15, 0, &mut rng);
+            osaka.offer_only = Some((Want::Walk, "walk/along"));
+            osaka.set(Act::Stand { until: 60_000 }, 0);
+            let n = osaka.decisions.len();
+            osaka.look(1000, 59, false, &terrain);
+            let off = next_decision(&mut osaka, 1000, n, &terrain, &mut rng);
+            assert_eq!(off.method, "off text", "{case}: {off:?}");
+            let arrived = next_decision(&mut osaka, off.at, n + 1, &terrain, &mut rng);
+            assert!(terrain.restful(osaka.x, 15), "{case}: somewhere calm");
+            assert_eq!(arrived.at < 1000 + WATCH_MS, watched, "{case}: {arrived:?}");
+            if !watched {
+                assert_ne!(arrived.method, "watching chat", "{case}");
+                continue;
+            }
+            assert_eq!(arrived.method, "watching chat", "{case}");
+            assert_eq!(osaka.facing, Facing::Right, "{case}: turned to the chat");
+            let back = next_decision(&mut osaka, arrived.at, n + 2, &terrain, &mut rng);
+            assert_eq!(
+                (back.at, back.method),
+                (1000 + WATCH_MS, "walk/along"),
+                "{case}: back to her business 5 s after the line"
+            );
+        }
     }
 
     /// A real hop: she sets off once a hop, the walk to the pole and the

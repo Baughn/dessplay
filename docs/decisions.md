@@ -1,6 +1,6 @@
 # DessPlay Decision Log
 
-Last updated: 2026-10-05
+Last updated: 2026-10-06
 
 The reasoning behind the rules in [design.md](design.md): the failure that
 motivated each one, the alternatives that were rejected, and the date it
@@ -2186,7 +2186,8 @@ rather than broken. Resting is still kept off text, so nothing stays
 unreadable. Wide glyphs stay solid because her image can't cover half of
 one. A minute of watching looked like being stuck: a lively chat kept
 her frozen for minutes. 15 s is enough to read as "she noticed", and the
-4 s startle per message still happens.
+4 s startle per message still happens. *(2026-10-06: 5 s; see
+[a chat line's watch is 5 s](#a-chat-lines-watch-is-5-s-2026-10-06).)*
 
 ## Scrolled-back chat gets an accordion Osaka pokes (2026-09-30)
 
@@ -3578,6 +3579,42 @@ this, 40 of 40 after. Over a sofa is kept as a fallback, rather than
 refused: making it strict would also stop her moving a piece under a
 window when she puts her home right, since both use the same room
 test.
+
+## A chat line's watch is 5 s (2026-10-06)
+
+**Rule:** After a chat line she looks (4 s: `!`, then `?`) and watches
+the chat until it has been quiet for 5 s, then carries on; each line
+renews it, so a lively chat still holds her. See
+[design.md](design.md#houseguest).
+
+**Why:** the user, for phase 5c (stillness): "the act of looking is
+there solely to draw attention, which only happens during change." The
+look (the turn, `!`, `?`) is the change; the 11 s she then stood
+watching held her out of whatever the line had cut, and in a room with
+a line every minute or so that was a large share of her time. 5 s keeps
+a second of plain watching past the look, so a line's look still ends
+on the chat, and a lively chat (lines closer than 5 s) still holds her.
+Rejected: no watch past the look (between lines of a lively chat she
+would set off, to be stopped again by the next).
+
+The watch is counted from the line even when her look is put off: on
+a pole or in the air, in a door or out, passing over text on her way
+to somewhere calm, or answering with the andagi. With 15 s that
+deferral usually fit inside the watch; with 5 s it often doesn't, and
+then she lets the line go without turning to it. That is kept on
+purpose (the same quote: a line some seconds old is no longer change,
+and turning to it then draws the eye for nothing). Rejected for now: a
+watch owed until she can first see the chat (a flag set on those paths,
+starting a fresh watch at her first restful decision); phase 5c's step 6
+(she looks up in place) reworks how a line meets what she's doing, and
+can revisit it there.
+
+Until that step lands, the shorter watch hands the freed time to fresh
+decisions (often a walk, 5 s after the line instead of 15), so in the
+9-minute census chat adds set-offs over a quiet room in the home and
+resident (home, lazy: 2.06 a minute against 1.51) where before it took
+some away: expected, not a regression; looking up in place is what is
+meant to make chat cost her no movement.
 
 ## Houseguest chooses by needs among the top few (2026-09-28)
 

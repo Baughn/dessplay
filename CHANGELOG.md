@@ -9,6 +9,12 @@ append-only; you cannot reword or remove existing entries.
 
 Add new days at the top. Add new entries at the bottom of existing days.
 
+## 2026-10-06
+
+- Changed: after glancing at a chat line, Osaka gets back to what she was
+  doing sooner, and lets a line go by if she can't look at it within a few
+  seconds (say, while climbing or out of the room).
+
 ## 2026-10-05
 
 - Added: You can drag playlist entries with the mouse to reorder them.

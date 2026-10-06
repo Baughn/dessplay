@@ -1,6 +1,6 @@
 # DessPlay Design Document
 
-Last updated: 2026-10-05
+Last updated: 2026-10-06
 
 A synchronized video player for watch parties. Terminal-first, built for
 reliability over flaky connections. Server-coordinated, including relayed
@@ -1392,8 +1392,10 @@ this section states what is built.
   startled face is a sleepy blink.
 - A **chat or IRC line** from anyone does not end a visit: she stops,
   turns toward the chat pane with a `!` then a `?`, and keeps watching
-  until chat has been quiet for 15 s, then carries on
-  (why: [decisions](decisions.md#line-art-osaka-passes-text-and-watches-chat-briefly-2026-09-30)).
+  until chat has been quiet for 5 s (a second past her 4 s look; each
+  line renews it), then carries on
+  (why: [decisions](decisions.md#line-art-osaka-passes-text-and-watches-chat-briefly-2026-09-30),
+  [5 s](decisions.md#a-chat-lines-watch-is-5-s-2026-10-06)).
   **There are two exceptions.** Asleep for the night, a line only makes
   her stir and sleep on (see *Her night*)
   (why: [decisions](decisions.md#chat-at-night-makes-her-stir-not-wake-2026-10-04)).
@@ -1402,16 +1404,23 @@ this section states what is built.
   whitespace aside; of each source whose count rose, chat or IRC, its
   newest line does) gets "Sata andagi." said toward the chat, beaming,
   and she plays on, turned to the chat for the rest of it (it isn't
-  shortened); once it's over she watches the chat as after any line. Any
+  shortened); her watch runs from the line, so she watches the chat
+  after it only if it ended within 5 s of the line. Any
   other line then, or any line during the snack itself, stops her as
   usual
   (why: [decisions](decisions.md#she-answers-a-question-with-a-sata-andagi-2026-10-03)).
   On a pole or in the air (climbing, clambering over a divider,
-  falling), she finishes getting onto a floor first and looks then.
+  falling), she finishes getting onto a floor first; in a door or out
+  of the room, she comes back first.
   Where her image hides text (see Line art), she doesn't stop: the
   chat still interrupts what she was at, but she goes on to somewhere
-  calm first and watches from there
+  calm first
   (why: [decisions](decisions.md#a-chat-line-over-text-doesnt-stop-her-there-2026-10-03)).
+  In each of these the watch still runs from the line: she watches
+  once she has landed, come back or reached the calm spot only if
+  that's within 5 s of it, and otherwise lets the line go without
+  turning to it
+  (why: [5 s](decisions.md#a-chat-lines-watch-is-5-s-2026-10-06)).
 - The **newest chat or IRC message** is never touched: its painted text
   is part of the protected set.
 - **Moving text.** She keeps a text layer of glyphs she has moved and
