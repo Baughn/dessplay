@@ -119,10 +119,13 @@ fn times(seed: u64, n: u64, from: u64, (lo, hi): (u64, u64)) -> Vec<u64> {
 ///
 /// `events` are the times at which `world` changes (a chat line, a key
 /// press, a focus change, text arriving): a step that would cross one
-/// (or a cue's time) is cut at it, so each lands at its own moment, as
-/// in the client, not at the first step past it, whose length her wakes
+/// (or a cue's time) is cut at it, so each comes into the world at its
+/// own moment, not at the first step past it, whose length her wakes
 /// set (a wake that changes only how she looks would move what she
-/// does). The census drivers do the same (`census::Room::step_from`).
+/// does). A key press or a cue paints there; a chat line or a focus
+/// change she sees at her next paint, which her wakes time (the client
+/// paints on a chat line: making this driver do so is open, step 8c's
+/// review). The census drivers do the same (`census::Room::step_from`).
 fn drive(
     guest: &mut Guest,
     trace: &mut Trace,
@@ -692,10 +695,10 @@ fn golden_stage_room() {
         "stage",
         stage_room,
         &[
-            (0, 0x421e7489bda72b5f, 0x1ff2a8e8f9f591f8),
-            (1, 0x60e3b2efb489fb8e, 0xbc7be947b2fe6b15),
-            (2, 0x120f65aceca55eb8, 0xfb57041c4742089d),
-            (3, 0x25658d9fa4f3da3e, 0xfe443ceed6c8084b),
+            (0, 0xd61bca12e5e65709, 0xf4534c1856e08c7a),
+            (1, 0x68f8ada817c731cb, 0xd32597e58ca09bed),
+            (2, 0xee7284e07c55356c, 0xf7395e7ae4eb35f2),
+            (3, 0x3baf244dc6ef772e, 0x446c86c8b8699df3),
         ],
     );
 }
@@ -706,10 +709,10 @@ fn golden_resident() {
         "resident",
         resident,
         &[
-            (0, 0x31235f8d42f7de07, 0x5e276a5ab3e1ad94),
-            (1, 0x0e4cc86dbb04cd82, 0xd6b9e217c880dce5),
-            (2, 0x223771ac0461fc73, 0x8134429bf025a12c),
-            (3, 0xbf464868fad11801, 0x4ed39987f8bdab27),
+            (0, 0xcc7119817e9176f9, 0x569146435fa5228c),
+            (1, 0x471e34f6d274c2c5, 0xcd895e6c2c276822),
+            (2, 0xb5cc6cd8f98d0ecc, 0x8018b599ec863c3c),
+            (3, 0xd07a901880937fb1, 0xe87cce4882bebf9b),
         ],
     );
 }
@@ -720,10 +723,10 @@ fn golden_furnished_home() {
         "furnished",
         furnished,
         &[
-            (0, 0x6c50fe5e6d16644c, 0x9ee80e5ca6e4d562),
-            (1, 0x5a02bce3d4bc859d, 0x1927e2c80d7c9b35),
-            (2, 0x5ae2d35ed27fdd26, 0xe072a8ed29476dfb),
-            (3, 0x08955dbc788f88dd, 0x8fc74ed7012dd701),
+            (0, 0x1f1aefeb661c2550, 0x91eae484c6f43b4d),
+            (1, 0x7148989d0a2d05d7, 0x612db7dcfd649bfb),
+            (2, 0x188ea19e5c382c4f, 0xe2e26b8f81fdc709),
+            (3, 0x46e2049e2f7146a1, 0xcd03e498d13d7822),
         ],
     );
 }
@@ -735,9 +738,9 @@ fn golden_errand() {
         errand,
         &[
             (0, 0x7ef41b6f44466ee1, 0x21d600e1fc53a86a),
-            (1, 0x22b77e96bb1e6b40, 0x28089f629cc9dd84),
+            (1, 0xdf91d60dbf2f6bd5, 0xe63c37ac36f0e2ca),
             (2, 0x853a5f641f5d8378, 0x95ae070706e62dc6),
-            (3, 0xa5d5b4ba51f32984, 0xe34a13e73adaaa7d),
+            (3, 0x219ec7d8688cc95e, 0x76564208074cbeb2),
         ],
     );
 }
@@ -749,9 +752,9 @@ fn golden_homework_evening() {
         homework_evening,
         &[
             (0, 0x876ea56886723d82, 0xa5cab324d4c159c6),
-            (1, 0x2b7d28f3784a5dc7, 0x2cb59310a593e59c),
-            (2, 0x774073234f16be7e, 0xce0d3b4cbec3c985),
-            (3, 0x0e940ff5e6294baa, 0x256afa3dcadf273e),
+            (1, 0x37b33a754a2dd3b0, 0xfc559d7cb1c2b4f1),
+            (2, 0x1fbcaf6948553ca3, 0x24497c5447708702),
+            (3, 0xa6818a2724fe4d89, 0x2ff9e59e742976af),
         ],
     );
 }
@@ -776,10 +779,10 @@ fn golden_weekend() {
         "weekend",
         weekend,
         &[
-            (0, 0x062d1f46d304d236, 0x94e178905ebd63cc),
-            (1, 0xe6f13b1ffa672c63, 0x861f622b965f241f),
-            (2, 0x1e7439fc48d10fd7, 0x86f1bfc6825e3d71),
-            (3, 0xdb5b9f3401a29980, 0x87f27acc92d9fab0),
+            (0, 0x7819172065ce9c85, 0x0f00ead5c6196cd4),
+            (1, 0xb1763eb3d5f4e3fc, 0xd5cdace40f9c5b6c),
+            (2, 0xdafd0b8b80eba12c, 0x658cb4be30aaaa8b),
+            (3, 0x436f7880bf8ae613, 0x4454634819e437b3),
         ],
     );
 }
@@ -790,10 +793,10 @@ fn golden_school_morning() {
         "school",
         school_morning,
         &[
-            (0, 0x78ccce965e42be1f, 0x343dd7e1638e6f82),
-            (1, 0x3f90b25eba234732, 0x1ff902c5b3cc9894),
-            (2, 0x12714caaef695715, 0x17e75178cc58e115),
-            (3, 0x457e0f12b590c556, 0xe54342c5fcee6435),
+            (0, 0xba00dd191f187f81, 0xde5ebb51862629db),
+            (1, 0x85a1267f399e61a1, 0x13abefdca5376cc5),
+            (2, 0x6895c0008156ae38, 0x1c01f7df6ac5be9d),
+            (3, 0x67d3c2766feac3e2, 0xc7d3d4fa034582db),
         ],
     );
 }
@@ -804,10 +807,10 @@ fn golden_home_from_school() {
         "home",
         home_from_school,
         &[
-            (0, 0x000795126138beb6, 0xb650bf0ab5ebd845),
-            (1, 0xfb969477fbc30e9e, 0x13c4cfd8af0b944d),
-            (2, 0xd3e4723f6d9b2432, 0x626f4248bb4b294b),
-            (3, 0xcdd830678a84442f, 0x684bcfe2aaf4e49b),
+            (0, 0xedede266d0e28c59, 0x657805fbe5642300),
+            (1, 0xb9bec406c451f100, 0x1e2bca2cb68bd798),
+            (2, 0x5958460eb0b84940, 0x4402b58c2140f24e),
+            (3, 0x118851fd1faf7228, 0xb003a9e2b3a59c04),
         ],
     );
 }
@@ -861,12 +864,15 @@ fn golden_dash_home() {
 /// changed; the trace diff is in that commit), and phase 5c step 8c's
 /// driver, which cuts a step at each event's own time (each seed and
 /// mode first differs at the swap cued at 45 s, where it was painted at
-/// the first step past it; the trace diff is in that commit).
+/// the first step past it; the trace diff is in that commit), and step
+/// 8c's stillness levers shipped (each seed and mode first differs as
+/// her lounge on the sofa she made runs on, longer, where it ended and
+/// she walked; the trace diff is in that commit).
 const UNFED_STAGE: [(u64, u64, u64); 4] = [
-    (0, 0xe3f24605fe8d5031, 0x3975e5fbd6200026),
-    (1, 0x05125573bff4df28, 0xd292feb50a16fd02),
-    (2, 0x7515ebeb64a221e2, 0x82e495fe577ab4c9),
-    (3, 0xcdc1d12e2473e914, 0xe013e49a02f79816),
+    (0, 0xc1c76b41e25adc6a, 0xb28f1b52a5210b71),
+    (1, 0x470d571a004dbe1b, 0x1ff9218355858061),
+    (2, 0xa8a4cfbaed797d09, 0x6ba3c8574a56679b),
+    (3, 0x70529ef2ef5ad1d1, 0x9b3c34dec9fd39e1),
 ];
 
 /// The resident's tables at the end of phase 5b step 3, but for step 5a's
@@ -902,12 +908,14 @@ const UNFED_STAGE: [(u64, u64, u64); 4] = [
 /// step 8c's driver, which cuts a step at each event's own time (each
 /// seed and mode first differs at a key press or a cue, at its own time
 /// where it was the first step past it; the trace diff is in that
-/// commit).
+/// commit), and step 8c's stillness levers shipped (each seed and mode
+/// first differs at a decision, choosing otherwise; the trace diff is in
+/// that commit).
 const UNFED_RESIDENT: [(u64, u64, u64); 4] = [
-    (0, 0x7f539c71b2b52770, 0x6eddc226d0c0bc33),
-    (1, 0x4cc5fed2c8a6a590, 0x97352ac19d357303),
-    (2, 0xb65fbe195a178214, 0xbe66f88da63b7161),
-    (3, 0x916bdb149d26150c, 0xb8dc3049369f1498),
+    (0, 0xb04a46edec8866d7, 0x830cb4155f00e0f6),
+    (1, 0x31b7823432e31b21, 0x0307fe7d3c7ad87d),
+    (2, 0x6ccfe9cf5a39c535, 0xbcdc86c480e2453e),
+    (3, 0x77765beced7f5792, 0x1d862d7631368fd3),
 ];
 
 /// The furnished home's tables at the end of phase 5b step 3, but for step
@@ -936,12 +944,14 @@ const UNFED_RESIDENT: [(u64, u64, u64); 4] = [
 /// step at each event's own time (seed 1 in both modes: every frame the
 /// same, her empty home's once-a-second steps re-phased at a chat line,
 /// so the run's last step ends at another moment and her ledger's clock
-/// reads a minute on; the trace diff is in that commit).
+/// reads a minute on; the trace diff is in that commit), and step 8c's
+/// stillness levers shipped (each seed and mode first differs at a
+/// decision, choosing otherwise; the trace diff is in that commit).
 const UNFED_FURNISHED: [(u64, u64, u64); 4] = [
-    (0, 0x1b81660042281504, 0x7986a02014324ead),
-    (1, 0x5130a026cbbfd393, 0x097fbf66361dd108),
-    (2, 0xec8ceebb5a3e8cf3, 0x418da866aa0e1677),
-    (3, 0xa01ef62ff7dd7b46, 0x6305a1da02e0eaeb),
+    (0, 0xc8340a6cc81cccbd, 0x984add90809e0ce1),
+    (1, 0xc5deec8b5667f689, 0x411e9310a7b9ad19),
+    (2, 0x9a5ecc376ee257ed, 0xa7983878310ebd4b),
+    (3, 0x8c26c1a0467dd5d1, 0x74538d0a03a8e4a7),
 ];
 
 /// The errand's tables at the end of phase 5b step 3, but for step 5a's
@@ -957,12 +967,15 @@ const UNFED_FURNISHED: [(u64, u64, u64); 4] = [
 /// on offer, choosing otherwise; the trace diff is in that commit), and
 /// step 8c's driver, which cuts a step at each event's own time (each
 /// seed and mode first differs at a key press, at its own time where it
-/// was the first step past it; the trace diff is in that commit).
+/// was the first step past it; the trace diff is in that commit), and
+/// step 8c's stillness levers shipped (seeds 1 and 3, the residents, in
+/// both modes first differ at a decision, choosing otherwise; the trace
+/// diff is in that commit).
 const UNFED_ERRAND: [(u64, u64, u64); 4] = [
     (0, 0x7ef41b6f44466ee1, 0x21d600e1fc53a86a),
-    (1, 0x22b77e96bb1e6b40, 0x28089f629cc9dd84),
+    (1, 0xdf91d60dbf2f6bd5, 0xe63c37ac36f0e2ca),
     (2, 0x853a5f641f5d8378, 0x95ae070706e62dc6),
-    (3, 0x769321f809c2a1d6, 0xd7c55070029e5a18),
+    (3, 0xb298d0d13167c6a3, 0xdac720f2ade0f23e),
 ];
 
 #[test]

@@ -67,9 +67,9 @@ impl Need {
     fn rise_ms(self) -> f64 {
         match self {
             Self::Sleepy => 15.0 * 60_000.0,
-            Self::Restless => 90_000.0,
-            Self::Tidy => 60_000.0,
-            Self::Mischief => 4.0 * 60_000.0,
+            Self::Restless => 300_000.0,
+            Self::Tidy => 90_000.0,
+            Self::Mischief => 6.0 * 60_000.0,
             Self::Hungry => 20.0 * 60_000.0,
             Self::Comfort => 8.0 * 60_000.0,
             Self::Fun => 6.0 * 60_000.0,
@@ -684,7 +684,12 @@ impl Want {
         match self {
             // The one filler: what she does when nothing else binds.
             Self::Stand => row(4.0, &[]),
-            Self::SpaceOut => row(6.0, &[(Need::Daydreams, 0.6)]),
+            // Spacing out is worth doing for its own sake, whatever her
+            // daydreams: the still thing to do when nothing calls.
+            Self::SpaceOut => DesireDef {
+                own_sake: true,
+                ..row(6.0, &[(Need::Daydreams, 0.6)])
+            },
             // An accident, not a want of anything (mischief would pin it
             // where there's nothing to swap).
             Self::Sneeze => with(row(2.0, &[]), SNEEZE_FACTORS),
@@ -738,8 +743,8 @@ impl Want {
             Self::Idle(Activity::CloudWatch) => {
                 row(4.0, &[(Need::Daydreams, 0.3), (Need::Comfort, 0.3)])
             }
-            Self::Walk => row(14.0, &[(Need::Restless, 0.4)]),
-            Self::Travel => in_chat(row(10.0, &[(Need::Restless, 0.4)])),
+            Self::Walk => row(9.0, &[(Need::Restless, 0.4)]),
+            Self::Travel => in_chat(row(7.0, &[(Need::Restless, 0.4)])),
             Self::Pull => in_chat(row(16.0, &[(Need::Tidy, 0.6)])),
             Self::Swap => in_chat(row(8.0, &[(Need::Mischief, 0.8), (Need::Fun, 0.3)])),
             // Once a visit at most (osaka.rs), so it can afford to compete;
@@ -784,9 +789,12 @@ impl Want {
             Self::Use(Use::Pet) => in_chat(row(8.0, &[(Need::Fun, 0.6)])),
             // Gazing out of the window: a daydream, as gazing up is, and
             // a little fun (what's out there?). Rarer than it was, and far
-            // longer (phase 5c D6: her long daydream at the sill).
+            // longer (phase 5c D6: her long daydream at the sill; 6, the
+            // user's in step 8c, asked as about two a game day in a
+            // furnished home: the day census measured about 4.5 with the
+            // stillness levers on).
             Self::Use(Use::LookOut) => with(
-                row(3.0, &[(Need::Daydreams, 0.5), (Need::Fun, 0.3)]),
+                row(6.0, &[(Need::Daydreams, 0.5), (Need::Fun, 0.3)]),
                 LOOK_OUT_FACTORS,
             ),
             // Only on offer while a rule she has felt is broken and her
@@ -1035,14 +1043,19 @@ mod tests {
     }
 
     /// Over a visit she gets sleepier and lies down more: with the same
-    /// offers, a settled Osaka at a visit's end (sleepy 0.9) lies down at
-    /// least twice as often as ten minutes in (sleepy 0.3), choosing as she
-    /// does — her last few choices cooling repeats.
+    /// offers and her comfort wanting as much (0.7), a settled Osaka at a
+    /// visit's end (sleepy 0.9) lies down at least twice as often as ten
+    /// minutes in (sleepy 0.3), choosing as she does — her last few
+    /// choices cooling repeats. It reads the table's bases: since phase 5c
+    /// (step 8c) spacing out is worth doing for its own sake, so the
+    /// floor's doze, a poor answer to sleep, is her pick only while her
+    /// comfort wants too (with none, she never lies down here).
     #[test]
     fn sleepiness_draws_her_to_lie_down() {
         let share = |sleepy: f64| {
             let needs = Needs::with(&[
                 (Need::Sleepy, sleepy),
+                (Need::Comfort, 0.7),
                 (Need::Restless, 0.1),
                 (Need::Mischief, 0.2),
             ]);
@@ -1071,7 +1084,7 @@ mod tests {
         };
         let (awake, sleepy) = (share(0.3), share(0.9));
         assert!(
-            sleepy > 2 * awake,
+            sleepy > 0 && sleepy > 2 * awake,
             "lay down {awake} times awake, {sleepy} sleepy"
         );
     }
@@ -1253,8 +1266,10 @@ mod tests {
     fn looking_out_is_a_daydream_and_some_fun() {
         let def = Want::Use(Use::LookOut).def();
         assert_eq!(def.serves, &[(Need::Daydreams, 0.5), (Need::Fun, 0.3)]);
-        // Rarer and far longer than it was (phase 5c D6: 8, 15-30 s).
-        assert_eq!(def.base, 3.0);
+        // Rarer and far longer than it was (phase 5c D6: 8, 15-30 s; the
+        // user's 6 in step 8c, asked as about two a game day in a
+        // furnished home: measured about 4.5 with the stillness levers on).
+        assert_eq!(def.base, 6.0);
         assert!(!def.own_sake);
         assert_eq!(def.factors, LOOK_OUT_FACTORS);
     }

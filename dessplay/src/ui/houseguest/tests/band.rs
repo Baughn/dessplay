@@ -39,24 +39,24 @@
 //! them minutes each.)
 //!
 //! **What the gate's seeds can see.** One visit's reading varies widely
-//! (a stage visit reads anywhere from a few % to about 80% of its time
-//! moving), so at the gate's [`GATE_SEEDS`] 3σ on the share is 3 × √2 ×
-//! [`BASELINE`]'s 4-visit σ (3.1–8.0): about 13 to 34 points. The gate
+//! (at step 8b's baseline, a stage visit read anywhere from a few % to
+//! about 80% of its time moving), so at the gate's [`GATE_SEEDS`] 3σ
+//! on the share is 3 × √2 × [`TUNED`]'s 4-visit σ (1.7–3.6): about 7
+//! to 15 points. The gate
 //! catches a gross excess of moving and of set-offs, no more, and a
 //! "too still" regression all but never fails there. Full strength is
 //! the real check: passing at the gate is not evidence the band is met
 //! (the user, step 4: "I'll know to check them if something feels
 //! off").
 //!
-//! **Not here yet:** D2's printed TV-only home, and a home or resident
-//! with text at her floors' heights (baseline.md: only the stage has
-//! text she can reach). Deferred to the band's re-read on a windowed
-//! home (phase 5c step 11, minor 9).
+//! **Printed beside it, not judged:** a windowed home, a TV-only home and
+//! a resident with text at her floor's height (`census::printed_rooms`,
+//! phase 5c step 11).
 //!
-//! Ignored until a tuning meets the band: step 8b's retune stopped short
-//! of it on the stage, whose short trips put its reachable share at about
-//! its floor under the mood's cap (phase5c/baseline.md, "Step 8b: the
-//! retune, stopped"). The rule and the structure tests run.
+//! **Tuned** in phase 5c step 8c ([`TUNED`]), the bare stage's floors
+//! lowered by the user: every cell inside, but [`SHORT`]'s, whose tests
+//! stay ignored with their numbers (phase5c/baseline.md, "Shipped (step
+//! 8c)").
 
 use super::census::{
     Room, Visit, WARM_MS, afternoon, at_afternoon, chat_name, furnished_room, resident_room,
@@ -69,21 +69,19 @@ use dessplay_core::test_support::census_band_seeds;
 
 /// How long each band visit runs (minutes): the warm-up and then twice
 /// her longest still act (B5), so a visit's reading isn't one act's
-/// luck. Today that's a day's sleep or a look out of her window, 3
-/// minutes at most: 3 + 2 × 3, with no headroom.
+/// luck. With the levers she ships with (phase 5c step 8c) that's her
+/// window's chain, lazy: leaning on the sill (3 minutes, ×1.5), sitting
+/// in front of it (40 s, ×1.5) and dozing or watching the clouds (60 s,
+/// ×1.5), 7 minutes: 3 + 2 × 7, with no headroom.
 /// [`band_visits_outlast_her_longest_still_act_twice`] holds it to that.
-/// Lingering as the design starts it makes a lazy day's sleep (or look
-/// out) 4.5 minutes, so a tuning that lands it makes this 12; with
-/// settling on too, her window's chain (leaning on the sill, sitting in
-/// front of it, dozing or watching the clouds: about 6.1 minutes lazy)
-/// sets it: 3 + 2 × 6.1, so 16 (phase 5c step 11; baseline.md).
-const BAND_MINUTES: u64 = 9;
+const BAND_MINUTES: u64 = 17;
 
 /// The seeds a cell runs at the gate (`CENSUS_BAND_SEEDS` overrides):
-/// what the stage, the costliest room, affords in about 3 s a test (a
-/// 9-minute line-art visit costs about 0.7 s there under the gate's
-/// opt-level 2, 0.6 s in the home and 0.4 s in the resident; a test runs
-/// two conditions).
+/// what the stage, the costliest room, affords in a few seconds a test
+/// (a 17-minute line-art visit costs about 1.3 s there under the gate's
+/// opt-level 2, less in the home and the resident; a test runs two
+/// conditions: about 4 s a stage test alone, more beside the gate's
+/// other tests).
 const GATE_SEEDS: u64 = 2;
 
 /// The margin every threshold keeps from the aim, in σ of the cell's
@@ -93,8 +91,9 @@ const SIGMAS: f64 = 3.0;
 /// The visits a σ in [`BASELINE`] or [`TUNED`] is of the mean of.
 const SET: f64 = 4.0;
 
-/// The minutes [`BASELINE`]'s visits ran: [`BAND_MINUTES`], so
-/// [`shorter_visits`] is 1.
+/// The minutes [`BASELINE`]'s visits ran (step 8b's 9; [`BAND_MINUTES`]
+/// is longer since step 8c, so [`shorter_visits`] is under 1, about
+/// 0.65).
 const BASELINE_MINUTES: u64 = 9;
 
 /// The industrious ÷ lazy spread each room's moving keeps (B5).
@@ -140,20 +139,26 @@ impl Band {
     /// dreamy, up to 30 industrious, with ceilings a point or two over;
     /// floors where she'd read as dead; and a cap on set-offs a minute
     /// by mood, since a set-off draws the eye the same in any room.
-    fn of(mood: Mood) -> Band {
+    ///
+    /// The bare stage's floors are lower (the user, step 8c): a room that
+    /// keeps her things close (her made pieces and the lines she pulls on
+    /// her own floor) moves her in shorter trips, so under the same cap
+    /// on set-offs its share runs lower.
+    fn of(room: &str, mood: Mood) -> Band {
+        let stage = room == "stage";
         match mood {
             Mood::Lazy => Band {
-                floor: 5.0,
+                floor: if stage { 4.0 } else { 5.0 },
                 ceiling: 17.0,
                 cap: 1.5,
             },
             Mood::Ordinary | Mood::Dreamy => Band {
-                floor: 8.0,
+                floor: if stage { 6.0 } else { 8.0 },
                 ceiling: 26.0,
                 cap: 2.25,
             },
             Mood::Industrious => Band {
-                floor: 12.0,
+                floor: if stage { 9.0 } else { 12.0 },
                 ceiling: 31.0,
                 cap: 3.0,
             },
@@ -241,7 +246,88 @@ const BASELINE: [(&str, Mood, bool, [f64; 4]); 24] = [
 /// it, and that each aim is inside its band, under its mood's cap, and
 /// spread over [`SPREAD`] a room): while empty, a cell aims at its
 /// band's middle and its mood's cap, with the baseline's σ.
-const TUNED: [(&str, Mood, bool, [f64; 4]); 0] = [];
+///
+/// Step 8c's, from what ships (`CENSUS_MINUTES=17 CENSUS_ROOMS=band
+/// CENSUS_MODES=line fed_afternoon_census`, 20 sets × 4 seeds, release;
+/// phase5c/baseline.md, "Shipped (step 8c)").
+// Measured numbers: none is a constant of nature.
+#[allow(clippy::approx_constant)]
+const TUNED: [(&str, Mood, bool, [f64; 4]); 24] = [
+    ("stage", Mood::Ordinary, true, [7.2, 2.53, 1.58, 0.18]),
+    ("stage", Mood::Ordinary, false, [6.8, 2.53, 1.69, 0.28]),
+    ("stage", Mood::Lazy, true, [6.5, 1.98, 1.20, 0.18]),
+    ("stage", Mood::Lazy, false, [6.6, 2.54, 1.31, 0.20]),
+    ("stage", Mood::Industrious, true, [9.7, 2.19, 2.21, 0.45]),
+    ("stage", Mood::Industrious, false, [8.2, 2.26, 2.18, 0.41]),
+    ("stage", Mood::Dreamy, true, [7.0, 2.32, 1.60, 0.19]),
+    ("stage", Mood::Dreamy, false, [6.9, 2.64, 1.71, 0.23]),
+    ("home", Mood::Ordinary, true, [21.8, 2.18, 1.23, 0.10]),
+    ("home", Mood::Ordinary, false, [21.0, 2.76, 1.34, 0.09]),
+    ("home", Mood::Lazy, true, [11.8, 1.74, 0.65, 0.08]),
+    ("home", Mood::Lazy, false, [11.9, 2.03, 0.71, 0.07]),
+    ("home", Mood::Industrious, true, [29.9, 3.63, 1.71, 0.16]),
+    ("home", Mood::Industrious, false, [28.8, 3.14, 1.90, 0.16]),
+    ("home", Mood::Dreamy, true, [21.1, 2.63, 1.19, 0.08]),
+    ("home", Mood::Dreamy, false, [21.9, 2.11, 1.38, 0.10]),
+    ("resident", Mood::Ordinary, true, [9.8, 1.80, 1.08, 0.10]),
+    ("resident", Mood::Ordinary, false, [10.0, 2.21, 1.21, 0.11]),
+    ("resident", Mood::Lazy, true, [6.0, 2.43, 0.54, 0.10]),
+    ("resident", Mood::Lazy, false, [6.3, 2.18, 0.68, 0.10]),
+    (
+        "resident",
+        Mood::Industrious,
+        true,
+        [15.9, 2.51, 1.35, 0.11],
+    ),
+    (
+        "resident",
+        Mood::Industrious,
+        false,
+        [14.5, 2.08, 1.46, 0.10],
+    ),
+    ("resident", Mood::Dreamy, true, [9.2, 2.26, 1.04, 0.11]),
+    ("resident", Mood::Dreamy, false, [8.6, 2.29, 1.11, 0.09]),
+];
+
+/// A room's cell (mood, quiet) or, with `None`, its spread, short of
+/// the band, and why.
+type Short = (&'static str, Option<(Mood, bool)>, &'static str);
+
+/// What the tuning left outside the band (the user, step 8c: "ship it";
+/// phase5c/baseline.md, "Shipped (step 8c)"): a cell (room, mood, quiet)
+/// or a room's spread (room, `None`), with why. Its band or spread test
+/// stays ignored, its bounds are the band's own (an aim outside the band
+/// never widens them), and the aims' checks pass it over.
+const SHORT: [Short; 2] = [
+    (
+        "stage",
+        Some((Mood::Industrious, false)),
+        "8.4% with chat against the stage's industrious floor of 9 at full strength (N = 525; quiet 9.1): \
+         an industrious linger of 0.7 brings it to 9.2 but the home's to 32.4 against 31 (80 visits)",
+    ),
+    (
+        "stage",
+        None,
+        "industrious ÷ lazy 1.39 against 1.6 at full strength (8.9 ÷ 6.4, N = 200): her moods \
+         read alike on the floor and in what she made (about 17% reading on her back in each)",
+    ),
+];
+
+/// Why `cell` is short of the band, if it is.
+fn short(cell: Cell) -> Option<&'static str> {
+    SHORT
+        .iter()
+        .find(|&&(room, at, _)| room == cell.0 && at == Some((cell.1, cell.2)))
+        .map(|&(.., why)| why)
+}
+
+/// Why `room`'s spread is short of [`SPREAD`], if it is.
+fn short_spread(room: &str) -> Option<&'static str> {
+    SHORT
+        .iter()
+        .find(|&&(r, at, _)| r == room && at.is_none())
+        .map(|&(.., why)| why)
+}
 
 /// The row `rows` has for `cell`, if any.
 fn row(rows: &[(&str, Mood, bool, [f64; 4])], (room, mood, quiet): Cell) -> Option<[f64; 4]> {
@@ -275,9 +361,9 @@ fn aim(cell: Cell) -> Stats {
         };
     }
     let base = baseline(cell);
-    let cap = Band::of(cell.1).cap;
+    let cap = Band::of(cell.0, cell.1).cap;
     Stats {
-        share: Band::of(cell.1).middle(),
+        share: Band::of(cell.0, cell.1).middle(),
         share_sd: base.share_sd,
         rate: cap,
         rate_sd: base.rate_sd * cap / base.rate,
@@ -347,24 +433,29 @@ fn read(room: &Room, mood: Mood, n: u64) -> Reading {
 }
 
 /// A cell's band test: `room` (unfed as built; fed here) in `mood`,
-/// quiet and at its cadence, each inside its bounds and under its cap.
-/// Prints each condition's line; fails if any fails.
-fn band_cell(room: Room, mood: Mood) {
+/// in each of `quiets` (quiet, and at its cadence), each inside its
+/// bounds and under its cap. Prints each condition's line; fails if any
+/// fails.
+fn band_cell(room: Room, mood: Mood, quiets: &[bool]) {
     let room = at_afternoon(room);
     let n = census_band_seeds(GATE_SEEDS);
-    let band = Band::of(mood);
+    let band = Band::of(room.name, mood);
     let mut lines = Vec::new();
     let mut failed = false;
-    for quiet in [true, false] {
+    for &quiet in quiets {
         let cell = (room.name, mood, quiet);
         let conditioned = with_chat(&room, quiet);
         let aimed = aim(cell);
         let reading = read(&conditioned, mood, n);
         let margin = SIGMAS * sd_of(aimed.share_sd, n);
-        let (lo, hi) = (
-            band.floor.min(aimed.share - margin),
-            band.ceiling.max(aimed.share + margin),
-        );
+        // A cell short of the band is held to the band itself.
+        let (lo, hi) = match short(cell) {
+            Some(_) => (band.floor, band.ceiling),
+            None => (
+                band.floor.min(aimed.share - margin),
+                band.ceiling.max(aimed.share + margin),
+            ),
+        };
         // The mood's cap, or 3σ over the aimed rate if that's higher.
         let rate_margin = SIGMAS * sd_of(aimed.rate_sd, n);
         let cap = band.cap.max(aimed.rate + rate_margin);
@@ -388,6 +479,9 @@ fn band_cell(room: Room, mood: Mood) {
             n_or_never(visits_for(aimed.rate_sd, band.cap - aimed.rate)),
             reading.sight as f64 / 60_000.0,
         ));
+        if let Some(why) = short(cell) {
+            lines.push(format!("  short of the band at step 8c: {why}"));
+        }
     }
     eprintln!("{}", lines.join("\n"));
     assert!(!failed, "outside the stillness band (the lines above)");
@@ -432,7 +526,11 @@ fn band_spread(room: Room) {
     };
     let (lazy, busy) = (pooled(Mood::Lazy), pooled(Mood::Industrious));
     let (aimed, sd, busy_aim, lazy_aim) = aimed_spread(room.name, n);
-    let floor = SPREAD.min(aimed - SIGMAS * sd);
+    // A room short of the spread is held to it itself.
+    let floor = match short_spread(room.name) {
+        Some(_) => SPREAD,
+        None => SPREAD.min(aimed - SIGMAS * sd),
+    };
     // σ of the ratio goes as 1/√n, like a mean's.
     let full = visits_for(sd * (n as f64 / SET).sqrt(), aimed - SPREAD);
     let ratio = busy / lazy.max(1e-9);
@@ -443,6 +541,9 @@ fn band_spread(room: Room) {
         SIGMAS * sd,
         n_or_never(full),
     );
+    if let Some(why) = short_spread(room.name) {
+        eprintln!("  short of the spread at step 8c: {why}");
+    }
     assert!(ratio >= floor, "her moods don't spread (the line above)");
 }
 
@@ -472,34 +573,40 @@ fn band_visits_outlast_her_longest_still_act_twice() {
 /// widening is only ever for σ.
 #[test]
 fn band_cells_are_whole_and_tuned_inside_the_band() {
-    let edges = |mood: Mood| {
-        let band = Band::of(mood);
+    let edges = |room: &str, mood: Mood| {
+        let band = Band::of(room, mood);
         (band.floor, band.ceiling, band.cap)
     };
-    assert_eq!(
-        Mood::ALL.map(edges),
-        Mood::ALL.map(|mood| match mood {
-            Mood::Lazy => (5.0, 17.0, 1.5),
-            Mood::Ordinary | Mood::Dreamy => (8.0, 26.0, 2.25),
-            Mood::Industrious => (12.0, 31.0, 3.0),
-        }),
-        "the user's round-3 band, by mood"
-    );
-    let rising = [Mood::Lazy, Mood::Ordinary, Mood::Industrious].map(edges);
-    for pair in rising.windows(2) {
-        let ((f0, c0, k0), (f1, c1, k1)) = (pair[0], pair[1]);
-        assert!(
-            f0 < f1 && c0 < c1 && k0 < k1,
-            "the band rises with her mood: {pair:?}"
+    for room in ROOMS {
+        let stage = room == "stage";
+        assert_eq!(
+            Mood::ALL.map(|mood| edges(room, mood)),
+            Mood::ALL.map(|mood| match mood {
+                Mood::Lazy => (if stage { 4.0 } else { 5.0 }, 17.0, 1.5),
+                Mood::Ordinary | Mood::Dreamy => (if stage { 6.0 } else { 8.0 }, 26.0, 2.25),
+                Mood::Industrious => (if stage { 9.0 } else { 12.0 }, 31.0, 3.0),
+            }),
+            "{room}: the user's round-3 band, by mood, the bare stage's floors lower (step 8c)"
+        );
+        let rising = [Mood::Lazy, Mood::Ordinary, Mood::Industrious].map(|mood| edges(room, mood));
+        for pair in rising.windows(2) {
+            let ((f0, c0, k0), (f1, c1, k1)) = (pair[0], pair[1]);
+            assert!(
+                f0 < f1 && c0 < c1 && k0 < k1,
+                "{room}: the band rises with her mood: {pair:?}"
+            );
+        }
+        assert_eq!(
+            edges(room, Mood::Ordinary),
+            edges(room, Mood::Dreamy),
+            "{room}: ordinary and dreamy share a band"
         );
     }
-    assert_eq!(
-        edges(Mood::Ordinary),
-        edges(Mood::Dreamy),
-        "ordinary and dreamy share a band"
-    );
-    for mood in Mood::ALL {
-        let band = Band::of(mood);
+    for (room, mood) in ROOMS
+        .into_iter()
+        .flat_map(|room| Mood::ALL.map(|mood| (room, mood)))
+    {
+        let band = Band::of(room, mood);
         assert!(
             0.0 < band.floor && band.floor < band.ceiling && band.cap > 0.0,
             "{mood:?}: floor {}, ceiling {}, cap {}",
@@ -524,8 +631,32 @@ fn band_cells_are_whole_and_tuned_inside_the_band() {
     if !TUNED.is_empty() {
         once(&TUNED, "TUNED");
     }
-    for cell in cells() {
-        let (aimed, band) = (aim(cell), Band::of(cell.1));
+    // What's short is exactly what the user shipped short (step 8c), and
+    // its tables say so. The literal is a deliberate tripwire: the list
+    // is the user's signed-off one, so growing it is a change to ask
+    // them about, not a number to refresh.
+    assert_eq!(
+        SHORT.map(|(room, at, _)| (room, at)),
+        [("stage", Some((Mood::Industrious, false))), ("stage", None)],
+        "SHORT"
+    );
+    for (room, at, _) in SHORT {
+        match at {
+            Some((mood, quiet)) => {
+                let aimed = aim((room, mood, quiet));
+                assert!(
+                    !Band::of(room, mood).holds(aimed.share),
+                    "{room} {mood:?} {quiet}: inside its band now (take it off SHORT)"
+                );
+            }
+            None => assert!(
+                aimed_spread(room, GATE_SEEDS).0 <= SPREAD,
+                "{room}: spread now (take it off SHORT)"
+            ),
+        }
+    }
+    for cell in cells().filter(|&cell| short(cell).is_none()) {
+        let (aimed, band) = (aim(cell), Band::of(cell.0, cell.1));
         assert!(
             band.holds(aimed.share),
             "{cell:?}: aimed at {:.1}%, outside {:.0}–{:.0}",
@@ -541,7 +672,10 @@ fn band_cells_are_whole_and_tuned_inside_the_band() {
             band.cap
         );
     }
-    for room in ROOMS {
+    for room in ROOMS
+        .into_iter()
+        .filter(|&room| short_spread(room).is_none())
+    {
         let (ratio, ..) = aimed_spread(room, GATE_SEEDS);
         assert!(
             ratio > SPREAD,
@@ -554,9 +688,8 @@ fn band_cells_are_whole_and_tuned_inside_the_band() {
 macro_rules! band {
     ($($name:ident: $room:ident $mood:ident;)*) => {$(
         #[test]
-        #[ignore = "5c: ignored until a tuning meets the per-mood band (phase5c/baseline.md, Step 8b: the retune, stopped)"]
         fn $name() {
-            band_cell($room(), Mood::$mood);
+            band_cell($room(), Mood::$mood, &[true, false]);
         }
     )*};
 }
@@ -565,7 +698,6 @@ band! {
     band_stage_lazy: stage_room Lazy;
     band_stage_ordinary: stage_room Ordinary;
     band_stage_dreamy: stage_room Dreamy;
-    band_stage_industrious: stage_room Industrious;
     band_home_lazy: furnished_room Lazy;
     band_home_ordinary: furnished_room Ordinary;
     band_home_dreamy: furnished_room Dreamy;
@@ -576,8 +708,23 @@ band! {
     band_resident_industrious: resident_room Industrious;
 }
 
+/// The stage's industrious afternoon, quiet: inside the band, in the
+/// gate (its chat cell is short: [`band_stage_industrious_chat`]).
 #[test]
-#[ignore = "5c: asks nothing at the gate's seeds (a floor under zero); run at full strength"]
+fn band_stage_industrious_quiet() {
+    band_cell(stage_room(), Mood::Industrious, &[true]);
+}
+
+/// Short of the band (see [`SHORT`]): at full strength, the stage's
+/// industrious afternoon with chat is under its floor.
+#[test]
+#[ignore = "5c step 8c, shipped short: 8.4% with chat against the stage's industrious floor of 9 at full strength (SHORT)"]
+fn band_stage_industrious_chat() {
+    band_cell(stage_room(), Mood::Industrious, &[false]);
+}
+
+#[test]
+#[ignore = "5c step 8c, shipped short: industrious ÷ lazy 1.39 against 1.6 at full strength (SHORT)"]
 fn band_spread_stage() {
     band_spread(stage_room());
 }

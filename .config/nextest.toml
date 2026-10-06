@@ -34,6 +34,8 @@ slow-timeout = { period = "60s", terminate-after = 2 }
 # the largest N a band or spread line prints. Kill at 20 min. Under the
 # per-mood rule a stage cell aimed just over its floor may need thousands
 # of visits (phase5c/baseline.md, step 8b: N ~ 6800 for one), which no
-# run finishes inside this limit. At the gate's seeds the band tests run
-# about 3 s and keep the default 60 s.
+# run finishes inside this limit. Step 8c's full strength (N = 525, the
+# 17-minute visits) took about 15 minutes a band test; run a spread test
+# at its own line's N. At the gate's seeds the band tests run about 4 s
+# and keep the default 60 s.
 slow-timeout = { period = "300s", terminate-after = 4 }

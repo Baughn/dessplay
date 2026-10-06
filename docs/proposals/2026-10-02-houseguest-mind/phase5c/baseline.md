@@ -1042,3 +1042,102 @@ longest still act, so the guard (`band_visits_outlast_her_longest_still_act_twic
 at 9 minutes. With `STARTING`'s lazy linger (×1.5) the look-out alone is 270 s (BAND_MINUTES 12),
 and with settling on too the sill's chain (270 + 37.5 sitting in front of it + 60 watching the
 clouds = 367.5 s) needs 3 + 2 × 6.1, so BAND_MINUTES 16.
+
+
+## Shipped (step 8c, 2026-10-07)
+
+**Measured 2026-10-07** on step 8c's tree: the levers on (`Stillness::TUNED`: 8b's c3 with settling on,
+and dreamy linger 0.85), LookOut base 6, the hour glance with no roll, the bare stage's lower floors
+(lazy 4, ordinary and dreamy 6, industrious 9). Visits are 17 minutes (`BAND_MINUTES`, the guard's: the
+sill's chain lazy is 7 minutes). `TUNED` is the 80-visit run (`CENSUS_MINUTES=17 CENSUS_ROOMS=band
+CENSUS_MODES=line fed_afternoon_census`, 20 sets × 4 seeds, release); full strength is
+`CENSUS_BAND_SEEDS=525` under `--profile band` (about 15 minutes a band test, 21 minutes' wall).
+
+Moving % in sight / set-offs a minute in sight; **bold** is outside the band or over the cap. Step 11's
+columns are its full-strength run (N = 190, 9 minutes, levers neutral; the stage as step 10b, the home
+and resident as step 10a).
+
+| Room | Mood | Quiet: step 11 (N=190, 9 min) | Quiet: shipped (80, 17 min) | Quiet: shipped (N=525) | Chat: step 11 | Chat: shipped (80) | Chat: shipped (N=525) | Band | Cap |
+|---|---|---|---|---|---|---|---|---|---|
+| stage | Lazy | 24.8 / 4.03 | 6.5 / 1.20 | 6.6 / 1.17 | 25.0 / 4.07 | 6.6 / 1.31 | 6.2 / 1.28 | 4–17 | 1.5 |
+| stage | Ordinary | 27.0 / 4.40 | 7.2 / 1.58 | 7.1 / 1.62 | 28.7 / 4.54 | 6.8 / 1.69 | 7.0 / 1.74 | 6–26 | 2.25 |
+| stage | Dreamy | 25.0 / 4.27 | 7.0 / 1.60 | 6.9 / 1.64 | 27.6 / 4.53 | 6.9 / 1.71 | 6.5 / 1.76 | 6–26 | 2.25 |
+| stage | Industrious | 29.5 / 4.60 | 9.7 / 2.21 | 9.1 / 2.11 | 27.9 / 4.77 | **8.2 / 2.18** | **8.4 / 2.15** | 9–31 | 3.0 |
+| home | Lazy | 34.1 / 1.52 | 11.8 / 0.65 | 12.5 / 0.65 | 33.2 / 1.70 | 11.9 / 0.71 | 12.3 / 0.73 | 5–17 | 1.5 |
+| home | Ordinary | 47.3 / 2.28 | 21.8 / 1.23 | 22.5 / 1.24 | 44.0 / 2.44 | 21.0 / 1.34 | 21.3 / 1.35 | 8–26 | 2.25 |
+| home | Dreamy | 45.5 / 2.25 | 21.1 / 1.19 | 21.8 / 1.22 | 42.5 / 2.41 | 21.9 / 1.38 | 21.3 / 1.39 | 8–26 | 2.25 |
+| home | Industrious | 53.3 / 2.76 | 29.9 / 1.71 | 30.6 / 1.72 | 52.1 / 2.91 | 28.8 / 1.90 | 28.7 / 1.90 | 12–31 | 3.0 |
+| resident | Lazy | 33.0 / 2.25 | 6.0 / 0.54 | 6.5 / 0.56 | 30.9 / 2.37 | 6.3 / 0.68 | 6.2 / 0.66 | 5–17 | 1.5 |
+| resident | Ordinary | 38.4 / 2.66 | 9.8 / 1.08 | 11.0 / 1.10 | 34.1 / 2.80 | 10.0 / 1.21 | 10.3 / 1.20 | 8–26 | 2.25 |
+| resident | Dreamy | 35.4 / 2.56 | 9.2 / 1.04 | 9.3 / 1.04 | 32.2 / 2.72 | 8.6 / 1.11 | 8.5 / 1.14 | 8–26 | 2.25 |
+| resident | Industrious | 42.5 / 2.74 | 15.9 / 1.35 | 16.3 / 1.35 | 37.3 / 2.88 | 14.5 / 1.46 | 14.1 / 1.43 | 12–31 | 3.0 |
+
+
+- **Every cell is in but the stage's industrious afternoon with chat** (8.4 at N = 525, floor 9; its
+  quiet cell 9.1 is in), shipped short by the user's word and ignored with its numbers (`SHORT`).
+  Every set-off rate is under its cap, most far under (the home's industrious 1.7–1.9 against 3).
+- **The spread:** home 2.49 (N = 200), resident 2.39 (N = 525), both over 1.6; **the stage's 1.39**
+  (N = 200: industrious 8.9 ÷ lazy 6.4) is short, ignored with its numbers. On the stage every mood
+  reads on her back about a sixth of the visit, and an industrious Osaka spaces out most (14% of the
+  visit, ordinary 7.5%): her moods read alike there.
+- **The home's industrious afternoon** sits at its ceiling's edge (30.6 quiet at N = 525, ceiling 31).
+- **The tries** (80 visits each, 17 minutes): c3 with settling on, as briefed: stage industrious chat
+  8.2 and resident dreamy chat 7.0 under their floors, stage spread 1.37. Industrious linger 0.7: stage
+  industrious chat 9.2 (in), but the home's industrious quiet 32.4 (over 31). Tidy 60 s: the stage
+  within noise (industrious 9.1 / 8.8). Lazy linger 2.0 with dreamy 0.85: the resident's lazy cells
+  4.8 / 4.7 (under 5), the stage's spread 1.48. Shipped: c3, settling on, dreamy 0.85 (the resident's
+  dreamy cells 9.2 / 8.6, the stage's 7.0 / 6.9, the home's 21.1 / 21.9).
+- **The gate's band tests** run about 4 s each at its two seeds (17-minute visits).
+
+**The 15-minute fed census** (both modes, all six rooms, 20 sets × 4 seeds): the band rooms read as at
+17 minutes within a point (stage ordinary 7.7 / 1.61 quiet line art, ASCII 12.6 / 2.07; home ordinary
+21.8 / 1.25; resident ordinary 10.1 / 1.13; home and resident identical in either mode). The printed
+rooms (line art, quiet / chat): the windowed home ordinary 20.0 / 19.8, lazy 11.0 / 11.4, industrious
+29.0 / 27.8, dreamy 20.2 / 19.0, its look-out 5–17% of the visit by mood (of an evening 17–25%;
+step 11, levers neutral: a few %), sitting under the sill
+1.1–2.7%, dozing there about 1%, watching the clouds about 1% (the settle-ins alive); the TV-only home
+ordinary 19.5 / 16.9, lazy 10.8 / 7.4, industrious 26.0 / 22.7, dreamy 16.8 / 14.8; the resident with
+text low ordinary 17.7 / 16.3, lazy 6.3 / 6.9, industrious 25.6 / 23.7, dreamy 16.1 / 14.5. All inside
+the band.
+
+**The unfed visit census** (`CENSUS_MOODS=1 visit_census`, ASCII, chat, 30 minutes, 16 visits): stage
+ordinary 8.2 / 2.00, lazy 7.3 / 1.29, industrious 11.4 / 2.92, dreamy 8.4 / 2.32; home 19.1 / 1.14,
+11.9 / 0.71, 27.7 / 1.61, 19.8 / 1.24; resident 10.3 / 1.16, 8.4 / 0.71, 15.8 / 1.34, 9.0 / 1.10
+(5a-comparable before 5c: stage 22–30%, 4–6 set-offs a minute).
+
+**The day census** (6 runs a room, a game week each, ASCII):
+- **Bedtime holds:** asleep 38.5–38.6% of 22:00–23:00 and 89.3–89.7% of 23:00–24:00 on school days in
+  each room (step 11: 38.9–39.1, 89.5–89.9); the day dozes don't keep her up.
+- **Look-outs in the census home: 191 in 42 game days, about 4.5 a day** (on offer at 3586 steps, in
+  her top four at 977). Step 11 measured base 6 at about two a day with the levers neutral; with them
+  on it's over twice that (and each look-out lingers, lazy ×1.5). Base 6 is the user's number, kept;
+  what base gives two a day with the levers on is unmeasured, the user's call.
+- **Afternoon hour glances:** home 19, stage 9, resident 13 (step 11's review: 1 / 2 / 9).
+- Moving in sight by her day's mood: stage 10.1 (lazy) to 15.2 (dreamy), home 11.6 to 26.1
+  (industrious), resident 10.0 to 16.9.
+
+### Step 8c's review (2026-10-07)
+
+Nothing tuned moved: `TUNED` and every number above stand, the goldens are byte-identical.
+- **The calendar's greeting pause** is its own again (`GREETING_PAUSE_MS`, 6 s): step 8c had tied it to
+  spacing out's shortest, 10 s. No golden shows one (the traces are identical); the day census's Oct 31
+  runs do, once a game day, 4 s shorter (not re-measured).
+- **The stage's industrious afternoon, quiet** (9.1 at N = 525, in) is back in the gate
+  (`band_stage_industrious_quiet`); only its chat cell stays ignored (`band_stage_industrious_chat`).
+- **Standing** (spacing out with it) in `she_mostly_does_things_rather_than_stare`'s four visits: 30% of
+  her time, 24 points of it spacing out, 5 plain staring; held under 40%.
+- **A resident in the chat**: pinned under 0.7 of a visitor's share (measured 0.62); the chat's tenth
+  governs going in, not staying (decisions.md). Weighing her staying moves every resident cell.
+- **The settle-ins under the window**, rendered at the code's spots in both facings: the lean matches the
+  sheet; sitting and dozing in front of it sit a column further out than panel 5 (in place where she
+  leaned); her head is under the glass watching the clouds either way. Accepted (snippets.md).
+
+**Open, for the next step:**
+- **Chat lines in the drivers** are put in her view at their own time but seen at her next paint, which
+  her wakes time (resident lags up to 10 s); the client paints on a chat line. Painting the golden and
+  census drivers on a line is one re-record and a re-measure of every chat cell.
+- **Looking out** comes about 4.5 times a game day with the levers on (the user's ask: about two); what
+  base gives two is unmeasured.
+- **The stage's spread** (1.39): spacing out for its own sake weighs the same in every mood and fills an
+  industrious stage afternoon most (14%); a mood factor on it is the lead.
+- **`a_sofa_she_could_not_unpack`** (ignored): a random case of the parcel property, older than step 8c.

@@ -533,3 +533,26 @@ that her trace is unchanged).
   borrowed line, with grip as one class for held text and pulls), and **11** (the window hung low,
   allowed behind a sofa, the sill lean and its session, cloud-watching under it only) are built,
   each with its CHANGELOG entry. Their records are in their commit messages and baseline.md.
+
+## Round-5 amendments (2026-10-07): step 8c as built
+
+- **The golden driver** cuts a step at each event's own time, as the census drivers do (one
+  deliberate re-record, its own commit before the shipping one).
+- **The levers ship** (`Stillness::TUNED`): 8b's c3 (step 8's move 7 values, watching unlingered,
+  Tidy 90 s, industrious linger 0.85, spacing out 10–28 s) with settling on (`STARTING`'s odds), so
+  sitting under the window, dozing sitting up and watching the clouds come alive; and **dreamy
+  linger 0.85** (not in the brief: at 1.0 the resident's dreamy afternoon with chat fell under its
+  floor once 10a–11 were in). Sitting in front of the window lasts as sitting does, watching the
+  clouds and the doze under a book as lying back does. `BAND_MINUTES` 17 (the guard: the sill's
+  chain, lazy, is 7 minutes).
+- **The user's answers of 2026-10-06:** LookOut base 6; the afternoon hour glance has no roll (its
+  other gates stay); a borrowed strip doesn't turn her at a chat line.
+- **The bare stage's floors** (lazy 4 / ordinary and dreamy 6 / industrious 9) are `Band::of`'s
+  for the stage room.
+- **Shipped short, by the user's word:** the stage's industrious afternoon with chat (8.4% at full
+  strength against 9) and the stage's spread (1.39 against 1.6), both ignored with their numbers
+  (`tests/band.rs`, `SHORT`). Every other cell is in, at full strength (N = 525).
+- **The facing-right lean** stands a column further in (her box centred on the window's first
+  column), as the approved sheet has her: at a column outside, her hands met the frame.
+- Records: [phase5c/baseline.md](phase5c/baseline.md), "Shipped (step 8c)", and decisions.md, "Her
+  stillness ships".

@@ -61,9 +61,12 @@ pub(super) struct Room {
 impl Room {
     /// The step from `now`: `step` long, but cut at the next chat line if
     /// it would cross one; and whether a line comes at its end. So every
-    /// line comes at its own time, as in the client, not at the first
-    /// step past it (whose length her wakes set: a wake that changes
-    /// only how she looks would move what she does).
+    /// line comes into her view at its own time, not at the first step
+    /// past it (whose length her wakes set: a wake that changes only how
+    /// she looks would move what she does). She sees it at her next
+    /// paint, which her wakes time, unless the room's line is drawn live
+    /// (unlike the client, which paints on every chat line: open, step
+    /// 8c's review).
     pub(super) fn step_from(&self, now: u64, step: u64) -> (u64, bool) {
         match self.chat_every {
             Some(every) => {
@@ -2311,10 +2314,10 @@ fn day_census() {
 /// The fed afternoon's tallies add up, in both drawing modes, on the
 /// stage (doors, text, chat) and in the home (a TV, so a wall clock would
 /// come if it weren't already sent): her time is all in sight (the
-/// warm-up apart), out of sight or asleep, step by step; out of sight shows on the
-/// stage (over two seeds: whether one seed's four minutes take her out of
-/// sight is its luck; seed 0's line art stopped doing so with the 5 s
-/// watch); the warm-up's set-offs are her log's before minute 3 (her
+/// warm-up apart), out of sight or asleep, step by step; out of sight
+/// shows on the stage (over as many seeds as it takes, up to 16: whether
+/// one seed's four minutes take her out of sight is its luck, and
+/// stiller since phase 5c step 8c, she often doesn't); the warm-up's set-offs are her log's before minute 3 (her
 /// arrival's among them) and the rest are the table's; the chat lines
 /// that stopped her after the warm-up are the table's; moving is part of
 /// her time in sight. And [`afternoon`]'s own checks hold: the forced
@@ -2329,7 +2332,13 @@ fn the_fed_afternoon_tallies_add_up() {
                 start: Some(AFTERNOON),
                 ..room
             };
-            for seed in 0..2 {
+            // Two seeds, and on the stage as many more as it takes her to
+            // go out of sight once (a door, the screen's edge), up to 16:
+            // stiller since phase 5c (step 8c), she may not in two.
+            for seed in 0..16 {
+                if seed >= 2 && (room.name != "stage" || hidden > 0) {
+                    break;
+                }
                 let at = format!("{} seed {seed} graphics={graphics}", room.name);
                 let (visit, guest) = afternoon(&room, seed, graphics, Mood::Ordinary, MINUTES);
                 let State::Visiting(her) = &guest.state else {
@@ -2378,10 +2387,11 @@ fn the_fed_afternoon_tallies_add_up() {
 
 /// The census's chat lines come at their own times, each exactly once:
 /// the visit is stepped to each line's moment (a step that would cross
-/// one is cut there) and the line is delivered at that step's end, so
-/// she sees each as the client would, not at the first step past it,
-/// whose length her wakes set (a wake that changes only how she looks,
-/// a blink's, used to move the chat cells; step 8's hand-off). Both
+/// one is cut there) and the line is put in her view at that step's
+/// end, not at the first step past it, whose length her wakes set (a
+/// wake that changes only how she looks, a blink's, used to move the
+/// chat cells; step 8's hand-off). She sees it at her next paint (not,
+/// as in the client, at once: open). Both
 /// drivers: [`visit_from`] in each census room at its cadence, both
 /// drawing modes, unfed and fed, and [`live_week`]'s ([`live_for`]) in
 /// each day room; a quiet room gets no line from either.
@@ -2496,17 +2506,45 @@ fn grouped(visits: &[Visit]) -> BTreeMap<&'static str, u64> {
     groups
 }
 
-/// At home she rests on her furniture, not the floor: far more of her
-/// time is on her things than sitting or lying on the floor.
+/// At home she rests on her furniture, not the floor: far more of the
+/// rest she chooses is on her things than sitting or lying on the floor
+/// (synthesis minor 3), and so is all her rest, what she settled into
+/// (phase 5c M7: sitting on from spacing out, lying back or dozing from
+/// sitting) with it: what the viewer sees. The rest she settled into
+/// follows where she was, not what she chose, so it's printed apart.
 #[test]
 fn at_home_her_furniture_beats_the_floor() {
     let room = furnished_room();
-    let visits: Vec<Visit> = (0..4)
-        .map(|seed| simulate(&room, seed, 10, Some(Mood::Ordinary)))
-        .collect();
-    let groups = grouped(&visits);
-    let at = |g: &str| groups.get(g).copied().unwrap_or(0);
-    assert!(at("furniture") > 10 * at("floor rest").max(1), "{groups:?}");
+    let mut chose: BTreeMap<&'static str, u64> = BTreeMap::new();
+    let mut settled: BTreeMap<&'static str, u64> = BTreeMap::new();
+    for seed in 0..4 {
+        let mut last: Option<(u64, &'static str, bool)> = None;
+        simulate_with(
+            &room,
+            seed,
+            10,
+            Some(Mood::Ordinary),
+            false,
+            |osaka, now| {
+                if let Some((then, group, was)) = last {
+                    let into = if was { &mut settled } else { &mut chose };
+                    *into.entry(group).or_default() += now - then;
+                }
+                last = Some((now, osaka.census_group(), osaka.settled_in()));
+            },
+        );
+    }
+    eprintln!("chosen {chose:?}; settled into {settled:?}");
+    let at = |g: &str| chose.get(g).copied().unwrap_or(0);
+    assert!(
+        at("furniture") > 10 * at("floor rest").max(1),
+        "chosen {chose:?}"
+    );
+    let all = |g: &str| at(g) + settled.get(g).copied().unwrap_or(0);
+    assert!(
+        all("furniture") > 10 * all("floor rest").max(1),
+        "chosen {chose:?}; settled into {settled:?}"
+    );
 }
 
 /// Her mood shows: on a lazy visit she spends more of her time on her

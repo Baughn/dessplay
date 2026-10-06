@@ -462,13 +462,13 @@ pub(super) const MM: &str = line!("mm...");
 /// Stirring at a chat line dozing by day (phase 5c B1).
 pub(super) const STIRRED: &str = line!("Mm?");
 /// Spacing out, musing or not (ms range).
-pub(super) const SPACE_OUT_MS: (u64, u64) = (6000, 14_000);
+pub(super) const SPACE_OUT_MS: (u64, u64) = (10_000, 28_000);
+/// After her calendar's greeting ("I'm home!", "Mornin'."), she spaces
+/// out a moment at least (ms): its own, not a daydream's (phase 5c step
+/// 8c lengthened those, not this).
+pub(super) const GREETING_PAUSE_MS: u64 = 6000;
 /// A glance up at her wall clock (phase 5b D7): a moment, spacing out.
 pub(super) const CLOCK_GLANCE_MS: u64 = 2500;
-/// Of an afternoon, with her wall clock where she can see it, a musing
-/// in this many (`n` in `d`, once a visit) is a glance up at it instead,
-/// saying the hour, roughly.
-const HOUR_GLANCE: (u64, u64) = (1, 3);
 
 /// Tearing text off a line for furniture: bracing, then the rip.
 const BRACE_MS: u64 = 700;
@@ -1470,13 +1470,13 @@ pub(super) fn use_range(what: Use) -> (u64, u64) {
 /// How long she keeps at `what` (ms range).
 fn use_duration(what: Use) -> (u64, u64) {
     match what {
-        Use::Lounge => (15_000, 30_000),
-        Use::Nap => (30_000, 60_000),
+        Use::Lounge => (27_000, 60_000),
+        Use::Nap => (45_000, 105_000),
         Use::Sleep => (60_000, 180_000),
-        Use::Homework => (30_000, 60_000),
-        Use::Watch => (20_000, 45_000),
+        Use::Homework => (37_000, 75_000),
+        Use::Watch => (32_000, 82_000),
         Use::Unpack => (4_000, 6_000),
-        Use::Read => (20_000, 40_000),
+        Use::Read => (30_000, 65_000),
         Use::Snack => (6_000, 9_000),
         Use::Pet => (6_000, 9_000),
         Use::Crumple => (4_000, 6_000),
@@ -1516,6 +1516,20 @@ fn use_duration_in(what: Use, slot: Option<routine::Slot>) -> (u64, u64) {
 #[cfg(test)]
 pub(super) fn longest_still_ms(slot: Option<routine::Slot>) -> u64 {
     longest_still_ms_with(slot, &stillness::SHIPPED)
+}
+
+/// [`longest_still_ms`] at whatever time of day makes it longest
+/// (routine or none): how long a test waits at most for her to be done
+/// sitting still somewhere.
+#[cfg(test)]
+pub(super) fn longest_still_any_ms() -> u64 {
+    routine::Slot::ALL
+        .into_iter()
+        .map(Some)
+        .chain([None])
+        .map(longest_still_ms)
+        .max()
+        .unwrap_or(0)
 }
 
 /// [`longest_still_ms`], with the levers `still`: each act her mood
@@ -1732,20 +1746,20 @@ impl Activity {
     /// bookshelf.
     pub(super) fn duration(self) -> (u64, u64) {
         match self {
-            Self::Sit => (10_000, 25_000),
-            Self::LieBack => (15_000, 40_000),
+            Self::Sit => (15_000, 40_000),
+            Self::LieBack => (20_000, 60_000),
             Self::LieFront => (10_000, 25_000),
             Self::Jacks => (4_000, 8_000),
             Self::ToeTouch => (5_000, 9_000),
             Self::Stretch => (2_000, 4_000),
-            Self::Gaze => (4_000, 10_000),
-            Self::SitDoze => (15_000, 40_000),
+            Self::Gaze => (6000, 14_000),
+            // A doze, as long as she'd lie back.
+            Self::SitDoze | Self::BookDoze => Self::LieBack.duration(),
             Self::FloorHomework => use_duration(Use::Homework),
             Self::LieRead => use_duration(Use::Read),
-            Self::BookDoze => (15_000, 40_000),
             // As long as she'd sit, or lie back.
-            Self::UnderSill => (10_000, 25_000),
-            Self::CloudWatch => (15_000, 40_000),
+            Self::UnderSill => Self::Sit.duration(),
+            Self::CloudWatch => Self::LieBack.duration(),
         }
     }
 
@@ -3042,9 +3056,10 @@ impl Osaka {
         {
             return self.wonder(now, rng);
         }
-        // Of an afternoon, her wall clock where she can see it: now and
-        // then (once a visit, while she's quiet) a glance up at it, saying
-        // the hour, roughly ("Three-ish."). It takes the musing's place.
+        // Of an afternoon, her wall clock where she can see it: the first
+        // daydream she starts quiet (once a visit, unrolled) has her
+        // glance up at it, saying the hour, roughly ("Three-ish."). It
+        // takes the musing's place.
         if rolls && let Some((glance, x)) = self.hour_glance(now, quiet, false) {
             return self.glance_up(glance, x, now);
         }
@@ -3208,7 +3223,8 @@ impl Osaka {
     /// [`Osaka::muse`]; `quiet`: she isn't saying anything; `cued`: the
     /// stage cued it, and she does, saying whatever hour her clock says,
     /// three o'clock without one): the glance, and the clock's column if
-    /// it's where she can see it. Rolled, only of an afternoon.
+    /// it's where she can see it. Unrolled (phase 5c step 8c): of an
+    /// afternoon, once a visit, while she's quiet and can see her clock.
     fn hour_glance(&self, now: u64, quiet: bool, cued: bool) -> Option<(ClockGlance, Option<i32>)> {
         let x = self.clock_on.and_then(|c| c.seen_from((self.x, self.y)));
         let day = self.day(now);
@@ -3219,9 +3235,9 @@ impl Osaka {
         let hour = day
             .filter(|day| day.slot == routine::Slot::Afternoon)
             .map(|day| day.minute / 60)?;
-        let (n, d) = HOUR_GLANCE;
-        let glance =
-            !self.hour_glanced && quiet && x.is_some() && self.whims.chance("hour-glance", 0, n, d);
+        // No roll (phase 5c step 8c, the user's): her daydreams are long
+        // and few now, so any she starts quiet glances, once a visit.
+        let glance = !self.hour_glanced && quiet && x.is_some();
         glance.then_some((ClockGlance::Hour(hour), x))
     }
 
@@ -5742,7 +5758,7 @@ impl Osaka {
             self.set(
                 Act::SpaceOut {
                     since: at,
-                    until: at + speech_ms(greeting.2).max(SPACE_OUT_MS.0),
+                    until: at + speech_ms(greeting.2).max(GREETING_PAUSE_MS),
                     play: None,
                     session: None,
                 },
@@ -6246,8 +6262,10 @@ impl Osaka {
             }
             Borrowing::Read { .. } => {
                 tracing::debug!("houseguest: sliding the strip back");
-                // Back to the line, whatever the chat turned her to.
-                self.facing = side_facing(pull.side);
+                // Nothing turns her from the line while she reads it (a
+                // chat line has her look up without turning: phase 5c
+                // step 8c).
+                debug_assert_eq!(self.facing, side_facing(pull.side), "still facing the line");
                 Borrowing::Slide(steps.saturating_sub(1))
             }
             Borrowing::Slide(0) => return self.decide(at, terrain, chances, rng),
@@ -6807,6 +6825,13 @@ impl Osaka {
             } => Some((seat, since, play)),
             _ => None,
         }
+    }
+
+    /// Whether the still act she's at is one she settled into (phase 5c
+    /// M7), not one she chose.
+    #[cfg(test)]
+    pub fn settled_in(&self) -> bool {
+        self.settled > 0
     }
 
     /// The census group what she's doing counts in. Wildcard-free, so a
@@ -7478,7 +7503,7 @@ impl Osaka {
     ) -> bool {
         let act = match bind {
             Bind::Here(Here::Stand) => Act::Stand {
-                until: at + rng.range(2000, 5000),
+                until: at + rng.range(3000, 8000),
             },
             Bind::Here(Here::SpaceOut) => Act::SpaceOut {
                 since: at,
@@ -8579,8 +8604,6 @@ impl Osaka {
         let back = match (was, &self.act) {
             (Some(was), _) => was.back,
             (None, Act::Use { seat, .. }) => Some(seat.facing),
-            // To the tear she reads beside.
-            (None, Act::Borrow { pull, .. }) => Some(side_facing(pull.side)),
             (None, _) => None,
         };
         // What she says about her home she says to its end first.
@@ -9796,56 +9819,90 @@ mod tests {
         }
     }
 
+    /// A daydream with a musing in it (her mood's session has one or
+    /// more: phase 5c B6) begins with a riddle one time in three, and only
+    /// while she's quiet; one with none says nothing at all. In every
+    /// mood, with the levers she ships with, its length her mood's.
     #[test]
     fn a_riddle_is_told_one_musing_in_three_and_only_when_quiet() {
-        let mut riddles = 0;
-        for seed in 0..120 {
-            for talking in [false, true] {
-                let mut rng = Rng(seed);
-                let mut osaka = Osaka::standing_at(10, 10, 0, &mut rng);
-                osaka.whims = Whims(seed);
-                if talking {
-                    osaka.say(OK, 0);
-                }
-                let mut alone = rng.clone();
-                osaka.muse(0, &mut rng);
-                let span = alone.range(SPACE_OUT_MS.0, SPACE_OUT_MS.1);
-                assert_eq!(rng.0, alone.0, "seed {seed}: one body draw");
-                let Act::SpaceOut {
-                    since, until, play, ..
-                } = osaka.act
-                else {
-                    panic!("seed {seed}: spacing out");
-                };
-                assert_eq!((since, until), (0, span), "seed {seed}");
-                match play {
-                    Some(play) => {
-                        assert!(!talking, "seed {seed}: a riddle over speech");
-                        riddles += 1;
-                        let (question, answer) = RIDDLES[usize::from(play.drawn[0])];
-                        assert_eq!(osaka.speech, None, "seed {seed}");
-                        assert_eq!(
-                            osaka.lines.said(),
-                            [
-                                (PoolId::Riddle, question, 0),
-                                (PoolId::Riddle, answer, script::RIDDLE_ASKED_MS),
-                            ],
-                            "seed {seed}"
-                        );
-                        assert_eq!(osaka.act_due, script::RIDDLE_ASKED_MS, "seed {seed}");
+        for mood in Mood::ALL {
+            let (mut riddles, mut musing) = (0, 0);
+            for seed in 0..120 {
+                for talking in [false, true] {
+                    let at = format!("{mood:?} seed {seed} talking={talking}");
+                    let mut rng = Rng(seed);
+                    let mut osaka = Osaka::standing_at(10, 10, 0, &mut rng);
+                    osaka.set_mood(mood);
+                    osaka.whims = Whims(seed);
+                    if talking {
+                        osaka.say(OK, 0);
                     }
-                    None => {
-                        let (said, _) = osaka.speech.unwrap();
-                        assert!(mind::MUSINGS.lines.contains(&said), "seed {seed}: {said}");
-                        assert_eq!(osaka.act_due, until, "seed {seed}");
+                    let mut alone = rng.clone();
+                    osaka.muse(0, &mut rng);
+                    let span = osaka.lingered(true, alone.range(SPACE_OUT_MS.0, SPACE_OUT_MS.1));
+                    assert_eq!(rng.0, alone.0, "{at}: one body draw");
+                    let Act::SpaceOut {
+                        since,
+                        until,
+                        play,
+                        session,
+                    } = osaka.act
+                    else {
+                        panic!("{at}: spacing out");
+                    };
+                    assert_eq!((since, until), (0, span), "{at}");
+                    match play {
+                        Some(play) => {
+                            assert!(!talking, "{at}: a riddle over speech");
+                            riddles += 1;
+                            musing += 1;
+                            let (question, answer) = RIDDLES[usize::from(play.drawn[0])];
+                            assert_eq!(osaka.speech, None, "{at}");
+                            assert_eq!(
+                                osaka.lines.said(),
+                                [
+                                    (PoolId::Riddle, question, 0),
+                                    (PoolId::Riddle, answer, script::RIDDLE_ASKED_MS),
+                                ],
+                                "{at}"
+                            );
+                            assert_eq!(osaka.act_due, script::RIDDLE_ASKED_MS, "{at}");
+                        }
+                        // Talking, a daydream with nothing to say leaves
+                        // her saying it: no session, due at its end.
+                        None if talking && osaka.speech.is_some_and(|(said, _)| said == OK) => {
+                            assert_eq!(session, None, "{at}");
+                            assert_eq!(osaka.act_due, until, "{at}");
+                        }
+                        // Her first musing is said over what she was
+                        // saying (only a riddle waits for quiet), the
+                        // rest of her session to come.
+                        None => match osaka.speech {
+                            Some((said, _)) => {
+                                // Over speech, no riddle could be told.
+                                musing += usize::from(!talking);
+                                assert!(mind::MUSINGS.lines.contains(&said), "{at}: {said}");
+                                // Due at her session's next musing, if one
+                                // comes before the end.
+                                let next = session.map_or(until, |s| s.next.min(until));
+                                assert_eq!(osaka.act_due, next, "{at}");
+                            }
+                            // A daydream with nothing to say: her mood's
+                            // sessions may hold none.
+                            None => assert_eq!(
+                                osaka.stillness.musings.of(mood).0,
+                                0,
+                                "{at}: a musing due"
+                            ),
+                        },
                     }
                 }
             }
+            assert!(
+                (musing / 5..=musing / 2).contains(&riddles),
+                "{mood:?}: {riddles} riddles in {musing} daydreams with a musing"
+            );
         }
-        assert!(
-            (25..=55).contains(&riddles),
-            "{riddles} riddles in 120 musings"
-        );
     }
 
     /// Her, standing, with `need` pressing.
@@ -11628,11 +11685,16 @@ mod tests {
         };
         let homework_time = Some(monday_at(21, 0));
         let afternoon = Some(monday_at(16, 0));
+        let usual = use_duration(Use::Homework);
+        assert!(usual.1 < HOMEWORK_IN_SLOT_MS.0, "longer at its time");
         for seed in 0..64 {
             let (unfed, drawn) = length(Use::Homework, None, seed);
             let (fed, fed_drawn) = length(Use::Homework, homework_time, seed);
-            assert!((30_000..60_000).contains(&unfed), "{unfed}");
-            assert!((120_000..240_000).contains(&fed), "{fed}");
+            assert!((usual.0..usual.1).contains(&unfed), "{unfed}");
+            assert!(
+                (HOMEWORK_IN_SLOT_MS.0..HOMEWORK_IN_SLOT_MS.1).contains(&fed),
+                "{fed}"
+            );
             assert_eq!(fed_drawn, drawn, "seed {seed}: the same draws");
             assert_eq!(length(Use::Homework, afternoon, seed), (unfed, drawn));
             for what in [Use::Read, Use::Watch, Use::Lounge] {
@@ -11641,9 +11703,9 @@ mod tests {
             // Her homework on the floor (phase 5c D5), as long as at her
             // desk, at its times.
             for (clock, (lo, hi)) in [
-                (None, (30_000, 60_000)),
-                (homework_time, (120_000, 240_000)),
-                (afternoon, (30_000, 60_000)),
+                (None, usual),
+                (homework_time, HOMEWORK_IN_SLOT_MS),
+                (afternoon, usual),
             ] {
                 let mut rng = Rng(seed);
                 let mut osaka = Osaka::standing_at(10, 10, 0, &mut rng);
@@ -11658,6 +11720,63 @@ mod tests {
                     until - since
                 );
             }
+        }
+    }
+
+    /// Her still acts last as phase 5c shipped them (step 8c): what she
+    /// settles into lasts as what it grew from (sitting under her window
+    /// as long as she'd sit, dozing sitting up, under a book or watching
+    /// the clouds as long as she'd lie back), her reading and homework
+    /// on the floor as at her bookshelf and desk, and each at its
+    /// shipped range. Not her sill's lean: that's a use, its length its
+    /// own (`looking_out_lasts_and_counts_as_spacing_out`).
+    #[test]
+    fn her_still_acts_last_as_shipped() {
+        let settled_from = [
+            (Activity::UnderSill, Activity::Sit),
+            (Activity::SitDoze, Activity::LieBack),
+            (Activity::BookDoze, Activity::LieBack),
+            (Activity::CloudWatch, Activity::LieBack),
+        ];
+        for (settled, from) in settled_from {
+            assert!(!settled.chosen(), "{settled:?} is settled into");
+            assert_eq!(
+                settled.duration(),
+                from.duration(),
+                "{settled:?} as {from:?}"
+            );
+        }
+        assert_eq!(
+            Activity::FloorHomework.duration(),
+            use_duration(Use::Homework)
+        );
+        assert_eq!(Activity::LieRead.duration(), use_duration(Use::Read));
+        let shipped = |what: Activity| match what {
+            Activity::Sit | Activity::UnderSill => (15_000, 40_000),
+            Activity::LieBack | Activity::SitDoze | Activity::BookDoze | Activity::CloudWatch => {
+                (20_000, 60_000)
+            }
+            Activity::LieFront => (10_000, 25_000),
+            Activity::Jacks => (4_000, 8_000),
+            Activity::ToeTouch => (5_000, 9_000),
+            Activity::Stretch => (2_000, 4_000),
+            Activity::Gaze => (6_000, 14_000),
+            Activity::FloorHomework => (37_000, 75_000),
+            Activity::LieRead => (30_000, 65_000),
+        };
+        for what in Activity::ALL {
+            assert_eq!(what.duration(), shipped(what), "{what:?}");
+        }
+        assert_eq!(SPACE_OUT_MS, (10_000, 28_000), "spacing out");
+        for (what, range) in [
+            (Use::Lounge, (27_000, 60_000)),
+            (Use::Nap, (45_000, 105_000)),
+            (Use::Watch, (32_000, 82_000)),
+            (Use::Read, (30_000, 65_000)),
+            (Use::Homework, (37_000, 75_000)),
+            (Use::LookOut, (60_000, 180_000)),
+        ] {
+            assert_eq!(use_duration(what), range, "{what:?}");
         }
     }
 
@@ -13587,6 +13706,22 @@ mod tests {
         osaka.episode = None;
         let beat = osaka.calendar_beat(here, &terrain, &chances, 0);
         assert_eq!(beat.map(|d| d.method), Some("calendar"));
+        // Its greeting, then a moment spacing out: as long as it's said,
+        // or 6 s (its own pause, not a daydream's: phase 5c step 8c's
+        // review).
+        let said = osaka.speech.map(|(line, _)| line).expect("greeting");
+        assert!(speech_ms(said) < GREETING_PAUSE_MS, "{said}");
+        let Act::SpaceOut {
+            since,
+            until,
+            play: None,
+            session: None,
+        } = osaka.act
+        else {
+            panic!("spacing out: {:?}", osaka.act);
+        };
+        assert_eq!((since, until), (0, GREETING_PAUSE_MS));
+        assert_eq!(GREETING_PAUSE_MS, 6000);
     }
 
     /// New Year's Day's sunrise follows its greeting shown, to her TV if
@@ -14568,12 +14703,13 @@ mod tests {
         assert!(!methods.contains(&"routine/glance"), "{methods:?}");
     }
 
-    /// Of an afternoon, her wall clock where she can see it, now and then
-    /// (about a musing in three) she glances up at it instead of musing,
-    /// saying the hour roughly ("Noon-ish." from 12:45, "Five-ish." up to
-    /// 18:00), turned toward it; once a visit. Never out of the afternoon,
-    /// without a clock, with it on another floor, unfed, or while she's
-    /// saying something.
+    /// Of an afternoon, her wall clock where she can see it, the first
+    /// daydream she starts quiet (her rare musing aside) is a glance up at
+    /// it instead of musing (phase 5c step 8c: no roll), saying the hour
+    /// roughly ("Noon-ish." from 12:45, "Five-ish." up to 18:00), turned
+    /// toward it; once a visit. Never out of the afternoon, without a
+    /// clock, with it on another floor, unfed, or while she's saying
+    /// something.
     #[test]
     fn of_an_afternoon_she_glances_at_the_hour() {
         let glance = |osaka: &Osaka| {
@@ -14629,7 +14765,9 @@ mod tests {
                     osaka.muse(0, &mut rng);
                     let open =
                         hour.is_some() && on.is_some_and(|c| c.seen_from((10, 10)).is_some());
+                    let rare = osaka.plays().is_some_and(|p| p.own == ScriptId::Escalator);
                     let Some(branch) = glance(&osaka) else {
+                        assert!(!(open && !talking && fed) || rare, "{at}: no glance");
                         continue;
                     };
                     assert!(open && !talking && fed, "{at}");
@@ -14657,10 +14795,9 @@ mod tests {
                 }
             }
             match hour {
-                Some(_) => assert!(
-                    (n / 5..n / 2).contains(&glanced),
-                    "{h}:{m}: {glanced} of {n}"
-                ),
+                // Her rare musing comes first now and then (a musing in
+                // three on a day it's open).
+                Some(_) => assert!(glanced >= n / 2, "{h}:{m}: {glanced} of {n}"),
                 None => assert_eq!(glanced, 0, "{h}:{m}"),
             }
         }
@@ -16783,7 +16920,14 @@ mod tests {
                 let (Act::Idle { until, .. } | Act::Use { until, .. }) = osaka.act else {
                     panic!("{at}");
                 };
-                osaka.tick(until, None, &terrain, &chances, &mut rng);
+                // A tick handles at most 64 of her moments, and a nap's
+                // frames can be more: tick until nothing at its end is left.
+                for _ in 0..8 {
+                    osaka.tick(until, None, &terrain, &chances, &mut rng);
+                    if osaka.due() > until {
+                        break;
+                    }
+                }
                 assert!(
                     osaka.credited.contains(&(*into, 1.0, until)),
                     "{at}: {:?}",
@@ -18492,7 +18636,9 @@ mod tests {
     /// (from her afternoon into dusk, the dusk's), none twice; leaning on
     /// the sill all the while. Drawn from her decision's whims, not her
     /// stream: the same whims say the same however her stream runs. Over
-    /// whims, every count from none to three comes.
+    /// whims, every count from none to three comes (the levers as built,
+    /// none to three in every mood: what her mood draws is
+    /// `her_mood_says_how_much_she_muses_at_her_sill`'s to say).
     #[test]
     fn at_her_sill_she_muses_on_the_sky() {
         use super::super::art::Sky;
@@ -18505,6 +18651,7 @@ mod tests {
                 let at = format!("whims {whims} stream {stream}");
                 let mut rng = Rng(stream);
                 let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+                osaka.stillness = Stillness::NEUTRAL;
                 osaka.splice_rows = &[];
                 osaka.whims = Whims(whims);
                 // 16:58 on a Monday: her dusk comes 20 s in (two game

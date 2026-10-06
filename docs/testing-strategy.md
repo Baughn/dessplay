@@ -824,9 +824,13 @@ piece she made over 100 seeds, with and without chat every 37 s. The
 visit censuses run unfed (`Room.start: None`), so they compare with
 earlier phases. Every census driver (the visits, the fed afternoon,
 the band, the day census) steps to each chat line's own moment and
-delivers it there (`Room::step_from`), as the client does, not at the
-first step past it; `chat_lines_come_at_their_own_time` holds both
-drivers to the room's cadence, line for line. The **day census** (`day_census`, ignored, about a
+puts it in her view there (`Room::step_from`), not at the first step
+past it; `chat_lines_come_at_their_own_time` holds both drivers to the
+room's cadence, line for line. She sees it at her next paint, which her
+wakes time (a day room's live line paints at once); the client
+re-renders on a chat line, so it paints her then: making the drivers
+paint on a line is open (phase 5c step 8c's review), one re-record and
+a re-measure of the chat cells. The **day census** (`day_census`, ignored, about a
 minute in release: `cargo test --release -p dessplay --lib day_census
 -- --ignored --nocapture`) runs a game week from Monday 00:00, fed, in
 each room at three seeds, on Oct 31 (a date that owes her calendar's
@@ -843,20 +847,24 @@ moves on a fed afternoon to a band per mood, the same in every room,
 quiet and at the room's chat cadence: moving in sight after the warm-up
 as a pooled share of her time in sight, between a floor and a ceiling,
 and a cap on her set-offs a minute (the user's: a set-off draws the eye
-the same in any room). Every threshold stands at least 3σ (of the mean of
+the same in any room; the bare stage has lower floors). Every threshold stands at least 3σ (of the mean of
 the visits run) from the cell's aim. At the gate's two seeds that makes
 3σ on the share about 13 to 34 points (a single stage visit reads from
 a few % to about 80% moving), so the gate checks little: "too still" all
 but never fails, and what's left is a gross excess of moving or of
 set-offs. Passing at the gate is not evidence the band is met (the user:
-"I'll know to check them if something feels off"). The band tests are
-ignored until a tuning meets the band (phase 5c's step 8b stopped on
-the stage).
+"I'll know to check them if something feels off"). The band tests run
+in the gate since phase 5c's step 8c tuned the levers (`TUNED`, read at
+the band's 17-minute visits, about 4 s a stage test), but for what the
+user shipped short (`SHORT`: the stage's industrious afternoon and its
+spread), ignored with their numbers.
 `CENSUS_BAND_SEEDS=<n>` (`test_support::census_band_seeds`, like
 `proptest_cases`) runs the full-strength check at step boundaries, in
 release under `--profile band` (minutes a test), where the thresholds
 narrow to the band itself: each line prints the N that takes, and the
-run uses the largest. The per-room spread runs only then.
+run uses the largest (525 at step 8c: about 15 minutes a stage or home
+test). The per-room spread runs only then, at its own line's N (its
+four conditions at N = 525 outrun the profile's 20 minutes in the home).
 The band tests run in **line art only**, an exemption from looping both
 drawing modes: the band is pinned in what the user's client draws, and
 the home and resident run identically in either mode.

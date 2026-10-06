@@ -601,7 +601,9 @@ fn her_wall_clock_comes_after_the_days_entry() {
                 };
                 let mut visits = None;
                 let mut lines: Vec<&str> = Vec::new();
-                let mut end = now + 240_000;
+                // Four minutes, and her longest still stretch (she's
+                // given nothing while she dozes).
+                let mut end = now + 240_000 + osaka::longest_still_any_ms();
                 while now < end {
                     if guest.ledger.clock_sent {
                         // On a few seconds, for her to say so.

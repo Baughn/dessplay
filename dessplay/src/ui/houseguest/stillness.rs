@@ -7,11 +7,12 @@
 //! tuning that pins the stillness band changes values here and nowhere
 //! else.
 //!
-//! What ships is [`SHIPPED`]: [`Stillness::NEUTRAL`] until the band is
-//! tuned (phase 5c step 8), every lever as it was before it existed (each
-//! linger 1, no settling, one musing a daydream, homework nodding off
-//! halfway, no nearness), so the mechanisms land without moving anything
-//! she does. Tests turn a lever on by setting [`Osaka`]'s table.
+//! What ships is [`SHIPPED`]: [`Stillness::TUNED`] (phase 5c step 8c).
+//! The mechanisms landed under [`Stillness::NEUTRAL`], every lever as it
+//! was before it existed (each linger 1, no settling, one musing a
+//! daydream, homework nodding off halfway, no nearness), which tests
+//! still use to pin what a lever alone does. Tests turn a lever on by
+//! setting [`Osaka`]'s table.
 //!
 //! [`Osaka`]: super::osaka::Osaka
 
@@ -28,6 +29,7 @@ pub(super) struct ByMood<T> {
 
 impl<T: Copy> ByMood<T> {
     /// The same in every mood.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub const fn all(value: T) -> Self {
         Self {
             ordinary: value,
@@ -56,7 +58,6 @@ impl<T: Copy> ByMood<T> {
 /// for this share of its body, nods for half what's left, then sleeps on
 /// the paper (see `script::HOMEWORK`, whose branches are in this order).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(not(test), allow(dead_code))]
 pub(super) enum NodOff {
     /// Writing for the first half (as homework always has).
     Half,
@@ -123,8 +124,9 @@ pub(super) struct Stillness {
 }
 
 impl Stillness {
-    /// Every lever as before it was made: what ships until the band is
-    /// tuned.
+    /// Every lever as before it was made: what shipped until the band
+    /// was tuned (phase 5c step 8c); tests pin a lever alone against it.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub const NEUTRAL: Self = Self {
         linger: ByMood::all(1.0),
         settle: ByMood::all(0.0),
@@ -142,11 +144,9 @@ impl Stillness {
     /// industrious one least; a dreamy one lingers and settles as an
     /// ordinary one does, and differs by her daydreams.
     ///
-    /// Not shippable alone: its musings need the longer spacing out D4
-    /// asks for (with today's 6–14 s, a session's second musing, 12 s
-    /// or more on, seldom fits and goes unsaid), which comes with the
-    /// tuning.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// Its musings need the longer spacing out D4 asks for (with 5b's
+    /// 6–14 s, a session's second musing, 12 s or more on, seldom fits
+    /// and goes unsaid): `SPACE_OUT_MS` is 10–28 s with it.
     pub const STARTING: Self = Self {
         linger: ByMood {
             ordinary: 1.0,
@@ -184,6 +184,23 @@ impl Stillness {
         near: true,
     };
 
+    /// What ships (phase 5c step 8c): [`Stillness::STARTING`], but an
+    /// industrious Osaka lingers a little longer (0.85, not 0.7), which
+    /// brings the furnished home's industrious afternoon under its
+    /// ceiling (step 8b's run c3), and a dreamy one a little less than an
+    /// ordinary one (0.85, not 1), which keeps her afternoons where she
+    /// has text above her off the band's floor: her long daydreams are
+    /// her stillness, not her lingering (phase5c/baseline.md, "Shipped
+    /// (step 8c)").
+    pub const TUNED: Self = Self {
+        linger: ByMood {
+            industrious: 0.85,
+            dreamy: 0.85,
+            ..Self::STARTING.linger
+        },
+        ..Self::STARTING
+    };
+
     /// `ms` drawn for a still act she chose, lingered as her `mood` does.
     pub fn lingered(&self, mood: Mood, ms: u64) -> u64 {
         (ms as f64 * self.linger.of(mood)).round() as u64
@@ -215,4 +232,4 @@ impl Stillness {
 }
 
 /// The levers as she ships with them.
-pub(super) const SHIPPED: Stillness = Stillness::NEUTRAL;
+pub(super) const SHIPPED: Stillness = Stillness::TUNED;

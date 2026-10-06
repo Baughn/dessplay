@@ -1070,16 +1070,19 @@ impl Shown {
     }
 
     /// Where she'd stand to look out of it (a window), leaning on its
-    /// sill (phase 5c D6), in the order she tries them: just outside its
-    /// end, her face over the glass, facing into it: first at the end she
-    /// faces it from the way it was hung (its left end, hung facing
-    /// right), then at the other. Her box takes in the window's end
-    /// columns (it hangs low), and nothing else may be in it: a sofa the
-    /// window hangs behind blocks that end, so she leans at it from its
-    /// free one.
+    /// sill (phase 5c D6), in the order she tries them: at its end, her
+    /// face over the glass, facing into it: first at the end she faces it
+    /// from the way it was hung (its left end, hung facing right), then at
+    /// the other. As the approved sheet stands her: facing right, her box
+    /// centred on its first column; facing left, a column outside its
+    /// last (the lean's figure sits a column toward her back in its box,
+    /// so the two aren't mirror images: phase 5c step 8c). Her box takes
+    /// in the window's end columns (it hangs low), and nothing else may be
+    /// in it: a sofa the window hangs behind blocks that end, so she
+    /// leans at it from its free one.
     pub fn look_out_spots(&self) -> [i32; 2] {
         let (cols, _) = self.size();
-        let (left, right) = (self.left - 1, self.left + i32::from(cols));
+        let (left, right) = (self.left, self.left + i32::from(cols));
         match self.facing {
             Facing::Right => [left, right],
             Facing::Left => [right, left],
@@ -2999,10 +3002,17 @@ mod tests {
     fn a_window_comes_in_where_she_can_look_out() {
         let rows = empty("Users", 30, 9);
         let clean = Buffer::with_lines(rows.iter().map(String::as_str));
-        // A letter just above the floor where her box would be, leaning
-        // at a window against either wall (its free end's spot).
+        // A letter where her box would be, leaning at a window against
+        // either wall (its free end's spot). Against the left wall, just
+        // above the floor. Against the right wall (columns 25-28, hung on
+        // rows 5-6) she leans facing right with her box centred on its
+        // first column (23-27, rows 4-7, as the approved sheet stands
+        // her): the letter at (27, 4) is in that box, above the window
+        // and clear of the parcel it comes in, and not in a box centred
+        // a column further out (22-26).
         let mut busy = rows.clone();
-        busy[7] = format!("│      x{}x      │", " ".repeat(14));
+        busy[7] = format!("│      x{}│", " ".repeat(21));
+        busy[4] = format!("│{}x │", " ".repeat(26));
         let busy = Buffer::with_lines(busy.iter().map(String::as_str));
         let nooks = [(Nook::Users, clean.area)];
         for (props, buf, side, looks) in [

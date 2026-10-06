@@ -657,9 +657,14 @@ fn she_looks_out_only_of_a_window_she_can_reach() {
             assert_eq!(seats.len(), 1, "{at}: {seats:?}");
             let seat = seats[0];
             assert_eq!(seat.item, Furniture::Window, "{at}");
+            // Facing right, her box centred on its first column, as the
+            // approved sheet has her (phase 5c step 8c: the lean's figure
+            // sits a column toward her back in its box, so a column outside
+            // would put her hands at its frame); facing left, a column
+            // outside its last (below).
             assert_eq!(
                 (seat.x, seat.y),
-                (i32::from(rect.x) - 1, window.floor),
+                (i32::from(rect.x), window.floor),
                 "{at}: at its near end"
             );
             assert_eq!(seat.facing, sprite::Facing::Right, "{at}");

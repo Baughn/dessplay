@@ -1,6 +1,6 @@
 # DessPlay Design Document
 
-Last updated: 2026-10-06
+Last updated: 2026-10-07
 
 A synchronized video player for watch parties. Terminal-first, built for
 reliability over flaky connections. Server-coordinated, including relayed
@@ -1402,8 +1402,8 @@ this section states what is built.
   (lounging, napping, a day's sleep, homework, watching TV, reading,
   looking out of the window). Her act runs on, its time and what it
   eases her by unchanged: in its own pose she turns to the chat (lying
-  down she doesn't turn over, and at her desk or a sill she keeps
-  facing it), `!` then `?`, then watches plain-faced until her watch is
+  down she doesn't turn over, and at her desk, a sill or a strip she
+  borrowed she keeps facing it), `!` then `?`, then watches plain-faced until her watch is
   over, her act's own bubble hidden meanwhile (what she's saying shows
   over it, as over any look), and is at it as before (at a piece,
   turned back to it). What her act's script said under the look (a
@@ -1496,7 +1496,8 @@ this section states what is built.
   lingered as one), then slides it back the way it came, a cell a step,
   and the line is whole. She stays put from taking hold to letting go:
   the walk is her one set-off. Reading it she looks up at a chat line
-  where she is; tearing it off or sliding it back, a line stops her.
+  where she is, without turning from the tear; tearing it off or
+  sliding it back, a line stops her.
   **She never leaves it torn:** text is out of its line only while she
   holds it; the moment she doesn't (cut short, her grip lost, someone at
   the keys while it's in the chat, moved on, the stage placing her),
@@ -1544,7 +1545,9 @@ this section states what is built.
   swap in reach) as base × fit × cooldown and picks at random, weighted,
   among the top four. Ten needs (0–1) set the fit: *sleepy* rises over a
   visit, and a bed answers it best, a nap on a sofa well and a doze on the
-  floor a little, so she dozes more as a visit goes on; *restless* starts
+  floor a little, so she dozes more as a visit goes on (on the floor only
+  while comfort asks too: sleepiness alone loses there to spacing out);
+  *restless* starts
   high, rises steadily, and moving answers it; *tidy* rises while a line is
   on offer and a pull answers it; *mischief* rises slowly and a swap
   answers it; *hungry* rises over twenty minutes and a snack from her
@@ -1568,7 +1571,8 @@ this section states what is built.
   accident). An offer's fit is 0.1 + Σ need² × amount × 2 × how well its
   spot answers that need (and how fresh, for fun) — 0.5 for an offer no
   need wants, and never below 0.5 for a parcel or her part-time job, which
-  she takes whatever she feels. She arrives wide awake (sleepy 0), keen to
+  she takes whatever she feels, or for spacing out, worth doing for its
+  own sake. She arrives wide awake (sleepy 0), keen to
   move (restless 0.7), mischief and hunger at 0.2, nesting at 0, beauty
   at 0.3, the rest at 0.5: that's her afternoon. Her routine changes
   some of it (see *Her routine*).
@@ -1604,9 +1608,9 @@ this section states what is built.
   sinking onto her knees); lounging, to a nap from the same seat of the
   same sofa (when napping there is on offer); leaning on her window's
   sill, to sitting in front of it, then to dozing there or watching the
-  clouds under it (see *Her window and wall clock*). (Its odds ship at 0
-  in every mood until the stillness band is tuned, so for now none of
-  these happen.) Lying back, a doze,
+  clouds under it (see *Her window and wall clock*). Its odds: lazy 0.6,
+  ordinary and dreamy 0.35, industrious 0.15; from sitting she dozes
+  where she sits half the time. Lying back, a doze,
   watching the clouds and a nap are as far as it goes. Like a leftover or a heading it's a
   continuation of what she chose, not a new choice: it skips the roll,
   isn't one of her recent choices, and eases her as its own want
@@ -1627,12 +1631,15 @@ this section states what is built.
   exercise, lying on her front, chores, a snack, the cat, homework (on
   the floor too; her
   mood moves where it nods off instead), her night or a trial sit, nor
-  watching until her TV holds a picture (its static is animated). **A
+  watching until her TV holds a picture (its static is animated):
+  lazy ×1.5, ordinary ×1, dreamy and industrious ×0.85. **A
   daydream** (a musing spacing-out) holds as many musings as her mood's
   whim says, the first as ever (or a riddle, which holds no more), each
   next a gap on while it lasts, waiting while she speaks or looks up at
   the chat; those that don't fit before it ends go unsaid; with none she
-  only spaces out. Her rare musing and a glance at her clock aren't
+  only spaces out (lazy none to two, ordinary one to three, dreamy two
+  to four, industrious none or one; spacing out lasts 10–28 s before
+  her mood lingers over it). Her rare musing and a glance at her clock aren't
   musings of hers: they take a daydream's place at their own odds in
   every mood, a daydream of none included, and hold no more. Her
   musings cool as any line does (ten minutes each, eight of them), so
@@ -1640,20 +1647,25 @@ this section states what is built.
   a piece of are on her own floor whenever it has any, the nearer
   likelier; a seat is likelier the nearer it is (another floor counts as
   40 columns more), and none is ruled out; where she wanders has no
-  weight. The values (odds, stretch, musings, nod-off, nearness on or
-  off) are the stillness band's tuning; until it, each lever is neutral
+  weight. Her homework nods off a third of the way in lazy, five sixths
+  industrious, halfway otherwise. These values are the stillness band's
+  tuning (phase 5c step 8c)
   (why: [decisions](decisions.md#her-stillness-levers-settling-in-lingering-daydreams-nearer-spots-2026-10-06)).
   **The stillness band** is an aim the tuning holds her to (phase 5c),
   read on a fed afternoon: her moving in sight as a share of her time in
   sight, and her set-offs (each start of a walk, a hop or a door) a
   minute in sight, by her mood, the same in every room, quiet or with
   chat: lazy 5–17% and at most 1.5 set-offs a minute, ordinary and
-  dreamy 8–26% and 2.25, industrious 12–31% and 3; and in each room,
-  industrious moves at least 1.6× as much as lazy. Walking to a job
+  dreamy 8–26% and 2.25, industrious 12–31% and 3, but for the floors of
+  a bare room that keeps her things close (her made pieces, the lines on
+  her own floor), lazy 4, ordinary and dreamy 6, industrious 9; and in
+  each room, industrious moves at least 1.6× as much as lazy. Walking to a job
   counts as moving; exercise in place and kicking her feet count as
   still; time out of sight (away, a door's hidden beats, her shift)
-  counts as neither. Not met yet: under these caps the stage's short
-  trips hold it at about its floor
+  counts as neither. Met in every room and mood but two, shipped short
+  by the user's word: the bare stage's industrious afternoon with chat
+  (8.4% against its floor of 9) and its spread (1.39), her moods
+  reading alike there
   (why: [decisions](decisions.md#her-stillness-band-per-mood-caps-2026-10-06)).
   Something is on offer only when there's a way to do it from where she
   stands (a method that binds: a spot on her floor, a way off it, a
@@ -2089,7 +2101,7 @@ this section states what is built.
   the evening the TV, the evening before a day off a book, the morning a
   stretch, and gazing doubles from 17:00 to 05:00; homework is three
   times as likely in its own slot, where it lasts 2–4 min instead of
-  30–60 s. Sleepy rises at 0.3× by day, 1× in the evening and 3× at
+  37–75 s. Sleepy rises at 0.3× by day, 1× in the evening and 3× at
   homework and at night; hungry 2× at breakfast and dinner (her mood's
   rate and her day's together never above 4×). She arrives in the
   evening a little sleepy (0.3; 0.5 at homework time, 0.8 at night) and
@@ -2223,29 +2235,34 @@ this section states what is built.
   flap, as any parcel) the first time her clock is running, her TV is
   out of its box, and she's up, in sight, greeted, quiet and done with
   the day's calendar, with no other parcel's flap open. The window is sold after the cat bed. She
-  looks out of it leaning on its sill, chin in her hands, just outside
-  either end (her face over the glass; first at the end it was hung to
-  face from, and never in front of a sofa it hangs behind), for her long
+  looks out of it leaning on its sill, chin in her hands, at either end
+  (her face over the glass: facing right, her box centred on its first
+  column, facing left a column outside its last, as the approved sheet
+  stands her; first at the end it was hung to face from, and never in
+  front of a sofa it hangs behind), for her long
   daydream: one to three minutes (as long again as her mood lingers),
   curious, first saying what the sky shows ("Sunny!", "Pretty...",
   "Stars!"), then musing on it up to three times, as many as her mood's
-  share says (for now none to three, by her whim, in every mood) ("That
+  share says (lazy none to two, ordinary one to three, dreamy two or
+  three, industrious none or one) ("That
   one's a cat.", "The moon's followin' me."), each a gap on, from the sky
   as it is as she says it, waiting while she speaks or looks up at the
-  chat. It's rarer than her other daydreams (its base 3), answers
-  daydreams and fun, twice as likely from 17:00 to 05:00. Settling in
-  from the sill, she sits down in front of it (chin in her hands, looking
+  chat. Its base is 6, as gazing up's and spacing out's; it's on offer
+  only with her window in reach, answers daydreams and fun, and is
+  twice as likely from 17:00 to 05:00 (in a furnished home with the
+  window, about four or five a game day). Settling in
+  from the sill, she sits down in front of it where she leaned (chin in her hands, looking
   up; a chat line has her look up without turning from it), then dozes
   off there or, on the doze's other side, lies back under it watching the
   clouds (eyes open, held, one line of the sky at most; turned so her
   head's under the glass, however she was turned): watching the clouds
   is only ever under her window, and is no doze (a chat line has her
-  look up). Settling in ships off for now (see *Settling in*)
+  look up)
   (why: [decisions](decisions.md#her-window-is-a-long-daydream-2026-10-06)).
   With her wall clock on the strip she stands on, she glances up
   at it before going to bed ("Oh! It's late!") and as she leaves for
-  school ("Time for school!"), once each, and now and then of an
-  afternoon (a musing in three, once a visit) says the hour, roughly
+  school ("Time for school!"), once each, and of an afternoon, the
+  first daydream she starts quiet (once a visit), says the hour, roughly
   ("Three-ish.")
   (why: [decisions](decisions.md#her-window-and-her-wall-clock-2026-10-04)).
 
@@ -2278,6 +2295,8 @@ this section states what is built.
   - **The chat** is where people read: whatever would take her into the
     chat pane — a pull or swap there, a climb or hop or door that lands
     her there, a walk along a floor into it — is a tenth as likely.
+    What she does where she already stands in it (spacing out, an act on
+    the spot, settling in) isn't weighed.
   - **Local input** puts back at once everything she moved in the chat
     (swapped letters, a sneeze's scatter, pulled lines, text she's
     tearing off or a strip she borrowed); nothing scheduled for them is

@@ -212,10 +212,11 @@ impl Pose {
     /// the user's approved art keeps her facing; on her front, held to
     /// that too, pending the user's word). Not at a piece her pose is
     /// aimed at (the desk she writes or eats at, the sill she leans on or
-    /// sits in front of):
-    /// mirrored, she'd reach into the air with the piece behind her. She
-    /// looks with her face and bubble alone there. Wildcard-free, so a
-    /// new pose doesn't compile until it's classed.
+    /// sits in front of, the line she tore the strip she reads from):
+    /// mirrored, she'd reach into the air with the piece behind her (the
+    /// strip held out away from its line). She looks with her face and
+    /// bubble alone there. Wildcard-free, so a new pose doesn't compile
+    /// until it's classed.
     pub fn turns(self) -> bool {
         match self {
             Self::LieBack(_)
@@ -231,7 +232,9 @@ impl Pose {
             | Self::SillLean
             // In front of her window, chin in her hands, her face up at
             // its sky.
-            | Self::UnderSill => false,
+            | Self::UnderSill
+            // Beside the line she tore it from (phase 5c step 8c).
+            | Self::ReadStrip(_) => false,
             Self::Stand
             | Self::Walk(_)
             | Self::Climb { .. }
@@ -251,7 +254,6 @@ impl Pose {
             | Self::Eat(_)
             | Self::EatAndagi(_)
             | Self::Pet(_)
-            | Self::ReadStrip(_)
             | Self::CrossLegged
             | Self::SitDoze(_) => true,
         }

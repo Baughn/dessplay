@@ -1,6 +1,6 @@
 # DessPlay Decision Log
 
-Last updated: 2026-10-06
+Last updated: 2026-10-07
 
 The reasoning behind the rules in [design.md](design.md): the failure that
 motivated each one, the alternatives that were rejected, and the date it
@@ -3700,7 +3700,8 @@ and moves where her homework nods off; a musing daydream holds several
 musings; a line to pull, letters to swap and text to make a piece of
 are on her own floor first, and nearer spots are likelier. Each lever's
 values come with the stillness band's tuning (phase 5c step 8); they
-land neutral. See [design.md](design.md#houseguest).
+landed neutral, and shipped in step 8c ("Her stillness ships", below).
+See [design.md](design.md#houseguest).
 
 **Why:** phase 5c's band asks for less moving in sight, and lazy moods
 noticeably stiller than industrious ones, without a mood factor on
@@ -3880,7 +3881,8 @@ the runs, against the band's own 31 ÷ 12 = 2.58: holding the home under
 31 leaves the stage at 10–13, at or within about a point of its floor
 of 12, and the tuning may not aim a cell at its floor. A room-selective
 lever, or a different rule for the stage, is the user's choice
-(phase5c/baseline.md, "Step 8b").
+(phase5c/baseline.md, "Step 8b"). The user chose lower floors on the bare
+stage and to ship ("Her stillness ships", below).
 
 **Watching out of lingering:** her TV shows animated static until phase
 5c's held picture (D7); lingered, a lazy day would watch the busiest
@@ -4168,7 +4170,9 @@ piece's: otherwise the sofa's cells over the window would "rain back"
 to the window's glyph. Nothing else ever overlapped, so both orders are
 unchanged for every other home (every golden trace byte-identical).
 
-**Why she leans from just outside an end:** her face over the glass,
+**Why she leans from just outside an end** (amended in step 8c: facing
+right she now stands a column further in, as the sheet has her; see "Her
+stillness ships", below): her face over the glass,
 her box takes in the window's end columns (her own window's cells are
 exempt from the room she needs, `clear_of`'s `of`), and a sofa the
 window hangs behind blocks that end, so she leans from the free one
@@ -4242,10 +4246,11 @@ still where she sits; else she dozes. A sit on a bare floor still lies
 back to doze. Lying down she turns end to end from how she sat, so her
 head is under the glass.
 
-**Ships inert, as every settle-in does:** settling's odds are the band's
-tuning, all 0 until it (`Stillness::NEUTRAL`). The sill's session, its
-length and rarity ship now; sitting in front of the window and watching
-the clouds come with settling on, so the changelog doesn't claim them.
+**Shipped inert, as every settle-in did:** settling's odds were the
+band's tuning, all 0 until it (`Stillness::NEUTRAL`). The sill's session,
+its length and rarity shipped then; sitting in front of the window and
+watching the clouds came with settling on (step 8c, "Her stillness
+ships", below), with base 6 and the glance's roll gone.
 
 **Measured (the day census, 6 runs a room, a game week each):** in the
 census home with a window, 14 look-outs in the 42 game days (683 before:
@@ -4265,6 +4270,138 @@ the once a visit never binds (she glances far less than once a visit).
 So it's not built: the starving is in the glance's other gates (her
 clock on the strip she stands on, of an afternoon, quiet, a musing in
 three, on a daydream's start), and which to ease is the user's call.
+
+## Her stillness ships (2026-10-07)
+
+**Rule:** The stillness levers ship (`Stillness::TUNED`): lingering
+(lazy ×1.5, ordinary ×1, dreamy and industrious ×0.85), settling in
+(lazy 0.6, ordinary and dreamy 0.35, industrious 0.15; from sitting,
+dozing where she sits half the time), daydream musings by mood, homework's
+nod-off by mood, nearer spots; with step 8's lengths and needs (8b's run
+c3): restless rises over 5 minutes, tidy over 90 s, mischief over 6; Walk
+base 9, Travel 7; spacing out is worth doing for its own sake, 10–28 s; a
+chosen stand 3–8 s; sitting 15–40 s, lying back and dozing (sitting up
+or under a book) 20–60, gazing 6–14, lounging 27–60, napping 45–105,
+watching 32–82, reading 30–65, homework 37–75. Sitting in front of her
+window lasts as sitting does, watching the clouds as lying back does.
+Looking out's base is 6. Of an afternoon, the first daydream she starts
+quiet with her clock in view glances at the hour (once a visit). Reading
+a borrowed strip she looks up at chat without turning. The band's floors
+on the bare stage are lower (lazy 4, ordinary and dreamy 6, industrious
+9). See [design.md](design.md#houseguest).
+
+**Why lower floors on the stage (the user's call, 2026-10-06: "ship it,
+lower stage floors"):** a room that keeps her things close (the pieces
+she made, the lines on her own floor) moves her in shorter trips, two to
+four seconds a set-off against eight to eleven in a furnished home. At
+the same set-off rate its share runs lower, and under a per-mood cap on
+set-offs it can't reach the furnished floors without her setting off
+more often, which is what draws the eye. So the stage's floor says what
+"not dead" means there; its ceilings and caps are the same.
+
+**Why dreamy lingers less than ordinary (0.85):** with settling on, the
+reading on her back of 10a and the sill chain of 11, a dreamy afternoon
+where her text is above her (the band's resident) fell under its floor
+(8.6 / 7.0 at linger 1). A dreamy Osaka is still by her daydreams (two to
+four musings a session, sessions as long as they last), so lingering a
+little less over her other still acts keeps her moods' ordering and
+brings her in (9.2 / 8.6); the home's dreamy afternoon moves from 20 to
+21. Lazy lingering more (2.0) would have taken the resident's lazy cell
+under its floor; it stays 1.5.
+
+**What shipped short, by the user's word ("if one cell can't be brought
+in, ship the closest"):** the bare stage's industrious afternoon with chat
+(8.4% at full strength, its floor 9; quiet 9.1, in) and the stage's
+spread (industrious ÷ lazy 1.39 against 1.6). An industrious linger of
+0.7 (the design's start) brings the stage's chat cell to 9.2, but the
+furnished home's industrious afternoon to 32.4 against its ceiling of 31,
+the old conflict between the two rooms; Tidy back to 60 s moved the stage
+within noise again. On the stage her moods read alike: every mood reads on
+her back about a sixth of the visit there, and an industrious Osaka,
+whose needs fill slowest, spaces out most (14% of the visit, ordinary
+7.5%): spacing out for its own sake weighs the same in every mood, so
+where little else calls her it fills an industrious afternoon most, the
+lead for the stage's spread (a mood factor on it). The chat cell's test
+stays ignored with its numbers (`tests/band.rs`, `SHORT`; its quiet cell
+is in the gate), and the spread's, for the user to weigh.
+
+**Why base 6 for looking out (the user's answer):** measured with the
+levers neutral, about two long daydreams at the window a game day in a
+furnished home, the design's "a few a game day"; base 3 gave one in
+three days. With the levers on, the day census's home looks out about
+4.5 times a game day (191 in 42), each look lingered by her mood: more
+than the user expected, left to the user (phase5c/baseline.md, "Shipped
+(step 8c)").
+
+**Why the hour glance lost its roll (the user's answer):** her daydreams
+are long and few now, so one in three of their starts almost never came
+(1–2 a week in the census home; now 19). Every other gate stays: an
+afternoon, her clock on the strip she stands on, quiet, a daydream's
+start, once a visit.
+
+**Why a borrowed strip doesn't turn her:** she reads it beside its tear,
+facing the line; turned, she'd hold the strip out over the air, away
+from where it came from, as at her desk or the sill (`Pose::turns`).
+
+**Why the facing-right lean moved a column in:** rendered at the spot
+the code used, her hands met the window's frame where the facing-left
+lean has them on the sill: the lean's figure sits a column toward her
+back in its box, so the two ends aren't mirror images in cells. The
+approved sheet stands her facing right with her box centred on the
+window's first column, and the code now does too (`look_out_spots`).
+The overlap rule with a sofa reads the same spots, so a sofa hiding the
+window's right corner now blocks a column more of its left end.
+
+**Why `BAND_MINUTES` is 17:** the band's guard asks for the warm-up and
+twice her longest still act; with lingering and settling on, the sill's
+chain is longest (a lazy lean of 270 s, 60 s sitting in front, 90 s
+watching the clouds: 7 minutes).
+
+**Why the golden driver cuts at its events (landed alone, before):** a
+golden step's length is set by her wakes, so with delivery at the first
+step past an event a wake that only changes how she looks moved what she
+did, and a trace diff read further than the change. The census drivers
+already cut there (step 8b). A key press or a cue paints at its time; a
+chat line or a focus change comes into her view then but she sees it at
+her next paint, which her wakes time (the client paints on a chat line).
+Painting the drivers on a chat line is left open: one more re-record,
+and every chat cell re-measured.
+
+**Why watching is longer though it doesn't linger (32–82 s, was 20–45):**
+step 8's lengths, which 8b's run c3 carried and the user shipped,
+lengthen every still use alike, watching with them, so a visit's share
+of watching keeps its place among her uses. Lingering is another thing:
+it would stretch only a lazy watch, half as long again, and watching
+stays out of it until her TV holds a picture (phase 5c D7, step 12a)
+rather than animated static.
+
+**Sleepiness alone no longer lays her on the floor:** spacing out, worth
+doing for its own sake now, outweighs a floor doze that only her
+sleepiness asks for; with comfort wanting too, the doze is still her pick
+there (`sleepiness_draws_her_to_lie_down`). Over a visit she still dozes
+more as she tires: she gets uncomfortable as well as sleepy.
+
+**The chat's tenth governs going in, not staying:** a resident's offers
+that would take her into the chat are a tenth as likely, but what she
+does where she stands (spacing out, an on-the-spot act, settling in from
+it) has no chat weight. With the levers on, once in the chat she stays
+longer, as she does anywhere: a resident's share of her time there rose
+from about 5% to 9–13% (a visitor's 16–21%, from 25%;
+`a_resident_mostly_keeps_out_of_the_chat` pins it under 0.7 of a
+visitor's). Weighing her staying too (the on-the-spot wants and settling
+paying the tenth while she stands in the chat) is the user's call: it
+would have her walk out of the chat more, so it moves every resident
+cell of the band and asks for a re-measure.
+
+**The settle-ins under the window sit where she leaned:** sitting in front
+of the window and dozing there keep her lean's spot, so on the approved
+sheet's terms they sit a column further out facing right (her face at
+the window's first column, not its second) and, facing left, beside its
+end rather than under its last columns; watching the clouds, turned end
+to end, has her head under the glass either way. Settling in is in
+place, with no step, and a spot further in would need its own clearance
+(a sofa covers the window's other corner); the difference is accepted
+(phase5c/art/snippets.md).
 
 ## Houseguest chooses by needs among the top few (2026-09-28)
 

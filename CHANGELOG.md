@@ -9,6 +9,17 @@ append-only; you cannot reword or remove existing entries.
 
 Add new days at the top. Add new entries at the bottom of existing days.
 
+## 2026-10-07
+
+- Changed: Osaka is calmer: she lingers, settles in, daydreams and
+  wanders less, and a lazy day looks lazy.
+- Added: she sits under the window, dozes off sitting up, and lies under
+  it watching the clouds.
+- Changed: she looks out of her window more often, and of an afternoon
+  her first daydream with her clock in view tells you the hour.
+- Changed: reading a borrowed strip of text, she looks up at a chat line
+  without turning away from it.
+
 ## 2026-10-06
 
 - Changed: after glancing at a chat line, Osaka gets back to what she was
