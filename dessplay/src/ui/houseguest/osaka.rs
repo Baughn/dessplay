@@ -16674,10 +16674,12 @@ mod tests {
     /// before, then times her mood's linger), the whole of the design's
     /// list and nothing else: sitting, lying back, gazing, dozing where
     /// she sits; spacing out (plain, a musing, her rare musing); and the
-    /// still uses (lounging, napping, a day's sleep, watching, reading,
-    /// looking out). Not lying on her front, exercise, homework (its
-    /// nod-off moves instead), chores, a snack, the cat, nor a trial sit.
-    /// Without the levers, nothing lingers.
+    /// still uses (lounging, napping, a day's sleep, reading, looking
+    /// out). Not lying on her front, exercise, homework (its nod-off
+    /// moves instead), chores, a snack, the cat, nor a trial sit; nor
+    /// watching, until the TV holds a picture (phase 5c D7: a lazy day
+    /// would watch animated snow half as long again). Without the
+    /// levers, nothing lingers.
     #[test]
     fn her_mood_lingers_over_the_still_acts_she_chooses() {
         let terrain = floor_at(15);
@@ -16767,7 +16769,7 @@ mod tests {
         for what in Use::ALL {
             let lingers = matches!(
                 what,
-                Use::Lounge | Use::Nap | Use::Sleep | Use::Watch | Use::Read | Use::LookOut
+                Use::Lounge | Use::Nap | Use::Sleep | Use::Read | Use::LookOut
             );
             cases.push((format!("{what:?}"), Box::new(using(what, false)), lingers));
         }

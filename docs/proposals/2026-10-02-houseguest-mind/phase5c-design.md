@@ -479,3 +479,13 @@ Steps from here, renumbered (the art "wiring" step folds into the steps that use
     windowed home; a TV-only home and a text-filled home or resident printed.
 12. D7, the TV picture, after its own two-lens critique.
 13. Census pass and docs.
+
+**Step 8b stopped** ([baseline.md, "Step 8b: the retune, stopped"](phase5c/baseline.md)): the
+harnesses deliver chat lines at their own times (committed alone), the band has the per-mood rule
+(still ignored; `BASELINE` re-measured at the new driver), and watching is out of lingering. Under a
+per-mood cap a cell moves at most its cap × the seconds a set-off moves her; on the stage that's a
+point or two over its floor in every mood. Within industrious the home moves 2.35–2.97× the stage
+across the runs (the band's own edges: 31 ÷ 12 = 2.58), so holding the home under 31 leaves the
+stage at or within about a point of its floor. Every lever that moved the stage moved the home with
+it (the one stage-only lever tried, Tidy 90 s, moved the stage only within noise), so the next move
+(a room-selective lever, a stage rule, or shipping the home and resident alone) is the user's.

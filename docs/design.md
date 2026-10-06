@@ -1563,9 +1563,10 @@ this section states what is built.
   trial sit), nor what was cut short. **Lingering**: her mood stretches
   the length she draws for a still act she chose (sitting, lying back,
   gazing, dozing where she sits, spacing out (her rare musing too),
-  lounging, napping, a day's sleep, watching, reading, looking out); not
+  lounging, napping, a day's sleep, reading, looking out); not
   exercise, lying on her front, chores, a snack, the cat, homework (her
-  mood moves where it nods off instead), her night or a trial sit. **A
+  mood moves where it nods off instead), her night or a trial sit, nor
+  watching until her TV holds a picture (its static is animated). **A
   daydream** (a musing spacing-out) holds as many musings as her mood's
   whim says, the first as ever (or a riddle, which holds no more), each
   next a gap on while it lasts, waiting while she speaks or looks up at
@@ -1579,9 +1580,20 @@ this section states what is built.
   likelier; a seat is likelier the nearer it is (another floor counts as
   40 columns more), and none is ruled out; where she wanders has no
   weight. The values (odds, stretch, musings, nod-off, nearness on or
-  off) are the stillness band's tuning (phase 5c step 8); until it, each
-  lever is neutral
+  off) are the stillness band's tuning; until it, each lever is neutral
   (why: [decisions](decisions.md#her-stillness-levers-settling-in-lingering-daydreams-nearer-spots-2026-10-06)).
+  **The stillness band** is an aim the tuning holds her to (phase 5c),
+  read on a fed afternoon: her moving in sight as a share of her time in
+  sight, and her set-offs (each start of a walk, a hop or a door) a
+  minute in sight, by her mood, the same in every room, quiet or with
+  chat: lazy 5–17% and at most 1.5 set-offs a minute, ordinary and
+  dreamy 8–26% and 2.25, industrious 12–31% and 3; and in each room,
+  industrious moves at least 1.6× as much as lazy. Walking to a job
+  counts as moving; exercise in place and kicking her feet count as
+  still; time out of sight (away, a door's hidden beats, her shift)
+  counts as neither. Not met yet: under these caps the stage's short
+  trips hold it at about its floor
+  (why: [decisions](decisions.md#her-stillness-band-per-mood-caps-2026-10-06)).
   Something is on offer only when there's a way to do it from where she
   stands (a method that binds: a spot on her floor, a way off it, a
   piece, text in reach), and she does it the way that bound.

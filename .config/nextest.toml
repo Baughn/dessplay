@@ -30,8 +30,10 @@ slow-timeout = { period = "60s", terminate-after = 2 }
 
 [profile.band]
 # The houseguest's stillness band at full strength (tests/band.rs:
-# CENSUS_BAND_SEEDS=<n> --release --run-ignored only): minutes a test. At
-# N=187 a band test took 2–4 min and the stage's spread (four cells) 6.4;
-# its own full strength, N=364, about doubles that. Kill at 20 min. At
-# the gate's seeds the band tests run about 3 s and keep the default 60 s.
+# CENSUS_BAND_SEEDS=<n> --release --run-ignored all): minutes a test, at
+# the largest N a band or spread line prints. Kill at 20 min. Under the
+# per-mood rule a stage cell aimed just over its floor may need thousands
+# of visits (phase5c/baseline.md, step 8b: N ~ 6800 for one), which no
+# run finishes inside this limit. At the gate's seeds the band tests run
+# about 3 s and keep the default 60 s.
 slow-timeout = { period = "300s", terminate-after = 4 }

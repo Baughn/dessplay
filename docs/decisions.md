@@ -3840,6 +3840,53 @@ late). So the rule's shape holds and four visits were too few to carry
 it; the test runs twelve. Its census effect is under 2 points a cell
 (phase5c/baseline.md).
 
+## Her stillness band: per-mood caps (2026-10-06)
+
+**Rule:** The stillness band is an aim, read on a fed afternoon per mood
+and the same in every room, quiet or with chat: her moving in sight as a
+share of her time in sight between a floor and a ceiling (lazy 5–17%,
+ordinary and dreamy 8–26%, industrious 12–31%), her set-offs a minute in
+sight under a cap (1.5, 2.25, 3), and industrious at least 1.6× lazy in
+each room. Watching doesn't linger until her TV holds a picture. See
+[design.md](design.md#houseguest).
+
+**Why per-mood caps (the user's call, 2026-10-06):** a set-off (a walk, a
+hop, a door) draws the eye the same in any room, so how often she sets
+off is judged by her mood alone. The share keeps its ceiling (the user's
+"about 15 lazy, 20–25 ordinary and dreamy, up to 30 industrious", a
+point or two over), and its floor only says she isn't dead.
+
+**Why the per-room cap failed** (synthesis M3, phase 5c step 4): each
+room's cap was its baseline rate scaled by the target share over the
+baseline share, so a lever that only shortened walks would fail it. But
+that froze each room's seconds moved per set-off at the baseline's, so
+the cap capped the share; and the levers shorten her trips without any
+walk getting faster, by keeping her near her things (once she no longer
+wanders off and travels, what's left is the short walk to a seat or a
+line). Step 8's tuning found the rooms needing opposite moves: the stage
+had to set off about three times as often as the home to reach its
+floor, from one shared table of lengths.
+
+**Not met yet (step 8b, stopped):** under a per-mood cap the most a cell
+can move is its cap × the seconds a set-off moves her. On the stage
+that's 2–3.5 s (a hop to a line on her own floor, a few steps to the
+piece she made), which puts its bound a point or two over its floor in
+every mood, while the home (8–11 s a set-off) has room to spare and its
+industrious cell sat over its ceiling. Every lever that moved the stage
+moved the home with it; the one stage-only lever tried (Tidy 90 s)
+moved the stage only within noise, since she is time-limited there.
+Within industrious the home moves 2.35–2.97× what the stage does across
+the runs, against the band's own 31 ÷ 12 = 2.58: holding the home under
+31 leaves the stage at 10–13, at or within about a point of its floor
+of 12, and the tuning may not aim a cell at its floor. A room-selective
+lever, or a different rule for the stage, is the user's choice
+(phase5c/baseline.md, "Step 8b").
+
+**Watching out of lingering:** her TV shows animated static until phase
+5c's held picture (D7); lingered, a lazy day would watch the busiest
+thing on screen half as long again. It joins the list when the picture
+lands.
+
 ## Houseguest chooses by needs among the top few (2026-09-28)
 
 **Rule:** Her next act is a weighted-random pick among the four

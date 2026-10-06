@@ -81,11 +81,12 @@ impl NodOff {
 pub(super) struct Stillness {
     /// Times the length she draws for a still act she chose: sitting,
     /// lying back, gazing; spacing out (musing, or her rare musing); and
-    /// the still uses (lounging, napping, watching, reading, looking out,
-    /// a day's sleep). Never exercise, chores, lying on her front kicking
-    /// her feet (it draws the eye), homework (its nod-off moves instead),
+    /// the still uses (lounging, napping, reading, looking out, a day's
+    /// sleep). Never exercise, chores, lying on her front kicking her
+    /// feet (it draws the eye), homework (its nod-off moves instead),
     /// her night, a trial sit, a glance, Setsubun or the moment after a
-    /// swap. See [`Activity::lingers`] and [`Use::lingers`].
+    /// swap; nor watching until the TV holds a picture (phase 5c D7).
+    /// See [`Activity::lingers`] and [`Use::lingers`].
     ///
     /// [`Activity::lingers`]: super::osaka::Activity::lingers
     /// [`Use::lingers`]: super::room::Use::lingers
@@ -136,8 +137,8 @@ impl Stillness {
     ///
     /// Not shippable alone: its musings need the longer spacing out D4
     /// asks for (with today's 6–14 s, a session's second musing, 12 s
-    /// or more on, seldom fits and goes unsaid), and watching lingers
-    /// over TV snow until D7's held picture. Both come with the tuning.
+    /// or more on, seldom fits and goes unsaid), which comes with the
+    /// tuning.
     #[cfg_attr(not(test), allow(dead_code))]
     pub const STARTING: Self = Self {
         linger: ByMood {

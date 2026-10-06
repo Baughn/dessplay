@@ -805,11 +805,29 @@ byte-identical. The seed-7 snapshot (`osaka_at_home_seed_7`, an insta
 snapshot) has no trace: re-accept it with `cargo insta review` only
 once the commit explains why it moved.
 
+The golden driver delivers a chat line, key press, focus change or cue
+at the first step past its time, and a step's length is set by her
+wakes. The censuses don't (below): their cells are measurements, and a
+wake that changes only how she looks would move when a line lands, and
+so the cell. A golden hash is meant to move on any change to what she
+does, and moves the same way at every run of a seed, so the goldens
+keep the crossing. Its cost is diagnostic: a change that only adds a
+wake (a blink) can move a trace past the frames it draws differently,
+so its diff reads further than the change. Cutting the golden driver
+at those times would be one deliberate re-record (not made yet). The
+property tests' drivers (`tests.rs`) deliver the same way; they check
+invariants on every frame at drawn times and measure nothing across
+builds.
+
 The sofa census (`sofa_census`, ignored; run with `--release --ignored
 --nocapture`) is the migration's checkpoint bench: what became of every
 piece she made over 100 seeds, with and without chat every 37 s. The
 visit censuses run unfed (`Room.start: None`), so they compare with
-earlier phases. The **day census** (`day_census`, ignored, about a
+earlier phases. Every census driver (the visits, the fed afternoon,
+the band, the day census) steps to each chat line's own moment and
+delivers it there (`Room::step_from`), as the client does, not at the
+first step past it; `chat_lines_come_at_their_own_time` holds both
+drivers to the room's cadence, line for line. The **day census** (`day_census`, ignored, about a
 minute in release: `cargo test --release -p dessplay --lib day_census
 -- --ignored --nocapture`) runs a game week from Monday 00:00, fed, in
 each room at three seeds, on Oct 31 (a date that owes her calendar's
@@ -822,21 +840,24 @@ clock, looking out of her window, the calendar, rare things first
 seen). It found the lunch lost to a chat line at her fridge.
 
 The **stillness band** (`tests/band.rs`, phase 5c) holds how much she
-moves on a fed afternoon to a band per room and mood, quiet and at the
-room's chat cadence: moving in sight after the warm-up as a pooled share
-of her time in sight, and a cap on her set-offs a minute. Every threshold
-stands at least 3σ (of the mean of the visits run) from the cell's aim.
-At the gate's two seeds a cell that makes 3σ 13–34 points, so the gate
-checks little: no share floor is above 10 (most are below zero, so "too
-still" all but never fails), the stage's share check can't fail at all,
-and what's left is the set-off cap and a gross excess of moving in the
-home and resident. Passing at the gate is not evidence the band is met.
+moves on a fed afternoon to a band per mood, the same in every room,
+quiet and at the room's chat cadence: moving in sight after the warm-up
+as a pooled share of her time in sight, between a floor and a ceiling,
+and a cap on her set-offs a minute (the user's: a set-off draws the eye
+the same in any room). Every threshold stands at least 3σ (of the mean of
+the visits run) from the cell's aim. At the gate's two seeds that makes
+3σ on the share about 13 to 34 points (a single stage visit reads from
+a few % to about 80% moving), so the gate checks little: "too still" all
+but never fails, and what's left is a gross excess of moving or of
+set-offs. Passing at the gate is not evidence the band is met (the user:
+"I'll know to check them if something feels off"). The band tests are
+ignored until a tuning meets the band (phase 5c's step 8b stopped on
+the stage).
 `CENSUS_BAND_SEEDS=<n>` (`test_support::census_band_seeds`, like
 `proptest_cases`) runs the full-strength check at step boundaries, in
 release under `--profile band` (minutes a test), where the thresholds
-narrow to the band itself: each line prints the N that takes (187 for
-the band, 364 for the stage's spread between moods, at the baseline's
-σ), and the run uses the largest. The per-room spread runs only then.
+narrow to the band itself: each line prints the N that takes, and the
+run uses the largest. The per-room spread runs only then.
 The band tests run in **line art only**, an exemption from looping both
 drawing modes: the band is pinned in what the user's client draws, and
 the home and resident run identically in either mode.

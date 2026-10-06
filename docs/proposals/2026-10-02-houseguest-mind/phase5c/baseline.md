@@ -5,12 +5,15 @@ that adds this file (behaviour as at `f29c482`, after D0a and D0b). Release buil
 deterministic: the fed census run twice gave identical tables. Paths are relative to
 `dessplay/src/ui/houseguest/`.
 
-**The band's baseline is now [After the shorter watch](#after-the-shorter-watch-step-5-9-minute-visits)**
-(step 5: the 5 s watch, 9-minute visits, at the end). The other tables are the 15 s watch (the fed
-afternoon's over 15 minutes).
+**The band's baseline is now step 8b's c0** ([Step 8b: the retune, stopped](#step-8b-the-retune-stopped-2026-10-06):
+step 7's state with step 8's fixes, each chat line at its own time, 9-minute visits). Before it,
+[After the shorter watch](#after-the-shorter-watch-step-5-9-minute-visits) (step 5). The older
+tables are the 15 s watch (the fed afternoon's over 15 minutes).
 
 **Step 8's tuning stopped short of the band:** [Step 8: tuning stopped](#step-8-tuning-stopped-2026-10-06)
-has every move tried, and why M3's cap and the levers can't both be met in every room.
+has every move tried, and why M3's cap and the levers can't both be met in every room. **So did
+step 8b's**, to the user's per-mood band: [Step 8b](#step-8b-the-retune-stopped-2026-10-06) has the
+runs, and why the stage's short trips hold it at its floor under a per-mood cap.
 
 Re-measured after the step's review, which tightened the definitions below. Her arrival is now a
 set-off (the warm-up's rate rises by about 0.2 a minute). A heave is only the beat she steps back (the
@@ -682,3 +685,166 @@ gaming the measure. The choice is the user's:
 - or keep the cap, and accept per-room floors below the band where the room has her things close
   (the resident, the stage), or a mood lever beyond lengths and settling;
 - or judge set-offs alone (onsets are what draw the eye) and the share only as a ceiling.
+
+## Step 8b: the retune, stopped (2026-10-06)
+
+**Measured 2026-10-06**, to the user's round-3 band (per-mood caps in every room and chat
+condition: lazy ≤ 1.5 set-offs a minute in sight, ordinary and dreamy ≤ 2.25, industrious ≤ 3.0;
+share ceilings 17 / 26 / 31, floors 5 / 8 / 12; industrious ÷ lazy ≥ 1.6 a room). **Stopped by the
+stop rule, again**, one level down from step 8's: under a per-mood cap the stage's short trips put
+the most it can move at about its floor, while the home's industrious cell is over its ceiling,
+and every lever in M5's list moves both rooms of a mood the same way. Nothing of the tuning ships:
+the commit that adds this section ships the band's new rule (still ignored), `BASELINE` re-measured
+at the new driver, and watching taken out of lingering (inert while the levers are neutral).
+
+### First: chat lines at their own time
+
+Step 8's hand-off, done first and committed alone: the census and band harnesses now step to each
+chat line's own moment (`Room::step_from`, used by both drivers), instead of delivering it at the
+first step that crosses it, whose length her wakes set. Re-measured on step 7's state (the levers
+neutral, with step 8's blink and credit fix), the band's 9-minute line-art census, 20 sets × 4
+seeds:
+
+```text
+CENSUS_MINUTES=9 CENSUS_MODES=line \
+  cargo test --release -p dessplay --lib fed_afternoon_census -- --ignored --nocapture
+```
+
+Quiet cells are identical to step 8's "1. credit" column (no line comes there); chat cells move by
+at most 0.5 points and 0.07 set-offs a minute (mean 0.10 points). These rows (c0) are now
+`tests/band.rs`'s `BASELINE`.
+
+| Room | Mood | Chat | Moving % | σ (N=4) | a visit | Set-offs/min | σ | Step 8's credit column (old driver) |
+|---|---|---|---|---|---|---|---|---|
+| stage | Ordinary | quiet | **30.6** | 6.47 | 2.9–72.4 | **4.87** | 0.59 | 30.6 / 4.87 |
+| stage | Ordinary | chat | **29.4** | 7.87 | 4.4–74.5 | **5.14** | 0.49 | 29.4 / 5.15 |
+| stage | Lazy | quiet | **21.7** | 7.23 | 2.3–70.5 | **4.18** | 0.42 | 21.7 / 4.18 |
+| stage | Lazy | chat | **24.8** | 8.00 | 5.0–67.2 | **4.41** | 0.43 | 24.8 / 4.42 |
+| stage | Industrious | quiet | **33.0** | 6.06 | 10.3–69.4 | **5.07** | 0.47 | 33.0 / 5.07 |
+| stage | Industrious | chat | **36.7** | 7.16 | 14.1–80.2 | **5.45** | 0.62 | 36.5 / 5.49 |
+| stage | Dreamy | quiet | **27.2** | 6.51 | 6.9–75.2 | **4.69** | 0.55 | 27.2 / 4.69 |
+| stage | Dreamy | chat | **30.5** | 7.06 | 5.7–71.2 | **4.95** | 0.66 | 30.2 / 5.02 |
+| home | Ordinary | quiet | **48.0** | 5.99 | 22.0–69.8 | **2.28** | 0.18 | 48.0 / 2.28 |
+| home | Ordinary | chat | **43.4** | 5.40 | 16.4–66.0 | **2.42** | 0.21 | 43.1 / 2.41 |
+| home | Lazy | quiet | **35.7** | 4.47 | 11.8–57.6 | **1.55** | 0.21 | 35.7 / 1.55 |
+| home | Lazy | chat | **33.9** | 5.83 | 14.5–60.4 | **1.74** | 0.22 | 33.4 / 1.73 |
+| home | Industrious | quiet | **52.8** | 4.42 | 28.0–75.7 | **2.73** | 0.25 | 52.8 / 2.73 |
+| home | Industrious | chat | **51.4** | 5.05 | 31.2–75.0 | **2.96** | 0.25 | 51.4 / 2.96 |
+| home | Dreamy | quiet | **46.2** | 4.31 | 18.2–68.0 | **2.29** | 0.16 | 46.2 / 2.29 |
+| home | Dreamy | chat | **42.1** | 6.02 | 22.5–65.4 | **2.35** | 0.20 | 42.4 / 2.36 |
+| resident | Ordinary | quiet | **38.8** | 3.14 | 17.9–55.7 | **2.82** | 0.17 | 38.8 / 2.82 |
+| resident | Ordinary | chat | **35.3** | 5.34 | 14.5–53.0 | **3.03** | 0.28 | 34.8 / 3.04 |
+| resident | Lazy | quiet | **33.8** | 4.15 | 8.9–56.0 | **2.45** | 0.17 | 33.8 / 2.45 |
+| resident | Lazy | chat | **31.9** | 4.46 | 2.7–56.2 | **2.58** | 0.17 | 32.1 / 2.60 |
+| resident | Industrious | quiet | **41.5** | 4.26 | 14.0–63.9 | **2.84** | 0.15 | 41.5 / 2.84 |
+| resident | Industrious | chat | **38.3** | 4.05 | 15.6–53.0 | **3.02** | 0.22 | 38.2 / 3.02 |
+| resident | Dreamy | quiet | **36.6** | 5.71 | 13.7–61.6 | **2.64** | 0.22 | 36.6 / 2.64 |
+| resident | Dreamy | chat | **31.8** | 3.69 | 15.9–53.5 | **2.81** | 0.21 | 31.7 / 2.82 |
+
+### The runs
+
+Each run is the fed census at 12-minute visits (`BAND_MINUTES` 12 once lingering lands: a lazy
+day's sleep lingered is 270 s), line art, 20 sets × 4 seeds, release, at the new driver.
+- **c1: step 8's move 7**, the starting point: Restless 300 s, Tidy 150 s, Mischief 6 min; Walk 9,
+  Travel 7; SpaceOut `own_sake`, a chosen Stand 3–8 s; SpaceOut 10–28 s, Sit 15–40, LieBack and
+  SitDoze 20–60, Gaze 6–14, Lounge 27–60, Nap 45–105, Watch 32–82, Read 30–65, Homework 37–75;
+  `Stillness::STARTING` (linger, settling, sessions, nod-off, near), **watching out of lingering**
+  (D7: a lazy day would watch animated snow ×1.5 longer).
+- **c2: c1 + industrious restless ×1.5 → ×1.2**, a diagnostic: is restlessness the home's
+  industrious excess (wander and travel are ~9% of her time in sight there against ~3% on the
+  stage)?
+- **c3: c1 + Tidy 150 → 90 s and industrious linger 0.7 → 0.85**: Tidy only rises with text on
+  offer, so it's a stage-only lever (the home's and resident's cells are identical to c1's,
+  number for number); the linger brings the home's industrious cell in.
+
+Cells are moving % in sight / set-offs a minute in sight; **bold** is outside the band or over the
+cap. "Most % under the cap" is the cap × the cell's own share ÷ rate: how much she could move at
+that cell's seconds per set-off without passing the cap.
+
+| Room | Mood | Chat | step 7 at the new driver (c0, 9 min) | step 8's move 7 (old driver, 9 min) | c1: move 7, watching unlingered, 12 min | c2: c1 + industrious restless ×1.2 | c3: c1 + tidy 90 s, industrious linger 0.85 | Band | Cap | Most % under the cap (c1 / c3) |
+|---|---|---|---|---|---|---|---|---|---|---|
+| stage | Ordinary | quiet | 30.6 / 4.87 | 10.8 / 2.11 | 9.1 / 1.94 | 9.1 / 1.94 | 8.7 / 1.88 | 8–26 | 2.25 | 10.6 / 10.4 |
+| stage | Ordinary | chat | 29.4 / 5.14 | 9.8 / 2.28 | 8.7 / 2.08 | 8.7 / 2.08 | 10.7 / 2.14 | 8–26 | 2.25 | 9.4 / 11.2 |
+| stage | Lazy | quiet | 21.7 / 4.18 | 6.9 / 1.20 | 6.2 / 1.17 | 6.2 / 1.17 | 6.7 / 1.16 | 5–17 | 1.5 | 7.9 / 8.7 |
+| stage | Lazy | chat | 24.8 / 4.41 | 6.7 / 1.46 | 6.2 / 1.33 | 6.2 / 1.33 | 5.3 / 1.31 | 5–17 | 1.5 | 7.0 / 6.1 |
+| stage | Industrious | quiet | 33.0 / 5.07 | 14.4 / 2.89 | 13.5 / 2.78 | 12.3 / 2.63 | 12.4 / 2.49 | 12–31 | 3.0 | 14.6 / 14.9 |
+| stage | Industrious | chat | 36.7 / 5.45 | 12.6 / 2.92 | **11.7 / 2.76** | 12.4 / 2.74 | **10.0 / 2.74** | 12–31 | 3.0 | 12.7 / 10.9 |
+| stage | Dreamy | quiet | 27.2 / 4.69 | 9.6 / 1.93 | **7.8 / 1.73** | **7.8 / 1.73** | 9.0 / 1.76 | 8–26 | 2.25 | 10.1 / 11.5 |
+| stage | Dreamy | chat | 30.5 / 4.95 | 8.7 / 2.03 | 8.3 / 1.92 | 8.3 / 1.92 | **7.6 / 1.81** | 8–26 | 2.25 | 9.7 / 9.4 |
+| home | Ordinary | quiet | 48.0 / 2.28 | 23.3 / 1.46 | 22.3 / 1.31 | 22.3 / 1.31 | 22.3 / 1.31 | 8–26 | 2.25 | 38.3 / 38.3 |
+| home | Ordinary | chat | 43.4 / 2.42 | 22.7 / 1.51 | 22.1 / 1.45 | 22.1 / 1.45 | 22.1 / 1.45 | 8–26 | 2.25 | 34.3 / 34.3 |
+| home | Lazy | quiet | 35.7 / 1.55 | 10.9 / 0.60 | 11.5 / 0.63 | 11.5 / 0.63 | 11.5 / 0.63 | 5–17 | 1.5 | 27.4 / 27.4 |
+| home | Lazy | chat | 33.9 / 1.74 | 11.3 / 0.71 | 11.9 / 0.71 | 11.9 / 0.71 | 11.9 / 0.71 | 5–17 | 1.5 | 25.1 / 25.1 |
+| home | Industrious | quiet | 52.8 / 2.73 | 35.9 / 2.24 | **33.1 / 2.00** | **33.2 / 2.01** | 30.4 / 1.85 | 12–31 | 3.0 | 49.7 / 49.3 |
+| home | Industrious | chat | 51.4 / 2.96 | 33.6 / 2.41 | 30.1 / 2.17 | 29.2 / 2.13 | 29.7 / 2.09 | 12–31 | 3.0 | 41.6 / 42.6 |
+| home | Dreamy | quiet | 46.2 / 2.29 | 21.0 / 1.31 | 20.3 / 1.21 | 20.3 / 1.21 | 20.3 / 1.21 | 8–26 | 2.25 | 37.7 / 37.7 |
+| home | Dreamy | chat | 42.1 / 2.35 | 19.9 / 1.45 | 19.2 / 1.32 | 19.2 / 1.32 | 19.2 / 1.32 | 8–26 | 2.25 | 32.7 / 32.7 |
+| resident | Ordinary | quiet | 38.8 / 2.82 | 15.0 / 1.51 | 13.6 / 1.35 | 13.6 / 1.35 | 13.6 / 1.35 | 8–26 | 2.25 | 22.7 / 22.7 |
+| resident | Ordinary | chat | 35.3 / 3.03 | 14.1 / 1.69 | 13.2 / 1.51 | 13.2 / 1.51 | 13.2 / 1.51 | 8–26 | 2.25 | 19.7 / 19.7 |
+| resident | Lazy | quiet | 33.8 / 2.45 | 8.3 / 0.66 | 8.1 / 0.68 | 8.1 / 0.68 | 8.1 / 0.68 | 5–17 | 1.5 | 17.9 / 17.9 |
+| resident | Lazy | chat | 31.9 / 2.58 | 7.3 / 0.73 | 8.5 / 0.79 | 8.5 / 0.79 | 8.5 / 0.79 | 5–17 | 1.5 | 16.1 / 16.1 |
+| resident | Industrious | quiet | 41.5 / 2.84 | 20.1 / 1.73 | 18.1 / 1.62 | 16.9 / 1.57 | 18.2 / 1.57 | 12–31 | 3.0 | 33.5 / 34.8 |
+| resident | Industrious | chat | 38.3 / 3.02 | 17.7 / 1.89 | 17.2 / 1.77 | 15.8 / 1.70 | 15.4 / 1.67 | 12–31 | 3.0 | 29.2 / 27.7 |
+| resident | Dreamy | quiet | 36.6 / 2.64 | 11.7 / 1.39 | 10.2 / 1.21 | 10.2 / 1.21 | 10.2 / 1.21 | 8–26 | 2.25 | 19.0 / 19.0 |
+| resident | Dreamy | chat | 31.8 / 2.81 | 11.8 / 1.54 | 10.6 / 1.36 | 10.6 / 1.36 | 10.6 / 1.36 | 8–26 | 2.25 | 17.5 / 17.5 |
+
+Industrious ÷ lazy moving, both chat conditions pooled:
+
+| Ratio | c0 | step 8's move 7 | c1 | c2 | c3 |
+|---|---|---|---|---|---|
+| stage industrious ÷ lazy | 1.50 | | 2.03 | 1.99 | 1.87 |
+| home industrious ÷ lazy | 1.50 | | 2.70 | 2.67 | 2.57 |
+| resident industrious ÷ lazy | 1.21 | | 2.13 | 1.97 | 2.02 |
+
+### Why it stops
+
+- **The pooled σ** of an 80-visit cell is about 0.22 × its 4-visit σ; c1's (not tabled) are
+  2.2–4.6 on the stage and 2.1–4.3 in the home, so the pooled σ is about 0.5–1.0 point in
+  either. So c1's home industrious quiet (33.1 against 31) is out
+  by over 2σ, a real excess; its stage cells at 7.8 and 11.7 are at their floors within noise.
+- **Under a per-mood cap the stage's share is bounded by its trips.** The most a cell can move is
+  its cap × the seconds a set-off moves her. On the stage that's 2.2–3.5 s (a hop to a line on her
+  own floor, a few steps to the piece she made), so its windows from the floor to that bound are:
+  lazy 5 to 6–9, ordinary and dreamy 8 to 9–11.5, industrious 12 to 14–15 quiet and 11–14 with
+  chat. The middle of the band is out of reach with any lever that keeps her trips short, and
+  "not at the floor" leaves a point or two. In the home a set-off moves her 8–11 s (the resident
+  5–7), so the cap there binds nothing (the most under it is 25–50%).
+- **Industrious can't hold both rooms away from the stage's floor.** Home ÷ stage within
+  industrious is 2.35–2.97 across the runs (c1 33.1 ÷ 13.5 = 2.45 quiet, 30.1 ÷ 11.7 = 2.57 chat;
+  c2 2.70 / 2.35; c3 2.45 / 2.97; step 8's move 7 2.49 / 2.67), against the band's own
+  31 ÷ 12 = 2.58. Some runs fall under 2.58 (c2's chat holds both, 29.2 and 12.4), so it isn't that
+  no setting holds both; it's that at these ratios a home under 31 leaves the stage at 10.4–13.2,
+  at or within about a point of its floor of 12, and the tuning may not aim a cell at its floor.
+  Every lever that moved the stage moved the home with it: industrious linger 0.85 (c3) brought the
+  home in (30.4 / 29.7) by taking the stage's chat cell to 10.0. The one stage-only lever tried,
+  Tidy 90 s, moved the stage only within noise (she's time-limited there, not tidy-limited).
+  Restless ×1.2 (c2) moved the home's industrious cell within noise (+0.1 quiet, 33.1 → 33.2;
+  −0.9 with chat, 30.1 → 29.2): the home's excess isn't restlessness. Its industrious time walking
+  is to a seat (19%: a snack 5.1, lounging 4.6, watching 3.9, reading 3.1) and to arrange her home
+  (5.4%, against 2.2% ordinary: `home_acts`, three a visit industrious, the user's call).
+- **At full strength** a stage cell aimed inside its window would need N in the many hundreds to a
+  few thousand for its bounds to be the band itself (c1's stage dreamy chat, 0.3 over its floor at
+  a 4-visit σ of 4.1: N ≈ 6800).
+- **What did land, again:** the home and resident inside the band in every cell from c1 on, apart
+  from the home's industrious; set-offs under every cap; industrious ÷ lazy 1.87–2.70 a room.
+
+### For the user
+
+A room-selective lever is needed, or the rule changes for the stage. In the right direction:
+- **Longer trips on the stage**: `near` off for text (pulls and swaps from other floors: longer
+  trips, and more legs, so more set-offs too; it undoes M6's "pulls stay on her floor"); or wait
+  for step 10a's "more makeshift while she owns no real piece" (making ×3 is stage-only and takes
+  her across her floor for the text), measuring the stage after it before retuning.
+- **Less industrious moving in the home** by 3–5 points without touching the stage: `home_acts`
+  three → two industrious (its excess over ordinary is 3.2 points), or something in the home's
+  seat trips (a snack's walk to the fridge is 5.1% industrious, 3.1% ordinary).
+- **A wider stage window**: lower floors on the stage (it has her made things close by), or the
+  user's third option from step 8: judge the stage by set-offs alone, the share only as a ceiling.
+- Or ship c3's values as they are (every home and resident cell in, the stage at its floors and
+  near its caps), un-ignoring only the home and resident cells.
+
+Step 8's hand-offs that come with any tuning carry forward unchanged: `SPACE_OUT_MS` lengthens in
+the commit that switches the shipped `Stillness` on; `BAND_MINUTES` 12 with lingering;
+`sleepiness_draws_her_to_lie_down` restated at Walk 9 / Travel 7 / Restless 300 s; the riddle
+test per mood (or over daydreams with a musing); the minor-1 restatements; the 15-minute fed, unfed
+and day censuses re-measured (nothing she does changed in 8b, so none was re-run).
