@@ -10,6 +10,12 @@ step 7's state with step 8's fixes, each chat line at its own time, 9-minute vis
 [After the shorter watch](#after-the-shorter-watch-step-5-9-minute-visits) (step 5). The older
 tables are the 15 s watch (the fed afternoon's over 15 minutes).
 
+**Step 10a measured the stage after "more makeshift"** (the lever 8b named), levers still neutral:
+[Step 10a: more makeshift, measured](#step-10a-more-makeshift-measured-2026-10-06). No cell left its
+band, but the stage regressed on two of the user's criteria: its industrious ÷ lazy spread fell
+from 1.50 to 1.17 (the rule is ≥ 1.6), and its lazy share rose about 3 points, further over its
+ceiling of 17.
+
 **Step 8's tuning stopped short of the band:** [Step 8: tuning stopped](#step-8-tuning-stopped-2026-10-06)
 has every move tried, and why M3's cap and the levers can't both be met in every room. **So did
 step 8b's**, to the user's per-mood band: [Step 8b](#step-8b-the-retune-stopped-2026-10-06) has the
@@ -848,3 +854,54 @@ the commit that switches the shipped `Stillness` on; `BAND_MINUTES` 12 with ling
 `sleepiness_draws_her_to_lie_down` restated at Walk 9 / Travel 7 / Restless 300 s; the riddle
 test per mood (or over daydreams with a musing); the minor-1 restatements; the 15-minute fed, unfed
 and day censuses re-measured (nothing she does changed in 8b, so none was re-run).
+
+## Step 10a: more makeshift, measured (2026-10-06)
+
+**Measured 2026-10-06** on step 10a's commit (`3030d69e`): homework and a book on the floor where no
+desk or bookshelf stands, the paper desk, making ×3 while she owns no real piece of the kind (×3 more
+for the desk while her back aches), cross-legged watching. The levers are still
+`Stillness::NEUTRAL`, so this is 8b's c0 plus step 10a. The band at full strength:
+
+```text
+CENSUS_BAND_SEEDS=190 cargo nextest run -p dessplay --release --profile band \
+  --run-ignored all -E 'test(/houseguest::tests::band::/)' --success-output final
+```
+
+190 visits a cell (9 minutes, line art), 6.0 minutes' wall. Moving % in sight / set-offs a minute in
+sight, quiet | chat, with c0 (`BASELINE`, 80 visits) after each.
+
+| Room | Mood | Quiet (10a) | Quiet (c0) | Chat (10a) | Chat (c0) | Band | Cap |
+|---|---|---|---|---|---|---|---|
+| stage | Lazy | 24.9 / 3.98 | 21.7 / 4.18 | 25.3 / 4.04 | 24.8 / 4.41 | 5–17 | 1.5 |
+| stage | Ordinary | 27.7 / 4.33 | 30.6 / 4.87 | 28.5 / 4.49 | 29.4 / 5.14 | 8–26 | 2.25 |
+| stage | Dreamy | 26.1 / 4.29 | 27.2 / 4.69 | 27.3 / 4.51 | 30.5 / 4.95 | 8–26 | 2.25 |
+| stage | Industrious | 29.3 / 4.65 | 33.0 / 5.07 | 29.4 / 4.83 | 36.7 / 5.45 | 12–31 | 3.0 |
+| home | Lazy | 34.1 / 1.52 | 35.7 / 1.55 | 33.2 / 1.70 | 33.9 / 1.74 | 5–17 | 1.5 |
+| home | Ordinary | 47.3 / 2.28 | 48.0 / 2.28 | 44.0 / 2.44 | 43.4 / 2.42 | 8–26 | 2.25 |
+| home | Dreamy | 45.5 / 2.25 | 46.2 / 2.29 | 42.5 / 2.41 | 42.1 / 2.35 | 8–26 | 2.25 |
+| home | Industrious | 53.3 / 2.76 | 52.8 / 2.73 | 52.1 / 2.91 | 51.4 / 2.96 | 12–31 | 3.0 |
+| resident | Lazy | 33.0 / 2.25 | 33.8 / 2.45 | 30.9 / 2.37 | 31.9 / 2.58 | 5–17 | 1.5 |
+| resident | Ordinary | 38.4 / 2.66 | 38.8 / 2.82 | 34.1 / 2.80 | 35.3 / 3.03 | 8–26 | 2.25 |
+| resident | Dreamy | 35.4 / 2.56 | 36.6 / 2.64 | 32.2 / 2.72 | 31.8 / 2.81 | 8–26 | 2.25 |
+| resident | Industrious | 42.5 / 2.74 | 41.5 / 2.84 | 37.3 / 2.88 | 38.3 / 3.02 | 12–31 | 3.0 |
+
+Industrious ÷ lazy (both chats pooled): stage 1.17, home 1.56, resident 1.25 (c0: 1.50, 1.50, 1.21).
+
+- **No cell is in its band but the stage's industrious share** (now 29.3 / 29.4, under 31; its
+  set-offs are still over the cap). None left the band: none was in it before.
+- **The stage moved most.** Its set-offs fell 0.2–0.6 a minute in every cell, its share 1–7 points
+  in all but lazy, which rose about 3 points quiet (about 2 pooled σ: possibly real, possibly
+  noise). The new still acts (homework and a book on the floor) draw her in a bare room, and the
+  paper desk is one more piece to make and use. The share didn't rise toward the band's middle, so
+  making ×3 is not the room-selective lever 8b hoped for: it took set-offs down with the share,
+  not trips longer.
+- **The home is within noise** (it has a desk and a bookshelf, so nothing new binds there but
+  watching cross-legged, which moves nothing); the resident fell a point or so, set-offs 0.1–0.2.
+- **The spread fell on the stage** (1.50 → 1.17): the floor acts draw a lazy Osaka as much as an
+  industrious one with the levers neutral (lingering and settling, the mood levers, aren't on).
+  **This is a regression on two of the user's criteria, not a neutral result:** the spread moved
+  further from ≥ 1.6, and the stage's lazy share (24.9 quiet, c0 21.7) further over its 17 ceiling.
+  Homework on the floor doesn't linger (its nod-off moves by mood instead, as at the desk), so with
+  the levers neutral nothing in it separates the moods. No re-tune while the band is ignored, but
+  8b's open stage question now has to recover this spread as well as reach the band.
+
