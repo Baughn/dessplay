@@ -30,11 +30,11 @@
 //! them minutes each.)
 //!
 //! **What the gate's seeds can see.** One visit's reading varies widely
-//! (a 15-minute stage visit reads anywhere from 4% to 62%), so at the
-//! gate's [`GATE_SEEDS`] 3σ is 13–34 points. No share floor is above 10
+//! (a 9-minute stage visit reads anywhere from 2% to 77%), so at the
+//! gate's [`GATE_SEEDS`] 3σ is 15–31 points. No share floor is above 11
 //! and most are below zero, so a "too still" regression all but never
-//! fails there; the stage's share bounds reach from about −15–0 to
-//! 38–60, so its share check can't fail for any plausible reading. The
+//! fails there; the stage's share bounds reach from about −15–2 to
+//! 42–55, so its share check can't fail for any plausible reading. The
 //! gate checks the set-off cap (with ×1.2–1.6 slack over M3's) and a
 //! gross excess of moving in the home and resident, no more. Full
 //! strength is the real check: passing at the gate is not evidence the
@@ -83,10 +83,10 @@ const SIGMAS: f64 = 3.0;
 /// The visits a σ in [`BASELINE`] or [`TUNED`] is of the mean of.
 const SET: f64 = 4.0;
 
-/// The minutes [`BASELINE`]'s visits ran (baseline.md's fed afternoon).
-/// Step 5's re-baseline reads it at [`BAND_MINUTES`] instead
-/// (`CENSUS_MINUTES=9 CENSUS_MODES=line`), and sets this to match.
-const BASELINE_MINUTES: u64 = 15;
+/// The minutes [`BASELINE`]'s visits ran: [`BAND_MINUTES`], since step
+/// 5's re-baseline (`CENSUS_MINUTES=9 CENSUS_MODES=line`), so
+/// [`shorter_visits`] is 1.
+const BASELINE_MINUTES: u64 = 9;
 
 /// The industrious ÷ lazy spread each room's moving keeps (B5).
 const SPREAD: f64 = 1.6;
@@ -177,44 +177,48 @@ struct Stats {
     rate_sd: f64,
 }
 
-/// The baseline (phase5c/baseline.md, "Fed afternoon", line art; the
-/// home's and resident's rows are both modes'), [`BASELINE_MINUTES`]
-/// long: moving %, σ of a 4-visit mean, set-offs a minute, its σ.
+/// The baseline (phase5c/baseline.md, "After the shorter watch"),
+/// [`BASELINE_MINUTES`] long: moving %, σ of a 4-visit mean, set-offs a
+/// minute, its σ. Every row is line art; the home's and resident's stand
+/// for ASCII too on step 3's finding that those rooms don't depend on
+/// drawing mode (no text in her reach there), not re-measured since.
+// Measured numbers: a rate of 3.14 a minute is not π.
+#[allow(clippy::approx_constant)]
 const BASELINE: [(&str, Mood, bool, [f64; 4]); 24] = [
-    ("stage", Mood::Ordinary, true, [29.3, 4.82, 4.81, 0.58]),
-    ("stage", Mood::Ordinary, false, [27.0, 4.96, 4.21, 0.29]),
-    ("stage", Mood::Lazy, true, [20.9, 4.83, 4.09, 0.39]),
-    ("stage", Mood::Lazy, false, [19.9, 3.98, 3.99, 0.39]),
-    ("stage", Mood::Industrious, true, [33.3, 5.61, 4.97, 0.52]),
-    ("stage", Mood::Industrious, false, [29.2, 5.70, 4.45, 0.37]),
-    ("stage", Mood::Dreamy, true, [27.0, 4.27, 4.76, 0.47]),
-    ("stage", Mood::Dreamy, false, [21.4, 3.51, 3.99, 0.28]),
-    ("home", Mood::Ordinary, true, [46.8, 3.99, 2.12, 0.13]),
-    ("home", Mood::Ordinary, false, [42.2, 2.89, 2.27, 0.11]),
-    ("home", Mood::Lazy, true, [34.8, 3.24, 1.54, 0.13]),
-    ("home", Mood::Lazy, false, [34.9, 2.82, 1.79, 0.10]),
-    ("home", Mood::Industrious, true, [51.4, 4.87, 2.41, 0.12]),
-    ("home", Mood::Industrious, false, [47.6, 2.68, 2.56, 0.17]),
-    ("home", Mood::Dreamy, true, [44.2, 3.70, 2.04, 0.09]),
-    ("home", Mood::Dreamy, false, [39.5, 2.16, 2.20, 0.09]),
-    ("resident", Mood::Ordinary, true, [37.1, 3.76, 2.63, 0.12]),
-    ("resident", Mood::Ordinary, false, [30.0, 2.55, 2.62, 0.12]),
-    ("resident", Mood::Lazy, true, [33.1, 3.60, 2.29, 0.11]),
-    ("resident", Mood::Lazy, false, [28.7, 3.95, 2.39, 0.15]),
+    ("stage", Mood::Ordinary, true, [32.5, 6.98, 4.96, 0.67]),
+    ("stage", Mood::Ordinary, false, [30.7, 7.26, 5.32, 0.57]),
+    ("stage", Mood::Lazy, true, [21.8, 6.55, 4.19, 0.30]),
+    ("stage", Mood::Lazy, false, [24.6, 6.89, 4.74, 0.41]),
+    ("stage", Mood::Industrious, true, [34.9, 6.93, 5.11, 0.51]),
+    ("stage", Mood::Industrious, false, [35.3, 5.60, 5.66, 0.56]),
+    ("stage", Mood::Dreamy, true, [27.8, 5.25, 4.86, 0.43]),
+    ("stage", Mood::Dreamy, false, [29.5, 6.27, 5.24, 0.66]),
+    ("home", Mood::Ordinary, true, [48.4, 5.16, 2.33, 0.20]),
+    ("home", Mood::Ordinary, false, [48.6, 5.68, 2.67, 0.20]),
+    ("home", Mood::Lazy, true, [35.8, 4.65, 1.51, 0.18]),
+    ("home", Mood::Lazy, false, [39.0, 3.66, 2.06, 0.16]),
+    ("home", Mood::Industrious, true, [53.4, 6.26, 2.72, 0.26]),
+    ("home", Mood::Industrious, false, [54.0, 4.42, 3.08, 0.30]),
+    ("home", Mood::Dreamy, true, [46.1, 4.11, 2.27, 0.17]),
+    ("home", Mood::Dreamy, false, [47.7, 4.35, 2.61, 0.21]),
+    ("resident", Mood::Ordinary, true, [38.8, 4.97, 2.79, 0.20]),
+    ("resident", Mood::Ordinary, false, [37.8, 5.89, 3.14, 0.24]),
+    ("resident", Mood::Lazy, true, [32.3, 3.71, 2.31, 0.12]),
+    ("resident", Mood::Lazy, false, [35.0, 5.48, 2.78, 0.17]),
     (
         "resident",
         Mood::Industrious,
         true,
-        [41.9, 2.87, 2.78, 0.09],
+        [43.9, 5.43, 2.92, 0.16],
     ),
     (
         "resident",
         Mood::Industrious,
         false,
-        [34.7, 2.96, 2.67, 0.20],
+        [41.2, 3.51, 3.20, 0.21],
     ),
-    ("resident", Mood::Dreamy, true, [34.7, 2.64, 2.54, 0.14]),
-    ("resident", Mood::Dreamy, false, [28.0, 3.82, 2.50, 0.10]),
+    ("resident", Mood::Dreamy, true, [36.6, 4.65, 2.70, 0.22]),
+    ("resident", Mood::Dreamy, false, [35.1, 4.00, 3.01, 0.20]),
 ];
 
 /// The tuned cells, which step 8 fills from one tuned census read at

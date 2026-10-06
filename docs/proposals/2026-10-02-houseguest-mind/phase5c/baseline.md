@@ -5,6 +5,10 @@ that adds this file (behaviour as at `f29c482`, after D0a and D0b). Release buil
 deterministic: the fed census run twice gave identical tables. Paths are relative to
 `dessplay/src/ui/houseguest/`.
 
+**The band's baseline is now [After the shorter watch](#after-the-shorter-watch-step-5-9-minute-visits)**
+(step 5: the 5 s watch, 9-minute visits, at the end). The other tables are the 15 s watch (the fed
+afternoon's over 15 minutes).
+
 Re-measured after the step's review, which tightened the definitions below. Her arrival is now a
 set-off (the warm-up's rate rises by about 0.2 a minute). A heave is only the beat she steps back (the
 stage's share falls by about 0.2 points). Lines that came while she was in a door or aloft now count as
@@ -397,3 +401,77 @@ contention), each visit's wall time including its unfed placing arrival. Cost pe
 - **Gate budget at these costs.** A line-art band cell of N = 8 × 15 min (8 × 12 in sight after the
   warm-up) costs about 5 s (stage), 4 s (home) and 2.5 s (resident) of CPU, per chat condition.
 - The gate runs the dev profile (opt-level 2), which is in the same range.
+
+## After the shorter watch (step 5, 9-minute visits)
+
+**Measured 2026-10-06**, on step 5's commit (`WATCH_MS` 15 → 5 s, `90a98239`), at the band's own
+length: 9-minute visits (6 after the warm-up), line art, 20 sets × 4 seeds = 80 visits a cell, release.
+These rows are `tests/band.rs`'s `BASELINE` (moving %, σ, set-offs, σ), with `BASELINE_MINUTES = 9`,
+so the band's √(time) factor is 1. To part the watch's effect from the shorter visits, the same census
+was also run with `WATCH_MS` put back to 15 s (the "15 s watch" columns and the brackets).
+
+```text
+CENSUS_MINUTES=9 CENSUS_MODES=line \
+  cargo test --release -p dessplay --lib fed_afternoon_census -- --ignored --nocapture
+```
+
+"Cuts/min" are the chat lines that stopped her (looks and passes), a minute in sight; "restarts" the
+set-offs right after one (from still and from moving together).
+
+| Room | Mood | Chat | Moving % | σ (N=4) | a visit | Set-offs/min | σ | Warm-up % | Warm-up set-offs/min | 15 s watch: moving % | set-offs/min | Exercise % (15 s) | Cuts/min | Restarts/min (15 s) |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| stage | Ordinary | quiet | **32.5** | 6.98 | 4.8–72.8 | **4.96** | 0.67 | 58.7 | 5.97 | 32.5 | 4.96 | 6.7 (6.7) | – | – |
+| stage | Ordinary | chat/45s | **30.7** | 7.26 | 10.0–73.2 | **5.32** | 0.57 | 56.4 | 6.37 | 30.0 | 4.50 | 5.6 (4.7) | 1.41 | 0.97 (1.01) |
+| stage | Lazy | quiet | **21.8** | 6.55 | 2.3–72.1 | **4.19** | 0.30 | 51.1 | 5.48 | 21.8 | 4.19 | 1.8 (1.8) | – | – |
+| stage | Lazy | chat/45s | **24.6** | 6.89 | 5.3–76.9 | **4.74** | 0.41 | 52.4 | 6.09 | 23.7 | 4.19 | 1.2 (1.0) | 1.41 | 1.13 (1.17) |
+| stage | Industrious | quiet | **34.9** | 6.93 | 12.8–64.1 | **5.11** | 0.51 | 62.1 | 6.14 | 34.9 | 5.11 | 11.2 (11.2) | – | – |
+| stage | Industrious | chat/45s | **35.3** | 5.60 | 17.4–77.0 | **5.66** | 0.56 | 60.5 | 6.34 | 32.4 | 4.66 | 10.2 (7.4) | 1.39 | 0.83 (0.97) |
+| stage | Dreamy | quiet | **27.8** | 5.25 | 9.6–75.2 | **4.86** | 0.43 | 55.4 | 5.71 | 27.8 | 4.86 | 3.6 (3.6) | – | – |
+| stage | Dreamy | chat/45s | **29.5** | 6.27 | 9.9–65.3 | **5.24** | 0.66 | 58.5 | 6.26 | 25.4 | 4.25 | 2.9 (2.8) | 1.41 | 0.92 (1.02) |
+| home | Ordinary | quiet | **48.4** | 5.16 | 20.3–76.0 | **2.33** | 0.20 | 57.8 | 2.40 | 48.4 | 2.33 | 4.7 (4.7) | – | – |
+| home | Ordinary | chat/90s | **48.6** | 5.68 | 20.2–75.0 | **2.67** | 0.20 | 56.2 | 2.53 | 42.6 | 2.46 | 4.4 (3.9) | 0.75 | 0.49 (0.53) |
+| home | Lazy | quiet | **35.8** | 4.65 | 15.8–57.6 | **1.51** | 0.18 | 50.9 | 2.12 | 35.8 | 1.51 | 1.3 (1.3) | – | – |
+| home | Lazy | chat/90s | **39.0** | 3.66 | 20.4–56.5 | **2.06** | 0.16 | 52.6 | 2.34 | 35.3 | 1.80 | 1.0 (1.0) | 0.78 | 0.58 (0.61) |
+| home | Industrious | quiet | **53.4** | 6.26 | 22.5–73.2 | **2.72** | 0.26 | 59.3 | 2.56 | 53.4 | 2.72 | 6.6 (6.6) | – | – |
+| home | Industrious | chat/90s | **54.0** | 4.42 | 28.3–76.9 | **3.08** | 0.30 | 58.4 | 2.76 | 47.9 | 2.84 | 6.8 (6.0) | 0.77 | 0.48 (0.47) |
+| home | Dreamy | quiet | **46.1** | 4.11 | 26.6–71.2 | **2.27** | 0.17 | 55.9 | 2.41 | 46.1 | 2.27 | 3.6 (3.6) | – | – |
+| home | Dreamy | chat/90s | **47.7** | 4.35 | 28.3–65.5 | **2.61** | 0.21 | 54.8 | 2.49 | 40.3 | 2.40 | 2.6 (2.6) | 0.77 | 0.53 (0.50) |
+| resident | Ordinary | quiet | **38.8** | 4.97 | 17.9–58.3 | **2.79** | 0.20 | 47.1 | 3.24 | 38.8 | 2.79 | 6.8 (6.8) | – | – |
+| resident | Ordinary | chat/60s | **37.8** | 5.89 | 10.0–61.2 | **3.14** | 0.24 | 47.8 | 3.53 | 31.0 | 2.79 | 6.8 (5.8) | 1.10 | 0.69 (0.68) |
+| resident | Lazy | quiet | **32.3** | 3.71 | 12.8–51.0 | **2.31** | 0.12 | 41.6 | 2.69 | 32.3 | 2.31 | 2.1 (2.1) | – | – |
+| resident | Lazy | chat/60s | **35.0** | 5.48 | 13.0–58.3 | **2.78** | 0.17 | 43.6 | 2.98 | 28.4 | 2.36 | 1.3 (1.6) | 1.04 | 0.80 (0.83) |
+| resident | Industrious | quiet | **43.9** | 5.43 | 23.4–65.9 | **2.92** | 0.16 | 47.9 | 3.40 | 43.9 | 2.92 | 9.1 (9.1) | – | – |
+| resident | Industrious | chat/60s | **41.2** | 3.51 | 23.7–59.7 | **3.20** | 0.21 | 49.9 | 3.70 | 34.1 | 2.72 | 9.1 (8.4) | 1.10 | 0.64 (0.56) |
+| resident | Dreamy | quiet | **36.6** | 4.65 | 17.6–56.4 | **2.70** | 0.22 | 45.8 | 3.05 | 36.6 | 2.70 | 4.1 (4.1) | – | – |
+| resident | Dreamy | chat/60s | **35.1** | 4.00 | 16.3–58.3 | **3.01** | 0.20 | 45.3 | 3.39 | 29.2 | 2.61 | 3.6 (3.5) | 1.10 | 0.66 (0.68) |
+
+What moved:
+- **Quiet cells are identical** to the 15 s watch's, number for number, as they must be: no line
+  comes there. Every change below is the chat cells'.
+- **Chat cells move more**: +0.7 to +4.1 points on the stage, +3.7 to +7.4 in the home, +5.9 to +7.1
+  in the resident. Set-offs rise by 0.55–1.00 a minute on the stage, 0.21–0.26 in the home and
+  0.35–0.48 in the resident. That's feas m1's prediction: the 10 s a line no longer holds her standing
+  go to fresh rolls, often a walk. Until step 6 (she looks up in place) lets a still act run on under
+  a look, chat adds movement in the home and resident (home, lazy: 2.06 set-offs a minute against
+  1.51 quiet): expected, not a regression.
+- **Chat no longer lowers the share.** Chat minus quiet was −10 to +2 points with the 15 s watch
+  (most of the home and resident 4–10 below quiet); now it's −3 to +3. The restarts barely move
+  (0.48–1.13 a minute, against 0.47–1.17): each line still cuts what it cuts. What changed is the
+  stand that followed.
+- **Exercise** in place rises a little with chat (the stage's industrious 7.4 → 10.2%; 8.4% in the
+  15-minute baseline above): at most +1.8 over that table, inside minor 8's 3 points.
+- **The shorter visits (15 → 9 minutes, the same watch) are busier**, the quiet cells say: the stage
+  +0.8 to +3.2 points, the home +1.0 to +2.0, the resident −0.8 to +2.0 (minutes 3–9 against 3–15). σ
+  of a 4-visit mean is 3.5–7.3 points, against 2.2–5.7 over 15 minutes, about the √2 that half the time
+  in sight predicts (6 minutes against 12).
+- **Every home and resident cell is still over its ceiling** (lazy 32–39 against 17, ordinary and
+  dreamy 35–49 against 26, industrious 41–54 against 31). The line-art stage is now over its band in
+  every cell, by less (lazy 22–25 against 17, ordinary and dreamy 28–33 against 26, industrious 35
+  against 31). Industrious ÷ lazy is 1.4–1.6 on the stage, 1.4–1.5 in the home, 1.2–1.4 in the
+  resident.
+- **The band tests on these rows** (still ignored): at the gate's 2 seeds, 10 of 15 fail (every home
+  and resident cell, and the stage's lazy and ordinary on the set-off cap); at full strength
+  (`CENSUS_BAND_SEEDS=190`, release, `--profile band`, 5.6 minutes wall) all 15 fail, every cell over
+  its band and its cap, and each room's spread under 1.6 (stage 1.46, home 1.47, resident 1.23). The
+  most visits a band line asks for is now 190 (the stage's lazy with chat; 187 before), and the
+  stage's spread 356.
