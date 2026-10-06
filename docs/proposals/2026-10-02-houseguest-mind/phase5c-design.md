@@ -489,3 +489,47 @@ across the runs (the band's own edges: 31 ÷ 12 = 2.58), so holding the home und
 stage at or within about a point of its floor. Every lever that moved the stage moved the home with
 it (the one stage-only lever tried, Tidy 90 s, moved the stage only within noise), so the next move
 (a room-selective lever, a stage rule, or shipping the home and resident alone) is the user's.
+
+## Round-4 amendments (2026-10-06): D7 after its critique, and steps 8b–11
+
+### D7, amended
+
+D7 had its own two-lens critique ([phase5c/d7/](phase5c/d7/): mechanics, character, synthesis; the
+mock script is there too, while the true-size mock itself stays out of the repo because it was made
+from real episodes). **The synthesis's amended D7 (in `d7/critique.md`, "The amended D7") replaces
+Round-1's D7 in full**, with its blockers, majors and minors, except where the user's answers below
+differ.
+
+The user's answers:
+- **Q1 → the film, no sheen.** The look is the mock's column 7: centre crop, 1.3× zoom, one levels
+  stretch, saturation ×1.25. No glass sheen. Drawn cards when there's no film, the frame is black or
+  flat, or this client doesn't hold the file.
+- **Q2 → refresh about once a minute during a long watch** (this overrides the synthesis's "never
+  swapped mid-watch"). While a Watch or Surf act runs, once 60 s have passed since the picture's
+  request (failures count), the shell asks again. A good new frame cuts straight in at its next
+  paint, with no static. A failed or black refresh keeps the picture. The purity rule still holds:
+  her trace and ASCII frames are byte-identical with and without pictures, because only
+  presentation changes. D7's "no act longer than 30 s flips cells faster than `USE_FRAME_MS` after
+  its first 10 s" test exempts a once-a-minute picture swap, as it already exempts the blink.
+- **Q3 → no reaction now.** Later: the user is considering replacing the marquee commentary with
+  Osaka's own comments on the actual episode (plan.md's idea list).
+
+Step 12 is two steps, as the synthesis says: **12a**, the drawn held pictures (static only at
+switch-on and between channels, Chiyo-chichi's bob ending after the hook; Watch rejoins lingering
+here; golden re-record); **12b**, the film feed (shell-side, private screenshot slot, a property
+that her trace is unchanged).
+
+### Steps 8b–11 as built, and the user's call on the stage
+
+- **8b** shipped the per-mood rule (ignored), the census and band harnesses delivering chat lines at
+  their own time, and Watch out of lingering. Its retune stopped: on the bare stage a set-off moves
+  her only 2–3.5 s, so the per-mood caps hold the stage near its floors, and bringing the
+  industrious home under 31 put the stage's industrious cell within a point of its floor. **The
+  user's call: ship it, with lower floors on the bare stage** (lazy 4 / ordinary and dreamy 6 /
+  industrious 9, for a room that keeps her things close). The home and resident keep 5 / 8 / 12.
+  That is step 8c: switch the levers on with 8b's best run (c3, `scratchpad/8b-c3.diff`),
+  re-measured with 10a–11 in.
+- **10a** (floor homework, `LieRead`, the paper desk, more makeshift, cross-legged TV), **10b** (a
+  borrowed line, with grip as one class for held text and pulls), and **11** (the window hung low,
+  allowed behind a sofa, the sill lean and its session, cloud-watching under it only) are built,
+  each with its CHANGELOG entry. Their records are in their commit messages and baseline.md.
