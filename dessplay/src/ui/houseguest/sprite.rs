@@ -92,13 +92,11 @@ pub(super) enum Pose {
     /// Sitting cross-legged on the floor, side-on: watching the TV away
     /// from a sofa (phase 5c D5).
     CrossLegged,
-    /// Standing at ease under the window, hands behind her back, looking
-    /// up and out. Phase 5c art, not yet wired.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// Leaning on the window's sill, elbows on it and chin cupped in
+    /// her hands, gazing out (phase 5c D6: the window hangs low for it).
     SillLean,
-    /// Sitting on the floor under the window, chin in her hands, looking
-    /// up at the sky. Phase 5c art, not yet wired.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// Sitting on the floor in front of the window, chin in her hands,
+    /// looking up at the sky: settled into from leaning on its sill.
     UnderSill,
     /// Dozing off sitting on the floor, head sinking onto her knees
     /// (frame 1 lower): settled into from sitting (phase 5c).
@@ -107,6 +105,10 @@ pub(super) enum Pose {
     /// (frame 1 turns a page); dozed off with it open over her eyes (2)
     /// (phase 5c D5).
     LieRead(u8),
+    /// Lying on her back under the window watching the clouds, eyes
+    /// open, held (phase 5c D6): drawn as [`Pose::LieBack`]'s frame 0,
+    /// but no doze, so a chat line has her look up rather than stir.
+    CloudWatch,
 }
 
 impl Pose {
@@ -146,7 +148,9 @@ impl Pose {
             | Self::ReadStrip(_)
             | Self::CrossLegged
             | Self::SillLean
-            | Self::UnderSill => false,
+            | Self::UnderSill
+            // Lying back with her eyes open, watching the sky.
+            | Self::CloudWatch => false,
         }
     }
 
@@ -167,7 +171,8 @@ impl Pose {
             | Self::ReadStrip(_)
             | Self::CrossLegged
             | Self::SillLean
-            | Self::UnderSill => true,
+            | Self::UnderSill
+            | Self::CloudWatch => true,
             // Writing: not nodding off or asleep on the paper. (Her face
             // there is shut, which `Osaka::held_blink_shows` checks too;
             // the pose is classed on its own, as a nodding pose doesn't
@@ -217,7 +222,8 @@ impl Pose {
             | Self::Nap(_)
             | Self::Sleep(_)
             | Self::FloorHomework(_)
-            | Self::LieRead(_) => false,
+            | Self::LieRead(_)
+            | Self::CloudWatch => false,
             Self::Homework(_) | Self::Chopsticks(_) | Self::PaperDesk(_) | Self::SillLean => false,
             Self::Stand
             | Self::Walk(_)
@@ -432,6 +438,7 @@ fn rows(pose: Pose) -> ([&'static str; 4], bool) {
         Pose::UnderSill => (UNDER_SILL, false),
         Pose::SitDoze(frame) => (SIT_DOZE[usize::from(frame % 2)], false),
         Pose::LieRead(frame) => (LIE_READ[usize::from(frame.min(2))], false),
+        Pose::CloudWatch => (LIE_BACK[0], false),
     }
 }
 
@@ -584,7 +591,7 @@ pub(super) fn cells(pose: Pose, facing: Facing, face: Face) -> Vec<SpriteCell> {
 
 /// Every pose (each frame of each), for the lints.
 #[cfg(test)]
-pub(super) const ALL: [Pose; 64] = [
+pub(super) const ALL: [Pose; 65] = [
     Pose::Stand,
     Pose::Walk(0),
     Pose::Walk(1),
@@ -655,6 +662,7 @@ pub(super) const ALL: [Pose; 64] = [
     Pose::LieRead(0),
     Pose::LieRead(1),
     Pose::LieRead(2),
+    Pose::CloudWatch,
 ];
 
 #[cfg(test)]

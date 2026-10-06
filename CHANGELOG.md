@@ -34,6 +34,9 @@ Add new days at the top. Add new entries at the bottom of existing days.
 - Fixed: when text scrolls or changes under Osaka while she pulls it or
   tears it off, she lets go, instead of carrying on with whatever text
   took its place.
+- Changed: Osaka's window hangs lower; she leans on the sill and
+  daydreams there for a long while, musing on the sky. It can hang
+  behind her sofa.
 
 ## 2026-10-05
 

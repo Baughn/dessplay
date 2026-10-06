@@ -4093,6 +4093,129 @@ a piece had what she held put back under her and tore it straight off
 again (the goldens' resident runs, at a key press about 143 s in). The
 borrow would have joined it; both are now caught out.
 
+## Her window hangs low for her to lean on (2026-10-06)
+
+**Rule:** The window's bottom row is 2 rows above the floor (it was 4),
+its sill at her chest. It may share cells with a sofa (drawn behind it)
+and with nothing else that stands: one predicate,
+`Furniture::may_overlap`, says so of that pair, and every placement
+reads it both ways round. See [design.md](design.md#houseguest).
+
+**Why:** the user's call on the art (phase 5c, round 2): "I think it has
+to be lower. The window being drawn behind the sofa would look fine from
+a design perspective, unlike other furniture." Leaning on the sill, chin
+in her hands (`SillLean`), is the daydream the user asked the window to
+be; at 4 rows up she could only gaze up at it.
+
+**Why one predicate, read everywhere a piece goes** (the class, not the
+report): the wall lane used to be packed on its own, which was safe
+only while every hung piece cleared the tallest standing one. Now:
+- the cell test every placement uses (`room::free`: a frame's layout, a
+  stage gift's spot, a delivery's admission) takes the piece being
+  placed, and lets it share cells only with what it may overlap; her box
+  (room to use a piece) may share none, so it's a separate reading
+  (`None`), never the piece's;
+- the layout (`Home::laid_on`) hangs a hung piece that meets a standing
+  one it may not overlap at the nearest place between its neighbours on
+  the wall that meets none, in order, else in the closet alone. So no
+  frame can show the window over her TV, however the home came to be:
+  an older home's window, saved at the old height over a piece that
+  stands, loads unchanged and shows beside it (nothing is rewritten: the
+  record has no hang);
+- putting her home right (`rules::evaluate`) refuses a move that would
+  shift a hung piece (a piece set down under the window), and its frame
+  test reads the same predicate for the piece and none for her box;
+- a delivery is refused at a wall where the parcel's piece would meet
+  the window, or the window would meet a standing piece (the sofa
+  aside), through the same cell test.
+
+**Why drawn as one image with the sofa:** in line art two images over
+the same cells each hide the other's cells behind their placeholders, so
+pieces whose footprints meet are painted as one image (back to front:
+anything hung behind a standing piece first), as her box already takes
+in what it overlaps. In ASCII the sofa's glyphs are drawn after the
+window's. Nothing else ever overlapped, so both orders are unchanged
+for every other home (every golden trace byte-identical).
+
+**Why she leans from just outside an end:** her face over the glass,
+her box takes in the window's end columns (her own window's cells are
+exempt from the room she needs, `clear_of`'s `of`), and a sofa the
+window hangs behind blocks that end, so she leans from the free one
+(none, with the window wholly behind a sofa: she can't reach it).
+
+**Sibling, made pieces:** a makeshift piece must stay clear of her real
+pieces (`tend_made`) but was offered wherever the text and her room
+allowed (`builds` didn't look at real pieces), so one made under the low
+window would fall apart as it was made. Both now read one predicate,
+`clear_of_real`. (A census and a probe found no such build on today's
+screens; the shared predicate makes the mismatch impossible rather
+than tested.)
+
+## Her window is a long daydream (2026-10-06)
+
+**Rule:** Looking out is rarer (base 8 → 3) and much longer (60–180 s,
+lingered by mood). It's a session: the sky's line, then leaning on the
+sill with up to three musings on the sky (a whim's count), a whim's gap
+apart, each from the sky as it is when she says it, waiting while she
+speaks or looks up at the chat. She settles in from it: sitting in
+front of the window, then dozing there or lying back watching the
+clouds. Watching the clouds is only ever under her window, eyes open,
+one line at most, and no doze. See [design.md](design.md#houseguest).
+
+**Why:** the user's call (phase 5c brief): "the window is a daydreaming
+place", not a quick glance; 5b's census had about 19 short look-outs a
+game day in a furnished home. Movement draws the eye; one long lean
+replaces many walks to the window and away.
+
+**Why musings said as they come, not drawn at the start** (M10 allowed
+either): three minutes of real time is 18 of her clock, so the sky can
+turn mid-look (17:00, 19:00, 21:00); a line drawn when she leaned would
+say "Sunny!" at dusk. Each musing is drawn from the session's whims (a
+series per musing), so a decision says the same however her stream runs,
+and the session lives on `Osaka::sill` beside her act, cleared with it
+in `set` (no new field on every `Act::Use`). The pools are one per sky
+(at least four lines each, all five skies), cooling as any line does.
+
+**Why up to three by whim, not by mood:** the levers that separate moods
+(lingering, settling) are the stillness band's tuning; the sill's count
+isn't one of them. Its length lingers through the length she draws, so
+the band's guard sees it (`longest_still_ms`: 180 s, within the band's
+9 minutes).
+
+**Why cloud-watching is a pose of its own** (`Pose::CloudWatch`): a doze
+is read from the pose drawn (`Pose::dozes`: a chat line stirs a doze,
+"Mm?", and looks up at anything else). Cloud-watching is drawn as lying
+back with her eyes open, and must look up, so it can't be `LieBack`. It
+draws as `LieBack(0)` (the art lint's one exemption beside it), held,
+curious, her slow blink on.
+
+**Why only under her window, structurally:** it's settled into only from
+sitting in front of the window (`UnderSill`), which is settled into only
+from leaning on its sill, and only while the window's look-out seat is
+still where she sits; else she dozes. A sit on a bare floor still lies
+back to doze. Lying down she turns end to end from how she sat, so her
+head is under the glass.
+
+**Ships inert, as every settle-in does:** settling's odds are the band's
+tuning, all 0 until it (`Stillness::NEUTRAL`). The sill's session, its
+length and rarity ship now; sitting in front of the window and watching
+the clouds come with settling on, so the changelog doesn't claim them.
+
+**Measured (the day census, 6 runs a room, a game week each):** in the
+census home with a window, 14 look-outs in the 42 game days (683 before:
+about 16 a day, now one in three days); at base 6 it would be 82 (about
+two a day, the "few a game day" the design aimed at). Base 3 is the
+design's number, kept: the rest is the user's call. Her afternoon glance
+at her clock is still starved: 2 "Three-ish." in the home's 42 days (4
+before), 2 on the stage, 9 in the resident's; at base 6, 4. The design's
+fallback (the hour glance rolling once per daydream session) is how it
+already rolls (a daydream's first musing only, B6); rolling it at the
+sill too would feed it nothing at a look-out every third day, and a
+glance is its own act, so it would end her lean. Not built: the
+starving is in the glance's own gates (her clock on the strip she
+stands on, of an afternoon, once a visit, a musing in three of a
+spacing-out bound to muse one in three).
+
 ## Houseguest chooses by needs among the top few (2026-09-28)
 
 **Rule:** Her next act is a weighted-random pick among the four

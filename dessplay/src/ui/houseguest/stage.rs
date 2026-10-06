@@ -74,6 +74,12 @@ pub enum Scene {
     /// Dozing under the book, open over her eyes (she only settles into
     /// it, from reading on her back).
     BookDoze,
+    /// Sit in front of the window, chin in her hands (she only settles
+    /// into it, from leaning on its sill).
+    UnderSill,
+    /// Lie on her back watching the clouds (she only settles into it,
+    /// under her window).
+    CloudWatch,
     /// Space out, saying something first.
     Muse,
     /// Space out, telling a riddle (and answering it herself).
@@ -157,7 +163,7 @@ pub enum Scene {
 
 impl Scene {
     /// Every scene, in menu order.
-    pub const ALL: [Scene; 55] = [
+    pub const ALL: [Scene; 57] = [
         Self::Arrive,
         Self::Pull,
         Self::Swap,
@@ -180,6 +186,8 @@ impl Scene {
         Self::BookHomework,
         Self::LieRead,
         Self::BookDoze,
+        Self::UnderSill,
+        Self::CloudWatch,
         Self::Muse,
         Self::Riddle,
         Self::Lounge,
@@ -240,6 +248,8 @@ impl Scene {
             Self::BookHomework => "homework on her back",
             Self::LieRead => "read on her back",
             Self::BookDoze => "doze under the book",
+            Self::UnderSill => "sit under the window",
+            Self::CloudWatch => "watch the clouds",
             Self::Muse => "muse",
             Self::Riddle => "tell a riddle",
             Self::Lounge => "sit on the sofa",
@@ -354,6 +364,8 @@ impl Scene {
             | Self::BookHomework
             | Self::LieRead
             | Self::BookDoze
+            | Self::UnderSill
+            | Self::CloudWatch
             | Self::Muse
             | Self::Lounge
             | Self::Nap
@@ -384,6 +396,8 @@ impl Scene {
             Self::FloorHomework => Activity::FloorHomework,
             Self::LieRead => Activity::LieRead,
             Self::BookDoze => Activity::BookDoze,
+            Self::UnderSill => Activity::UnderSill,
+            Self::CloudWatch => Activity::CloudWatch,
             _ => return None,
         })
     }

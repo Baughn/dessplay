@@ -412,17 +412,38 @@ pub(super) struct Frame<'a> {
 impl Frame<'_> {
     /// Whether `(x, y)` is free for `who` with her pieces where `laid`
     /// has them: not blocked, not under a makeshift piece or another of
-    /// hers.
+    /// hers it may not overlap (her window and a sofa may: see
+    /// [`Furniture::may_overlap`]).
     fn clear(&self, laid: &[Shown], who: Furniture, x: i32, y: i32) -> bool {
+        self.free(laid, who, Some(who), x, y)
+    }
+
+    /// Whether `(x, y)` is free for her, using `who` with her pieces where
+    /// `laid` has them: as [`Frame::clear`], but her box overlaps no
+    /// other piece of hers at all.
+    fn room(&self, laid: &[Shown], who: Furniture, x: i32, y: i32) -> bool {
+        self.free(laid, who, None, x, y)
+    }
+
+    fn free(
+        &self,
+        laid: &[Shown],
+        who: Furniture,
+        over: Option<Furniture>,
+        x: i32,
+        y: i32,
+    ) -> bool {
         let (Ok(ux), Ok(uy)) = (u16::try_from(x), u16::try_from(y)) else {
             return false;
         };
         let cell = (ux, uy).into();
         !(self.blocked)(x, y)
             && !self.made.iter().any(|r| r.contains(cell))
-            && !laid
-                .iter()
-                .any(|s| s.item != who && s.rect().contains(cell))
+            && !laid.iter().any(|s| {
+                s.item != who
+                    && s.rect().contains(cell)
+                    && !over.is_some_and(|over| over.may_overlap(s.item))
+            })
     }
 }
 
@@ -458,7 +479,7 @@ impl Before {
             .iter()
             .filter(|s| s.scrap.is_none())
             .map(|s| {
-                let clear = |x: i32, y: i32| frame.clear(&laid, s.item, x, y);
+                let clear = |x: i32, y: i32| frame.room(&laid, s.item, x, y);
                 (*s, room::roomy(frame.buf, s, &clear))
             })
             .collect();
@@ -540,6 +561,21 @@ fn evaluate(
         return None;
     }
     let at = *laid.iter().find(|s| s.item == piece)?;
+    // Nothing goes under a piece hung low that it may not overlap (her
+    // window: phase 5c D6): every other hung piece lays where it did (one
+    // a piece set down under it would have moved aside).
+    let hung_moved = laid
+        .iter()
+        .filter(|a| a.lane() == room::Lane::Wall && a.item != piece)
+        .any(|a| {
+            !before
+                .laid
+                .iter()
+                .any(|b| (b.item, b.strip, b.left) == (a.item, a.strip, a.left))
+        });
+    if hung_moved {
+        return None;
+    }
     // It mends the rule (the settled flags are unchanged by a move).
     let mut target = Vec::new();
     judge(key.row, &laid, &before.strips, &before.home, &mut target);
@@ -627,7 +663,7 @@ fn fits_now(frame: &Frame, before: &Before, laid: &[Shown], piece: Furniture) ->
         room::fits(frame.buf, at, &clear)
     };
     let room = |at: &Shown| {
-        let clear = |x: i32, y: i32| frame.clear(laid, at.item, x, y);
+        let clear = |x: i32, y: i32| frame.room(laid, at.item, x, y);
         room::roomy(frame.buf, at, &clear)
     };
     let Some(at) = laid.iter().find(|s| s.item == piece) else {
@@ -2056,7 +2092,9 @@ mod tests {
         let laid = home.clone().layout(nooks);
         let keys: Vec<Grievance> = broken(&laid, &all, home).iter().map(|b| b.key).collect();
         prop_assert!(keys.contains(&r.key), "{:?} mends what holds", r);
-        let clear = |at: &[Shown], who: Furniture| {
+        // Clear for the piece `who` (of what it may not overlap: her
+        // window and a sofa may), or for her box using it (`her`: of all).
+        let free = |at: &[Shown], who: Furniture, her: bool| {
             let at = at.to_vec();
             move |x: i32, y: i32| {
                 let cell = (x as u16, y as u16).into();
@@ -2064,9 +2102,15 @@ mod tests {
                     && y >= 0
                     && !made.iter().any(|r| r.contains(cell))
                     && !blocked.iter().any(|r| r.contains(cell))
-                    && !at.iter().any(|s| s.item != who && s.rect().contains(cell))
+                    && !at.iter().any(|s| {
+                        s.item != who
+                            && s.rect().contains(cell)
+                            && (her || !who.may_overlap(s.item))
+                    })
             }
         };
+        let clear = |at: &[Shown], who: Furniture| free(at, who, false);
+        let room_for = |at: &[Shown], who: Furniture| free(at, who, true);
         let after = made_on(home, r, nooks);
         // The same pieces laid out: every strip still packs.
         prop_assert_eq!(after.len(), laid.len());
@@ -2095,10 +2139,25 @@ mod tests {
         for s in spoilt(&after) {
             prop_assert!(was.contains(&s), "{:?} newly spoilt by {:?}", s, r);
         }
-        // Fits, clear of everything, where she'd use it.
+        // Fits, clear of everything (but what it may overlap), where
+        // she'd use it.
         let mine = clear(&after, r.piece);
         prop_assert!(room::fits(buf, &at, &mine), "{:?}", r);
-        prop_assert!(room::roomy(buf, &at, &mine), "{:?}", r);
+        prop_assert!(room::roomy(buf, &at, &room_for(&after, r.piece)), "{:?}", r);
+        // Nothing went under her window, low: every other hung piece
+        // lays where it did.
+        for a in after
+            .iter()
+            .filter(|a| a.lane() == room::Lane::Wall && a.item != r.piece)
+        {
+            prop_assert!(
+                laid.iter()
+                    .any(|b| (b.item, b.strip, b.left) == (a.item, a.strip, a.left)),
+                "{:?} moved by {:?}",
+                a,
+                r
+            );
+        }
         prop_assert!(!made.iter().any(|m| m.intersects(at.rect())), "{:?}", r);
         prop_assert!(!blocked.iter().any(|b| b.intersects(at.rect())), "{:?}", r);
         // Every other piece that showed still fits.
@@ -2109,9 +2168,14 @@ mod tests {
             let now = laid_of(&after, s.item);
             let theirs = clear(&after, s.item);
             prop_assert!(room::fits(buf, &now, &theirs), "{:?} by {:?}", s, r);
-            let before = clear(&laid, s.item);
+            let before = room_for(&laid, s.item);
             if room::roomy(buf, s, &before) {
-                prop_assert!(room::roomy(buf, &now, &theirs), "{:?} by {:?}", s, r);
+                prop_assert!(
+                    room::roomy(buf, &now, &room_for(&after, s.item)),
+                    "{:?} by {:?}",
+                    s,
+                    r
+                );
             }
         }
         Ok(at)

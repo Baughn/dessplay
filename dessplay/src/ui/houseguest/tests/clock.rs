@@ -150,8 +150,25 @@ fn the_dial_changes_only_on_the_quarter_hour() {
                     };
                     let hand =
                         (!graphics).then(|| cells_of(&guest, &frame, Furniture::Clock)[4].clone());
-                    if !graphics && let PieceState::Sky(phase) = sky {
-                        // Its lower row, between the frame's sides.
+                    // Its lower row, between the frame's sides, unless
+                    // she's in front of it (it hangs low: she leans on
+                    // its sill, phase 5c D6).
+                    let visit = visit_of(&guest);
+                    let behind_her = visit
+                        .shown
+                        .iter()
+                        .find(|s| s.item == Furniture::Window)
+                        .is_some_and(|w| {
+                            let (x, y) = (visit.osaka.x, visit.osaka.y);
+                            let sky = w.rect();
+                            let (sx, sy) = (i32::from(sky.x), i32::from(sky.y) + 1);
+                            (sy > y - sprite::HEIGHT - 1 && sy <= y)
+                                && (sx + 1..=sx + 2).any(|c| (c - x).abs() <= sprite::WIDTH / 2)
+                        });
+                    if !graphics
+                        && !behind_her
+                        && let PieceState::Sky(phase) = sky
+                    {
                         let window = cells_of(&guest, &frame, Furniture::Window);
                         skies.push((phase, window[5..7].concat()));
                     }
@@ -601,15 +618,17 @@ fn look_out_seats(guest: &Guest) -> Vec<room::Seat> {
 }
 
 /// She looks out of her window only with it shown and somewhere to stand
-/// for it (step 8b): under it, a cell off its middle toward the side she
-/// faces from (her gaze goes up the way she faces), on its floor; with a
-/// piece standing beneath it, never in front of that: beside it, clear,
-/// facing it (her lamp beneath), or, with nowhere clear to stand (her
-/// sofa beneath), not at all: nothing binds. Without a window, or with it
-/// still in its box, there's nothing to look out of (only the box to
-/// unpack), and nothing binds. Her wall clock is offered as where it
-/// hangs only out of its box. Quiet panes or text-dense, in both drawing
-/// modes.
+/// for it (phase 5c D6: it hangs low, and she leans on its sill): just
+/// outside its end, her face over the glass, facing into it, on the side
+/// it was hung to face from first, on its floor. Hung where a piece that
+/// stands would be under it, it hangs beside that piece instead (her lamp),
+/// and she leans at it there, clear of the lamp; over her sofa it may
+/// hang, and she leans at it from its free side, never in front of the
+/// sofa (wholly behind the sofa, from nowhere: nothing binds). Without a
+/// window, or with it still in its box, there's nothing to look out of
+/// (only the box to unpack), and nothing binds. Her wall clock is offered
+/// as where it hangs only out of its box. Quiet panes or text-dense, in
+/// both drawing modes.
 #[test]
 fn she_looks_out_only_of_a_window_she_can_reach() {
     use crate::ui::houseguest::mind::{Place, Whims, places};
@@ -618,10 +637,11 @@ fn she_looks_out_only_of_a_window_she_can_reach() {
             .filter(|&w| !places(room::Use::LookOut, &visit_of(guest).chances, Whims(w)).is_empty())
             .count()
     };
+    let half = sprite::WIDTH / 2;
     for (name, (real, view)) in screens() {
         for graphics in [false, true] {
             let at = format!("{name} graphics={graphics}");
-            // Hung, with nothing beneath it: under it.
+            // Hung, with nothing beneath it: at its near end.
             let mut guest = timed_home(3, tue(14, 0), sprite::Facing::Right, graphics);
             let now = until_visiting(&mut guest, &real, &view, 0);
             paint(&mut guest, &real, &view, now);
@@ -631,17 +651,24 @@ fn she_looks_out_only_of_a_window_she_can_reach() {
                 .find(|s| s.item == Furniture::Window)
                 .unwrap_or_else(|| panic!("{at}: window shown"));
             let rect = window.rect();
-            let middle = i32::from(rect.x) + i32::from(rect.width) / 2;
+            assert_eq!(i32::from(rect.bottom()), window.floor - 1, "{at}: hung low");
             let seats = look_out_seats(&guest);
             assert_eq!(seats.len(), 1, "{at}: {seats:?}");
             let seat = seats[0];
             assert_eq!(seat.item, Furniture::Window, "{at}");
             assert_eq!(
                 (seat.x, seat.y),
-                (middle - 1, window.floor),
-                "{at}: under it"
+                (i32::from(rect.x) - 1, window.floor),
+                "{at}: at its near end"
             );
             assert_eq!(seat.facing, sprite::Facing::Right, "{at}");
+            // Her face over the glass: the columns before her (the side
+            // she faces) are the window's.
+            assert!(
+                (seat.x + 1..=seat.x + half)
+                    .all(|x| (i32::from(rect.x)..i32::from(rect.right())).contains(&x)),
+                "{at}: her face over the glass"
+            );
             assert_eq!(offered(&guest), 32, "{at}");
             assert!(
                 places(room::Use::LookOut, &visit_of(&guest).chances, Whims(0))
@@ -665,39 +692,41 @@ fn she_looks_out_only_of_a_window_she_can_reach() {
             assert_eq!(on.floor, window.floor, "{at}: the same strip");
             assert_eq!(on.seen_from((seat.x, seat.y)), Some(on.x), "{at}");
             assert_eq!(on.seen_from((seat.x, seat.y - 3)), None, "{at}");
-            // Hung the other way: under it, the other side of its middle.
+            // Hung the other way: at its other end.
             let mut guest = timed_home(3, tue(14, 0), sprite::Facing::Left, graphics);
             let now = until_visiting(&mut guest, &real, &view, 0);
             paint(&mut guest, &real, &view, now);
             let seats = look_out_seats(&guest);
             assert_eq!(
                 seats.iter().map(|s| (s.x, s.facing)).collect::<Vec<_>>(),
-                [(middle, sprite::Facing::Left)],
+                [(i32::from(rect.right()), sprite::Facing::Left)],
                 "{at}: hung facing left"
             );
-            // Over a piece that stands: never in front of it. Over her
-            // lamp, beside it (clear of the lamp), facing it; over her
-            // sofa, wider, nowhere clear to stand (her box beside the
-            // window would be in front of the sofa too), so she can't
-            // reach it to look out, and nothing binds.
-            // Beside it, she stands first on the side she'd face it from
-            // the way it was hung (the other is clear too).
-            for (piece, reachable, facing) in [
-                (Furniture::Lamp, true, sprite::Facing::Right),
-                (Furniture::Lamp, true, sprite::Facing::Left),
-                (Furniture::Sofa, false, sprite::Facing::Right),
+            // Hung over a piece that stands: beside her lamp, clear of
+            // it, leaning at it from either end; over her sofa, wholly
+            // behind it (nowhere to lean but in front of the sofa:
+            // nothing binds), or half behind it, from its free end.
+            // (On the 50-wide pane: the sofa at 550 stands on 22..31, the
+            // window at 550 hangs on 25..29, wholly in front of it; the
+            // sofa at 359 on 15..24, the window at 478 on 22..26, its two
+            // left columns behind the sofa.)
+            for (piece, x, hung_at, reachable, facing) in [
+                (Furniture::Lamp, 550, 550, true, sprite::Facing::Right),
+                (Furniture::Lamp, 550, 550, true, sprite::Facing::Left),
+                (Furniture::Sofa, 550, 550, false, sprite::Facing::Right),
+                (Furniture::Sofa, 359, 478, true, sprite::Facing::Right),
             ] {
-                let at = format!("{at} over her {piece:?} hung {facing:?}");
+                let at = format!("{at} over her {piece:?} at {x} hung at {hung_at} {facing:?}");
                 let mut guest = home_at(
                     3,
                     tue(14, 0),
-                    &[(piece, Nook::Users, 550), (Furniture::Tv, Nook::Users, 900)],
+                    &[(piece, Nook::Users, x), (Furniture::Tv, Nook::Users, 900)],
                     graphics,
                 );
                 assert!(guest.ledger.home.add(room::Prop::new(
                     Furniture::Window,
                     Nook::Users,
-                    550,
+                    hung_at,
                     facing
                 )));
                 let now = until_visiting(&mut guest, &real, &view, 0);
@@ -711,11 +740,15 @@ fn she_looks_out_only_of_a_window_she_can_reach() {
                         .unwrap_or_else(|| panic!("{at}: {item:?} shown"))
                 };
                 let (window, below) = (rect_of(Furniture::Window), rect_of(piece));
-                let under = |x: i32| (i32::from(below.x)..i32::from(below.right())).contains(&x);
-                let middle = i32::from(window.x) + i32::from(window.width) / 2;
-                assert!(
-                    under(middle - 1) || under(middle),
-                    "{at}: {window:?} over {below:?}"
+                let cover = shown
+                    .iter()
+                    .find(|s| s.item == piece)
+                    .map(Shown::cover)
+                    .unwrap();
+                assert_eq!(
+                    window.intersects(cover),
+                    piece == Furniture::Sofa,
+                    "{at}: {window:?} {below:?}"
                 );
                 let seats = look_out_seats(&guest);
                 if !reachable {
@@ -726,11 +759,15 @@ fn she_looks_out_only_of_a_window_she_can_reach() {
                 assert_eq!(seats.len(), 1, "{at}: {seats:?} {window:?} {below:?}");
                 assert_eq!(offered(&guest), 32, "{at}");
                 let seat = seats[0];
-                let half = sprite::WIDTH / 2;
                 assert!(
                     seat.x + half < i32::from(below.x) || seat.x - half >= i32::from(below.right()),
                     "{at}: in front of it: {seat:?}, {below:?}"
                 );
+                assert!(
+                    seat.x == i32::from(window.x) - 1 || seat.x == i32::from(window.right()),
+                    "{at}: at an end: {seat:?} {window:?}"
+                );
+                let middle = i32::from(window.x) + i32::from(window.width) / 2;
                 assert_eq!(
                     seat.facing,
                     if seat.x < middle {
@@ -740,19 +777,15 @@ fn she_looks_out_only_of_a_window_she_can_reach() {
                     },
                     "{at}: facing it"
                 );
-                assert_eq!(seat.facing, facing, "{at}: from the side it was hung to");
-                // The other side would do as well: she'd fit there too.
-                let terrain = &visit_of(&guest).terrain;
+                // Beside her lamp, it hangs on the side its anchor puts
+                // nearer; she leans at it from the end clear of the lamp.
                 let window = *shown
                     .iter()
                     .find(|s| s.item == Furniture::Window)
                     .unwrap_or_else(|| panic!("{at}: window"));
-                let [left, right] = window.beside();
-                let other = if seat.x == left { right } else { left };
-                assert_ne!(seat.x, other, "{at}");
                 assert!(
-                    seat_spot(terrain, other, window.floor) && clear_of(shown, other, window.floor),
-                    "{at}: the other side at {other} is blocked"
+                    clear_of(shown, &window, seat.x, window.floor),
+                    "{at}: her box meets a piece: {seat:?}"
                 );
             }
             // No window, or one still boxed: nothing to look out of; no
@@ -821,8 +854,8 @@ fn she_looks_out_at_the_sky_she_sees() {
                 let (pose, face, bubble) = visit_of(&guest).osaka.appearance(now);
                 assert_eq!(
                     (pose, face),
-                    (sprite::Pose::Gaze, sprite::Face::Curious),
-                    "{at}"
+                    (sprite::Pose::SillLean, sprite::Face::Curious),
+                    "{at}: leaning on her sill"
                 );
                 assert_eq!(bubble, Some(osaka::Bubble::Say(line)), "{at}");
             }

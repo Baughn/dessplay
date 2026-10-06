@@ -1508,6 +1508,55 @@ fn afternoon_rooms() -> [Room; 3] {
     [stage_room(), furnished_room(), resident_room()].map(at_afternoon)
 }
 
+/// The census home with her window too (phase 5c D6, minor 9: the band's
+/// home has none, and her long daydream at the sill is a still act it
+/// never sees).
+const WINDOWED_HOME: [Furniture; 8] = [
+    Furniture::Sofa,
+    Furniture::Tv,
+    Furniture::Bed,
+    Furniture::Desk,
+    Furniture::Bookshelf,
+    Furniture::Fridge,
+    Furniture::Lamp,
+    Furniture::Window,
+];
+
+/// Rooms the fed afternoon prints beside the band's own (phase 5c D2,
+/// D6; step 4's hand-off), judged by nothing: the census home with her
+/// window ([`WINDOWED_HOME`]); the home's screen with only a TV (her
+/// first piece: watching from the floor); and the resident's with its
+/// chat's text low in the chat pane, at her floors' heights (the band's
+/// resident has all its text above her reach, so she never pulls or
+/// swaps there).
+fn printed_rooms() -> [Room; 3] {
+    let windowed = Room {
+        name: "home+window",
+        owns: &WINDOWED_HOME,
+        ..furnished_room()
+    };
+    let tv_only = Room {
+        name: "home, TV only",
+        owns: &[Furniture::Tv],
+        ..furnished_room()
+    };
+    let (w, h) = (100, 30);
+    let mut real = rooms(w, h);
+    // The chat pane's last ten rows, just above its floor (its bottom
+    // border, row 26), each line ending at column 39: beside them, on
+    // that floor, the lines on her box's rows are hers to pull.
+    let text: Vec<(u16, u16, String)> = (0..10)
+        .map(|i| (19, 16 + i, "so what did you think".to_owned()))
+        .collect();
+    scatter(&mut real, &text, &[]);
+    let low_text = Room {
+        name: "resident, text low",
+        real,
+        ..resident_room()
+    };
+    [windowed, tv_only, low_text].map(at_afternoon)
+}
+
 /// `room` fed from [`AFTERNOON`].
 pub(super) fn at_afternoon(room: Room) -> Room {
     Room {
@@ -1613,7 +1662,9 @@ pub(super) fn afternoon(
 /// sight; what chat lines stopped her; still-but-busy time, exercise
 /// begun and bubbles a minute; and what a sim-minute cost to run, then a
 /// line a cell. It's the stillness band's own setup, read before the
-/// band's thresholds are set. Ignored; run by hand:
+/// band's thresholds are set; [`printed_rooms`] come after the band's
+/// (`CENSUS_ROOMS=band` or `printed` for either alone). Ignored; run by
+/// hand:
 ///
 /// ```text
 /// cargo test --release -p dessplay --lib fed_afternoon_census -- --ignored --nocapture
@@ -1648,8 +1699,18 @@ fn fed_afternoon_census() {
         std::thread::available_parallelism().map_or(1, |n| n.get() as u64),
     )
     .max(1) as usize;
+    // `CENSUS_ROOMS`: "band" for the band's three, "printed" for the
+    // three printed beside them ([`printed_rooms`]), all six by default.
+    let rooms: Vec<Room> = match std::env::var("CENSUS_ROOMS").as_deref() {
+        Ok("band") => afternoon_rooms().into(),
+        Ok("printed") => printed_rooms().into(),
+        _ => afternoon_rooms()
+            .into_iter()
+            .chain(printed_rooms())
+            .collect(),
+    };
     let mut table = Vec::new();
-    for room in afternoon_rooms() {
+    for room in rooms {
         for mood in Mood::ALL {
             for quiet in [true, false] {
                 for &graphics in &modes {

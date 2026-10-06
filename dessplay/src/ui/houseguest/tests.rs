@@ -1836,6 +1836,8 @@ fn every_scene_has_a_spot_in_the_stage_room() {
                         Scene::Sit => posed(Pose::Sit),
                         Scene::LieBack => posed(Pose::LieBack(0)),
                         Scene::SitDoze => posed(Pose::SitDoze(0)),
+                        Scene::UnderSill => posed(Pose::UnderSill),
+                        Scene::CloudWatch => posed(Pose::CloudWatch),
                         Scene::LieFront => posed(Pose::LieFront(0)),
                         Scene::Jacks => posed(Pose::Jack(0)),
                         Scene::ToeTouch => posed(Pose::ToeTouch(0)),
@@ -8863,6 +8865,9 @@ fn every_want_can_be_cued() {
             Want::Idle(Activity::LieRead) => &[Scene::LieRead],
             // Settled into from reading on her back.
             Want::Idle(Activity::BookDoze) => &[Scene::BookDoze],
+            // Settled into from her window's sill.
+            Want::Idle(Activity::UnderSill) => &[Scene::UnderSill],
+            Want::Idle(Activity::CloudWatch) => &[Scene::CloudWatch],
             Want::Travel => &[
                 Scene::ClimbUp,
                 Scene::ClimbDown,
@@ -12497,3 +12502,4 @@ mod golden;
 mod rain;
 mod rares;
 mod stillness;
+mod window;

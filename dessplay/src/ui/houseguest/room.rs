@@ -87,6 +87,22 @@ impl Furniture {
         }
     }
 
+    /// Whether it and `other` may share cells, one in front of the
+    /// other: only her window and a sofa (phase 5c D6). The window hangs
+    /// low enough for her to lean on its sill, so it would meet anything
+    /// that stands under it; the sofa's back may cover its lower corner
+    /// (the window drawn behind it), but nothing else may stand under it.
+    /// The one rule for both ways round, so where a hung piece goes
+    /// (packing the wall, a delivery, her moving it) and where a piece
+    /// that stands goes (the floor, a delivery, her moving it) can't
+    /// drift apart.
+    pub(super) fn may_overlap(self, other: Self) -> bool {
+        matches!(
+            (self, other),
+            (Self::Window, Self::Sofa) | (Self::Sofa, Self::Window)
+        )
+    }
+
     /// Whether it shows her time of day (the clock's dial, the window's
     /// sky), so it changes as her clock runs, on the quarter-hour.
     pub(super) fn tells_time(self) -> bool {
@@ -151,7 +167,9 @@ pub(super) struct Spec {
     pub comfort: f64,
     /// Out of its box, it hangs on the wall: the rows between the floor
     /// and its bottom row (none: it stands on the floor). Hung above the
-    /// tallest piece that stands, it hangs over any of them.
+    /// tallest piece that stands, it hangs over any of them; hung lower
+    /// (her window), it hangs clear of each it may not overlap (see
+    /// [`Furniture::may_overlap`]).
     pub hang: Option<u16>,
     /// How much prettier it makes a room (decor; nothing else does).
     pub beauty: f64,
@@ -327,12 +345,15 @@ const WINDOW: Spec = Spec {
     // The sky's two cells are drawn over (see the guest's `overrides`).
     ascii: &[".--.", "|  |"],
     ink: (Color::Rgb(243, 234, 216), Color::White),
-    // She stands under it (or beside it), gazing out (phase 5b D7).
+    // She leans on its sill, gazing out (phase 5b D7, 5c D6).
     uses: &[Use::LookOut],
     offers: &[],
     sit: None,
     comfort: 1.0,
-    hang: Some(4),
+    // Low, so its sill is at her chest and she can lean on it, chin in
+    // her hands (phase 5c D6): among the pieces that stand, so it hangs
+    // clear of every one but a sofa (see [`Furniture::may_overlap`]).
+    hang: Some(1),
     beauty: 0.0,
     symmetric: true,
 };
@@ -657,8 +678,11 @@ pub(super) struct Prop {
 
 /// Where along its strip a piece is: standing on the floor, or hung on
 /// the wall above it. Each lane is packed on its own (a hung piece may
-/// hang over a standing one); the floor lane is the room's, and only it
-/// moves the room (see [`Home::project`]).
+/// hang over a standing one), but a hung piece low enough to meet one
+/// that stands hangs clear of it, unless it may overlap it (her window
+/// and a sofa: see [`Furniture::may_overlap`], [`Home::laid_on`]); the
+/// floor lane is the room's, and only it moves the room (see
+/// [`Home::project`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Lane {
     Floor,
@@ -1017,20 +1041,20 @@ impl Shown {
         [i32::from(rect.x) - half - 1, i32::from(rect.right()) + half]
     }
 
-    /// Where she'd stand to look out of it (a window), in the order she
-    /// tries them: under it, a cell off its middle toward the side she
-    /// faces it from (her gaze goes up the way she faces), facing the
-    /// way it was hung, then the other side of its middle; then just
-    /// beside it (see [`Shown::beside`]), on the side she'd face it the
-    /// way it was hung from first, for when what stands beneath it leaves
-    /// her no room under it.
-    pub fn look_out_spots(&self) -> [i32; 4] {
+    /// Where she'd stand to look out of it (a window), leaning on its
+    /// sill (phase 5c D6), in the order she tries them: just outside its
+    /// end, her face over the glass, facing into it: first at the end she
+    /// faces it from the way it was hung (its left end, hung facing
+    /// right), then at the other. Her box takes in the window's end
+    /// columns (it hangs low), and nothing else may be in it: a sofa the
+    /// window hangs behind blocks that end, so she leans at it from its
+    /// free one.
+    pub fn look_out_spots(&self) -> [i32; 2] {
         let (cols, _) = self.size();
-        let middle = self.left + i32::from(cols) / 2;
-        let [left, right] = self.beside();
+        let (left, right) = (self.left - 1, self.left + i32::from(cols));
         match self.facing {
-            Facing::Right => [middle - 1, middle, left, right],
-            Facing::Left => [middle, middle - 1, right, left],
+            Facing::Right => [left, right],
+            Facing::Left => [right, left],
         }
     }
 
@@ -1170,13 +1194,69 @@ impl Home {
             let Some(mut packed) = pack(&self.on(strip, Lane::Floor), e) else {
                 continue;
             };
-            packed.extend(pack_each(&self.on(strip, Lane::Wall), e));
+            let standing: Vec<Shown> = packed
+                .iter()
+                .filter_map(|&(i, left)| Some(stand(self.props.get(i)?, strip, e, left)))
+                .collect();
+            let hung = pack_each(&self.on(strip, Lane::Wall), e);
+            packed.extend(self.hung_clear(hung, strip, e, &standing));
             packed.sort_unstable();
             out.extend(
                 packed.into_iter().filter_map(|(index, left)| {
                     Some(stand(self.props.get(index)?, strip, e, left))
                 }),
             );
+        }
+        out
+    }
+
+    /// `hung`, her pieces on `strip`'s wall as [`pack_each`] has them on
+    /// `e`, each clear of every piece `standing` there it may not overlap
+    /// (see [`Furniture::may_overlap`]: only her window hangs low enough
+    /// to meet one, phase 5c D6). One that meets such a piece hangs at
+    /// the nearest place between its neighbours on the wall that meets
+    /// none (to the left, of two as near), keeping its order along the
+    /// wall; with none, it's left out alone (a wall never moves a room).
+    /// So an older record's window, hung over her TV, shows beside it.
+    fn hung_clear(
+        &self,
+        mut hung: Vec<(usize, i32)>,
+        strip: Strip,
+        e: Extent,
+        standing: &[Shown],
+    ) -> Vec<(usize, i32)> {
+        hung.sort_by_key(|&(index, left)| (left, index));
+        let cols = |index: usize| {
+            self.props
+                .get(index)
+                .map_or(0, |p| i32::from(p.item.spec().footprint.0))
+        };
+        let mut out: Vec<(usize, i32)> = Vec::with_capacity(hung.len());
+        for (k, &(index, left)) in hung.iter().enumerate() {
+            let Some(prop) = self.props.get(index) else {
+                continue;
+            };
+            let meets = |left: i32| {
+                let at = stand(prop, strip, e, left);
+                standing
+                    .iter()
+                    .any(|s| at.rect().intersects(s.cover()) && !prop.item.may_overlap(s.item))
+            };
+            if !meets(left) {
+                out.push((index, left));
+                continue;
+            }
+            let from = out.last().map_or(e.from, |&(j, l)| l + cols(j));
+            let to = hung.get(k + 1).map_or(e.to, |&(_, l)| l) - cols(index);
+            match (from..=to)
+                .filter(|&l| !meets(l))
+                .min_by_key(|&l| ((l - left).abs(), l))
+            {
+                Some(clear) => out.push((index, clear)),
+                None => {
+                    tracing::trace!(item = ?prop.item, "houseguest: no room on the wall clear of what stands")
+                }
+            }
         }
         out
     }
@@ -1215,7 +1295,7 @@ impl Home {
         }
         let mut shown: Vec<Shown> = Vec::new();
         for at in self.layout(nooks) {
-            if fits(buf, &at, &|x, y| free(&shown, blocked, x, y)) {
+            if fits(buf, &at, &|x, y| free(&shown, blocked, Some(at.item), x, y)) {
                 shown.push(at);
             }
         }
@@ -1327,9 +1407,10 @@ impl Home {
                 })
             })
             .filter_map(|(prop, at)| {
-                let clear = |x: i32, y: i32| free(shown, blocked, x, y);
-                (fits(buf, &at, &clear) && roomy(buf, &at, &clear))
-                    .then(|| (prop, room_to_look(buf, &at, &clear)))
+                let clear = |x: i32, y: i32| free(shown, blocked, Some(item), x, y);
+                let her = |x: i32, y: i32| free(shown, blocked, None, x, y);
+                (fits(buf, &at, &clear) && roomy(buf, &at, &her))
+                    .then(|| (prop, room_to_look(buf, &at, &her)))
             })
             .collect();
         // A window where she could stand to look out of it, if there's
@@ -1462,18 +1543,23 @@ impl Home {
             .copied()
             .collect();
         let fits_here = |i: usize, at: &Shown| {
-            let clear = |x: i32, y: i32| {
-                free(&others, blocked, x, y)
-                    && !packed
-                        .iter()
-                        .any(|(j, s)| *j != i && s.rect().contains((x as u16, y as u16).into()))
+            let (others, packed) = (&others, &packed);
+            let clear_for = |item: Option<Furniture>| {
+                move |x: i32, y: i32| {
+                    free(others, blocked, item, x, y)
+                        && !packed
+                            .iter()
+                            .any(|(j, s)| *j != i && s.rect().contains((x as u16, y as u16).into()))
+                }
             };
+            // The piece clear of what it may not overlap; her, of all.
+            let (clear, her) = (clear_for(Some(at.item)), clear_for(None));
             fits(buf, at, &clear)
                 && (i != new
                     || match room {
                         Room::None => true,
-                        Room::ToUse => roomy(buf, at, &clear),
-                        Room::ToLook => roomy(buf, at, &clear) && room_to_look(buf, at, &clear),
+                        Room::ToUse => roomy(buf, at, &her),
+                        Room::ToLook => roomy(buf, at, &her) && room_to_look(buf, at, &her),
                     })
         };
         let all_fit = packed.iter().all(|(i, at)| {
@@ -1615,12 +1701,24 @@ enum Room {
     ToLook,
 }
 
-/// Whether `(x, y)` is neither `blocked` nor under a shown piece.
-fn free(shown: &[Shown], blocked: &dyn Fn(i32, i32) -> bool, x: i32, y: i32) -> bool {
+/// Whether `(x, y)` is free for `item` (a piece being placed; `None`:
+/// her, as room to use one): not `blocked`, nor under a shown piece it
+/// may not overlap (see [`Furniture::may_overlap`]; her box may overlap
+/// none). The one test both lanes' pieces are placed by, so a piece that
+/// stands never goes under her window, nor her window over it, but for a
+/// sofa.
+fn free(
+    shown: &[Shown],
+    blocked: &dyn Fn(i32, i32) -> bool,
+    item: Option<Furniture>,
+    x: i32,
+    y: i32,
+) -> bool {
     !blocked(x, y)
-        && !shown
-            .iter()
-            .any(|s| s.rect().contains((x as u16, y as u16).into()))
+        && !shown.iter().any(|s| {
+            s.rect().contains((x as u16, y as u16).into())
+                && !item.is_some_and(|item| item.may_overlap(s.item))
+        })
 }
 
 /// Whether `at` stands on unbroken line glyphs (hung, it needs none)
@@ -1987,14 +2085,19 @@ mod tests {
     }
 
     /// Some of her pieces that stand, and a poster hung among them
-    /// (newer or older than any of them), each placed as [`pieces`].
+    /// (newer or older than any of them), and maybe her window hung low
+    /// among them too, each placed as [`pieces`].
     fn decorated() -> impl Strategy<Value = Vec<Prop>> {
         (
             proptest::sample::subsequence(standing(), 0..=4),
             any::<proptest::sample::Index>(),
+            proptest::option::of(any::<proptest::sample::Index>()),
         )
-            .prop_flat_map(|(mut items, at)| {
+            .prop_flat_map(|(mut items, at, window)| {
                 items.insert(at.index(items.len() + 1), Furniture::Poster);
+                if let Some(window) = window {
+                    items.insert(window.index(items.len() + 1), Furniture::Window);
+                }
                 placed(items)
             })
     }
@@ -2149,7 +2252,14 @@ mod tests {
     }
 
     /// Every piece that hangs hangs above the tallest piece that stands
-    /// (and so above any it hangs over), and above her head.
+    /// (and so above any it hangs over), and above her head; all but her
+    /// window, hung low for her to lean on its sill (its bottom row the
+    /// floor less 2, the sill at her chest: phase 5c D6). It hangs among
+    /// the pieces that stand, so it may share columns only with what it
+    /// may overlap: a sofa (drawn in front of it), and nothing else.
+    /// [`Furniture::may_overlap`] says so of that pair, both ways round,
+    /// and of no other. Each is used from beneath or beside it, never
+    /// from in it (out of reach).
     #[test]
     fn hung_pieces_clear_every_standing_piece() {
         let tallest = standing()
@@ -2158,14 +2268,176 @@ mod tests {
             .max()
             .unwrap();
         assert!(tallest >= super::super::sprite::HEIGHT as u16);
+        for a in Furniture::ALL {
+            for b in Furniture::ALL {
+                assert_eq!(a.may_overlap(b), b.may_overlap(a), "{a:?} {b:?}");
+                assert_eq!(
+                    a.may_overlap(b),
+                    matches!(
+                        (a, b),
+                        (Furniture::Window, Furniture::Sofa) | (Furniture::Sofa, Furniture::Window)
+                    ),
+                    "{a:?} {b:?}"
+                );
+            }
+        }
+        assert_eq!(
+            Furniture::Window.spec().hang,
+            Some(1),
+            "her sill at her chest"
+        );
         for item in Furniture::ALL {
             if let Some(hang) = item.spec().hang {
-                assert!(hang >= tallest, "{item:?} hangs {hang}, under {tallest}");
+                if item != Furniture::Window {
+                    assert!(hang >= tallest, "{item:?} hangs {hang}, under {tallest}");
+                }
+                // Hung lower than a piece that stands, it may overlap one
+                // (the sofa: so the sofa's back can cover its corner).
+                if hang < tallest {
+                    assert!(
+                        standing().into_iter().any(|s| item.may_overlap(s)),
+                        "{item:?} hangs {hang}, under {tallest}, over nothing it may overlap"
+                    );
+                }
                 // Used from the floor beneath or beside it, never from in
                 // it (out of reach).
                 for &what in item.spec().uses {
                     assert!(!what.inside(), "{item:?} is out of reach for {what:?}");
                 }
+            }
+        }
+    }
+
+    /// Her window hangs low (phase 5c D6), and it may hang behind a sofa:
+    /// against the same wall the sofa's back covers its lower corner,
+    /// whichever came first, and nothing moves for it.
+    #[test]
+    fn a_window_may_hang_behind_a_sofa() {
+        let rows = empty("Users", 30, 9);
+        let buf = Buffer::with_lines(rows.iter().map(String::as_str));
+        let nooks = [(Nook::Users, buf.area)];
+        for window_first in [false, true] {
+            let (sofa, window) = (prop(Furniture::Sofa, 0), prop(Furniture::Window, 0));
+            let props = if window_first {
+                [window, sofa]
+            } else {
+                [sofa, window]
+            };
+            let mut room = home(Nook::Users, &props);
+            room.layout(&nooks);
+            let before = room.clone();
+            let shown = room.project(&buf, &nooks, &|_, _| false);
+            let at = format!("window first: {window_first}");
+            assert_eq!(shown.len(), 2, "{at}: {shown:?}");
+            let get = |item: Furniture| *shown.iter().find(|s| s.item == item).unwrap();
+            let (w, sofa) = (get(Furniture::Window), get(Furniture::Sofa));
+            assert_eq!((w.left, sofa.left), (1, 1), "{at}: each against the wall");
+            assert_eq!(w.rect(), Rect::new(1, 5, 4, 2), "{at}: hung low");
+            assert!(w.rect().intersects(sofa.rect()), "{at}");
+            assert_eq!(room, before, "{at}: nothing moved");
+        }
+    }
+
+    /// Over any other piece that stands, her window never hangs (phase 5c
+    /// D6): hung where it would meet one, it hangs beside it instead, on
+    /// the nearest stretch of its wall that's clear; with none, it's in
+    /// the closet alone, and the room never moves for it. Whichever came
+    /// first.
+    #[test]
+    fn a_window_hangs_clear_of_every_other_standing_piece() {
+        for item in standing().into_iter().filter(|&f| f != Furniture::Sofa) {
+            for window_first in [false, true] {
+                let at = format!("{item:?}, window first: {window_first}");
+                let (piece, window) = (prop(item, 0), prop(Furniture::Window, 0));
+                let props = if window_first {
+                    [window, piece]
+                } else {
+                    [piece, window]
+                };
+                let rows = empty("Users", 40, 9);
+                let buf = Buffer::with_lines(rows.iter().map(String::as_str));
+                let nooks = [(Nook::Users, buf.area)];
+                let mut room = home(Nook::Users, &props);
+                room.layout(&nooks);
+                let before = room.clone();
+                let shown = room.project(&buf, &nooks, &|_, _| false);
+                assert_eq!(shown.len(), 2, "{at}: {shown:?}");
+                let get = |f: Furniture| *shown.iter().find(|s| s.item == f).unwrap();
+                let (w, standing) = (get(Furniture::Window), get(item));
+                assert_eq!(standing.left, 1, "{at}: it stays against the wall");
+                assert_eq!(w.rect().y, 5, "{at}: hung low");
+                assert!(
+                    !w.rect().intersects(standing.cover()),
+                    "{at}: {w:?} over {standing:?}"
+                );
+                assert_eq!(
+                    w.left,
+                    i32::from(standing.rect().right()),
+                    "{at}: beside it, as near as it can"
+                );
+                assert_eq!(room, before, "{at}: nothing moved");
+                // No room beside it: in the closet alone.
+                let cols = item.spec().footprint.0;
+                let rows = empty("Users", usize::from(cols) + 2 + 3, 9);
+                let buf = Buffer::with_lines(rows.iter().map(String::as_str));
+                let nooks = [(Nook::Users, buf.area)];
+                let shown = room.project(&buf, &nooks, &|_, _| false);
+                assert_eq!(
+                    shown.iter().map(|s| s.item).collect::<Vec<_>>(),
+                    [item],
+                    "{at}: narrow"
+                );
+                assert_eq!(room, before, "{at}: narrow, nothing moved");
+            }
+        }
+    }
+
+    /// A saved home whose window hung at the old height (four rows up,
+    /// over her TV) loads as it was saved, and shows the window hung low
+    /// and valid: beside the TV (never over it), its sky still there, the
+    /// TV where it stood; over a sofa it stays where it was hung.
+    #[test]
+    fn a_window_saved_at_the_old_hang_hangs_low_and_valid() {
+        use super::super::ledger::Ledger;
+        let record = |under: &str| {
+            format!(
+                concat!(
+                    r#"{{"version":1,"master_seed":3,"visits":9,"rooms":[["Living","Users"]],"#,
+                    r#""props":[{{"item":"{under}","at":0,"facing":"Right","boxed":false}},"#,
+                    r#"{{"item":"Window","at":20,"facing":"Right","boxed":false}}],"#,
+                    r#""anchors":[{{"item":"{under}","strip":{{"Bottom":"Users"}},"anchor":{{"side":"Left","offset":0}}}},"#,
+                    r#"{{"item":"Window","strip":{{"Bottom":"Users"}},"anchor":{{"side":"Left","offset":1}}}}]}}"#
+                ),
+                under = under
+            )
+        };
+        let rows = empty("Users", 40, 9);
+        let buf = Buffer::with_lines(rows.iter().map(String::as_str));
+        let nooks = [(Nook::Users, buf.area)];
+        for (under, overlaps) in [("Tv", false), ("Sofa", true)] {
+            let ledger = Ledger::from_json(&record(under)).expect("it reads");
+            let mut home = ledger.home.clone();
+            let shown = home.project(&buf, &nooks, &|_, _| false);
+            assert_eq!(home, ledger.home, "{under}: nothing moved");
+            assert_eq!(shown.len(), 2, "{under}: {shown:?}");
+            let get = |f: Furniture| *shown.iter().find(|s| s.item == f).unwrap();
+            let w = get(Furniture::Window);
+            let below = *shown.iter().find(|s| s.item != Furniture::Window).unwrap();
+            assert_eq!(below.left, 1, "{under}");
+            assert_eq!(w.rect().y, 5, "{under}: hung low");
+            assert_eq!(
+                w.rect().intersects(below.cover()),
+                overlaps,
+                "{under}: {w:?} {below:?}"
+            );
+            if !overlaps {
+                assert_eq!(
+                    w.left,
+                    i32::from(below.rect().right()),
+                    "{under}: beside it"
+                );
+            } else {
+                assert_eq!(w.left, 2, "{under}: where it was hung");
             }
         }
     }
@@ -2300,6 +2572,57 @@ mod tests {
         let mut shown_room = room.clone();
         assert_eq!(shown_room.project(&buf, &nooks, &|_, _| false), laid);
         assert_eq!(shown_room, room, "nothing moved");
+    }
+
+    /// Nothing that stands comes in under her window but a sofa, nor does
+    /// her window come in over anything that stands but a sofa (phase 5c
+    /// D6): a delivery through a wall where the one would meet the other
+    /// comes in through the other wall instead.
+    #[test]
+    fn a_delivery_never_meets_her_window_but_for_a_sofa() {
+        let rows = empty("Users", 40, 9);
+        let clean = Buffer::with_lines(rows.iter().map(String::as_str));
+        let nooks = [(Nook::Users, clean.area)];
+        let against_right = |item: Furniture| Prop {
+            anchor: Some(Anchor {
+                side: Side::Right,
+                offset: 0,
+            }),
+            at: 1000,
+            facing: Facing::Left,
+            ..prop(item, 1000)
+        };
+        let comes_in = |room: &Home, item: Furniture| {
+            let mut projected = room.clone();
+            let shown = projected.project(&clean, &nooks, &|_, _| false);
+            projected
+                .doorstep(&clean, &nooks, &shown, &|_, _| false, &|_, _| true, item)
+                .map(|(prop, _)| prop.anchor.map_or(Side::Left, |a| a.side))
+        };
+        // Her window against the right wall (the first a delivery
+        // tries): a TV comes in at the left; a sofa may come in under it.
+        let windowed = home(Nook::Users, &[against_right(Furniture::Window)]);
+        assert_eq!(comes_in(&windowed, Furniture::Tv), Some(Side::Left));
+        assert_eq!(comes_in(&windowed, Furniture::Lamp), Some(Side::Left));
+        assert_eq!(comes_in(&windowed, Furniture::Sofa), Some(Side::Right));
+        // Her bed against the left wall, and against the right her TV
+        // (or bookshelf): a window comes in through neither; her sofa,
+        // and it may come in over it; nothing, and there.
+        for (under, side) in [
+            (Some(Furniture::Tv), None),
+            (Some(Furniture::Bookshelf), None),
+            (Some(Furniture::Sofa), Some(Side::Right)),
+            (None, Some(Side::Right)),
+        ] {
+            let mut props = vec![prop(Furniture::Bed, 0)];
+            props.extend(under.map(against_right));
+            let room = home(Nook::Users, &props);
+            assert_eq!(
+                comes_in(&room, Furniture::Window),
+                side,
+                "over her {under:?}"
+            );
+        }
     }
 
     /// A delivery that hangs comes in only where it fits both ways: its
@@ -2471,7 +2794,7 @@ mod tests {
                 .filter(|s| s.item != Furniture::Window)
                 .copied()
                 .collect();
-            let clear = |x: i32, y: i32| free(&others, &|_, _| false, x, y);
+            let clear = |x: i32, y: i32| free(&others, &|_, _| false, None, x, y);
             assert!(roomy(&clean, &hung, &clear), "{at}");
             assert_eq!(room_to_look(&clean, &hung, &clear), looks, "{at}");
         }
@@ -2480,11 +2803,12 @@ mod tests {
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(dessplay_core::test_support::proptest_cases(128)))]
 
-        /// With a poster hung among her pieces: each lane keeps its
-        /// anchor order and its walls, and never overlaps; what hangs
-        /// never overlaps what stands; a resize and back puts every piece
-        /// where it was; a wall too low for what hangs never moves the
-        /// room; and text closets only the pieces it would cover.
+        /// With a poster hung among her pieces (and maybe her window,
+        /// hung low): each lane keeps its anchor order and its walls, and
+        /// never overlaps; what hangs never overlaps what stands, but
+        /// what it may (her window, a sofa); a resize and back puts every
+        /// piece where it was; a wall too low for what hangs never moves
+        /// the room; and text closets only the pieces it would cover.
         #[test]
         fn the_wall_lane_keeps_order_and_never_moves_the_room(
             props in decorated(),
@@ -2525,7 +2849,10 @@ mod tests {
                 prop_assert!(i32::from(r.y) > e.floor - i32::from(e.rows) - 1, "inside: {:?}", s);
                 for t in &laid {
                     if s.lane() == Lane::Wall && t.lane() == Lane::Floor {
-                        prop_assert!(!s.cover().intersects(t.cover()), "{:?} over {:?}", s, t);
+                        prop_assert!(
+                            !s.cover().intersects(t.cover()) || s.item.may_overlap(t.item),
+                            "{:?} over {:?}", s, t
+                        );
                     }
                 }
             }
@@ -2568,7 +2895,9 @@ mod tests {
             let users = |s: &&Shown| s.strip == Some(Strip::Bottom(Nook::Users));
             if floor_holds {
                 prop_assert_eq!(&lowered, &pinned, "the wall moved the room");
-                prop_assert!(!shown.iter().filter(users).any(|s| s.lane() == Lane::Wall));
+                // Only what that wall holds shows on it.
+                let held = |s: &&Shown| s.lane() != Lane::Wall || s.size().1 + s.lift() + 2 <= low;
+                prop_assert!(shown.iter().filter(users).all(|s| held(&s)), "{:?}", shown);
                 let standing = |v: &[Shown]| -> Vec<(Furniture, i32)> {
                     v.iter().filter(users).filter(|s| s.lane() == Lane::Floor).map(|s| (s.item, s.left)).collect()
                 };

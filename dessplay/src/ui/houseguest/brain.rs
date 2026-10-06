@@ -728,6 +728,16 @@ impl Want {
             Self::Idle(Activity::BookDoze) => {
                 row(4.0, &[(Need::Sleepy, 0.15), (Need::Comfort, 0.3)])
             }
+            // Never chosen (not in [`Want::ALL`]): settled into from her
+            // window's sill, still the daydream it was, sitting down.
+            Self::Idle(Activity::UnderSill) => {
+                row(4.0, &[(Need::Daydreams, 0.3), (Need::Comfort, 0.2)])
+            }
+            // Never chosen: settled into under her window, a daydream
+            // lying down (her eyes open: no doze).
+            Self::Idle(Activity::CloudWatch) => {
+                row(4.0, &[(Need::Daydreams, 0.3), (Need::Comfort, 0.3)])
+            }
             Self::Walk => row(14.0, &[(Need::Restless, 0.4)]),
             Self::Travel => in_chat(row(10.0, &[(Need::Restless, 0.4)])),
             Self::Pull => in_chat(row(16.0, &[(Need::Tidy, 0.6)])),
@@ -773,9 +783,10 @@ impl Want {
             ),
             Self::Use(Use::Pet) => in_chat(row(8.0, &[(Need::Fun, 0.6)])),
             // Gazing out of the window: a daydream, as gazing up is, and
-            // a little fun (what's out there?).
+            // a little fun (what's out there?). Rarer than it was, and far
+            // longer (phase 5c D6: her long daydream at the sill).
             Self::Use(Use::LookOut) => with(
-                row(8.0, &[(Need::Daydreams, 0.5), (Need::Fun, 0.3)]),
+                row(3.0, &[(Need::Daydreams, 0.5), (Need::Fun, 0.3)]),
                 LOOK_OUT_FACTORS,
             ),
             // Only on offer while a rule she has felt is broken and her
@@ -1242,7 +1253,8 @@ mod tests {
     fn looking_out_is_a_daydream_and_some_fun() {
         let def = Want::Use(Use::LookOut).def();
         assert_eq!(def.serves, &[(Need::Daydreams, 0.5), (Need::Fun, 0.3)]);
-        assert_eq!(def.base, 8.0);
+        // Rarer and far longer than it was (phase 5c D6: 8, 15-30 s).
+        assert_eq!(def.base, 3.0);
         assert!(!def.own_sake);
         assert_eq!(def.factors, LOOK_OUT_FACTORS);
     }

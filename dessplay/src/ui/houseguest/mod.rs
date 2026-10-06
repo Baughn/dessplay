@@ -3469,9 +3469,10 @@ fn seat_spot(terrain: &Terrain, x: i32, y: i32) -> bool {
 }
 
 /// Whether her box standing at `(x, y)` is clear of every shown piece
-/// (and the floor beneath one): where she stands to look out of the
-/// window, not in front of the sofa beneath it.
-fn clear_of(shown: &[Shown], x: i32, y: i32) -> bool {
+/// (and the floor beneath one) but `of`, the window she'd lean on (it
+/// hangs low: phase 5c D6): where she stands to look out of it, not in
+/// front of a sofa it hangs behind, nor anything beside it.
+fn clear_of(shown: &[Shown], of: &Shown, x: i32, y: i32) -> bool {
     let half = sprite::WIDTH / 2;
     let (Ok(left), Ok(top)) = (u16::try_from(x - half), u16::try_from(y - sprite::HEIGHT)) else {
         return false;
@@ -3479,7 +3480,10 @@ fn clear_of(shown: &[Shown], x: i32, y: i32) -> bool {
     let width = u16::try_from(sprite::WIDTH).unwrap_or(u16::MAX);
     let height = u16::try_from(sprite::HEIGHT + 1).unwrap_or(u16::MAX);
     let her = Rect::new(left, top, width, height);
-    shown.iter().all(|s| !s.cover().intersects(her))
+    shown
+        .iter()
+        .filter(|s| *s != of)
+        .all(|s| !s.cover().intersects(her))
 }
 
 fn spots_for(piece: &Shown, shown: &[Shown], terrain: &Terrain, cat: bool) -> Vec<room::Seat> {
@@ -3490,8 +3494,7 @@ fn spots_for(piece: &Shown, shown: &[Shown], terrain: &Terrain, cat: bool) -> Ve
         if what == room::Use::Pet && !cat {
             continue;
         }
-        // Looking out of the window: under it if she can stand there,
-        // else beside it.
+        // Looking out of the window: leaning on its sill at either end.
         let spots: &[i32] = match what {
             room::Use::LookOut => &piece.look_out_spots(),
             _ if what.inside() => &[0],
@@ -3502,7 +3505,7 @@ fn spots_for(piece: &Shown, shown: &[Shown], terrain: &Terrain, cat: bool) -> Ve
             .map(|&beside| piece.seat(what, beside))
             .find(|seat| {
                 seat_spot(terrain, seat.x, seat.y)
-                    && (what != room::Use::LookOut || clear_of(shown, seat.x, seat.y))
+                    && (what != room::Use::LookOut || clear_of(shown, piece, seat.x, seat.y))
             });
         out.extend(seat);
     }
@@ -3545,6 +3548,18 @@ fn spots_for(piece: &Shown, shown: &[Shown], terrain: &Terrain, cat: bool) -> Ve
     out
 }
 
+/// Whether `(x, y)` is clear of every real piece `shown` (and the floor
+/// beneath one), as a makeshift piece must be to be made there and to
+/// stay (see [`builds`], [`tend_made`]).
+fn clear_of_real(shown: &[Shown], x: i32, y: i32) -> bool {
+    let (Ok(ux), Ok(uy)) = (u16::try_from(x), u16::try_from(y)) else {
+        return false;
+    };
+    !shown
+        .iter()
+        .any(|s| s.scrap.is_none() && s.cover().contains((ux, uy).into()))
+}
+
 /// Keep her makeshift pieces that still stand: each while every glyph
 /// torn off for it is still torn off (its line hasn't changed, and its
 /// pane isn't protected), and it still fits where she made it, clear of
@@ -3561,7 +3576,7 @@ fn tend_made(visit: &mut Visit, buf: &Buffer, protected: &[Rect], size: (u16, u1
         };
         !moved.contains(&(ux, uy))
             && !protected.iter().any(|r| r.contains((ux, uy).into()))
-            && !real.iter().any(|s| s.cover().contains((ux, uy).into()))
+            && clear_of_real(&real, x, y)
     };
     let mut gone = Vec::new();
     let layer = &visit.layer;
@@ -3680,11 +3695,14 @@ fn builds(
     if wanted.is_empty() || visit.layer.cells().count() + scrap::GLYPHS > layer::CAP {
         return Vec::new();
     }
+    // Clear of her real pieces too, as a made piece must stay (see
+    // `tend_made`), or it would fall apart as it's made: her window hangs
+    // low enough to meet one built beneath it (phase 5c D6).
     let clear = |x: i32, y: i32| {
         let (Ok(ux), Ok(uy)) = (u16::try_from(x), u16::try_from(y)) else {
             return false;
         };
-        !protected.iter().any(|r| r.contains((ux, uy).into()))
+        !protected.iter().any(|r| r.contains((ux, uy).into())) && clear_of_real(&visit.shown, x, y)
     };
     // Where she'd stay once it's made, judged with it in her image: to
     // crumple it, and then to use it.
@@ -4019,21 +4037,80 @@ fn screen_glyphs(channel: art::Channel) -> [char; 2] {
     }
 }
 
+/// `pieces` back to front: anything hung that a piece standing overlaps
+/// (her window, low, behind her sofa: phase 5c D6) before them all, so
+/// the sofa is drawn over it; otherwise as they are.
+fn back_to_front(pieces: &[Shown]) -> Vec<Shown> {
+    let behind = pieces.iter().any(|hung| {
+        hung.lane() == room::Lane::Wall
+            && pieces
+                .iter()
+                .any(|s| s.lane() == room::Lane::Floor && hung.rect().intersects(s.rect()))
+    });
+    let mut out = pieces.to_vec();
+    if behind {
+        out.sort_by_key(|p| p.lane() != room::Lane::Wall);
+    }
+    out
+}
+
+/// `pieces` in groups that overlap (each a piece, or pieces whose
+/// footprints meet, as her window and the sofa it hangs behind), in the
+/// order their first pieces come: in line art each group is one image,
+/// since two images over the same cells would cut each other out.
+fn overlapping(pieces: &[Shown]) -> Vec<Vec<Shown>> {
+    let mut group: Vec<usize> = (0..pieces.len()).collect();
+    fn root(group: &mut [usize], mut i: usize) -> usize {
+        while let Some(&up) = group.get(i)
+            && up != i
+        {
+            i = up;
+        }
+        i
+    }
+    for (i, a) in pieces.iter().enumerate() {
+        for (j, b) in pieces.iter().enumerate().skip(i + 1) {
+            if a.rect().intersects(b.rect()) {
+                let (ra, rb) = (root(&mut group, i), root(&mut group, j));
+                if let Some(slot) = group.get_mut(rb.max(ra)) {
+                    *slot = ra.min(rb);
+                }
+            }
+        }
+    }
+    let mut out: Vec<(usize, Vec<Shown>)> = Vec::new();
+    for (i, &piece) in pieces.iter().enumerate() {
+        let r = root(&mut group, i);
+        match out.iter_mut().find(|(at, _)| *at == r) {
+            Some((_, members)) => members.push(piece),
+            None => out.push((r, vec![piece])),
+        }
+    }
+    out.into_iter().map(|(_, members)| members).collect()
+}
+
 /// Paint her furniture (as line art, or as ASCII without graphics),
-/// returning what was painted over what.
+/// returning what was painted over what. Back to front ([`back_to_front`]:
+/// her window behind her sofa); in line art, pieces that overlap as one
+/// image ([`overlapping`]).
 fn draw_props(
     buf: &mut Buffer,
-    mut graphics: Option<&mut Graphics>,
+    graphics: Option<&mut Graphics>,
     shown: &[Shown],
     looks: &Looks,
     truecolor: bool,
 ) -> Vec<Frozen> {
+    /// A footprint cell: where, its glyph this frame, what's under it.
+    type Under = (u16, u16, Option<char>, tuirealm::ratatui::buffer::Cell);
+    let shown = back_to_front(shown);
     let mut painted = Vec::new();
-    for prop in shown {
-        let ink = prop_ink(prop.item, truecolor);
+    // Each footprint cell of `prop` with its glyph this frame and what's
+    // under it now.
+    let unders_of = |buf: &Buffer,
+                     prop: &Shown|
+     -> Vec<(u16, u16, Option<char>, tuirealm::ratatui::buffer::Cell)> {
         let over = overrides(prop, looks);
-        let unders: Vec<_> = prop
-            .cells()
+        prop.cells()
             .filter_map(|(x, y, glyph)| {
                 let (ux, uy) = (u16::try_from(x).ok()?, u16::try_from(y).ok()?);
                 let glyph = over
@@ -4043,10 +4120,45 @@ fn draw_props(
                     .or(glyph);
                 Some((ux, uy, glyph, buf.cell((ux, uy))?.clone()))
             })
-            .collect();
-        match graphics.as_deref_mut() {
-            Some(graphics) => {
-                if paint_prop_art(buf, graphics, prop, looks) {
+            .collect()
+    };
+    match graphics {
+        Some(graphics) => {
+            for group in overlapping(&shown) {
+                let unders: Vec<(Shown, Vec<Under>)> =
+                    group.iter().map(|p| (*p, unders_of(buf, p))).collect();
+                let placed: Vec<bool> = match group.as_slice() {
+                    [prop] => vec![paint_prop_art(buf, graphics, prop, looks)],
+                    _ => {
+                        let layers: Vec<graphics::Layer> = group
+                            .iter()
+                            .map(|prop| {
+                                let look = piece_look(
+                                    prop,
+                                    art::Layer::Whole,
+                                    looks.tv,
+                                    false,
+                                    looks.state(prop.item),
+                                );
+                                prop_layer(prop, look)
+                            })
+                            .collect();
+                        if graphics.paint_layers(buf, &layers, &|_, _| true).is_some() {
+                            vec![true; group.len()]
+                        } else {
+                            // Not all of it hers to cover: each alone.
+                            group
+                                .iter()
+                                .map(|prop| paint_prop_art(buf, graphics, prop, looks))
+                                .collect()
+                        }
+                    }
+                };
+                for ((prop, unders), placed) in unders.into_iter().zip(placed) {
+                    if !placed {
+                        continue;
+                    }
+                    let ink = prop_ink(prop.item, truecolor);
                     painted.extend(unders.into_iter().map(|(x, y, glyph, under)| Frozen {
                         x,
                         y,
@@ -4058,8 +4170,11 @@ fn draw_props(
                     }));
                 }
             }
-            None => {
-                for (x, y, glyph, under) in unders {
+        }
+        None => {
+            for prop in &shown {
+                let ink = prop_ink(prop.item, truecolor);
+                for (x, y, glyph, under) in unders_of(buf, prop) {
                     // Makeshift, it's its own letters in their own colours.
                     let ink = prop
                         .scrap
@@ -4177,7 +4292,7 @@ fn draw_art(
         ))
     };
     let mut layers = Vec::with_capacity(with.len() * 2 + 2);
-    for piece in &with {
+    for piece in &back_to_front(&with) {
         layers.extend(part(piece, false).map(|layer| prop_layer(piece, layer)));
         body.extend(piece.cells().filter_map(|(x, y, glyph)| {
             let (ux, uy) = (u16::try_from(x).ok()?, u16::try_from(y).ok()?);
@@ -4194,7 +4309,7 @@ fn draw_art(
     }
     layers.extend(door.map(Door::layer));
     layers.extend(her.map(|at| at.pose(pose, face)));
-    for piece in &with {
+    for piece in &back_to_front(&with) {
         layers.extend(part(piece, true).map(|layer| prop_layer(piece, layer)));
     }
     let placed = graphics
@@ -4450,7 +4565,7 @@ fn draw_door(
         })
         .collect();
     let mut layers = Vec::with_capacity(with.len() + 1);
-    for piece in &with {
+    for piece in &back_to_front(&with) {
         let look = piece_look(
             piece,
             art::Layer::Whole,

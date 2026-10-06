@@ -1846,16 +1846,23 @@ pub(super) const LOOK_OUT_LINES: [(Sky, &str); 11] = [
 /// shortest use there is).
 pub(super) const LOOK_OUT_LINE_MS: u64 = 3000;
 
-/// Gazing up out of the window, curious: `line` first, then quietly.
+/// Leaning on the window's sill, chin in her hands, curious (phase 5c
+/// D6): `line` first, then quietly (her musings on the sky come over it:
+/// see `Osaka::sill_on`).
 const fn looking(line: &'static str) -> [Key; 2] {
     [
         key(
             Span::Ms(LOOK_OUT_LINE_MS),
-            Posed::Still(Pose::Gaze),
+            Posed::Still(Pose::SillLean),
             Face::Curious,
             bubble(Bubble::Say(line)),
         ),
-        key(Span::Rest, Posed::Still(Pose::Gaze), Face::Curious, None),
+        key(
+            Span::Rest,
+            Posed::Still(Pose::SillLean),
+            Face::Curious,
+            None,
+        ),
     ]
 }
 

@@ -1602,8 +1602,10 @@ this section states what is built.
   often as her mood's odds: spacing out (musing, a riddle, her rare
   musing) or gazing, to sitting; sitting, to lying back or dozing where she sits (her head
   sinking onto her knees); lounging, to a nap from the same seat of the
-  same sofa (when napping there is on offer). Lying back, a doze and a
-  nap are as far as it goes. Like a leftover or a heading it's a
+  same sofa (when napping there is on offer); leaning on her window's
+  sill, to sitting in front of it, then to dozing there or watching the
+  clouds under it (see *Her window and wall clock*). Lying back, a doze,
+  watching the clouds and a nap are as far as it goes. Like a leftover or a heading it's a
   continuation of what she chose, not a new choice: it skips the roll,
   isn't one of her recent choices, and eases her as its own want
   (dozing where she sits as lying back does). It comes after her
@@ -1793,7 +1795,18 @@ this section states what is built.
   row 4 rows above the floor
   (above the tallest piece that stands, and her head), in a lane of its
   own: hung pieces stand in anchor order among themselves, by the same
-  rules, and may hang over pieces that stand. It needs no floor beneath
+  rules, and may hang over pieces that stand. The window hangs lower,
+  its bottom row 2 rows above the floor (its sill at her chest, so she
+  can lean on it), among the pieces that stand: it may hang behind a
+  sofa (the sofa drawn in front of it, in line art one image with it),
+  and over nothing else that stands. One rule says which pieces may
+  share cells (her window and a sofa), both ways round: hung where
+  something else stands, the window hangs at the nearest stretch of its
+  wall clear of it, keeping its order (else it's in the closet alone, as
+  an older home's window, hung higher, over her TV, shows beside it);
+  a piece that stands, delivered or moved, never comes under it, nor
+  does a window come in over one, but for a sofa
+  (why: [decisions](decisions.md#her-window-hangs-low-for-her-to-lean-on-2026-10-06)). It needs no floor beneath
   it, and the wall never moves a room: a hung piece its wall doesn't
   hold (too low, or crowded: in anchor order, each that fits beside
   those before it hangs) is in the closet alone, while a strip too
@@ -2201,10 +2214,23 @@ this section states what is built.
   flap, as any parcel) the first time her clock is running, her TV is
   out of its box, and she's up, in sight, greeted, quiet and done with
   the day's calendar, with no other parcel's flap open. The window is sold after the cat bed. She
-  looks out of it from under it or just beside it (15–30 s, gazing up,
-  curious), saying what the sky shows ("Sunny!", "Pretty...",
-  "Stars!"); it answers daydreams and fun, twice as likely from 17:00 to
-  05:00. With her wall clock on the strip she stands on, she glances up
+  looks out of it leaning on its sill, chin in her hands, just outside
+  either end (her face over the glass; first at the end it was hung to
+  face from, and never in front of a sofa it hangs behind), for her long
+  daydream: one to three minutes (as long again as her mood lingers),
+  curious, first saying what the sky shows ("Sunny!", "Pretty...",
+  "Stars!"), then musing on it up to three times as her whim says ("That
+  one's a cat.", "The moon's followin' me."), each a gap on, from the sky
+  as it is as she says it, waiting while she speaks or looks up at the
+  chat. It's rarer than her other daydreams (its base 3), answers
+  daydreams and fun, twice as likely from 17:00 to 05:00. Settling in
+  from the sill, she sits down in front of it (chin in her hands, looking
+  up), then dozes off there or, on the doze's other side, lies back under
+  it watching the clouds (eyes open, held, one line of the sky at most;
+  turned so her head's under the glass): watching the clouds is only
+  ever under her window, and is no doze (a chat line has her look up)
+  (why: [decisions](decisions.md#her-window-is-a-long-daydream-2026-10-06)).
+  With her wall clock on the strip she stands on, she glances up
   at it before going to bed ("Oh! It's late!") and as she leaves for
   school ("Time for school!"), once each, and now and then of an
   afternoon (a musing in three, once a visit) says the hour, roughly

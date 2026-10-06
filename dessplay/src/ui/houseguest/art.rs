@@ -312,6 +312,8 @@ impl Rig {
             Pose::UnderSill => Self::under_sill(expression),
             Pose::SitDoze(frame) => Self::sit_doze(frame),
             Pose::LieRead(frame) => Self::lie_read(frame, expression),
+            // Lying back as she dozes, held, her eyes open on the sky.
+            Pose::CloudWatch => Self::for_pose(Pose::LieBack(0), face),
             Pose::Gaze => Self {
                 profile: true,
                 tilt: -16.0,
@@ -1890,10 +1892,13 @@ mod tests {
                     // Frames line art draws as one: her nap (she
                     // breathes in ASCII only), and writing (the pen moves
                     // in ASCII only).
+                    // Watching the clouds is lying back with her eyes
+                    // open (her face, not her pose, tells it).
                     let shared = matches!(
                         (a, b),
                         (Pose::Nap(_), Pose::Nap(_))
                             | (Pose::Homework(0 | 1), Pose::Homework(0 | 1))
+                            | (Pose::LieBack(0), Pose::CloudWatch)
                     );
                     if !shared {
                         assert_ne!(

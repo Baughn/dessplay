@@ -911,6 +911,82 @@ pub(super) const MUSINGS: Pool = Pool {
     d: 1,
 };
 
+/// What she muses on at her window's sill, by the sky outside (phase 5c
+/// D6): after her look-out's first line, up to three of these, each from
+/// the sky as it is when she says it (see [`sky_musings`]).
+pub(super) const SKY_DAY: Pool = Pool {
+    id: PoolId::Sky,
+    lines: &[
+        line!("Clouds go so slow..."),
+        line!("That one's a cat."),
+        line!("I wanna ride a cloud."),
+        line!("That plane's goin' far."),
+        line!("Birds don't get bored."),
+    ],
+    n: 1,
+    d: 1,
+};
+/// Her sill's musings at dawn.
+pub(super) const SKY_DAWN: Pool = Pool {
+    id: PoolId::Sky,
+    lines: &[
+        line!("Sky's still sleepy."),
+        line!("Pink on the clouds..."),
+        line!("The birds are up early."),
+        line!("Mornin' comes slow."),
+    ],
+    n: 1,
+    d: 1,
+};
+/// Her sill's musings at dusk.
+pub(super) const SKY_DUSK: Pool = Pool {
+    id: PoolId::Sky,
+    lines: &[
+        line!("Orange, then purple..."),
+        line!("The sun's goin' home."),
+        line!("Where's the sun go?"),
+        line!("Clouds all pink 'n gold."),
+    ],
+    n: 1,
+    d: 1,
+};
+/// Her sill's musings of an evening.
+pub(super) const SKY_EVENING: Pool = Pool {
+    id: PoolId::Sky,
+    lines: &[
+        line!("Someone's makin' dinner."),
+        line!("Windows lightin' up..."),
+        line!("Is that star a plane?"),
+        line!("Sky's goin' all blue..."),
+    ],
+    n: 1,
+    d: 1,
+};
+/// Her sill's musings at night.
+pub(super) const SKY_NIGHT: Pool = Pool {
+    id: PoolId::Sky,
+    lines: &[
+        line!("The moon's followin' me."),
+        line!("Moon looks like mochi."),
+        line!("Wonder who's up there."),
+        line!("Stars are just far suns."),
+    ],
+    n: 1,
+    d: 1,
+};
+
+/// Her sill's musings for `sky` (see [`SKY_DAY`]).
+pub(super) fn sky_musings(sky: super::art::Sky) -> Pool {
+    use super::art::Sky;
+    match sky {
+        Sky::Day => SKY_DAY,
+        Sky::Dawn => SKY_DAWN,
+        Sky::Dusk => SKY_DUSK,
+        Sky::Evening => SKY_EVENING,
+        Sky::Night => SKY_NIGHT,
+    }
+}
+
 /// Her sleep-talk's lines, every night.
 const SLEEP_TALK_LINES: [&str; 7] = [
     line!("Mm... melon bread..."),
@@ -1135,6 +1211,9 @@ pub(super) enum PoolId {
     December,
     /// Her musing in summer's panic week ([`PANIC`]).
     Panic,
+    /// What she muses on at her window's sill, by the sky ([`SKY_DAY`]
+    /// and its siblings, [`sky_musings`]).
+    Sky,
     /// A test's pool, with no budget: not a pool she draws from.
     #[cfg(test)]
     Test,
@@ -1143,7 +1222,7 @@ pub(super) enum PoolId {
 impl PoolId {
     /// Every pool there is.
     #[cfg(test)]
-    pub const ALL: [PoolId; 10] = [
+    pub const ALL: [PoolId; 11] = [
         Self::Beat,
         Self::Door,
         Self::Musing,
@@ -1153,6 +1232,7 @@ impl PoolId {
         Self::Calendar,
         Self::December,
         Self::Panic,
+        Self::Sky,
         Self::Test,
     ];
 
@@ -1168,6 +1248,7 @@ impl PoolId {
             Self::Calendar => 6,
             Self::December => 7,
             Self::Panic => 8,
+            Self::Sky => 9,
             // Out of the way of every pool she draws from.
             #[cfg(test)]
             Self::Test => u64::MAX,
@@ -1186,7 +1267,8 @@ impl PoolId {
             | Self::Routine
             | Self::Calendar
             | Self::December
-            | Self::Panic => false,
+            | Self::Panic
+            | Self::Sky => false,
             #[cfg(test)]
             Self::Test => false,
         }
@@ -1228,7 +1310,8 @@ impl PoolId {
             Self::Calendar => (6, vec![CALENDAR]),
             Self::December => (7, vec![DECEMBER]),
             Self::Panic => (8, vec![PANIC]),
-            Self::Test => (9, Vec::new()),
+            Self::Sky => (9, vec![SKY_DAY, SKY_DAWN, SKY_DUSK, SKY_EVENING, SKY_NIGHT]),
+            Self::Test => (10, Vec::new()),
         }
     }
 }
