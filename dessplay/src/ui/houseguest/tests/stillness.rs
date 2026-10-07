@@ -224,65 +224,33 @@ type Shown = (
 /// Chiyo-chichi's hook plays, the key of her script playing).
 type Sampled = (u64, bool, bool, Vec<(u64, Shown, bool, KeyRef)>);
 
-/// Where the key of her act's script playing at a moment is, if any: a
-/// bob's flips, and its key ending, are told apart by it.
+/// Where the key of her act's script playing at a moment is, if any
+/// (for telling a change of key apart in a failure, and the world's
+/// clock's scope: [`world_ticked`]).
 type KeyRef = Option<script::KeyPlace>;
 
-/// Whether going from `was` to `now`, each with the key playing then, is
-/// a bob's own flip (her writing, her breathing asleep, a page turning):
-/// in the one key, which bobs, her pose alone changed.
-fn bob_flip(was: (&Shown, KeyRef), now: (&Shown, KeyRef)) -> bool {
-    let (Some(a), Some(b)) = (was.1, now.1) else {
-        return false;
-    };
-    let ((pose, face, bubble), at, prop, dark) = *was.0;
-    let ((pose2, face2, bubble2), at2, prop2, dark2) = *now.0;
-    a == b
-        && a.bobs
-        && pose != pose2
-        && (face, bubble, at, prop, dark) == (face2, bubble2, at2, prop2, dark2)
-}
-
-/// The key that bobbed, if going from `was` to `now` ends it (another key
-/// playing now).
-fn bob_ends(was: KeyRef, now: KeyRef) -> KeyRef {
-    was.filter(|key| key.bobs && now != was)
-}
-
 /// The stillness rule's count over an act's changes after its first
-/// 10 s: no change within a frame ([`osaka::USE_FRAME_MS`]) of the last,
-/// but one: for now, a bob's key ending may come within a frame of that
-/// same bob's last flip (her homework nodding off: its key ends at a
-/// share of the use, off the bob's frame grid). That allowance is
-/// provisional (phase 5c step 12c's review: whether she should hold the
-/// bob's last frame through the part of a period before its key ends,
-/// instead, is open); any other change near a bob's flip still counts.
+/// 10 s: no change within a frame ([`osaka::USE_FRAME_MS`]) of the last.
+/// No allowance: a bob's key ending, or starting, keeps a frame clear of
+/// its flips (Round 8, the user; phase 5c's tail, T2), as every other
+/// change does.
 #[derive(Default)]
 struct Flips {
-    /// The last change's time, and the key it flipped if a bob's flip.
-    last: Option<(u64, KeyRef)>,
+    /// The last change's time.
+    last: Option<u64>,
 }
 
 impl Flips {
-    /// A change at `t`: `flipped`, the key if it's a bob's own flip;
-    /// `ends`, the key that bobbed if it ends that key. The last change's
-    /// time if that was within a frame (and not its bob's flip as the bob
-    /// ends).
-    fn see(&mut self, t: u64, flipped: KeyRef, ends: KeyRef) -> Result<(), u64> {
-        if let Some((before, last_flip)) = self.last
+    /// A change at `t`: the last change's time if that was within a
+    /// frame.
+    fn see(&mut self, t: u64) -> Result<(), u64> {
+        if let Some(before) = self.last
             && t - before < osaka::USE_FRAME_MS
-            && (ends.is_none() || last_flip != ends)
         {
             return Err(before);
         }
-        self.last = Some((t, flipped));
+        self.last = Some(t);
         Ok(())
-    }
-
-    /// [`Flips::see`] going from `was` to `now` at `t`.
-    fn change(&mut self, t: u64, was: (&Shown, KeyRef), now: (&Shown, KeyRef)) -> Result<(), u64> {
-        let flipped = if bob_flip(was, now) { now.1 } else { None };
-        self.see(t, flipped, bob_ends(was.1, now.1))
     }
 }
 
@@ -331,10 +299,10 @@ fn exempt(was: &Shown, now: &Shown, hook: bool) -> bool {
 /// show of her act, sampled every 100 ms between the steps the shell
 /// takes, never changes twice within a frame once the act's first 10 s
 /// are over: her slow blink apart, and Chiyo-chichi's bob through his
-/// hook (the first two fifths of the shopping channel's body); and, for
-/// now, a bob's key ending within a frame of that bob's last flip (her
-/// homework nodding off at its share of the use: provisional, see
-/// [`Flips`]). Quiet: a
+/// hook (the first two fifths of the shopping channel's body). A bob's
+/// key ending (her homework nodding off at its share of the use) or
+/// starting keeps a frame clear of its flips as any change does (no
+/// allowance since phase 5c's tail, T2). Quiet: a
 /// chat line's look up (`!`, then `?`) is the other exemption design.md
 /// names, so it isn't tried here. Each room shows her watching for over
 /// 30 s at least once in each mode, so the TV is tried, and the shopping
@@ -381,11 +349,15 @@ fn no_long_act_flips_faster_than_a_frame() {
     ]
     .map(at_afternoon)
     .map(|room| super::census::with_chat(&room, true));
+    // And an industrious afternoon at her desk in the furnished homes
+    // (seed 0): her homework's writing ends at its share of the use,
+    // off its bob's frames, where the rule once had an allowance.
     let moods = [
         (0, Mood::Lazy),
         (1, Mood::Ordinary),
         (2, Mood::Dreamy),
         (3, Mood::Industrious),
+        (0, Mood::Industrious),
     ];
     let runs: Vec<(String, u32, u32)> = std::thread::scope(|scope| {
         let mut runs = Vec::new();
@@ -425,8 +397,7 @@ fn no_long_act_flips_faster_than_a_frame() {
                                 if was == now || *t < since + 10_000 || exempt(was, now, *hook) {
                                     continue;
                                 }
-                                if let Err(before) = flips.change(*t, (was, *was_key), (now, *key))
-                                {
+                                if let Err(before) = flips.see(*t) {
                                     panic!(
                                         "{at}: an act from {since} flipped at {before} and {t}: \
                                          {was:?} {was_key:?} to {now:?} {key:?}"
@@ -723,8 +694,8 @@ fn exempt_drawn(was: &Drawn, now: &Drawn) -> bool {
 /// breathing's frames, but it holds unchanged for a frame from its start,
 /// checked at each), the film's fresh still once
 /// a minute, and the world's clock (her wall clock's dial, her window's
-/// sky); and, for now, a bob's key ending within a frame of its
-/// last flip ([`Flips`]). On fed afternoons, with chat, in the home with
+/// sky); a bob's key ending or starting gets no allowance ([`Flips`]).
+/// On fed afternoons, with chat, in the home with
 /// only a TV (she watches it most), the furnished home with the shopping
 /// channel on at her first watch, the home with her window and the
 /// resident, in each mood, in both modes, painted as a client painting
@@ -883,11 +854,7 @@ fn drawn_stillness(rooms: &[Room]) -> Vec<(String, [u32; 7])> {
                                         looked |= was.chat || now.chat;
                                         continue;
                                     }
-                                    if let Err(before) = flips.change(
-                                        now.t,
-                                        (&was.shown, was.key),
-                                        (&now.shown, now.key),
-                                    ) {
+                                    if let Err(before) = flips.see(now.t) {
                                         panic!(
                                             "{at}: an act from {since} flipped at {before} and {}: \
                                              {:?} {:?} {:?} to {:?} {:?} {:?}; cells {:?}",

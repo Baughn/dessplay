@@ -1827,17 +1827,24 @@ impl Activity {
         }
     }
 
-    /// Its frame `elapsed` ms in: alternating on its period; dozing where
+    /// Its frame `elapsed` ms into an act `length` ms long: alternating
+    /// on its period, and on a frame's period or slower (lying back,
+    /// reading on her back) its last frame held through the part of a
+    /// period before the act ends, as a script's bob is
+    /// ([`script::bob_frame`]; the act starts on its grid); dozing where
     /// she sits, her head sinking (frame 0) for [`SIT_DOZE_NOD_MS`], then
     /// on her knees (frame 1) and held; gazing, "ooh" (frame 0) for
-    /// [`GAZE_OOH_MS`], then quiet (frame 1).
-    fn frame(self, elapsed: u64) -> u8 {
+    /// [`GAZE_OOH_MS`], then quiet (frame 1). What alternates faster
+    /// (exercise, kicking her feet) is motion through a short act, not a
+    /// still one's change (the stillness rule is for still acts over 30 s;
+    /// these are 25 s at most), so it runs to the end.
+    fn frame(self, elapsed: u64, length: u64) -> u8 {
+        let period = self.period();
         match self {
             Self::SitDoze => u8::from(elapsed >= SIT_DOZE_NOD_MS),
             Self::Gaze => u8::from(elapsed >= GAZE_OOH_MS),
-            _ => elapsed
-                .checked_div(self.period())
-                .map_or(0, |n| (n % 2) as u8),
+            _ if period >= USE_FRAME_MS => script::bob_frame(elapsed, 0, length, period),
+            _ => elapsed.checked_div(period).map_or(0, |n| (n % 2) as u8),
         }
     }
 
@@ -6862,8 +6869,8 @@ impl Osaka {
             } => (since, until, play),
             _ => return None,
         };
-        let (key, elapsed) = play.key(since, until, now)?;
-        key.prop.map(|shows| shows.at(elapsed, play.card))
+        let (key, time) = play.key(since, until, now)?;
+        key.prop.map(|shows| shows.at(time.elapsed, play.card))
     }
 
     /// What she's playing at `now`, for the stage: each part of it by
@@ -8804,8 +8811,8 @@ impl Osaka {
         let mut lines: Vec<&'static str> = Vec::new();
         let mut at = from;
         while at < to {
-            if let Some((key, elapsed)) = play.key(since, until, at)
-                && let (_, _, Some(Bubble::Say(text))) = key.look(elapsed, Pose::Stand, &play)
+            if let Some((key, time)) = play.key(since, until, at)
+                && let (_, _, Some(Bubble::Say(text))) = key.look(time, Pose::Stand, &play)
                 && lines.last() != Some(&text)
             {
                 lines.push(text);
@@ -9590,13 +9597,13 @@ impl Osaka {
                 let host = what.look(0).0;
                 let look = play
                     .key(since, until, now)
-                    .map_or(what.look(0), |(key, elapsed)| {
-                        key.look(elapsed, host, &play)
-                    });
+                    .map_or(what.look(0), |(key, time)| key.look(time, host, &play));
                 self.stirring(look, now)
             }
-            Act::Idle { what, since, .. } => {
-                let frame = what.frame(now.saturating_sub(since));
+            Act::Idle {
+                what, since, until, ..
+            } => {
+                let frame = what.frame(now.saturating_sub(since), until.saturating_sub(since));
                 self.stirring(what.look(frame), now)
             }
             Act::Use {
@@ -9616,8 +9623,8 @@ impl Osaka {
                 };
                 let (pose, face, bubble) = play
                     .key(since, until, now)
-                    .map_or((host, Face::Vacant, None), |(key, elapsed)| {
-                        key.look(elapsed, host, &play)
+                    .map_or((host, Face::Vacant, None), |(key, time)| {
+                        key.look(time, host, &play)
                     });
                 let pose = at_seat(pose, seat);
                 // Answering the chat, she beams.
@@ -9658,8 +9665,15 @@ impl Osaka {
                 match phase {
                     Borrowing::Brace => (pull(0), Face::Curious, None),
                     Borrowing::Reel(step) => (pull(step), Face::Happy, None),
-                    Borrowing::Read { .. } => {
-                        let frame = (now.saturating_sub(since) / USE_FRAME_MS % 2) as u8;
+                    // Its last frame held through the part of a frame
+                    // before she slides the strip back ([`script::bob_frame`]).
+                    Borrowing::Read { until } => {
+                        let frame = script::bob_frame(
+                            now.saturating_sub(since),
+                            0,
+                            until.saturating_sub(since),
+                            USE_FRAME_MS,
+                        );
                         (Pose::ReadStrip(frame), Face::Vacant, None)
                     }
                     Borrowing::Slide(step) => (pull(step), Face::Pleased, None),
@@ -9672,7 +9686,7 @@ impl Osaka {
                 ..
             } => play.key(since, until, now).map_or(
                 (Pose::Stand, Face::Vacant, Some(Bubble::Dots)),
-                |(key, elapsed)| key.look(elapsed, Pose::Stand, &play),
+                |(key, time)| key.look(time, Pose::Stand, &play),
             ),
             Act::SpaceOut { play: None, .. } => (Pose::Stand, Face::Vacant, Some(Bubble::Dots)),
             Act::Home { until } => {
@@ -10161,33 +10175,37 @@ mod tests {
     #[test]
     fn every_use_look_span_is_half_open() {
         use super::super::art::Channel;
-        /// Her bob's frame, `t` ms in.
-        fn bob(t: u64) -> u8 {
-            (t / USE_FRAME_MS % 2) as u8
+        /// Her bob's frame, `t` ms in, in a span (a key) from `start` to
+        /// `end`: on its frames, but a frame clear of the span's start and
+        /// end (Round 8; `a_bob_flips_a_frame_clear_of_its_keys_start_and_end`
+        /// holds the rule itself).
+        fn bob(t: u64, (start, end): (u64, u64)) -> u8 {
+            script::bob_frame(t, start, end, USE_FRAME_MS)
         }
         /// The TV's frame, `t` ms in.
         fn tv(t: u64) -> u8 {
             (t / script::CHANNEL_FRAME_MS % 2) as u8
         }
-        /// Her pose and what's on her furniture, `t` ms in.
-        type Body = fn(u64) -> (Pose, Option<Prop>);
+        /// Her pose and what's on her furniture, `t` ms in, in a span
+        /// from and to (ms in).
+        type Body = fn(u64, (u64, u64)) -> (Pose, Option<Prop>);
         /// A span's start, her face and bubble, and her body.
         type Span = (u64, Face, Option<Bubble>, Body);
         /// A use, on a sofa or not, its advert, and its spans.
         type Case = (Use, bool, Option<Furniture>, Vec<Span>);
         let pitch = Furniture::Lamp.spec().pitch;
-        let snow: Body = |t| (Pose::CrossLegged, Some(Prop::Tv(Channel::Snow(tv(t)))));
-        let snow_on_sofa: Body = |t| (Pose::Lounge, Some(Prop::Tv(Channel::Snow(tv(t)))));
-        let selling: Body = |t| (Pose::CrossLegged, Some(Prop::Tv(Channel::Shopping(tv(t)))));
-        let selling_on_sofa: Body = |t| (Pose::Lounge, Some(Prop::Tv(Channel::Shopping(tv(t)))));
+        let snow: Body = |t, _| (Pose::CrossLegged, Some(Prop::Tv(Channel::Snow(tv(t)))));
+        let snow_on_sofa: Body = |t, _| (Pose::Lounge, Some(Prop::Tv(Channel::Snow(tv(t)))));
+        let selling: Body = |t, _| (Pose::CrossLegged, Some(Prop::Tv(Channel::Shopping(tv(t)))));
+        let selling_on_sofa: Body = |t, _| (Pose::Lounge, Some(Prop::Tv(Channel::Shopping(tv(t)))));
         // The programme a plain play holds (none drawn: the first), and
         // Chiyo-chichi after his hook.
         const NEWS: Option<Prop> = Some(Prop::Tv(Channel::Programme(art::Programme::News)));
         const SOLD: Option<Prop> = Some(Prop::Tv(Channel::Shopping(0)));
-        let held: Body = |_| (Pose::CrossLegged, NEWS);
-        let held_on_sofa: Body = |_| (Pose::Lounge, NEWS);
-        let sold_held: Body = |_| (Pose::CrossLegged, SOLD);
-        let sold_held_on_sofa: Body = |_| (Pose::Lounge, SOLD);
+        let held: Body = |_, _| (Pose::CrossLegged, NEWS);
+        let held_on_sofa: Body = |_, _| (Pose::Lounge, NEWS);
+        let sold_held: Body = |_, _| (Pose::CrossLegged, SOLD);
+        let sold_held_on_sofa: Body = |_, _| (Pose::Lounge, SOLD);
         let sold = |hook: Body, held: Body, length: u64| {
             vec![
                 (0, Face::Curious, Some(Bubble::Ooh), hook),
@@ -10201,20 +10219,20 @@ mod tests {
                     Use::Lounge,
                     false,
                     None,
-                    vec![(0, Face::Vacant, None, |_| (Pose::Lounge, None))],
+                    vec![(0, Face::Vacant, None, |_, _| (Pose::Lounge, None))],
                 ),
                 (
                     Use::Lounge,
                     true,
                     None,
-                    vec![(0, Face::Vacant, None, |_| (Pose::Lounge, None))],
+                    vec![(0, Face::Vacant, None, |_, _| (Pose::Lounge, None))],
                 ),
                 (
                     Use::Nap,
                     true,
                     None,
-                    vec![(0, Face::Blink, Some(Bubble::Zzz), |t| {
-                        (Pose::Nap(bob(t)), None)
+                    vec![(0, Face::Blink, Some(Bubble::Zzz), |t, span| {
+                        (Pose::Nap(bob(t, span)), None)
                     })],
                 ),
                 (
@@ -10222,12 +10240,15 @@ mod tests {
                     false,
                     None,
                     vec![
-                        (0, Face::Blink, Some(Bubble::Dots), |t| {
-                            (Pose::Sleep(bob(t)), None)
+                        (0, Face::Blink, Some(Bubble::Dots), |t, span| {
+                            (Pose::Sleep(bob(t, span)), None)
                         }),
-                        (script::LAMP_ON_MS, Face::Blink, Some(Bubble::Zzz), |t| {
-                            (Pose::Sleep(bob(t)), Some(Prop::LampOff))
-                        }),
+                        (
+                            script::LAMP_ON_MS,
+                            Face::Blink,
+                            Some(Bubble::Zzz),
+                            |t, span| (Pose::Sleep(bob(t, span)), Some(Prop::LampOff)),
+                        ),
                     ],
                 ),
                 (
@@ -10235,11 +10256,13 @@ mod tests {
                     false,
                     None,
                     vec![
-                        (0, Face::Vacant, None, |t| (Pose::Homework(bob(t)), None)),
-                        (length / 2, Face::Blink, Some(Bubble::Dots), |_| {
+                        (0, Face::Vacant, None, |t, span| {
+                            (Pose::Homework(bob(t, span)), None)
+                        }),
+                        (length / 2, Face::Blink, Some(Bubble::Dots), |_, _| {
                             (Pose::Homework(2), None)
                         }),
-                        (length * 3 / 4, Face::Blink, Some(Bubble::Zzz), |_| {
+                        (length * 3 / 4, Face::Blink, Some(Bubble::Zzz), |_, _| {
                             (Pose::Homework(3), None)
                         }),
                     ],
@@ -10278,17 +10301,21 @@ mod tests {
                     Use::Read,
                     false,
                     None,
-                    vec![(0, Face::Vacant, None, |t| (Pose::Read(bob(t)), None))],
+                    vec![(0, Face::Vacant, None, |t, span| {
+                        (Pose::Read(bob(t, span)), None)
+                    })],
                 ),
                 (
                     Use::Snack,
                     false,
                     None,
                     vec![
-                        (0, Face::Curious, None, |_| {
+                        (0, Face::Curious, None, |_, _| {
                             (Pose::Side, Some(Prop::FridgeOpen))
                         }),
-                        (1500, Face::Happy, None, |t| (Pose::Eat(bob(t)), None)),
+                        (1500, Face::Happy, None, |t, span| {
+                            (Pose::Eat(bob(t, span)), None)
+                        }),
                     ],
                 ),
                 (
@@ -10296,12 +10323,14 @@ mod tests {
                     false,
                     None,
                     vec![
-                        (0, Face::Happy, Some(Bubble::Hum), |_| (Pose::Pet(0), None)),
+                        (0, Face::Happy, Some(Bubble::Hum), |_, _| {
+                            (Pose::Pet(0), None)
+                        }),
                         (
                             length * 7 / 10,
                             Face::Surprised,
                             Some(Bubble::Say("Ow!")),
-                            |_| (Pose::Pet(1), Some(Prop::CatBiting)),
+                            |_, _| (Pose::Pet(1), Some(Prop::CatBiting)),
                         ),
                     ],
                 ),
@@ -10310,12 +10339,15 @@ mod tests {
                     false,
                     None,
                     vec![
-                        (0, Face::Happy, Some(Bubble::Say(SCRUNCH)), |t| {
-                            (Pose::ToeTouch(bob(t)), None)
+                        (0, Face::Happy, Some(Bubble::Say(SCRUNCH)), |t, span| {
+                            (Pose::ToeTouch(bob(t, span)), None)
                         }),
-                        (length * 4 / 5, Face::Happy, Some(Bubble::Say(THERE)), |t| {
-                            (Pose::ToeTouch(bob(t)), None)
-                        }),
+                        (
+                            length * 4 / 5,
+                            Face::Happy,
+                            Some(Bubble::Say(THERE)),
+                            |t, span| (Pose::ToeTouch(bob(t, span)), None),
+                        ),
                     ],
                 ),
                 (
@@ -10323,9 +10355,11 @@ mod tests {
                     false,
                     None,
                     vec![
-                        (0, Face::Happy, None, |t| (Pose::ToeTouch(bob(t)), None)),
-                        (length * 3 / 5, Face::Happy, Some(Bubble::Ooh), |t| {
-                            (Pose::ToeTouch(bob(t)), None)
+                        (0, Face::Happy, None, |t, span| {
+                            (Pose::ToeTouch(bob(t, span)), None)
+                        }),
+                        (length * 3 / 5, Face::Happy, Some(Bubble::Ooh), |t, span| {
+                            (Pose::ToeTouch(bob(t, span)), None)
                         }),
                     ],
                 ),
@@ -10338,9 +10372,9 @@ mod tests {
                             0,
                             Face::Curious,
                             Some(Bubble::Say(script::LOOK_OUT_LINES[0].1)),
-                            |_| (Pose::SillLean, None),
+                            |_, _| (Pose::SillLean, None),
                         ),
-                        (script::LOOK_OUT_LINE_MS, Face::Curious, None, |_| {
+                        (script::LOOK_OUT_LINE_MS, Face::Curious, None, |_, _| {
                             (Pose::SillLean, None)
                         }),
                     ],
@@ -10374,7 +10408,7 @@ mod tests {
                 for (i, &(start, face, bubble, body)) in spans.iter().enumerate() {
                     let end = spans.get(i + 1).map_or(length, |&(next, ..)| next);
                     for elapsed in [start, (start + end) / 2, end - 1] {
-                        let (pose, prop) = body(elapsed);
+                        let (pose, prop) = body(elapsed, (start, end));
                         assert_eq!(
                             look(elapsed),
                             ((pose, face, bubble), prop),
@@ -16592,6 +16626,68 @@ mod tests {
         }
     }
 
+    /// A bob on the frame that isn't a script's key holds its last frame
+    /// through the part of a period before her act ends, as a key's bob
+    /// does (Round 8, the user; `a_bob_flips_a_frame_clear_of_its_keys_start_and_end`
+    /// in script.rs): lying back and reading on her back (her idle acts
+    /// bobbing on [`USE_FRAME_MS`] or slower), and reading a borrowed
+    /// strip beside the tear. Each starts on its own grid, so only its
+    /// end can land off it: over acts from 20 s to 90 s (in steps of
+    /// 997 ms), no flip comes within a frame of the act's end.
+    #[test]
+    fn an_idle_bob_holds_its_last_frame_before_her_act_ends() {
+        let slow: Vec<Activity> = Activity::ALL
+            .into_iter()
+            .filter(|what| what.period() >= USE_FRAME_MS)
+            .collect();
+        assert_eq!(slow, [Activity::LieBack, Activity::LieRead]);
+        let mut acts: Vec<(String, Act)> = Vec::new();
+        for until in (20_000..90_000).step_by(997) {
+            for &what in &slow {
+                acts.push((
+                    format!("{what:?}"),
+                    Act::Idle {
+                        what,
+                        since: 0,
+                        until,
+                        play: None,
+                    },
+                ));
+            }
+            acts.push((
+                "reading a strip".to_owned(),
+                Act::Borrow {
+                    pull: census_pull(),
+                    since: 0,
+                    phase: Borrowing::Read { until },
+                },
+            ));
+        }
+        let mut flips = 0u32;
+        for (at, act) in acts {
+            let until = match act {
+                Act::Idle { until, .. }
+                | Act::Borrow {
+                    phase: Borrowing::Read { until },
+                    ..
+                } => until,
+                _ => unreachable!(),
+            };
+            let mut osaka = Osaka::standing_at(20, 15, 0, &mut Rng(3));
+            osaka.set(act, 0);
+            for t in (1..).map(|k| k * USE_FRAME_MS).take_while(|&t| t < until) {
+                if osaka.acting(t - 1).0 != osaka.acting(t).0 {
+                    flips += 1;
+                    assert!(
+                        t + USE_FRAME_MS <= until,
+                        "{at} to {until}: flips at {t}, within a frame of its end"
+                    );
+                }
+            }
+        }
+        assert!(flips > 1000, "{flips} flips tried");
+    }
+
     /// Dozing (lying back on the floor, napping, asleep by day, asleep
     /// over her homework), a chat line only stirs her, as at night: she
     /// blinks and turns over a moment (the line comes as her own pose
@@ -18630,8 +18726,10 @@ mod tests {
                 let nods = until * write.0 / write.1;
                 let sleeps = nods + (until - nods) / 2;
                 let look = |t: u64| osaka.appearance(t);
+                // On its frames, its last held through the part of a
+                // frame before she nods off.
                 for t in (0..nods).step_by(350) {
-                    let frame = (t / USE_FRAME_MS % 2) as u8;
+                    let frame = (t.min(nods - USE_FRAME_MS) / USE_FRAME_MS % 2) as u8;
                     assert_eq!(look(t).0, at_it(frame), "{at}: at it, {t}");
                 }
                 assert_eq!(
@@ -18684,8 +18782,10 @@ mod tests {
         let mut rng = Rng(5);
         let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
         osaka.set(idle_until(Activity::LieRead, 30_000), 0);
+        // On its frames, the last held through the part of a frame
+        // before it ends.
         for t in (0..30_000).step_by(350) {
-            let frame = (t / USE_FRAME_MS % 2) as u8;
+            let frame = (t.min(30_000 - USE_FRAME_MS) / USE_FRAME_MS % 2) as u8;
             assert_eq!(
                 osaka.appearance(t),
                 (Pose::LieRead(frame), Face::Vacant, None),

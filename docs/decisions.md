@@ -4665,19 +4665,44 @@ its first flicker in a long act. Before the trigger the flicker passed
 as the clock's for over a minute and was caught only where it spoiled
 an exemption of hers.
 
-**Why a bob's key may end within a frame of its last flip, for now
-(step 12c):** a key that bobs (her writing, her breathing asleep) flips
-on the 1.4 s frame grid, and a key ending at a share of the use (her
-homework nodding off) lands off that grid, so it always comes less than
-a frame after the bob's last flip: counted as two changes, every such
-act broke the rule. The test had never sampled one (no desk homework
-after the first 10 s of its afternoons). Only that change is allowed:
-the key that ends must be the bob that flipped last, and any other
-change within a frame of a bob's flip (a bubble ending, another key
-starting) still counts. It is provisional: the other way, holding a
-bob's last frame through the part of a period before its key ends (and
-its first flip until a frame after its key starts), changes how she
-looks (a golden re-record) and is the user's call.
+**Why a bob keeps a frame clear of its key's start and end (the user,
+phase 5c's tail, T2, 2026-10-07: "fix both"; step 12c had allowed it
+provisionally):** a key that bobs (her writing, her breathing asleep)
+flips on the 1.4 s frame grid of its part, and a key ending at a share
+of the use (her homework nodding off) lands off that grid, so it came
+less than a frame after the bob's last flip: two changes within a
+frame. Step 12c's test allowed exactly that case; the user chose to fix
+what she does instead. So a bob holds its last frame through the part
+of a period before its key ends, and its first until the first flip on
+the grid a whole period after its key starts (`script::bob_frame`): its
+flips and the changes as its key starts and ends are always at least a
+frame apart, wherever a share puts them. It stays on its part's grid
+(not restarted at each key) because her wakeups are on that grid
+(`every_bob_moves_on_the_frame_grid`, the wakeup tests): a held flip is
+a wake with nothing new to paint, so nothing she does moves, only how
+she looks. It starts on the grid's frame at its key's start, so a key
+starting on the grid (every part's first) is the plain beat but at its
+end; after a held first flip its beat runs the other way, which nobody
+can see. One mechanism covers every bobbing key, all on the frame
+(`Key::look` takes the key's `KeyTime`, so no bob is timed without its
+key's edges): napping and asleep (by day, the night's bed and sofa
+branches, the Dream's), her homework writing at her desk and on the
+floor (and reading there), reading at her bookshelf, eating the melon
+bread, crumpling and unpacking (bent to it), and chewing the sata
+andagi. Its siblings outside scripts hold their last frame before
+the act ends the same way: lying back and reading on her back (idle
+acts bobbing on the frame, which start on their grid) and reading a
+borrowed strip. Faster alternation (exercise, kicking her feet, lifting
+and setting down a piece, poking, carrying a parcel home, static and
+Chiyo-chichi's hook) is motion, not a still act's change: those acts
+are under 30 s or exempt, so they run to their end. Golden traces: 75
+moved, each first at a bob's frame held within a frame of its key's or
+act's end (crumpling or unpacking 42, asleep 14, reading on her back 9,
+homework 6, lying back 2, napping 2), every differing line only a pose
+frame, no time or act changed. The stillness tests hold the rule
+plainly now (no allowance), and the model's test adds an industrious
+afternoon at her desk (seed 0), where the writing's end comes 800 ms
+after its last flip without the hold.
 
 **Static wakes her on its frames; the hook doesn't:** a use wakes her on
 its 1.4 s frame grid and as each key ends, and a client that paints only

@@ -52,9 +52,11 @@ pub(super) enum Posed {
     /// Bobbing between frames 0 and 1 of a pose every so many ms,
     /// counted from the start of the part it plays in (the prelude, the
     /// body or the coda; not of the key), so a bob running across keys
-    /// keeps its beat. The period is a whole number of frames
-    /// ([`USE_FRAME_MS`]), so her wakeups on the frame grid catch every
-    /// bob.
+    /// keeps its beat; but a period clear of its key's start and end
+    /// ([`bob_frame`]), so its flips never come within a frame of the
+    /// changes as its key starts and ends. The period is a whole number
+    /// of frames ([`USE_FRAME_MS`]), so her wakeups on the frame grid
+    /// catch every bob.
     Bob(fn(u8) -> Pose, u64),
 }
 
@@ -180,16 +182,14 @@ impl Key {
         }
     }
 
-    /// How she looks `elapsed` ms into the body this key plays in: in
+    /// How she looks at `time` in the part this key plays in: in
     /// `host`'s pose where the key leaves it to the host, saying what
     /// `play` drew for her or pitching what it sold her.
-    pub fn look(&self, elapsed: u64, host: Pose, play: &Play) -> Look {
+    pub fn look(&self, time: KeyTime, host: Pose, play: &Play) -> Look {
         let pose = match self.pose {
             Posed::Host => host,
             Posed::Still(pose) => pose,
-            Posed::Bob(pose, period) => {
-                pose(elapsed.checked_div(period).map_or(0, |n| (n % 2) as u8))
-            }
+            Posed::Bob(pose, period) => pose(bob_frame(time.elapsed, time.start, time.end, period)),
         };
         let bubble = self.say.and_then(|say| match say {
             Say::Bubble(bubble) => Some(bubble),
@@ -205,6 +205,43 @@ impl Key {
         });
         (pose, self.face, bubble)
     }
+}
+
+/// When a key plays in its part (the prelude, the body or the coda), in
+/// ms from the part's start: how far into the part it is (`elapsed`),
+/// and the key's own `start` and `end` there (the last key's end the
+/// part's, or `u64::MAX` in a part with no set length). What it shows is
+/// timed by `elapsed`, as everything in a part is; a bob also keeps clear
+/// of `start` and `end` ([`bob_frame`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct KeyTime {
+    pub elapsed: u64,
+    pub start: u64,
+    pub end: u64,
+}
+
+/// A bob's frame (0 or 1) `elapsed` ms into its part, flipping every
+/// `period` ms on the part's grid, but only a whole period clear of what
+/// bobs' `start` and `end` (ms into the part: a key's, or an idle act's
+/// own): its first frame held until the first flip on the grid a period
+/// or more after its start, its last held through the part of a period
+/// before its end (Round 8, the user). So its flips and the changes as
+/// it starts and ends (another key's look, her getting up) are never
+/// within a period of each other, wherever a share of the use puts them.
+/// It starts on the grid's frame at `start`, so a bob starting on the
+/// grid (every part's first key; every idle act) is the plain beat but
+/// at its end, and one running on across keys keeps its beat as near as
+/// it can. A period of 0 holds frame 0.
+pub(super) fn bob_frame(elapsed: u64, start: u64, end: u64, period: u64) -> u8 {
+    if period == 0 {
+        return 0;
+    }
+    // The grid's flips it makes: from the first a period after its start
+    // to the last a period before its end, none past `elapsed`.
+    let first = start.saturating_add(period).div_ceil(period);
+    let last = end.saturating_sub(period).min(elapsed) / period;
+    let flips = (last + 1).saturating_sub(first);
+    ((start / period + flips) % 2) as u8
 }
 
 /// Where a key plays in a use (for tests telling keys apart): when
@@ -236,14 +273,36 @@ pub(super) fn at<T>(
 }
 
 /// The key of `keys` playing `elapsed` ms into a body `body` ms long
-/// (`None`: no set length), its index, and when it ends. Past the end
-/// of the body, its last moment's key holds.
-pub(super) fn key_at(keys: &[Key], elapsed: u64, body: Option<u64>) -> Option<(usize, &Key, u64)> {
-    let elapsed = body.map_or(elapsed, |body| elapsed.min(body.saturating_sub(1)));
-    at(keys, elapsed, |key| key.span.end(body)).or_else(|| {
+/// (`None`: no set length), its index, and when it plays ([`KeyTime`]:
+/// `elapsed`, and when it starts and ends). Past the end of the body,
+/// its last moment's key holds.
+pub(super) fn key_at(
+    keys: &[Key],
+    elapsed: u64,
+    body: Option<u64>,
+) -> Option<(usize, &Key, KeyTime)> {
+    let held = body.map_or(elapsed, |body| elapsed.min(body.saturating_sub(1)));
+    let (index, key, end) = at(keys, held, |key| key.span.end(body)).or_else(|| {
         let last = keys.len().checked_sub(1)?;
         Some((last, keys.get(last)?, body.unwrap_or(u64::MAX)))
-    })
+    })?;
+    // It starts as the last of those before it ends (ends are where in
+    // the body each key ends, so a key that ends no later than one
+    // before it never plays).
+    let start = keys[..index]
+        .iter()
+        .map(|key| key.span.end(body))
+        .max()
+        .unwrap_or(0);
+    Some((
+        index,
+        key,
+        KeyTime {
+            elapsed,
+            start,
+            end,
+        },
+    ))
 }
 
 /// A riddle's question shows this long, from the start of her spacing
@@ -1274,12 +1333,11 @@ impl Play {
     }
 
     /// The key playing at `now` in a use from `since` to `until`, and
-    /// how far `now` is into the part it plays in (the prelude, the
-    /// body or the coda).
-    pub fn key(&self, since: u64, until: u64, now: u64) -> Option<(&'static Key, u64)> {
+    /// when it plays in its part (the prelude, the body or the coda):
+    /// how far `now` is into the part, and the key's start and end there.
+    pub fn key(&self, since: u64, until: u64, now: u64) -> Option<(&'static Key, KeyTime)> {
         let (keys, from, body) = self.part(since, until, now);
-        let elapsed = now.saturating_sub(from);
-        key_at(keys, elapsed, body).map(|(_, key, _)| (key, elapsed))
+        key_at(keys, now.saturating_sub(from), body).map(|(_, key, time)| (key, time))
     }
 
     /// What it plays at `now` in a use (or musing) from `since` to
@@ -2555,8 +2613,8 @@ mod tests {
             let play = Play::riddle(u8::try_from(i).unwrap());
             let (since, until) = (1000, 1000 + super::super::osaka::SPACE_OUT_MS.0);
             let look = |now| {
-                let (key, elapsed) = play.key(since, until, now).unwrap();
-                key.look(elapsed, Pose::Stand, &play)
+                let (key, time) = play.key(since, until, now).unwrap();
+                key.look(time, Pose::Stand, &play)
             };
             let said = |now| look(now).2;
             // Standing throughout.
@@ -2627,6 +2685,77 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Her pose `t` ms into a part playing `keys` over a body `body` ms
+    /// long, and the key playing then (its index; whether it bobs).
+    fn pose_in(keys: &[Key], body: u64, t: u64) -> Option<(Pose, usize, bool)> {
+        let play = Play::plain(ScriptId::Lounge);
+        let (index, key, time) = key_at(keys, t, Some(body))?;
+        let (pose, ..) = key.look(time, Pose::Stand, &play);
+        Some((pose, index, matches!(key.pose, Posed::Bob(..))))
+    }
+
+    /// A bob's flips keep a frame ([`USE_FRAME_MS`]) clear of its key's
+    /// start and its end (Round 8, the user: hold a bob's last frame
+    /// through the part of a period before its key ends, and its first
+    /// flip until a frame after its key starts), so a bobbing key's
+    /// flips and the changes as it starts and ends are never within a
+    /// frame of each other: for every bobbing key of every script's every
+    /// branch and every splice, over bodies of every length from 2 s to
+    /// 200 s (in steps of 997 ms, so its ends at a share of the body fall
+    /// all about the frame grid) and each splice's own. Her pose can only
+    /// change on the grid or as a key ends, so those moments are all it
+    /// looks at.
+    #[test]
+    fn a_bob_flips_a_frame_clear_of_its_keys_start_and_end() {
+        let mut parts: Vec<(String, &'static [Key], u64)> = Vec::new();
+        for id in ScriptId::ALL {
+            for (branch, keys) in id.branches().iter().enumerate() {
+                for body in (2_000..200_000).step_by(997) {
+                    parts.push((format!("{id:?} branch {branch}"), keys, body));
+                }
+            }
+        }
+        for splice in SpliceId::ALL {
+            for (branch, &len) in splice.row().lens.iter().enumerate() {
+                let keys = splice.script().keys(branch as u8);
+                parts.push((format!("{splice:?} branch {branch}"), keys, len));
+            }
+        }
+        let mut flips = 0u32;
+        for (at, keys, body) in parts {
+            let ends: Vec<u64> = keys.iter().map(|k| k.span.end(Some(body))).collect();
+            // Each key's start and end, in the body.
+            let bounds = |index: usize| {
+                let start = ends[..index].iter().copied().max().unwrap_or(0);
+                (start, ends[index])
+            };
+            let mut moments: Vec<u64> = (1..)
+                .map(|k| k * USE_FRAME_MS)
+                .take_while(|&t| t < body)
+                .chain(ends.iter().copied().filter(|&t| t > 0 && t < body))
+                .collect();
+            moments.sort_unstable();
+            moments.dedup();
+            for t in moments {
+                let (Some(was), Some(now)) = (pose_in(keys, body, t - 1), pose_in(keys, body, t))
+                else {
+                    continue;
+                };
+                let ((pose, index, bobs), (pose2, index2, _)) = (was, now);
+                if index != index2 || !bobs || pose == pose2 {
+                    continue;
+                }
+                flips += 1;
+                let (start, end) = bounds(index);
+                assert!(
+                    t >= start + USE_FRAME_MS && t + USE_FRAME_MS <= end.min(body),
+                    "{at}, body {body}: key {index} ({start} to {end}) flips at {t}"
+                );
+            }
+        }
+        assert!(flips > 1000, "{flips} flips tried");
     }
 
     /// The player: half-open keys, cumulative ends clamped to the body,
@@ -3325,8 +3454,8 @@ mod tests {
             assert_eq!(end, UNTIL - after.map_or(0, |s| s.len));
             let body = end - start;
             let at = |now| {
-                let (key, elapsed) = play.key(SINCE, UNTIL, now).unwrap();
-                (which(key), elapsed)
+                let (key, time) = play.key(SINCE, UNTIL, now).unwrap();
+                (which(key), time.elapsed)
             };
             let case = format!("before {before:?} after {after:?}");
             if before.is_some() {
@@ -3364,10 +3493,10 @@ mod tests {
         };
         let start = crowded.body_start(SINCE);
         assert_eq!(crowded.body_end(SINCE, UNTIL), start);
-        let (key, elapsed) = crowded.key(SINCE, UNTIL, start - 1).unwrap();
-        assert_eq!((which(key), elapsed), (which(&snack[1]), 5999));
-        let (key, elapsed) = crowded.key(SINCE, UNTIL, start).unwrap();
-        assert_eq!((which(key), elapsed), (which(&sleep[0]), 0));
+        let (key, time) = crowded.key(SINCE, UNTIL, start - 1).unwrap();
+        assert_eq!((which(key), time.elapsed), (which(&snack[1]), 5999));
+        let (key, time) = crowded.key(SINCE, UNTIL, start).unwrap();
+        assert_eq!((which(key), time.elapsed), (which(&sleep[0]), 0));
     }
 
     /// The stage's note names each part in turn, the one playing with

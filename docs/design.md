@@ -1924,10 +1924,12 @@ this section states what is built.
   and only the dial's and the sky's own cells). Steady periodic motion is not what draws the
   eye; a change is: so the hook bobs through the whole of its span,
   however long her mood lingers over the act (a lazy one's up to
-  49 s). For now, a bob's key ending (her homework nodding off, at a
-  share of the use) may come within a frame of that bob's last flip, as
-  it ends off the bob's frame grid (provisional: whether she holds the
-  bob's last frame instead is open) (why:
+  49 s). A bob of hers on the frame (her writing, her breathing asleep,
+  a page turning) flips on its frame grid but a frame clear of the
+  start and end of what bobs (its script's key, or the idle act): its
+  first frame held until a frame after it starts, its last through the
+  part of a frame before it ends, so a key ending at a share of the use
+  (her homework nodding off) never comes within a frame of a flip (why:
   [decisions](decisions.md#her-tv-holds-a-picture-2026-10-07)).
   **The film on her TV** (phase 5c D7): in line art, with a film loaded
   that this client holds (on disk and ready) and whose real video the

@@ -657,7 +657,8 @@ that her trace is unchanged).
   paints every 100 ms, with chat and the film fed, in the TV-only home, the shopping home, the home
   with her window and the resident, and compares drawn cells and images; its exemptions are
   design.md's four (five since T1, 2026-10-07: the world's clock), each only its own change with
-  nothing else drawn alongside (a chat line's stir, dozing, counts as the look up at it, for now).
+  nothing else drawn alongside (a chat line's stir, dozing, counts as the look up at it: it comes
+  when the line does; since T2 it lasts a frame, checked).
 - **Open, for the user** (each found by the stillness tests; each fix would change how she looks, a
   golden re-record; until then the test allows exactly the case, provisionally, or keeps it ignored):
   - *A bob's key ending off its frame grid.* A key that bobs (her writing, her breathing asleep)
@@ -666,10 +667,19 @@ that her trace is unchanged).
     frame of that same key's last flip; any other change near a bob's flip counts (design.md says
     "for now"). The fix in what she does: hold a bob's last frame through the partial period before
     its key ends (and its first flip until a frame after its key starts).
+    **Resolved (T2, 2026-10-07):** the user: fix it. A bob keeps a frame clear of its key's start
+    and end (`script::bob_frame`), on its part's grid as before, for every bobbing key and the
+    idle bobs on the frame (lying back, reading on her back, reading a borrowed strip); the
+    allowance is gone from both stillness tests.
   - *A stir is shorter than a frame by day.* A chat line stirring her dozing by day ("Mm?") lasts
     `speech_ms("Mm?")` = 1380 ms, under the 1400 ms frame, so it comes and goes inside one (a
     night's "mm..." lasts 1500 ms). The test exempts a stir as the dozing form of a look up. The
     fix: `stir_until = now + speech_ms(line).max(USE_FRAME_MS)`.
+    **Resolved (T2, 2026-10-07):** the user: fix it. Whatever she says lasts a frame at least
+    (`speech_ms` floors at `USE_FRAME_MS`; only "Mm?" was under one), so the stir's turn and its
+    murmur end together a frame on; the stir keeps the look up's exemption (it comes when the
+    line does), and the drawn test checks it holds a frame. Her look up's `!` (1.2 s) is under a
+    frame too, left (inside the look up's exemption; plan.md).
   - *The world's clock.* In the home with her wall clock, the dial (each game quarter-hour, about
     150 s at 6×) stepped 656 ms after her breathing's flip asleep ("home, clock and window Lazy
     seed 0", both modes); the window's sky would do the same at dawn and dusk. It's no act of

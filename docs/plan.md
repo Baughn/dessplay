@@ -3282,23 +3282,58 @@ exempts, that one thing more changed is not), and its run
 (`no_long_act_flips_drawn_cells_faster_than_a_frame_by_her_clock`, with
 a run across the sky's day to dusk) in the gate.
 
+**Phase 5c's tail, T2 (2026-10-07),** the two flickers the drawn
+stillness test found, fixed by the user's word ("fix both"), a commit
+each. (B) Whatever she says shows for a frame at least (`speech_ms`
+floors at `USE_FRAME_MS`), so a stir by day ("Mm?", 1380 ms before)
+lasts a frame and its turn ends with its murmur; only "Mm?" was under a
+frame. A stir keeps the look up's exemption (it comes when the line
+does, off her breathing's frames; without it the drawn test fails in
+every room), and the drawn test checks each stir holds unchanged a frame
+from its start. 42 golden traces moved, each only its daytime stirs'
+ends, 20 ms later. (A) A bob keeps a frame clear of its key's start and
+end (`script::bob_frame`; `Key::look` takes the key's `KeyTime`): its
+first frame held until a frame after its key starts, its last through
+the part of a frame before it ends, on its part's grid as before (so
+her wakeups, and all she does, are unchanged). Every bobbing key (asleep,
+napping, the Dream, homework at her desk and on the floor, reading,
+eating, crumpling, unpacking, chewing the andagi) and, outside scripts,
+lying back, reading on her back and reading a borrowed strip, which
+hold their last frame before the act ends. 75 golden traces moved, only
+pose frames, each first at a bob held within a frame of its key's or
+act's end. The stillness tests' allowance is gone; the model's test adds
+an industrious afternoon at her desk (seed 0), where the writing ended
+800 ms after its last flip. Sub-second, so no band cell moves (not
+re-measured). New tests: `whatever_she_says_shows_for_a_frame`,
+`a_bob_flips_a_frame_clear_of_its_keys_start_and_end`,
+`an_idle_bob_holds_its_last_frame_before_her_act_ends`. A night whose
+wake time moves within its last frame (`refresh_night`) can still flip
+her breathing at that moment: the hold is timed from the end known
+then.
+
 **Open, for the user:**
 - **The two `SHORT` items** above; the lead for the stage's spread is a
   mood factor on spacing out for its own sake, which weighs the same in
   every mood and fills an industrious stage afternoon most (14%).
-- **From the drawn stillness test** (Round 8; each fix changes how she
-  looks, a golden re-record): a bob's key ending off its frame grid (her
-  homework nodding off within a frame of the writing's last flip; the
-  test allows exactly that, "for now"); a stir by day ("Mm?", 1380 ms) is
-  shorter than a frame. (The world's clock, her wall clock's dial and the
-  window's sky stepping within a frame of her own changes, was resolved
-  in T1: exempt, by the user's word, scoped to its own change.)
+- **From the drawn stillness test** (Round 8): all three resolved. The
+  world's clock in T1 (exempt, scoped to its own change); a bob's key
+  ending off its frame grid and a stir by day shorter than a frame in T2
+  (both fixed, the allowance gone).
+- **Her look up's `!`** (found in T2): it shows `SURPRISED_MS`, 1.2 s,
+  under a frame, before her `?`. It's inside the look up's exemption, a
+  reaction to the user's line, and the same startle she gives on her
+  feet, so it was left; lengthening it to a frame would move every look
+  up (a golden re-record).
 - **The drawn exemptions don't combine** (T1's review): a dial or sky
   step on the same 100 ms paint as another exempt change (a blink, a
   look up at the chat) is exempt by neither arm, and fails the drawn
   test as a flip; and in ASCII the sky's cells inside her box (her
   leaning at the sill) count as hers. Neither comes up in today's runs;
-  the door batch moving pieces could. Checking the world's part and hers
+  the door batch moving pieces could. The model's test has the same
+  shape (T2, probing 16 seeds a mood): her blink starting on the
+  sample the hook's bob flips is exempt by neither, so the shopping
+  channel's key ending 300 ms on counted as a flip (shopping, lazy seed 2
+  and ordinary seed 5; not among the seeds the test runs). Checking the world's part and hers
   apart (strip the stepped piece's cells and look, then try the other
   exemptions on the rest) would answer both, at some looseness.
 - **The by-her-clock drawn test's gate cost** (T1): about 10 s CPU,
