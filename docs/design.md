@@ -1775,11 +1775,16 @@ this section states what is built.
   room, where the piece will stand. The pieces already on that strip
   make way (packed in order, the newcomer nearest the wall), but only
   where every one that shows still fits, the parcel's cells are blank
-  and free, she can stand to unpack it (judged as any seat of hers: a
-  floor under her, lines allowed) and she'd fit to use it; a window comes
+  and free, she can stand to unpack it and she'd fit to use it, each
+  judged as any seat of hers (a floor under her, lines allowed), on the
+  room as it would show with the box there, then with the piece out of
+  it (the pieces that made way, and what she made that it leaves
+  standing, where they'd be: in line art the image she'd be drawn in
+  takes them in, as once it's there); a window comes
   in first where she could look out of it. With no such wall it
   waits
   (why: [decisions](decisions.md#a-parcel-comes-only-when-shes-up-and-can-stand-to-unpack-it-2026-10-05),
+  [decisions](decisions.md#where-she-unpacks-a-parcel-is-judged-with-it-there-2026-10-07),
   [decisions](decisions.md#a-window-comes-in-where-she-can-look-out-of-it-2026-10-05)).
   She unpacks it (her strongest wish while it's there) and it
   becomes the piece. A parcel stays boxed, across visits, until she

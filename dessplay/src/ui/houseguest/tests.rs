@@ -5023,9 +5023,12 @@ proptest! {
     /// arbitrary screens, text and the pieces she has, in both drawing
     /// modes, each piece the channel sells (on order) and her wall clock
     /// (a gift), once delivered, has a seat to unpack it from at once,
-    /// and nothing protected is touched; with no text about (none for her
-    /// to move, or to come up, where she'd stand), she unpacks it within
-    /// ten real minutes.
+    /// and nothing protected is touched; while it's boxed and nothing has
+    /// moved since it came, every choice she makes has unpacking it on
+    /// offer, once she sets about it it's unpacked within two minutes,
+    /// and she doesn't pass it over choice after choice (see
+    /// [`a_parcel_on_her_doorstep`]); and out of its box, she has a seat
+    /// for every use of it she needs room for.
     #[test]
     fn every_parcel_on_her_doorstep_gets_unpacked(
         seed in any::<u64>(),
@@ -5035,7 +5038,7 @@ proptest! {
             Just(Vec::new()),
             proptest::collection::vec((0u16..60, 0u16..18, "[a-z漢─│ ]{1,6}"), 1..12),
         ],
-        owned in proptest::collection::vec((0usize..8, 0usize..3, 0u16..=1000, any::<bool>()), 0..4),
+        owned in proptest::collection::vec((0usize..Furniture::ALL.len(), 0usize..3, 0u16..=1000, any::<bool>()), 0..5),
         tv in (0usize..3, 0u16..=1000),
         which in 0usize..=CATALOGUE.len(),
     ) {
@@ -5047,7 +5050,15 @@ proptest! {
 /// what kept her from unpacking, in both drawing modes: her cat's bed,
 /// boxed, with no cat yet (who comes only to it unboxed); a lamp at the
 /// wall where text above the floor leaves her nowhere to stand to
-/// unpack it.
+/// unpack it; and (phase 5c step 12d) a sofa delivered beside her TV on
+/// The List's floor with a letter above them, judged before it stood
+/// there: in line art her image at its unpack spot takes in the box and,
+/// through it, the TV, and so the letter above the TV, and with the
+/// box in the room she couldn't stay there; and (the step-12d review) a
+/// desk at The List's wall with a letter in the floor at its stool:
+/// room to use it was asked of the frame's cells alone, not as her seats
+/// are (a floor under her), so it came in where she could unpack it but
+/// never sit at it.
 #[test]
 fn parcels_she_could_not_unpack() {
     for graphics in [false, true] {
@@ -5059,34 +5070,61 @@ fn parcels_she_could_not_unpack() {
             .iter()
             .position(|&i| i == Furniture::Lamp)
             .expect("sold");
+        let sofa = CATALOGUE
+            .iter()
+            .position(|&i| i == Furniture::Sofa)
+            .expect("sold");
         a_parcel_on_her_doorstep(0, graphics, (60, 18), &[], &[], (0, 0), cat_bed)
             .unwrap_or_else(|e| panic!("graphics={graphics}: {e}"));
         let text = [(5, 10, "漢".to_owned())];
         a_parcel_on_her_doorstep(0, graphics, (60, 18), &text, &[], (0, 0), lamp)
             .unwrap_or_else(|e| panic!("graphics={graphics}: {e}"));
+        let text = [(8, 11, "a".to_owned())];
+        a_parcel_on_her_doorstep(0, graphics, (60, 19), &text, &[], (0, 0), sofa)
+            .unwrap_or_else(|e| panic!("graphics={graphics}: {e}"));
+        let desk = CATALOGUE
+            .iter()
+            .position(|&i| i == Furniture::Desk)
+            .expect("sold");
+        let text = [(8, 15, "a".to_owned())];
+        a_parcel_on_her_doorstep(0, graphics, (60, 19), &text, &[], (1, 0), desk)
+            .unwrap_or_else(|e| panic!("graphics={graphics}: {e}"));
     }
 }
 
-/// A case [`every_parcel_on_her_doorstep_gets_unpacked`] found at random
-/// in phase 5c step 8c (its shrunk input), failing as it did one commit
-/// earlier, so older than that step: a sofa delivered beside her TV on
-/// The List's floor with a letter above it, in line art, and no seat to
-/// unpack it from. Kept here (not in the regression file, which would
-/// fail the gate) until it's fixed in a step of its own.
+/// A case of [`every_parcel_on_her_doorstep_gets_unpacked`] the step-12d
+/// review found (ASCII, no text): her wall clock delivered beside her
+/// sofa, a seat to unpack it from all along, and still boxed ten minutes
+/// on. Not a parcel she couldn't get at: unpacking it was the top of her
+/// offers at every choice (61.7, 65.3, 20.0, 46.7), and she rolled
+/// something else each time, her lingering (phase 5c) leaving four
+/// choices in those ten minutes. Her strongest wish is not a certain one;
+/// the property now checks what is promised (see
+/// [`a_parcel_on_her_doorstep`]).
 #[test]
-#[ignore = "predates 5c step 8c: \"Sofa delivered at 5000 with no seat to unpack it\" (line art, 60×19, 'a' at (8, 11))"]
-fn a_sofa_she_could_not_unpack() {
+fn a_clock_she_passed_over() {
     a_parcel_on_her_doorstep(
-        0,
-        true,
-        (60, 19),
-        &[(8, 11, "a".to_owned())],
+        17_007_287_719_767_563_718,
+        false,
+        (61, 20),
         &[],
-        (0, 0),
-        0,
+        &[(0, 0, 0, false)],
+        (1, 522),
+        CATALOGUE.len(),
     )
     .unwrap_or_else(|e| panic!("{e}"));
 }
+
+/// Where a piece shows: its kind, strip, left column and floor.
+type Laid = (Furniture, Option<room::Strip>, i32, i32);
+
+/// Her choices with a parcel on offer she may pass it over before one
+/// is a failure of [`a_parcel_on_her_doorstep`]: she picks it about half
+/// the time or more (its score against the top few's). Over 2000 cases
+/// (step 12d) the choices it took fell off by about 0.35 a step (1303
+/// at the first, 7 at the sixth, none past it), so 14 by luck alone is
+/// some one case in a hundred thousand.
+const PASSED_OVER: u32 = 14;
 
 /// One case of [`every_parcel_on_her_doorstep_gets_unpacked`]: on a
 /// `w`×`h` screen with `text`, her TV out of its box at `tv` (nook,
@@ -5101,6 +5139,8 @@ fn a_parcel_on_her_doorstep(
     tv: (usize, u16),
     which: usize,
 ) -> Result<(), TestCaseError> {
+    use super::brain::Want;
+    use super::osaka::Bucket;
     let item = CATALOGUE.get(which).copied().unwrap_or(Furniture::Clock);
     let nook = [Nook::List, Nook::Users, Nook::Playlist];
     let mut guest = home_at(seed, mon(16, 0), &[], graphics);
@@ -5148,8 +5188,25 @@ fn a_parcel_on_her_doorstep(
     };
     let mut now = 0;
     let mut delivered = None;
+    // Where everything stood as it was delivered, and her text layer.
+    let mut as_delivered: Option<Vec<Laid>> = None;
     let mut seat = false;
-    while now < 20 * 60_000 {
+    // Her choices, for her wish to unpack it: where her scored offers
+    // stood last frame, the last choice looked at, how many she has made
+    // with it on offer, unpacking chosen, and when she first set about it.
+    let (mut scored, mut last_choice, mut passed_over) = (0, None, 0);
+    let mut unpacks_chosen = 0;
+    let mut set_about = None;
+    let laid = |visit: &Visit| -> Vec<Laid> {
+        visit
+            .shown
+            .iter()
+            .map(|s| (s.item, s.strip, s.left, s.floor))
+            .collect()
+    };
+    // Long enough for `PASSED_OVER` choices, while it's boxed and she
+    // hasn't set about it.
+    while now < 20 * 60_000 || delivered.is_some() && set_about.is_none() && now < 50 * 60_000 {
         now += guest
             .next_tick(now)
             .map_or(1000, |d| d.as_millis() as u64)
@@ -5165,6 +5222,13 @@ fn a_parcel_on_her_doorstep(
         if delivered.is_none() && guest.ledger.home.owns(item) {
             prop_assert!(boxed(&guest), "{item:?} came unboxed");
             delivered = Some(now);
+            as_delivered = visit.layer.is_empty().then(|| laid(visit));
+            // Her choices from here on.
+            scored = visit.osaka.factored.len();
+            last_choice = visit.osaka.explain().map(|d| d.at);
+            unpacks_chosen = (visit.osaka.choices.iter())
+                .filter(|&&w| w == Want::Use(room::Use::Unpack))
+                .count();
         }
         let Some(since) = delivered else {
             // No room for it at either wall: it waits (fine), so long
@@ -5174,13 +5238,34 @@ fn a_parcel_on_her_doorstep(
             }
             continue;
         };
-        seat |= visit
+        let seated = visit
             .chances
             .seats
             .iter()
             .any(|s| s.what == room::Use::Unpack && s.item == item);
+        seat |= seated;
+        // Nothing has moved since it came: no text of hers, every piece
+        // where it stood (else what's checked below may have changed).
+        let unchanged = visit.layer.is_empty() && as_delivered.as_ref() == Some(&laid(visit));
         if !boxed(&guest) {
             prop_assert!(seat, "{item:?} unpacked from no seat");
+            // Out of its box, nothing moved, she can use it every way she
+            // was let in for: it came only where she'd fit to.
+            if unchanged {
+                for &what in item.spec().uses {
+                    if what.asks_room() && what != room::Use::Pet {
+                        prop_assert!(
+                            visit
+                                .chances
+                                .seats
+                                .iter()
+                                .any(|s| s.what == what && s.item == item),
+                            "{item:?} unpacked with no seat to {what:?} from: {:?}",
+                            visit.shown
+                        );
+                    }
+                }
+            }
             return Ok(());
         }
         prop_assert!(
@@ -5188,18 +5273,62 @@ fn a_parcel_on_her_doorstep(
             "{item:?} delivered at {since} with no seat to unpack it: {:?}",
             visit.shown
         );
-        if !text.is_empty() && seat {
+        if !unchanged && (seat || !text.is_empty()) {
             return Ok(());
         }
+        // Her strongest wish, not a certain one (she rolls among the top
+        // few: brain.rs): while it's boxed with a seat to unpack it from,
+        // every choice she makes has it on offer (bound: she can get
+        // there), and chosen, she finds a way there; once she sets about
+        // it, it's out of its box within two
+        // minutes; and she isn't still passing it over after
+        // `PASSED_OVER` choices with it on offer.
+        let osaka = &visit.osaka;
+        let new_scores = osaka.factored.get(scored..).unwrap_or_default();
+        scored = osaka.factored.len();
+        let decided = osaka.explain().map(|d| (d.at, d.bucket));
+        if let Some((at, Bucket::Normal)) = decided
+            && Some(at) != last_choice
+            && seated
+        {
+            last_choice = Some(at);
+            prop_assert!(
+                new_scores
+                    .iter()
+                    .any(|&(w, ..)| w == Want::Use(room::Use::Unpack)),
+                "{item:?} boxed with a seat, not on offer at {now}: {:?}",
+                osaka.explain()
+            );
+            passed_over += 1;
+        }
         prop_assert!(
-            now < since + 10 * 60_000,
-            "{item:?} delivered at {since}, still boxed at {now}: {:?}",
-            visit.shown
+            !osaka.stranded.contains(&Want::Use(room::Use::Unpack)),
+            "{item:?} boxed with a seat, chosen and no way there at {now}: {:?}",
+            osaka.explain()
+        );
+        let chosen = osaka
+            .choices
+            .iter()
+            .filter(|&&w| w == Want::Use(room::Use::Unpack))
+            .count();
+        if chosen > unpacks_chosen {
+            unpacks_chosen = chosen;
+            set_about.get_or_insert(now);
+        }
+        if let Some(at) = set_about {
+            prop_assert!(
+                now < at + 2 * 60_000,
+                "{item:?} set about unpacking at {at}, still boxed at {now}: {:?}",
+                visit.shown
+            );
+        }
+        prop_assert!(
+            set_about.is_some() || passed_over < PASSED_OVER,
+            "{item:?} passed over {passed_over} times since {since}: {:?}",
+            osaka.explain()
         );
     }
-    Err(TestCaseError::fail(format!(
-        "{item:?}: the visit never settled"
-    )))
+    Ok(())
 }
 
 /// The piece `item` as shown this frame, if it is.

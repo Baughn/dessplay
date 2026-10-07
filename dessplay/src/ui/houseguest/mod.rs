@@ -2099,6 +2099,7 @@ impl Guest {
                     view,
                     visit,
                     time.is_some(),
+                    self.graphics.is_some(),
                     now,
                     &mut self.rng,
                 );
@@ -3063,6 +3064,7 @@ fn furnish(
     view: &IdleView,
     visit: &mut Visit,
     fed: bool,
+    graphics: bool,
     now: u64,
     rng: &mut Rng,
 ) -> Vec<Shown> {
@@ -3137,13 +3139,39 @@ fn furnish(
     // she'd say so. It waits for her to wake, and to say good morning.
     // Nor on a dash home from school (A16): it waits for her return.
     let awake = !visit.tuck && visit.kind != Kind::Dash && visit.osaka.awake(now);
-    // A parcel comes in only where she can unpack it (her seats' test).
-    let terrain = &visit.terrain;
-    let stands = |x: i32, y: i32| seat_spot(terrain, x, y);
+    // A parcel comes in only where she can unpack it, and use what's in
+    // it: her seats' own test (`seats_of`), on the room as the doorstep
+    // projects it (the box, then the piece, and the pieces that made
+    // way) with what she made that it leaves standing (`made_stands`, as
+    // `tend_made` will judge it), as a makeshift piece is judged before
+    // it's made (see `builds`): in line art, the image she'd be drawn in
+    // takes in the piece, and through it what it meets. On this frame's
+    // terrain, read once, when a delivery first asks (the visit's is
+    // last frame's, read after this).
+    let fresh: std::cell::RefCell<Option<Terrain>> = std::cell::RefCell::new(None);
+    let mut kept = view.protected.clone();
+    kept.extend(visit.ghost);
+    let (makeshift, layer) = (&visit.made, &visit.layer);
+    let seats = |piece: &Shown, after: &[Shown]| {
+        let mut fresh = fresh.borrow_mut();
+        let terrain = fresh.get_or_insert_with(|| {
+            // As the visit's is read (`Visit::solid`).
+            let mut solid = view.protected.clone();
+            solid.extend(runs(layer.cells()));
+            Terrain::read(buf, &solid, graphics)
+        });
+        let standing = makeshift
+            .iter()
+            .filter(|m| made_stands(m, layer, buf, after, &moved, &kept))
+            .map(|m| m.piece);
+        let room: Vec<Shown> = after.iter().copied().chain(standing).collect();
+        terrain.furnish(room.iter().map(Shown::cover));
+        seats_of(piece, &room, terrain, true)
+    };
     if let Some(item) = ledger.ordered
         && ledger.bought_on < ledger.visits
         && awake
-        && let Some((prop, flap)) = home.doorstep(buf, &view.nooks, &shown, &blocked, &stands, item)
+        && let Some((prop, flap)) = home.doorstep(buf, &view.nooks, &shown, &blocked, &seats, item)
         && home.add(prop)
     {
         tracing::info!(?item, strip = ?prop.strip, "houseguest: a parcel arrived");
@@ -3172,14 +3200,8 @@ fn furnish(
             .props
             .iter()
             .any(|p| p.item == Furniture::Tv && !p.boxed)
-        && let Some((prop, flap)) = home.doorstep(
-            buf,
-            &view.nooks,
-            &shown,
-            &blocked,
-            &stands,
-            Furniture::Clock,
-        )
+        && let Some((prop, flap)) =
+            home.doorstep(buf, &view.nooks, &shown, &blocked, &seats, Furniture::Clock)
         && home.add(prop)
     {
         tracing::info!(strip = ?prop.strip, "houseguest: her wall clock arrived");
@@ -3518,8 +3540,9 @@ fn seats_of(piece: &Shown, shown: &[Shown], terrain: &Terrain, cat: bool) -> Vec
 }
 
 /// Whether she could be seated at `(x, y)` to use something: where she
-/// may stay, on a floor she stands on. (A parcel comes in only where
-/// this holds of its unpack spot: [`room::Home::doorstep`].)
+/// may stay, on a floor she stands on. (A parcel comes in only where her
+/// seats hold, this among them, of its box and of the piece, on the room
+/// with it in: [`room::Home::doorstep`], asked by `furnish`.)
 fn seat_spot(terrain: &Terrain, x: i32, y: i32) -> bool {
     terrain.restful(x, y) && terrain.platform_at(x, y).is_some()
 }
@@ -3621,19 +3644,10 @@ fn tend_made(visit: &mut Visit, buf: &Buffer, protected: &[Rect], size: (u16, u1
     let resized = visit.size != size;
     let real = visit.shown.clone();
     let moved: std::collections::HashSet<(u16, u16)> = visit.layer.cells().collect();
-    let clear = |x: i32, y: i32| {
-        let (Ok(ux), Ok(uy)) = (u16::try_from(x), u16::try_from(y)) else {
-            return false;
-        };
-        !moved.contains(&(ux, uy))
-            && !protected.iter().any(|r| r.contains((ux, uy).into()))
-            && clear_of_real(&real, x, y)
-    };
     let mut gone = Vec::new();
     let layer = &visit.layer;
     visit.made.retain(|made| {
-        let stands =
-            !resized && layer.torn_intact(&made.torn) && room::fits(buf, &made.piece, &clear);
+        let stands = !resized && made_stands(made, layer, buf, &real, &moved, protected);
         if !stands {
             gone.push((made.torn.clone(), made.used, made.mine(), made.piece.item));
         }
@@ -3665,6 +3679,30 @@ fn tend_made(visit: &mut Visit, buf: &Buffer, protected: &[Rect], size: (u16, u1
             }
         }
     }
+}
+
+/// Whether the makeshift piece `made` still stands among the real pieces
+/// `real`: every glyph torn off for it still torn off, and it still fits
+/// where she made it, clear of them, of `moved` text and of anything
+/// `protected` (see [`tend_made`]; a delivery asks it of the room it
+/// would make).
+fn made_stands(
+    made: &Made,
+    layer: &layer::TextLayer,
+    buf: &Buffer,
+    real: &[Shown],
+    moved: &std::collections::HashSet<(u16, u16)>,
+    protected: &[Rect],
+) -> bool {
+    let clear = |x: i32, y: i32| {
+        let (Ok(ux), Ok(uy)) = (u16::try_from(x), u16::try_from(y)) else {
+            return false;
+        };
+        !moved.contains(&(ux, uy))
+            && !protected.iter().any(|r| r.contains((ux, uy).into()))
+            && clear_of_real(real, x, y)
+    };
+    layer.torn_intact(&made.torn) && room::fits(buf, &made.piece, &clear)
 }
 
 /// A makeshift piece `piece` of the glyphs just torn off `row` at

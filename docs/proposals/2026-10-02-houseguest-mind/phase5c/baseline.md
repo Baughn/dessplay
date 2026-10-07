@@ -1141,6 +1141,8 @@ Nothing tuned moved: `TUNED` and every number above stand, the goldens are byte-
 - **The stage's spread** (1.39): spacing out for its own sake weighs the same in every mood and fills an
   industrious stage afternoon most (14%); a mood factor on it is the lead.
 - **`a_sofa_she_could_not_unpack`** (ignored): a random case of the parcel property, older than step 8c.
+  Fixed in step 12d (folded into `parcels_she_could_not_unpack`): present since the rule came in
+  (78c53d98, 5b), which judged the unpack spot before the box stood there.
 
 ## Step 12a: the held TV picture (2026-10-07)
 

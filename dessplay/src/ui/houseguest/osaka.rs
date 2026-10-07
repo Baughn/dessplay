@@ -2153,6 +2153,10 @@ pub(super) struct Osaka {
     /// Every choice she made (tests read it).
     #[cfg(test)]
     pub choices: Vec<Want>,
+    /// Every want she chose and then found no way to after all (tests
+    /// read it).
+    #[cfg(test)]
+    pub stranded: Vec<Want>,
     /// Every factor her choices weighed a want by (the chat's, her
     /// day's, the season's; not her inertia), with whether it would have
     /// taken her into the chat (tests read it).
@@ -2475,6 +2479,8 @@ impl Osaka {
             log: std::collections::VecDeque::new(),
             #[cfg(test)]
             choices: Vec::new(),
+            #[cfg(test)]
+            stranded: Vec::new(),
             #[cfg(test)]
             factored: Vec::new(),
             #[cfg(test)]
@@ -7557,6 +7563,8 @@ impl Osaka {
                 };
             }
             tracing::debug!(?want, "houseguest: couldn't after all");
+            #[cfg(test)]
+            self.stranded.push(want);
         }
         self.set(Act::Stand { until: at + 2000 }, at);
         Decision {

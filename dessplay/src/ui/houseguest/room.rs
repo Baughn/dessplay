@@ -1499,9 +1499,16 @@ impl Home {
     /// chose where it stands). The pieces already on
     /// that strip make way, packed in order, but only where every one of
     /// them that shows still fits, its box fits on blank, free cells, she
-    /// can unpack it (`stands`: she may stay at its unpack spot, on a
-    /// floor she can stand on, as for any seat of hers; her box may take
-    /// in the wall's line), and she'd fit to use the piece. A piece that
+    /// can unpack it, and she'd fit to use the piece. Both are asked of
+    /// `seats` (her seats at a piece, among the pieces shown: see
+    /// `seats_of`), each on the whole room as it would show (the pieces
+    /// that made way where they'd be): with the box standing there, an
+    /// `Unpack` seat; with the piece out of its box, a seat for each way
+    /// she uses it that asks room (see [`Use::asks_room`]), and to look
+    /// out of a window first coming in where she could. So it's judged
+    /// as her seats will be once it's there: in line art the image she'd
+    /// be drawn in takes in the box (or the piece) and whatever it meets;
+    /// in either mode she stands on a floor. A piece that
     /// hangs must fit both ways: boxed, standing on the floor to be
     /// unpacked, and hung on the wall above. A window comes in first
     /// through a wall where she could stand to look out of it (not over
@@ -1513,7 +1520,7 @@ impl Home {
         nooks: &[(Nook, Rect)],
         shown: &[Shown],
         blocked: &dyn Fn(i32, i32) -> bool,
-        stands: &dyn Fn(i32, i32) -> bool,
+        seats: &dyn Fn(&Shown, &[Shown]) -> Vec<Seat>,
         item: Furniture,
     ) -> Option<(Prop, Flap)> {
         let screen = buf.area;
@@ -1559,12 +1566,32 @@ impl Home {
                 ..prop
             };
             let at = self.admits(buf, shown, blocked, e, parcel, Room::None)?;
-            let unpack = at.seat(Use::Unpack, 0);
-            if !stands(unpack.x, unpack.y) {
-                return None;
-            }
             let room = if look { Room::ToLook } else { Room::ToUse };
             self.admits(buf, shown, blocked, e, prop, room)?;
+            // The room as it will show with the box in it, then with the
+            // piece out of it: her seats there are judged on each.
+            let offers = |prop: Prop, wants: &[Use]| {
+                let mut with = self.clone();
+                with.props.push(prop);
+                let after = with.project(buf, nooks, blocked);
+                let Some(piece) = after.iter().find(|s| s.item == item) else {
+                    return false;
+                };
+                let seats = seats(piece, &after);
+                wants
+                    .iter()
+                    .all(|&what| seats.iter().any(|seat| seat.what == what))
+            };
+            let uses: Vec<Use> = item
+                .spec()
+                .uses
+                .iter()
+                .copied()
+                .filter(|&what| what.asks_room() || look && what == Use::LookOut)
+                .collect();
+            if !offers(parcel, &[Use::Unpack]) || !offers(prop, &uses) {
+                return None;
+            }
             let x = match side {
                 Side::Left => e.from - 1,
                 Side::Right => e.to,
@@ -1835,6 +1862,21 @@ pub(super) fn fits(buf: &Buffer, at: &Shown, clear: &dyn Fn(i32, i32) -> bool) -
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    /// Her seats at `piece` (every way she'd use it) as if she could stand
+    /// anywhere: for a doorstep that judges only the room's cells.
+    fn anywhere(piece: &Shown, _: &[Shown]) -> Vec<Seat> {
+        piece
+            .uses()
+            .iter()
+            .map(|&what| piece.seat(what, piece.beside()[0]))
+            .collect()
+    }
+
+    /// Her seats at `piece` as if she could stand nowhere.
+    fn nowhere(_: &Shown, _: &[Shown]) -> Vec<Seat> {
+        Vec::new()
+    }
 
     #[test]
     fn every_ascii_drawing_fills_its_footprint_exactly() {
@@ -2835,7 +2877,7 @@ mod tests {
             let mut projected = room.clone();
             let shown = projected.project(&clean, &nooks, &|_, _| false);
             projected
-                .doorstep(&clean, &nooks, &shown, &|_, _| false, &|_, _| true, item)
+                .doorstep(&clean, &nooks, &shown, &|_, _| false, &anywhere, item)
                 .map(|(prop, _)| prop.anchor.map_or(Side::Left, |a| a.side))
         };
         // Her window against the right wall (the first a delivery
@@ -2883,7 +2925,7 @@ mod tests {
                 &nooks,
                 &shown,
                 &|_, _| false,
-                &|_, _| true,
+                &anywhere,
                 Furniture::Poster,
             )
             .expect("room for it");
@@ -2899,7 +2941,17 @@ mod tests {
                 &nooks,
                 &shown,
                 &|_, _| false,
-                &|x, _| x != 27,
+                &|piece, _| {
+                    let unpack = piece.seat(Use::Unpack, 0);
+                    match unpack.x != 27 || !piece.boxed {
+                        true => piece
+                            .uses()
+                            .iter()
+                            .map(|&what| piece.seat(what, 0))
+                            .collect(),
+                        false => Vec::new(),
+                    }
+                },
                 Furniture::Poster,
             )
             .expect("the other wall");
@@ -2910,7 +2962,7 @@ mod tests {
                 &nooks,
                 &shown,
                 &|_, _| false,
-                &|_, _| false,
+                &nowhere,
                 Furniture::Poster
             ),
             None
@@ -2925,7 +2977,7 @@ mod tests {
                 &nooks,
                 &shown,
                 &|_, _| false,
-                &|_, _| true,
+                &anywhere,
                 Furniture::Poster,
             )
             .expect("the other wall");
@@ -2938,7 +2990,7 @@ mod tests {
                 &nooks,
                 &shown,
                 &|_, _| false,
-                &|_, _| true,
+                &anywhere,
                 Furniture::Poster
             ),
             None
@@ -2953,7 +3005,7 @@ mod tests {
                 &nooks,
                 &shown,
                 &|_, _| false,
-                &|_, _| true,
+                &anywhere,
                 Furniture::Poster
             ),
             None
@@ -2968,7 +3020,7 @@ mod tests {
                 &low_nooks,
                 &shown,
                 &|_, _| false,
-                &|_, _| true,
+                &anywhere,
                 Furniture::Poster
             ),
             None
@@ -2980,7 +3032,7 @@ mod tests {
                     &low_nooks,
                     &shown,
                     &|_, _| false,
-                    &|_, _| true,
+                    &anywhere,
                     Furniture::Plant
                 )
                 .is_some(),
@@ -3037,7 +3089,7 @@ mod tests {
                 &nooks,
                 &shown,
                 &|_, _| false,
-                &|_, _| true,
+                &anywhere,
                 Furniture::Window,
             );
             assert_eq!(

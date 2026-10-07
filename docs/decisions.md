@@ -4678,6 +4678,72 @@ still comes when the file is written, so every `screenshot-to-file`
 (commentary's too) goes out async. A real `--vo=gpu` with hardware
 decoding may differ; the session logs each frame's time at trace.
 
+## Where she unpacks a parcel is judged with it there (2026-10-07)
+
+**Rule:** A delivery comes in only where her seats' own test
+(`seats_of`) offers an `Unpack` seat at the box, on the room as it will
+show with the box in it, and a seat for every use of the piece that
+asks room (and to look out of a window, where it first tries that), on
+the room as it will show with the piece out of its box: in each, the
+pieces that made way where they'd be, and what she made that it leaves
+standing (judged as `tend_made` will judge it: one predicate,
+`made_stands`). It's asked of this frame's terrain, read once when a
+delivery first asks. The wall clock's gift goes through the same door.
+See [design.md](design.md#houseguest).
+
+**Why:** a random case of the parcel property
+(`every_parcel_on_her_doorstep_gets_unpacked`, seed 0, found in 5c
+step 8c, kept ignored since): in line art a sofa came in beside her TV
+on The List's floor and was never unpacked. The doorstep asked "can
+she stay at its unpack spot?" of the terrain as it stood *before* the
+box: but in line art the image she's drawn in takes in every piece it
+meets, so once the box stood there her image at that spot took in the
+box, then through it the TV, then the letter above the TV, and she
+couldn't stay; the visit offered no `Unpack` seat. The same judgement
+of a room without the piece in it had been fixed for makeshift pieces
+already (`builds` judges where she'd crumple and use one with it in
+her image). It was there from the rule's start (78c53d98, 5b: the case
+fails there, the first commit with the rule and its test), not a 5c
+regression. ASCII is immune (pieces are no part of where she may stay
+there); the TV's parcel, every piece sold and her clock all come by
+the doorstep, the stage's `give` places a piece out of its box (no
+unpacking, stage-only), and later changes of the frame (text she
+moves, a resize) can still take the seat away after it's delivered, as
+for any seat, which the rule doesn't promise against.
+
+The review of that fix found its sibling: room *to use* the piece was
+still asked of the frame's cells alone (`roomy`), not as her seats are
+(in either mode, a floor under her; in line art, her image clear of
+text). The widened property (out of its box, nothing moved since it
+came, a seat for every use that asks room) found a desk at The List's
+wall with a letter in the floor at its stool, in ASCII: she could
+unpack it, never sit at it. Both are now asked of `seats_of` (`roomy`
+still holds too: the piece fits with her clear of the other pieces).
+The unpack check now accepts any of her `Unpack` spots, as the visit
+does (it had asked only spot 0). The doorstep had also judged on the
+visit's terrain, which is last frame's (read after `furnish`), on a
+resize a grid of another size; it reads this frame's now. And what she
+made that a delivery leaves standing was approximated by "its cover
+meets no piece"; it's now `tend_made`'s own test. The property's owned
+pieces now range over every kind (hung decor too), and the cases it
+found are named in `parcels_she_could_not_unpack`.
+
+The review also turned up a wall clock delivered beside her sofa, in
+ASCII, with a seat to unpack it from all along, still boxed ten minutes
+on: not this class. Unpacking it was the top of her offers at every
+choice (61.7, 65.3, 20.0, 46.7) and she rolled something else four
+times, phase 5c's lingering leaving few choices in ten minutes. Her
+strongest wish is not a certain one (she rolls among the top few:
+brain.rs), so the property's ten-minute deadline was a deadline over a
+roll. It now checks what is promised: while it's boxed and nothing has
+moved, every choice she makes has unpacking on offer (bound), and
+chosen, she finds a way there; once she sets about it, it's out of its
+box within two minutes; and she hasn't passed it over 14 choices
+running (the case runs on to 50 minutes for that; over 2000 cases the
+count fell off by about 0.35 a choice, none past six, so by luck alone
+one case in some hundred thousand). The case is named,
+`a_clock_she_passed_over`.
+
 ## A moved wide glyph rains whole (2026-10-07)
 
 **Rule:** In the goodbye rain (and a focused pane's), a wide glyph she

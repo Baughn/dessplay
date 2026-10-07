@@ -24,6 +24,9 @@ Add new days at the top. Add new entries at the bottom of existing days.
   about once a minute while she watches.
 - Fixed: when Osaka leaves, wide characters (Japanese, Chinese) she had
   moved no longer show garbled or half-drawn as they rain back into place.
+- Fixed: a parcel no longer arrives where Osaka can't get at it to
+  unpack it, sitting boxed by her TV, or where she could unpack it but
+  never use it (a desk she can't sit at).
 
 ## 2026-10-06
 
