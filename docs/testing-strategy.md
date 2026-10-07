@@ -829,19 +829,31 @@ change then, not at her next wake.
 `the_golden_driver_steps_to_every_event` and
 `the_golden_driver_paints_at_every_event` hold it to that. (The cut
 landed as one deliberate re-record in phase 5c step 8c, alone; the paint
-as another in step 12c.) It is not the client in three ways, each left
-so the goldens don't move for the harness alone: within a moment it
-tells her of a key press (`activity`) and cues the stage before it
-advances her, where the shell advances her at the dequeue first, then
-handles the input, then draws (the drawn stillness test's driver
-advances first, as the shell does, so the two drivers disagree on that
-order); it doesn't paint at the shell's ~10 Hz snapshot redraws during
-playback (the errand scenes play), only at events, cues and her wakes;
-and so the effects a paint has on her (`Guest::paint`: she observes
-the view, a nudge falls due, an errand's progress is read) come at
-those paints alone. The property tests' drivers (`tests.rs`)
-still deliver at the first step past a time; they check invariants on
-every frame at drawn times and measure nothing across builds.
+as another in step 12c.) Within a moment it keeps the shell's order: it
+advances her to the moment first, then tells her of a key press
+(`activity`), then paints, so what fell due by then happened before
+the input came; the drawn stillness test's driver, and the property
+drivers that press keys (`a_resident_keeps_out_of_the_focused_pane`,
+`errands_end_and_touch_only_the_accordion`), keep the same order. It
+cues the stage (`cue`) in that order too, by convention rather than to
+match a client: the shell has no cues, and the stage cues on a key
+while her clock still stands at its last draw, so a cue on the very
+moment something falls due is a tie there.
+`the_golden_driver_advances_her_before_input_like_the_shell` holds it
+to that, at the two moments where the order shows (a key press as
+school ends: her coming home was already asked, A6; a cue as she goes
+out by her door: advanced first, it finds her gone). (Changed in phase 5c's tail, T1,
+test-only: no golden moved, since no scene has a press or a cue on
+such a moment.) It is not the client in one way, left so the goldens
+don't move for the harness alone: it doesn't paint at the shell's
+~10 Hz snapshot redraws during playback (the errand scenes play), only
+at events, cues and her wakes (a cadence the session sets while mpv
+reports, not one of hers); so the effects a paint has on her
+(`Guest::paint`: she observes the view, a nudge falls due, an errand's
+progress is read) come at those paints alone. The property tests' drivers (`tests.rs`)
+still deliver at the first step past a time (not cut at it); they check
+invariants on every frame at drawn times and measure nothing across
+builds.
 
 The sofa census (`sofa_census`, ignored; run with `--release --ignored
 --nocapture`) is the migration's checkpoint bench: what became of every

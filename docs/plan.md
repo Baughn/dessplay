@@ -3224,9 +3224,10 @@ mood (22–30% before 5c, at 4–6 set-offs a minute), 11–26% in the home and
 - **The film refreshes about once a minute** (the user's Q2), overriding
   D7's critique's "never swapped mid-watch"; a picture swap cuts straight
   in with no static.
-- **The golden driver's order within a moment** (it tells her of a key
-  press before it advances her, where the shell advances first) is
-  documented, not changed (testing-strategy.md).
+- **The golden driver's order within a moment** now keeps the shell's
+  (T1, test-only: it advances her before it tells her of a key press,
+  and cues the stage in that order by convention; no golden moved); the ~10 Hz snapshot redraws during
+  playback stay unmodelled (testing-strategy.md).
 
 **The user's decisions this phase** (beyond the brief's):
 - **Art** (two review rounds, 2026-10-05): approved the paper desk

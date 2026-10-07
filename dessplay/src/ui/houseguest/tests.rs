@@ -6915,6 +6915,9 @@ proptest! {
                 .map_or(until - now, |d| d.as_millis() as u64)
                 .clamp(1, 1000.min(until - now));
             now += step;
+            // The shell's order: advance her to the moment, then tell her
+            // of the input there (the golden driver's, `drive`).
+            guest.advance(now);
             if presses.iter().any(|&p| p <= now && p > now - step) {
                 guest.activity(now);
             }
@@ -6946,7 +6949,6 @@ proptest! {
                 });
             }
             let view = resident_view(w, h, focus);
-            guest.advance(now);
             let frame = paint(&mut guest, &real, &view, now);
             assert_untouched(&frame, &real, &base)?;
             arrived |= guest.present();
@@ -7305,12 +7307,14 @@ proptest! {
             now += step;
             paints += 1;
             prop_assert!(paints < 20_000, "busy at {}: {:?} errand={} next={:?}", now, guest.nudge, guest.errand.is_some(), guest.next_tick(now));
+            // The shell's order: advance her to the moment, then tell her
+            // of the input there (the golden driver's, `drive`).
+            guest.advance(now);
             if presses.iter().any(|&p| p <= now && p > now - step) {
                 guest.activity(now);
             }
             let unseen = arrivals.iter().filter(|&&a| a <= now).count();
             let (real, accordion, view) = view_at(unseen);
-            guest.advance(now);
             let frame = paint(&mut guest, &real, &view, now);
             let others: Vec<Rect> = view
                 .protected

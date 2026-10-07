@@ -127,13 +127,22 @@ fn times(seed: u64, n: u64, from: u64, (lo, hi): (u64, u64)) -> Vec<u64> {
 /// not at her next wake. The census drivers do the same
 /// (`census::Room::step_from`).
 ///
-/// It isn't the client in three ways (docs/testing-strategy.md, the
-/// golden driver): it calls [`Guest::activity`] and [`Guest::cue`]
-/// before [`Guest::advance`] within a moment, where the shell advances
-/// her first, then handles the input, then draws; it doesn't paint at
-/// the shell's ~10 Hz snapshot redraws during playback; and so what a
-/// paint does to her ([`Guest::paint`]: observing, a nudge falling due,
-/// an errand's progress) comes only at the paints it makes.
+/// Within a moment it keeps the shell's order (`ui::shell`'s loop):
+/// [`Guest::advance`] to the moment first, then [`Guest::activity`] for
+/// a key press there, then the paint, so what fell due by that moment
+/// happened before the input came
+/// (`the_golden_driver_advances_her_before_input_like_the_shell`). A
+/// [`Guest::cue`] keeps the same order by convention, not to match a
+/// client: the shell has no cues, and the stage (`examples/houseguest.rs`)
+/// cues on a key while her clock still stands at its last draw, so a cue
+/// on the very moment something falls due is a tie there, either order.
+///
+/// It isn't the client in one way (docs/testing-strategy.md, the golden
+/// driver): it doesn't paint at the shell's ~10 Hz snapshot redraws
+/// during playback (the errand scenes play), a cadence the session sets,
+/// not she; so what a paint does to her ([`Guest::paint`]: observing, a
+/// nudge falling due, an errand's progress) comes only at the paints it
+/// makes.
 fn drive(
     guest: &mut Guest,
     trace: &mut Trace,
@@ -154,6 +163,7 @@ fn drive(
         let step = step_to(now, tick, cues, events);
         now += step;
         let (real, view, input) = world(now, step);
+        let advanced = guest.advance(now);
         if input {
             guest.activity(now);
         }
@@ -164,7 +174,7 @@ fn drive(
         // The client draws after every input: each event is one (a chat
         // line, text arriving, a key press, a focus change).
         let event = events.iter().any(|times| times.contains(&now));
-        if guest.advance(now) || input || event || cue.is_some() {
+        if advanced || input || event || cue.is_some() {
             let frame = paint(guest, &real, &view, now);
             trace.frame(guest, &frame, &real, now);
         }
@@ -757,6 +767,116 @@ fn the_golden_driver_paints_at_every_event() {
                     "{at}: no paint at the event at {t} ms"
                 );
             }
+        }
+    }
+}
+
+/// A traced run of `drive` on Tuesday from `h:m`, a visitor on
+/// [`home_screen`] with [`home_at`]'s home, the client idle but for a key
+/// press at each of `presses`, and the stage's `cues`, to `until`.
+/// Returns her, and her painted frames as `(ms, what she is)`.
+fn tuesday_run(
+    seed: u64,
+    graphics: bool,
+    (h, m): (u16, u16),
+    until: u64,
+    presses: &[u64],
+    cues: &[(u64, Scene)],
+) -> (Guest, Vec<(u64, String)>) {
+    let (real, view) = home_screen();
+    let mut guest = home_at(seed, routine::GameTime { day: 1, h, m }, graphics);
+    let mut trace = Trace {
+        hash: Fnv::new(),
+        lines: Some(Vec::new()),
+    };
+    drive(
+        &mut guest,
+        &mut trace,
+        until,
+        cues,
+        &[presses],
+        |now, step| {
+            (
+                real.clone(),
+                view.clone(),
+                arrived_within(presses, now, step),
+            )
+        },
+    );
+    let frames = trace
+        .lines
+        .expect("traced")
+        .iter()
+        .map(|line| {
+            let mut words = line.split(' ');
+            let at = words.next().unwrap().parse().unwrap();
+            (at, words.next().unwrap().to_owned())
+        })
+        .collect();
+    (guest, frames)
+}
+
+/// Whether a traced frame shows her not here: her empty home, nothing, or
+/// her rain.
+fn not_here(what: &str) -> bool {
+    matches!(what, "away" | "absent" | "leaving")
+}
+
+/// The golden driver advances her to a moment before it tells her of a
+/// key press there, as the shell does (`ui::shell`'s loop advances her
+/// as it takes each input, then handles it, then draws): what fell due
+/// by that moment happened before the input came. It cues the stage in
+/// the same order, by convention (the stage cues on a key while her
+/// clock stands at its last draw, a tie at the very moment; see
+/// [`drive`]). In both modes, a visitor:
+/// - at the very moment school ends (12:45), out and the client idle
+///   until then: her coming home is asked as it falls due, so a key
+///   press at that moment finds her on her way and doesn't call it off
+///   (A6: input since doesn't), where told first she'd have found the
+///   client busy and her empty home rained out;
+/// - at the very moment she goes out through her door for school
+///   (08:15): a cue there, advanced first, finds her gone and brings her
+///   in; cued first, it went to the visit ending under it.
+#[test]
+fn the_golden_driver_advances_her_before_input_like_the_shell() {
+    for graphics in [false, true] {
+        for seed in 0..2u64 {
+            let at = format!("graphics={graphics} seed={seed}");
+            // As school ends, from a run with no input: her first frame
+            // here after her empty home.
+            let (_, frames) = tuesday_run(seed, graphics, (12, 40), 120_000, &[], &[]);
+            assert!(
+                frames.iter().any(|(_, what)| what == "away"),
+                "{at}: her home stood empty at school"
+            );
+            let home = frames
+                .iter()
+                .skip_while(|(_, what)| what != "away")
+                .find(|(_, what)| !not_here(what))
+                .unwrap_or_else(|| panic!("{at}: she came home from school"))
+                .0;
+            let (_, pressed) = tuesday_run(seed, graphics, (12, 40), home, &[home], &[]);
+            let last = pressed.last().expect("painted");
+            assert!(
+                last.0 == home && !not_here(&last.1),
+                "{at}: a key press as school ends at {home} ms calls off her coming home: {last:?}"
+            );
+            // As she goes out for school, from a run with no input: her
+            // first frame not here after one of her here.
+            let (_, frames) = tuesday_run(seed, graphics, (8, 10), 120_000, &[], &[]);
+            let gone = frames
+                .iter()
+                .skip_while(|(_, what)| not_here(what))
+                .find(|(_, what)| not_here(what))
+                .unwrap_or_else(|| panic!("{at}: she went out for school"))
+                .0;
+            let cue = [(gone, Scene::Sneeze)];
+            let (_, cued) = tuesday_run(seed, graphics, (8, 10), gone, &[], &cue);
+            let last = cued.last().expect("painted");
+            assert!(
+                last.0 == gone && !not_here(&last.1),
+                "{at}: a cue as she goes out at {gone} ms, advanced first, doesn't find her gone: {last:?}"
+            );
         }
     }
 }

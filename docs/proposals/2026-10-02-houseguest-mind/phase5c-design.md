@@ -677,8 +677,9 @@ that her trace is unchanged).
     `no_long_act_flips_drawn_cells_faster_than_a_frame_by_her_clock`, ignored with those numbers.
   - *The golden driver's order within a moment.* It tells her of a key press and cues the stage
     before it advances her, where the shell advances her first; it paints at no ~10 Hz snapshot
-    redraw during playback. Documented (`drive`, testing-strategy.md), not changed: changing it is
-    a golden re-record for the harness alone.
+    redraw during playback. **Resolved (T1, 2026-10-07):** the driver advances her first, as the
+    shell does (`the_golden_driver_advances_her_before_input_like_the_shell`); no golden moved.
+    The snapshot redraws stay unmodelled.
 - Measured: [phase5c/baseline.md](phase5c/baseline.md), "Step 12c".
 
 ## Implemented (2026-10-07)

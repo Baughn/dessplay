@@ -4409,6 +4409,24 @@ the band, the day census) and the film tests' at every line. One
 re-record, and every chat cell re-measured (phase5c/baseline.md, "Step
 12c").
 
+**Why the golden driver advances her before it tells her of input (phase
+5c's tail, T1, 2026-10-07; test-only):** the shell advances her as it
+takes each input, then handles it, then draws, so whatever fell due by
+a moment has happened when a key press comes then. The driver had told
+her of a key press first, so a key press the moment school ends found
+the client busy (her coming home is asked once, as it's due, A6). Its
+cues follow the same order by convention, not to match a client: the
+shell has no cues, and the stage cues on a key while her clock stands
+at its last draw, so a cue on the very moment something falls due (she
+goes out by her door) is a tie there; advanced first, it finds her gone
+and brings her in. The two property drivers that press keys
+(`a_resident_keeps_out_of_the_focused_pane`,
+`errands_end_and_touch_only_the_accordion`) took the same order. Neither
+moment comes up in a golden scene, so no hash moved;
+the ~10 Hz snapshot redraws during playback stay unmodelled (a cadence
+the session sets, not hers; modelling it would multiply the errand
+scenes' paints tenfold and move them for the harness alone).
+
 **Why watching is longer though it doesn't linger (32–82 s, was 20–45):**
 step 8's lengths, which 8b's run c3 carried and the user shipped,
 lengthen every still use alike, watching with them, so a visit's share
