@@ -296,19 +296,31 @@ on PATH). Nextest runs tests from all ~50 test binaries in parallel —
 plain `cargo test` runs the binaries serially, which cost ~24s wall on a
 warm cache vs ~4s under nextest (measured 2026-08-31, 32 cores).
 
-`.config/nextest.toml` defines two profiles:
+`.config/nextest.toml` defines four profiles:
 
 - **default** (the gate): excludes the `perf.rs` wall-clock regression
   tests via `default-filter` (they only assert in release builds — in a
   debug gate they cost ~4s and verify nothing) and flags any test slower
   than 30s as SLOW, killing it at 60s. A SLOW flag usually means an
-  accidental real (non-paused) sleep. A test that legitimately takes
-  longer at a deep pass's case count gets a named `overrides` entry
-  with its reason (today `every_made_piece_is_used_or_let_go`: ~50 s
-  at 256 cases in release, killed at 120 s).
+  accidental real (non-paused) sleep. A property test whose cost grows
+  with its case count is not an exception here: a deep pass runs under
+  **deep** instead. Any other test that legitimately takes longer gets a
+  named `overrides` entry with its reason (none today).
+- **deep**: a deep property pass, `PROPTEST_CASES=256 cargo nextest run
+  --release --profile deep -p dessplay houseguest`, flagging at 90s and
+  killing at 180s. At 256 cases the houseguest's whole-visit properties
+  outrun the gate's limits (phase 5c's step 13: `her_film_never_moves_her`
+  ~72 s alone and 81 s in the pass, killed at 60 s under the default
+  profile; `a_trial_keeps_every_promise` ~52 s;
+  `every_made_piece_is_used_or_let_go` ~48 s; four more at 30–37 s),
+  while at the gate's 32 they take ~21–28 s, so the gate keeps its
+  30/60s sensitivity.
 - **full**: includes release perf tests:
   `cargo nextest run --profile full --release`. Ignored tests still require
   explicit `--run-ignored` selection.
+- **band**: the houseguest's stillness band at full strength, minutes a
+  test, killed at 20 minutes (the **stillness band**, under "Golden
+  Trajectories (houseguest)" below).
 
 Nextest does not run doctests; the workspace has none — add a
 `cargo test --doc` step to the hook if that changes.

@@ -1,5 +1,6 @@
 # Nextest configuration. The default profile is the stop-hook / dev gate;
 # `--profile full` (or --ignore-default-filter) includes perf tests.
+# `--profile deep` gives a deep property pass (PROPTEST_CASES=256) its longer kill.
 # `--profile band` gives the houseguest's full-strength stillness band minutes a test.
 # Ignored OS/socket tests still require explicit --run-ignored selection.
 
@@ -11,22 +12,29 @@
 default-filter = "not binary(perf)"
 # No test legitimately takes >30s (paused-time tokio; worst real-time test
 # ~4s): flag anything slower as SLOW — usually an accidental real sleep —
-# and kill it at 60s so the blocking gate is bounded. The exceptions are
-# overridden below, by name, each with its reason.
+# and kill it at 60s so the blocking gate is bounded. A property test's
+# cost scales with PROPTEST_CASES; a deep pass runs under `--profile deep`
+# rather than raising this profile's limits. Any other exception gets a
+# named override here, with its reason.
 slow-timeout = { period = "30s", terminate-after = 2 }
-
-# The houseguest's made-piece property simulates a 1.5-minute-plus visit
-# per case: ~13 s at the gate's 32 cases, but ~50 s at the deep pass's
-# 256 (PROPTEST_CASES=256, release), which a loaded machine pushed past
-# the 60 s kill. Kill it at 120 s instead.
-[[profile.default.overrides]]
-filter = 'test(every_made_piece_is_used_or_let_go)'
-slow-timeout = { period = "60s", terminate-after = 2 }
 
 [profile.full]
 # Include perf regression tests; ignored tests still need --run-ignored.
 default-filter = "all()"
 slow-timeout = { period = "60s", terminate-after = 2 }
+
+[profile.deep]
+# A deep property pass: PROPTEST_CASES=256, release, e.g.
+#   PROPTEST_CASES=256 cargo nextest run --release --profile deep -p dessplay houseguest
+# Every property test's cost scales with its case count, eight times the
+# gate's 32. The houseguest's whole-visit properties take ~21-28 s at the
+# gate (dev, full load) but up to ~72 s alone at 256, ~81 s in the full
+# pass (phase 5c step 13: her_film_never_moves_her 81 s,
+# a_trial_keeps_every_promise 52 s, every_made_piece_is_used_or_let_go
+# 48 s, four more at 30-37 s): the film's property is past the default
+# 60 s kill even alone, and the rest one loaded machine from it. Flag at 90 s, kill at 180 s, for every test the pass runs, so
+# the gate keeps its 30/60 s sensitivity.
+slow-timeout = { period = "90s", terminate-after = 2 }
 
 [profile.band]
 # The houseguest's stillness band at full strength (tests/band.rs:
@@ -34,8 +42,9 @@ slow-timeout = { period = "60s", terminate-after = 2 }
 # the largest N a band or spread line prints. Kill at 20 min. Under the
 # per-mood rule a stage cell aimed just over its floor may need thousands
 # of visits (phase5c/baseline.md, step 8b: N ~ 6800 for one), which no
-# run finishes inside this limit. Step 8c's full strength (N = 525, the
-# 17-minute visits) took about 15 minutes a band test; run a spread test
+# run finishes inside this limit. Full strength at N = 525 (the 17-minute
+# visits) took 4.5-10.5 minutes a band test at phase 5c's step 13 (16
+# threads; about 15 at step 8c); run a spread test
 # at its own line's N. At the gate's seeds the band tests run about 4 s
 # and keep the default 60 s.
 slow-timeout = { period = "300s", terminate-after = 4 }
