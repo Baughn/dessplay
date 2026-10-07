@@ -1,0 +1,113 @@
+<!-- Her front door, set in the wall at the screen's edge and seen
+     side-on (a model sheet for review, not yet wired in).
+
+     Frame 120 x 168: 6 x 4 cells at 20 x 42 units per cell (props.svg's
+     scale), the floor along the bottom edge. Parts are authored with the
+     wall's line at x = 70 (the middle of the wall column `to`), the room
+     to the left; `art.rs` shifts them 40 units right, so the frame's
+     columns are to-5 ..= to. Drawn for the right wall; mirrored for the
+     left. Rows: the door stands on the floor row f, up to f-4 (y 0).
+
+     Chosen (B): the door turned a little toward the viewer. Its front
+     post covers the wall's line (column to); its face, foreshortened, and
+     its back post show in to-1. The leaf hangs on the back post, so it
+     swings into the room and lies face-on, behind her, over to-3 ..= to-1.
+     The parcel flap is the leaf's lower half, hinged at its top.
+
+     The rejected candidate (A), for the sheet's comparison: the door
+     strictly edge-on, in the wall column alone. -->
+<defs>
+  <linearGradient id="wd-day" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="#8fd0f0"/>
+    <stop offset="0.75" stop-color="#d9f0f6"/>
+    <stop offset="1" stop-color="#fff1c4"/>
+  </linearGradient>
+
+  <!-- ===== A (rejected): edge-on, in the wall column ===== -->
+  <g id="wd-a-shut">
+    <rect x="62" y="10" width="15" height="152" fill="#e58db3" stroke="currentColor" stroke-width="2"/>
+    <rect x="64" y="12" width="3" height="148" fill="#f8c3da"/>
+    <rect x="55" y="77" width="8" height="3.5" fill="#b8962f" stroke="currentColor" stroke-width="1"/>
+    <circle cx="55" cy="78.8" r="4.4" fill="#e8c34a" stroke="currentColor" stroke-width="1.4"/>
+    <rect x="56" y="1" width="23" height="9" rx="1.5" fill="#f4a6c6" stroke="currentColor" stroke-width="2"/>
+    <rect x="54" y="162" width="25" height="6" rx="1" fill="#c69c6d" stroke="currentColor" stroke-width="1.8"/>
+  </g>
+
+  <!-- ===== B: the frame and what's beyond ===== -->
+
+  <!-- The frame: the back post (the jamb nearer the room's middle, the
+       leaf's hinge), the lintel across, the front post over the wall's
+       line, and a wooden threshold. Drawn last, over the leaf and her. -->
+  <g id="wd-frame">
+    <path d="M 42 8 L 72 1 L 79 1 L 79 9 L 47 15 L 47 164 L 42 164 Z" fill="#f4a6c6" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+    <rect x="70" y="5" width="9" height="159" fill="#f4a6c6" stroke="currentColor" stroke-width="2"/>
+    <rect x="41" y="162" width="38" height="6" rx="1" fill="#c69c6d" stroke="currentColor" stroke-width="1.8"/>
+  </g>
+  <!-- The front post alone: over her as she steps through the doorway. -->
+  <g id="wd-post">
+    <rect x="70" y="5" width="9" height="159" fill="#f4a6c6" stroke="currentColor" stroke-width="2"/>
+    <rect x="41" y="162" width="38" height="6" rx="1" fill="#c69c6d" stroke="currentColor" stroke-width="1.8"/>
+  </g>
+  <!-- Outside, through the empty doorway: daylight, a hedge. -->
+  <g id="wd-beyond">
+    <path d="M 46 15 L 70 9 L 70 162 L 46 162 Z" fill="url(#wd-day)"/>
+    <path d="M 46 162 L 46 148 C 54 143 62 142 70 144 L 70 162 Z" fill="#7fb07a"/>
+  </g>
+
+  <!-- ===== B: the leaf ===== -->
+
+  <!-- Shut: its face foreshortened, a panel above, the flap below, the
+       knob by its free (front) edge. -->
+  <g id="wd-shut">
+    <path d="M 46 15 L 70 9 L 70 162 L 46 162 Z" fill="#e58db3" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+    <path d="M 50 22 L 63 19 L 63 68 L 50 69 Z" fill="#f4a6c6" stroke="#b25c84" stroke-width="1.4"/>
+    <ellipse cx="66" cy="74" rx="2.6" ry="4" fill="#e8c34a" stroke="currentColor" stroke-width="1.2"/>
+  </g>
+  <!-- The flap, shut: the leaf's lower half, hinged along its top, a
+       brass pull near its foot. -->
+  <g id="wd-flap-shut">
+    <path d="M 49 83 L 66 81 L 66 159 L 49 159 Z" fill="#d77aa2" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+    <path d="M 51 86 L 64 84.5 L 64 88 L 51 89.5 Z" fill="#eaa2c3"/>
+    <rect x="54" y="148" width="8" height="4" rx="1" fill="#e8c34a" stroke="currentColor" stroke-width="1.1"/>
+  </g>
+  <!-- The flap's hole, open: daylight. (The flap itself, swung up into
+       the room by an angle, is drawn by `art.rs`: see `flap_plate`.) -->
+  <g id="wd-flap-hole">
+    <path d="M 49 83 L 66 81 L 66 159 L 49 159 Z" fill="url(#wd-day)" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+  </g>
+
+  <!-- Ajar: turned about 50 degrees on its back hinge (x = 46),
+       foreshortened, its free edge nearer (taller). -->
+  <g id="wd-ajar">
+    <path d="M 46 12 L 18 4 L 18 168 L 46 163 Z" fill="#e58db3" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+    <path d="M 42 20 L 22 14 L 22 68 L 42 69 Z" fill="#f4a6c6" stroke="#b25c84" stroke-width="1.3"/>
+    <path d="M 42 82 L 22 82 L 22 158 L 42 155 Z" fill="#d77aa2" stroke="currentColor" stroke-width="1.3"/>
+    <ellipse cx="21" cy="74" rx="2.4" ry="3.8" fill="#e8c34a" stroke="currentColor" stroke-width="1.1"/>
+  </g>
+  <!-- Open: face-on, swung flat against the back, over to-3 ..= to-1,
+       its knob at the far end. -->
+  <g id="wd-open">
+    <rect x="2" y="12" width="44" height="151" fill="#e58db3" stroke="currentColor" stroke-width="1.8"/>
+    <rect x="8" y="20" width="32" height="48" rx="3" fill="#f4a6c6" stroke="#b25c84" stroke-width="1.4"/>
+    <rect x="5" y="82" width="38" height="77" rx="2" fill="#d77aa2" stroke="currentColor" stroke-width="1.3"/>
+    <rect x="21" y="148" width="8" height="4" rx="1" fill="#e8c34a" stroke="currentColor" stroke-width="1.1"/>
+    <circle cx="6" cy="74" r="3.4" fill="#e8c34a" stroke="currentColor" stroke-width="1.2"/>
+  </g>
+
+  <!-- ===== While she's out ===== -->
+
+  <!-- Her house slippers, side by side on the floor before the door,
+       toes to the room (she stepped out of them into her shoes). -->
+  <g id="wd-slippers">
+    <rect x="16" y="161" width="30" height="6" rx="2.5" fill="#f3ead6" stroke="currentColor" stroke-width="1.6"/>
+    <path d="M 16 163 Q 16 153 26 153 Q 33 153 35 163 Z" fill="#c95b84" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+    <rect x="6" y="162" width="30" height="6" rx="2.5" fill="#f3ead6" stroke="currentColor" stroke-width="1.6"/>
+    <path d="M 6 164 Q 6 154 16 154 Q 23 154 25 164 Z" fill="#e46f97" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+  </g>
+  <!-- A little card hung on the knob: "out". -->
+  <g id="wd-tag">
+    <path d="M 66 76 L 62 85 M 66 76 L 69 85" fill="none" stroke="currentColor" stroke-width="1.1"/>
+    <rect x="57" y="84" width="15" height="17" rx="1.5" fill="#fff6e0" stroke="currentColor" stroke-width="1.4"/>
+    <path d="M 60.5 90 L 68.5 90 M 60.5 95 L 66.5 95" fill="none" stroke="#c0466a" stroke-width="2" stroke-linecap="round"/>
+  </g>
+</defs>

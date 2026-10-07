@@ -469,6 +469,20 @@ const DOOR: [[&str; 4]; 3] = [
     [" ___ ", "|*.*|", "|.*.|", "|___|"],
 ];
 
+/// Her front door side-on (a model sheet, not yet wired in): rows f-4
+/// ..= f-1 of columns to-3 ..= to at a right wall, the last column the
+/// wall's own (its border glyph painted over, as the flap is today);
+/// mirrored for a left wall (`mirror`, and `[`/`]`). Shut, the flap open
+/// (a parcel through it), ajar, open (the leaf face-on behind her, the
+/// doorway's daylight `.`). Spaces are left as they are.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(super) const WALL_DOOR: [[&str; 4]; 4] = [
+    ["  /|", "  o|", "  #|", "  #|"],
+    ["  /|", "  o|", " /.|", "  .|"],
+    [" \\.|", " |.|", " o.|", " |.|"],
+    ["[].|", "[].|", "o].|", "[].|"],
+];
+
 /// The door's cells (its drawn glyphs), relative to her anchor like
 /// [`SpriteCell`]s; `frame` 0 shut, 1 ajar, 2 open. The hinge is on the
 /// side she faces.
@@ -756,6 +770,26 @@ mod tests {
                     assert!(cell.glyph.is_ascii_graphic() || head_gap, "{pose:?}");
                 }
             }
+        }
+    }
+
+    /// Her front door's ASCII: pure ASCII, four columns wide, the wall's
+    /// column always painted (`|`); shut and with the flap open it keeps
+    /// to the two columns by the wall, plus the flap's one.
+    #[test]
+    fn the_wall_door_is_ascii_and_keeps_to_its_columns() {
+        for (i, rows) in WALL_DOOR.iter().enumerate() {
+            for row in rows {
+                assert_eq!(row.chars().count(), 4, "{i}: {row:?}");
+                assert!(row.chars().all(|c| c == ' ' || c.is_ascii_graphic()));
+                assert!(row.ends_with('|'), "{i}: {row:?}");
+            }
+            let used = rows
+                .iter()
+                .filter_map(|row| row.chars().position(|c| c != ' '))
+                .min();
+            let least = [2, 1, 1, 0][i];
+            assert_eq!(used, Some(least), "{i}");
         }
     }
 }
