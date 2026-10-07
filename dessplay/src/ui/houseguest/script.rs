@@ -207,6 +207,17 @@ impl Key {
     }
 }
 
+/// Where a key plays in a use (for tests telling keys apart): when
+/// its part (the prelude, the body or the coda) starts, its index in
+/// that part's keys, and whether it bobs ([`Posed::Bob`]).
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct KeyPlace {
+    pub part: u64,
+    pub index: usize,
+    pub bobs: bool,
+}
+
 /// Her pose, face and bubble.
 pub(super) type Look = (Pose, Face, Option<Bubble>);
 
@@ -1248,6 +1259,18 @@ impl Play {
             }
             _ => (self.own.keys(self.branch), start, Some(end - start)),
         }
+    }
+
+    /// Where the key playing at `now` in a use from `since` to `until`
+    /// is: its part's start, its index there, and whether it bobs.
+    #[cfg(test)]
+    pub fn key_place(&self, since: u64, until: u64, now: u64) -> Option<KeyPlace> {
+        let (keys, from, body) = self.part(since, until, now);
+        key_at(keys, now.saturating_sub(from), body).map(|(index, key, _)| KeyPlace {
+            part: from,
+            index,
+            bobs: matches!(key.pose, Posed::Bob(..)),
+        })
     }
 
     /// The key playing at `now` in a use from `since` to `until`, and

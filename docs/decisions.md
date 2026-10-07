@@ -4487,6 +4487,20 @@ state, pinned by `each_prop_looks_distinct_in_each_mode` and
 drawing alone, so its once-a-minute swap has a variant that compares
 drawn images (`a_long_watch_takes_a_fresh_still_once_a_minute`).
 
+**Why a bob's key may end within a frame of its last flip, for now
+(step 12c):** a key that bobs (her writing, her breathing asleep) flips
+on the 1.4 s frame grid, and a key ending at a share of the use (her
+homework nodding off) lands off that grid, so it always comes less than
+a frame after the bob's last flip: counted as two changes, every such
+act broke the rule. The test had never sampled one (no desk homework
+after the first 10 s of its afternoons). Only that change is allowed:
+the key that ends must be the bob that flipped last, and any other
+change within a frame of a bob's flip (a bubble ending, another key
+starting) still counts. It is provisional: the other way, holding a
+bob's last frame through the part of a period before its key ends (and
+its first flip until a frame after its key starts), changes how she
+looks (a golden re-record) and is the user's call.
+
 **Static wakes her on its frames; the hook doesn't:** a use wakes her on
 its 1.4 s frame grid and as each key ends, and a client that paints only
 when she says something changed would show the 1.2 s of switch-on static

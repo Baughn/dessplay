@@ -7048,6 +7048,31 @@ impl Osaka {
         self.looking_up.is_some()
     }
 
+    /// Where the key of her act's script playing at `now` is, if her act
+    /// plays one (a use, or an idle act or spacing out with a script).
+    #[cfg(test)]
+    pub fn key_at(&self, now: u64) -> Option<script::KeyPlace> {
+        let (play, since, until) = match self.act {
+            Act::Use {
+                play, since, until, ..
+            }
+            | Act::Idle {
+                play: Some(play),
+                since,
+                until,
+                ..
+            }
+            | Act::SpaceOut {
+                play: Some(play),
+                since,
+                until,
+                ..
+            } => (play, since, until),
+            _ => return None,
+        };
+        play.key_place(since, until, now)
+    }
+
     /// Whether she's stopped to look (at the chat, or startled).
     #[cfg(test)]
     pub fn looking(&self) -> bool {

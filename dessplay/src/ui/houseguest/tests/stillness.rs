@@ -220,8 +220,70 @@ type Shown = (
 
 /// An act sampled: its start, whether it's a watch, whether it's the
 /// shopping channel, and its samples (when, what shows, whether
-/// Chiyo-chichi's hook plays).
-type Sampled = (u64, bool, bool, Vec<(u64, Shown, bool)>);
+/// Chiyo-chichi's hook plays, the key of her script playing).
+type Sampled = (u64, bool, bool, Vec<(u64, Shown, bool, KeyRef)>);
+
+/// Where the key of her act's script playing at a moment is, if any: a
+/// bob's flips, and its key ending, are told apart by it.
+type KeyRef = Option<script::KeyPlace>;
+
+/// Whether going from `was` to `now`, each with the key playing then, is
+/// a bob's own flip (her writing, her breathing asleep, a page turning):
+/// in the one key, which bobs, her pose alone changed.
+fn bob_flip(was: (&Shown, KeyRef), now: (&Shown, KeyRef)) -> bool {
+    let (Some(a), Some(b)) = (was.1, now.1) else {
+        return false;
+    };
+    let ((pose, face, bubble), at, prop, dark) = *was.0;
+    let ((pose2, face2, bubble2), at2, prop2, dark2) = *now.0;
+    a == b
+        && a.bobs
+        && pose != pose2
+        && (face, bubble, at, prop, dark) == (face2, bubble2, at2, prop2, dark2)
+}
+
+/// The key that bobbed, if going from `was` to `now` ends it (another key
+/// playing now).
+fn bob_ends(was: KeyRef, now: KeyRef) -> KeyRef {
+    was.filter(|key| key.bobs && now != was)
+}
+
+/// The stillness rule's count over an act's changes after its first
+/// 10 s: no change within a frame ([`osaka::USE_FRAME_MS`]) of the last,
+/// but one: for now, a bob's key ending may come within a frame of that
+/// same bob's last flip (her homework nodding off: its key ends at a
+/// share of the use, off the bob's frame grid). That allowance is
+/// provisional (phase 5c step 12c's review: whether she should hold the
+/// bob's last frame through the part of a period before its key ends,
+/// instead, is open); any other change near a bob's flip still counts.
+#[derive(Default)]
+struct Flips {
+    /// The last change's time, and the key it flipped if a bob's flip.
+    last: Option<(u64, KeyRef)>,
+}
+
+impl Flips {
+    /// A change at `t`: `flipped`, the key if it's a bob's own flip;
+    /// `ends`, the key that bobbed if it ends that key. The last change's
+    /// time if that was within a frame (and not its bob's flip as the bob
+    /// ends).
+    fn see(&mut self, t: u64, flipped: KeyRef, ends: KeyRef) -> Result<(), u64> {
+        if let Some((before, last_flip)) = self.last
+            && t - before < osaka::USE_FRAME_MS
+            && (ends.is_none() || last_flip != ends)
+        {
+            return Err(before);
+        }
+        self.last = Some((t, flipped));
+        Ok(())
+    }
+
+    /// [`Flips::see`] going from `was` to `now` at `t`.
+    fn change(&mut self, t: u64, was: (&Shown, KeyRef), now: (&Shown, KeyRef)) -> Result<(), u64> {
+        let flipped = if bob_flip(was, now) { now.1 } else { None };
+        self.see(t, flipped, bob_ends(was.1, now.1))
+    }
+}
 
 /// Whether going from `was` to `now` is only her slow blink (her face
 /// alone, to or from a blink), or Chiyo-chichi's bob while his hook
@@ -258,7 +320,10 @@ fn exempt(was: &Shown, now: &Shown, hook: bool) -> bool {
 /// show of her act, sampled every 100 ms between the steps the shell
 /// takes, never changes twice within a frame once the act's first 10 s
 /// are over: her slow blink apart, and Chiyo-chichi's bob through his
-/// hook (the first two fifths of the shopping channel's body). Quiet: a
+/// hook (the first two fifths of the shopping channel's body); and, for
+/// now, a bob's key ending within a frame of that bob's last flip (her
+/// homework nodding off at its share of the use: provisional, see
+/// [`Flips`]). Quiet: a
 /// chat line's look up (`!`, then `?`) is the other exemption design.md
 /// names, so it isn't tried here. Each room shows her watching for over
 /// 30 s at least once in each mode, so the TV is tried, and the shopping
@@ -331,27 +396,27 @@ fn no_long_act_flips_faster_than_a_frame() {
                             // her somewhere (a walk the screen's width is
                             // 31 s) moves her as the band counts it. A
                             // turn where she stands is checked.
-                            let (_, (_, first_at, ..), _) = samples[0];
-                            let stays = samples.iter().all(|(_, (_, at, ..), _)| {
+                            let (_, (_, first_at, ..), ..) = samples[0];
+                            let stays = samples.iter().all(|(_, (_, at, ..), ..)| {
                                 (at.0, at.1) == (first_at.0, first_at.1)
                             });
                             if last - since <= 30_000 || !stays {
                                 return (false, false);
                             }
-                            let mut flipped: Option<u64> = None;
+                            let mut flips = Flips::default();
                             for pair in samples.windows(2) {
-                                let ((_, was, _), (t, now, hook)) = (&pair[0], &pair[1]);
+                                let ((_, was, _, was_key), (t, now, hook, key)) =
+                                    (&pair[0], &pair[1]);
                                 if was == now || *t < since + 10_000 || exempt(was, now, *hook) {
                                     continue;
                                 }
-                                if let Some(before) = flipped {
-                                    assert!(
-                                        t - before >= osaka::USE_FRAME_MS,
+                                if let Err(before) = flips.change(*t, (was, *was_key), (now, *key))
+                                {
+                                    panic!(
                                         "{at}: an act from {since} flipped at {before} and {t}: \
-                                         {was:?} to {now:?}"
+                                         {was:?} {was_key:?} to {now:?} {key:?}"
                                     );
                                 }
-                                flipped = Some(*t);
                             }
                             (*watch, *shopping)
                         };
@@ -397,7 +462,7 @@ fn no_long_act_flips_faster_than_a_frame() {
                                         osaka.prop(t),
                                         osaka.dark(t),
                                     );
-                                    samples.push((t, shown, t <= hook_end));
+                                    samples.push((t, shown, t <= hook_end, osaka.key_at(t)));
                                     t += SAMPLE_MS;
                                 }
                             }
