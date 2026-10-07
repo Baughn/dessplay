@@ -5,6 +5,9 @@ that adds this file (behaviour as at `f29c482`, after D0a and D0b). Release buil
 deterministic: the fed census run twice gave identical tables. Paths are relative to
 `dessplay/src/ui/houseguest/`.
 
+**The phase's closing numbers** are the last section, [Census pass (step 13)](#census-pass-step-13-2026-10-07):
+what shipped, at full strength, with every census re-run.
+
 **The band's baseline is now step 8b's c0** ([Step 8b: the retune, stopped](#step-8b-the-retune-stopped-2026-10-06):
 step 7's state with step 8's fixes, each chat line at its own time, 9-minute visits). Before it,
 [After the shorter watch](#after-the-shorter-watch-step-5-9-minute-visits) (step 5). The older
@@ -1304,3 +1307,101 @@ ordinary 21.3 / 21.8 (19.7 / 19.8), lazy 10.9 / 11.1 (10.8 / 11.4), industrious 
 10.0 / 9.0, industrious 25.9 / 22.4 (26.3 / 23.3), dreamy 18.4 / 16.7. The resident with text low:
 ordinary 17.1 / 16.0, lazy 6.1 / 6.1, industrious 24.6 / 24.1, dreamy 17.4 / 15.7. All inside the
 band.
+
+## Census pass (step 13, 2026-10-07)
+
+**Measured 2026-10-07** on step 12d's tree (`84274374`; its behaviour is 12c's: 12d's two fixes leave
+every golden trace byte-identical), release. The runs are seeded; determinism here rests on reproducing step 12c's numbers exactly (and
+the band's one line printed by both full-strength runs, the stage's industrious chat 8.6 / 2.10, and
+the two spread runs, read identically). The censuses come from one
+release test binary (`cargo test --release -p dessplay --lib --no-run`), the band from nextest under
+`--profile band`.
+
+**Nothing moved.** Every census reads step 12c's numbers to the printed decimal: the 17-minute line
+census of all six rooms (the band's three as `TUNED`, the printed three as "Step 12c" has them), the
+band at full strength, the day census. The phase ships what step 12c measured.
+
+**The 256-case houseguest pass** (`PROPTEST_CASES=256 cargo nextest run --release -p dessplay
+houseguest`, nextest's own exit code read from its log). The first run: 730 of 731 passed, and
+`film::her_film_never_moves_her` was killed at the default profile's 60 s (four 4-minute sims a case;
+alone it takes 72 s at 256 cases). No product failure. The kill is the deep pass's case count, as for
+`every_made_piece_is_used_or_let_go` before it (once a named 120 s override in the gate's profile). Every
+property's cost scales with its cases, so the deep pass now runs under its own nextest profile,
+`--profile deep` (flag at 90 s, kill at 180 s, for every test), and the gate's profile keeps its 30 / 60 s
+with no override. The re-run under the default profile with a 180 s override on the three: **731 of 731
+passed, nextest's exit code 0**; the slowest `her_film_never_moves_her` 81 s,
+`a_trial_keeps_every_promise` 52 s, `every_made_piece_is_used_or_let_go` 48 s, four more at 30–37 s.
+The run under `--profile deep` (`PROPTEST_CASES=256 cargo nextest run --release --profile deep -p dessplay
+houseguest`): **731 of 731 passed, exit 0**, in 90 s; `her_film_never_moves_her` 85 s,
+`a_trial_keeps_every_promise` 61.6 s (past the default kill this time), `every_made_piece_is_used_or_let_go`
+51 s, then five at 31–42 s. The gate's 32 cases take these three ~21–28 s (dev, full load).
+
+**The band at full strength** (`CENSUS_BAND_SEEDS=525 cargo nextest run --release -p dessplay --profile
+band --run-ignored all --success-output final -E 'test(/houseguest::tests::band::band_/) and not
+test(/band_spread/)'`, 16 threads, 10 minutes' wall; the spreads at `CENSUS_BAND_SEEDS=200`, 3 threads,
+8 minutes). Moving % in sight / set-offs a minute in sight; **bold** is outside its band:
+
+| Room | Mood | Quiet | Chat | Band | Cap |
+|---|---|---|---|---|---|
+| stage | Lazy | 6.6 / 1.17 | 6.2 / 1.22 | 4–17 | 1.5 |
+| stage | Ordinary | 7.1 / 1.62 | 7.3 / 1.69 | 6–26 | 2.25 |
+| stage | Dreamy | 6.9 / 1.64 | 6.7 / 1.67 | 6–26 | 2.25 |
+| stage | Industrious | 9.1 / 2.11 | **8.6** / 2.10 | 9–31 | 3.0 |
+| home | Lazy | 12.0 / 0.62 | 11.9 / 0.68 | 5–17 | 1.5 |
+| home | Ordinary | 22.5 / 1.24 | 21.5 / 1.32 | 8–26 | 2.25 |
+| home | Dreamy | 22.1 / 1.25 | 21.7 / 1.36 | 8–26 | 2.25 |
+| home | Industrious | 30.6 / 1.72 | 29.1 / 1.86 | 12–31 | 3.0 |
+| resident | Lazy | 6.2 / 0.54 | 6.0 / 0.56 | 5–17 | 1.5 |
+| resident | Ordinary | 11.0 / 1.10 | 10.7 / 1.16 | 8–26 | 2.25 |
+| resident | Dreamy | 9.7 / 1.08 | 9.1 / 1.12 | 8–26 | 2.25 |
+| resident | Industrious | 16.3 / 1.35 | 15.1 / 1.40 | 12–31 | 3.0 |
+
+- Every cell is in but `SHORT`'s (the stage's industrious afternoon with chat, 8.6 against 9); every
+  set-off rate far under its cap. The band run (15 tests, the spreads excluded) exits 100 for one test
+  only, `band_stage_industrious_chat` (`SHORT`, run here because `--run-ignored all` includes it); the
+  other 14 pass. The spread run (3 tests) fails only `band_spread_stage` (`SHORT`); the home's and
+  resident's spreads pass.
+- The spreads (N = 200): home 2.60 (29.7 ÷ 11.5), resident 2.68 (15.9 ÷ 5.9), the stage 1.38
+  (8.9 ÷ 6.4; `SHORT`).
+- The home's industrious quiet afternoon is 30.6 against 31, in by noise (about 1.2σ).
+- The resident's dreamy afternoon with chat measures 9.1 but is aimed at 8.3, just over its floor of 8:
+  at N = 525 its test holds it to 7.7 ("the band itself from N=2266"), so the floor is read here by eye,
+  not enforced.
+
+**The fed afternoon, 15 minutes, both modes** (`fed_afternoon_census`, all six rooms, 20 sets × 4 seeds;
+quiet / chat, line art, then ASCII where it differs). The band's rooms: the stage lazy 6.9 / 6.8,
+ordinary 7.7 / 8.0, dreamy 7.6 / 7.5, industrious 10.1 / 8.9 (ASCII 10.0 / 9.9, 12.6 / 13.0, 12.7 /
+12.2, 14.4 / 14.1, with 3.05 / 3.26 set-offs a minute industrious: over the line-art cap of 3, in a mode
+the band doesn't pin); the home 11.4 / 11.4, 21.8 / 21.8, 22.0 / 20.8, 30.0 / 28.7; the resident 5.5 /
+5.9, 10.1 / 10.9, 10.1 / 8.6, 15.6 / 15.6 (both modes alike). The printed rooms, line art: the windowed
+home 11.1 / 11.3, 21.4 / 21.9, 21.9 / 20.6, 30.3 / 28.8; the TV-only home 10.2 / 9.1, 19.5 / 18.4, 18.2
+/ 17.0, 26.0 / 23.1; the resident with text low 6.1 / 6.0, 17.7 / 16.4, 17.8 / 16.0, 25.6 / 24.7; the
+windowed home of an evening 10.1 / 10.0, 18.6 / 18.1, 18.4 / 17.7, 26.6 / 25.4. All in the band's
+ranges.
+
+**The unfed visit census** (`CENSUS_MOODS=1 CENSUS_MODES=both visit_census`, chat, 30 minutes, 16 visits;
+moving % / set-offs a minute in sight, ASCII then line art where they differ):
+- stage: lazy 5.4 / 1.19 (line 4.3 / 0.95), ordinary 8.6 / 2.02 (5.4 / 1.43), dreamy 7.9 / 2.29 (5.8 /
+  1.51), industrious 12.2 / 3.06 (7.8 / 1.92);
+- home: 11.3 / 0.69, 18.6 / 1.09, 19.7 / 1.19, 26.3 / 1.57;
+- resident: 8.4 / 0.62, 11.0 / 1.10, 9.5 / 1.08, 16.3 / 1.31.
+In her drawn mood (`CENSUS_MODES=both visit_census`): stage 8.0 / 2.00 (line 6.1 / 1.55), home
+17.2 / 1.03, resident 10.7 / 0.98. Against step 8c's (ASCII): the stage within a point but lazy (7.3 →
+5.4), the home and resident within 1.4 (12a's lingering watch and 12c's driver). Before 5c the stage
+read 22–30% at 4–6 set-offs a minute.
+
+**The day census** (6 runs a room, a game week each, ASCII; 56 s): bedtime holds (asleep 38.6–39.2% of
+22:00–23:00 and 89.0–89.7% of 23:00–24:00 on school days); **looking out 82 in 42 game days, 1.95 a
+day** (in her top four 442 times, on offer 3823), inside the census's 1.5–2.5; afternoon hour glances
+home 20, stage 14, resident 14; out to school and home 30 of 30 in each room, dash-ins 10; moving in sight
+by her day's mood: stage 10.6 (lazy) to 18.2 (industrious), home 11.2 to 25.9, resident 9.6 to 17.5.
+All as step 12c.
+
+**The image census** (`image_census`, 120-minute visits, 16 a mood): the furnished home against the
+home with the film (a still fed on every switch-on and every minute she watches): distinct images at
+120 minutes, means lazy 294 / 307, ordinary 377 / 396, dreamy 400 / 416, industrious 445 / 471; most
+distinct 518 / 545, largest working set 515 / 541, most held 22.7 / 23.6 MB; 2671 stills fed, 1454 images
+of her TV showing one. A 1024-image cache (`CACHE_LIMIT`) encodes nothing again in either (one image at
+512 in the busiest). Step 12b read 498 / 525 most distinct: the drivers paint at every input since 12c,
+so a few more frames are drawn. The live room is unchanged (its 13 at 1024 in the busiest industrious
+two hours, as before).

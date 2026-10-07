@@ -3884,6 +3884,19 @@ lever, or a different rule for the stage, is the user's choice
 (phase5c/baseline.md, "Step 8b"). The user chose lower floors on the bare
 stage and to ship ("Her stillness ships", below).
 
+**The band in the gate (the user, 2026-10-06):** the band tests run in
+the gate at two seeds a cell, where 3σ about each aim is 13 to 34 points
+wide: they catch a gross excess of moving and the set-off cap, and
+almost nothing else. The real check is full strength
+(`CENSUS_BAND_SEEDS`, release, `--profile band`, N up to 525: minutes a
+test), run at step boundaries and in a phase's census pass; the mood
+spreads run only there. The user: "Seems fine. I'll know to check them
+if something feels off." What the user signed off as short is named in
+`tests/band.rs`'s `SHORT`, each ignored with its numbers, so the gate
+stays green without hiding a new shortfall (testing-strategy.md, "The
+stillness band"). Rejected: full strength in the gate (a quarter of an
+hour a test) and a band of 3σ at two seeds read as passing evidence.
+
 **Watching out of lingering:** her TV shows animated static until phase
 5c's held picture (D7); lingered, a lazy day would watch the busiest
 thing on screen half as long again. It joins the list when the picture
@@ -4281,6 +4294,13 @@ four against her other daydreams: in the census home's 42 game days
 base 3 gave 36 look-outs, 4 gave 82, 5 gave 140, 6 gave 175. Base 4 is
 the nearest two a day (1.95).
 
+**The tolerance (the user, after base 4 had been measured):** "4.5 times
+a game day is fine. I'd accept anything in the 2-6 range." Base 4 stays
+(1.95, two to the user's rounding). The day census holds 1.5 to 2.5 a
+game day, the band around what ships, so drift fails it; a deliberate
+retune within about two to six a day needs no new sign-off, and moves
+the day census's 1.5–2.5 bound with it (phase 5c step 13).
+
 ## Her stillness ships (2026-10-07)
 
 **Rule:** The stillness levers ship (`Stillness::TUNED`): lingering
@@ -4323,7 +4343,9 @@ under its floor; it stays 1.5.
 **What shipped short, by the user's word ("if one cell can't be brought
 in, ship the closest"):** the bare stage's industrious afternoon with chat
 (8.4% at full strength, its floor 9; quiet 9.1, in) and the stage's
-spread (industrious ÷ lazy 1.39 against 1.6). An industrious linger of
+spread (industrious ÷ lazy 1.39 against 1.6): step 8c's numbers. What
+shipped is step 12c's, 8.6% and 1.38 (phase5c/baseline.md, "Census pass
+(step 13)"). An industrious linger of
 0.7 (the design's start) brings the stage's chat cell to 9.2, but the
 furnished home's industrious afternoon to 32.4 against its ceiling of 31,
 the old conflict between the two rooms; Tidy back to 60 s moved the stage

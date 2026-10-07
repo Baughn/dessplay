@@ -877,8 +877,10 @@ the visits run) from the cell's aim. At the gate's two seeds that makes
 3σ on the share about 13 to 34 points (a single stage visit reads from
 a few % to about 80% moving), so the gate checks little: "too still" all
 but never fails, and what's left is a gross excess of moving or of
-set-offs. Passing at the gate is not evidence the band is met (the user:
-"I'll know to check them if something feels off"). The band tests run
+set-offs. Passing at the gate is not evidence the band is met (the user,
+accepting the gate's two seeds on 2026-10-06: "Seems fine. I'll know to
+check them if something feels off."; decisions.md, "Her stillness band:
+per-mood caps"). The band tests run
 in the gate since phase 5c's step 8c tuned the levers (`TUNED`, read at
 the band's 17-minute visits, about 4 s a stage test), but for what the
 user shipped short (`SHORT`: the stage's industrious afternoon and its
@@ -886,10 +888,19 @@ spread), ignored with their numbers.
 `CENSUS_BAND_SEEDS=<n>` (`test_support::census_band_seeds`, like
 `proptest_cases`) runs the full-strength check at step boundaries, in
 release under `--profile band` (minutes a test), where the thresholds
-narrow to the band itself: each line prints the N that takes, and the
-run uses the largest (525 at step 8c: about 15 minutes a stage or home
-test). The per-room spread runs only then, at its own line's N (its
-four conditions at N = 525 outrun the profile's 20 minutes in the home).
+narrow toward the band itself: each line prints the N at which its
+thresholds become the band. A cell aimed close to its edge needs more
+visits than a run can give (at 5c's step 13 the resident's dreamy
+afternoon with chat, aimed at 8.3 against its floor of 8, from N = 2266;
+the `SHORT` cell never), so full strength is N = 525 (chosen at step 8c;
+4.5–10.5 minutes a test at step 13, 16 threads), run at step boundaries
+and in a phase's census pass. At 525 such a cell is held to a wider
+threshold (the resident's dreamy chat floor reads 7.7), so the census
+pass also reads each measured value against the band itself. Nextest
+hides a passing test's lines: pass `--success-output final` to read
+every cell. The per-room spread runs only then, at its own line's N (its
+four conditions at N = 525 outrun the profile's 20 minutes in the home;
+at N = 200 they take about 8 minutes).
 The band tests run in **line art only**, an exemption from looping both
 drawing modes: the band is pinned in what the user's client draws, and
 the home and resident run identically in either mode.

@@ -1546,39 +1546,44 @@ this section states what is built.
 - **Choosing what to do**: each decision scores what's on offer where she
   stands (stand, space out, sneeze, walk, travel, each activity, a pull or
   swap in reach) as base × fit × cooldown and picks at random, weighted,
-  among the top four. Ten needs (0–1) set the fit: *sleepy* rises over a
-  visit, and a bed answers it best, a nap on a sofa well and a doze on the
-  floor a little, so she dozes more as a visit goes on (on the floor only
-  while comfort asks too: sleepiness alone loses there to spacing out);
-  *restless* starts
-  high, rises steadily, and moving answers it; *tidy* rises while a line is
-  on offer and a pull answers it; *mischief* rises slowly and a swap
-  answers it; *hungry* rises over twenty minutes and a snack from her
-  fridge answers it; *comfort* rises steadily and sitting or lying on
-  furniture answers it (a real piece fully, one she made 0.6 as well, the
-  floor 0.1); *fun* rises steadily and the TV, a book, the cat, a parcel,
-  a snack and a swap answer it, each wearing thin with use (its tolerance
-  rises by 0.6 a whole use and wears off over ten minutes), so she varies
-  what she enjoys; *daydreams* rise slowly and spacing out, gazing, lying
-  on her front and drifting off at her desk answer them; *nesting*
-  rises only while a rule of her home she has felt is broken (see *The
-  rules of her home*); *beauty* rises (over twenty minutes) only while
-  she's in a plain room, on a strip where nothing pretty shows (or on
-  none), and no want answers it: resting (sitting, lying, gazing; not
-  exercise) or using her things (not the chores of unpacking a parcel
-  or crumpling text) in a
-  pretty room eases it as she does them (by the share done, times the
-  room's beauty up to 1; the plant and the poster are 1 each), and it
-  turns the shopping channel to decor (below). Every want
-  answers at least one need but standing (the filler) and sneezing (an
-  accident). An offer's fit is 0.1 + Σ need² × amount × 2 × how well its
-  spot answers that need (and how fresh, for fun) — 0.5 for an offer no
-  need wants, and never below 0.5 for a parcel or her part-time job, which
-  she takes whatever she feels, or for spacing out, worth doing for its
-  own sake. She arrives wide awake (sleepy 0), keen to
-  move (restless 0.7), mischief and hunger at 0.2, nesting at 0, beauty
-  at 0.3, the rest at 0.5: that's her afternoon. Her routine changes
-  some of it (see *Her routine*).
+  among the top four. Ten needs (0–1) set the fit, each rising from empty
+  to full over its own time (before her mood scales it, below): *sleepy*
+  rises over a visit (fifteen minutes), and a bed answers it best, a nap
+  on a sofa well and a doze on the floor a little, so she dozes more as a
+  visit goes on (on the floor only while comfort asks too: sleepiness
+  alone loses there to spacing out); *restless* starts high, rises over
+  five minutes, and moving answers it (wandering on her floor is base 9,
+  travelling to another 7); *tidy* rises over 90 s while a line is on
+  offer and a pull answers it; *mischief* rises over six minutes and a
+  swap answers it; *hungry* rises over twenty minutes and a snack from her
+  fridge answers it; *comfort* rises over eight minutes and sitting or
+  lying on furniture answers it (a real piece fully, one she made 0.6 as
+  well, the floor 0.1); *fun* rises over six minutes and the TV, a book,
+  the cat, a parcel, a snack and a swap answer it, each wearing thin with
+  use (its tolerance rises by 0.6 a whole use and wears off over ten
+  minutes), so she varies what she enjoys; *daydreams* rise over ten
+  minutes and spacing out, gazing, lying on her front and drifting off at
+  her desk answer them; *nesting* rises only while a rule of her home she
+  has felt is broken (see *The rules of her home*); *beauty* rises (over
+  twenty minutes) only while she's in a plain room, on a strip where
+  nothing pretty shows (or on none), and no want answers it: resting
+  (sitting, lying, gazing; not exercise) or using her things (not the
+  chores of unpacking a parcel or crumpling text) in a pretty room eases
+  it as she does them (by the share done, times the room's beauty up to 1;
+  the plant and the poster are 1 each), and it turns the shopping channel
+  to decor (below). Every want answers at least one need but standing (the
+  filler) and sneezing (an accident). An offer's fit is 0.1 + Σ need² ×
+  amount × 2 × how well its spot answers that need (and how fresh, for
+  fun) — 0.5 for an offer no need wants, and never below 0.5 for a parcel
+  or her part-time job, which she takes whatever she feels, or for spacing
+  out, worth doing for its own sake. She arrives wide awake (sleepy 0),
+  keen to move (restless 0.7), mischief and hunger at 0.2, nesting at 0,
+  beauty at 0.3, the rest at 0.5: that's her afternoon. Her routine
+  changes some of it (see *Her routine*). Restlessness, tidiness and
+  mischief rise as slowly as they do, and wandering's and travelling's
+  bases are 9 and 7, for her stillness (phase 5c; they were 90 s, 60 s and
+  four minutes, 14 and 10) (why:
+  [decisions](decisions.md#her-stillness-ships-2026-10-07)).
   **Her mood for the day** is drawn from her master seed and the game
   day (each visit's, without her clock): ordinary half the time, lazy
   and industrious a fifth each, dreamy a tenth. A second visit the same
@@ -1668,8 +1673,8 @@ this section states what is built.
   still; time out of sight (away, a door's hidden beats, her shift)
   counts as neither. Met in every room and mood but two, shipped short
   by the user's word: the bare stage's industrious afternoon with chat
-  (8.4% against its floor of 9) and its spread (1.39), her moods
-  reading alike there
+  (8.6% at full strength against its floor of 9) and its spread (1.38),
+  her moods reading alike there
   (why: [decisions](decisions.md#her-stillness-band-per-mood-caps-2026-10-06)).
   Something is on offer only when there's a way to do it from where she
   stands (a method that binds: a spot on her floor, a way off it, a
@@ -2311,7 +2316,8 @@ this section states what is built.
   chat. Its base is 4; it's on offer
   only with her window in reach, answers daydreams and fun, and is
   twice as likely from 17:00 to 05:00 (in a furnished home with the
-  window, about two a game day). Settling in
+  window, about two a game day: the user's aim, who accepts anything
+  from about two to six). Settling in
   from the sill, she sits down in front of it where she leaned (chin in her hands, looking
   up; a chat line has her look up without turning from it), then dozes
   off there or, on the doze's other side, lies back under it watching the

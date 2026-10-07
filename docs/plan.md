@@ -1,6 +1,6 @@
 # DessPlay Implementation Plan
 
-Last updated: 2026-10-03
+Last updated: 2026-10-07
 
 The initial 10 phases are bottom-up; later numbered phases capture feature
 batches. Each phase produces testable artifacts. The first
@@ -2105,7 +2105,7 @@ welcome; the only goal is "watching her is kind of fun".
 
 ## Phase 38: Houseguest mind and home
 
-**Status: phases 0–4 done (2026-10-02 and 2026-10-03); phase 5 split into 5a (vignettes, done 2026-10-03) and 5b (the clock, done 2026-10-05; record below). master was pushed by the user at 5b step 5c (2026-10-04) to test it; the rest of 5b is unpushed. Next: phase 5c, stillness (brief below), then phase 6.** Design: [the mind
+**Status: phases 0–4 done (2026-10-02 and 2026-10-03); phase 5 split into 5a (vignettes, done 2026-10-03) and 5b (the clock, done 2026-10-05; record below). Phase 5c, stillness, done 2026-10-07 (record below). master was pushed by the user at 5b step 5c (2026-10-04) to test it, and again at 5c step 11's record (2026-10-06); everything after that record is unpushed (step 11's review fixes, D7's docs, steps 8c–13 and the door art). Next: the door batch (below), then phase 6.** Design: [the mind
 and home proposal](proposals/2026-10-02-houseguest-mind.md) (direction
 agreed with the user; their answers are its *Decisions*). Its migration
 plan numbers its own phases 0–8; this section records them.
@@ -2983,14 +2983,21 @@ midnight snack) cost her what she came for; fixed with a property each.
 **Open, for the user.**
 - **Restlessness** (the user, testing on 2026-10-04): she spends too much
   time walking about (35–45% of awake time; Restless fills in 90 s). To be
-  discussed before phase 6.
+  discussed before phase 6. *(Fixed: phase 5c, stillness, below. She
+  moves 5–31% of her time in sight by mood, a band the tuning holds.)*
 - **Should a dash look at chat lines at all?** Today she's startled and
-  looks, then carries on; the tests pin that.
+  looks, then carries on; the tests pin that. *(Decided: the user, in
+  5c's brief: a dash keeps looking at chat lines, as built.)*
 - **Look-outs vs. the afternoon clock glance:** in a full home look-outs
   (about 19 a game day) crowd out spacing out, so the afternoon glance
   came once in six home-weeks (nine each in the stage and resident). The
   glance is also once per visit, not per game day, and D4's "Gaze ×more
-  with a window" isn't built.
+  with a window" isn't built. *(Fixed in 5c: looking out is a long
+  daydream, about two a game day (base 4); the afternoon glance lost its
+  one-in-three roll, and comes 20 times in the census home's six weeks,
+  14 on the stage and 14 in the resident's; D4 was dropped, the window
+  being the daydream itself. The glance stays once a visit, by decision:
+  that never binds (decisions.md, "Her window is a long daydream").)*
 - **Rares a home can't show:** pity can pick NoMelon in a fridgeless room
   (a wasted day's draw; nothing is lost). Scary is first seen in about one
   week in six (its window is 30 minutes on school nights).
@@ -2998,6 +3005,8 @@ midnight snack) cost her what she came for; fixed with a property each.
   ends in a tick where nothing else changes (Visiting's `fading` is
   computed after `retain`). The fix moves 24 golden traces, unfed tables
   included, so it waits for a decision. Away's arm has the fix.
+  *(Fixed in 5c step 1: the fades live on the guest and every arm drops
+  them through one helper, so a fade's last frame is always drawn.)*
 - **Her pane-corner column** belongs to no strip, so from there she sees no
   clock (as `beauty_at` already sees no decor).
 
@@ -3062,3 +3071,298 @@ Daydreams 10 min, Comfort 8 min); and stillness is brief (spacing out
 Steps 1–3 should be re-measured before step 4. Step 4 may be smaller if
 the band is met, but floor homework and the desk are wanted for their
 own charm.
+
+### Phase 5c — stillness (done 2026-10-07)
+
+Built as the [working design](proposals/2026-10-02-houseguest-mind/phase5c-design.md)
+and its Round-1 to Round-8 amendments say (code map, four critiques and
+their synthesis, D7's own critique and mock script, and the approved art
+in its `phase5c/` dir; every number in
+[phase5c/baseline.md](proposals/2026-10-02-houseguest-mind/phase5c/baseline.md),
+whose last section, "Census pass (step 13)", has the closing runs). The
+rules are in design.md (Houseguest) and the reasons in decisions.md.
+Each step was implemented, reviewed twice (correctness, and tests proven
+by mutants) and fixed, minors included; the commit messages carry each
+step's golden trace check.
+
+**The aim.** She moved 35–45% of her awake time (5b's week census), and
+moving draws the eye far more than sitting still. 5c is attention
+control: a band per mood for her moving *in sight* (walking to a job
+counts), reached through stiller habits rather than slower walking, and
+the things on screen that changed for no reason (the TV's static, a
+lingering rain frame) held still.
+
+**What was built, by step:**
+- **0.** The design, the code map, four critics and their synthesis (the
+  user chose B1: in a still act she looks up where she is, no resume
+  mechanism); the art agent's sheet.
+- **1.** A rain-out's last frame is always drawn: the fades live on the
+  guest, and every arm drops them through one helper (5b's "Open" item).
+  A rain is cut short only when she's sent away or her room goes.
+- **2.** The credit class: spacing out eases her daydreams and work her
+  restlessness, as designed; a cut work shift is credited by the share
+  worked; a class test runs every want by each of its methods.
+- **3.** The census measures moving in sight by purpose (wandering, to a
+  seat, to text, climbs and doors) and set-offs a minute; the fed
+  afternoon census (each room fed at Tuesday 13:00 in a forced mood);
+  `phase5c/baseline.md`.
+- **4.** The band tests (`tests/band.rs`), ignored until the tuning.
+- **5.** The watch after a chat line is 5 s, not 15 ("the act of looking
+  is there solely to draw attention, which only happens during change").
+- **6.** In a still act on restful terrain she looks up where she is
+  (`!` then `?`, turned to the chat where the pose has a facing); dozes
+  stir ("Mm?"). Walking, pulling, chores, making, exercise and anything
+  on text are still cut.
+- **7.** The levers, landed neutral: settling in (a still act that runs
+  its course settles further where she is, skipping the roll), lingering
+  by mood at the call sites, a daydream as one act of several musings,
+  nearer spots (text on her own floor first, nearer seats likelier).
+- **8.** A slow blink on held poses (150 ms every 6–12 s, from her
+  whims); an easing lands on her needs as they are (`rise_to` before a
+  credit). The tuning stopped: the design's per-room set-off cap held the
+  furnished home near one set-off a minute while the stage needed three.
+  The user's call: **per-mood caps**, the same in every room (Round 3).
+- **8b.** The census and band drivers deliver each chat line at its own
+  time; the per-mood rule in the band; watching out of lingering until
+  the TV held a picture. The retune stopped again: under a per-mood cap
+  the bare stage (2–3.5 s a set-off) sits a point or two over its floor.
+  The user: "ship it, lower stage floors".
+- **9.** Wiring the approved art folded into the steps that use each
+  pose (Round 3); the sheet itself landed unwired after step 4.
+- **10a.** Homework on the floor (on her front, or on her back with the
+  book), reading on her back where no bookshelf stands (settling into a
+  doze under the book), "My back..." after the first floor homework a
+  visit, the paper desk (a 4×2 cube of torn text she kneels at), making
+  three times as likely while she owns no real piece of the kind,
+  cross-legged before the TV away from a sofa.
+- **10b.** A borrowed line (HG #72): she reels a strip off a line beside
+  her, reads it sat by the tear and slides it back; she never leaves it
+  torn (grip is one class for held text and pulls).
+- **11.** The window hangs low enough to lean on (and may stand behind a
+  sofa, unlike any other piece); a look-out is a long daydream at the
+  sill (one to three minutes, musing on the sky), settling to sitting
+  under it, then a doze or watching the clouds (only ever under her
+  window).
+- **8c.** The golden driver cuts at each event's own time (its own
+  re-record); **the levers ship** (`Stillness::TUNED`: lingering lazy
+  ×1.5, ordinary ×1, dreamy and industrious ×0.85; settling lazy 0.6,
+  ordinary and dreamy 0.35, industrious 0.15; restless over 5 minutes,
+  tidy 90 s, mischief 6; Walk base 9, Travel 7; spacing out 10–28 s and
+  worth doing for its own sake); the stage's floors lowered;
+  `BAND_MINUTES` 17; the two short items in `SHORT`.
+- **12a.** Her TV holds a drawn programme (news, weather, penguins, a
+  cooking show) after 1.2 s of switch-on static; Chiyo-chichi bobs only
+  through his hook; watching lingers.
+- **12b.** In line art her TV shows a still of the held now-playing film,
+  asked for as she heads to watch and once a minute while she does, into
+  the TV's own private screenshot slot (never commentary's, whose frames
+  go to Anthropic), read, treated and deleted in process; her trace and
+  ASCII frames are identical with and without it. Every
+  `screenshot-to-file` goes out async, and commentary shares the gate
+  that the player shows the real video, not the placeholder.
+- **12c.** The drivers paint her at every input, as the client does;
+  the user's answers (an industrious watch isn't shortened, the film's
+  saturation ×1.3, looking out at base 4); the stillness rule tested on
+  drawn cells.
+- **12d.** Two failures older than 5c that 5c's property runs surfaced, each
+  fixed as a class: a moved wide glyph rains out whole, never half of one
+  (as old as the text layer); a parcel comes in only where she can unpack
+  it, and use it, with it there (as old as 5b's rule). Their pinned cases
+  are regression tests now: `a_sofa_she_could_not_unpack` folded into
+  `parcels_she_could_not_unpack`, and the away "half a wide glyph" line
+  a saved regression of the day-long property, with the deterministic
+  `a_wide_glyph_she_moved_rains_out_whole` cases.
+- **13.** The census pass and these docs; the deep pass got its own
+  nextest profile, `--profile deep` (flag at 90 s, kill at 180 s), so its
+  256-case properties don't raise the gate's limits.
+
+**Shipped numbers** (the band at full strength, N = 525 visits a cell of
+17 minutes, line art, fed afternoons; moving % in sight / set-offs a
+minute in sight):
+
+| Room | Mood | Quiet | Chat | Band | Cap |
+|---|---|---|---|---|---|
+| stage | Lazy | 6.6 / 1.17 | 6.2 / 1.22 | 4–17 | 1.5 |
+| stage | Ordinary | 7.1 / 1.62 | 7.3 / 1.69 | 6–26 | 2.25 |
+| stage | Dreamy | 6.9 / 1.64 | 6.7 / 1.67 | 6–26 | 2.25 |
+| stage | Industrious | 9.1 / 2.11 | **8.6** / 2.10 | 9–31 | 3.0 |
+| home | Lazy | 12.0 / 0.62 | 11.9 / 0.68 | 5–17 | 1.5 |
+| home | Ordinary | 22.5 / 1.24 | 21.5 / 1.32 | 8–26 | 2.25 |
+| home | Dreamy | 22.1 / 1.25 | 21.7 / 1.36 | 8–26 | 2.25 |
+| home | Industrious | 30.6 / 1.72 | 29.1 / 1.86 | 12–31 | 3.0 |
+| resident | Lazy | 6.2 / 0.54 | 6.0 / 0.56 | 5–17 | 1.5 |
+| resident | Ordinary | 11.0 / 1.10 | 10.7 / 1.16 | 8–26 | 2.25 |
+| resident | Dreamy | 9.7 / 1.08 | 9.1 / 1.12 | 8–26 | 2.25 |
+| resident | Industrious | 16.3 / 1.35 | 15.1 / 1.40 | 12–31 | 3.0 |
+
+Every cell is in its band but the bare stage's industrious afternoon with
+chat (8.6% against its floor of 9), and every set-off rate is under its
+cap. The spreads (industrious ÷ lazy, N = 200): home 2.60, resident
+2.68, the stage 1.38 against 1.6. The home's industrious quiet
+afternoon (30.6 against 31) is in by noise only: the next change to what an
+industrious Osaka does re-measures it at N = 525 first. The resident's
+dreamy afternoon with chat measures 9.1, but is aimed at 8.3, just over
+its floor of 8: the test at N = 525 holds it to 7.7, and enforcing the
+floor itself takes N = 2266, so its value is read against the band by eye. Looking out: 1.95
+a game day in the census home (82 in 42 game days). The unfed visit census
+(5a-comparable, ASCII, with chat) reads 5–12% moving on the stage by
+mood (22–30% before 5c, at 4–6 set-offs a minute), 11–26% in the home and
+8–16% in the resident.
+
+**Deviations from the design** (each in decisions.md):
+- **B1, not D3's resume:** the user chose looking up in place; D3's
+  `Resume` and its guards were never built.
+- **Per-mood caps replaced M3's per-room cap** (Round 3), and the bare
+  stage has lower floors (lazy 4, ordinary and dreamy 6, industrious 9).
+- **Dreamy lingers ×0.85** (not in the brief): at ×1 the resident's dreamy
+  afternoon with chat fell under its floor once 10a–11 were in.
+- **The floor wants are base 6**, not the desk's 8 (at 8 a sleepy doze
+  dropped out of a bare room's best four), and drop the chat factor;
+  reading on her back is an activity, not a `Use(Read)` method.
+- **D4 of 5b ("Gaze ×more with a window") was dropped**: the window is the
+  daydream place itself.
+- **The film refreshes about once a minute** (the user's Q2), overriding
+  D7's critique's "never swapped mid-watch"; a picture swap cuts straight
+  in with no static.
+- **The golden driver's order within a moment** (it tells her of a key
+  press before it advances her, where the shell advances first) is
+  documented, not changed (testing-strategy.md).
+
+**The user's decisions this phase** (beyond the brief's):
+- **Art** (two review rounds, 2026-10-05): approved the paper desk
+  kneeling, the torn strip, cross-legged TV, the sitting doze, looking up
+  in place and the programme cards; floor homework with the paper in
+  front of her, not under her head; reading on her back with the book
+  over her face, and dozing with it turned side-on over her eyes; the
+  window hung lower to lean on, allowed behind a sofa; cloud-watching only
+  under a window (or a solarium, later).
+- **The band:** per-mood caps in every room (lazy 1.5, ordinary and
+  dreamy 2.25, industrious 3 a minute), share ceilings 17 / 26 / 31,
+  floors 5 / 8 / 12, and 4 / 6 / 9 on the bare stage ("ship it, lower
+  stage floors"). The gate runs the band at two seeds, full strength at
+  step boundaries: "Seems fine. I'll know to check them if something
+  feels off." Two items shipped short by the user's word (`SHORT`): the
+  stage's industrious afternoon with chat and the stage's spread.
+- **Looking out:** base 6 first, then the outcome over the number: about
+  two long daydreams a game day (base 4, 1.95). "4.5 times a game day is
+  fine. I'd accept anything in the 2-6 range": future tuning has that
+  tolerance (the day census holds 1.5–2.5 around what ships, so drift
+  fails there). The afternoon hour glance lost its roll; a borrowed strip
+  doesn't turn her at a chat line.
+- **The TV (D7):** the film, the mock's column 7 (centre crop, 1.3× zoom,
+  a levels lift, saturation ×1.3, no sheen), drawn cards otherwise; a
+  refresh about once a minute; no reaction from her (an idea for later,
+  below). "Don't shorten industrious watching" (×1). The shopping hook's
+  bob is left whole (up to 49 s lazy): "Continuous cyclical movement gets
+  filtered out by the human optical system almost as quickly as static
+  scenes."
+- **A resident staying in the chat pane** isn't weighted (only going in
+  is a tenth). The TV's retry 5 s after a question the player couldn't
+  be asked stands (the orchestrator's call, unless the user objects).
+
+**Measured at step 13** (phase5c/baseline.md, "Census pass (step 13)"):
+the 256-case houseguest pass (731 tests, release) passed under its own
+`--profile deep`, a 180 s kill (`her_film_never_moves_her` takes 72 s
+alone and was killed at the default profile's 60 s); the slowest are
+that one (81–85 s in the pass), `a_trial_keeps_every_promise` 52–62 s,
+`every_made_piece_is_used_or_let_go` 48–51 s, and four or five at 30–42 s. No
+product bug. The censuses read exactly step 12c's numbers (12d moved none of them).
+
+**Open, for the user:**
+- **The two `SHORT` items** above; the lead for the stage's spread is a
+  mood factor on spacing out for its own sake, which weighs the same in
+  every mood and fills an industrious stage afternoon most (14%).
+- **From the drawn stillness test** (Round 8; each fix changes how she
+  looks, a golden re-record): a bob's key ending off its frame grid (her
+  homework nodding off within a frame of the writing's last flip; the
+  test allows exactly that, "for now"); a stir by day ("Mm?", 1380 ms) is
+  shorter than a frame; the world's clock (her wall clock's dial and the
+  window's sky step within a frame of her own changes; whether the rule
+  holds them is the user's call, the test ignored with its numbers).
+- **Commentary's frames in the real app:** screenshots are now async and
+  gated on the real video being shown; the user should check commentary
+  still attaches frames. A real `--vo=gpu` grab's time is unmeasured
+  (the session logs each frame's at trace).
+- **Desk before back:** where she can build at all, a desk she makes
+  outweighs homework on the floor 4–5×, so she usually makes the desk
+  before her back aches; gating the desk on the ache would make "a sore
+  back, then the desk" the order (a design change, 10a).
+- **A busy client's `school_out`** makes the empty home vanish with no
+  rain (step 1's hand-off; another class).
+- **Her door overlapping her furniture** (the user's report): the door
+  batch, next.
+- 5b's still-open items: rares a home can't show, her pane-corner column.
+- In ASCII the bare stage's industrious afternoon sets off 3.05–3.26
+  times a minute (fed, 15 minutes), over the line-art cap of 3; the band
+  is pinned in line art (the user's client), and ASCII is dev and test
+  only.
+
+### Next: the door batch (planned, 2026-10-07)
+
+The user's report (2026-10-06): *"she just left for school directly from
+bed, from a door that's now stuck visible overlapping said bed."* The
+closed door standing while she's out is by design ("there's really no
+other way to know she *is* out"); the bug is where it stands. The ask:
+*"make sure her external door has a reserved empty space next to the edge
+of the screen."* The investigation is
+[door/brief.md](proposals/2026-10-02-houseguest-mind/door/brief.md)
+(sibling sites, geometry, regression tests; where it differs from this
+section, this section wins), and the approved art is in
+[door/art/](proposals/2026-10-02-houseguest-mind/door/art/) (committed,
+not wired).
+
+**Root cause.** The 08:15 school cut interrupts any use where she stands,
+which for a bed, sofa or desk is *inside* the piece; `go_out` then opens
+her door where she stands, the guest records that spot, and the only
+check, `door_fits`, is `platform_at && restful`, and `restful` deliberately
+accepts the cells of a piece her image takes in (that's how she lies in
+her bed). The arrival reads an unfurnished terrain, so she comes home out
+of the door inside the bed too. The class: her external door's spot comes
+from her feet, and nothing asks that her door's box meet no piece. Work
+by door, going out again after a dash, and the cold start in school hours
+share it.
+
+**The user's decisions:**
+- **A reserved space** for her door at the screen's edge: floor against a
+  wall, never over furniture; no piece stands in it, and no piece hangs
+  low enough to meet it (the window included). **Poster and clock may hang
+  above it.** The door's spot is computed from her home and the frame
+  (one constructor, never her feet), so the overlap can't be represented
+  inside the space; outside it (the space yielding, no home) a strict
+  check that her box meets no piece's cover, the same in both modes.
+- **The door is the approved sheet's B:** side-on, two columns, turned
+  slightly toward the viewer, set in the wall line, with **the parcel flap
+  in the door** (its lower half). Parcels come through it and rest just
+  past the door's space.
+- **While she's out:** her slippers on the floor before it and a card on
+  the knob. The doorway's glimpse follows the window's sky. She visibly
+  walks through, clipped at the wall line.
+- **Work leaves through the same door** (screen edge first when her floor
+  reaches one); every routine exit and return is through it.
+- **Older homes** whose furniture fills the space: she clears it herself,
+  through a felt rule ("Can't get to the door!") that phase 4's arranging
+  answers by moving the piece. Until then the space yields for that frame
+  and the door stands at the nearest spot meeting no piece.
+- **Decided unless the user objects:** the no-home door uses the same edge
+  chooser, unsaved; door-position logging (the spot at info as she goes
+  out, a fallback or yield at debug with its reason).
+- **Tests first:** the day-long property extended so a closed or open
+  external door never meets a shown piece (both modes, with a bed, sofa
+  or desk owned and school mornings); a bed, sofa and desk unit
+  regression at 08:14; layout properties that no floor piece or window
+  meets the space and that a home packing both ways keeps its anchors and
+  order; an older record migrating without closeting anything.
+
+### Later (ideas, the user)
+
+Not planned yet; each wants its own brief:
+- **A kitchen and a bathroom**, with their contents, for a **morning
+  routine** (a bathroom-then-breakfast chain that ends with her walk to
+  her door).
+- **Osaka's comments on the actual onscreen episode**, replacing the
+  marquee commentary (the user, after D7: she doesn't react to the film
+  on her TV for now).
+- From phase 4 (2026-10-03): posters delivered in cardboard tubes; more
+  posters, paintings and plant varieties; a greenhouse or solarium she
+  builds (cloud-watching under its glass too). From 5a/5b: maybe a cat
+  who ignores the clock.

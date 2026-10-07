@@ -1575,7 +1575,7 @@ mod tests {
             needs.pass(ms, rising, Mood::Ordinary, |_| 1.0);
             needs
         };
-        // Short enough that nothing reaches 1 (tidiness rises in 60 s).
+        // Short enough that nothing reaches 1 (tidiness, the fastest, rises in 90 s).
         let awake = pass(6_000, 0);
         let asleep = pass(24_000, 24_000);
         let half = pass(12_000, 6_000);
