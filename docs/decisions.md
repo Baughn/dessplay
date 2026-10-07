@@ -4934,7 +4934,9 @@ frame of those can hold half of one; the text layer, the parcel flap
 and the accordion shake write their cells directly, and are immune for
 the reasons below. In ASCII a makeshift piece draws a wide letter as a
 narrow stand-in (the rain's scramble of it): one glyph a cell. Every
-line she says is plain ASCII, a compile error otherwise (`line!`). See
+line she says is plain ASCII, a compile error otherwise (`line!`;
+since widened to a few narrow marks:
+[below](#her-lines-may-use-a-few-narrow-marks-2026-10-07)). See
 [design.md](design.md#houseguest).
 
 **Why:** a random case of the day-long property test
@@ -4987,6 +4989,32 @@ other writer of torn text, a makeshift piece's ASCII drawing, could
 draw a torn 漢 in one cell of its own; with `put` taking second cells,
 one at the piece's last column would have blanked a cell outside it,
 so it draws a narrow stand-in instead.
+
+## Her lines may use a few narrow marks (2026-10-07)
+
+**Rule:** A line she says is ASCII plus a short allowlist of narrow
+marks (`NARROW`: `… ♪ — – ’ ‘ “ ” ·`), each one cell wide under the
+width the renderer uses (unicode-width's `width`, not its CJK variant);
+`line!` refuses any other character at compile time. See
+[design.md](design.md#houseguest).
+
+**Why:** 12d made every line plain ASCII so that no wide glyph could
+leave half of itself in a bubble (drawn a character a cell). That threw
+out marks that are as narrow as ASCII in every terminal the users run.
+The user: *"Realistically none of us use a CJK locale; wide-character
+support is useful mostly for rare subtitles and filenames."* These marks
+are East Asian Ambiguous, two cells only in a CJK locale, which the
+renderer never assumes (it measures every cell with the non-CJK width).
+So the rule is an allowlist checked against that width function, not a
+general "narrow" test: a test (`her_narrow_marks_are_one_cell_wide`)
+pins each mark at one cell under `width` and checks that the code that
+keeps wide glyphs whole (`cells::put`, `cells::width`, the rain's
+pairing) never treats one as wide. Rejected: allowing any character
+the width function calls narrow. That would let in combining marks,
+zero-width and control characters, and anything a future
+unicode-width revision re-measures, all unchecked. 12d had swapped no
+line's mark for an ASCII stand-in (her `...` lines were always ASCII),
+so no line changed.
 
 ## Houseguest chooses by needs among the top few (2026-09-28)
 

@@ -1722,7 +1722,10 @@ this section states what is built.
   faces when centred), the other side, centred above, beside her head,
   two rows up — never inside her box, and whose cells are all blank and
   open; with no such spot the bubble isn't shown. Things she *says*
-  (≤ 24 characters, plain ASCII: a bubble is drawn a character a cell)
+  (≤ 24 characters, ASCII and a few narrow marks, `… ♪ — – ’ ‘ “ ” ·`,
+  each one cell wide under the renderer's width, its non-CJK one: a
+  bubble is drawn a character a cell; any other character is a compile
+  error; why: [decisions](decisions.md#her-lines-may-use-a-few-narrow-marks-2026-10-07))
   show for 1.2 s + 60 ms per character, a frame (1.4 s) at least so a
   line never comes and goes inside one (a stir's turn lasts as long as
   its murmur), over her act's

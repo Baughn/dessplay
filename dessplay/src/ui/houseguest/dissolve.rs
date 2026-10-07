@@ -596,6 +596,46 @@ mod tests {
         buf
     }
 
+    /// The few marks her lines may use beyond ASCII ([`NARROW`]) are one
+    /// cell wide under the width the renderer uses (unicode-width's,
+    /// not its CJK variant), and nothing of hers that keeps wide glyphs
+    /// whole takes them for wide: `put` writes one without touching the
+    /// cell after it, a cell holding one is a cell wide, and the rain
+    /// never pairs it with its neighbour. A line may use them; any other
+    /// character beyond ASCII is refused (`line!`, at compile time).
+    ///
+    /// [`NARROW`]: super::super::NARROW
+    #[test]
+    fn her_narrow_marks_are_one_cell_wide() {
+        use super::super::cells::width;
+        use unicode_width::UnicodeWidthStr;
+        // The marks the user named, all on the list.
+        let named = ['…', '♪', '—', '–', '’', '‘', '“', '”', '·'];
+        assert!(named.iter().all(|c| super::super::NARROW.contains(c)));
+        for mark in super::super::NARROW {
+            let text = mark.to_string();
+            assert_eq!(mark.width(), Some(1), "{mark:?}");
+            assert_eq!(text.width(), 1, "{mark:?}");
+            assert!(!wide(mark), "{mark:?}: the rain takes it for wide");
+            let mut buf = live(3, 1, &[(0, 0, "xyz")]);
+            assert!(put(&mut buf, 0, 0, mark, INK), "{mark:?}");
+            assert_eq!(width(buf.cell((0, 0)).unwrap()), 1, "{mark:?}");
+            assert_eq!(buf.cell((1, 0)).unwrap().symbol(), "y", "{mark:?}");
+            assert!(
+                super::super::narrow(&text),
+                "{mark:?}: not allowed in a line"
+            );
+            assert!(
+                super::super::narrow(&format!("Hm{mark} ok{mark}")),
+                "{mark:?}"
+            );
+        }
+        // Wide, or beyond the list, refused.
+        for other in ["漢", "é", "★", "\u{2028}"] {
+            assert!(!super::super::narrow(other), "{other:?}");
+        }
+    }
+
     /// Frozen cells at `positions`, with glyphs both narrow and wide (a
     /// wide one is a glyph she moved, shown whole in her composite).
     fn frozen_over(buf: &Buffer, positions: &[(u16, u16)]) -> Vec<Frozen> {

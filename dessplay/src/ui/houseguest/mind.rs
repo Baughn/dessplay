@@ -1581,13 +1581,13 @@ mod tests {
     /// Lint: every pooled line fits a bubble (`line!` already makes an
     /// over-long one a compile error), and so does every line a script
     /// says; and every pool has a line to say. A bubble is drawn a
-    /// character a cell, so every line is plain ASCII (`line!` makes any
-    /// other a compile error too; a wide glyph would leave half of itself
-    /// under the next).
+    /// character a cell, so every line is ASCII and the few narrow marks
+    /// (`NARROW`; `line!` makes any other a compile error too; a wide
+    /// glyph would leave half of itself under the next).
     /// Every pool lists its own lines, all of them: the beat pool's six.
     #[test]
     fn every_pooled_line_fits_a_bubble() {
-        let narrow = super::super::plain;
+        let narrow = super::super::narrow;
         for (pool, line) in all_lines() {
             assert!(super::super::fits_a_bubble(line), "{pool:?}: {line:?}");
             assert!(!line.is_empty(), "{pool:?}");
@@ -1691,12 +1691,12 @@ mod tests {
                 assert_eq!(other, pool, "{line:?} in two pools");
             }
         }
-        // Characters, not bytes; and plain ASCII only.
+        // Characters, not bytes; and ASCII and the narrow marks only.
         assert!(super::super::fits_a_bubble(&"…".repeat(24)));
         assert!(!super::super::fits_a_bubble(&"a".repeat(25)));
-        assert!(super::super::plain("Hm? ~(^_^)/ 1, 2!"));
-        assert!(!super::super::plain("…"));
-        assert!(!super::super::plain("漢"));
+        assert!(super::super::narrow("Hm? ~(^_^)/ 1, 2!"));
+        assert!(super::super::narrow("…"));
+        assert!(!super::super::narrow("漢"));
     }
 
     /// [`Loss::all`] lists every kind of loss (see [`Loss::kind`]), each

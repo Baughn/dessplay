@@ -31,17 +31,57 @@ const fn chars(text: &str) -> usize {
     n
 }
 
-/// Whether `text` is plain ASCII, at compile time: every character one
-/// cell wide, as a bubble draws them, a character a cell (a wide one
-/// would leave half of itself under the next).
-const fn plain(text: &str) -> bool {
+/// The characters beyond ASCII a line she says may use: a few narrow
+/// marks, each one cell wide under the width the renderer uses
+/// (unicode-width's, not its CJK variant), so a bubble, drawn a
+/// character a cell, draws them whole (a wide one would leave half of
+/// itself under the next). Wide glyphs stay out of her lines: nobody
+/// here uses a CJK locale, and wide characters turn up only in rare
+/// subtitles and filenames (design.md, Houseguest).
+pub(super) const NARROW: [char; 9] = ['…', '♪', '—', '–', '’', '‘', '“', '”', '·'];
+
+/// Whether every character of `text` is ASCII or one of [`NARROW`], at
+/// compile time: every character one cell wide, as a bubble draws them.
+const fn narrow(text: &str) -> bool {
     let bytes = text.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
-        if !bytes[i].is_ascii() {
+        if bytes[i].is_ascii() {
+            i += 1;
+            continue;
+        }
+        // A character beyond ASCII: its UTF-8 bytes must be one of
+        // NARROW's.
+        let mut k = 0;
+        let mut len = 0;
+        while k < NARROW.len() {
+            let mut buf = [0u8; 4];
+            let mark = NARROW[k].encode_utf8(&mut buf).as_bytes();
+            if starts_with_at(bytes, i, mark) {
+                len = mark.len();
+                break;
+            }
+            k += 1;
+        }
+        if len == 0 {
             return false;
         }
-        i += 1;
+        i += len;
+    }
+    true
+}
+
+/// Whether `bytes` holds `mark` from `at` on, at compile time.
+const fn starts_with_at(bytes: &[u8], at: usize, mark: &[u8]) -> bool {
+    if at + mark.len() > bytes.len() {
+        return false;
+    }
+    let mut j = 0;
+    while j < mark.len() {
+        if bytes[at + j] != mark[j] {
+            return false;
+        }
+        j += 1;
     }
     true
 }
@@ -52,7 +92,7 @@ const fn fits_a_bubble(text: &str) -> bool {
 }
 
 /// A fixed line she says: a compile error if it doesn't fit a bubble,
-/// or isn't plain ASCII ([`plain`]).
+/// or has a character beyond ASCII but [`NARROW`]'s ([`narrow`]).
 /// Every line she says is written with it, pooled or not
 /// (`mind::all_lines` lists the pooled ones).
 ///
@@ -72,8 +112,8 @@ macro_rules! line {
             "a line longer than a bubble"
         );
         const _: () = assert!(
-            $crate::ui::houseguest::plain(TEXT),
-            "a line of more than plain ASCII"
+            $crate::ui::houseguest::narrow(TEXT),
+            "a line with a character beyond ASCII and the few narrow marks"
         );
         TEXT
     }};

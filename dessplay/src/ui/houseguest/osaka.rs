@@ -1905,18 +1905,18 @@ pub(super) enum Bubble {
 impl Bubble {
     pub fn text(self) -> &'static str {
         match self {
-            Self::Dots => "...",
-            Self::Bang => "!",
-            Self::Huh => "?",
-            Self::Hehe => "hehe",
-            Self::Zzz => "zzz",
-            Self::Hum => "~",
-            Self::Count => "1, 2!",
-            Self::Stretch => "nnn~",
-            Self::Ooh => "ooh",
-            Self::Achoo => "a...",
-            Self::Chu => "chu!",
-            Self::Sparkle => "*'*",
+            Self::Dots => line!("..."),
+            Self::Bang => line!("!"),
+            Self::Huh => line!("?"),
+            Self::Hehe => line!("hehe"),
+            Self::Zzz => line!("zzz"),
+            Self::Hum => line!("~"),
+            Self::Count => line!("1, 2!"),
+            Self::Stretch => line!("nnn~"),
+            Self::Ooh => line!("ooh"),
+            Self::Achoo => line!("a..."),
+            Self::Chu => line!("chu!"),
+            Self::Sparkle => line!("*'*"),
             Self::Say(text) => text,
         }
     }
@@ -10334,7 +10334,7 @@ mod tests {
                         (
                             length * 7 / 10,
                             Face::Surprised,
-                            Some(Bubble::Say("Ow!")),
+                            Some(Bubble::Say(line!("Ow!"))),
                             |_, _| (Pose::Pet(1), Some(Prop::CatBiting)),
                         ),
                     ],
