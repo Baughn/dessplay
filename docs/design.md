@@ -2207,7 +2207,13 @@ this section states what is built.
   with no hello, if the client is open to her then (a resident, or the
   idle gate open). A key or a chat line doesn't call her return off;
   the gate closing (playback, an overlay, visits off) does, and then she
-  arrives later through the idle gate as usual. With no home she still
+  arrives later through the idle gate as usual. Her empty home stands
+  until she's in; if she doesn't come in after all (the client busy as
+  school ends, her return or a dash called off, nowhere for her door),
+  it rains out like a visitor's key would rain it, and only visits
+  switched off, her moving out or her room gone remove it at once
+  (why: [decisions](decisions.md#her-empty-home-rains-out-whenever-she-doesnt-come-in-2026-10-07)).
+  With no home she still
   comes home by a door. Started in school hours, the client shows her
   empty home once the gate opens. Everything of hers that comes and goes
   by her routine uses her door, never a screen edge

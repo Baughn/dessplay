@@ -644,8 +644,12 @@ struct Errand {
 
 enum State {
     Absent,
-    /// She enters on the next paint, as `How` says.
-    Arriving(How),
+    /// She enters on the next paint, as `How` says. Coming in from her
+    /// empty home (`State::Away`), she carries it till then: it stands
+    /// on screen as the last frame showed it, so if she doesn't come in
+    /// after all (called off, nowhere to come in), it rains out
+    /// ([`Guest::call_off`]) rather than vanishing.
+    Arriving(How, Option<Box<Empty>>),
     Visiting(Box<Visit>),
     Leaving(Box<Leaving>),
     /// She's out by her routine (at school): her home stands empty, the
@@ -1098,12 +1102,14 @@ impl Guest {
             // out again after). On a visit under way, as any scene but
             // an arrival, the visit goes on (the stage puts her through
             // a door).
-            self.state = State::Arriving(How::Dash);
+            let home = self.take_home();
+            self.state = State::Arriving(How::Dash, home);
         } else if scene == stage::Scene::Arrive || !visiting {
             // From her empty home too: an arrival like any (at school
             // time her routine sends her out again at her first
             // decision).
-            self.state = State::Arriving(How::Idle);
+            let home = self.take_home();
+            self.state = State::Arriving(How::Idle, home);
         }
         self.cue = Some(scene);
     }
@@ -1129,7 +1135,7 @@ impl Guest {
     pub fn playing(&self, now: u64) -> Option<String> {
         match &self.state {
             State::Visiting(visit) => visit.osaka.playing_note(now),
-            State::Absent | State::Arriving(_) | State::Leaving(_) | State::Away(_) => None,
+            State::Absent | State::Arriving(..) | State::Leaving(_) | State::Away(_) => None,
         }
     }
 
@@ -1141,7 +1147,7 @@ impl Guest {
                 visit.osaka.mood(),
                 visit.osaka.needs().summary()
             )),
-            State::Absent | State::Arriving(_) | State::Leaving(_) | State::Away(_) => None,
+            State::Absent | State::Arriving(..) | State::Leaving(_) | State::Away(_) => None,
         }
     }
 
@@ -1150,7 +1156,7 @@ impl Guest {
     pub fn explain(&self) -> Option<String> {
         match &self.state {
             State::Visiting(visit) => visit.osaka.explain().map(ToString::to_string),
-            State::Absent | State::Arriving(_) | State::Leaving(_) | State::Away(_) => None,
+            State::Absent | State::Arriving(..) | State::Leaving(_) | State::Away(_) => None,
         }
     }
 
@@ -1182,7 +1188,7 @@ impl Guest {
                 })
                 .collect::<Vec<_>>()
                 .join(", "),
-            State::Absent | State::Arriving(_) | State::Leaving(_) | State::Away(_) => {
+            State::Absent | State::Arriving(..) | State::Leaving(_) | State::Away(_) => {
                 String::new()
             }
         }
@@ -1198,7 +1204,7 @@ impl Guest {
                 .first()
                 .map(|r| format!("{}: {}", r.key.label(), r.label()))
                 .unwrap_or_default(),
-            State::Absent | State::Arriving(_) | State::Leaving(_) | State::Away(_) => {
+            State::Absent | State::Arriving(..) | State::Leaving(_) | State::Away(_) => {
                 String::new()
             }
         }
@@ -1252,7 +1258,7 @@ impl Guest {
     pub fn present(&self) -> bool {
         match self.state {
             State::Visiting(_) | State::Leaving(_) => true,
-            State::Absent | State::Arriving(_) | State::Away(_) => false,
+            State::Absent | State::Arriving(..) | State::Away(_) => false,
         }
     }
 
@@ -1271,13 +1277,14 @@ impl Guest {
         if !self.resident {
             return self.leave(now);
         }
-        // Resident: an arrival on the idle gate waits for the next quiet;
-        // her coming home doesn't (A6), nor does her empty home go (her
-        // focused pane is kept clear, as ever).
+        // Resident: an arrival on the idle gate waits for the next quiet
+        // (cued in from her empty home, it stands on); her coming home
+        // doesn't (A6), nor does her empty home go (her focused pane is
+        // kept clear, as ever).
         match self.state {
-            State::Arriving(How::Idle) => self.state = State::Absent,
+            State::Arriving(How::Idle, _) => self.back_out(),
             State::Visiting(_) => self.shake = true,
-            State::Arriving(How::Return(_) | How::Dash)
+            State::Arriving(How::Return(_) | How::Dash, _)
             | State::Absent
             | State::Leaving(_)
             | State::Away(_) => {}
@@ -1286,33 +1293,19 @@ impl Guest {
 
     fn leave(&mut self, now: u64) {
         match std::mem::replace(&mut self.state, State::Absent) {
-            State::Arriving(How::Idle) | State::Absent => {}
-            // Her coming home: only the gate shutting calls it off (A6).
-            arriving @ State::Arriving(How::Return(_) | How::Dash) => self.state = arriving,
-            // Her empty home rains out: her furniture and her door, with
-            // no wave (she isn't there). She's still out, her door's spot
-            // kept for when it shows again.
-            State::Away(empty) => {
-                tracing::info!("houseguest: her empty home goes");
-                if !empty.painted.is_empty() {
-                    let origin = self
-                        .closed_door()
-                        .map_or(i32::from(empty.size.0) / 2, |door| door.x);
-                    let dissolve =
-                        Dissolve::new(now, empty.painted, origin, self.truecolor, empty.size);
-                    // What the last frame showed, as it showed it, until
-                    // the rain: the pieces on their own, and her door's
-                    // image (with the pieces it took in, and nobody in
-                    // it to wave).
-                    self.state = State::Leaving(Box::new(Leaving {
-                        dissolve,
-                        image: empty.image,
-                        startled: sprite::Face::Surprised,
-                        props: empty.apart,
-                        looks: empty.looks,
-                    }));
-                }
+            State::Absent => {}
+            // An arrival on the idle gate: back to where she was, and
+            // that goes (cued in from her empty home, it rains out).
+            arriving @ State::Arriving(How::Idle, _) => {
+                self.state = arriving;
+                self.back_out();
+                self.leave(now);
             }
+            // Her coming home: only the gate shutting calls it off (A6).
+            arriving @ State::Arriving(How::Return(_) | How::Dash, _) => self.state = arriving,
+            // Her empty home rains out. She's still out, her door's spot
+            // kept for when it shows again.
+            State::Away(empty) => self.rain_home(*empty, self.closed_door(), now),
             State::Visiting(visit) => {
                 tracing::info!("houseguest leaving");
                 // In the night she isn't startled: she blinks, half
@@ -1342,6 +1335,94 @@ impl Guest {
                 }
             }
             leaving @ State::Leaving(_) => self.state = leaving,
+        }
+    }
+
+    /// Her empty home as it stands on screen, taken out of her state:
+    /// `State::Away`'s, or the one an arrival carries (left `Absent`, or
+    /// arriving with none). `None` otherwise, her state as it was.
+    fn take_home(&mut self) -> Option<Box<Empty>> {
+        match std::mem::replace(&mut self.state, State::Absent) {
+            State::Away(empty) => Some(empty),
+            State::Arriving(how, home) => {
+                self.state = State::Arriving(how, None);
+                home
+            }
+            other => {
+                self.state = other;
+                None
+            }
+        }
+    }
+
+    /// Her empty home, as the last frame showed it, rains out from
+    /// `now`: her furniture and her closed door (`door`, where the rain
+    /// starts; with none, the middle), with no wave (she isn't there).
+    /// With nothing of it shown she's simply absent. The one way her
+    /// empty home goes whole but at once (sent away, or her room gone:
+    /// [`Guest::vanish`]); an errand breaking in rains only her door
+    /// ([`Guest::door_rain`]), the visit painting the rest.
+    fn rain_home(&mut self, empty: Empty, door: Option<DoorAt>, now: u64) {
+        tracing::info!("houseguest: her empty home goes");
+        self.state = State::Absent;
+        if empty.painted.is_empty() {
+            return;
+        }
+        let origin = door.map_or(i32::from(empty.size.0) / 2, |door| door.x);
+        let dissolve = Dissolve::new(now, empty.painted, origin, self.truecolor, empty.size);
+        // What the last frame showed, as it showed it, until the rain:
+        // the pieces on their own, and her door's image (with the pieces
+        // it took in, and nobody in it to wave).
+        self.state = State::Leaving(Box::new(Leaving {
+            dissolve,
+            image: empty.image,
+            startled: sprite::Face::Surprised,
+            props: empty.apart,
+            looks: empty.looks,
+        }));
+    }
+
+    /// Her coming in called off at `now` (the gate shut under it: an
+    /// overlay, a visitor busy; or the client busy as her coming home is
+    /// decided), or come to nothing (nowhere to come in): she's absent,
+    /// and the empty home she was coming in from, if she was, rains out
+    /// ([`Guest::rain_home`]). Her not being idle after all, for an
+    /// arrival on the idle gate, is [`Guest::back_out`]'s.
+    fn call_off(&mut self, now: u64) {
+        let how = match self.state {
+            State::Arriving(how, _) => how,
+            _ => return,
+        };
+        let home = self.take_home();
+        self.state = State::Absent;
+        if let Some(home) = home {
+            let door = self.door_of(how);
+            self.rain_home(*home, door, now);
+        }
+    }
+
+    /// An arrival on the idle gate called off by her not being idle after
+    /// all (a key, a chat line): she's as she was before it, absent, or,
+    /// cued in from her empty home ([`Guest::cue`]), out with it standing
+    /// as the last frame showed it; what called it off then takes that as
+    /// it would have (a visitor's key rains her home out, [`Guest::leave`];
+    /// a resident's key or a chat line leaves it standing). Anything else
+    /// as it was.
+    fn back_out(&mut self) {
+        self.state = match std::mem::replace(&mut self.state, State::Absent) {
+            State::Arriving(How::Idle, Some(home)) => State::Away(home),
+            State::Arriving(How::Idle, None) => State::Absent,
+            other => other,
+        };
+    }
+
+    /// Where her closed door stands for an arrival `how`: the one she
+    /// comes home out of, or (dashing in, or cued in) the one standing
+    /// while she's out.
+    fn door_of(&self, how: How) -> Option<DoorAt> {
+        match how {
+            How::Return(door) => door,
+            How::Dash | How::Idle => self.closed_door(),
         }
     }
 
@@ -1584,7 +1665,7 @@ impl Guest {
         self.fades.retain(|fade| !fade.done(now));
         let mut changed = match &mut self.state {
             State::Absent => self.absent(now, school, dash),
-            State::Arriving(_) => true,
+            State::Arriving(..) => true,
             State::Away(empty) => {
                 let ticked = quarter && tells_time(&empty.shown);
                 if !school {
@@ -1592,7 +1673,8 @@ impl Guest {
                     true
                 } else if dash && self.comes_in(now) {
                     tracing::info!("houseguest: dashing home from school");
-                    self.state = State::Arriving(How::Dash);
+                    let home = self.take_home();
+                    self.state = State::Arriving(How::Dash, home);
                     true
                 } else {
                     ticked
@@ -1664,7 +1746,7 @@ impl Guest {
             self.out.get_or_insert_default();
             if dash && self.comes_in(now) {
                 tracing::info!("houseguest: dashing home from school");
-                self.state = State::Arriving(How::Dash);
+                self.state = State::Arriving(How::Dash, None);
                 return true;
             }
         } else if self.out.is_some() {
@@ -1676,7 +1758,7 @@ impl Guest {
         }
         if !school {
             tracing::trace!("houseguest arriving");
-            self.state = State::Arriving(How::Idle);
+            self.state = State::Arriving(How::Idle, None);
             return true;
         }
         if !self.furnished() {
@@ -1704,14 +1786,18 @@ impl Guest {
     /// (or she lives here, and visits are on). Its own question (A6),
     /// asked once, here: input or chat since doesn't call it off. Else
     /// she's absent, and comes in later on the idle gate.
+    ///
+    /// Her empty home, if it stands, stands on till she's in; with the
+    /// client busy, it rains out.
     fn school_out(&mut self, now: u64) {
         let door = self.out.take().and_then(|out| out.door);
+        let home = self.take_home();
+        self.state = State::Arriving(How::Return(door), home);
         if self.comes_in(now) {
             tracing::info!("houseguest: home from school");
-            self.state = State::Arriving(How::Return(door));
         } else {
             tracing::debug!("houseguest: school's out, but the client is busy");
-            self.state = State::Absent;
+            self.call_off(now);
         }
     }
 
@@ -1875,7 +1961,7 @@ impl Guest {
                     .chain(self.next_dash(now))
                     .min()
             }
-            State::Arriving(_) => Some(now),
+            State::Arriving(..) => Some(now),
             State::Away(empty) => self
                 .next_boundary(now)
                 .into_iter()
@@ -1930,7 +2016,11 @@ impl Guest {
         let size = (buf.area.width, buf.area.height);
         self.errand_progress(view, now);
         self.nudge_due(buf, view, now);
-        if let State::Arriving(how) = self.state {
+        if let State::Arriving(how, _) = self.state {
+            // Her empty home, if she's coming in from it: the visit
+            // shows her pieces from this frame on, or, if she doesn't
+            // come in, it rains out.
+            let home = self.take_home();
             self.state = State::Absent;
             if size.0 >= MIN_WIDTH && size.1 >= MIN_HEIGHT {
                 let terrain = Terrain::read(buf, &view.protected, self.graphics.is_some());
@@ -1968,6 +2058,20 @@ impl Guest {
             if !self.present() {
                 // Nowhere to stand: try again after another idle delay.
                 self.quiet_since = now;
+                match home {
+                    // At another size her empty home goes at once, as it
+                    // does standing (the geometry it froze against is
+                    // gone). She's still out, her door's spot kept.
+                    Some(home) if home.size != size => {
+                        tracing::info!("houseguest: her empty home goes (no room)");
+                        self.vanish();
+                    }
+                    // Else it rains out.
+                    home => {
+                        self.state = State::Arriving(how, home);
+                        self.call_off(now);
+                    }
+                }
             }
         }
         // Out through her door since the last tick: her home stands
@@ -1981,7 +2085,7 @@ impl Guest {
         // after everything that reads the real frame, and under her.
         let nudge = &self.nudge;
         match &mut self.state {
-            State::Absent | State::Arriving(_) => {
+            State::Absent | State::Arriving(..) => {
                 nudge.paint(buf, now);
                 Rains::ToPaint
             }
@@ -2672,7 +2776,7 @@ impl Guest {
             // Out at school, she comes for it too, out of a door: a dash
             // home (Q2), and after the poke her routine sends her out
             // again by her door.
-            State::Absent | State::Arriving(_) | State::Away(_) => {
+            State::Absent | State::Arriving(..) | State::Away(_) => {
                 // Her closed door, as it stood in her empty home, rains
                 // out as she comes (her pieces stand on in the visit).
                 let door = self.door_rain(now);
@@ -2693,14 +2797,18 @@ impl Guest {
         true
     }
 
-    /// Her closed door as her empty home last painted it (`State::Away`),
-    /// raining out from `now`: what a visit breaking in on it (an errand)
-    /// keeps of it, so it never just vanishes. The pieces it took in
-    /// aren't in it: the visit paints them on.
+    /// Her closed door as her empty home last painted it (`State::Away`,
+    /// or the one an arrival carries), raining out from `now`: what a
+    /// visit breaking in on it (an errand) keeps of it, so it never just
+    /// vanishes. The pieces it took in aren't in it: the visit paints
+    /// them on.
     fn door_rain(&self, now: u64) -> Option<Dissolve> {
-        let (State::Away(empty), Some(door)) = (&self.state, self.closed_door()) else {
-            return None;
+        let (empty, door) = match &self.state {
+            State::Away(empty) => (empty, self.closed_door()),
+            State::Arriving(how, Some(empty)) => (empty, self.door_of(*how)),
+            _ => return None,
         };
+        let door = door?;
         let cells: std::collections::HashSet<(i32, i32)> =
             Door::closed(door.x, door.y, door.facing)
                 .cells()
@@ -2754,12 +2862,12 @@ impl Guest {
             match self.state {
                 // Switched off: no goodbye, and nothing of hers rains on
                 // (a goodbye under way rains to its end).
-                State::Absent | State::Arriving(_) | State::Visiting(_) | State::Away(_)
+                State::Absent | State::Arriving(..) | State::Visiting(_) | State::Away(_)
                     if view.delay.is_none() =>
                 {
                     self.vanish();
                 }
-                State::Arriving(_) => self.state = State::Absent,
+                State::Arriving(..) => self.call_off(now),
                 // A visitor busy (his video, a selection): on an errand,
                 // she stays till it's done; on a dash home from school
                 // (an errand's too, Q2), till she's out again by her door
@@ -2797,11 +2905,11 @@ impl Guest {
                 // Away, it changes nothing, so her coming home asks the
                 // same of a chat line with a home or without (A6).
                 State::Absent if self.out.is_some() => {}
-                State::Absent | State::Arriving(How::Idle) => {
+                State::Absent | State::Arriving(How::Idle, _) => {
                     self.quiet_since = now;
-                    self.state = State::Absent;
+                    self.back_out();
                 }
-                State::Arriving(How::Return(_) | How::Dash) => self.quiet_since = now,
+                State::Arriving(How::Return(_) | How::Dash, _) => self.quiet_since = now,
                 State::Away(_) | State::Leaving(_) => {}
             }
         }

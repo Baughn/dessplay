@@ -5016,6 +5016,77 @@ unicode-width revision re-measures, all unchecked. 12d had swapped no
 line's mark for an ASCII stand-in (her `...` lines were always ASCII),
 so no line changed.
 
+## Her empty home rains out whenever she doesn't come in (2026-10-07)
+
+**Rule:** Her coming in from her empty home (home from school, a dash,
+a stage cue) carries the home in her arriving state until the next
+paint. If she comes in, the visit shows her pieces from that frame on.
+If she doesn't (the client busy as school ends, the arrival called off
+by the gate shutting, or nowhere for her door), it rains out
+(`Guest::call_off`, through `rain_home`, the one place an empty home
+rains out whole; an errand breaking in rains only her door,
+`door_rain`, and a focused pane only what stood in it). At another size than it was drawn at, it goes at once,
+as a standing home does on a resize. A stage-cued arrival called off by
+her not being idle after all (a key, a chat line) puts her back as she
+was, her home standing (`Guest::back_out`), and the cause then takes it
+as it would with no arrival under way: a visitor's key rains it out, a
+resident's key or a chat line leaves it standing. See
+[design.md](design.md#houseguest).
+
+**Why:** phase 5c step 1 made the rule that a rain is cut short only
+when she's sent away (switched off, moved out) or her room goes, and
+handed off one case it didn't reach: with the client busy, `school_out`
+set her state to `Absent`, and her empty home vanished with no rain.
+The cause was wider than that branch. Every arrival from her empty home
+replaced `State::Away` with `State::Arriving`, dropping the home, and
+counted on the next paint's visit to show the pieces again. Any way the
+arrival came to nothing dropped the home: `school_out` with the client
+busy, the gate shutting between the tick and the paint (`observe`'s
+`Arriving → Absent`), or no spot for her door at the paint. The
+property `a_live_rain_always_gets_its_frame` was widened with that
+scene (an overlay up as school ends, a resident, both drawing modes,
+any shell lateness) and a check that a shown empty home never goes
+`Absent` in one step. It failed on seed 0: the tick at 12:45 decided
+her return, the overlay's paint called it off, and the home was gone.
+Carrying the home in `Arriving` makes "called off" mean "rain it out"
+in every path, and an errand sent from that state rains her door out of
+the carried home as it does from `Away`.
+
+The review (T3) found the first cut too harsh in one case and
+under-tested in the rest. A key or a chat line over a stage-cued
+arrival rained the home out, though the same key or line over the home
+itself leaves it standing; calling off an arrival is no reason to treat
+the home worse than its cause would, so `back_out` restores it. The
+other paths, each pinned in both drawing modes and each confirmed by
+breaking the code it covers: `school_ending_on_a_busy_client_rains_her_empty_home_out`
+(the reported branch; in the app only a visitor's key on her errand's
+last frames reaches it, so the test sets the idle timer as that key
+does), `an_overlay_as_she_dashes_home_rains_her_empty_home_out`,
+`an_errand_as_she_comes_in_from_her_empty_home_rains_her_door_out`,
+`home_from_school_with_nowhere_to_come_in_her_empty_home_rains_out`
+(and at another size, at once), and
+`a_cued_arrival_called_off_leaves_her_empty_home_as_the_cause_would`.
+
+The siblings, immune: going out by her door (to school, a dash's end,
+the no-home leave, a visitor's errand at school) goes through
+`out_by_door`, which either leaves her home standing (`Away`) or sends
+the visit through `leave()`, raining. Vacations and weekends never make
+school time, so no empty home stands then, and the day's latch holds a
+vacation flag through the day (A12). `absent()`'s own school's end has
+nothing on screen. An overlay, a busy visitor or a visitor's key over
+`Away` already went through `leave()`; a resident's key and a chat line
+leave it standing. Switched off, moved out, too small a terminal or a
+resize still remove it at once, as the rule says.
+
+One exception, known and left: the stage's cue over a goodbye under way
+(`Guest::cue` over `State::Leaving`) replaces it with the arrival and
+cuts its rain short. It predates T3 and only the stage reaches it.
+Pushing the goodbye's dissolve into her rains (`fades`) would keep the
+rain but not the goodbye's image and pieces, which it paints over the
+dissolve until the rain starts, so in line art it would show a
+different frame; and she would arrive under her own goodbye. No golden
+scene covers any of these paths, so all 112 traces are unchanged.
+
 ## Houseguest chooses by needs among the top few (2026-09-28)
 
 **Rule:** Her next act is a weighted-random pick among the four

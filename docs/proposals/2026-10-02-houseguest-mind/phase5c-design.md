@@ -416,6 +416,8 @@ the user's redraws:
   paints them. Rule: a rain is cut short only when she's sent away (off, moved out) or her room goes;
   every other exit lets it fall. A goodbye overlapping a rain wakes about twice the paint rate. Still
   open: a busy client's `school_out` makes the empty home vanish with no rain (other class).
+  **Resolved (5c tail T3, 2026-10-07):** an arrival carries her empty home until she's in, and one
+  that comes to nothing rains it out (plan.md; decisions.md).
 - **Step 2** credits SpaceOut and Work, and `cut_shift` settles a cut shift by the share worked (the
   errand, `place`/`dash_through`, school, her next decision on the way out). **Deferred to step 8:**
   needs should rise to the credit's moment before it lands (`rise_to` at the top of `serve`); landing
@@ -702,6 +704,12 @@ that her trace is unchanged).
     100 ms paint as another exempt change (a blink, a look up at the chat) is exempt by neither arm
     and fails as a flip; in ASCII the sky's cells inside her box (her leaning at the sill) count as
     hers. Neither comes up today; the door batch moving pieces could. Open (plan.md).
+  - *Her lines, plain ASCII only* (12d). **Resolved (T3, 2026-10-07):** the user allows a few
+    narrow marks ("Realistically none of us use a CJK locale; wide-character support is useful
+    mostly for rare subtitles and filenames"). The allowlist is `NARROW`, … ♪ — – ’ ‘ “ ” ·, one
+    cell each under the renderer's non-CJK width, and `line!` refuses any other at compile time.
+  - *A busy client's `school_out`* (step 1's hand-off; the user left it to the orchestrator).
+    **Resolved (T3, 2026-10-07):** her empty home rains out whenever she doesn't come in after all.
 - Measured: [phase5c/baseline.md](phase5c/baseline.md), "Step 12c".
 
 ## Implemented (2026-10-07)

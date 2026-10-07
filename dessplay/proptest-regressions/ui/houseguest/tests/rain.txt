@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 3b4b450cac2927649c81450847c102d4bef72e6558dcd9396b1119aba58d9365 # shrinks to seed = 0, texty = false, at = Visiting, wait = 3801, jumps = [14, 0, 0, 914, 1298, 0, 0]
+cc d132e0acb2709949dda354eb7ac7ffe42488b7b9e53074f08ccef6bfd233b08d # shrinks to seed = 0, texty = false, at = SchoolEndsCovered, wait = 0, jumps = []

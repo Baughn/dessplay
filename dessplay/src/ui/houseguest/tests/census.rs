@@ -1917,8 +1917,8 @@ impl Where {
             State::Visiting(visit) if visit.kind == Kind::Dash => Where::Dash,
             State::Visiting(_) | State::Leaving(_) => Where::Present,
             State::Away(_) => Where::Away,
-            State::Absent | State::Arriving(_) if guest.out.is_some() => Where::Away,
-            State::Absent | State::Arriving(_) => Where::Gone,
+            State::Absent | State::Arriving(..) if guest.out.is_some() => Where::Away,
+            State::Absent | State::Arriving(..) => Where::Gone,
         }
     }
 }
@@ -2050,7 +2050,7 @@ struct Week {
 fn phase(guest: &Guest) -> String {
     match &guest.state {
         State::Absent => "absent".to_owned(),
-        State::Arriving(how) => format!("arriving {how:?}"),
+        State::Arriving(how, _) => format!("arriving {how:?}"),
         State::Visiting(visit) => format!("visiting {:?}", visit.kind),
         State::Leaving(_) => "leaving".to_owned(),
         State::Away(_) => "away".to_owned(),

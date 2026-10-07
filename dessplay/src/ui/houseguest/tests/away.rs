@@ -719,7 +719,7 @@ fn a_chat_line_while_shes_out_doesnt_stop_her_coming_home() {
                 }
                 assert!(chatted, "{at}");
                 assert!(
-                    matches!(guest.state, State::Arriving(How::Return(_)))
+                    matches!(guest.state, State::Arriving(How::Return(_), _))
                         || matches!(&guest.state, State::Visiting(v) if v.osaka.act_name() == "Door"),
                     "{at}: she comes home out of her door"
                 );
@@ -760,7 +760,7 @@ fn her_coming_home_isnt_called_off_by_a_key_or_a_chat_line() {
                             .clamp(1, 1000);
                         assert!(now <= home_time, "{at}: no wakeup at 12:45");
                         guest.advance(now);
-                        if matches!(guest.state, State::Arriving(How::Return(_))) {
+                        if matches!(guest.state, State::Arriving(How::Return(_), _)) {
                             break;
                         }
                         paint(&mut guest, &real, &view, now);
@@ -820,10 +820,10 @@ fn busy_as_school_ends_she_comes_in_later_on_the_idle_gate() {
                     .clamp(1, 1000);
                 guest.advance(now);
                 assert!(
-                    !matches!(guest.state, State::Arriving(How::Return(_))),
+                    !matches!(guest.state, State::Arriving(How::Return(_), _)),
                     "{at}: home out of her door with a visitor at the keys"
                 );
-                if matches!(guest.state, State::Arriving(How::Idle)) {
+                if matches!(guest.state, State::Arriving(How::Idle, _)) {
                     arrived = Some(now);
                 }
                 paint(&mut guest, &real, &view, now);
@@ -1134,7 +1134,7 @@ fn cued_in_at_school_time_her_routine_sends_her_out_again() {
         let mut now = until_away(&mut guest, &real, &view, 0);
         let visits = guest.ledger.visits;
         guest.cue(Scene::Arrive);
-        assert!(matches!(guest.state, State::Arriving(How::Idle)), "{at}");
+        assert!(matches!(guest.state, State::Arriving(How::Idle, _)), "{at}");
         now += 1;
         paint(&mut guest, &real, &view, now);
         assert!(matches!(guest.state, State::Visiting(_)), "{at}");
@@ -1271,4 +1271,184 @@ fn her_days_case_pulling_text_as_school_begins() {
         120_000,
     )
     .unwrap_or_else(|e| panic!("{e}"));
+}
+
+/// Whether a rain of hers paints any cell of her closed door at `door`.
+fn door_raining(guest: &Guest, door: DoorAt) -> bool {
+    closed(door).cells().any(|(x, y, _)| {
+        let (Ok(x), Ok(y)) = (u16::try_from(x), u16::try_from(y)) else {
+            return false;
+        };
+        guest.fades.iter().any(|fade| fade.painting(x, y))
+    })
+}
+
+/// The stage's cue to arrive from her empty home, called off before the
+/// paint she'd come in on: what calls it off takes her empty home as it
+/// takes it with no arrival under way. A resident's key and a chat line
+/// leave it standing (she's still out, it drawn on the next frame); a
+/// visitor's key rains it out. It never just vanishes.
+#[test]
+fn a_cued_arrival_called_off_leaves_her_empty_home_as_the_cause_would() {
+    let (real, quiet) = home_screen();
+    for resident in [false, true] {
+        for chat in [false, true] {
+            for graphics in [false, true] {
+                let at = format!("resident={resident} chat={chat} graphics={graphics}");
+                let mut view = IdleView {
+                    resident,
+                    ..quiet.clone()
+                };
+                let mut guest = home_at(4, tue(9, 0), &HOME, graphics);
+                let mut now = until_away(&mut guest, &real, &view, 0);
+                assert!(
+                    empty_of(&guest).is_some_and(|empty| !empty.painted.is_empty()),
+                    "{at}: her home shown"
+                );
+                guest.cue(Scene::Arrive);
+                assert!(
+                    matches!(guest.state, State::Arriving(How::Idle, Some(_))),
+                    "{at}: cued in from her home"
+                );
+                now += 1;
+                if chat {
+                    view.chat_mark.synced += 1;
+                } else {
+                    guest.activity(now);
+                }
+                paint(&mut guest, &real, &view, now);
+                if resident || chat {
+                    assert!(
+                        empty_of(&guest).is_some_and(|empty| !empty.painted.is_empty()),
+                        "{at}: her home stands on, drawn"
+                    );
+                    assert!(guest.closed_door().is_some(), "{at}: her door kept");
+                } else {
+                    assert!(
+                        matches!(guest.state, State::Leaving(_)),
+                        "{at}: her home rains out"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// An errand due on the paint she'd come in on from her empty home (cued
+/// in, or home from school as it ends): her closed door, as the home she
+/// carries in has it, rains out rather than vanishing.
+#[test]
+fn an_errand_as_she_comes_in_from_her_empty_home_rains_her_door_out() {
+    let (real, view) = home_screen();
+    for school_ends in [false, true] {
+        for graphics in [false, true] {
+            let at = format!("school_ends={school_ends} graphics={graphics}");
+            let start = if school_ends { tue(12, 44) } else { tue(9, 0) };
+            let mut guest = home_at(4, start, &HOME, graphics);
+            let mut now = until_away(&mut guest, &real, &view, 0);
+            let door = guest.closed_door().expect("her door");
+            if school_ends {
+                let home = real_of(&guest, now, tue(12, 45));
+                assert!(now < home, "{at}: school ended already");
+                now = home;
+                guest.advance(now);
+                assert!(
+                    matches!(guest.state, State::Arriving(How::Return(_), Some(_))),
+                    "{at}: home from school, from her home"
+                );
+            } else {
+                guest.cue(Scene::Arrive);
+                now += 1;
+                assert!(
+                    matches!(guest.state, State::Arriving(How::Idle, Some(_))),
+                    "{at}: cued in from her home"
+                );
+            }
+            let accordion = Rect::new(10, 8, 20, 1);
+            assert!(guest.send(&real, &view, accordion, now), "{at}: sent");
+            assert!(matches!(guest.state, State::Visiting(_)), "{at}: visiting");
+            assert!(door_raining(&guest, door), "{at}: her door rains out");
+        }
+    }
+}
+
+/// School ends with the client busy, her home standing empty: she
+/// doesn't come home out of her door (A6), and her home rains out rather
+/// than vanishing (step 1's hand-off).
+#[test]
+fn school_ending_on_a_busy_client_rains_her_empty_home_out() {
+    let (real, view) = home_screen();
+    for graphics in [false, true] {
+        let at = format!("graphics={graphics}");
+        let mut guest = home_at(4, tue(12, 44), &HOME, graphics);
+        let now = until_away(&mut guest, &real, &view, 0);
+        let home = real_of(&guest, now, tue(12, 45));
+        assert!(now < home, "{at}: school ended already");
+        // Busy as school ends with her home still standing: in the app,
+        // only a visitor's key on her errand's last frames does this (it
+        // waits for her poke, and leaves the idle timer set, as here),
+        // too narrow a window to set up honestly.
+        guest.quiet_since = home - 1;
+        guest.advance(home);
+        assert!(
+            matches!(guest.state, State::Leaving(_)),
+            "{at}: her home rains out"
+        );
+        paint(&mut guest, &real, &view, home);
+        assert!(
+            matches!(guest.state, State::Leaving(_)),
+            "{at}: her home's rain drawn"
+        );
+    }
+}
+
+/// Home from school with nowhere for her door at the paint she'd come in
+/// on (the whole screen kept clear): she doesn't come in, and her empty
+/// home rains out rather than vanishing; at another size than it was
+/// drawn at, it goes at once (the geometry it froze against is gone).
+#[test]
+fn home_from_school_with_nowhere_to_come_in_her_empty_home_rains_out() {
+    let (real, view) = home_screen();
+    for resized in [false, true] {
+        for graphics in [false, true] {
+            let at = format!("resized={resized} graphics={graphics}");
+            let mut guest = home_at(4, tue(12, 44), &HOME, graphics);
+            let now = until_away(&mut guest, &real, &view, 0);
+            let home = real_of(&guest, now, tue(12, 45));
+            assert!(now < home, "{at}: school ended already");
+            guest.advance(home);
+            assert!(
+                matches!(guest.state, State::Arriving(How::Return(_), Some(_))),
+                "{at}: home from school, from her home"
+            );
+            let area = if resized {
+                Rect::new(0, 0, real.area.width + 4, real.area.height)
+            } else {
+                real.area
+            };
+            let mut screen = Buffer::empty(area);
+            screen.merge(&real);
+            let kept = IdleView {
+                protected: vec![area],
+                ..view.clone()
+            };
+            paint(&mut guest, &screen, &kept, home);
+            assert!(
+                !matches!(guest.state, State::Visiting(_)),
+                "{at}: she came in"
+            );
+            if resized {
+                assert!(
+                    matches!(guest.state, State::Absent),
+                    "{at}: her home goes at once"
+                );
+                assert!(guest.fades.is_empty(), "{at}: nothing rains on");
+            } else {
+                assert!(
+                    matches!(guest.state, State::Leaving(_)),
+                    "{at}: her home rains out"
+                );
+            }
+        }
+    }
 }

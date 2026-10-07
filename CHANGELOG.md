@@ -27,6 +27,10 @@ Add new days at the top. Add new entries at the bottom of existing days.
 - Fixed: a parcel no longer arrives where Osaka can't get at it to
   unpack it, sitting boxed by her TV, or where she could unpack it but
   never use it (a desk she can't sit at).
+- Fixed: if a menu or a dialog comes up (or, when she isn't resident, a
+  video starts or you select text) just as Osaka comes home from school
+  or dashes home, her empty home now rains away as it does at any other
+  time instead of vanishing at once.
 
 ## 2026-10-06
 

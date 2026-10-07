@@ -7070,7 +7070,7 @@ fn watch_errand(
                     seen.gone.get_or_insert(now);
                 }
             }
-            State::Arriving(_) | State::Away(_) => {}
+            State::Arriving(..) | State::Away(_) => {}
         }
         // Shaking, and painted so (under her feet it's in her image).
         let moved = (accordion.left()..accordion.right())

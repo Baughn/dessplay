@@ -3318,6 +3318,45 @@ edge table and property (`a_bob_frame_flips_on_the_grid_clear_of_its_ends`,
 `any_bob_frame_flips_on_the_grid_clear_of_its_ends`), and the lint
 `every_bob_at_a_set_time_flips`.
 
+**Phase 5c's tail, T3 (2026-10-07),** two commits. (A) Her lines may
+use a few narrow marks beyond ASCII, the user's call ("Realistically
+none of us use a CJK locale; wide-character support is useful mostly for
+rare subtitles and filenames"). The allowlist is `NARROW`: … ♪ — – ’ ‘ “ ” ·,
+each one cell wide under the renderer's non-CJK width. `line!` refuses
+any other character beyond ASCII at compile time, the fixed bubbles
+("...", "zzz") included. `her_narrow_marks_are_one_cell_wide` pins each
+mark's width and that `cells::put`, `cells::width` and the rain never
+take one for wide. 12d had swapped no mark for an ASCII stand-in, so no
+line changed and there's no CHANGELOG entry. (B) Her empty home never
+just vanishes when she doesn't come in. `State::Arriving` carries the
+home she's coming in from until the next paint, and `call_off` rains it
+out when the arrival comes to nothing: the client busy as school ends,
+the gate shutting between the tick and the paint, an idle arrival
+called off, or no spot for her door. An errand sent from that state
+rains her door out of the carried home. The widened property
+`a_live_rain_always_gets_its_frame` (new scene: an overlay up as school
+ends; new check: a shown empty home never goes `Absent` in one step)
+failed on seed 0 before the fix. The siblings, and why they're immune,
+are in decisions.md ("Her empty home rains out whenever she doesn't
+come in"). The review fixes, folded into (B): a stage-cued arrival
+called off by a key or a chat line puts her back with her home standing
+(`back_out`), and the cause takes it as over her home itself (a
+visitor's key rains it, a resident's key or a chat line leaves it); at
+another size than it was drawn at, a home with nowhere to come in goes
+at once ("(no room)"), as a standing one does; each path has its own
+test in both drawing modes, confirmed against the code broken (the
+busy `school_out`, an overlay on her dash, an errand as she comes in,
+nowhere for her door, the cued call-offs), and the property's scene a
+fixed-draw test. The stage's cue over a goodbye still cuts its rain
+short (stage-only, predates T3; decisions.md says why it's left).
+Goldens: all 112 traces byte-identical after each commit and after the
+fixes (no golden scene reaches either change). The band is unmoved and
+was not re-measured: its afternoons assert she stays visiting at every
+step, so it never reaches an arrival, and the one changed path the
+census could reach without a key or an overlay (nowhere for her door
+with her home carried) never fired in the day census (a probe, 18 game
+weeks, release).
+
 **Open, for the user:**
 - **The two `SHORT` items** above; the lead for the stage's spread is a
   mood factor on spacing out for its own sake, which weighs the same in
@@ -3373,8 +3412,9 @@ edge table and property (`a_bob_frame_flips_on_the_grid_clear_of_its_ends`,
   outweighs homework on the floor 4–5×, so she usually makes the desk
   before her back aches; gating the desk on the ache would make "a sore
   back, then the desk" the order (a design change, 10a).
-- **A busy client's `school_out`** makes the empty home vanish with no
-  rain (step 1's hand-off; another class).
+- **A busy client's `school_out`** (step 1's hand-off): **resolved in
+  T3.** Every arrival from her empty home now carries it until she's
+  in, and one that comes to nothing rains it out.
 - **Her door overlapping her furniture** (the user's report): the door
   batch, next.
 - 5b's still-open items: rares a home can't show, her pane-corner column.

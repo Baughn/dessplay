@@ -56,7 +56,7 @@ fn empty_of(guest: &Guest) -> Option<&Empty> {
 
 /// Whether she's on a dash home.
 fn dashing(guest: &Guest) -> bool {
-    matches!(guest.state, State::Arriving(How::Dash))
+    matches!(guest.state, State::Arriving(How::Dash, _))
         || matches!(&guest.state, State::Visiting(visit) if visit.kind == Kind::Dash)
 }
 
@@ -859,7 +859,8 @@ fn stopped_on_her_way_to_her_lunch_she_sets_off_again() {
         // Dashing home as her clock would have her (not cued: the stage
         // puts her door beside her fridge), out of her closed door, a
         // walk from her fridge.
-        guest.state = State::Arriving(How::Dash);
+        let home = guest.take_home();
+        guest.state = State::Arriving(How::Dash, home);
         let walking = |guest: &Guest| {
             matches!(&guest.state, State::Visiting(visit)
                 if visit.osaka.act_name() == "Walk"
@@ -1288,5 +1289,55 @@ proptest! {
         let mut guest = Guest::restore(Ledger::new_at(seed, before_a_dash(seed, from)));
         guest.set_date(date(2026, 6, 17));
         long_visit_of(guest, graphics, &sizes, &text, &skips, &chats, protect, &owned, 120_000)?;
+    }
+}
+
+/// An overlay coming up on the paint she'd dash home on (her dash
+/// decided at the tick before), her home standing empty: the dash is
+/// off, and her home rains out, never just vanishing.
+#[test]
+fn an_overlay_as_she_dashes_home_rains_her_empty_home_out() {
+    let (real, home) = home_screen();
+    let home = IdleView {
+        resident: true,
+        ..home
+    };
+    let covered = IdleView {
+        busy: Some(Busy::Overlay),
+        ..home.clone()
+    };
+    for graphics in [false, true] {
+        let at = format!("graphics={graphics}");
+        let (seed, minute) = dash_seed(0);
+        let mut guest = home_at(seed, tue_at(minute - 2), &FRIDGE_HOME, graphics);
+        let mut now = until_visiting_or_away(&mut guest, &real, &home);
+        shell_step(&mut guest, &real, &home, &mut now, true);
+        assert!(
+            empty_of(&guest).is_some_and(|empty| !empty.painted.is_empty()),
+            "{at}: her home shown"
+        );
+        let dash = real_of(&guest, now, tue_at(minute));
+        loop {
+            assert!(now < dash + 30_000, "{at}: never dashed");
+            now += guest
+                .next_tick(now)
+                .map_or(1000, |d| d.as_millis() as u64)
+                .clamp(1, 1000);
+            guest.advance(now);
+            if dashing(&guest) {
+                break;
+            }
+            paint(&mut guest, &real, &home, now);
+        }
+        assert!(
+            matches!(guest.state, State::Arriving(How::Dash, Some(_))),
+            "{at}: dashing in from her home"
+        );
+        paint(&mut guest, &real, &covered, now);
+        assert!(
+            matches!(guest.state, State::Leaving(_)),
+            "{at}: her home rains out"
+        );
+        assert!(!waving(&guest), "{at}: nobody in it to wave");
     }
 }

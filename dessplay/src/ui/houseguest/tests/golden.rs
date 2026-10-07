@@ -57,7 +57,7 @@ impl Trace {
                 )
             }
             State::Leaving(_) => "leaving".to_owned(),
-            State::Arriving(_) => "arriving".to_owned(),
+            State::Arriving(..) => "arriving".to_owned(),
             State::Absent => "absent".to_owned(),
             State::Away(_) => "away".to_owned(),
         };
