@@ -4295,11 +4295,26 @@ base 3 gave 36 look-outs, 4 gave 82, 5 gave 140, 6 gave 175. Base 4 is
 the nearest two a day (1.95).
 
 **The tolerance (the user, after base 4 had been measured):** "4.5 times
-a game day is fine. I'd accept anything in the 2-6 range." Base 4 stays
-(1.95, two to the user's rounding). The day census holds 1.5 to 2.5 a
-game day, the band around what ships, so drift fails it; a deliberate
-retune within about two to six a day needs no new sign-off, and moves
-the day census's 1.5–2.5 bound with it (phase 5c step 13).
+a game day is fine. I'd accept anything in the 2-6 range." Base 4 stayed
+(1.95, two to the user's rounding) until phase 5c's tail, below. A
+deliberate retune within two to six a day needs no new sign-off.
+
+**Why base 5 (phase 5c's tail, T1, 2026-10-07):** base 4's 1.95 a game
+day sits just under the 2 to 6 the user accepts; base 5 measured 140
+look-outs in the day census's 42 game days (3.3 a day), mid-range, so
+neither noise nor a neighbouring change pushes it out. The day census
+now holds the user's range itself, 2 to 6 a game day in a room with her
+window, not a band around what ships: it fails only outside that range,
+so drift inside it shows only in the number the census prints. No band
+room has a window, so no band cell moved; in the fed afternoon's
+windowed home (printed, judged by nothing, 15 minutes against the
+band's 17) her time leaning at the sill rose from at most 3% of an
+afternoon visit to 1.5–12% by mood (of an evening, 6–17% to 13–23%),
+moving in sight moved by at most 1.2 points, mostly down, and every
+cell stays inside its mood's band by eye. Base 4 never
+reached players (all of 5c was unpushed), so the changelog's "she looks
+out of her window more often" (against the pushed base 3, 0.33 a day)
+stays true and needs no new entry.
 
 ## Her stillness ships (2026-10-07)
 

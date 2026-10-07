@@ -2313,11 +2313,11 @@ this section states what is built.
   three, industrious none or one) ("That
   one's a cat.", "The moon's followin' me."), each a gap on, from the sky
   as it is as she says it, waiting while she speaks or looks up at the
-  chat. Its base is 4; it's on offer
+  chat. Its base is 5; it's on offer
   only with her window in reach, answers daydreams and fun, and is
   twice as likely from 17:00 to 05:00 (in a furnished home with the
-  window, about two a game day: the user's aim, who accepts anything
-  from about two to six). Settling in
+  window, about three a game day, mid-way in the two to six the user
+  accepts; the day census holds that range). Settling in
   from the sill, she sits down in front of it where she leaned (chin in her hands, looking
   up; a chat line has her look up without turning from it), then dozes
   off there or, on the doze's other side, lies back under it watching the

@@ -789,12 +789,13 @@ impl Want {
             Self::Use(Use::Pet) => in_chat(row(8.0, &[(Need::Fun, 0.6)])),
             // Gazing out of the window: a daydream, as gazing up is, and
             // a little fun (what's out there?). Rarer than it was, and far
-            // longer (phase 5c D6: her long daydream at the sill). About
-            // two a game day in a furnished home with a window, as the
-            // user asked (step 12c): the day census measured 82 in its 42
-            // game days at base 4 with the stillness levers on.
+            // longer (phase 5c D6: her long daydream at the sill). 2 to 6
+            // a game day in a furnished home with a window, the range the
+            // user accepts (step 12c): the day census measured 140 in its
+            // 42 game days (3.3 a day) at base 5 with the stillness levers
+            // on, mid-range (base 4's 82, 1.95, sat under it).
             Self::Use(Use::LookOut) => with(
-                row(4.0, &[(Need::Daydreams, 0.5), (Need::Fun, 0.3)]),
+                row(5.0, &[(Need::Daydreams, 0.5), (Need::Fun, 0.3)]),
                 LOOK_OUT_FACTORS,
             ),
             // Only on offer while a rule she has felt is broken and her
@@ -1267,12 +1268,13 @@ mod tests {
         let def = Want::Use(Use::LookOut).def();
         assert_eq!(def.serves, &[(Need::Daydreams, 0.5), (Need::Fun, 0.3)]);
         // Rarer and far longer than it was (phase 5c D6: 8, 15-30 s). The
-        // user asked for about two a game day in a furnished home with a
-        // window (step 12c, the outcome, not the number): with the
-        // stillness levers on, the day census read 36 look-outs in its
-        // 42 game days at base 3, 82 at 4 (about two a day), 140 at 5
-        // and 175 at 6.
-        assert_eq!(def.base, 4.0);
+        // user accepts 2 to 6 a game day in a furnished home with a
+        // window (step 12c, the outcome, not the number; the day census
+        // holds that range): with the stillness levers on, the day census
+        // read 36 look-outs in its 42 game days at base 3, 82 at 4 (1.95
+        // a day, under the range), 140 at 5 (3.3, mid-range, as shipped
+        // in phase 5c's tail, T1) and 175 at 6.
+        assert_eq!(def.base, 5.0);
         assert!(!def.own_sake);
         assert_eq!(def.factors, LOOK_OUT_FACTORS);
     }

@@ -1405,3 +1405,33 @@ of her TV showing one. A 1024-image cache (`CACHE_LIMIT`) encodes nothing again 
 512 in the busiest). Step 12b read 498 / 525 most distinct: the drivers paint at every input since 12c,
 so a few more frames are drawn. The live room is unchanged (its 13 at 1024 in the busiest industrious
 two hours, as before).
+
+## Phase 5c's tail, T1: looking out at base 5 (2026-10-07)
+
+Looking out's base 4 → 5 (the user accepts 2 to 6 a game day; base 4's 1.95 sat under it).
+
+**The day census** (as step 13's, release, 57 s): **looking out 140 in 42 game days, 3.33 a day**, inside
+its new bound (2 to 6, the user's range); afternoon hour glances home 20, stage 14, resident 14, as step 13.
+
+**The band** doesn't move: no band room owns a window (the fed afternoon census's 80 rows without a
+window are step 13's to the digit). **The fed afternoon's windowed rooms** (printed, judged by nothing;
+15 minutes, 80 visits; ASCII and line art read the same), moving % / set-offs a minute in sight, quiet
+then chat, step 13 → T1, and her share of the visit leaning at the sill (`use:LookOut:real`; her
+sitting or dozing under it, `idle:UnderSill`, e.g. 1.2% lazy, isn't in it):
+
+| Room | Mood | Quiet | Chat | Leaning at the sill (LookOut) |
+|---|---|---|---|---|
+| home+window | Lazy | 11.1 / 0.59 → 10.5 / 0.56 | 11.3 / 0.67 → 11.4 / 0.64 | 1.3 → 8.2–8.9% |
+| home+window | Ordinary | 21.4 / 1.24 → 21.4 / 1.20 | 21.9 / 1.35 → 20.7 / 1.30 | ≤1.4 → 5.6–5.7% |
+| home+window | Dreamy | 21.9 / 1.23 → 21.3 / 1.17 | 20.6 / 1.30 → 19.6 / 1.25 | 2.6–3.1 → 11.2–11.7% |
+| home+window | Industrious | 30.3 / 1.68 → 30.4 / 1.67 | 28.8 / 1.81 → 28.6 / 1.80 | <1 → 1.5–2.0% |
+| …, evening | Lazy | 10.1 / 0.49 → 9.3 / 0.47 | 10.0 / 0.54 → 9.4 / 0.51 | 9.0–11.0 → 18.8–19.4% |
+| …, evening | Ordinary | 18.6 / 1.03 → 17.4 / 1.00 | 18.1 / 1.17 → 17.2 / 1.12 | 10.7–12.3 → 17.3–20.1% |
+| …, evening | Dreamy | 18.4 / 1.03 → 18.2 / 1.04 | 17.7 / 1.17 → 18.1 / 1.15 | 15.5–16.8 → 22.1–22.7% |
+| …, evening | Industrious | 26.6 / 1.57 → 26.0 / 1.48 | 25.4 / 1.69 → 25.0 / 1.64 | 6.3–7.0 → 12.8–13.3% |
+
+Every cell is inside its mood's band (floors 5 / 8 / 8 / 12, ceilings 17 / 26 / 26 / 31) and under its
+cap, compared by eye: these rooms ran 15 minutes, where band.rs judges its rooms at `BAND_MINUTES` (17),
+and nothing judges them. Moving in sight moved by at most 1.2 points, mostly down (lazy chat, industrious
+quiet and the evening dreamy chat rose a tenth or so). No golden scene owns a window: all 112 traces are
+byte-identical.

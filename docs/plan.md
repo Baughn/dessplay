@@ -2993,7 +2993,7 @@ midnight snack) cost her what she came for; fixed with a property each.
   came once in six home-weeks (nine each in the stage and resident). The
   glance is also once per visit, not per game day, and D4's "Gaze ×more
   with a window" isn't built. *(Fixed in 5c: looking out is a long
-  daydream, about two a game day (base 4); the afternoon glance lost its
+  daydream, about three a game day (base 5); the afternoon glance lost its
   one-in-three roll, and comes 20 times in the census home's six weeks,
   14 on the stage and 14 in the resident's; D4 was dropped, the window
   being the daydream itself. The glance stays once a visit, by decision:
@@ -3162,7 +3162,7 @@ lingering rain frame) held still.
   that the player shows the real video, not the placeholder.
 - **12c.** The drivers paint her at every input, as the client does;
   the user's answers (an industrious watch isn't shortened, the film's
-  saturation ×1.3, looking out at base 4); the stillness rule tested on
+  saturation ×1.3, looking out at base 4, base 5 since T1); the stillness rule tested on
   drawn cells.
 - **12d.** Two failures older than 5c that 5c's property runs surfaced, each
   fixed as a class: a moved wide glyph rains out whole, never half of one
@@ -3203,8 +3203,8 @@ afternoon (30.6 against 31) is in by noise only: the next change to what an
 industrious Osaka does re-measures it at N = 525 first. The resident's
 dreamy afternoon with chat measures 9.1, but is aimed at 8.3, just over
 its floor of 8: the test at N = 525 holds it to 7.7, and enforcing the
-floor itself takes N = 2266, so its value is read against the band by eye. Looking out: 1.95
-a game day in the census home (82 in 42 game days). The unfed visit census
+floor itself takes N = 2266, so its value is read against the band by eye. Looking out: 3.3
+a game day in the census home (140 in 42 game days, base 5 since T1; base 4 read 1.95). The unfed visit census
 (5a-comparable, ASCII, with chat) reads 5–12% moving on the stage by
 mood (22–30% before 5c, at 4–6 set-offs a minute), 11–26% in the home and
 8–16% in the resident.
@@ -3246,9 +3246,8 @@ mood (22–30% before 5c, at 4–6 set-offs a minute), 11–26% in the home and
   stage's industrious afternoon with chat and the stage's spread.
 - **Looking out:** base 6 first, then the outcome over the number: about
   two long daydreams a game day (base 4, 1.95). "4.5 times a game day is
-  fine. I'd accept anything in the 2-6 range": future tuning has that
-  tolerance (the day census holds 1.5–2.5 around what ships, so drift
-  fails there). The afternoon hour glance lost its roll; a borrowed strip
+  fine. I'd accept anything in the 2-6 range": base 5 (3.3, mid-range)
+  ships since T1, and the day census holds the 2 to 6 itself. The afternoon hour glance lost its roll; a borrowed strip
   doesn't turn her at a chat line.
 - **The TV (D7):** the film, the mock's column 7 (centre crop, 1.3× zoom,
   a levels lift, saturation ×1.3, no sheen), drawn cards otherwise; a

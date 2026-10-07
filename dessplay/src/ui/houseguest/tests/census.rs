@@ -2297,9 +2297,9 @@ fn live_for(room: &Room, seed: u64, date: Option<chrono::NaiveDate>, until: u64)
 /// goodbyes, her vignettes, clock glances by kind, looking out of her
 /// window, the calendar, rare things first seen); then the same by slot,
 /// and each run's rare draws and one-off events. It holds one outcome:
-/// in a room with her window she looks out about two times a game day
-/// (1.5 to 2.5: the user's ask, phase 5c step 12c), so tuning that moves
-/// it fails here, not only in a pinned base. About a minute in
+/// in a room with her window she looks out 2 to 6 times a game day (the
+/// range the user accepts, phase 5c step 12c), so tuning that moves it
+/// out fails here, not only in a pinned base. About a minute in
 /// release. Ignored; run by hand:
 ///
 /// ```text
@@ -2409,9 +2409,10 @@ fn day_census() {
             eprintln!("    rares: {}", week.rares.join("; "));
             eprintln!("    once: {}", week.once.join("; "));
         }
-        // The user's outcome for her window (phase 5c step 12c): about two
+        // The user's outcome for her window (phase 5c step 12c): 2 to 6
         // long window daydreams a game day in a furnished home with a
-        // window (82 in its 42 game days, 1.95, at base 4 when it shipped).
+        // window (140 in its 42 game days, 3.3, at base 5 as shipped in
+        // phase 5c's tail, T1; base 4's 1.95 sat under the range).
         let days = runs.len() * 7;
         let looks = whole.events.get("look out").copied().unwrap_or(0);
         let a_day = looks as f64 / days as f64;
@@ -2423,8 +2424,8 @@ fn day_census() {
     assert!(!looking_out.is_empty(), "a day room has her window");
     for (name, a_day) in looking_out {
         assert!(
-            (1.5..=2.5).contains(&a_day),
-            "{name}: she looks out {a_day:.2} times a game day, not about two"
+            (2.0..=6.0).contains(&a_day),
+            "{name}: she looks out {a_day:.2} times a game day, not 2 to 6"
         );
     }
 }

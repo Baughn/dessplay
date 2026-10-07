@@ -644,7 +644,8 @@ that her trace is unchanged).
   furnished home with a window, and chose the outcome, not the number: the day census read 36
   look-outs in its 42 game days at base 3, 82 at 4 (1.95 a day), 140 at 5 and 175 at 6, with the
   levers on. The day census now holds the outcome (1.5 to 2.5 a game day in a room with her window),
-  not only the pinned base.
+  not only the pinned base. *(Since T1, 2026-10-07: base 5, 3.3 a day, mid-way in the 2 to 6 the
+  user accepts, and the day census holds 2 to 6.)*
 - **Left as they are, by the user's word:**
   - The shopping channel's hook bobs through its whole span, up to about 49 s on a lazy watch. The
     user: "Continuous cyclical movement gets filtered out by the human optical system almost as
