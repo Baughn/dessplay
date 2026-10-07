@@ -7056,6 +7056,13 @@ impl Osaka {
         self.looking_up.is_some()
     }
 
+    /// Whether she's stirring at a chat line at `now`, dozing (by day or
+    /// for the night): her head up a moment, murmuring.
+    #[cfg(test)]
+    pub fn stirring_at_chat(&self, now: u64) -> bool {
+        now < self.stir_until
+    }
+
     /// Where the key of her act's script playing at `now` is, if her act
     /// plays one (a use, or an idle act or spacing out with a script).
     #[cfg(test)]

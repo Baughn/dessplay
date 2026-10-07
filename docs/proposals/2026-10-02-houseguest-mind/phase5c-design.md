@@ -652,4 +652,31 @@ that her trace is unchanged).
     (design.md's stillness rule says so; decisions.md, "Her TV holds a picture").
   - A resident staying in the chat pane is not weighted: only going in is a tenth.
 - **The TV's `NotAsked` retry after 5 s stands** (the orchestrator's call, unless the user objects).
+- **The stillness test, drawn** (12a's hand-off): `no_long_act_flips_drawn_cells_faster_than_a_frame`
+  paints every 100 ms, with chat and the film fed, in the TV-only home, the shopping home, the home
+  with her window and the resident, and compares drawn cells and images; its exemptions are
+  design.md's four, each only its own change with nothing else drawn alongside (a chat line's stir,
+  dozing, counts as the look up at it, for now).
+- **Open, for the user** (each found by the stillness tests; each fix would change how she looks, a
+  golden re-record; until then the test allows exactly the case, provisionally, or keeps it ignored):
+  - *A bob's key ending off its frame grid.* A key that bobs (her writing, her breathing asleep)
+    ending at a share of the use (her homework nodding off) always comes less than a frame after the
+    bob's last flip. The test allows exactly that: the change that ends a bobbing key, within a
+    frame of that same key's last flip; any other change near a bob's flip counts (design.md says
+    "for now"). The fix in what she does: hold a bob's last frame through the partial period before
+    its key ends (and its first flip until a frame after its key starts).
+  - *A stir is shorter than a frame by day.* A chat line stirring her dozing by day ("Mm?") lasts
+    `speech_ms("Mm?")` = 1380 ms, under the 1400 ms frame, so it comes and goes inside one (a
+    night's "mm..." lasts 1500 ms). The test exempts a stir as the dozing form of a look up. The
+    fix: `stir_until = now + speech_ms(line).max(USE_FRAME_MS)`.
+  - *The world's clock.* In the home with her wall clock, the dial (each game quarter-hour, about
+    150 s at 6×) stepped 656 ms after her breathing's flip asleep ("home, clock and window Lazy
+    seed 0", both modes); the window's sky would do the same at dawn and dusk. It's no act of
+    hers, and steady and slow (this round's principle may cover it), so whether the rule holds it
+    is the user's call: that room's run is
+    `no_long_act_flips_drawn_cells_faster_than_a_frame_by_her_clock`, ignored with those numbers.
+  - *The golden driver's order within a moment.* It tells her of a key press and cues the stage
+    before it advances her, where the shell advances her first; it paints at no ~10 Hz snapshot
+    redraw during playback. Documented (`drive`, testing-strategy.md), not changed: changing it is
+    a golden re-record for the harness alone.
 - Measured: [phase5c/baseline.md](phase5c/baseline.md), "Step 12c".

@@ -4504,11 +4504,45 @@ rooms, the home with her window (its sill session is her longest still
 act) and the furnished home with the shopping channel on (so the hook's
 exemption is tried, not only the script's own test). It compares her
 model's state (how she looks, where, what her script shows, the lamp),
-not drawn cells: a sound proxy while drawing is a pure map from that
-state, pinned by `each_prop_looks_distinct_in_each_mode` and
-`every_piece_shows_what_her_script_shows_on_it`. Step 12b's film is
-drawing alone, so its once-a-minute swap has a variant that compares
-drawn images (`a_long_watch_takes_a_fresh_still_once_a_minute`).
+not drawn cells: a proxy for what's drawn of her and what her script
+shows, which map from that state (`each_prop_looks_distinct_in_each_mode`,
+`every_piece_shows_what_her_script_shows_on_it`). Some of what's drawn
+isn't in her model: step 12b's film, her wall clock's dial (each game
+quarter-hour) and her window's sky. So the rule has a drawn variant
+(step 12c, `no_long_act_flips_drawn_cells_faster_than_a_frame`): painted
+every 100 ms as a client would paint (advanced first, as the shell
+does), with chat, in the TV-only home, the home with the shopping
+channel on, the home with her window and the resident, every mood, both
+modes, the film's stills fed through `TvFeed` as the shell feeds them,
+it compares the cells and images painted. Its exemptions are design.md's
+four, each only that change with nothing else drawn changing alongside
+(step 12c's review: a looser check let any drawn change ride along a
+look up): a blink changes cells only in her box and no look but hers;
+the hook's bob only the TV's cells and look; a look up (or a stir)
+changes her pose, face, bubble or facing in her model, no look but hers
+and no piece's cells outside her box; the film's fresh still, at a paint
+a still was delivered at, takes the TV from a still (or the programme
+it stands in for) to another still of the same programme, and nothing
+else (that it comes once a minute is
+`a_long_watch_takes_a_fresh_still_once_a_minute`'s to hold). Mutants
+it fails: one that swaps back to the still before at every paint (the
+TV's image flipping 100 ms apart, no still delivered; the model's test
+can't see it), and one that flickers a cell above her every 200 ms while
+she looks up at the chat (the looser check passed it).
+
+**Open from the drawn variant (step 12c, the user's call):** with chat
+on, a chat line stirring her asleep by day ("Mm?") showed up as a
+change just after her breathing's flip. A stir is the dozing form of a
+look up at the chat, so the test exempts it with the look up; but by
+day it lasts `speech_ms("Mm?")` = 1380 ms, under a frame, so it comes
+and goes inside one (a night's "mm..." lasts 1500 ms). Making it last at
+least a frame (`speech_ms(line).max(USE_FRAME_MS)`) would change how
+she looks (a golden re-record). And in the home with her wall clock its
+dial steps within a frame of her own changes (her breathing asleep:
+656 ms apart), as the window's sky would at dawn and dusk: the world's
+clock is no act of hers, and steady and slow, so whether the rule holds
+it is the user's call; its run is kept, ignored, with those numbers
+(`no_long_act_flips_drawn_cells_faster_than_a_frame_by_her_clock`).
 
 **Why a bob's key may end within a frame of its last flip, for now
 (step 12c):** a key that bobs (her writing, her breathing asleep) flips

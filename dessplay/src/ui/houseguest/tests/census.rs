@@ -1512,7 +1512,7 @@ const WEEK_MS: u64 = 7 * 24 * 60 * 60_000 / CLOCK_SPEED;
 /// Her home for the day census: the census home's pieces, with her wall
 /// clock and her window (so she can glance at the one and look out of
 /// the other).
-const DAY_HOME: [Furniture; 9] = [
+pub(super) const DAY_HOME: [Furniture; 9] = [
     Furniture::Sofa,
     Furniture::Tv,
     Furniture::Bed,

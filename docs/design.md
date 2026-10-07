@@ -1897,14 +1897,17 @@ this section states what is built.
   each programme is its own pair of screen glyphs. No act of hers that
   holds her place for over 30 s changes how she or her furniture looks
   faster than once a frame (1.4 s) after its first 10 s, her slow
-  blink, the hook's bob, a look up at the chat and the film's fresh
+  blink, the hook's bob, a look up at the chat (dozing, a stir at it,
+  for now: by day it lasts under a frame, open) and the film's fresh
   still (below) apart. Steady periodic motion is not what draws the
   eye; a change is: so the hook bobs through the whole of its span,
   however long her mood lingers over the act (a lazy one's up to
   49 s). For now, a bob's key ending (her homework nodding off, at a
   share of the use) may come within a frame of that bob's last flip, as
   it ends off the bob's frame grid (provisional: whether she holds the
-  bob's last frame instead is open) (why:
+  bob's last frame instead is open). Her wall clock's dial and her
+  window's sky, which keep the game's time, are not held to it yet:
+  whether they are is open (why:
   [decisions](decisions.md#her-tv-holds-a-picture-2026-10-07)).
   **The film on her TV** (phase 5c D7): in line art, with a film loaded
   that this client holds (on disk and ready) and whose real video the

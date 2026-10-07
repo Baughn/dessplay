@@ -10,6 +10,7 @@ use super::census::{
 };
 use super::*;
 use crate::ui::houseguest::brain::{Mood, Want};
+use crate::ui::houseguest::graphics::Look;
 use crate::ui::houseguest::mind::{self, Bind, Ctx, Whims};
 use crate::ui::houseguest::osaka::SETTLE_IN;
 use crate::ui::houseguest::room::Use;
@@ -286,27 +287,37 @@ impl Flips {
 }
 
 /// Whether going from `was` to `now` is only her slow blink (her face
-/// alone, to or from a blink), or Chiyo-chichi's bob while his hook
-/// plays (`hook`: what's on TV alone, from one of his frames to the
-/// other).
-fn exempt(was: &Shown, now: &Shown, hook: bool) -> bool {
+/// alone, to or from a blink).
+fn blink(was: &Shown, now: &Shown) -> bool {
+    let ((pose, face, bubble), at, prop, dark) = *was;
+    let ((pose2, face2, bubble2), at2, prop2, dark2) = *now;
+    face != face2
+        && (face == Face::Blink || face2 == Face::Blink)
+        && (pose, bubble, at, prop, dark) == (pose2, bubble2, at2, prop2, dark2)
+}
+
+/// Whether going from `was` to `now` is only Chiyo-chichi's bob while
+/// his hook plays (`hook`: what's on TV alone, from one of his frames to
+/// the other).
+fn hook_bob(was: &Shown, now: &Shown, hook: bool) -> bool {
     use crate::ui::houseguest::art::Channel;
     use crate::ui::houseguest::script::Prop;
     let ((pose, face, bubble), at, prop, dark) = *was;
     let ((pose2, face2, bubble2), at2, prop2, dark2) = *now;
-    let blink = face != face2
-        && (face == Face::Blink || face2 == Face::Blink)
-        && (pose, bubble, at, prop, dark) == (pose2, bubble2, at2, prop2, dark2);
-    let bob = hook
-        && (pose, face, bubble, at, dark) == (pose2, face2, bubble2, at2, dark2)
+    hook && (pose, face, bubble, at, dark) == (pose2, face2, bubble2, at2, dark2)
         && matches!(
             (prop, prop2),
             (
                 Some(Prop::Tv(Channel::Shopping(_))),
                 Some(Prop::Tv(Channel::Shopping(_)))
             )
-        );
-    blink || bob
+        )
+}
+
+/// Whether going from `was` to `now` is only her slow blink, or
+/// Chiyo-chichi's bob while his hook plays.
+fn exempt(was: &Shown, now: &Shown, hook: bool) -> bool {
+    blink(was, now) || hook_bob(was, now, hook)
 }
 
 /// No act of hers longer than 30 s flips faster than [`USE_FRAME_MS`]
@@ -330,13 +341,16 @@ fn exempt(was: &Shown, now: &Shown, hook: bool) -> bool {
 /// room the shopping channel, so the hook's exemption is.
 ///
 /// What it compares is her model's (how she looks, where and which way,
-/// what her script shows, the lamp dark), not drawn cells: a proxy, sound
-/// while drawing is a pure map from those to images and glyphs
-/// (`each_prop_looks_distinct_in_each_mode`,
+/// what her script shows, the lamp dark), not drawn cells: a proxy for
+/// what's drawn of her and what her script shows, which map from those
+/// to images and glyphs (`each_prop_looks_distinct_in_each_mode`,
 /// `every_piece_shows_what_her_script_shows_on_it`), so both modes check
-/// the same states here. A change that is drawing alone (step 12b's
-/// once-a-minute fresh still of the film) has its own variant comparing
-/// drawn images (`a_long_watch_takes_a_fresh_still_once_a_minute`).
+/// the same states here. What is drawing alone is not in her model: the
+/// film's fresh still once a minute (step 12b), her wall clock's dial
+/// (each game quarter-hour) and her window's sky (dawn, day, dusk,
+/// evening, night). The drawn variant
+/// ([`no_long_act_flips_drawn_cells_faster_than_a_frame`]) holds those to
+/// the rule.
 ///
 /// [`USE_FRAME_MS`]: osaka::USE_FRAME_MS
 #[test]
@@ -492,6 +506,444 @@ fn no_long_act_flips_faster_than_a_frame() {
     }
     for (at, watched, shopped) in runs {
         assert!(watched > 0, "{at}: never watched for over 30 s");
+        if at.starts_with("home, shopping ") {
+            assert!(
+                shopped > 0,
+                "{at}: never on the shopping channel for over 30 s"
+            );
+        }
+    }
+}
+
+/// One paint of her act, as drawn: when; what her model showed (as
+/// [`Shown`]) and the key her script played; every cell of hers that
+/// differs from the real frame, by where (a kitty image's cell as
+/// "image", its id being random) and, in line art, each image's look
+/// (what it shows: her pose, a piece, the TV's channel or the film's
+/// still), sorted by how it prints; her box, her TV's footprint and every
+/// shown piece's; and why a change there may be exempt: Chiyo-chichi's
+/// hook playing, her looking up at the chat (or stirring at it), a still
+/// of the film delivered at this paint.
+struct Drawn {
+    t: u64,
+    shown: Shown,
+    key: KeyRef,
+    cells: std::collections::BTreeMap<(u16, u16), String>,
+    looks: Vec<(String, Look)>,
+    her: Option<Rect>,
+    tv: Option<Rect>,
+    pieces: Vec<Rect>,
+    hook: bool,
+    chat: bool,
+    delivered: bool,
+}
+
+impl Drawn {
+    /// Its looks but those `skip` names, as they print.
+    fn looks_but(&self, skip: impl Fn(&Look) -> bool) -> Vec<&str> {
+        self.looks
+            .iter()
+            .filter(|(_, look)| !skip(look))
+            .map(|(name, _)| name.as_str())
+            .collect()
+    }
+
+    /// What's on its TV: the looks of the TV switched on or holding the
+    /// film's still.
+    fn on_tv(&self) -> Vec<Look> {
+        self.looks
+            .iter()
+            .map(|&(_, look)| look)
+            .filter(on_tv)
+            .collect()
+    }
+}
+
+/// A look of her own (her pose, her wave).
+fn hers(look: &Look) -> bool {
+    matches!(look, Look::Pose(..) | Look::Wave(..))
+}
+
+/// A look of what's on her TV.
+fn on_tv(look: &Look) -> bool {
+    matches!(look, Look::Tv(_) | Look::Film(..))
+}
+
+/// The cells that differ between two paints.
+fn changed(was: &Drawn, now: &Drawn) -> Vec<(u16, u16)> {
+    let mut at: Vec<(u16, u16)> = was
+        .cells
+        .keys()
+        .chain(now.cells.keys())
+        .copied()
+        .filter(|at| was.cells.get(at) != now.cells.get(at))
+        .collect();
+    at.sort_unstable();
+    at.dedup();
+    at
+}
+
+/// Whether `at` is in `rect`.
+fn inside(rect: Option<Rect>, (x, y): (u16, u16)) -> bool {
+    rect.is_some_and(|r| (r.x..r.right()).contains(&x) && (r.y..r.bottom()).contains(&y))
+}
+
+/// Whether going from `was` to `now`, as drawn, is one of the stillness
+/// rule's exemptions, and only that, nothing else drawn changing with it:
+/// - her slow blink: her face alone in her model, the cells that change
+///   in her box, every look not hers the same;
+/// - Chiyo-chichi's bob through his hook: what's on TV alone in her
+///   model, the cells that change in the TV's footprint, every look not
+///   on the TV the same;
+/// - a look up at the chat (or, dozing, a stir at it), on either side:
+///   her pose, face, bubble or facing alone in her model (not where she
+///   is, what her script shows or the lamp), every look not hers the
+///   same, and no cell of a piece changing but where her box covers it;
+/// - the film's fresh still, at a paint a still was delivered at: her
+///   model the same, the TV's look going from the film's still (or the
+///   programme it stands in for) to another still standing in for the
+///   same programme, every other look the same, the cells that change in
+///   the TV's footprint. That it comes once a minute is
+///   `a_long_watch_takes_a_fresh_still_once_a_minute`'s to hold.
+fn exempt_drawn(was: &Drawn, now: &Drawn) -> bool {
+    use crate::ui::houseguest::art::Channel;
+    let cells = changed(was, now);
+    let in_her_box = |at: &(u16, u16)| inside(was.her, *at) || inside(now.her, *at);
+    let in_tv = |at: &(u16, u16)| inside(was.tv, *at) || inside(now.tv, *at);
+    let blinked = blink(&was.shown, &now.shown)
+        && was.looks_but(hers) == now.looks_but(hers)
+        && cells.iter().all(in_her_box);
+    let bobbed = hook_bob(&was.shown, &now.shown, now.hook)
+        && was.looks_but(on_tv) == now.looks_but(on_tv)
+        && cells.iter().all(in_tv);
+    let ((_, at, prop, dark), (_, at2, prop2, dark2)) = (was.shown, now.shown);
+    let looked = (was.chat || now.chat)
+        && was.shown != now.shown
+        && ((at.0, at.1), prop, dark) == ((at2.0, at2.1), prop2, dark2)
+        && was.looks_but(hers) == now.looks_but(hers)
+        && cells
+            .iter()
+            .all(|at| in_her_box(at) || !now.pieces.iter().any(|&r| inside(Some(r), *at)));
+    let swapped = now.delivered
+        && was.shown == now.shown
+        && was.looks_but(on_tv) == now.looks_but(on_tv)
+        && cells.iter().all(in_tv)
+        && match (&was.on_tv()[..], &now.on_tv()[..]) {
+            ([Look::Film(a, card)], [Look::Film(b, card2)]) => a != b && card == card2,
+            ([Look::Tv(Channel::Programme(card))], [Look::Film(_, card2)]) => card == card2,
+            _ => false,
+        };
+    blinked || bobbed || looked || swapped
+}
+
+/// The drawn half of the stillness rule (phase 5c D7, as the user
+/// amended it for the film, Q2): no act of hers longer than 30 s flips
+/// what's drawn of her faster than [`USE_FRAME_MS`] after its first
+/// 10 s, but for exactly the four exemptions design.md names, each only
+/// its own change with nothing else drawn alongside ([`exempt_drawn`]):
+/// her slow blink, Chiyo-chichi's bob through his hook, a look up at the
+/// chat (or, dozing, a stir at it, for now), and the film's fresh still
+/// once a minute; and, for now, a bob's key ending within a frame of its
+/// last flip ([`Flips`]). On fed afternoons, with chat, in the home with
+/// only a TV (she watches it most), the furnished home with the shopping
+/// channel on at her first watch, the home with her window and the
+/// resident, in each mood, in both modes, painted as a client painting
+/// every 100 ms would (advancing her first, as the shell does before
+/// each draw, and at each chat line), with the film's stills fed as the
+/// shell feeds them ([`TvFeed`]: asked as she heads to watch, then once
+/// a minute, each answered good 150 ms on). An act that takes her
+/// somewhere is left out, as in [`no_long_act_flips_faster_than_a_frame`],
+/// which checks her model's state, every 100 ms, quiet; this checks the
+/// cells and images painted, so a change that is drawing alone (the
+/// film's still) is held to the rule too. The home with her wall clock
+/// runs apart, ignored
+/// ([`no_long_act_flips_drawn_cells_faster_than_a_frame_by_her_clock`]).
+/// Each room shows her watching for over 30 s with a fresh still
+/// mid-watch in line art at least once, the shopping room the shopping
+/// channel, and some act a look up at the chat, so each exemption is
+/// tried.
+///
+/// [`USE_FRAME_MS`]: osaka::USE_FRAME_MS
+/// [`TvFeed`]: crate::ui::tv_feed::TvFeed
+#[test]
+fn no_long_act_flips_drawn_cells_faster_than_a_frame() {
+    let tv_only = Room {
+        name: "home, TV only",
+        owns: &[Furniture::Tv],
+        ..furnished_room()
+    };
+    let shopping = Room {
+        name: "home, shopping",
+        ..furnished_room()
+    };
+    let windowed = Room {
+        name: "home+window",
+        owns: &super::census::WINDOWED_HOME,
+        ..furnished_room()
+    };
+    drawn_stillness(&[tv_only, shopping, windowed, resident_room()].map(at_afternoon));
+}
+
+/// [`no_long_act_flips_drawn_cells_faster_than_a_frame`] in the home with
+/// her wall clock as well as her window (the day census's home), where
+/// her clock's dial steps each game quarter-hour (about 150 s at 6×),
+/// whatever she's doing. Ignored: the dial's step is no change of hers,
+/// and lands within a frame of one of hers (her breathing asleep: "home,
+/// clock and window Lazy seed 0, an act from 151044 flipped at 299444
+/// and 300100", both modes; Dial { hour: 1, quarter: 1 } to quarter 2,
+/// 656 ms after her Sleep(1) to Sleep(0)). Whether the world's clock (the
+/// dial, and the window's sky by the same token) is held to the rule, or
+/// is steady periodic motion the rule leaves out, is the user's call
+/// (phase5c-design.md, Round 8). Run by hand with `--ignored`.
+#[test]
+#[ignore = "her clock's dial steps within a frame of her own changes: the user's call (Round 8)"]
+fn no_long_act_flips_drawn_cells_faster_than_a_frame_by_her_clock() {
+    let clocked = Room {
+        name: "home, clock and window",
+        owns: &super::census::DAY_HOME,
+        ..furnished_room()
+    };
+    drawn_stillness(&[clocked].map(at_afternoon));
+}
+
+/// The drawn stillness check over `rooms`, each in both modes and every
+/// mood (see [`no_long_act_flips_drawn_cells_faster_than_a_frame`]).
+fn drawn_stillness(rooms: &[Room]) {
+    use crate::ui::houseguest::film::test_picture;
+    use crate::ui::tv_feed::{Sent, TvAnswer, TvAsk, TvFeed};
+    const MINUTES: u64 = 10;
+    const PAINT_MS: u64 = 100;
+    const FILM: dessplay_core::types::Ed2kHash = dessplay_core::types::Ed2kHash([0xC3; 16]);
+    let moods = [
+        (0, Mood::Lazy),
+        (1, Mood::Ordinary),
+        (2, Mood::Dreamy),
+        (3, Mood::Industrious),
+    ];
+    // Per room and mode: watches over 30 s, those with a fresh still
+    // after their first 10 s, shopping acts over 30 s, and acts with a
+    // look up at the chat after their first 10 s.
+    let runs: Vec<(String, [u32; 4])> = std::thread::scope(|scope| {
+        let mut runs = Vec::new();
+        for room in rooms {
+            for graphics in [false, true] {
+                runs.push(scope.spawn(move || {
+                    let mut seen = [0u32; 4];
+                    for (seed, mood) in moods {
+                        let at = format!("{} {mood:?} seed {seed} graphics={graphics}", room.name);
+                        let mut guest = fed_afternoon(room, seed, graphics, mood);
+                        if room.name == "home, shopping" {
+                            guest.shop();
+                        }
+                        if let Some(graphics) = guest.graphics.as_mut() {
+                            graphics.take_looks();
+                        }
+                        let mut view = room.view.clone();
+                        let mut feed = TvFeed::default();
+                        let mut pending: Option<(u64, TvAsk)> = None;
+                        let mut made = 0u32;
+                        // The act painted so far: its start, whether a
+                        // watch, whether the shopping channel, its paints.
+                        let mut act: Option<(u64, bool, bool, Vec<Drawn>)> = None;
+                        let mut check =
+                            |(since, watch, shopping, paints): (u64, bool, bool, Vec<Drawn>)| {
+                                let Some(last) = paints.last() else {
+                                    return;
+                                };
+                                let (_, first_at, ..) = paints[0].shown;
+                                let stays = paints.iter().all(|p| {
+                                    (p.shown.1.0, p.shown.1.1) == (first_at.0, first_at.1)
+                                });
+                                if last.t - since <= 30_000 || !stays {
+                                    return;
+                                }
+                                let mut flips = Flips::default();
+                                let (mut swapped, mut looked) = (false, false);
+                                for pair in paints.windows(2) {
+                                    let (was, now) = (&pair[0], &pair[1]);
+                                    let same = was.shown == now.shown
+                                        && was.cells == now.cells
+                                        && was.looks == now.looks;
+                                    if same || now.t < since + 10_000 {
+                                        continue;
+                                    }
+                                    if exempt_drawn(was, now) {
+                                        swapped |= now.delivered;
+                                        looked |= was.chat || now.chat;
+                                        continue;
+                                    }
+                                    if let Err(before) = flips.change(
+                                        now.t,
+                                        (&was.shown, was.key),
+                                        (&now.shown, now.key),
+                                    ) {
+                                        panic!(
+                                            "{at}: an act from {since} flipped at {before} and {}: \
+                                             {:?} {:?} {:?} to {:?} {:?} {:?}; cells {:?}",
+                                            now.t,
+                                            was.shown,
+                                            was.key,
+                                            was.looks_but(|_| false),
+                                            now.shown,
+                                            now.key,
+                                            now.looks_but(|_| false),
+                                            changed(was, now)
+                                                .iter()
+                                                .map(|at| (
+                                                    at,
+                                                    was.cells.get(at),
+                                                    now.cells.get(at)
+                                                ))
+                                                .collect::<Vec<_>>()
+                                        );
+                                    }
+                                }
+                                seen[0] += u32::from(watch);
+                                seen[1] += u32::from(watch && swapped);
+                                seen[2] += u32::from(shopping);
+                                seen[3] += u32::from(looked);
+                            };
+                        let mut now = 0;
+                        while now < MINUTES * 60_000 {
+                            let tick = guest
+                                .next_tick(now)
+                                .map_or(1000, |d| d.as_millis() as u64)
+                                .clamp(1, 1000);
+                            let (step, line) = room.step_from(now, tick);
+                            // A paint every 100 ms, and the answer at its time.
+                            let grid = PAINT_MS - now % PAINT_MS;
+                            let answer = pending.map_or(u64::MAX, |(t, _)| t - now);
+                            let step = step.min(grid).min(answer);
+                            let line = line && step == room.step_from(now, tick).0;
+                            now += step;
+                            if line {
+                                view.chat_mark.synced += 1;
+                                view.chat_mark.synced_asks =
+                                    view.chat_mark.synced.is_multiple_of(2);
+                            }
+                            let mut delivered = false;
+                            if let Some((t, ask)) = pending
+                                && t == now
+                            {
+                                pending = None;
+                                made += 1;
+                                let still = test_picture(ask.file, made);
+                                delivered =
+                                    feed.deliver(&mut guest, ask, TvAnswer::Still(still), now);
+                            }
+                            let closed = feed.turn(&mut guest, Some(FILM), now, |ask| {
+                                pending = Some((now + 150, ask));
+                                Sent::Gone
+                            });
+                            assert!(!closed);
+                            guest.advance(now);
+                            let frame = paint(&mut guest, &room.real, &view, now);
+                            let looks: Vec<(String, Look)> = match guest.graphics.as_mut() {
+                                Some(graphics) => {
+                                    let mut looks: Vec<(String, Look)> = graphics
+                                        .take_looks()
+                                        .into_iter()
+                                        .map(|look| (format!("{look:?}"), look))
+                                        .collect();
+                                    looks.sort_by(|a, b| a.0.cmp(&b.0));
+                                    looks
+                                }
+                                None => Vec::new(),
+                            };
+                            let State::Visiting(visit) = &guest.state else {
+                                if let Some(done) = act.take() {
+                                    check(done);
+                                }
+                                continue;
+                            };
+                            let osaka = &visit.osaka;
+                            let since = osaka.act_started();
+                            if act.as_ref().is_some_and(|a| a.0 != since)
+                                && let Some(done) = act.take()
+                            {
+                                check(done);
+                            }
+                            let span = osaka.use_span();
+                            let watch = span.is_some_and(|(seat, ..)| seat.what == Use::Watch);
+                            let shopping = osaka
+                                .plays()
+                                .is_some_and(|play| play.own == script::ScriptId::Shopping);
+                            let hook_end = match (span, osaka.plays()) {
+                                (Some((_, since, until)), Some(play))
+                                    if play.own == script::ScriptId::Shopping =>
+                                {
+                                    let start = play.body_start(since);
+                                    start + (play.body_end(since, until) - start) * 2 / 5
+                                }
+                                _ => 0,
+                            };
+                            let mut cells = std::collections::BTreeMap::new();
+                            let width = usize::from(room.real.area.width);
+                            for (i, (got, want)) in
+                                frame.content.iter().zip(&room.real.content).enumerate()
+                            {
+                                if got != want {
+                                    let cell = if got.symbol().contains('\x1b') {
+                                        "image".to_owned()
+                                    } else {
+                                        format!("{got:?}")
+                                    };
+                                    cells.insert(((i % width) as u16, (i / width) as u16), cell);
+                                }
+                            }
+                            let drawn = Drawn {
+                                t: now,
+                                shown: (
+                                    osaka.appearance(now),
+                                    (osaka.x, osaka.y, osaka.facing),
+                                    osaka.prop(now),
+                                    osaka.dark(now),
+                                ),
+                                key: osaka.key_at(now),
+                                cells,
+                                looks,
+                                her: crate::ui::houseguest::room::her_box(osaka.x, osaka.y),
+                                tv: visit
+                                    .shown
+                                    .iter()
+                                    .find(|piece| piece.item == Furniture::Tv)
+                                    .map(|piece| piece.rect()),
+                                pieces: visit.shown.iter().map(|piece| piece.rect()).collect(),
+                                hook: now <= hook_end,
+                                chat: osaka.looking_up_at_chat() || osaka.stirring_at_chat(now),
+                                delivered,
+                            };
+                            act.get_or_insert((since, watch, shopping, Vec::new()))
+                                .3
+                                .push(drawn);
+                        }
+                        if let Some(done) = act.take() {
+                            check(done);
+                        }
+                    }
+                    (format!("{} graphics={graphics}", room.name), seen)
+                }));
+            }
+        }
+        runs.into_iter()
+            .map(|run| run.join().expect("a run"))
+            .collect()
+    });
+    for (at, [watched, swapped, shopped, looked]) in &runs {
+        println!(
+            "{at}: {watched} watches over 30 s ({swapped} with a fresh still), \
+             {shopped} on the shopping channel, {looked} with a look up at the chat"
+        );
+    }
+    for (at, [watched, swapped, shopped, looked]) in runs {
+        assert!(watched > 0, "{at}: never watched for over 30 s");
+        assert!(
+            looked > 0,
+            "{at}: never looked up at the chat in a long act"
+        );
+        if at.ends_with("graphics=true") {
+            assert!(swapped > 0, "{at}: no fresh still mid-watch");
+        }
         if at.starts_with("home, shopping ") {
             assert!(
                 shopped > 0,
