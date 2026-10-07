@@ -349,8 +349,9 @@ fn exempt(was: &Shown, now: &Shown, hook: bool) -> bool {
 /// film's fresh still once a minute (step 12b), her wall clock's dial
 /// (each game quarter-hour) and her window's sky (dawn, day, dusk,
 /// evening, night). The drawn variant
-/// ([`no_long_act_flips_drawn_cells_faster_than_a_frame`]) holds those to
-/// the rule.
+/// ([`no_long_act_flips_drawn_cells_faster_than_a_frame`]) holds the film
+/// to the rule, and exempts the dial and the sky, each only its own
+/// change ([`world_ticked`]).
 ///
 /// [`USE_FRAME_MS`]: osaka::USE_FRAME_MS
 #[test]
@@ -523,9 +524,13 @@ fn no_long_act_flips_faster_than_a_frame() {
 /// still), sorted by how it prints; her box, her TV's footprint and every
 /// shown piece's; and why a change there may be exempt: Chiyo-chichi's
 /// hook playing, her looking up at the chat (or stirring at it), a still
-/// of the film delivered at this paint.
+/// of the film delivered at this paint, and what her wall clock's dial
+/// and her window's sky read by her clock (`None` unfed: a plain face
+/// and a day sky). Whether it was painted in line art.
+#[derive(Clone)]
 struct Drawn {
     t: u64,
+    graphics: bool,
     shown: Shown,
     key: KeyRef,
     cells: std::collections::BTreeMap<(u16, u16), String>,
@@ -533,9 +538,12 @@ struct Drawn {
     her: Option<Rect>,
     tv: Option<Rect>,
     pieces: Vec<Rect>,
+    clocks: Vec<Rect>,
+    windows: Vec<Rect>,
     hook: bool,
     chat: bool,
     delivered: bool,
+    world: Option<(art::Dial, art::Sky)>,
 }
 
 impl Drawn {
@@ -588,6 +596,70 @@ fn inside(rect: Option<Rect>, (x, y): (u16, u16)) -> bool {
     rect.is_some_and(|r| (r.x..r.right()).contains(&x) && (r.y..r.bottom()).contains(&y))
 }
 
+/// A look of the world's clock: her wall clock's dial, her window's sky.
+fn world_clock(look: &Look) -> bool {
+    use crate::ui::houseguest::art::PieceState;
+    matches!(
+        look,
+        Look::Piece(Furniture::Clock, PieceState::Dial(_))
+            | Look::Piece(Furniture::Window, PieceState::Sky(_))
+    )
+}
+
+/// Whether going from `was` to `now`, as drawn, is the world's clock
+/// stepping, and only that. Its trigger: a reading of her clock changed
+/// between them (the dial's quarter-hour, or the sky: dawn, day, dusk,
+/// evening, night), and in line art a look of a piece whose reading
+/// changed went with it. Its scope: her model, her script's key and
+/// every look but the dial's and the sky's the same, a dial or sky look
+/// changing only if its reading did, and every changed cell in the
+/// footprint of a wall clock or window whose reading changed, none in
+/// her box. Not her doing, and slow and steady (a dial step each game
+/// quarter-hour, the sky five times a game day): the user exempts it
+/// (Round 8's open point; the periodic-motion principle).
+fn world_ticked(was: &Drawn, now: &Drawn) -> bool {
+    let (Some((dial, sky)), Some((dial2, sky2))) = (was.world, now.world) else {
+        return false;
+    };
+    let items = [
+        (Furniture::Clock, dial != dial2),
+        (Furniture::Window, sky != sky2),
+    ];
+    if !items.iter().any(|&(_, ticked)| ticked) {
+        return false;
+    }
+    let rects = |d: &Drawn, item: Furniture| match item {
+        Furniture::Clock => d.clocks.clone(),
+        _ => d.windows.clone(),
+    };
+    let in_ticked = |at: &(u16, u16)| {
+        items.iter().any(|&(item, ticked)| {
+            ticked
+                && rects(was, item)
+                    .into_iter()
+                    .chain(rects(now, item))
+                    .any(|r| inside(Some(r), *at))
+        })
+    };
+    let in_her_box = |at: &(u16, u16)| inside(was.her, *at) || inside(now.her, *at);
+    let looks_of = |d: &Drawn, item: Furniture| -> Vec<Look> {
+        d.looks
+            .iter()
+            .map(|&(_, look)| look)
+            .filter(|look| world_clock(look) && matches!(look, Look::Piece(it, _) if *it == item))
+            .collect()
+    };
+    let redrawn = |item: Furniture| looks_of(was, item) != looks_of(now, item);
+    was.shown == now.shown
+        && was.key == now.key
+        && was.looks_but(world_clock) == now.looks_but(world_clock)
+        && items.iter().all(|&(item, ticked)| ticked || !redrawn(item))
+        && (!now.graphics || items.iter().any(|&(item, ticked)| ticked && redrawn(item)))
+        && changed(was, now)
+            .iter()
+            .all(|at| in_ticked(at) && !in_her_box(at))
+}
+
 /// Whether going from `was` to `now`, as drawn, is one of the stillness
 /// rule's exemptions, and only that, nothing else drawn changing with it:
 /// - her slow blink: her face alone in her model, the cells that change
@@ -604,7 +676,12 @@ fn inside(rect: Option<Rect>, (x, y): (u16, u16)) -> bool {
 ///   programme it stands in for) to another still standing in for the
 ///   same programme, every other look the same, the cells that change in
 ///   the TV's footprint. That it comes once a minute is
-///   `a_long_watch_takes_a_fresh_still_once_a_minute`'s to hold.
+///   `a_long_watch_takes_a_fresh_still_once_a_minute`'s to hold;
+/// - the world's clock, her wall clock's dial or her window's sky
+///   stepping ([`world_ticked`]): at a paint where her clock's reading
+///   changed, her model, her key and every other look the same, the
+///   cells that change in the footprint of the piece that stepped and
+///   none in her box.
 fn exempt_drawn(was: &Drawn, now: &Drawn) -> bool {
     use crate::ui::houseguest::art::Channel;
     let cells = changed(was, now);
@@ -633,17 +710,18 @@ fn exempt_drawn(was: &Drawn, now: &Drawn) -> bool {
             ([Look::Tv(Channel::Programme(card))], [Look::Film(_, card2)]) => card == card2,
             _ => false,
         };
-    blinked || bobbed || looked || swapped
+    blinked || bobbed || looked || swapped || world_ticked(was, now)
 }
 
 /// The drawn half of the stillness rule (phase 5c D7, as the user
 /// amended it for the film, Q2): no act of hers longer than 30 s flips
 /// what's drawn of her faster than [`USE_FRAME_MS`] after its first
-/// 10 s, but for exactly the four exemptions design.md names, each only
+/// 10 s, but for exactly the five exemptions design.md names, each only
 /// its own change with nothing else drawn alongside ([`exempt_drawn`]):
 /// her slow blink, Chiyo-chichi's bob through his hook, a look up at the
-/// chat (or, dozing, a stir at it, for now), and the film's fresh still
-/// once a minute; and, for now, a bob's key ending within a frame of its
+/// chat (or, dozing, a stir at it, for now), the film's fresh still once
+/// a minute, and the world's clock (her wall clock's dial, her window's
+/// sky); and, for now, a bob's key ending within a frame of its
 /// last flip ([`Flips`]). On fed afternoons, with chat, in the home with
 /// only a TV (she watches it most), the furnished home with the shopping
 /// channel on at her first watch, the home with her window and the
@@ -656,7 +734,7 @@ fn exempt_drawn(was: &Drawn, now: &Drawn) -> bool {
 /// which checks her model's state, every 100 ms, quiet; this checks the
 /// cells and images painted, so a change that is drawing alone (the
 /// film's still) is held to the rule too. The home with her wall clock
-/// runs apart, ignored
+/// runs apart
 /// ([`no_long_act_flips_drawn_cells_faster_than_a_frame_by_her_clock`]).
 /// Each room shows her watching for over 30 s with a fresh still
 /// mid-watch in line art at least once, the shopping room the shopping
@@ -686,29 +764,49 @@ fn no_long_act_flips_drawn_cells_faster_than_a_frame() {
 
 /// [`no_long_act_flips_drawn_cells_faster_than_a_frame`] in the home with
 /// her wall clock as well as her window (the day census's home), where
-/// her clock's dial steps each game quarter-hour (about 150 s at 6×),
-/// whatever she's doing. Ignored: the dial's step is no change of hers,
-/// and lands within a frame of one of hers (her breathing asleep: "home,
-/// clock and window Lazy seed 0, an act from 151044 flipped at 299444
-/// and 300100", both modes; Dial { hour: 1, quarter: 1 } to quarter 2,
-/// 656 ms after her Sleep(1) to Sleep(0)). Whether the world's clock (the
-/// dial, and the window's sky by the same token) is held to the rule, or
-/// is steady periodic motion the rule leaves out, is the user's call
-/// (phase5c-design.md, Round 8). Run by hand with `--ignored`.
+/// her clock's dial steps each game quarter-hour (about 150 s at 6×) and
+/// her window's sky at each change of the sky (dawn, day, dusk, evening,
+/// night), whatever she's doing: of an afternoon (13:00, four dial
+/// steps), and from 16:30, so the sky goes from day to dusk at 17:00.
+/// The world's clock is exempt (the user, Round 8's open point: not her
+/// doing, slow and steady, the periodic motion principle), only at a
+/// paint where her clock's reading changed and scoped to its own change
+/// ([`world_ticked`]): only the stepped piece's cells and look change.
+/// At each paint it exempts, the same paint with one thing more changed
+/// must not be exempt ([`world_ticked_guards`]). Before the exemption the
+/// dial stepped 656 ms after her breathing's flip asleep ("home, clock
+/// and window Lazy seed 0, an act from 151044 flipped at 299444 and
+/// 300100", both modes). Each run sees a dial step in a long act, and
+/// the run at dusk a sky step, so the exemption is tried.
 #[test]
-#[ignore = "her clock's dial steps within a frame of her own changes: the user's call (Round 8)"]
 fn no_long_act_flips_drawn_cells_faster_than_a_frame_by_her_clock() {
     let clocked = Room {
         name: "home, clock and window",
         owns: &super::census::DAY_HOME,
         ..furnished_room()
     };
-    drawn_stillness(&[clocked].map(at_afternoon));
+    let dusk = Room {
+        name: "home, clock and window, to dusk",
+        owns: &super::census::DAY_HOME,
+        start: Some(routine::GameTime {
+            day: 1,
+            h: 16,
+            m: 30,
+        }),
+        ..furnished_room()
+    };
+    let runs = drawn_stillness(&[at_afternoon(clocked), dusk]);
+    for (at, [.., dial, sky]) in runs {
+        assert!(dial > 0, "{at}: no dial step in a long act");
+        if at.contains("to dusk") {
+            assert!(sky > 0, "{at}: no sky step in a long act");
+        }
+    }
 }
 
 /// The drawn stillness check over `rooms`, each in both modes and every
 /// mood (see [`no_long_act_flips_drawn_cells_faster_than_a_frame`]).
-fn drawn_stillness(rooms: &[Room]) {
+fn drawn_stillness(rooms: &[Room]) -> Vec<(String, [u32; 6])> {
     use crate::ui::houseguest::film::test_picture;
     use crate::ui::tv_feed::{Sent, TvAnswer, TvAsk, TvFeed};
     const MINUTES: u64 = 10;
@@ -721,14 +819,15 @@ fn drawn_stillness(rooms: &[Room]) {
         (3, Mood::Industrious),
     ];
     // Per room and mode: watches over 30 s, those with a fresh still
-    // after their first 10 s, shopping acts over 30 s, and acts with a
-    // look up at the chat after their first 10 s.
-    let runs: Vec<(String, [u32; 4])> = std::thread::scope(|scope| {
+    // after their first 10 s, shopping acts over 30 s, acts with a look
+    // up at the chat after their first 10 s, and the world's clock
+    // stepping in a checked act: her dial, and her window's sky.
+    let runs: Vec<(String, [u32; 6])> = std::thread::scope(|scope| {
         let mut runs = Vec::new();
         for room in rooms {
             for graphics in [false, true] {
                 runs.push(scope.spawn(move || {
-                    let mut seen = [0u32; 4];
+                    let mut seen = [0u32; 6];
                     for (seed, mood) in moods {
                         let at = format!("{} {mood:?} seed {seed} graphics={graphics}", room.name);
                         let mut guest = fed_afternoon(room, seed, graphics, mood);
@@ -765,6 +864,14 @@ fn drawn_stillness(rooms: &[Room]) {
                                         && was.cells == now.cells
                                         && was.looks == now.looks;
                                     if same || now.t < since + 10_000 {
+                                        continue;
+                                    }
+                                    // The world's clock first, so a step of it
+                                    // credits no other exemption.
+                                    if world_ticked(was, now) {
+                                        world_ticked_guards(&at, was, now);
+                                        seen[4] += u32::from(stepped(was, now, Furniture::Clock));
+                                        seen[5] += u32::from(stepped(was, now, Furniture::Window));
                                         continue;
                                     }
                                     if exempt_drawn(was, now) {
@@ -893,6 +1000,7 @@ fn drawn_stillness(rooms: &[Room]) {
                             }
                             let drawn = Drawn {
                                 t: now,
+                                graphics,
                                 shown: (
                                     osaka.appearance(now),
                                     (osaka.x, osaka.y, osaka.facing),
@@ -909,9 +1017,14 @@ fn drawn_stillness(rooms: &[Room]) {
                                     .find(|piece| piece.item == Furniture::Tv)
                                     .map(|piece| piece.rect()),
                                 pieces: visit.shown.iter().map(|piece| piece.rect()).collect(),
+                                clocks: shown_rects(visit, Furniture::Clock),
+                                windows: shown_rects(visit, Furniture::Window),
                                 hook: now <= hook_end,
                                 chat: osaka.looking_up_at_chat() || osaka.stirring_at_chat(now),
                                 delivered,
+                                world: guest
+                                    .time_of_day(now)
+                                    .map(|minute| (art::Dial::at(minute), art::Sky::at(minute))),
                             };
                             act.get_or_insert((since, watch, shopping, Vec::new()))
                                 .3
@@ -929,26 +1042,118 @@ fn drawn_stillness(rooms: &[Room]) {
             .map(|run| run.join().expect("a run"))
             .collect()
     });
-    for (at, [watched, swapped, shopped, looked]) in &runs {
+    for (at, [watched, swapped, shopped, looked, dial, sky]) in &runs {
         println!(
             "{at}: {watched} watches over 30 s ({swapped} with a fresh still), \
-             {shopped} on the shopping channel, {looked} with a look up at the chat"
+             {shopped} on the shopping channel, {looked} with a look up at the chat, \
+             {dial} dial and {sky} sky steps in a long act"
         );
     }
-    for (at, [watched, swapped, shopped, looked]) in runs {
-        assert!(watched > 0, "{at}: never watched for over 30 s");
+    for (at, [watched, swapped, shopped, looked, ..]) in &runs {
+        assert!(*watched > 0, "{at}: never watched for over 30 s");
         assert!(
-            looked > 0,
+            *looked > 0,
             "{at}: never looked up at the chat in a long act"
         );
         if at.ends_with("graphics=true") {
-            assert!(swapped > 0, "{at}: no fresh still mid-watch");
+            assert!(*swapped > 0, "{at}: no fresh still mid-watch");
         }
         if at.starts_with("home, shopping ") {
             assert!(
-                shopped > 0,
+                *shopped > 0,
                 "{at}: never on the shopping channel for over 30 s"
             );
         }
     }
+    runs
+}
+
+/// Whether `item` (her wall clock, her window) stepped going from `was`
+/// to `now`: its reading by her clock changed (the dial's quarter-hour,
+/// the sky), and it changed as drawn, a cell in its footprint (ASCII) or
+/// its look (line art).
+fn stepped(was: &Drawn, now: &Drawn, item: Furniture) -> bool {
+    let (Some((dial, sky)), Some((dial2, sky2))) = (was.world, now.world) else {
+        return false;
+    };
+    let read = match item {
+        Furniture::Clock => dial != dial2,
+        _ => sky != sky2,
+    };
+    let rects = |d: &Drawn| match item {
+        Furniture::Clock => d.clocks.clone(),
+        _ => d.windows.clone(),
+    };
+    let cells = changed(was, now)
+        .iter()
+        .any(|&at| rects(now).iter().any(|&r| inside(Some(r), at)));
+    let of = |d: &Drawn| -> Vec<Look> {
+        d.looks
+            .iter()
+            .map(|&(_, look)| look)
+            .filter(|look| matches!(look, Look::Piece(it, _) if *it == item))
+            .collect()
+    };
+    read && (cells || of(was) != of(now))
+}
+
+/// [`world_ticked`]'s guards, tried at every paint it holds at (`was` to
+/// `now`): the same paint, but with one more thing changed, is never
+/// exempt. No reading of her clock changed (a flicker in the clock's or
+/// the window's footprint, off the quarter); a cell of her box changed;
+/// a cell outside every footprint changed; her model changed (her lamp's
+/// dark); another look changed (line art).
+fn world_ticked_guards(at: &str, was: &Drawn, now: &Drawn) {
+    let mark = "mutant".to_owned();
+    let mut mutants: Vec<(&str, Drawn)> = Vec::new();
+    let mut idle = now.clone();
+    idle.world = was.world;
+    mutants.push(("no reading of her clock changed", idle));
+    if let Some(her) = now.her {
+        let mut hers = now.clone();
+        hers.cells.insert((her.x, her.y), mark.clone());
+        mutants.push(("a cell of her box changed", hers));
+    }
+    let footprints: Vec<Rect> = [was, now]
+        .into_iter()
+        .flat_map(|d| {
+            d.her
+                .into_iter()
+                .chain(d.tv)
+                .chain(d.pieces.iter().copied())
+        })
+        .collect();
+    if let Some(cell) = (0..100u16)
+        .flat_map(|y| (0..300u16).map(move |x| (x, y)))
+        .find(|&cell| !footprints.iter().any(|&r| inside(Some(r), cell)))
+    {
+        let mut elsewhere = now.clone();
+        elsewhere.cells.insert(cell, mark.clone());
+        mutants.push(("a cell outside every footprint changed", elsewhere));
+    }
+    let mut model = now.clone();
+    model.shown.3 = !model.shown.3;
+    mutants.push(("her model changed", model));
+    if let Some(i) = now.looks.iter().position(|(_, look)| !world_clock(look)) {
+        let mut look = now.clone();
+        look.looks[i].0 = mark.clone();
+        mutants.push(("another look changed", look));
+    }
+    for (what, mutant) in &mutants {
+        assert!(
+            !exempt_drawn(was, mutant),
+            "{at}: at {} the world's clock exempts a paint where {what} as well",
+            now.t
+        );
+    }
+}
+
+/// The footprints of the pieces `item` shown in `visit`.
+fn shown_rects(visit: &Visit, item: Furniture) -> Vec<Rect> {
+    visit
+        .shown
+        .iter()
+        .filter(|piece| piece.item == item)
+        .map(|piece| piece.rect())
+        .collect()
 }

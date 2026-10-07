@@ -4570,7 +4570,8 @@ does), with chat, in the TV-only home, the home with the shopping
 channel on, the home with her window and the resident, every mood, both
 modes, the film's stills fed through `TvFeed` as the shell feeds them,
 it compares the cells and images painted. Its exemptions are design.md's
-four, each only that change with nothing else drawn changing alongside
+five (the world's clock since phase 5c's tail, T1, below), each only
+that change with nothing else drawn changing alongside
 (step 12c's review: a looser check let any drawn change ride along a
 look up): a blink changes cells only in her box and no look but hers;
 the hook's bob only the TV's cells and look; a look up (or a stir)
@@ -4579,7 +4580,12 @@ and no piece's cells outside her box; the film's fresh still, at a paint
 a still was delivered at, takes the TV from a still (or the programme
 it stands in for) to another still of the same programme, and nothing
 else (that it comes once a minute is
-`a_long_watch_takes_a_fresh_still_once_a_minute`'s to hold). Mutants
+`a_long_watch_takes_a_fresh_still_once_a_minute`'s to hold); the
+world's clock, at a paint where a reading of her clock changed (the
+dial's quarter-hour, the sky) and, in line art, that piece's look with
+it, her model, her key and every look but the dial's and the sky's the
+same, every changed cell in the footprint of a clock or window whose
+reading changed and none in her box. Mutants
 it fails: one that swaps back to the still before at every paint (the
 TV's image flipping 100 ms apart, no still delivered; the model's test
 can't see it), and one that flickers a cell above her every 200 ms while
@@ -4597,7 +4603,39 @@ dial steps within a frame of her own changes (her breathing asleep:
 656 ms apart), as the window's sky would at dawn and dusk: the world's
 clock is no act of hers, and steady and slow, so whether the rule holds
 it is the user's call; its run is kept, ignored, with those numbers
-(`no_long_act_flips_drawn_cells_faster_than_a_frame_by_her_clock`).
+(`no_long_act_flips_drawn_cells_faster_than_a_frame_by_her_clock`;
+since T1 exempt, and in the gate: below).
+
+**Why the world's clock is exempt (the user, phase 5c's tail, T1,
+2026-10-07: "exempt it"):** her wall clock's dial and her window's sky
+are not her doing, and they step slow and steady (each game
+quarter-hour, about 150 s at 6×; the sky five times a game day), the
+periodic motion the eye filters out (the principle the hook's bob
+rests on); a change the eye catches is hers. The exemption has a
+trigger, as each of the others has (a blink a face change, the bob his
+hook, a look up the chat, a swap a delivered still): a reading of her
+clock changed between the two paints (the dial's quarter-hour, or the
+sky), and in line art the look of a piece whose reading changed went
+with it; without one, a cell flickering in the clock's footprint at any
+speed would pass. And it is scoped to that change alone, so it can't
+carry hers: at that paint her model and her script's key are the same,
+no look changes but the dial's and the sky's (each only if its reading
+did), and every changed cell is in the footprint of a clock or window
+whose reading changed and none in her box. The by-her-clock run is in
+the gate now, of an afternoon (four dial steps) and from 16:30 across
+the sky's day to dusk; each run sees a dial step in a long act, the
+dusk run a sky step, and at every paint the exemption holds at, the run
+checks that the same paint with one thing more changed is not exempt
+(no reading changed; a cell of her box; a cell outside every footprint;
+her model; another look). Mutants it fails, both modes: a cell of hers
+changing with the dial (her model the same) and a cell outside the
+clock and the window changing with it, each in both rooms (the
+afternoon's at the dial step 656 ms after her breathing's flip, the
+dusk room's at one 38 ms after it); and a cell of the clock's, or of
+the window's, footprint flickering every 200 ms, off the quarter, at
+its first flicker in a long act. Before the trigger the flicker passed
+as the clock's for over a minute and was caught only where it spoiled
+an exemption of hers.
 
 **Why a bob's key may end within a frame of its last flip, for now
 (step 12c):** a key that bobs (her writing, her breathing asleep) flips

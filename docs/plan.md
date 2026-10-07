@@ -3268,6 +3268,20 @@ that one (81–85 s in the pass), `a_trial_keeps_every_promise` 52–62 s,
 `every_made_piece_is_used_or_let_go` 48–51 s, and four or five at 30–42 s. No
 product bug. The censuses read exactly step 12c's numbers (12d moved none of them).
 
+**Phase 5c's tail, T1 (2026-10-07),** three commits: the golden driver
+advances her before it tells her of a key press, as the shell does, and
+cues the stage in that order by convention (test-only, no golden moved;
+the two property drivers that press keys too; the ~10 Hz snapshot
+redraws stay unmodelled); looking out's base 4 → 5 (3.3 a game day in the day
+census, which now holds the user's 2 to 6; no band room has a window,
+so the band is unmoved; baseline.md, "Phase 5c's tail, T1"); the
+world's clock (her wall clock's dial, her window's sky) exempt from the
+drawn stillness rule, only at a paint where her clock's reading
+changed and scoped to its own change (the run checks, at each paint it
+exempts, that one thing more changed is not), and its run
+(`no_long_act_flips_drawn_cells_faster_than_a_frame_by_her_clock`, with
+a run across the sky's day to dusk) in the gate.
+
 **Open, for the user:**
 - **The two `SHORT` items** above; the lead for the stage's spread is a
   mood factor on spacing out for its own sake, which weighs the same in
@@ -3276,9 +3290,20 @@ product bug. The censuses read exactly step 12c's numbers (12d moved none of the
   looks, a golden re-record): a bob's key ending off its frame grid (her
   homework nodding off within a frame of the writing's last flip; the
   test allows exactly that, "for now"); a stir by day ("Mm?", 1380 ms) is
-  shorter than a frame; the world's clock (her wall clock's dial and the
-  window's sky step within a frame of her own changes; whether the rule
-  holds them is the user's call, the test ignored with its numbers).
+  shorter than a frame. (The world's clock, her wall clock's dial and the
+  window's sky stepping within a frame of her own changes, was resolved
+  in T1: exempt, by the user's word, scoped to its own change.)
+- **The drawn exemptions don't combine** (T1's review): a dial or sky
+  step on the same 100 ms paint as another exempt change (a blink, a
+  look up at the chat) is exempt by neither arm, and fails the drawn
+  test as a flip; and in ASCII the sky's cells inside her box (her
+  leaning at the sill) count as hers. Neither comes up in today's runs;
+  the door batch moving pieces could. Checking the world's part and hers
+  apart (strip the stepped piece's cells and look, then try the other
+  exemptions on the rest) would answer both, at some looseness.
+- **The by-her-clock drawn test's gate cost** (T1): about 10 s CPU,
+  31.6 → 33.8 s wall for the stop hook's gate; it could run under
+  `--profile deep` instead.
 - **Commentary's frames in the real app:** screenshots are now async and
   gated on the real video being shown; the user should check commentary
   still attaches frames. A real `--vo=gpu` grab's time is unmeasured

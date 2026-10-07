@@ -656,8 +656,8 @@ that her trace is unchanged).
 - **The stillness test, drawn** (12a's hand-off): `no_long_act_flips_drawn_cells_faster_than_a_frame`
   paints every 100 ms, with chat and the film fed, in the TV-only home, the shopping home, the home
   with her window and the resident, and compares drawn cells and images; its exemptions are
-  design.md's four, each only its own change with nothing else drawn alongside (a chat line's stir,
-  dozing, counts as the look up at it, for now).
+  design.md's four (five since T1, 2026-10-07: the world's clock), each only its own change with
+  nothing else drawn alongside (a chat line's stir, dozing, counts as the look up at it, for now).
 - **Open, for the user** (each found by the stillness tests; each fix would change how she looks, a
   golden re-record; until then the test allows exactly the case, provisionally, or keeps it ignored):
   - *A bob's key ending off its frame grid.* A key that bobs (her writing, her breathing asleep)
@@ -676,11 +676,20 @@ that her trace is unchanged).
     hers, and steady and slow (this round's principle may cover it), so whether the rule holds it
     is the user's call: that room's run is
     `no_long_act_flips_drawn_cells_faster_than_a_frame_by_her_clock`, ignored with those numbers.
+    **Resolved (T1, 2026-10-07):** the user exempts it (not her doing, slow and steady, the
+    periodic-motion principle); the exemption is scoped to the dial's and the sky's own change
+    (only at a paint where her clock's reading changed; her model, key and other looks the same,
+    the changed cells in the footprint of the clock or window that stepped and none in her box),
+    and the run, with one across the sky's day to dusk, is in the gate.
   - *The golden driver's order within a moment.* It tells her of a key press and cues the stage
     before it advances her, where the shell advances her first; it paints at no ~10 Hz snapshot
     redraw during playback. **Resolved (T1, 2026-10-07):** the driver advances her first, as the
     shell does (`the_golden_driver_advances_her_before_input_like_the_shell`); no golden moved.
     The snapshot redraws stay unmodelled.
+  - *The drawn exemptions don't combine* (new in T1's review). A dial or sky step on the same
+    100 ms paint as another exempt change (a blink, a look up at the chat) is exempt by neither arm
+    and fails as a flip; in ASCII the sky's cells inside her box (her leaning at the sill) count as
+    hers. Neither comes up today; the door batch moving pieces could. Open (plan.md).
 - Measured: [phase5c/baseline.md](phase5c/baseline.md), "Step 12c".
 
 ## Implemented (2026-10-07)
