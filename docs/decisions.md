@@ -4598,13 +4598,41 @@ look up at the chat, so the test exempts it with the look up; but by
 day it lasts `speech_ms("Mm?")` = 1380 ms, under a frame, so it comes
 and goes inside one (a night's "mm..." lasts 1500 ms). Making it last at
 least a frame (`speech_ms(line).max(USE_FRAME_MS)`) would change how
-she looks (a golden re-record). And in the home with her wall clock its
+she looks (a golden re-record; since T2 it lasts a frame: below). And in the home with her wall clock its
 dial steps within a frame of her own changes (her breathing asleep:
 656 ms apart), as the window's sky would at dawn and dusk: the world's
 clock is no act of hers, and steady and slow, so whether the rule holds
 it is the user's call; its run is kept, ignored, with those numbers
 (`no_long_act_flips_drawn_cells_faster_than_a_frame_by_her_clock`;
 since T1 exempt, and in the gate: below).
+
+**Why a stir lasts a frame, and stays exempt (the user, phase 5c's
+tail, T2, 2026-10-07: "fix both"):** the stir's turn lasts as long as
+its murmur, and the murmur as long as anything she says, so the floor
+is on how long she says a line (`speech_ms`: 1.2 s + 60 ms a
+character, a frame at least), not on the stir alone: stretching only
+`stir_until` would have left "Mm?" vanishing at 1380 ms and her turning
+back 20 ms later, two changes in place of one. The floor reaches every
+line, so none can come and go inside a frame; today only "Mm?" (three
+characters) was under one (`whatever_she_says_shows_for_a_frame`). A
+stir stays exempt as the dozing form of a look up: it comes when the
+line comes, off her breathing's frames (without the exemption the drawn
+test fails at once, a stir 956 ms after her breathing's flip, every
+room), as a look up does; what the drawn test now checks is that it
+starts with a line and, at every paint of the frame from its start,
+shows as it began (her blink, its murmur, her turn; what she's turned
+over from may change under it, as her key does). Her look up's `!` (1.2 s,
+`SURPRISED_MS`) is under a frame too; it is left: it is inside the
+look up's own exemption, a reaction to the user's line, and the same
+startle she gives on her feet, so changing it is a design call of its
+own (open, plan.md). The other things of hers under a frame are not
+lines and are out of the rule's reach: the andagi's quiet beat (0.6 s)
+and the no-melon look back in the fridge (1.2 s) are in codas to a
+snack of 6–9 s, the whole under 30 s; the chopsticks' split (0.8 s) is a
+prelude, inside a use's first 10 s; Setsubun's throws (0.7 s each) are
+an act of 5.6 s; a glance at something lost (0.9 s) and peering over an
+edge (1.2 s) are short acts of their own. Golden traces: only each
+daytime stir's end moved, from 1380 to 1400 ms after it began.
 
 **Why the world's clock is exempt (the user, phase 5c's tail, T1,
 2026-10-07: "exempt it"):** her wall clock's dial and her window's sky

@@ -476,9 +476,32 @@ const REEL_MS: u64 = 220;
 const RIP: &str = line!("Rrrip!");
 pub(super) const SCRUNCH: &str = line!("scrunch...");
 pub(super) const THERE: &str = line!("There!");
-/// How long she keeps saying `text`.
+/// How long she keeps saying `text`: a frame ([`USE_FRAME_MS`]) at
+/// least, however short, so a line never comes and goes inside one (and
+/// a stir's turn, which lasts as long as its murmur, with it: Round 8,
+/// "Mm?" by day lasted 1380 ms).
 pub(super) fn speech_ms(text: &str) -> u64 {
-    1200 + 60 * text.chars().count() as u64
+    (1200 + 60 * text.chars().count() as u64).max(USE_FRAME_MS)
+}
+
+/// How she turns, stirring at a chat line dozing posed `pose` (see
+/// [`Osaka::stirring`]): over, or her head up off her knees dozing where
+/// she sits; `None` where she doesn't turn.
+fn stir_turn(pose: Pose) -> Option<Pose> {
+    match pose {
+        Pose::Sleep(_) => Some(Pose::Sleep(1)),
+        Pose::Nap(_) => Some(Pose::Nap(1)),
+        Pose::LieBack(_) => Some(Pose::LieBack(1)),
+        Pose::SitDoze(_) => Some(Pose::SitDoze(0)),
+        _ => None,
+    }
+}
+
+/// Whether `pose`, shown stirring, is one she's turned to (so it holds
+/// the stir through).
+#[cfg(test)]
+pub(super) fn turned_stirring(pose: Pose) -> bool {
+    stir_turn(pose) == Some(pose)
 }
 
 /// What her calendar has for her to do (see [`Osaka::calendar_due`]).
@@ -5454,7 +5477,8 @@ impl Osaka {
     }
 
     /// She stirs at `now`, murmuring `line`: turned over a moment,
-    /// blinking, while she says it (see [`Osaka::stirring`]).
+    /// blinking, while she says it (a frame at least: [`speech_ms`]; see
+    /// [`Osaka::stirring`]).
     fn stir_saying(&mut self, line: &'static str, now: u64) {
         self.say(line, now);
         self.stir_until = now + speech_ms(line);
@@ -9541,15 +9565,7 @@ impl Osaka {
             return look;
         }
         let (pose, _, bubble) = look;
-        let turned = match pose {
-            Pose::Sleep(_) => Pose::Sleep(1),
-            Pose::Nap(_) => Pose::Nap(1),
-            Pose::LieBack(_) => Pose::LieBack(1),
-            // Dozing where she sits, her head comes up off her knees.
-            Pose::SitDoze(_) => Pose::SitDoze(0),
-            other => other,
-        };
-        (turned, Face::Blink, bubble)
+        (stir_turn(pose).unwrap_or(pose), Face::Blink, bubble)
     }
 
     fn acting(&self, now: u64) -> (Pose, Face, Option<Bubble>) {
@@ -16518,6 +16534,64 @@ mod tests {
         }
     }
 
+    /// Whatever she says shows for a frame at least ([`USE_FRAME_MS`]),
+    /// however short: a line coming and going inside one would flicker
+    /// (Round 8: "Mm?", stirring by day, lasted 1380 ms). Each line she
+    /// can say, from one character up, said standing and stirring
+    /// asleep: the bubble, and the stir's turn with it, hold through the
+    /// frame and end together.
+    #[test]
+    fn whatever_she_says_shows_for_a_frame() {
+        const SHORT: [&str; 6] = ["", "!", "Oh", STIRRED, MM, OK];
+        // Every 10 ms through the frame, and its last ms.
+        let frame = |from: u64| {
+            (from..from + USE_FRAME_MS)
+                .step_by(10)
+                .chain([from + USE_FRAME_MS - 1])
+        };
+        for text in SHORT {
+            let mut osaka = Osaka::standing_at(20, 15, 0, &mut Rng(3));
+            osaka.say(text, 1_000);
+            for t in frame(1_000) {
+                assert_eq!(
+                    osaka.appearance(t).2,
+                    Some(Bubble::Say(text)),
+                    "{text:?} said at 1000, {t}"
+                );
+            }
+            let mut asleep = Osaka::standing_at(20, 15, 0, &mut Rng(3));
+            asleep.set(
+                Act::Idle {
+                    what: Activity::LieBack,
+                    since: 0,
+                    until: 600_000,
+                    play: None,
+                },
+                0,
+            );
+            asleep.stir_saying(text, 5_000);
+            let stirred = asleep.appearance(5_000);
+            for t in frame(5_000) {
+                assert_eq!(
+                    asleep.appearance(t),
+                    stirred,
+                    "{text:?} stirred at 5000, {t}"
+                );
+            }
+            let over = 5_000 + speech_ms(text);
+            assert_eq!(
+                asleep.stir_until, over,
+                "{text:?}: the turn ends with the line"
+            );
+            assert_ne!(
+                asleep.appearance(over).2,
+                Some(Bubble::Say(text)),
+                "{text:?}"
+            );
+            assert!(speech_ms(text) >= USE_FRAME_MS, "{text:?}");
+        }
+    }
+
     /// Dozing (lying back on the floor, napping, asleep by day, asleep
     /// over her homework), a chat line only stirs her, as at night: she
     /// blinks and turns over a moment (the line comes as her own pose
@@ -16593,6 +16667,19 @@ mod tests {
                 (stirred, Face::Blink, Some(Bubble::Say(STIRRED))),
                 "{name}"
             );
+            // The stir, its turn and its "Mm?" together, lasts a frame at
+            // least (Round 8: by day it was 1380 ms, coming and going
+            // inside one).
+            for t in (line..line + USE_FRAME_MS)
+                .step_by(10)
+                .chain([line + USE_FRAME_MS - 1])
+            {
+                assert_eq!(
+                    osaka.appearance(t),
+                    (stirred, Face::Blink, Some(Bubble::Say(STIRRED))),
+                    "{name}: the stir holds a frame, {t}"
+                );
+            }
             let after = line + speech_ms(STIRRED);
             osaka.tick(after, None, &terrain, &chances, &mut rng);
             assert_eq!(osaka.appearance(after), plain.appearance(after), "{name}");

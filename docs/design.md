@@ -1723,7 +1723,9 @@ this section states what is built.
   two rows up — never inside her box, and whose cells are all blank and
   open; with no such spot the bubble isn't shown. Things she *says*
   (≤ 24 characters, plain ASCII: a bubble is drawn a character a cell)
-  show for 1.2 s + 60 ms per character over her act's
+  show for 1.2 s + 60 ms per character, a frame (1.4 s) at least so a
+  line never comes and goes inside one (a stir's turn lasts as long as
+  its murmur), over her act's
   own bubble: a greeting on first finding her feet ("Nice to meet you.",
   the date's, or her mood's), "...I'm OK."
   after a hard landing (always on her entrance, else half the time), and
@@ -1912,8 +1914,9 @@ this section states what is built.
   holds her place for over 30 s changes how she or her furniture looks
   faster than once a frame (1.4 s) after its first 10 s, but for five
   exemptions, each only its own change: her slow blink, the hook's bob,
-  a look up at the chat (dozing, a stir at it, for now: by day it lasts
-  under a frame, open), the film's fresh still once a minute (below),
+  a look up at the chat (dozing, a stir at it: it comes when the line
+  does, but holds a frame at least, as all she says does), the film's
+  fresh still once a minute (below),
   and the world's clock (her wall clock's dial stepping each game
   quarter-hour and her window's sky at each change of the sky, dawn,
   day, dusk, evening and night, five a game day: not her doing, and

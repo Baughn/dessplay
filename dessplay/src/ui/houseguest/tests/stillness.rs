@@ -719,7 +719,9 @@ fn exempt_drawn(was: &Drawn, now: &Drawn) -> bool {
 /// 10 s, but for exactly the five exemptions design.md names, each only
 /// its own change with nothing else drawn alongside ([`exempt_drawn`]):
 /// her slow blink, Chiyo-chichi's bob through his hook, a look up at the
-/// chat (or, dozing, a stir at it, for now), the film's fresh still once
+/// chat (or, dozing, a stir at it: it comes when the line does, off her
+/// breathing's frames, but it holds unchanged for a frame from its start,
+/// checked at each), the film's fresh still once
 /// a minute, and the world's clock (her wall clock's dial, her window's
 /// sky); and, for now, a bob's key ending within a frame of its
 /// last flip ([`Flips`]). On fed afternoons, with chat, in the home with
@@ -796,7 +798,7 @@ fn no_long_act_flips_drawn_cells_faster_than_a_frame_by_her_clock() {
         ..furnished_room()
     };
     let runs = drawn_stillness(&[at_afternoon(clocked), dusk]);
-    for (at, [.., dial, sky]) in runs {
+    for (at, [.., dial, sky, _]) in runs {
         assert!(dial > 0, "{at}: no dial step in a long act");
         if at.contains("to dusk") {
             assert!(sky > 0, "{at}: no sky step in a long act");
@@ -806,7 +808,7 @@ fn no_long_act_flips_drawn_cells_faster_than_a_frame_by_her_clock() {
 
 /// The drawn stillness check over `rooms`, each in both modes and every
 /// mood (see [`no_long_act_flips_drawn_cells_faster_than_a_frame`]).
-fn drawn_stillness(rooms: &[Room]) -> Vec<(String, [u32; 6])> {
+fn drawn_stillness(rooms: &[Room]) -> Vec<(String, [u32; 7])> {
     use crate::ui::houseguest::film::test_picture;
     use crate::ui::tv_feed::{Sent, TvAnswer, TvAsk, TvFeed};
     const MINUTES: u64 = 10;
@@ -821,13 +823,15 @@ fn drawn_stillness(rooms: &[Room]) -> Vec<(String, [u32; 6])> {
     // Per room and mode: watches over 30 s, those with a fresh still
     // after their first 10 s, shopping acts over 30 s, acts with a look
     // up at the chat after their first 10 s, and the world's clock
-    // stepping in a checked act: her dial, and her window's sky.
-    let runs: Vec<(String, [u32; 6])> = std::thread::scope(|scope| {
+    // stepping in a checked act: her dial, and her window's sky; and her
+    // stirs at the chat, dozing.
+    let runs: Vec<(String, [u32; 7])> = std::thread::scope(|scope| {
         let mut runs = Vec::new();
         for room in rooms {
             for graphics in [false, true] {
                 runs.push(scope.spawn(move || {
-                    let mut seen = [0u32; 6];
+                    let mut seen = [0u32; 7];
+                    let mut stirs = 0u32;
                     for (seed, mood) in moods {
                         let at = format!("{} {mood:?} seed {seed} graphics={graphics}", room.name);
                         let mut guest = fed_afternoon(room, seed, graphics, mood);
@@ -910,6 +914,9 @@ fn drawn_stillness(rooms: &[Room]) -> Vec<(String, [u32; 6])> {
                                 seen[2] += u32::from(shopping);
                                 seen[3] += u32::from(looked);
                             };
+                        // The stir showing: when it started, and how
+                        // she looked then.
+                        let mut stir: Option<(u64, script::Look)> = None;
                         let mut now = 0;
                         while now < MINUTES * 60_000 {
                             let tick = guest
@@ -964,6 +971,44 @@ fn drawn_stillness(rooms: &[Room]) -> Vec<(String, [u32; 6])> {
                                 continue;
                             };
                             let osaka = &visit.osaka;
+                            // A stir at the chat, dozing, holds for a
+                            // frame from its start: it's exempt as a look
+                            // up at the chat is (its start comes when the
+                            // line does, off her breathing's frames), but it
+                            // never comes and goes inside a frame. It starts
+                            // as a line comes, lasts a frame, and at every
+                            // paint of that frame shows as it began: her
+                            // blink, its murmur, and her turn (what she's
+                            // turned over from may change under it, as her
+                            // key does: not the stir's).
+                            let stirring = osaka.stirring_at_chat(now);
+                            match stir {
+                                None if stirring => {
+                                    stirs += 1;
+                                    assert!(line, "{at}: a stir at {now} comes with a line");
+                                    assert!(
+                                        osaka.stirring_at_chat(now + osaka::USE_FRAME_MS - 1),
+                                        "{at}: a stir at {now} lasts a frame"
+                                    );
+                                    stir = Some((now, osaka.appearance(now)));
+                                }
+                                Some((from, (pose, face, bubble)))
+                                    if now < from + osaka::USE_FRAME_MS =>
+                                {
+                                    let (pose2, face2, bubble2) = osaka.appearance(now);
+                                    assert!(stirring, "{at}: a stir at {from} over by {now}");
+                                    assert_eq!(
+                                        (face2, bubble2),
+                                        (face, bubble),
+                                        "{at}: a stir at {from}, at {now}"
+                                    );
+                                    if osaka::turned_stirring(pose) {
+                                        assert_eq!(pose2, pose, "{at}: a stir at {from}, at {now}");
+                                    }
+                                }
+                                Some(_) if !stirring => stir = None,
+                                _ => {}
+                            }
                             let since = osaka.act_started();
                             if act.as_ref().is_some_and(|a| a.0 != since)
                                 && let Some(done) = act.take()
@@ -1034,6 +1079,7 @@ fn drawn_stillness(rooms: &[Room]) -> Vec<(String, [u32; 6])> {
                             check(done);
                         }
                     }
+                    seen[6] = stirs;
                     (format!("{} graphics={graphics}", room.name), seen)
                 }));
             }
@@ -1042,13 +1088,17 @@ fn drawn_stillness(rooms: &[Room]) -> Vec<(String, [u32; 6])> {
             .map(|run| run.join().expect("a run"))
             .collect()
     });
-    for (at, [watched, swapped, shopped, looked, dial, sky]) in &runs {
+    for (at, [watched, swapped, shopped, looked, dial, sky, stirs]) in &runs {
         println!(
             "{at}: {watched} watches over 30 s ({swapped} with a fresh still), \
              {shopped} on the shopping channel, {looked} with a look up at the chat, \
-             {dial} dial and {sky} sky steps in a long act"
+             {dial} dial and {sky} sky steps in a long act, {stirs} stirs"
         );
     }
+    assert!(
+        runs.iter().any(|(_, seen)| seen[6] > 0),
+        "no stir at the chat, dozing, so its frame isn't tried"
+    );
     for (at, [watched, swapped, shopped, looked, ..]) in &runs {
         assert!(*watched > 0, "{at}: never watched for over 30 s");
         assert!(
