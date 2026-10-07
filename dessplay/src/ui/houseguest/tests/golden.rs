@@ -769,7 +769,7 @@ fn golden_stage_room() {
         &[
             (0, 0xd84335fb4891e795, 0x1d85f2c9b1424fe5),
             (1, 0xc95cf5b0e23ec2f7, 0xd3452aa9abf33429),
-            (2, 0xeedc8d9ac6dac930, 0x0f235f671e1f0315),
+            (2, 0xf0d3b60eb3da471b, 0x40c13aca4871e2bd),
             (3, 0xb886785b597e1d60, 0x429805df926e0aaf),
         ],
     );
@@ -797,7 +797,7 @@ fn golden_furnished_home() {
         &[
             (0, 0x1967d39bc82803b9, 0xf738a35f913c8525),
             (1, 0x05cbd5e1f9870a3f, 0xba75682a9e0fc63c),
-            (2, 0xa1636836da80c450, 0xbc8a4c151890d5a8),
+            (2, 0x14c1ff88047e776d, 0xafcdeb4ecffe43c2),
             (3, 0x494da2fdeca60bc8, 0x3e8486765b1b11b9),
         ],
     );
@@ -825,7 +825,7 @@ fn golden_homework_evening() {
         &[
             (0, 0x1b80eb2b61080185, 0xa6538d6da29880a3),
             (1, 0xbfd9efd81baa9f78, 0x851a272fdc5786a8),
-            (2, 0x2449460ba2c62107, 0x3f834ebf5b311896),
+            (2, 0x02a092eff126efe1, 0x7cdee6fb88f39b1a),
             (3, 0xcf70f4e6a6846c88, 0xb3f353139b8e62c6),
         ],
     );

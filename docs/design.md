@@ -1631,7 +1631,9 @@ this section states what is built.
   exercise, lying on her front, chores, a snack, the cat, homework (on
   the floor too; her
   mood moves where it nods off instead), her night or a trial sit:
-  lazy ×1.5, ordinary ×1, dreamy and industrious ×0.85. **A
+  lazy ×1.5, ordinary ×1, dreamy and industrious ×0.85, but an
+  industrious watch (watching TV, flicking through the channels, the
+  shopping channel) isn't shortened (×1). **A
   daydream** (a musing spacing-out) holds as many musings as her mood's
   whim says, the first as ever (or a riddle, which holds no more), each
   next a gap on while it lasts, waiting while she speaks or looks up at
@@ -1896,10 +1898,13 @@ this section states what is built.
   holds her place for over 30 s changes how she or her furniture looks
   faster than once a frame (1.4 s) after its first 10 s, her slow
   blink, the hook's bob, a look up at the chat and the film's fresh
-  still (below) apart; for now, a bob's key ending (her homework
-  nodding off, at a share of the use) may come within a frame of that
-  bob's last flip, as it ends off the bob's frame grid (provisional:
-  whether she holds the bob's last frame instead is open) (why:
+  still (below) apart. Steady periodic motion is not what draws the
+  eye; a change is: so the hook bobs through the whole of its span,
+  however long her mood lingers over the act (a lazy one's up to
+  49 s). For now, a bob's key ending (her homework nodding off, at a
+  share of the use) may come within a frame of that bob's last flip, as
+  it ends off the bob's frame grid (provisional: whether she holds the
+  bob's last frame instead is open) (why:
   [decisions](decisions.md#her-tv-holds-a-picture-2026-10-07)).
   **The film on her TV** (phase 5c D7): in line art, with a film loaded
   that this client holds (on disk and ready) and whose real video the
@@ -1918,7 +1923,7 @@ this section states what is built.
   file no longer held, puts her programme back. Not the shopping
   channel or her first sunrise, which show their own. The still is the
   frame's centre at the glass's aspect, zoomed 1.3×, one levels stretch
-  from its brightness (gain at most 3×), saturation ×1.25, no sheen,
+  from its brightness (gain at most 3×), saturation ×1.3, no sheen,
   laid in the glass unmirrored whichever way the set faces. **The frame
   stays on this machine**: the player writes it to the TV's own private
   screenshot slot (never commentary's, whose frames go to Anthropic),
@@ -2290,10 +2295,10 @@ this section states what is built.
   three, industrious none or one) ("That
   one's a cat.", "The moon's followin' me."), each a gap on, from the sky
   as it is as she says it, waiting while she speaks or looks up at the
-  chat. Its base is 6, as gazing up's and spacing out's; it's on offer
+  chat. Its base is 4; it's on offer
   only with her window in reach, answers daydreams and fun, and is
   twice as likely from 17:00 to 05:00 (in a furnished home with the
-  window, about four or five a game day). Settling in
+  window, about two a game day). Settling in
   from the sill, she sits down in front of it where she leaned (chin in her hands, looking
   up; a chat line has her look up without turning from it), then dozes
   off there or, on the doze's other side, lies back under it watching the

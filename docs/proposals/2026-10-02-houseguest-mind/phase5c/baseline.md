@@ -1214,3 +1214,91 @@ either. Well inside `CACHE_LIMIT`.
 **mpv's reply** (`--vo=null`, this machine): 73–128 ms for a 3840×2160 h264 `video` grab, 41–63 ms
 at 1080p HEVC; sync, a queued command waited as long, async under 1 ms. A real `--vo=gpu` with
 hardware decoding is unmeasured (the session logs each frame's time at trace).
+
+## Step 12c: the drivers paint at a line, and the user's answers (2026-10-07)
+
+**Measured 2026-10-07** in two stages: the drivers painting her at each chat line (the client draws on
+every input; before, she saw a line at her next wake, up to 10 s later for the resident), alone; then
+with the user's answers: an industrious watch isn't shortened (×1, `Stillness::watch`), the film's
+saturation ×1.3 (drawing alone), and looking out's base 4. Same runs as "Shipped (step 8c)": the
+80-visit 17-minute line census for `TUNED` (`CENSUS_MINUTES=17 CENSUS_ROOMS=band CENSUS_MODES=line
+fed_afternoon_census`, release), `CENSUS_BAND_SEEDS=525` for full strength, the spreads at N = 200.
+
+**The 80-visit census** (moving % / set-offs a minute in sight). Quiet cells don't depend on the
+driver (no line comes), and are identical to `TUNED` but for the industrious ones; the band's rooms own
+no window, so looking out's base moves none of them.
+
+| Room | Mood | Quiet: TUNED (12a) | Quiet: 12c | Chat: TUNED (12a) | Chat: the driver alone | Chat: 12c |
+|---|---|---|---|---|---|---|
+| stage | Lazy | 6.5 / 1.20 | same | 6.6 / 1.31 | 6.2 / 1.20 | 6.2 / 1.20 |
+| stage | Ordinary | 7.2 / 1.58 | same | 6.8 / 1.69 | 7.5 / 1.61 | 7.5 / 1.61 |
+| stage | Dreamy | 7.0 / 1.60 | same | 6.9 / 1.71 | 7.1 / 1.63 | 7.1 / 1.63 |
+| stage | Industrious | 9.7 / 2.21 | same | 8.2 / 2.18 | 8.5 / 2.14 | 8.5 / 2.14 |
+| home | Lazy | 11.3 / 0.60 | same | 11.1 / 0.68 | 11.1 / 0.67 | 11.1 / 0.67 |
+| home | Ordinary | 21.8 / 1.23 | same | 21.0 / 1.34 | 21.7 / 1.32 | 21.7 / 1.32 |
+| home | Dreamy | 21.7 / 1.23 | same | 20.9 / 1.35 | 20.6 / 1.32 | 20.6 / 1.32 |
+| home | Industrious | 30.8 / 1.78 | 29.9 / 1.71 | 29.4 / 1.93 | 29.8 / 1.87 | 28.2 / 1.83 |
+| resident | Lazy | 5.6 / 0.52 | same | 6.2 / 0.64 | 6.1 / 0.55 | 6.1 / 0.55 |
+| resident | Ordinary | 9.8 / 1.08 | same | 10.0 / 1.21 | 10.6 / 1.20 | 10.6 / 1.20 |
+| resident | Dreamy | 9.7 / 1.08 | same | 8.8 / 1.15 | 8.3 / 1.08 | 8.3 / 1.08 |
+| resident | Industrious | 16.1 / 1.36 | 15.9 / 1.35 | 14.5 / 1.40 | 15.5 / 1.40 | 15.5 / 1.40 |
+
+The driver moves the chat cells by under a point (seeing a line sooner puts her looks up earlier,
+and their set-offs after); `TUNED` now holds the 12c column.
+
+**Full strength** (N = 525; every band test, each running its quiet and chat cells): the quiet cells
+that can't move read 12a's N = 525 values to the decimal (stage 6.6 / 7.1 / 6.9 / 9.1, home 12.0 /
+22.5 / 22.1, resident 6.2 / 11.0 / 9.7), so the comparison is sound. The cells that moved, against
+their band and against the test's threshold (the band, or 3σ about the new aim where that's wider):
+
+| Cell | 12a (N=525) | 12c (N=525) | Band | Test's bounds | Set-offs / cap |
+|---|---|---|---|---|---|
+| home industrious quiet | **31.4** | 30.6 | 12–31 | 12.0–31.0 | 1.72 / 3 |
+| home industrious chat | 29.4 | 29.1 | 12–31 | 12.0–31.0 | 1.86 / 3 |
+| resident industrious quiet | 16.3 | 16.3 | 12–31 | 12.0–31.0 | 1.35 / 3 |
+| resident industrious chat | 14.5 | 15.1 | 12–31 | 12.0–31.0 | 1.40 / 3 |
+| stage lazy chat | 6.2 | 6.2 | 4–17 | 4.0–17.0 | 1.22 / 1.5 |
+| stage ordinary chat | 7.0 | 7.3 | 6–26 | 6.0–26.0 | 1.69 / 2.25 |
+| stage dreamy chat | 6.5 | 6.7 | 6–26 | 6.0–26.0 | 1.67 / 2.25 |
+| stage industrious chat (`SHORT`) | **8.4** | **8.6** | 9–31 | 9.0–31.0 (the band) | 2.10 / 3 |
+| home lazy chat | 12.0 | 11.9 | 5–17 | 5.0–17.0 | 0.68 / 1.5 |
+| home ordinary chat | 21.3 | 21.5 | 8–26 | 8.0–26.0 | 1.32 / 2.25 |
+| home dreamy chat | 21.2 | 21.7 | 8–26 | 8.0–26.0 | 1.36 / 2.25 |
+| resident lazy chat | 5.9 | 6.0 | 5–17 | 5.0–17.0 | 0.56 / 1.5 |
+| resident ordinary chat | 10.3 | 10.7 | 8–26 | 8.0–26.0 | 1.16 / 2.25 |
+| resident dreamy chat | 8.8 | 9.1 | 8–26 | 7.7–26.0 | 1.12 / 2.25 |
+
+- **The home's industrious quiet afternoon is back to 30.6** (step 8c's number), inside its ceiling of
+  31: her industrious watch whole, she gets up from the TV no sooner than she did before step 12a.
+  It is in by noise only: 0.4 under the ceiling is about 1.2σ at N = 525 (σ ≈ 0.33), and the test's
+  threshold there is the band itself. The next step that touches what an industrious Osaka does
+  re-measures this cell at N = 525 first.
+- **Every cell is in but `SHORT`'s** (the stage's industrious afternoon with chat, 8.6 against 9; 8.4
+  before), every set-off rate far under its cap. No cell fell outside, so the stop rule didn't bind.
+- **The spreads** (N = 200): home 2.60 (29.7 ÷ 11.5; 12a 2.66), resident 2.68 (15.9 ÷ 5.9; 12a 2.56
+  at N = 525), the stage 1.38 (8.9 ÷ 6.4; `SHORT`, 1.39 before).
+
+**Looking out** (the day census, 6 runs a room, a game week each: 42 game days in the census home with
+its window). The user asked for about two a game day and chose the outcome, not the number. With the
+levers on, the driver painting at each line and an industrious watch whole:
+
+| Base | 3 | 4 (ships) | 5 | 6 (was) |
+|---|---|---|---|---|
+| Look-outs in 42 game days | 36 | 82 | 140 | 175 |
+| A game day | 0.86 | 1.95 | 3.3 | 4.2 |
+| In her top four / on offer | 192 / 3895 | 442 / 3823 | 740 / 3710 | 917 / 3501 |
+
+(The driver alone, at base 6: 184; step 8c, 191.) The mapping is steep: a look-out has to make her top
+four against her other daydreams, and each point of base buys about 40% more of them there. Base 4 is
+the nearest two a day. The rest of the day census at base 4: bedtime holds (asleep 38.6–39.2% of
+22:00–23:00 and 89.0–89.7% of 23:00–24:00 on school days); afternoon hour glances home 20, stage 14,
+resident 14 (step 8c: 19 / 9 / 13).
+
+**The printed rooms** (17 minutes, line art, quiet / chat; 12a's in brackets): the windowed home
+ordinary 21.3 / 21.8 (19.7 / 19.8), lazy 10.9 / 11.1 (10.8 / 11.4), industrious 30.0 / 28.4 (29.7 /
+27.3), dreamy 21.5 / 20.5 (20.1 / 19.3); its look-out 0–3% of an afternoon visit (12a: 4–17%) and
+7–17% of an evening's (12a: 18–25%). The windowed home of an evening: ordinary 18.1 / 17.5, lazy 10.0
+/ 10.1, industrious 26.3 / 25.4, dreamy 18.1 / 17.6. The TV-only home: ordinary 19.4 / 18.0, lazy
+10.0 / 9.0, industrious 25.9 / 22.4 (26.3 / 23.3), dreamy 18.4 / 16.7. The resident with text low:
+ordinary 17.1 / 16.0, lazy 6.1 / 6.1, industrious 24.6 / 24.1, dreamy 17.4 / 15.7. All inside the
+band.

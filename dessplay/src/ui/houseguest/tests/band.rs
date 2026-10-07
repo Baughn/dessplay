@@ -251,44 +251,47 @@ const BASELINE: [(&str, Mood, bool, [f64; 4]); 24] = [
 /// CENSUS_MODES=line fed_afternoon_census`, 20 sets × 4 seeds, release;
 /// phase5c/baseline.md, "Shipped (step 8c)"); the home's and resident's
 /// lazy, industrious and dreamy cells re-read in step 12a, watching
-/// lingering (phase5c/baseline.md, "Step 12a: the held TV picture").
+/// lingering (phase5c/baseline.md, "Step 12a: the held TV picture"); and
+/// every chat cell and the industrious cells re-read in step 12c, the
+/// drivers painting her at each chat line and an industrious watch whole
+/// (phase5c/baseline.md, "Step 12c").
 // Measured numbers: none is a constant of nature.
 #[allow(clippy::approx_constant)]
 const TUNED: [(&str, Mood, bool, [f64; 4]); 24] = [
     ("stage", Mood::Ordinary, true, [7.2, 2.53, 1.58, 0.18]),
-    ("stage", Mood::Ordinary, false, [6.8, 2.53, 1.69, 0.28]),
+    ("stage", Mood::Ordinary, false, [7.5, 3.50, 1.61, 0.21]),
     ("stage", Mood::Lazy, true, [6.5, 1.98, 1.20, 0.18]),
-    ("stage", Mood::Lazy, false, [6.6, 2.54, 1.31, 0.20]),
+    ("stage", Mood::Lazy, false, [6.2, 2.28, 1.20, 0.20]),
     ("stage", Mood::Industrious, true, [9.7, 2.19, 2.21, 0.45]),
-    ("stage", Mood::Industrious, false, [8.2, 2.26, 2.18, 0.41]),
+    ("stage", Mood::Industrious, false, [8.5, 2.37, 2.14, 0.39]),
     ("stage", Mood::Dreamy, true, [7.0, 2.32, 1.60, 0.19]),
-    ("stage", Mood::Dreamy, false, [6.9, 2.64, 1.71, 0.23]),
+    ("stage", Mood::Dreamy, false, [7.1, 2.71, 1.63, 0.21]),
     ("home", Mood::Ordinary, true, [21.8, 2.18, 1.23, 0.10]),
-    ("home", Mood::Ordinary, false, [21.0, 2.76, 1.34, 0.09]),
+    ("home", Mood::Ordinary, false, [21.7, 3.81, 1.32, 0.12]),
     ("home", Mood::Lazy, true, [11.3, 1.51, 0.60, 0.05]),
-    ("home", Mood::Lazy, false, [11.1, 1.59, 0.68, 0.08]),
-    ("home", Mood::Industrious, true, [30.8, 4.16, 1.78, 0.10]),
-    ("home", Mood::Industrious, false, [29.4, 2.52, 1.93, 0.10]),
+    ("home", Mood::Lazy, false, [11.1, 1.49, 0.67, 0.08]),
+    ("home", Mood::Industrious, true, [29.9, 3.63, 1.71, 0.16]),
+    ("home", Mood::Industrious, false, [28.2, 2.47, 1.83, 0.12]),
     ("home", Mood::Dreamy, true, [21.7, 1.92, 1.23, 0.07]),
-    ("home", Mood::Dreamy, false, [20.9, 1.91, 1.35, 0.09]),
+    ("home", Mood::Dreamy, false, [20.6, 2.08, 1.32, 0.10]),
     ("resident", Mood::Ordinary, true, [9.8, 1.80, 1.08, 0.10]),
-    ("resident", Mood::Ordinary, false, [10.0, 2.21, 1.21, 0.11]),
+    ("resident", Mood::Ordinary, false, [10.6, 2.76, 1.20, 0.11]),
     ("resident", Mood::Lazy, true, [5.6, 2.42, 0.52, 0.10]),
-    ("resident", Mood::Lazy, false, [6.2, 2.48, 0.64, 0.10]),
+    ("resident", Mood::Lazy, false, [6.1, 2.87, 0.55, 0.14]),
     (
         "resident",
         Mood::Industrious,
         true,
-        [16.1, 3.44, 1.36, 0.10],
+        [15.9, 2.51, 1.35, 0.11],
     ),
     (
         "resident",
         Mood::Industrious,
         false,
-        [14.5, 3.25, 1.40, 0.11],
+        [15.5, 2.73, 1.40, 0.11],
     ),
     ("resident", Mood::Dreamy, true, [9.7, 1.92, 1.08, 0.10]),
-    ("resident", Mood::Dreamy, false, [8.8, 2.71, 1.15, 0.13]),
+    ("resident", Mood::Dreamy, false, [8.3, 2.38, 1.08, 0.13]),
 ];
 
 /// A room's cell (mood, quiet) or, with `None`, its spread, short of
@@ -304,14 +307,15 @@ const SHORT: [Short; 2] = [
     (
         "stage",
         Some((Mood::Industrious, false)),
-        "8.4% with chat against the stage's industrious floor of 9 at full strength (N = 525; quiet 9.1): \
-         an industrious linger of 0.7 brings it to 9.2 but the home's to 32.4 against 31 (80 visits)",
+        "8.6% with chat against the stage's industrious floor of 9 at full strength (N = 525, step 12c; \
+         quiet 9.1): an industrious linger of 0.7 brings it to 9.2 but the home's to 32.4 against 31 \
+         (80 visits, step 8c)",
     ),
     (
         "stage",
         None,
-        "industrious ÷ lazy 1.39 against 1.6 at full strength (8.9 ÷ 6.4, N = 200): her moods \
-         read alike on the floor and in what she made (about 17% reading on her back in each)",
+        "industrious ÷ lazy 1.38 against 1.6 at full strength (8.9 ÷ 6.4, N = 200, step 12c): her \
+         moods read alike on the floor and in what she made (about 17% reading on her back in each)",
     ),
 ];
 
@@ -720,13 +724,13 @@ fn band_stage_industrious_quiet() {
 /// Short of the band (see [`SHORT`]): at full strength, the stage's
 /// industrious afternoon with chat is under its floor.
 #[test]
-#[ignore = "5c step 8c, shipped short: 8.4% with chat against the stage's industrious floor of 9 at full strength (SHORT)"]
+#[ignore = "5c step 8c, shipped short: 8.6% with chat against the stage's industrious floor of 9 at full strength (step 12c; SHORT)"]
 fn band_stage_industrious_chat() {
     band_cell(stage_room(), Mood::Industrious, &[false]);
 }
 
 #[test]
-#[ignore = "5c step 8c, shipped short: industrious ÷ lazy 1.39 against 1.6 at full strength (SHORT)"]
+#[ignore = "5c step 8c, shipped short: industrious ÷ lazy 1.38 against 1.6 at full strength (step 12c; SHORT)"]
 fn band_spread_stage() {
     band_spread(stage_room());
 }

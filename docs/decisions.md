@@ -4193,7 +4193,7 @@ than tested.)
 
 ## Her window is a long daydream (2026-10-06)
 
-**Rule:** Looking out is rarer (base 8 → 3) and much longer (60–180 s,
+**Rule:** Looking out is rarer (base 8 → 3; 6 in step 8c, 4 in step 12c) and much longer (60–180 s,
 lingered by mood). It's a session: the sky's line, then leaning on the
 sill with up to three musings on the sky (a whim's count), a whim's gap
 apart, each from the sky as it is when she says it, waiting while she
@@ -4271,10 +4271,21 @@ So it's not built: the starving is in the glance's other gates (her
 clock on the strip she stands on, of an afternoon, quiet, a musing in
 three, on a daydream's start), and which to ease is the user's call.
 
+**Why base 4 (the user, step 12c: "about two long window daydreams a
+game day"):** the user chose the outcome, not the number. Base 6, the
+user's number in step 8c, came to about two a day with the levers
+neutral, but with them on (lingering, settling in) the day census read
+4.5 a day. The mapping is steep, since a look-out has to make her top
+four against her other daydreams: in the census home's 42 game days
+(the driver painting at each chat line, an industrious watch whole),
+base 3 gave 36 look-outs, 4 gave 82, 5 gave 140, 6 gave 175. Base 4 is
+the nearest two a day (1.95).
+
 ## Her stillness ships (2026-10-07)
 
 **Rule:** The stillness levers ship (`Stillness::TUNED`): lingering
-(lazy ×1.5, ordinary ×1, dreamy and industrious ×0.85), settling in
+(lazy ×1.5, ordinary ×1, dreamy and industrious ×0.85; an industrious
+watch ×1, since step 12c), settling in
 (lazy 0.6, ordinary and dreamy 0.35, industrious 0.15; from sitting,
 dozing where she sits half the time), daydream musings by mood, homework's
 nod-off by mood, nearer spots; with step 8's lengths and needs (8b's run
@@ -4284,7 +4295,7 @@ chosen stand 3–8 s; sitting 15–40 s, lying back and dozing (sitting up
 or under a book) 20–60, gazing 6–14, lounging 27–60, napping 45–105,
 watching 32–82, reading 30–65, homework 37–75. Sitting in front of her
 window lasts as sitting does, watching the clouds as lying back does.
-Looking out's base is 6. Of an afternoon, the first daydream she starts
+Looking out's base is 6 (4 since step 12c). Of an afternoon, the first daydream she starts
 quiet with her clock in view glances at the hour (once a visit). Reading
 a borrowed strip she looks up at chat without turning. The band's floors
 on the bare stage are lower (lazy 4, ordinary and dreamy 6, industrious
@@ -4422,7 +4433,8 @@ decision's whims as every watch begins, whatever it plays (a plain watch,
 the shopping channel, a surf, a watch with her home on her mind) and the
 act carries it (`Play::card`). Chiyo-chichi bobs only through his hook
 (the shopping channel's first two fifths), then holds still. Watching
-lingers by her mood as her other still uses do. A script key names what
+lingers by her mood as her other still uses do, but an industrious watch
+isn't shortened (`Stillness::watch`, step 12c). A script key names what
 it shows as `Shows`: held as it is, static, the hook, or the act's
 programme; only static and the hook move. See
 [design.md](design.md#houseguest).
@@ -4463,9 +4475,20 @@ With the picture held, a long watch is a still one. Measured
 industrious cells of the rooms with a TV. The furnished home's industrious
 afternoon, quiet, now reads 31.4% at full strength against its ceiling of
 31 (step 8c: 30.6). Its test passes within its 3σ, but the cell is over.
-Its shorter watches (×0.85) get her up more often. Accepting it, leaving
-watching out of the industrious linger, or retuning is open, for the
-user.
+Its shorter watches (×0.85) get her up more often.
+
+**Why an industrious watch isn't shortened (the user, step 12c: "Don't
+shorten industrious watching"):** an industrious Osaka shortened at the
+TV got up from it sooner and so moved more, pushing the home's
+industrious quiet afternoon to 31.4% against its 31% ceiling. Her other
+still uses keep the industrious ×0.85 (it's what keeps her busy), and
+every other mood's watch lingers as that mood does. The watch's table
+(`Stillness::watch`) overrides the linger only where it says (×1
+industrious), not a second whole table: so nothing else she does moves,
+and a later change to the linger still reaches her watching unless
+the user said otherwise (step 12c's review: two whole tables would let a
+lever over "linger" silently miss the TV).
+Measured in phase5c/baseline.md, "Step 12c".
 
 **The stillness test** (`no_long_act_flips_faster_than_a_frame`,
 `a_long_tv_act_holds_still_after_its_first_ten_seconds`): sampled every
@@ -4515,8 +4538,11 @@ him bob more visibly, and his bob is talk, not a picture to see whole.
 **The hook's length is the lingered body's:** the hook is two fifths of
 the shopping act's body (`Span::Upto(2, 5)`), and the body lingers by
 mood, so a lazy shopping act (up to 82 s × 1.5 = 123 s) bobs for up to
-49 s, against 33 s before watching lingered. Left as the synthesis wrote
-it; capping the hook in ms is open, for the user.
+49 s, against 33 s before watching lingered. **The user left it (step
+12c):** "Continuous cyclical movement gets filtered out by the human
+optical system almost as quickly as static scenes." Steady periodic
+motion is not what draws the eye; a change is (design.md's stillness
+rule says so). So the hook isn't capped in ms.
 
 ## The film on her TV (2026-10-07)
 
@@ -4533,11 +4559,13 @@ player, if any (changing infrequently)?"): her TV showing what the room
 is watching. It is a **held picture, not animation**: step 12a made the
 TV hold still because a moving screen in a TV home outshone her, and a
 still a minute keeps that. The user chose the mock's column 7 (zoom 1.3,
-one luma levels stretch, saturation ×1.25, no sheen) over plain crops
+one luma levels stretch, saturation ×1.3, no sheen) over plain crops
 (night and interior scenes went to mud at 27×22 pixels), posterizing,
 scanlines, a CRT tint and letterboxing (each worse in the mock), and a
 refresh about once a minute during a long watch over the synthesis's
-"one still per switch-on, never swapped" (Q2).
+"one still per switch-on, never swapped" (Q2). The saturation is the
+column's own ×1.3 (step 12c): the Q1 answer and step 12b wrote ×1.25,
+but the user chose the column by eye, and the column applies ×1.3.
 
 **Why its own screenshot slot:** AI commentary deletes its `frame.jpg`
 before each request and sends what it reads to the Anthropic API.

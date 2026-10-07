@@ -2296,7 +2296,10 @@ fn live_for(room: &Room, seed: u64, date: Option<chrono::NaiveDate>, until: u64)
 /// happened (arrivals, going out to school, coming home, dash-ins,
 /// goodbyes, her vignettes, clock glances by kind, looking out of her
 /// window, the calendar, rare things first seen); then the same by slot,
-/// and each run's rare draws and one-off events. About a minute in
+/// and each run's rare draws and one-off events. It holds one outcome:
+/// in a room with her window she looks out about two times a game day
+/// (1.5 to 2.5: the user's ask, phase 5c step 12c), so tuning that moves
+/// it fails here, not only in a pinned base. About a minute in
 /// release. Ignored; run by hand:
 ///
 /// ```text
@@ -2307,6 +2310,7 @@ fn live_for(room: &Room, seed: u64, date: Option<chrono::NaiveDate>, until: u64)
 fn day_census() {
     const DAY_SEEDS: [u64; 3] = [0, 1, 2];
     let dates = [date(2026, 10, 31), None];
+    let mut looking_out = Vec::new();
     for room in day_rooms() {
         let started = std::time::Instant::now();
         let room = &room;
@@ -2405,6 +2409,23 @@ fn day_census() {
             eprintln!("    rares: {}", week.rares.join("; "));
             eprintln!("    once: {}", week.once.join("; "));
         }
+        // The user's outcome for her window (phase 5c step 12c): about two
+        // long window daydreams a game day in a furnished home with a
+        // window (82 in its 42 game days, 1.95, at base 4 when it shipped).
+        let days = runs.len() * 7;
+        let looks = whole.events.get("look out").copied().unwrap_or(0);
+        let a_day = looks as f64 / days as f64;
+        eprintln!("  looking out: {looks} in {days} game days, {a_day:.2} a day");
+        if room.owns.contains(&Furniture::Window) {
+            looking_out.push((room.name, a_day));
+        }
+    }
+    assert!(!looking_out.is_empty(), "a day room has her window");
+    for (name, a_day) in looking_out {
+        assert!(
+            (1.5..=2.5).contains(&a_day),
+            "{name}: she looks out {a_day:.2} times a game day, not about two"
+        );
     }
 }
 

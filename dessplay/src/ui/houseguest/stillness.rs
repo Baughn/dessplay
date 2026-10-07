@@ -17,6 +17,7 @@
 //! [`Osaka`]: super::osaka::Osaka
 
 use super::brain::Mood;
+use super::room::Use;
 
 /// One value per mood.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -84,7 +85,7 @@ pub(super) struct Stillness {
     /// Times the length she draws for a still act she chose: sitting,
     /// lying back, gazing; spacing out (musing, or her rare musing); and
     /// the still uses (lounging, napping, reading, looking out, a day's
-    /// sleep, watching TV: phase 5c D7). Never exercise, chores, lying on
+    /// sleep; watching TV by [`Stillness::watch`]). Never exercise, chores, lying on
     /// her front kicking her feet (it draws the eye), homework (its
     /// nod-off moves instead), her night, a trial sit, a glance,
     /// Setsubun or the moment after a swap.
@@ -93,6 +94,15 @@ pub(super) struct Stillness {
     /// [`Activity::lingers`]: super::osaka::Activity::lingers
     /// [`Use::lingers`]: super::room::Use::lingers
     pub linger: ByMood<f64>,
+    /// Where a mood's watch (watching TV, flicking through the channels,
+    /// the shopping channel) lingers otherwise than [`Stillness::linger`]
+    /// has it: the times it's drawn for, or `None` (every mood but where
+    /// a lever says otherwise) for as that mood lingers, so a change to
+    /// the linger changes watching too. What ships keeps an industrious
+    /// Osaka's watching whole (the user, phase 5c step 12c: "Don't
+    /// shorten industrious watching"), so she doesn't get up from the TV
+    /// sooner. See [`Stillness::watch_of`].
+    pub watch: ByMood<Option<f64>>,
     /// The odds, as a still act she chose (or settled into) runs its
     /// course, that she settles further where she is: spacing out or
     /// gazing to sitting, sitting to lying back (or dozing where she
@@ -129,6 +139,7 @@ impl Stillness {
     #[cfg_attr(not(test), allow(dead_code))]
     pub const NEUTRAL: Self = Self {
         linger: ByMood::all(1.0),
+        watch: ByMood::all(None),
         settle: ByMood::all(0.0),
         sit_doze: 0.0,
         musings: ByMood::all((1, 1)),
@@ -154,6 +165,8 @@ impl Stillness {
             industrious: 0.7,
             dreamy: 1.0,
         },
+        // A watch lingers as the rest do (phase 5c D7).
+        watch: ByMood::all(None),
         settle: ByMood {
             ordinary: 0.35,
             lazy: 0.6,
@@ -191,19 +204,44 @@ impl Stillness {
     /// ordinary one (0.85, not 1), which keeps her afternoons where she
     /// has text above her off the band's floor: her long daydreams are
     /// her stillness, not her lingering (phase5c/baseline.md, "Shipped
-    /// (step 8c)").
+    /// (step 8c)"). A watch lingers as the rest do, but an industrious
+    /// Osaka's isn't shortened (the user, step 12c: shortened, she got up
+    /// from the TV sooner and moved more, the home's industrious quiet
+    /// afternoon 31.4% against its ceiling of 31).
     pub const TUNED: Self = Self {
         linger: ByMood {
             industrious: 0.85,
             dreamy: 0.85,
             ..Self::STARTING.linger
         },
+        watch: ByMood {
+            industrious: Some(1.0),
+            ..ByMood::all(None)
+        },
         ..Self::STARTING
     };
+
+    /// The times a watch is drawn for in `mood`: [`Stillness::watch`]'s,
+    /// or as the mood lingers.
+    pub fn watch_of(&self, mood: Mood) -> f64 {
+        self.watch.of(mood).unwrap_or_else(|| self.linger.of(mood))
+    }
 
     /// `ms` drawn for a still act she chose, lingered as her `mood` does.
     pub fn lingered(&self, mood: Mood, ms: u64) -> u64 {
         (ms as f64 * self.linger.of(mood)).round() as u64
+    }
+
+    /// `ms` drawn for a use of `what` she chose (not a trial), lingered
+    /// as her `mood` does if it [lingers](Use::lingers): a watch by
+    /// [`Stillness::watch_of`], the rest by [`Stillness::linger`].
+    pub fn lingered_use(&self, mood: Mood, what: Use, ms: u64) -> u64 {
+        let times = match what {
+            _ if !what.lingers() => 1.0,
+            Use::Watch => self.watch_of(mood),
+            _ => self.linger.of(mood),
+        };
+        (ms as f64 * times).round() as u64
     }
 
     /// `ms`, as long as the most lingering mood lingers over it if it
@@ -227,7 +265,11 @@ impl Stillness {
     /// shortens no act past its table's longest).
     #[cfg(test)]
     pub fn most_linger(&self) -> f64 {
-        self.linger.each().into_iter().fold(1.0, f64::max)
+        self.linger
+            .each()
+            .into_iter()
+            .chain(self.watch.each().into_iter().flatten())
+            .fold(1.0, f64::max)
     }
 }
 

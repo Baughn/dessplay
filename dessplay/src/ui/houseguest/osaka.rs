@@ -4704,7 +4704,12 @@ impl Osaka {
                 }
                 // A still use she chose, as long as her mood lingers over
                 // it (not a trial: a moment's sit is a moment's).
-                let length = self.lingered(!trying && seat.what.lingers(), rng.range(lo, hi));
+                let drawn = rng.range(lo, hi);
+                let length = if trying {
+                    drawn
+                } else {
+                    self.stillness.lingered_use(self.mood, seat.what, drawn)
+                };
                 let whole = if trying {
                     let (lo, hi) = usual;
                     lo.midpoint(hi)
@@ -6260,7 +6265,10 @@ impl Osaka {
             Borrowing::Reel(_) => {
                 let slot = self.day(at).map(|day| day.slot);
                 let (lo, hi) = use_duration_in(Use::Read, slot);
-                let until = at + self.lingered(Use::Read.lingers(), rng.range(lo, hi));
+                let until = at
+                    + self
+                        .stillness
+                        .lingered_use(self.mood, Use::Read, rng.range(lo, hi));
                 tracing::debug!(until, "houseguest: reading the strip beside the tear");
                 Borrowing::Read { until }
             }
@@ -17883,10 +17891,10 @@ mod tests {
     /// list and nothing else: sitting, lying back, gazing, dozing where
     /// she sits; spacing out (plain, a musing, her rare musing); and the
     /// still uses (lounging, napping, a day's sleep, reading, looking
-    /// out, watching TV: it holds a picture, phase 5c D7). Not lying on
-    /// her front, exercise, homework (its nod-off moves instead), chores,
-    /// a snack, the cat, nor a trial sit. Without the levers, nothing
-    /// lingers.
+    /// out, watching TV: it holds a picture, phase 5c D7; a watch by its
+    /// own table, `Stillness::watch`). Not lying on her front, exercise,
+    /// homework (its nod-off moves instead), chores, a snack, the cat,
+    /// nor a trial sit. Without the levers, nothing lingers.
     #[test]
     fn her_mood_lingers_over_the_still_acts_she_chooses() {
         let terrain = floor_at(15);
@@ -17896,6 +17904,14 @@ mod tests {
                 lazy: 2.0,
                 industrious: 0.5,
                 dreamy: 1.5,
+            },
+            // A watch by its own table, but where it leaves a mood to
+            // the linger (dreamy).
+            watch: ByMood {
+                ordinary: Some(0.75),
+                lazy: Some(1.75),
+                industrious: Some(1.1),
+                dreamy: None,
             },
             ..Stillness::NEUTRAL
         };
@@ -18035,6 +18051,7 @@ mod tests {
             );
             cases.push((format!("{what:?}"), Box::new(using(what, false)), lingers));
         }
+        let watch = format!("{:?}", Use::Watch);
         cases.push((
             "trial sit".into(),
             Box::new(using(Use::Lounge, true)),
@@ -18044,10 +18061,10 @@ mod tests {
             for (name, start, lingers) in &cases {
                 let plain = length(Stillness::NEUTRAL, mood, start.as_ref());
                 let long = length(lingering, mood, start.as_ref());
-                let times = if *lingers {
-                    lingering.linger.of(mood)
-                } else {
-                    1.0
+                let times = match lingers {
+                    false => 1.0,
+                    true if *name == watch => lingering.watch_of(mood),
+                    true => lingering.linger.of(mood),
                 };
                 assert_eq!(
                     long,
@@ -18066,6 +18083,57 @@ mod tests {
         assert!(
             longest <= 2 * longest_still_ms_with(slot, &Stillness::NEUTRAL),
             "{longest}"
+        );
+    }
+
+    /// With the levers she ships with, an industrious Osaka's watch is as
+    /// long as it's drawn (the user, phase 5c step 12c: "Don't shorten
+    /// industrious watching"), while her other still uses are shortened
+    /// as her mood lingers, and every other mood's watch lingers as that
+    /// mood does.
+    #[test]
+    fn industrious_watching_is_not_shortened() {
+        let length = |still: Stillness, mood: Mood, what: Use| {
+            let mut rng = Rng(5);
+            let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+            osaka.set_mood(mood);
+            osaka.stillness = still;
+            osaka.splice_rows = &[];
+            osaka.whims = Whims(5);
+            let item = Furniture::ALL
+                .into_iter()
+                .find(|item| item.spec().uses.contains(&what))
+                .unwrap();
+            let seat = Seat {
+                x: 20,
+                y: 15,
+                ..seat_for(what, item)
+            };
+            osaka.start_job(Job::Use(seat), 0, &Chances::default(), &mut rng);
+            match osaka.act {
+                Act::Use { since, until, .. } => until - since,
+                ref other => panic!("{other:?}"),
+            }
+        };
+        let shipped = stillness::SHIPPED;
+        for mood in Mood::ALL {
+            for what in [Use::Watch, Use::Lounge, Use::Read] {
+                let plain = length(Stillness::NEUTRAL, mood, what);
+                let times = if what == Use::Watch && mood == Mood::Industrious {
+                    1.0
+                } else {
+                    shipped.linger.of(mood)
+                };
+                assert_eq!(
+                    length(shipped, mood, what),
+                    (plain as f64 * times).round() as u64,
+                    "{what:?} {mood:?}"
+                );
+            }
+        }
+        assert!(
+            shipped.linger.of(Mood::Industrious) < 1.0,
+            "her other still uses are still shortened"
         );
     }
 

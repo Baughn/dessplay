@@ -621,7 +621,35 @@ that her trace is unchanged).
   runs `a_tv_still_is_asked_only_of_the_held_file_into_its_own_slot`: not asked before anything
   plays or of another file, asked into the `dessplay-tv-*` slot once held and shown, the frame read
   and deleted.
-- **Open, for the user:** saturation. The Q1 answer, the synthesis and the code say ×1.25; the
+- **Saturation** (closed in Round 8): the Q1 answer, the synthesis and the code said ×1.25; the
   mock's column 7 (`lifted()` in `d7/mock.py`), which the user picked by eye, applies ×1.3. The
-  code keeps the written ×1.25 (pinned by `the_treatment_is_the_users_choice`).
+  user chose the column's ×1.3 (step 12c).
 - Records: decisions.md, "The film on her TV"; baseline.md, "Step 12b".
+
+## Round-8 amendments (2026-10-07): the user's answers after 8c, 12a and 12b (step 12c)
+
+- **The drivers paint her at every input** (its own commit, before the answers): the golden driver at
+  every event (a chat line, text arriving, a key press, a focus change) and every cue, the census
+  drivers and the film tests' at every chat line, as the client draws after every input. One golden
+  re-record; every chat cell re-measured.
+- **Industrious watching isn't shortened** (the user: "Don't shorten industrious watching"): a watch
+  (watching TV, flicking through the channels, the shopping channel) lingers as the mood's linger
+  but where `Stillness::watch` overrides it, which ships ×1 industrious and nothing else (so a lever
+  that changes the linger changes watching too); every other mood and every other still act as
+  before. The home's industrious quiet afternoon is back to 30.6% at full strength
+  (31.4 at step 12a, ceiling 31).
+- **The film's saturation is ×1.3**, the mock's column 7 that the user picked by eye (Round 7's open
+  point, closed).
+- **Looking out's base is 4.** The user asked for about two long window daydreams a game day in a
+  furnished home with a window, and chose the outcome, not the number: the day census read 36
+  look-outs in its 42 game days at base 3, 82 at 4 (1.95 a day), 140 at 5 and 175 at 6, with the
+  levers on. The day census now holds the outcome (1.5 to 2.5 a game day in a room with her window),
+  not only the pinned base.
+- **Left as they are, by the user's word:**
+  - The shopping channel's hook bobs through its whole span, up to about 49 s on a lazy watch. The
+    user: "Continuous cyclical movement gets filtered out by the human optical system almost as
+    quickly as static scenes." Steady periodic motion is not what draws the eye; a change is
+    (design.md's stillness rule says so; decisions.md, "Her TV holds a picture").
+  - A resident staying in the chat pane is not weighted: only going in is a tenth.
+- **The TV's `NotAsked` retry after 5 s stands** (the orchestrator's call, unless the user objects).
+- Measured: [phase5c/baseline.md](phase5c/baseline.md), "Step 12c".

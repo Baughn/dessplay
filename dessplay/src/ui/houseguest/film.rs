@@ -29,8 +29,9 @@ const ZOOM: f32 = 1.3;
 /// One levels stretch from luma's 2nd to 98th percentile, the same map
 /// on all three channels (so hues keep), its gain at most this.
 const GAIN_MAX: f32 = 3.0;
-/// Saturation, after the stretch.
-const SATURATION: f32 = 1.25;
+/// Saturation, after the stretch (the mock's column 7, which the user
+/// picked by eye).
+const SATURATION: f32 = 1.3;
 /// A frame darker than this (mean luma, of 255) is black: a fade, a
 /// cut, a player between files. Measured before the stretch.
 const BLACK_MEAN: f32 = 20.0;
@@ -385,11 +386,12 @@ mod tests {
         assert!(p[2] > p[0] && p[2] > p[1], "{p:?}");
     }
 
-    /// The user's treatment, by its numbers (the mock's column 7, with
-    /// the Q1 answer's saturation): the crop is the centre zoomed 1.3×
-    /// (the frame's rings at 1.25× and 1.35× tell 1.2 and 1.4 from it),
-    /// and saturation is ×1.25 about each pixel's luma (a frame already
-    /// spanning black to white, so the stretch leaves it be).
+    /// The user's treatment, by its numbers (the mock's column 7, which
+    /// the user picked by eye, its saturation too: phase 5c step 12c):
+    /// the crop is the centre zoomed 1.3× (the frame's rings at 1.25×
+    /// and 1.35× tell 1.2 and 1.4 from it), and saturation is ×1.3 about
+    /// each pixel's luma (a frame already spanning black to white, so
+    /// the stretch leaves it be; ×1.25 would give 90, 152, 215).
     #[test]
     fn the_treatment_is_the_users_choice() {
         // At the glass's aspect: magenta outside the 1.25× crop, cyan
@@ -434,9 +436,9 @@ mod tests {
             _ => Rgba([255, 255, 255, 255]),
         });
         let still = treat(&bands).unwrap();
-        // Luma 140.75: each channel 1.25× as far from it.
+        // Luma 140.75: each channel 1.3× as far from it.
         let p = still.get_pixel(SOURCE.0 / 2, SOURCE.1 / 2);
-        for (c, want) in [90u8, 152, 215].into_iter().enumerate() {
+        for (c, want) in [88u8, 153, 218].into_iter().enumerate() {
             assert!(p[c].abs_diff(want) <= 1, "channel {c}: {p:?}, want {want}");
         }
     }
