@@ -31,12 +31,28 @@ const fn chars(text: &str) -> usize {
     n
 }
 
+/// Whether `text` is plain ASCII, at compile time: every character one
+/// cell wide, as a bubble draws them, a character a cell (a wide one
+/// would leave half of itself under the next).
+const fn plain(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if !bytes[i].is_ascii() {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
 /// Whether `text` fits a bubble ([`BUBBLE_CHARS`]).
 const fn fits_a_bubble(text: &str) -> bool {
     chars(text) <= BUBBLE_CHARS
 }
 
-/// A fixed line she says: a compile error if it doesn't fit a bubble.
+/// A fixed line she says: a compile error if it doesn't fit a bubble,
+/// or isn't plain ASCII ([`plain`]).
 /// Every line she says is written with it, pooled or not
 /// (`mind::all_lines` lists the pooled ones).
 ///
@@ -54,6 +70,10 @@ macro_rules! line {
         const _: () = assert!(
             $crate::ui::houseguest::fits_a_bubble(TEXT),
             "a line longer than a bubble"
+        );
+        const _: () = assert!(
+            $crate::ui::houseguest::plain(TEXT),
+            "a line of more than plain ASCII"
         );
         TEXT
     }};

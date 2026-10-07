@@ -4678,6 +4678,77 @@ still comes when the file is written, so every `screenshot-to-file`
 (commentary's too) goes out async. A real `--vo=gpu` with hardware
 decoding may differ; the session logs each frame's time at trace.
 
+## A moved wide glyph rains whole (2026-10-07)
+
+**Rule:** In the goodbye rain (and a focused pane's), a wide glyph she
+moved is one brick with the cell after it: while it holds it is drawn
+whole, and that cell's own frozen cell (the hole another moved glyph
+left there, say) shows nothing of its own; a drop reaching it rains
+both as two narrow cells, and they settle together; a change of the
+real UI under either half settles it at once. Only a cell painted
+before the glyph (under its second half) is that brick's; one of hers
+painted after it knocked it out, as in the frame she painted, and the
+glyph settles when that cell does. Every cell her figure, pieces,
+bubbles, door and rain write goes through one writer (`cells::put`),
+which takes a wide glyph's second cell with it (or refuses it), so no
+frame of those can hold half of one; the text layer, the parcel flap
+and the accordion shake write their cells directly, and are immune for
+the reasons below. In ASCII a makeshift piece draws a wide letter as a
+narrow stand-in (the rain's scramble of it): one glyph a cell. Every
+line she says is plain ASCII, a compile error otherwise (`line!`). See
+[design.md](design.md#houseguest).
+
+**Why:** a random case of the day-long property test
+(`her_days_never_touch_what_is_protected`, phase 5c step 12b) found
+half a wide glyph in the rain after she slid a line with wide glyphs
+left and went off to school: the moved 漢's second half sat on the hole
+`w` left, and that hole, frozen as a cell of its own, rained noise
+beside the still-frozen 漢 (painted after it, so neither knocked the
+other out). Two faults met: `put` was written for narrow glyphs and
+never cleared a wide glyph's second cell, and the rain froze that cell
+as the hole's, not the glyph's. Both are as old as the text layer
+(2026-09-28: the new dissolve tests fail there); 5c step 8c's tuning
+only led this seed into that slide before a leaving. The dissolve's own
+property test froze only `/` and `V`, so it never reached a wide frozen
+glyph; it now freezes wide ones too, and a second property drives the
+real text layer (slides and carries over rows of wide and narrow
+glyphs, someone typing after the freeze). With more cases the two found two more orderings
+in the same class, now settled: a cell beside a live wide glyph judged
+"still animating" by a partner settling later in the same frame (so it
+blanked a glyph already shown real), and a cell judged on the frame as
+painted so far, after its neighbour's write had blanked the wide glyph
+it was frozen over. A cell is now judged on the live frame as it was
+before the rain wrote anything, unless another of her cells was painted
+in that same cell this frame (one frozen over the other: then the later
+shows while the earlier shows what it showed then, as before); and
+"settling" counts this frame's settling, whatever order they're painted
+in.
+
+The review of that fix found three more in the class, each with a
+deterministic test that failed first: a glyph and its own second half
+were judged each other's "partner" beside a live wide glyph (moving
+`漢語` two cells left puts 語 on the real 漢), so the half settling by
+its own column's clock popped the moved glyph back without rain (a half
+now settles only with its glyph, and the two are never partners); what
+shows at a partner's cell was read off the cell of hers on top there,
+whose `under` is her own lower cell, not the real UI, so a neighbour
+settled early (it's now read off the first cell she painted there); and
+any cell of hers on top after a moved wide glyph was taken for its
+second half, hiding a later bubble or sprite cell the frame showed (now
+paint order decides, as above).
+
+The siblings: the layer's own paint writes a wide glyph only on cells
+it validated free (both halves), so it never writes half of one;
+the flap swings in on a `│` cell (never a second half) with a narrow
+glyph; her bubbles say fixed lines, every one written with `line!`,
+whose compile-time check now refuses any but plain ASCII (a lint over
+the pools alone would have missed some fifty other lines: greetings,
+pitches, constants); her sprite, door and furniture art are narrow; the accordion shake rotates an all-narrow row. The one
+other writer of torn text, a makeshift piece's ASCII drawing, could
+draw a torn 漢 in one cell of its own; with `put` taking second cells,
+one at the piece's last column would have blanked a cell outside it,
+so it draws a narrow stand-in instead.
+
 ## Houseguest chooses by needs among the top few (2026-09-28)
 
 **Rule:** Her next act is a weighted-random pick among the four

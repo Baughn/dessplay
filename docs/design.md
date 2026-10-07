@@ -1454,7 +1454,10 @@ this section states what is built.
   another moved glyph left); dropping repeats until stable. Wide glyphs
   move whole. At most 60 glyphs. Her body never stands over moved text or
   holes. The goodbye rain re-knits holes and moved glyphs back to the
-  real text.
+  real text; a moved wide glyph rains as one brick with the cell after
+  it (whatever it covered there, a hole included), shows whole or not
+  at all, and settles at once if the real UI changes under either half
+  (why: [decisions](decisions.md#a-moved-wide-glyph-rains-whole-2026-10-07)).
 - **Activities** keep her busy on the spot: sitting hugging her knees,
   lying on her back (dozing, "zzz") or stomach (feet kicking, "~"),
   jumping jacks ("1, 2!"), toe touches, a big stretch ("nnn~"), gazing up
@@ -1714,7 +1717,8 @@ this section states what is built.
   faces when centred), the other side, centred above, beside her head,
   two rows up — never inside her box, and whose cells are all blank and
   open; with no such spot the bubble isn't shown. Things she *says*
-  (≤ 24 characters) show for 1.2 s + 60 ms per character over her act's
+  (≤ 24 characters, plain ASCII: a bubble is drawn a character a cell)
+  show for 1.2 s + 60 ms per character over her act's
   own bubble: a greeting on first finding her feet ("Nice to meet you.",
   the date's, or her mood's), "...I'm OK."
   after a hard landing (always on her entrance, else half the time), and
@@ -2102,7 +2106,8 @@ this section states what is built.
   end, facing it; she bends over its middle to crumple it); each stands on a floor over blank cells
   like her real pieces (and is solid to text the same way), and is
   drawn as shreds of the alien glyphs her image derezzes text into, in
-  the torn text's own colours (in ASCII, its own letters, jumbled). Once
+  the torn text's own colours (in ASCII, its own letters, jumbled, a
+  wide letter as a narrow stand-in, one glyph a cell). Once
   in shape it's for whatever the real piece is: the sofa for sitting
   on, napping on and watching TV from; the bed, for sleeping in, under
   a blanket of shreds. A heap she let be is offered for finishing.

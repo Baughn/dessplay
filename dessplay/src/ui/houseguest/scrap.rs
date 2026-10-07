@@ -8,6 +8,7 @@
 //! cover it and composite it with her, like any real piece.
 
 use tuirealm::ratatui::style::Color;
+use unicode_width::UnicodeWidthChar;
 
 use super::art::{CELL_UNITS, rasterize};
 use super::graphics::{alien_bits, rgb};
@@ -63,7 +64,8 @@ impl Scrap {
     }
 
     /// The ASCII drawing's glyph at `(dx, dy)` of `item`'s footprint,
-    /// facing `facing`: its own letters, jumbled.
+    /// facing `facing`: its own letters, jumbled (a wide one as a narrow
+    /// stand-in: one glyph a cell).
     pub fn cell(&self, item: Furniture, facing: Facing, dx: u16, dy: u16) -> Option<(char, Color)> {
         let (cols, rows) = footprint(item);
         let dx = match facing {
@@ -93,7 +95,14 @@ impl Scrap {
             return None;
         }
         let i = usize::from(dy * cols + dx) * 7 + self.seed as usize;
-        Some(self.glyph(i))
+        let (c, color) = self.glyph(i);
+        // One glyph a cell: a wide letter (torn off whole) is drawn as a
+        // narrow letter of its kind, as the goodbye rain scrambles it.
+        let c = match c.width() {
+            Some(2..) => dessplay_core::spoiler::rain_glyph(c, c, u64::from(self.seed), i as u32),
+            _ => c,
+        };
+        Some((c, color))
     }
 }
 
@@ -500,6 +509,60 @@ mod tests {
                 }
             }
             assert!(drawn >= usize::from(cols), "{item:?}: {drawn}");
+        }
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(
+            dessplay_core::test_support::proptest_cases(64)
+        ))]
+
+        /// The ASCII drawing is one glyph a cell: over any letters torn off
+        /// (wide ones too: wide glyphs tear off whole), every cell it draws
+        /// is one cell wide — a wide letter as a narrow stand-in, so it
+        /// never spills past the piece or leaves half of itself — and
+        /// otherwise one of its own letters: cell by cell, the same
+        /// drawing with each wide letter swapped for a narrow marker
+        /// (where the jumble put which letter) shows the very letter where
+        /// a narrow one stands, and a marker only where a stand-in does.
+        #[test]
+        fn every_ascii_cell_is_one_cell_wide(
+            letters in "[a-zA-Z0-9漢語 ]{1,10}",
+            seed in proptest::prelude::any::<u32>(),
+            left in proptest::prelude::any::<bool>(),
+        ) {
+            use unicode_width::UnicodeWidthChar;
+            let glyphs: Vec<(char, Color)> = letters.chars().map(|c| (c, Color::Reset)).collect();
+            let marker = |c: char| match c {
+                '漢' => '#',
+                '語' => '%',
+                c => c,
+            };
+            let marked: Vec<(char, Color)> = letters.chars().map(|c| (marker(c), Color::Reset)).collect();
+            let mut scrap = Scrap::new(MadeId(0), &glyphs, seed);
+            let mut plain = Scrap::new(MadeId(0), &marked, seed);
+            scrap.stage = STAGES;
+            plain.stage = STAGES;
+            let facing = if left { Facing::Left } else { Facing::Right };
+            for item in MAKES {
+                let (cols, rows) = footprint(item);
+                for dy in 0..rows {
+                    for dx in 0..cols {
+                        let got = scrap.cell(item, facing, dx, dy).map(|(c, _)| c);
+                        let mark = plain.cell(item, facing, dx, dy).map(|(c, _)| c);
+                        proptest::prop_assert_eq!(got.is_some(), mark.is_some(), "{:?} at ({}, {})", item, dx, dy);
+                        let (Some(c), Some(mark)) = (got, mark) else {
+                            continue;
+                        };
+                        proptest::prop_assert_eq!(c.width(), Some(1), "{:?} {:?} at ({}, {})", item, c, dx, dy);
+                        // A marker: a wide letter's narrow stand-in (its
+                        // width is checked above).
+                        if !matches!(mark, '#' | '%') {
+                            proptest::prop_assert_eq!(c, mark, "{:?} at ({}, {}) of {:?}", item, dx, dy, letters);
+                        }
+                    }
+                }
+            }
         }
     }
 

@@ -22,6 +22,8 @@ Add new days at the top. Add new entries at the bottom of existing days.
 - Changed: Osaka's TV shows a programme instead of endless static.
 - Added: with a film loaded, Osaka's TV shows a still from it, refreshed
   about once a minute while she watches.
+- Fixed: when Osaka leaves, wide characters (Japanese, Chinese) she had
+  moved no longer show garbled or half-drawn as they rain back into place.
 
 ## 2026-10-06
 
