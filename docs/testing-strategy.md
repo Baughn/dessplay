@@ -810,11 +810,24 @@ press's, focus change's, text arrival's and cue's own time (each scene
 hands it its times), as the census drivers do (below): a step's length
 is otherwise set by her wakes, so a wake that changes only how she
 looks (a blink) would move when an event lands, and with it what she
-does, and a trace diff would read further than the change. A key press
-or a cue paints a frame at its moment; a chat line or a focus change is
-seen at her next paint, as in the census.
-`the_golden_driver_steps_to_every_event` holds it to that. (It landed as one deliberate re-record
-in phase 5c step 8c, alone.) The property tests' drivers (`tests.rs`)
+does, and a trace diff would read further than the change. Every event
+and every cue paints a frame at its moment, as the client draws after
+every input (`ui::shell`'s loop), so she sees a chat line or a focus
+change then, not at her next wake.
+`the_golden_driver_steps_to_every_event` and
+`the_golden_driver_paints_at_every_event` hold it to that. (The cut
+landed as one deliberate re-record in phase 5c step 8c, alone; the paint
+as another in step 12c.) It is not the client in three ways, each left
+so the goldens don't move for the harness alone: within a moment it
+tells her of a key press (`activity`) and cues the stage before it
+advances her, where the shell advances her at the dequeue first, then
+handles the input, then draws (the drawn stillness test's driver
+advances first, as the shell does, so the two drivers disagree on that
+order); it doesn't paint at the shell's ~10 Hz snapshot redraws during
+playback (the errand scenes play), only at events, cues and her wakes;
+and so the effects a paint has on her (`Guest::paint`: she observes
+the view, a nudge falls due, an errand's progress is read) come at
+those paints alone. The property tests' drivers (`tests.rs`)
 still deliver at the first step past a time; they check invariants on
 every frame at drawn times and measure nothing across builds.
 
@@ -826,11 +839,11 @@ earlier phases. Every census driver (the visits, the fed afternoon,
 the band, the day census) steps to each chat line's own moment and
 puts it in her view there (`Room::step_from`), not at the first step
 past it; `chat_lines_come_at_their_own_time` holds both drivers to the
-room's cadence, line for line. She sees it at her next paint, which her
-wakes time (a day room's live line paints at once); the client
-re-renders on a chat line, so it paints her then: making the drivers
-paint on a line is open (phase 5c step 8c's review), one re-record and
-a re-measure of the chat cells. The **day census** (`day_census`, ignored, about a
+room's cadence, line for line, and to painting her at each line's
+moment, as the client draws on every input (phase 5c step 12c: before,
+she saw a line at her next paint, which her wakes time, up to 10 s later
+for the resident). The film tests' driver (`fed_films`) paints on a line
+too. The **day census** (`day_census`, ignored, about a
 minute in release: `cargo test --release -p dessplay --lib day_census
 -- --ignored --nocapture`) runs a game week from Monday 00:00, fed, in
 each room at three seeds, on Oct 31 (a date that owes her calendar's

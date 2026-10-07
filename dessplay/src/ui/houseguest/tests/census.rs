@@ -63,10 +63,9 @@ impl Room {
     /// it would cross one; and whether a line comes at its end. So every
     /// line comes into her view at its own time, not at the first step
     /// past it (whose length her wakes set: a wake that changes only how
-    /// she looks would move what she does). She sees it at her next
-    /// paint, which her wakes time, unless the room's line is drawn live
-    /// (unlike the client, which paints on every chat line: open, step
-    /// 8c's review).
+    /// she looks would move what she does). The drivers paint her at a
+    /// line's step, as the client draws on every input, so she sees it
+    /// at once.
     pub(super) fn step_from(&self, now: u64, step: u64) -> (u64, bool) {
         match self.chat_every {
             Some(every) => {
@@ -273,6 +272,8 @@ pub(super) struct Visit {
     /// When each chat line arrived (ms): what the driver delivered, so
     /// a test can hold it to the room's cadence.
     pub lines: Vec<u64>,
+    /// The chat lines she was painted at, at their own moment (ms).
+    pub painted_lines: Vec<u64>,
 }
 
 impl Visit {
@@ -545,7 +546,6 @@ pub(super) fn visit_feeding(
             out.needs.push(visit.osaka.needs().summary());
         }
         now += step;
-        let mut changed = false;
         if line {
             out.lines.push(now);
             if let Some(live) = room.live {
@@ -553,15 +553,18 @@ pub(super) fn visit_feeding(
                 let mark = view.chat_mark;
                 (real, view) = live(arrived);
                 view.chat_mark = mark;
-                // The client draws the line as it comes.
-                changed = true;
             }
             // Every other line asks her something.
             view.chat_mark.synced += 1;
             view.chat_mark.synced_asks = view.chat_mark.synced.is_multiple_of(2);
         }
-        if guest.advance(now) || changed {
+        // The client draws on every input, a chat line among them: she
+        // sees the line as it comes.
+        if guest.advance(now) || line {
             paint(&mut guest, &real, &view, now);
+            if line {
+                out.painted_lines.push(now);
+            }
         }
         if let State::Visiting(visit) = &guest.state {
             // Her logs as this step left them, while she's still here to
@@ -2038,6 +2041,8 @@ struct Week {
     moods: BTreeMap<String, MoodWeek>,
     /// When each chat line arrived (ms), as the driver delivered it.
     lines: Vec<u64>,
+    /// The chat lines she was painted at, at their own moment (ms).
+    painted_lines: Vec<u64>,
 }
 
 /// How `guest` is, for her comings and goings: her state, how she's
@@ -2182,8 +2187,12 @@ fn live_for(room: &Room, seed: u64, date: Option<chrono::NaiveDate>, until: u64)
             *was = is;
         };
         note(&guest, &mut was);
-        if changed {
+        // The client draws on every input, a chat line among them.
+        if changed || line {
             paint(&mut guest, &real, &view, now);
+            if line {
+                week.painted_lines.push(now);
+            }
         }
         note(&guest, &mut was);
         if let State::Visiting(visit) = &guest.state {
@@ -2478,8 +2487,8 @@ fn the_fed_afternoon_tallies_add_up() {
 /// one is cut there) and the line is put in her view at that step's
 /// end, not at the first step past it, whose length her wakes set (a
 /// wake that changes only how she looks, a blink's, used to move the
-/// chat cells; step 8's hand-off). She sees it at her next paint (not,
-/// as in the client, at once: open). Both
+/// chat cells; step 8's hand-off), and she's painted there, as the
+/// client draws on every input, so she sees it at once. Both
 /// drivers: [`visit_from`] in each census room at its cadence, both
 /// drawing modes, unfed and fed, and [`live_week`]'s ([`live_for`]) in
 /// each day room; a quiet room gets no line from either.
@@ -2510,6 +2519,10 @@ fn chat_lines_come_at_their_own_time() {
                     );
                 }
                 assert_eq!(visit.lines, due(every), "{at} {how}: the lines delivered");
+                assert_eq!(
+                    visit.painted_lines, visit.lines,
+                    "{at} {how}: painted at each line, as the client draws on it"
+                );
             }
             let quiet = with_chat(&fed_room, true);
             let guest = fed_afternoon(&quiet, 1, graphics, Mood::Ordinary);
@@ -2524,6 +2537,11 @@ fn chat_lines_come_at_their_own_time() {
             week.lines,
             due(every),
             "{} day: the lines delivered",
+            room.name
+        );
+        assert_eq!(
+            week.painted_lines, week.lines,
+            "{} day: painted at each line, as the client draws on it",
             room.name
         );
         let week = live_for(&with_chat(&room, true), 1, None, end);

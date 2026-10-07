@@ -122,10 +122,18 @@ fn times(seed: u64, n: u64, from: u64, (lo, hi): (u64, u64)) -> Vec<u64> {
 /// (or a cue's time) is cut at it, so each comes into the world at its
 /// own moment, not at the first step past it, whose length her wakes
 /// set (a wake that changes only how she looks would move what she
-/// does). A key press or a cue paints there; a chat line or a focus
-/// change she sees at her next paint, which her wakes time (the client
-/// paints on a chat line: making this driver do so is open, step 8c's
-/// review). The census drivers do the same (`census::Room::step_from`).
+/// does). Each event, and each cue, paints her there, as the client
+/// draws after every input (`ui::shell`'s loop), so she sees it then,
+/// not at her next wake. The census drivers do the same
+/// (`census::Room::step_from`).
+///
+/// It isn't the client in three ways (docs/testing-strategy.md, the
+/// golden driver): it calls [`Guest::activity`] and [`Guest::cue`]
+/// before [`Guest::advance`] within a moment, where the shell advances
+/// her first, then handles the input, then draws; it doesn't paint at
+/// the shell's ~10 Hz snapshot redraws during playback; and so what a
+/// paint does to her ([`Guest::paint`]: observing, a nudge falling due,
+/// an errand's progress) comes only at the paints it makes.
 fn drive(
     guest: &mut Guest,
     trace: &mut Trace,
@@ -153,7 +161,10 @@ fn drive(
         if let Some(&(_, scene)) = cue {
             guest.cue(scene);
         }
-        if guest.advance(now) || input || cue.is_some() {
+        // The client draws after every input: each event is one (a chat
+        // line, text arriving, a key press, a focus change).
+        let event = events.iter().any(|times| times.contains(&now));
+        if guest.advance(now) || input || event || cue.is_some() {
             let frame = paint(guest, &real, &view, now);
             trace.frame(guest, &frame, &real, now);
         }
@@ -689,16 +700,77 @@ fn the_golden_driver_steps_to_every_event() {
     }
 }
 
+/// The golden driver paints her at every event's own time, as the client
+/// draws after every input (`ui::shell`'s loop: a chat line, text
+/// arriving, a key press or a focus change is a `UiInput`, and a draw
+/// follows each), not at her next wake: in both modes, on the stage room
+/// with chat lines, presses and a focus change at odd moments no wake of
+/// hers would hit, and a cue.
+#[test]
+fn the_golden_driver_paints_at_every_event() {
+    for graphics in [false, true] {
+        for seed in 0..2u64 {
+            let at = format!("graphics={graphics} seed={seed}");
+            let mut ui = stage_ui();
+            let (real, view) = real_frame(&mut ui, 100, 30);
+            let mut guest = guest_of(seed, true);
+            if graphics {
+                guest.set_picker(kitty());
+            }
+            let chats = times(seed, 8, 0, (3_001, 9_007));
+            let presses = [7_777, 12_345];
+            let focus = [23_456, 47_111];
+            let cues = [(20_011, Scene::Sneeze)];
+            let until = 60_000;
+            let mut trace = Trace {
+                hash: Fnv::new(),
+                lines: Some(Vec::new()),
+            };
+            drive(
+                &mut guest,
+                &mut trace,
+                until,
+                &cues,
+                &[&chats, &presses, &focus],
+                |now, step| {
+                    let mark = ChatMark {
+                        synced: chats.iter().filter(|&&t| t <= now).count(),
+                        ..ChatMark::default()
+                    };
+                    let view = IdleView {
+                        chat_mark: mark,
+                        ..view.clone()
+                    };
+                    (real.clone(), view, arrived_within(&presses, now, step))
+                },
+            );
+            let painted: Vec<u64> = trace
+                .lines
+                .as_ref()
+                .expect("traced")
+                .iter()
+                .map(|line| line.split(' ').next().unwrap().parse().unwrap())
+                .collect();
+            for &t in chats.iter().chain(&presses).chain(&focus) {
+                assert!(
+                    painted.contains(&t),
+                    "{at}: no paint at the event at {t} ms"
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn golden_stage_room() {
     check(
         "stage",
         stage_room,
         &[
-            (0, 0x5b42688d70dbe2d4, 0xb276f5d89314d03c),
-            (1, 0x7c953da8be804f4f, 0x4d80275cdaf7e110),
-            (2, 0x1182fcdddaa8dd07, 0xce09d5b63f289204),
-            (3, 0x4cb005da5ee2fe59, 0x172fbbec1d7b6bd5),
+            (0, 0xd84335fb4891e795, 0x1d85f2c9b1424fe5),
+            (1, 0xc95cf5b0e23ec2f7, 0xd3452aa9abf33429),
+            (2, 0xeedc8d9ac6dac930, 0x0f235f671e1f0315),
+            (3, 0xb886785b597e1d60, 0x429805df926e0aaf),
         ],
     );
 }
@@ -709,10 +781,10 @@ fn golden_resident() {
         "resident",
         resident,
         &[
-            (0, 0xcc7119817e9176f9, 0x569146435fa5228c),
-            (1, 0x5a94514c88ced161, 0xa4ea3e8f228015b1),
-            (2, 0xb5cc6cd8f98d0ecc, 0x6204e6730cbdde27),
-            (3, 0xe4dcda4adf95ff77, 0x3dabbe4d4830102e),
+            (0, 0x2da4fd4955d0c4fe, 0x1f35c97e22309a1c),
+            (1, 0x667b376ec169f949, 0x645a9a48b9d51f75),
+            (2, 0x96ec2c160cb1f8b7, 0xa38580e543323855),
+            (3, 0x2b527ac3f502821a, 0x249b2b1c32c0043b),
         ],
     );
 }
@@ -723,10 +795,10 @@ fn golden_furnished_home() {
         "furnished",
         furnished,
         &[
-            (0, 0x5590f92a2a836544, 0xdc3dbb092c72efc3),
-            (1, 0xd830fa40de068476, 0x8bdc2ac94c696c5d),
-            (2, 0x988ead2f6b7c0243, 0x9a3eb2caf36dff57),
-            (3, 0x43ffa7cb07911db2, 0xbd41d3949e44b179),
+            (0, 0x1967d39bc82803b9, 0xf738a35f913c8525),
+            (1, 0x05cbd5e1f9870a3f, 0xba75682a9e0fc63c),
+            (2, 0xa1636836da80c450, 0xbc8a4c151890d5a8),
+            (3, 0x494da2fdeca60bc8, 0x3e8486765b1b11b9),
         ],
     );
 }
@@ -737,10 +809,10 @@ fn golden_errand() {
         "errand",
         errand,
         &[
-            (0, 0x7ef41b6f44466ee1, 0x21d600e1fc53a86a),
-            (1, 0xdf91d60dbf2f6bd5, 0xe63c37ac36f0e2ca),
-            (2, 0x853a5f641f5d8378, 0x95ae070706e62dc6),
-            (3, 0x219ec7d8688cc95e, 0x76564208074cbeb2),
+            (0, 0x2ea7fca9dab09e54, 0x62569ff3c4e80001),
+            (1, 0xe2f122152f4e2d4e, 0xfae433fad4a58894),
+            (2, 0x4ce68ad344556355, 0xa1b27ef17e3b691b),
+            (3, 0x27fa23efb3022361, 0x271f1609deee8faa),
         ],
     );
 }
@@ -751,10 +823,10 @@ fn golden_homework_evening() {
         "evening",
         homework_evening,
         &[
-            (0, 0x876ea56886723d82, 0xa5cab324d4c159c6),
-            (1, 0x37b33a754a2dd3b0, 0xfc559d7cb1c2b4f1),
-            (2, 0x6ec06ff0c7873fef, 0x704d05253160bc17),
-            (3, 0x5c406cbce954ccc6, 0xef32fc05675ffef4),
+            (0, 0x1b80eb2b61080185, 0xa6538d6da29880a3),
+            (1, 0xbfd9efd81baa9f78, 0x851a272fdc5786a8),
+            (2, 0x2449460ba2c62107, 0x3f834ebf5b311896),
+            (3, 0xcf70f4e6a6846c88, 0xb3f353139b8e62c6),
         ],
     );
 }
@@ -765,10 +837,10 @@ fn golden_tucked_in() {
         "tucked",
         tucked_in,
         &[
-            (0, 0xba09db43923a93ae, 0x30c0edb9d18e94bb),
-            (1, 0x3cb861c6934daed1, 0x43718fdc5d1aa0f2),
-            (2, 0xdfc846fd62ec9a27, 0xe2c5ec2d0bc9326e),
-            (3, 0x23829cc8c48b959f, 0x69b70050d8b5df9a),
+            (0, 0x8f6b08e44778c80e, 0xbdf26c2bc4dfaecb),
+            (1, 0x1d75fab392eac8e8, 0x67b089307b52a545),
+            (2, 0x28885a67f6190cfe, 0x8b6dee2f3a0d2d69),
+            (3, 0xa1e533b18ac388e7, 0x510bbe8b18455adc),
         ],
     );
 }
@@ -779,10 +851,10 @@ fn golden_weekend() {
         "weekend",
         weekend,
         &[
-            (0, 0x6e294eaa17d2587b, 0xaf59f7ea51f2540e),
-            (1, 0x43c7d9594c8de10a, 0x653578e3e2894656),
-            (2, 0xdafd0b8b80eba12c, 0x658cb4be30aaaa8b),
-            (3, 0x82f1158a7ca39832, 0x5929fb648f45f962),
+            (0, 0x99df05cee2b86670, 0xc322fb7208032ec7),
+            (1, 0xf52203509d711719, 0xe3ac76cd52081ee2),
+            (2, 0x219a0fcdf97fc66a, 0x55cb1b7e788a18ca),
+            (3, 0xf2a77ec31bc910d8, 0x094beb3e3dfd6a2b),
         ],
     );
 }
@@ -793,10 +865,10 @@ fn golden_school_morning() {
         "school",
         school_morning,
         &[
-            (0, 0x34abba24308b502d, 0x61df31d116ac8109),
-            (1, 0x85a1267f399e61a1, 0x13abefdca5376cc5),
-            (2, 0x36876fecb42493bf, 0x23d07a5dd9a875b6),
-            (3, 0x67d3c2766feac3e2, 0xc7d3d4fa034582db),
+            (0, 0xb8aa95783f19d44e, 0x61b9a191bf292443),
+            (1, 0x5002c32532d578cb, 0x9106438beaf91560),
+            (2, 0xee16c79f05f70858, 0xfd18a9bb758a2e00),
+            (3, 0x6c800b36e7b4d65d, 0x8ee055307be66dd2),
         ],
     );
 }
@@ -807,10 +879,10 @@ fn golden_home_from_school() {
         "home",
         home_from_school,
         &[
-            (0, 0xedede266d0e28c59, 0x657805fbe5642300),
-            (1, 0xb9bec406c451f100, 0x1e2bca2cb68bd798),
-            (2, 0xab383fe9d3985a63, 0xbefb74800cb09c2a),
-            (3, 0x332570b8d4bc1eb6, 0xc477f13e33dddeec),
+            (0, 0x113540f5c6b678a5, 0xde18db7b702d7d1e),
+            (1, 0x0800952ab4b495f6, 0xafa61ef3c4de6a98),
+            (2, 0xbfb492b2b170c635, 0x3ac6062a08a01154),
+            (3, 0xe29720b3222a0e9b, 0x99e4b9f9780cd3b6),
         ],
     );
 }
@@ -867,12 +939,15 @@ fn golden_dash_home() {
 /// the first step past it; the trace diff is in that commit), and step
 /// 8c's stillness levers shipped (each seed and mode first differs as
 /// her lounge on the sofa she made runs on, longer, where it ended and
-/// she walked; the trace diff is in that commit).
+/// she walked; the trace diff is in that commit), and step 12c's driver,
+/// which paints her at every event (each seed and mode first differs by a
+/// frame inserted at a chat line's own time, her look up at it shown then,
+/// not at her next wake; the trace diff is in that commit).
 const UNFED_STAGE: [(u64, u64, u64); 4] = [
-    (0, 0xc1c76b41e25adc6a, 0xb28f1b52a5210b71),
-    (1, 0x470d571a004dbe1b, 0x72e4b1da28372f69),
-    (2, 0xcccd9bebcb893f2c, 0x9a33fb96d73f0e67),
-    (3, 0xf3e5e32c8234215c, 0x35a820c379fb3a8f),
+    (0, 0x8c3a6acb9844ab87, 0x798d3a0b949a46a5),
+    (1, 0x15a02ea08aee0067, 0x282b5cbc2753d246),
+    (2, 0xadf03c9d721cdd83, 0x0f6616710cb76ee8),
+    (3, 0x997235dc6c279434, 0x1674b07f60f5f2c4),
 ];
 
 /// The resident's tables at the end of phase 5b step 3, but for step 5a's
@@ -910,12 +985,16 @@ const UNFED_STAGE: [(u64, u64, u64); 4] = [
 /// where it was the first step past it; the trace diff is in that
 /// commit), and step 8c's stillness levers shipped (each seed and mode
 /// first differs at a decision, choosing otherwise; the trace diff is in
-/// that commit).
+/// that commit), and step 12c's driver, which paints her at every event
+/// (seeds 0 to 2 in both modes first differ by a frame inserted at a chat
+/// line's or text's own time, her look up at it shown then, not at her
+/// next wake; seed 3 in both modes by one at a focus change, 33915 ms;
+/// the trace diff is in that commit).
 const UNFED_RESIDENT: [(u64, u64, u64); 4] = [
-    (0, 0xc68d1f83436c6aa0, 0x78221d66d01b129e),
-    (1, 0x31b7823432e31b21, 0x0307fe7d3c7ad87d),
-    (2, 0xd20e22fee8f3d344, 0xbcdc86c480e2453e),
-    (3, 0x77765beced7f5792, 0xaefc5faef1a6111d),
+    (0, 0xf4b761a26d1188a2, 0xf27556dfa6188dab),
+    (1, 0xc4778d6b913acbed, 0xf6bd2b518838494c),
+    (2, 0x6b308ad131de668a, 0x3a02251f9a4210de),
+    (3, 0xa2d97663a266a633, 0xf889d34e88bd19c9),
 ];
 
 /// The furnished home's tables at the end of phase 5b step 3, but for step
@@ -946,12 +1025,16 @@ const UNFED_RESIDENT: [(u64, u64, u64); 4] = [
 /// so the run's last step ends at another moment and her ledger's clock
 /// reads a minute on; the trace diff is in that commit), and step 8c's
 /// stillness levers shipped (each seed and mode first differs at a
-/// decision, choosing otherwise; the trace diff is in that commit).
+/// decision, choosing otherwise; the trace diff is in that commit), and
+/// step 12c's driver, which paints her at every event (each seed and mode
+/// first differs by a frame inserted at a chat line's own time, her look
+/// up at it shown then, not at her next wake; the trace diff is in that
+/// commit).
 const UNFED_FURNISHED: [(u64, u64, u64); 4] = [
-    (0, 0x682c2854e2fff2cd, 0x32efbb5dd79c55da),
-    (1, 0xa80d35ab1e0df0a8, 0x3c295f186eea94dd),
-    (2, 0x9a5ecc376ee257ed, 0xa7983878310ebd4b),
-    (3, 0x7cd109c9288bed43, 0x422fbcab6a159117),
+    (0, 0x61d55ed9e46abda8, 0x5897da1a016fd15e),
+    (1, 0xcfb563669fb8ff6b, 0xd58bbafb79b93297),
+    (2, 0x65e20c526b12e6d9, 0xf706116e92853ff1),
+    (3, 0x6e8f264b3be3b77d, 0x702b1853608657d9),
 ];
 
 /// The errand's tables at the end of phase 5b step 3, but for step 5a's
@@ -970,12 +1053,16 @@ const UNFED_FURNISHED: [(u64, u64, u64); 4] = [
 /// was the first step past it; the trace diff is in that commit), and
 /// step 8c's stillness levers shipped (seeds 1 and 3, the residents, in
 /// both modes first differ at a decision, choosing otherwise; the trace
-/// diff is in that commit).
+/// diff is in that commit), and step 12c's driver, which paints her at
+/// every event (each seed and mode first differs by a frame inserted at an
+/// event's own time: seeds 0 and 2 while she's still away, seeds 1 and 3
+/// with her in the room, her answer or her step shown then, not at her
+/// next wake; the trace diff is in that commit).
 const UNFED_ERRAND: [(u64, u64, u64); 4] = [
-    (0, 0x7ef41b6f44466ee1, 0x21d600e1fc53a86a),
-    (1, 0xdf91d60dbf2f6bd5, 0xe63c37ac36f0e2ca),
-    (2, 0x853a5f641f5d8378, 0x95ae070706e62dc6),
-    (3, 0xb298d0d13167c6a3, 0xdac720f2ade0f23e),
+    (0, 0x2ea7fca9dab09e54, 0x62569ff3c4e80001),
+    (1, 0xe2f122152f4e2d4e, 0xfae433fad4a58894),
+    (2, 0x4ce68ad344556355, 0xa1b27ef17e3b691b),
+    (3, 0xf148ae9ad8c75a77, 0x2b1ad6e223371a71),
 ];
 
 #[test]

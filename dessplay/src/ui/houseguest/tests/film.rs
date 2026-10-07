@@ -92,6 +92,8 @@ fn line(guest: &Guest, frame: &Buffer, real: &Buffer, now: u64) -> String {
 /// paint's TV look (the films drawn, and any static between them).
 struct Run {
     lines: Vec<String>,
+    /// When each chat line came.
+    chats: Vec<u64>,
     /// At each paint where her TV was drawn: when, her act's start,
     /// whether that act is a watch of her programme, how the TV looked,
     /// and the film held then.
@@ -137,6 +139,7 @@ fn fed_films(
     let mut pending: Option<(u64, TvAsk, Answer)> = None;
     let mut out = Run {
         lines: Vec::new(),
+        chats: Vec::new(),
         tv: Vec::new(),
         stills: Vec::new(),
         films: HashMap::new(),
@@ -170,7 +173,10 @@ fn fed_films(
         now += step;
         let mut input = false;
         if chat {
+            // An input: the client draws on it.
+            input = true;
             view.chat_mark.synced += 1;
+            out.chats.push(now);
         }
         for &(_, arrival) in schedule.arrivals.iter().filter(|&&(t, _)| t == now) {
             input = true;
@@ -342,6 +348,20 @@ fn a_long_watch_takes_a_fresh_still_once_a_minute() {
         };
         for seed in 0..4 {
             let run = fed_films(&room, seed, true, Mood::Lazy, 20, &schedule, true);
+            // Painted at each chat line, as the client draws on every
+            // input.
+            let painted: Vec<u64> = run
+                .lines
+                .iter()
+                .map(|line| line.split(' ').next().unwrap().parse().unwrap())
+                .collect();
+            assert!(!run.chats.is_empty(), "seed {seed}: no chat");
+            for &t in &run.chats {
+                assert!(
+                    painted.contains(&t),
+                    "seed {seed}: no paint at the line at {t}"
+                );
+            }
             for pair in run.stills.windows(2) {
                 assert!(
                     pair[1] - pair[0] >= A_MINUTE,

@@ -4361,11 +4361,20 @@ watching the clouds: 7 minutes).
 golden step's length is set by her wakes, so with delivery at the first
 step past an event a wake that only changes how she looks moved what she
 did, and a trace diff read further than the change. The census drivers
-already cut there (step 8b). A key press or a cue paints at its time; a
-chat line or a focus change comes into her view then but she sees it at
-her next paint, which her wakes time (the client paints on a chat line).
-Painting the drivers on a chat line is left open: one more re-record,
-and every chat cell re-measured.
+already cut there (step 8b). A key press or a cue painted at its time;
+a chat line or a focus change came into her view then but she saw it at
+her next paint, which her wakes time.
+
+**Why the drivers paint at every event (phase 5c step 12c, landed alone,
+before the user's answers):** the client draws after every input
+(`ui::shell`'s loop: a chat line, text arriving, a key press, a focus
+change), so she sees a chat line the moment it comes; the drivers showed
+it her at her next wake, up to 10 s later for the resident, so the
+censuses measured a slower Osaka than the client runs. The golden driver
+now paints at every event, the census drivers (visits, fed afternoons,
+the band, the day census) and the film tests' at every line. One
+re-record, and every chat cell re-measured (phase5c/baseline.md, "Step
+12c").
 
 **Why watching is longer though it doesn't linger (32–82 s, was 20–45):**
 step 8's lengths, which 8b's run c3 carried and the user shipped,
