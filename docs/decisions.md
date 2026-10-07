@@ -4475,8 +4475,8 @@ model's state (how she looks, where, what her script shows, the lamp),
 not drawn cells: a sound proxy while drawing is a pure map from that
 state, pinned by `each_prop_looks_distinct_in_each_mode` and
 `every_piece_shows_what_her_script_shows_on_it`. Step 12b's film is
-drawing alone, so its once-a-minute swap needs a variant that compares
-drawn cells.
+drawing alone, so its once-a-minute swap has a variant that compares
+drawn images (`a_long_watch_takes_a_fresh_still_once_a_minute`).
 
 **Static wakes her on its frames; the hook doesn't:** a use wakes her on
 its 1.4 s frame grid and as each key ends, and a client that paints only
@@ -4494,6 +4494,104 @@ the shopping act's body (`Span::Upto(2, 5)`), and the body lingers by
 mood, so a lazy shopping act (up to 82 s × 1.5 = 123 s) bobs for up to
 49 s, against 33 s before watching lingered. Left as the synthesis wrote
 it; capping the hook in ms is open, for the user.
+
+## The film on her TV (2026-10-07)
+
+**Rule:** In line art, with a film loaded that this client holds, her
+TV shows a still of it in place of her drawn programme: asked of the
+player as she heads to watch, then once a minute (since the last
+question, failures counted) while she watches; a good still cuts in at
+the next paint; a failure keeps the still; a change of film clears it.
+The frame goes through the TV's own private screenshot slot and never
+leaves the process. See [design.md](design.md#houseguest).
+
+**Why:** the user's idea ("could it use screenshots from the running mpv
+player, if any (changing infrequently)?"): her TV showing what the room
+is watching. It is a **held picture, not animation**: step 12a made the
+TV hold still because a moving screen in a TV home outshone her, and a
+still a minute keeps that. The user chose the mock's column 7 (zoom 1.3,
+one luma levels stretch, saturation ×1.25, no sheen) over plain crops
+(night and interior scenes went to mud at 27×22 pixels), posterizing,
+scanlines, a CRT tint and letterboxing (each worse in the mock), and a
+refresh about once a minute during a long watch over the synthesis's
+"one still per switch-on, never swapped" (Q2).
+
+**Why its own screenshot slot:** AI commentary deletes its `frame.jpg`
+before each request and sends what it reads to the Anthropic API.
+Sharing that path would let commentary delete the TV's frame mid-poll,
+or attach a frame the TV asked for to an API request. So the slot and
+its poll are a module of their own (`screenshot::Slot`), each user with
+a private 0700 directory; the TV's frame is decoded, treated and deleted
+in the process, `TvPicture` and `UiInput` have no `Debug`, and the logs
+say how long a frame took or why it was rejected, never its pixels
+(`slots_are_private_and_apart`).
+
+**Why only a held file, its real video showing:** without the file mpv
+shows dessplay's "You don't have this file" placeholder, which at 27
+pixels is a smudge. So the UI asks only while this client holds the
+now-playing file ready (`held_now_playing`). That alone wasn't enough
+(step 12b review): `Ready` comes on prefetch, before the player loads the
+file, and when a download finishes while the placeholder (a `Load` that
+reuses the file's hash) still shows; and the UI asks at once on a change
+of film, right inside that gap, so the placeholder or the last frame of
+the episode before would have been shown under the new film's name for
+a minute. So the gate is at both ends, for the TV and commentary alike:
+the session asks the player only when it told it to load the file's
+*real* video (`PlayerWiring::may_screenshot`: held, and the
+`holds_now_playing` that gates speaking for the group), and the player
+actor takes a screenshot only of the file it was last told to load,
+once the player's own path echo confirms it shows it (not in the gap
+after a `Load`, nor while the user's own dropped-in file is up),
+answering at once whether it took it. A question the player wasn't
+asked costs no minute ("failures count" is about frames that failed):
+it's asked again 5 s on, so an episode's first still comes within
+seconds of its video showing, not a minute later.
+
+**Why numbered questions and one frame at a time:** a question given up
+after 3 s can still be answered later, and every request clears the
+slot's one path: two polls could race on it, one deleting or reading the
+other's frame. So each question carries a number and only the answer to
+the one out counts, and the slot is claimed for one frame at a time
+(`screenshot::Slot::claim`; a request while a poll still runs is "not
+asked").
+
+**Why invalidation by file, not clock:** a nine-minute-old frame of the
+episode still playing is right; a thirty-second-old frame of last
+night's is wrong. Each still carries the file it's of; a change of film
+(or the file no longer held) clears both slots, and an answer for a file
+since changed is dropped. A failed or black refresh on the same file
+keeps the still.
+
+**Why two slots and a latch at paint:** the guest's `Graphics` keeps the
+still on show and the one delivered since; at each paint the delivered
+one takes over (so it cuts in at the paint its arrival triggers). An
+image is keyed by `Look::Film(id, programme)` (a pixel hash, so a paused
+film's same frame is one image), and composing it needs the still's
+pixels: a key is only made while its still is in a slot, and one whose
+still is gone draws its programme (the card the act drew in 12a, which is
+why the key carries it).
+
+**Why the guest stays pure:** whether a still arrived, and when, depends
+on mpv's timing. So nothing she does reads it: the want
+(`Guest::tv_wants_picture`) is output only, the still goes into her
+drawing alone (`Guest::set_tv_picture`, never `IdleView`), her card is
+drawn on every watch whether or not a film covers it (12a), and there is
+no reaction line (Q3: the user is thinking about Osaka commenting on the
+episode itself later). `her_film_never_moves_her` checks it: for random
+schedules of answers (good, failed or not asked, up to 4 s late, past
+the 3 s give-up), stray stills,
+clears and changes of film, her trace and every ASCII frame are
+byte-identical with and without the stills reaching her, in both modes
+(a leak of the latch into her generator fails it at once).
+
+**Why the screenshot goes out async:** measured on this machine with
+`--vo=null`: mpv answers a `video` grab in 73–128 ms at 3840×2160 (h264)
+and 41–63 ms at 1080p (HEVC), and a command sent behind it waits as
+long, since a screenshot holds mpv's command queue. With `"async": true`
+the queued command is answered at once and the screenshot's own reply
+still comes when the file is written, so every `screenshot-to-file`
+(commentary's too) goes out async. A real `--vo=gpu` with hardware
+decoding may differ; the session logs each frame's time at trace.
 
 ## Houseguest chooses by needs among the top few (2026-09-28)
 

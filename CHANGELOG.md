@@ -20,6 +20,8 @@ Add new days at the top. Add new entries at the bottom of existing days.
 - Changed: reading a borrowed strip of text, she looks up at a chat line
   without turning away from it.
 - Changed: Osaka's TV shows a programme instead of endless static.
+- Added: with a film loaded, Osaka's TV shows a still from it, refreshed
+  about once a minute while she watches.
 
 ## 2026-10-06
 

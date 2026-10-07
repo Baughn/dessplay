@@ -2670,7 +2670,7 @@ impl Osaka {
 
     /// What she's set about, for the explain log: her act, and where
     /// it takes her.
-    fn act_summary(&self) -> String {
+    pub fn act_summary(&self) -> String {
         let name = self.act_name();
         match &self.act {
             Act::Walk { to, then } => match then {
@@ -6705,6 +6705,31 @@ impl Osaka {
                 ..
             } => Some(pull),
             _ => None,
+        }
+    }
+
+    /// Whether her TV's programme is coming or on (phase 5c D7): she's
+    /// on her way to watch (any watch: whether it'll be the shopping
+    /// channel or her first sunrise is only chosen as it starts, so a
+    /// walk to one asks for a still it won't show), or watching, or
+    /// flicking through the channels to rest on it (not the shopping
+    /// channel or her first sunrise, which show their own pictures).
+    /// Output only: the shell fetches the film's still by it, and
+    /// nothing of hers reads it.
+    pub fn tv_bound(&self) -> bool {
+        let watch = |job: &Job| matches!(job, Job::Use(seat) if seat.what == Use::Watch);
+        if self.heading.as_ref().is_some_and(|h| watch(&h.job)) {
+            return true;
+        }
+        match &self.act {
+            Act::Walk {
+                then: Then::Job(job),
+                ..
+            } => watch(job),
+            Act::Use { seat, play, .. } => {
+                seat.what == Use::Watch && matches!(play.own, ScriptId::Watch | ScriptId::Surf)
+            }
+            _ => false,
         }
     }
 

@@ -98,9 +98,6 @@ const CHARACTER_SUBTITLES: usize = 20;
 /// Hard cap on the marquee line, chars (the slot scrolls, but an essay
 /// would take a minute to cross the screen).
 const MAX_COMMENT_CHARS: usize = 220;
-/// How long to wait for mpv to finish writing the screenshot.
-const SCREENSHOT_POLLS: u32 = 20;
-const SCREENSHOT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// Hard cap on a thread's length, in completed turns: at the cap the
 /// next tick force-re-rolls the commentator (the same fresh-thread
 /// path the 5% dice take, comment-text seeding included). This — not a
@@ -602,39 +599,9 @@ pub struct CommentaryEngine {
     /// private per-process directory, overwritten every tick). `None`
     /// when the directory could not be created — screenshots are
     /// disabled, commentary itself still runs.
-    screenshots: Option<ScreenshotSlot>,
-}
-
-/// The screenshot drop point: one stable path (`frame.jpg`) inside an
-/// engine-owned temporary directory, mode 0700 on Unix. A predictable
-/// name in the shared, world-writable `$TMPDIR` was a symlink-following
-/// exfiltration hazard (2026-08-12 review): `poll_screenshot` reads
-/// whatever the path resolves to and ships it to the API, so the path
-/// must live where only this user can plant anything. The path stays
-/// stable across ticks within a session — mpv just overwrites it — and
-/// the directory (and any leftover frame) is removed on drop.
-struct ScreenshotSlot {
-    path: PathBuf,
-    /// Owns the directory; kept alive for the engine's lifetime.
-    _dir: tempfile::TempDir,
-}
-
-impl ScreenshotSlot {
-    fn create() -> std::io::Result<Self> {
-        let mut builder = tempfile::Builder::new();
-        builder.prefix("dessplay-commentary-");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            builder.permissions(std::fs::Permissions::from_mode(0o700));
-        }
-        let dir = builder.tempdir()?;
-        // .jpg drives mpv's format inference: a PNG of a 10-bit source
-        // is 16-bit and ~8MB — past the API's image cap — where a JPEG
-        // frame is a few hundred KB.
-        let path = dir.path().join("frame.jpg");
-        Ok(Self { path, _dir: dir })
-    }
+    /// Commentary's own private slot ([`crate::screenshot::Slot`]): its
+    /// frames are sent to the API, so no other feature shares it.
+    screenshots: Option<crate::screenshot::Slot>,
 }
 
 impl CommentaryEngine {
@@ -692,7 +659,7 @@ impl CommentaryEngine {
             in_flight: false,
             results_tx,
             results,
-            screenshots: ScreenshotSlot::create()
+            screenshots: crate::screenshot::Slot::create("dessplay-commentary-")
                 .inspect_err(|e| {
                     // Never a reason to break commentary — the frame is
                     // best-effort on top of best-effort.
@@ -748,7 +715,9 @@ impl CommentaryEngine {
     /// `None` when the private directory could not be created (the
     /// tick then simply goes out frameless).
     pub fn screenshot_path(&self) -> Option<PathBuf> {
-        self.screenshots.as_ref().map(|slot| slot.path.clone())
+        self.screenshots
+            .as_ref()
+            .map(|slot| slot.path().to_path_buf())
     }
 
     /// The current voice, if any (tests peek at it).
@@ -1096,46 +1065,22 @@ fn run_job(
     })
 }
 
-/// Wait for mpv to finish writing the screenshot: the file must exist,
-/// be non-empty, and hold the same size across two polls. A miss is
-/// `None` — the comment goes out without the frame. A frame over
-/// [`MAX_SCREENSHOT_BYTES`] is likewise dropped: the API rejects it
-/// outright, and losing the image beats losing the whole comment. A
-/// file whose mtime predates `requested_at` is a leftover an earlier
-/// tick's slow mpv finished late (the caller deletes the path before
-/// each request, but a late write can still race in behind that) — it
-/// is deleted and never attached.
+/// Wait for mpv to finish writing the screenshot
+/// ([`crate::screenshot::poll`]: stable size, never a frame written
+/// before `requested_at`). A miss is `None` — the comment goes out
+/// without the frame. A frame over [`MAX_SCREENSHOT_BYTES`] is likewise
+/// dropped: the API rejects it outright, and losing the image beats
+/// losing the whole comment.
 fn poll_screenshot(path: &Path, requested_at: std::time::SystemTime) -> Option<Vec<u8>> {
-    let mut last_len = None;
-    for _ in 0..SCREENSHOT_POLLS {
-        std::thread::sleep(SCREENSHOT_POLL_INTERVAL);
-        if let Ok(meta) = std::fs::metadata(path) {
-            let len = meta.len();
-            if len > 0 && last_len == Some(len) {
-                if meta
-                    .modified()
-                    .ok()
-                    .is_some_and(|written| written < requested_at)
-                {
-                    // Written before this tick asked for it: a previous
-                    // tick's late frame, minutes old by now.
-                    let _ = std::fs::remove_file(path);
-                    tracing::debug!("screenshot predates the request; dropped");
-                    return None;
-                }
-                let frame = std::fs::read(path).ok();
-                let _ = std::fs::remove_file(path);
-                if len > MAX_SCREENSHOT_BYTES {
-                    tracing::debug!(bytes = len, "screenshot too large for the API; dropped");
-                    return None;
-                }
-                return frame;
-            }
-            last_len = Some(len);
-        }
+    let frame = crate::screenshot::poll(path, requested_at)?;
+    if frame.len() as u64 > MAX_SCREENSHOT_BYTES {
+        tracing::debug!(
+            bytes = frame.len(),
+            "screenshot too large for the API; dropped"
+        );
+        return None;
     }
-    let _ = std::fs::remove_file(path);
-    None
+    Some(frame)
 }
 
 #[cfg(test)]

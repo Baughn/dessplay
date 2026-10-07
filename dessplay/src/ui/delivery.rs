@@ -17,6 +17,7 @@ enum UpdateKey<'a> {
     Hash(&'a str),
     Search(u64),
     Import(crate::torrent::engine::TorrentImportId),
+    TvPicture,
 }
 
 enum Delivery<'a> {
@@ -39,6 +40,7 @@ impl UiInput {
                 Delivery::Latest(UpdateKey::Search(*request_id))
             }
             Self::NyaaImportProgress { id, .. } => Delivery::Latest(UpdateKey::Import(*id)),
+            Self::TvPicture { .. } => Delivery::Latest(UpdateKey::TvPicture),
             Self::Roguelike(_)
             | Self::Event(_)
             | Self::Subtitle { .. }
@@ -261,6 +263,15 @@ mod tests {
                 done_bytes: value,
                 total_bytes: 10_000,
             },
+            // The houseguest's TV's answers (phase 5c D7): one question
+            // is out at a time, so only the latest answer matters.
+            7 => UiInput::TvPicture {
+                ask: crate::ui::tv_feed::TvAsk {
+                    seq: value,
+                    file: Ed2kHash([7; 16]),
+                },
+                answer: crate::ui::tv_feed::TvAnswer::NotAsked,
+            },
             _ => unreachable!(),
         }
     }
@@ -279,6 +290,7 @@ mod tests {
                 progress: NyaaSearchProgress::Inspecting { done, .. },
             } => (request_id as u8 + 2, done as u64),
             UiInput::NyaaImportProgress { id, done_bytes, .. } => (id.0 as u8 + 4, done_bytes),
+            UiInput::TvPicture { ask, .. } => (7, ask.seq),
             _ => panic!("expected replaceable state"),
         }
     }
@@ -291,7 +303,7 @@ mod tests {
         // consumer timing must not change event order or the state at barriers.
         #[test]
         fn coalescing_preserves_state_at_every_event(
-            segments in prop::collection::vec(prop::collection::vec((0u8..7, any::<bool>()), 0..80), 1..20),
+            segments in prop::collection::vec(prop::collection::vec((0u8..8, any::<bool>()), 0..80), 1..20),
         ) {
             let (sender, receiver) = channel();
             let mut expected = BTreeMap::new();

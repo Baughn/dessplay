@@ -142,7 +142,7 @@ fn validate_headers(content_type: Option<&str>, content_length: Option<u64>) -> 
 /// (never the URL's extension — the two need not agree, and the
 /// extension is remote-authored). An animated GIF decodes to its first
 /// frame.
-fn decode_capped(bytes: &[u8]) -> Result<image::DynamicImage, String> {
+pub(crate) fn decode_capped(bytes: &[u8]) -> Result<image::DynamicImage, String> {
     let mut limits = image::Limits::default();
     limits.max_image_width = Some(MAX_DIMENSION);
     limits.max_image_height = Some(MAX_DIMENSION);

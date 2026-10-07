@@ -125,6 +125,9 @@ fn log_action(action: &UserAction) {
         UserAction::FetchChatImage { url } => {
             tracing::debug!(%url, "user action: FetchChatImage");
         }
+        UserAction::TvPicture { ask } => {
+            tracing::trace!(seq = ask.seq, file = %ask.file, "user action: TvPicture");
+        }
         UserAction::StartNyaaImport { id, result, .. } => {
             tracing::debug!(import = id.0, title = %result.title, "user action: StartNyaaImport");
         }
@@ -575,6 +578,12 @@ impl Ui {
     /// seam for true-color rendering.
     pub fn set_color_depth(&mut self, color_depth: ColorDepth) {
         self.color_depth = color_depth;
+    }
+
+    /// The now-playing file, if this client holds it ready to play
+    /// ([`derive::held_now_playing`]): what the houseguest's TV may show.
+    pub fn held_now_playing(&self) -> Option<Ed2kHash> {
+        derive::held_now_playing(&self.snapshot.view, &self.me)
     }
 
     /// The detected image protocol picker (the houseguest draws with it).

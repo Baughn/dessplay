@@ -1557,6 +1557,102 @@ pub(super) fn render_tv(
     )
 }
 
+/// The TV's glass's whole-pixel rectangle in a `width × height` image of
+/// the TV facing `facing`, as [`rasterize`] places the frame: left, top,
+/// width, height, snapped outward (its half-pixel edges covered; the
+/// glass's mask trims them).
+pub(super) fn glass_rect(facing: Facing, width: u32, height: u32) -> (u32, u32, u32, u32) {
+    let (fw, fh) = prop_frame(Furniture::Tv);
+    let (x0, y0, gw, gh) = GLASS;
+    let scale = (width as f32 / fw).min(height as f32 / fh);
+    let dx = (width as f32 - fw * scale) / 2.0;
+    let dy = height as f32 - fh * scale;
+    let gx = match facing {
+        Facing::Right => x0,
+        Facing::Left => fw - x0 - gw,
+    };
+    let left = (gx * scale + dx).floor().max(0.0) as u32;
+    let top = (y0 * scale + dy).floor().max(0.0) as u32;
+    let right = (((gx + gw) * scale + dx).ceil() as u32).min(width);
+    let bottom = (((y0 + gh) * scale + dy).ceil() as u32).min(height);
+    (
+        left,
+        top,
+        right.saturating_sub(left),
+        bottom.saturating_sub(top),
+    )
+}
+
+/// The whole TV with a still of the film on its glass (phase 5c D7),
+/// rendered like [`render_tv`]: the set with nothing on its glass, then
+/// `film` box-scaled once to the glass's whole-pixel rectangle at this
+/// size and laid in through the glass's rounded mask, **unmirrored** (a
+/// film reads one way, whichever way the set faces), then the glass's
+/// outline over it. In pixel space, not SVG: resvg here has no raster
+/// images, and an `<image>` would be mirrored with the set. No sheen
+/// (the user's call).
+pub(super) fn render_film(
+    film: &image::RgbaImage,
+    facing: Facing,
+    line: &str,
+    width: u32,
+    height: u32,
+) -> Option<image::RgbaImage> {
+    let frame = prop_frame(Furniture::Tv);
+    let (w, h) = frame;
+    let mirror = match facing {
+        Facing::Right => String::new(),
+        Facing::Left => format!(r#" transform="translate({w} 0) scale(-1 1)""#),
+    };
+    let (x0, y0, gw, gh) = GLASS;
+    let svg = |defs: &str, inner: &str| {
+        format!(
+            r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w} {h}" color="{line}">{defs}<g{mirror}>{inner}</g></svg>"##
+        )
+    };
+    let glass = format!(r#"x="{x0}" y="{y0}" width="{gw}" height="{gh}" rx="8""#);
+    let mut out = rasterize(
+        &svg(&format!("{PROPS}{DELIVERY}"), r##"<use href="#tv"/>"##),
+        frame,
+        width,
+        height,
+    )?;
+    let mask = rasterize(
+        &svg("", &format!(r##"<rect {glass} fill="#ffffff"/>"##)),
+        frame,
+        width,
+        height,
+    )?;
+    let outline = rasterize(
+        &svg(
+            "",
+            &format!(r#"<rect {glass} fill="none" stroke="currentColor" stroke-width="1.6"/>"#),
+        ),
+        frame,
+        width,
+        height,
+    )?;
+    let (left, top, pw, ph) = glass_rect(facing, width, height);
+    if pw > 0 && ph > 0 {
+        let picture = super::film::box_scale(film, pw, ph);
+        for (x, y, p) in picture.enumerate_pixels() {
+            let (ox, oy) = (left + x, top + y);
+            let cover = f32::from(mask.get_pixel(ox, oy)[3]) / 255.0;
+            if cover <= 0.0 {
+                continue;
+            }
+            let under = out.get_pixel_mut(ox, oy);
+            for c in 0..3 {
+                under[c] =
+                    (f32::from(under[c]) * (1.0 - cover) + f32::from(p[c]) * cover).round() as u8;
+            }
+            under[3] = (f32::from(under[3]) + (255.0 - f32::from(under[3])) * cover).round() as u8;
+        }
+    }
+    image::imageops::overlay(&mut out, &outline, 0, 0);
+    Some(out)
+}
+
 /// A prop's frame in SVG units.
 fn prop_frame(prop: Furniture) -> (f32, f32) {
     let (cols, rows) = prop.spec().footprint;
@@ -2779,6 +2875,98 @@ mod tests {
         render_sheet(3)
             .save(format!("{dir}/stillness-3x.png"))
             .unwrap();
+    }
+
+    /// The film on her TV for review (phase 5c D7), through the real
+    /// path (a JPEG as mpv writes it, decoded and treated, then laid on
+    /// the glass): `HOUSEGUEST_FILM_SHEET=/dir cargo test -p dessplay
+    /// --lib film_sheet -- --ignored` writes `film-1x.png` and the same
+    /// pixels at 3× nearest-neighbour (`film-1x-nn3x.png`), over a dark
+    /// terminal. Generated frames (never a real film's), or the frames
+    /// named in `HOUSEGUEST_FILM` (comma-separated paths: CC-BY stills,
+    /// Sintel or Big Buck Bunny), one row each. Columns: the News card
+    /// for reference, the film at 9×19-pixel cells facing right and
+    /// left, at 10×20 facing right, and the treated still itself.
+    #[test]
+    #[ignore = "writes a review sheet: set HOUSEGUEST_FILM_SHEET"]
+    fn film_sheet() {
+        use super::super::film::{TvPicture, test_frame};
+        let Ok(dir) = std::env::var("HOUSEGUEST_FILM_SHEET") else {
+            return;
+        };
+        let file = dessplay_core::types::Ed2kHash([1; 16]);
+        let frames: Vec<Vec<u8>> = match std::env::var("HOUSEGUEST_FILM") {
+            Ok(paths) => paths
+                .split(',')
+                .map(|path| std::fs::read(path.trim()).unwrap())
+                .collect(),
+            Err(_) => (0..4)
+                .map(|n| {
+                    let mut bytes = Vec::new();
+                    image::DynamicImage::ImageRgba8(test_frame(1920, 1080, n * 7))
+                        .into_rgb8()
+                        .write_to(
+                            &mut std::io::Cursor::new(&mut bytes),
+                            image::ImageFormat::Jpeg,
+                        )
+                        .unwrap();
+                    bytes
+                })
+                .collect(),
+        };
+        const GAP: u32 = 10;
+        let (cw, ch) = (6 * 10 + GAP, 4 * 20 + GAP);
+        let mut sheet = image::RgbaImage::from_pixel(
+            GAP + 5 * cw + 128,
+            GAP + frames.len() as u32 * ch.max(102 + GAP),
+            image::Rgba([30, 33, 39, 255]),
+        );
+        for (row, bytes) in frames.iter().enumerate() {
+            let y = GAP + row as u32 * ch.max(102 + GAP);
+            let picture = match TvPicture::from_frame(file, bytes) {
+                Ok(picture) => picture,
+                Err(why) => {
+                    eprintln!("row {row}: {why:?}");
+                    continue;
+                }
+            };
+            let tiles = [
+                render_tv(
+                    Channel::Programme(Programme::News),
+                    Facing::Right,
+                    LINE,
+                    54,
+                    76,
+                ),
+                render_film(picture.image(), Facing::Right, LINE, 54, 76),
+                render_film(picture.image(), Facing::Left, LINE, 54, 76),
+                render_film(picture.image(), Facing::Right, LINE, 60, 80),
+            ];
+            for (col, tile) in tiles.into_iter().enumerate() {
+                let tile = tile.unwrap();
+                image::imageops::overlay(
+                    &mut sheet,
+                    &tile,
+                    i64::from(GAP + col as u32 * cw),
+                    i64::from(y),
+                );
+            }
+            image::imageops::overlay(
+                &mut sheet,
+                picture.image(),
+                i64::from(GAP + 4 * cw),
+                i64::from(y),
+            );
+        }
+        sheet.save(format!("{dir}/film-1x.png")).unwrap();
+        image::imageops::resize(
+            &sheet,
+            sheet.width() * 3,
+            sheet.height() * 3,
+            image::imageops::FilterType::Nearest,
+        )
+        .save(format!("{dir}/film-1x-nn3x.png"))
+        .unwrap();
     }
 
     #[test]

@@ -21,6 +21,7 @@ use tuirealm::ratatui::style::Color;
 use tuirealm::ratatui::widgets::Widget;
 
 use super::art::{self, Rig};
+use super::film::{FilmId, TvPicture};
 use super::placement::InSight;
 use super::room::Furniture;
 use super::scrap;
@@ -75,6 +76,9 @@ pub(super) enum Look {
     Parcel(Furniture, bool),
     /// Her TV, switched on.
     Tv(art::Channel),
+    /// Her TV holding a still of the film (phase 5c D7): which still,
+    /// and the programme it stands in for (drawn if the still is gone).
+    Film(FilmId, art::Programme),
     /// A piece in some state (the lamp off, the cat in his bed…).
     Piece(Furniture, art::PieceState),
     /// A makeshift piece she made of text, or part of it.
@@ -85,7 +89,7 @@ impl Look {
     /// The box it fills, in cells (columns, rows above the floor).
     fn size(self) -> (i32, i32) {
         match self {
-            Self::Tv(_) => {
+            Self::Tv(_) | Self::Film(..) => {
                 let (cols, rows) = Furniture::Tv.spec().footprint;
                 (i32::from(cols), i32::from(rows))
             }
@@ -113,6 +117,10 @@ impl Look {
             }
             Self::Parcel(item, open) => art::render_parcel(item, open, facing, LINE, width, height),
             Self::Tv(channel) => art::render_tv(channel, facing, LINE, width, height),
+            // With no still to hand (see `Graphics::compose`), the card.
+            Self::Film(_, card) => {
+                art::render_tv(art::Channel::Programme(card), facing, LINE, width, height)
+            }
             Self::Piece(item, state) => art::render_piece(item, state, facing, LINE, width, height),
             Self::Scrap(item, made, part) => {
                 scrap::render(item, &made, part, facing, LINE, width, height)
@@ -367,10 +375,22 @@ fn draw_alien(
     }
 }
 
+/// The film's stills for her TV (phase 5c D7), in two slots: the one
+/// her TV shows, and the latest delivered, which takes its place at the
+/// next paint ([`Graphics::latch_film`]). An image keyed by a still is
+/// only ever composed while that still is in a slot.
+#[derive(Default)]
+struct Film {
+    showing: Option<TvPicture>,
+    next: Option<TvPicture>,
+}
+
 /// Her image source: the picker, the line geometry, and a frame cache.
 pub(super) struct Graphics {
     picker: Picker,
     line: LineGeometry,
+    /// The film's stills her TV shows in place of its programme.
+    film: Film,
     /// Each image, and when it was last shown.
     cache: HashMap<Key, (Protocol, u64)>,
     /// The cache's images by when they were last shown, oldest first.
@@ -419,6 +439,7 @@ impl Graphics {
         Some(Self {
             picker,
             line: LineGeometry::for_cell(height),
+            film: Film::default(),
             cache: HashMap::new(),
             shown: BTreeMap::new(),
             clock: 0,
@@ -432,6 +453,41 @@ impl Graphics {
             #[cfg(test)]
             looks: None,
         })
+    }
+
+    /// A still of the film for her TV, or `None` for none (the film
+    /// changed or stopped: both slots go). A still waits in `next` for
+    /// the next paint.
+    pub fn set_film(&mut self, picture: Option<TvPicture>) {
+        match picture {
+            Some(picture) => self.film.next = Some(picture),
+            None => self.film = Film::default(),
+        }
+    }
+
+    /// At a paint: a still delivered since the last one cuts in now.
+    pub fn latch_film(&mut self) {
+        if let Some(next) = self.film.next.take() {
+            self.film.showing = Some(next);
+        }
+    }
+
+    /// `look` as drawn: her TV's programme is the film's still while
+    /// there's one to show.
+    fn resolve(&self, look: Look) -> Look {
+        match (look, &self.film.showing) {
+            (Look::Tv(art::Channel::Programme(card)), Some(still)) => Look::Film(still.id(), card),
+            _ => look,
+        }
+    }
+
+    /// The still `id`'s pixels, while it's in a slot.
+    fn still(&self, id: FilmId) -> Option<&image::RgbaImage> {
+        [&self.film.showing, &self.film.next]
+            .into_iter()
+            .flatten()
+            .find(|still| still.id() == id)
+            .map(TvPicture::image)
     }
 
     fn cell(&self) -> (u32, u32) {
@@ -489,7 +545,7 @@ impl Graphics {
         Image::new(protocol).render(rect, buf);
         #[cfg(test)]
         if let Some(looks) = self.looks.as_mut() {
-            looks.extend(layers.iter().map(|layer| layer.look));
+            looks.extend(key.layers.iter().map(|layer| layer.0));
         }
         Some(rect)
     }
@@ -573,7 +629,7 @@ impl Graphics {
                 .zip(&bounds)
                 .map(|(layer, b)| {
                     (
-                        layer.look,
+                        self.resolve(layer.look),
                         layer.facing,
                         ((b.0 - left) as u16, (b.1 - top) as u16),
                         layer.standing,
@@ -592,6 +648,15 @@ impl Graphics {
     #[cfg(test)]
     pub fn cached(&self) -> usize {
         self.cache.len()
+    }
+
+    /// Distinct images in the cache showing the film on her TV.
+    #[cfg(test)]
+    pub fn films_cached(&self) -> usize {
+        self.cache
+            .keys()
+            .filter(|key| key.layers.iter().any(|l| matches!(l.0, Look::Film(..))))
+            .count()
     }
 
     /// What her images have cost so far.
@@ -688,7 +753,12 @@ impl Graphics {
             } else {
                 ch * height as u32
             };
-            let body = look.render(facing, cw * width as u32, feet)?;
+            let body = match look {
+                Look::Film(id, _) if let Some(still) = self.still(id) => {
+                    art::render_film(still, facing, LINE, cw * width as u32, feet)
+                }
+                _ => look.render(facing, cw * width as u32, feet),
+            }?;
             image::imageops::overlay(
                 &mut canvas,
                 &body,
@@ -767,6 +837,153 @@ mod tests {
             standing: false,
         };
         (buf, [her])
+    }
+
+    const FILE: dessplay_core::types::Ed2kHash = dessplay_core::types::Ed2kHash([3; 16]);
+
+    #[allow(deprecated)] // the fixed font size picker is the deterministic one
+    fn graphics_at(cell: (u16, u16)) -> Graphics {
+        let mut picker = Picker::from_fontsize(cell.into());
+        picker.set_protocol_type(ProtocolType::Kitty);
+        Graphics::new(picker).unwrap()
+    }
+
+    /// Her TV alone, its box at the screen's corner (6×4 cells), showing
+    /// `look`.
+    fn tv_layer(look: Look, facing: Facing) -> (Buffer, [Layer; 1]) {
+        let buf = Buffer::empty(Rect::new(0, 0, 20, 8));
+        let tv = Layer {
+            look,
+            facing,
+            at: (3, 4),
+            standing: false,
+        };
+        (buf, [tv])
+    }
+
+    const NEWS: Look = Look::Tv(art::Channel::Programme(art::Programme::News));
+
+    fn close(a: &Rgba<u8>, b: &Rgba<u8>) -> bool {
+        a.0.iter().zip(b.0).all(|(x, y)| x.abs_diff(y) <= 2)
+    }
+
+    /// The film's still on her TV's glass (phase 5c D7), at two cell
+    /// sizes, the set facing either way: the still fills the glass's
+    /// whole-pixel rectangle (about 27×22 pixels at 9×19 cells) through
+    /// its rounded corners, unmirrored (the still's marker, left of its
+    /// centre, stays left on a set facing left), its middle the still's
+    /// own colour scaled down; outside the glass the set is as drawn
+    /// with its programme.
+    #[test]
+    fn the_still_fills_the_glass_unmirrored() {
+        let still = crate::ui::houseguest::film::test_picture(FILE, 0);
+        for cell in [(9, 19), (10, 20)] {
+            for facing in [Facing::Right, Facing::Left] {
+                let at = format!("{cell:?} {facing:?}");
+                let mut graphics = graphics_at(cell);
+                let (buf, card) = tv_layer(NEWS, facing);
+                let programme = graphics.canvas(&buf, &card, &|_, _| true).unwrap();
+                graphics.set_film(Some(still.clone()));
+                graphics.latch_film();
+                let film = graphics.canvas(&buf, &card, &|_, _| true).unwrap();
+                assert_eq!(film.dimensions(), programme.dimensions(), "{at}");
+                let (w, h) = film.dimensions();
+                let (left, top, gw, gh) = art::glass_rect(facing, w, h);
+                let glass = match cell {
+                    (9, 19) => (27, 22),
+                    (10, 20) => (29, 23),
+                    _ => unreachable!("{at}"),
+                };
+                assert_eq!((gw, gh), glass, "{at}");
+                let inside =
+                    |x: u32, y: u32| (left..left + gw).contains(&x) && (top..top + gh).contains(&y);
+                for (x, y, p) in film.enumerate_pixels() {
+                    if !inside(x, y) {
+                        assert!(close(p, programme.get_pixel(x, y)), "{at}: ({x}, {y})");
+                    }
+                }
+                // The rounded corner is the set's, not the film's.
+                assert!(
+                    close(film.get_pixel(left, top), programme.get_pixel(left, top)),
+                    "{at}: the corner"
+                );
+                let scaled = crate::ui::houseguest::film::box_scale(still.image(), gw, gh);
+                let middle = film.get_pixel(left + gw / 2, top + gh / 2);
+                assert!(
+                    close(middle, scaled.get_pixel(gw / 2, gh / 2)),
+                    "{at}: {middle:?}"
+                );
+                // The marker: red, left of the glass's middle either way.
+                let red: Vec<u32> = (top..top + gh)
+                    .flat_map(|y| (left..left + gw).map(move |x| (x, y)))
+                    .filter(|&(x, y)| {
+                        let p = film.get_pixel(x, y);
+                        p[0] > 170 && p[1] < 100 && p[2] < 100
+                    })
+                    .map(|(x, _)| x)
+                    .collect();
+                assert!(!red.is_empty(), "{at}: the marker shows");
+                let mean = red.iter().sum::<u32>() as f32 / red.len() as f32;
+                assert!(mean < (left + gw / 2) as f32, "{at}: marker at {mean}");
+            }
+        }
+    }
+
+    /// An image keyed by a still no slot holds draws the programme the
+    /// still stood in for.
+    #[test]
+    fn a_still_gone_falls_back_to_the_programme() {
+        let graphics = graphics_at((9, 19));
+        let gone = crate::ui::houseguest::film::test_picture(FILE, 1).id();
+        for facing in [Facing::Right, Facing::Left] {
+            let (buf, card) = tv_layer(NEWS, facing);
+            let (_, film) = tv_layer(Look::Film(gone, art::Programme::News), facing);
+            assert_eq!(
+                graphics.canvas(&buf, &film, &|_, _| true),
+                graphics.canvas(&buf, &card, &|_, _| true),
+                "{facing:?}"
+            );
+        }
+    }
+
+    /// A still delivered shows from the next paint on (her TV's
+    /// programme drawn as the film until then, the still before it), the
+    /// same still again is the same image (a paused film costs nothing),
+    /// and none (the film changed) puts the programme back at once.
+    #[test]
+    fn a_still_cuts_in_at_the_next_paint() {
+        let mut graphics = graphics_at((9, 19));
+        graphics.take_looks();
+        let paint = |graphics: &mut Graphics| {
+            let (mut buf, tv) = tv_layer(NEWS, Facing::Right);
+            assert!(graphics.paint_layers(&mut buf, &tv, &|_, _| true).is_some());
+            graphics.take_looks()
+        };
+        let (a, b) = (
+            crate::ui::houseguest::film::test_picture(FILE, 1),
+            crate::ui::houseguest::film::test_picture(FILE, 2),
+        );
+        let film = |p: &TvPicture| vec![Look::Film(p.id(), art::Programme::News)];
+        assert_eq!(paint(&mut graphics), vec![NEWS]);
+        graphics.set_film(Some(a.clone()));
+        assert_eq!(
+            paint(&mut graphics),
+            vec![NEWS],
+            "not until the paint latches it"
+        );
+        graphics.latch_film();
+        assert_eq!(paint(&mut graphics), film(&a));
+        graphics.set_film(Some(b.clone()));
+        assert_eq!(paint(&mut graphics), film(&a));
+        graphics.latch_film();
+        assert_eq!(paint(&mut graphics), film(&b));
+        let encoded = graphics.counts().encoded;
+        graphics.set_film(Some(crate::ui::houseguest::film::test_picture(FILE, 2)));
+        graphics.latch_film();
+        assert_eq!(paint(&mut graphics), film(&b), "the same still");
+        assert_eq!(graphics.counts().encoded, encoded, "no new image");
+        graphics.set_film(None);
+        assert_eq!(paint(&mut graphics), vec![NEWS], "cleared at once");
     }
 
     proptest::proptest! {

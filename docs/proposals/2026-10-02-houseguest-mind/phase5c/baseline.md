@@ -1196,3 +1196,21 @@ none changing within a frame.
 The 80-visit line census of the home's and resident's eight cells, quiet and with chat, reads
 exactly `TUNED` (every share and set-off rate to the printed decimal), so the full-strength numbers
 above stand. Its golden traces moved (50, each first at a new wake 400 ms into a static key).
+
+## Step 12b: the film on her TV (2026-10-07)
+
+**Her numbers don't move**: the film is drawing alone. All 112 golden traces are byte-identical
+before and after, and `her_film_never_moves_her` holds her trace and ASCII frames identical with and
+without stills, so the band and census cells above stand without a re-run.
+
+**The image census** gains "home, film": the furnished home with a new still fed on every switch-on
+and every minute she watches (the worst case: the shell reuses a still within the minute), each
+painted as it arrives. 2634 stills fed over its 64 two-hour visits, 1417 distinct images of her TV
+showing one (about 22 a visit). Against the plain home (120 min): distinct means lazy 305 / 291,
+ordinary 389 / 369, dreamy 415 / 398, industrious 467 / 445; most distinct 525 / 498, largest
+working set 473 / 460, most held 23.2 / 22.4 MB; a 1024-image cache encodes nothing again in
+either. Well inside `CACHE_LIMIT`.
+
+**mpv's reply** (`--vo=null`, this machine): 73–128 ms for a 3840×2160 h264 `video` grab, 41–63 ms
+at 1080p HEVC; sync, a queued command waited as long, async under 1 ms. A real `--vo=gpu` with
+hardware decoding is unmeasured (the session logs each frame's time at trace).

@@ -64,6 +64,7 @@ mod brain;
 mod calendar;
 mod cells;
 mod dissolve;
+pub mod film;
 mod graphics;
 mod idle;
 mod layer;
@@ -91,6 +92,7 @@ use tuirealm::ratatui::style::{Color, Modifier};
 
 use cells::{Ink, put};
 use dissolve::{Dissolve, Frozen};
+pub use film::TvPicture;
 use graphics::{Graphics, Look};
 pub use idle::{Busy, ChatMark, IdleView, Scrollback, asks, grow};
 pub use ledger::{Ledger, Owned, Pities, Summary, TierPity};
@@ -1155,6 +1157,36 @@ impl Guest {
         tracing::debug!(graphics = self.graphics.is_some(), "houseguest renderer");
     }
 
+    /// A still of the film for her TV (phase 5c D7), shown in place of
+    /// its programme from the next paint on; `None` when the film changed
+    /// or stopped (any still goes: a failed fetch is no reason to call
+    /// this). Line art only: without it there's nothing to show it on.
+    /// Only her drawing reads it, never what she does (the purity rule:
+    /// her trace and her ASCII frames are the same with or without it).
+    pub fn set_tv_picture(&mut self, picture: Option<TvPicture>) {
+        if let Some(graphics) = &mut self.graphics {
+            tracing::trace!(picture = picture.is_some(), "houseguest: TV picture");
+            graphics.set_film(picture);
+        }
+    }
+
+    /// Whether her TV wants a still of the film (phase 5c D7): drawn in
+    /// line art, she's on her way to her TV's programme or watching it
+    /// ([`Osaka::tv_bound`]), and her TV is the real one (not one made of
+    /// text). The shell asks the player for one by it, at most once a
+    /// minute. Output only.
+    pub fn tv_wants_picture(&self) -> bool {
+        let State::Visiting(visit) = &self.state else {
+            return false;
+        };
+        self.graphics.is_some()
+            && visit.osaka.tv_bound()
+            && visit
+                .shown
+                .iter()
+                .any(|s| s.item == Furniture::Tv && s.scrap.is_none() && !s.boxed)
+    }
+
     /// Whether she is on screen (visiting or leaving): not while she's
     /// out, her home standing empty.
     pub fn present(&self) -> bool {
@@ -1812,6 +1844,10 @@ impl Guest {
     /// Paint her over the finished frame. `view` must describe the frame
     /// just drawn (pane rectangles are measured during the draw).
     pub fn paint(&mut self, buf: &mut Buffer, view: &IdleView, now: u64) {
+        // A still of the film delivered since the last paint cuts in.
+        if let Some(graphics) = &mut self.graphics {
+            graphics.latch_film();
+        }
         // Her rains, last, over the real frame in a focused pane (where
         // nothing else of hers goes), whatever her state now; once a
         // frame (a second pass would take the first's glyphs for the UI

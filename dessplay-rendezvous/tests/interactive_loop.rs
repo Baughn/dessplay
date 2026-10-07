@@ -23,6 +23,8 @@ use std::path::Path;
 use std::time::Duration;
 
 use common::*;
+use dessplay::actors::sync::{Mutation, SyncCommand};
+use dessplay::player::mock::MockCommand;
 use dessplay::run::SessionEnd;
 use dessplay::ui::msg::UserAction;
 use dessplay::ui::shell::UiInput;
@@ -92,6 +94,152 @@ async fn a_closed_ui_ends_the_session_without_another_action() {
             .expect("loop panicked"),
         SessionEnd::Quit,
     );
+}
+
+/// The answer to the houseguest TV's question `seq`, waited for (real
+/// time, `budget`); other inputs pass.
+async fn tv_answer(rig: &LoopRig, seq: u64, budget: Duration) -> dessplay::ui::tv_feed::TvAnswer {
+    let deadline = std::time::Instant::now() + budget;
+    loop {
+        match rig.ui_rx.try_recv() {
+            Ok(UiInput::TvPicture { ask, answer }) if ask.seq == seq => return answer,
+            Ok(_) => {}
+            Err(_) => {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "no answer to question {seq} within {budget:?}"
+                );
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }
+    }
+}
+
+/// Ask the session for a still of `file` for the houseguest's TV.
+async fn ask_tv(rig: &LoopRig, seq: u64, file: dessplay_core::types::Ed2kHash) {
+    rig.actions
+        .send(UserAction::TvPicture {
+            ask: dessplay::ui::tv_feed::TvAsk { seq, file },
+        })
+        .await
+        .expect("loop gone");
+}
+
+/// The houseguest's TV still (phase 5c D7) with no player: the session
+/// answers at once that the player wasn't asked, rather than waiting out
+/// the 2 s poll for a frame that can't come.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_tv_still_with_no_player_is_not_asked() {
+    use dessplay::ui::tv_feed::TvAnswer;
+    let harness = Harness::new(805);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let rig = loop_rig(&harness, "kim", 1, dir.path());
+    ask_tv(&rig, 1, hash(1)).await;
+    let answer = tv_answer(&rig, 1, Duration::from_millis(1_500)).await;
+    assert!(matches!(answer, TvAnswer::NotAsked));
+    rig.quit().await;
+}
+
+/// The houseguest's TV still (phase 5c D7), through the real session
+/// loop and player actor: the player is asked for a frame only of the
+/// now-playing file this client holds, its real video showing (not
+/// before anything plays, not of another file), and writes it to the
+/// TV's own private slot, never commentary's; the frame is read from
+/// there and deleted (here not a picture, so the answer is a failure).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_tv_still_is_asked_only_of_the_held_file_into_its_own_slot() {
+    use dessplay::ui::tv_feed::TvAnswer;
+    let harness = Harness::new(806);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (rig, mut control, root) = loop_rig_with_player(&harness, "kim", 1, dir.path());
+    let film = media_file(1);
+    std::fs::write(root.path().join(&film.filename), &film.contents).expect("media file");
+    let screenshots = |control: &mut dessplay::player::mock::MockControl| {
+        std::iter::from_fn(|| control.try_command())
+            .filter_map(|cmd| match cmd {
+                MockCommand::Screenshot(path) => Some(path),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+
+    ask_tv(&rig, 1, film.hash).await;
+    let answer = tv_answer(&rig, 1, Duration::from_secs(2)).await;
+    assert!(matches!(answer, TvAnswer::NotAsked), "nothing plays");
+
+    for mutation in [
+        Mutation::PushPlaylist {
+            new: file_entry(&film, "kim"),
+        },
+        Mutation::SetNowPlaying {
+            file: Some(film.hash),
+        },
+    ] {
+        rig.sync
+            .send(SyncCommand::Mutate(Box::new(mutation)))
+            .await
+            .expect("sync actor gone");
+    }
+    // Asked until the session holds the file and the player shows it
+    // (the loop's own view catches up in its time).
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    let mut seq = 1;
+    let path = loop {
+        seq += 1;
+        ask_tv(&rig, seq, hash(9)).await;
+        let answer = tv_answer(&rig, seq, Duration::from_secs(2)).await;
+        assert!(matches!(answer, TvAnswer::NotAsked), "another file");
+        seq += 1;
+        ask_tv(&rig, seq, film.hash).await;
+        // Whichever comes first: the player asked (its frame then polled
+        // for), or the answer that it wasn't (not yet held or shown).
+        let asked = loop {
+            if let Some(path) = screenshots(&mut control).pop() {
+                break Some(path);
+            }
+            match rig.ui_rx.try_recv() {
+                Ok(UiInput::TvPicture { ask, answer }) if ask.seq == seq => match answer {
+                    TvAnswer::NotAsked => break None,
+                    _ => panic!("answered as if asked, the player not asked"),
+                },
+                Ok(_) => {}
+                Err(_) => {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "no answer to question {seq}"
+                    );
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            }
+        };
+        if let Some(path) = asked {
+            break path;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the player was never asked for the held file's frame"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    let view = rig.view().await;
+    assert_eq!(view.now_playing, Some(film.hash));
+    let slot = path
+        .parent()
+        .and_then(|dir| dir.file_name())
+        .and_then(|name| name.to_str())
+        .expect("a slot directory")
+        .to_owned();
+    assert!(
+        slot.starts_with("dessplay-tv-") && !slot.starts_with("dessplay-commentary-"),
+        "the TV's own slot: {slot}"
+    );
+    // The player writes its frame (not a picture: no still is made).
+    std::fs::write(&path, b"not a picture").expect("the slot exists");
+    let answer = tv_answer(&rig, seq, Duration::from_secs(3)).await;
+    assert!(matches!(answer, TvAnswer::Failed), "a frame that isn't one");
+    assert!(!path.exists(), "the frame is deleted once read");
+    assert!(screenshots(&mut control).is_empty());
+    rig.quit().await;
 }
 
 /// The Ctrl-C regression: a quit must be processed even while a

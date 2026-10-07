@@ -757,18 +757,52 @@ impl LoopRig {
 /// and transfers live on the blocking pool, which paused time can't
 /// drive.
 pub fn loop_rig(harness: &Harness, name: &str, nonce: u128, db_dir: &std::path::Path) -> LoopRig {
+    loop_rig_with(harness, name, nonce, db_dir, MockFactory::new([]), vec![])
+}
+
+/// A [`loop_rig`] with a player (the auto-acking mock, confirming each
+/// load as mpv does) and a media root: the returned control is the
+/// "user in mpv", the directory the root to [`PlayerClient::install`]
+/// files into (write them there directly).
+pub fn loop_rig_with_player(
+    harness: &Harness,
+    name: &str,
+    nonce: u128,
+    db_dir: &std::path::Path,
+) -> (LoopRig, MockControl, tempfile::TempDir) {
+    let root = tempfile::tempdir().expect("media root");
+    let (player, control) = MockPlayer::auto_pair();
+    let rig = loop_rig_with(
+        harness,
+        name,
+        nonce,
+        db_dir,
+        MockFactory::new([player]),
+        vec![root.path().to_path_buf()],
+    );
+    (rig, control, root)
+}
+
+fn loop_rig_with(
+    harness: &Harness,
+    name: &str,
+    nonce: u128,
+    db_dir: &std::path::Path,
+    factory: MockFactory,
+    media_roots: Vec<std::path::PathBuf>,
+) -> LoopRig {
     let handle = harness.client(name, nonce);
     let sync = handle.sync.clone();
     let cache_dir = db_dir.join(format!("{name}-cache"));
     std::fs::create_dir_all(&cache_dir).expect("cache dir");
     let shell = SessionShell::new(
         UserId::new(name),
-        MockFactory::new([]),
+        factory,
         sim_clock(0),
         dessplay::actors::file::FileConfig {
             storage: dessplay::storage::Storage::open(&db_dir.join(format!("{name}-file.db")))
                 .expect("opening file storage"),
-            media_roots: vec![],
+            media_roots: media_roots.clone(),
             retention: dessplay::config::CacheRetention::default(),
             archive: dessplay::actors::file::ArchivePolicy::default(),
             cache_dir,
@@ -802,7 +836,7 @@ pub fn loop_rig(harness: &Harness, name: &str, nonce: u128, db_dir: &std::path::
         image_fetch_permits: std::sync::Arc::new(tokio::sync::Semaphore::new(2)),
         me: UserId::new(name),
         settings: dessplay::config::Settings::default(),
-        media_roots: Vec::new(),
+        media_roots,
         observed_fingerprint: Box::new(|| None),
         pin_pending: false,
         server_addr: "sim".into(),
@@ -818,6 +852,7 @@ pub fn loop_rig(harness: &Harness, name: &str, nonce: u128, db_dir: &std::path::
         suggestion: None,
         advisor: Default::default(),
         commentary: dessplay::commentary::CommentaryEngine::disabled(),
+        tv_screenshots: dessplay::screenshot::Slot::create("dessplay-tv-test-").ok(),
         clipboard: None,
     };
     let task = tokio::spawn(async move { session.run().await });

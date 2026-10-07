@@ -448,9 +448,23 @@ fn simulate_with(
 /// its end.
 pub(super) fn visit_from(
     room: &Room,
+    guest: Guest,
+    minutes: u64,
+    watch: impl FnMut(&Guest, u64),
+) -> (Visit, Guest) {
+    visit_feeding(room, guest, minutes, watch, |_, _| false)
+}
+
+/// [`visit_from`], with `feed` giving her what the shell would at each
+/// step (before it: `image_census` feeds her TV the film); when it says
+/// something arrived, she's painted at once over the frame as it is
+/// then, as the client draws on every input.
+pub(super) fn visit_feeding(
+    room: &Room,
     mut guest: Guest,
     minutes: u64,
     mut watch: impl FnMut(&Guest, u64),
+    mut feed: impl FnMut(&mut Guest, u64) -> bool,
 ) -> (Visit, Guest) {
     let (mut real, mut view) = (room.real.clone(), room.view.clone());
     let mut arrived = 0;
@@ -479,6 +493,9 @@ pub(super) fn visit_from(
                 .map_or(1000, |d| d.as_millis() as u64)
                 .clamp(1, 1000),
         );
+        if feed(&mut guest, now) {
+            paint(&mut guest, &real, &view, now);
+        }
         watch(&guest, now);
         if let State::Visiting(visit) = &guest.state {
             let doing = doing(&visit.osaka, now);
@@ -1294,6 +1311,9 @@ fn motion_table(name: &str, rows: &[(String, MotionRow)]) {
     }
 }
 
+/// The image census's furnished home with the film on her TV.
+const FILM_ROOM: &str = "home, film";
+
 /// Her images over long visits: each room in each mood (forced), drawn
 /// in line art at 10×20-pixel cells (a common Ghostty cell) with a frame
 /// cache that never drops an image, measuring at 20, 40, 60 and 120
@@ -1301,8 +1321,12 @@ fn motion_table(name: &str, rows: &[(String, MotionRow)]) {
 /// has been sent), her working set (the smallest cache that would never
 /// have dropped one she showed again), the images a cache of each size
 /// in [`LIMITS`] would have encoded again, and what the images hold on
-/// the client. It's how the frame cache's limit is sized. Ignored; run
-/// by hand:
+/// the client. It's how the frame cache's limit is sized. The furnished
+/// home is measured twice: as it is, and with the film on her TV (phase
+/// 5c D7), a new still on every switch-on and every minute she watches
+/// (the worst case: the shell reuses a still within the minute), each
+/// delivered as the client draws it (a paint on its arrival). Ignored;
+/// run by hand:
 ///
 /// ```text
 /// cargo test --release -p dessplay --lib image_census -- --ignored --nocapture
@@ -1316,6 +1340,10 @@ fn image_census() {
     /// At a mark: distinct images, working set, cached bytes, and the
     /// images each of [`LIMITS`] would have encoded again.
     type Sample = (usize, usize, usize, [usize; LIMITS.len()]);
+    // Stills fed to her TV in the film room, over all its visits.
+    let fed_stills = std::sync::atomic::AtomicUsize::new(0);
+    // Images of her TV showing them (the cache drops none here).
+    let fed_films = std::sync::atomic::AtomicUsize::new(0);
     let measure = |room: &Room, seed: u64, mood: Mood| -> Vec<Sample> {
         let guest = arrive_drawn(room, seed, Some(mood), |guest| {
             guest.set_picker(kitty_cells(10, 20));
@@ -1338,20 +1366,71 @@ fn image_census() {
         };
         let mut marks = Vec::new();
         let last = MARKS[MARKS.len() - 1];
-        let (_, guest) = visit_from(room, guest, last, |guest, now| {
-            if let Some(&mark) = MARKS.get(marks.len())
-                && mark < last
-                && now >= mark * 60_000
-            {
-                marks.push(sample(guest));
+        // The film fed to her TV (the film room): when last, in which
+        // act, and how many stills so far.
+        let film = room.name == FILM_ROOM;
+        let mut fed: Option<(u64, u64)> = None;
+        let mut stills = 0;
+        let feed = |guest: &mut Guest, now: u64| {
+            if !film || !guest.tv_wants_picture() {
+                return false;
             }
-        });
+            let act = match &guest.state {
+                State::Visiting(visit) if visit.osaka.seat().is_some() => {
+                    Some(visit.osaka.act_started())
+                }
+                _ => None,
+            };
+            let switched_on = act.is_some_and(|act| fed.is_none_or(|(_, was)| was != act));
+            let minute = fed.is_none_or(|(at, _)| now >= at + 60_000);
+            if switched_on || minute {
+                stills += 1;
+                guest.set_tv_picture(Some(crate::ui::houseguest::film::test_picture(
+                    dessplay_core::types::Ed2kHash([9; 16]),
+                    stills,
+                )));
+                fed = Some((now, act.unwrap_or(u64::MAX)));
+                return true;
+            }
+            false
+        };
+        let (_, guest) = visit_feeding(
+            room,
+            guest,
+            last,
+            |guest, now| {
+                if let Some(&mark) = MARKS.get(marks.len())
+                    && mark < last
+                    && now >= mark * 60_000
+                {
+                    marks.push(sample(guest));
+                }
+            },
+            feed,
+        );
         marks.push(sample(&guest));
+        fed_stills.fetch_add(stills as usize, std::sync::atomic::Ordering::Relaxed);
+        if let Some(graphics) = guest.graphics.as_ref() {
+            fed_films.fetch_add(
+                graphics.films_cached(),
+                std::sync::atomic::Ordering::Relaxed,
+            );
+        }
         marks
     };
     let max = |v: &[usize]| v.iter().copied().max().unwrap_or(0);
     let mean = |v: &[usize]| v.iter().sum::<usize>() as f64 / v.len().max(1) as f64;
-    for room in [stage_room(), furnished_room(), resident_room(), live_room()] {
+    let film_room = Room {
+        name: FILM_ROOM,
+        ..furnished_room()
+    };
+    for room in [
+        stage_room(),
+        furnished_room(),
+        film_room,
+        resident_room(),
+        live_room(),
+    ] {
         let mut most: Vec<Sample> = vec![(0, 0, 0, [0; LIMITS.len()]); MARKS.len()];
         let mut per_image = (0usize, 0usize);
         for mood in Mood::ALL {
@@ -1394,6 +1473,15 @@ fn image_census() {
                     per_image.1 += images;
                 }
             }
+        }
+        let stills = fed_stills.swap(0, std::sync::atomic::Ordering::Relaxed);
+        let films = fed_films.swap(0, std::sync::atomic::Ordering::Relaxed);
+        if stills > 0 {
+            eprintln!(
+                "\n== {}: {stills} stills fed to her TV, {films} images of it showing one ({} visits)",
+                room.name,
+                SEEDS as usize * Mood::ALL.len()
+            );
         }
         eprintln!(
             "\n== {}: {:.1} KB an image at 10×20-pixel cells",

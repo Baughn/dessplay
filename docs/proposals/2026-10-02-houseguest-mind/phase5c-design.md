@@ -579,3 +579,49 @@ that her trace is unchanged).
 - **Open, for the user:** the home's industrious quiet afternoon at 31.4 against 31, and a lazy
   shopping act's hook at up to 49 s (two fifths of a lingered body).
 - Measured: [phase5c/baseline.md](phase5c/baseline.md), "Step 12a: the held TV picture".
+
+## Round-7 amendments (2026-10-07): step 12b as built
+
+- **The film on her TV** (D7's film half). `Guest::tv_wants_picture` (output only: in line art, a
+  real TV, `Osaka::tv_bound`: heading or walking to a watch, or in a Watch or Surf act) drives the
+  shell's `TvFeed` (`ui/tv_feed.rs`, pure): ask while she wants one and this client holds the
+  now-playing file (`derive::held_now_playing`, shared with commentary's gate), then again once
+  60 s have passed since the last question (failures count), one at a time, given up after 3 s; a
+  change of film (or the file no longer held) clears her stills and asks afresh. The session answers
+  `UiInput::TvPicture { ask, answer }` (latest wins) from the TV's own private slot
+  (`screenshot::Slot`, `dessplay-tv-*`; commentary keeps its own, `dessplay-commentary-*`).
+- **Review fixes (folded into the step).** *The real video:* `Ready` comes on prefetch and while
+  the placeholder (same hash) still shows, so the player is asked only through
+  `SessionShell::request_screenshot(path, file, view)`: `PlayerWiring::may_screenshot` (held, and
+  the `loaded` real video, the gate that speaks for the group), then the player actor's
+  `PlayerCommand::Screenshot { path, file, taken }`, taken only of the file last loaded once the
+  player's path echo confirms it (`player_on_current_file`), answering at once. Commentary's request
+  goes through the same gate. *Answers:* `TvAnswer::{Still, Failed, NotAsked}`; `NotAsked` (no
+  player or slot, not held, not showing it yet, the slot busy) costs no minute and is asked again
+  after 5 s (`NOT_ASKED_MS`); `Failed` keeps the minute. *Numbered questions:* `TvAsk { seq, file }`;
+  only the answer to the question out counts. *One frame at a time:* `Slot::claim` (a `Claim`
+  frees the slot on drop), so polls never race on the one path. *The shell's wiring* is
+  `TvFeed::turn` / `TvFeed::deliver`, which the film tests drive too; a closed session queue ends
+  the UI loop (it spun).
+- **The two slots are a latch at paint**, Q2 having replaced "never swapped mid-act": `Graphics`
+  holds the still on show and the one delivered since; each paint latches the delivered one, so a
+  fresh still cuts in at the paint its arrival triggers. `Look::Film(id, programme)` carries the
+  act's card, so a key whose still is gone draws the card (the synthesis's canvas test).
+  `Guest::set_tv_picture(None)` is the file change (both slots go); a failed answer never calls it.
+- **Treatment** (`film.rs`, off the UI thread): decode within the chat images' caps, centre crop at
+  58:46 zoomed 1.3×, box-scaled to 128×102, then black (mean luma < 20) and flat (p98 − p2 < 24)
+  rejected, one luma levels stretch (gain ≤ 3), saturation ×1.25; the pixel hash is the id. The
+  stretch's statistics are taken on the 128×102 still, as the mock took them on its scaled one.
+  At paint: box-scaled once to the glass's whole-pixel rectangle (27×22 at 9×19 cells, 29×23 at
+  10×20), laid in through the rounded mask unmirrored, the outline over it.
+- **mpv**, measured with `--vo=null`: a `video` grab answers in 73–128 ms at 3840×2160 and
+  41–63 ms at 1080p HEVC, and a command queued behind it waited as long; with `"async": true` the
+  queued command answers at once, so every `screenshot-to-file` (commentary's too) goes out async.
+- **Tests through the real loop:** `loop_rig_with_player` (the auto-acking mock and a media root)
+  runs `a_tv_still_is_asked_only_of_the_held_file_into_its_own_slot`: not asked before anything
+  plays or of another file, asked into the `dessplay-tv-*` slot once held and shown, the frame read
+  and deleted.
+- **Open, for the user:** saturation. The Q1 answer, the synthesis and the code say ×1.25; the
+  mock's column 7 (`lifted()` in `d7/mock.py`), which the user picked by eye, applies ×1.3. The
+  code keeps the written ×1.25 (pinned by `the_treatment_is_the_users_choice`).
+- Records: decisions.md, "The film on her TV"; baseline.md, "Step 12b".

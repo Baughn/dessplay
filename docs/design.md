@@ -1895,8 +1895,35 @@ this section states what is built.
   each programme is its own pair of screen glyphs. No act of hers that
   holds her place for over 30 s changes how she or her furniture looks
   faster than once a frame (1.4 s) after its first 10 s, her slow
-  blink, the hook's bob and a look up at the chat apart (why:
+  blink, the hook's bob, a look up at the chat and the film's fresh
+  still (below) apart (why:
   [decisions](decisions.md#her-tv-holds-a-picture-2026-10-07)).
+  **The film on her TV** (phase 5c D7): in line art, with a film loaded
+  that this client holds (on disk and ready) and whose real video the
+  player shows (never mpv's "you don't have this file" placeholder,
+  which reuses the file's hash, nor the episode before while the next
+  loads), her TV shows a still of it in place of her programme. The UI
+  asks for one as she heads to watch (or to flick through the
+  channels), and while she watches, again once a minute has passed
+  since it last asked (a frame that failed counts; a question the
+  player couldn't be asked, as it isn't showing that video yet, is
+  asked again 5 s on); one question at a time, numbered, given up
+  after 3 s, an answer to any other ignored, and one frame in the TV's
+  slot at a time. A good still cuts in at the
+  next paint, straight from the one before, with no static; a failed,
+  black or flat frame keeps what she shows; a change of film, or the
+  file no longer held, puts her programme back. Not the shopping
+  channel or her first sunrise, which show their own. The still is the
+  frame's centre at the glass's aspect, zoomed 1.3×, one levels stretch
+  from its brightness (gain at most 3×), saturation ×1.25, no sheen,
+  laid in the glass unmirrored whichever way the set faces. **The frame
+  stays on this machine**: the player writes it to the TV's own private
+  screenshot slot (never commentary's, whose frames go to Anthropic),
+  it is read, treated and deleted in the process (the player writes it
+  to a private 0700 temporary file, deleted once read), and never kept,
+  logged or sent. She doesn't react to it, and nothing she does depends
+  on it: her trace and her ASCII frames are the same with or without it
+  (why: [decisions](decisions.md#the-film-on-her-tv-2026-10-07)).
 - **Scripts and splices** (phase 5a): how a use looks (her pose and
   face, what she says, and what shows on her furniture: the TV's
   channel, the lamp, the fridge door, the cat biting) is its own
@@ -3152,8 +3179,11 @@ reply scrolls across the bottom line's middle slot on **every** client.
   **speaker-attributed** — a cue with an ASS Name field goes out as
   `Name: line`, the same field the separate subtitle pane colors by; a
   nameless cue stays bare — plus an mpv screenshot when one can be
-  captured in time (`screenshot-to-file`, raw frame, no OSD/subs;
-  best-effort — its absence never blocks the tick). The model's replies
+  captured in time (`screenshot-to-file`, raw frame, no OSD/subs, sent
+  async; written to commentary's own private screenshot slot, which no
+  other feature shares; only of the now-playing file this client holds
+  with its real video showing, never the placeholder; best-effort — its
+  absence never blocks the tick). The model's replies
   ride along as assistant turns, so the commentator remembers what it
   already said. An episode — or series — change stays in-thread: the
   next turn opens with a "Now playing" header. Episode identity is

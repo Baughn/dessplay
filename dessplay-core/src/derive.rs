@@ -190,6 +190,16 @@ pub fn file_permits(view: &StateView, user: &UserId) -> bool {
     file_block_reason(view, user).is_none()
 }
 
+/// The now-playing file, if `user` holds it whole on disk (`Ready`): not
+/// while it's missing or downloading, nor before its state is reported.
+/// What may be screenshotted of it (the player shows a placeholder
+/// otherwise): AI commentary's frame and the houseguest's TV.
+pub fn held_now_playing(view: &StateView, user: &UserId) -> Option<Ed2kHash> {
+    let file = view.now_playing?;
+    (view.file_availability.get(&(user.clone(), file)) == Some(&FileAvailability::Ready))
+        .then_some(file)
+}
+
 /// Why a *present* user (committed or Maybe) blocks now-playing: a manual
 /// pause beats their file state, otherwise the file state decides.
 fn present_block_reason(
@@ -372,6 +382,45 @@ mod tests {
             },
         );
         id
+    }
+
+    /// The now-playing file is held only when this user has it `Ready`:
+    /// not missing, downloading, unreported, someone else's, or with
+    /// nothing playing.
+    #[test]
+    fn the_now_playing_file_is_held_only_ready() {
+        let (alice, bob) = (UserId::new("alice"), UserId::new("bob"));
+        let mut state = CrdtState::new();
+        assert_eq!(
+            held_now_playing(&state.view(), &alice),
+            None,
+            "nothing playing"
+        );
+        state.set_now_playing(SERVER, ts(1), Some(hash(1)));
+        assert_eq!(held_now_playing(&state.view(), &alice), None, "unreported");
+        for (t, availability, held) in [
+            (2, FileAvailability::Missing, None),
+            (
+                3,
+                FileAvailability::Downloading { progress_bps: 9000 },
+                None,
+            ),
+            (4, FileAvailability::Ready, Some(hash(1))),
+        ] {
+            state.set_file_availability(SERVER, ts(t), alice.clone(), hash(1), availability);
+            assert_eq!(held_now_playing(&state.view(), &alice), held, "{t}");
+            assert_eq!(
+                held_now_playing(&state.view(), &bob),
+                None,
+                "{t}: not bob's"
+            );
+        }
+        state.set_now_playing(SERVER, ts(5), Some(hash(2)));
+        assert_eq!(
+            held_now_playing(&state.view(), &alice),
+            None,
+            "another file"
+        );
     }
 
     /// Preference folding across a franchise (proposal 2026-08-28): with

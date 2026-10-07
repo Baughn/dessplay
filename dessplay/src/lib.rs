@@ -31,6 +31,7 @@ pub mod player;
 pub mod roguelike;
 pub mod roguelike_store;
 pub mod run;
+pub mod screenshot;
 pub mod seeder;
 pub mod session;
 pub mod storage;

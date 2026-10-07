@@ -270,7 +270,8 @@ fn exempt(was: &Shown, now: &Shown, hook: bool) -> bool {
 /// (`each_prop_looks_distinct_in_each_mode`,
 /// `every_piece_shows_what_her_script_shows_on_it`), so both modes check
 /// the same states here. A change that is drawing alone (step 12b's
-/// once-a-minute picture swap) needs a variant comparing drawn cells.
+/// once-a-minute fresh still of the film) has its own variant comparing
+/// drawn images (`a_long_watch_takes_a_fresh_still_once_a_minute`).
 ///
 /// [`USE_FRAME_MS`]: osaka::USE_FRAME_MS
 #[test]

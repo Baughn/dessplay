@@ -325,6 +325,15 @@ pub enum UserAction {
         /// The https image URL, as detected in the message text.
         url: String,
     },
+    /// Ask the player for a still of the now-playing `file` for the
+    /// houseguest's TV (phase 5c D7): written to the TV's own private
+    /// screenshot slot, never commentary's, and never sent anywhere.
+    /// Answered with [`crate::ui::shell::UiInput::TvPicture`].
+    TvPicture {
+        /// The question: its number, and the file the still must be of
+        /// (held by this client).
+        ask: crate::ui::tv_feed::TvAsk,
+    },
     /// Start a selected single-file torrent import.
     StartNyaaImport {
         /// Local pending-import identity.

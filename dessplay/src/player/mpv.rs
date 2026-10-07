@@ -260,6 +260,14 @@ impl MpvPlayer {
     }
 }
 
+/// Commands mpv runs off its command queue: a screenshot holds the queue
+/// for as long as it takes to grab and encode the frame (measured
+/// 2026-10-07: a `get_property` sent behind a 4K `video` grab waited
+/// 73–119 ms for it, `--vo=null`; behind an async one, under 1 ms), so
+/// a sync command sent meanwhile would wait. Its reply still comes when
+/// the file is written.
+const ASYNC_COMMANDS: [&str; 1] = ["screenshot-to-file"];
+
 async fn send_command<W: AsyncWrite + Unpin>(
     writer: &Mutex<W>,
     pending: &PendingCommands,
@@ -271,7 +279,12 @@ async fn send_command<W: AsyncWrite + Unpin>(
         .and_then(Value::as_str)
         .unwrap_or("?")
         .to_string();
-    let mut line = json!({ "command": command, "request_id": request_id }).to_string();
+    let mut line = if ASYNC_COMMANDS.contains(&name.as_str()) {
+        json!({ "command": command, "request_id": request_id, "async": true })
+    } else {
+        json!({ "command": command, "request_id": request_id })
+    }
+    .to_string();
     tracing::trace!(ipc = %line, "mpv command");
     line.push('\n');
     // Registered before the write: the reply cannot arrive earlier.
@@ -1425,6 +1438,30 @@ mod tests {
                 .is_err(),
             "keep-open EOF pause issued a command"
         );
+    }
+
+    /// A screenshot goes out async (it would hold mpv's command queue
+    /// while the frame encodes); other commands don't.
+    #[tokio::test(start_paused = true)]
+    async fn a_screenshot_goes_out_async() {
+        let (_mpv, mut commands, _events, writer, pending) = spawn_read_loop();
+        for (command, id) in [
+            (json!(["screenshot-to-file", "/x/frame.jpg", "video"]), 3),
+            (json!(["get_property", "time-pos"]), 4),
+        ] {
+            send_command(&writer, &pending, command, id).await.unwrap();
+        }
+        let mut lines = Vec::new();
+        for _ in 0..2 {
+            let line = tokio::time::timeout(BUDGET, commands.next_line())
+                .await
+                .expect("command budget exhausted")
+                .unwrap()
+                .expect("mpv end closed");
+            lines.push(serde_json::from_str::<Value>(&line).unwrap());
+        }
+        assert_eq!(lines[0]["async"], json!(true), "{}", lines[0]);
+        assert_eq!(lines[1].get("async"), None, "{}", lines[1]);
     }
 
     /// Every command's reply is read back: the pending entry registered

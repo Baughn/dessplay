@@ -1581,6 +1581,19 @@ impl PlayerWiring {
         view.now_playing == Some(file) && self.holds_now_playing(view)
     }
 
+    /// Whether the player may be asked for a frame of `file` (AI
+    /// commentary's, and the houseguest's TV's, phase 5c D7): it's the
+    /// now-playing file, this client holds it whole (`Ready`,
+    /// [`derive::held_now_playing`]), and the player was told to load
+    /// its *real* video ([`Self::holds_now_playing`]: not the "you don't
+    /// have this file" placeholder, which reuses the hash, and not the
+    /// episode before while a prefetched next one is `Ready`). The
+    /// player actor checks the rest: that it shows that video now.
+    pub fn may_screenshot(&self, view: &StateView, file: Ed2kHash) -> bool {
+        dessplay_core::derive::held_now_playing(view, &self.me) == Some(file)
+            && self.speaks_for_now_playing(view, file)
+    }
+
     /// The file actor's availability advert, corrected for what the
     /// player actually managed: while `file` sits in
     /// `partial_load_failed` (the player couldn't open the partial and
@@ -2792,15 +2805,30 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
         self.wiring.auto_download = enabled;
     }
 
-    /// Ask the running player for a screenshot written to `path`
-    /// (commentary context). Best-effort and fire-and-forget: returns
-    /// false when no player has been spawned yet, so the caller can skip
-    /// polling for a file that will never appear.
-    pub async fn request_screenshot(&self, path: PathBuf) -> bool {
-        match &self.player {
-            Some(player) => player.send(PlayerCommand::Screenshot(path)).await.is_ok(),
-            None => false,
+    /// Ask the running player for a screenshot of `file` written to
+    /// `path` (AI commentary's frame, the houseguest's TV's still).
+    /// Best-effort: `None` when it may not be asked
+    /// ([`PlayerWiring::may_screenshot`]) or no player has been spawned,
+    /// so the caller can skip polling for a frame that will never come;
+    /// else the player actor's answer to come, whether it took it (it
+    /// refuses while it isn't showing `file`'s video).
+    pub async fn request_screenshot(
+        &self,
+        path: PathBuf,
+        file: Ed2kHash,
+        view: &StateView,
+    ) -> Option<tokio::sync::oneshot::Receiver<bool>> {
+        if !self.wiring.may_screenshot(view, file) {
+            tracing::trace!(%file, "screenshot: not the real now-playing video; not asked");
+            return None;
         }
+        let player = self.player.as_ref()?;
+        let (taken, answer) = tokio::sync::oneshot::channel();
+        player
+            .send(PlayerCommand::Screenshot { path, file, taken })
+            .await
+            .ok()?;
+        Some(answer)
     }
 
     /// Persist a manual mapping (and resolve it Verified at once).
@@ -7441,6 +7469,47 @@ mod tests {
                 .iter()
                 .any(|c| matches!(c, PlayerCommand::SetPlaying(true))),
             "must not resume stale ep1 while ep2 is now-playing: {cmds:?}"
+        );
+    }
+
+    /// A frame of the now-playing file may be asked of the player only
+    /// when this client holds it `Ready` *and* told the player to load
+    /// its real video: not while the placeholder (which reuses the hash)
+    /// or the episode before is up, though the file is `Ready` (phase 5c
+    /// D7 review: a prefetched next episode is `Ready` before it loads,
+    /// and a finished download is `Ready` while the placeholder shows).
+    #[test]
+    fn a_screenshot_is_asked_only_of_the_real_now_playing_video() {
+        let mut wiring = PlayerWiring::new(me());
+        let mut state = playing_state();
+        assert!(
+            !wiring.may_screenshot(&state.view(), hash(1)),
+            "not reported held"
+        );
+        state.set_file_availability(A, ts(4), me(), hash(1), FileAvailability::Ready);
+        let view = state.view();
+        assert!(
+            !wiring.may_screenshot(&view, hash(1)),
+            "Ready, but only the placeholder (or nothing) loaded"
+        );
+        wiring.loaded = loaded(2);
+        assert!(
+            !wiring.may_screenshot(&view, hash(1)),
+            "Ready, but the episode before loaded"
+        );
+        wiring.loaded = loaded(1);
+        assert!(wiring.may_screenshot(&view, hash(1)), "the real video");
+        assert!(!wiring.may_screenshot(&view, hash(2)), "another file");
+        state.set_file_availability(
+            A,
+            ts(5),
+            me(),
+            hash(1),
+            FileAvailability::Downloading { progress_bps: 5000 },
+        );
+        assert!(
+            !wiring.may_screenshot(&state.view(), hash(1)),
+            "a partial is not held"
         );
     }
 
