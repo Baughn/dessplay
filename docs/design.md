@@ -1627,11 +1627,10 @@ this section states what is built.
   the length she draws for a still act she chose (sitting, lying back,
   gazing, dozing where she sits, spacing out (her rare musing too),
   lounging, napping, a day's sleep, reading (on her back too, and the
-  doze under the book, and a borrowed strip), looking out); not
+  doze under the book, and a borrowed strip), looking out, watching TV (it holds a picture)); not
   exercise, lying on her front, chores, a snack, the cat, homework (on
   the floor too; her
-  mood moves where it nods off instead), her night or a trial sit, nor
-  watching until her TV holds a picture (its static is animated):
+  mood moves where it nods off instead), her night or a trial sit:
   lazy ×1.5, ordinary ×1, dreamy and industrious ×0.85. **A
   daydream** (a musing spacing-out) holds as many musings as her mood's
   whim says, the first as ever (or a riddle, which holds no more), each
@@ -1865,7 +1864,7 @@ this section states what is built.
   floor), turned towards it (one plain watch in five, with no shopping
   channel on, nothing about her home on her mind and not just trying
   the spot, she flicks through the channels: static, colour bars,
-  static, a sunrise, "ooh", then back to static, pleased with herself);
+  static, a sunrise, "ooh", then her programme, pleased with herself);
   she reads beside her bookshelf, gets a snack from her fridge (it
   stands open as she looks in, then she eats a melon bread; one snack in
   four ends in a sata andagi: the fridge open a moment, she holds it up
@@ -1885,6 +1884,19 @@ this section states what is built.
   she's left blinking where it was. Her furniture shows only while she
   does, and the goodbye rain takes it along with her
   (why: [decisions](decisions.md#houseguest-furniture-is-pane-relative-and-leaves-with-her-2026-09-28)).
+  **The TV holds a picture** (phase 5c D7): it's on only while she
+  watches; static shows only as she switches it on (1.2 s, three of
+  its 400 ms frames) and between channels as she flicks; then a drawn
+  programme holds still to the end (the news, the weather, penguins, a
+  cooking show), one drawn from her decision's whims as every watch
+  begins, whatever it plays (so what she does never hangs on what the
+  screen shows). On the shopping channel Chiyo-chichi bobs as he talks
+  through his hook (its first two fifths), then holds still. In ASCII
+  each programme is its own pair of screen glyphs. No act of hers that
+  holds her place for over 30 s changes how she or her furniture looks
+  faster than once a frame (1.4 s) after its first 10 s, her slow
+  blink, the hook's bob and a look up at the chat apart (why:
+  [decisions](decisions.md#her-tv-holds-a-picture-2026-10-07)).
 - **Scripts and splices** (phase 5a): how a use looks (her pose and
   face, what she says, and what shows on her furniture: the TV's
   channel, the lamp, the fridge door, the cat biting) is its own
@@ -1892,7 +1904,8 @@ this section states what is built.
   the use's drawn length, so nothing new is drawn; a spacing-out may
   play one too (a riddle). She wakes as each key ends, so the next
   key's look, line and prop come on on time, as well as on the use's
-  frame grid (what bobs and what's on TV moves on it). A use may be
+  frame grid (what bobs moves on it), and on each of static's 400 ms
+  frames while it shows (Chiyo-chichi's hook bobs at paint time). A use may be
   wrapped in a **splice**: a prelude before it (the chopsticks) or a
   coda after it (the sata andagi), a script of its own length rolled as
   the use starts: never round a trial, a prelude only while she isn't

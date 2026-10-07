@@ -12,7 +12,9 @@ use super::*;
 use crate::ui::houseguest::brain::{Mood, Want};
 use crate::ui::houseguest::mind::{self, Bind, Ctx, Whims};
 use crate::ui::houseguest::osaka::SETTLE_IN;
+use crate::ui::houseguest::room::Use;
 use crate::ui::houseguest::scenes::Job;
+use crate::ui::houseguest::sprite::{Face, Facing, Pose};
 use crate::ui::houseguest::stillness::{ByMood, Stillness};
 
 /// Her, fed an afternoon in `room` from `seed` in `mood`, with the
@@ -203,5 +205,232 @@ fn on_the_stage_nearer_text_is_on_her_own_floor() {
             floors_with.iter().all(|&n| n > 0),
             "graphics={graphics}: {floors_with:?}"
         );
+    }
+}
+
+/// What a client painting at `now` would show of her act: how she looks
+/// (pose, face, bubble), where and which way, what her script shows on
+/// her furniture, and her lamp dark for the night.
+type Shown = (
+    (Pose, Face, Option<osaka::Bubble>),
+    (i32, i32, Facing),
+    Option<crate::ui::houseguest::script::Prop>,
+    bool,
+);
+
+/// An act sampled: its start, whether it's a watch, whether it's the
+/// shopping channel, and its samples (when, what shows, whether
+/// Chiyo-chichi's hook plays).
+type Sampled = (u64, bool, bool, Vec<(u64, Shown, bool)>);
+
+/// Whether going from `was` to `now` is only her slow blink (her face
+/// alone, to or from a blink), or Chiyo-chichi's bob while his hook
+/// plays (`hook`: what's on TV alone, from one of his frames to the
+/// other).
+fn exempt(was: &Shown, now: &Shown, hook: bool) -> bool {
+    use crate::ui::houseguest::art::Channel;
+    use crate::ui::houseguest::script::Prop;
+    let ((pose, face, bubble), at, prop, dark) = *was;
+    let ((pose2, face2, bubble2), at2, prop2, dark2) = *now;
+    let blink = face != face2
+        && (face == Face::Blink || face2 == Face::Blink)
+        && (pose, bubble, at, prop, dark) == (pose2, bubble2, at2, prop2, dark2);
+    let bob = hook
+        && (pose, face, bubble, at, dark) == (pose2, face2, bubble2, at2, dark2)
+        && matches!(
+            (prop, prop2),
+            (
+                Some(Prop::Tv(Channel::Shopping(_))),
+                Some(Prop::Tv(Channel::Shopping(_)))
+            )
+        );
+    blink || bob
+}
+
+/// No act of hers longer than 30 s flips faster than [`USE_FRAME_MS`]
+/// after its first 10 s (phase 5c D7), but those that take her
+/// somewhere (a walk; the band counts what moves her; a turn where she
+/// stands is checked): on quiet fed afternoons in her rooms with a TV
+/// (the furnished home, the home with only a TV, the resident, the home
+/// with her window, whose sill session is her longest still act, and the
+/// furnished home with the shopping channel on at her first watch), in
+/// each mood, in both modes, what a client painting at any moment would
+/// show of her act, sampled every 100 ms between the steps the shell
+/// takes, never changes twice within a frame once the act's first 10 s
+/// are over: her slow blink apart, and Chiyo-chichi's bob through his
+/// hook (the first two fifths of the shopping channel's body). Quiet: a
+/// chat line's look up (`!`, then `?`) is the other exemption design.md
+/// names, so it isn't tried here. Each room shows her watching for over
+/// 30 s at least once in each mode, so the TV is tried, and the shopping
+/// room the shopping channel, so the hook's exemption is.
+///
+/// What it compares is her model's (how she looks, where and which way,
+/// what her script shows, the lamp dark), not drawn cells: a proxy, sound
+/// while drawing is a pure map from those to images and glyphs
+/// (`each_prop_looks_distinct_in_each_mode`,
+/// `every_piece_shows_what_her_script_shows_on_it`), so both modes check
+/// the same states here. A change that is drawing alone (step 12b's
+/// once-a-minute picture swap) needs a variant comparing drawn cells.
+///
+/// [`USE_FRAME_MS`]: osaka::USE_FRAME_MS
+#[test]
+fn no_long_act_flips_faster_than_a_frame() {
+    const MINUTES: u64 = 10;
+    const SAMPLE_MS: u64 = 100;
+    let tv_only = Room {
+        name: "home, TV only",
+        owns: &[Furniture::Tv],
+        ..furnished_room()
+    };
+    let windowed = Room {
+        name: "home+window",
+        owns: &super::census::WINDOWED_HOME,
+        ..furnished_room()
+    };
+    let shopping = Room {
+        name: "home, shopping",
+        ..furnished_room()
+    };
+    let rooms = [
+        furnished_room(),
+        tv_only,
+        resident_room(),
+        windowed,
+        shopping,
+    ]
+    .map(at_afternoon)
+    .map(|room| super::census::with_chat(&room, true));
+    let moods = [
+        (0, Mood::Lazy),
+        (1, Mood::Ordinary),
+        (2, Mood::Dreamy),
+        (3, Mood::Industrious),
+    ];
+    let runs: Vec<(String, u32, u32)> = std::thread::scope(|scope| {
+        let mut runs = Vec::new();
+        for room in &rooms {
+            for graphics in [false, true] {
+                runs.push(scope.spawn(move || {
+                    let (mut watched, mut shopped) = (0, 0);
+                    for (seed, mood) in moods {
+                        let at = format!("{} {mood:?} seed {seed} graphics={graphics}", room.name);
+                        let mut guest = fed_afternoon(room, seed, graphics, mood);
+                        if room.name == "home, shopping" {
+                            guest.shop();
+                        }
+                        let mut act: Option<Sampled> = None;
+                        // Whether a checked act was a watch, and the
+                        // shopping channel.
+                        let check = |act: &Sampled| -> (bool, bool) {
+                            let (since, watch, shopping, samples) = act;
+                            let Some(&(last, ..)) = samples.last() else {
+                                return (false, false);
+                            };
+                            // Over 30 s, where she is: an act that takes
+                            // her somewhere (a walk the screen's width is
+                            // 31 s) moves her as the band counts it. A
+                            // turn where she stands is checked.
+                            let (_, (_, first_at, ..), _) = samples[0];
+                            let stays = samples.iter().all(|(_, (_, at, ..), _)| {
+                                (at.0, at.1) == (first_at.0, first_at.1)
+                            });
+                            if last - since <= 30_000 || !stays {
+                                return (false, false);
+                            }
+                            let mut flipped: Option<u64> = None;
+                            for pair in samples.windows(2) {
+                                let ((_, was, _), (t, now, hook)) = (&pair[0], &pair[1]);
+                                if was == now || *t < since + 10_000 || exempt(was, now, *hook) {
+                                    continue;
+                                }
+                                if let Some(before) = flipped {
+                                    assert!(
+                                        t - before >= osaka::USE_FRAME_MS,
+                                        "{at}: an act from {since} flipped at {before} and {t}: \
+                                         {was:?} to {now:?}"
+                                    );
+                                }
+                                flipped = Some(*t);
+                            }
+                            (*watch, *shopping)
+                        };
+                        let mut tally = |(watch, shopping): (bool, bool)| {
+                            watched += u32::from(watch);
+                            shopped += u32::from(shopping);
+                        };
+                        let mut now = 0;
+                        while now < MINUTES * 60_000 {
+                            let step = guest
+                                .next_tick(now)
+                                .map_or(1000, |d| d.as_millis() as u64)
+                                .clamp(1, 1000);
+                            if let State::Visiting(visit) = &guest.state {
+                                let osaka = &visit.osaka;
+                                let since = osaka.act_started();
+                                if act.as_ref().is_some_and(|a| a.0 != since)
+                                    && let Some(done) = act.take()
+                                {
+                                    tally(check(&done));
+                                }
+                                let span = osaka.use_span();
+                                let watch = span.is_some_and(|(seat, ..)| seat.what == Use::Watch);
+                                let shopping = osaka
+                                    .plays()
+                                    .is_some_and(|play| play.own == script::ScriptId::Shopping);
+                                let samples =
+                                    &mut act.get_or_insert((since, watch, shopping, Vec::new())).3;
+                                let hook_end = match (span, osaka.plays()) {
+                                    (Some((_, since, until)), Some(play))
+                                        if play.own == script::ScriptId::Shopping =>
+                                    {
+                                        let start = play.body_start(since);
+                                        start + (play.body_end(since, until) - start) * 2 / 5
+                                    }
+                                    _ => 0,
+                                };
+                                let mut t = now.next_multiple_of(SAMPLE_MS);
+                                while t < now + step {
+                                    let shown = (
+                                        osaka.appearance(t),
+                                        (osaka.x, osaka.y, osaka.facing),
+                                        osaka.prop(t),
+                                        osaka.dark(t),
+                                    );
+                                    samples.push((t, shown, t <= hook_end));
+                                    t += SAMPLE_MS;
+                                }
+                            }
+                            now += step;
+                            if guest.advance(now) {
+                                paint(&mut guest, &room.real, &room.view, now);
+                            }
+                        }
+                        if let Some(done) = act.take() {
+                            tally(check(&done));
+                        }
+                    }
+                    (
+                        format!("{} graphics={graphics}", room.name),
+                        watched,
+                        shopped,
+                    )
+                }));
+            }
+        }
+        runs.into_iter()
+            .map(|run| run.join().expect("a run"))
+            .collect()
+    });
+    for (at, watched, shopped) in &runs {
+        println!("{at}: {watched} watches over 30 s, {shopped} on the shopping channel");
+    }
+    for (at, watched, shopped) in runs {
+        assert!(watched > 0, "{at}: never watched for over 30 s");
+        if at.starts_with("home, shopping ") {
+            assert!(
+                shopped > 0,
+                "{at}: never on the shopping channel for over 30 s"
+            );
+        }
     }
 }

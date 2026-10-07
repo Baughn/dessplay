@@ -1514,7 +1514,7 @@ fn afternoon_rooms() -> [Room; 3] {
 /// The census home with her window too (phase 5c D6, minor 9: the band's
 /// home has none, and her long daydream at the sill is a still act it
 /// never sees).
-const WINDOWED_HOME: [Furniture; 8] = [
+pub(super) const WINDOWED_HOME: [Furniture; 8] = [
     Furniture::Sofa,
     Furniture::Tv,
     Furniture::Bed,

@@ -6,7 +6,7 @@
 //! that was chosen for it when it began, so how she looks at any instant
 //! is a pure function of the act.
 
-use super::art::{Channel, Sky};
+use super::art::{Channel, Programme, Sky};
 use super::calendar::Tints;
 use super::mind::{Lines, RIDDLES, Whims};
 use super::osaka::{Bubble, SCRUNCH, THERE, USE_FRAME_MS};
@@ -72,12 +72,11 @@ pub(super) enum Say {
     Answer,
 }
 
-/// What a key shows on her furniture: on every shown piece of its kind
-/// ([`Prop::item`]).
+/// What her script shows on her furniture at a moment: on every shown
+/// piece of its kind ([`Prop::item`]). A key names it as [`Shows`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) enum Prop {
-    /// The TV on, showing a channel (each key names it on frame 0; see
-    /// [`Prop::framed`]).
+    /// The TV on, showing a channel (on its frame, if it moves).
     Tv(Channel),
     /// The lamp switched off.
     LampOff,
@@ -87,8 +86,47 @@ pub(super) enum Prop {
     CatBiting,
 }
 
-/// How long each frame of what's on TV lasts.
+/// How long each frame of what's on TV lasts, while it moves (static,
+/// Chiyo-chichi's hook).
 pub(super) const CHANNEL_FRAME_MS: u64 = 400;
+
+/// How long the static lasts as she switches the TV on to watch (phase
+/// 5c D7): three of its frames, ending on a frame's edge, then the
+/// programme she drew holds.
+pub(super) const STATIC_MS: u64 = 3 * CHANNEL_FRAME_MS;
+
+/// What a key shows on her furniture, as its script has it: a prop held
+/// as it is, or her TV on static or Chiyo-chichi's hook (each moving
+/// every [`CHANNEL_FRAME_MS`]), or holding the programme drawn for the
+/// act ([`Play::card`]). Only static and the hook move: whatever else
+/// is on holds still for as long as its key plays (phase 5c D7).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Shows {
+    /// Held as it is: the lamp off, the fridge open, the cat biting; the
+    /// TV on a still channel (colour bars, the sunrise, Chiyo-chichi
+    /// after his hook).
+    Still(Prop),
+    /// The TV on static, as she switches it on and between channels.
+    Static,
+    /// The shopping channel's hook: Chiyo-chichi bobbing as he talks.
+    Hook,
+    /// The TV holding the programme she drew for the act.
+    Programme,
+}
+
+impl Shows {
+    /// What it shows `elapsed` ms into the part its key plays in, on an
+    /// act that drew `card`.
+    pub fn at(self, elapsed: u64, card: Programme) -> Prop {
+        let frame = (elapsed / CHANNEL_FRAME_MS % 2) as u8;
+        match self {
+            Self::Still(prop) => prop,
+            Self::Static => Prop::Tv(Channel::Snow(frame)),
+            Self::Hook => Prop::Tv(Channel::Shopping(frame)),
+            Self::Programme => Prop::Tv(Channel::Programme(card)),
+        }
+    }
+}
 
 impl Prop {
     /// The kind of piece it shows on.
@@ -108,18 +146,6 @@ impl Prop {
             Self::LampOff | Self::FridgeOpen | Self::CatBiting => None,
         }
     }
-
-    /// On animation frame `frame` (what's on TV moves; the rest hold).
-    pub fn framed(self, frame: u8) -> Self {
-        match self {
-            Self::Tv(Channel::Snow(_)) => Self::Tv(Channel::Snow(frame)),
-            Self::Tv(Channel::Shopping(_)) => Self::Tv(Channel::Shopping(frame)),
-            Self::Tv(Channel::ColourBars | Channel::Sunrise | Channel::Programme(_))
-            | Self::LampOff
-            | Self::FridgeOpen
-            | Self::CatBiting => self,
-        }
-    }
 }
 
 /// One key of a script.
@@ -129,10 +155,31 @@ pub(super) struct Key {
     pub pose: Posed,
     pub face: Face,
     pub say: Option<Say>,
-    pub prop: Option<Prop>,
+    pub prop: Option<Shows>,
 }
 
 impl Key {
+    /// How often what this key shows moves (ms), if she's to wake for
+    /// each move: a bob's period, or static's frame
+    /// ([`CHANNEL_FRAME_MS`], so all three of the switch-on's frames are
+    /// painted). Counted from the start of the part it plays in, as
+    /// [`Play::next_frame`] counts. Chiyo-chichi's hook moves at paint
+    /// time instead: his bob is talk, not a picture to see whole.
+    pub fn frame_ms(&self) -> Option<u64> {
+        let bob = match self.pose {
+            Posed::Bob(_, period) => Some(period),
+            Posed::Host | Posed::Still(_) => None,
+        };
+        let shows = match self.prop {
+            Some(Shows::Static) => Some(CHANNEL_FRAME_MS),
+            Some(Shows::Still(_) | Shows::Hook | Shows::Programme) | None => None,
+        };
+        match (bob, shows) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
+    }
+
     /// How she looks `elapsed` ms into the body this key plays in: in
     /// `host`'s pose where the key leaves it to the host, saying what
     /// `play` drew for her or pitching what it sold her.
@@ -202,7 +249,7 @@ pub(super) enum ScriptId {
     Sleep,
     /// Writing, then nodding off onto the paper.
     Homework,
-    /// Watching static.
+    /// Static as she switches it on, then the programme she drew, held.
     Watch,
     /// Watching the shopping channel: hooked, then sold.
     Shopping,
@@ -1086,7 +1133,8 @@ impl Spliced {
 
 /// What a use plays, all chosen when it began: its own script and
 /// branch, any prelude (`before`) and coda (`after`), the lines drawn
-/// for it, and what the shopping channel sold her (on a watch).
+/// for it, what the shopping channel sold her (on a watch), and the
+/// programme her TV holds (on a watch: [`Shows::Programme`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Play {
     pub own: ScriptId,
@@ -1095,6 +1143,10 @@ pub(super) struct Play {
     pub after: Option<Spliced>,
     pub drawn: [u8; 2],
     pub bought: Option<Furniture>,
+    /// Drawn as every watch begins, from her decision's whims, whatever
+    /// it plays (phase 5c D7: so what she does never hangs on whether a
+    /// picture of the film came to show instead).
+    pub card: Programme,
 }
 
 impl Play {
@@ -1107,6 +1159,7 @@ impl Play {
             after: None,
             drawn: [0; 2],
             bought: None,
+            card: Programme::News,
         }
     }
 
@@ -1251,6 +1304,17 @@ impl Play {
         let period = period.max(1);
         from + (now.saturating_sub(from) / period + 1) * period
     }
+
+    /// The next time after `now` that what the key playing at `now`
+    /// shows moves ([`Key::frame_ms`]), in a use from `since` to
+    /// `until`; `u64::MAX` if it holds.
+    pub fn next_move(&self, since: u64, until: u64, now: u64) -> u64 {
+        self.key(since, until, now)
+            .and_then(|(key, _)| key.frame_ms())
+            .map_or(u64::MAX, |period| {
+                self.next_frame(since, until, now, period)
+            })
+    }
 }
 
 impl Use {
@@ -1283,14 +1347,19 @@ const fn key(span: Span, pose: Posed, face: Face, say: Option<Say>) -> Key {
     }
 }
 
-/// A key with `prop` on her furniture.
+/// A key with `prop` held on her furniture.
 const fn shows(span: Span, pose: Posed, face: Face, say: Option<Say>, prop: Prop) -> Key {
+    on(span, pose, face, say, Shows::Still(prop))
+}
+
+/// A key with `shows` on her furniture.
+const fn on(span: Span, pose: Posed, face: Face, say: Option<Say>, shows: Shows) -> Key {
     Key {
         span,
         pose,
         face,
         say,
-        prop: Some(prop),
+        prop: Some(shows),
     }
 }
 
@@ -1485,26 +1554,36 @@ pub(super) fn floor_homework_branch(nod: super::stillness::NodOff, book: bool) -
     nod.branch() + if book { 3 } else { 0 }
 }
 
-const WATCH: &[&[Key]] = &[&[shows(
-    Span::Rest,
-    Posed::Host,
-    Face::Curious,
-    None,
-    Prop::Tv(Channel::Snow(0)),
-)]];
+/// Static as she switches it on, then the programme she drew, held.
+const WATCH: &[&[Key]] = &[&[
+    on(
+        Span::Ms(STATIC_MS),
+        Posed::Host,
+        Face::Curious,
+        None,
+        Shows::Static,
+    ),
+    on(
+        Span::Rest,
+        Posed::Host,
+        Face::Curious,
+        None,
+        Shows::Programme,
+    ),
+]];
 
 /// How long each channel she flicks to before the sunrise stays on.
 pub(super) const SURF_MS: u64 = 2 * USE_FRAME_MS;
 
-/// Snow, colour bars, snow, a sunrise (ooh!), then back on snow,
-/// humming, pleased with herself.
+/// Snow, colour bars, snow, a sunrise (ooh!), then the programme she
+/// drew, held, humming, pleased with herself.
 const SURF: &[&[Key]] = &[&[
-    shows(
+    on(
         Span::Ms(SURF_MS),
         Posed::Host,
         Face::Curious,
         None,
-        Prop::Tv(Channel::Snow(0)),
+        Shows::Static,
     ),
     shows(
         Span::Ms(2 * SURF_MS),
@@ -1513,12 +1592,12 @@ const SURF: &[&[Key]] = &[&[
         None,
         Prop::Tv(Channel::ColourBars),
     ),
-    shows(
+    on(
         Span::Ms(3 * SURF_MS),
         Posed::Host,
         Face::Curious,
         None,
-        Prop::Tv(Channel::Snow(0)),
+        Shows::Static,
     ),
     shows(
         Span::Ms(4 * SURF_MS),
@@ -1527,23 +1606,24 @@ const SURF: &[&[Key]] = &[&[
         bubble(Bubble::Ooh),
         Prop::Tv(Channel::Sunrise),
     ),
-    shows(
+    on(
         Span::Rest,
         Posed::Host,
         Face::Happy,
         bubble(Bubble::Hum),
-        Prop::Tv(Channel::Snow(0)),
+        Shows::Programme,
     ),
 ]];
 
-/// Hooked, then sold, then watching on.
+/// Hooked (Chiyo-chichi bobbing as he talks), then sold, then watching
+/// on, he holding still.
 const SHOPPING: &[&[Key]] = &[&[
-    shows(
+    on(
         Span::Upto(2, 5),
         Posed::Host,
         Face::Curious,
         bubble(Bubble::Ooh),
-        Prop::Tv(Channel::Shopping(0)),
+        Shows::Hook,
     ),
     shows(
         Span::Upto(3, 5),
@@ -2404,6 +2484,29 @@ mod tests {
         }
     }
 
+    /// Only static and the hook move, and a programme is the act's
+    /// (phase 5c D7): no key holds a frame of static still, or names a
+    /// programme of its own instead of the one the act drew. (Wildcard-
+    /// free, so a new channel says which it is.)
+    #[test]
+    fn no_key_holds_static_or_a_programme_of_its_own() {
+        use crate::ui::houseguest::art::Channel;
+        for id in ScriptId::ALL {
+            for (branch, keys) in id.branches().iter().enumerate() {
+                for key in *keys {
+                    let Some(Shows::Still(Prop::Tv(channel))) = key.prop else {
+                        continue;
+                    };
+                    let held = match channel {
+                        Channel::ColourBars | Channel::Sunrise | Channel::Shopping(_) => true,
+                        Channel::Snow(_) | Channel::Programme(_) => false,
+                    };
+                    assert!(held, "{id:?}/{branch}: holds {channel:?} still");
+                }
+            }
+        }
+    }
+
     /// Spacing out, she wakes only as a key ends (no frame grid, as a
     /// use has), and nothing shows on her furniture: so a script played
     /// spacing out neither bobs (it would freeze) nor shows a prop.
@@ -2916,7 +3019,7 @@ mod tests {
                 Posed::Host => panic!("{surface:?}: posed by its host"),
             };
             for key in keys {
-                assert_eq!(key.prop, Some(Prop::LampOff), "{surface:?}");
+                assert_eq!(key.prop, Some(Shows::Still(Prop::LampOff)), "{surface:?}");
                 assert_eq!(key.face, Face::Blink, "{surface:?}");
                 assert_eq!(
                     posed(key.pose),
@@ -2950,7 +3053,7 @@ mod tests {
             for at_once in [false, true] {
                 let keys = night.keys(surface.branch(at_once));
                 assert_eq!(keys.len(), if at_once { 1 } else { 2 }, "{surface:?}");
-                assert_eq!(keys.last().unwrap().prop, Some(Prop::LampOff));
+                assert_eq!(keys.last().unwrap().prop, Some(Shows::Still(Prop::LampOff)));
                 assert_eq!(keys[0].prop.is_some(), at_once, "{surface:?}");
                 for key in keys {
                     let pose = match key.pose {
@@ -3000,7 +3103,7 @@ mod tests {
             assert_eq!(len, andagi_ms(count as u64));
             let found = &keys[0];
             assert_eq!(found.span, Span::Ms(ANDAGI_FOUND_MS));
-            assert_eq!(found.prop, Some(Prop::FridgeOpen));
+            assert_eq!(found.prop, Some(Shows::Still(Prop::FridgeOpen)));
             let rank = |face| match face {
                 Face::Vacant => 0,
                 Face::Pleased => 1,
@@ -3158,7 +3261,7 @@ mod tests {
     }
 
     /// Which key it is, as far as the tests can tell them apart.
-    fn which(key: &Key) -> (Span, Face, Option<Say>, Option<Prop>) {
+    fn which(key: &Key) -> (Span, Face, Option<Say>, Option<Shows>) {
         (key.span, key.face, key.say, key.prop)
     }
 

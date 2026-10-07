@@ -1380,22 +1380,20 @@ pub(super) fn render_parcel(
 
 /// What's on her TV: static, or Chiyo-chichi's shopping channel, each
 /// with animation frames 0–1; or, flicking through the channels, colour
-/// bars and a sunrise (both still).
+/// bars and a sunrise; or a programme she watches (all three still).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) enum Channel {
     Snow(u8),
     Shopping(u8),
     ColourBars,
     Sunrise,
-    /// A held programme picture (phase 5c art, not yet wired): drawn
-    /// when there's no film to show.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// A programme, held while she watches (phase 5c D7).
     Programme(Programme),
 }
 
-/// The drawn programmes the TV can hold (phase 5c art, not yet wired).
+/// The drawn programmes the TV can hold (phase 5c D7): one drawn as each
+/// watch begins.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[cfg_attr(not(test), allow(dead_code))]
 pub(super) enum Programme {
     /// The news: an anchor at the desk, a red ticker.
     News,
@@ -1408,8 +1406,7 @@ pub(super) enum Programme {
 }
 
 impl Programme {
-    #[cfg(test)]
-    const ALL: [Self; 4] = [Self::News, Self::Weather, Self::Penguins, Self::Cooking];
+    pub const ALL: [Self; 4] = [Self::News, Self::Weather, Self::Penguins, Self::Cooking];
 
     /// Its picture's part in `art/props.svg`.
     fn id(self) -> &'static str {
@@ -1939,13 +1936,17 @@ mod tests {
         }
     }
 
-    const CHANNELS: [Channel; 6] = [
+    const CHANNELS: [Channel; 10] = [
         Channel::Snow(0),
         Channel::Snow(1),
         Channel::Shopping(0),
         Channel::Shopping(1),
         Channel::ColourBars,
         Channel::Sunrise,
+        Channel::Programme(Programme::News),
+        Channel::Programme(Programme::Weather),
+        Channel::Programme(Programme::Penguins),
+        Channel::Programme(Programme::Cooking),
     ];
 
     /// Every state that applies to each of the second half of the

@@ -19,6 +19,7 @@ Add new days at the top. Add new entries at the bottom of existing days.
   her first daydream with her clock in view tells you the hour.
 - Changed: reading a borrowed strip of text, she looks up at a chat line
   without turning away from it.
+- Changed: Osaka's TV shows a programme instead of endless static.
 
 ## 2026-10-06
 

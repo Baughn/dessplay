@@ -474,18 +474,16 @@ impl Use {
     /// Whether it's a still use, whose length her mood lingers over
     /// (phase 5c M8: see [`Stillness::linger`]): lounging, napping,
     /// sleeping (by day: her night has its own wake), reading, looking
-    /// out. Not chores (unpacking, crumpling, a snack, petting the cat),
-    /// nor homework, whose nod-off her mood moves instead; nor watching
-    /// until the TV holds a picture (phase 5c D7): its static is
-    /// animated, and a lazy day would watch it half as long again.
+    /// out, and watching TV, now that it holds a picture after its
+    /// switch-on (phase 5c D7). Not chores (unpacking, crumpling, a
+    /// snack, petting the cat), nor homework, whose nod-off her mood
+    /// moves instead.
     ///
     /// [`Stillness::linger`]: super::stillness::Stillness::linger
     pub fn lingers(self) -> bool {
         match self {
-            Use::Lounge | Use::Nap | Use::Sleep | Use::Read | Use::LookOut => true,
-            Use::Watch | Use::Homework | Use::Unpack | Use::Snack | Use::Pet | Use::Crumple => {
-                false
-            }
+            Use::Lounge | Use::Nap | Use::Sleep | Use::Read | Use::LookOut | Use::Watch => true,
+            Use::Homework | Use::Unpack | Use::Snack | Use::Pet | Use::Crumple => false,
         }
     }
 }

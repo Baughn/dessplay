@@ -2403,7 +2403,9 @@ fn a_home_full_of_vignettes_stays_cheap() {
     use super::brain::Mood;
     use script::SpliceId;
     let mut played = std::collections::HashSet::new();
-    for seed in [0u64, 2, 3] {
+    // (Seed 5 for the chopsticks: since watching lingers, phase 5c step
+    // 12a, the others' twenty minutes have no homework that plays them.)
+    for seed in [0u64, 2, 3, 5] {
         let mut encoded = [0; 2];
         for sure in [false, true] {
             // The cost of her vignettes alone, unfed from the start: in
@@ -2440,17 +2442,21 @@ fn a_home_full_of_vignettes_stays_cheap() {
             );
             encoded[usize::from(sure)] = counts.encoded;
         }
-        // Seen: 13 more, 2 more, 4 fewer.
+        // Seen (phase 5c step 12a): as many, as many, 8 more, 3 fewer.
         let [without, with] = encoded;
         assert!(
             with <= without + 32,
             "seed {seed}: her vignettes cost {with} images, {without} without them"
         );
     }
+    // A cue can't stand in for a seed here: a cued splice waits for a use
+    // it wraps, and these seeds play the chopsticks only if her twenty
+    // minutes hold homework at all.
     for want in [SpliceId::Chopsticks, SpliceId::Andagi] {
         assert!(
             played.contains(&(true, want)),
-            "{want:?} never played: {played:?}"
+            "{want:?} never played (no seed's twenty minutes held the use it wraps: \
+             pick a seed whose afternoon does): {played:?}"
         );
     }
 }
@@ -5737,6 +5743,7 @@ fn every_piece_shows_what_her_script_shows_on_it() {
         Some(Prop::CatBiting),
         Some(Prop::Tv(Channel::Snow(0))),
         Some(Prop::Tv(Channel::Shopping(1))),
+        Some(Prop::Tv(Channel::Programme(art::Programme::Penguins))),
     ];
     for item in Furniture::ALL {
         let piece = Shown {
@@ -6088,7 +6095,9 @@ fn looks_of(
                 script::Posed::Host => panic!("a vignette has no host's pose"),
             };
             for pose in poses {
-                out.insert((pose, face.unwrap_or(key.face), key.prop, facing));
+                // (A vignette shows nothing on TV: no programme to draw.)
+                let prop = key.prop.map(|shows| shows.at(0, art::Programme::News));
+                out.insert((pose, face.unwrap_or(key.face), prop, facing));
             }
         }
         start = end;
@@ -6223,19 +6232,16 @@ fn a_vignette_stays_within_its_image_budget() {
 }
 
 /// Through a plain watch, painted only when she says something changed
-/// (as the shell paints), the TV's screen keeps changing: what's on
-/// moves at paint time, so her wakeups are what carry it on, and they
-/// never leave it frozen. Its 400 ms frames sampled on the 1400 ms frame
-/// grid change every second frame, so the screen changes at least every
-/// two frames from the watch's start to its end. In both drawing modes,
-/// among text.
+/// (as the shell paints), the TV's screen shows static as she switches
+/// it on (for [`script::STATIC_MS`]: each of its three frames painted,
+/// the snow flickering between its two screens), then the programme she
+/// drew for the watch, held on one screen to its end (phase 5c D7). In
+/// both drawing modes, among text.
 #[test]
-fn the_tv_screen_alternates_through_a_plain_watch() {
+fn the_tv_screen_holds_its_programme_through_a_plain_watch() {
     use super::room::Use;
     use art::Channel;
     use script::{Prop, ScriptId};
-    /// The longest the screen may hold: two frames, and a step's slack.
-    const HOLD_MS: u64 = 2 * osaka::USE_FRAME_MS + 100;
     for graphics in [false, true] {
         let at = format!("graphics={graphics}");
         let (real, view) = busy_home_screen();
@@ -6251,11 +6257,11 @@ fn the_tv_screen_alternates_through_a_plain_watch() {
             "{at}: {:?}",
             guest.cue_note()
         );
-        let mut channels = Vec::new();
-        // Each screen shown, and when it came on.
+        // Each screen shown after the static, and when it came on.
         let mut screens: Vec<(u64, Vec<String>)> = Vec::new();
+        // The static's frames painted: which frame, what's on, the screen.
+        let mut statics: Vec<(u64, Prop, Vec<String>)> = Vec::new();
         let mut watched = 0;
-        let mut ended = None;
         while now < 90_000 {
             now += guest
                 .next_tick(now)
@@ -6268,13 +6274,12 @@ fn the_tv_screen_alternates_through_a_plain_watch() {
             let State::Visiting(visit) = &guest.state else {
                 panic!("{at}: visiting");
             };
-            let Some((.., play)) = visit
+            let Some((_, since, play)) = visit
                 .osaka
                 .playing()
                 .filter(|(seat, ..)| seat.what == Use::Watch)
             else {
                 if watched > 0 {
-                    ended = Some(now);
                     break;
                 }
                 continue;
@@ -6286,12 +6291,18 @@ fn the_tv_screen_alternates_through_a_plain_watch() {
             );
             watched += 1;
             let prop = visit.osaka.prop(now);
-            assert!(
-                matches!(prop, Some(Prop::Tv(Channel::Snow(_)))),
-                "{at}: {prop:?}"
-            );
-            if !channels.contains(&prop) {
-                channels.push(prop);
+            let switching_on = now < play.body_start(since) + script::STATIC_MS;
+            if switching_on {
+                assert!(
+                    matches!(prop, Some(Prop::Tv(Channel::Snow(_)))),
+                    "{at}: {prop:?} at {now}"
+                );
+            } else {
+                assert_eq!(
+                    prop,
+                    Some(Prop::Tv(Channel::Programme(play.card))),
+                    "{at} at {now}"
+                );
             }
             let tv = visit
                 .shown
@@ -6325,25 +6336,32 @@ fn the_tv_screen_alternates_through_a_plain_watch() {
                 screen.iter().all(|s| !s.contains("\x1b_G")),
                 "{at}: image data left in {screen:?}"
             );
-            if screens.last().is_none_or(|(_, last)| *last != screen) {
+            if switching_on {
+                let frame = (now - play.body_start(since)) / script::CHANNEL_FRAME_MS;
+                if statics.last().is_none_or(|(last, ..)| *last != frame) {
+                    statics.push((frame, prop.expect("static"), screen));
+                }
+            } else if screens.last().is_none_or(|(_, last)| *last != screen) {
                 screens.push((now, screen));
             }
         }
         assert!(watched > 5, "{at}: watched for {watched} frames");
-        assert_eq!(channels.len(), 2, "{at}: {channels:?}");
-        let ended = ended.expect("the watch ended");
-        let distinct: std::collections::HashSet<_> = screens.iter().map(|(_, s)| s).collect();
-        assert!(distinct.len() >= 2, "{at}: the screen froze: {screens:?}");
-        // Never held longer than two frames, to the watch's end.
-        let changes: Vec<u64> = screens.iter().map(|&(t, _)| t).chain([ended]).collect();
-        for pair in changes.windows(2) {
-            assert!(
-                pair[1] - pair[0] <= HOLD_MS,
-                "{at}: the screen held from {} to {}: {changes:?}",
-                pair[0],
-                pair[1]
-            );
-        }
+        let frames: Vec<_> = statics
+            .iter()
+            .map(|(frame, prop, _)| (*frame, *prop))
+            .collect();
+        assert_eq!(
+            frames,
+            [0, 1, 0]
+                .into_iter()
+                .enumerate()
+                .map(|(i, snow)| (i as u64, Prop::Tv(Channel::Snow(snow))))
+                .collect::<Vec<_>>(),
+            "{at}: the static's frames painted"
+        );
+        assert_ne!(statics[0].2, statics[1].2, "{at}: the snow didn't flicker");
+        assert_eq!(statics[0].2, statics[2].2, "{at}: the snow's screens");
+        assert_eq!(screens.len(), 1, "{at}: the screen changed: {screens:?}");
     }
 }
 
@@ -9128,7 +9146,10 @@ fn each_prop_looks_distinct_in_each_mode() {
         vec![Channel::Shopping(0), Channel::Shopping(1)],
         vec![Channel::ColourBars],
         vec![Channel::Sunrise],
-    ];
+    ]
+    .into_iter()
+    .chain(art::Programme::ALL.map(|p| vec![Channel::Programme(p)]))
+    .collect::<Vec<_>>();
     let glyphs =
         |c: &[Channel]| -> Vec<[char; 2]> { c.iter().map(|&c| screen_glyphs(c)).collect() };
     let image = |c: Channel| {

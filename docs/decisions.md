@@ -4403,6 +4403,98 @@ place, with no step, and a spot further in would need its own clearance
 (a sofa covers the window's other corner); the difference is accepted
 (phase5c/art/snippets.md).
 
+## Her TV holds a picture (2026-10-07)
+
+**Rule:** Her TV shows static only as she switches it on (`STATIC_MS`,
+1.2 s: three of its 400 ms frames) and between channels as she flicks;
+then a drawn programme (the news, the weather, penguins, a cooking show)
+holds still to the end of the act. The programme is drawn from her
+decision's whims as every watch begins, whatever it plays (a plain watch,
+the shopping channel, a surf, a watch with her home on her mind) and the
+act carries it (`Play::card`). Chiyo-chichi bobs only through his hook
+(the shopping channel's first two fifths), then holds still. Watching
+lingers by her mood as her other still uses do. A script key names what
+it shows as `Shows`: held as it is, static, the hook, or the act's
+programme; only static and the hook move. See
+[design.md](design.md#houseguest).
+
+**Why:** the TV is the one thing in a TV home that moved all the time:
+static for the whole of a 32–82 s watch, reshuffled on every paint, and
+on the shopping channel Chiyo-chichi bobbing for its whole length. In a
+phase about her being still, the brightest flicker on the screen was her
+TV. A held picture after a short switch-on reads as "she put something
+on", and the change she causes (switching on, flicking) explains itself.
+
+**Why the card is drawn on every watch, from the whims:** step 12b will
+show a frame of the film instead of the card when this client holds it.
+Whether that frame arrived depends on mpv's timing, so nothing she does
+may depend on it: the card is drawn whether or not a film will cover it,
+from a labelled whim (`Whims::below("programme", 4)`), which draws
+nothing from her generator. What she does is then the same with or
+without the card, and the same with or without a film
+(`every_watch_draws_its_programme`).
+
+**Why a fixed `STATIC_MS`, not "static until the picture":** waiting on
+the picture would put mpv's latency into her trace. 1.2 s is three of
+the static's frames and ends on a frame's edge.
+
+**Why `Shows` rather than a held `Channel`:** a script is a `const` table
+and can't carry the act's drawn card, and a `Channel` is the TV image's
+cache key, which should only ever name something drawable. So a key says
+what it shows (`Shows::Programme`, as `Say::Pitch` says what she pitches)
+and `Osaka::prop` resolves it with the act's card to a plain
+`Prop::Tv(Channel::Programme(card))`; what moves (static, the hook) is a
+property of the key, so Chiyo-chichi after his hook is the same image as
+his first frame, held.
+
+**Why watching lingers now:** it was held out of lingering only because a
+lazy day would have watched animated static half as long again (step 8b).
+With the picture held, a long watch is a still one. Measured
+(phase5c/baseline.md, "Step 12a"), it moves only the lazy, dreamy and
+industrious cells of the rooms with a TV. The furnished home's industrious
+afternoon, quiet, now reads 31.4% at full strength against its ceiling of
+31 (step 8c: 30.6). Its test passes within its 3σ, but the cell is over.
+Its shorter watches (×0.85) get her up more often. Accepting it, leaving
+watching out of the industrious linger, or retuning is open, for the
+user.
+
+**The stillness test** (`no_long_act_flips_faster_than_a_frame`,
+`a_long_tv_act_holds_still_after_its_first_ten_seconds`): sampled every
+100 ms, as a client painting for any reason shows her, no act that holds
+her place for over 30 s changes how she or her furniture looks twice
+within a frame (1.4 s) after its first 10 s; her slow blink, the
+hook's bob and a look up at the chat are exempt. A walk the screen's
+width is over 30 s and changes every step, so an act that moves her is
+outside it: what moves her is the band's to count (a turn where she
+stands is checked). A chat line's look up (`!`, then `?`) is checked
+elsewhere, so the test runs quiet. It runs every mood, in the three TV
+rooms, the home with her window (its sill session is her longest still
+act) and the furnished home with the shopping channel on (so the hook's
+exemption is tried, not only the script's own test). It compares her
+model's state (how she looks, where, what her script shows, the lamp),
+not drawn cells: a sound proxy while drawing is a pure map from that
+state, pinned by `each_prop_looks_distinct_in_each_mode` and
+`every_piece_shows_what_her_script_shows_on_it`. Step 12b's film is
+drawing alone, so its once-a-minute swap needs a variant that compares
+drawn cells.
+
+**Static wakes her on its frames; the hook doesn't:** a use wakes her on
+its 1.4 s frame grid and as each key ends, and a client that paints only
+when she says something changed would show the 1.2 s of switch-on static
+as one frozen frame, which reads as a broken picture. So while a key
+shows static she also wakes on its 400 ms frames (`Key::frame_ms`, the
+same rule that wakes her on a bob's frames), and all three switch-on
+frames are painted (`the_tv_screen_holds_its_programme_through_a_plain_watch`).
+Chiyo-chichi's hook still bobs at paint time, sampled on the 1.4 s grid:
+waking her every 400 ms through two fifths of a shopping act would make
+him bob more visibly, and his bob is talk, not a picture to see whole.
+
+**The hook's length is the lingered body's:** the hook is two fifths of
+the shopping act's body (`Span::Upto(2, 5)`), and the body lingers by
+mood, so a lazy shopping act (up to 82 s × 1.5 = 123 s) bobs for up to
+49 s, against 33 s before watching lingered. Left as the synthesis wrote
+it; capping the hook in ms is open, for the user.
+
 ## Houseguest chooses by needs among the top few (2026-09-28)
 
 **Rule:** Her next act is a weighted-random pick among the four

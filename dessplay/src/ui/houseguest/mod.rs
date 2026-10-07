@@ -4012,7 +4012,7 @@ fn overrides(prop: &Shown, looks: &Looks) -> Vec<((i32, i32), char)> {
 }
 
 /// What's on the TV's two-cell screen in ASCII: static, the shopping
-/// channel's sunburst, colour bars, a sunrise.
+/// channel's sunburst, colour bars, a sunrise, a programme.
 fn screen_glyphs(channel: art::Channel) -> [char; 2] {
     match channel {
         art::Channel::Snow(0) => [':', '.'],
@@ -4020,9 +4020,9 @@ fn screen_glyphs(channel: art::Channel) -> [char; 2] {
         art::Channel::Shopping(_) => ['^', '^'],
         art::Channel::ColourBars => ['|', '|'],
         art::Channel::Sunrise => ['o', '_'],
-        // Phase 5c's drawn programmes (not yet wired): the anchor over
-        // the ticker, the sun and a cloud, a penguin on the sea, a bowl
-        // under its steam.
+        // The programmes she watches (phase 5c D7): the anchor over the
+        // ticker, the sun and a cloud, a penguin on the sea, a bowl under
+        // its steam.
         art::Channel::Programme(programme) => match programme {
             art::Programme::News => ['o', '='],
             art::Programme::Weather => ['*', 'c'],

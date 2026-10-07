@@ -249,7 +249,9 @@ const BASELINE: [(&str, Mood, bool, [f64; 4]); 24] = [
 ///
 /// Step 8c's, from what ships (`CENSUS_MINUTES=17 CENSUS_ROOMS=band
 /// CENSUS_MODES=line fed_afternoon_census`, 20 sets × 4 seeds, release;
-/// phase5c/baseline.md, "Shipped (step 8c)").
+/// phase5c/baseline.md, "Shipped (step 8c)"); the home's and resident's
+/// lazy, industrious and dreamy cells re-read in step 12a, watching
+/// lingering (phase5c/baseline.md, "Step 12a: the held TV picture").
 // Measured numbers: none is a constant of nature.
 #[allow(clippy::approx_constant)]
 const TUNED: [(&str, Mood, bool, [f64; 4]); 24] = [
@@ -263,30 +265,30 @@ const TUNED: [(&str, Mood, bool, [f64; 4]); 24] = [
     ("stage", Mood::Dreamy, false, [6.9, 2.64, 1.71, 0.23]),
     ("home", Mood::Ordinary, true, [21.8, 2.18, 1.23, 0.10]),
     ("home", Mood::Ordinary, false, [21.0, 2.76, 1.34, 0.09]),
-    ("home", Mood::Lazy, true, [11.8, 1.74, 0.65, 0.08]),
-    ("home", Mood::Lazy, false, [11.9, 2.03, 0.71, 0.07]),
-    ("home", Mood::Industrious, true, [29.9, 3.63, 1.71, 0.16]),
-    ("home", Mood::Industrious, false, [28.8, 3.14, 1.90, 0.16]),
-    ("home", Mood::Dreamy, true, [21.1, 2.63, 1.19, 0.08]),
-    ("home", Mood::Dreamy, false, [21.9, 2.11, 1.38, 0.10]),
+    ("home", Mood::Lazy, true, [11.3, 1.51, 0.60, 0.05]),
+    ("home", Mood::Lazy, false, [11.1, 1.59, 0.68, 0.08]),
+    ("home", Mood::Industrious, true, [30.8, 4.16, 1.78, 0.10]),
+    ("home", Mood::Industrious, false, [29.4, 2.52, 1.93, 0.10]),
+    ("home", Mood::Dreamy, true, [21.7, 1.92, 1.23, 0.07]),
+    ("home", Mood::Dreamy, false, [20.9, 1.91, 1.35, 0.09]),
     ("resident", Mood::Ordinary, true, [9.8, 1.80, 1.08, 0.10]),
     ("resident", Mood::Ordinary, false, [10.0, 2.21, 1.21, 0.11]),
-    ("resident", Mood::Lazy, true, [6.0, 2.43, 0.54, 0.10]),
-    ("resident", Mood::Lazy, false, [6.3, 2.18, 0.68, 0.10]),
+    ("resident", Mood::Lazy, true, [5.6, 2.42, 0.52, 0.10]),
+    ("resident", Mood::Lazy, false, [6.2, 2.48, 0.64, 0.10]),
     (
         "resident",
         Mood::Industrious,
         true,
-        [15.9, 2.51, 1.35, 0.11],
+        [16.1, 3.44, 1.36, 0.10],
     ),
     (
         "resident",
         Mood::Industrious,
         false,
-        [14.5, 2.08, 1.46, 0.10],
+        [14.5, 3.25, 1.40, 0.11],
     ),
-    ("resident", Mood::Dreamy, true, [9.2, 2.26, 1.04, 0.11]),
-    ("resident", Mood::Dreamy, false, [8.6, 2.29, 1.11, 0.09]),
+    ("resident", Mood::Dreamy, true, [9.7, 1.92, 1.08, 0.10]),
+    ("resident", Mood::Dreamy, false, [8.8, 2.71, 1.15, 0.13]),
 ];
 
 /// A room's cell (mood, quiet) or, with `None`, its spread, short of

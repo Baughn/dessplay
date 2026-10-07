@@ -84,10 +84,10 @@ pub(super) struct Stillness {
     /// Times the length she draws for a still act she chose: sitting,
     /// lying back, gazing; spacing out (musing, or her rare musing); and
     /// the still uses (lounging, napping, reading, looking out, a day's
-    /// sleep). Never exercise, chores, lying on her front kicking her
-    /// feet (it draws the eye), homework (its nod-off moves instead),
-    /// her night, a trial sit, a glance, Setsubun or the moment after a
-    /// swap; nor watching until the TV holds a picture (phase 5c D7).
+    /// sleep, watching TV: phase 5c D7). Never exercise, chores, lying on
+    /// her front kicking her feet (it draws the eye), homework (its
+    /// nod-off moves instead), her night, a trial sit, a glance,
+    /// Setsubun or the moment after a swap.
     /// See [`Activity::lingers`] and [`Use::lingers`].
     ///
     /// [`Activity::lingers`]: super::osaka::Activity::lingers

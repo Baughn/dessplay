@@ -1141,3 +1141,58 @@ Nothing tuned moved: `TUNED` and every number above stand, the goldens are byte-
 - **The stage's spread** (1.39): spacing out for its own sake weighs the same in every mood and fills an
   industrious stage afternoon most (14%); a mood factor on it is the lead.
 - **`a_sofa_she_could_not_unpack`** (ignored): a random case of the parcel property, older than step 8c.
+
+## Step 12a: the held TV picture (2026-10-07)
+
+**Measured 2026-10-07** on step 12a's tree: the TV holds a drawn programme after 1.2 s of static,
+Chiyo-chichi holds still after his hook, and watching lingers (lazy ×1.5, ordinary ×1, dreamy and
+industrious ×0.85). Same runs as "Shipped (step 8c)": the 80-visit 17-minute line census for `TUNED`,
+`CENSUS_BAND_SEEDS=525` for full strength on the cells that moved.
+
+The stage has no TV, so its cells are unchanged, and so are the ordinary cells, since ordinary
+lingering is ×1 (all identical to the decimal, as the golden traces predicted). The cells that moved
+(moving % / set-offs a minute in sight):
+
+| Room | Mood | Quiet: 8c (80) | Quiet: 12a (80) | Quiet: 12a (N=525) | Chat: 8c (80) | Chat: 12a (80) | Chat: 12a (N=525) | Band |
+|---|---|---|---|---|---|---|---|---|
+| home | Lazy | 11.8 / 0.65 | 11.3 / 0.60 | 12.0 / 0.62 | 11.9 / 0.71 | 11.1 / 0.68 | 12.0 / 0.71 | 5–17 |
+| home | Industrious | 29.9 / 1.71 | 30.8 / 1.78 | **31.4** / 1.76 | 28.8 / 1.90 | 29.4 / 1.93 | 29.4 / 1.92 | 12–31 |
+| home | Dreamy | 21.1 / 1.19 | 21.7 / 1.23 | 22.1 / 1.25 | 21.9 / 1.38 | 20.9 / 1.35 | 21.2 / 1.38 | 8–26 |
+| resident | Lazy | 6.0 / 0.54 | 5.6 / 0.52 | 6.2 / 0.54 | 6.3 / 0.68 | 6.2 / 0.64 | 5.9 / 0.63 | 5–17 |
+| resident | Industrious | 15.9 / 1.35 | 16.1 / 1.36 | 16.3 / 1.37 | 14.5 / 1.46 | 14.5 / 1.40 | 14.5 / 1.45 | 12–31 |
+| resident | Dreamy | 9.2 / 1.04 | 9.7 / 1.08 | 9.7 / 1.08 | 8.6 / 1.11 | 8.8 / 1.15 | 8.8 / 1.17 | 8–26 |
+
+- **The home's industrious afternoon, quiet, reads over its ceiling at full strength**: 31.4 against
+  31 (step 8c: 30.6). Its test passes, because the threshold is 3σ (1.1) about its aim (30.8, inside
+  the band) and only becomes the band itself at N ≈ 15 600. At ×0.85 an industrious Osaka's watches
+  get shorter, so she gets up more often. Whether to accept that, keep watching out of the industrious
+  linger, or retune is the user's call. Its chat cell (29.4) and every set-off rate are in, far under
+  their caps.
+- **The resident's lazy afternoon** stays above its floor (6.2 / 5.9 at N = 525, floor 5). The
+  80-visit quiet aim, 5.6, is the lowest in the band.
+- **The spread**: home 2.66 (N = 200; was 2.49), resident 2.56 (N = 525; was 2.39).
+- **The band's guard** holds at 17 minutes. The sill's chain (7 minutes, lazy) is still her longest
+  still act, and a lazy watch is at most 123 s.
+- **`TUNED`** has the 80-visit numbers above for these twelve cells.
+
+**The printed rooms** (17 minutes, line art, quiet / chat; step 8c's were at 15 minutes):
+- the TV-only home: ordinary 19.4 / 16.7, lazy 10.0 / 7.7, industrious 26.3 / 23.3, dreamy 18.4 / 15.3.
+  She watches for 22–28% of the visit.
+- the windowed home: ordinary 19.7 / 19.8, lazy 10.8 / 11.4, industrious 29.7 / 27.3, dreamy
+  20.1 / 19.3.
+- the resident with text low: ordinary 17.1 / 16.4, lazy 6.1 / 6.0, industrious 24.0 / 23.3, dreamy
+  17.4 / 15.5.
+- the windowed home of an evening: ordinary 17.5 / 16.0, lazy 8.8 / 9.4, industrious 24.8 / 24.3,
+  dreamy 17.9 / 17.6.
+
+All are inside the band.
+
+**The TV after its first 10 s** (`no_long_act_flips_faster_than_a_frame`, 10-minute quiet fed
+afternoons, both modes, every mood after the review): 4–12 watches over 30 s a room (the windowed
+home 4, the TV-only home 12), and 4 shopping acts over 30 s in the home with the shopping channel on,
+none changing within a frame.
+
+**Review fix: static wakes her on its 400 ms frames** (so all three switch-on frames are painted).
+The 80-visit line census of the home's and resident's eight cells, quiet and with chat, reads
+exactly `TUNED` (every share and set-off rate to the printed decimal), so the full-strength numbers
+above stand. Its golden traces moved (50, each first at a new wake 400 ms into a static key).

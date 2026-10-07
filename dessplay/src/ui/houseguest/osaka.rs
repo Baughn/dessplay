@@ -3,7 +3,7 @@
 //! instant is a safe place to cut the visit short.
 
 use super::Rng;
-use super::art::DoorFrame;
+use super::art::{self, DoorFrame};
 use super::brain::{self, Mood, Need, Needs, Rising, Spot, Want};
 use super::calendar::{self, Owed, Tints};
 use super::layer::Placed;
@@ -14,8 +14,7 @@ use super::routine::{self, DayTime};
 use super::rules::{Grievance, Placement, Repair, TIE_CELLS, Trials};
 use super::scenes::{Build, Grip, Held, Job, JobRef, LayerOp, Lift, Pull, SetDown, Side, Swap};
 use super::script::{
-    self, CHANNEL_FRAME_MS, Chat, ClockGlance, Cue, Play, Prop, ScriptId, SpliceCtx, SpliceId,
-    Surface,
+    self, Chat, ClockGlance, Cue, Play, Prop, ScriptId, SpliceCtx, SpliceId, Surface,
 };
 use super::sprite::{self, Face, Facing, HEIGHT, Pose, SpriteCell};
 use super::stillness::{self, Stillness};
@@ -2652,6 +2651,13 @@ impl Osaka {
         );
     }
 
+    /// When the act she's at began (a pull or a borrow begins again at
+    /// each of its phases).
+    #[cfg(test)]
+    pub fn act_started(&self) -> u64 {
+        self.act_since
+    }
+
     /// The name of what she's doing (the golden trajectories hash it).
     pub fn act_name(&self) -> String {
         let debug = format!("{:?}", self.act);
@@ -2830,17 +2836,7 @@ impl Osaka {
                 ..
             } => {
                 let key_end = play.next_end(since, until, now).unwrap_or(until);
-                let grid = match play.key(since, until, now) {
-                    Some((
-                        script::Key {
-                            pose: script::Posed::Bob(_, period),
-                            ..
-                        },
-                        _,
-                    )) => play.next_frame(since, until, now, *period),
-                    _ => u64::MAX,
-                };
-                key_end.min(grid).min(until)
+                key_end.min(play.next_move(since, until, now)).min(until)
             }
             Act::Idle {
                 what, since, until, ..
@@ -2858,11 +2854,12 @@ impl Osaka {
                 .min(session.map_or(until, |s| s.next))
                 .min(until),
             // On the frame grid from the start of the part playing (the
-            // prelude, the body or the coda: what bobs and what's on TV
-            // move on, timed as the part times them), as each key ends,
-            // so the next one's look, line and prop come on on time, and
-            // as she starts and stops saying what's wrong with her home
-            // (felt the moment it has all shown).
+            // prelude, the body or the coda: what bobs moves on it, timed
+            // as the part times them), and on static's quicker frames
+            // while it shows (the hook moves at paint time), as each key
+            // ends, so the next one's look, line and prop come on on
+            // time, and as she starts and stops saying what's wrong with
+            // her home (felt the moment it has all shown).
             Act::Use {
                 since,
                 until,
@@ -2870,7 +2867,9 @@ impl Osaka {
                 grievance,
                 ..
             } => {
-                let grid = play.next_frame(since, until, now, USE_FRAME_MS);
+                let grid = play
+                    .next_frame(since, until, now, USE_FRAME_MS)
+                    .min(play.next_move(since, until, now));
                 let key_end = play.next_end(since, until, now).unwrap_or(until);
                 let grumble = grievance
                     .into_iter()
@@ -4740,11 +4739,20 @@ impl Osaka {
                 } else {
                     0
                 };
+                // The programme her TV holds as she watches: drawn on every
+                // watch, whatever it plays (phase 5c D7).
+                let card = if seat.what == Use::Watch {
+                    let cards = art::Programme::ALL;
+                    cards[self.whims.below("programme", cards.len() as u64) as usize]
+                } else {
+                    plain.card
+                };
                 let play = Play {
                     own,
                     branch,
                     before,
                     after,
+                    card,
                     ..plain
                 };
                 Act::Use {
@@ -5003,7 +5011,7 @@ impl Osaka {
         let night = self.asleep_slot(at);
         let off = self.night_play().and_then(|(play, since, until)| {
             play.key(since, until, at)
-                .filter(|(key, _)| key.prop == Some(Prop::LampOff))
+                .filter(|(key, _)| key.prop == Some(script::Shows::Still(Prop::LampOff)))
                 .map(|_| play.own)
         });
         let Some(own) = off.filter(|_| night && !self.lamp_off) else {
@@ -6768,9 +6776,12 @@ impl Osaka {
     }
 
     /// What the script she's playing shows on her furniture at `now`
-    /// (what's on TV moving every [`CHANNEL_FRAME_MS`] from the start of
-    /// the part it plays in: the prelude, the body or the coda, so a
-    /// splice never shifts the body's frames).
+    /// (static and Chiyo-chichi's hook moving every [`CHANNEL_FRAME_MS`]
+    /// from the start of the part it plays in: the prelude, the body or
+    /// the coda, so a splice never shifts the body's frames; a programme,
+    /// the one the act drew).
+    ///
+    /// [`CHANNEL_FRAME_MS`]: script::CHANNEL_FRAME_MS
     ///
     /// The lamp off for the night, whatever she's doing, is apart from
     /// it ([`Osaka::dark`]): the two show together (the fridge open in
@@ -6789,8 +6800,7 @@ impl Osaka {
             _ => return None,
         };
         let (key, elapsed) = play.key(since, until, now)?;
-        let frame = (elapsed / CHANNEL_FRAME_MS % 2) as u8;
-        key.prop.map(|prop| prop.framed(frame))
+        key.prop.map(|shows| shows.at(elapsed, play.card))
     }
 
     /// What she's playing at `now`, for the stage: each part of it by
@@ -10056,8 +10066,9 @@ mod tests {
     /// and the next look takes over exactly at its share (Crumple's
     /// "There!" at ⅘ and Unpack's `Ooh` at ⅗ included), as played: her
     /// pose (bobbing on its frames), face and bubble, and what's on her
-    /// furniture (the TV's frames, the lamp, the fridge, the cat), on a
-    /// sofa or not, for every use.
+    /// furniture (the TV's static and Chiyo-chichi's hook on their
+    /// frames, a programme or Chiyo-chichi held, the lamp, the fridge,
+    /// the cat), on a sofa or not, for every use.
     #[test]
     fn every_use_look_span_is_half_open() {
         use super::super::art::Channel;
@@ -10067,7 +10078,7 @@ mod tests {
         }
         /// The TV's frame, `t` ms in.
         fn tv(t: u64) -> u8 {
-            (t / CHANNEL_FRAME_MS % 2) as u8
+            (t / script::CHANNEL_FRAME_MS % 2) as u8
         }
         /// Her pose and what's on her furniture, `t` ms in.
         type Body = fn(u64) -> (Pose, Option<Prop>);
@@ -10080,11 +10091,19 @@ mod tests {
         let snow_on_sofa: Body = |t| (Pose::Lounge, Some(Prop::Tv(Channel::Snow(tv(t)))));
         let selling: Body = |t| (Pose::CrossLegged, Some(Prop::Tv(Channel::Shopping(tv(t)))));
         let selling_on_sofa: Body = |t| (Pose::Lounge, Some(Prop::Tv(Channel::Shopping(tv(t)))));
-        let sold = |body: Body, length: u64| {
+        // The programme a plain play holds (none drawn: the first), and
+        // Chiyo-chichi after his hook.
+        const NEWS: Option<Prop> = Some(Prop::Tv(Channel::Programme(art::Programme::News)));
+        const SOLD: Option<Prop> = Some(Prop::Tv(Channel::Shopping(0)));
+        let held: Body = |_| (Pose::CrossLegged, NEWS);
+        let held_on_sofa: Body = |_| (Pose::Lounge, NEWS);
+        let sold_held: Body = |_| (Pose::CrossLegged, SOLD);
+        let sold_held_on_sofa: Body = |_| (Pose::Lounge, SOLD);
+        let sold = |hook: Body, held: Body, length: u64| {
             vec![
-                (0, Face::Curious, Some(Bubble::Ooh), body),
-                (length * 2 / 5, Face::Happy, Some(Bubble::Say(pitch)), body),
-                (length * 3 / 5, Face::Curious, None, body),
+                (0, Face::Curious, Some(Bubble::Ooh), hook),
+                (length * 2 / 5, Face::Happy, Some(Bubble::Say(pitch)), held),
+                (length * 3 / 5, Face::Curious, None, held),
             ]
         };
         for length in [7, 5000, 5250, 12_345] {
@@ -10140,25 +10159,31 @@ mod tests {
                     Use::Watch,
                     false,
                     None,
-                    vec![(0, Face::Curious, None, snow)],
+                    vec![
+                        (0, Face::Curious, None, snow),
+                        (script::STATIC_MS, Face::Curious, None, held),
+                    ],
                 ),
                 (
                     Use::Watch,
                     true,
                     None,
-                    vec![(0, Face::Curious, None, snow_on_sofa)],
+                    vec![
+                        (0, Face::Curious, None, snow_on_sofa),
+                        (script::STATIC_MS, Face::Curious, None, held_on_sofa),
+                    ],
                 ),
                 (
                     Use::Watch,
                     false,
                     Some(Furniture::Lamp),
-                    sold(selling, length),
+                    sold(selling, sold_held, length),
                 ),
                 (
                     Use::Watch,
                     true,
                     Some(Furniture::Lamp),
-                    sold(selling_on_sofa, length),
+                    sold(selling_on_sofa, sold_held_on_sofa, length),
                 ),
                 (
                     Use::Read,
@@ -10889,6 +10914,64 @@ mod tests {
         }
     }
 
+    /// Every watch draws the programme her TV holds as it begins, from
+    /// her decision's whims, whatever it plays (phase 5c D7): a plain
+    /// watch, the shopping channel, a cued surf, a watch with her home on
+    /// her mind; the same card from the same whims, each of the four
+    /// from some, and drawing it draws nothing from her generator (what
+    /// she does never hangs on whether a picture of the film shows
+    /// instead, phase 5c step 12b). Any other use keeps the first.
+    #[test]
+    fn every_watch_draws_its_programme() {
+        use super::super::art::Programme;
+        let seat = seat_for(Use::Watch, Furniture::Tv);
+        let plain = Chances::default();
+        let selling = Chances {
+            advert: Some(Furniture::Lamp),
+            ..Chances::default()
+        };
+        let broken = Chances {
+            broken: broken_for(Use::Watch, Furniture::Tv).into_iter().collect(),
+            ..Chances::default()
+        };
+        let mut drawn = std::collections::HashSet::new();
+        for seed in 0..64 {
+            let start = |chances: &Chances, cue: Option<Cue>| {
+                let (osaka, rng) = started(seat, 1000, chances, cue, None, seed);
+                (begun(&osaka).3, rng)
+            };
+            let (watch, rng) = start(&plain, None);
+            let card = watch.card;
+            // From her decision's whims, as `started` seeds them (this
+            // pins the helper's derivation too; the spec's purity is the
+            // generator check below).
+            assert_eq!(
+                card,
+                Programme::ALL[Whims(seed ^ 0x5eed).below("programme", 4) as usize],
+                "seed {seed}"
+            );
+            for (name, (play, _)) in [
+                ("sold", start(&selling, None)),
+                ("surfing", start(&plain, Some(Cue::Script(ScriptId::Surf)))),
+                ("her home on her mind", start(&broken, None)),
+            ] {
+                assert_eq!(play.card, card, "seed {seed}: {name} ({:?})", play.own);
+            }
+            // As much drawn from her generator as before there were
+            // programmes: her length, and nothing more.
+            let mut alone = Rng(seed);
+            Osaka::standing_at(10, 10, 0, &mut alone);
+            let (lo, hi) = use_duration(Use::Watch);
+            let _ = alone.range(lo, hi);
+            assert_eq!(rng, alone.0, "seed {seed}");
+            drawn.insert(card);
+        }
+        assert_eq!(drawn.len(), Programme::ALL.len(), "{drawn:?}");
+        let sit = seat_for(Use::Lounge, Furniture::Sofa);
+        let (osaka, _) = started(sit, 1000, &plain, None, None, 3);
+        assert_eq!(begun(&osaka).3.card, Programme::News);
+    }
+
     /// A cue waits for a use it plays on: a splice, through a use it
     /// can't wrap and a trial sit, then round the next it can; surfing,
     /// through a use of another piece, a watch with her home on her mind
@@ -11127,22 +11210,80 @@ mod tests {
         );
     }
 
-    /// Surfing: snow, colour bars, snow, the sunrise (ooh!), then snow
-    /// to the end, humming, pleased; in her watching pose throughout.
+    /// Surfing: snow, colour bars, snow, the sunrise (ooh!), then the
+    /// programme she drew to the end, humming, pleased; in her watching
+    /// pose throughout.
     #[test]
     fn surfing_flicks_through_the_channels_in_turn() {
-        use super::super::art::Channel;
+        use super::super::art::{Channel, Programme};
         use script::SURF_MS;
         let mut osaka = Osaka::standing_at(10, 10, 0, &mut Rng(1));
         let length = use_duration(Use::Watch).0;
-        let play = Play::plain(ScriptId::Surf);
-        for sofa in [false, true] {
-            let host = if sofa {
-                Pose::Lounge
-            } else {
-                Pose::CrossLegged
+        for card in Programme::ALL {
+            let play = Play {
+                card,
+                ..Play::plain(ScriptId::Surf)
             };
-            let mut at = |t| {
+            for sofa in [false, true] {
+                let host = if sofa {
+                    Pose::Lounge
+                } else {
+                    Pose::CrossLegged
+                };
+                let mut at = |t| {
+                    let use_ = Played {
+                        what: Use::Watch,
+                        sofa,
+                        bought: None,
+                        grievance: None,
+                        length,
+                    };
+                    let ((pose, face, bubble), prop) = played_as(&mut osaka, use_, play, t);
+                    assert_eq!(pose, host, "{t}");
+                    (face, bubble, prop.map(on_frame_0))
+                };
+                let snow = Some(Prop::Tv(Channel::Snow(0)));
+                let held = Some(Prop::Tv(Channel::Programme(card)));
+                assert_eq!(at(0), (Face::Curious, None, snow));
+                assert_eq!(at(SURF_MS - 1).2, snow);
+                assert_eq!(
+                    at(SURF_MS),
+                    (Face::Vacant, None, Some(Prop::Tv(Channel::ColourBars)))
+                );
+                assert_eq!(at(2 * SURF_MS).2, snow);
+                assert_eq!(
+                    at(3 * SURF_MS),
+                    (
+                        Face::Curious,
+                        Some(Bubble::Ooh),
+                        Some(Prop::Tv(Channel::Sunrise))
+                    )
+                );
+                assert_eq!(at(4 * SURF_MS), (Face::Happy, Some(Bubble::Hum), held));
+                assert_eq!(at(length - 1), (Face::Happy, Some(Bubble::Hum), held));
+            }
+        }
+    }
+
+    /// Watching: static as she switches the TV on, for [`STATIC_MS`]
+    /// (three of its frames), then the programme she drew, held to the
+    /// end; the shopping channel: Chiyo-chichi bobbing through his hook
+    /// (the first two fifths), then held on one frame. On a sofa or not.
+    ///
+    /// [`STATIC_MS`]: script::STATIC_MS
+    #[test]
+    fn the_tv_holds_its_picture_after_switching_on() {
+        use super::super::art::{Channel, Programme};
+        use script::{CHANNEL_FRAME_MS, STATIC_MS};
+        assert_eq!(STATIC_MS, 3 * CHANNEL_FRAME_MS);
+        let mut osaka = Osaka::standing_at(10, 10, 0, &mut Rng(1));
+        let length = use_duration(Use::Watch).0;
+        for sofa in [false, true] {
+            for card in Programme::ALL {
+                let play = Play {
+                    card,
+                    ..Play::of(Use::Watch, None)
+                };
                 let use_ = Played {
                     what: Use::Watch,
                     sofa,
@@ -11150,46 +11291,115 @@ mod tests {
                     grievance: None,
                     length,
                 };
-                let ((pose, face, bubble), prop) = played_as(&mut osaka, use_, play, t);
-                assert_eq!(pose, host, "{t}");
-                (
-                    face,
-                    bubble,
-                    prop.and_then(Prop::channel)
-                        .map(|c| c != Channel::Snow(0) && c != Channel::Snow(1)),
-                    prop.map(|p| p.framed(0)),
-                )
+                let frames: Vec<_> = (0..STATIC_MS)
+                    .step_by(CHANNEL_FRAME_MS as usize)
+                    .map(|t| played_as(&mut osaka, use_, play, t).1)
+                    .collect();
+                assert_eq!(
+                    frames,
+                    [0, 1, 0].map(|f| Some(Prop::Tv(Channel::Snow(f)))),
+                    "sofa={sofa}: three frames of static"
+                );
+                for t in (STATIC_MS..length).step_by(97) {
+                    assert_eq!(
+                        played_as(&mut osaka, use_, play, t).1,
+                        Some(Prop::Tv(Channel::Programme(card))),
+                        "sofa={sofa} {card:?}: {t}"
+                    );
+                }
+            }
+            let sold = Played {
+                what: Use::Watch,
+                sofa,
+                bought: Some(Furniture::Lamp),
+                grievance: None,
+                length,
             };
-            let snow = Some(Prop::Tv(Channel::Snow(0)));
-            assert_eq!(at(0), (Face::Curious, None, Some(false), snow));
-            assert_eq!(at(SURF_MS - 1).3, snow);
-            assert_eq!(
-                at(SURF_MS),
-                (
-                    Face::Vacant,
-                    None,
-                    Some(true),
-                    Some(Prop::Tv(Channel::ColourBars))
-                )
-            );
-            assert_eq!(at(2 * SURF_MS).3, snow);
-            assert_eq!(
-                at(3 * SURF_MS),
-                (
-                    Face::Curious,
-                    Some(Bubble::Ooh),
-                    Some(true),
-                    Some(Prop::Tv(Channel::Sunrise))
-                )
-            );
-            assert_eq!(
-                at(4 * SURF_MS),
-                (Face::Happy, Some(Bubble::Hum), Some(false), snow)
-            );
-            assert_eq!(
-                at(length - 1),
-                (Face::Happy, Some(Bubble::Hum), Some(false), snow)
-            );
+            let hook = length * 2 / 5;
+            let bobbed: std::collections::HashSet<_> = (0..hook)
+                .step_by(97)
+                .map(|t| played(&mut osaka, sold, t).1)
+                .collect();
+            assert_eq!(bobbed.len(), 2, "sofa={sofa}: he bobs through his hook");
+            for t in (hook..length).step_by(97) {
+                assert_eq!(
+                    played(&mut osaka, sold, t).1,
+                    Some(Prop::Tv(Channel::Shopping(0))),
+                    "sofa={sofa}: held after his hook, {t}"
+                );
+            }
+        }
+    }
+
+    /// A TV act over 30 s holds still after its first 10 s (phase 5c
+    /// D7): sampled every 100 ms, as a client painting for any reason
+    /// would show it, no two changes of how she looks or of what's on
+    /// her furniture come closer than [`USE_FRAME_MS`] once 10 s have
+    /// passed, but Chiyo-chichi's bob through his hook (the first two
+    /// fifths of the shopping channel). Watching, flicking through the
+    /// channels and the shopping channel, on a sofa or not, a plain watch
+    /// with a grievance said 20 s in or none, as long as she watches.
+    #[test]
+    fn a_long_tv_act_holds_still_after_its_first_ten_seconds() {
+        use super::super::art::Channel;
+        let mut osaka = Osaka::standing_at(10, 10, 0, &mut Rng(1));
+        let plays = [
+            Play::of(Use::Watch, None),
+            Play::plain(ScriptId::Surf),
+            Play::of(Use::Watch, Some(Furniture::Lamp)),
+        ];
+        let (lo, hi) = use_duration(Use::Watch);
+        for play in plays {
+            for sofa in [false, true] {
+                // (Only a plain watch has a grievance: the shopping
+                // channel and surfing come on only without one.)
+                let grievances: &[Option<u64>] = if play.own == ScriptId::Watch {
+                    &[None, Some(20_000)]
+                } else {
+                    &[None]
+                };
+                for &grievance in grievances {
+                    for length in [30_001, lo, hi, hi * 3 / 2] {
+                        let at = format!("{:?} sofa={sofa} {grievance:?} {length}", play.own);
+                        let use_ = Played {
+                            what: Use::Watch,
+                            sofa,
+                            bought: play.bought,
+                            grievance,
+                            length,
+                        };
+                        let hook = length * 2 / 5;
+                        let mut last = None;
+                        let mut flipped: Option<u64> = None;
+                        for t in (0..length).step_by(100) {
+                            let shown = played_as(&mut osaka, use_, play, t);
+                            if let Some(was) = last.replace(shown)
+                                && was != shown
+                            {
+                                let bob = play.own == ScriptId::Shopping
+                                    && t <= hook
+                                    && was.0 == shown.0
+                                    && matches!(
+                                        (was.1, shown.1),
+                                        (
+                                            Some(Prop::Tv(Channel::Shopping(_))),
+                                            Some(Prop::Tv(Channel::Shopping(_)))
+                                        )
+                                    );
+                                if t >= 10_000 && !bob {
+                                    if let Some(before) = flipped {
+                                        assert!(
+                                            t - before >= USE_FRAME_MS,
+                                            "{at}: flipped at {before} and {t}: {was:?} to {shown:?}"
+                                        );
+                                    }
+                                    flipped = Some(t);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -11237,9 +11447,12 @@ mod tests {
     /// When a use from [`SINCE`] playing `play`, `length` ms in all,
     /// should wake her, from the parts it plays in turn: on every frame
     /// of each part (the prelude, the body, the coda), counted from that
-    /// part's start; as each of its keys ends (the part's end with its
-    /// last); as she starts and stops saying what's wrong with her home
-    /// (from `grievance` ms in); and at its end. Ascending, each once.
+    /// part's start, and on each of static's frames
+    /// ([`script::CHANNEL_FRAME_MS`], from the part's start too) while a
+    /// key showing it plays; as each of its keys ends (the part's end
+    /// with its last); as she starts and stops saying what's wrong with
+    /// her home (from `grievance` ms in); and at its end. Ascending, each
+    /// once.
     fn wakeups(play: Play, length: u64, grievance: Option<u64>) -> Vec<u64> {
         let until = SINCE + length;
         let start = play.body_start(SINCE);
@@ -11259,7 +11472,22 @@ mod tests {
                     .map(move |k| from + k * USE_FRAME_MS)
                     .take_while(move |&t| t < to);
                 let ends = keys.iter().map(move |k| from + k.span.end(Some(to - from)));
-                frames.chain(ends)
+                // Static's frames, through each key showing it.
+                let statics = keys
+                    .iter()
+                    .scan(from, move |start, k| {
+                        let (key_from, key_to) = (*start, from + k.span.end(Some(to - from)));
+                        *start = key_to;
+                        Some((k.prop == Some(script::Shows::Static), key_from, key_to))
+                    })
+                    .filter(|&(snow, ..)| snow)
+                    .flat_map(move |(_, key_from, key_to)| {
+                        (1..)
+                            .map(move |k| from + k * script::CHANNEL_FRAME_MS)
+                            .skip_while(move |&t| t <= key_from)
+                            .take_while(move |&t| t < key_to)
+                    });
+                frames.chain(ends).chain(statics)
             })
             .chain(
                 grievance
@@ -11274,12 +11502,22 @@ mod tests {
         want
     }
 
+    /// `prop` on its first frame: Chiyo-chichi's hook moves at paint
+    /// time (static, on her wakes).
+    fn on_frame_0(prop: Prop) -> Prop {
+        use super::super::art::Channel;
+        match prop {
+            Prop::Tv(Channel::Shopping(_)) => Prop::Tv(Channel::Shopping(0)),
+            prop => prop,
+        }
+    }
+
     /// Keys change on time: a use wakes her on every frame of the part
     /// playing (counted from its start), as each key ends and as a
     /// grievance comes and goes, and at nothing else, each wakeup
     /// strictly after the last; and how she looks, and what's on her
-    /// furniture (what's on TV aside, which moves at paint time), only
-    /// ever changes at a wakeup. Every use, the shopping channel too,
+    /// furniture (static too; Chiyo-chichi's hook aside, which moves at
+    /// paint time), only ever changes at a wakeup. Every use, the shopping channel too,
     /// with no grievance, one on the frame grid and one off it, plain and
     /// with every splice as a prelude, a coda or both (off the grid's
     /// beat, so a part timed from the wrong start shows), at trial
@@ -11359,7 +11597,7 @@ mod tests {
                                 // Between wakeups, nothing she shows changes.
                                 let mut shown = |t: u64| {
                                     let (look, prop) = played_as(&mut osaka, use_, play, t - SINCE);
-                                    (look, prop.map(|p| p.framed(0)))
+                                    (look, prop.map(on_frame_0))
                                 };
                                 let times = (SINCE..until)
                                     .step_by(37)
@@ -17595,11 +17833,10 @@ mod tests {
     /// list and nothing else: sitting, lying back, gazing, dozing where
     /// she sits; spacing out (plain, a musing, her rare musing); and the
     /// still uses (lounging, napping, a day's sleep, reading, looking
-    /// out). Not lying on her front, exercise, homework (its nod-off
-    /// moves instead), chores, a snack, the cat, nor a trial sit; nor
-    /// watching, until the TV holds a picture (phase 5c D7: a lazy day
-    /// would watch animated snow half as long again). Without the
-    /// levers, nothing lingers.
+    /// out, watching TV: it holds a picture, phase 5c D7). Not lying on
+    /// her front, exercise, homework (its nod-off moves instead), chores,
+    /// a snack, the cat, nor a trial sit. Without the levers, nothing
+    /// lingers.
     #[test]
     fn her_mood_lingers_over_the_still_acts_she_chooses() {
         let terrain = floor_at(15);
@@ -17744,7 +17981,7 @@ mod tests {
         for what in Use::ALL {
             let lingers = matches!(
                 what,
-                Use::Lounge | Use::Nap | Use::Sleep | Use::Read | Use::LookOut
+                Use::Lounge | Use::Nap | Use::Sleep | Use::Read | Use::LookOut | Use::Watch
             );
             cases.push((format!("{what:?}"), Box::new(using(what, false)), lingers));
         }

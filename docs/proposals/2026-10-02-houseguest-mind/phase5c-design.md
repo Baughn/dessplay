@@ -556,3 +556,26 @@ that her trace is unchanged).
   column), as the approved sheet has her: at a column outside, her hands met the frame.
 - Records: [phase5c/baseline.md](phase5c/baseline.md), "Shipped (step 8c)", and decisions.md, "Her
   stillness ships".
+
+## Round-6 amendments (2026-10-07): step 12a as built
+
+- **The held picture** (D7's drawn half): `WATCH` is static for `STATIC_MS` (1.2 s), then the
+  act's programme; `SURF`'s rest key is the programme; `SHOPPING` bobs through its hook only.
+  A script key names what it shows as `script::Shows` (held as it is, static, the hook, or the
+  act's programme): the synthesis's `Channel::Held` placeholder is a key-level variant instead,
+  resolved by `Osaka::prop` to `Prop::Tv(Channel::Programme(card))`, so `Channel` (the image's
+  cache key) only names what can be drawn and 12b's stable key is `Channel::Programme(card)`.
+  The card is `Play::card`, drawn on every watch from the decision's whims
+  (`Whims::below("programme", 4)`), which draws nothing from her generator.
+- **Watching lingers** (`Use::lingers`); `BAND_MINUTES` stays 17 (the sill's chain is still her
+  longest still act; a lazy watch is at most 123 s).
+- **The stillness test** samples every 100 ms (a client paints for other reasons too) and leaves
+  out acts that take her somewhere (a walk the screen's width is 31 s) and chat (quiet rooms). It
+  runs every mood, in the TV rooms, the windowed home and a home with the shopping channel on, and
+  compares her model's state, not drawn cells (12b's picture swap needs a drawn-cells variant).
+- **Static wakes her** on its 400 ms frames (`Key::frame_ms`), so all three switch-on frames are
+  painted in a client that paints only on her wakes; Chiyo-chichi's hook still bobs at paint time
+  (review fix; decisions.md, "Her TV holds a picture").
+- **Open, for the user:** the home's industrious quiet afternoon at 31.4 against 31, and a lazy
+  shopping act's hook at up to 49 s (two fifths of a lingered body).
+- Measured: [phase5c/baseline.md](phase5c/baseline.md), "Step 12a: the held TV picture".
