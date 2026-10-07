@@ -670,7 +670,9 @@ that her trace is unchanged).
     **Resolved (T2, 2026-10-07):** the user: fix it. A bob keeps a frame clear of its key's start
     and end (`script::bob_frame`), on its part's grid as before, for every bobbing key and the
     idle bobs on the frame (lying back, reading on her back, reading a borrowed strip); the
-    allowance is gone from both stillness tests.
+    allowance is gone from both stillness tests. Short bobbing keys lose flips: the lamp-on moment
+    and the andagi's chewing are still poses now; the Dream's last two lines hold (open in
+    plan.md, with in-place retiming of an act's end).
   - *A stir is shorter than a frame by day.* A chat line stirring her dozing by day ("Mm?") lasts
     `speech_ms("Mm?")` = 1380 ms, under the 1400 ms frame, so it comes and goes inside one (a
     night's "mm..." lasts 1500 ms). The test exempts a stir as the dozing form of a look up. The

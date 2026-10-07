@@ -4688,14 +4688,41 @@ can see. One mechanism covers every bobbing key, all on the frame
 key's edges): napping and asleep (by day, the night's bed and sofa
 branches, the Dream's), her homework writing at her desk and on the
 floor (and reading there), reading at her bookshelf, eating the melon
-bread, crumpling and unpacking (bent to it), and chewing the sata
-andagi. Its siblings outside scripts hold their last frame before
-the act ends the same way: lying back and reading on her back (idle
-acts bobbing on the frame, which start on their grid) and reading a
-borrowed strip. Faster alternation (exercise, kicking her feet, lifting
-and setting down a piece, poking, carrying a parcel home, static and
-Chiyo-chichi's hook) is motion, not a still act's change: those acts
-are under 30 s or exempt, so they run to their end. Golden traces: 75
+bread, and crumpling and unpacking (bent to it). Its siblings outside
+scripts hold their last frame before the act ends the same way: lying
+back and reading on her back (idle acts bobbing on the frame, which
+start on their grid) and reading a borrowed strip. The hold is chosen
+by period, not by the act's length: the user asked for every bobbing
+key, so it reaches bobs on the frame in short acts too (crumpling and
+unpacking, the melon bread), where the stillness rule itself doesn't.
+Faster alternation (exercise, kicking her feet, lifting and setting
+down a piece, poking, carrying a parcel home, static and Chiyo-chichi's
+hook, all quicker than a frame) is motion, not a still act's change,
+and is left to run to its end: holding a frame at each end of a key of
+700 ms flips would stop most of them, and none is in a long act the
+rule reaches (each is in an act under 30 s, or exempt).
+
+The cost is flips in short bobbing keys: a key can only flip on the
+grid points a frame clear of both its ends, so one under two frames
+never flips, and one of two frames flips once only if its middle is on
+the grid. Crumpling and unpacking (keys a share of a 4–6 s use) bob
+once or twice where they bobbed three or four times; her breathing as
+the lamp goes off was a 2 s bob and is now drawn still (`LAMP_ON_MS`,
+it could never flip); the andagi's chewing, two frames off the grid,
+never flipped at all (T2's review), so it is two keys now, chewing
+then biting again, a frame each, as the vignette was approved ("two
+frames"); and the Dream's second and third lines (3 s each, starting
+off the grid) hold her breathing still, one flip in its 9 s where there
+were six. The Dream is left for the user (two frames a line, 2.8 s,
+would give each line a flip; plan.md). `every_bob_at_a_set_time_flips`
+holds every bobbing key that plays at set moments to at least one flip,
+the Dream's two lines excepted by name. And where her act's end is
+retimed in place within its last frame, the hold was timed from the old
+end, so her breathing can flip then, off the grid, and its next flip
+come within a frame: a night whose wake time moves (`refresh_night`),
+and a day's sleep or a night's idle act becoming her night at bedtime
+(`sleep_on`, which also drops any coda). Both need the retiming inside
+a frame of the old end; left, and open (plan.md). Golden traces: 75
 moved, each first at a bob's frame held within a frame of its key's or
 act's end (crumpling or unpacking 42, asleep 14, reading on her back 9,
 homework 6, lying back 2, napping 2), every differing line only a pose

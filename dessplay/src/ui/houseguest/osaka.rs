@@ -10177,8 +10177,13 @@ mod tests {
         use super::super::art::Channel;
         /// Her bob's frame, `t` ms in, in a span (a key) from `start` to
         /// `end`: on its frames, but a frame clear of the span's start and
-        /// end (Round 8; `a_bob_flips_a_frame_clear_of_its_keys_start_and_end`
-        /// holds the rule itself).
+        /// end (Round 8). This takes the frame from `script::bob_frame`
+        /// itself, so here it checks the wiring only (each key's span
+        /// reaching it as played); `bob_frame`'s values are held against
+        /// the rule independently by its own tests in script.rs
+        /// (`a_bob_frame_flips_on_the_grid_clear_of_its_ends`, its
+        /// property, and `a_bob_flips_a_frame_clear_of_its_keys_start_and_end`
+        /// over every script).
         fn bob(t: u64, (start, end): (u64, u64)) -> u8 {
             script::bob_frame(t, start, end, USE_FRAME_MS)
         }

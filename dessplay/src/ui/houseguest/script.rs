@@ -1462,7 +1462,9 @@ const NAP: &[&[Key]] = &[&[key(
     bubble(Bubble::Zzz),
 )]];
 
-/// How long the lamp stays on as she settles into bed.
+/// How long the lamp stays on as she settles into bed: lying still
+/// (under two frames, so a bob there could never flip clear of its
+/// key's start and end: Round 8), breathing once it's off.
 pub(super) const LAMP_ON_MS: u64 = 2000;
 
 /// The lamp on a moment as she settles (blinking, thoughtful), then off
@@ -1471,7 +1473,7 @@ const SLEEP: &[&[Key]] = &[
     &[
         key(
             Span::Ms(LAMP_ON_MS),
-            Posed::Bob(Pose::Sleep, USE_FRAME_MS),
+            Posed::Still(Pose::Sleep(0)),
             Face::Blink,
             bubble(Bubble::Dots),
         ),
@@ -1501,7 +1503,7 @@ const NIGHT: &[&[Key]] = &[
     &[
         key(
             Span::Ms(LAMP_ON_MS),
-            Posed::Bob(Pose::Sleep, USE_FRAME_MS),
+            Posed::Still(Pose::Sleep(0)),
             Face::Blink,
             bubble(Bubble::Dots),
         ),
@@ -1511,7 +1513,7 @@ const NIGHT: &[&[Key]] = &[
     &[
         key(
             Span::Ms(LAMP_ON_MS),
-            Posed::Bob(Pose::Nap, USE_FRAME_MS),
+            Posed::Still(Pose::Nap(0)),
             Face::Blink,
             bubble(Bubble::Dots),
         ),
@@ -2295,7 +2297,10 @@ pub(super) const ANDAGI_SAID_MS: u64 = 1900;
 pub(super) const ANDAGI_BEAT_MS: u64 = 600;
 /// The first bite.
 pub(super) const ANDAGI_BITE_MS: u64 = USE_FRAME_MS;
-/// Then eating it, two frames.
+/// Then eating it, two frames: chewing, then biting again, a frame each
+/// (two keys, not a bob: a bob's first and last frames are held a frame
+/// clear of its key's ends, so off the grid as this is, a bob two frames
+/// long would never flip).
 pub(super) const ANDAGI_EAT_MS: u64 = 2 * USE_FRAME_MS;
 
 /// How long the andagi plays, said `count` times.
@@ -2303,11 +2308,12 @@ pub(super) const fn andagi_ms(count: u64) -> u64 {
     ANDAGI_FOUND_MS + count * (ANDAGI_SAID_MS + ANDAGI_BEAT_MS) + ANDAGI_BITE_MS + ANDAGI_EAT_MS
 }
 
-/// The andagi said `(N - 3) / 2` times: the fridge open as she finds
+/// The andagi said `(N - 4) / 2` times: the fridge open as she finds
 /// it, then holding it up, "Sata andagi." and a quiet beat each time,
-/// blank, then pleased, then happy; then a bite, and she eats it.
+/// blank, then pleased, then happy; then a bite, and she eats it,
+/// chewing what's left of it in her hand, then biting again.
 const fn andagi<const N: usize>() -> [Key; N] {
-    let count = (N - 3) / 2;
+    let count = (N - 4) / 2;
     let held = Posed::Still(Pose::EatAndagi(0));
     let mut keys = [key(Span::Rest, held, Face::Happy, None); N];
     keys[0] = shows(
@@ -2339,26 +2345,25 @@ const fn andagi<const N: usize>() -> [Key; N] {
         );
         i += 1;
     }
-    keys[N - 2] = key(
+    keys[N - 3] = key(
         Span::Ms(andagi_ms(count as u64) - ANDAGI_EAT_MS),
         Posed::Still(Pose::EatAndagi(1)),
         Face::Happy,
         None,
     );
+    keys[N - 2] = key(
+        Span::Ms(andagi_ms(count as u64) - ANDAGI_EAT_MS + USE_FRAME_MS),
+        Posed::Still(Pose::EatAndagi(2)),
+        Face::Happy,
+        None,
+    );
     keys[N - 1] = key(
         Span::Rest,
-        Posed::Bob(chewing, USE_FRAME_MS),
+        Posed::Still(Pose::EatAndagi(1)),
         Face::Happy,
         None,
     );
     keys
-}
-
-/// Eating the andagi once she's bitten it: biting again (frame 1 of the
-/// bob), and chewing, what's left of it in her hand (frame 0), never
-/// whole again whichever frame the bob is on as the bite ends.
-fn chewing(frame: u8) -> Pose {
-    Pose::EatAndagi(if frame % 2 == 1 { 1 } else { 2 })
 }
 
 /// How many times she names it, by branch: four, five or six.
@@ -2371,11 +2376,11 @@ const ANDAGI_LENS: &[u64] = &[
     andagi_ms(ANDAGI_COUNTS[2]),
 ];
 
-/// Its keys, by branch (two a naming, and three more).
+/// Its keys, by branch (two a naming, and four more).
 const ANDAGI: &[&[Key]] = &[
-    &andagi::<{ 2 * ANDAGI_COUNTS[0] as usize + 3 }>(),
-    &andagi::<{ 2 * ANDAGI_COUNTS[1] as usize + 3 }>(),
-    &andagi::<{ 2 * ANDAGI_COUNTS[2] as usize + 3 }>(),
+    &andagi::<{ 2 * ANDAGI_COUNTS[0] as usize + 4 }>(),
+    &andagi::<{ 2 * ANDAGI_COUNTS[1] as usize + 4 }>(),
+    &andagi::<{ 2 * ANDAGI_COUNTS[2] as usize + 4 }>(),
 ];
 
 #[cfg(test)]
@@ -2756,6 +2761,149 @@ mod tests {
             }
         }
         assert!(flips > 1000, "{flips} flips tried");
+    }
+
+    /// [`bob_frame`] against its rule, at every ms from a bob's start to
+    /// a period past its end: it starts on the grid's frame at its start
+    /// (`start / period`, odd or even), flips on the grid and only there,
+    /// never less than a period after its start nor less than a period
+    /// before its end (nor after it), and on every grid point between:
+    /// so its flips are exactly the grid's in `[start + period, end -
+    /// period]`.
+    fn check_bob_frame(start: u64, end: u64, period: u64) {
+        let case = format!("{start} to {end}, every {period}");
+        let frame = |t| bob_frame(t, start, end, period);
+        assert_eq!(u64::from(frame(start)), start / period % 2, "{case}");
+        let mut flips = 0;
+        for t in start + 1..end + period {
+            if frame(t) == frame(t - 1) {
+                continue;
+            }
+            flips += 1;
+            assert!(
+                t.is_multiple_of(period) && t >= start + period && t + period <= end,
+                "{case}: flips at {t}"
+            );
+        }
+        let allowed = (start + period..=end.saturating_sub(period))
+            .filter(|t| t.is_multiple_of(period))
+            .count();
+        assert_eq!(
+            flips, allowed,
+            "{case}: flips on every grid point clear of its ends"
+        );
+    }
+
+    /// [`bob_frame`] at the edges: bobs starting and ending a ms either
+    /// side of the grid, on it, and half a period off, for bobs a period
+    /// long (or a ms less or more) to several, so a flip a ms within a
+    /// period of either end shows (Round 8: holding the first and last
+    /// frame). Then any bob ([`check_bob_frame`]).
+    #[test]
+    fn a_bob_frame_flips_on_the_grid_clear_of_its_ends() {
+        for period in [3, USE_FRAME_MS, 2 * USE_FRAME_MS] {
+            for g in 0..4 {
+                for start in [g * period, g * period + 1, g * period + period / 2]
+                    .into_iter()
+                    .chain((g * period).checked_sub(1))
+                {
+                    for len in [1, 2, 3, 5]
+                        .into_iter()
+                        .flat_map(|k| [k * period - 1, k * period, k * period + 1])
+                        .chain([period / 2, 5 * period + 7])
+                    {
+                        check_bob_frame(start, start + len, period);
+                    }
+                }
+            }
+        }
+        // A key from a ms past the grid holds its first frame through the
+        // grid point a ms under a period on, flipping at the next.
+        let frame = |t| bob_frame(t, 1401, 100_000, USE_FRAME_MS);
+        assert_eq!((frame(1401), frame(2799), frame(2800)), (1, 1, 1));
+        assert_eq!((frame(4199), frame(4200)), (1, 0));
+        // One ending a ms short of a period past the grid holds its last
+        // through it.
+        let frame = |t| bob_frame(t, 0, 86_799, USE_FRAME_MS);
+        assert_eq!(
+            (frame(84_000), frame(85_399), frame(85_400), frame(86_798)),
+            (0, 0, 0, 0)
+        );
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(
+            dessplay_core::test_support::proptest_cases(64)
+        ))]
+
+        /// Any bob, at any start and length, keeps [`check_bob_frame`]'s
+        /// rule.
+        #[test]
+        fn any_bob_frame_flips_on_the_grid_clear_of_its_ends(
+            start in 0u64..20_000,
+            len in 1u64..12_000,
+            period in proptest::sample::select(vec![700u64, USE_FRAME_MS, 2 * USE_FRAME_MS]),
+        ) {
+            check_bob_frame(start, start + len, period);
+        }
+    }
+
+    /// Every bobbing key that always plays at the same moments (each of a
+    /// splice's at its branches' lengths; a script's keys set in ms from
+    /// its body's start, played over its shortest body) flips at least
+    /// once: holding a bob's first and last frame a frame clear of its
+    /// key's start and end (Round 8) leaves a key of two frames off the
+    /// grid none, a still pose drawn as a bob (the andagi's chewing, T2's
+    /// review). The Dream's second and third lines (3 s each, off the
+    /// grid) are known to hold, for the user (plan.md's open items).
+    #[test]
+    fn every_bob_at_a_set_time_flips() {
+        let mut parts: Vec<(String, &'static [Key], u64, usize)> = Vec::new();
+        for splice in SpliceId::ALL {
+            for (branch, &len) in splice.row().lens.iter().enumerate() {
+                let keys = splice.script().keys(branch as u8);
+                parts.push((format!("{splice:?} branch {branch}"), keys, len, keys.len()));
+            }
+        }
+        for id in ScriptId::ALL {
+            let Some(shortest) = id.shortest_body() else {
+                continue;
+            };
+            for (branch, keys) in id.branches().iter().enumerate() {
+                // Its keys set in ms, from the first.
+                let set = keys
+                    .iter()
+                    .take_while(|k| matches!(k.span, Span::Ms(ms) if ms <= shortest))
+                    .count();
+                parts.push((format!("{id:?} branch {branch}"), keys, shortest, set));
+            }
+        }
+        let mut checked = 0;
+        for (at, keys, body, set) in parts {
+            let ends: Vec<u64> = keys.iter().map(|k| k.span.end(Some(body))).collect();
+            for index in 0..set {
+                if !matches!(keys[index].pose, Posed::Bob(..)) {
+                    continue;
+                }
+                let start = ends[..index].iter().copied().max().unwrap_or(0);
+                let end = ends[index].min(body);
+                if end <= start {
+                    continue;
+                }
+                if at.starts_with("Dream") && (index == 1 || index == 2) {
+                    continue;
+                }
+                checked += 1;
+                let flips = (start + 1..end)
+                    .filter(|&t| pose_in(keys, body, t) != pose_in(keys, body, t - 1))
+                    .count();
+                assert!(
+                    flips > 0,
+                    "{at}: key {index} ({start} to {end}) never flips"
+                );
+            }
+        }
+        assert!(checked >= 2, "{checked} keys checked");
     }
 
     /// The player: half-open keys, cumulative ends clamped to the body,
@@ -3251,7 +3399,7 @@ mod tests {
         for (branch, &len) in lens.iter().enumerate() {
             let count = ANDAGI_COUNTS[branch] as usize;
             let keys = ScriptId::Andagi.keys(branch as u8);
-            assert_eq!(keys.len(), 2 * count + 3, "{count}");
+            assert_eq!(keys.len(), 2 * count + 4, "{count}");
             assert_eq!(len, andagi_ms(count as u64));
             let found = &keys[0];
             assert_eq!(found.span, Span::Ms(ANDAGI_FOUND_MS));
@@ -3281,15 +3429,8 @@ mod tests {
             assert!(faces.windows(2).all(|w| w[0] <= w[1]), "{faces:?}");
             assert_eq!((faces[0], faces[count - 1]), (0, 2), "{faces:?}");
             assert!(faces.contains(&1), "{faces:?}");
-            let (bite, eat) = (&keys[2 * count + 1], &keys[2 * count + 2]);
+            let (bite, eat) = (&keys[2 * count + 1], &keys[2 * count + 3]);
             assert!(matches!(bite.pose, Posed::Still(Pose::EatAndagi(1))));
-            let Posed::Bob(eating, _) = eat.pose else {
-                panic!("{:?}", eat.pose);
-            };
-            assert_eq!(
-                (eating(0), eating(1)),
-                (Pose::EatAndagi(2), Pose::EatAndagi(1))
-            );
             // Bitten, it stays bitten.
             let poses = |key: &Key| match key.pose {
                 Posed::Still(pose) => vec![pose],
@@ -3308,6 +3449,24 @@ mod tests {
             }
             assert_eq!(eat.span, Span::Rest);
             assert_eq!(bite.span, Span::Ms(len - ANDAGI_EAT_MS));
+            // Bitten, she eats it over its last two frames: chewing,
+            // then biting again, a frame each.
+            let mut eaten: Vec<(Pose, u64)> = Vec::new();
+            for t in len - ANDAGI_EAT_MS..len {
+                let (pose, ..) = pose_in(keys, len, t).unwrap();
+                match eaten.last_mut() {
+                    Some((was, ms)) if *was == pose => *ms += 1,
+                    _ => eaten.push((pose, 1)),
+                }
+            }
+            assert_eq!(
+                eaten,
+                [
+                    (Pose::EatAndagi(2), USE_FRAME_MS),
+                    (Pose::EatAndagi(1), USE_FRAME_MS)
+                ],
+                "{count}: eating it"
+            );
         }
     }
 

@@ -3289,27 +3289,34 @@ floors at `USE_FRAME_MS`), so a stir by day ("Mm?", 1380 ms before)
 lasts a frame and its turn ends with its murmur; only "Mm?" was under a
 frame. A stir keeps the look up's exemption (it comes when the line
 does, off her breathing's frames; without it the drawn test fails in
-every room), and the drawn test checks each stir holds unchanged a frame
-from its start. 42 golden traces moved, each only its daytime stirs'
+every room), and the drawn test checks each stir starts with a line,
+lasts a frame, and shows as it began at every paint of it. 42 golden traces moved, each only its daytime stirs'
 ends, 20 ms later. (A) A bob keeps a frame clear of its key's start and
 end (`script::bob_frame`; `Key::look` takes the key's `KeyTime`): its
 first frame held until a frame after its key starts, its last through
 the part of a frame before it ends, on its part's grid as before (so
 her wakeups, and all she does, are unchanged). Every bobbing key (asleep,
 napping, the Dream, homework at her desk and on the floor, reading,
-eating, crumpling, unpacking, chewing the andagi) and, outside scripts,
-lying back, reading on her back and reading a borrowed strip, which
-hold their last frame before the act ends. 75 golden traces moved, only
-pose frames, each first at a bob held within a frame of its key's or
-act's end. The stillness tests' allowance is gone; the model's test adds
-an industrious afternoon at her desk (seed 0), where the writing ended
-800 ms after its last flip. Sub-second, so no band cell moves (not
-re-measured). New tests: `whatever_she_says_shows_for_a_frame`,
+eating, crumpling, unpacking) and, outside scripts, lying back, reading
+on her back and reading a borrowed strip, which hold their last frame
+before the act ends. Short bobbing keys lose flips (a key can flip only
+on grid points a frame clear of both ends): crumpling and unpacking bob
+once or twice; the bobs that then could never flip are drawn as still
+poses (her lamp-on moment settling into bed, 2 s; the andagi's chewing,
+two frames off the grid, now two keys, chewing then biting again, a
+frame each); the Dream's last two lines hold (open, below). 75 golden
+traces moved, only pose frames, each first at a bob held within a frame
+of its key's or act's end; the review's fixes moved none (no golden
+scene reaches the andagi; the lamp keys look the same). The stillness tests' allowance is gone;
+the model's test adds an industrious afternoon at her desk (seed 0),
+where the writing ended 800 ms after its last flip. Sub-second, so no
+band cell moves (not re-measured). New tests:
+`whatever_she_says_shows_for_a_frame`,
 `a_bob_flips_a_frame_clear_of_its_keys_start_and_end`,
-`an_idle_bob_holds_its_last_frame_before_her_act_ends`. A night whose
-wake time moves within its last frame (`refresh_night`) can still flip
-her breathing at that moment: the hold is timed from the end known
-then.
+`an_idle_bob_holds_its_last_frame_before_her_act_ends`, `bob_frame`'s own
+edge table and property (`a_bob_frame_flips_on_the_grid_clear_of_its_ends`,
+`any_bob_frame_flips_on_the_grid_clear_of_its_ends`), and the lint
+`every_bob_at_a_set_time_flips`.
 
 **Open, for the user:**
 - **The two `SHORT` items** above; the lead for the stage's spread is a
@@ -3319,6 +3326,21 @@ then.
   world's clock in T1 (exempt, scoped to its own change); a bob's key
   ending off its frame grid and a stir by day shorter than a frame in T2
   (both fixed, the allowance gone).
+- **The Dream's breathing** (T2's review): its lines are 3 s each, so
+  the second and third start off the frame grid and, holding a frame
+  clear of each end, never flip: one flip in its 9 s where there were
+  six (`every_bob_at_a_set_time_flips` excepts them by name). Two frames
+  a line (`DREAM_LINE_MS` 2.8 s, the Dream 8.4 s) would give each line
+  one flip at its middle; three (4.2 s) two. Approved and rare, so left
+  for the user.
+- **A bob's end retimed in place** (T2): the hold is timed from the end
+  known then, so where her act's end moves within its last frame, her
+  breathing can flip at that moment, off the grid, and flip again
+  within a frame: a night whose wake time moves (`refresh_night`), and
+  a day's sleep or a night's idle act becoming her night at bedtime
+  (`sleep_on`). Neither test reaches it (both need the retiming inside
+  a frame of the old end). A fix would hold the bob a frame from the
+  retiming, as from a key's start.
 - **Her look up's `!`** (found in T2): it shows `SURPRISED_MS`, 1.2 s,
   under a frame, before her `?`. It's inside the look up's exemption, a
   reaction to the user's line, and the same startle she gives on her
@@ -3333,7 +3355,11 @@ then.
   shape (T2, probing 16 seeds a mood): her blink starting on the
   sample the hook's bob flips is exempt by neither, so the shopping
   channel's key ending 300 ms on counted as a flip (shopping, lazy seed 2
-  and ordinary seed 5; not among the seeds the test runs). Checking the world's part and hers
+  and ordinary seed 5; not among the seeds the test runs). And in both
+  tests an exempt change never sets the flip clock (T2's review): a
+  stir, or a look up, ending off the grid can be followed by her
+  breathing's next flip less than a frame later unnoticed; a stir
+  itself lasts a frame now, but not what follows it. Checking the world's part and hers
   apart (strip the stepped piece's cells and look, then try the other
   exemptions on the rest) would answer both, at some looseness.
 - **The by-her-clock drawn test's gate cost** (T1): about 10 s CPU,
