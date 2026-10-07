@@ -9,6 +9,11 @@ append-only; you cannot reword or remove existing entries.
 
 Add new days at the top. Add new entries at the bottom of existing days.
 
+## 2026-10-08
+
+- Changed: Osaka's once-a-night Dream is said more slowly, each line
+  held a little longer as she breathes in her sleep.
+
 ## 2026-10-07
 
 - Changed: Osaka is calmer: she lingers, settles in, daydreams and

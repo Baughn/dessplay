@@ -2306,7 +2306,9 @@ this section states what is built.
   kept in memory, so a restart the same game day draws it again. The
   rare things: the Dream (asleep, 30 game minutes after she first lies
   down for the night: "Hello everynyan...", "Fine sankyu...", "Oh my
-  gah!"), the last melon bread after a snack ("That was the last
+  gah!", each 4.2 s, three of her breathing's frames, so she breathes
+  twice under each; why:
+  [decisions](decisions.md#her-tv-holds-a-picture-2026-10-07)), the last melon bread after a snack ("That was the last
   one."), the escalator ("The box one's the...", "...escalator? No?")
   as she spaces out, and a scary story on her sofa or over a book from
   22:00 to bedtime ("Scary story time...", "A fart. Not mine.")

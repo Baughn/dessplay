@@ -4716,7 +4716,7 @@ off the grid) hold her breathing still, one flip in its 9 s where there
 were six. The Dream is left for the user (two frames a line, 2.8 s,
 would give each line a flip; plan.md). `every_bob_at_a_set_time_flips`
 holds every bobbing key that plays at set moments to at least one flip,
-the Dream's two lines excepted by name. And where her act's end is
+the Dream's two lines excepted by name (no longer: below). And where her act's end is
 retimed in place within its last frame, the hold was timed from the old
 end, so her breathing can flip then, off the grid, and its next flip
 come within a frame: a night whose wake time moves (`refresh_night`),
@@ -4730,6 +4730,18 @@ frame, no time or act changed. The stillness tests hold the rule
 plainly now (no allowance), and the model's test adds an industrious
 afternoon at her desk (seed 0), where the writing's end comes 800 ms
 after its last flip without the hold.
+
+**The Dream's lines are three frames each (the user, 2026-10-08):** of
+the two lengths that give each line flips (two frames, 2.8 s, a flip at
+its middle; three, 4.2 s, two), the user chose 4.2 s. Each line starts
+on her breathing's frame grid (the Dream's part starts its own grid),
+so each flips twice, six flips in its 12.6 s, as many as the 3 s lines
+had before the hold; the Dream asks for 12.6 s of her night left, not
+9 s. `every_bob_at_a_set_time_flips` checks the Dream's lines with every
+other bob at a set time, no exception by name; it found no other set-time
+bob that the hold leaves without a flip (the Dream's are the only
+bobbing keys set in ms; the share-timed ones, crumpling and unpacking,
+are above).
 
 **Static wakes her on its frames; the hook doesn't:** a use wakes her on
 its 1.4 s frame grid and as each key ends, and a client that paints only

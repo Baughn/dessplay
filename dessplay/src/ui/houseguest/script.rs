@@ -1868,8 +1868,12 @@ pub(super) const SANKYU: &str = line!("Fine sankyu...");
 pub(super) const OH_MY_GAH: &str = line!("Oh my gah!");
 
 /// Each of the Dream's lines shows this long, the last ending at
-/// [`DREAM_MS`]; then she sleeps on.
-pub(super) const DREAM_LINE_MS: u64 = 3000;
+/// [`DREAM_MS`]; then she sleeps on. Three frames (the user, phase 5c's
+/// tail): each line starts on her breathing's frame grid, and, holding a
+/// frame clear of each end ([`bob_frame`]), her breathing flips twice
+/// under it (at 3 s, off the grid, the second and third lines held her
+/// still).
+pub(super) const DREAM_LINE_MS: u64 = 3 * USE_FRAME_MS;
 /// The Dream's lines, all said.
 pub(super) const DREAM_MS: u64 = 3 * DREAM_LINE_MS;
 
@@ -2854,8 +2858,9 @@ mod tests {
     /// once: holding a bob's first and last frame a frame clear of its
     /// key's start and end (Round 8) leaves a key of two frames off the
     /// grid none, a still pose drawn as a bob (the andagi's chewing, T2's
-    /// review). The Dream's second and third lines (3 s each, off the
-    /// grid) are known to hold, for the user (plan.md's open items).
+    /// review). The Dream's lines are three frames each so that each
+    /// flips (twice; at 3 s, off the grid, its second and third never
+    /// did: phase 5c's tail).
     #[test]
     fn every_bob_at_a_set_time_flips() {
         let mut parts: Vec<(String, &'static [Key], u64, usize)> = Vec::new();
@@ -2888,9 +2893,6 @@ mod tests {
                 let start = ends[..index].iter().copied().max().unwrap_or(0);
                 let end = ends[index].min(body);
                 if end <= start {
-                    continue;
-                }
-                if at.starts_with("Dream") && (index == 1 || index == 2) {
                     continue;
                 }
                 checked += 1;
