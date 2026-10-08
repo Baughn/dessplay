@@ -3530,7 +3530,7 @@ share it.
   rule because her door was there (*"Should note I noticed this because
   the* door *is there."*): the reserved space at a screen edge is chosen
   outside the chat pane, and the no-home door's edge chooser skips it
-  too. **Open for the door design:** a layout whose only reachable
+  too. **Answered 2026-10-08 (below):** a layout whose only reachable
   screen edge is in the chat pane; and what the frame shows of an older
   home's piece in the chat pane until she has moved it out (where it
   stands, so she has it to notice, or held out of the pane as her door's
@@ -3541,6 +3541,23 @@ share it.
   extended so no piece and no door meets the chat pane, an older record
   with a piece there moved out (or closeted when nothing else fits),
   and a parcel never left on a doorstep in it.
+- **The user's answers (2026-10-08),** after the code map
+  ([door/map.md](proposals/2026-10-02-houseguest-mind/door/map.md); in
+  the bundled layout every nook's right wall is a screen edge outside the
+  chat, so the first two arise only in custom layouts):
+  - **No edge wall outside the chat:** an inner wall of one of her nooks
+    (outside the chat), then the nearest floor spot outside the chat
+    whose box meets no piece (face-on); with none, she goes out by a door
+    in space where she stands and no door is drawn while she's out.
+  - **An older anchored piece in the chat:** shown where it stands until
+    she moves it out through the felt rule; if no strip takes it, it's
+    closeted (hidden) for as long as nothing fits, never deleted.
+    Makeshift pieces are never built in the chat at all.
+  - **Work: always her door.** Every work exit and return is through her
+    door's space, like school; work's screen-edge walk-out goes.
+  - **Only her external door** is kept out of the chat; doors in space
+    (about 1.5 s, in her own box; the errand's arrival at the accordion)
+    are unchanged.
 - **Decided unless the user objects:** the no-home door uses the same edge
   chooser, unsaved; door-position logging (the spot at info as she goes
   out, a fallback or yield at debug with its reason).
