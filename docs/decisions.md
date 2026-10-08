@@ -4760,7 +4760,7 @@ then biting again, a frame each, as the vignette was approved ("two
 frames"); and the Dream's second and third lines (3 s each, starting
 off the grid) hold her breathing still, one flip in its 9 s where there
 were six. The Dream is left for the user (two frames a line, 2.8 s,
-would give each line a flip; plan.md). `every_bob_at_a_set_time_flips`
+would give each line a flip; plan.md; resolved in T4: below). `every_bob_at_a_set_time_flips`
 holds every bobbing key that plays at set moments to at least one flip,
 the Dream's two lines excepted by name (no longer: below). And where her act's end is
 retimed in place within its last frame, the hold was timed from the old
@@ -4768,7 +4768,8 @@ end, so her breathing can flip then, off the grid, and its next flip
 come within a frame: a night whose wake time moves (`refresh_night`),
 and a day's sleep or a night's idle act becoming her night at bedtime
 (`sleep_on`, which also drops any coda). Both need the retiming inside
-a frame of the old end; left, and open (plan.md). Golden traces: 75
+a frame of the old end; left, and open (plan.md; resolved in T4:
+below). Golden traces: 75
 moved, each first at a bob's frame held within a frame of its key's or
 act's end (crumpling or unpacking 42, asleep 14, reading on her back 9,
 homework 6, lying back 2, napping 2), every differing line only a pose

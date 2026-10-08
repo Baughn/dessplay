@@ -5,7 +5,8 @@ starting point). Where it and docs/plan.md's *Next: the door batch* disagree, **
 has since answered its questions (§8): parcels come through a flap **in her door** (its Q1, B, not A),
 the approved door is the sheet's **B, two columns, turned slightly** ([art/snippets.md](art/snippets.md)),
 older homes whose furniture fills the space have her **clear it herself** (§7's optional felt rule, now
-in the batch), work leaves by the same door, and poster and clock may hang above it. Line numbers are
+in the batch), work leaves by the same door, and poster and clock may hang above it. And a new rule
+for the batch (2026-10-07): **no furniture, and not her door, in the chat pane** (§5.8). Line numbers are
 from the working copy of 2026-10-07 and will drift; `placement.md` and `teardown.md`, cited below,
 were the two investigators' notes and are not kept.
 
@@ -281,6 +282,29 @@ column and rows, and the narrowed extent would also put the parcel 6 columns fro
 recommendation is that `doorstep` skips the door's wall. Its edge-first sort (room.rs:1525)
 still applies to the others.
 
+### 5.8 The chat pane (the user, 2026-10-07)
+
+> *"Furniture cannot be placed in the chat pane, since the chat pane is what is focused 95% of the
+> time."*
+
+- **Scope: every piece.** Bought pieces, makeshift ones, parcels on the doorstep, and hung decor
+  (poster, clock, window). Props she carries in an act (a book, her homework, a borrowed strip) are
+  exempt: they go with her.
+- **Her door is never in the chat pane.** The user noticed the rule because her door was there
+  (*"Should note I noticed this because the* door *is there."*). §5.4's chooser skips any wall whose
+  space would be in the chat pane, and so does the no-home chooser and `door_place`'s fallback.
+- **Older homes** with a piece in the chat pane: she moves it out herself, through the same felt
+  rule as for her door's space (phase 4's arranging moves the piece); a piece that fits nowhere else
+  goes to the closet.
+- **One placement check** for both: the door's space and the chat pane refused to every piece in
+  `layout`, `project`, `doorstep`/`admits`, `spot`, the repairs' search, the wall lane (hung decor)
+  and makeshift lines (`builds`' `clear`, `rules::Frame::free`), in both modes.
+- **Open for the door design:** a layout whose only reachable screen edge is in the chat pane (the
+  chat pane spanning the screen's side, say). Where does her door go then, and how does she leave?
+  And what the frame shows of an older home's piece in the chat pane until she has moved it out
+  (where it stands, so there is something for her to notice and move; or held out of the pane
+  as her door's space yields for a frame, which would leave her nothing to see).
+
 ## 6. Regression tests to write first (all fail today)
 
 1. **Property test, the main one.** Extend `her_days_never_touch_what_is_protected`
@@ -324,6 +348,10 @@ still applies to the others.
    door forced onto her sofa stands in its space instead; its image takes in no piece".
 7. **Keep** `tests/away.rs:466` as the fallback's test, with the strict predicate. Rename
    `tests/away.rs:376` to "her door stays in its space whatever takes her home away".
+8. **The chat pane (§5.8).** Extend test 3's property, and test 1's day-long one: no shown piece
+   (floor, makeshift, hung, a parcel on its doorstep) and no door, open or shut, meets the chat
+   pane, in both modes. An older record with a piece in the chat pane: she moves it out through the
+   felt rule, or it goes to the closet when nothing else fits; never lost.
 
 ## 7. Order of work
 
@@ -339,8 +367,9 @@ still applies to the others.
    closes the bug class without waiting for art.
 2. **Next batch: the side-on door.** Model sheet first (5.3). Then the new look, which moves the
    shut door from `to-3` into the wall column `to`.
-3. **Optional, later:** a felt rule `Rule::DoorClear`, so that when the space keeps yielding she
-   frees it herself with the phase-4 mending. Also clean up `door_away`.
+3. **In this batch (no longer optional):** a felt rule `Rule::DoorClear`, so that when the space
+   keeps yielding she frees it herself with the phase-4 mending, and the same for a piece in the
+   chat pane (§5.8). Also clean up `door_away`.
 4. **Docs.**
    - design.md: replace "where she left" (2103-2104) with the space rule from 5.1. Fix the false
      line at 1380-1381 (true only for doors in space). Update work by door (1734-1735) and
@@ -368,6 +397,10 @@ chain would end with `Job::Leave`, her walk to her door.
    else by a door where she stands.
    - **Recommend yes, always by her door.** One external door reads clearly, and the edge exit
      looks like her leaving through the wall right beside it.
+
+4. **A layout whose only reachable screen edge is in the chat pane** (§5.8): open, for the door
+   design (the user's rule keeps her door out of the chat pane). With it, what the frame shows of
+   an older home's piece in the chat pane until she has moved it out.
 
 Not asked, decided here (veto welcome):
 - ~~The space yields quietly; she doesn't mend it herself for now.~~ *(Superseded: she clears it herself, through a felt rule, "Can't get to the door!"; plan.md, "Next: the door batch".)*

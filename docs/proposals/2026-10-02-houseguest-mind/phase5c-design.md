@@ -674,7 +674,9 @@ that her trace is unchanged).
     idle bobs on the frame (lying back, reading on her back, reading a borrowed strip); the
     allowance is gone from both stillness tests. Short bobbing keys lose flips: the lamp-on moment
     and the andagi's chewing are still poses now; the Dream's last two lines hold (open in
-    plan.md, with in-place retiming of an act's end).
+    plan.md, with in-place retiming of an act's end). **Both resolved (T4, 2026-10-08):** the
+    user chose 4.2 s Dream lines (each flips twice), and a bob holds where her act's end moves in
+    place, from the moment it moves.
   - *A stir is shorter than a frame by day.* A chat line stirring her dozing by day ("Mm?") lasts
     `speech_ms("Mm?")` = 1380 ms, under the 1400 ms frame, so it comes and goes inside one (a
     night's "mm..." lasts 1500 ms). The test exempts a stir as the dozing form of a look up. The
@@ -683,7 +685,9 @@ that her trace is unchanged).
     (`speech_ms` floors at `USE_FRAME_MS`; only "Mm?" was under one), so the stir's turn and its
     murmur end together a frame on; the stir keeps the look up's exemption (it comes when the
     line does), and the drawn test checks it holds a frame. Her look up's `!` (1.2 s) is under a
-    frame too, left (inside the look up's exemption; plan.md).
+    frame too, left (inside the look up's exemption; plan.md). **Resolved (T4, 2026-10-08):**
+    each of her look up's marks shows a frame at least (`!` a frame, `?` to 4 s, her plain watch
+    a frame past it, 5.4 s for one line).
   - *The world's clock.* In the home with her wall clock, the dial (each game quarter-hour, about
     150 s at 6×) stepped 656 ms after her breathing's flip asleep ("home, clock and window Lazy
     seed 0", both modes); the window's sky would do the same at dawn and dusk. It's no act of
@@ -704,6 +708,16 @@ that her trace is unchanged).
     100 ms paint as another exempt change (a blink, a look up at the chat) is exempt by neither arm
     and fails as a flip; in ASCII the sky's cells inside her box (her leaning at the sill) count as
     hers. Neither comes up today; the door batch moving pieces could. Open (plan.md).
+    **Resolved (T4, 2026-10-08):** the world's clock's own step is taken back first and the rest
+    judged by the other exemptions (and her blink with the hook's bob combines too); in ASCII the
+    sky's cells in her box off her glyphs are the sky's while her model and key hold. And an
+    exempt change no longer hides a flip after it: a look up's or a stir's changes count on (her
+    bob now holds a frame from them and from what she says); her blink, the hook, the film's still
+    and the world's clock don't. Each clause has a mutant over the real paints. T4's review
+    narrowed the look up's exemption to the look's own change (face, bubble, facing; her pose only
+    into or out of a stir's turn), so her bob flipping under a look is judged, and a hold never
+    moves back. Left for the user (plan.md): her act's own keys within a frame of a look's change
+    or a line she says; her night's stillness; the 5.4 s look-up watch.
   - *Her lines, plain ASCII only* (12d). **Resolved (T3, 2026-10-07):** the user allows a few
     narrow marks ("Realistically none of us use a CJK locale; wide-character support is useful
     mostly for rare subtitles and filenames"). The allowlist is `NARROW`, … ♪ — – ’ ‘ “ ” ·, one

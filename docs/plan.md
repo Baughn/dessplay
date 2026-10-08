@@ -2105,7 +2105,7 @@ welcome; the only goal is "watching her is kind of fun".
 
 ## Phase 38: Houseguest mind and home
 
-**Status: phases 0–4 done (2026-10-02 and 2026-10-03); phase 5 split into 5a (vignettes, done 2026-10-03) and 5b (the clock, done 2026-10-05; record below). Phase 5c, stillness, done 2026-10-07 (record below). master was pushed by the user at 5b step 5c (2026-10-04) to test it, and again at 5c step 11's record (2026-10-06); everything after that record is unpushed (step 11's review fixes, D7's docs, steps 8c–13 and the door art). Next: the door batch (below), then phase 6.** Design: [the mind
+**Status: phases 0–4 done (2026-10-02 and 2026-10-03); phase 5 split into 5a (vignettes, done 2026-10-03) and 5b (the clock, done 2026-10-05; record below). Phase 5c, stillness, done 2026-10-07 (record below). master was pushed by the user at 5b step 5c (2026-10-04) to test it, and again at 5c step 11's record (2026-10-06), and at 5c's tail T2 (A) (2026-10-07); everything after that is unpushed (T2's review fixes, T3 and T4). Next: the door batch (below), then phase 6.** Design: [the mind
 and home proposal](proposals/2026-10-02-houseguest-mind.md) (direction
 agreed with the user; their answers are its *Decisions*). Its migration
 plan numbers its own phases 0–8; this section records them.
@@ -3357,6 +3357,57 @@ census could reach without a key or an overlay (nowhere for her door
 with her home carried) never fired in the day census (a probe, 18 game
 weeks, release).
 
+**Phase 5c's tail, T4 (2026-10-08),** four commits and a docs commit.
+(1) **The Dream's lines are 4.2 s** (the user's choice of the two
+lengths offered: three frames a line), each starting on its breathing's
+grid and flipping twice (six in 12.6 s, as before the T2 hold); the
+lint's exception by name is gone, and it found no other set-time bob the
+hold leaves without a flip (the Dream's were the only bobbing keys set
+in ms). CHANGELOG: the Dream said more slowly. (2) **A bob holds where
+her act's end moves in place** (`sleep_on` at bedtime, `refresh_night`
+as her clock is read, which now takes the moment): the frame shown then
+holds until the first flip on its grid a frame on (`script::bob_frame`
+takes the hold through `KeyTime`; `Osaka::hold_bob`). (3) **Each of her
+look up's marks shows a frame at least:** `!` a frame (1.4 s), `?` to
+4 s, her plain watch a frame past it at least (5.4 s for one line,
+400 ms past the 5 s watch; a musing waiting for the look comes as much
+later); her standing look (a short act on her feet) is left, and the
+other sub-frame marks are each outside the rule (decisions.md lists
+them). 69 golden traces moved, each only a look up's `?` 200 ms later
+and its end 400 ms later (and one, the stage's unfed trace, now ends
+before her turn back to the TV). (4) **The stillness tests made precise, and
+her bob holds from her look up and what she says:** the exemptions
+combine (the world's clock's step taken back first; her blink with the
+hook's bob), the sky's cells round her glyphs in her box are the sky's
+in ASCII, and a look up's or a stir's changes count on (the next change
+waits a frame); blinks, the hook, the film's still and the world's clock
+don't. The count failed on what she did (48 stirs and 2 look ups in the
+drawn runs, her breathing flipping 444 ms after a stir's end), so her
+bob now holds from each change of a look up and from what she says
+coming, going or cut short. 67 golden traces moved, only her bob's
+frames. Every new test clause has a mutant over the real paints, and
+each mutant was shown to fail with its clause broken. The gate's wall
+went from about 35 s to about 40 s (the drawn tests under load; alone,
+under a second more). No band cell was re-measured: every change is
+under a second and the band counts movement.
+
+**T4's review fixes** (folded into its commits; goldens: none moved).
+The drawn test's look-up exemption took any change of hers under a look
+or a stir, her bob's flip included, so the holds at a look's start and
+steps were pinned only by golden hashes: it now takes only the look's
+own change (face, bubble, facing; her pose only into or out of a stir's
+turn), with a mutant (her pose changed under the look), and two unit
+tests sample her whole look through a look up and through a line she
+says at each 100 ms of the frame, each failing with any of those holds
+dropped. The holds in `end_look` and `hush` were redundant (each caller
+holds or starts afresh at the same moment) and went. A hold never moves
+back (a late tick held at its moment as her wake moved, then a line's
+end due before it replaced that hold), and `refresh_night` holds only
+when the end moves. A stir's turn ends with its murmur cut short (it
+ran on unwoken). The model's test requires samples its combined clause
+alone exempted; the tests' docs state the combination limit and why
+the film's still counts nothing.
+
 **Open, for the user:**
 - **The two `SHORT` items** above; the lead for the stage's spread is a
   mood factor on spacing out for its own sake, which weighs the same in
@@ -3365,42 +3416,40 @@ weeks, release).
   world's clock in T1 (exempt, scoped to its own change); a bob's key
   ending off its frame grid and a stir by day shorter than a frame in T2
   (both fixed, the allowance gone).
-- **The Dream's breathing** (T2's review): its lines are 3 s each, so
-  the second and third start off the frame grid and, holding a frame
-  clear of each end, never flip: one flip in its 9 s where there were
-  six (`every_bob_at_a_set_time_flips` excepts them by name). Two frames
-  a line (`DREAM_LINE_MS` 2.8 s, the Dream 8.4 s) would give each line
-  one flip at its middle; three (4.2 s) two. Approved and rare, so left
-  for the user.
-- **A bob's end retimed in place** (T2): the hold is timed from the end
-  known then, so where her act's end moves within its last frame, her
-  breathing can flip at that moment, off the grid, and flip again
-  within a frame: a night whose wake time moves (`refresh_night`), and
-  a day's sleep or a night's idle act becoming her night at bedtime
-  (`sleep_on`). Neither test reaches it (both need the retiming inside
-  a frame of the old end). A fix would hold the bob a frame from the
-  retiming, as from a key's start.
-- **Her look up's `!`** (found in T2): it shows `SURPRISED_MS`, 1.2 s,
-  under a frame, before her `?`. It's inside the look up's exemption, a
-  reaction to the user's line, and the same startle she gives on her
-  feet, so it was left; lengthening it to a frame would move every look
-  up (a golden re-record).
-- **The drawn exemptions don't combine** (T1's review): a dial or sky
-  step on the same 100 ms paint as another exempt change (a blink, a
-  look up at the chat) is exempt by neither arm, and fails the drawn
-  test as a flip; and in ASCII the sky's cells inside her box (her
-  leaning at the sill) count as hers. Neither comes up in today's runs;
-  the door batch moving pieces could. The model's test has the same
-  shape (T2, probing 16 seeds a mood): her blink starting on the
-  sample the hook's bob flips is exempt by neither, so the shopping
-  channel's key ending 300 ms on counted as a flip (shopping, lazy seed 2
-  and ordinary seed 5; not among the seeds the test runs). And in both
-  tests an exempt change never sets the flip clock (T2's review): a
-  stir, or a look up, ending off the grid can be followed by her
-  breathing's next flip less than a frame later unnoticed; a stir
-  itself lasts a frame now, but not what follows it. Checking the world's part and hers
-  apart (strip the stepped piece's cells and look, then try the other
-  exemptions on the rest) would answer both, at some looseness.
+- ~~**The Dream's breathing**~~ (T2's review): **resolved in T4** by
+  the user's choice, 4.2 s lines (two flips each).
+- ~~**A bob's end retimed in place**~~ (T2): **resolved in T4**; the
+  bob holds from the moment the end moves.
+- ~~**Her look up's `!`**~~ (found in T2): **resolved in T4**; each of
+  the look up's marks shows a frame at least (its plain watch was under
+  one too).
+- ~~**The drawn exemptions don't combine**~~ (T1's review), and an
+  exempt change never setting the flip clock (T2's review): **resolved
+  in T4**, in both stillness tests, with her bob holding from a look
+  up's and a stir's changes so what she does fits the counting.
+- **Her look up's watch is 5.4 s, not 5 s** (T4): a single line's
+  watch now runs a frame past her `?` (the "second of plain watching"
+  became a frame, 400 ms more). And whether her standing look (on her
+  feet, a short act outside the stillness rule) should match: its `!`
+  is 1.2 s, and its `?` 0.8 s after a restless start.
+- **Her act's keys under a look or a line** (T4's review): a key of
+  her still act may start within a frame of a look's change or of a line
+  she says (her homework nodding off ends the look, so a `!` just before
+  it shows under a frame), which design.md's rule counts; nothing holds
+  a key off. Keeping them apart means putting off one (nodding off till
+  the look is over, or the look's next mark to the key). No stillness
+  run meets one.
+- **Her night's stillness** (found in T4): the stillness tests run
+  afternoons. The night's sleep is a long still act whose sleep-talk
+  and the Dream come at moments off her breathing's grid, so each
+  begins less than a frame after her breathing's last flip; the hold
+  covers only what follows. Aligning them to her breathing's grid, or
+  exempting sleep-talk as a stir is, and a night run of the tests, are
+  the user's call.
+- **The stage's cue over a goodbye** cuts its rain short (T3's review):
+  left as documented, by the orchestrator's call: a stage-only dev
+  scene, predating T3 (decisions.md, "Her empty home rains out whenever
+  she doesn't come in").
 - **The by-her-clock drawn test's gate cost** (T1): about 10 s CPU,
   31.6 → 33.8 s wall for the stop hook's gate; it could run under
   `--profile deep` instead.
@@ -3469,6 +3518,29 @@ share it.
   through a felt rule ("Can't get to the door!") that phase 4's arranging
   answers by moving the piece. Until then the space yields for that frame
   and the door stands at the nearest spot meeting no piece.
+- **No furniture in the chat pane** (the user, 2026-10-07): *"Furniture
+  cannot be placed in the chat pane, since the chat pane is what is
+  focused 95% of the time."* Every piece: bought, makeshift, parcels on
+  the doorstep, and hung decor (poster, clock, window). Props she
+  carries in an act (a book, her homework, a borrowed strip) are exempt.
+  Older homes with a piece in the chat pane: she moves it out herself,
+  through the same felt rule as for her door's space; a piece that fits
+  nowhere else goes to the closet.
+- **Her door is never in the chat pane either.** The user noticed the
+  rule because her door was there (*"Should note I noticed this because
+  the* door *is there."*): the reserved space at a screen edge is chosen
+  outside the chat pane, and the no-home door's edge chooser skips it
+  too. **Open for the door design:** a layout whose only reachable
+  screen edge is in the chat pane; and what the frame shows of an older
+  home's piece in the chat pane until she has moved it out (where it
+  stands, so she has it to notice, or held out of the pane as her door's
+  space yields, which would leave her nothing to see).
+- **Built with the door batch,** on one shared placement check (the
+  door's space and the chat pane both refused to every piece, in both
+  modes), the felt rule for both, and tests first: the layout property
+  extended so no piece and no door meets the chat pane, an older record
+  with a piece there moved out (or closeted when nothing else fits),
+  and a parcel never left on a doorstep in it.
 - **Decided unless the user objects:** the no-home door uses the same edge
   chooser, unsaved; door-position logging (the spot at info as she goes
   out, a fallback or yield at debug with its reason).
