@@ -831,6 +831,9 @@ fn long_visit_on_the_real_layout() {
         // Her door stood drawn in its space while she was out (the door
         // batch: the non-vacuity of `long_visit_of`'s door checks).
         assert!(visited.walls > 0, "graphics={graphics}: {visited:?}");
+        // She went out through her door, open in the visit (step 4a: the
+        // non-vacuity of its "meets no piece" check).
+        assert!(visited.out_doors > 0, "graphics={graphics}: {visited:?}");
     }
 }
 
@@ -921,6 +924,12 @@ struct Visited {
     /// Frames her empty home showed her door drawn face-on (the
     /// fallback).
     floors: usize,
+    /// Visiting frames with her external door open (door batch, step
+    /// 4a: she walked to it and goes out through it).
+    out_doors: usize,
+    /// Visiting frames with a door in space open that she goes out by
+    /// for good (`leaving`: no door to go to).
+    space_doors: usize,
     poses: std::collections::HashSet<std::mem::Discriminant<sprite::Pose>>,
 }
 
@@ -1045,6 +1054,41 @@ fn long_visit_of(
                     visited.visiting += 1;
                     let pose = visit.osaka.appearance(now).0;
                     visited.poses.insert(std::mem::discriminant(&pose));
+                    // Her external door, open in a visit, meets none of
+                    // her pieces (door batch, step 4a: she walks to it,
+                    // never opening it where she stands); nor does a door
+                    // in space she goes out by for good (no door to go
+                    // to: out of any piece first, M25).
+                    let out = match visit.osaka.through() {
+                        Some(osaka::Through::Home(door)) => {
+                            visited.out_doors += 1;
+                            Some(door.spot())
+                        }
+                        Some(osaka::Through::Space(spot)) if visit.osaka.leaving().is_some() => {
+                            visited.space_doors += 1;
+                            Some(spot)
+                        }
+                        _ => None,
+                    };
+                    if let Some((x, y)) = out {
+                        let her = room::her_box(x, y);
+                        prop_assert!(
+                            her.is_some(),
+                            "{now}: her door at {:?} off the screen",
+                            (x, y)
+                        );
+                        let her = her.unwrap();
+                        for piece in &visit.shown {
+                            prop_assert!(
+                                !piece.cover().intersects(her),
+                                "{now}: her open door at {:?} {:?} on her {:?} {:?}",
+                                (x, y),
+                                visit.osaka.through(),
+                                piece.item,
+                                piece.cover()
+                            );
+                        }
+                    }
                 }
                 State::Away(_) => visited.away += 1,
                 _ => {}
@@ -2103,6 +2147,7 @@ fn every_scene_has_a_spot_in_the_stage_room() {
                 let (mut moved, mut swapped, mut climbed, mut poses) =
                     (0, false, false, Vec::new());
                 let mut said = false;
+                let mut home_said = false;
                 let mut used = None;
                 let mut now = 0;
                 let mut happened = false;
@@ -2111,7 +2156,7 @@ fn every_scene_has_a_spot_in_the_stage_room() {
                 // A dash comes in by her door, at its space by the screen's
                 // edge (the door batch), and walks the room to her fridge.
                 let cap = match scene {
-                    Scene::DashIn | Scene::DashForgot => 40_000,
+                    Scene::DashIn | Scene::DashForgot | Scene::School => 40_000,
                     _ => 10_000,
                 };
                 while !happened && now < cap {
@@ -2139,6 +2184,8 @@ fn every_scene_has_a_spot_in_the_stage_room() {
                     used = used.or(visit.osaka.using());
                     let (pose, _, bubble) = visit.osaka.appearance(now);
                     said |= matches!(bubble, Some(osaka::Bubble::Say(_)));
+                    home_said |= gone
+                        && matches!(bubble, Some(osaka::Bubble::Say(line)) if mind::HOME.lines.contains(&line));
                     poses.push(std::mem::discriminant(&pose));
                     let posed = |pose: Pose| poses.contains(&std::mem::discriminant(&pose));
                     happened = match scene {
@@ -2217,6 +2264,8 @@ fn every_scene_has_a_spot_in_the_stage_room() {
                                     .any(|s| s.splice == id && branch.is_none_or(|b| s.branch == b))
                             })
                         }
+                        // Out through her door and back in, home.
+                        Scene::School => home_said,
                         // Lifted, or (a turn) set down already.
                         Scene::Arrange => {
                             visit.osaka.carrying().is_some() || sofa(&guest) != sofa_was

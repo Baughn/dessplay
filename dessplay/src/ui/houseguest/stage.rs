@@ -137,6 +137,10 @@ pub enum Scene {
     /// She dashes home from school, and can't think what for: in through
     /// her door, a moment wondering, and (at school time) out again.
     DashForgot,
+    /// Off to school as at 08:15, at any hour (door batch D10): she
+    /// walks to her door and out through it, and after a short while
+    /// comes back in with "I'm home!" (the visit never ends).
+    School,
     /// Setsubun's beans, thrown on the spot (her calendar's on Feb 3).
     Setsubun,
     /// The first sunrise of the year on her TV (her calendar's on Jan 1;
@@ -163,7 +167,7 @@ pub enum Scene {
 
 impl Scene {
     /// Every scene, in menu order.
-    pub const ALL: [Scene; 57] = [
+    pub const ALL: [Scene; 58] = [
         Self::Arrive,
         Self::Pull,
         Self::Swap,
@@ -213,6 +217,7 @@ impl Scene {
         Self::Arrange,
         Self::DashIn,
         Self::DashForgot,
+        Self::School,
         Self::Setsubun,
         Self::FirstSunrise,
         Self::Dream,
@@ -275,6 +280,7 @@ impl Scene {
             Self::Arrange => "turn the sofa round",
             Self::DashIn => "dash home for lunch",
             Self::DashForgot => "dash home, forgetful",
+            Self::School => "off to school",
             Self::Setsubun => "Setsubun's beans",
             Self::FirstSunrise => "first sunrise",
             Self::Dream => "the Dream",
@@ -378,6 +384,7 @@ impl Scene {
             | Self::MakeSofa
             | Self::MakeBed
             | Self::MakeDesk
+            | Self::School
             | Self::Arrange
             | Self::LookOut => None,
         }
@@ -451,7 +458,7 @@ pub(super) fn direct(
     let (terrain, osaka) = (&visit.terrain, &mut visit.osaka);
     // The frame as it is (her tick may not have seen it yet): where her
     // clock hangs, for a glance up at it.
-    osaka.take_in(chances);
+    osaka.take_in(chances, now);
     let name = scene.name();
     osaka.cue(scene.cue());
     match scene {
@@ -470,8 +477,37 @@ pub(super) fn direct(
                 return Err(format!("{name}: nowhere for her door to stand"));
             };
             let (x, y) = door.spot();
-            osaka.dash_through((x, y), door.into_room(), now);
+            osaka.dash_through(door, now);
             Ok(format!("{name}: in through her door at ({x}, {y})"))
+        }
+        // Off to school by her door, from where she stands (door batch
+        // D10): back in after a short gap.
+        Scene::School => {
+            let Some(door) = chances.door else {
+                return Err(format!("{name}: nowhere for her door to stand"));
+            };
+            // Checked before she's moved: an error leaves her be.
+            let (dx, dy) = door.spot();
+            if terrain.platform_at(dx, dy).is_none() {
+                return Err(format!("{name}: no way to her door"));
+            }
+            // Off any floor (dropping in, say): set down somewhere calm
+            // first, on her door's floor if she can be.
+            if terrain.platform_at(osaka.x, osaka.y).is_none() {
+                let (x, y) = terrain
+                    .platforms
+                    .iter()
+                    .map(|p| ((p.x0 + p.x1) / 2, p.y))
+                    .filter(|&(x, y)| terrain.restful(x, y))
+                    .min_by_key(|&(x, y)| ((x - dx).abs() + (y - dy).abs(), y, x))
+                    .ok_or_else(|| format!("{name}: nowhere to stand"))?;
+                osaka.place(x, y, now);
+            }
+            if !osaka.off_to_school_on_stage(door, terrain, chances, now, rng) {
+                return Err(format!("{name}: no way to her door"));
+            }
+            let (x, y) = door.spot();
+            Ok(format!("{name}: to her door at ({x}, {y})"))
         }
         // The sofa was set up turned from the TV as the frame was read,
         // and she's felt it: she sets off to lift it.

@@ -2237,10 +2237,25 @@ this section states what is built.
   a fall, a door or a poke finishes first); then she goes, whatever
   else she wanted. Every other change waits for her next choice.
 - **Away at school**: at 08:15 on a school day she says "I'm off!" or
-  "Off to school!" ("Late, late, late!" if it cut her breakfast short)
-  and goes out through her pink door, which then stands closed at her
-  door's space (see *Her door's space*), until she comes back out of
-  it. The visit ends there.
+  "Off to school!" ("Late, late, late!" if it cut her breakfast short),
+  once, as she sets off, and walks to her door where it stands this
+  frame (getting up as after any use; climbing, hopping, or taking a
+  door in space between floors as any walk does), and goes out through
+  her pink door there; it then stands closed at her door's space (see
+  *Her door's space*), until she comes back out of it. A boundary never
+  cuts her walk to her door. Each step she follows where the frame
+  stands it: her door moved (a resize, a focused pane over its spot),
+  she walks on to where it stands now; at it, school over on her way (a
+  dash's way out crossing 12:45), she stays in, silently. Her set-off
+  line is said once per school time: once school's over, whatever cut
+  her way short, the next school morning says it again. With no door
+  anywhere, or no way to its spot, she goes out by a door in space
+  where she stands, but only out of every piece of hers (she steps
+  along her floor out of it first, and goes out there). Once she's
+  through her door, it follows the frame's door (a resize) but a
+  focused pane never moves it. Nothing is delivered on her way out (a
+  parcel waits for her). The visit ends only once her door has closed
+  behind her.
   Her home stands empty meanwhile: her pieces, the lamp and TV off, the
   cat as he'll be when she's back, her door. It shows when a visit would
   (the idle gate open, or a resident) and goes as one does: a visitor's

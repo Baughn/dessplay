@@ -2059,30 +2059,24 @@ impl Guest {
                     }
                     placed = spot;
                     match spot {
-                        Some(door) => Some((door.spot(), door.into_room())),
+                        Some(door) => Some(osaka::Through::Home(door)),
                         None => osaka::door_in_space_spot(
                             &terrain,
                             view.chat,
                             &obstacles,
                             &mut guest.rng,
                         )
-                        .map(|spot| (spot, sprite::Facing::Right)),
+                        .map(osaka::Through::Space),
                     }
                 };
                 let osaka = match how {
                     How::Idle => Osaka::arrive(now, &terrain, i32::from(size.0), &mut self.rng),
-                    How::Return => through(self).map(|(spot, facing)| {
-                        Osaka::back_through_door(
-                            spot,
-                            facing,
-                            osaka::Routine::School,
-                            now,
-                            &mut self.rng,
-                        )
+                    How::Return => through(self).map(|to| {
+                        Osaka::back_through_door(to, osaka::Routine::School, now, &mut self.rng)
                     }),
-                    How::Dash => through(self).map(|(spot, facing)| {
+                    How::Dash => through(self).map(|to| {
                         let met = kind == Kind::Dash;
-                        Osaka::dash_in(spot, facing, met, now, &mut self.rng)
+                        Osaka::dash_in(to, met, now, &mut self.rng)
                     }),
                 };
                 if let Some(osaka) = osaka {
@@ -2362,18 +2356,32 @@ impl Guest {
                 // Her external door this frame, on her own terrain (she
                 // never comes out inside a focused pane, nor walks into
                 // one): what she'd go out through.
-                let door = {
+                let (door, door_through, obstacles) = {
                     let plan = plan_of(view, buf);
                     let laid = self.ledger.home.laid_and_shifted(plan.nooks).shown;
                     let made = visit.made.iter().map(|m| m.piece.cover());
                     let obstacles = door::obstacles(&laid, made, visit.ghost);
-                    door::door_place(
+                    let door = door::door_place(
                         &self.ledger.home,
                         plan,
                         &obstacles,
                         &visit.terrain,
                         visit.door,
-                    )
+                    );
+                    // The door she's through follows this: the same, but
+                    // for the focused pane, from where it opened (D6).
+                    // With no focus and the same prev, it's `door` itself.
+                    let prev = visit.osaka.opened_door(now).or(visit.door);
+                    let door_through = if view.focus.is_none() && prev == visit.door {
+                        door
+                    } else {
+                        let ungated = door::Ungated {
+                            ground: &visit.terrain,
+                            focus: view.focus,
+                        };
+                        door::door_place(&self.ledger.home, plan, &obstacles, &ungated, prev)
+                    };
+                    (door, door_through, obstacles)
                 };
                 if door != visit.door {
                     log_door(door, "her visit");
@@ -2452,6 +2460,8 @@ impl Guest {
                         beauty_here,
                         clock,
                         door,
+                        obstacles: obstacles.clone(),
+                        door_through,
                     };
                     let note =
                         stage::direct(scene, buf, &protected, visit, &offered, now, &mut self.rng);
@@ -2503,6 +2513,8 @@ impl Guest {
                     beauty_here,
                     clock,
                     door,
+                    obstacles,
+                    door_through,
                 };
                 // A visit beginning at night: in her bed (else on her
                 // sofa) from the first frame, if either is shown; else she

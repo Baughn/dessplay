@@ -5457,6 +5457,66 @@ a few pieces costs far less than laying a strip out. Laying out again
 after a resize (`move_off`) and per place of a stage gift (`spot`) still
 lays out the whole home: they're rare, not per move.
 
+## She walks to her door; her line is latched apart from `leaving` (2026-10-08)
+
+**Rule:** at school time she sets off for her door where the frame
+stands it (`chances.door`) as a job (`Job::Leave { spot, why }`), says
+her set-off line once (`set_off`, the latch), and opens her external
+door only at its spot (`Act::Door { to: Through::Home(spot), .. }`).
+`leaving` is set only then, never as she sets off. A boundary never
+cuts a Leave walk (`cut`'s `to_job` leaves it out); each step of it she
+re-reads the frame's door (`door_moved`), and at the spot her routine
+(`at_door`). The latch is let go on any decision outside school time
+(`choose_next`), by an errand and by being placed. An opened door not
+yet let her out follows the frame's door read without the focused pane
+(`Chances::door_through`, `door::Ungated`), so a focus never moves it.
+Every door in space she goes out by for good goes through
+`out_where_clear` (her box out of every piece first, a `Then::Out`
+step-off walk), and while she's on her way out (`on_her_way_out`) no
+parcel or gift is delivered. The stage's school scene goes out the same way
+for a short gap (`Leave::Stage`), with "I'm home!" coming back.
+
+**Why:** `leaving` is what ends the visit (`gone_out`: leaving, hidden,
+no door showing). Set at set-off, any door in space on her way between
+floors, or a trip round the screen's edge, would end the visit there,
+out of sight and nowhere near her door (M1;
+`a_leave_walk_across_floors_never_ends_the_visit_before_her_door` was
+red on that build). So the line needs its own latch: re-entering her
+way out (a landing, a walk come to nothing, a focused pane moving her)
+must say nothing, and an errand or being placed resets it. *Which gap*
+her door opens on is in the job (`why`), never derived from `leaving`,
+`returning` or a shift (M9). Letting a later boundary cut her walk
+would have her decide afresh mid-way and, at 12:45 on a dash's way out,
+leave with school over; instead she reaches her door and stays in,
+silently (Open choice 5). Her door at a stale spot can't be
+represented: with no door anywhere mid-gap the act becomes a door in
+space at her feet (C5, M8). With no way to her door's spot (no floor
+she can stand on there) she goes out by a door in space where she
+stands, but only once her box is out of every piece (M25: she steps
+along her floor first), so a door never opens in her bed. *Step 4a
+review (2026-10-08):* the latch was cleared only at her door's spot,
+so a way out cut after 12:45 (a chat line) kept it for the rest of the
+visit: the next school morning said no line, and `awake` would have
+held parcels back all afternoon; clearing it in `choose_next` outside
+school time makes that leak impossible. A door that was read only at
+her arrival could be stale for the whole walk (a resize, a focused
+pane over it); reading it each step leaves one place that handles a
+moved or vanished door (`at_door`'s own moved/none arms went). Three
+of the four "out at her feet" sites skipped the out-of-piece step;
+they now share `out_where_clear`, and its step-off walk ends in the
+door (`Then::Out`) rather than a decision, so `find_rest` can't send
+her back into the piece. A face-on fallback door covered by a focused
+pane moved with the focus (its fallback reason isn't `Protected`), so
+the door she's through now follows the door as read without the focus
+instead of special-casing `Fallback::Protected`. Which gap and which
+of `leaving`/`returning` a door sets is one helper (`leave_by`) for
+every door, so the stage scene comes back with "I'm home!" by a door
+in space too.
+*Rejected:* setting `leaving` at set-off (the M1 bug above); a `beside`
+step to get up from a piece (she gets up by the ordinary end of a use,
+as after any nap, C16); reading `returning` in `start_job` for the
+stage scene (mixed state; a third `Leave` variant instead).
+
 ## Houseguest chooses by needs among the top few (2026-09-28)
 
 **Rule:** Her next act is a weighted-random pick among the four

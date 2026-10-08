@@ -126,7 +126,8 @@ fn until_away(guest: &mut Guest, real: &Buffer, view: &IdleView, from: u64) -> u
     let mut now = from;
     paint(guest, real, view, now);
     while empty_of(guest).is_none() {
-        assert!(now < from + 60_000, "her home never stood empty");
+        // Her walk to her door included.
+        assert!(now < from + 120_000, "her home never stood empty");
         shell_step(guest, real, view, &mut now, true);
     }
     shell_step(guest, real, view, &mut now, true);
@@ -203,9 +204,15 @@ fn a_school_morning_out_through_her_door_and_home_again() {
                 says(said, mind::OFF) || said == Some(Bubble::Say(osaka::LATE)),
                 "{at}: {said:?}"
             );
-            assert_eq!(spot, Some(from), "{at}: through her door where she stood");
             let door = guest.closed_door().expect("her door");
             let space = space_spot(&real, &view, Nook::Users, room::Side::Left);
+            // She set off from where she was and walked to her door's
+            // spot (door batch, step 4a): out through it there.
+            assert_eq!(spot, Some(space), "{at}: out at her door's spot");
+            assert_ne!(
+                from, space,
+                "{at}: she walked there (set off from {from:?})"
+            );
             assert_eq!(door.spot(), space, "{at}: her door in its space");
             assert_eq!(
                 door.set(),
@@ -1120,9 +1127,10 @@ fn rained_out_on_her_way_to_school_she_is_simply_gone() {
             let mut guest = home_at(4, tue(8, 14), &HOME, graphics);
             let mut now = until_visiting(&mut guest, &real, &view, 0);
             let school = real_of(&guest, now, tue(8, 15));
-            // Until she sets off through her door, in sight still.
+            // Until she goes through her door (having walked to it), in
+            // sight still.
             loop {
-                assert!(now < school + 30_000, "{at}: never set off");
+                assert!(now < school + 60_000, "{at}: never set off");
                 shell_step(&mut guest, &real, &view, &mut now, true);
                 let State::Visiting(visit) = &guest.state else {
                     continue;
@@ -1147,7 +1155,7 @@ fn rained_out_on_her_way_to_school_she_is_simply_gone() {
             let door = guest.closed_door().expect("her door");
             let space = space_spot(&real, &view, Nook::Users, room::Side::Left);
             assert_eq!(door.spot(), space, "{at}: in its space");
-            let _ = (x, y);
+            assert_eq!((x, y), space, "{at}: she went through it at its spot");
         }
     }
 }
@@ -1692,13 +1700,22 @@ fn out_of_a_piece_at_school_time(item: Furniture, scenes: &[Scene]) {
             // At the last frame before 08:15: whether she's using it, and
             // whether her box meets its cover.
             let mut last_in = None;
+            // Where she sat, and where she went out through her door
+            // (step 4a: she walks to it from her seat).
+            let (mut seat, mut opened) = (None, None);
             while empty_of(&guest).is_none() {
                 assert!(now < school + 60_000, "{at}: never out");
                 shell_step(&mut guest, &real, &view, &mut now, true);
                 if let State::Visiting(visit) = &guest.state
+                    && let Some(osaka::Through::Home(door)) = visit.osaka.through()
+                {
+                    opened.get_or_insert((door.spot(), (visit.osaka.x, visit.osaka.y)));
+                }
+                if let State::Visiting(visit) = &guest.state
                     && now < school
                 {
                     let osaka = &visit.osaka;
+                    seat = Some((osaka.x, osaka.y));
                     let using = osaka
                         .use_span()
                         .is_some_and(|(seat, ..)| seat.piece == room::PieceRef::Real(item));
@@ -1730,6 +1747,8 @@ fn out_of_a_piece_at_school_time(item: Furniture, scenes: &[Scene]) {
             let space = space_spot(&real, &view, Nook::Users, room::Side::Right);
             let spot = guest.closed_door().expect("her door");
             assert_eq!(spot.spot(), space, "{at}: in its space");
+            assert_eq!(opened, Some((space, space)), "{at}: out through it there");
+            assert_ne!(seat, Some(space), "{at}: she walked there from her seat");
             assert_eq!(
                 spot.set(),
                 door::Set::Wall {
@@ -1849,7 +1868,7 @@ proptest! {
         extra in proptest::option::of((0usize..3, 1usize..3, 0u16..=1000)),
         apart in any::<bool>(),
         size in (70u16..130, 20u16..45),
-        span in 60_000u64..=120_000,
+        span in 90_000u64..=120_000,
     ) {
         let (item, scene) = [
             (Furniture::Bed, Scene::Sleep),
@@ -2852,5 +2871,798 @@ fn text_she_moved_in_her_door_space_never_moves_her_visits_door() {
         );
         paint(&mut guest, &real, &view, now + 100);
         assert_eq!(visit_of(&guest).door, Some(before), "{at}: unmoved");
+    }
+}
+
+// ---- Her walk to her door (door batch, step 4a) ----
+
+/// What her way out to school showed, frame by frame (door batch, step
+/// 4a), until her home stood empty.
+#[derive(Debug, Default)]
+struct WayOut {
+    /// Her set-off lines said this visit (OFF, from her pool's record;
+    /// "Late, late, late!" isn't pooled and is counted apart).
+    off_lines: usize,
+    late: bool,
+    /// Her routine's away reflex taken: the set-off and each re-entry.
+    reentries: usize,
+    /// Frames on her walk to her door.
+    walking: usize,
+    /// Through a door in space on her way (no route between floors).
+    spaced: bool,
+    /// Off the screen on her way (an `Around` route).
+    around: bool,
+    /// Her external door as it first opened: its spot, where she stood,
+    /// and her pieces' covers then.
+    opened: Option<(door::DoorSpot, (i32, i32), Vec<Rect>)>,
+    /// The visit ended (her home stood empty) before her door opened.
+    early: bool,
+}
+
+/// From `now`, frame by frame on `real`/`view`, until her home stands
+/// empty (asserted within `limit` ms): what her way out showed.
+fn way_out(guest: &mut Guest, real: &Buffer, view: &IdleView, now: &mut u64, limit: u64) -> WayOut {
+    let mut seen = WayOut::default();
+    let end = *now + limit;
+    while empty_of(guest).is_none() {
+        assert!(*now < end, "never out: {seen:?}");
+        shell_step(guest, real, view, now, true);
+        let State::Visiting(visit) = &guest.state else {
+            if empty_of(guest).is_some() && seen.opened.is_none() {
+                seen.early = true;
+            }
+            continue;
+        };
+        let osaka = &visit.osaka;
+        seen.off_lines = osaka
+            .said_lines()
+            .iter()
+            .filter(|(pool, ..)| *pool == mind::OFF.id)
+            .count();
+        seen.late |= osaka.appearance(*now).2 == Some(Bubble::Say(osaka::LATE));
+        seen.reentries = osaka
+            .decisions
+            .iter()
+            .filter(|d| d.method == "routine/away")
+            .count();
+        seen.walking += usize::from(osaka.act_summary().contains("her door"));
+        match osaka.through() {
+            Some(osaka::Through::Space(_)) if seen.opened.is_none() && seen.reentries > 0 => {
+                seen.spaced = true;
+            }
+            Some(osaka::Through::Home(door)) if seen.opened.is_none() => {
+                let covers = visit.shown.iter().map(Shown::cover).collect();
+                seen.opened = Some((door, (osaka.x, osaka.y), covers));
+            }
+            _ => {}
+        }
+        seen.around |= seen.reentries > 0 && matches!(osaka.act_name().as_str(), "Out" | "Away");
+    }
+    seen
+}
+
+/// A Tuesday at 08:14 on `real`/`view` with her sofa on Users, set down
+/// at `at` a moment before 08:15 (08:14:59): returns the guest and when.
+fn set_down_before_school(
+    real: &Buffer,
+    view: &IdleView,
+    at: (i32, i32),
+    graphics: bool,
+) -> (Guest, u64) {
+    let mut guest = home_at(
+        4,
+        tue(8, 14),
+        &[(Furniture::Sofa, Nook::Users, 300)],
+        graphics,
+    );
+    let mut now = until_visiting(&mut guest, real, view, 0);
+    let school = real_of(&guest, now, tue(8, 15));
+    let placed = school - 1000 / CLOCK_SPEED;
+    while now < placed {
+        now += (placed - now).min(500);
+        guest.advance(now);
+        paint(&mut guest, real, view, now);
+    }
+    let State::Visiting(visit) = &mut guest.state else {
+        panic!("visiting");
+    };
+    visit.osaka.place(at.0, at.1, now);
+    paint(&mut guest, real, view, now);
+    (guest, now)
+}
+
+/// Out of her bed at school time (cued to sleep in it at 08:12, on
+/// [`rooms_frame`] at 100×30, her bed on Users): she gets up, says one
+/// set-off line, walks to her door's spot (Users' right wall, worked out
+/// from the nook) and opens it there, its box meeting none of her
+/// pieces. Before step 4a, the door opened at her seat.
+#[test]
+fn out_from_her_bed_she_walks_to_her_door() {
+    let (real, view) = rooms_frame(100, 30);
+    let space = space_spot(&real, &view, Nook::Users, room::Side::Right);
+    for graphics in [false, true] {
+        let at = format!("graphics={graphics}");
+        let mut guest = home_at(
+            4,
+            tue(8, 12),
+            &[(Furniture::Bed, Nook::Users, 300)],
+            graphics,
+        );
+        let mut now = until_visiting(&mut guest, &real, &view, 0);
+        guest.cue(Scene::Sleep);
+        let school = real_of(&guest, now, tue(8, 15));
+        // In her bed as school begins (the precondition).
+        let mut seat = None;
+        while now < school {
+            shell_step(&mut guest, &real, &view, &mut now, true);
+            if let State::Visiting(visit) = &guest.state
+                && now < school
+            {
+                seat = visit
+                    .osaka
+                    .use_span()
+                    .filter(|(seat, ..)| seat.piece == room::PieceRef::Real(Furniture::Bed))
+                    .map(|_| (visit.osaka.x, visit.osaka.y));
+            }
+        }
+        let seat = seat.unwrap_or_else(|| panic!("{at}: in her bed as school began"));
+        let seen = way_out(&mut guest, &real, &view, &mut now, 90_000);
+        let (door, stood, covers) = seen
+            .opened
+            .clone()
+            .unwrap_or_else(|| panic!("{at}: her door never opened: {seen:?}"));
+        assert_eq!(door.spot(), space, "{at}: her door in its space");
+        assert_eq!(stood, space, "{at}: she stood at its spot");
+        assert_ne!(seat, space, "{at}: she was elsewhere (in her bed)");
+        assert!(seen.walking > 0, "{at}: she walked there: {seen:?}");
+        let her = room::her_box(space.0, space.1).unwrap();
+        for cover in covers {
+            assert!(
+                !cover.intersects(her),
+                "{at}: her door {her:?} on {cover:?}"
+            );
+        }
+        assert_eq!(
+            seen.off_lines + usize::from(seen.late),
+            1,
+            "{at}: one set-off line: {seen:?}"
+        );
+        assert!(!seen.early, "{at}");
+    }
+}
+
+/// Two boxes on a 100×30 screen: List low on the left, Users high on the
+/// right at the screen's right edge (her door's wall). `around`: List
+/// reaches the left edge, so her way between them is round the screen's
+/// edge; else no route at all (a door in space).
+fn two_floors(around: bool) -> (Buffer, IdleView, (i32, i32)) {
+    let list = if around {
+        Rect::new(0, 10, 45, 17)
+    } else {
+        Rect::new(5, 14, 35, 13)
+    };
+    let users = Rect::new(55, 0, 45, 12);
+    let real = boxes_screen(&[list, users]);
+    let view = IdleView {
+        nooks: vec![(Nook::List, list), (Nook::Users, users)],
+        ..view(bottom_strip(100, 30))
+    };
+    (real, view, (20, i32::from(list.bottom()) - 1))
+}
+
+/// Her walk to her door across floors (an `Around` route, and no route
+/// at all) never ends the visit before her external door opens (M1):
+/// she's visiting until then, through the door in space or the trip off
+/// the screen on her way. Red against a build that sets `leaving` as
+/// she sets off. Both modes.
+#[test]
+fn a_leave_walk_across_floors_never_ends_the_visit_before_her_door() {
+    for around in [false, true] {
+        let (real, view, start) = two_floors(around);
+        let space = space_spot(&real, &view, Nook::Users, room::Side::Right);
+        for graphics in [false, true] {
+            let at = format!("around={around} graphics={graphics}");
+            let (mut guest, mut now) = set_down_before_school(&real, &view, start, graphics);
+            let seen = way_out(&mut guest, &real, &view, &mut now, 90_000);
+            if around {
+                assert!(seen.around, "{at}: round the edge: {seen:?}");
+            } else {
+                assert!(seen.spaced, "{at}: a door in space: {seen:?}");
+            }
+            assert!(!seen.early, "{at}: out before her door: {seen:?}");
+            let (door, stood, _) = seen
+                .opened
+                .clone()
+                .unwrap_or_else(|| panic!("{at}: her door: {seen:?}"));
+            assert_eq!((door.spot(), stood), (space, space), "{at}");
+        }
+    }
+}
+
+/// Her line as she sets off is said once (T11; a guard): re-entering her
+/// way out (a landing, the door in space between floors) says nothing.
+/// The precondition: her away reflex was taken at least twice (the
+/// set-off, and at least one re-entry).
+#[test]
+fn her_line_as_she_sets_off_is_said_once() {
+    for around in [false, true] {
+        let (real, view, start) = two_floors(around);
+        for graphics in [false, true] {
+            let at = format!("around={around} graphics={graphics}");
+            let (mut guest, mut now) = set_down_before_school(&real, &view, start, graphics);
+            let seen = way_out(&mut guest, &real, &view, &mut now, 90_000);
+            // `reentries` counts the set-off itself too: at least one
+            // re-entry (the door in space between floors gives exactly
+            // one).
+            assert!(seen.reentries >= 2, "{at}: re-entered: {seen:?}");
+            assert_eq!(seen.off_lines + usize::from(seen.late), 1, "{at}: {seen:?}");
+        }
+    }
+}
+
+/// A resize on her walk to her door that moves its space (Users' right
+/// wall, 100 wide → 90 wide, [`rooms_frame`]): her door opens at the new
+/// spot (M8).
+#[test]
+fn a_resize_mid_walk_moves_where_she_goes_out() {
+    let (real, view) = rooms_frame(100, 30);
+    let (small, small_view) = rooms_frame(90, 30);
+    let old = space_spot(&real, &view, Nook::Users, room::Side::Right);
+    let new = space_spot(&small, &small_view, Nook::Users, room::Side::Right);
+    assert_ne!(old, new, "the spot moves");
+    for graphics in [false, true] {
+        let at = format!("graphics={graphics}");
+        let (mut guest, mut now) = set_down_before_school(&real, &view, (55, 12), graphics);
+        // On her way, halfway.
+        loop {
+            assert!(now < 120_000, "{at}: never on her way");
+            shell_step(&mut guest, &real, &view, &mut now, true);
+            let osaka = &visit_of(&guest).osaka;
+            if osaka.act_summary().contains("her door") && osaka.x >= 70 {
+                break;
+            }
+        }
+        let seen = way_out(&mut guest, &small, &small_view, &mut now, 90_000);
+        let (door, stood, _) = seen.opened.unwrap_or_else(|| panic!("{at}: her door"));
+        assert_eq!((door.spot(), stood), (new, new), "{at}");
+        assert_eq!(
+            guest.closed_door().map(door::DoorSpot::spot),
+            Some(new),
+            "{at}"
+        );
+    }
+}
+
+/// The stage's school scene (D10): visiting throughout, she walks to her
+/// door, out through it at its space, and back in out of it with "I'm
+/// home!" (the visit never ends).
+#[test]
+fn a_school_scene_comes_back_after_its_gap() {
+    let (real, view) = rooms_frame(100, 30);
+    let space = space_spot(&real, &view, Nook::Users, room::Side::Right);
+    for graphics in [false, true] {
+        let at = format!("graphics={graphics}");
+        let mut guest = home_at(
+            4,
+            tue(15, 0),
+            &[(Furniture::Sofa, Nook::Users, 300)],
+            graphics,
+        );
+        let mut now = until_visiting(&mut guest, &real, &view, 0);
+        guest.cue(Scene::School);
+        let (mut opened, mut hidden, mut home) = (None, false, false);
+        let end = now + 90_000;
+        while !home {
+            assert!(now < end, "{at}: never home: {opened:?} {hidden}");
+            shell_step(&mut guest, &real, &view, &mut now, true);
+            let State::Visiting(visit) = &guest.state else {
+                panic!("{at}: visiting throughout");
+            };
+            let osaka = &visit.osaka;
+            if let Some(osaka::Through::Home(door)) = osaka.through() {
+                opened.get_or_insert(door.spot());
+            }
+            hidden |= opened.is_some() && osaka.hidden(now);
+            if hidden && !osaka.hidden(now) {
+                assert_eq!((osaka.x, osaka.y), space, "{at}: out of her door");
+            }
+            home = hidden && says(osaka.appearance(now).2, mind::HOME);
+        }
+        assert_eq!(opened, Some(space), "{at}");
+    }
+}
+
+/// Her door moves mid-gap (a resize, the stage's school scene): she
+/// comes back out where it stands now (C5, T20; the precondition: the
+/// spot moves).
+#[test]
+fn her_door_follows_a_resize_mid_gap() {
+    let (real, view) = rooms_frame(100, 30);
+    let (small, small_view) = rooms_frame(90, 30);
+    let old = space_spot(&real, &view, Nook::Users, room::Side::Right);
+    let new = space_spot(&small, &small_view, Nook::Users, room::Side::Right);
+    assert_ne!(old, new, "the spot moves");
+    for graphics in [false, true] {
+        let at = format!("graphics={graphics}");
+        let mut guest = home_at(
+            4,
+            tue(15, 0),
+            &[(Furniture::Sofa, Nook::Users, 300)],
+            graphics,
+        );
+        let mut now = until_visiting(&mut guest, &real, &view, 0);
+        guest.cue(Scene::School);
+        // Through her door, out of sight.
+        loop {
+            assert!(now < 120_000, "{at}: never through");
+            shell_step(&mut guest, &real, &view, &mut now, true);
+            let osaka = &visit_of(&guest).osaka;
+            if matches!(osaka.through(), Some(osaka::Through::Home(_))) && osaka.hidden(now) {
+                break;
+            }
+        }
+        let back = now;
+        loop {
+            assert!(now < back + 30_000, "{at}: never back");
+            shell_step(&mut guest, &small, &small_view, &mut now, true);
+            let State::Visiting(visit) = &guest.state else {
+                panic!("{at}: visiting throughout");
+            };
+            if !visit.osaka.hidden(now) {
+                assert_eq!((visit.osaka.x, visit.osaka.y), new, "{at}: out of it");
+                break;
+            }
+        }
+    }
+}
+
+/// Evicted on her way out (a resident's focused pane; F21): a pane not
+/// over her leaves her walk be; one over her moves her out of it, and
+/// her routine sends her on, silently (one set-off line in all), out
+/// through her door in the end.
+#[test]
+fn evicted_on_her_way_out_she_walks_on() {
+    let (w, h) = (100, 30);
+    let real = rooms(w, h);
+    let quiet = resident_view(w, h, None);
+    let panes = nooks(w, h);
+    let (users, playlist) = (panes[1].1, panes[2].1);
+    for graphics in [false, true] {
+        let at = format!("graphics={graphics}");
+        let (mut guest, mut now) = set_down_before_school(&real, &quiet, (55, 12), graphics);
+        loop {
+            assert!(now < 120_000, "{at}: never on her way");
+            shell_step(&mut guest, &real, &quiet, &mut now, true);
+            let osaka = &visit_of(&guest).osaka;
+            if osaka.act_summary().contains("her door") && osaka.x >= 60 {
+                break;
+            }
+        }
+        // Playlist focused, under her: she walks on.
+        let elsewhere = resident_view(w, h, Some(playlist));
+        let was = visit_of(&guest).osaka.x;
+        for _ in 0..3 {
+            shell_step(&mut guest, &real, &elsewhere, &mut now, true);
+        }
+        let osaka = &visit_of(&guest).osaka;
+        assert!(
+            osaka.act_summary().contains("her door"),
+            "{at}: {}",
+            osaka.act_summary()
+        );
+        assert!(osaka.x > was, "{at}: on she walks");
+        // Users focused, over her: out of it by a door in space, then on
+        // to her door (now outside the focused pane).
+        let over = resident_view(w, h, Some(users));
+        shell_step(&mut guest, &real, &over, &mut now, true);
+        let osaka = &visit_of(&guest).osaka;
+        assert!(
+            matches!(osaka.through(), Some(osaka::Through::Space(_))),
+            "{at}: out of the pane: {}",
+            osaka.act_summary()
+        );
+        let seen = way_out(&mut guest, &real, &over, &mut now, 90_000);
+        let (door, ..) = seen
+            .opened
+            .clone()
+            .unwrap_or_else(|| panic!("{at}: her door: {seen:?}"));
+        assert!(!osaka::box_meets(users, door.spot()), "{at}: {door:?}");
+        assert_eq!(seen.off_lines + usize::from(seen.late), 1, "{at}: {seen:?}");
+    }
+}
+
+/// A dash's way out crossing 12:45 (Open choice 5): on her walk to her
+/// door as school ends, she reaches her door's spot and, school being
+/// over, stays in, silently (her door never opens, no set-off line, no
+/// "Late, late, late!", no homecoming), visiting on. This proves the re-check at her door; that a boundary
+/// never cuts her way out (T11) is `a_later_boundary_never_cuts_her_way_out`'s
+/// (osaka.rs): 12:45 reached by skipping her clock cuts no walk either way.
+#[test]
+fn a_dash_out_as_school_ends_stays_in_at_her_door() {
+    let (real, view) = home_screen();
+    let space = space_spot(&real, &view, Nook::Users, room::Side::Left);
+    let seed = (0..10_000)
+        .find(|&seed| brain::dash(seed, 1).is_none())
+        .expect("a Tuesday without one");
+    let pieces = [
+        (Furniture::Fridge, Nook::Playlist, 800),
+        (Furniture::Sofa, Nook::Users, 600),
+    ];
+    for graphics in [false, true] {
+        let at = format!("graphics={graphics}");
+        let mut guest = home_at(seed, tue(12, 30), &pieces, graphics);
+        let mut now = until_visiting_or_away_here(&mut guest, &real, &view);
+        // For her lunch, at her fridge across the room from her door.
+        guest.cue(Scene::DashIn);
+        now += 1;
+        paint(&mut guest, &real, &view, now);
+        // On her way out again, a way from her door still.
+        loop {
+            assert!(now < 120_000, "{at}: never on her way out");
+            shell_step(&mut guest, &real, &view, &mut now, true);
+            let State::Visiting(visit) = &guest.state else {
+                panic!("{at}: out before school ended");
+            };
+            let osaka = &visit.osaka;
+            if osaka.act_summary().contains("her door") && (osaka.x - space.0).abs() > 10 {
+                break;
+            }
+        }
+        let said = visit_of(&guest).osaka.said_lines().len();
+        guest.skip_clock(now);
+        assert_eq!(
+            guest.clock_label(now).as_deref(),
+            Some("Tue 12:45 Afternoon")
+        );
+        let mut there = false;
+        let end = now + 30_000;
+        while now < end {
+            shell_step(&mut guest, &real, &view, &mut now, true);
+            let State::Visiting(visit) = &guest.state else {
+                panic!("{at}: visiting on");
+            };
+            let osaka = &visit.osaka;
+            there |= (osaka.x, osaka.y) == space;
+            assert!(
+                !matches!(osaka.through(), Some(osaka::Through::Home(_))),
+                "{at}: her door opened"
+            );
+            // "Late, late, late!" isn't pooled (`said_lines` below).
+            assert_ne!(
+                osaka.appearance(now).2,
+                Some(Bubble::Say(osaka::LATE)),
+                "{at}: late"
+            );
+            assert_eq!(osaka.leaving(), None, "{at}");
+            if !there {
+                assert!(
+                    osaka.act_summary().contains("her door"),
+                    "{at}: cut: {}",
+                    osaka.act_summary()
+                );
+            }
+        }
+        assert!(there, "{at}: she reached her door");
+        let osaka = &visit_of(&guest).osaka;
+        assert!(
+            !osaka.said_lines()[said..]
+                .iter()
+                .any(|(pool, ..)| *pool == mind::OFF.id || *pool == mind::HOME.id),
+            "{at}: silently: {:?}",
+            &osaka.said_lines()[said..]
+        );
+    }
+}
+
+/// From a cold start until she's visiting or her home stands empty.
+fn until_visiting_or_away_here(guest: &mut Guest, real: &Buffer, view: &IdleView) -> u64 {
+    let mut now = 0;
+    paint(guest, real, view, now);
+    while !matches!(guest.state, State::Visiting(_) | State::Away(_)) {
+        assert!(now < 60_000, "never visiting nor away");
+        shell_step(guest, real, view, &mut now, true);
+    }
+    now
+}
+
+// ---- Her way out: the step 4a review's tests ----
+
+/// A dash's way out cut short after 12:45 (a chat line on her walk, the
+/// step 4a review): her set-off is let go with school, so she's not on
+/// her way out (a parcel may come), and the next school morning she says
+/// her set-off line again, once. Red with the latch kept past school.
+#[test]
+fn a_way_out_cut_after_school_says_its_line_next_morning() {
+    let (real, view) = home_screen();
+    let space = space_spot(&real, &view, Nook::Users, room::Side::Left);
+    let seed = (0..10_000)
+        .find(|&seed| brain::dash(seed, 1).is_none())
+        .expect("a Tuesday without one");
+    let pieces = [
+        (Furniture::Fridge, Nook::Playlist, 800),
+        (Furniture::Sofa, Nook::Users, 600),
+        (Furniture::Bed, Nook::Playlist, 200),
+    ];
+    for graphics in [false, true] {
+        let at = format!("graphics={graphics}");
+        let mut guest = home_at(seed, tue(12, 30), &pieces, graphics);
+        let mut now = until_visiting_or_away_here(&mut guest, &real, &view);
+        guest.cue(Scene::DashIn);
+        now += 1;
+        paint(&mut guest, &real, &view, now);
+        loop {
+            assert!(now < 120_000, "{at}: never on her way out");
+            shell_step(&mut guest, &real, &view, &mut now, true);
+            let osaka = &visit_of(&guest).osaka;
+            if osaka.act_summary().contains("her door") && (osaka.x - space.0).abs() > 10 {
+                break;
+            }
+        }
+        guest.skip_clock(now);
+        // A chat line on her way: she looks, and decides afresh.
+        let mut chatty = view.clone();
+        chatty.chat_mark.synced += 1;
+        shell_step(&mut guest, &real, &chatty, &mut now, true);
+        let cut = now;
+        loop {
+            assert!(now < cut + 30_000, "{at}: never off her way");
+            shell_step(&mut guest, &real, &chatty, &mut now, true);
+            let osaka = &visit_of(&guest).osaka;
+            if !osaka.act_summary().contains("her door") && osaka.act_name() != "Look" {
+                break;
+            }
+        }
+        let osaka = &visit_of(&guest).osaka;
+        assert!(!osaka.on_her_way_out(), "{at}: {}", osaka.act_summary());
+        let offs = |guest: &Guest| {
+            visit_of(guest)
+                .osaka
+                .said_lines()
+                .iter()
+                .filter(|(pool, ..)| *pool == mind::OFF.id)
+                .count()
+        };
+        let before = offs(&guest);
+        // On to the next school morning, visiting on (the dash home is a
+        // visit after all), then out: her lines as she sets off.
+        let (mut said, mut late) = (before, false);
+        while matches!(guest.state, State::Visiting(_)) {
+            assert!(now < cut + 600_000, "{at}: {:?}", guest.clock_label(now));
+            // Skipped boundary by boundary to Wednesday's school time,
+            // then on until she's out.
+            if guest.clock_label(now).is_some_and(|l| !l.ends_with("Away")) {
+                guest.skip_clock(now);
+            }
+            let step = now;
+            while now < step + 10_000 && matches!(guest.state, State::Visiting(_)) {
+                shell_step(&mut guest, &real, &chatty, &mut now, true);
+                if let State::Visiting(visit) = &guest.state {
+                    said = offs(&guest);
+                    late |= visit.osaka.appearance(now).2 == Some(Bubble::Say(osaka::LATE));
+                }
+            }
+        }
+        let out = guest.clock_label(now).unwrap_or_default();
+        assert!(out.starts_with("Wed 08:"), "{at}: out at {out}");
+        assert_eq!(
+            said - before + usize::from(late),
+            1,
+            "{at}: one set-off line"
+        );
+    }
+}
+
+/// Nothing is delivered on her way out to school (the step 4a review):
+/// a parcel ordered once she has set off for her door doesn't come (no
+/// flap, no "A parcel!") before she's out; it waits for her, and comes
+/// once she's home at 12:45 (the precondition: it could come here).
+#[test]
+fn no_parcel_comes_on_her_way_out() {
+    let (real, view) = rooms_frame(100, 30);
+    for graphics in [false, true] {
+        let at = format!("graphics={graphics}");
+        let (mut guest, mut now) = set_down_before_school(&real, &view, (55, 12), graphics);
+        let mut ordered = false;
+        while matches!(guest.state, State::Visiting(_)) {
+            assert!(now < 120_000, "{at}: never out");
+            shell_step(&mut guest, &real, &view, &mut now, true);
+            let State::Visiting(visit) = &guest.state else {
+                break;
+            };
+            assert!(visit.flap.is_none(), "{at}: a flap on her way out");
+            assert_ne!(
+                visit.osaka.appearance(now).2,
+                Some(Bubble::Say(PARCEL)),
+                "{at}: on her way out"
+            );
+            if !ordered && visit.osaka.act_summary().contains("her door") {
+                assert!(visit.osaka.on_her_way_out(), "{at}");
+                guest.send_parcel();
+                ordered = true;
+            }
+        }
+        assert!(ordered, "{at}: she set off");
+        assert!(guest.ledger.ordered.is_some(), "{at}: it waits");
+        guest.skip_clock(now);
+        let home = now;
+        let mut parcel = false;
+        while !parcel {
+            assert!(now < home + 60_000, "{at}: no parcel once home");
+            shell_step(&mut guest, &real, &view, &mut now, true);
+            if let State::Visiting(visit) = &guest.state {
+                parcel = visit.osaka.appearance(now).2 == Some(Bubble::Say(PARCEL));
+            }
+        }
+    }
+}
+
+/// A focused pane over her door's spot on her walk to it (not over her;
+/// the step 4a review): she goes where the frame stands it now, outside
+/// the pane, and never walks into the pane (no eviction on her way). A
+/// guard: the pane's cells are no floor to her, so even a walk on to the
+/// old spot would end at its edge (and re-enter her routine); each step
+/// following the frame's door is `her_walk_to_her_door_follows_the_frames_door`'s.
+#[test]
+fn a_pane_focused_over_her_door_on_her_way_turns_her_aside() {
+    let (w, h) = (100, 30);
+    let real = rooms(w, h);
+    let quiet = resident_view(w, h, None);
+    let focus = Rect::new(84, 0, 16, 13);
+    let focused = resident_view(w, h, Some(focus));
+    for graphics in [false, true] {
+        let at = format!("graphics={graphics}");
+        let (mut guest, mut now) = set_down_before_school(&real, &quiet, (55, 12), graphics);
+        loop {
+            assert!(now < 120_000, "{at}: never on her way");
+            shell_step(&mut guest, &real, &quiet, &mut now, true);
+            let osaka = &visit_of(&guest).osaka;
+            if osaka.act_summary().contains("her door") && osaka.x >= 60 {
+                assert!(!osaka::box_meets(focus, (osaka.x, osaka.y)), "{at}");
+                break;
+            }
+        }
+        let mut opened = None;
+        while opened.is_none() {
+            assert!(now < 240_000, "{at}: her door never opened");
+            shell_step(&mut guest, &real, &focused, &mut now, true);
+            let State::Visiting(visit) = &guest.state else {
+                panic!("{at}: out before her door opened");
+            };
+            let osaka = &visit.osaka;
+            assert!(
+                !osaka::box_meets(focus, (osaka.x, osaka.y)),
+                "{at}: in the focused pane at {:?}: {}",
+                (osaka.x, osaka.y),
+                osaka.act_summary()
+            );
+            // Never moved out of it (an eviction is a door in space).
+            assert!(
+                !matches!(osaka.through(), Some(osaka::Through::Space(_))),
+                "{at}: evicted: {}",
+                osaka.act_summary()
+            );
+            if let Some(osaka::Through::Home(door)) = osaka.through() {
+                opened = Some(door.spot());
+            }
+        }
+        let spot = opened.unwrap();
+        assert!(!osaka::box_meets(focus, spot), "{at}: her door at {spot:?}");
+    }
+}
+
+/// An errand on her walk to her door (the step 4a review, D6): it lets
+/// her set-off go, so setting off again after the poke she says her line
+/// again (two in all), and goes out through her door.
+#[test]
+fn an_errand_on_her_way_out_has_her_set_off_again() {
+    let (real, view) = rooms_frame(100, 30);
+    for graphics in [false, true] {
+        let at = format!("graphics={graphics}");
+        let (mut guest, mut now) = set_down_before_school(&real, &view, (55, 12), graphics);
+        loop {
+            assert!(now < 120_000, "{at}: never on her way");
+            shell_step(&mut guest, &real, &view, &mut now, true);
+            let osaka = &visit_of(&guest).osaka;
+            if osaka.act_summary().contains("her door") && osaka.x >= 60 {
+                break;
+            }
+        }
+        // On List's floor.
+        let accordion = Rect::new(10, 26, 20, 1);
+        assert!(guest.send(&real, &view, accordion, now), "{at}: sent");
+        let seen = way_out(&mut guest, &real, &view, &mut now, 120_000);
+        assert!(seen.opened.is_some(), "{at}: {seen:?}");
+        assert_eq!(seen.off_lines + usize::from(seen.late), 2, "{at}: {seen:?}");
+    }
+}
+
+/// With no door anywhere and her in her bed as school begins (the door
+/// batch's M25 through the guest; the step 4a review): she steps out of
+/// her bed and goes out by a door in space where her box meets none of
+/// her pieces ([`long_visit_of`] checks every frame of it), for good.
+#[test]
+fn with_no_door_anywhere_she_steps_out_of_her_bed_to_go_out() {
+    let (real, view) = no_door_but_floor_outside_the_chat();
+    for graphics in [false, true] {
+        let mut guest = Guest::restore(Ledger::new_at(4, tue(8, 12)));
+        guest.set_date(date(2026, 6, 17));
+        let visited = long_visit_of(
+            guest,
+            graphics,
+            |_, _| (real.clone(), view.clone()),
+            &[(100, 30)],
+            &[],
+            &[],
+            &[],
+            (0, 0, 1, 1),
+            &[(Furniture::Bed, 1, 300, false)],
+            Run {
+                cue: Some(Scene::Sleep),
+                out_every: Some(500),
+            },
+            90_000,
+        )
+        .unwrap_or_else(|e| panic!("graphics={graphics}: {e}"));
+        assert!(visited.space_doors > 0, "graphics={graphics}: {visited:?}");
+        assert!(visited.away > 0, "graphics={graphics}: {visited:?}");
+        assert_eq!(visited.out_doors, 0, "graphics={graphics}: no door of hers");
+    }
+}
+
+/// A focused pane is never a reason to move the door she's through
+/// (D6; the step 4a review): mid-gap on the stage's school scene, a
+/// pane focused over her door's wall (not over her box, so she isn't
+/// moved out of it) puts the frame's door at the fallback (the
+/// precondition; face-on, here at the same spot), but she comes back
+/// out of the door she went in by, in its wall.
+#[test]
+fn a_focused_pane_never_moves_the_door_shes_through() {
+    let (w, h) = (100, 30);
+    let real = rooms(w, h);
+    let quiet = resident_view(w, h, None);
+    let wall = Rect::new(99, 0, 1, 13);
+    let focused = resident_view(w, h, Some(wall));
+    for graphics in [false, true] {
+        let at = format!("graphics={graphics}");
+        let mut guest = home_at(
+            4,
+            tue(15, 0),
+            &[(Furniture::Sofa, Nook::Users, 300)],
+            graphics,
+        );
+        let mut now = until_visiting(&mut guest, &real, &quiet, 0);
+        guest.cue(Scene::School);
+        let door = loop {
+            assert!(now < 120_000, "{at}: never through");
+            shell_step(&mut guest, &real, &quiet, &mut now, true);
+            let osaka = &visit_of(&guest).osaka;
+            if let Some(osaka::Through::Home(door)) = osaka.through()
+                && osaka.hidden(now)
+            {
+                break door;
+            }
+        };
+        assert!(door.wall().is_some(), "{at}: in its space: {door:?}");
+        assert!(!osaka::box_meets(wall, door.spot()), "{at}");
+        let back = now;
+        loop {
+            assert!(now < back + 30_000, "{at}: never back");
+            shell_step(&mut guest, &real, &focused, &mut now, true);
+            let visit = visit_of(&guest);
+            assert_ne!(
+                visit.door,
+                Some(door),
+                "{at}: the frame's door, off its space"
+            );
+            if !visit.osaka.hidden(now) {
+                assert_eq!(
+                    visit.osaka.through(),
+                    Some(osaka::Through::Home(door)),
+                    "{at}"
+                );
+                assert_eq!((visit.osaka.x, visit.osaka.y), door.spot(), "{at}");
+                break;
+            }
+        }
     }
 }

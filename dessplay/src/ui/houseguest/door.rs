@@ -128,6 +128,40 @@ pub(super) trait Ground {
     fn protected(&self, x: i32, y: i32) -> bool;
 }
 
+/// `ground` with the focused pane (`focus`, if the frame protects one)
+/// no longer protected: where her door would stand but for the focus.
+/// The door she's through follows the frame's door read on this (door
+/// batch D6), so a focused pane is never a reason to move it: not over
+/// its space, nor over the fallback spot it stood at.
+pub(super) struct Ungated<'a, G> {
+    pub ground: &'a G,
+    pub focus: Option<Rect>,
+}
+
+impl<G: Ground> Ground for Ungated<'_, G> {
+    fn ledge(&self, x: i32, y: i32) -> bool {
+        self.ground.ledge(x, y)
+    }
+
+    fn wall(&self, x: i32, y: i32) -> bool {
+        self.ground.wall(x, y)
+    }
+
+    fn stroke(&self, x: i32, y: i32) -> bool {
+        self.ground.stroke(x, y)
+    }
+
+    fn protected(&self, x: i32, y: i32) -> bool {
+        let focused = self.focus.is_some_and(|focus| {
+            let (Ok(ux), Ok(uy)) = (u16::try_from(x), u16::try_from(y)) else {
+                return false;
+            };
+            focus.contains((ux, uy).into())
+        });
+        !focused && self.ground.protected(x, y)
+    }
+}
+
 /// Every cover her door's box mustn't meet: her pieces as laid out
 /// (`laid`: before any hiding by text or a focused pane, so a piece
 /// under a released pane counts), what she made this visit (`made`), and
@@ -434,6 +468,71 @@ mod tests {
                 "x {x}"
             );
         }
+    }
+
+    /// A focused pane over her face-on door's spot moves the frame's
+    /// door off it (nothing of hers stands in a focused pane), but read
+    /// without the focus ([`Ungated`]) it stays where it stood: what the
+    /// door she's through follows, so a focused pane never moves it
+    /// (door batch D6), whatever her door fell back for.
+    #[test]
+    fn a_focused_pane_never_moves_the_door_read_ungated() {
+        struct Focused {
+            lines: Lines,
+            focus: Rect,
+        }
+        impl Ground for Focused {
+            fn ledge(&self, x: i32, y: i32) -> bool {
+                self.lines.ledge(x, y)
+            }
+            fn wall(&self, x: i32, y: i32) -> bool {
+                self.lines.wall(x, y)
+            }
+            fn stroke(&self, x: i32, y: i32) -> bool {
+                self.lines.stroke(x, y)
+            }
+            fn protected(&self, x: i32, y: i32) -> bool {
+                self.lines.protected(x, y)
+                    || u16::try_from(x)
+                        .ok()
+                        .zip(u16::try_from(y).ok())
+                        .is_some_and(|(x, y)| self.focus.contains((x, y).into()))
+            }
+        }
+        let area = Rect::new(0, 0, 100, 30);
+        let focus = Rect::new(40, 0, 20, 30);
+        let gated = Focused {
+            lines: Lines {
+                area,
+                floor: 12,
+                wall: 99,
+            },
+            focus,
+        };
+        let plan = Plan {
+            nooks: &[],
+            chat: Rect::default(),
+            screen: area,
+        };
+        let home = Home::default();
+        let prev = DoorSpot::at(50, 12, Set::Floor(Fallback::NoWall));
+        let moved = door_place(&home, plan, &[], &gated, Some(prev));
+        assert!(
+            moved.is_some_and(|m| m.spot() != prev.spot()),
+            "out of the focused pane: {moved:?}"
+        );
+        assert_eq!(moved.map(DoorSpot::set), Some(Set::Floor(Fallback::NoWall)));
+        let ungated = Ungated {
+            ground: &gated,
+            focus: Some(focus),
+        };
+        assert_eq!(
+            door_place(&home, plan, &[], &ungated, Some(prev)),
+            Some(prev)
+        );
+        // Off the screen still counts.
+        let off = DoorSpot::at(1, 12, Set::Floor(Fallback::NoWall));
+        assert_ne!(door_place(&home, plan, &[], &ungated, Some(off)), Some(off));
     }
 
     /// An empty chat pane is no chat pane, wherever it's laid out: a

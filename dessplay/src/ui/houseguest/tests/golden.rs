@@ -981,17 +981,19 @@ fn golden_weekend() {
 
 /// Re-recorded in the door batch's step 3: her Away door stands at its
 /// space by her door's wall, not where she went out (the traces first
-/// differ at the first `away` frame, in its cells only).
+/// differ at the first `away` frame, in its cells only). Again in step
+/// 4a: she walks to her door to go out (the traces first differ at her
+/// set-off, a `Walk` where her door used to open at her feet).
 #[test]
 fn golden_school_morning() {
     check(
         "school",
         school_morning,
         &[
-            (0, 0x7edb5bbe1397144b, 0x78b99dcdbfc912bf),
-            (1, 0x1e87f0b2e59d65e9, 0x6aff49249f61e607),
-            (2, 0xcbde71a777552b5a, 0x993066996e710025),
-            (3, 0x40b06cad5b1a4cd7, 0x1904545460f95f51),
+            (0, 0x91075bdec21b3928, 0x848a7905623507b4),
+            (1, 0x0f128be02e54c273, 0x6d547e08b421c6e2),
+            (2, 0x64ed2451177b3d6f, 0xf1bc13ffb1852e11),
+            (3, 0x77580f827acc6c9e, 0x805e919c3bcddff3),
         ],
     );
 }
@@ -1015,17 +1017,18 @@ fn golden_home_from_school() {
 
 /// Re-recorded in the door batch's step 3: she dashes in out of her door
 /// at its space (3, 16), not the middle (the traces differ from the first
-/// frame).
+/// frame). Again in step 4a: out again, she walks back to her door (the
+/// traces first differ at her set-off, after "Forgot my lunch!").
 #[test]
 fn golden_dash_home() {
     check(
         "dash",
         dash_home,
         &[
-            (0, 0x444b297c12222994, 0x57337a376e5ffa98),
-            (1, 0xd571c8fe4041f464, 0x64fe577017e8c788),
-            (2, 0xb5f06f62e468a7da, 0x37bcdf94f7dd6497),
-            (3, 0x3209667644398321, 0x230458651e2fb985),
+            (0, 0xdda02d0adc807b20, 0x52b53bc3b5dddaa3),
+            (1, 0xb2e0362c93ef47a0, 0x244cb8cbcf4b6863),
+            (2, 0x68ffd923bfa9eb29, 0x51197acb6b4a7b43),
+            (3, 0xa1ec79ac1f6f261d, 0x7fa41a266b0269ee),
         ],
     );
 }

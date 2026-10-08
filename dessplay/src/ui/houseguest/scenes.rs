@@ -10,6 +10,7 @@ use tuirealm::ratatui::buffer::Buffer;
 use tuirealm::ratatui::layout::{Position, Rect};
 
 use super::cells::{untouchable, width};
+use super::door::DoorSpot;
 use super::graphics::strokes;
 use super::layer::{Placed, TextLayer, takeable};
 use super::sprite::{HEIGHT, WIDTH};
@@ -246,6 +247,24 @@ pub(super) enum Job {
     /// Borrow a strip of a line to read beside where she tore it, and
     /// slide it back (phase 5c D5, HG #72).
     Borrow(Pull),
+    /// Go out by her external door, standing at its spot (door batch
+    /// D6): `why` says which gap its door opens on.
+    Leave {
+        spot: DoorSpot,
+        why: Leave,
+    },
+}
+
+/// Why she goes out by her door (door batch D6), so which gap it opens
+/// on is never derived from mixed state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Leave {
+    /// Her routine: school (the door's gap never ends; the visit ends
+    /// once it has closed behind her).
+    School,
+    /// The stage's school scene (door batch D10): out and back in after
+    /// a short gap, the visit never ending.
+    Stage,
 }
 
 /// Lifting `repair.piece`, standing at `(x, y)` (beside it on its
@@ -282,6 +301,7 @@ impl Job {
             Self::Lift(lift) => JobRef::Lift(lift),
             Self::SetDown(set) => JobRef::SetDown(set),
             Self::Borrow(p) => JobRef::Borrow(p),
+            Self::Leave { spot, why } => JobRef::Leave(*spot, *why),
         }
     }
 
@@ -320,6 +340,7 @@ pub(super) enum JobRef<'a> {
     Lift(&'a Lift),
     SetDown(&'a SetDown),
     Borrow(&'a Pull),
+    Leave(DoorSpot, Leave),
 }
 
 impl JobRef<'_> {
@@ -332,6 +353,7 @@ impl JobRef<'_> {
             Self::Use(seat) => (seat.x, seat.y),
             Self::Lift(l) => (l.x, l.y),
             Self::SetDown(s) => (s.x, s.y),
+            Self::Leave(door, _) => door.spot(),
         }
     }
 
@@ -347,6 +369,9 @@ impl JobRef<'_> {
             Self::Build(b) => on(b.row, b.cells.clone()),
             Self::Swap(s) => vec![s.a.source, s.a.at, s.b.source, s.b.at],
             Self::Use(_) | Self::Lift(_) | Self::SetDown(_) => Vec::new(),
+            // Never asked: `Act::at_job` yields no Leave (at her door
+            // she's at an `Act::Door`), and a door is about no text.
+            Self::Leave(..) => Vec::new(),
         }
     }
 
@@ -361,6 +386,11 @@ impl JobRef<'_> {
             },
             Self::Lift(l) => l.side,
             Self::SetDown(s) => s.side,
+            // Facing out, toward her door's wall.
+            Self::Leave(door, _) => match door.out() {
+                super::sprite::Facing::Left => Side::Left,
+                super::sprite::Facing::Right => Side::Right,
+            },
         }
     }
 
@@ -371,6 +401,9 @@ impl JobRef<'_> {
             Self::Swap(s) => (s.row, s.y),
             Self::Build(b) => (b.row, b.y),
             Self::Use(_) => return 1,
+            // Never asked: `Act::at_job` yields no Leave (at her door
+            // she's at an `Act::Door`). It would be the knob.
+            Self::Leave(..) => return 1,
             // Bent down to the piece at her feet.
             Self::Lift(_) | Self::SetDown(_) => return (HEIGHT - 1) as u8,
         };

@@ -360,6 +360,18 @@ and the carried piece's `ghost` (mod.rs:3403). Every caller builds them with one
   decides instead. Otherwise it opens `Act::Door { to: Through::Home(spot), gap }` facing `out()`, with `gap =
   u64::MAX` for `School`, `rng.range(SHIFT_MS)` for `Work` (F13), and sets `leaving` for `School`.
 
+- **Step 4a review amendments (2026-10-08; override the bullets above and below where they differ):**
+  `take_in` follows `chances.door_through` (the frame's door read on `door::Ungated` ground, the focused pane
+  unprotected, from the opened door's spot), not `chances.door`, so no `Set::Floor(Protected)` special case: a
+  face-on fallback covered by focus never moves the opened door either. The Leave walk re-reads `chances.door`
+  every step (`door_moved`, osaka.rs walk tick): moved → `go_to` the fresh spot, `None` or unreachable →
+  `out_where_clear`; `at_door` keeps only the routine re-check. Every door in space she goes out by for good
+  (`go_out`'s `None`, the walk's moved/none, `go_to` false) goes through `out_where_clear`, whose step-off walk is
+  `Then::Out(why)` (out at her feet on arrival, census "routine", no decision between). `set_off` is cleared in
+  `choose_next` on any decision outside the Away slot (plus `errand`, `place`). `Osaka::on_her_way_out()` (latch,
+  `leaving`, a Leave walk/heading, a `Then::Out` walk) gates `awake`, so nothing is delivered on her way out.
+  `leave_by(why)` is the one mapping from `Leave` to gap and `leaving`/`returning` (`start_job`, `out_at_feet`).
+
 **School** (`go_out` osaka.rs:5266, from `choose_next` 7371):
 - First entry (`set_off.is_none()`): say `LATE`/`OFF`, set `set_off = Some(why)`, log info with the spot. Face the
   chat while saying it **only if she is already at her spot** (C14); otherwise she says it facing her way. **Re-entry**
@@ -514,6 +526,9 @@ and the carried piece's `ghost` (mod.rs:3403). Every caller builds them with one
 
 ### D10. Stage
 
+- *As built (step 4a):* `enum Leave { School, Stage }` (Work comes in 4b); `Scene::School` is `Leave::Stage`, and
+  `returning` is set as its door opens (`start_job`), not at set-off, so a decision on her way (a landing) can't
+  say "I'm home!" before she's out. `start_job` never reads `returning`.
 - `Scene::School` (stage.rs:28; a test-and-stage cue, step 4a): she sets off for her door as at 08:15 but with
   **no `leaving` and no `set_off`**: `returning = Some(Routine::School)` (consumed by `back_home`, osaka.rs:9487)
   and a `Job::Leave` whose door opens with gap 5000 ms, so the visit never ends and she comes back through the

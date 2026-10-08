@@ -6,13 +6,16 @@ use super::Rng;
 use super::art::{self, DoorFrame};
 use super::brain::{self, Mood, Need, Needs, Rising, Spot, Want};
 use super::calendar::{self, Owed, Tints};
+use super::door::DoorSpot;
 use super::layer::Placed;
 use super::mind::{self, Beat, Bind, Ctx, Heading, Here, Lines, Loss, PoolId, RIDDLES, Whims};
 use super::rarity::{self, Pity, Rares};
 use super::room::{Furniture, MadeId, PieceRef, Seat, Use};
 use super::routine::{self, DayTime};
 use super::rules::{Grievance, Placement, Repair, TIE_CELLS, Trials};
-use super::scenes::{Build, Grip, Held, Job, JobRef, LayerOp, Lift, Pull, SetDown, Side, Swap};
+use super::scenes::{
+    Build, Grip, Held, Job, JobRef, LayerOp, Leave, Lift, Pull, SetDown, Side, Swap,
+};
 use super::script::{
     self, Chat, ClockGlance, Cue, Play, Prop, ScriptId, SpliceCtx, SpliceId, Surface,
 };
@@ -68,8 +71,21 @@ pub(super) struct Chances {
     /// on that strip: see [`ClockOn::seen_from`]).
     pub clock: Option<ClockOn>,
     /// Her external door this frame, if it stands anywhere (the door
-    /// batch, D4): what a dash in comes through.
+    /// batch, D4): what a dash in comes through, and what she goes out
+    /// by.
     pub door: Option<super::door::DoorSpot>,
+    /// What her door's box mustn't meet this frame (her pieces as laid,
+    /// what she made, the place kept for the piece in her pocket: see
+    /// [`super::door::obstacles`]): with no way to her door, she goes out
+    /// at her feet only where her box meets none of them.
+    pub obstacles: Vec<Rect>,
+    /// Where the door she's through stands this frame (only while she's
+    /// through her own door, [`Osaka::opened_door`]; else `None`): the
+    /// frame's door read without the focused pane and from where that
+    /// door stood ([`super::door::Ungated`]), so a focused pane is never
+    /// a reason to move it (door batch D6). `None` while she's through
+    /// it: no door anywhere now.
+    pub door_through: Option<super::door::DoorSpot>,
 }
 
 /// Her wall clock where it hangs (phase 5b D7): its middle column, and
@@ -674,11 +690,12 @@ enum Act {
         to_y: i32,
         to_x: i32,
     },
-    /// Through a door in space from where she stands to `to` (see
-    /// [`DOOR`]), away for `gap` ms between the doors.
+    /// Through a door from where she stands to `to` (see [`DOOR`]): a
+    /// door in space, or her external door at its spot ([`Through`]);
+    /// away for `gap` ms between the doors.
     Door {
         since: u64,
-        to: (i32, i32),
+        to: Through,
         gap: u64,
     },
     /// Back from work with her shopping.
@@ -956,6 +973,10 @@ enum Then {
     Link(Link),
     /// Does the job, at its spot.
     Job(Job),
+    /// Out by a door in space where she ends up (door batch M25): she
+    /// stepped out of a piece first, with no door of hers to go to
+    /// ([`Osaka::out_where_clear`]).
+    Out(Leave),
 }
 
 /// What kind of thing an act is, for whatever asks: one exhaustive
@@ -1228,6 +1249,35 @@ impl Act {
     }
 }
 
+/// Where a door she goes through lets her out (door batch D6): a door in
+/// space onto a spot, or her external door, at its spot by her home
+/// (the one way out by her routine, and in again). Which it is is told
+/// by type, never by the door's gap.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Through {
+    Space((i32, i32)),
+    Home(DoorSpot),
+}
+
+impl Through {
+    /// Where she stands at the far door.
+    pub fn spot(self) -> (i32, i32) {
+        match self {
+            Self::Space(spot) => spot,
+            Self::Home(door) => door.spot(),
+        }
+    }
+
+    /// Which way she faces coming in through it: into the room from her
+    /// door (door batch C6); a door in space, to the right.
+    pub fn into_room(self) -> Facing {
+        match self {
+            Self::Space(_) => Facing::Right,
+            Self::Home(door) => door.into_room(),
+        }
+    }
+}
+
 /// One beat of going through a door: the door (if shown), whether she
 /// is, whether it's the far end yet, and for how long.
 struct DoorBeat {
@@ -1336,6 +1386,10 @@ fn door_beat(elapsed: u64, gap: u64) -> Option<(&'static DoorBeat, u64)> {
     })
     .map(|(_, beat, end)| (beat, end))
 }
+
+/// The stage's school scene (door batch D10): how long she's out
+/// through her door before she comes back in.
+const STAGE_GAP_MS: u64 = 5000;
 
 /// How long a door takes to let her through and close behind her: the
 /// beats before the gap.
@@ -2069,12 +2123,20 @@ pub(super) struct Osaka {
     shift: Option<Shift>,
     /// She's been to work this visit (once is plenty).
     worked: bool,
-    /// She's leaving by her routine (A9): through her door in place,
-    /// whose gap never ends (`u64::MAX`, nothing drawn), or out at the
-    /// screen's edge for good. The guest ends the visit once she's
-    /// through and it has closed behind her ([`Osaka::gone_out`]). Never
-    /// a [`Shift`]; cleared by [`Osaka::place`] and by an errand.
+    /// She's leaving by her routine (A9): through her door, whose gap
+    /// never ends (`u64::MAX`, nothing drawn), or out at the screen's
+    /// edge for good. Set only once her external door opens (door batch
+    /// D6, M1): nothing on her way to it can end the visit. The guest
+    /// ends the visit once she's through and it has closed behind her
+    /// ([`Osaka::gone_out`]). Never a [`Shift`]; cleared by
+    /// [`Osaka::place`] and by an errand.
     leaving: Option<Routine>,
+    /// She has set off for her door by her routine (door batch D6): her
+    /// line as she sets off is said once (the latch); re-entering her
+    /// way out (a hop's landing, a walk come to nothing, a look at the
+    /// chat) says nothing. Cleared where `leaving` is, and when school's
+    /// over before she's out.
+    set_off: Option<Routine>,
     /// She's coming home by her routine, out of her door: at its end,
     /// she says so ([`Osaka::home_from`]).
     returning: Option<Routine>,
@@ -2493,6 +2555,7 @@ impl Osaka {
             shift: None,
             worked: false,
             leaving: None,
+            set_off: None,
             returning: None,
             late: false,
             needs: Needs::default(),
@@ -2760,10 +2823,12 @@ impl Osaka {
                         JobRef::Use(seat) => format!("{:?} ({:?})", seat.what, seat.item),
                         JobRef::Lift(l) => format!("lifting the {}", l.repair.piece.spec().name),
                         JobRef::SetDown(s) => format!("setting the {} down", s.piece.spec().name),
+                        JobRef::Leave(_, why) => format!("her door ({why:?})"),
                     };
                     format!("{name} to {:?} for {what}", job.spot())
                 }
                 Then::Link(link) => format!("{name} to {to}, then {:?}", link.route),
+                Then::Out(why) => format!("{name} to {to}, then out where she stands ({why:?})"),
                 Then::Nothing => format!("{name} to {to}"),
             },
             Act::Door { to, .. } => format!("{name} to {to:?}"),
@@ -2786,10 +2851,60 @@ impl Osaka {
     /// pretty the room she stands in is, and where her wall clock hangs.
     /// Taken in at each tick, and by the stage before it directs her (a
     /// scene played before her tick has seen the frame sees it as it is).
-    pub fn take_in(&mut self, chances: &Chances) {
+    pub fn take_in(&mut self, chances: &Chances, now: u64) {
         self.beauty_here = chances.beauty_here;
         self.clock_on = chances.clock;
         self.rising = self.rising_in(chances);
+        self.door_follows(chances, now);
+    }
+
+    /// Her external door, opened and not yet let her out at its far side
+    /// (`there`), follows where the frame stands it now (door batch D6,
+    /// C5, M8; `chances.door_through`): a resize mid-gap and she comes
+    /// back out where it stands. A focused pane over it is never a
+    /// reason to move it (that door is read without the focus; the act
+    /// keeps its spot and [`Osaka::evict`] handles the focus). With no
+    /// door anywhere now, it's a door in space at her feet: a door at a
+    /// stale spot can't be represented.
+    fn door_follows(&mut self, chances: &Chances, now: u64) {
+        let (x, y) = (self.x, self.y);
+        let Act::Door { since, to, gap } = &mut self.act else {
+            return;
+        };
+        let Through::Home(door) = *to else {
+            return;
+        };
+        let there = door_beat(now.saturating_sub(*since), *gap).is_none_or(|(beat, _)| beat.there);
+        if there {
+            return;
+        }
+        match chances.door_through {
+            Some(fresh) if fresh != door => {
+                tracing::debug!(from = ?door.spot(), to = ?fresh.spot(), "houseguest: her door moved while she's through it");
+                *to = Through::Home(fresh);
+            }
+            Some(_) => {}
+            None => {
+                tracing::debug!(from = ?door.spot(), "houseguest: her door's gone while she's through it");
+                *to = Through::Space((x, y));
+            }
+        }
+    }
+
+    /// The door of hers she's through, opened and not yet let her out
+    /// at its far side (`now`): what the frame reads her door from for
+    /// `Chances::door_through`.
+    pub fn opened_door(&self, now: u64) -> Option<DoorSpot> {
+        match self.act {
+            Act::Door {
+                since,
+                to: Through::Home(door),
+                gap,
+            } if door_beat(now.saturating_sub(since), gap).is_some_and(|(beat, _)| !beat.there) => {
+                Some(door)
+            }
+            _ => None,
+        }
     }
 
     /// What rises her needs in `chances`' frame (nothing slept).
@@ -3539,11 +3654,13 @@ impl Osaka {
         // On her way to a job she'd stay at: at its spot she'd start it
         // with no decision (her routine's reflex unasked), so it's cut
         // as the job itself would be.
+        // Never her way out by her door (door batch D6, T11): at her
+        // door, she re-checks her routine herself.
         let (to_job, snack) = match &self.act {
             Act::Walk {
                 then: Then::Job(job),
                 ..
-            } => (
+            } if !matches!(job, Job::Leave { .. }) => (
                 true,
                 matches!(job, Job::Use(seat) if seat.what == Use::Snack),
             ),
@@ -3701,6 +3818,16 @@ impl Osaka {
         self.slept_total + self.slept_ms
     }
 
+    /// Where the door she's going through lets her out, if she's going
+    /// through one (tests).
+    #[cfg(test)]
+    pub fn through(&self) -> Option<Through> {
+        match self.act {
+            Act::Door { to, .. } => Some(to),
+            _ => None,
+        }
+    }
+
     /// The routine she's leaving by, if she is.
     pub(super) fn leaving(&self) -> Option<Routine> {
         self.leaving
@@ -3737,7 +3864,7 @@ impl Osaka {
         rng: &mut Rng,
     ) -> bool {
         self.read_clock(clock, now);
-        self.take_in(chances);
+        self.take_in(chances, now);
         let mut changed = false;
         for _ in 0..64 {
             let due = self.due();
@@ -4095,14 +4222,14 @@ impl Osaka {
             }
             Act::Door { since, to, gap } => match door_beat(at.saturating_sub(since), gap) {
                 Some((beat, _)) => {
-                    if beat.there && (self.x, self.y) != to {
-                        (self.x, self.y) = to;
+                    if beat.there && (self.x, self.y) != to.spot() {
+                        (self.x, self.y) = to.spot();
                     }
                     self.act_due = self.first_due(at);
                 }
                 None => {
-                    (self.x, self.y) = to;
-                    if self.errand == Some(to) {
+                    (self.x, self.y) = to.spot();
+                    if self.errand == Some(to.spot()) {
                         self.poke(at);
                     } else if !self.back_home(at) {
                         // Drawn from the decision that sent her through
@@ -4417,6 +4544,12 @@ impl Osaka {
                 }
             }
             Act::Walk { to, then } => {
+                // On her way to her door: wherever it stands now.
+                if let Then::Job(Job::Leave { spot, why }) = then
+                    && self.door_moved(spot, why, at, terrain, chances)
+                {
+                    return;
+                }
                 if self.x != to {
                     let step = (to - self.x).signum();
                     let next = self.x + step;
@@ -4436,6 +4569,18 @@ impl Osaka {
                     return self.poke(at);
                 }
                 let then = match then {
+                    // As the frame stands it now (`door_moved` saw the
+                    // same spot).
+                    Then::Job(Job::Leave { spot, why }) if spot.spot() == (self.x, self.y) => {
+                        let spot = chances.door.unwrap_or(spot);
+                        return self.at_door(spot, why, at, terrain, chances, rng);
+                    }
+                    Then::Out(why) => {
+                        if self.stays_in(why, at) {
+                            return self.decide(at, terrain, chances, rng);
+                        }
+                        return self.out_where_clear(why, terrain, chances, at);
+                    }
                     Then::Job(job) if job.spot() == (self.x, self.y) => {
                         return self.start_job(job, at, chances, rng);
                     }
@@ -4640,7 +4785,7 @@ impl Osaka {
         match then {
             Then::Job(job) if job.carry() => self.spend_try(),
             Then::Link(_) => self.hop_came_to_nothing(),
-            Then::Job(_) | Then::Nothing => {}
+            Then::Job(_) | Then::Out(_) | Then::Nothing => {}
         }
     }
 
@@ -4940,6 +5085,19 @@ impl Osaka {
                 until: at + FIDDLE_MS,
                 back: false,
             },
+            // At her door's spot: out through it (door batch D6), facing
+            // its wall. School's gap never ends (the visit ends once it
+            // has closed behind her); the stage's lets her back in.
+            Job::Leave { spot, why } => {
+                self.facing = spot.out();
+                let gap = self.leave_by(why);
+                tracing::info!(spot = ?spot.spot(), ?why, "houseguest: out through her door");
+                Act::Door {
+                    since: at,
+                    to: Through::Home(spot),
+                    gap,
+                }
+            }
             Job::Pull(pull) => {
                 // At the line's end: brace. She reels in any slack first,
                 // then heaves it 2–7 cells further.
@@ -5289,38 +5447,242 @@ impl Osaka {
         }
     }
 
-    /// Her routine's away reflex (D4, A9; round 1, "the away cue is her
-    /// closed door"): at school time (`why`), out through her door where
-    /// she stands, saying so ("Late, late, late!" if it cut her
-    /// breakfast short). The door's gap never ends and nothing is drawn
-    /// for it: once it has closed behind her, the guest ends the visit
-    /// ([`Osaka::gone_out`]), and her closed door stands there until she
-    /// comes home out of it.
-    fn go_out(&mut self, why: Routine, whims: Whims, at: u64) -> Decision {
-        // Watching the chat, she still faces it as she goes.
-        if at < self.watch_until {
-            self.facing = toward(self.x, self.watch_x);
+    /// Her routine's away reflex (D4, A9; the door batch D6): at school
+    /// time (`why`), she sets off for her door where the frame stands it
+    /// (`chances.door`), saying so once ("Late, late, late!" if it cut
+    /// her breakfast short; the latch, `set_off`), and walks there (a
+    /// hop or a door in space between floors, as any walk); at its spot,
+    /// out through it ([`Osaka::at_door`]). Re-entered (a landing, a walk
+    /// come to nothing, a look at the chat), she says nothing and goes on.
+    /// With no door anywhere, or no way to its spot, out by a door in
+    /// space where she stands, out of any piece first
+    /// ([`Osaka::out_where_clear`]). The visit ends only once her door
+    /// has closed behind her ([`Osaka::gone_out`]), and her closed door
+    /// stands at its spot until she comes home out of it.
+    fn go_out(
+        &mut self,
+        why: Routine,
+        whims: Whims,
+        ctx: &Ctx,
+        at: u64,
+        rng: &mut Rng,
+    ) -> Decision {
+        let (terrain, chances) = (ctx.terrain, ctx.chances);
+        let door = chances.door;
+        let at_spot = door.is_some_and(|d| d.spot() == (self.x, self.y));
+        let first = self.set_off.is_none();
+        if first {
+            let line = if std::mem::take(&mut self.late) {
+                Some(LATE)
+            } else {
+                self.lines.pick(mind::OFF, whims, at)
+            };
+            if let Some(line) = line {
+                self.say(line, at);
+            }
+            match door {
+                Some(door) => {
+                    tracing::info!(?why, door = ?door.spot(), "houseguest: sets off for her door");
+                }
+                // `out_where_clear` says where she goes out.
+                None => tracing::debug!(?why, "houseguest: sets off, no door anywhere"),
+            }
+            self.set_off = Some(why);
         }
-        let line = if std::mem::take(&mut self.late) {
-            Some(LATE)
-        } else {
-            self.lines.pick(mind::OFF, whims, at)
-        };
-        if let Some(line) = line {
-            self.say(line, at);
-        }
-        tracing::info!(?why, "houseguest: out through her door");
-        self.leaving = Some(why);
         self.credit = None;
+        let leave = match why {
+            Routine::School => Leave::School,
+        };
+        match door {
+            None => self.out_where_clear(leave, terrain, chances, at),
+            Some(spot) if at_spot => {
+                self.start_job(Job::Leave { spot, why: leave }, at, chances, rng);
+                // Watching the chat, at her door already, she says it to
+                // the chat (door batch C14).
+                if first && at < self.watch_until {
+                    self.facing = toward(self.x, self.watch_x);
+                }
+            }
+            Some(spot) => {
+                let job = Job::Leave { spot, why: leave };
+                if !self.go_to(Want::Walk, job, ctx.here, terrain, at) {
+                    self.out_where_clear(leave, terrain, chances, at);
+                }
+            }
+        }
+        Decision::reflex("routine/away")
+    }
+
+    /// On her walk to her door's `spot` (`why`), each step (door batch
+    /// D6): the frame's door is read again. Where it stands now is
+    /// where she goes (a resize, or a focused pane over its spot: she
+    /// never walks on into the pane for it), silently; with no door
+    /// anywhere now, or no way to where it stands, out by a door in space
+    /// where she stands ([`Osaka::out_where_clear`]). Returns whether it
+    /// set her about something else (the walk she's on is stale).
+    fn door_moved(
+        &mut self,
+        spot: DoorSpot,
+        why: Leave,
+        at: u64,
+        terrain: &Terrain,
+        chances: &Chances,
+    ) -> bool {
+        match chances.door {
+            // Where it stood (how it stands may have changed: at its spot
+            // she goes out through it as it stands then).
+            Some(door) if door.spot() == spot.spot() => false,
+            Some(door) => {
+                tracing::debug!(from = ?spot.spot(), to = ?door.spot(), "houseguest: her door moved on her way");
+                let job = Job::Leave { spot: door, why };
+                let went = terrain
+                    .platform_at(self.x, self.y)
+                    .is_some_and(|here| self.go_to(Want::Walk, job, here, terrain, at));
+                if !went {
+                    self.out_where_clear(why, terrain, chances, at);
+                }
+                true
+            }
+            None => {
+                tracing::debug!(from = ?spot.spot(), "houseguest: her door's gone on her way");
+                self.out_where_clear(why, terrain, chances, at);
+                true
+            }
+        }
+    }
+
+    /// At her door's `spot` on her way out (`why`; door batch D6), where
+    /// the frame stands it now (her walk followed it each step,
+    /// [`Osaka::door_moved`]). School over on her way (a dash's way out
+    /// crossing 12:45): she stays in and decides instead, silently. Else
+    /// out through it ([`Osaka::start_job`]).
+    fn at_door(
+        &mut self,
+        spot: DoorSpot,
+        why: Leave,
+        at: u64,
+        terrain: &Terrain,
+        chances: &Chances,
+        rng: &mut Rng,
+    ) {
+        if self.stays_in(why, at) {
+            return self.decide(at, terrain, chances, rng);
+        }
+        self.start_job(Job::Leave { spot, why }, at, chances, rng);
+    }
+
+    /// Whether, about to go out for `why` at `at`, she stays in: school
+    /// over on her way (her routine no longer has her out). She decides
+    /// then, silently, and that lets her set-off go (`choose_next`: a
+    /// later school morning says its line again).
+    fn stays_in(&self, why: Leave, at: u64) -> bool {
+        let school = self
+            .day(at)
+            .is_some_and(|day| day.slot == routine::Slot::Away);
+        let stays = why == Leave::School && !school;
+        if stays {
+            tracing::debug!(at = ?(self.x, self.y), "houseguest: on her way out, school's over: she stays in");
+        }
+        stays
+    }
+
+    /// The stage's school scene (door batch D10): she sets off for her
+    /// `door` from where she stands, with no line and nothing latched,
+    /// and goes out through it for a short gap (no `leaving`: the visit
+    /// never ends), coming back in with "I'm home!". False, and nothing
+    /// done, when she isn't on a floor or has no way there.
+    pub fn off_to_school_on_stage(
+        &mut self,
+        door: DoorSpot,
+        terrain: &Terrain,
+        chances: &Chances,
+        now: u64,
+        rng: &mut Rng,
+    ) -> bool {
+        let Some(here) = terrain.platform_at(self.x, self.y) else {
+            return false;
+        };
+        self.credit = None;
+        let job = Job::Leave {
+            spot: door,
+            why: Leave::Stage,
+        };
+        if door.spot() == (self.x, self.y) {
+            self.start_job(job, now, chances, rng);
+            return true;
+        }
+        self.go_to(Want::Walk, job, here, terrain, now)
+    }
+
+    /// Out by a door in space where she stands (`why`; door batch M25):
+    /// no door of hers to go to, or no way to its spot. Only once her box
+    /// meets none of what her door mustn't (`chances.obstacles`: she's
+    /// out of the piece she got up from), so a door never opens in her
+    /// bed; while it does, she steps along her floor to the nearest place
+    /// where it doesn't (a calm one first), and out there on arrival
+    /// (`Then::Out`), with nothing decided in between.
+    fn out_where_clear(&mut self, why: Leave, terrain: &Terrain, chances: &Chances, at: u64) {
+        let clear = |x: i32| !chances.obstacles.iter().any(|&o| box_meets(o, (x, self.y)));
+        if clear(self.x) {
+            return self.out_at_feet(why, at);
+        }
+        let y = self.y;
+        let to = terrain
+            .platform_at(self.x, y)
+            .and_then(|here| terrain.platforms.get(here))
+            .and_then(|floor| {
+                (floor.x0..=floor.x1)
+                    .filter(|&x| clear(x))
+                    .min_by_key(|&x| (!terrain.restful(x, y), (x - self.x).abs(), x))
+            });
+        match to {
+            Some(to) => {
+                tracing::debug!(to, "houseguest: no door to go to; out of the piece first");
+                self.facing = toward(self.x, to);
+                self.set(
+                    Act::Walk {
+                        to,
+                        then: Then::Out(why),
+                    },
+                    at,
+                );
+            }
+            None => self.out_at_feet(why, at),
+        }
+    }
+
+    /// Out by a door in space where she stands (`why`), now: no door of
+    /// hers to go to. School's gap never ends; the stage's lets her back
+    /// in.
+    fn out_at_feet(&mut self, why: Leave, at: u64) {
+        tracing::info!(?why, at = ?(self.x, self.y), "houseguest: out by a door in space where she stands");
+        let gap = self.leave_by(why);
         self.set(
             Act::Door {
                 since: at,
-                to: (self.x, self.y),
-                gap: u64::MAX,
+                to: Through::Space((self.x, self.y)),
+                gap,
             },
             at,
         );
-        Decision::reflex("routine/away")
+    }
+
+    /// What going out by a door for `why` sets (door batch D6, M9): the
+    /// one place it's decided, whichever door. School: `leaving` (the
+    /// visit ends once it has closed behind her) and a gap that never
+    /// ends. The stage's: `returning` (coming back in, she's home; see
+    /// `back_home`) and a short gap. Returns the gap.
+    fn leave_by(&mut self, why: Leave) -> u64 {
+        match why {
+            Leave::School => {
+                self.leaving = Some(Routine::School);
+                u64::MAX
+            }
+            Leave::Stage => {
+                self.returning = Some(Routine::School);
+                STAGE_GAP_MS
+            }
+        }
     }
 
     /// The routine she's out by, once she's through her door and it has
@@ -5445,16 +5807,36 @@ impl Osaka {
     /// isn't over until her day begins), not saying good morning or that
     /// she's home, which nothing speaks over; and here: not out of sight,
     /// nor on her way out or in, by her routine or to and from work (a
-    /// parcel waits for her to have said she's home).
+    /// parcel waits for her to have said she's home; on her way out,
+    /// [`Osaka::on_her_way_out`], for her next visit).
     pub fn awake(&self, now: u64) -> bool {
         !self.sleeping()
             && self.night.is_none()
             && !self.groggy_at(now)
             && now >= self.morning_until
             && !self.hidden(now)
-            && self.leaving.is_none()
+            && !self.on_her_way_out()
             && self.returning.is_none()
             && self.shift.is_none()
+    }
+
+    /// Whether she's on her way out by a door of hers (door batch D6):
+    /// set off for it (`set_off`, latched until school's over or she's
+    /// moved), walking or heading to it, stepping out of a piece to go
+    /// out where she stands, or through it (`leaving`).
+    pub fn on_her_way_out(&self) -> bool {
+        let leave = |job: &Job| matches!(job, Job::Leave { .. });
+        self.set_off.is_some()
+            || self.leaving.is_some()
+            || self.heading.as_ref().is_some_and(|h| leave(&h.job))
+            || matches!(
+                &self.act,
+                Act::Walk {
+                    then: Then::Out(_),
+                    ..
+                }
+            )
+            || matches!(&self.act, Act::Walk { then: Then::Job(job), .. } if leave(job))
     }
 
     /// Whether she's free at `now` for a gift on her doorstep (her wall
@@ -7099,16 +7481,22 @@ impl Osaka {
             Job::Pull(_) | Job::Swap(_) | Job::Build(_) | Job::Borrow(_) => "to text",
             Job::Use(_) => "to seat",
             Job::Lift(_) | Job::SetDown(_) => "to home",
+            // On her way out by her door (door batch D6).
+            Job::Leave { .. } => "routine",
         };
         if let Some(heading) = &self.heading {
             return kind(&heading.job);
         }
-        if let Act::Walk {
-            then: Then::Job(job),
-            ..
-        } = &self.act
-        {
-            return kind(job);
+        match &self.act {
+            Act::Walk {
+                then: Then::Job(job),
+                ..
+            } => return kind(job),
+            // Out of a piece, to go out where she stands (door batch M25).
+            Act::Walk {
+                then: Then::Out(_), ..
+            } => return "routine",
+            _ => {}
         }
         if self.shift.is_some() {
             "work"
@@ -7303,6 +7691,15 @@ impl Osaka {
         self.credit_done(at);
         self.got_what_she_came_for(at);
         self.catch_up_day(at);
+        // Her set-off line is latched for this school time only: whatever
+        // cut her way out short (a chat line, a startle, a focused pane),
+        // once school's over, so is the latch (the next school morning
+        // says its line again), before anything she decides.
+        if self.day(at).map(|day| day.slot) != Some(routine::Slot::Away)
+            && self.set_off.take().is_some()
+        {
+            tracing::debug!("houseguest: school's over; her set-off is let go");
+        }
         self.rest = None;
         if self.errand.is_some() {
             self.head_for_errand(terrain, at);
@@ -7401,7 +7798,7 @@ impl Osaka {
             return self.send_to_bed(&ctx, whims, here, terrain, at, rng);
         }
         if to_school {
-            return self.go_out(Routine::School, whims, at);
+            return self.go_out(Routine::School, whims, &ctx, at, rng);
         }
         // Her homework on the floor over, the floor was hard on her back
         // (phase 5c D5): the first time a visit, she says so, standing a
@@ -8108,7 +8505,10 @@ impl Osaka {
             tracing::debug!(?why, want = ?heading.want, "houseguest: lets go of where she was heading");
             #[cfg(test)]
             self.headings.push(format!("let go: {why:?}"));
-            if matches!(why, Letting::Gone | Letting::Other) {
+            // Her way out by her door isn't something she lost: her
+            // routine sends her on, or school's over (door batch D6).
+            let leave = matches!(heading.job, Job::Leave { .. });
+            if matches!(why, Letting::Gone | Letting::Other) && !leave {
                 self.owe(Loss::Heading, heading.job.spot());
             }
         }
@@ -8654,6 +9054,7 @@ impl Osaka {
         self.hush(at);
         self.cut_shift(at);
         self.leaving = None;
+        self.set_off = None;
         self.returning = None;
         self.late = false;
         self.dash = None;
@@ -9125,7 +9526,7 @@ impl Osaka {
         self.set(
             Act::Door {
                 since: at,
-                to,
+                to: Through::Space(to),
                 gap: 0,
             },
             at,
@@ -9137,7 +9538,7 @@ impl Osaka {
     pub fn arrive_for_errand(spot: (i32, i32), now: u64, rng: &mut Rng) -> Self {
         let act = Act::Door {
             since: now.saturating_sub(DOOR_THROUGH_MS),
-            to: spot,
+            to: Through::Space(spot),
             gap: 0,
         };
         let mut osaka = Self::new(spot.0, spot.1, Facing::Right, act, now, rng);
@@ -9150,24 +9551,20 @@ impl Osaka {
         osaka
     }
 
-    /// She comes home by her routine (`why`): out of her door at `spot`,
-    /// facing `facing` (the far door's beats only, from its first, so a
+    /// She comes home by her routine (`why`): out of her door `to` (her
+    /// own at its spot, or with none anywhere a door in space), facing
+    /// into the room (the far door's beats only, from its first, so a
     /// door standing closed there goes straight on into hers). At its
     /// end she says she's home ([`Osaka::home_from`]). The day is the
     /// unit: she said good morning already, so no hello.
-    pub fn back_through_door(
-        spot: (i32, i32),
-        facing: Facing,
-        why: Routine,
-        now: u64,
-        rng: &mut Rng,
-    ) -> Self {
+    pub fn back_through_door(to: Through, why: Routine, now: u64, rng: &mut Rng) -> Self {
         let act = Act::Door {
             since: now.saturating_sub(DOOR_THERE_MS),
-            to: spot,
+            to,
             gap: 0,
         };
-        let mut osaka = Self::new(spot.0, spot.1, facing, act, now, rng);
+        let (x, y) = to.spot();
+        let mut osaka = Self::new(x, y, to.into_room(), act, now, rng);
         osaka.returning = Some(why);
         osaka.greeted = true;
         #[cfg(test)]
@@ -9176,19 +9573,20 @@ impl Osaka {
     }
 
     /// She dashes home from school for something she forgot (phase 5b
-    /// D3a): out of her door at `spot`, facing `facing` (the far door's
+    /// D3a): out of her door `to`, facing into the room (the far door's
     /// beats only, from its first, so a door standing closed there goes
     /// straight on into hers). As she first decides, she goes for it (see
     /// [`Osaka::dash_on`]); then her routine sends her out again. No
     /// hello once she has `met` you (she said good morning already); a
     /// first meeting (the stage's) has hers after.
-    pub fn dash_in(spot: (i32, i32), facing: Facing, met: bool, now: u64, rng: &mut Rng) -> Self {
+    pub fn dash_in(to: Through, met: bool, now: u64, rng: &mut Rng) -> Self {
         let act = Act::Door {
             since: now.saturating_sub(DOOR_THERE_MS),
-            to: spot,
+            to,
             gap: 0,
         };
-        let mut osaka = Self::new(spot.0, spot.1, facing, act, now, rng);
+        let (x, y) = to.spot();
+        let mut osaka = Self::new(x, y, to.into_room(), act, now, rng);
         osaka.dash = Some(Dash::In);
         osaka.greeted = met;
         #[cfg(test)]
@@ -9202,18 +9600,19 @@ impl Osaka {
         self.dash.is_some()
     }
 
-    /// The stage: her dash home comes out of her door at `spot` instead,
-    /// facing `facing` (into the room), from its first far beat at `now`,
-    /// what she forgot still to settle. Whatever she was up to is
-    /// dropped, as [`Osaka::place`] drops it.
-    pub fn dash_through(&mut self, spot: (i32, i32), facing: Facing, now: u64) {
-        self.place(spot.0, spot.1, now);
-        self.facing = facing;
+    /// The stage: her dash home comes out of her `door` instead, facing
+    /// into the room, from its first far beat at `now`, what she forgot
+    /// still to settle. Whatever she was up to is dropped, as
+    /// [`Osaka::place`] drops it.
+    pub fn dash_through(&mut self, door: DoorSpot, now: u64) {
+        let (x, y) = door.spot();
+        self.place(x, y, now);
+        self.facing = door.into_room();
         self.dash = Some(Dash::In);
         self.set(
             Act::Door {
                 since: now.saturating_sub(DOOR_THERE_MS),
-                to: spot,
+                to: Through::Home(door),
                 gap: 0,
             },
             now,
@@ -9230,7 +9629,9 @@ impl Osaka {
         self.errand = Some(spot);
         // Not out by her routine any more: the accordion first (on her
         // way out through her door, it opens on the accordion instead).
+        // Setting off again after, she says so again.
         self.leaving = None;
+        self.set_off = None;
         // Out of her night's sleep: up groggy, and back to bed after
         // (her routine's bed reflex). Only in the night: a night's sleep
         // the stage gives her by day has no bed to go back to.
@@ -9250,7 +9651,7 @@ impl Osaka {
                     // instead (a shift through it can wait).
                     self.cut_shift(at);
                     if let Act::Door { to, gap, .. } = &mut self.act {
-                        *to = spot;
+                        *to = Through::Space(spot);
                         *gap = 0;
                     }
                 }
@@ -9261,7 +9662,7 @@ impl Osaka {
                 self.set(
                     Act::Door {
                         since: at.saturating_sub(DOOR_THROUGH_MS),
-                        to: spot,
+                        to: Through::Space(spot),
                         gap: 0,
                     },
                     at,
@@ -9387,10 +9788,14 @@ impl Osaka {
         rng: &mut Rng,
     ) -> bool {
         let clear = |spot: (i32, i32)| !box_meets(focus, spot);
-        // Leaving by her routine (A9): she has rained out of it, and is
-        // through her door already (or off the screen): out for good,
-        // with no shift and nothing drawn. The guest ends the visit, her
-        // closed door in the pane until it's left alone.
+        // Leaving by her routine (A9): `leaving` is set only once her
+        // external door has opened (door batch D6), so she's in its beats
+        // or through it already (or off the screen): rained out of it,
+        // out for good, with no shift and nothing drawn. The guest ends
+        // the visit, her closed door in the pane until it's left alone.
+        // On her walk to her door she isn't leaving yet: the ordinary
+        // arms below move her out of the pane, and her routine sends her
+        // on from there, silently (her line is latched, `set_off`).
         if self.leaving.is_some() {
             if !clear((self.x, self.y)) {
                 tracing::debug!("houseguest: out of the focused pane, out for good");
@@ -9429,14 +9834,14 @@ impl Osaka {
                         return true;
                     }
                 } else {
-                    if clear(*to) {
+                    if clear(to.spot()) {
                         return true;
                     }
                     let Some(spot) = calm_elsewhere(terrain, &clear, chat, rng) else {
                         return false;
                     };
                     tracing::debug!(?spot, "houseguest: her door opens elsewhere");
-                    *to = spot;
+                    *to = Through::Space(spot);
                     return true;
                 }
             }
@@ -9472,7 +9877,7 @@ impl Osaka {
         self.set(
             Act::Door {
                 since: now.saturating_sub(DOOR_THROUGH_MS),
-                to: spot,
+                to: Through::Space(spot),
                 gap,
             },
             now,
@@ -9519,7 +9924,7 @@ impl Osaka {
                 self.set(
                     Act::Door {
                         since: at,
-                        to: here,
+                        to: Through::Space(here),
                         gap,
                     },
                     at,
@@ -11973,6 +12378,344 @@ mod tests {
     /// cutting boundary after bedtime.
     const SCHOOL: u64 = (2 * 60 + 8 * 60 + 15) * 10_000;
 
+    /// Her external door in a right-hand wall, standing at `(x, y)`.
+    fn wall_door(x: i32, y: i32) -> DoorSpot {
+        DoorSpot::at(
+            x,
+            y,
+            super::super::door::Set::Wall {
+                side: super::super::room::Side::Right,
+                wall: x + 3,
+            },
+        )
+    }
+
+    /// A later boundary never cuts her way out (door batch, step 4a,
+    /// T11): at school's end (12:45) on her walk to her door, `cut`
+    /// leaves the walk; by the structural match in `cut`'s `to_job`.
+    /// A walk to a use, the same boundary cuts (the precondition).
+    #[test]
+    fn a_later_boundary_never_cuts_her_way_out() {
+        let leave = Act::Walk {
+            to: 40,
+            then: Then::Job(Job::Leave {
+                spot: wall_door(40, 10),
+                why: Leave::School,
+            }),
+        };
+        let to_use = Act::Walk {
+            to: 40,
+            then: Then::Job(Job::Use(seat_for(Use::Watch, Furniture::Tv))),
+        };
+        for (act, cut) in [(leave, false), (to_use, true)] {
+            let (mut osaka, _) = at_bedtime(act.clone(), BED + 50);
+            assert_eq!(osaka.cut(BED), cut, "{act:?}");
+            assert_eq!(osaka.act == act, !cut, "{act:?}");
+        }
+    }
+
+    /// Her, on a 40-wide floor at row 15 at `(x, 15)`, on a Tuesday at
+    /// `h:m` (a school day) from monotonic 0, at `act` due now.
+    fn on_a_school_day(x: i32, h: u64, m: u64, act: Act) -> (Osaka, Terrain, Rng) {
+        let mut rng = Rng(3);
+        let mut osaka = Osaka::standing_at(x, 15, 0, &mut rng);
+        osaka.act = act;
+        osaka.act_due = 0;
+        osaka.read_clock(Some(clock_at(1, h, m)), 0);
+        (osaka, floor_at(15), rng)
+    }
+
+    /// Her walk to her door, set off at 08:20 (the latch set).
+    fn leave_walk(to: i32) -> Act {
+        Act::Walk {
+            to,
+            then: Then::Job(Job::Leave {
+                spot: wall_door(to, 15),
+                why: Leave::School,
+            }),
+        }
+    }
+
+    /// On her walk to her door, a step from its spot (door batch D6,
+    /// step 4a review): the frame's door read each step. Moved (on her
+    /// floor): she walks on to where it stands now. Gone: out by a door
+    /// in space where she stands, for good. Never out through it at the
+    /// stale spot. Where it stood, but standing otherwise: out through
+    /// it as it stands now.
+    #[test]
+    fn her_walk_to_her_door_follows_the_frames_door() {
+        use super::super::door::{Fallback, Set};
+        let moved = wall_door(30, 15);
+        let restood = DoorSpot::at(20, 15, Set::Floor(Fallback::Protected));
+        for door in [Some(moved), None, Some(restood)] {
+            let (mut osaka, terrain, mut rng) = on_a_school_day(19, 8, 20, leave_walk(20));
+            osaka.set_off = Some(Routine::School);
+            let chances = Chances {
+                door,
+                ..Chances::default()
+            };
+            osaka.tick(1000, Some(clock_at(1, 8, 20)), &terrain, &chances, &mut rng);
+            match door {
+                Some(d) if d == moved => {
+                    assert!((19..30).contains(&osaka.x), "on toward it: {}", osaka.x);
+                    assert!(
+                        matches!(
+                            osaka.act,
+                            Act::Walk { to: 30, then: Then::Job(Job::Leave { spot, .. }) } if spot == moved
+                        ),
+                        "{:?}",
+                        osaka.act
+                    );
+                    assert_eq!(osaka.leaving, None);
+                }
+                None => {
+                    assert_eq!(osaka.through(), Some(Through::Space((19, 15))));
+                    assert_eq!(osaka.leaving, Some(Routine::School));
+                }
+                Some(d) => {
+                    assert_eq!(osaka.through(), Some(Through::Home(d)));
+                    assert_eq!(osaka.leaving, Some(Routine::School));
+                }
+            }
+        }
+    }
+
+    /// With no way to her door's spot (on no floor of hers) or no door
+    /// anywhere, she goes out by a door in space where she stands, but
+    /// only once her box meets nothing of hers (door batch M25, the
+    /// step 4a review): in a piece, she steps along her floor to the
+    /// nearest clear spot first (no door, nothing set), and out there
+    /// as she arrives, nothing decided between; out of any piece, out
+    /// at once.
+    #[test]
+    fn with_no_way_to_her_door_she_steps_out_of_her_piece_first() {
+        let unreachable = wall_door(35, 5);
+        let piece = Rect::new(8, 11, 5, 5);
+        for door in [Some(unreachable), None] {
+            for (obstacles, step) in [(vec![piece], true), (Vec::new(), false)] {
+                let at = format!("{door:?} {obstacles:?}");
+                let stand = Act::Stand { until: 0 };
+                let (mut osaka, terrain, mut rng) = on_a_school_day(10, 8, 20, stand);
+                let chances = Chances {
+                    door,
+                    obstacles,
+                    ..Chances::default()
+                };
+                osaka.decide(1000, &terrain, &chances, &mut rng);
+                assert_eq!(
+                    osaka.decisions.last().map(|d| d.method),
+                    Some("routine/away"),
+                    "{at}"
+                );
+                assert_eq!(osaka.set_off, Some(Routine::School), "{at}");
+                if !step {
+                    assert_eq!(osaka.through(), Some(Through::Space((10, 15))), "{at}");
+                    assert_eq!(osaka.leaving, Some(Routine::School), "{at}");
+                    continue;
+                }
+                // Box x−2..=x+2 clear of 8..=12: 5 or 15, the lower first.
+                assert_eq!(
+                    osaka.act,
+                    Act::Walk {
+                        to: 5,
+                        then: Then::Out(Leave::School)
+                    },
+                    "{at}"
+                );
+                assert_eq!(osaka.leaving, None, "{at}");
+                assert_eq!(osaka.census_purpose(), "routine", "{at}");
+                assert!(osaka.on_her_way_out(), "{at}");
+                let decided = osaka.decisions.len();
+                let mut now = 1000;
+                while osaka.through().is_none() {
+                    assert!(now < 30_000, "{at}: never out: {:?}", osaka.act);
+                    now = osaka.due().max(now + 1);
+                    osaka.tick(now, Some(clock_at(1, 8, 20)), &terrain, &chances, &mut rng);
+                }
+                assert_eq!(osaka.through(), Some(Through::Space((5, 15))), "{at}");
+                assert_eq!(osaka.leaving, Some(Routine::School), "{at}");
+                assert_eq!(osaka.decisions.len(), decided, "{at}: nothing decided");
+            }
+        }
+    }
+
+    /// Her way out by her door isn't something she lost (door batch D6):
+    /// a Leave heading let go owes no beat, however it's let go; a walk
+    /// to a use let go so does (the precondition).
+    #[test]
+    fn a_lost_way_out_owes_no_beat() {
+        let mut rng = Rng(3);
+        let leave = Job::Leave {
+            spot: wall_door(30, 15),
+            why: Leave::School,
+        };
+        let to_use = Job::Use(seat_for(Use::Watch, Furniture::Tv));
+        for why in [Letting::Gone, Letting::Other] {
+            for (job, owes) in [(leave.clone(), false), (to_use.clone(), true)] {
+                let mut osaka = Osaka::standing_at(10, 15, 0, &mut rng);
+                osaka.heading = Some(Heading {
+                    want: Want::Walk,
+                    job: job.clone(),
+                });
+                osaka.drop_heading(why);
+                assert_eq!(!osaka.beats.is_empty(), owes, "{why:?} {job:?}");
+                assert_eq!(!osaka.owed.is_empty(), owes, "{why:?} {job:?}");
+            }
+        }
+    }
+
+    /// Her set-off line is latched for one school time (door batch D6,
+    /// the step 4a review): an errand or being placed lets it go (a new
+    /// set-off says its line), and so does school ending: at her door
+    /// at 12:45 she stays in, and on any decision once school's over
+    /// (whatever cut her way out short), it's gone.
+    #[test]
+    fn her_set_off_is_let_go() {
+        let terrain = floor_at(15);
+        // An errand on her way.
+        let (mut osaka, _, _) = on_a_school_day(10, 8, 20, leave_walk(30));
+        osaka.set_off = Some(Routine::School);
+        osaka.errand((5, 15), &terrain, 1000);
+        assert_eq!(osaka.set_off, None, "the errand");
+        // Placed on her way.
+        let (mut osaka, _, _) = on_a_school_day(10, 8, 20, leave_walk(30));
+        osaka.set_off = Some(Routine::School);
+        osaka.place(12, 15, 1000);
+        assert_eq!(osaka.set_off, None, "placed");
+        // At her door as school ends.
+        let (mut osaka, terrain, mut rng) = on_a_school_day(19, 12, 50, leave_walk(20));
+        osaka.set_off = Some(Routine::School);
+        let chances = Chances {
+            door: Some(wall_door(20, 15)),
+            ..Chances::default()
+        };
+        osaka.tick(
+            1000,
+            Some(clock_at(1, 12, 50)),
+            &terrain,
+            &chances,
+            &mut rng,
+        );
+        assert_eq!((osaka.x, osaka.y), (20, 15));
+        assert_eq!(osaka.through(), None, "she stays in");
+        assert_eq!(osaka.set_off, None, "at her door");
+        // Any decision once school's over (a chat look cut her walk).
+        let stand = Act::Stand { until: 0 };
+        let (mut osaka, terrain, mut rng) = on_a_school_day(10, 12, 50, stand);
+        osaka.set_off = Some(Routine::School);
+        osaka.decide(1000, &terrain, &Chances::default(), &mut rng);
+        assert_eq!(osaka.set_off, None, "decided after school");
+        // While school is on, a decision keeps it (a re-entry).
+        let stand = Act::Stand { until: 0 };
+        let (mut osaka, terrain, mut rng) = on_a_school_day(10, 8, 20, stand);
+        osaka.set_off = Some(Routine::School);
+        osaka.decide(1000, &terrain, &Chances::default(), &mut rng);
+        assert_eq!(osaka.set_off, Some(Routine::School), "re-entered");
+        assert!(osaka.said_lines().is_empty(), "silently");
+    }
+
+    /// She comes in facing the room (door batch C6): out of her door in
+    /// a left wall she faces right, in a right wall left; coming home and
+    /// dashing in alike. A guard (step 3 already faced her so).
+    #[test]
+    fn she_comes_in_facing_the_room() {
+        use super::super::door::Set;
+        use super::super::room::Side;
+        let mut rng = Rng(5);
+        // Her spot three in from its wall: a left wall at 7, a right at 13.
+        for (side, wall, facing) in [
+            (Side::Left, 7, Facing::Right),
+            (Side::Right, 13, Facing::Left),
+        ] {
+            let door = DoorSpot::at(10, 12, Set::Wall { side, wall });
+            let to = Through::Home(door);
+            let back = Osaka::back_through_door(to, Routine::School, 0, &mut rng);
+            let dash = Osaka::dash_in(to, true, 0, &mut rng);
+            for osaka in [back, dash] {
+                assert_eq!(osaka.facing, facing, "{side:?}");
+                assert_eq!((osaka.x, osaka.y), (10, 12), "{side:?}");
+                assert_eq!(osaka.through(), Some(to), "{side:?}");
+            }
+        }
+    }
+
+    /// Her external door opened, not yet let her out (door batch, step
+    /// 4a, C5): with no door anywhere now, it's a door in space at her
+    /// feet; moved, it follows (`Chances::door_through`: the frame's door
+    /// read without the focused pane, so a focus never moves it; see
+    /// door.rs `a_focused_pane_never_moves_the_door_read_ungated`); the
+    /// frame's own door is not what it reads. Once she's out at its far
+    /// side it's left.
+    #[test]
+    fn her_door_mid_gap_follows_the_frame() {
+        use super::super::door::{Fallback, Set};
+        let mut rng = Rng(5);
+        let open = |osaka: &mut Osaka, door: DoorSpot| {
+            osaka.act = Act::Door {
+                since: 0,
+                to: Through::Home(door),
+                gap: 5_000,
+            };
+        };
+        let door = wall_door(20, 10);
+        let moved = wall_door(30, 10);
+        let elsewhere = DoorSpot::at(25, 10, Set::Floor(Fallback::Protected));
+        let mid = DOOR_THROUGH_MS + 100;
+        for (through, want) in [
+            (None, Through::Space((20, 10))),
+            (Some(moved), Through::Home(moved)),
+            (Some(door), Through::Home(door)),
+        ] {
+            let mut osaka = Osaka::standing_at(20, 10, 0, &mut rng);
+            open(&mut osaka, door);
+            assert_eq!(osaka.opened_door(mid), Some(door));
+            let chances = Chances {
+                door: Some(elsewhere),
+                door_through: through,
+                ..Chances::default()
+            };
+            osaka.take_in(&chances, mid);
+            assert_eq!(osaka.through(), Some(want), "{through:?}");
+        }
+        // At its far side already: left as it is.
+        let mut osaka = Osaka::standing_at(20, 10, 0, &mut rng);
+        open(&mut osaka, door);
+        let there = DOOR_THROUGH_MS + 5_000 + 10;
+        assert_eq!(osaka.opened_door(there), None);
+        let chances = Chances {
+            door: Some(moved),
+            door_through: Some(moved),
+            ..Chances::default()
+        };
+        osaka.take_in(&chances, there);
+        assert_eq!(osaka.through(), Some(Through::Home(door)));
+    }
+
+    /// Her external door opened, not leaving by her routine (the stage's
+    /// school scene; work's in step 4b), not yet let her out, its far
+    /// side in a focused pane: it opens elsewhere, a door in space,
+    /// keeping its gap (door batch M10, F21).
+    #[test]
+    fn an_opened_door_evicted_keeps_its_gap() {
+        let terrain = floor_at(15);
+        let mut rng = Rng(5);
+        let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+        let door = wall_door(20, 15);
+        osaka.act = Act::Door {
+            since: 0,
+            to: Through::Home(door),
+            gap: 5_000,
+        };
+        let focus = Rect::new(15, 8, 12, 9);
+        assert!(osaka.evict(focus, &terrain, None, DOOR_THROUGH_MS + 100, &mut rng));
+        let Act::Door { to, gap, .. } = osaka.act else {
+            panic!("{:?}", osaka.act);
+        };
+        assert!(matches!(to, Through::Space(_)), "{to:?}");
+        assert!(!box_meets(focus, to.spot()), "{to:?}");
+        assert_eq!(gap, 5_000);
+    }
+
     /// Her, at `act` (its next pose change at `act_due`), with her clock
     /// at Monday 22:00 from monotonic 0.
     fn at_bedtime(act: Act, act_due: u64) -> (Osaka, Rng) {
@@ -12093,8 +12836,22 @@ mod tests {
             },
             Act::Door {
                 since: BED - 100,
-                to: (20, 10),
+                to: Through::Space((20, 10)),
                 gap: 5_000,
+            },
+            // Her external door (door batch, step 4a), and her walk to
+            // it: a boundary never cuts her way out.
+            Act::Door {
+                since: BED - 100,
+                to: Through::Home(wall_door(10, 10)),
+                gap: u64::MAX,
+            },
+            Act::Walk {
+                to: 20,
+                then: Then::Job(Job::Leave {
+                    spot: wall_door(20, 10),
+                    why: Leave::School,
+                }),
             },
             Act::Poke {
                 since: BED - 100,
@@ -12114,17 +12871,17 @@ mod tests {
             },
         ];
         let terrain = blank_terrain();
+        // Her door where the frame stands it (where she is).
+        let chances = Chances {
+            door: Some(wall_door(10, 10)),
+            door_through: Some(wall_door(10, 10)),
+            ..Chances::default()
+        };
         for act in acts {
             let (mut osaka, mut rng) = at_bedtime(act.clone(), step);
             let before = rng.0;
             assert_eq!(osaka.cut_at, Some(BED), "{act:?}");
-            let changed = osaka.tick(
-                BED,
-                Some(monday_at(22, 0)),
-                &terrain,
-                &Chances::default(),
-                &mut rng,
-            );
+            let changed = osaka.tick(BED, Some(monday_at(22, 0)), &terrain, &chances, &mut rng);
             assert!(!changed, "{act:?}");
             assert_eq!(osaka.act, act, "not cut, not stepped");
             assert_eq!(osaka.act_due, step, "{act:?}");
@@ -12134,13 +12891,7 @@ mod tests {
             assert_eq!(osaka.due(), step, "{act:?}");
             // Again at the same moment, and as the clock is read afresh
             // (the next tick's entry): the boundary handled stays handled.
-            assert!(!osaka.tick(
-                BED,
-                Some(monday_at(22, 0)),
-                &terrain,
-                &Chances::default(),
-                &mut rng
-            ));
+            assert!(!osaka.tick(BED, Some(monday_at(22, 0)), &terrain, &chances, &mut rng));
             assert_eq!(osaka.cut_at, Some(SCHOOL), "{act:?}");
         }
     }
@@ -15645,7 +16396,7 @@ mod tests {
             clock: Some(clock_on(5, 15)),
             ..Chances::default()
         };
-        osaka.take_in(&chances);
+        osaka.take_in(&chances, 0);
         osaka.act = Act::Away {
             until: 0,
             enter: 20,
@@ -15696,7 +16447,7 @@ mod tests {
         };
         let door = Act::Door {
             since: 0,
-            to: (5, 15),
+            to: Through::Space((5, 15)),
             gap: 0,
         };
         let look = Act::Look {
@@ -15830,8 +16581,9 @@ mod tests {
         }
         assert!(walked_in, "she never walked in");
         let errand = Osaka::arrive_for_errand((20, 15), 0, &mut rng);
-        let back = Osaka::back_through_door((20, 15), Facing::Left, Routine::School, 0, &mut rng);
-        let dash = Osaka::dash_in((20, 15), Facing::Left, true, 0, &mut rng);
+        let into = Through::Space((20, 15));
+        let back = Osaka::back_through_door(into, Routine::School, 0, &mut rng);
+        let dash = Osaka::dash_in(into, true, 0, &mut rng);
         for (osaka, what) in [(&errand, "errand"), (&back, "routine"), (&dash, "dash")] {
             let log: Vec<_> = osaka
                 .set_off_log
@@ -15912,7 +16664,7 @@ mod tests {
         osaka.set(
             Act::Door {
                 since: now,
-                to: (5, 15),
+                to: Through::Space((5, 15)),
                 gap: 0,
             },
             now,
@@ -15933,7 +16685,7 @@ mod tests {
         osaka.set(
             Act::Door {
                 since: now,
-                to: (5, 15),
+                to: Through::Space((5, 15)),
                 gap: 0,
             },
             now,
@@ -16197,7 +16949,7 @@ mod tests {
         assert_eq!(osaka.census_motion(0), None, "standing is still");
         osaka.act = Act::Door {
             since: 0,
-            to: (5, 15),
+            to: Through::Space((5, 15)),
             gap: 0,
         };
         assert_eq!(osaka.census_motion(0).map(|m| m.body), Some(Body::Door));
