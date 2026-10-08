@@ -4743,6 +4743,49 @@ bob that the hold leaves without a flip (the Dream's are the only
 bobbing keys set in ms; the share-timed ones, crumpling and unpacking,
 are above).
 
+**A bob holds where her act's end moves in place (phase 5c's tail, T4,
+2026-10-08; T2 left it open):** a bob's hold before its end is timed
+from the end known then, so an end moved within its last frame released
+(moved later) or took back (moved earlier) a flip at that moment, off
+the grid, with the next flip or the act's end less than a frame on.
+Two places move an end in place: `sleep_on` (a day's sleep, or a
+night's idle act, becoming her night at bedtime; it also drops any
+coda) and `refresh_night` (her wake time found afresh at each reading
+of her clock, which now gives the moment it's read at). Both now hold
+her bob (`Osaka::hold_bob`, before the end moves): the frame it shows
+then holds until the first flip on its grid a frame on
+(`script::bob_frame`, the hold carried in `KeyTime` to every bob
+on the frame: a key's, lying back and reading on her back, reading a
+borrowed strip). The rejected alternative, restarting the bob at the
+moment as at a key's start, would show the grid's frame there, not the
+one shown, and change it off the grid itself. A hold belongs to its
+act (cleared as an act is set) and to its part: the Dream, which
+restarts her night's part in place, carries none, and keeps clear of
+its own start as any key does. Where the end moves earlier to less than
+a frame on, the act's end itself can still come within a frame of the
+last flip, which no hold can take back; it is her waking (a new act),
+and only a date crossing into a vacation (or back) in the night moves
+the wake at all. A hold never moves back (T4's review): a tick that
+comes late reads her clock at its own moment first and holds there as
+her wake moves, then handles what fell due before it, and a line's end
+held at its earlier moment replaced the later hold, so her breathing
+could flip less than a frame after the moment the client painted from.
+The latest hold now stays (`Osaka::hold_frame`); and `refresh_night`
+reads the frame before the end moves but holds only if it moved (it
+held and put the old hold back at every reading, logging a hold that
+never was each tick). Test: `a_late_tick_holds_her_bob_from_her_wake_moving`
+(lines ending in each 100 ms of the frame before a late tick, three
+phases of the grid), red before ("held from her wake moving": 899900,
+not 900000; her pose "changed at 900000 and 900600");
+`any_held_bob_frame_holds_from_its_moment` also tries a hold from
+before the bob's start, which holds nothing.
+Test: `a_bob_holds_a_frame_when_her_acts_end_moves_in_place`
+(every 50 ms of the old end's last frame, three phases of the grid, both
+places, both ways), red before the fix at `sleep_on` ("changed at
+300000 and 300800") and, the hold dropped from `refresh_night` alone,
+at either way the wake moves. Golden traces: none moved (no golden
+scene moves an end in place).
+
 **Static wakes her on its frames; the hook doesn't:** a use wakes her on
 its 1.4 s frame grid and as each key ends, and a client that paints only
 when she says something changed would show the 1.2 s of switch-on static

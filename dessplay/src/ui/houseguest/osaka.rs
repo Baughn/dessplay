@@ -1838,14 +1838,22 @@ impl Activity {
     /// (exercise, kicking her feet) is motion through a short act, not a
     /// still one's change (the stillness rule is for still acts over 30 s;
     /// these are 25 s at most), so it runs to the end.
-    fn frame(self, elapsed: u64, length: u64) -> u8 {
+    /// A bob on the frame is held from `held` (ms into the act, and the
+    /// frame then: [`script::bob_frame`]).
+    fn frame(self, elapsed: u64, length: u64, held: Option<(u64, u8)>) -> u8 {
         let period = self.period();
         match self {
             Self::SitDoze => u8::from(elapsed >= SIT_DOZE_NOD_MS),
             Self::Gaze => u8::from(elapsed >= GAZE_OOH_MS),
-            _ if period >= USE_FRAME_MS => script::bob_frame(elapsed, 0, length, period),
+            _ if self.bobs_on_the_frame() => script::bob_frame(elapsed, 0, length, period, held),
             _ => elapsed.checked_div(period).map_or(0, |n| (n % 2) as u8),
         }
+    }
+
+    /// Whether it bobs on the frame or slower (lying back, reading on
+    /// her back): a still act's change, held as a script's bob is.
+    fn bobs_on_the_frame(self) -> bool {
+        !matches!(self, Self::SitDoze | Self::Gaze) && self.period() >= USE_FRAME_MS
     }
 
     fn look(self, frame: u8) -> (Pose, Face, Option<Bubble>) {
@@ -2257,6 +2265,10 @@ pub(super) struct Osaka {
     /// Until when she's stirring, turned over, at a chat line in the
     /// night (see [`Osaka::look`]).
     stir_until: u64,
+    /// Her bob held where something of hers changed in place off its
+    /// grid, in this act: the moment (monotonic) and the frame it showed
+    /// then ([`script::bob_frame`], set by [`Osaka::hold_bob`]).
+    bob_held: Option<(u64, u8)>,
     /// Until when she's saying good morning (see [`Osaka::begin_day`]),
     /// or that she's home (from school or work): what would speak over
     /// it waits (see [`Osaka::awake`]).
@@ -2533,6 +2545,7 @@ impl Osaka {
             slept_to: 0,
             lamp_off: false,
             stir_until: 0,
+            bob_held: None,
             morning_until: 0,
             master: 0,
             budget_day: None,
@@ -3325,8 +3338,9 @@ impl Osaka {
     /// every tick's entry, and when the stage skips her clock. Her next
     /// cutting boundary is found afresh from it, and her night's wake
     /// time (a later day's vacation flag is provisional until that day
-    /// latches: what's predicted into it is predicted again each time).
-    pub fn read_clock(&mut self, clock: Option<routine::Clock>) {
+    /// latches: what's predicted into it is predicted again each time),
+    /// read at the monotonic millis `now`.
+    pub fn read_clock(&mut self, clock: Option<routine::Clock>, now: u64) {
         // Time lost between the readings (a step the shell's cap clamped:
         // a suspend): no moment from here on reads earlier than the last
         // reading did, as this one, extended back, would.
@@ -3350,7 +3364,7 @@ impl Osaka {
             }
         }
         self.refresh_cut();
-        self.refresh_night();
+        self.refresh_night(now);
     }
 
     /// Her clock at the monotonic millis `at` (game millis since her
@@ -3400,13 +3414,17 @@ impl Osaka {
     /// Her night's sleep lasts until her wake time, found afresh from her
     /// clock as it's read now (from when it began by her clock, never
     /// mapped back): a later day's flag may have changed since it began.
-    fn refresh_night(&mut self) {
+    /// Read at `now`.
+    fn refresh_night(&mut self, now: u64) {
         let Some(began) = self.act_since_game.filter(|_| self.sleeping()) else {
             return;
         };
         let Some(wake) = self.wake_of(began) else {
             return;
         };
+        // Her breathing holds as the end moves: the frame it shows now,
+        // read before the end moves.
+        let frame = self.bob_frame_at(now);
         let changed = match &mut self.act {
             Act::Use {
                 since,
@@ -3430,6 +3448,9 @@ impl Osaka {
         if changed {
             tracing::trace!(wake, "houseguest: her wake time moved");
             self.act_due = self.act_due.min(wake);
+            if let Some(frame) = frame {
+                self.hold_frame(now, frame);
+            }
         }
     }
 
@@ -3549,6 +3570,9 @@ impl Osaka {
         if !night {
             return false;
         }
+        // Her breathing holds as her sleep's end moves to her wake time
+        // (the frame it shows now).
+        self.hold_bob(at);
         match &mut self.act {
             Act::Use {
                 since,
@@ -3658,7 +3682,7 @@ impl Osaka {
         chances: &Chances,
         rng: &mut Rng,
     ) -> bool {
-        self.read_clock(clock);
+        self.read_clock(clock, now);
         self.take_in(chances);
         let mut changed = false;
         for _ in 0..64 {
@@ -3854,6 +3878,7 @@ impl Osaka {
         // isn't cut by this.)
         self.looking_up = None;
         self.stir_until = 0;
+        self.bob_held = None;
         self.sill = None;
         // Anything she's set at is chosen afresh, unless she's settling
         // into it (which counts itself, once set: see `settle_in`).
@@ -6081,6 +6106,9 @@ impl Osaka {
             night.dreamt = true;
         }
         self.hush(at);
+        // Its part begins at `at`: its bob keeps clear of that, as any
+        // key's start, and no hold of the night's carries into it.
+        self.bob_held = None;
         let dreamt = |play: Play| Play {
             branch: Surface::of_branch(play.branch).dream_branch(),
             ..Play::plain(ScriptId::Dream)
@@ -9560,6 +9588,92 @@ impl Osaka {
         (pose, face, speech.or(bubble))
     }
 
+    /// Her bob's hold ([`Osaka::bob_held`]) in a part (or an act) begun
+    /// at `from`: the moment held, ms into it, and the frame then.
+    fn held_from(&self, from: u64) -> Option<(u64, u8)> {
+        self.bob_held
+            .and_then(|(at, frame)| Some((at.checked_sub(from)?, frame)))
+    }
+
+    /// `time`, a key's at `now`, with her bob's hold.
+    fn held_time(&self, time: script::KeyTime, now: u64) -> script::KeyTime {
+        script::KeyTime {
+            held: self.held_from(now.saturating_sub(time.elapsed)),
+            ..time
+        }
+    }
+
+    /// The frame of what bobs on the frame in her act at `at` (a key's
+    /// bob, lying back or reading on her back, reading a borrowed strip),
+    /// held as it's drawn; `None` if nothing does.
+    fn bob_frame_at(&self, at: u64) -> Option<u8> {
+        match self.act {
+            Act::Use {
+                since, until, play, ..
+            }
+            | Act::Idle {
+                since,
+                until,
+                play: Some(play),
+                ..
+            }
+            | Act::SpaceOut {
+                since,
+                until,
+                play: Some(play),
+                ..
+            } => {
+                let (key, time) = play.key(since, until, at)?;
+                key.bob(self.held_time(time, at))
+            }
+            Act::Idle {
+                what, since, until, ..
+            } => what.bobs_on_the_frame().then(|| {
+                what.frame(
+                    at.saturating_sub(since),
+                    until.saturating_sub(since),
+                    self.held_from(since),
+                )
+            }),
+            Act::Borrow {
+                since,
+                phase: Borrowing::Read { until },
+                ..
+            } => Some(script::bob_frame(
+                at.saturating_sub(since),
+                0,
+                until.saturating_sub(since),
+                USE_FRAME_MS,
+                self.held_from(since),
+            )),
+            _ => None,
+        }
+    }
+
+    /// Something of hers changes in place at `at`, off her bob's grid (her
+    /// act's end moved): her bob holds the frame it shows now until a
+    /// frame on ([`script::bob_frame`]). Called before the change,
+    /// so the frame is the one shown.
+    fn hold_bob(&mut self, at: u64) {
+        if let Some(frame) = self.bob_frame_at(at) {
+            self.hold_frame(at, frame);
+        }
+    }
+
+    /// Her bob held at `at` on `frame` ([`Osaka::hold_bob`]), unless it's
+    /// held from later already: a hold never moves back. A tick that
+    /// comes late reads her clock at its `now` (her wake time moving
+    /// holds there) before it handles what fell due before it (a line
+    /// ending): the client paints from `now` on, so the latest hold is
+    /// what it shows held.
+    fn hold_frame(&mut self, at: u64, frame: u8) {
+        if self.bob_held.is_some_and(|(held, _)| held > at) {
+            return;
+        }
+        tracing::trace!(at, frame, "houseguest: her bob held");
+        self.bob_held = Some((at, frame));
+    }
+
     /// How she looks dozing (`look`: asleep for the night, or by day),
     /// stirring at a chat line if she is at `now`: turned over, held
     /// there, blinking.
@@ -9597,13 +9711,19 @@ impl Osaka {
                 let host = what.look(0).0;
                 let look = play
                     .key(since, until, now)
-                    .map_or(what.look(0), |(key, time)| key.look(time, host, &play));
+                    .map_or(what.look(0), |(key, time)| {
+                        key.look(self.held_time(time, now), host, &play)
+                    });
                 self.stirring(look, now)
             }
             Act::Idle {
                 what, since, until, ..
             } => {
-                let frame = what.frame(now.saturating_sub(since), until.saturating_sub(since));
+                let frame = what.frame(
+                    now.saturating_sub(since),
+                    until.saturating_sub(since),
+                    self.held_from(since),
+                );
                 self.stirring(what.look(frame), now)
             }
             Act::Use {
@@ -9624,7 +9744,7 @@ impl Osaka {
                 let (pose, face, bubble) = play
                     .key(since, until, now)
                     .map_or((host, Face::Vacant, None), |(key, time)| {
-                        key.look(time, host, &play)
+                        key.look(self.held_time(time, now), host, &play)
                     });
                 let pose = at_seat(pose, seat);
                 // Answering the chat, she beams.
@@ -9673,6 +9793,7 @@ impl Osaka {
                             0,
                             until.saturating_sub(since),
                             USE_FRAME_MS,
+                            self.held_from(since),
                         );
                         (Pose::ReadStrip(frame), Face::Vacant, None)
                     }
@@ -9686,7 +9807,7 @@ impl Osaka {
                 ..
             } => play.key(since, until, now).map_or(
                 (Pose::Stand, Face::Vacant, Some(Bubble::Dots)),
-                |(key, time)| key.look(time, Pose::Stand, &play),
+                |(key, time)| key.look(self.held_time(time, now), Pose::Stand, &play),
             ),
             Act::SpaceOut { play: None, .. } => (Pose::Stand, Face::Vacant, Some(Bubble::Dots)),
             Act::Home { until } => {
@@ -10185,7 +10306,7 @@ mod tests {
         /// property, and `a_bob_flips_a_frame_clear_of_its_keys_start_and_end`
         /// over every script).
         fn bob(t: u64, (start, end): (u64, u64)) -> u8 {
-            script::bob_frame(t, start, end, USE_FRAME_MS)
+            script::bob_frame(t, start, end, USE_FRAME_MS, None)
         }
         /// The TV's frame, `t` ms in.
         fn tv(t: u64) -> u8 {
@@ -11780,7 +11901,7 @@ mod tests {
         let mut osaka = Osaka::standing_at(10, 10, 0, &mut rng);
         osaka.act = act;
         osaka.act_due = act_due;
-        osaka.read_clock(Some(monday_at(22, 0)));
+        osaka.read_clock(Some(monday_at(22, 0)), 0);
         (osaka, rng)
     }
 
@@ -11950,12 +12071,12 @@ mod tests {
     fn unfed_nothing_is_cut() {
         let mut rng = Rng(3);
         let mut osaka = Osaka::standing_at(10, 10, 0, &mut rng);
-        osaka.read_clock(None);
+        osaka.read_clock(None, 0);
         assert_eq!(osaka.cut_at, None);
         let unfed = osaka.clone();
-        osaka.read_clock(Some(monday_at(22, 0)));
+        osaka.read_clock(Some(monday_at(22, 0)), 0);
         assert_eq!(osaka.cut_at, Some(BED));
-        osaka.read_clock(None);
+        osaka.read_clock(None, 0);
         assert_eq!(osaka.cut_at, None);
         assert_eq!(osaka.due(), unfed.due());
     }
@@ -11966,15 +12087,15 @@ mod tests {
     fn a_cut_is_the_first_boundary_after_her_act_began() {
         let mut rng = Rng(3);
         let mut osaka = Osaka::standing_at(10, 10, BED + 1_000, &mut rng);
-        osaka.read_clock(Some(monday_at(22, 0)));
+        osaka.read_clock(Some(monday_at(22, 0)), 0);
         assert_eq!(osaka.cut_at, Some(SCHOOL));
         // Begun before: bedtime.
         let mut osaka = Osaka::standing_at(10, 10, BED - 1, &mut rng);
-        osaka.read_clock(Some(monday_at(22, 0)));
+        osaka.read_clock(Some(monday_at(22, 0)), 0);
         assert_eq!(osaka.cut_at, Some(BED));
         // A new act after it moves the search on.
         osaka.set(Act::Stand { until: BED + 5_000 }, BED + 1);
-        osaka.read_clock(Some(monday_at(22, 0)));
+        osaka.read_clock(Some(monday_at(22, 0)), 0);
         assert_eq!(osaka.cut_at, Some(SCHOOL));
     }
 
@@ -12033,7 +12154,7 @@ mod tests {
             osaka.splice_rows = &[];
             osaka.whims = Whims(seed ^ 0x5eed);
             osaka.credit = Some(Want::Use(what));
-            osaka.read_clock(clock);
+            osaka.read_clock(clock, 0);
             let item = Furniture::ALL
                 .into_iter()
                 .find(|f| f.spec().uses.contains(&what))
@@ -12075,7 +12196,7 @@ mod tests {
             ] {
                 let mut rng = Rng(seed);
                 let mut osaka = Osaka::standing_at(10, 10, 0, &mut rng);
-                osaka.read_clock(clock);
+                osaka.read_clock(clock, 0);
                 osaka.floor_homework(seed % 2 == 0, 1000, &mut rng);
                 let Act::Idle { since, until, .. } = osaka.act else {
                     panic!("homework on the floor: {:?}", osaka.act);
@@ -12216,7 +12337,7 @@ mod tests {
         let rose = |clock: Option<routine::Clock>, need: Need| {
             let mut rng = Rng(3);
             let mut osaka = Osaka::standing_at((floor.x0 + floor.x1) / 2, floor.y, 0, &mut rng);
-            osaka.read_clock(clock);
+            osaka.read_clock(clock, 0);
             osaka.decided = 0;
             let before = osaka.needs.get(need);
             osaka.decide(60_000, &terrain, &Chances::default(), &mut rng);
@@ -12293,7 +12414,7 @@ mod tests {
         let clock = clock_at(1, 2, 0);
         let mut rng = Rng(3);
         let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
-        osaka.read_clock(Some(clock));
+        osaka.read_clock(Some(clock), 0);
         let mut now = until_asleep(&mut osaka, 0, clock, &low, &mut rng, 5_000);
         assert_eq!(
             osaka.decisions.last().map(|d| d.method),
@@ -12311,7 +12432,7 @@ mod tests {
         // one below in the other's stead.
         let mut rng2 = Rng(4);
         let mut up = Osaka::standing_at(20, 12, now, &mut rng2);
-        up.read_clock(Some(clock));
+        up.read_clock(Some(clock), now);
         let then = until_asleep(&mut up, now, clock, &high, &mut rng2, 5_000);
         assert!(up.settle(then, &low));
         assert!(!up.sleeping(), "fell: {:?}", up.act);
@@ -12394,7 +12515,7 @@ mod tests {
             let bed = !chances.seats.is_empty();
             let mut rng = Rng(3);
             let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
-            osaka.read_clock(Some(read(june)));
+            osaka.read_clock(Some(read(june)), 0);
             let mut now = 0;
             while !osaka.sleeping() {
                 assert!(now < 30_000, "bed={bed}: {:?}", osaka.act);
@@ -12417,10 +12538,10 @@ mod tests {
             };
             assert_eq!(matches!(osaka.act, Act::Use { .. }), bed, "{:?}", osaka.act);
             assert_eq!(until(&osaka), school, "bed={bed}");
-            osaka.read_clock(Some(read(july)));
+            osaka.read_clock(Some(read(july)), 0);
             assert_eq!(until(&osaka), summer, "bed={bed}: 105 real minutes");
             // And back, should the date go back before Monday latches.
-            osaka.read_clock(Some(read(june)));
+            osaka.read_clock(Some(read(june)), 0);
             assert_eq!(until(&osaka), school, "bed={bed}");
         }
         // On the floor, settled in (the lamp off) on a predicted summer
@@ -12428,7 +12549,7 @@ mod tests {
         // out June after all: up at 07:00, not 09:00.
         let mut rng = Rng(3);
         let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
-        osaka.read_clock(Some(read(july)));
+        osaka.read_clock(Some(read(july)), 0);
         let chances = Chances::default();
         let settled = 1_000 + script::LAMP_ON_MS + 5_000;
         for now in [1_000, settled] {
@@ -12567,7 +12688,7 @@ mod tests {
             let mut rng = Rng(3);
             let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
             osaka.episode = Some(episode);
-            osaka.read_clock(Some(clock));
+            osaka.read_clock(Some(clock), 0);
             let mut now = 0;
             while !osaka.sleeping() {
                 assert!(now < 60_000, "{at}: awake at {now}: {:?}", osaka.act);
@@ -12603,7 +12724,7 @@ mod tests {
         let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
         osaka.key_days(9, Some(0));
         osaka.worked = true;
-        osaka.read_clock(Some(clock));
+        osaka.read_clock(Some(clock), 0);
         let mut now = until_asleep_with(&mut osaka, 0, clock, &terrain, &chances, &mut rng);
         // Settled in: dark.
         for t in (now..now + script::LAMP_ON_MS + 2_000).step_by(500) {
@@ -12653,7 +12774,7 @@ mod tests {
         let clock = monday_at(16, 0);
         let mut rng = Rng(3);
         let mut osaka = Osaka::standing_at(10, 10, 0, &mut rng);
-        osaka.read_clock(Some(clock));
+        osaka.read_clock(Some(clock), 0);
         osaka.cue(Some(Cue::Script(ScriptId::Night)));
         osaka.credit = Some(Want::Use(Use::Sleep));
         osaka.start_job(
@@ -12688,13 +12809,13 @@ mod tests {
         let was = monday_at(22, 0);
         let mut rng = Rng(3);
         let mut osaka = Osaka::standing_at(10, 10, 0, &mut rng);
-        osaka.read_clock(Some(was));
+        osaka.read_clock(Some(was), 0);
         let (then, now) = (500_000, 1_000_000);
         let lost = GameClock {
             at: now,
             game: was.game.at(1_000),
         };
-        osaka.read_clock(Some(routine::Clock::read(lost, now, None, None)));
+        osaka.read_clock(Some(routine::Clock::read(lost, now, None, None)), 0);
         assert!(osaka.game_at(then) >= Some(was.game.game));
         assert!(osaka.game_at(now) >= Some(was.game.game));
     }
@@ -12782,7 +12903,7 @@ mod tests {
             } else {
                 Facing::Left
             };
-            osaka.read_clock(Some(clock_at(1, 2, 0)));
+            osaka.read_clock(Some(clock_at(1, 2, 0)), 0);
             osaka.watch_until = 10_000;
             osaka.watch_x = watch_x;
             osaka.decide(1_000, &terrain, &Chances::default(), &mut rng);
@@ -12858,7 +12979,7 @@ mod tests {
         for seed in 0..6 {
             let mut rng = Rng(seed);
             let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
-            osaka.read_clock(Some(clock));
+            osaka.read_clock(Some(clock), 0);
             let now = until_asleep_with(&mut osaka, 0, clock, &terrain, &chances, &mut rng);
             let (start, whims) = (osaka.act_since, osaka.whims);
             let mut schedule = Vec::new();
@@ -12967,7 +13088,7 @@ mod tests {
         for (unlit, spot) in [(bed_at(25), (18, 15)), (fridge_and_bed(4), (2, 15))] {
             let mut rng = Rng(5);
             let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
-            osaka.read_clock(Some(clock));
+            osaka.read_clock(Some(clock), 0);
             let asleep = until_asleep_with(&mut osaka, 0, clock, &terrain, &unlit, &mut rng);
             let chances = Chances {
                 clock: Some(clock_on(30, 15)),
@@ -13077,7 +13198,7 @@ mod tests {
             let mut rng = Rng(9);
             let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
             osaka.key_days(master, Some(1));
-            osaka.read_clock(Some(clock));
+            osaka.read_clock(Some(clock), 0);
             osaka.splices_sure = true;
             osaka.cued = Some(cue);
             let now = until_asleep_with(&mut osaka, 0, clock, &terrain, chances, &mut rng);
@@ -13181,7 +13302,7 @@ mod tests {
         let mut rng = Rng(9);
         let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
         osaka.key_days(quiet, Some(1));
-        osaka.read_clock(Some(clock));
+        osaka.read_clock(Some(clock), 0);
         let chances = fridge_and_bed(4);
         let now = until_asleep_with(&mut osaka, 0, clock, &terrain, &chances, &mut rng);
         tick_until(
@@ -13211,7 +13332,7 @@ mod tests {
         let at = |clock: Option<routine::Clock>, now: u64| {
             let mut rng = Rng(1);
             let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
-            osaka.read_clock(clock);
+            osaka.read_clock(clock, 0);
             osaka.may_work(&furnished, now)
         };
         for (day, h, m, open) in [
@@ -13241,7 +13362,7 @@ mod tests {
         // Worked already, or no home.
         let mut rng = Rng(1);
         let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
-        osaka.read_clock(Some(clock_at(5, 12, 0)));
+        osaka.read_clock(Some(clock_at(5, 12, 0)), 0);
         assert!(!osaka.may_work(&Chances::default(), 0));
         osaka.worked = true;
         assert!(!osaka.may_work(&furnished, 0));
@@ -13266,7 +13387,7 @@ mod tests {
             let mut rng = Rng(5);
             let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
             osaka.key_days(9, Some(keyed));
-            osaka.read_clock(Some(clock));
+            osaka.read_clock(Some(clock), 0);
             let asleep = until_asleep_with(&mut osaka, 0, clock, &terrain, &chances, &mut rng);
             assert!(asleep < wake - 10_000, "{what}");
             let world = (clock, &terrain, &chances);
@@ -13449,7 +13570,7 @@ mod tests {
     fn her_night_on_the_floor_is_armed() {
         let mut rng = Rng(3);
         let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
-        osaka.read_clock(Some(clock_at(1, 2, 0)));
+        osaka.read_clock(Some(clock_at(1, 2, 0)), 0);
         osaka.decide(1_000, &floor_at(15), &Chances::default(), &mut rng);
         assert_eq!(
             osaka.decisions.last().map(|d| d.method),
@@ -13475,7 +13596,7 @@ mod tests {
         let mut rng = Rng(5);
         let mut osaka = Osaka::standing_at(10, 15, 0, &mut rng);
         osaka.key_days(9, Some(1));
-        osaka.read_clock(Some(clock));
+        osaka.read_clock(Some(clock), 0);
         osaka.errand((14, 15), &terrain, 0);
         osaka.groggy_if_night(0);
         assert!(osaka.groggy() && osaka.groggy_at(0) && osaka.drowsy(0));
@@ -13488,7 +13609,7 @@ mod tests {
         // The stage's night's sleep by day (Tuesday 14:00).
         let clock = clock_at(1, 14, 0);
         let mut osaka = Osaka::standing_at(25, 15, 0, &mut rng);
-        osaka.read_clock(Some(clock));
+        osaka.read_clock(Some(clock), 0);
         let seat = chances.seats[0];
         let act = osaka.night_in(seat, 120_000, 0, true);
         osaka.set(act, 0);
@@ -13564,7 +13685,7 @@ mod tests {
         let mut rng = Rng(seed);
         let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
         osaka.key_days(master, Some(1));
-        osaka.read_clock(Some(clock));
+        osaka.read_clock(Some(clock), 0);
         let mut now = until_asleep_with(&mut osaka, 0, clock, &terrain, &chances, &mut rng);
         let mut lines = lines.to_vec();
         let mut snacks: Vec<SnackSeen> = Vec::new();
@@ -13720,7 +13841,7 @@ mod tests {
         let mut rng = Rng(9);
         let mut osaka = Osaka::standing_at(10, 15, 0, &mut rng);
         osaka.key_days(master, Some(1));
-        osaka.read_clock(Some(clock));
+        osaka.read_clock(Some(clock), 0);
         assert!(osaka.tuck_in(&chances, &terrain, 0));
         assert!(osaka.night.is_some_and(|n| n.snack.is_none()));
         tick_until(
@@ -13739,7 +13860,7 @@ mod tests {
         let mut rng = Rng(9);
         let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
         osaka.key_days(master, Some(1));
-        osaka.read_clock(Some(clock));
+        osaka.read_clock(Some(clock), 0);
         let world = (clock, &terrain, &chances);
         let asleep = until_asleep_with(&mut osaka, 0, clock, &terrain, &chances, &mut rng);
         assert_eq!(osaka.snack_due(), Some(moment));
@@ -13797,7 +13918,7 @@ mod tests {
         let mut rng = Rng(9);
         let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
         osaka.key_days(master, Some(1));
-        osaka.read_clock(Some(clock));
+        osaka.read_clock(Some(clock), 0);
         let asleep = until_asleep_with(&mut osaka, 0, clock, &terrain, &chances, &mut rng);
         assert_eq!(osaka.snack_due(), Some(50_000));
         let mut changed = Vec::new();
@@ -13829,7 +13950,7 @@ mod tests {
         for seed in 0..4 {
             let mut rng = Rng(seed);
             let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
-            osaka.read_clock(Some(clock));
+            osaka.read_clock(Some(clock), 0);
             let now = until_asleep_with(&mut osaka, 0, clock, &terrain, &chances, &mut rng);
             let (start, whims) = (osaka.act_since, osaka.whims);
             let world = (clock, &terrain, &chances);
@@ -13887,7 +14008,7 @@ mod tests {
     /// greeting owed.
     fn on_halloween(rng: &mut Rng) -> Osaka {
         let mut osaka = Osaka::standing_at(20, 15, 0, rng);
-        osaka.read_clock(Some(clock_dated(0, 16, 0, ymd(2026, 10, 31))));
+        osaka.read_clock(Some(clock_dated(0, 16, 0, ymd(2026, 10, 31))), 0);
         osaka
     }
 
@@ -14015,7 +14136,7 @@ mod tests {
         assert!(free(&osaka, quiet), "delivered");
         // Setsubun: owed, then thrown, then done.
         let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
-        osaka.read_clock(Some(clock_dated(0, 16, 0, ymd(2027, 2, 3))));
+        osaka.read_clock(Some(clock_dated(0, 16, 0, ymd(2027, 2, 3))), 0);
         osaka.greeted = true;
         assert!(!free(&osaka, 0), "beans owed");
         let here = terrain.platform_at(20, 15).expect("floor");
@@ -14036,7 +14157,7 @@ mod tests {
             ..Chances::default()
         };
         let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
-        osaka.read_clock(Some(clock_dated(0, 16, 0, ymd(2027, 1, 1))));
+        osaka.read_clock(Some(clock_dated(0, 16, 0, ymd(2027, 1, 1))), 0);
         osaka.greeted = true;
         let greeting = osaka.calendar_greeting(0).expect("owed");
         osaka.say_calendar(greeting, 0);
@@ -14107,7 +14228,7 @@ mod tests {
         };
         let mut rng = Rng(1);
         let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
-        osaka.read_clock(Some(clock_dated(0, 16, 0, ymd(2027, 1, 1))));
+        osaka.read_clock(Some(clock_dated(0, 16, 0, ymd(2027, 1, 1))), 0);
         let here = terrain.platform_at(20, 15).expect("floor");
         let greeting = osaka.calendar_greeting(0).expect("owed");
         assert_eq!(greeting.2, calendar::HAPPY_NEW_YEAR);
@@ -14153,7 +14274,7 @@ mod tests {
         ] {
             let mut rng = Rng(3);
             let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
-            osaka.read_clock(fed.then(|| clock_dated(0, 16, 0, date)));
+            osaka.read_clock(fed.then(|| clock_dated(0, 16, 0, date)), 0);
             for k in 0..240 {
                 osaka.whims = Whims(k ^ 0xca1e);
                 osaka.speech = None;
@@ -14194,7 +14315,7 @@ mod tests {
             for seed in 0..6 {
                 let mut rng = Rng(seed);
                 let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
-                osaka.read_clock(Some(clock));
+                osaka.read_clock(Some(clock), 0);
                 let now = until_asleep_with(&mut osaka, 0, clock, &terrain, &chances, &mut rng);
                 // Her wake (later on a day of the winter vacation).
                 let (.., wake) = osaka.night_play().expect("asleep");
@@ -14251,7 +14372,7 @@ mod tests {
                 let mut rng = Rng(7);
                 let mut osaka = Osaka::standing_at(10, 10, 0, &mut rng);
                 osaka.splice_rows = &[];
-                osaka.read_clock(fed.then(|| clock_dated(day, h, m, None)));
+                osaka.read_clock(fed.then(|| clock_dated(day, h, m, None)), 0);
                 osaka.start_job(Job::Use(seat), 1000, &chances, &mut rng);
                 let at = format!("day {day} {h}:{m:02} fed {fed}");
                 let said = osaka.speech.map(|(line, _)| line);
@@ -14267,7 +14388,7 @@ mod tests {
                 assert_eq!(osaka.speech, None, "{at}: again");
                 // Trying the fridge where it stands: nothing, ever.
                 let mut trying = Osaka::standing_at(10, 10, 0, &mut rng);
-                trying.read_clock(fed.then(|| clock_dated(day, h, m, None)));
+                trying.read_clock(fed.then(|| clock_dated(day, h, m, None)), 0);
                 trying.episode = Some(trial_episode());
                 trying.start_job(Job::Use(seat), 1000, &chances, &mut rng);
                 assert!(
@@ -14302,7 +14423,7 @@ mod tests {
             let clock = clock_dated(day, h, 0, date);
             let mut rng = Rng(11);
             let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
-            osaka.read_clock(Some(clock));
+            osaka.read_clock(Some(clock), 0);
             let today = clock.day(0);
             osaka.begin_day(today, 0);
             let mut now = 0;
@@ -14334,7 +14455,7 @@ mod tests {
         let clock = clock_at(1, 0, 0);
         let mut rng = Rng(2);
         let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
-        osaka.read_clock(Some(clock));
+        osaka.read_clock(Some(clock), 0);
         assert!(osaka.tuck_in(&chances, &terrain, 0));
         tick_until(
             &mut osaka,
@@ -14364,7 +14485,7 @@ mod tests {
                 let mut rng = Rng(seed);
                 let mut osaka = Osaka::standing_at(10, 10, 0, &mut rng);
                 osaka.whims = Whims(seed ^ 0xe4a3);
-                osaka.read_clock(Some(clock_dated(1, 20, 30, date)));
+                osaka.read_clock(Some(clock_dated(1, 20, 30, date)), 0);
                 osaka.start_job(Job::Use(seat), 1000, &chances, &mut rng);
                 wrapped +=
                     usize::from(osaka.plays().is_some_and(|p| {
@@ -14413,7 +14534,7 @@ mod tests {
         for open in [true, false] {
             let mut rng = Rng(5);
             let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
-            osaka.read_clock(Some(clock));
+            osaka.read_clock(Some(clock), 0);
             let rares = if open { dream_open() } else { Rares::none() };
             osaka.set_rares(rares, Some(1), Vec::new());
             let asleep = until_asleep_with(&mut osaka, 0, clock, &terrain, &chances, &mut rng);
@@ -14568,7 +14689,7 @@ mod tests {
         let terrain = floor_at(15);
         let chances = bed_at(25);
         let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
-        osaka.read_clock(Some(clock));
+        osaka.read_clock(Some(clock), 0);
         osaka.set_rares(dream_open(), Some(1), Vec::new());
         assert!(osaka.tuck_in(&chances, &terrain, 0), "tucked in");
         assert_eq!(osaka.dream_moment(), Some(DREAM_AFTER_MS / 6));
@@ -14600,7 +14721,7 @@ mod tests {
         ] {
             let mut rng = Rng(5);
             let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
-            osaka.read_clock(Some(clock));
+            osaka.read_clock(Some(clock), 0);
             osaka.set_rares(dream_open(), Some(1), Vec::new());
             let asleep = until_asleep_with(&mut osaka, 0, clock, &terrain, &chances, &mut rng);
             let dream = osaka.act_since + DREAM_AFTER_MS / 6;
@@ -14845,7 +14966,7 @@ mod tests {
                 None,
                 None,
             );
-            osaka.read_clock(Some(later));
+            osaka.read_clock(Some(later), 0);
             osaka.set_rares(dream_open(), Some(1), Vec::new());
             osaka.carry_night(Some(carried));
             assert!(osaka.night.is_none(), "not asleep for arriving");
@@ -14979,7 +15100,7 @@ mod tests {
                 let at = format!("{glance:?} {on:?}");
                 let mut rng = Rng(3);
                 let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
-                osaka.read_clock(Some(clock));
+                osaka.read_clock(Some(clock), 0);
                 let chances = Chances {
                     clock: on,
                     ..Chances::default()
@@ -15052,7 +15173,7 @@ mod tests {
         let clock = clock_at(1, 1, 0);
         let mut rng = Rng(3);
         let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
-        osaka.read_clock(Some(clock));
+        osaka.read_clock(Some(clock), 0);
         let chances = Chances {
             clock: Some(clock_on(5, 15)),
             ..bed_at(25)
@@ -15120,7 +15241,7 @@ mod tests {
                     let mut osaka = Osaka::standing_at(10, 10, 0, &mut rng);
                     osaka.whims = Whims(seed);
                     if fed {
-                        osaka.read_clock(Some(clock_at(day, h, m)));
+                        osaka.read_clock(Some(clock_at(day, h, m)), 0);
                     }
                     osaka.clock_on = on;
                     if talking {
@@ -15178,7 +15299,7 @@ mod tests {
         let clock = clock_at(1, 15, 0);
         let mut rng = Rng(4);
         let mut osaka = Osaka::standing_at(20, 10, 0, &mut rng);
-        osaka.read_clock(Some(clock));
+        osaka.read_clock(Some(clock), 0);
         osaka.offer_only = Some((Want::SpaceOut, "space-out/muse"));
         osaka.cue(Some(Cue::Script(ScriptId::ClockGlance)));
         let mut glanced = None;
@@ -15335,7 +15456,7 @@ mod tests {
                 let mut osaka = Osaka::standing_at(10, 10, 0, &mut rng);
                 osaka.splice_rows = &[];
                 osaka.whims = Whims(seed ^ 0x5eed);
-                osaka.read_clock(clock);
+                osaka.read_clock(clock, 0);
                 osaka.credit = Some(Want::Use(Use::LookOut));
                 osaka.start_job(
                     Job::Use(seat_for(Use::LookOut, Furniture::Window)),
@@ -15382,7 +15503,7 @@ mod tests {
                 let at = format!("{clock:?} {on:?}");
                 let mut rng = Rng(4);
                 let mut osaka = Osaka::standing_at(10, 10, 0, &mut rng);
-                osaka.read_clock(clock);
+                osaka.read_clock(clock, 0);
                 osaka.clock_on = on;
                 osaka.cue(Some(Cue::Script(ScriptId::ClockGlance)));
                 osaka.muse(0, &mut rng);
@@ -15411,7 +15532,7 @@ mod tests {
             let mut rng = Rng(seed);
             let mut osaka = Osaka::standing_at(10, 10, 0, &mut rng);
             osaka.whims = Whims(seed);
-            osaka.read_clock(Some(clock_at(1, 15, 0)));
+            osaka.read_clock(Some(clock_at(1, 15, 0)), 0);
             osaka.clock_on = Some(clock_on(5, 10));
             // Rolled: now and then a glance.
             let mut rolled = osaka.clone();
@@ -15440,7 +15561,7 @@ mod tests {
         let clock = clock_at(1, 8, 15);
         let mut rng = Rng(3);
         let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
-        osaka.read_clock(Some(clock));
+        osaka.read_clock(Some(clock), 0);
         let chances = Chances {
             clock: Some(clock_on(5, 15)),
             ..Chances::default()
@@ -16693,6 +16814,189 @@ mod tests {
         assert!(flips > 1000, "{flips} flips tried");
     }
 
+    /// Her act's end moved in place (phase 5c's tail, T4): a day's sleep
+    /// become her night at bedtime (`sleep_on`), and her night's wake time
+    /// found afresh as her clock is read (`refresh_night`), later or
+    /// earlier. Her breathing's bob holds the frame it shows as the end
+    /// moves, until the first flip on its grid a frame on (as from a
+    /// key's start), so it neither changes as the end moves nor flips
+    /// within a frame of that: the hold was timed from the end known
+    /// before, so with the end moved within its last frame her breathing
+    /// flipped then, off the grid, and again within a frame. Over every
+    /// 50 ms of that last frame, at three phases of her breathing's grid,
+    /// her pose sampled every 10 ms either side never changes twice
+    /// within a frame.
+    #[test]
+    fn a_bob_holds_a_frame_when_her_acts_end_moves_in_place() {
+        let clock = monday_at(22, 0);
+        // Tuesday 07:00 (a school day), in monotonic millis.
+        let wake = BED + (9 * 60 - 30) * 10_000;
+        // Every change of her pose from `from` to `to`, sampled every 10 ms.
+        let changes = |osaka: &Osaka, from: u64, to: u64| -> Vec<(u64, Pose)> {
+            (from..to)
+                .step_by(10)
+                .map(|t| (t, osaka.appearance(t).0))
+                .collect()
+        };
+        let check = |at: &str, poses: Vec<(u64, Pose)>| {
+            let mut last: Option<u64> = None;
+            for pair in poses.windows(2) {
+                let ((_, was), (t, now)) = (pair[0], pair[1]);
+                if was == now {
+                    continue;
+                }
+                if let Some(before) = last {
+                    assert!(
+                        t - before >= USE_FRAME_MS,
+                        "{at}: changed at {before} and {t} ({was:?} to {now:?})"
+                    );
+                }
+                last = Some(t);
+            }
+        };
+        let night = |since: u64, until: u64| Act::Use {
+            seat: seat_for(Use::Sleep, Furniture::Bed),
+            since,
+            until,
+            whole: until - since,
+            play: Play {
+                branch: Surface::Bed.branch(true),
+                ..Play::plain(ScriptId::Night)
+            },
+            grievance: None,
+        };
+        let mut tried = 0;
+        for phase in [0, 700, 1_234] {
+            for d in (50..USE_FRAME_MS).step_by(50) {
+                // At bedtime, a day's sleep that would have ended `d` on.
+                let at = format!("sleep_on, phase {phase}, {d} ms before its end");
+                let sleep = Act::Use {
+                    seat: seat_for(Use::Sleep, Furniture::Bed),
+                    since: BED - 30_000 - phase,
+                    until: BED + d,
+                    whole: 30_000 + phase + d,
+                    play: Play::of(Use::Sleep, None),
+                    grievance: None,
+                };
+                let (mut osaka, mut rng) = at_bedtime(sleep, BED + d);
+                let mut poses = changes(&osaka, BED - 3 * USE_FRAME_MS, BED);
+                osaka.tick(
+                    BED,
+                    Some(clock),
+                    &blank_terrain(),
+                    &Chances::default(),
+                    &mut rng,
+                );
+                assert!(osaka.sleeping(), "{at}");
+                poses.extend(changes(&osaka, BED, BED + 4 * USE_FRAME_MS));
+                check(&at, poses);
+                // Asleep for the night, her wake time moves as her clock
+                // is read: later (it was a moment off), and earlier (to a
+                // moment on).
+                for later in [true, false] {
+                    let at = format!("refresh_night, later={later}, phase {phase}, {d} ms");
+                    let read = if later {
+                        BED + 600_000 + phase
+                    } else {
+                        wake - d
+                    };
+                    let until = if later { read + d } else { wake + 3_600_000 };
+                    let (mut osaka, _) = at_bedtime(night(BED - phase, until), read + d);
+                    osaka.act_since_game = Some(clock.game.at(BED));
+                    let mut poses = changes(&osaka, read - 3 * USE_FRAME_MS, read);
+                    osaka.read_clock(Some(clock), read);
+                    let Act::Use { until: moved, .. } = osaka.act else {
+                        panic!("{at}: {:?}", osaka.act);
+                    };
+                    assert_eq!(moved, wake, "{at}: her wake time");
+                    poses.extend(changes(&osaka, read, (read + 4 * USE_FRAME_MS).min(wake)));
+                    check(&at, poses);
+                    tried += 1;
+                }
+            }
+        }
+        assert!(tried > 100, "{tried}");
+    }
+
+    /// Her wake time moved as her clock is read at a tick that comes late,
+    /// after a line she said in her sleep ended (a client whose ticks lag
+    /// her wakes): her breathing holds from the moment the end moved, the
+    /// latest, not from the line's end handled after it in the same tick
+    /// (a hold never moves back: [`Osaka::hold_bob`]). Painted as the
+    /// client paints, her pose before the tick (her wake as it was) and
+    /// after it never changes twice within a frame. Over lines ending in
+    /// each 100 ms of the frame before the late tick, at three phases of
+    /// her breathing's grid, her old wake within its last frame.
+    #[test]
+    fn a_late_tick_holds_her_bob_from_her_wake_moving() {
+        let clock = monday_at(22, 0);
+        let wake = BED + (9 * 60 - 30) * 10_000;
+        let night = |since: u64, until: u64| Act::Use {
+            seat: seat_for(Use::Sleep, Furniture::Bed),
+            since,
+            until,
+            whole: until - since,
+            play: Play {
+                branch: Surface::Bed.branch(true),
+                ..Play::plain(ScriptId::Night)
+            },
+            grievance: None,
+        };
+        let mut tried = 0;
+        for phase in [0, 700, 1_234] {
+            for d in [300, 900] {
+                for ended in (100..USE_FRAME_MS).step_by(100) {
+                    let read = BED + 600_000 + phase;
+                    let at = format!("phase {phase}, wake {d} ms on, line over {ended} ms before");
+                    let (mut osaka, mut rng) = at_bedtime(night(BED - phase, read + d), read + d);
+                    osaka.act_since_game = Some(clock.game.at(BED));
+                    osaka.say(MM, read - ended - speech_ms(MM));
+                    let mut poses: Vec<(u64, Pose)> = (read - 4 * USE_FRAME_MS..read)
+                        .step_by(10)
+                        .map(|t| (t, osaka.appearance(t).0))
+                        .collect();
+                    osaka.tick(
+                        read,
+                        Some(clock),
+                        &blank_terrain(),
+                        &Chances::default(),
+                        &mut rng,
+                    );
+                    let Act::Use { until: moved, .. } = osaka.act else {
+                        panic!("{at}: {:?}", osaka.act);
+                    };
+                    assert_eq!(moved, wake, "{at}: her wake time");
+                    assert_eq!(
+                        osaka.bob_held.map(|(held, _)| held),
+                        Some(read),
+                        "{at}: held from her wake moving"
+                    );
+                    poses.extend(
+                        (read..read + 4 * USE_FRAME_MS)
+                            .step_by(10)
+                            .map(|t| (t, osaka.appearance(t).0)),
+                    );
+                    let mut last: Option<u64> = None;
+                    for pair in poses.windows(2) {
+                        let ((_, was), (t, now)) = (pair[0], pair[1]);
+                        if was == now {
+                            continue;
+                        }
+                        if let Some(before) = last {
+                            assert!(
+                                t - before >= USE_FRAME_MS,
+                                "{at}: changed at {before} and {t} ({was:?} to {now:?})"
+                            );
+                        }
+                        last = Some(t);
+                    }
+                    tried += 1;
+                }
+            }
+        }
+        assert!(tried > 50, "{tried}");
+    }
+
     /// Dozing (lying back on the floor, napping, asleep by day, asleep
     /// over her homework), a chat line only stirs her, as at night: she
     /// blinks and turns over a moment (the line comes as her own pose
@@ -17501,7 +17805,7 @@ mod tests {
                     if rare == ScriptId::Escalator {
                         osaka.set_rares(open.clone(), Some(0), vec![ScriptId::Escalator]);
                     } else {
-                        osaka.read_clock(Some(clock_at(1, 15, 0)));
+                        osaka.read_clock(Some(clock_at(1, 15, 0)), 0);
                         osaka.clock_on = Some(clock_on(20, 10));
                     }
                     osaka.muse(0, &mut rng);
@@ -19219,7 +19523,7 @@ mod tests {
                 // 16:58 on a Monday: her dusk comes 20 s in (two game
                 // minutes at 6x), by her second musing at the latest.
                 let clock = clock_at(0, 16, 58);
-                osaka.read_clock(Some(clock));
+                osaka.read_clock(Some(clock), 0);
                 osaka.credit = Some(Want::Use(Use::LookOut));
                 osaka.start_job(Job::Use(sill_seat()), 0, &chances, &mut rng);
                 let Act::Use { until, play, .. } = osaka.act else {

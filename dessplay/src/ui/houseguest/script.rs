@@ -182,6 +182,14 @@ impl Key {
         }
     }
 
+    /// Its bob's frame at `time`, if it bobs.
+    pub fn bob(&self, time: KeyTime) -> Option<u8> {
+        match self.pose {
+            Posed::Bob(_, period) => Some(time.bob(period)),
+            Posed::Host | Posed::Still(_) => None,
+        }
+    }
+
     /// How she looks at `time` in the part this key plays in: in
     /// `host`'s pose where the key leaves it to the host, saying what
     /// `play` drew for her or pitching what it sold her.
@@ -189,7 +197,7 @@ impl Key {
         let pose = match self.pose {
             Posed::Host => host,
             Posed::Still(pose) => pose,
-            Posed::Bob(pose, period) => pose(bob_frame(time.elapsed, time.start, time.end, period)),
+            Posed::Bob(pose, period) => pose(time.bob(period)),
         };
         let bubble = self.say.and_then(|say| match say {
             Say::Bubble(bubble) => Some(bubble),
@@ -212,12 +220,23 @@ impl Key {
 /// and the key's own `start` and `end` there (the last key's end the
 /// part's, or `u64::MAX` in a part with no set length). What it shows is
 /// timed by `elapsed`, as everything in a part is; a bob also keeps clear
-/// of `start` and `end` ([`bob_frame`]).
+/// of `start` and `end` ([`bob_frame`]), and of `held`: a moment in the
+/// part (ms) where something else of hers changed in place, and the
+/// bob's frame then ([`bob_frame`]; her player sets it, the script
+/// never does).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct KeyTime {
     pub elapsed: u64,
     pub start: u64,
     pub end: u64,
+    pub held: Option<(u64, u8)>,
+}
+
+impl KeyTime {
+    /// The frame of a bob flipping every `period` ms, at this time.
+    pub fn bob(self, period: u64) -> u8 {
+        bob_frame(self.elapsed, self.start, self.end, period, self.held)
+    }
 }
 
 /// A bob's frame (0 or 1) `elapsed` ms into its part, flipping every
@@ -232,16 +251,38 @@ pub(super) struct KeyTime {
 /// grid (every part's first key; every idle act) is the plain beat but
 /// at its end, and one running on across keys keeps its beat as near as
 /// it can. A period of 0 holds frame 0.
-pub(super) fn bob_frame(elapsed: u64, start: u64, end: u64, period: u64) -> u8 {
+///
+/// And it's held where something of hers changed in place off its grid
+/// (`held`: the moment, ms into the part, and the frame shown then): her
+/// act's end moved (phase 5c's tail, T4). From that moment the frame it
+/// showed holds until the first flip on the grid a whole period on, as
+/// from a start, so the bob neither changes as the moment comes (an end
+/// moved within its last period would release or take back a flip
+/// there, off the grid) nor flips within a period after it; its end
+/// holds as ever. A moment before `start` (a key that started since) or
+/// after `elapsed` holds nothing.
+pub(super) fn bob_frame(
+    elapsed: u64,
+    start: u64,
+    end: u64,
+    period: u64,
+    held: Option<(u64, u8)>,
+) -> u8 {
     if period == 0 {
         return 0;
     }
-    // The grid's flips it makes: from the first a period after its start
-    // to the last a period before its end, none past `elapsed`.
-    let first = start.saturating_add(period).div_ceil(period);
+    // Where its beat runs from, and its frame there: its start, on the
+    // grid's frame, or the moment held, on the frame shown then.
+    let (from, frame) = match held {
+        Some((at, frame)) if (start..=elapsed).contains(&at) => (at, u64::from(frame)),
+        _ => (start, start / period),
+    };
+    // The grid's flips it makes: from the first a period after that to
+    // the last a period before its end, none past `elapsed`.
+    let first = from.saturating_add(period).div_ceil(period);
     let last = end.saturating_sub(period).min(elapsed) / period;
     let flips = (last + 1).saturating_sub(first);
-    ((start / period + flips) % 2) as u8
+    ((frame + flips) % 2) as u8
 }
 
 /// Where a key plays in a use (for tests telling keys apart): when
@@ -301,6 +342,7 @@ pub(super) fn key_at(
             elapsed,
             start,
             end,
+            held: None,
         },
     ))
 }
@@ -2776,7 +2818,7 @@ mod tests {
     /// period]`.
     fn check_bob_frame(start: u64, end: u64, period: u64) {
         let case = format!("{start} to {end}, every {period}");
-        let frame = |t| bob_frame(t, start, end, period);
+        let frame = |t| bob_frame(t, start, end, period, None);
         assert_eq!(u64::from(frame(start)), start / period % 2, "{case}");
         let mut flips = 0;
         for t in start + 1..end + period {
@@ -2823,12 +2865,12 @@ mod tests {
         }
         // A key from a ms past the grid holds its first frame through the
         // grid point a ms under a period on, flipping at the next.
-        let frame = |t| bob_frame(t, 1401, 100_000, USE_FRAME_MS);
+        let frame = |t| bob_frame(t, 1401, 100_000, USE_FRAME_MS, None);
         assert_eq!((frame(1401), frame(2799), frame(2800)), (1, 1, 1));
         assert_eq!((frame(4199), frame(4200)), (1, 0));
         // One ending a ms short of a period past the grid holds its last
         // through it.
-        let frame = |t| bob_frame(t, 0, 86_799, USE_FRAME_MS);
+        let frame = |t| bob_frame(t, 0, 86_799, USE_FRAME_MS, None);
         assert_eq!(
             (frame(84_000), frame(85_399), frame(85_400), frame(86_798)),
             (0, 0, 0, 0)
@@ -2849,6 +2891,55 @@ mod tests {
             period in proptest::sample::select(vec![700u64, USE_FRAME_MS, 2 * USE_FRAME_MS]),
         ) {
             check_bob_frame(start, start + len, period);
+        }
+
+        /// Any bob held at any moment of it, on either frame (phase 5c's
+        /// tail, T4): it shows that frame at the moment, and from there
+        /// flips on the grid and only there, never less than a period
+        /// after the moment nor less than a period before its end, and on
+        /// every grid point between. Before the moment it's the bob
+        /// unheld. A hold from before its start (a part or key begun
+        /// since) holds nothing: it's the bob unheld throughout.
+        #[test]
+        fn any_held_bob_frame_holds_from_its_moment(
+            start in 0u64..20_000,
+            len in 1u64..12_000,
+            at in 0u64..12_000,
+            shown in 0u8..2,
+            early in 1u64..20_000,
+            period in proptest::sample::select(vec![700u64, USE_FRAME_MS, 2 * USE_FRAME_MS]),
+        ) {
+            let (end, at) = (start + len, start + at % len);
+            if let Some(before) = start.checked_sub(early) {
+                for t in start..end + period {
+                    proptest::prop_assert_eq!(
+                        bob_frame(t, start, end, period, Some((before, shown))),
+                        bob_frame(t, start, end, period, None),
+                        "{} to {}, held at {} before it, every {}, at {}", start, end, before, period, t
+                    );
+                }
+            }
+            let case = format!("{start} to {end}, held at {at} on {shown}, every {period}");
+            let held = |t| bob_frame(t, start, end, period, Some((at, shown)));
+            for t in start..at {
+                proptest::prop_assert_eq!(held(t), bob_frame(t, start, end, period, None), "{} at {}", case, t);
+            }
+            proptest::prop_assert_eq!(held(at), shown, "{}", case);
+            let mut flips = 0;
+            for t in at + 1..end + period {
+                if held(t) == held(t - 1) {
+                    continue;
+                }
+                flips += 1;
+                proptest::prop_assert!(
+                    t.is_multiple_of(period) && t >= at + period && t + period <= end,
+                    "{}: flips at {}", case, t
+                );
+            }
+            let allowed = (at + period..=end.saturating_sub(period))
+                .filter(|t| t.is_multiple_of(period))
+                .count();
+            proptest::prop_assert_eq!(flips, allowed, "{}", case);
         }
     }
 

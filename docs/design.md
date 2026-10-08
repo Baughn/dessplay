@@ -1933,7 +1933,10 @@ this section states what is built.
   reading a borrowed strip): its first frame held until a frame after
   it starts, its last through the part of a frame before it ends, so a
   key ending at a share of the use (her homework nodding off) never
-  comes within a frame of a flip. A bob that could never flip so (under
+  comes within a frame of a flip. Where her act's end moves in place (a
+  day's sleep become her night at bedtime, her wake time found afresh
+  as her clock is read), the frame it shows then holds until the first
+  flip on its grid a frame on, as from a start. A bob that could never flip so (under
   two frames, or two off the grid) is drawn as still poses instead:
   the lamp going off as she settles, the andagi's chewing then biting
   again, a frame each (why:

@@ -1510,7 +1510,7 @@ impl Guest {
             self.slot_was = Some(slot);
         }
         if let State::Visiting(visit) = &mut self.state {
-            visit.osaka.read_clock(fed);
+            visit.osaka.read_clock(fed, now);
         }
         fed
     }
@@ -2645,7 +2645,7 @@ impl Guest {
         }
         // Her routine reaches her from her first moment (her first paint
         // may tuck her in), not only from her first tick.
-        osaka.read_clock(self.routine_clock(now).filter(|_| self.feed_clock));
+        osaka.read_clock(self.routine_clock(now).filter(|_| self.feed_clock), now);
         // Come in the night for the accordion, she was asleep: groggy.
         osaka.groggy_if_night(now);
         // At night she's tucked in at the first paint (not come on an
