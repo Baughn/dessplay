@@ -1244,10 +1244,84 @@ proptest! {
             .into_iter()
             .map(|(item, at, along, left)| (Furniture::ALL[item], at, along, left))
             .collect();
-        let mut guest = Guest::restore(Ledger::new_at(seed, start));
-        guest.set_date(date(2026, 6, 17));
-        long_visit_of(guest, graphics, &sizes, &text, &skips, &chats, protect, &owned, 120_000)?;
+        her_days(
+            seed,
+            start,
+            graphics,
+            rooms_frame,
+            &sizes,
+            &text,
+            &skips,
+            &chats,
+            protect,
+            &owned,
+            Run::default(),
+        )?;
     }
+
+    /// [`her_days_never_touch_what_is_protected`] with the chat pane
+    /// apart from her nooks ([`chat_apart`]: her pieces on the two right
+    /// panes), so the chat rule's properties can be added here.
+    #[test]
+    fn her_days_with_the_chat_apart_never_touch_what_is_protected(
+        seed in any::<u64>(),
+        start in somewhen(),
+        graphics in any::<bool>(),
+        sizes in proptest::collection::vec((48u16..130, 14u16..45), 1..3),
+        // Over the whole screen (clipped by `scatter` and `long_visit_of`),
+        // so it reaches her nooks on the right as often as the chat.
+        text in proptest::collection::vec((0u16..130, 0u16..45, "[a-z漢─│ ]{1,6}"), 0..20),
+        skips in proptest::collection::vec((0u16..130, 0u16..45), 0..6),
+        chats in proptest::collection::vec(0u64..120_000, 0..3),
+        protect in (0u16..130, 0u16..45, 1u16..20, 1u16..6),
+        // Users or Playlist, the nooks of `chat_apart`.
+        owned in proptest::collection::vec((0usize..4, 1usize..3, 0u16..=1000, any::<bool>()), 0..4),
+    ) {
+        let owned: Vec<(Furniture, usize, u16, bool)> = owned
+            .into_iter()
+            .map(|(item, at, along, left)| (Furniture::ALL[item], at, along, left))
+            .collect();
+        her_days(
+            seed,
+            start,
+            graphics,
+            chat_apart,
+            &sizes,
+            &text,
+            &skips,
+            &chats,
+            protect,
+            &owned,
+            Run {
+                out_every: Some(1000),
+                ..Run::default()
+            },
+        )?;
+    }
+}
+
+/// One of her days' runs: from `start` by her clock, mid-June, 120 s
+/// over `sizes` of `frame`, run as `how` says.
+#[allow(clippy::too_many_arguments)]
+fn her_days(
+    seed: u64,
+    start: routine::GameTime,
+    graphics: bool,
+    frame: fn(u16, u16) -> (Buffer, IdleView),
+    sizes: &[(u16, u16)],
+    text: &[(u16, u16, String)],
+    skips: &[(u16, u16)],
+    chats: &[u64],
+    protect: (u16, u16, u16, u16),
+    owned: &[(Furniture, usize, u16, bool)],
+    how: Run,
+) -> Result<(), TestCaseError> {
+    let mut guest = Guest::restore(Ledger::new_at(seed, start));
+    guest.set_date(date(2026, 6, 17));
+    long_visit_of(
+        guest, graphics, frame, sizes, text, skips, chats, protect, owned, how, 120_000,
+    )
+    .map(|_| ())
 }
 
 /// [`her_days_never_touch_what_is_protected`]'s case where she was pulling
@@ -1262,12 +1336,14 @@ fn her_days_case_pulling_text_as_school_begins() {
     long_visit_of(
         guest,
         true,
+        rooms_frame,
         &[(64, 33)],
         &text,
         &[(53, 0)],
         &[],
         (0, 0, 1, 1),
         &owned,
+        Run::default(),
         120_000,
     )
     .unwrap_or_else(|e| panic!("{e}"));

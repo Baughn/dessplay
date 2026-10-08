@@ -1288,7 +1288,19 @@ proptest! {
         owned.push((Furniture::Fridge, fridge.0, fridge.1, false));
         let mut guest = Guest::restore(Ledger::new_at(seed, before_a_dash(seed, from)));
         guest.set_date(date(2026, 6, 17));
-        long_visit_of(guest, graphics, &sizes, &text, &skips, &chats, protect, &owned, 120_000)?;
+        long_visit_of(
+            guest,
+            graphics,
+            rooms_frame,
+            &sizes,
+            &text,
+            &skips,
+            &chats,
+            protect,
+            &owned,
+            Run::default(),
+            120_000,
+        )?;
     }
 }
 

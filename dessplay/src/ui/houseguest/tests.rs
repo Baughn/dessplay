@@ -17,6 +17,11 @@ use crate::ui::layout::{LayoutBundle, Renderer};
 
 use super::stage::{DELAY, Scene, chatty_ui, real_ui, stage_ui};
 
+/// A visitor's view with `protected` and no nooks. Its chat has no area
+/// (it meets nothing), centred on column 15 where she looks up at a
+/// chat line: a fixture's chat pane is one it names, never one lying
+/// over its nooks. Tests of the chat rule use [`chat_apart`] (or a
+/// fixture that sets its own chat, as [`resident_view`] does).
 fn view(protected: Vec<Rect>) -> IdleView {
     IdleView {
         delay: Some(DELAY),
@@ -24,7 +29,7 @@ fn view(protected: Vec<Rect>) -> IdleView {
         resident: false,
         focus: None,
         chat_mark: ChatMark::default(),
-        chat: Rect::new(0, 0, 30, 20),
+        chat: Rect::new(0, 0, 30, 0),
         scrollback: None,
         protected,
         nooks: Vec::new(),
@@ -723,6 +728,148 @@ proptest! {
         }
         long_visit(seed, graphics, &sizes, &text, &skips, &chats, protect, &owned, 60_000)?;
     }
+
+    /// [`long_visits_never_touch_what_is_protected`], shorter, with the
+    /// chat pane apart from her nooks ([`chat_apart`]: her pieces on the
+    /// two right panes), so the chat rule's properties can be added here.
+    #[test]
+    fn long_visits_with_the_chat_apart_never_touch_what_is_protected(
+        seed in any::<u64>(),
+        graphics in any::<bool>(),
+        sizes in proptest::collection::vec((60u16..130, 18u16..45), 1..3),
+        // Over the whole screen (clipped by `scatter` and `long_visit_of`),
+        // so it reaches her nooks on the right as often as the chat.
+        text in proptest::collection::vec((0u16..130, 0u16..45, "[a-z漢─│ ]{1,6}"), 0..20),
+        skips in proptest::collection::vec((0u16..130, 0u16..45), 0..6),
+        chats in proptest::collection::vec(0u64..200_000, 0..4),
+        protect in (0u16..130, 0u16..45, 1u16..20, 1u16..6),
+        // Users or Playlist, the nooks of `chat_apart`.
+        owned in proptest::collection::vec((0usize..4, 1usize..3, 0u16..=1000, any::<bool>()), 0..5),
+    ) {
+        let owned: Vec<(Furniture, usize, u16, bool)> = owned
+            .into_iter()
+            .map(|(item, at, along, left)| (Furniture::ALL[item], at, along, left))
+            .collect();
+        long_visit_of(
+            Guest::new(seed),
+            graphics,
+            chat_apart,
+            &sizes,
+            &text,
+            &skips,
+            &chats,
+            protect,
+            &owned,
+            Run {
+                out_every: Some(1000),
+                ..Run::default()
+            },
+            30_000,
+        )?;
+    }
+}
+
+/// A long visit on the bundled layout ([`real_frame`] of [`real_ui`],
+/// its chat and nooks as the client lays them), from a school morning:
+/// she visits, goes out to school, and her home stands empty, in both
+/// modes, never touching what is protected (a stretch of List's
+/// interior protected too, as a focused pane in use, and text in her
+/// nooks).
+#[test]
+fn long_visit_on_the_real_layout() {
+    let (real, view) = real_frame(&mut real_ui(), 100, 30);
+    assert!(
+        view.nooks
+            .iter()
+            .all(|&(_, rect)| !rect.intersects(view.chat))
+    );
+    // `owned`'s panes 1 and 2 are here, for her sofa and bed.
+    for nook in [Nook::Users, Nook::Playlist] {
+        assert!(
+            view.nooks.iter().any(|&(n, _)| n == nook),
+            "{nook:?}: {:?}",
+            view.nooks
+        );
+    }
+    let owned = [
+        (Furniture::Sofa, 1, 300, false),
+        (Furniture::Bed, 2, 300, true),
+    ];
+    let text = [
+        (56, 12, "osaka".to_string()),
+        (80, 20, "漢字 song".to_string()),
+        (62, 5, "a title".to_string()),
+    ];
+    for graphics in [false, true] {
+        let mut guest = Guest::restore(Ledger::new_at(5, tue(8, 12)));
+        guest.set_date(date(2026, 6, 17));
+        let visited = long_visit_of(
+            guest,
+            graphics,
+            |_, _| (real.clone(), view.clone()),
+            &[(100, 30)],
+            &text,
+            &[],
+            &[],
+            (60, 3, 30, 5),
+            &owned,
+            Run {
+                out_every: Some(500),
+                ..Run::default()
+            },
+            120_000,
+        )
+        .unwrap_or_else(|e| panic!("graphics={graphics}: {e}"));
+        eprintln!(
+            "PROBE {graphics} {} {} {}",
+            visited.visiting, visited.away, visited.furnished
+        );
+        assert!(
+            visited.visiting > 0 && visited.away >= 20 && visited.furnished > 0,
+            "graphics={graphics}: {visited:?}"
+        );
+    }
+}
+
+/// [`long_visit_of`]'s cue takes: a nap cued once she's visiting is
+/// napped, where the same visit uncued has none (the precondition).
+#[test]
+fn a_long_visit_cued_to_nap_naps() {
+    let owned = [(Furniture::Sofa, 1, 300, false)];
+    for graphics in [false, true] {
+        let visit = |cue| {
+            let mut guest = Guest::restore(Ledger::new_at(7, sat(14, 0)));
+            guest.set_date(date(2026, 6, 20));
+            long_visit_of(
+                guest,
+                graphics,
+                rooms_frame,
+                &[(100, 30)],
+                &[],
+                &[],
+                &[],
+                (0, 0, 1, 1),
+                &owned,
+                Run {
+                    cue,
+                    out_every: Some(1000),
+                },
+                30_000,
+            )
+            .unwrap_or_else(|e| panic!("graphics={graphics}: {e}"))
+        };
+        let uncued = visit(None);
+        assert!(uncued.visiting > 0, "graphics={graphics}: {uncued:?}");
+        assert!(
+            !uncued.posed(sprite::Pose::Nap(0)),
+            "graphics={graphics}: naps uncued"
+        );
+        let cued = visit(Some(Scene::Nap));
+        assert!(
+            cued.posed(sprite::Pose::Nap(0)),
+            "graphics={graphics}: {cued:?}"
+        );
+    }
 }
 
 /// One long visit, `span` ms over `sizes` in turn (see
@@ -743,30 +890,85 @@ fn long_visit(
     long_visit_of(
         Guest::new(seed),
         graphics,
+        rooms_frame,
         sizes,
         text,
         skips,
         chats,
         protect,
         owned,
+        Run::default(),
         span,
+    )
+    .map(|_| ())
+}
+
+/// What a [`long_visit_of`] saw: how many frames she was visiting, how
+/// many her home stood empty (she out), how many showed any furniture,
+/// and every pose she took while visiting, so a caller can tell a run
+/// that tested something from one that never saw her (or never did
+/// what it cued).
+#[derive(Clone, Debug, Default)]
+struct Visited {
+    visiting: usize,
+    away: usize,
+    furnished: usize,
+    poses: std::collections::HashSet<std::mem::Discriminant<sprite::Pose>>,
+}
+
+impl Visited {
+    fn posed(&self, pose: sprite::Pose) -> bool {
+        self.poses.contains(&std::mem::discriminant(&pose))
+    }
+}
+
+/// How a [`long_visit_of`] runs, past its layout and its span.
+#[derive(Clone, Copy, Debug, Default)]
+struct Run {
+    /// Cued once, after the first frame she's seen visiting (all that
+    /// frame's checks done): it takes effect at the next paint.
+    cue: Option<Scene>,
+    /// While she isn't here (out, or not yet come), a paint at least
+    /// this often (ms), as the shell paints. Her own ticks then come only
+    /// at boundaries, dashes and quarter hours (and before a first paint
+    /// her idle gate isn't even open), so without it a run can spend a
+    /// whole size's span in one step: she never comes, or her empty home
+    /// is seen a frame or two.
+    out_every: Option<u64>,
+}
+
+/// [`rooms`] with its three panes her nooks, the keybar protected, and
+/// no chat pane (see [`view`]): [`long_visit_of`]'s usual frame.
+fn rooms_frame(w: u16, h: u16) -> (Buffer, IdleView) {
+    (
+        rooms(w, h),
+        IdleView {
+            nooks: nooks(w, h),
+            ..view(bottom_strip(w, h))
+        },
     )
 }
 
 /// [`long_visit`] for `guest` as made (her clock somewhere in her week,
-/// say): visiting, or her home standing empty while she's out.
+/// say): visiting, or her home standing empty while she's out. `frame`
+/// gives the real frame and the view at each size (the text is scattered
+/// over it, `protect` added to its protected cells); `owned`'s pane index
+/// is into List, Users, Playlist. See [`Run`] for `how`.
 #[allow(clippy::too_many_arguments)]
 fn long_visit_of(
     mut guest: Guest,
     graphics: bool,
+    mut frame: impl FnMut(u16, u16) -> (Buffer, IdleView),
     sizes: &[(u16, u16)],
     text: &[(u16, u16, String)],
     skips: &[(u16, u16)],
     chats: &[u64],
     protect: (u16, u16, u16, u16),
     owned: &[(Furniture, usize, u16, bool)],
+    how: Run,
     span: u64,
-) -> Result<(), TestCaseError> {
+) -> Result<Visited, TestCaseError> {
+    let mut cue = how.cue;
     if graphics {
         guest.set_picker(kitty());
     }
@@ -785,20 +987,26 @@ fn long_visit_of(
         ));
     }
     let mut hidden = Hidden::default();
+    let mut visited = Visited::default();
     let mut now = 0;
     let span = span / sizes.len() as u64;
     let mut mark = ChatMark::default();
     for &(w, h) in sizes {
-        let mut real = rooms(w, h);
+        let (mut real, base) = frame(w, h);
         scatter(&mut real, text, skips);
         let (px, py, pw, ph) = protect;
-        let mut protected = bottom_strip(w, h);
+        let mut protected = base.protected.clone();
         protected.push(Rect::new(px, py, pw, ph).intersection(real.area));
         let until = now + span;
         while now < until {
+            let cap = match (&guest.state, how.out_every) {
+                (State::Away(_) | State::Absent, Some(every)) => every,
+                _ => u64::MAX,
+            };
             let step = guest
                 .next_tick(now)
                 .map_or(until - now, |d| d.as_millis() as u64)
+                .min(cap)
                 .clamp(1, until - now);
             now += step;
             if chats.iter().any(|&c| c <= now && c > now - step) {
@@ -806,11 +1014,20 @@ fn long_visit_of(
             }
             let view = IdleView {
                 chat_mark: mark,
-                nooks: nooks(w, h),
-                ..view(protected.clone())
+                protected: protected.clone(),
+                ..base.clone()
             };
             guest.advance(now);
             let frame = paint(&mut guest, &real, &view, now);
+            match &guest.state {
+                State::Visiting(visit) => {
+                    visited.visiting += 1;
+                    let pose = visit.osaka.appearance(now).0;
+                    visited.poses.insert(std::mem::discriminant(&pose));
+                }
+                State::Away(_) => visited.away += 1,
+                _ => {}
+            }
             let feet = match &guest.state {
                 State::Visiting(visit) => feet(visit),
                 // Her closed door stands on its floor (in line art, its
@@ -825,6 +1042,7 @@ fn long_visit_of(
                 State::Away(empty) => (Vec::new(), empty.shown.clone()),
                 _ => (Vec::new(), Vec::new()),
             };
+            visited.furnished += usize::from(!shown.is_empty());
             // The flap a parcel is coming in by (swung in over her wall's
             // line a moment).
             let flap = open_flap(&guest, now);
@@ -961,19 +1179,22 @@ fn long_visit_of(
                 most,
                 debug
             );
+            // After the frame's checks, so they all read the state it
+            // was painted in (an arrival cued replaces it at once).
+            if matches!(guest.state, State::Visiting(_))
+                && let Some(scene) = cue.take()
+            {
+                guest.cue(scene);
+            }
         }
     }
     let &(w, h) = sizes.last().unwrap();
-    let mut real = rooms(w, h);
+    let (mut real, view) = frame(w, h);
     scatter(&mut real, text, skips);
-    let view = IdleView {
-        nooks: nooks(w, h),
-        ..view(bottom_strip(w, h))
-    };
     guest.activity(now);
     let end = run(&mut guest, &real, &view, now, now + dissolve::DURATION_MS);
     prop_assert_eq!(end, real);
-    Ok(())
+    Ok(visited)
 }
 
 /// Whether a cell is what she moved and made raining out as she went
@@ -6508,6 +6729,477 @@ fn resident_view(width: u16, height: u16, focus: Option<Rect>) -> IdleView {
         nooks: panes[1..].to_vec(),
         ..view(bottom_strip(width, height))
     }
+}
+
+// ---- The chat pane, honestly placed (the door batch's fixtures) ----
+
+/// [`rooms`] with its tall left box the chat pane, and her nooks the two
+/// right ones: a visitor's screen whose chat meets no nook (the
+/// [`resident_view`] shape). Tests of the chat rule start here.
+fn chat_apart(width: u16, height: u16) -> (Buffer, IdleView) {
+    let panes = nooks(width, height);
+    let view = IdleView {
+        chat: panes[0].1,
+        nooks: panes[1..].to_vec(),
+        ..view(bottom_strip(width, height))
+    };
+    (rooms(width, height), view)
+}
+
+/// [`chat_apart`] with the chat reaching over part of Users (its left
+/// eighth, floor row included, the wall's space with it), as a custom
+/// layout's grid can overlap two panes (ui/app.rs's `overlap` template):
+/// the one geometry where a piece already standing can be in the chat.
+fn chat_over(width: u16, height: u16) -> (Buffer, IdleView) {
+    let (real, view) = chat_apart(width, height);
+    let users = view.nooks[0].1;
+    let view = IdleView {
+        chat: Rect::new(0, 0, users.x + width / 8, users.height),
+        ..view
+    };
+    (real, view)
+}
+
+/// A wall of one of a screen's nooks, as the door design names it: its
+/// column, whether its nook touches the screen's edge on its side, and
+/// her door's space beside it (6 columns by her height and the floor
+/// row), if the strip is tall and wide enough to have one at all.
+#[derive(Clone, Copy, Debug)]
+struct WallAt {
+    nook: Nook,
+    side: room::Side,
+    edge: bool,
+    space: Option<Rect>,
+    /// Where she'd stand in the space to go through.
+    spot: (i32, i32),
+}
+
+/// Every wall of `nooks`' strips on `screen`, worked out from the nook
+/// rects alone (the right wall is the strip's `to`, the left `from - 1`),
+/// never from the code that will keep the space, so it can check it.
+/// A space exists (D1) where the strip has her height and is at least
+/// 6 columns wider than her and than the widest of `pieces` standing on
+/// its floor.
+fn walls_of(
+    nooks: &[(Nook, Rect)],
+    screen: Rect,
+    pieces: &[(Furniture, Nook, u16)],
+) -> Vec<WallAt> {
+    let mut walls = Vec::new();
+    for &(nook, rect) in nooks {
+        let from = i32::from(rect.x) + 1;
+        let to = i32::from(rect.right()) - 1;
+        let floor = i32::from(rect.bottom()) - 1;
+        let rows = i32::from(rect.height) - 2;
+        let widest = pieces
+            .iter()
+            .filter(|&&(item, on, x)| {
+                on == nook
+                    && room::Prop::new(item, on, x, sprite::Facing::Right).lane()
+                        == room::Lane::Floor
+            })
+            .map(|&(item, ..)| i32::from(item.spec().footprint.0))
+            .fold(sprite::WIDTH, i32::max);
+        let room = rows >= sprite::HEIGHT && to - from >= 6 + widest;
+        for side in [room::Side::Right, room::Side::Left] {
+            let (wall, edge, x) = match side {
+                room::Side::Right => (to, rect.right() == screen.right(), to - 6),
+                room::Side::Left => (from - 1, rect.x == screen.x, from),
+            };
+            let space = room.then(|| Rect::new(x as u16, (floor - 4) as u16, 6, 5));
+            let spot = match side {
+                room::Side::Right => (wall - 3, floor),
+                room::Side::Left => (wall + 3, floor),
+            };
+            walls.push(WallAt {
+                nook,
+                side,
+                edge,
+                space,
+                spot,
+            });
+        }
+    }
+    walls
+}
+
+/// A floor glyph, by the terrain's rule written out again: a
+/// box-drawing glyph with a horizontal stroke (never a vertical-only
+/// one), or a diagonal.
+fn ledge_glyph(symbol: &str) -> bool {
+    let mut chars = symbol.chars();
+    let (Some(c), None) = (chars.next(), chars.next()) else {
+        return false;
+    };
+    matches!(c, '╱' | '╲')
+        || (('\u{2500}'..='\u{2570}').contains(&c)
+            && !matches!(
+                c,
+                '│' | '┃'
+                    | '║'
+                    | '╎'
+                    | '╏'
+                    | '┆'
+                    | '┇'
+                    | '┊'
+                    | '┋'
+                    | '╵'
+                    | '╷'
+                    | '╹'
+                    | '╻'
+                    | '╽'
+                    | '╿'
+            ))
+}
+
+/// Whether the door design's strict fallback (D4, step 3) takes her box
+/// standing at `(x, y)`: on the screen, a ledge under all 5 cells of its
+/// floor row, none of its cells protected, meeting none of `covers` and
+/// missing `chat` (`Rect::default()`: no chat). Text-blind, as D4 is:
+/// what stands above the floor doesn't matter.
+fn door_floor(
+    real: &Buffer,
+    protected: &[Rect],
+    covers: &[Rect],
+    chat: Rect,
+    (x, y): (i32, i32),
+) -> bool {
+    let Some(her) = room::her_box(x, y) else {
+        return false;
+    };
+    her.intersection(real.area) == her
+        && !covers.iter().any(|c| c.intersects(her))
+        && !her.intersects(chat)
+        && her.positions().all(|at| {
+            !protected.iter().any(|r| r.contains(at))
+                && (i32::from(at.y) != y || ledge_glyph(real.cell(at).unwrap().symbol()))
+        })
+}
+
+/// [`door_floor`] with blank cells above the floor: where she can stand
+/// (come home onto) on a screen with no text there. Stricter than D4, so
+/// never an oracle for the door's exact spot.
+fn standable(
+    real: &Buffer,
+    protected: &[Rect],
+    covers: &[Rect],
+    chat: Rect,
+    (x, y): (i32, i32),
+) -> bool {
+    door_floor(real, protected, covers, chat, (x, y))
+        && room::her_box(x, y)
+            .unwrap()
+            .positions()
+            .all(|at| i32::from(at.y) == y || real.cell(at).unwrap().symbol().trim().is_empty())
+}
+
+/// The [`door_floor`] spot nearest `to` (by L1, then y, then x), if any:
+/// the strict fallback's choice.
+fn nearest_door_floor(
+    real: &Buffer,
+    protected: &[Rect],
+    covers: &[Rect],
+    chat: Rect,
+    to: (i32, i32),
+) -> Option<(i32, i32)> {
+    every_spot(real.area)
+        .filter(|&at| door_floor(real, protected, covers, chat, at))
+        .min_by_key(|&(x, y)| ((x - to.0).abs() + (y - to.1).abs(), y, x))
+}
+
+/// Every cell of `area`, as her `(x, y)`.
+fn every_spot(area: Rect) -> impl Iterator<Item = (i32, i32)> {
+    (i32::from(area.y)..i32::from(area.bottom()))
+        .flat_map(move |y| (i32::from(area.x)..i32::from(area.right())).map(move |x| (x, y)))
+}
+
+/// The chat cases built on purpose (door batch, T6), on a 100×30 screen
+/// with the keybar protected along the bottom, each drawn as boxes.
+fn boxes_screen(boxes: &[Rect]) -> Buffer {
+    let (width, height) = (100u16, 30u16);
+    let mut buf = Buffer::empty(Rect::new(0, 0, width, height));
+    for &area in boxes {
+        tuirealm::ratatui::widgets::Widget::render(
+            tuirealm::ratatui::widgets::Block::bordered(),
+            area,
+            &mut buf,
+        );
+    }
+    buf.set_string(0, height - 2, "Tab Next pane | Enter Send", Style::new());
+    buf
+}
+
+/// [`chat_by_a_full_space`]'s home: a living room filling the Users
+/// strip (25 of its 28 columns), too full to keep her door's 6 clear.
+const FULL_SPACE_HOME: [(Furniture, Nook, u16); 4] = [
+    (Furniture::Sofa, Nook::Users, 0),
+    (Furniture::Tv, Nook::Users, 400),
+    (Furniture::Desk, Nook::Users, 700),
+    (Furniture::Lamp, Nook::Users, 1000),
+];
+
+/// Chat case (i): her door's wall (Users' right, at the screen's edge,
+/// the only strip her pieces are on) has a space her pieces
+/// ([`FULL_SPACE_HOME`]) fill, so it yields, and the nearest floor to it
+/// is the chat pane's, right below: the fallback must pass it by for
+/// List's far floor. List's left wall is an edge wall too, its space
+/// clear of the chat: D2's second key (her pieces' strips) is what picks
+/// Users' right over it.
+fn chat_by_a_full_space() -> (Buffer, IdleView) {
+    let list = Rect::new(0, 0, 70, 27);
+    let users = Rect::new(70, 0, 30, 14);
+    let chat = Rect::new(70, 14, 30, 13);
+    let view = IdleView {
+        chat,
+        nooks: vec![(Nook::List, list), (Nook::Users, users)],
+        ..view(bottom_strip(100, 30))
+    };
+    (boxes_screen(&[list, users, chat]), view)
+}
+
+/// Chat case (ii): the chat lies over the screen-edge end of the one
+/// nook that reaches an edge, so every edge wall's space meets it, and
+/// her door goes to an inner wall (Users' right, Playlist's walls). A
+/// side pane at the right edge is no nook of hers.
+fn chat_over_every_edge_space() -> (Buffer, IdleView) {
+    let users = Rect::new(0, 0, 50, 27);
+    let playlist = Rect::new(50, 0, 30, 27);
+    let side = Rect::new(80, 0, 20, 27);
+    let view = IdleView {
+        chat: Rect::new(0, 0, 12, 27),
+        nooks: vec![(Nook::Users, users), (Nook::Playlist, playlist)],
+        ..view(bottom_strip(100, 30))
+    };
+    (boxes_screen(&[users, playlist, side]), view)
+}
+
+/// Chat case (iii): her one nook is the chat pane (a grid laying the two
+/// in one cell), so no wall of hers has a space outside the chat. The
+/// other boxes of [`rooms`] are floor outside it, not hers to furnish:
+/// D4's strict fallback (no wall: `Fallback::NoWall`) puts a face-on
+/// door there while she's out, and she comes home onto it. Not the "no
+/// door anywhere" case: that is [`chat_over_every_floor`].
+fn chat_over_every_space() -> (Buffer, IdleView) {
+    let users = nooks(100, 30)[1].1;
+    let view = IdleView {
+        chat: users,
+        nooks: vec![(Nook::Users, users)],
+        ..view(bottom_strip(100, 30))
+    };
+    (rooms(100, 30), view)
+}
+
+/// Chat case (iv): one box over the screen, her one nook and the chat
+/// pane both, so there is no floor at all outside the chat (no wall, no
+/// fallback: D4 gives no door). Where she comes home here is the user's
+/// call (door-notes, step 1).
+fn chat_over_every_floor() -> (Buffer, IdleView) {
+    let pane = Rect::new(0, 0, 100, 27);
+    let view = IdleView {
+        chat: pane,
+        nooks: vec![(Nook::Users, pane)],
+        ..view(bottom_strip(100, 30))
+    };
+    (boxes_screen(&[pane]), view)
+}
+
+/// The covers of `pieces` laid on `view`'s nooks of `real`.
+fn covers_of(real: &Buffer, view: &IdleView, pieces: &[(Furniture, Nook, u16)]) -> Vec<Rect> {
+    let mut home = room::Home::default();
+    for &(item, nook, x) in pieces {
+        assert!(home.add(room::Prop::new(item, nook, x, sprite::Facing::Right)));
+    }
+    home.project(real, &view.nooks, &|_, _| false)
+        .iter()
+        .map(Shown::cover)
+        .collect()
+}
+
+#[test]
+fn the_chat_apart_meets_no_nook() {
+    for (w, h) in [(48, 14), (60, 18), (100, 30), (129, 44)] {
+        let (real, view) = chat_apart(w, h);
+        assert_eq!(real.area, Rect::new(0, 0, w, h));
+        assert!(!view.chat.is_empty() && !view.resident);
+        assert_eq!(view.nooks.len(), 2);
+        for &(nook, rect) in &view.nooks {
+            assert!(
+                !rect.intersects(view.chat),
+                "{w}x{h}: {nook:?} meets the chat"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_chat_over_meets_part_of_users_only() {
+    for (w, h) in [(60, 18), (100, 30), (129, 44)] {
+        let (_, view) = chat_over(w, h);
+        let [(Nook::Users, users), (Nook::Playlist, playlist)] = view.nooks[..] else {
+            panic!("{w}x{h}: {:?}", view.nooks);
+        };
+        assert!(users.intersects(view.chat), "{w}x{h}");
+        assert_ne!(
+            users.intersection(view.chat),
+            users,
+            "{w}x{h}: all of Users"
+        );
+        assert!(!playlist.intersects(view.chat), "{w}x{h}");
+        // Users' left wall's space, and floor, are in it.
+        let left = walls_of(&view.nooks, Rect::new(0, 0, w, h), &[])
+            .into_iter()
+            .find(|wall| wall.nook == Nook::Users && wall.side == room::Side::Left)
+            .unwrap();
+        assert!(
+            left.space.is_some_and(|s| s.intersects(view.chat)),
+            "{w}x{h}"
+        );
+    }
+}
+
+#[test]
+fn chat_case_i_the_space_yields_and_the_nearest_floor_is_the_chats() {
+    let (real, view) = chat_by_a_full_space();
+    let walls = walls_of(&view.nooks, real.area, &FULL_SPACE_HOME);
+    let edges: Vec<(Nook, room::Side)> = walls
+        .iter()
+        .filter(|w| w.edge)
+        .map(|w| (w.nook, w.side))
+        .collect();
+    assert_eq!(
+        edges,
+        [
+            (Nook::List, room::Side::Left),
+            (Nook::Users, room::Side::Right)
+        ]
+    );
+    // Both edge walls qualify (a space, clear of the chat): the tie is
+    // real, and her pieces' strip (D2's second key) breaks it for
+    // Users' right.
+    for wall in walls.iter().filter(|w| w.edge) {
+        assert!(
+            wall.space.is_some_and(|s| !s.intersects(view.chat)),
+            "{wall:?}"
+        );
+    }
+    assert!(
+        FULL_SPACE_HOME
+            .iter()
+            .all(|&(_, nook, _)| nook == Nook::Users)
+    );
+    let wall = walls
+        .iter()
+        .find(|w| w.nook == Nook::Users && w.side == room::Side::Right)
+        .unwrap();
+    let space = wall.space.expect("a space");
+    // Her floor pieces pack between the walls, not between the wall and
+    // the space: it yields.
+    let users = view.nooks[1].1;
+    let between = i32::from(users.width) - 2;
+    let widths: i32 = FULL_SPACE_HOME
+        .iter()
+        .filter(|&&(item, nook, x)| {
+            room::Prop::new(item, nook, x, sprite::Facing::Right).lane() == room::Lane::Floor
+        })
+        .map(|&(item, ..)| i32::from(item.spec().footprint.0))
+        .sum();
+    assert!(
+        widths <= between && widths > between - 6,
+        "{widths} of {between}"
+    );
+    let covers = covers_of(&real, &view, &FULL_SPACE_HOME);
+    assert_eq!(covers.len(), FULL_SPACE_HOME.len(), "all shown");
+    assert!(covers.iter().any(|c| c.intersects(space)), "they fill it");
+    // The nearest floor to her spot, the chat aside, is in the chat;
+    // refusing the chat, the fallback's is outside it, on List's floor.
+    let blind =
+        nearest_door_floor(&real, &view.protected, &covers, Rect::default(), wall.spot).unwrap();
+    assert!(
+        room::her_box(blind.0, blind.1)
+            .unwrap()
+            .intersects(view.chat),
+        "{blind:?}"
+    );
+    // (D4 is blind above the floor: that spot is (67, 26), her box over
+    // List's right border; door-notes, step 1.)
+    let near = nearest_door_floor(&real, &view.protected, &covers, view.chat, wall.spot).unwrap();
+    assert!(near.1 == 26 && near.0 + 2 < 70, "{near:?} on List's floor");
+    assert!(
+        (0..70).any(|x| standable(&real, &view.protected, &covers, view.chat, (x, 26))),
+        "List's floor to come home onto"
+    );
+}
+
+#[test]
+fn chat_case_ii_every_edge_space_meets_the_chat() {
+    let (real, view) = chat_over_every_edge_space();
+    let walls = walls_of(&view.nooks, real.area, &[]);
+    let edges: Vec<&WallAt> = walls.iter().filter(|w| w.edge).collect();
+    assert!(!edges.is_empty());
+    for wall in &edges {
+        let space = wall.space.expect("an edge wall with room");
+        assert!(space.intersects(view.chat), "{wall:?}");
+    }
+    let inner: Vec<&WallAt> = walls
+        .iter()
+        .filter(|w| !w.edge && w.space.is_some_and(|s| !s.intersects(view.chat)))
+        .collect();
+    assert!(!inner.is_empty(), "an inner wall outside the chat");
+    for wall in inner {
+        let spot = wall.spot;
+        assert!(
+            standable(&real, &view.protected, &[], view.chat, spot),
+            "{wall:?}"
+        );
+    }
+}
+
+#[test]
+fn chat_case_iii_no_wall_outside_the_chat_leaves_the_face_on_fallback() {
+    let (real, view) = chat_over_every_space();
+    // Hers is the one nook, and it is the chat.
+    assert_eq!(view.nooks.len(), 1);
+    let walls = walls_of(&view.nooks, real.area, &[]);
+    assert!(walls.iter().any(|w| w.space.is_some()));
+    for wall in &walls {
+        assert!(
+            wall.space.is_none_or(|s| s.intersects(view.chat)),
+            "{wall:?}"
+        );
+    }
+    // The fallback has floor outside the chat (her face-on door, NoWall),
+    // and she can come home onto it.
+    assert!(every_spot(real.area).any(|at| door_floor(&real, &view.protected, &[], view.chat, at)));
+    assert!(every_spot(real.area).any(|at| standable(&real, &view.protected, &[], view.chat, at)));
+}
+
+#[test]
+fn chat_case_iv_no_floor_outside_the_chat() {
+    let (real, view) = chat_over_every_floor();
+    assert_eq!(view.nooks.len(), 1);
+    assert_eq!(view.nooks[0].1, view.chat);
+    for wall in walls_of(&view.nooks, real.area, &[]) {
+        assert!(
+            wall.space.is_some_and(|s| s.intersects(view.chat)),
+            "{wall:?}"
+        );
+    }
+    // No spot for the fallback outside the chat, so none to stand on;
+    // the chat aside, there is (her nook's floor).
+    assert!(!every_spot(real.area).any(|at| door_floor(
+        &real,
+        &view.protected,
+        &[],
+        view.chat,
+        at
+    )));
+    assert!(every_spot(real.area).any(|at| standable(
+        &real,
+        &view.protected,
+        &[],
+        Rect::default(),
+        at
+    )));
 }
 
 /// A resident doesn't leave when someone's at the keys.
