@@ -3030,15 +3030,26 @@ impl Osaka {
     pub fn say(&mut self, text: &'static str, now: u64) {
         tracing::debug!(text, "houseguest says");
         self.hush(now);
+        self.hold_bob(now);
         self.speech = Some((text, now + speech_ms(text)));
     }
 
     /// Stop saying what she's saying. A pooled line she started saying
     /// this very instant never showed (nothing is drawn between), so it
     /// isn't said: its record goes, and it doesn't cool. (A door line
-    /// the decision after the door speaks over, say.)
+    /// the decision after the door speaks over, say.) A stir's turn ends
+    /// with its murmur (phase 5c's tail, T4): it's only ever woken for
+    /// and held at the murmur's end, so cut short, it ends here too.
+    ///
+    /// Her bob isn't held here, for what's cut short: every caller holds
+    /// or starts afresh at the same moment. [`Osaka::say`] holds; a new
+    /// act ([`Osaka::set`]: a cued Setsubun, riddle or rare musing, a
+    /// glance at her clock, a cued prelude's use, being placed) clears
+    /// the hold, its bob starting on its own grid; and the Dream
+    /// ([`Osaka::dream_from`]) begins its own part.
     fn hush(&mut self, now: u64) {
         self.unsaid.clear();
+        self.stir_until = self.stir_until.min(now);
         if let Some((text, until)) = self.speech.take()
             && until == now + speech_ms(text)
         {
@@ -3726,6 +3737,7 @@ impl Osaka {
                 && until == due
             {
                 self.speech = None;
+                self.hold_bob(due);
                 // What her act said under her look, said on in turn.
                 if let Some((&next, rest)) = std::mem::take(&mut self.unsaid).split_first() {
                     self.say(next, due);
@@ -8769,6 +8781,7 @@ impl Osaka {
         if pose.turns() {
             self.facing = toward(self.x, chat_x);
         }
+        self.hold_bob(now);
         self.looking_up = Some(LookUp {
             since,
             hidden,
@@ -8781,7 +8794,12 @@ impl Osaka {
     }
 
     /// Her look up from her act is over: turned back to the piece she
-    /// sits to, if she turned from one.
+    /// sits to, if she turned from one. Her bob isn't held here: each
+    /// caller holds or starts afresh at the same moment. Her watch over
+    /// ([`Osaka::looking_up_moves`]) holds as it moves; a stir dozing
+    /// ([`Osaka::stir_dozing`]) says its murmur, which holds; nodding off
+    /// under her look (her tick) is her act's next key, whose bob starts
+    /// on its own grid; and a new act ([`Osaka::set`]) clears the hold.
     fn end_look(&mut self, at: u64) {
         if let Some(look) = self.looking_up.take() {
             self.look_ended = at;
@@ -8800,12 +8818,12 @@ impl Osaka {
             return;
         };
         look.step += 1;
-        match look.step {
+        let (step, from, to) = (look.step, look.hidden, look.since + LOOK_MS);
+        // Her face and bubble change in place: her bob holds a frame.
+        self.hold_bob(at);
+        match step {
             1 => {}
-            2 => {
-                let (from, to) = (look.hidden, look.since + LOOK_MS);
-                self.say_what_her_look_hid(from, to, at);
-            }
+            2 => self.say_what_her_look_hid(from, to, at),
             _ => {
                 self.end_look(at);
                 tracing::trace!("houseguest: back to what she was at after the chat");
@@ -9661,10 +9679,13 @@ impl Osaka {
         }
     }
 
-    /// Something of hers changes in place at `at`, off her bob's grid (her
-    /// act's end moved): her bob holds the frame it shows now until a
-    /// frame on ([`script::bob_frame`]). Called before the change,
-    /// so the frame is the one shown.
+    /// Something of hers changes in place at `at`, off her bob's grid:
+    /// her act's end moved, her look up at the chat beginning, moving on
+    /// or ending, or what she says (a stir's murmur too) coming, going or
+    /// cut short. Her bob holds the frame it shows now until a frame on
+    /// ([`script::bob_frame`]), so it never flips within a frame of that
+    /// (phase 5c's tail, T4). Called before an end moves, so the frame is
+    /// the one shown.
     fn hold_bob(&mut self, at: u64) {
         if let Some(frame) = self.bob_frame_at(at) {
             self.hold_frame(at, frame);
@@ -16325,35 +16346,42 @@ mod tests {
             osaka.set(act.clone(), 0);
             osaka.tick(4_000, None, &terrain, &chances, &mut rng);
             let plain = osaka.clone();
-            let own = |at: u64| plain.appearance(at).0;
+            // In its own pose (her bob held a frame from each of the look's
+            // changes: its frame may differ).
+            let own = |at: u64| std::mem::discriminant(&plain.appearance(at).0);
+            let looks = |osaka: &Osaka, at: u64| {
+                let (pose, face, bubble) = osaka.appearance(at);
+                (std::mem::discriminant(&pose), face, bubble)
+            };
             let line = 5_000;
             osaka.look(line, 0, false, &terrain);
             assert_eq!(osaka.act, act, "{name}: the act runs on");
             let turned = if turns { Facing::Left } else { Facing::Right };
             assert_eq!(osaka.facing, turned, "{name}: turned to the chat");
             assert_eq!(
-                osaka.appearance(line),
+                looks(&osaka, line),
                 (own(line), Face::Surprised, Some(Bubble::Bang)),
                 "{name}"
             );
             let curious = line + LOOK_UP_SURPRISED_MS;
             osaka.tick(curious, None, &terrain, &chances, &mut rng);
             assert_eq!(
-                osaka.appearance(curious),
+                looks(&osaka, curious),
                 (own(curious), Face::Curious, Some(Bubble::Huh)),
                 "{name}"
             );
             let watching = line + LOOK_MS;
             osaka.tick(watching, None, &terrain, &chances, &mut rng);
             assert_eq!(
-                osaka.appearance(watching),
+                looks(&osaka, watching),
                 (own(watching), Face::Vacant, None),
                 "{name}: watching"
             );
             let over = line + WATCH_MS.max(LOOK_UP_MS);
             osaka.tick(over, None, &terrain, &chances, &mut rng);
             assert_eq!(osaka.act, act, "{name}: still at it");
-            assert_eq!(osaka.appearance(over), plain.appearance(over), "{name}");
+            let (_, face, bubble) = plain.appearance(over);
+            assert_eq!(looks(&osaka, over), (own(over), face, bubble), "{name}");
             let facing = if matches!(act, Act::Use { .. }) {
                 Facing::Right
             } else {
@@ -16723,6 +16751,164 @@ mod tests {
         }
     }
 
+    /// Her still acts and the bobbing one beside them (reading on her
+    /// back), for [`her_act_waits_a_frame_from_each_change_of_her_look_up`]
+    /// and [`her_act_waits_a_frame_from_what_she_says`]: those whose own
+    /// pose changes no faster than a frame (lying on her front kicks her
+    /// feet faster, a quick bob the stillness rule leaves to the band).
+    fn still_acts_and_a_bob() -> Vec<(&'static str, Act)> {
+        let acts: Vec<(&'static str, Act)> = still_acts()
+            .into_iter()
+            .map(|(name, act, ..)| (name, act))
+            .chain([(
+                "lie read",
+                Act::Idle {
+                    what: Activity::LieRead,
+                    since: 0,
+                    until: 60_000,
+                    play: None,
+                },
+            )])
+            .collect();
+        let slow = |act: &Act| {
+            let mut osaka = Osaka::standing_at(20, 15, 0, &mut Rng(3));
+            osaka.set(act.clone(), 0);
+            let changes: Vec<u64> = (10..20_000)
+                .step_by(10)
+                .filter(|&t| osaka.acting(t - 10).0 != osaka.acting(t).0)
+                .collect();
+            changes.windows(2).all(|w| w[1] - w[0] >= USE_FRAME_MS)
+        };
+        let (slow, quick): (Vec<_>, Vec<_>) = acts.into_iter().partition(|(_, act)| slow(act));
+        let quick: Vec<&str> = quick.iter().map(|(name, _)| *name).collect();
+        assert_eq!(quick, ["lie front"]);
+        slow
+    }
+
+    /// Her whole look (pose, face, bubble, facing) sampled every 10 ms
+    /// from `from` to `to`, `event` (a chat line, a line she says) run at
+    /// `at` (on a sample) and her tick at each sample (as a client
+    /// painting then would), checked against the stillness rule's count
+    /// (design.md: an exempt change of hers that isn't periodic still
+    /// counts): a change `own` names (the look's or her line's) needn't
+    /// wait, but whatever of hers changes next waits a frame from it, and
+    /// from any change before; her slow blink alone is exempt and counts
+    /// nothing.
+    fn check_waits_a_frame(
+        case: &str,
+        osaka: &mut Osaka,
+        (from, to): (u64, u64),
+        (at, event): (u64, impl FnOnce(&mut Osaka, u64)),
+        own: impl Fn((Pose, Face, Option<Bubble>), (Pose, Face, Option<Bubble>)) -> bool,
+    ) {
+        let terrain = floor_at(15);
+        let chances = Chances::default();
+        let mut rng = Rng(3);
+        let mut event = Some(event);
+        let mut last: Option<u64> = None;
+        let mut was: Option<(script::Look, Facing)> = None;
+        for t in (from..to).step_by(10) {
+            if t == at
+                && let Some(event) = event.take()
+            {
+                event(osaka, t);
+            }
+            osaka.tick(t, None, &terrain, &chances, &mut rng);
+            let now = (osaka.appearance(t), osaka.facing);
+            let Some(before) = was.replace(now) else {
+                continue;
+            };
+            if before == now {
+                continue;
+            }
+            let ((pose, face, bubble), facing) = before;
+            let ((pose2, face2, bubble2), facing2) = now;
+            if (pose, bubble, facing) == (pose2, bubble2, facing2)
+                && (face == Face::Blink || face2 == Face::Blink)
+            {
+                continue;
+            }
+            if !own(before.0, now.0)
+                && let Some(last) = last
+            {
+                assert!(
+                    t - last >= USE_FRAME_MS,
+                    "{case}: changed at {last} and {t} ({before:?} to {now:?})"
+                );
+            }
+            last = Some(t);
+        }
+        assert!(event.is_none(), "{case}: {at} never sampled");
+    }
+
+    /// Her act waits a frame from each change of her look up at a chat
+    /// line (phase 5c's tail, T4; design.md, an exempt change that isn't
+    /// periodic still counts): its `!` beginning, its `?`, its plain watch
+    /// and its end each hold her bob a frame ([`Osaka::hold_bob`]), so in
+    /// every still act, and reading on her back, with the line at each
+    /// 100 ms of her bob's frame, her whole look, from two frames before
+    /// the line to well past the look, never changes within a frame of a
+    /// change but for the look's own next change (her face, bubble and
+    /// facing: [`check_waits_a_frame`]).
+    #[test]
+    fn her_act_waits_a_frame_from_each_change_of_her_look_up() {
+        let terrain = floor_at(15);
+        let mut tried = 0;
+        for (name, act) in still_acts_and_a_bob() {
+            for line in (5_000..5_000 + USE_FRAME_MS).step_by(100) {
+                let case = format!("{name}, a line at {line}");
+                let mut osaka = Osaka::standing_at(20, 15, 0, &mut Rng(3));
+                osaka.facing = Facing::Right;
+                osaka.set(act.clone(), 0);
+                let end = line + LOOK_UP_MS.max(WATCH_MS) + 3 * USE_FRAME_MS;
+                check_waits_a_frame(
+                    &case,
+                    &mut osaka,
+                    (line - 2 * USE_FRAME_MS, end),
+                    (line, |osaka: &mut Osaka, t| {
+                        osaka.look(t, 0, false, &terrain);
+                        assert!(osaka.looking_up_at_chat(), "looks up in place");
+                    }),
+                    |(pose, ..), (pose2, ..)| pose == pose2,
+                );
+                tried += 1;
+            }
+        }
+        assert!(tried > 50, "{tried}");
+    }
+
+    /// Her act waits a frame from what she says (phase 5c's tail, T4):
+    /// a line coming and going, off her bob's grid, holds her bob a frame
+    /// from each ([`Osaka::say`], her tick at its end), so in every still
+    /// act, and reading on her back, with a line said at each 100 ms of
+    /// her bob's frame (short and long), her whole look, from two frames
+    /// before the line to well past it, never changes within a frame of a
+    /// change but for the line's own bubble ([`check_waits_a_frame`]).
+    #[test]
+    fn her_act_waits_a_frame_from_what_she_says() {
+        let mut tried = 0;
+        for (name, act) in still_acts_and_a_bob() {
+            for text in [OK, "I wonder what the sea tastes like today"] {
+                for said in (5_000..5_000 + USE_FRAME_MS).step_by(100) {
+                    let case = format!("{name}, {text:?} said at {said}");
+                    let mut osaka = Osaka::standing_at(20, 15, 0, &mut Rng(3));
+                    osaka.facing = Facing::Right;
+                    osaka.set(act.clone(), 0);
+                    let end = said + speech_ms(text) + 3 * USE_FRAME_MS;
+                    check_waits_a_frame(
+                        &case,
+                        &mut osaka,
+                        (said - 2 * USE_FRAME_MS, end),
+                        (said, |osaka: &mut Osaka, t| osaka.say(text, t)),
+                        |(pose, face, _), (pose2, face2, _)| (pose, face) == (pose2, face2),
+                    );
+                    tried += 1;
+                }
+            }
+        }
+        assert!(tried > 100, "{tried}");
+    }
+
     /// Asked something (a line that `asks`) in a still act with nothing
     /// to answer, she looks up in place as at any line; and each line of
     /// a lively chat looks again (`!` from it), watched until 5.4 s after
@@ -16826,6 +17012,38 @@ mod tests {
                 "{text:?}"
             );
             assert!(speech_ms(text) >= USE_FRAME_MS, "{text:?}");
+        }
+    }
+
+    /// A stir's turn ends with its murmur, however the murmur ends (phase
+    /// 5c's tail, T4): run to its end it's woken for and held at
+    /// (`whatever_she_says_shows_for_a_frame`), and cut short by another
+    /// line (her sleep-talk, the Dream's hush, a line by day) the turn
+    /// ends there too, so it never runs on unwoken past the line that
+    /// went with it. Lying back, stirred at 5000 and saying another line
+    /// at each 100 ms of the murmur: stirring until then, not after.
+    #[test]
+    fn a_stirs_turn_ends_with_its_murmur_cut_short() {
+        for said in (5_100..5_000 + speech_ms(MM)).step_by(100) {
+            let mut asleep = Osaka::standing_at(20, 15, 0, &mut Rng(3));
+            asleep.set(
+                Act::Idle {
+                    what: Activity::LieBack,
+                    since: 0,
+                    until: 600_000,
+                    play: None,
+                },
+                0,
+            );
+            asleep.stir_saying(MM, 5_000);
+            assert!(asleep.stirring_at_chat(said - 1), "{said}");
+            asleep.say(OK, said);
+            for t in [said, said + 100, 5_000 + speech_ms(MM)] {
+                assert!(
+                    !asleep.stirring_at_chat(t),
+                    "murmur cut at {said}: turned at {t}"
+                );
+            }
         }
     }
 
@@ -17162,9 +17380,17 @@ mod tests {
                     "{name}: the stir holds a frame, {t}"
                 );
             }
+            // Back as she was (her bob held a frame from the stir's end:
+            // its frame may differ).
             let after = line + speech_ms(STIRRED);
             osaka.tick(after, None, &terrain, &chances, &mut rng);
-            assert_eq!(osaka.appearance(after), plain.appearance(after), "{name}");
+            let (pose, face, bubble) = osaka.appearance(after);
+            let (own, own_face, own_bubble) = plain.appearance(after);
+            assert_eq!(
+                (std::mem::discriminant(&pose), face, bubble),
+                (std::mem::discriminant(&own), own_face, own_bubble),
+                "{name}"
+            );
             let n = osaka.decisions.len();
             osaka.tick(59_999, None, &terrain, &chances, &mut rng);
             assert_eq!((&osaka.act, osaka.decisions.len()), (&act, n), "{name}");

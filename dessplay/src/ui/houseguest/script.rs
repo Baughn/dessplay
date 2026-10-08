@@ -254,7 +254,8 @@ impl KeyTime {
 ///
 /// And it's held where something of hers changed in place off its grid
 /// (`held`: the moment, ms into the part, and the frame shown then): her
-/// act's end moved (phase 5c's tail, T4). From that moment the frame it
+/// act's end moved, her look up at the chat, what she says (phase 5c's
+/// tail, T4: `Osaka::hold_bob`). From that moment the frame it
 /// showed holds until the first flip on the grid a whole period on, as
 /// from a start, so the bob neither changes as the moment comes (an end
 /// moved within its last period would release or take back a flip

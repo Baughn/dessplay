@@ -887,10 +887,10 @@ fn golden_stage_room() {
         "stage",
         stage_room,
         &[
-            (0, 0xead2bdfd3cec4ec0, 0x116ef23c9c125263),
-            (1, 0x353f1896da4d255c, 0x8c66e321b389e7ca),
+            (0, 0x47b5116647357e8a, 0xd6eaffd48f8d6709),
+            (1, 0x353f1896da4d255c, 0xd6def839be94c0e6),
             (2, 0x3728520a856d334b, 0x89cf073ddd8ae9b2),
-            (3, 0xe4e5548a9361acfd, 0xc419d67a2f7c897d),
+            (3, 0x78a5011d0ddfea3f, 0x551acdf5a9cc72b7),
         ],
     );
 }
@@ -901,10 +901,10 @@ fn golden_resident() {
         "resident",
         resident,
         &[
-            (0, 0x88db7c78f7ffd920, 0x2401d9ca5d96a1bf),
-            (1, 0xd405a1cc2cf341e7, 0x08e20ad349e86833),
-            (2, 0xd23c334bb8c9be67, 0x32f7a47ca8f47f19),
-            (3, 0x01dd0cb53a947a68, 0xb1293d1f5af47567),
+            (0, 0x854bea441dbad036, 0x0d493ffd7056db64),
+            (1, 0x08e3c147d299a8ca, 0x08e20ad349e86833),
+            (2, 0x3125e653fc700c51, 0x6e7fd757071c1cbd),
+            (3, 0x65dd91a1a4689cf4, 0xb1293d1f5af47567),
         ],
     );
 }
@@ -915,10 +915,10 @@ fn golden_furnished_home() {
         "furnished",
         furnished,
         &[
-            (0, 0x354ef08cb8c6929e, 0xdd672ab33f4ae0bc),
-            (1, 0x2874e3d49620cbd5, 0x0c2d5f15fa08a38b),
-            (2, 0x3d84e019d001101e, 0xe216f4f8c1865d26),
-            (3, 0xbdc4a277cc614e04, 0xab35e90595dbe7eb),
+            (0, 0x7cf74eb7b60ba443, 0x239777f14ac9ef42),
+            (1, 0x3f01f341ffc12c22, 0x1413e277ebe10328),
+            (2, 0xf34a5f6360e8b5c2, 0x6056e69f9e72818a),
+            (3, 0x2c8d9e0770be6020, 0xa4d38c2dfef1144d),
         ],
     );
 }
@@ -932,7 +932,7 @@ fn golden_errand() {
             (0, 0x2ea7fca9dab09e54, 0x62569ff3c4e80001),
             (1, 0x0189aaa246e31f89, 0x8837834bca303667),
             (2, 0x4ce68ad344556355, 0xa1b27ef17e3b691b),
-            (3, 0xb7e0804b610f6e66, 0x4c9bf77151e38f77),
+            (3, 0x11862e9fc4708882, 0x4a1f23cf13c1aa17),
         ],
     );
 }
@@ -943,10 +943,10 @@ fn golden_homework_evening() {
         "evening",
         homework_evening,
         &[
-            (0, 0x0ccaeef6b15a7c71, 0x2b950953f9e4b613),
-            (1, 0x1b8efbd17f0e019b, 0xf60261e68bd1b66d),
-            (2, 0x19fde888a88d8bdd, 0x93d5a62ef45c7f1e),
-            (3, 0x0880d1ceec5e9114, 0x045e67159712c319),
+            (0, 0x294559d498103f46, 0x6ea18028a1b98d00),
+            (1, 0x6e971732c0b6d338, 0x303ac09346e45118),
+            (2, 0xaed0e80b50b34322, 0x41f8a585cc020388),
+            (3, 0x225affab6696c7f5, 0x280b2e5f235c700c),
         ],
     );
 }
@@ -957,10 +957,10 @@ fn golden_tucked_in() {
         "tucked",
         tucked_in,
         &[
-            (0, 0x8f6b08e44778c80e, 0xbdf26c2bc4dfaecb),
-            (1, 0x1d75fab392eac8e8, 0x67b089307b52a545),
-            (2, 0x28885a67f6190cfe, 0x8b6dee2f3a0d2d69),
-            (3, 0xa1e533b18ac388e7, 0x510bbe8b18455adc),
+            (0, 0x236869d8b448a58a, 0xc4901d31ce91d3fb),
+            (1, 0xdf1a470baad00194, 0x053294c2445f07e5),
+            (2, 0xbd63447155361f62, 0x989d9ad7617671ab),
+            (3, 0x352c4a5b3b896cfb, 0x952bacf6b4d3609c),
         ],
     );
 }
@@ -971,9 +971,9 @@ fn golden_weekend() {
         "weekend",
         weekend,
         &[
-            (0, 0x52a719110f85390d, 0xb5e1c5336b8dc555),
-            (1, 0x78bba4acca09d603, 0x1ff288b93400be7b),
-            (2, 0xebf7d45a68680445, 0xf8ff1bd86a80500e),
+            (0, 0xe924ba8a75b51482, 0x5aa529bb30ad807a),
+            (1, 0xd64da2dfe592e44f, 0x6723fd5183c9c02b),
+            (2, 0xe341abd3226b031d, 0xb6f5bd227cc8a00b),
             (3, 0x3877e60597695871, 0xf724df8a45ad1ef5),
         ],
     );
@@ -1064,10 +1064,10 @@ fn golden_dash_home() {
 /// frame inserted at a chat line's own time, her look up at it shown then,
 /// not at her next wake; the trace diff is in that commit).
 const UNFED_STAGE: [(u64, u64, u64); 4] = [
-    (0, 0xfac7c577aa114248, 0x99216d6fb546e137),
-    (1, 0xc185302e462ff1c7, 0xe3813629899e6646),
-    (2, 0xdc857574c6cee2a7, 0x7831feeacabb7641),
-    (3, 0x91491ccce445123b, 0xc3acd4a15b5a72cf),
+    (0, 0xe490bbcb2911f802, 0x6674efd794782bbf),
+    (1, 0xc185302e462ff1c7, 0x4afb501e4a5f3bb2),
+    (2, 0xdc857574c6cee2a7, 0x65960c76e2055dd3),
+    (3, 0xc65cf286fc85cc95, 0xcac6285779eff395),
 ];
 
 /// The resident's tables at the end of phase 5b step 3, but for step 5a's
@@ -1111,10 +1111,10 @@ const UNFED_STAGE: [(u64, u64, u64); 4] = [
 /// next wake; seed 3 in both modes by one at a focus change, 33915 ms;
 /// the trace diff is in that commit).
 const UNFED_RESIDENT: [(u64, u64, u64); 4] = [
-    (0, 0x31248b2703d7f4b9, 0xa42bc92dfdb06bf8),
-    (1, 0x2cb57aed24a7f2cc, 0xfbbb1d4b144416cc),
-    (2, 0x142f71eff4919c2b, 0x6eed446698019d89),
-    (3, 0xe7dfaa5b4a0961b6, 0xe69e61d8935ff18f),
+    (0, 0xfb6a797eae9e4083, 0x44f1f668b63723bf),
+    (1, 0xa92dd73a6d6bbfd8, 0x6d0838257a92d1a3),
+    (2, 0xad209fb858210b6d, 0x22ab6ca4ac24a031),
+    (3, 0xbc05009d8a3b0a96, 0x51d68e264087e03a),
 ];
 
 /// The furnished home's tables at the end of phase 5b step 3, but for step
@@ -1151,10 +1151,10 @@ const UNFED_RESIDENT: [(u64, u64, u64); 4] = [
 /// up at it shown then, not at her next wake; the trace diff is in that
 /// commit).
 const UNFED_FURNISHED: [(u64, u64, u64); 4] = [
-    (0, 0xcd742d75f34fb852, 0x6231796b3c9b1902),
-    (1, 0x439109007da54dda, 0x54be599a8fe7ac6f),
-    (2, 0x0552d833096e0e08, 0xccbb880ca23019d7),
-    (3, 0xe374fdfb8dde5aad, 0x7d8bdbf01be66f24),
+    (0, 0xd1023d1c5cd8b61f, 0x6714edeb29357a2c),
+    (1, 0x1782f3d5ee343583, 0x996b7a0514d86e83),
+    (2, 0xc7cf455f8c8ec56c, 0x43724e9ba2fc6c2d),
+    (3, 0xa4ebfaa87beeff6c, 0xb561b4c24b0b9bee),
 ];
 
 /// The errand's tables at the end of phase 5b step 3, but for step 5a's
@@ -1182,7 +1182,7 @@ const UNFED_ERRAND: [(u64, u64, u64); 4] = [
     (0, 0x2ea7fca9dab09e54, 0x62569ff3c4e80001),
     (1, 0x0189aaa246e31f89, 0x8837834bca303667),
     (2, 0x4ce68ad344556355, 0xa1b27ef17e3b691b),
-    (3, 0xf148ae9ad8c75a77, 0x2b1ad6e223371a71),
+    (3, 0x464bd292b9257dd1, 0xbd9bbe268ca64baf),
 ];
 
 #[test]

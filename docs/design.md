@@ -1731,7 +1731,7 @@ this section states what is built.
   error; why: [decisions](decisions.md#her-lines-may-use-a-few-narrow-marks-2026-10-07))
   show for 1.2 s + 60 ms per character, a frame (1.4 s) at least so a
   line never comes and goes inside one (a stir's turn lasts as long as
-  its murmur), over her act's
+  its murmur, and ends with it if another line cuts it short), over her act's
   own bubble: a greeting on first finding her feet ("Nice to meet you.",
   the date's, or her mood's), "...I'm OK."
   after a hard landing (always on her entrance, else half the time), and
@@ -1927,7 +1927,13 @@ this section states what is built.
   quarter-hour and her window's sky at each change of the sky, dawn,
   day, dusk, evening and night, five a game day: not her doing, and
   slow and steady; only at a paint where her clock's reading changed,
-  and only the dial's and the sky's own cells). Steady periodic motion is not what draws the
+  and only the dial's and the sky's own cells, which in ASCII include
+  those round her glyphs in her box while she holds still). Exemptions
+  combine: whatever else changes with the world's clock is judged by
+  the others. An exempt change of hers that isn't periodic (a look up
+  at the chat, a stir) still counts: whatever of hers changes next
+  waits a frame from it; her blink, the hook's bob, the film's still
+  and the world's clock count nothing. Steady periodic motion is not what draws the
   eye; a change is: so the hook bobs through the whole of its span,
   however long her mood lingers over the act (a lazy one's up to
   49 s). A bob of hers on the frame (her writing, her breathing asleep,
@@ -1936,10 +1942,13 @@ this section states what is built.
   reading a borrowed strip): its first frame held until a frame after
   it starts, its last through the part of a frame before it ends, so a
   key ending at a share of the use (her homework nodding off) never
-  comes within a frame of a flip. Where her act's end moves in place (a
-  day's sleep become her night at bedtime, her wake time found afresh
-  as her clock is read), the frame it shows then holds until the first
-  flip on its grid a frame on, as from a start. A bob that could never flip so (under
+  comes within a frame of a flip. Where anything else of hers changes
+  in place, off its grid (her look up at the chat beginning, moving on
+  or ending; what she says, a stir's murmur too, coming, going or cut
+  short; her act's end moving: a day's sleep become her night at
+  bedtime, her wake time found afresh as her clock is read), the frame
+  it shows then holds until the first flip on its grid a frame on, as
+  from a start. A bob that could never flip so (under
   two frames, or two off the grid) is drawn as still poses instead:
   the lamp going off as she settles, the andagi's chewing then biting
   again, a frame each (why:

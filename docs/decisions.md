@@ -4832,6 +4832,109 @@ places, both ways), red before the fix at `sleep_on` ("changed at
 at either way the wake moves. Golden traces: none moved (no golden
 scene moves an end in place).
 
+**An exempt change of hers still counts, and her bob holds from it
+(phase 5c's tail, T4, 2026-10-08):** the stillness rule exempts some
+changes, "each only its own change", and the drawn test had read that
+as "never counted": an exempt change never set the frame clock, so a
+look up at the chat or a stir ending off the grid was followed by her
+breathing's next flip less than a frame later unnoticed (T2's review).
+The rule is now precise: an exempt change is never a flip itself, but a
+look up's or a stir's changes are her reaction, a change the eye
+catches, and whatever of hers changes next waits a frame from them, as
+from any change of hers. Her slow blink and the hook's bob are steady
+periodic motion (the user's principle, Round 8), and the film's still
+and the world's clock aren't hers and come on their own time; none of
+those counts. Counting blinks was tried and rejected: her blinks come
+off her bob's grid by design, so her reading or writing flipped within
+a frame of a blink's end 120 times in the drawn test's runs; holding
+her bob for each blink would all but stop it. The world's clock counted
+would undo T1's exemption (the dial stepping 656 ms after her breathing's
+flip is the same pair the other way round).
+
+What she does now fits it: her bob holds the frame it shows from each
+change of a look up (its beginning, its `?`, its plain watch, its end)
+and from what she says coming, going or being cut short (a stir's
+murmur is said, so its turn's end is held from too), until the first
+flip on its grid a frame on (`Osaka::hold_bob`, the hold her act's end
+moving in place already used). Before it the drawn test, counting on
+from those, failed on a stir by day (the stir over at 181400 and her
+breathing's next flip at 181844) and a look up over reading on her
+back (its end at 94000, her page at 95267); 48 stirs and 2 look ups
+in its runs. A hold skips a flip at most, so after one her bob's beat
+runs the other way, which nobody can see. Golden traces: 67 moved,
+each only her bob's frames (asleep, reading on her back, homework, a
+nap, a borrowed strip, the paper desk), her acts, places, faces and
+bubbles the same in every one.
+
+T4's review tightened both. The drawn test's look-up exemption took
+any change of hers while she looked up or stirred, her bob's flip and
+her act's key included, so the holds at a look's start and steps were
+pinned only by golden hashes: it now takes only the look's own change
+(her face, bubble and facing; her pose only into or out of a stir's
+turn, with its murmur), and anything else of hers under it is judged
+as any change, so dropping either hold fails it, and so does its
+mutant (her pose changed a paint after a look's change, the look still
+on). Two unit tests sample her whole look every 10 ms through a look
+up and through a line she says, in every still act and reading on her
+back, at each 100 ms of her bob's frame: each fails with the hold at
+the look's start, its steps, a line's start or a line's end dropped.
+Two holds were reached by nothing and were redundant, so they went:
+her look's end (each caller holds at the same moment, or a new key or
+act starts its own grid) and a line cut short (every caller of `hush`
+says, which holds, sets a new act, or begins the Dream's part). A
+stir's turn now ends with its murmur when another line cuts it short
+(her sleep-talk, the Dream, a line by day): it was woken for and held
+at only through the murmur's end, so cut short it ran on to its old end
+unwoken (`a_stirs_turn_ends_with_its_murmur_cut_short`, red before). The
+same open class as her look's (above): a line she says a moment before
+her act's key comes less than a frame before it (plan.md).
+
+**The drawn exemptions combine, and the sky shows round her in ASCII
+(phase 5c's tail, T4, 2026-10-08; T1's review left it):** the world's
+clock's own step (its footprint's changed cells and its dial or sky
+looks) is taken back first and whatever else changed at that paint is
+judged by the other exemptions, so her blink as the dial steps is
+exempt and her breathing's flip with it is not. In ASCII the sky's (or
+the dial's) cells in her box, off her glyphs, are the piece's at a
+paint where her model and key didn't change (her leaning at the sill
+as the sky turns to dusk); her glyphs are known there (her sprite's
+cells), and a change at one of them is hers. In line art she is one
+image over the window, so her box is hers. The test's own mutants, at
+every paint the world's clock exempts, show both: a blink with it is
+exempt, and with a cell elsewhere as well is not; with her box put
+over the stepped window, the sky's cells off her glyphs are the sky's
+and one of her glyphs changing with it is hers. Each new clause was
+shown to matter by breaking it in the test (the stripping, the glyph
+check, the count from a look, the count from a flip), each failing its
+mutant. Her blink and the hook's bob at one paint combine the same way
+(her face, cells and looks taken as the blink, the rest as the hook's
+bob), in both tests: in the model's test (her state, not cells) a blink
+beginning on the sample the hook's bob flipped counted as a flip (T2's
+probe: lazy seed 2, ordinary seed 5, which its shopping room now also
+runs; with the combining broken it fails there, "flipped at 91900 and
+92200"), and the drawn test's mutant (a blink with each real hook's bob
+is exempt, with a cell elsewhere as well is not) fails with it broken.
+The model's test counts the samples only the combined clause exempted
+and requires some in the shopping room (11 in each mode), so a change
+moving the coincidence away can't leave it untried unseen. Its limit,
+documented in the test: those are the only pairs that combine (the
+world's clock with any one); a look's change or the film's still on
+the paint of a blink or the hook's bob is judged as hers, failing only
+if something counted came in the frame before, which no run does. A
+key boundary that shows nothing new is no change at a step of the
+world's clock either, as at any paint. The film's still counts nothing
+as design.md says, though counting it fails no run today: nothing keeps
+her bob off the moment the player answers, so it would fail by chance,
+on a principle that isn't hers to keep.
+
+Left, and open: her night. The stillness tests run afternoons, and the
+night's sleep is a long still act whose sleep-talk and the Dream come
+at moments her breathing's grid doesn't know: each begins less than a
+frame after her breathing's last flip, which no hold after it can take
+back (the hold covers only what follows). Aligning them to her
+breathing's grid, or exempting sleep-talk as a stir is, is the user's
+call (plan.md).
+
 **Static wakes her on its frames; the hook doesn't:** a use wakes her on
 its 1.4 s frame grid and as each key ends, and a client that paints only
 when she says something changed would show the 1.2 s of switch-on static
