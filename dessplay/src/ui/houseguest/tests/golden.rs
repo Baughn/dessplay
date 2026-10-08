@@ -887,10 +887,10 @@ fn golden_stage_room() {
         "stage",
         stage_room,
         &[
-            (0, 0xacf2911f7f91741c, 0xb316faba4efcee9b),
-            (1, 0x533e815962d90304, 0x284d15f57592bdb4),
-            (2, 0x8f7eca09e8bf5dea, 0xab1927fc8c278d05),
-            (3, 0x4b696f8efadcadd1, 0x02cded0f2eae4179),
+            (0, 0xead2bdfd3cec4ec0, 0x116ef23c9c125263),
+            (1, 0x353f1896da4d255c, 0x8c66e321b389e7ca),
+            (2, 0x3728520a856d334b, 0x89cf073ddd8ae9b2),
+            (3, 0xe4e5548a9361acfd, 0xc419d67a2f7c897d),
         ],
     );
 }
@@ -902,9 +902,9 @@ fn golden_resident() {
         resident,
         &[
             (0, 0x88db7c78f7ffd920, 0x2401d9ca5d96a1bf),
-            (1, 0x02c18ac4ae8ae63e, 0x391cb481b1fe1c61),
-            (2, 0x35a03e549e945a09, 0xe8606c324e680f6a),
-            (3, 0x2b527ac3f502821a, 0x249b2b1c32c0043b),
+            (1, 0xd405a1cc2cf341e7, 0x08e20ad349e86833),
+            (2, 0xd23c334bb8c9be67, 0x32f7a47ca8f47f19),
+            (3, 0x01dd0cb53a947a68, 0xb1293d1f5af47567),
         ],
     );
 }
@@ -915,10 +915,10 @@ fn golden_furnished_home() {
         "furnished",
         furnished,
         &[
-            (0, 0x04357f396f22463c, 0xd923ab165ad74bbc),
-            (1, 0x26eaa126cb2a5986, 0xcb1efa215b352ddd),
-            (2, 0x29b5670cddf668f9, 0xcbbb3750fbb33625),
-            (3, 0xef15999807afe0ab, 0x691e1adee0bd0d10),
+            (0, 0x354ef08cb8c6929e, 0xdd672ab33f4ae0bc),
+            (1, 0x2874e3d49620cbd5, 0x0c2d5f15fa08a38b),
+            (2, 0x3d84e019d001101e, 0xe216f4f8c1865d26),
+            (3, 0xbdc4a277cc614e04, 0xab35e90595dbe7eb),
         ],
     );
 }
@@ -943,10 +943,10 @@ fn golden_homework_evening() {
         "evening",
         homework_evening,
         &[
-            (0, 0xdb3509ad6d4838c0, 0x77248402ccb704aa),
-            (1, 0xd6f95ffbd46231d6, 0x7e4d4561ec707c7c),
-            (2, 0x8f5286da531cc4c7, 0x2841492b7c62f0ae),
-            (3, 0x5066c52d64d35292, 0x2443cb93179b9690),
+            (0, 0x0ccaeef6b15a7c71, 0x2b950953f9e4b613),
+            (1, 0x1b8efbd17f0e019b, 0xf60261e68bd1b66d),
+            (2, 0x19fde888a88d8bdd, 0x93d5a62ef45c7f1e),
+            (3, 0x0880d1ceec5e9114, 0x045e67159712c319),
         ],
     );
 }
@@ -971,10 +971,10 @@ fn golden_weekend() {
         "weekend",
         weekend,
         &[
-            (0, 0x2757b4e467632d08, 0xbf327327cf611cee),
-            (1, 0xa5d557ea731341af, 0x5c9f1c835f874e6f),
-            (2, 0x6c0d549bc6822067, 0x1bd13f23c14c5bd8),
-            (3, 0x013cbd281f2c5deb, 0x048f2a401353933b),
+            (0, 0x52a719110f85390d, 0xb5e1c5336b8dc555),
+            (1, 0x78bba4acca09d603, 0x1ff288b93400be7b),
+            (2, 0xebf7d45a68680445, 0xf8ff1bd86a80500e),
+            (3, 0x3877e60597695871, 0xf724df8a45ad1ef5),
         ],
     );
 }
@@ -999,10 +999,10 @@ fn golden_home_from_school() {
         "home",
         home_from_school,
         &[
-            (0, 0x64a148fbf0d14dd3, 0x9f125b7c63adf087),
-            (1, 0x3e590f207101f225, 0xf2b435e50b149de5),
-            (2, 0x08c51e1faaa6b10e, 0x9a4b261c76b69381),
-            (3, 0x5eb63f3edfa72b3c, 0x2c2cc56970e06317),
+            (0, 0xdebcaa1271a4aa09, 0x22110c91d00c5961),
+            (1, 0x10a97a9925186f37, 0xec027d19389dbf1f),
+            (2, 0xd08bacb4487eeadf, 0xa809d1eaeef0df2e),
+            (3, 0xf33fa804aa6ddeb6, 0x0730851a22206035),
         ],
     );
 }
@@ -1064,10 +1064,10 @@ fn golden_dash_home() {
 /// frame inserted at a chat line's own time, her look up at it shown then,
 /// not at her next wake; the trace diff is in that commit).
 const UNFED_STAGE: [(u64, u64, u64); 4] = [
-    (0, 0x9b6f31f5c529a08a, 0x7f439d0f43cac615),
-    (1, 0x3004e346daca41bf, 0xbd2789c846e32f91),
-    (2, 0x17fc44fb5e1305a3, 0xfff5fddcdf821c04),
-    (3, 0x35c55a68b9a9d0f3, 0xb5954b6f09a28e1d),
+    (0, 0xfac7c577aa114248, 0x99216d6fb546e137),
+    (1, 0xc185302e462ff1c7, 0xe3813629899e6646),
+    (2, 0xdc857574c6cee2a7, 0x7831feeacabb7641),
+    (3, 0x91491ccce445123b, 0xc3acd4a15b5a72cf),
 ];
 
 /// The resident's tables at the end of phase 5b step 3, but for step 5a's
@@ -1111,10 +1111,10 @@ const UNFED_STAGE: [(u64, u64, u64); 4] = [
 /// next wake; seed 3 in both modes by one at a focus change, 33915 ms;
 /// the trace diff is in that commit).
 const UNFED_RESIDENT: [(u64, u64, u64); 4] = [
-    (0, 0x92651de6e91f6fda, 0x55f07b8158a832b6),
-    (1, 0xc4778d6b913acbed, 0xc6e5c162ced61330),
-    (2, 0xc22f3cfc650fdce2, 0x91722d0c7a1b5ffa),
-    (3, 0xe7dfaa5b4a0961b6, 0xb2fc55e202920049),
+    (0, 0x31248b2703d7f4b9, 0xa42bc92dfdb06bf8),
+    (1, 0x2cb57aed24a7f2cc, 0xfbbb1d4b144416cc),
+    (2, 0x142f71eff4919c2b, 0x6eed446698019d89),
+    (3, 0xe7dfaa5b4a0961b6, 0xe69e61d8935ff18f),
 ];
 
 /// The furnished home's tables at the end of phase 5b step 3, but for step
@@ -1151,10 +1151,10 @@ const UNFED_RESIDENT: [(u64, u64, u64); 4] = [
 /// up at it shown then, not at her next wake; the trace diff is in that
 /// commit).
 const UNFED_FURNISHED: [(u64, u64, u64); 4] = [
-    (0, 0x80204641a552909e, 0x675d26c94a067417),
-    (1, 0x88fb77bb0693e3a2, 0x365aba1014286032),
-    (2, 0x5e1c4f0203bf8f1f, 0xbf3924fce7c41b54),
-    (3, 0x3397f6b89207438a, 0x14c932f0553e6c89),
+    (0, 0xcd742d75f34fb852, 0x6231796b3c9b1902),
+    (1, 0x439109007da54dda, 0x54be599a8fe7ac6f),
+    (2, 0x0552d833096e0e08, 0xccbb880ca23019d7),
+    (3, 0xe374fdfb8dde5aad, 0x7d8bdbf01be66f24),
 ];
 
 /// The errand's tables at the end of phase 5b step 3, but for step 5a's

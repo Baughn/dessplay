@@ -1403,8 +1403,11 @@ this section states what is built.
   looking out of the window). Her act runs on, its time and what it
   eases her by unchanged: in its own pose she turns to the chat (lying
   down she doesn't turn over, and at her desk, a sill or a strip she
-  borrowed she keeps facing it), `!` then `?`, then watches plain-faced until her watch is
-  over, her act's own bubble hidden meanwhile (what she's saying shows
+  borrowed she keeps facing it), `!` (a frame, 1.4 s) then `?` (to
+  4 s), then watches plain-faced until her watch is over and a frame
+  past her `?` at least, so none of them comes and goes inside a frame
+  (why: [decisions](decisions.md#in-a-still-act-she-looks-up-where-she-is-2026-10-06)),
+  her act's own bubble hidden meanwhile (what she's saying shows
   over it, as over any look), and is at it as before (at a piece,
   turned back to it). What her act's script said under the look (a
   riddle's question and answer) she says once the look is over, line

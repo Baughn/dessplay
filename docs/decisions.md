@@ -3626,7 +3626,8 @@ or gazing on the floor, spacing out, or a piece she rests at: lounging,
 napping, a day's sleep, homework, watching TV, reading, looking out of
 the window) doesn't stop it: she looks up where she is, in its pose,
 turned to the chat unless she's lying down or at her desk or a sill
-(`!`, `?`, then watching plain-faced until her watch ends), and the act
+(`!`, `?`, then watching plain-faced until her watch ends, each a
+frame at least: below), and the act
 runs on with its own time and what it eases her by; at a piece she
 turns back to it after. Dozing, she only stirs ("Mm?", as at night),
 with no watch after. Walking, pulling, chores, mischief, making, moving
@@ -3689,6 +3690,51 @@ line, and needed guards for a moved seat, the routine, a script
 replayed from its start and credit scaled by what was left. The census
 counts an in-place look as a look that cut nothing (no restart after
 it); a stir isn't counted as a look, as at night.
+
+**Each of her look up's marks shows a frame at least (phase 5c's tail,
+T4, 2026-10-08):** her `!` showed 1.2 s and, once her `?` was over at
+4 s, her plain-faced watch to the line's 5 s watch 1 s, each under the
+1.4 s frame, so each came and went inside one, the flicker T2 ended for
+whatever she says (a stir's "Mm?"). Now her look up is startled a frame
+(`LOOK_UP_SURPRISED_MS`), puzzled to 4 s as before (2.6 s), and
+watches plain-faced until her watch is over and a frame past her `?` at
+least (`LOOK_UP_MS`, 5.4 s from the line): 400 ms more than the 5 s
+watch of a single line, the "second of plain watching past the look"
+(above) now a frame. Rejected: ending her `?` a frame before the 5 s
+watch (it keeps the 5 s, but where her look waits for her grievance
+the watch can be as short as her `?`, and then one of the two would
+still be under a frame). Only the look up changed: her standing look
+(`!` 1.2 s, `?` to 4 s, or 0.8 s after something got her up restless,
+her seat gone or shaken, then watching on her feet) is a short act that
+moves, as her walk is, and the stillness rule is for still acts over
+30 s. A line in a lively chat restarts the look (its `!` cuts the mark
+it shows short): that is the user's line, which the look exists to
+answer. Other marks and keys under a frame, and why they're left:
+her slow blink (an exemption, steady and periodic); the switch-on's
+static (three 400 ms frames in a watch's first 10 s, and channel
+flicking, held by the stillness tests); the vignettes' quick keys
+(chopsticks before homework, the andagi and the last melon bread after
+a snack, Setsubun's beans, a clock glance), each in an act under 30 s
+or in its first 10 s; peering over an edge, a glance at something
+lost, mischief's recoil and oops, all on her feet. Not left by choice,
+but open (T4's review; plan.md): her act's own keys under a look. A
+key of her still act may start within a frame of a look's change, and
+nothing holds it off: her homework nodding off ends the look (a doze
+wears none), so a line a moment before it shows its `!` under a frame,
+and a key's pose changing under the `?` or the watch comes less than a
+frame after it. design.md's rule (whatever of hers changes next waits a
+frame) counts it; a key is her act's scheduled change, so keeping the
+two apart means putting off one of them (nodding off till the look is
+over, or the look's next mark to the key), the user's call. The drawn
+stillness test judges it (her pose changing under a look is no
+exemption) and no run of it meets one. The look up waiting
+for a musing moves it 400 ms later (`a_daydream_session_says_its_musings_in_turn`).
+Test: `her_look_up_shows_each_of_its_marks_for_a_frame` (every still
+act, a line, her face and bubble every 10 ms to a frame past the look),
+red at the `!` (sitting: 1200 ms) and, the `!` fixed alone, at the plain
+watch (lying on her front: 1000 ms). Golden traces: 69 moved, every one
+first at a look up's `?` starting 200 ms later (since + 1.4 s) and its
+end 400 ms later, the sequence of her acts and places unchanged in all.
 
 ## Her stillness levers: settling in, lingering, daydreams, nearer spots (2026-10-06)
 

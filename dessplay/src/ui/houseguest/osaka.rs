@@ -394,10 +394,18 @@ const DAZED_MS: u64 = 1500;
 const PEER_MS: u64 = 1200;
 /// "!" then "?" when a chat message arrives.
 const SURPRISED_MS: u64 = 1200;
+/// Her look up at a chat line from a still act is startled (`!`) a frame,
+/// so it never comes and goes inside one (phase 5c's tail, T4); on her
+/// feet, a short act that moves, [`SURPRISED_MS`].
+const LOOK_UP_SURPRISED_MS: u64 = USE_FRAME_MS;
+/// Her look up's shortest: startled, puzzled to [`LOOK_MS`], then
+/// watching plain-faced a frame (never coming and going inside one).
+const LOOK_UP_MS: u64 = LOOK_MS + USE_FRAME_MS;
 pub(super) const LOOK_MS: u64 = 4000;
 /// A conversation keeps her watching until it's been quiet this long
 /// (counted from the line, so past her look, `LOOK_MS`, by a second; a
-/// lively chat renews it with each line). Counted from the line also when
+/// lively chat renews it with each line; a look up in place watches a
+/// frame past its `?` at least, [`LOOK_UP_MS`], 5.4 s). Counted from the line also when
 /// her look is put off (aloft, in a door, passing over text, answering
 /// with the andagi): if she can't watch within it, the line is let go.
 const WATCH_MS: u64 = 5_000;
@@ -1943,8 +1951,9 @@ struct Felt {
 
 /// Her look up at a chat line where she is, over a still act that runs
 /// on (phase 5c B1; see [`Osaka::look_up`]): startled (`!`) for
-/// [`SURPRISED_MS`] from the line, puzzled (`?`) to [`LOOK_MS`], then
-/// watching, plain-faced, until `until` (the line's watch). Tied to the
+/// [`LOOK_UP_SURPRISED_MS`] from the line, puzzled (`?`) to [`LOOK_MS`],
+/// then watching, plain-faced, until `until` (the line's watch, never
+/// before [`LOOK_UP_MS`]: a frame past the `?`). Tied to the
 /// act: any other act has its own look ([`Osaka::set`] ends it).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct LookUp {
@@ -1956,8 +1965,8 @@ struct LookUp {
     /// first look's, while each next comes before the last one's look is
     /// over (what the act said under them all is said after the last).
     hidden: u64,
-    /// Her watch's end, as the line set it (never before the look's
-    /// `?` is over).
+    /// Her watch's end, as the line set it (never before a frame past
+    /// the look's `?`).
     until: u64,
     /// The look's next moment to handle: 0, out of her startle; 1, the
     /// look over (what her act said under it said now); 2, the watch
@@ -1972,7 +1981,7 @@ impl LookUp {
     /// When its next moment is.
     fn due(&self) -> u64 {
         match self.step {
-            0 => self.since + SURPRISED_MS,
+            0 => self.since + LOOK_UP_SURPRISED_MS,
             1 => self.since + LOOK_MS,
             _ => self.until,
         }
@@ -8763,7 +8772,9 @@ impl Osaka {
         self.looking_up = Some(LookUp {
             since,
             hidden,
-            until: self.watch_until.max(since + LOOK_MS),
+            // Watching plain-faced a frame at least once her `?` is over
+            // (never coming and going inside one: phase 5c's tail, T4).
+            until: self.watch_until.max(since + LOOK_UP_MS),
             step: 0,
             back,
         });
@@ -9563,7 +9574,7 @@ impl Osaka {
         // never on a doze.
         let (face, bubble) = match self.looking_up {
             Some(look) if now >= look.since && !self.grumbling(now) && !pose.dozes() => {
-                if now < look.since + SURPRISED_MS {
+                if now < look.since + LOOK_UP_SURPRISED_MS {
                     (Face::Surprised, Some(Bubble::Bang))
                 } else if now < look.since + LOOK_MS {
                     (Face::Curious, Some(Bubble::Huh))
@@ -16297,7 +16308,8 @@ mod tests {
     /// A chat line in a still act on calm floor (phase 5c B1): she looks
     /// up where she is, the act running on. In its own pose, turned to
     /// the chat (where the pose turns: not lying, not at her desk or sill), `!` startled, then
-    /// `?`, then a plain watching face until 5 s after the line; then
+    /// `?`, then a plain watching face until 5.4 s after the line (a frame
+    /// past the `?`, [`LOOK_UP_MS`]); then
     /// her act's own look again (a piece's facing back to it). Its
     /// clock runs on: she decides only at its own end, it eases her as a
     /// whole, and the census logs a look that cut nothing (no restart).
@@ -16324,7 +16336,7 @@ mod tests {
                 (own(line), Face::Surprised, Some(Bubble::Bang)),
                 "{name}"
             );
-            let curious = line + SURPRISED_MS;
+            let curious = line + LOOK_UP_SURPRISED_MS;
             osaka.tick(curious, None, &terrain, &chances, &mut rng);
             assert_eq!(
                 osaka.appearance(curious),
@@ -16338,7 +16350,7 @@ mod tests {
                 (own(watching), Face::Vacant, None),
                 "{name}: watching"
             );
-            let over = line + WATCH_MS;
+            let over = line + WATCH_MS.max(LOOK_UP_MS);
             osaka.tick(over, None, &terrain, &chances, &mut rng);
             assert_eq!(osaka.act, act, "{name}: still at it");
             assert_eq!(osaka.appearance(over), plain.appearance(over), "{name}");
@@ -16577,7 +16589,7 @@ mod tests {
         // Her look over mid-blink (begun under it): no blink's remainder
         // shows after it, nor wakes her.
         for &start in starts.iter().take(3) {
-            let line = start + 50 - WATCH_MS;
+            let line = start + 50 - WATCH_MS.max(LOOK_UP_MS);
             let mut rng = Rng(3);
             let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
             osaka.whims = Whims(1);
@@ -16659,10 +16671,63 @@ mod tests {
         }
     }
 
+    /// Her look up at a chat line from a still act shows each of its
+    /// marks for a frame at least ([`USE_FRAME_MS`]; phase 5c's tail, T4,
+    /// as whatever she says does since T2): startled (`!`), puzzled
+    /// (`?`), and watching plain-faced, each never coming and going
+    /// inside a frame. In every still act, a single line: her face and
+    /// bubble sampled every 10 ms from the line until a frame past her
+    /// look's end hold each look of hers for a frame, but the last (her
+    /// act's own again, which runs on).
+    #[test]
+    fn her_look_up_shows_each_of_its_marks_for_a_frame() {
+        let terrain = floor_at(15);
+        let chances = Chances::default();
+        for (name, act, _, _) in still_acts() {
+            let mut rng = Rng(3);
+            let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+            osaka.facing = Facing::Right;
+            osaka.set(act.clone(), 0);
+            osaka.tick(5_000, None, &terrain, &chances, &mut rng);
+            osaka.look(5_000, 0, false, &terrain);
+            assert!(osaka.looking_up_at_chat(), "{name}: looks up in place");
+            // Each run of her face and bubble: its start and what it shows.
+            let mut runs: Vec<(u64, (Face, Option<Bubble>))> = Vec::new();
+            let mut over = None;
+            let mut t = 5_000;
+            while over.is_none_or(|over| t < over + 2 * USE_FRAME_MS) {
+                osaka.tick(t, None, &terrain, &chances, &mut rng);
+                let (_, face, bubble) = osaka.appearance(t);
+                // Her slow blink is its own exemption: her face as it was.
+                let face = match runs.last() {
+                    Some(&(_, (was, _))) if face == Face::Blink => was,
+                    _ => face,
+                };
+                if runs.last().is_none_or(|&(_, look)| look != (face, bubble)) {
+                    runs.push((t, (face, bubble)));
+                }
+                if over.is_none() && !osaka.looking_up_at_chat() {
+                    over = Some(t);
+                }
+                t += 10;
+                assert!(t < 30_000, "{name}: her look never ends");
+            }
+            assert_eq!(runs[0].1, (Face::Surprised, Some(Bubble::Bang)), "{name}");
+            for pair in runs.windows(2) {
+                let ((from, look), (to, _)) = (pair[0], pair[1]);
+                assert!(
+                    to - from >= USE_FRAME_MS,
+                    "{name}: {look:?} from {from} to {to}, under a frame ({runs:?})"
+                );
+            }
+        }
+    }
+
     /// Asked something (a line that `asks`) in a still act with nothing
     /// to answer, she looks up in place as at any line; and each line of
-    /// a lively chat looks again (`!` from it), watched until 5 s after
-    /// the last, a piece's facing back after it.
+    /// a lively chat looks again (`!` from it), watched until 5.4 s after
+    /// the last (a frame past the `?`, [`LOOK_UP_MS`]), a piece's facing
+    /// back after it.
     #[test]
     fn each_line_of_a_lively_chat_looks_up_again_in_place() {
         let terrain = floor_at(15);
@@ -16679,13 +16744,25 @@ mod tests {
             assert_eq!(osaka.appearance(7_000).2, Some(Bubble::Bang), "{name}");
             osaka.tick(7_000 + LOOK_MS, None, &terrain, &chances, &mut rng);
             assert_eq!(osaka.appearance(7_000 + LOOK_MS).1, Face::Vacant, "{name}");
-            osaka.tick(7_000 + WATCH_MS - 1, None, &terrain, &chances, &mut rng);
+            osaka.tick(
+                7_000 + WATCH_MS.max(LOOK_UP_MS) - 1,
+                None,
+                &terrain,
+                &chances,
+                &mut rng,
+            );
             assert_eq!(
-                osaka.appearance(7_000 + WATCH_MS - 1).1,
+                osaka.appearance(7_000 + WATCH_MS.max(LOOK_UP_MS) - 1).1,
                 Face::Vacant,
                 "{name}"
             );
-            osaka.tick(7_000 + WATCH_MS, None, &terrain, &chances, &mut rng);
+            osaka.tick(
+                7_000 + WATCH_MS.max(LOOK_UP_MS),
+                None,
+                &terrain,
+                &chances,
+                &mut rng,
+            );
             assert_eq!(osaka.act, act, "{name}");
             if matches!(act, Act::Use { .. }) {
                 assert_eq!(osaka.facing, Facing::Right, "{name}: back to the piece");
@@ -17435,18 +17512,21 @@ mod tests {
             },
             0,
         );
-        osaka.say(OK, 4_500);
+        // Said just before the line, it's still showing once her startle
+        // is over.
+        let said = 5_000 + LOOK_UP_SURPRISED_MS + 100 - speech_ms(OK);
+        osaka.say(OK, said);
         osaka.look(5_000, 0, false, &terrain);
         assert_eq!(
             osaka.appearance(5_000),
             (Pose::Stand, Face::Surprised, Some(Bubble::Say(OK)))
         );
-        let curious = 5_000 + SURPRISED_MS;
+        let curious = 5_000 + LOOK_UP_SURPRISED_MS;
         assert_eq!(
             osaka.appearance(curious),
             (Pose::Stand, Face::Curious, Some(Bubble::Say(OK)))
         );
-        let over = 4_500 + speech_ms(OK);
+        let over = said + speech_ms(OK);
         assert_eq!(
             osaka.appearance(over),
             (Pose::Stand, Face::Curious, Some(Bubble::Huh))
@@ -17529,8 +17609,17 @@ mod tests {
         assert!(osaka.has_felt(FELT), "felt");
         assert_eq!(osaka.appearance(shown).1, Face::Surprised);
         assert_eq!(osaka.appearance(shown).2, Some(Bubble::Bang));
-        osaka.tick(shown + SURPRISED_MS, None, &terrain, &chances, &mut rng);
-        assert_eq!(osaka.appearance(shown + SURPRISED_MS).2, Some(Bubble::Huh));
+        osaka.tick(
+            shown + LOOK_UP_SURPRISED_MS,
+            None,
+            &terrain,
+            &chances,
+            &mut rng,
+        );
+        assert_eq!(
+            osaka.appearance(shown + LOOK_UP_SURPRISED_MS).2,
+            Some(Bubble::Huh)
+        );
         osaka.tick(shown + LOOK_MS, None, &terrain, &chances, &mut rng);
         assert_eq!(osaka.appearance(shown + LOOK_MS).1, Face::Vacant);
         assert_eq!(osaka.act, act, "lounging on");
@@ -18196,7 +18285,13 @@ mod tests {
         osaka.tick(plain, None, &terrain, &chances, &mut rng);
         assert_eq!(osaka.appearance(plain), (Pose::Sit, Face::Vacant, None));
         assert!(osaka.looking_up.is_some(), "watching on");
-        osaka.tick(line + WATCH_MS, None, &terrain, &chances, &mut rng);
+        osaka.tick(
+            line + WATCH_MS.max(LOOK_UP_MS),
+            None,
+            &terrain,
+            &chances,
+            &mut rng,
+        );
         assert!(osaka.looking_up.is_none(), "the watch is over");
         assert!(matches!(osaka.act, Act::Idle { .. }), "sitting on");
         assert_eq!(osaka.facing, Facing::Right);
@@ -18355,7 +18450,13 @@ mod tests {
                 let mut methods: Vec<_> = osaka.decisions.iter().map(|d| d.method).collect();
                 if watching {
                     assert_eq!(methods.last(), Some(&"watching chat"), "{at}");
-                    osaka.tick(line + WATCH_MS, None, &terrain, chances, &mut rng);
+                    osaka.tick(
+                        line + WATCH_MS.max(LOOK_UP_MS),
+                        None,
+                        &terrain,
+                        chances,
+                        &mut rng,
+                    );
                     methods = osaka.decisions.iter().map(|d| d.method).collect();
                 }
                 assert_eq!(methods.last(), Some(owed), "{at}: {methods:?}");
@@ -18877,10 +18978,11 @@ mod tests {
             );
             // A chat line just before the second: it waits for her look.
             let (late, ..) = said(Mood::Dreamy, whims, Some(11_000));
-            let look = 11_000 + WATCH_MS.max(LOOK_MS);
+            let look = 11_000 + WATCH_MS.max(LOOK_UP_MS);
+            // (Sampled every 250 ms.)
             assert_eq!(
                 late.iter().map(|&(at, _)| at).collect::<Vec<_>>(),
-                [0, look, look + 12_000],
+                [0, look, look + 12_000].map(|at: u64| at.next_multiple_of(250)),
                 "{whims}: {late:?}"
             );
             // Industrious, her mood's none: nothing to say.
