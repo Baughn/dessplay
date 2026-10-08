@@ -979,44 +979,53 @@ fn golden_weekend() {
     );
 }
 
+/// Re-recorded in the door batch's step 3: her Away door stands at its
+/// space by her door's wall, not where she went out (the traces first
+/// differ at the first `away` frame, in its cells only).
 #[test]
 fn golden_school_morning() {
     check(
         "school",
         school_morning,
         &[
-            (0, 0x20539bfe7ac5d021, 0x2283c7af2f145507),
-            (1, 0xe06cbb16bba5fd03, 0x698f47abae4a2a51),
-            (2, 0x80acde6ce7496518, 0xd510f95f3e8321b9),
-            (3, 0x79fed05f404d7539, 0x1e4a2d4ca050af97),
+            (0, 0x7edb5bbe1397144b, 0x78b99dcdbfc912bf),
+            (1, 0x1e87f0b2e59d65e9, 0x6aff49249f61e607),
+            (2, 0xcbde71a777552b5a, 0x993066996e710025),
+            (3, 0x40b06cad5b1a4cd7, 0x1904545460f95f51),
         ],
     );
 }
 
+/// Re-recorded in the door batch's step 3: her Away door, and her
+/// coming home, at its space (Users' left on `home_screen`, spot (3, 16)),
+/// not the middle (the traces differ from the first frame).
 #[test]
 fn golden_home_from_school() {
     check(
         "home",
         home_from_school,
         &[
-            (0, 0x0737f4a07a6a1324, 0xe406c6c7e71728bf),
-            (1, 0x7386d52ed2297d54, 0x4834b9d557ac2136),
-            (2, 0x95779708778b79f8, 0xee1c114bdd380dab),
-            (3, 0x05ed931b20ab3a9c, 0xbd85db347f1d9006),
+            (0, 0x57d801e451d6d919, 0x99b1d3cc8ee740da),
+            (1, 0xb2309a261c8fe65b, 0xd001cf6dd53aac69),
+            (2, 0xd01fad3f4e1bbbc4, 0x5a38302ec795bc8b),
+            (3, 0xe0bfbe0ac513afac, 0xf3e147b040f3e30c),
         ],
     );
 }
 
+/// Re-recorded in the door batch's step 3: she dashes in out of her door
+/// at its space (3, 16), not the middle (the traces differ from the first
+/// frame).
 #[test]
 fn golden_dash_home() {
     check(
         "dash",
         dash_home,
         &[
-            (0, 0x735ade99d7966b78, 0xd2411199cee6b9df),
-            (1, 0x83a39eadbd71a668, 0x261c07ff4b78aa6f),
-            (2, 0x7ad2fa8db524d330, 0x7dd73ceff72bbe14),
-            (3, 0x78feb4eb465cb3e5, 0x838b6f7336caa08a),
+            (0, 0x444b297c12222994, 0x57337a376e5ffa98),
+            (1, 0xd571c8fe4041f464, 0x64fe577017e8c788),
+            (2, 0xb5f06f62e468a7da, 0x37bcdf94f7dd6497),
+            (3, 0x3209667644398321, 0x230458651e2fb985),
         ],
     );
 }

@@ -201,47 +201,58 @@ fn standing_at_her_sofa_her_window_is_behind_it() {
     window_first(&looks, "her image");
 }
 
-/// Her closed door, standing in front of her window and her sofa while
-/// she's out at school, keeps them back to front in its image: the
-/// window's layers before the sofa's. Line art.
+/// Out to school from her sofa (cued to lounge on it at 08:12, and in
+/// it as school begins: the precondition), her closed door stands in its
+/// space by her door's wall instead, clear of her sofa and her window,
+/// and its image takes in no piece. Line art.
 #[test]
-fn her_door_at_her_sofa_keeps_her_window_behind_it() {
+fn a_door_forced_onto_her_sofa_stands_in_its_space_instead() {
     let (real, view) = home_screen();
-    let mut guest = sofa_and_window_at(4, tue(8, 10), true);
+    let mut guest = sofa_and_window_at(4, tue(8, 12), true);
     let mut now = until_visiting(&mut guest, &real, &view, 0);
-    let sofa = *visit_of(&guest)
-        .shown
-        .iter()
-        .find(|s| s.item == Furniture::Sofa)
-        .expect("shown");
-    paint(&mut guest, &real, &view, now);
-    let from = now;
+    guest.cue(Scene::Lounge);
+    let school = real_of(&guest, now, tue(8, 15));
+    let mut last_in = None;
     while !matches!(guest.state, State::Away(_)) {
-        assert!(now < from + 60 * 60_000, "she never went out");
+        assert!(now < school + 60_000, "she never went out");
         shell_step(&mut guest, &real, &view, &mut now, true);
+        if let State::Visiting(visit) = &guest.state
+            && now < school
+        {
+            let osaka = &visit.osaka;
+            let sofa = visit
+                .shown
+                .iter()
+                .find(|s| s.item == Furniture::Sofa)
+                .expect("shown");
+            let using = osaka
+                .use_span()
+                .is_some_and(|(seat, ..)| seat.piece == room::PieceRef::Real(Furniture::Sofa));
+            let meets = room::her_box(osaka.x, osaka.y).is_some_and(|b| b.intersects(sofa.cover()));
+            last_in = Some((using, meets));
+        }
     }
-    shell_step(&mut guest, &real, &view, &mut now, true);
-    let out = guest.out.as_mut().expect("out");
-    out.door = Some(DoorAt {
-        x: 10,
-        y: sofa.floor,
-        facing: sprite::Facing::Right,
-    });
+    assert_eq!(last_in, Some((true, true)), "in her sofa as school began");
     if let Some(graphics) = &mut guest.graphics {
         graphics.take_looks();
     }
-    paint(&mut guest, &real, &view, now);
-    assert_eq!(
-        guest.closed_door().map(|d| (d.x, d.y)),
-        Some((10, sofa.floor)),
-        "her door stands there"
-    );
+    shell_step(&mut guest, &real, &view, &mut now, true);
+    let door = guest.closed_door().expect("her door");
+    assert!(door.wall().is_some(), "in its space: {door:?}");
+    let State::Away(empty) = &guest.state else {
+        panic!("out");
+    };
+    let rect = door.rect().expect("on screen");
+    for piece in &empty.shown {
+        assert!(!piece.cover().intersects(rect), "{door:?} on {piece:?}");
+    }
+    let image = empty.image.as_ref().expect("her door's image");
+    assert!(image.with.is_empty(), "its image takes in {:?}", image.with);
     let looks = guest.graphics.as_mut().expect("line art").take_looks();
     assert!(
         looks.iter().any(|l| matches!(l, Look::Door(_))),
         "her door is drawn: {looks:?}"
     );
-    window_first(&looks, "her door's image");
 }
 
 /// What she painted over what, where her sofa covers her window's corner
@@ -633,9 +644,10 @@ fn nothing_is_made_under_her_window() {
             glyphs: "Tab Next pane | Enter Send".to_owned(),
             gap: 0,
         };
-        let bare = builds(&real, visit, &[pull(40)], &[]);
+        let keep = door::Keep::default();
+        let bare = builds(&real, visit, &[pull(40)], &[], &keep);
         assert!(!bare.is_empty(), "{at}: a piece from bare floor");
-        let under = builds(&real, visit, &[pull(window.left + 1)], &[]);
+        let under = builds(&real, visit, &[pull(window.left + 1)], &[], &keep);
         assert!(
             under.is_empty(),
             "{at}: made under {window:?}: {:?}",

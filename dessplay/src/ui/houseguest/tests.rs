@@ -828,6 +828,9 @@ fn long_visit_on_the_real_layout() {
             visited.visiting > 0 && visited.away >= 20 && visited.furnished > 0,
             "graphics={graphics}: {visited:?}"
         );
+        // Her door stood drawn in its space while she was out (the door
+        // batch: the non-vacuity of `long_visit_of`'s door checks).
+        assert!(visited.walls > 0, "graphics={graphics}: {visited:?}");
     }
 }
 
@@ -905,7 +908,7 @@ fn long_visit(
 
 /// What a [`long_visit_of`] saw: how many frames she was visiting, how
 /// many her home stood empty (she out), how many showed any furniture,
-/// and every pose she took while visiting, so a caller can tell a run
+/// how many showed her door drawn in its space, and every pose she took while visiting, so a caller can tell a run
 /// that tested something from one that never saw her (or never did
 /// what it cued).
 #[derive(Clone, Debug, Default)]
@@ -913,6 +916,11 @@ struct Visited {
     visiting: usize,
     away: usize,
     furnished: usize,
+    /// Frames her empty home showed her door drawn in its wall's space.
+    walls: usize,
+    /// Frames her empty home showed her door drawn face-on (the
+    /// fallback).
+    floors: usize,
     poses: std::collections::HashSet<std::mem::Discriminant<sprite::Pose>>,
 }
 
@@ -935,6 +943,19 @@ struct Run {
     /// whole size's span in one step: she never comes, or her empty home
     /// is seen a frame or two.
     out_every: Option<u64>,
+}
+
+/// Her door's space, from where it stands in its wall (worked out from
+/// the wall's column and the floor alone, as the door design names it),
+/// if it stands in one.
+fn space_of_door(door: door::DoorSpot) -> Option<Rect> {
+    let (side, wall) = door.wall()?;
+    let (_, floor) = door.spot();
+    let left = match side {
+        room::Side::Right => wall - 6,
+        room::Side::Left => wall + 1,
+    };
+    Some(Rect::new(left as u16, (floor - 4) as u16, 6, 5))
 }
 
 /// [`rooms`] with its three panes her nooks, the keybar protected, and
@@ -1032,7 +1053,11 @@ fn long_visit_of(
                 State::Visiting(visit) => feet(visit),
                 // Her closed door stands on its floor (in line art, its
                 // image redraws the line under it).
-                State::Away(_) => guest.closed_door().map(|door| (door.x, door.y)),
+                State::Away(empty) => empty
+                    .door
+                    .as_ref()
+                    .filter(|door| !door.cells.is_empty())
+                    .map(|door| door.spot.spot()),
                 _ => None,
             };
             assert_untouched_but_feet(&frame, &real, &protected, feet)?;
@@ -1043,6 +1068,55 @@ fn long_visit_of(
                 _ => (Vec::new(), Vec::new()),
             };
             visited.furnished += usize::from(!shown.is_empty());
+            // Her closed door, while she's out, stands clear of every
+            // piece of hers and of the chat pane, its drawn cells too;
+            // in its space, no piece but a poster or a clock (hung above
+            // it) meets the space (the door batch, D4).
+            if let State::Away(empty) = &guest.state
+                && let Some(door) = &empty.door
+            {
+                let rect = door.spot.rect().unwrap();
+                for piece in &shown {
+                    prop_assert!(
+                        !piece.cover().intersects(rect),
+                        "her door {:?} on her {:?} {:?}",
+                        door,
+                        piece.item,
+                        piece.cover()
+                    );
+                    for &(x, y) in &door.cells {
+                        prop_assert!(
+                            !piece.cover().contains((x, y).into()),
+                            "her door's cell {:?} on her {:?}",
+                            (x, y),
+                            piece.item
+                        );
+                    }
+                }
+                prop_assert!(
+                    !rect.intersects(view.chat),
+                    "her door {:?} in the chat {:?}",
+                    door,
+                    view.chat
+                );
+                if let Some(space) = space_of_door(door.spot) {
+                    for piece in shown
+                        .iter()
+                        .filter(|p| !matches!(p.item, Furniture::Poster | Furniture::Clock))
+                    {
+                        prop_assert!(
+                            !piece.rect().intersects(space),
+                            "her {:?} {:?} in her door's space {:?}",
+                            piece.item,
+                            piece.rect(),
+                            space
+                        );
+                    }
+                    visited.walls += usize::from(!door.cells.is_empty());
+                } else {
+                    visited.floors += usize::from(!door.cells.is_empty());
+                }
+            }
             // The flap a parcel is coming in by (swung in over her wall's
             // line a moment).
             let flap = open_flap(&guest, now);
@@ -1092,6 +1166,17 @@ fn long_visit_of(
                     }
                 }
             }
+            // Her closed door, drawn while she's out, stands over text
+            // (the user's answer, door batch): its box hides what's there
+            // for as long as she's out.
+            let shut = match &guest.state {
+                State::Away(empty) => empty
+                    .door
+                    .as_ref()
+                    .filter(|door| !door.cells.is_empty())
+                    .and_then(|door| door.spot.rect()),
+                _ => None,
+            };
             if graphics {
                 // What she moved raining out as she went out by her
                 // routine shows it as it was, holes and all, a moment.
@@ -1100,7 +1185,7 @@ fn long_visit_of(
                     &real,
                     &layer,
                     &flap,
-                    |at| raining(&guest, at),
+                    |at| raining(&guest, at) || shut.is_some_and(|r| r.contains(at.into())),
                     now,
                 )?;
             }
@@ -1134,27 +1219,12 @@ fn long_visit_of(
                     let union = with.fold(her, |r, p| r.union(p.cover()));
                     (furniture, area(union))
                 }
-                // Her door's box, and the pieces its image takes in.
+                // Her door's box (counted as hers): its image takes in no
+                // piece (it meets none).
                 State::Away(_) => {
                     let area = |r: Rect| usize::from(r.width) * usize::from(r.height);
                     let furniture: usize = shown.iter().map(|p| area(p.cover())).sum();
-                    let spanned = guest.closed_door().map_or(0, |door| {
-                        let box_ = Rect::new(
-                            (door.x - sprite::WIDTH / 2).max(0) as u16,
-                            (door.y - sprite::HEIGHT).max(0) as u16,
-                            sprite::WIDTH as u16,
-                            sprite::HEIGHT as u16 + 1,
-                        );
-                        let covers: Vec<Rect> = shown.iter().map(Shown::cover).collect();
-                        let with = terrain::image(door.x, door.y, &covers).with;
-                        let union = covers
-                            .iter()
-                            .zip(with)
-                            .filter(|(_, with)| *with)
-                            .fold(box_, |r, (c, _)| r.union(*c));
-                        area(union)
-                    });
-                    (furniture, spanned)
+                    (furniture, 0)
                 }
                 _ => (0, 0),
             };
@@ -1168,7 +1238,7 @@ fn long_visit_of(
                     visit.osaka.y
                 ),
                 State::Away(empty) => {
-                    format!("away: {:?} door {:?}", empty.shown, guest.closed_door())
+                    format!("away: {:?} door {:?}", empty.shown, empty.door)
                 }
                 _ => String::new(),
             };
@@ -1565,6 +1635,7 @@ fn visiting_at(guest: &mut Guest, real: &Buffer, view: &IdleView, (x, y): (i32, 
         set_down: None,
         judging: None,
         ghost: None,
+        door: None,
         size: (real.area.width, real.area.height),
         tuck: false,
         looks: Looks::default(),
@@ -2037,7 +2108,13 @@ fn every_scene_has_a_spot_in_the_stage_room() {
                 let mut happened = false;
                 // Stop as soon as the scene has visibly happened: running
                 // all 116 cases to the 10s cap costs ~50s in a debug build.
-                while !happened && now < 10_000 {
+                // A dash comes in by her door, at its space by the screen's
+                // edge (the door batch), and walks the room to her fridge.
+                let cap = match scene {
+                    Scene::DashIn | Scene::DashForgot => 40_000,
+                    _ => 10_000,
+                };
+                while !happened && now < cap {
                     now += guest
                         .next_tick(now)
                         .map_or(100, |d| d.as_millis() as u64)

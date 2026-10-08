@@ -913,6 +913,14 @@ impl<'a> Plan<'a> {
     }
 }
 
+/// Whether `rect` meets the chat pane laid out at `chat`. An empty chat
+/// rect is no chat, wherever it lies: ratatui's `intersects` alone says
+/// a zero-high or zero-wide rect away from the origin meets whatever
+/// straddles its line.
+pub(super) fn in_chat(chat: Rect, rect: Rect) -> bool {
+    !chat.is_empty() && !rect.is_empty() && chat.intersects(rect)
+}
+
 /// Whether a wall on `side` of a nook drawn at `rect` is at the
 /// screen's edge (read from the nook's rect, never a space's).
 pub(super) fn at_edge(rect: Rect, side: Side, screen: Rect) -> bool {
@@ -986,7 +994,7 @@ fn choose(home: &Home, plan: Plan, only: Option<Strip>) -> Option<DoorWall> {
             let Some((_, space)) = space_of(raw, side, widest) else {
                 continue;
             };
-            if space.intersects(plan.chat) {
+            if in_chat(plan.chat, space) {
                 continue;
             }
             // Kept as [`Home::extents`] judges it: her floor pieces pack
@@ -1821,7 +1829,7 @@ impl Home {
                                 let at = stand(p, to, e, left);
                                 let cover = at.cover();
                                 fits(buf, &at, &|x, y| !blocked(x, y))
-                                    && !cover.intersects(plan.chat)
+                                    && !in_chat(plan.chat, cover)
                                     && space.is_none_or(|r| !cover.intersects(r))
                             })
                         });
@@ -4207,6 +4215,13 @@ mod tests {
             }
         }
         assert_eq!(choose_wall(&mine, plan_on(&nooks, band, screen)), None);
+        // A band across them laid out empty (a collapsed chat slot) is no
+        // chat: the first edge wall, as with none.
+        let collapsed = Rect::new(0, 7, 100, 0);
+        assert_eq!(
+            choose_wall(&mine, plan_on(&nooks, collapsed, screen)),
+            door_on(Nook::Users, Side::Left)
+        );
         // Saved once she has a piece; then kept through a resize, a plan
         // without her pane (settling alone moves nothing), a short frame
         // and the chat coming over its space.

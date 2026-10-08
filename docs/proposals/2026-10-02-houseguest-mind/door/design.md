@@ -757,6 +757,29 @@ before `take_home`'s pieces are projected (mod.rs:2026): frame first. Away draw 
 `Chances.door` read **gated**; the `standing` filter reads gated `view.protected`. `Empty.door` is derived; never
 write it from anywhere but the paint. `closed_door()` is also reached by tests (tests.rs:818, 953).
 
+**As built (step 3, 2026-10-08).** `door.rs` holds `DoorSpot`/`Set`/`Fallback`/`Ground`/`door_place`/`obstacles`/
+`Keep`. `Ground` is four text-blind per-cell flags kept by `Terrain::read` (`ledge`, `wall` = plain `│`/`┃`,
+`stroke`, `protected` = in a protected rect, untouchable or off screen) instead of `platform`/`line`; the Unmarked
+test reads ledges whether protected or not, so a protected space gives `Protected`, not `Unmarked`. A saved wall
+whose strip isn't on screen gives `NoWall` (only a strip with no space gives `Short`); on the bundled layout her
+pieces leaving a short strip take her door's wall with them (step 2's `move_off`), so a short terminal gives
+`Short` or `NoWall`. `back_through_door`/`dash_in`/`dash_through` keep `(spot, facing)` arguments (callers pass
+`spot()` and `into_room()`): the no-door arrival has no `DoorSpot`. `visit.bumped` is not added yet (step 6, its
+only reader). Keep's chat is `Rect::default()` at the step-3 call sites; furnish's delivery `seats` closure uses
+the pre-delivery home's keep (step 5). Test 7's arrival with her door's pane focused does not wait: the fallback
+stands outside the pane (`Protected`) and she comes in there. Test 13 runs on fixture (iv) and asserts what D5
+gives there (no calm floor outside the chat: her coming home is called off); see door-notes.
+
+**Review fixes (step 3, 2026-10-08).** An empty chat rect is no chat (`room::in_chat`, at `in_space`, `on_floor`,
+`Keep::refuses`, `choose` and `move_off`; `plan_of` hands out `Rect::default()` for one). The visit's terrain is
+read with `Terrain::read_guarded(buf, solid, view.protected, ..)`: her door's `protected` is the view's alone, so
+text she moved never moves the visit's door. A `LayerOp::Make` whose piece the frame's `Keep` refuses is refused
+before it's applied (a build planned before her door's space came there is never made to fall apart a frame
+later). M22's door in space is reached with a protected floor row (the fallback refuses a protected cell under
+her; a platform doesn't): `with_no_door_anywhere_she_comes_home_by_a_door_in_space_outside_the_chat`. Test 10's
+third clause is `a_made_piece_her_door_space_comes_to_meet_falls_apart`. Open: a face-on fallback may straddle a
+pane's `│` above the floor (case (i): (67, 26)), the user's call.
+
 ### Step 4a. `Job::Leave`: she walks to her door; the latch (~1000 lines)
 
 **Goal.** D6's school, dash and Through parts: every routine exit and return is through her door's spot; the latch;

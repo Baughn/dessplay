@@ -15,6 +15,9 @@ Add new days at the top. Add new entries at the bottom of existing days.
   held a little longer as she breathes in her sleep.
 - Changed: furniture by the screen's edge stands a little further
   along, leaving room for Osaka's door.
+- Fixed: while Osaka is at school her door no longer stands over her
+  bed, sofa or desk, or in the chat pane; it stands by the screen's
+  edge where there's room.
 
 ## 2026-10-07
 

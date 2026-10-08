@@ -1377,9 +1377,10 @@ this section states what is built.
   again wherever she's going (a floor where she fits) and she steps out,
   one time in three saying a door line ("Where was I?", "Huh? How'd I
   get here?", "...What was I doin'?", "I forgot what I forgot.",
-  "Handy, these doors."; the rest she comes through quietly). The door
-  stays within her box, so it never covers
-  anything; what it ignores is the terrain in between
+  "Handy, these doors."; the rest she comes through quietly). A door in
+  space stays within her box, so it covers nothing of the terrain;
+  what it ignores is the terrain in between (her external door, which
+  she goes out by to school, is placed apart: see *Away at school*)
   (why: [decisions](decisions.md#houseguest-has-a-door-in-space-2026-09-28)).
 - **Local key, mouse, or paste input** ends a visit (unless she's
   resident) with a ~3.75 s dissolve: a startled face, a goodbye smile,
@@ -2237,16 +2238,25 @@ this section states what is built.
   else she wanted. Every other change waits for her next choice.
 - **Away at school**: at 08:15 on a school day she says "I'm off!" or
   "Off to school!" ("Late, late, late!" if it cut her breakfast short)
-  and goes out through her pink door, which stays standing, closed,
-  where she left, until she comes back out of it. The visit ends there.
+  and goes out through her pink door, which then stands closed at her
+  door's space (see *Her door's space*), until she comes back out of
+  it. The visit ends there.
   Her home stands empty meanwhile: her pieces, the lamp and TV off, the
   cat as he'll be when she's back, her door. It shows when a visit would
   (the idle gate open, or a resident) and goes as one does: a visitor's
   input or an overlay rains it out (nobody in it to wave), switching
   visits off or too small a terminal removes it at once, and a chat line
-  changes nothing. With no furniture there's nothing to show. If a
-  resize leaves her door's spot unfit, it moves to the nearest floor
-  spot where she'd fit. At 12:45 she comes home out of that door ("I'm
+  changes nothing. With no furniture there's nothing to show. Where
+  her door stands is worked out each frame from her home and the
+  frame, never from where she went out: in its space (face-on, facing
+  its wall) when the space is kept and free (nothing she made in it,
+  clear of the chat pane, its wall and floor drawn as lines, nothing in
+  it protected); else at the nearest floor spot where her box meets
+  none of her pieces, clear of the chat pane and of protected cells (a
+  spot it stood at stays while it still fits, so it never hops); else
+  nowhere. Text never moves it nor hides it: it stands over pane text;
+  only a protected pane (one in use) hides it, and it's back when the
+  pane's left alone. At 12:45 she comes home out of that door ("I'm
   home!" or "Tadaima!"), counted as a visit but in the morning's mood,
   with no hello, if the client is open to her then (a resident, or the
   idle gate open). A key or a chat line doesn't call her return off;
@@ -2258,7 +2268,10 @@ this section states what is built.
   switched off, her moving out or her room gone remove it at once
   (why: [decisions](decisions.md#her-empty-home-rains-out-whenever-she-doesnt-come-in-2026-10-07)).
   With no home she still
-  comes home by a door. Started in school hours, the client shows her
+  comes home by a door, at the wall the same choice picks, unsaved; with
+  no door anywhere, by a door in space outside the chat pane and clear
+  of her pieces: somewhere calm if there's such a spot, else anywhere
+  clear. Started in school hours, the client shows her
   empty home once the gate opens. Everything of hers that comes and goes
   by her routine uses her door, never a screen edge
   (why: [decisions](decisions.md#away-at-school-ends-the-visit-at-her-door-2026-10-04)).

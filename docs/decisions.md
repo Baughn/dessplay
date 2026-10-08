@@ -3357,7 +3357,11 @@ visits off); then she arrives later through the idle gate.
 *A short school day* (08:30 to 12:30, home at 12:45): the user's call.
 The proposal's 08:30 to 15:30 would leave every other two-hour session
 mostly empty or dark. Rejected: a hidden act (above); leaving by an
-edge (no cue in the empty room).
+edge (no cue in the empty room). *Superseded in where, not whether
+(2026-10-08):* her closed door no longer stands where she went out; it
+stands at her door's space by the screen's edge, or the strict fallback
+(see [Her door has its own space at the screen's edge](#her-door-has-its-own-space-at-the-screens-edge-2026-10-08),
+*Where her door stands*).
 
 ## At school or asleep, she still comes, by her door (2026-10-04)
 
@@ -5381,6 +5385,44 @@ a door; `Home::frame` settles it before the layout instead, and
 `project` only reads it). A saved wall the chat pane comes to meet is
 not chosen again: it's refused frame by frame, so dragging the pane back
 restores it.
+
+**Where her door stands (the door batch's step 3, 2026-10-08):** her
+closed door (while she's out) and the door she comes home and dashes in
+through are placed by one function, `door::door_place`, from her home,
+the frame's panes and lines, and her pieces' covers as laid out (and,
+on a visit, what she made and the place of the piece in her pocket):
+in its space when kept and free; else at the nearest floor spot where
+her box meets no piece, clear of the chat and protected cells; else
+nowhere. Nothing records her feet any more (`DoorAt` and `Out`'s spot
+are gone; the last spot placed lives on her empty home, derived by each
+frame), and only `door_place` makes a `DoorSpot` (its fields are
+private). The acts that open her door (`back_through_door`, `dash_in`,
+`dash_through`) still take a bare spot and facing until step 4a
+(`Through::Home(DoorSpot)` / `Through::Space`): coming home with no door
+anywhere opens that act at a spot in space. With no door anywhere she
+comes in somewhere calm outside the chat if there's such a spot, else
+anywhere clear of it and her pieces. Her door reads text she moved
+during a visit as text, never as a protected pane, and an empty chat
+rect (a collapsed slot) is no chat (`room::in_chat`). **Post-mortem:** the old door stood where she went out, and
+`door_fits` judged it by `restful`, the test of where she may stay,
+which knows nothing of her pieces: out of her bed, sofa or desk at
+08:15 she went out by a door standing in it, and on the chat pane's
+floor by one in the chat (`her_school_mornings_never_put_her_door_on_a_piece`
+and the step's `out_of_her_*` tests were red on it). The fallback is
+blind to text and sticky (`prev`): a door that moved as text scrolled
+would draw the eye. *It stands over text* (the user's answer): text in
+its space neither moves nor hides it; only a protected pane does, and
+then only while that pane is in use (the drawn door reads the frame as
+drawn; arrivals and the visit's door read it as she keeps to it, so she
+never comes out inside a focused pane). The image of the door takes in
+no piece: it meets none by construction. What she makes is kept out of
+the space too (`door::Keep`: `builds` refuses it, a piece she set out
+to make there after the space came is refused as it's made, and a made
+piece the space comes to meet falls apart), the chat half following in
+step 5.
+*Rejected:* hiding the door while text is in its space (the user chose
+the door over the text: it's how you know she's out); keeping the old
+spot while it still fits (that's the bug).
 
 **Older builds:** the record keeps `door` after what she has seen and
 before her clock sent; an older build drops it when it saves the record

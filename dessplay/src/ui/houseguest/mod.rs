@@ -124,6 +124,7 @@ mod brain;
 mod calendar;
 mod cells;
 mod dissolve;
+mod door;
 pub mod film;
 mod graphics;
 mod idle;
@@ -517,6 +518,10 @@ struct Visit {
     /// Where the piece in her pocket stood (its place is kept for it:
     /// nothing she makes or moves goes there).
     ghost: Option<Rect>,
+    /// Where her external door stood in the last frame
+    /// ([`door::door_place`] on the visit's own terrain), if anywhere:
+    /// the next frame's `prev`.
+    door: Option<door::DoorSpot>,
     size: (u16, u16),
     /// The visit began at night by her routine: at its first paint she's
     /// tucked in, if her bed or sofa is shown ([`Osaka::tuck_in`]).
@@ -657,7 +662,9 @@ enum State {
     Visiting(Box<Visit>),
     Leaving(Box<Leaving>),
     /// She's out by her routine (at school): her home stands empty, the
-    /// lamp off, her closed door where she went out (phase 5b D3, A22).
+    /// lamp off, her closed door at its space by her door's wall (or
+    /// where the strict fallback puts it: [`door::door_place`]; phase 5b
+    /// D3, A22, the door batch).
     Away(Box<Empty>),
 }
 
@@ -667,13 +674,12 @@ enum How {
     /// The idle gate opened (or the stage cued her): local input or a chat
     /// line calls it off.
     Idle,
-    /// Home by her routine at the end of school, out of her closed door
-    /// (where it stood, if it did): only the gate shutting (`!open`)
-    /// calls it off.
-    Return(Option<DoorAt>),
-    /// A dash home while she's out at school (D3a, A16), out of her
-    /// closed door (where it stands, if it does): only the gate shutting
-    /// calls it off.
+    /// Home by her routine at the end of school, out of her door (where
+    /// [`door::door_place`] stands it that frame): only the gate shutting
+    /// (`!open`) calls it off.
+    Return,
+    /// A dash home while she's out at school (D3a, A16), out of her door
+    /// (as for `Return`): only the gate shutting calls it off.
     Dash,
 }
 
@@ -690,30 +696,25 @@ enum Kind {
     Dash,
 }
 
-/// Where her door stands: its floor spot, and which way it faces.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct DoorAt {
-    x: i32,
-    y: i32,
-    facing: sprite::Facing,
-}
-
 /// She's out by her routine (at school), her coming home not yet
-/// decided (`Guest::out`).
+/// decided (`Guest::out`). Nothing of where she went out is kept: her
+/// door stands where her home and the frame put it
+/// ([`door::door_place`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-struct Out {
-    /// Where her closed door stands: where she went out, or the nearest
-    /// floor spot that fits it once that doesn't (a resize); `None` until
-    /// a frame finds it one (a cold start). Kept while she's out, her
-    /// empty home shown or not (a visitor's key, an overlay, a frame too
-    /// small), so it stands where she left until she comes out of it.
-    door: Option<DoorAt>,
+struct Out;
+
+/// Her closed door as a frame of her empty home drew it: where it stood,
+/// and the cells it painted (what rains out of it).
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DoorDrawn {
+    spot: door::DoorSpot,
+    cells: Vec<(u16, u16)>,
 }
 
 /// Her home while she's out by her routine (`State::Away`): painted as
 /// a visit paints it, without her (and without anything a visit's paint
 /// would set going: no gift, no order, no parcel), her closed door
-/// standing where she went out (kept in `Guest::out`).
+/// standing where [`door::door_place`] puts it.
 struct Empty {
     /// The cat's in his bed while she's out, as for the coming visit (so
     /// he doesn't change as she comes home).
@@ -731,6 +732,11 @@ struct Empty {
     painted: Vec<Frozen>,
     /// How her furniture looked in the last frame (a goodbye keeps it).
     looks: Looks,
+    /// Her closed door as the last frame placed it (drawn or hidden in a
+    /// protected pane), if it stood anywhere: derived by each paint, the
+    /// one source for everything with no frame to read (a rain, the
+    /// arrival's `prev`).
+    door: Option<DoorDrawn>,
     size: (u16, u16),
 }
 
@@ -745,6 +751,7 @@ impl Empty {
             image: None,
             painted: Vec::new(),
             looks: Looks::default(),
+            door: None,
             size: (0, 0),
         }
     }
@@ -1288,7 +1295,7 @@ impl Guest {
         match self.state {
             State::Arriving(How::Idle, _) => self.back_out(),
             State::Visiting(_) => self.shake = true,
-            State::Arriving(How::Return(_) | How::Dash, _)
+            State::Arriving(How::Return | How::Dash, _)
             | State::Absent
             | State::Leaving(_)
             | State::Away(_) => {}
@@ -1306,10 +1313,10 @@ impl Guest {
                 self.leave(now);
             }
             // Her coming home: only the gate shutting calls it off (A6).
-            arriving @ State::Arriving(How::Return(_) | How::Dash, _) => self.state = arriving,
-            // Her empty home rains out. She's still out, her door's spot
-            // kept for when it shows again.
-            State::Away(empty) => self.rain_home(*empty, self.closed_door(), now),
+            arriving @ State::Arriving(How::Return | How::Dash, _) => self.state = arriving,
+            // Her empty home rains out. She's still out; when it shows
+            // again, her door stands where her home and the frame put it.
+            State::Away(empty) => self.rain_home(*empty, now),
             State::Visiting(visit) => {
                 tracing::info!("houseguest leaving");
                 // In the night she isn't startled: she blinks, half
@@ -1360,19 +1367,22 @@ impl Guest {
     }
 
     /// Her empty home, as the last frame showed it, rains out from
-    /// `now`: her furniture and her closed door (`door`, where the rain
-    /// starts; with none, the middle), with no wave (she isn't there).
+    /// `now`: her furniture and her closed door (where the rain starts;
+    /// with none, the middle), with no wave (she isn't there).
     /// With nothing of it shown she's simply absent. The one way her
     /// empty home goes whole but at once (sent away, or her room gone:
     /// [`Guest::vanish`]); an errand breaking in rains only her door
     /// ([`Guest::door_rain`]), the visit painting the rest.
-    fn rain_home(&mut self, empty: Empty, door: Option<DoorAt>, now: u64) {
+    fn rain_home(&mut self, empty: Empty, now: u64) {
         tracing::info!("houseguest: her empty home goes");
         self.state = State::Absent;
         if empty.painted.is_empty() {
             return;
         }
-        let origin = door.map_or(i32::from(empty.size.0) / 2, |door| door.x);
+        let origin = empty
+            .door
+            .as_ref()
+            .map_or(i32::from(empty.size.0) / 2, |door| door.spot.spot().0);
         let dissolve = Dissolve::new(now, empty.painted, origin, self.truecolor, empty.size);
         // What the last frame showed, as it showed it, until the rain:
         // the pieces on their own, and her door's image (with the pieces
@@ -1393,15 +1403,13 @@ impl Guest {
     /// ([`Guest::rain_home`]). Her not being idle after all, for an
     /// arrival on the idle gate, is [`Guest::back_out`]'s.
     fn call_off(&mut self, now: u64) {
-        let how = match self.state {
-            State::Arriving(how, _) => how,
-            _ => return,
-        };
+        if !matches!(self.state, State::Arriving(..)) {
+            return;
+        }
         let home = self.take_home();
         self.state = State::Absent;
         if let Some(home) = home {
-            let door = self.door_of(how);
-            self.rain_home(*home, door, now);
+            self.rain_home(*home, now);
         }
     }
 
@@ -1418,16 +1426,6 @@ impl Guest {
             State::Arriving(How::Idle, None) => State::Absent,
             other => other,
         };
-    }
-
-    /// Where her closed door stands for an arrival `how`: the one she
-    /// comes home out of, or (dashing in, or cued in) the one standing
-    /// while she's out.
-    fn door_of(&self, how: How) -> Option<DoorAt> {
-        match how {
-            How::Return(door) => door,
-            How::Dash | How::Idle => self.closed_door(),
-        }
     }
 
     /// The most one accrual of her clock may add (`None`, the default:
@@ -1786,7 +1784,7 @@ impl Guest {
     }
 
     /// School's out at `now` while she's out: she comes home out of her
-    /// closed door (where it stands, if it does) if the client is idle
+    /// door (where the arrival's frame stands it) if the client is idle
     /// (or she lives here, and visits are on). Its own question (A6),
     /// asked once, here: input or chat since doesn't call it off. Else
     /// she's absent, and comes in later on the idle gate.
@@ -1794,9 +1792,9 @@ impl Guest {
     /// Her empty home, if it stands, stands on till she's in; with the
     /// client busy, it rains out.
     fn school_out(&mut self, now: u64) {
-        let door = self.out.take().and_then(|out| out.door);
+        self.out = None;
         let home = self.take_home();
-        self.state = State::Arriving(How::Return(door), home);
+        self.state = State::Arriving(How::Return, home);
         if self.comes_in(now) {
             tracing::info!("houseguest: home from school");
         } else {
@@ -1849,9 +1847,16 @@ impl Guest {
         (at > game && clock.day_of(at).slot == routine::Slot::Away).then(|| clock.game.when(at))
     }
 
-    /// Where her closed door stands while she's out, if it does.
-    fn closed_door(&self) -> Option<DoorAt> {
-        self.out.and_then(|out| out.door)
+    /// Where her closed door stood in the last frame of her empty home
+    /// (standing, or coming in from it), if it stood anywhere.
+    #[cfg(test)]
+    fn closed_door(&self) -> Option<door::DoorSpot> {
+        match &self.state {
+            State::Away(empty) | State::Arriving(_, Some(empty)) => {
+                empty.door.as_ref().map(|door| door.spot)
+            }
+            _ => None,
+        }
     }
 
     /// Whether she's visiting and gone out by her routine at `now`, her
@@ -1862,8 +1867,8 @@ impl Guest {
 
     /// Her visit ends at `now` with her out through her door by her
     /// routine (A9): a new end, with no goodbye and no wave of her. With
-    /// a home to show, it stands empty, her closed door where she went
-    /// out (`State::Away`), and what she'd moved and made rains out.
+    /// a home to show, it stands empty, her closed door at its place
+    /// (`State::Away`), and what she'd moved and made rains out.
     /// With none (no home; or out again from a dash home, the client in
     /// use), what the visit showed rains out as her empty home's does
     /// for a visitor's key: her door, her pieces, what she'd moved and
@@ -1874,15 +1879,14 @@ impl Guest {
         let State::Visiting(visit) = std::mem::replace(&mut self.state, State::Absent) else {
             return;
         };
-        tracing::info!(kind = ?visit.kind, "houseguest: out, her door shut behind her");
-        let door = DoorAt {
-            x: visit.osaka.x,
-            y: visit.osaka.y,
-            facing: visit.osaka.facing,
-        };
-        // Where she went out (with no home to show, it's where she comes
-        // back in).
-        self.out = Some(Out { door: Some(door) });
+        tracing::info!(
+            kind = ?visit.kind,
+            door = ?visit.door.map(door::DoorSpot::spot),
+            "houseguest: out, her door shut behind her"
+        );
+        // From her door's spot, else from her.
+        let origin = visit.door.map_or(visit.osaka.x, |door| door.spot().0);
+        self.out = Some(Out);
         // Out again from a dash home, her home stands empty only for a
         // client still idle (or hers); else it shows when the gate next
         // opens.
@@ -1911,7 +1915,7 @@ impl Guest {
             self.fades.push(Dissolve::new(
                 now.saturating_sub(dissolve::RAIN_FROM_MS),
                 out,
-                door.x,
+                origin,
                 self.truecolor,
                 visit.size,
             ));
@@ -2031,17 +2035,43 @@ impl Guest {
                 let kind = self.kind_of(how == How::Dash);
                 // Each visit draws from its own seed.
                 self.rng = Rng(self.seed_of(kind));
-                // Out of her door where it stood (or the nearest spot it
-                // fits, or one near the middle with no home), never
-                // dropping in from the sky.
-                let through = |door: Option<DoorAt>| {
-                    let near = door.map_or(middle(size), |d| (d.x, d.y));
-                    let facing = door.map_or(sprite::Facing::Right, |d| d.facing);
-                    door_spot(&terrain, near).map(|spot| (spot, facing))
+                // Out of her door, where her home and this frame stand it
+                // (D4), never dropping in from the sky; with no door
+                // anywhere, by a door in space clear of the chat and her
+                // pieces (the door batch, M22).
+                let mut placed = None;
+                let mut through = |guest: &mut Self| {
+                    let prev = home.as_ref().and_then(|h| h.door.as_ref()).map(|d| d.spot);
+                    let blocked = |cx: i32, cy: i32| {
+                        let (Ok(ux), Ok(uy)) = (u16::try_from(cx), u16::try_from(cy)) else {
+                            return true;
+                        };
+                        view.protected.iter().any(|r| r.contains((ux, uy).into()))
+                    };
+                    let plan = plan_of(view, buf);
+                    let home = &mut guest.ledger.home;
+                    guest.unsaved |= home.frame(buf, plan, &blocked).1;
+                    let laid = home.laid_and_shifted(plan.nooks).shown;
+                    let obstacles = door::obstacles(&laid, [], None);
+                    let spot = door::door_place(home, plan, &obstacles, &terrain, prev);
+                    if spot != prev {
+                        log_door(spot, "her coming in");
+                    }
+                    placed = spot;
+                    match spot {
+                        Some(door) => Some((door.spot(), door.into_room())),
+                        None => osaka::door_in_space_spot(
+                            &terrain,
+                            view.chat,
+                            &obstacles,
+                            &mut guest.rng,
+                        )
+                        .map(|spot| (spot, sprite::Facing::Right)),
+                    }
                 };
                 let osaka = match how {
                     How::Idle => Osaka::arrive(now, &terrain, i32::from(size.0), &mut self.rng),
-                    How::Return(door) => through(door).map(|(spot, facing)| {
+                    How::Return => through(self).map(|(spot, facing)| {
                         Osaka::back_through_door(
                             spot,
                             facing,
@@ -2050,13 +2080,16 @@ impl Guest {
                             &mut self.rng,
                         )
                     }),
-                    How::Dash => through(self.closed_door()).map(|(spot, facing)| {
+                    How::Dash => through(self).map(|(spot, facing)| {
                         let met = kind == Kind::Dash;
                         Osaka::dash_in(spot, facing, met, now, &mut self.rng)
                     }),
                 };
                 if let Some(osaka) = osaka {
                     self.begin_visit(osaka, terrain, size, kind, now);
+                    if let State::Visiting(visit) = &mut self.state {
+                        visit.door = placed;
+                    }
                 }
             }
             if !self.present() {
@@ -2065,7 +2098,8 @@ impl Guest {
                 match home {
                     // At another size her empty home goes at once, as it
                     // does standing (the geometry it froze against is
-                    // gone). She's still out, her door's spot kept.
+                    // gone). She's still out; her door stands where her
+                    // home and the frame put it when her home shows again.
                     Some(home) if home.size != size => {
                         tracing::info!("houseguest: her empty home goes (no room)");
                         self.vanish();
@@ -2098,22 +2132,20 @@ impl Guest {
                     // As a visit leaves for no room: shown again only
                     // after another idle delay (the gate, still open,
                     // would show it at once, to go again at this paint).
-                    // She's still out, her door's spot kept.
+                    // She's still out; her door stands where her home and
+                    // the frame put it when her home shows again.
                     tracing::info!("houseguest: her empty home goes (no room)");
                     self.vanish();
                     self.quiet_since = now;
                     return Rains::ToPaint;
                 }
                 // As the frame has it, before she keeps out of a focused
-                // pane: her closed door moves only for what would keep
-                // her out of its spot for good (a resize), never for a
-                // pane kept clear a while.
+                // pane: her closed door never moves for a pane kept clear
+                // a while (it's hidden there meanwhile).
                 let unkept = whole_glyphs(buf, as_drawn.clone()).protected;
-                let door = &mut self.out.get_or_insert_default().door;
                 let changed = paint_empty(
                     empty,
                     &mut self.fades,
-                    door,
                     &mut self.ledger,
                     self.graphics.as_mut(),
                     buf,
@@ -2258,7 +2290,16 @@ impl Guest {
                 // The place of the piece in her pocket is kept for it.
                 let mut kept = view.protected.clone();
                 kept.extend(visit.ghost);
-                tend_made(visit, buf, &kept, size, now);
+                // Her door's space is kept clear of what she made (the
+                // chat pane too, from the door batch's step 5).
+                let keep = door::Keep::of(
+                    &self.ledger.home,
+                    room::Plan {
+                        chat: Rect::default(),
+                        ..plan_of(view, buf)
+                    },
+                );
+                tend_made(visit, buf, &kept, &keep, size, now);
                 visit.shown.extend(visit.made.iter().map(|made| made.piece));
                 let gone = |piece: room::PieceRef| !visit.shown.iter().any(|s| s.piece() == piece);
                 let using = visit.osaka.use_span().map(|(seat, ..)| seat.piece);
@@ -2271,7 +2312,15 @@ impl Guest {
                 base.extend(visit.ghost);
                 let mut gripped = true;
                 for op in visit.osaka.take_ops() {
-                    if !scenes::apply(&op, &mut visit.layer, buf, &base) {
+                    // A piece she set out to make where her door's space
+                    // has come since is refused, as the frame refuses a
+                    // change it can't take (never made, to fall apart
+                    // the next frame).
+                    let kept_out = matches!(
+                        &op,
+                        scenes::LayerOp::Make { piece, .. } if keep.refuses(piece.cover())
+                    );
+                    if kept_out || !scenes::apply(&op, &mut visit.layer, buf, &base) {
                         tracing::trace!(?op, "houseguest: the frame refused a layer change");
                         gripped &= !op.grips();
                         visit.osaka.refused(now, op);
@@ -2300,10 +2349,36 @@ impl Guest {
                 }
                 let_go(visit);
                 let mut protected = visit.solid(&view.protected);
-                visit.terrain = Terrain::read(buf, &protected, self.graphics.is_some());
+                // Her door reads what she moved as the text it is.
+                visit.terrain = Terrain::read_guarded(
+                    buf,
+                    &protected,
+                    &view.protected,
+                    self.graphics.is_some(),
+                );
                 visit.terrain.furnish(visit.shown.iter().map(Shown::cover));
                 visit.size = size;
                 let chat = view.resident.then_some(view.chat);
+                // Her external door this frame, on her own terrain (she
+                // never comes out inside a focused pane, nor walks into
+                // one): what she'd go out through.
+                let door = {
+                    let plan = plan_of(view, buf);
+                    let laid = self.ledger.home.laid_and_shifted(plan.nooks).shown;
+                    let made = visit.made.iter().map(|m| m.piece.cover());
+                    let obstacles = door::obstacles(&laid, made, visit.ghost);
+                    door::door_place(
+                        &self.ledger.home,
+                        plan,
+                        &obstacles,
+                        &visit.terrain,
+                        visit.door,
+                    )
+                };
+                if door != visit.door {
+                    log_door(door, "her visit");
+                }
+                visit.door = door;
                 // Out of the focused pane, through her door.
                 // Text came up where she stays (under her, or under the
                 // image she's drawn in): she gets up.
@@ -2342,7 +2417,7 @@ impl Guest {
                 let swaps = scenes::swaps(buf, &visit.terrain, &holes, &visit.layer);
                 let mut solid = protected.clone();
                 solid.extend(visit.ghost);
-                let builds = builds(buf, visit, &pulls, &solid);
+                let builds = builds(buf, visit, &pulls, &solid, &keep);
                 let borrows = borrows(visit, &pulls);
                 let (lift_at, judged) = arranging(visit);
                 let beauty_here =
@@ -2376,6 +2451,7 @@ impl Guest {
                         judged,
                         beauty_here,
                         clock,
+                        door,
                     };
                     let note =
                         stage::direct(scene, buf, &protected, visit, &offered, now, &mut self.rng);
@@ -2426,6 +2502,7 @@ impl Guest {
                     judged,
                     beauty_here,
                     clock,
+                    door,
                 };
                 // A visit beginning at night: in her bed (else on her
                 // sofa) from the first frame, if either is shown; else she
@@ -2678,6 +2755,7 @@ impl Guest {
             set_down: None,
             judging: None,
             ghost: None,
+            door: None,
             size,
             tuck,
             looks: Looks::default(),
@@ -2807,28 +2885,22 @@ impl Guest {
     /// vanishes. The pieces it took in aren't in it: the visit paints
     /// them on.
     fn door_rain(&self, now: u64) -> Option<Dissolve> {
-        let (empty, door) = match &self.state {
-            State::Away(empty) => (empty, self.closed_door()),
-            State::Arriving(how, Some(empty)) => (empty, self.door_of(*how)),
+        let empty = match &self.state {
+            State::Away(empty) | State::Arriving(_, Some(empty)) => empty,
             _ => return None,
         };
-        let door = door?;
-        let cells: std::collections::HashSet<(i32, i32)> =
-            Door::closed(door.x, door.y, door.facing)
-                .cells()
-                .map(|(x, y, _)| (x, y))
-                .collect();
+        let door = empty.door.as_ref()?;
         let out: Vec<Frozen> = empty
             .painted
             .iter()
-            .filter(|cell| cells.contains(&(i32::from(cell.x), i32::from(cell.y))))
+            .filter(|cell| door.cells.contains(&(cell.x, cell.y)))
             .cloned()
             .collect();
         (!out.is_empty()).then(|| {
             Dissolve::new(
                 now.saturating_sub(dissolve::RAIN_FROM_MS),
                 out,
-                door.x,
+                door.spot.spot().0,
                 self.truecolor,
                 empty.size,
             )
@@ -2913,7 +2985,7 @@ impl Guest {
                     self.quiet_since = now;
                     self.back_out();
                 }
-                State::Arriving(How::Return(_) | How::Dash, _) => self.quiet_since = now,
+                State::Arriving(How::Return | How::Dash, _) => self.quiet_since = now,
                 State::Away(_) | State::Leaving(_) => {}
             }
         }
@@ -3205,7 +3277,12 @@ fn bubble_spot(
 fn plan_of<'a>(view: &'a IdleView, buf: &Buffer) -> room::Plan<'a> {
     room::Plan {
         nooks: &view.nooks,
-        chat: view.chat,
+        // A collapsed chat slot is no chat (see `room::in_chat`).
+        chat: if view.chat.is_empty() {
+            Rect::default()
+        } else {
+            view.chat
+        },
         screen: buf.area,
     }
 }
@@ -3319,6 +3396,17 @@ fn furnish(
     // terrain, read once, when a delivery first asks (the visit's is
     // last frame's, read after this).
     let fresh: std::cell::RefCell<Option<Terrain>> = std::cell::RefCell::new(None);
+    // What she made stands clear of her door's space as it is now: the
+    // home before the delivery's (D3 wants the after-delivery home's, a
+    // delivery that moves her door's wall judged on its new space: the
+    // door batch's step 5). Until then `tend_made` catches it a frame on.
+    let keep = door::Keep::of(
+        home,
+        room::Plan {
+            chat: Rect::default(),
+            ..plan
+        },
+    );
     let mut kept = view.protected.clone();
     kept.extend(visit.ghost);
     let (makeshift, layer) = (&visit.made, &visit.layer);
@@ -3332,7 +3420,7 @@ fn furnish(
         });
         let standing = makeshift
             .iter()
-            .filter(|m| made_stands(m, layer, buf, after, &moved, &kept))
+            .filter(|m| made_stands(m, layer, buf, after, &moved, &kept, &keep))
             .map(|m| m.piece);
         let room: Vec<Shown> = after.iter().copied().chain(standing).collect();
         terrain.furnish(room.iter().map(Shown::cover));
@@ -3821,14 +3909,21 @@ fn clear_of_real(shown: &[Shown], x: i32, y: i32) -> bool {
 /// her real furniture and anything `protected`; a resize takes them all.
 /// What goes, goes back into its line. One she's crumpling grows as she
 /// does.
-fn tend_made(visit: &mut Visit, buf: &Buffer, protected: &[Rect], size: (u16, u16), now: u64) {
+fn tend_made(
+    visit: &mut Visit,
+    buf: &Buffer,
+    protected: &[Rect],
+    keep: &door::Keep,
+    size: (u16, u16),
+    now: u64,
+) {
     let resized = visit.size != size;
     let real = visit.shown.clone();
     let moved: std::collections::HashSet<(u16, u16)> = visit.layer.cells().collect();
     let mut gone = Vec::new();
     let layer = &visit.layer;
     visit.made.retain(|made| {
-        let stands = !resized && made_stands(made, layer, buf, &real, &moved, protected);
+        let stands = !resized && made_stands(made, layer, buf, &real, &moved, protected, keep);
         if !stands {
             gone.push((made.torn.clone(), made.used, made.mine(), made.piece.item));
         }
@@ -3864,9 +3959,10 @@ fn tend_made(visit: &mut Visit, buf: &Buffer, protected: &[Rect], size: (u16, u1
 
 /// Whether the makeshift piece `made` still stands among the real pieces
 /// `real`: every glyph torn off for it still torn off, and it still fits
-/// where she made it, clear of them, of `moved` text and of anything
-/// `protected` (see [`tend_made`]; a delivery asks it of the room it
-/// would make).
+/// where she made it, clear of them, of `moved` text, of anything
+/// `protected`, and of what `keep` keeps clear (her door's space: one
+/// that comes to meet it takes it apart; see [`tend_made`]; a delivery
+/// asks it of the room it would make).
 fn made_stands(
     made: &Made,
     layer: &layer::TextLayer,
@@ -3874,7 +3970,11 @@ fn made_stands(
     real: &[Shown],
     moved: &std::collections::HashSet<(u16, u16)>,
     protected: &[Rect],
+    keep: &door::Keep,
 ) -> bool {
+    if keep.refuses(made.piece.cover()) {
+        return false;
+    }
     let clear = |x: i32, y: i32| {
         let (Ok(ux), Ok(uy)) = (u16::try_from(x), u16::try_from(y)) else {
             return false;
@@ -3957,6 +4057,7 @@ fn builds(
     visit: &Visit,
     pulls: &[scenes::Pull],
     protected: &[Rect],
+    keep: &door::Keep,
 ) -> Vec<scenes::Build> {
     let wanted: Vec<Furniture> = scrap::MAKES
         .into_iter()
@@ -3975,8 +4076,12 @@ fn builds(
         !protected.iter().any(|r| r.contains((ux, uy).into())) && clear_of_real(&visit.shown, x, y)
     };
     // Where she'd stay once it's made, judged with it in her image: to
-    // crumple it, and then to use it.
+    // crumple it, and then to use it. Never where `keep` keeps clear (her
+    // door's space), once per candidate.
     let then = |piece: &Shown| {
+        if keep.refuses(piece.cover()) {
+            return Vec::new();
+        }
         let mut terrain = visit.terrain.clone();
         terrain.furnish(visit.shown.iter().chain([piece]).map(Shown::cover));
         let crumple = piece.seat(room::Use::Crumple, 0);
@@ -4628,33 +4733,6 @@ fn draw_art(
     (painted, image, drawn)
 }
 
-/// The middle of a screen `size`, at its foot: where her door is looked
-/// for with nowhere else to start from.
-fn middle(size: (u16, u16)) -> (i32, i32) {
-    (i32::from(size.0) / 2, i32::from(size.1))
-}
-
-/// Whether her door may stand at `(x, y)` on `terrain`: where she'd stay
-/// (on a floor, and nothing in her box, or the image she'd be drawn in,
-/// that she may not stay over).
-fn door_fits(terrain: &Terrain, (x, y): (i32, i32)) -> bool {
-    terrain.platform_at(x, y).is_some() && terrain.restful(x, y)
-}
-
-/// The floor spot nearest `near` where her door may stand
-/// ([`door_fits`]), `near` itself if it does; `None` with nowhere.
-fn door_spot(terrain: &Terrain, near: (i32, i32)) -> Option<(i32, i32)> {
-    if door_fits(terrain, near) {
-        return Some(near);
-    }
-    terrain
-        .platforms
-        .iter()
-        .flat_map(|p| (p.x0..=p.x1).map(move |x| (x, p.y)))
-        .filter(|&spot| door_fits(terrain, spot))
-        .min_by_key(|&(x, y)| ((x - near.0).abs() + (y - near.1).abs(), y, x))
-}
-
 /// Whether the arm of [`Guest::paint_state`] that painted her state
 /// painted her rains too, or left them to [`Guest::paint`].
 #[must_use]
@@ -4680,17 +4758,17 @@ fn paint_fades(fades: &mut Vec<Dissolve>, buf: &mut Buffer, size: (u16, u16), no
 /// the finished frame: her furniture as a visit projects it (and nothing
 /// a visit's paint sets going: no gift, no order, no parcel), the TV off
 /// and the lamp off, the cat as the coming visit has him, her clock and
-/// window at her time of day (`time`, when it's fed); her closed
-/// door where she went out (moved to the nearest spot it fits only once
-/// it doesn't on the frame as drawn, `unkept`); what was in a pane just
-/// focused raining out (her door too: it comes back when the pane's left
-/// alone). Returns whether her record changed (projecting may settle a
-/// piece), as a visit's paint diffs it.
+/// window at her time of day (`time`, when it's fed); her closed door
+/// where her home and the frame as drawn (`unkept`) stand it
+/// ([`door::door_place`]: at its space, or the strict fallback), drawn
+/// over text, and hidden only while a cell of it is protected (a pane in
+/// use); what was in a pane just focused raining out (her door too: it
+/// comes back when the pane's left alone). Returns whether her record
+/// changed (projecting may settle a piece), as a visit's paint diffs it.
 #[allow(clippy::too_many_arguments)]
 fn paint_empty(
     empty: &mut Empty,
     fades: &mut Vec<Dissolve>,
-    door: &mut Option<DoorAt>,
     ledger: &mut Ledger,
     mut graphics: Option<&mut Graphics>,
     buf: &mut Buffer,
@@ -4702,7 +4780,10 @@ fn paint_empty(
     truecolor: bool,
 ) -> bool {
     let size = (buf.area.width, buf.area.height);
-    let origin = door.map_or(i32::from(size.0) / 2, |door| door.x);
+    let origin = empty
+        .door
+        .as_ref()
+        .map_or(i32::from(size.0) / 2, |door| door.spot.spot().0);
     // A pane was just focused: what of hers was in it rains away at once.
     if let Some(focus) = view.focus {
         let out: Vec<Frozen> = empty
@@ -4734,38 +4815,37 @@ fn paint_empty(
         view.protected.iter().any(|r| r.contains((ux, uy).into()))
     };
     let before = ledger.clone();
-    let shown = ledger.home.frame(buf, plan_of(view, buf), &blocked).0;
+    let plan = plan_of(view, buf);
+    let shown = ledger.home.frame(buf, plan, &blocked).0;
     let changed = *ledger != before;
     let covers: Vec<Rect> = shown.iter().map(Shown::cover).collect();
     let line_art = graphics.is_some();
-    // Her door where she went out, unless that no longer fits on the
-    // frame as drawn: then the nearest spot that does.
-    let mut fit = Terrain::read(buf, unkept, line_art);
-    fit.furnish(covers.iter().copied());
-    let fits = |door: DoorAt| door_fits(&fit, (door.x, door.y));
-    if !door.is_some_and(fits) {
-        let near = door.map_or(middle(size), |door| (door.x, door.y));
-        let facing = door.map_or(sprite::Facing::Right, |door| door.facing);
-        if let Some((x, y)) = door_spot(&fit, near) {
-            tracing::debug!(x, y, "houseguest: her closed door stands");
-            *door = Some(DoorAt { x, y, facing });
-        }
+    // Her door, read off the frame as drawn: never moved by a pane kept
+    // clear a while, nor by text.
+    let ground = Terrain::read(buf, unkept, line_art);
+    let laid = ledger.home.laid_and_shifted(plan.nooks).shown;
+    let obstacles = door::obstacles(&laid, [], None);
+    let prev = empty.door.as_ref().map(|door| door.spot);
+    let spot = door::door_place(&ledger.home, plan, &obstacles, &ground, prev);
+    if spot != prev {
+        log_door(spot, "her empty home");
     }
-    // Shown where it fits, and out of the pane she keeps clear.
-    let standing = door.filter(|&door| {
-        fits(door)
-            && !view
-                .protected
-                .iter()
-                .any(|&rect| osaka::box_meets(rect, (door.x, door.y)))
+    // Hidden while any cell of it is in a pane she keeps clear.
+    let standing = spot.filter(|&spot| {
+        let (x, y) = spot.spot();
+        !Door::closed(x, y, spot.out()).cells().any(|(cx, cy, _)| {
+            let (Ok(ux), Ok(uy)) = (u16::try_from(cx), u16::try_from(cy)) else {
+                return true;
+            };
+            view.protected.iter().any(|r| r.contains((ux, uy).into()))
+        })
     });
-    let terrain = if view.protected == unkept {
-        fit
+    let mut terrain = if view.protected == unkept {
+        ground
     } else {
-        let mut terrain = Terrain::read(buf, &view.protected, line_art);
-        terrain.furnish(covers.iter().copied());
-        terrain
+        Terrain::read(buf, &view.protected, line_art)
     };
+    terrain.furnish(covers.iter().copied());
     // Nobody's watching, reading by the lamp or petting him; her clock
     // and window tell the time all the same.
     let world = World {
@@ -4780,35 +4860,40 @@ fn paint_empty(
             .collect(),
     };
     nudge.paint(buf, now);
-    // In line art, the pieces her door overlaps go in its image (two
-    // images would cut each other out).
-    let drawn = match standing.filter(|_| line_art) {
-        Some(door) => terrain::image(door.x, door.y, &covers).with,
-        None => vec![false; covers.len()],
-    };
-    let (mut with, mut apart) = (Vec::new(), Vec::new());
-    for (&piece, drawn) in shown.iter().zip(drawn) {
-        if drawn {
-            with.push(piece);
-        } else {
-            apart.push(piece);
-        }
-    }
-    let mut painted = draw_props(buf, graphics.as_deref_mut(), &apart, &looks, truecolor);
+    // Her door meets none of her pieces (D4): every piece is drawn on its
+    // own, and her door's image takes in none.
+    let mut painted = draw_props(buf, graphics.as_deref_mut(), &shown, &looks, truecolor);
     let mut image = None;
-    if let Some(door) = standing {
-        let door = Door::closed(door.x, door.y, door.facing);
-        let (cells, art) = draw_door(buf, graphics, door, with, &looks, &terrain, truecolor);
-        painted.extend(cells);
+    let mut cells = Vec::new();
+    if let Some(spot) = standing {
+        let (x, y) = spot.spot();
+        let door = Door::closed(x, y, spot.out());
+        let (drawn, art) = draw_door(buf, graphics, door, Vec::new(), &looks, &terrain, truecolor);
+        cells = drawn.iter().map(|cell| (cell.x, cell.y)).collect();
+        painted.extend(drawn);
         image = art;
     }
+    empty.apart = shown.clone();
     empty.shown = shown;
-    empty.apart = apart;
     empty.image = image;
     empty.painted = painted;
     empty.looks = looks;
+    empty.door = spot.map(|spot| DoorDrawn { spot, cells });
     empty.size = size;
     changed
+}
+
+/// Log where her door stands (`whose`: which frame placed it), as it
+/// changes: its spot and how it stands (in its space, or the fallback
+/// and why), or that it stands nowhere.
+fn log_door(spot: Option<door::DoorSpot>, whose: &'static str) {
+    match spot {
+        Some(door) => {
+            let (x, y) = door.spot();
+            tracing::debug!(x, y, set = ?door.set(), whose, "houseguest: her door stands");
+        }
+        None => tracing::debug!(whose, "houseguest: her door stands nowhere"),
+    }
 }
 
 /// Paint her door standing on its own (she's out, see [`paint_empty`]):

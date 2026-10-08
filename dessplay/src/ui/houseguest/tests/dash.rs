@@ -92,7 +92,7 @@ fn waving(guest: &Guest) -> bool {
 #[derive(Debug, Default)]
 struct Seen {
     /// When she dashed in, and where her closed door stood then.
-    came: Option<(u64, Option<DoorAt>)>,
+    came: Option<(u64, Option<door::DoorSpot>)>,
     /// Where she first stood, in.
     first: Option<(i32, i32)>,
     /// Every line she said.
@@ -180,7 +180,7 @@ fn a_dash_home_for_her_lunch_and_out_again() {
                 "{at}: dashed home at {came}, due {due}"
             );
             let door = door.unwrap_or_else(|| panic!("{at}: no door"));
-            assert_eq!(seen.first, Some((door.x, door.y)), "{at}: out of her door");
+            assert_eq!(seen.first, Some(door.spot()), "{at}: out of her door");
             assert!(seen.fridge_open, "{at}: her fridge never opened");
             assert!(seen.said.contains(&FORGOT_LUNCH), "{at}: {:?}", seen.said);
             assert!(
@@ -437,8 +437,12 @@ fn a_fridge_gone_from_her_lunch_doesnt_keep_her_home() {
                 let out = run
                     .out
                     .unwrap_or_else(|| panic!("{at}: never out again: {run:?}"));
+                // Her door is at its space by the screen's edge (the door
+                // batch), a long walk from her fridge: on her way, she
+                // gives up only where it stood (a walk isn't cut short
+                // when its piece goes; door-notes, step 3).
                 assert!(
-                    out < closeted + 30_000,
+                    out < closeted + 60_000,
                     "{at}: out at {out}, closeted at {closeted}: {run:?}"
                 );
                 let after = run.lunches.iter().filter(|l| l.0 > closeted).count();
@@ -666,10 +670,7 @@ fn the_errand_at_school_is_a_dash() {
             let poked = poked.unwrap_or_else(|| panic!("{at}: never poked"));
             let out = out.unwrap_or_else(|| panic!("{at}: never out again"));
             assert!(out > poked, "{at}");
-            assert!(
-                guest.out.is_some_and(|o| o.door.is_some()),
-                "{at}: out by her door"
-            );
+            assert!(guest.out.is_some(), "{at}: out by her door");
             assert_eq!(
                 matches!(guest.state, State::Away(_)),
                 resident && home,
@@ -891,13 +892,14 @@ fn stopped_on_her_way_to_her_lunch_she_sets_off_again() {
 
 /// With no home (nothing to show while she's out: she's simply absent),
 /// she still dashes home as its minute passes, the shell asleep until
-/// she asks to wake for it: in by a door at a spot it fits, can't think
-/// what for, and out by her door again; what showed (her door) rains
-/// out, nobody waving, and she's absent, out at school, her door's spot
-/// kept. Not counted. Her client not idle at the minute, the day's dash
-/// is simply missed.
+/// she asks to wake for it: in by her door (with no home, at the space
+/// of the wall the chooser picks, unsaved: on [`home_screen`] Users'
+/// left), can't think what for, and out by her door again; what showed
+/// (her door) rains out, nobody waving, and she's absent, out at school;
+/// at 12:45 she comes home by the same wall. Not counted. Her client not
+/// idle at the minute, the day's dash is simply missed.
 #[test]
-fn with_no_home_she_dashes_home_from_absent() {
+fn with_no_home_she_comes_in_by_the_same_wall_each_time() {
     let (real, view) = home_screen();
     let (seed, minute) = dash_seed(0);
     for graphics in [false, true] {
@@ -935,15 +937,28 @@ fn with_no_home_she_dashes_home_from_absent() {
             assert!(!waving(&guest), "{at}: a goodbye at {now}");
             shell_step(&mut guest, &real, &view, &mut now, true);
         }
-        let door = guest
-            .closed_door()
-            .unwrap_or_else(|| panic!("{at}: no door"));
-        assert_eq!(
-            Some((door.x, door.y)),
-            seen.first,
-            "{at}: out where she came in"
-        );
+        let wall = walls_of(&view.nooks, real.area, &[])
+            .into_iter()
+            .find(|w| w.nook == Nook::Users && w.side == room::Side::Left)
+            .expect("Users' left wall");
+        assert!(wall.edge && wall.space.is_some(), "{at}: {wall:?}");
+        assert_eq!(seen.first, Some(wall.spot), "{at}: in by her door's space");
         assert_eq!(guest.ledger.visits, visits, "{at}: counted");
+        assert_eq!(guest.ledger.home.door, None, "{at}: no wall saved, no home");
+        // Home from school: by the same wall.
+        let home_time = real_of(&guest, now, tue(12, 45));
+        while now < home_time {
+            long_step(&mut guest, &real, &view, &mut now);
+        }
+        let mut first = None;
+        while first.is_none() {
+            assert!(now < home_time + 20_000, "{at}: never home");
+            shell_step(&mut guest, &real, &view, &mut now, true);
+            if let State::Visiting(visit) = &guest.state {
+                first = Some((visit.osaka.x, visit.osaka.y));
+            }
+        }
+        assert_eq!(first, Some(wall.spot), "{at}: home by the same wall");
     }
     // At the keys a moment before the minute (the client open, the idle
     // gate shut): no dash that day.
@@ -1014,10 +1029,7 @@ fn the_errand_at_school_for_a_visitor_at_the_keys() {
         assert!(came && poked, "{at}: came {came}, poked {poked}");
         assert!(matches!(guest.state, State::Absent), "{at}: out");
         assert!(rained, "{at}: her things just vanished");
-        assert!(
-            guest.out.is_some_and(|o| o.door.is_some()),
-            "{at}: out by her door"
-        );
+        assert!(guest.out.is_some(), "{at}: out by her door");
     }
 }
 
@@ -1167,17 +1179,25 @@ fn a_dash_cued_on_a_visit_keeps_the_visit() {
             assert_eq!(guest.ledger.visits, visits, "{at}: not a new one");
             assert!(visit.osaka.dashing(), "{at}: dashing in");
             let spot = (visit.osaka.x, visit.osaka.y);
+            assert_eq!(
+                visit.door.map(door::DoorSpot::spot),
+                Some(spot),
+                "{at}: through her door"
+            );
             assert!(
-                door_fits(&visit.terrain, spot),
-                "{at}: her door at {spot:?}"
+                visit.door.is_some_and(|d| d.wall().is_some()),
+                "{at}: in its space"
             );
             let line = if scene == Scene::DashIn {
                 FORGOT_LUNCH
             } else {
                 WHAT_WAS_IT
             };
+            // Her door is at its space, by the screen's edge: she walks
+            // the room to her fridge.
             let mut said = Vec::new();
-            while now < 30_000 && !said.contains(&line) {
+            let cued = now;
+            while now < cued + 60_000 && !said.contains(&line) {
                 shell_step(&mut guest, &real, &view, &mut now, true);
                 if let Some(Bubble::Say(line)) = visit_of(&guest).osaka.appearance(now).2 {
                     said.push(line);

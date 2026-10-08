@@ -456,44 +456,22 @@ pub(super) fn direct(
     osaka.cue(scene.cue());
     match scene {
         Scene::Arrive => Ok("arriving".into()),
-        // In through a door: what she forgot, she goes for as she first
+        // In through her door (where her home and the frame stand it,
+        // the door batch): what she forgot, she goes for as she first
         // decides (her routine sends her out after, at school time).
-        // Dashing home for her lunch, the door is beside her fridge, so
-        // the scene shows soon; else it's her own (just dashed in), or
-        // one where she stood (a visit under way). Wherever her door may
-        // stand: never over text.
+        // Just dashed in, she's through it already.
         Scene::DashIn | Scene::DashForgot => {
-            let fridge = chances
-                .seats
-                .iter()
-                .find(|s| s.what == Use::Snack && !s.makeshift())
-                .filter(|_| scene == Scene::DashIn);
-            let near = match fridge {
-                Some(seat) => {
-                    let away = match Job::Use(*seat).side() {
-                        Side::Left => 1,
-                        Side::Right => -1,
-                    };
-                    Some((approach(terrain, seat.x, seat.y, away), seat.y))
-                }
-                None if osaka.dashing() => None,
-                None => Some((osaka.x, osaka.y)),
-            };
-            let Some(near) = near else {
+            if osaka.dashing() {
                 return Ok(format!("{name}: in through her door"));
-            };
-            let Some((x, y)) = super::door_spot(terrain, near) else {
+            }
+            let Some(door) = chances.door else {
                 // Not left to wait for a later snack.
                 osaka.cue(None);
                 return Err(format!("{name}: nowhere for her door to stand"));
             };
-            osaka.dash_through((x, y), now);
-            let by = if fridge.is_some() {
-                "by her fridge"
-            } else {
-                "through a door"
-            };
-            Ok(format!("{name}: in {by} at ({x}, {y})"))
+            let (x, y) = door.spot();
+            osaka.dash_through((x, y), door.into_room(), now);
+            Ok(format!("{name}: in through her door at ({x}, {y})"))
         }
         // The sofa was set up turned from the TV as the frame was read,
         // and she's felt it: she sets off to lift it.

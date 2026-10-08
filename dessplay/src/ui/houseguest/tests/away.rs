@@ -1,8 +1,9 @@
 //! Away (phase 5b D3, step 5b): on a school morning she goes out through
-//! her door at 08:15, the door stands closed where she left, her home
-//! stands empty with the lamp off, and at 12:45 she comes home out of
-//! it. Each in both drawing modes; the screens quiet and text-dense
-//! (`home_screens`, or text scattered over `rooms`).
+//! her door at 08:15, the door stands closed at its space by her door's
+//! wall (the door batch), her home stands empty with the lamp off, and at
+//! 12:45 she comes home out of it. Each in both drawing modes; the
+//! screens quiet and text-dense (`home_screens`, or text scattered over
+//! `rooms`).
 
 use super::*;
 use crate::ui::houseguest::art::PieceState;
@@ -52,33 +53,48 @@ fn roomy_screens() -> [(&'static str, (Buffer, IdleView)); 2] {
 }
 
 /// Her closed door standing at `door`, as it's drawn.
-fn closed(door: DoorAt) -> Door {
-    Door::closed(door.x, door.y, door.facing)
+fn closed(door: door::DoorSpot) -> Door {
+    let (x, y) = door.spot();
+    Door::closed(x, y, door.out())
 }
 
 /// Whether `frame` shows her closed door at `door` in her empty home
-/// (`empty`, just painted): in ASCII, its glyphs, each where it's free to
-/// stand (on blank cells clear of her pieces) and at least one; in line
-/// art, her door's image, closed, there, with cells of her box drawn.
-fn door_shows(empty: &Empty, frame: &Buffer, real: &Buffer, door: DoorAt) -> bool {
+/// (`empty`, just painted), strictly: none of its cells under any of her
+/// pieces (that's a failure, not a skip); in ASCII, every glyph of it
+/// drawn, over text too (only a wide glyph's cells, which it can't take,
+/// are passed over), and at least one; in line art, her door's image,
+/// closed, there, taking in no piece, with cells of her box drawn.
+fn door_shows(empty: &Empty, frame: &Buffer, real: &Buffer, door: door::DoorSpot) -> bool {
+    let covers: Vec<Rect> = empty.shown.iter().map(Shown::cover).collect();
+    let under_a_piece = closed(door).cells().any(|(x, y, _)| {
+        let (Ok(x), Ok(y)) = (u16::try_from(x), u16::try_from(y)) else {
+            return false;
+        };
+        covers.iter().any(|r| r.contains((x, y).into()))
+    });
+    if under_a_piece {
+        return false;
+    }
     match &empty.image {
         Some(image) => {
             let drawn = image.figure.door().map(|d| d.cells().collect::<Vec<_>>());
             drawn == Some(closed(door).cells().collect())
                 && image.figure.her().is_none()
-                && box_changed(frame, real, (door.x, door.y)) > 0
+                && image.with.is_empty()
+                && box_changed(frame, real, door.spot()) > 0
         }
         None => {
-            let covers: Vec<Rect> = empty.shown.iter().map(Shown::cover).collect();
             let mut seen = 0;
+            let mut after_wide = false;
             for (x, y, glyph) in closed(door).cells() {
                 let (Ok(x), Ok(y)) = (u16::try_from(x), u16::try_from(y)) else {
                     continue;
                 };
-                let blank = real
-                    .cell((x, y))
-                    .is_some_and(|c| c.symbol().trim().is_empty());
-                if !blank || covers.iter().any(|r| r.contains((x, y).into())) {
+                let Some(cell) = real.cell((x, y)) else {
+                    continue;
+                };
+                let wide = std::mem::replace(&mut after_wide, cells::width(cell) > 1);
+                if wide || cells::width(cell) > 1 {
                     continue;
                 }
                 seen += 1;
@@ -89,6 +105,19 @@ fn door_shows(empty: &Empty, frame: &Buffer, real: &Buffer, door: DoorAt) -> boo
             seen > 0
         }
     }
+}
+
+/// Where her door stands on `view` of `real` when it stands in its space
+/// by her door's wall on `side` of `nook`'s strip: worked out from the
+/// nook's rect and the side alone (`walls_of`), never from the code that
+/// stands it there. The wall must have a space (asserted).
+fn space_spot(real: &Buffer, view: &IdleView, nook: Nook, side: room::Side) -> (i32, i32) {
+    let wall = walls_of(&view.nooks, real.area, &[])
+        .into_iter()
+        .find(|w| w.nook == nook && w.side == side)
+        .expect("that wall");
+    assert!(wall.space.is_some(), "{wall:?}: a space");
+    wall.spot
 }
 
 /// From `from` on `real`, until her home stands empty; a few steps more
@@ -107,7 +136,7 @@ fn until_away(guest: &mut Guest, real: &Buffer, view: &IdleView, from: u64) -> u
 /// Seed 4's school morning on `real`: visiting from 08:10, out through
 /// her door at 08:15. Returns her home standing empty, when, and where
 /// her door stands.
-fn out_to_school(real: &Buffer, view: &IdleView, graphics: bool) -> (Guest, u64, DoorAt) {
+fn out_to_school(real: &Buffer, view: &IdleView, graphics: bool) -> (Guest, u64, door::DoorSpot) {
     let mut guest = home_at(4, tue(8, 10), &HOME, graphics);
     let now = until_visiting(&mut guest, real, view, 0);
     let now = until_away(&mut guest, real, view, now);
@@ -116,11 +145,13 @@ fn out_to_school(real: &Buffer, view: &IdleView, graphics: bool) -> (Guest, u64,
 }
 
 /// One school morning (Tuesday, fed), in skips of her clock: she leaves
-/// at 08:15 through her door in place, saying so; her door stays closed
-/// where she left (drawn from the very frame she's out, with no tick
-/// between); her home stands empty, the TV and the lamp off; and at
-/// 12:45 she comes home out of that door saying she's home, with no
-/// hello (the day's mood goes on).
+/// at 08:15 through her door in place, saying so; her door stands closed
+/// in its space by her door's wall (on [`home_screen`], Users' left, at
+/// the screen's edge: drawn from the very frame she's out, with no tick
+/// between; on the wordy screen, over the users listed there); her home
+/// stands empty, the TV and the lamp off; and at 12:45 she comes home out
+/// of that door saying she's home, with no hello (the day's mood goes
+/// on).
 #[test]
 fn a_school_morning_out_through_her_door_and_home_again() {
     for (name, (real, view)) in home_screens() {
@@ -174,7 +205,16 @@ fn a_school_morning_out_through_her_door_and_home_again() {
             );
             assert_eq!(spot, Some(from), "{at}: through her door where she stood");
             let door = guest.closed_door().expect("her door");
-            assert_eq!((door.x, door.y), from, "{at}: her door where she went out");
+            let space = space_spot(&real, &view, Nook::Users, room::Side::Left);
+            assert_eq!(door.spot(), space, "{at}: her door in its space");
+            assert_eq!(
+                door.set(),
+                door::Set::Wall {
+                    side: room::Side::Left,
+                    wall: 0
+                },
+                "{at}"
+            );
             // A while out: her door stands closed there, her things with
             // the lamp off and nothing on TV, and nothing else of hers.
             let out = now;
@@ -213,7 +253,7 @@ fn a_school_morning_out_through_her_door_and_home_again() {
                     continue;
                 }
                 let osaka = &visit_of(&guest).osaka;
-                assert_eq!((osaka.x, osaka.y), from, "{at}: out of her door");
+                assert_eq!((osaka.x, osaka.y), space, "{at}: out of her door");
                 // Her door never blinks away as she comes out of it.
                 assert!(
                     osaka.door(now).is_some() || !osaka.hidden(now),
@@ -355,7 +395,7 @@ fn a_visitor_at_school_time_sees_her_home_and_a_key_rains_it_out() {
                 guest.advance(key + t);
                 let frame = paint(&mut guest, &real, &view, key + t);
                 assert!(
-                    box_changed(&frame, &real, (door.x, door.y)) > 0,
+                    box_changed(&frame, &real, door.spot()) > 0,
                     "{at}: her door blinked out {t} ms in"
                 );
             }
@@ -368,12 +408,13 @@ fn a_visitor_at_school_time_sees_her_home_and_a_key_rains_it_out() {
 
 /// Whatever takes her empty home off the screen while she's out — a
 /// visitor's key, an overlay, a frame too small, visits switched off —
-/// her door's spot is kept: when it shows again, her door stands where
-/// she went out. A frame too small doesn't spin the shell (it waits for
-/// the next quiet, as a visit does); visits switched off take it at once
-/// with no rain; an overlay rains it out.
+/// when it shows again, her door stands in its space as before (on the
+/// wordy screen, drawn over the users listed there). A frame too small
+/// doesn't spin the shell (it waits for the next quiet, as a visit does);
+/// visits switched off take it at once with no rain; an overlay rains it
+/// out.
 #[test]
-fn her_door_stays_where_she_left_whatever_takes_her_home_away() {
+fn her_door_stays_in_its_space_whatever_takes_her_home_away() {
     let (w, h) = (50, 15);
     let small = rooms(w, h);
     let small_view = IdleView {
@@ -383,15 +424,9 @@ fn her_door_stays_where_she_left_whatever_takes_her_home_away() {
     for (name, (real, view)) in home_screens() {
         for graphics in [false, true] {
             let (mut guest, mut now, door) = out_to_school(&real, &view, graphics);
-            let middle = {
-                let terrain = Terrain::read(&real, &view.protected, graphics);
-                door_spot(&terrain, middle((real.area.width, real.area.height)))
-            };
-            assert_ne!(
-                Some((door.x, door.y)),
-                middle,
-                "{name}: a door off the middle"
-            );
+            let space = space_spot(&real, &view, Nook::Users, room::Side::Left);
+            assert_eq!(door.spot(), space, "{name}: in its space");
+            assert!(door.wall().is_some(), "{name}: in its wall");
             for how in ["key", "overlay", "too small", "visits off"] {
                 let at = format!("{name} graphics={graphics} {how}");
                 now += 100;
@@ -445,14 +480,9 @@ fn her_door_stays_where_she_left_whatever_takes_her_home_away() {
                     }
                 }
                 assert!(empty_of(&guest).is_none(), "{at}: gone");
-                assert_eq!(
-                    guest.closed_door(),
-                    Some(door),
-                    "{at}: her door's spot kept"
-                );
                 now = until_away(&mut guest, &real, &view, now);
                 let frame = paint(&mut guest, &real, &view, now);
-                assert_eq!(guest.closed_door(), Some(door), "{at}: where she went out");
+                assert_eq!(guest.closed_door(), Some(door), "{at}: in its space again");
                 let empty = empty_of(&guest).expect("away");
                 assert!(door_shows(empty, &frame, &real, door), "{at}");
             }
@@ -460,16 +490,24 @@ fn her_door_stays_where_she_left_whatever_takes_her_home_away() {
     }
 }
 
-/// A resize that leaves her door's spot off every floor moves it to the
-/// nearest spot where she'd fit; it stays there after.
+/// A resize moves her door to its space on the new frame (on
+/// [`wordy_rooms`], Users' left wall, saved on [`home_screen`]); a
+/// protected strip over that space then moves it to the strict
+/// fallback's spot (the nearest floor spot where her box meets no piece,
+/// checked against the predicate written out again, `door_floor`), and
+/// it stays there after, over the text as much as anywhere.
 #[test]
-fn a_resize_moves_her_door_to_the_nearest_spot_it_fits() {
+fn a_resize_moves_her_door_to_its_space_or_the_nearest_clear_spot() {
     let (w, h) = (100, 30);
     let other = wordy_rooms(w, h);
     let other_view = IdleView {
         nooks: nooks(w, h),
         ..view(bottom_strip(w, h))
     };
+    let space = space_spot(&other, &other_view, Nook::Users, room::Side::Left);
+    let guard = Rect::new(51, 8, 6, 5);
+    let mut guarded = other_view.clone();
+    guarded.protected.push(guard);
     let (real, view) = home_screen();
     for graphics in [false, true] {
         let at = format!("graphics={graphics}");
@@ -478,21 +516,50 @@ fn a_resize_moves_her_door_to_the_nearest_spot_it_fits() {
         guest.advance(now);
         let frame = paint(&mut guest, &other, &other_view, now);
         let moved = guest.closed_door().expect("her door");
+        assert_ne!(moved.spot(), door.spot(), "{at}: the screen changed");
+        assert_eq!(moved.spot(), space, "{at}: in its space on the new frame");
+        assert!(moved.wall().is_some(), "{at}");
         let empty = empty_of(&guest).expect("away");
-        let mut fit = Terrain::read(&other, &other_view.protected, graphics);
-        fit.furnish(empty.shown.iter().map(Shown::cover));
-        assert!(!door_fits(&fit, (door.x, door.y)), "{at}: the spot went");
-        assert_eq!(
-            Some((moved.x, moved.y)),
-            door_spot(&fit, (door.x, door.y)),
-            "{at}: the nearest spot that fits"
-        );
-        assert_eq!(moved.facing, door.facing, "{at}");
         assert!(door_shows(empty, &frame, &other, moved), "{at}");
+        // Its space protected: the strict fallback.
         now += 1000;
         guest.advance(now);
-        paint(&mut guest, &other, &other_view, now);
-        assert_eq!(guest.closed_door(), Some(moved), "{at}: and stays");
+        let frame = paint(&mut guest, &other, &guarded, now);
+        let fell = guest.closed_door().expect("her door");
+        assert_eq!(
+            fell.set(),
+            door::Set::Floor(door::Fallback::Protected),
+            "{at}"
+        );
+        let covers: Vec<Rect> = guest
+            .ledger
+            .home
+            .laid_and_shifted(&guarded.nooks)
+            .shown
+            .iter()
+            .map(Shown::cover)
+            .collect();
+        assert!(
+            door_floor(
+                &other,
+                &guarded.protected,
+                &covers,
+                guarded.chat,
+                fell.spot()
+            ),
+            "{at}: {fell:?}"
+        );
+        assert_eq!(
+            Some(fell.spot()),
+            nearest_door_floor(&other, &guarded.protected, &covers, guarded.chat, space),
+            "{at}: the nearest clear spot"
+        );
+        let empty = empty_of(&guest).expect("away");
+        assert!(door_shows(empty, &frame, &other, fell), "{at}");
+        now += 1000;
+        guest.advance(now);
+        paint(&mut guest, &other, &guarded, now);
+        assert_eq!(guest.closed_door(), Some(fell), "{at}: and stays");
     }
 }
 
@@ -521,7 +588,7 @@ fn a_residents_focused_pane_keeps_her_home_out_while_shes_away() {
             };
             let before = paint(&mut guest, &real, &quiet, now);
             let there = hers(&before);
-            doors_pane |= osaka::box_meets(pane, (door.x, door.y));
+            doors_pane |= osaka::box_meets(pane, door.spot());
             let focused = resident_view(w, h, Some(pane));
             let landed = now + 1;
             now = landed;
@@ -572,8 +639,10 @@ fn resident_at(graphics: bool) -> Guest {
     guest
 }
 
-/// A focused pane that takes in only part of her door's box keeps all
-/// of it away: no half a door outside the pane.
+/// A focused pane that takes in only part of her door (its drawn cells
+/// from its middle column rightwards) keeps all of it away: no half a
+/// door outside the pane, and it never moves meanwhile; left alone, it's
+/// back in its space.
 #[test]
 fn a_focused_pane_across_her_door_keeps_all_of_it_away() {
     let (w, h) = (100, 30);
@@ -584,13 +653,20 @@ fn a_focused_pane_across_her_door_keeps_all_of_it_away() {
         let quiet = resident_view(w, h, None);
         let mut now = until_away(&mut guest, &real, &quiet, 0);
         let door = guest.closed_door().expect("her door");
-        // Her box from its middle column rightwards.
-        let focus = Rect::new(
-            door.x as u16,
-            (door.y - sprite::HEIGHT) as u16,
-            sprite::WIDTH as u16,
-            sprite::HEIGHT as u16 + 1,
-        );
+        assert!(door.wall().is_some(), "{at}: in its space");
+        // Her door's drawn cells from its middle column rightwards.
+        let drawn = &empty_of(&guest).expect("away").door.as_ref().unwrap().cells;
+        let right: Vec<(u16, u16)> = drawn
+            .iter()
+            .copied()
+            .filter(|&(x, _)| i32::from(x) >= door.spot().0)
+            .collect();
+        assert!(!right.is_empty(), "{at}: drawn");
+        let focus = right
+            .iter()
+            .map(|&(x, y)| Rect::new(x, y, 1, 1))
+            .reduce(|a, b| a.union(b))
+            .unwrap();
         let focused = resident_view(w, h, Some(focus));
         let covers: Vec<Rect> = empty_of(&guest)
             .expect("away")
@@ -612,7 +688,14 @@ fn a_focused_pane_across_her_door_keeps_all_of_it_away() {
             for &cell in &outside {
                 assert_eq!(frame.cell(cell), real.cell(cell), "{at}: {cell:?} at {now}");
             }
+            assert_eq!(guest.closed_door(), Some(door), "{at}: it never moves");
         }
+        now += 1000;
+        guest.advance(now);
+        let frame = paint(&mut guest, &real, &quiet, now);
+        assert_eq!(guest.closed_door(), Some(door), "{at}: back in its space");
+        let empty = empty_of(&guest).expect("away");
+        assert!(door_shows(empty, &frame, &real, door), "{at}: drawn again");
     }
 }
 
@@ -629,6 +712,9 @@ fn a_cold_start_in_school_hours() {
             for furnished in [true, false] {
                 let at = format!("{name} furnished={furnished} graphics={graphics}");
                 let pieces: &[(Furniture, Nook, u16)] = if furnished { &HOME } else { &[] };
+                // Furnished, her door stands in Users' left space (worked
+                // out from the nook alone), and she comes home out of it.
+                let space = space_spot(&real, &view, Nook::Users, room::Side::Left);
                 let mut guest = home_at(4, tue(12, 30), pieces, graphics);
                 let mut now = 0;
                 paint(&mut guest, &real, &view, now);
@@ -666,6 +752,17 @@ fn a_cold_start_in_school_hours() {
                             let empty = empty_of(&guest).expect("her home, empty");
                             let door = guest.closed_door().expect("her door");
                             assert!(door_shows(empty, &frame, &real, door), "{at}");
+                            assert_eq!(door.spot(), space, "{at}: in its space");
+                            assert!(
+                                matches!(
+                                    door.set(),
+                                    door::Set::Wall {
+                                        side: room::Side::Left,
+                                        ..
+                                    }
+                                ),
+                                "{at}: {door:?}"
+                            );
                         } else if !furnished {
                             assert!(matches!(guest.state, State::Absent), "{at}");
                             assert_eq!(frame, real, "{at}: nothing at all");
@@ -673,16 +770,21 @@ fn a_cold_start_in_school_hours() {
                     }
                 }
                 let mut home = false;
+                let mut first = None;
                 while !home {
                     assert!(now < home_time + 20_000, "{at}: never home");
                     shell_step(&mut guest, &real, &view, &mut now, true);
                     let osaka = &visit_of(&guest).osaka;
+                    first.get_or_insert((osaka.x, osaka.y));
                     assert!(
                         osaka.door(now).is_some() || !osaka.hidden(now),
                         "{at}: her door gone at {now}"
                     );
                     assert_ne!(osaka.act_name(), "Fall", "{at}: no drop from the sky");
                     home = says(osaka.appearance(now).2, mind::HOME);
+                }
+                if furnished {
+                    assert_eq!(first, Some(space), "{at}: home out of her door");
                 }
                 assert_eq!(guest.ledger.visits, 2, "{at}: her coming home is a visit");
             }
@@ -719,7 +821,7 @@ fn a_chat_line_while_shes_out_doesnt_stop_her_coming_home() {
                 }
                 assert!(chatted, "{at}");
                 assert!(
-                    matches!(guest.state, State::Arriving(How::Return(_), _))
+                    matches!(guest.state, State::Arriving(How::Return, _))
                         || matches!(&guest.state, State::Visiting(v) if v.osaka.act_name() == "Door"),
                     "{at}: she comes home out of her door"
                 );
@@ -760,7 +862,7 @@ fn her_coming_home_isnt_called_off_by_a_key_or_a_chat_line() {
                             .clamp(1, 1000);
                         assert!(now <= home_time, "{at}: no wakeup at 12:45");
                         guest.advance(now);
-                        if matches!(guest.state, State::Arriving(How::Return(_), _)) {
+                        if matches!(guest.state, State::Arriving(How::Return, _)) {
                             break;
                         }
                         paint(&mut guest, &real, &view, now);
@@ -820,7 +922,7 @@ fn busy_as_school_ends_she_comes_in_later_on_the_idle_gate() {
                     .clamp(1, 1000);
                 guest.advance(now);
                 assert!(
-                    !matches!(guest.state, State::Arriving(How::Return(_), _)),
+                    !matches!(guest.state, State::Arriving(How::Return, _)),
                     "{at}: home out of her door with a visitor at the keys"
                 );
                 if matches!(guest.state, State::Arriving(How::Idle, _)) {
@@ -1041,8 +1143,11 @@ fn rained_out_on_her_way_to_school_she_is_simply_gone() {
             assert_eq!(rng.0, Rng(77).0, "{at}: nothing drawn");
             assert!(visit.osaka.gone_out(now).is_some(), "{at}: out at once");
             guest.advance(now);
+            paint(&mut guest, &real, &view, now);
             let door = guest.closed_door().expect("her door");
-            assert_eq!((door.x, door.y), (x, y), "{at}: where she went out");
+            let space = space_spot(&real, &view, Nook::Users, room::Side::Left);
+            assert_eq!(door.spot(), space, "{at}: in its space");
+            let _ = (x, y);
         }
     }
 }
@@ -1349,8 +1454,37 @@ fn her_days_case_pulling_text_as_school_begins() {
     .unwrap_or_else(|e| panic!("{e}"));
 }
 
+/// [`her_days_never_touch_what_is_protected`]'s case from before her
+/// door was placed from her home (the door batch, step 3): on Tuesday at
+/// 08:12, 62×21, her bed on List, she went out of it as school began and
+/// her closed door stood on her bed. Both modes.
+#[test]
+fn her_days_case_out_of_her_bed_as_school_begins() {
+    for graphics in [false, true] {
+        let mut guest = Guest::restore(Ledger::new_at(61_518_700_694_217, tue(8, 12)));
+        guest.set_date(date(2026, 6, 17));
+        let owned = [(Furniture::ALL[2], 0, 369, false)];
+        assert_eq!(owned[0].0, Furniture::Bed);
+        let visited = long_visit_of(
+            guest,
+            graphics,
+            rooms_frame,
+            &[(62, 21)],
+            &[],
+            &[(28, 13)],
+            &[],
+            (0, 0, 1, 1),
+            &owned,
+            Run::default(),
+            120_000,
+        )
+        .unwrap_or_else(|e| panic!("graphics={graphics}: {e}"));
+        assert!(visited.away > 0, "graphics={graphics}: {visited:?}");
+    }
+}
+
 /// Whether a rain of hers paints any cell of her closed door at `door`.
-fn door_raining(guest: &Guest, door: DoorAt) -> bool {
+fn door_raining(guest: &Guest, door: door::DoorSpot) -> bool {
     closed(door).cells().any(|(x, y, _)| {
         let (Ok(x), Ok(y)) = (u16::try_from(x), u16::try_from(y)) else {
             return false;
@@ -1429,7 +1563,7 @@ fn an_errand_as_she_comes_in_from_her_empty_home_rains_her_door_out() {
                 now = home;
                 guest.advance(now);
                 assert!(
-                    matches!(guest.state, State::Arriving(How::Return(_), Some(_))),
+                    matches!(guest.state, State::Arriving(How::Return, Some(_))),
                     "{at}: home from school, from her home"
                 );
             } else {
@@ -1494,7 +1628,7 @@ fn home_from_school_with_nowhere_to_come_in_her_empty_home_rains_out() {
             assert!(now < home, "{at}: school ended already");
             guest.advance(home);
             assert!(
-                matches!(guest.state, State::Arriving(How::Return(_), Some(_))),
+                matches!(guest.state, State::Arriving(How::Return, Some(_))),
                 "{at}: home from school, from her home"
             );
             let area = if resized {
@@ -1526,5 +1660,1199 @@ fn home_from_school_with_nowhere_to_come_in_her_empty_home_rains_out() {
                 );
             }
         }
+    }
+}
+
+// ---- Her door at its space (door batch, step 3) ----
+
+/// Where her closed door stands while she's out, if it does: its floor
+/// spot (where she'd stand to go through it).
+fn door_spot_of(guest: &Guest) -> Option<(i32, i32)> {
+    guest.closed_door().map(door::DoorSpot::spot)
+}
+
+/// The box her closed door stands in while she's out, if it does.
+fn door_box_of(guest: &Guest) -> Option<Rect> {
+    door_spot_of(guest).and_then(|(x, y)| room::her_box(x, y))
+}
+
+/// Her one `item` on Users of [`rooms_frame`] at 100×30, a Tuesday at
+/// 08:12, she cued to each of `scenes` with it: in it as school begins
+/// (asserted), she goes out, and her closed door's box meets none of her
+/// pieces. Returns nothing; each case's own asserts say what failed.
+fn out_of_a_piece_at_school_time(item: Furniture, scenes: &[Scene]) {
+    let (real, view) = rooms_frame(100, 30);
+    for &scene in scenes {
+        for graphics in [false, true] {
+            let at = format!("{item:?} {scene:?} graphics={graphics}");
+            let mut guest = home_at(4, tue(8, 12), &[(item, Nook::Users, 300)], graphics);
+            let mut now = until_visiting(&mut guest, &real, &view, 0);
+            guest.cue(scene);
+            let school = real_of(&guest, now, tue(8, 15));
+            // At the last frame before 08:15: whether she's using it, and
+            // whether her box meets its cover.
+            let mut last_in = None;
+            while empty_of(&guest).is_none() {
+                assert!(now < school + 60_000, "{at}: never out");
+                shell_step(&mut guest, &real, &view, &mut now, true);
+                if let State::Visiting(visit) = &guest.state
+                    && now < school
+                {
+                    let osaka = &visit.osaka;
+                    let using = osaka
+                        .use_span()
+                        .is_some_and(|(seat, ..)| seat.piece == room::PieceRef::Real(item));
+                    let meets = visit
+                        .shown
+                        .iter()
+                        .find(|s| s.item == item && s.scrap.is_none())
+                        .is_some_and(|piece| {
+                            room::her_box(osaka.x, osaka.y)
+                                .is_some_and(|b| b.intersects(piece.cover()))
+                        });
+                    last_in = Some((using, meets));
+                }
+            }
+            assert_eq!(last_in, Some((true, true)), "{at}: in it as school began");
+            shell_step(&mut guest, &real, &view, &mut now, true);
+            let empty = empty_of(&guest).expect("out");
+            let door = door_box_of(&guest).unwrap_or_else(|| panic!("{at}: her door"));
+            for piece in &empty.shown {
+                assert!(
+                    !piece.cover().intersects(door),
+                    "{at}: her door {door:?} on her {:?} {:?}",
+                    piece.item,
+                    piece.cover()
+                );
+            }
+            // In its space: Users' right wall, at the screen's edge (her
+            // piece's strip), worked out from the nook alone.
+            let space = space_spot(&real, &view, Nook::Users, room::Side::Right);
+            let spot = guest.closed_door().expect("her door");
+            assert_eq!(spot.spot(), space, "{at}: in its space");
+            assert_eq!(
+                spot.set(),
+                door::Set::Wall {
+                    side: room::Side::Right,
+                    wall: 99
+                },
+                "{at}"
+            );
+            // At 12:45 she comes out of it.
+            guest.skip_clock(now);
+            let back = now;
+            loop {
+                assert!(now < back + 20_000, "{at}: never home");
+                shell_step(&mut guest, &real, &view, &mut now, true);
+                if let State::Visiting(visit) = &guest.state {
+                    let osaka = &visit.osaka;
+                    assert_eq!((osaka.x, osaka.y), space, "{at}: out of her door");
+                    break;
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn out_of_her_bed_at_school_time_her_door_misses_it() {
+    out_of_a_piece_at_school_time(Furniture::Bed, &[Scene::Sleep]);
+}
+
+#[test]
+fn out_of_her_sofa_at_school_time_her_door_misses_it() {
+    out_of_a_piece_at_school_time(Furniture::Sofa, &[Scene::Lounge, Scene::Nap]);
+}
+
+#[test]
+fn out_of_her_desk_at_school_time_her_door_misses_it() {
+    out_of_a_piece_at_school_time(Furniture::Desk, &[Scene::Homework]);
+}
+
+/// Her door is never in the chat pane: set down on the chat pane's floor
+/// ([`chat_apart`]: the tall left box) a moment before 08:15, she goes
+/// out, and her closed door stands clear of it. A guard against a door
+/// placed from her feet (red before the door batch's step 3, when the
+/// door stood where she set off); her door no longer reads her feet, so
+/// no mutant of `door_place` turns it red.
+#[test]
+fn her_door_is_never_in_the_chat() {
+    let (real, view) = chat_apart(100, 30);
+    let chat_floor = i32::from(view.chat.bottom()) - 1;
+    for graphics in [false, true] {
+        let at = format!("graphics={graphics}");
+        let mut guest = home_at(
+            4,
+            tue(8, 14),
+            &[(Furniture::Sofa, Nook::Users, 300)],
+            graphics,
+        );
+        let mut now = until_visiting(&mut guest, &real, &view, 0);
+        let school = real_of(&guest, now, tue(8, 15));
+        // 08:14:59 by her clock.
+        let placed = school - 1000 / CLOCK_SPEED;
+        while now < placed {
+            now += (placed - now).min(500);
+            guest.advance(now);
+            paint(&mut guest, &real, &view, now);
+        }
+        let State::Visiting(visit) = &mut guest.state else {
+            panic!("{at}: visiting");
+        };
+        visit.osaka.place(25, chat_floor, now);
+        let her = room::her_box(25, chat_floor).unwrap();
+        assert!(her.intersects(view.chat), "{at}: she stands in the chat");
+        paint(&mut guest, &real, &view, now);
+        // Where she stood at the last visiting frame before 08:15.
+        let mut last = Some(her);
+        while empty_of(&guest).is_none() {
+            assert!(now < school + 60_000, "{at}: never out");
+            shell_step(&mut guest, &real, &view, &mut now, true);
+            if let State::Visiting(visit) = &guest.state
+                && now < school
+            {
+                last = room::her_box(visit.osaka.x, visit.osaka.y);
+            }
+        }
+        assert!(
+            last.is_some_and(|b| b.intersects(view.chat)),
+            "{at}: in the chat as school began: {last:?}"
+        );
+        shell_step(&mut guest, &real, &view, &mut now, true);
+        let door = door_box_of(&guest).unwrap_or_else(|| panic!("{at}: her door"));
+        assert!(
+            !door.intersects(view.chat),
+            "{at}: her door {door:?} in the chat {:?}",
+            view.chat
+        );
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(dessplay_core::test_support::proptest_cases(16)))]
+
+    /// Whatever she's in as school begins (a bed, a sofa, a desk, cued),
+    /// with a lamp, a fridge or a window besides, on her rooms or with
+    /// the chat apart: while she's out, her closed door meets none of her
+    /// pieces (checked in [`long_visit_of`] on every frame her home
+    /// stands empty), and she does go out.
+    #[test]
+    fn her_school_mornings_never_put_her_door_on_a_piece(
+        seed in any::<u64>(),
+        day in 1u64..5,
+        minute in 12u16..=14,
+        graphics in any::<bool>(),
+        main in 0usize..4,
+        pane in 1usize..3,
+        along in 0u16..=1000,
+        left in any::<bool>(),
+        extra in proptest::option::of((0usize..3, 1usize..3, 0u16..=1000)),
+        apart in any::<bool>(),
+        size in (70u16..130, 20u16..45),
+        span in 60_000u64..=120_000,
+    ) {
+        let (item, scene) = [
+            (Furniture::Bed, Scene::Sleep),
+            (Furniture::Sofa, Scene::Lounge),
+            (Furniture::Sofa, Scene::Nap),
+            (Furniture::Desk, Scene::Homework),
+        ][main];
+        let mut owned = vec![(item, pane, along, left)];
+        if let Some((more, at, along)) = extra {
+            let more = [Furniture::Lamp, Furniture::Fridge, Furniture::Window][more];
+            owned.push((more, at, along, false));
+        }
+        let mut guest = Guest::restore(Ledger::new_at(seed, routine::GameTime { day, h: 8, m: minute }));
+        guest.set_date(date(2026, 6, 17));
+        let frame = if apart { chat_apart } else { rooms_frame };
+        let visited = long_visit_of(
+            guest,
+            graphics,
+            frame,
+            &[size],
+            &[],
+            &[],
+            &[],
+            (0, 0, 1, 1),
+            &owned,
+            Run {
+                cue: Some(scene),
+                out_every: Some(1000),
+            },
+            span,
+        )?;
+        prop_assert!(visited.away > 0, "never out: {:?}", visited);
+    }
+}
+
+/// [`her_school_mornings_never_put_her_door_on_a_piece`]'s deterministic
+/// companions, where its random homes seldom reach: (a) on her rooms,
+/// out of her sofa, her door drawn in its space; (b) on chat case (i),
+/// her pieces filling the space ([`FULL_SPACE_HOME`]), her door drawn at
+/// the fallback (the space yields), meeting none of them (both checked
+/// on every frame by [`long_visit_of`]). Both modes.
+#[test]
+fn her_school_mornings_put_her_door_in_its_space_or_clear_of_her_pieces() {
+    let full: Vec<(Furniture, usize, u16, bool)> = FULL_SPACE_HOME
+        .iter()
+        .map(|&(item, _, along)| (item, 1, along, false))
+        .collect();
+    for graphics in [false, true] {
+        for (name, full_space) in [("rooms", false), ("(i)", true)] {
+            let at = format!("{name} graphics={graphics}");
+            let mut guest = Guest::restore(Ledger::new_at(
+                4,
+                routine::GameTime {
+                    day: 2,
+                    h: 8,
+                    m: 13,
+                },
+            ));
+            guest.set_date(date(2026, 6, 17));
+            let how = Run {
+                cue: Some(Scene::Lounge),
+                out_every: Some(1000),
+            };
+            let visited = if full_space {
+                long_visit_of(
+                    guest,
+                    graphics,
+                    |_, _| chat_by_a_full_space(),
+                    &[(100, 30)],
+                    &[],
+                    &[],
+                    &[],
+                    (0, 0, 1, 1),
+                    &full,
+                    how,
+                    90_000,
+                )
+            } else {
+                long_visit_of(
+                    guest,
+                    graphics,
+                    rooms_frame,
+                    &[(100, 30)],
+                    &[],
+                    &[],
+                    &[],
+                    (0, 0, 1, 1),
+                    &[(Furniture::Sofa, 1, 300, false)],
+                    how,
+                    90_000,
+                )
+            }
+            .unwrap_or_else(|e| panic!("{at}: {e}"));
+            if full_space {
+                assert!(visited.floors > 0, "{at}: {visited:?}");
+            } else {
+                assert!(visited.walls > 0, "{at}: {visited:?}");
+            }
+        }
+    }
+}
+
+/// Her home (`pieces`) standing empty at Tuesday 09:00 on `view` of
+/// `real`, painted a few frames: the guest, and when.
+fn away_on(
+    real: &Buffer,
+    view: &IdleView,
+    pieces: &[(Furniture, Nook, u16)],
+    graphics: bool,
+) -> (Guest, u64) {
+    let mut guest = home_at(4, tue(9, 0), pieces, graphics);
+    let now = until_away(&mut guest, real, view, 0);
+    (guest, now)
+}
+
+/// From `now`, on to 12:45 and her coming home: where she first stands,
+/// in, if she comes in within 20 s of it.
+fn home_at_1245(guest: &mut Guest, real: &Buffer, view: &IdleView, now: u64) -> Option<(i32, i32)> {
+    came_home_at_1245(guest, real, view, now).map(|(spot, _)| spot)
+}
+
+/// [`home_at_1245`], and which way she faces as she first stands there.
+fn came_home_at_1245(
+    guest: &mut Guest,
+    real: &Buffer,
+    view: &IdleView,
+    mut now: u64,
+) -> Option<((i32, i32), sprite::Facing)> {
+    let home = real_of(guest, now, tue(12, 45));
+    guest.skip_clock(now);
+    while now < home + 20_000 {
+        shell_step(guest, real, view, &mut now, true);
+        if let State::Visiting(visit) = &guest.state {
+            return Some(((visit.osaka.x, visit.osaka.y), visit.osaka.facing));
+        }
+    }
+    None
+}
+
+/// The laid covers of her home on `view`'s nooks: what her door must
+/// meet none of.
+fn laid_covers(guest: &Guest, view: &IdleView) -> Vec<Rect> {
+    guest
+        .ledger
+        .home
+        .laid_and_shifted(&view.nooks)
+        .shown
+        .iter()
+        .map(Shown::cover)
+        .collect()
+}
+
+/// Her door is never in the chat pane, on the layouts built for it
+/// (door batch, T6), each precondition asserted by the fixture's own
+/// test in tests.rs: (i) her pieces fill her door's space, and the
+/// nearest floor to it is the chat's: the fallback passes it by for
+/// List's; (ii) every edge wall's space meets the chat: an inner wall's
+/// space; (iii) no wall of hers outside the chat: the face-on fallback
+/// outside it. While she's out, and as she comes home at 12:45 (out of
+/// that door). Both modes.
+#[test]
+fn her_door_is_never_in_the_chat_on_the_chat_cases() {
+    let sofa = [(Furniture::Sofa, Nook::Users, 500)];
+    type Case<'a> = (&'a str, (Buffer, IdleView), &'a [(Furniture, Nook, u16)]);
+    let cases: [Case; 3] = [
+        ("(i)", chat_by_a_full_space(), &FULL_SPACE_HOME),
+        ("(ii)", chat_over_every_edge_space(), &sofa),
+        ("(iii)", chat_over_every_space(), &sofa),
+    ];
+    for (name, (real, view), pieces) in cases {
+        for graphics in [false, true] {
+            let at = format!("{name} graphics={graphics}");
+            let (mut guest, mut now) = away_on(&real, &view, pieces, graphics);
+            now += 500;
+            guest.advance(now);
+            let frame = paint(&mut guest, &real, &view, now);
+            let door = guest
+                .closed_door()
+                .unwrap_or_else(|| panic!("{at}: her door"));
+            let rect = door.rect().unwrap();
+            assert!(!rect.intersects(view.chat), "{at}: {door:?} in the chat");
+            let covers = laid_covers(&guest, &view);
+            match name {
+                "(i)" => {
+                    // OPEN QUESTION (i) (door-notes, step 3): this spot is
+                    // (67, 26), her box over List's right border (column
+                    // 69): D4's fallback reads no line above the floor.
+                    // If the user has a face-on door refuse a pane's `│`,
+                    // `door_floor` and this spot change with it.
+                    assert_eq!(door.spot(), (67, 26), "{at}: across List's wall");
+                    assert_eq!(door.set(), door::Set::Floor(door::Fallback::Yield), "{at}");
+                    let space = space_spot(&real, &view, Nook::Users, room::Side::Right);
+                    assert_eq!(
+                        Some(door.spot()),
+                        nearest_door_floor(&real, &view.protected, &covers, view.chat, space),
+                        "{at}: the nearest clear floor outside the chat"
+                    );
+                }
+                "(ii)" => {
+                    let space = space_spot(&real, &view, Nook::Users, room::Side::Right);
+                    assert_eq!(door.spot(), space, "{at}: an inner wall's space");
+                    assert!(door.wall().is_some(), "{at}");
+                }
+                _ => {
+                    assert_eq!(door.set(), door::Set::Floor(door::Fallback::NoWall), "{at}");
+                    assert!(
+                        door_floor(&real, &view.protected, &covers, view.chat, door.spot()),
+                        "{at}: {door:?}"
+                    );
+                }
+            }
+            let empty = empty_of(&guest).expect("away");
+            assert!(door_shows(empty, &frame, &real, door), "{at}: drawn");
+            let came = home_at_1245(&mut guest, &real, &view, now);
+            assert_eq!(came, Some(door.spot()), "{at}: home out of it");
+        }
+    }
+}
+
+/// A saved wall whose space comes to lie under the chat pane (a pane
+/// dragged over it) isn't chosen again: while the chat meets it, her
+/// door falls back clear of the chat (`Fallback::Chat`); with the chat
+/// gone again, it's back in its space.
+#[test]
+fn her_doors_space_under_the_chat_falls_back_and_comes_back() {
+    let (real, view) = rooms_frame(100, 30);
+    let pieces = [(Furniture::Sofa, Nook::Users, 300)];
+    let space = space_spot(&real, &view, Nook::Users, room::Side::Right);
+    let over = IdleView {
+        chat: Rect::new(80, 0, 20, 13),
+        ..view.clone()
+    };
+    for graphics in [false, true] {
+        let at = format!("graphics={graphics}");
+        let (mut guest, mut now) = away_on(&real, &view, &pieces, graphics);
+        let wall = guest.ledger.home.door;
+        assert_eq!(
+            guest.closed_door().map(door::DoorSpot::spot),
+            Some(space),
+            "{at}"
+        );
+        now += 500;
+        guest.advance(now);
+        paint(&mut guest, &real, &over, now);
+        let fell = guest.closed_door().expect("her door");
+        assert_eq!(fell.set(), door::Set::Floor(door::Fallback::Chat), "{at}");
+        assert!(
+            !fell.rect().unwrap().intersects(over.chat),
+            "{at}: {fell:?}"
+        );
+        assert_eq!(guest.ledger.home.door, wall, "{at}: not chosen again");
+        now += 500;
+        guest.advance(now);
+        paint(&mut guest, &real, &view, now);
+        assert_eq!(
+            guest.closed_door().map(door::DoorSpot::spot),
+            Some(space),
+            "{at}: back"
+        );
+    }
+}
+
+/// With no door anywhere outside the chat (chat case (iv): her one nook
+/// is the chat pane, and there's no other floor), no door is drawn while
+/// she's out, and at 12:45 she doesn't come in inside the chat: there's
+/// nowhere calm outside it, so she waits (D5 as written; where she
+/// should come home here is the user's call, door-notes step 1).
+#[test]
+fn with_no_door_anywhere_she_never_comes_in_inside_the_chat() {
+    let (real, view) = chat_over_every_floor();
+    let pieces = [(Furniture::Sofa, Nook::Users, 500)];
+    for graphics in [false, true] {
+        let at = format!("graphics={graphics}");
+        let (mut guest, mut now) = away_on(&real, &view, &pieces, graphics);
+        now += 500;
+        guest.advance(now);
+        paint(&mut guest, &real, &view, now);
+        let empty = empty_of(&guest).expect("away");
+        assert!(empty.door.is_none(), "{at}: {:?}", empty.door);
+        assert!(empty.image.is_none(), "{at}: no door's image");
+        // School's out: with nowhere to come in, her coming home is
+        // called off (she comes in later on the idle gate, as any
+        // visitor, wherever she lands).
+        guest.skip_clock(now);
+        shell_step(&mut guest, &real, &view, &mut now, true);
+        assert!(
+            !matches!(guest.state, State::Visiting(_)),
+            "{at}: home out of a door at {:?}",
+            visit_of(&guest).osaka.act_name()
+        );
+    }
+}
+
+/// On a short terminal (the bundled layout at 18, 19, 20 or 22 rows,
+/// her door's strip too short for its space: the precondition, every
+/// frame) her door stands at the strict fallback meeting none of her
+/// pieces and clear of the chat, or nowhere (and her coming home waits);
+/// at 12:45 she comes home out of it. The fallback is `Short`, or
+/// `NoWall` once her pieces, not fitting her door's strip, have moved
+/// and taken her door's wall with them to a strip with no wall that
+/// qualifies (step 2's `move_off`). A face-on door faces out toward the
+/// nearer edge of the screen, and she comes in facing into the room.
+/// Returns how many frames showed her door at the fallback with her
+/// door's wall short (the property's own non-vacuity).
+fn short_terminal(
+    width: u16,
+    height: u16,
+    graphics: bool,
+    owned: &[(Furniture, Nook, u16)],
+) -> usize {
+    let at = format!("{width}x{height} graphics={graphics} {owned:?}");
+    let (real, view) = real_frame(&mut real_ui(), width, height);
+    let mut guest = home_at(4, tue(9, 0), owned, graphics);
+    guest.ledger.home.door = Some(room::DoorWall {
+        strip: room::Strip::Bottom(Nook::Users),
+        side: room::Side::Right,
+    });
+    let mut now = until_away(&mut guest, &real, &view, 0);
+    let mut door = None;
+    let mut fell = 0;
+    for _ in 0..10 {
+        now += 1000;
+        guest.advance(now);
+        paint(&mut guest, &real, &view, now);
+        let plan = room::Plan {
+            nooks: &view.nooks,
+            chat: view.chat,
+            screen: real.area,
+        };
+        // Short: her door's wall (wherever her pieces took it) has no
+        // space it keeps. (At 22 rows the List pane has: her pieces,
+        // not fitting her door's strip, may move there with her door.)
+        let home = &guest.ledger.home;
+        let short = home.wall(plan).is_none_or(|wall| {
+            let doored = room::Home {
+                door: Some(wall),
+                ..home.clone()
+            };
+            let strips = doored.extents(&view.nooks);
+            let strip = strips.iter().find(|p| p.strip == wall.strip);
+            strip.is_none_or(|p| p.space.is_none_or(|s| !s.kept))
+        });
+        let covers = laid_covers(&guest, &view);
+        door = guest.closed_door();
+        if let Some(door) = door {
+            if short {
+                assert!(
+                    matches!(
+                        door.set(),
+                        door::Set::Floor(door::Fallback::Short | door::Fallback::NoWall)
+                    ),
+                    "{at}: {door:?}"
+                );
+                fell += 1;
+            }
+            if door.wall().is_none() {
+                let (x, _) = door.spot();
+                let nearer = if 2 * x < i32::from(width) {
+                    sprite::Facing::Left
+                } else {
+                    sprite::Facing::Right
+                };
+                assert_eq!(door.out(), nearer, "{at}: {door:?} out to the nearer edge");
+            }
+            let rect = door.rect().unwrap();
+            assert!(!covers.iter().any(|c| c.intersects(rect)), "{at}: {door:?}");
+            assert!(!rect.intersects(view.chat), "{at}: {door:?}");
+        }
+    }
+    let came = came_home_at_1245(&mut guest, &real, &view, now);
+    match door {
+        Some(door) => assert_eq!(
+            came,
+            Some((door.spot(), door.into_room())),
+            "{at}: home out of it, into the room"
+        ),
+        // No door: if she comes home at all, it isn't out of a door in
+        // a wall.
+        None => {
+            if came.is_some() {
+                let visit = visit_of(&guest);
+                assert!(
+                    visit.door.is_none_or(|d| d.wall().is_none()),
+                    "{at}: {:?}",
+                    visit.door
+                );
+            }
+        }
+    }
+    fell
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(dessplay_core::test_support::proptest_cases(16)))]
+
+    #[test]
+    fn on_a_short_terminal_her_door_falls_back_clear_of_every_piece(
+        height in prop::sample::select(vec![18u16, 19, 20, 22]),
+        width in 80u16..=129,
+        graphics in any::<bool>(),
+        items in proptest::sample::subsequence(
+            vec![
+                Furniture::Sofa,
+                Furniture::Tv,
+                Furniture::Lamp,
+                Furniture::Fridge,
+                Furniture::Bed,
+                Furniture::Desk,
+            ],
+            1..4,
+        ),
+        places in proptest::collection::vec((0usize..2, 0u16..=1000), 3),
+    ) {
+        let owned: Vec<(Furniture, Nook, u16)> = items
+            .into_iter()
+            .zip(places)
+            .map(|(item, (nook, x))| (item, [Nook::Users, Nook::Playlist][nook], x))
+            .collect();
+        // Only a case with her door at the fallback for a short wall
+        // says anything (at 22 rows List may take her pieces and door).
+        prop_assume!(short_terminal(width, height, graphics, &owned) > 0);
+    }
+}
+
+/// [`on_a_short_terminal_her_door_falls_back_clear_of_every_piece`]'s
+/// non-vacuity: on the bundled layout at 100×20 her door does stand
+/// somewhere while she's out (the fallback, `Short`).
+#[test]
+fn on_a_short_terminal_her_door_does_stand() {
+    let (real, view) = real_frame(&mut real_ui(), 100, 20);
+    for graphics in [false, true] {
+        let mut guest = home_at(
+            4,
+            tue(9, 0),
+            &[(Furniture::Sofa, Nook::Users, 300)],
+            graphics,
+        );
+        guest.ledger.home.door = Some(room::DoorWall {
+            strip: room::Strip::Bottom(Nook::Users),
+            side: room::Side::Right,
+        });
+        let now = until_away(&mut guest, &real, &view, 0);
+        paint(&mut guest, &real, &view, now);
+        let door = guest.closed_door().expect("her door");
+        assert_eq!(
+            door.set(),
+            door::Set::Floor(door::Fallback::Short),
+            "graphics={graphics}"
+        );
+        let fell = short_terminal(100, 20, graphics, &[(Furniture::Sofa, Nook::Users, 300)]);
+        assert!(fell > 0, "graphics={graphics}: {fell}");
+    }
+}
+
+/// Her fallback door (on a short terminal, as above) never hops with the
+/// text in a pane: text written into its box and out again, the spot is
+/// the same every frame, and it's drawn over the text. Both modes.
+#[test]
+fn her_fallback_door_doesnt_hop_with_pane_text() {
+    let (quiet, view) = real_frame(&mut real_ui(), 100, 20);
+    for graphics in [false, true] {
+        let at = format!("graphics={graphics}");
+        let mut guest = home_at(
+            4,
+            tue(9, 0),
+            &[(Furniture::Sofa, Nook::Users, 300)],
+            graphics,
+        );
+        guest.ledger.home.door = Some(room::DoorWall {
+            strip: room::Strip::Bottom(Nook::Users),
+            side: room::Side::Right,
+        });
+        let mut now = until_away(&mut guest, &quiet, &view, 0);
+        paint(&mut guest, &quiet, &view, now);
+        let door = guest.closed_door().expect("her door");
+        assert!(door.wall().is_none(), "{at}: the fallback");
+        let rect = door.rect().unwrap();
+        let mut wordy = quiet.clone();
+        for y in rect.y..rect.bottom() - 1 {
+            wordy.set_string(rect.x, y, "words", Style::new());
+        }
+        for (i, real) in [&wordy, &quiet, &wordy, &quiet].into_iter().enumerate() {
+            now += 1000;
+            guest.advance(now);
+            let frame = paint(&mut guest, real, &view, now);
+            assert_eq!(guest.closed_door(), Some(door), "{at}: frame {i}");
+            let empty = empty_of(&guest).expect("away");
+            assert!(
+                door_shows(empty, &frame, real, door),
+                "{at}: drawn, frame {i}"
+            );
+        }
+    }
+}
+
+/// Text written into her door's space while she's out: her door stands
+/// at the same spot, drawn over it (the user's answer, door batch). On
+/// [`home_screen`], both modes.
+#[test]
+fn her_door_stands_over_text_and_keeps_its_spot() {
+    let (quiet, view) = home_screen();
+    for graphics in [false, true] {
+        let at = format!("graphics={graphics}");
+        let (mut guest, mut now, door) = out_to_school(&quiet, &view, graphics);
+        assert!(door.wall().is_some(), "{at}: in its space");
+        let rect = door.rect().unwrap();
+        let mut wordy = quiet.clone();
+        for y in rect.y..rect.bottom() - 1 {
+            wordy.set_string(rect.x, y, "texts", Style::new());
+        }
+        now += 1000;
+        guest.advance(now);
+        let frame = paint(&mut guest, &wordy, &view, now);
+        assert_eq!(guest.closed_door(), Some(door), "{at}: the same spot");
+        let empty = empty_of(&guest).expect("away");
+        assert!(
+            !empty.door.as_ref().unwrap().cells.is_empty(),
+            "{at}: drawn"
+        );
+        assert!(
+            door_shows(empty, &frame, &wordy, door),
+            "{at}: over the text"
+        );
+    }
+}
+
+/// With her door's pane focused and in use (a resident's), at 12:45 she
+/// neither comes out inside it nor walks into it: her door falls back
+/// outside the pane (`Fallback::Protected`), and she comes home out of
+/// that; the visit's own door is the same fallback.
+#[test]
+fn with_her_doors_pane_focused_she_neither_comes_out_nor_walks_into_it() {
+    let (w, h) = (100, 30);
+    let real = wordy_rooms(w, h);
+    let users = nooks(w, h)[1].1;
+    let focused = resident_view(w, h, Some(users));
+    for graphics in [false, true] {
+        let at = format!("graphics={graphics}");
+        let mut guest = resident_at(graphics);
+        let quiet = resident_view(w, h, None);
+        let now = until_away(&mut guest, &real, &quiet, 0);
+        let space = guest.closed_door().expect("her door");
+        assert!(space.wall().is_some(), "{at}: in its space");
+        assert!(space.rect().unwrap().intersects(users), "{at}: in Users");
+        let came = home_at_1245(&mut guest, &real, &focused, now).expect("home");
+        assert!(
+            !osaka::box_meets(users, came),
+            "{at}: came out in it at {came:?}"
+        );
+        let visit = visit_of(&guest);
+        let door = visit.door.expect("her door");
+        assert_eq!(
+            door.set(),
+            door::Set::Floor(door::Fallback::Protected),
+            "{at}"
+        );
+        assert!(!door.rect().unwrap().intersects(users), "{at}: {door:?}");
+        assert_eq!(came, door.spot(), "{at}: out of her door");
+    }
+}
+
+/// What she made (a scrap) or the place kept for the piece in her pocket
+/// in her door's space: it falls back (`Fallback::Blocked`). She never
+/// builds anything in the space, and a made piece the space comes to
+/// meet falls apart (its stand refused). On [`rooms`] at 100×30, her
+/// sofa on Users (her door's space at its right wall, 93..=98).
+#[test]
+fn a_scrap_in_her_door_space_makes_it_fall_back() {
+    let (real, view) = rooms_frame(100, 30);
+    let mut home = room::Home::default();
+    assert!(home.add(room::Prop::new(
+        Furniture::Sofa,
+        Nook::Users,
+        300,
+        sprite::Facing::Right
+    )));
+    let plan = room::Plan {
+        nooks: &view.nooks,
+        chat: view.chat,
+        screen: real.area,
+    };
+    home.layout(&view.nooks);
+    home.settle_door(plan);
+    let laid = home.laid_and_shifted(&view.nooks).shown;
+    let space = Rect::new(93, 8, 6, 5);
+    let scrap = Rect::new(93, 10, 3, 3);
+    for graphics in [false, true] {
+        let at = format!("graphics={graphics}");
+        let ground = Terrain::read(&real, &view.protected, graphics);
+        let clear = door::door_place(
+            &home,
+            plan,
+            &door::obstacles(&laid, [], None),
+            &ground,
+            None,
+        )
+        .expect("a door");
+        assert_eq!(clear.rect(), room::her_box(96, 12), "{at}: in its space");
+        assert!(clear.rect().unwrap().intersects(space), "{at}");
+        for (what, made, ghost) in [("made", Some(scrap), None), ("ghost", None, Some(scrap))] {
+            let obstacles = door::obstacles(&laid, made, ghost);
+            let fell = door::door_place(&home, plan, &obstacles, &ground, None).expect("a door");
+            assert_eq!(
+                fell.set(),
+                door::Set::Floor(door::Fallback::Blocked),
+                "{at} {what}"
+            );
+            assert!(!fell.rect().unwrap().intersects(scrap), "{at} {what}");
+        }
+    }
+    let keep = door::Keep::of(&home, plan);
+    assert!(keep.refuses(scrap), "the space is kept clear");
+    assert!(
+        !keep.refuses(Rect::new(70, 10, 3, 3)),
+        "the rest of the strip isn't"
+    );
+    // She builds nothing there: the keybar's line, as though she pulled
+    // it standing on Users' floor, at its middle (made) and in the space
+    // (refused).
+    for graphics in [false, true] {
+        let at = format!("graphics={graphics}");
+        let mut guest = home_at(
+            3,
+            tue(14, 0),
+            &[(Furniture::Sofa, Nook::Users, 0)],
+            graphics,
+        );
+        let now = until_visiting(&mut guest, &real, &view, 0);
+        paint(&mut guest, &real, &view, now);
+        let visit = visit_of(&guest);
+        let keep = door::Keep::of(&guest.ledger.home, plan);
+        let row = real.area.height - 2;
+        let pull = |x: i32| scenes::Pull {
+            x,
+            y: 12,
+            row,
+            side: scenes::Side::Right,
+            cells: (0..26).collect(),
+            glyphs: "Tab Next pane | Enter Send".to_owned(),
+            gap: 0,
+        };
+        let middle = builds(&real, visit, &[pull(80)], &[], &keep);
+        assert!(!middle.is_empty(), "{at}: a piece mid-strip");
+        let free = builds(&real, visit, &[pull(95)], &[], &door::Keep::default());
+        assert!(!free.is_empty(), "{at}: one in the space, nothing kept");
+        let kept = builds(&real, visit, &[pull(95)], &[], &keep);
+        assert!(
+            kept.is_empty(),
+            "{at}: made in her door's space: {:?}",
+            kept.iter().map(|b| b.piece).collect::<Vec<_>>()
+        );
+    }
+}
+
+// ---- Her door at its space: the step 3 review's tests ----
+
+/// [`rooms_frame`] at 100×30 with one line of text in Playlist ("abcdefghij"
+/// at columns 80..=89 on row 23, over its floor at 26) and Playlist kept
+/// out of left of it (columns 51..=79 above its floor): the only pulls are
+/// from her standing right of the line, so every makeshift sofa she
+/// could make stands by Playlist's right wall, in that wall's space
+/// (93..=98 × 22..=26).
+fn by_playlists_right_wall() -> (Buffer, IdleView, Rect) {
+    let (mut real, mut view) = rooms_frame(100, 30);
+    real.set_string(80, 23, "abcdefghij", Style::new());
+    view.protected.push(Rect::new(51, 14, 29, 12));
+    (real, view, Rect::new(93, 22, 6, 5))
+}
+
+/// Her door on Playlist's right wall (at the screen's edge).
+const PLAYLIST_RIGHT: room::DoorWall = room::DoorWall {
+    strip: room::Strip::Bottom(Nook::Playlist),
+    side: room::Side::Right,
+};
+
+/// The makeshift pieces of `guest`'s visit meeting `space`.
+fn made_in(guest: &Guest, space: Rect) -> Vec<Rect> {
+    visit_of(guest)
+        .made
+        .iter()
+        .map(|m| m.piece.cover())
+        .filter(|c| c.intersects(space))
+        .collect()
+}
+
+/// She never makes a piece in her door's space, cued to make a sofa
+/// where the only sofa she could make would stand there: the cue finds
+/// no room, and nothing she makes meets the space. (With nothing kept,
+/// that sofa is on offer: asserted.) Through the visiting frame, so its
+/// own `Keep` is what keeps it out.
+#[test]
+fn she_never_makes_a_piece_in_her_door_space() {
+    let (real, view, space) = by_playlists_right_wall();
+    for graphics in [false, true] {
+        let at = format!("graphics={graphics}");
+        let mut guest = home_at(
+            3,
+            tue(14, 0),
+            &[(Furniture::Sofa, Nook::Playlist, 0)],
+            graphics,
+        );
+        let mut now = until_visiting(&mut guest, &real, &view, 0);
+        paint(&mut guest, &real, &view, now);
+        assert_eq!(guest.ledger.home.door, Some(PLAYLIST_RIGHT), "{at}");
+        // Non-vacuous: with nothing kept, she'd make a sofa there.
+        let visit = visit_of(&guest);
+        let mut solid = view.protected.clone();
+        solid.extend(visit.shown.iter().map(Shown::cover));
+        let pulls = scenes::pulls(&real, &visit.terrain, &solid);
+        let offered = builds(&real, visit, &pulls, &solid, &door::Keep::default());
+        assert!(
+            offered
+                .iter()
+                .any(|b| b.piece.item == Furniture::Sofa && b.piece.cover().intersects(space)),
+            "{at}: a sofa on offer in the space"
+        );
+        guest.cue(Scene::MakeSofa);
+        let end = now + 30_000;
+        while now < end {
+            shell_step(&mut guest, &real, &view, &mut now, true);
+            assert!(
+                made_in(&guest, space).is_empty(),
+                "{at}: made in her door's space at {now}"
+            );
+        }
+        assert!(
+            matches!(guest.cue_note(), Some(Err(_))),
+            "{at}: {:?}",
+            guest.cue_note()
+        );
+    }
+}
+
+/// [`by_playlists_right_wall`] with her sofa on Users (her door at Users'
+/// right wall): she makes a sofa by Playlist's right wall, out of the
+/// way of her door. Returns when it's made, and the frame.
+fn made_by_playlists_right_wall(graphics: bool) -> (Guest, u64, Buffer, IdleView, Rect) {
+    let (real, view, space) = by_playlists_right_wall();
+    let mut guest = home_at(
+        3,
+        tue(14, 0),
+        &[(Furniture::Sofa, Nook::Users, 0)],
+        graphics,
+    );
+    let mut now = until_visiting(&mut guest, &real, &view, 0);
+    paint(&mut guest, &real, &view, now);
+    assert_ne!(guest.ledger.home.door, Some(PLAYLIST_RIGHT));
+    guest.cue(Scene::MakeSofa);
+    let end = now + 30_000;
+    while visit_of(&guest).made.is_empty() {
+        assert!(now < end, "graphics={graphics}: never made");
+        shell_step(&mut guest, &real, &view, &mut now, true);
+    }
+    (guest, now, real, view, space)
+}
+
+/// A made piece her door's space comes to meet falls apart (D3's
+/// symmetric path): her sofa of text by Playlist's right wall, then her
+/// door's wall moved there (as a hidden pane can move it with her
+/// pieces): at the next frame it's gone, its text back in its line.
+#[test]
+fn a_made_piece_her_door_space_comes_to_meet_falls_apart() {
+    for graphics in [false, true] {
+        let at = format!("graphics={graphics}");
+        let (mut guest, mut now, real, view, space) = made_by_playlists_right_wall(graphics);
+        let [made] = visit_of(&guest).made.as_slice() else {
+            panic!("{at}: one piece");
+        };
+        assert!(made.piece.cover().intersects(space), "{at}: by the wall");
+        let torn = made.torn.clone();
+        // It stands a frame first.
+        now += 100;
+        guest.advance(now);
+        paint(&mut guest, &real, &view, now);
+        assert_eq!(made_in(&guest, space).len(), 1, "{at}: it stands");
+        guest.ledger.home.door = Some(PLAYLIST_RIGHT);
+        now += 100;
+        guest.advance(now);
+        paint(&mut guest, &real, &view, now);
+        assert!(
+            visit_of(&guest).made.is_empty(),
+            "{at}: it fell apart: {:?}",
+            visit_of(&guest).made
+        );
+        let frame = paint(&mut guest, &real, &view, now);
+        for &(x, y) in &torn {
+            assert_eq!(frame[(x, y)], real[(x, y)], "{at}: {:?} back", (x, y));
+        }
+    }
+}
+
+/// A piece she set out to make where her door's space comes meanwhile
+/// is never made: her door's wall moved onto Playlist's right as she
+/// reels in the text for a sofa there, nothing she makes meets the
+/// space (it isn't made to fall apart the next frame).
+#[test]
+fn a_piece_she_sets_out_to_make_where_her_door_space_comes_isnt_made() {
+    for graphics in [false, true] {
+        let at = format!("graphics={graphics}");
+        let (real, view, space) = by_playlists_right_wall();
+        let mut guest = home_at(
+            3,
+            tue(14, 0),
+            &[(Furniture::Sofa, Nook::Users, 0)],
+            graphics,
+        );
+        let mut now = until_visiting(&mut guest, &real, &view, 0);
+        paint(&mut guest, &real, &view, now);
+        guest.cue(Scene::MakeSofa);
+        let end = now + 30_000;
+        while visit_of(&guest).osaka.reeling().is_none() {
+            assert!(now < end, "{at}: never reeled");
+            assert!(visit_of(&guest).made.is_empty(), "{at}: made already");
+            shell_step(&mut guest, &real, &view, &mut now, true);
+        }
+        let build = visit_of(&guest).osaka.reeling().unwrap().piece.cover();
+        assert!(build.intersects(space), "{at}: {build:?} by the wall");
+        guest.ledger.home.door = Some(PLAYLIST_RIGHT);
+        while now < end {
+            shell_step(&mut guest, &real, &view, &mut now, true);
+            assert!(
+                made_in(&guest, space).is_empty(),
+                "{at}: made in her door's space at {now}"
+            );
+        }
+    }
+}
+
+/// [`chat_over_every_space`] (her one nook the chat pane) with List's and
+/// Playlist's floors protected (the floor row alone: she may still stand
+/// on a protected ledge, her body clear above it): no door at all (no
+/// wall outside the chat, and no fallback floor, the fallback refusing a
+/// protected cell under her), yet floor outside the chat to stand on.
+fn no_door_but_floor_outside_the_chat() -> (Buffer, IdleView) {
+    let (real, mut view) = chat_over_every_space();
+    view.protected.push(Rect::new(0, 26, 100, 1));
+    (real, view)
+}
+
+/// With no door of hers anywhere but floor to stand on outside the chat
+/// (M22's case), no door stands while she's out, and at 12:45 she comes
+/// home by a door in space there: out of the chat and her pieces, by a
+/// door (not dropping in), the visit with no door of hers.
+#[test]
+fn with_no_door_anywhere_she_comes_home_by_a_door_in_space_outside_the_chat() {
+    let (real, view) = no_door_but_floor_outside_the_chat();
+    let pieces = [(Furniture::Sofa, Nook::Users, 500)];
+    for graphics in [false, true] {
+        let at = format!("graphics={graphics}");
+        let (mut guest, mut now) = away_on(&real, &view, &pieces, graphics);
+        now += 500;
+        guest.advance(now);
+        paint(&mut guest, &real, &view, now);
+        let empty = empty_of(&guest).expect("away");
+        assert!(empty.door.is_none(), "{at}: {:?}", empty.door);
+        let covers = laid_covers(&guest, &view);
+        assert!(
+            !every_spot(real.area).any(|spot| door_floor(
+                &real,
+                &view.protected,
+                &covers,
+                view.chat,
+                spot
+            )),
+            "{at}: no fallback floor"
+        );
+        let came = home_at_1245(&mut guest, &real, &view, now).expect("home");
+        let visit = visit_of(&guest);
+        let her = room::her_box(came.0, came.1).unwrap();
+        assert!(!her.intersects(view.chat), "{at}: in the chat at {came:?}");
+        assert!(
+            !covers.iter().any(|c| c.intersects(her)),
+            "{at}: on a piece at {came:?}"
+        );
+        assert_eq!(visit.osaka.act_name(), "Door", "{at}: by a door");
+        assert_eq!(visit.door, None, "{at}");
+    }
+}
+
+/// Her fallback door stays where it stood while that spot still passes,
+/// even with a nearer one free again (M12): on a short terminal (the
+/// `Short` fallback), a protected rect over its spot moves it on; with
+/// the rect gone, it stays where it went, not back at the nearer spot.
+#[test]
+fn her_fallback_door_stays_where_it_went() {
+    let (real, view) = real_frame(&mut real_ui(), 100, 20);
+    for graphics in [false, true] {
+        let at = format!("graphics={graphics}");
+        let mut guest = home_at(
+            4,
+            tue(9, 0),
+            &[(Furniture::Sofa, Nook::Users, 300)],
+            graphics,
+        );
+        guest.ledger.home.door = Some(room::DoorWall {
+            strip: room::Strip::Bottom(Nook::Users),
+            side: room::Side::Right,
+        });
+        let mut now = until_away(&mut guest, &real, &view, 0);
+        paint(&mut guest, &real, &view, now);
+        let first = guest.closed_door().expect("her door");
+        assert_eq!(first.set(), door::Set::Floor(door::Fallback::Short), "{at}");
+        let mut kept = view.clone();
+        kept.protected.push(first.rect().unwrap());
+        now += 1000;
+        guest.advance(now);
+        paint(&mut guest, &real, &kept, now);
+        let moved = guest.closed_door().expect("her door");
+        assert_ne!(moved.spot(), first.spot(), "{at}: moved on");
+        for _ in 0..3 {
+            now += 1000;
+            guest.advance(now);
+            paint(&mut guest, &real, &view, now);
+            assert_eq!(
+                guest.closed_door().map(door::DoorSpot::spot),
+                Some(moved.spot()),
+                "{at}: stays, not back at {:?}",
+                first.spot()
+            );
+        }
+    }
+}
+
+/// Her door stands `Unmarked` when the frame doesn't draw its wall (or
+/// the floor under its space) as lines: a custom layout, a pane drawn
+/// otherwise. On [`rooms`] at 100×30, her sofa on Users (her door's
+/// space at its right wall, column 99, floor row 12).
+#[test]
+fn an_unmarked_wall_puts_her_door_at_the_fallback() {
+    let (real, view) = rooms_frame(100, 30);
+    let mut home = room::Home::default();
+    assert!(home.add(room::Prop::new(
+        Furniture::Sofa,
+        Nook::Users,
+        300,
+        sprite::Facing::Right
+    )));
+    let plan = room::Plan {
+        nooks: &view.nooks,
+        chat: view.chat,
+        screen: real.area,
+    };
+    home.layout(&view.nooks);
+    home.settle_door(plan);
+    let laid = home.laid_and_shifted(&view.nooks).shown;
+    let obstacles = door::obstacles(&laid, [], None);
+    let blank = |cells: &[(u16, u16)]| {
+        let mut buf = real.clone();
+        for &(x, y) in cells {
+            buf.set_string(x, y, " ", Style::new());
+        }
+        buf
+    };
+    let no_wall: Vec<(u16, u16)> = (8..12).map(|y| (99, y)).collect();
+    let no_floor: Vec<(u16, u16)> = (94..=98).map(|x| (x, 12)).collect();
+    for graphics in [false, true] {
+        let ground = Terrain::read(&real, &view.protected, graphics);
+        let drawn = door::door_place(&home, plan, &obstacles, &ground, None).expect("a door");
+        assert!(drawn.wall().is_some(), "graphics={graphics}: in its wall");
+        for (what, cells) in [("wall", &no_wall), ("floor", &no_floor)] {
+            let at = format!("{what} graphics={graphics}");
+            let buf = blank(cells);
+            let ground = Terrain::read(&buf, &view.protected, graphics);
+            let fell = door::door_place(&home, plan, &obstacles, &ground, None).expect("a door");
+            assert_eq!(
+                fell.set(),
+                door::Set::Floor(door::Fallback::Unmarked),
+                "{at}"
+            );
+        }
+    }
+}
+
+/// The visit's own door reads the text she moved as text, never as a
+/// protected pane: text she tore off in her door's space leaves it in
+/// its wall (text never moves her door, D4).
+#[test]
+fn text_she_moved_in_her_door_space_never_moves_her_visits_door() {
+    let (mut real, view) = rooms_frame(100, 30);
+    // Words in the space (93..=98 × 8..=12), over Users' floor.
+    real.set_string(93, 10, "words", Style::new());
+    for graphics in [false, true] {
+        let at = format!("graphics={graphics}");
+        let mut guest = home_at(
+            3,
+            tue(14, 0),
+            &[(Furniture::Sofa, Nook::Users, 300)],
+            graphics,
+        );
+        let now = until_visiting(&mut guest, &real, &view, 0);
+        paint(&mut guest, &real, &view, now);
+        let before = visit_of(&guest).door.expect("her door");
+        assert!(before.wall().is_some(), "{at}: in its wall: {before:?}");
+        let State::Visiting(visit) = &mut guest.state else {
+            panic!("{at}: visiting");
+        };
+        assert!(
+            visit
+                .layer
+                .tear(&real, &view.protected, &[(94, 10), (95, 10)]),
+            "{at}: torn off"
+        );
+        paint(&mut guest, &real, &view, now + 100);
+        assert_eq!(visit_of(&guest).door, Some(before), "{at}: unmoved");
     }
 }

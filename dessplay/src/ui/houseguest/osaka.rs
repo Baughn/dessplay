@@ -67,6 +67,9 @@ pub(super) struct Chances {
     /// hangs, and the strip's floor and columns (what she glances at,
     /// on that strip: see [`ClockOn::seen_from`]).
     pub clock: Option<ClockOn>,
+    /// Her external door this frame, if it stands anywhere (the door
+    /// batch, D4): what a dash in comes through.
+    pub door: Option<super::door::DoorSpot>,
 }
 
 /// Her wall clock where it hangs (phase 5b D7): its middle column, and
@@ -1386,6 +1389,21 @@ fn elsewhere(
             .is_some_and(|&spot| chat.is_some_and(|chat| holds(chat, spot)))
     };
     pick(spots.len(), in_chat, |n| rng.below(n)).and_then(|i| spots.get(i).copied())
+}
+
+/// Where she comes in by a door in space with no door of hers anywhere
+/// (the door batch, M22): somewhere she can stay if there's such a
+/// spot, else anywhere, her box clear of the chat pane and of
+/// `obstacles` (her pieces).
+pub(super) fn door_in_space_spot(
+    terrain: &Terrain,
+    chat: Rect,
+    obstacles: &[Rect],
+    rng: &mut Rng,
+) -> Option<(i32, i32)> {
+    let clear =
+        |spot: (i32, i32)| !box_meets(chat, spot) && !obstacles.iter().any(|&o| box_meets(o, spot));
+    calm_elsewhere(terrain, &clear, None, rng)
 }
 
 /// [`elsewhere`], somewhere she can stay (clear of text) if there's such
@@ -9184,13 +9202,13 @@ impl Osaka {
         self.dash.is_some()
     }
 
-    /// The stage: her dash home comes out of a door at `spot` instead
-    /// (beside her fridge, so the scene shows soon; or, on a visit under
-    /// way, where she stood), from its first far beat at `now`, what she
-    /// forgot still to settle. Whatever she was up to is dropped, as
-    /// [`Osaka::place`] drops it.
-    pub fn dash_through(&mut self, spot: (i32, i32), now: u64) {
+    /// The stage: her dash home comes out of her door at `spot` instead,
+    /// facing `facing` (into the room), from its first far beat at `now`,
+    /// what she forgot still to settle. Whatever she was up to is
+    /// dropped, as [`Osaka::place`] drops it.
+    pub fn dash_through(&mut self, spot: (i32, i32), facing: Facing, now: u64) {
         self.place(spot.0, spot.1, now);
+        self.facing = facing;
         self.dash = Some(Dash::In);
         self.set(
             Act::Door {
