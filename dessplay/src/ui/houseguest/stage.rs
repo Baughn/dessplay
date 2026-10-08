@@ -619,35 +619,22 @@ pub(super) fn direct(
             Ok(format!("{name} at ({x}, {y}), {n} glyphs in reach"))
         }
         Scene::Work => {
-            // From a floor reaching a screen edge if there is one (she
-            // walks out), else anywhere (she takes the door).
-            let out = terrain
-                .links
+            // Anywhere restful (she walks to her door from there).
+            let (x, y) = terrain
+                .platforms
                 .iter()
-                .find(|l| matches!(l.route, Route::Around { .. }))
-                .copied();
-            let (x, y) = match out {
-                Some(link) => {
-                    let y = terrain.platforms.get(link.from).map_or(0, |p| p.y);
-                    let middle = terrain
-                        .platforms
-                        .get(link.from)
-                        .map_or(link.x, |p| (p.x0 + p.x1) / 2);
-                    (
-                        approach(terrain, link.x, y, if middle < link.x { -1 } else { 1 }),
-                        y,
-                    )
-                }
-                None => terrain
-                    .platforms
-                    .iter()
-                    .map(|p| ((p.x0 + p.x1) / 2, p.y))
-                    .find(|&(x, y)| terrain.restful(x, y))
-                    .ok_or_else(|| format!("{name}: nowhere to stand"))?,
-            };
+                .map(|p| ((p.x0 + p.x1) / 2, p.y))
+                .find(|&(x, y)| terrain.restful(x, y))
+                .ok_or_else(|| format!("{name}: nowhere to stand"))?;
             osaka.place(x, y, now);
-            let how = if out.is_some() { "walking" } else { "by door" };
-            osaka.go_to_work(out, now, rng);
+            let how = match chances.door {
+                Some(door) => {
+                    let (dx, dy) = door.spot();
+                    format!("to her door at ({dx}, {dy})")
+                }
+                None => "by a door in space".to_owned(),
+            };
+            osaka.go_to_work(terrain, chances, now, rng);
             Ok(format!("{name}, {how}"))
         }
         Scene::Door => {

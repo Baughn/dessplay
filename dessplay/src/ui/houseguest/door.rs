@@ -91,7 +91,6 @@ impl DoorSpot {
     }
 
     /// Whether it stands where it does because her pieces fill its space.
-    #[allow(dead_code)] // DoorClear's trigger (the door batch, step 6)
     pub(super) fn bumped(self) -> bool {
         self.at == Set::Floor(Fallback::Yield)
     }

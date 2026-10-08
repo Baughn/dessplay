@@ -5517,6 +5517,67 @@ step to get up from a piece (she gets up by the ordinary end of a use,
 as after any nap, C16); reading `returning` in `start_job` for the
 stage scene (mixed state; a third `Leave` variant instead).
 
+## Work goes out by her door (2026-10-08)
+
+**Rule:** her part-time job goes out and comes home through her door,
+as school does, never off a screen edge (`Job::Leave { why: Work }`,
+`Osaka::go_to_work`). The shift's length is drawn as she sets off
+(`Shift::Going { gap }`) and is the gap of whichever door she goes out
+by: her door at its spot, a door in space where she stands when there's
+no door of hers or no way to it, or a door in space where a focused
+pane moved her on her way (C4). Going through it, the shift is `Out`;
+coming back out of that door, and only that one, she's home from work
+(`back_home`), facing the room with her leeks in her arms through its
+last beats (C13). A landing on her way (a hop, a door in space between
+floors) goes on to her door (`choose_next`, `work/on`); a startle, a
+chat line or an errand on her way ends the shift with no homecoming,
+and her way to her door for it goes with it (`Osaka::let_work_go`:
+walking, heading there across floors, round the screen's edge, up a
+pole). With no door or no way to it, the door in space opens only once
+her box meets none of her pieces (`out_where_clear`, as school's).
+Out at work by a door in space, she comes home by her door if the
+frame stands it anywhere then and no focused pane is over it (M10;
+while one is, she comes home where she went); her door's pane focused while
+she's out doesn't move the door she's through. School beginning on her
+way rewrites her way out to school's (`school_from_work`); `leaving`
+is still set only as the door opens. Coming in through her door where
+her pieces pushed it out of its space (`Fallback::Yield`) is noted
+(`Osaka::bumped`) for her DoorClear rule (M13).
+
+**Why:** one external door reads clearly; the edge exit looked like
+leaving through the wall beside it, and two ways out for the same
+routine-like trip made her door's cue ("her door shut with slippers
+before it": she's out) a half-truth. Which door brings her home is in
+the shift (`Going`/`Out`), never in the door: with the old shift
+taken by any door's end, a door in space between floors on her way
+brought her "home from work" before she had gone (found while building
+this; `a_shift_through_her_door_ends_at_home`'s door-in-space case).
+The gap is drawn once, as she sets off, so every door of the shift
+opens on the same length and none can open on a moment's gap (C4).
+Only a door in space that is the shift's (its gap above zero) is
+re-pointed at her door while she's out of sight, so a hop between
+floors or an errand's door can never be. The focused pane doesn't move
+her door during her gap because nothing of hers is drawn then, and
+moving it would have it hop to the fallback and back with focus; if
+the pane is still focused as she comes back out, she's moved on as
+anyone in a focused pane is. (Review of step 4b, 2026-10-09:) An
+errand used to cut only a shift on her walk, leaving her heading for
+her door across floors: she'd land, walk on to her door and step out
+of it at once with no shift behind it; cutting a shift and letting go
+of her way to it are now one call, so a way to work never outlives its
+shift. A door in space re-pointed at her door while its pane is still
+focused undid eviction (she came back out inside the focus for a
+frame), so the re-point waits until the frame's door and the door she'd
+come through agree. Work's no-door arm opened a door in space at her
+feet even in her sofa; every door in space she goes out by now follows
+one rule (`out_where_clear`).
+*Rejected:* keeping the edge exit where her floor reaches one (the
+user: one door; settled fact 3); deriving "home from work" from a
+door's gap (a door in space has gap 0 on her way and gap 0 when a
+focused pane moves her out of her door's far side, so the gap can't
+tell them apart); drawing the shift at the door (an eviction mid-walk
+had no gap to give, C4).
+
 ## Houseguest chooses by needs among the top few (2026-09-28)
 
 **Rule:** Her next act is a weighted-random pick among the four

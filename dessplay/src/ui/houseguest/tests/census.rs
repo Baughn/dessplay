@@ -2578,7 +2578,9 @@ fn chat_lines_come_at_their_own_time() {
 
 /// A trip she sets off on runs its course when nothing interrupts her:
 /// each hop she lands from carries on without choosing anew, so in a
-/// quiet home she never lets one go for something else.
+/// quiet home she never lets one go for something else. (Nine visits:
+/// since work goes out and comes home by her door, it no longer leaves
+/// her on another floor to set off from, and six saw too few trips.)
 #[test]
 fn an_uninterrupted_trip_runs_its_course() {
     let room = Room {
@@ -2586,7 +2588,7 @@ fn an_uninterrupted_trip_runs_its_course() {
         ..furnished_room()
     };
     let mut set_off = 0;
-    for seed in 0..6 {
+    for seed in 0..9 {
         let visit = simulate(&room, seed, 10, None);
         set_off += visit.headings.get("set off").copied().unwrap_or(0);
         assert_eq!(
@@ -2679,12 +2681,14 @@ fn at_home_her_furniture_beats_the_floor() {
 /// furniture and less of it exercising than on an industrious one, and
 /// a dreamy one spaces out more than an ordinary one. (Time spent moving
 /// about is no measure: in this room it's within a few percent either
-/// way, seed set to seed set.)
+/// way, seed set to seed set. Eight visits a mood: on four, since work
+/// goes out by her door, a dreamy set spaced out 3% less than an
+/// ordinary one; on eight, 20% more.)
 #[test]
 fn her_mood_shows() {
     let room = resident_room();
     let in_mood = |mood: Mood| {
-        let visits: Vec<Visit> = (0..4)
+        let visits: Vec<Visit> = (0..8)
             .map(|seed| simulate(&room, seed, 15, Some(mood)))
             .collect();
         grouped(&visits)
@@ -2859,15 +2863,15 @@ fn every_pooled_line_shown_was_drawn_from_its_pool() {
 
 /// The census counts her vignettes as she plays them: on quiet visits
 /// home (no chat, so nothing cuts a coda short or is answered), in both
-/// drawing modes, the shopping channel plays on each (it's on at her
-/// first watch), bedtime with her lamp on some, and some uses are
-/// spliced, the chopsticks among them; and on a visit cued one, a sata
-/// andagi (rare: on the others, one plays on seed 2, just before the
-/// census ends). Each splice's
-/// count agrees with what she was heard to say: "Sata andagi." as many
-/// times as the andagis' branches name it, "Hold 'em by the ends!" once
-/// a bad split; a riddle's question and answer are both pooled lines;
-/// and with no question asked, nothing is answered.
+/// drawing modes, the shopping channel plays on each she watches on
+/// (it's on at her first watch; most do), bedtime with her lamp on some,
+/// and some uses are spliced, the chopsticks among them; and on a visit
+/// cued one, a sata andagi (rare: on the others, one plays on seed 2,
+/// just before the census ends). Each splice's count agrees with what
+/// she was heard to say: "Sata andagi." as many times as the andagis'
+/// branches name it, "Hold 'em by the ends!" once a bad split; a
+/// riddle's question and answer are both pooled lines; and with no
+/// question asked, nothing is answered.
 #[test]
 fn the_census_counts_her_vignettes() {
     use script::{HOLD_EM, SATA_ANDAGI};
@@ -2878,6 +2882,7 @@ fn the_census_counts_her_vignettes() {
     for graphics in [false, true] {
         let mut scripts: BTreeMap<String, usize> = BTreeMap::new();
         let mut splices: BTreeMap<String, usize> = BTreeMap::new();
+        let mut shopped = 0;
         let visits = (0..3)
             .map(|seed| (seed, None))
             .chain([(3, Some(Scene::Andagi))]);
@@ -2904,12 +2909,16 @@ fn the_census_counts_her_vignettes() {
                     said == named
                 }
             };
+            // On at her first watch, if she watched at all (since work
+            // goes out by her door, seed 1 never sits down to the TV).
+            let watched = visit.time.keys().any(|k| k.starts_with("use:Watch"));
             assert_eq!(
                 get(&visit.scripts, "shopping"),
-                1,
+                usize::from(watched),
                 "{at}: {:?}",
                 visit.scripts
             );
+            shopped += usize::from(watched);
             let named: usize = ANDAGI_COUNTS
                 .iter()
                 .map(|&n| n as usize * get(&visit.splices, &format!("sata andagi ×{n}")))
@@ -2957,6 +2966,7 @@ fn the_census_counts_her_vignettes() {
             row.iter().any(|(k, &v)| k.starts_with(start) && v > 0)
         };
         assert!(had(&scripts, "bedtime"), "graphics={graphics}: {scripts:?}");
+        assert!(shopped >= 3, "graphics={graphics}: {shopped} watched");
         assert!(
             had(&splices, "sata andagi"),
             "graphics={graphics}: {splices:?}"

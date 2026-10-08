@@ -2144,6 +2144,8 @@ fn every_scene_has_a_spot_in_the_stage_room() {
                 let sofa_was = sofa(&guest);
                 let (mut went_out, mut doored, mut moved_on, mut gone) =
                     (false, false, false, false);
+                // Out through her own door, where the frame stands it.
+                let mut by_her_door = false;
                 let (mut moved, mut swapped, mut climbed, mut poses) =
                     (0, false, false, Vec::new());
                 let mut said = false;
@@ -2154,9 +2156,10 @@ fn every_scene_has_a_spot_in_the_stage_room() {
                 // Stop as soon as the scene has visibly happened: running
                 // all 116 cases to the 10s cap costs ~50s in a debug build.
                 // A dash comes in by her door, at its space by the screen's
-                // edge (the door batch), and walks the room to her fridge.
+                // edge (the door batch), and walks the room to her fridge;
+                // school and work walk to her door.
                 let cap = match scene {
-                    Scene::DashIn | Scene::DashForgot | Scene::School => 40_000,
+                    Scene::DashIn | Scene::DashForgot | Scene::School | Scene::Work => 40_000,
                     _ => 10_000,
                 };
                 while !happened && now < cap {
@@ -2180,6 +2183,10 @@ fn every_scene_has_a_spot_in_the_stage_room() {
                     went_out |= !(0..i32::from(width)).contains(&visit.osaka.x);
                     doored |= visit.osaka.door(now).is_some();
                     gone |= visit.osaka.hidden(now);
+                    by_her_door |= visit
+                        .osaka
+                        .out_by_her_door(now)
+                        .is_some_and(|door| visit.door == Some(door));
                     moved_on |= (visit.osaka.x, visit.osaka.y) != start;
                     used = used.or(visit.osaka.using());
                     let (pose, _, bubble) = visit.osaka.appearance(now);
@@ -2236,7 +2243,9 @@ fn every_scene_has_a_spot_in_the_stage_room() {
                             .any(|m| m.piece.scrap.is_some_and(|s| s.stage > 0)),
                         Scene::Parcel => guest.ledger.home.props.iter().any(|p| !p.boxed),
                         Scene::Shopping => guest.ledger.ordered.is_some(),
-                        Scene::Work => went_out || gone,
+                        // Through her door, never off the screen's edge
+                        // (door batch, step 4b).
+                        Scene::Work => by_her_door && gone && !went_out,
                         Scene::Read => posed(Pose::Read(0)),
                         // Torn off and read beside the tear.
                         Scene::Borrow => posed(Pose::ReadStrip(0)),
@@ -4164,9 +4173,17 @@ fn a_door_on_a_protected_floor_redraws_only_its_floor() {
 }
 
 /// Her sofa's home (seed 3, a Saturday at 11:00), she visiting, set down
-/// `dx` columns right of the middle of her sofa and sent to work through
-/// a door in place there, then stepped as the shell would until `when`
-/// holds of her: the guest, the time, where she stood, and her sofa.
+/// `dx` columns right of the middle of her sofa and sent to work with no
+/// door of hers anywhere and nothing of hers in her way (chances with no
+/// door and no obstacles: through a door in space where she stands,
+/// there, her sofa in her box), then stepped as the shell would until
+/// `when` holds of her: the guest, the time, where she stood, and her
+/// sofa. (The frame's own chances would have her step out of her sofa
+/// first, `out_where_clear`; these tests are about what's drawn and
+/// rained of her box while she's out with a piece in it, as a door in
+/// space between floors or out of a focused pane can still leave her.)
+/// Her work through her door is `work_goes_out_by_her_door`
+/// (tests/away.rs).
 fn out_at_work(
     real: &Buffer,
     view: &IdleView,
@@ -4184,7 +4201,10 @@ fn out_at_work(
         panic!("visiting");
     };
     visit.osaka.place(x, y, now);
-    visit.osaka.go_to_work(None, now, &mut Rng(1));
+    let terrain = visit.terrain.clone();
+    visit
+        .osaka
+        .go_to_work(&terrain, &osaka::Chances::default(), now, &mut Rng(1));
     paint(&mut guest, real, view, now);
     loop {
         let State::Visiting(visit) = &guest.state else {

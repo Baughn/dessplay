@@ -1762,14 +1762,24 @@ this section states what is built.
     re-knits anything left.
 - **Her part-time job**: once she has a home, on a day off (a weekend or
   a school holiday) from 10:00 to 17:00 of her clock, at most once a
-  visit, she may go to work: out at a screen
-  edge if her floor reaches one, else through her door. Her room stands
-  furnished while she's gone (one to three minutes); a chat or IRC line
-  meanwhile doesn't fetch her (mischief is still undone at once). She
-  comes back the same way with a bundle of leeks cradled in her arms
-  ("I'm home!"). Once she's back in sight her shift is over, however her
-  walk in ends (a fall, a daze); a trip to work that never got out of
-  sight brings no homecoming.
+  visit, she may go to work: through her door, as school is, never off
+  a screen edge. She walks to where it stands (a hop or a door in space
+  between floors on the way, as any walk; landing, she goes on to it),
+  and with no door of hers anywhere, or no way to it, goes by a door in
+  space where she stands, once she's out of any piece of hers (never in
+  her bed or sofa). Her room stands furnished while she's gone
+  (one to three minutes, the door's gap); a chat or IRC line meanwhile
+  doesn't fetch her (mischief is still undone at once). Her door's
+  pane focused while she's out doesn't move it. She comes back out of
+  it facing the room with a bundle of leeks cradled in her arms ("I'm
+  home!"); moved out of a focused pane on her way, she goes to work by
+  a door in space there and comes home by her door, or, while its pane
+  is still focused, where she went. A trip to work that never got
+  through her door (a startle, a chat line or the accordion on her way,
+  however far she got) brings no homecoming, and she doesn't go on to
+  it after; school beginning on her way sends her on
+  out through it to school
+  (why: [decisions](decisions.md#work-goes-out-by-her-door-2026-10-08)).
 - **Getting furniture**: her TV is ordered for her and arrives on her
   second visit. After that, when she watches TV at least three visits
   after her last purchase, with nothing on order or still boxed, the
@@ -2289,7 +2299,7 @@ this section states what is built.
   of her pieces: somewhere calm if there's such a spot, else anywhere
   clear. Started in school hours, the client shows her
   empty home once the gate opens. Everything of hers that comes and goes
-  by her routine uses her door, never a screen edge
+  by her routine or work uses her door, never a screen edge
   (why: [decisions](decisions.md#away-at-school-ends-the-visit-at-her-door-2026-10-04)).
 - **Dashes home**: one school day in three, at a minute between 08:25
   and 12:35 fixed by her home and the day, she dashes home through her

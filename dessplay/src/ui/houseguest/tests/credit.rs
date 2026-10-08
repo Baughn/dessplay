@@ -40,6 +40,8 @@ struct Room {
     /// She went through a door, or off the screen's edge (as driven).
     doored: bool,
     went_out: bool,
+    /// She went out through her own door, where the frame stood it.
+    by_her_door: bool,
 }
 
 impl Room {
@@ -76,6 +78,7 @@ fn stage_room(seed: u64, pieces: &[Furniture]) -> Room {
         now: 0,
         doored: false,
         went_out: false,
+        by_her_door: false,
     }
 }
 
@@ -95,6 +98,7 @@ fn edge_room(seed: u64) -> Room {
         now: 0,
         doored: false,
         went_out: false,
+        by_her_door: false,
     }
 }
 
@@ -115,6 +119,7 @@ fn pit_room(seed: u64) -> Room {
         now: 0,
         doored: false,
         went_out: false,
+        by_her_door: false,
     }
 }
 
@@ -149,6 +154,10 @@ fn step(room: &mut Room) -> Result<(), String> {
     };
     room.doored |= visit.osaka.door(room.now).is_some();
     room.went_out |= !(0..i32::from(room.real.area.width)).contains(&visit.osaka.x);
+    room.by_her_door |= visit
+        .osaka
+        .out_by_her_door(room.now)
+        .is_some_and(|door| visit.door == Some(door));
     Ok(())
 }
 
@@ -300,17 +309,19 @@ fn what_she_chooses_eases_what_it_serves() {
         let mut room = stage_room(4, &[]);
         note(want, method, check(&mut room, want, method, 5 * MINUTE));
     }
-    // Her part-time job: out at a screen edge and back in, or through her
-    // door (each its own way home).
-    for (room, how) in [(edge_room(5), "edge"), (pit_room(5), "door")] {
+    // Her part-time job: through her door, always (door batch, step 4b),
+    // never off the screen's edge, though her floor reaches one.
+    for room in [edge_room(5), pit_room(5)] {
         let mut room = room;
         let result = check(&mut room, Want::Work, "work", 10 * MINUTE);
-        let (doored, went_out) = (room.doored, room.went_out);
+        let (doored, went_out, hers) = (room.doored, room.went_out, room.by_her_door);
         let result = result.and_then(|ran| {
-            if (doored, went_out) == (how == "door", how == "edge") {
+            if hers && !went_out {
                 Ok(ran)
             } else {
-                Err(format!("not by the {how}: door {doored}, out {went_out}"))
+                Err(format!(
+                    "not by her door: door {doored}, hers {hers}, out {went_out}"
+                ))
             }
         });
         note(Want::Work, "work", result);
@@ -400,6 +411,7 @@ fn what_she_chooses_eases_what_it_serves() {
             now: felt_at,
             doored: false,
             went_out: false,
+            by_her_door: false,
         };
         let lifted = check(&mut room, Want::Arrange, "arrange/lift", 10 * MINUTE);
         // Carried, and set down: arranging eases her as the frame takes
@@ -482,9 +494,8 @@ fn what_she_chooses_eases_what_it_serves() {
     assert!(failed.is_empty(), "{}", failed.join("\n"));
 }
 
-/// Off to work at the screen's edge (offered nothing else), stepped
-/// until she has been out of sight `away_ms`: where she stood as she
-/// chose it.
+/// Off to work through her door (offered nothing else), stepped until
+/// she has been out of sight `away_ms`: where she stood as she chose it.
 fn out_at_work(room: &mut Room, away_ms: u64) -> (i32, i32) {
     room.osaka_mut().offer_only = Some((Want::Work, "work"));
     let mut stood = None;
@@ -500,7 +511,7 @@ fn out_at_work(room: &mut Room, away_ms: u64) -> (i32, i32) {
         {
             stood = Some((osaka.x, osaka.y));
         }
-        if room.went_out && osaka.hidden(room.now) {
+        if room.doored && osaka.hidden(room.now) && osaka.door(room.now).is_none() {
             let since = *away_since.get_or_insert(room.now);
             if room.now >= since + away_ms {
                 return stood.expect("chose work");
@@ -533,30 +544,26 @@ fn a_shift_cut_short_eases_her_by_its_share() {
     );
 }
 
-/// Her third way home from work: back in sight, walking in, and her
-/// walk cut short (a chat line: she stops to look). Her next decision
-/// has her home from work, and her shift eases her restlessness as a
-/// whole one, as off the edge or through her door.
+/// Her way home from work: back out of her door (door batch, step 4b),
+/// she's home from work, and her shift eases her restlessness as a
+/// whole one, once. (Before step 4b a chat line could cut her walk in
+/// from the screen's edge short, home from work all the same; her door
+/// is never cut short but by an errand,
+/// `a_shift_cut_short_eases_her_by_its_share`, or a focused pane, whose
+/// door brings her home as hers does.)
 #[test]
-fn a_shift_whose_walk_home_is_cut_short_eases_her() {
+fn a_shift_home_through_her_door_eases_her_as_a_whole_one() {
     let mut room = edge_room(5);
     out_at_work(&mut room, 0);
     while room.osaka().hidden(room.now) {
         assert!(room.now < 10 * 60_000, "never back");
         step(&mut room).expect("visiting");
     }
-    let (from, before) = (room.osaka().decisions.len(), room.osaka().served.len());
-    let now = room.now;
-    match &mut room.guest.state {
-        State::Visiting(visit) => visit.osaka.look(now, 0, false, &visit.terrain),
-        _ => panic!("visiting"),
-    }
+    assert_eq!(room.osaka().act_name(), "Door", "coming out of it");
+    let before = room.osaka().served.len();
     let bound = room.now + 60_000;
-    while !room.osaka().decisions[from..]
-        .iter()
-        .any(|d| d.method == "work/home")
-    {
-        assert!(room.now < bound, "{:?}", &room.osaka().decisions[from..]);
+    while room.osaka().act_name() != "Home" {
+        assert!(room.now < bound, "{}", room.osaka().act_summary());
         step(&mut room).expect("visiting");
     }
     let eased: Vec<(Want, f64, Via)> = room.osaka().served[before..]

@@ -965,16 +965,20 @@ fn golden_tucked_in() {
     );
 }
 
+/// Re-recorded in the door batch's step 4b: work goes out by her door
+/// (every seed, both modes, first differs as she stops at her door's
+/// spot (3, 16) on her way to work and opens it, where she walked on off
+/// the screen's edge).
 #[test]
 fn golden_weekend() {
     check(
         "weekend",
         weekend,
         &[
-            (0, 0x062d2c4723a53511, 0x72187c60dd5f0343),
-            (1, 0x0b57975eb27aa591, 0xaa2e51d84f0b0d88),
-            (2, 0xe5d87e523c503b52, 0x4ef5a36e4a549d0a),
-            (3, 0x99d4d6a37ec421d5, 0x955e276d5c972d69),
+            (0, 0x8abc3f341512e9fc, 0x03bd5ff97a628bee),
+            (1, 0x6e71302cca23acee, 0xca1d3fb0011cff7c),
+            (2, 0x7f7f1c0ce10971ce, 0xbd3545e8677a4fe3),
+            (3, 0x9ab549fe0548ff43, 0x0da300f40538a4d0),
         ],
     );
 }
@@ -1082,12 +1086,20 @@ fn golden_dash_home() {
 /// that commit), with its review's fixes (seeds 0 and 1 in ASCII and 1
 /// and 2 in line art: one frame each, at a line she says on after her
 /// look up, which now shows on a frame past her look's end; nothing
-/// else changed; the trace diff is in that commit).
+/// else changed; the trace diff is in that commit), and the door batch's
+/// step 4b, work through her door (seed 0, line art: walking to work she
+/// opens her door at (96, 8) where she walked on off the screen's edge;
+/// seeds 1 and 3, ASCII: her way to her door on another floor is a door
+/// in space, and she comes out of it there and goes on through her door,
+/// where before she went to work through a door where she stood (the run
+/// ended in its gap); seed 1, line art: her way to work cut short, the
+/// shift's length drawn as she set off moved a later beat's timing; the
+/// rest unchanged; the trace diff is in that commit).
 const UNFED_STAGE: [(u64, u64, u64); 4] = [
-    (0, 0x708733793f400284, 0x21c0ac42d0b6ce07),
-    (1, 0x6815cac0d5b99796, 0x90ce2cafb85fabea),
+    (0, 0x708733793f400284, 0x941bf0a431f5b066),
+    (1, 0xa4a798e2a1a79945, 0x51c67cb9d4c2829e),
     (2, 0xec15f92e2f11cc74, 0xf73152a21a71ba81),
-    (3, 0x143c1f2ade3d911a, 0xc45aa53bb13f470a),
+    (3, 0xaf26d1f42948b458, 0xc45aa53bb13f470a),
 ];
 
 /// The resident's tables at the end of phase 5b step 3, but for step 5a's
@@ -1179,10 +1191,17 @@ const UNFED_RESIDENT: [(u64, u64, u64); 4] = [
 /// record saves her door's wall; the trace diff is in that commit), with
 /// its review's fixes (each seed and mode first differs at its first
 /// frame, in the cells only: a stage gift is judged where it's laid, so
-/// her pieces stand elsewhere; the trace diff is in that commit).
+/// her pieces stand elsewhere; the trace diff is in that commit), and the
+/// door batch's step 4b, work through her door (seed 0, both modes: on
+/// her way to work she stops at her door's spot (3, 16) and goes through
+/// it, where she walked on to the screen's edge; seed 1, both modes:
+/// her way to work cut by a chat line, the shift's length is now drawn
+/// as she sets off, so the stream that times her standing blinks moved,
+/// first showing on the frame after the look (a blink no longer shown);
+/// seeds 2 and 3 unchanged; the trace diff is in that commit).
 const UNFED_FURNISHED: [(u64, u64, u64); 4] = [
-    (0, 0xdfed378a6fe4ebea, 0x2a0076ba5a8772e0),
-    (1, 0x57ab00f70c498da5, 0xc0749c4f5eb7b262),
+    (0, 0xd68c121f21096143, 0xe5248391f31579c5),
+    (1, 0xe11d39f391f8b0a6, 0xc6712cdb6f6c3b91),
     (2, 0x926059ace43e7151, 0x9d52a9c8d4e177e1),
     (3, 0x79407de0d1328d6f, 0xcc2d79b8d69e779b),
 ];

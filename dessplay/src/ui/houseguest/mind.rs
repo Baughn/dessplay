@@ -12,7 +12,7 @@ use super::room::{Furniture, PieceRef, Seat, Use};
 use super::rules::Trials;
 use super::scenes::{Build, Job, Lift, SetDown};
 use super::script::ScriptId;
-use super::terrain::{Link, Route, Terrain};
+use super::terrain::{Link, Terrain};
 
 /// Her mind's stream is seeded from the body's first draw, salted.
 pub(super) const MIND_SALT: u64 = 0x6d69_6e64_5f6f_6661;
@@ -205,8 +205,9 @@ pub(super) enum Bind {
     Take(Link),
     /// A door in space to this spot.
     Door((i32, i32)),
-    /// Off to work, out by this link if her floor reaches a screen edge.
-    Work(Option<Link>),
+    /// Off to work, through her door where the frame stands it (door
+    /// batch, step 4b), or, with none, a door in space where she stands.
+    Work,
     /// A job: on her floor she walks to it, elsewhere she heads for it.
     Job(Job),
 }
@@ -218,7 +219,7 @@ impl Bind {
             Self::Take(link) => landing(link, terrain),
             Self::Door(spot) => Some(*spot),
             Self::Job(job) => Some(job.spot()),
-            Self::Here(_) | Self::WalkTo(_) | Self::Work(_) => None,
+            Self::Here(_) | Self::WalkTo(_) | Self::Work => None,
         }
     }
 
@@ -459,22 +460,11 @@ fn door_away(c: &Ctx, w: Whims, _: Want) -> Option<Bind> {
     Some(Bind::Door((x, p.y)))
 }
 
-/// Off to work, home by a way that doesn't come in through the chat when
-/// there is one.
+/// Off to work, through her door (door batch, step 4b): wherever the
+/// frame stands it then (`Chances::door`), or, with none, a door in
+/// space where she stands.
 fn work(c: &Ctx, _: Whims, _: Want) -> Option<Bind> {
-    if !c.may_work {
-        return None;
-    }
-    let around = || {
-        c.links
-            .iter()
-            .filter(|l| matches!(l.route, Route::Around { .. }))
-    };
-    let out = around()
-        .find(|l| !landing(l, c.terrain).is_some_and(|s| c.chances.in_chat(s)))
-        .or_else(|| around().next())
-        .copied();
-    Some(Bind::Work(out))
+    c.may_work.then_some(Bind::Work)
 }
 
 /// A line to pull: those into the chat a tenth as likely, and nearer

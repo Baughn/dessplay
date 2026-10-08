@@ -1087,9 +1087,10 @@ fn the_cat_doesnt_change_as_she_comes_home() {
     }
 }
 
-/// Out at work as school begins (the stage's doing: her job is open only
-/// on days off), she goes on to school: the visit ends at once, her home
-/// stands empty, and she never comes home with her shopping.
+/// Off to work as school begins (the stage's doing: her job is open only
+/// on days off), she goes on to school through her door: the visit ends
+/// once it has closed behind her, her home stands empty, and she never
+/// comes home with her shopping.
 #[test]
 fn out_at_work_as_school_begins_she_goes_on_to_school() {
     use super::sprite::Pose;
@@ -1102,9 +1103,11 @@ fn out_at_work_as_school_begins_she_goes_on_to_school() {
             let State::Visiting(visit) = &mut guest.state else {
                 panic!("{at}: visiting");
             };
-            visit.osaka.go_to_work(None, now, &mut Rng(1));
+            let (chances, terrain) = (visit.chances.clone(), visit.terrain.clone());
+            visit.osaka.go_to_work(&terrain, &chances, now, &mut Rng(1));
             while empty_of(&guest).is_none() {
-                assert!(now < school + 2_000, "{at}: still out at work past 08:15");
+                // Her walk to her door included.
+                assert!(now < school + 60_000, "{at}: still out at work past 08:15");
                 shell_step(&mut guest, &real, &view, &mut now, true);
                 if let State::Visiting(visit) = &guest.state {
                     let (pose, ..) = visit.osaka.appearance(now);
@@ -3663,6 +3666,257 @@ fn a_focused_pane_never_moves_the_door_shes_through() {
                 assert_eq!((visit.osaka.x, visit.osaka.y), door.spot(), "{at}");
                 break;
             }
+        }
+    }
+}
+
+// ---- Work through her door (door batch, step 4b) ----
+
+/// From `now`, stepped as the shell would on `real`/`view` until she has
+/// come back out of the door she's through and it has run its course
+/// (at most `bound` ms on), checking each frame she's seen at its far
+/// side with `there`: when, and how many such frames there were.
+fn back_out_of_her_door(
+    guest: &mut Guest,
+    real: &Buffer,
+    view: &IdleView,
+    mut now: u64,
+    bound: u64,
+    mut there: impl FnMut(&Visit, u64),
+) -> (u64, usize) {
+    let from = now;
+    let (mut out, mut seen) = (false, 0);
+    while visit_of(guest).osaka.through().is_some() {
+        assert!(now < from + bound, "never back");
+        shell_step(guest, real, view, &mut now, true);
+        let visit = visit_of(guest);
+        let hidden = visit.osaka.hidden(now);
+        out |= hidden;
+        if out && !hidden && visit.osaka.through().is_some() {
+            seen += 1;
+            there(visit, now);
+        }
+    }
+    (now, seen)
+}
+
+/// Her part-time job goes out through her door, at its space, and comes
+/// home out of it (door batch, step 4b): she walks from her sofa to it,
+/// goes through it for her shift (a minute or more out of sight), and
+/// comes back out of it facing the room, carrying her shopping (C13),
+/// home from work. In both drawing modes, with and without text in her
+/// panes (her door stands over text).
+#[test]
+fn work_goes_out_by_her_door() {
+    for (name, (real, view)) in home_screens() {
+        for graphics in [false, true] {
+            let at = format!("{name} graphics={graphics}");
+            let sofa = [(Furniture::Sofa, Nook::Users, 300)];
+            let mut guest = home_at(3, sat(11, 0), &sofa, graphics);
+            let mut now = until_visiting(&mut guest, &real, &view, 0);
+            paint(&mut guest, &real, &view, now);
+            let space = space_spot(&real, &view, Nook::Users, room::Side::Left);
+            let State::Visiting(visit) = &mut guest.state else {
+                panic!("{at}: visiting");
+            };
+            let door = visit.door.expect("her door");
+            assert_eq!(door.spot(), space, "{at}: her door at its space");
+            // Along her floor from it (by her sofa).
+            let (x, y) = (space.0 + 25, space.1);
+            assert!(
+                visit.terrain.platform_at(x, y).is_some(),
+                "{at}: on her floor"
+            );
+            visit.osaka.place(x, y, now);
+            let (chances, terrain) = (visit.chances.clone(), visit.terrain.clone());
+            assert_eq!(chances.door, Some(door), "{at}");
+            visit.osaka.go_to_work(&terrain, &chances, now, &mut Rng(1));
+            let from = now;
+            let mut walked = false;
+            while visit_of(&guest).osaka.through().is_none() {
+                assert!(now < from + 60_000, "{at}: never at her door");
+                walked |= visit_of(&guest).osaka.act_name() == "Walk";
+                shell_step(&mut guest, &real, &view, &mut now, true);
+            }
+            assert!(walked, "{at}: she walked to it");
+            let osaka = &visit_of(&guest).osaka;
+            assert_eq!(osaka.through(), Some(osaka::Through::Home(door)), "{at}");
+            assert_eq!((osaka.x, osaka.y), space, "{at}: through it at its spot");
+            let went = now;
+            let (back, seen) =
+                back_out_of_her_door(&mut guest, &real, &view, now, 200_000, |visit, t| {
+                    let osaka = &visit.osaka;
+                    assert_eq!((osaka.x, osaka.y), space, "{at} t={t}: out of it");
+                    assert_eq!(osaka.facing, door.into_room(), "{at} t={t}: into the room");
+                    assert!(
+                        matches!(osaka.appearance(t).0, sprite::Pose::Carry(_)),
+                        "{at} t={t}: her shopping"
+                    );
+                });
+            assert!(seen > 0, "{at}: seen coming out");
+            assert!(back >= went + 60_000, "{at}: a shift: {}", back - went);
+            assert_eq!(
+                visit_of(&guest).osaka.act_name(),
+                "Home",
+                "{at}: home from work"
+            );
+        }
+    }
+}
+
+/// Her door's pane focused while she's out at work (door batch, step 4b,
+/// test 3): the frame's door goes to the fallback for the focus (the
+/// precondition), but the door she's through stays where it stood, in
+/// its space, hidden (none opens anywhere else); the focus gone, she
+/// comes home out of it there.
+#[test]
+fn focusing_her_doors_pane_in_a_work_gap_never_moves_it() {
+    let (w, h) = (100, 30);
+    let real = rooms(w, h);
+    let quiet = resident_view(w, h, None);
+    for graphics in [false, true] {
+        let at = format!("graphics={graphics}");
+        let sofa = [(Furniture::Sofa, Nook::Users, 300)];
+        let mut guest = home_at(4, sat(11, 0), &sofa, graphics);
+        let mut now = until_visiting(&mut guest, &real, &quiet, 0);
+        guest.cue(Scene::Work);
+        let from = now;
+        let door = loop {
+            assert!(now < from + 60_000, "{at}: never out");
+            shell_step(&mut guest, &real, &quiet, &mut now, true);
+            let osaka = &visit_of(&guest).osaka;
+            if let Some(osaka::Through::Home(door)) = osaka.through()
+                && osaka.hidden(now)
+                && osaka.door(now).is_none()
+            {
+                break door;
+            }
+        };
+        assert!(door.wall().is_some(), "{at}: in its space: {door:?}");
+        let pane = quiet
+            .nooks
+            .iter()
+            .map(|&(_, r)| r)
+            .find(|r| {
+                r.contains(Position::new(
+                    door.spot().0 as u16,
+                    door.spot().1 as u16 - 1,
+                ))
+            })
+            .expect("her door's pane");
+        let focused = resident_view(w, h, Some(pane));
+        let until = now + 5_000;
+        let mut fallbacks = 0;
+        while now < until {
+            shell_step(&mut guest, &real, &focused, &mut now, true);
+            let frame = paint(&mut guest, &real, &focused, now);
+            let visit = visit_of(&guest);
+            assert_ne!(
+                visit.door,
+                Some(door),
+                "{at}: the frame's door, off its space"
+            );
+            // No door of hers appears at the frame's fallback while she's
+            // out through the one in its space: nothing of it is drawn in
+            // the fallback's box (step 8 draws the shut door at the door
+            // she's through).
+            if let Some(fallback) = visit.door {
+                fallbacks += 1;
+                let (fx, fy) = fallback.spot();
+                for y in fy - sprite::HEIGHT..fy {
+                    for x in fx - sprite::WIDTH / 2..=fx + sprite::WIDTH / 2 {
+                        let cell = (x as u16, y as u16);
+                        assert_eq!(
+                            frame[cell].symbol(),
+                            real[cell].symbol(),
+                            "{at} t={now}: drawn at the fallback {cell:?}"
+                        );
+                    }
+                }
+            }
+            assert_eq!(
+                visit.osaka.through(),
+                Some(osaka::Through::Home(door)),
+                "{at}: the door she's through never moves"
+            );
+            assert!(visit.osaka.hidden(now), "{at}: out");
+        }
+        assert!(fallbacks > 0, "{at}: the frame's door stood at a fallback");
+        let (_, seen) =
+            back_out_of_her_door(&mut guest, &real, &quiet, now, 200_000, |visit, t| {
+                assert_eq!(
+                    visit.osaka.through(),
+                    Some(osaka::Through::Home(door)),
+                    "{at} t={t}"
+                );
+                assert_eq!((visit.osaka.x, visit.osaka.y), door.spot(), "{at} t={t}");
+            });
+        assert!(seen > 0, "{at}: seen coming home");
+    }
+}
+
+/// A lamp (with her sofa, TV and desk) filling her door's space, so her
+/// door stands at the nearest floor that meets no piece (the space
+/// yields): coming home from work out of it, she has bumped into it
+/// (door batch M13, for step 6's DoorClear), from the moment she's back
+/// out, never before. Through her door in its space, never.
+#[test]
+fn a_lamp_in_the_space_is_bumped_into_coming_home_from_work() {
+    use crate::ui::houseguest::door::{Fallback, Set};
+    let sofa = [(Furniture::Sofa, Nook::Users, 300)];
+    let full: &[(Furniture, Nook, u16)] = &FULL_SPACE_HOME;
+    type Case<'a> = (
+        &'a str,
+        (Buffer, IdleView),
+        &'a [(Furniture, Nook, u16)],
+        bool,
+    );
+    let cases: [Case; 2] = [
+        ("yielded", chat_by_a_full_space(), full, true),
+        (
+            "kept",
+            (rooms(100, 30), resident_view(100, 30, None)),
+            &sofa,
+            false,
+        ),
+    ];
+    for (name, (real, view), pieces, bumps) in cases {
+        for graphics in [false, true] {
+            let at = format!("{name} graphics={graphics}");
+            let mut guest = home_at(3, sat(11, 0), pieces, graphics);
+            let mut now = until_visiting(&mut guest, &real, &view, 0);
+            paint(&mut guest, &real, &view, now);
+            let door = visit_of(&guest).door.expect("her door");
+            assert_eq!(
+                door.set() == Set::Floor(Fallback::Yield),
+                bumps,
+                "{at}: {door:?}"
+            );
+            guest.cue(Scene::Work);
+            let from = now;
+            while visit_of(&guest).osaka.through().is_none() {
+                assert!(now < from + 60_000, "{at}: never out");
+                assert!(!visit_of(&guest).osaka.bumped(), "{at}: on her way");
+                shell_step(&mut guest, &real, &view, &mut now, true);
+            }
+            let (mut out, mut seen, mut t) = (false, 0, now);
+            while visit_of(&guest).osaka.through().is_some() {
+                assert!(t < now + 200_000, "{at}: never back");
+                shell_step(&mut guest, &real, &view, &mut t, true);
+                let osaka = &visit_of(&guest).osaka;
+                let hidden = osaka.hidden(t);
+                out |= hidden;
+                if out && !hidden && osaka.through().is_some() {
+                    seen += 1;
+                    assert_eq!(osaka.bumped(), bumps, "{at} t={t}: back out");
+                } else if osaka.through().is_some() && (!out || osaka.door(t).is_none()) {
+                    // On her way through, or out of sight between its
+                    // doors.
+                    assert!(!osaka.bumped(), "{at} t={t}: before she's back");
+                }
+            }
+            assert!(seen > 0, "{at}: seen coming home");
+            assert_eq!(visit_of(&guest).osaka.bumped(), bumps, "{at}: home");
         }
     }
 }

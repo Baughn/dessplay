@@ -265,6 +265,9 @@ pub(super) enum Leave {
     /// The stage's school scene (door batch D10): out and back in after
     /// a short gap, the visit never ending.
     Stage,
+    /// Her part-time job (door batch, step 4b): out for her shift (the
+    /// door's gap is the shift's) and home again with her shopping.
+    Work,
 }
 
 /// Lifting `repair.piece`, standing at `(x, y)` (beside it on its
@@ -318,6 +321,14 @@ impl Job {
 
     pub fn side(&self) -> Side {
         self.by_ref().side()
+    }
+
+    /// Why she's going out, if it's her way out by her door.
+    pub fn leave(&self) -> Option<Leave> {
+        match self {
+            Self::Leave { why, .. } => Some(*why),
+            _ => None,
+        }
     }
 }
 

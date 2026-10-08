@@ -19,6 +19,8 @@ Add new days at the top. Add new entries at the bottom of existing days.
   bed, sofa or desk, or in the chat pane; it stands by the screen's
   edge where there's room, and never across a pane's border.
 - Changed: Osaka gets up and walks to her door to leave for school.
+- Changed: Osaka leaves for work through her door too; she no longer
+  walks off the screen's edge.
 
 ## 2026-10-07
 

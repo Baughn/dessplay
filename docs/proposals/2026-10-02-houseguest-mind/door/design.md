@@ -415,6 +415,25 @@ and the carried piece's `ghost` (mod.rs:3403). Every caller builds them with one
   `Set::Floor(Yield)` door sets `visit.bumped` at `there` (D7, M13).
 - Stage `Scene::Work` (stage.rs:607-637) places her anywhere restful and calls `go_to_work(chances.door, ..)`.
 
+- **Step 4b amendments (as built, and after its review, 2026-10-09; override the Work bullets above where they
+  differ):** `Bind::Work` has no payload and `go_to_work(terrain, chances, at, rng)` reads `chances.door` (`plan`
+  takes `chances`). `Shift` keeps two variants: `Going { gap }` (drawn at set-off) and `Out` (through the shift's
+  door; only coming back out of that door is "home from work"). With no door or no way to it, work goes through
+  `out_where_clear` like school (a step out of any piece first, `Then::Out(Work)`), never "today's None arm" at
+  her feet. Every cut of a shift on her way goes through `Osaka::let_work_go` (cut, drop a Leave-Work heading and
+  its hop), called by `errand` before anything else (walking, round the edge, a door in space, aloft) and by
+  `choose_next`'s non-resume branch; `leave_by(Work)` without `Going` is a `warn!`, unreachable. "Her way to work"
+  is one predicate, `work_way()` (a Leave-Work or `Then::Out(Work)` walk, or a Leave-Work heading); the resume
+  reads `hopping && work_heading() || work_walk()`. `choose_next`'s old "deciding while `Out` → home from work"
+  arm is gone (no path leaves a Door act with `Out` but its end, which runs `back_home`). M10 re-points a work
+  door in space at `chances.door_through` only while `chances.door == chances.door_through` (no focused pane over
+  her door; else she comes home where she went: re-pointing to the gated `chances.door` would be undone by
+  `take_in`'s Home arm the next frame). Census purpose of a work Leave walk/heading/`Then::Out(Work)` is
+  **"work"** (not "routine"; step 10 reads it in the work bucket). tests.rs `out_at_work` keeps a door in space
+  at her feet in her sofa via chances with no door and no obstacles (its tests are about her box's image while
+  she's out), not `go_to_work(chances.door, ..)`. `Osaka::bumped()` lives on Osaka (per visit), set by any
+  Home return.
+
 **Dash** (`dash_on` osaka.rs:5684): unchanged; out again reaches `go_out` through `choose_next` and walks.
 
 ### D7. Felt rules `DoorClear` and `InChat`, and the per-frame closet
