@@ -5431,6 +5431,25 @@ anchored from the door's wall up to six columns nearer it, until a newer
 build chooses the wall again. Shares (`at`) are always of the raw strip,
 so nothing is lost; the version stays 1.
 
+**Her repair search lays out only the strips a move changes (the door
+batch's step 3p, 2026-10-08):** each strip is laid out alone and
+recorded with what it was laid out from (her pieces on it, by index, and
+her door's wall if it's there: all its layout reads). A move's layout
+reuses a recorded strip only when those are identical, and lays out the
+rest again. *Why:* the search weighs ~1170 moves, and laying out her
+whole home for each (her door's strip twice, to judge its space) made a
+search 0.60-0.76 ms, past its 1 ms bound under a deep pass's load; now
+0.43-0.48 ms. Her door's space is kept without laying the strip out a
+second time when, laid out beside it, the strip leaves none of her
+pieces out (`lay_strip` counts them, whatever leaves them out): without
+the space it could show no more. *Rejected:* the caller naming the
+strips a move touches (the first cut): a wrong list, or a new input to a
+strip's layout (the chat, made pieces), would reuse a stale strip with
+no error; recording the inputs makes that unrepresentable, and comparing
+a few pieces costs far less than laying a strip out. Laying out again
+after a resize (`move_off`) and per place of a stage gift (`spot`) still
+lays out the whole home: they're rare, not per move.
+
 ## Houseguest chooses by needs among the top few (2026-09-28)
 
 **Rule:** Her next act is a weighted-random pick among the four

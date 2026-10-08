@@ -9,7 +9,7 @@
 
 use super::room::{
     self, Anchor, Extent, Furniture, Home, LaidOut, Nook, Prop, Role, Shown, Side, Strip,
-    StripPlan, Use,
+    StripLaid, StripPlan, Use,
 };
 use super::sprite::Facing;
 use tuirealm::ratatui::buffer::Buffer;
@@ -441,9 +441,9 @@ impl Frame<'_> {
 struct Before {
     /// Anchored wherever its strip is here.
     home: Home,
-    /// Her quiet panes.
-    nooks: Vec<(Nook, Rect)>,
-    plans: Vec<StripPlan>,
+    /// Each strip laid out alone, with its plan: a move lays out again
+    /// only the strips it touches (see [`Home::relaid`]).
+    strips: Vec<StripLaid>,
     laid: Vec<Shown>,
     broken: Vec<Broken>,
     /// Every strip with a piece out of its box on it, and its role.
@@ -460,7 +460,8 @@ struct Before {
 impl Before {
     fn new(home: &Home, frame: &Frame) -> Self {
         let mut home = home.clone();
-        let out = home.laid_out(frame.nooks);
+        let strips = home.strips_laid_out(frame.nooks);
+        let out = home.relaid(&strips);
         let broken = broken(&out, &home);
         let LaidOut {
             shown: laid,
@@ -484,8 +485,7 @@ impl Before {
             .collect();
         Self {
             home,
-            nooks: frame.nooks.to_vec(),
-            plans,
+            strips,
             laid,
             broken,
             roles,
@@ -552,7 +552,7 @@ fn evaluate(
     };
     let slot = scratch.props.get_mut(i)?;
     *slot = moved;
-    let out = scratch.laid_and_shifted(&before.nooks);
+    let out = scratch.relaid(&before.strips);
     if let Some(slot) = scratch.props.get_mut(i) {
         *slot = old;
     }
@@ -662,12 +662,15 @@ fn evaluate(
 /// space otherwise is caught: [`evaluate`] lays out the real home, and
 /// [`search`] drops a repair that doesn't stand where it was set down.
 fn plan_with(before: &Before, piece: Furniture, strip: Strip) -> Option<StripPlan> {
+    let raw = before
+        .strips
+        .iter()
+        .find(|s| s.plan.strip == strip)?
+        .plan
+        .raw;
     let mut probe = before.home.clone();
     probe.props.iter_mut().find(|p| p.item == piece)?.strip = strip;
-    probe
-        .extents(&before.nooks)
-        .into_iter()
-        .find(|p| p.strip == strip)
+    Some(probe.strip_plan(strip, raw))
 }
 
 /// Whether a move of `piece` pushes a hung piece aside, its wall's
@@ -785,7 +788,7 @@ pub(super) fn search(home: &Home, frame: &Frame, target: &Broken) -> Search {
         };
         let (cols, rows) = piece.spec().footprint;
         let with = partners(rule, piece);
-        for strip in before.plans.iter().map(|p| p.strip) {
+        for strip in before.strips.iter().map(|s| s.plan.strip) {
             let Some(plan) = plan_with(&before, piece, strip) else {
                 continue;
             };
@@ -2209,9 +2212,15 @@ mod tests {
                 .min()
                 .unwrap_or_default();
             eprintln!(
-                "repair search (dense {dense}, door {door:?}): {per_search:?}, {} moves",
+                "repair search (dense {dense}, door {door:?}): {per_search:?}, {} moves \
+                 (release baseline 2026-10-08: 0.43-0.48 ms; bound 1 ms)",
                 found.examined
             );
+            // The bound stays loose (a deep pass's load has pushed a run
+            // past 1 ms), but alone in release a search took 0.43-0.48
+            // ms on 2026-10-08 (the door batch, step 3p), door or not:
+            // a step that adds work per move re-measures against that
+            // (`--release -E 'test(repair_search_is_cheap)' --no-capture`).
             if !cfg!(debug_assertions) {
                 assert!(
                     per_search < std::time::Duration::from_millis(1),

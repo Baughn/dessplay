@@ -880,6 +880,20 @@ pub(super) struct LaidOut {
     pub plans: Vec<StripPlan>,
 }
 
+/// One strip laid out alone (see [`Home::strips_laid`]): its plan, and
+/// what it lays out, if she has a piece on it and what stands there
+/// packs; and what it was laid out from (her pieces on it, by index,
+/// and her door's wall if it's on it: all its layout reads, see
+/// [`Home::lays_from`]), so it's never taken for the layout of a home
+/// whose strip differs ([`Home::relaid`]).
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct StripLaid {
+    pub plan: StripPlan,
+    laid: Option<LaidOut>,
+    from: Vec<(usize, Prop)>,
+    door: Option<DoorWall>,
+}
+
 impl LaidOut {
     /// The plan of `strip`, if it's here.
     pub(super) fn plan(&self, strip: Strip) -> Option<&StripPlan> {
@@ -1397,10 +1411,9 @@ impl Home {
     /// The widest of her pieces that stand on `strip`'s floor, anchored
     /// or not (0 with none).
     fn widest_standing(&self, strip: Strip) -> u16 {
-        self.props
-            .iter()
-            .filter(|p| p.strip == strip && p.lane() == Lane::Floor)
-            .map(|p| p.item.spec().footprint.0)
+        self.lays_from(strip)
+            .filter(|(_, p)| p.lane() == Lane::Floor)
+            .map(|(_, p)| p.item.spec().footprint.0)
             .max()
             .unwrap_or(0)
     }
@@ -1424,15 +1437,37 @@ impl Home {
             .collect()
     }
 
+    /// `strip`'s plan alone (see [`Home::extents`]), on `raw`.
+    pub(super) fn strip_plan(&self, strip: Strip, raw: Extent) -> StripPlan {
+        self.plan_strip(strip, raw).0
+    }
+
     /// `strip`'s plan (see [`Home::extents`]), and on her door's strip,
     /// where it has a space, the strip laid out as the plan has it (its
     /// space kept or yielding): judging the one lays out the other.
     fn plan_strip(&self, strip: Strip, raw: Extent) -> (StripPlan, Option<Option<LaidOut>>) {
         let mut laid = None;
-        let space = self.door.filter(|d| d.strip == strip).and_then(|d| {
+        let space = self.strip_door(strip).and_then(|d| {
             let (wall, rect) = space_of(raw, d.side, self.widest_standing(strip))?;
             let doored = self.lay_strip(strip, raw, narrowed(raw, d.side), Some(rect));
-            let doorless = self.lay_strip(strip, raw, raw, None);
+            // Laid out with the space, every piece on the strip that
+            // could be laid out is (none left out, as `lay_strip` counts
+            // them, whatever left it out): laid out without it, no more
+            // could be, and it's kept. Only one left out needs the strip
+            // laid out without the space to judge it.
+            let doored = match doored {
+                Some((doored, 0)) => {
+                    laid = Some(Some(doored));
+                    return Some(Space {
+                        side: d.side,
+                        wall,
+                        rect,
+                        kept: true,
+                    });
+                }
+                doored => doored.map(|(l, _)| l),
+            };
+            let doorless = self.lay_strip(strip, raw, raw, None).map(|(l, _)| l);
             let kept = match (&doored, &doorless) {
                 (Some(doored), Some(doorless)) => doorless
                     .shown
@@ -1515,12 +1550,28 @@ impl Home {
     /// Her pieces in `lane` of `strip`, as [`pack`] takes them (with the
     /// rows each needs clear above the floor), those that are anchored.
     fn on(&self, strip: Strip, lane: Lane) -> Vec<(usize, Anchor, (u16, u16))> {
+        self.lays_from(strip)
+            .filter(|(_, p)| p.lane() == lane)
+            .filter_map(|(i, p)| Some((i, p.anchor?, p.needs())))
+            .collect()
+    }
+
+    /// Her pieces on `strip`, by index: with [`Home::strip_door`], all
+    /// that laying the strip out reads (its plan, what stands, what
+    /// hangs). [`StripLaid`] records them, and [`Home::relaid`] lays a
+    /// strip out again whenever they differ, so a new input to a strip's
+    /// layout belongs here (or beside the door in [`StripLaid`]), or a
+    /// strip laid out before it changed would be taken for one after.
+    fn lays_from(&self, strip: Strip) -> impl Iterator<Item = (usize, &Prop)> + '_ {
         self.props
             .iter()
             .enumerate()
-            .filter(|(_, p)| p.strip == strip && p.lane() == lane)
-            .filter_map(|(i, p)| Some((i, p.anchor?, p.needs())))
-            .collect()
+            .filter(move |(_, p)| p.strip == strip)
+    }
+
+    /// Her door's wall, if it's on `strip` (see [`Home::lays_from`]).
+    fn strip_door(&self, strip: Strip) -> Option<DoorWall> {
+        self.door.filter(|d| d.strip == strip)
     }
 
     /// Anchor every piece that has only a share of the way along (an
@@ -1558,6 +1609,13 @@ impl Home {
         self.laid_and_shifted(nooks)
     }
 
+    /// [`Home::laid_out`], strip by strip ([`Home::strips_laid`]): what
+    /// [`Home::relaid`] lays a move out from.
+    pub(super) fn strips_laid_out(&mut self, nooks: &[(Nook, Rect)]) -> Vec<StripLaid> {
+        self.pin_anchors(&raw_strips(nooks));
+        self.strips_laid(nooks)
+    }
+
     /// Where her pieces stand on `nooks`, once every piece whose strip is
     /// there is anchored (a piece that isn't is left out), and how far
     /// each hung piece hangs from where its wall alone would hang it (see
@@ -1567,53 +1625,125 @@ impl Home {
     /// packed on each strip's floor, those hung on the raw wall, both
     /// clear of her door's space while it's kept.
     pub(super) fn laid_and_shifted(&self, nooks: &[(Nook, Rect)]) -> LaidOut {
-        let (plans, mut lays): (Vec<StripPlan>, Vec<Option<Option<LaidOut>>>) = raw_strips(nooks)
+        let strips: Vec<(StripPlan, Option<LaidOut>)> = raw_strips(nooks)
             .into_iter()
-            .map(|(strip, raw)| self.plan_strip(strip, raw))
-            .unzip();
-        let mut shown: Vec<Shown> = Vec::new();
-        let mut shifts = Vec::new();
+            .map(|(strip, raw)| self.strip_layout(strip, raw))
+            .collect();
+        let strips: Vec<_> = strips.iter().map(|(p, l)| (p, l.as_ref())).collect();
+        self.gathered(&strips)
+    }
+
+    /// Each of `nooks`' strips laid out alone, in their order: its plan
+    /// and, where she has a piece on it, what it lays out (see
+    /// [`Home::laid_and_shifted`], which gathers them). A strip's layout
+    /// reads only her pieces on it and her door's wall there
+    /// ([`Home::lays_from`]), so a move lays out again only the strips
+    /// it touches ([`Home::relaid`]).
+    pub(super) fn strips_laid(&self, nooks: &[(Nook, Rect)]) -> Vec<StripLaid> {
+        raw_strips(nooks)
+            .into_iter()
+            .map(|(strip, raw)| self.strip_laid(strip, raw))
+            .collect()
+    }
+
+    /// `strip` laid out alone (see [`Home::strips_laid`]), with what
+    /// it was laid out from.
+    fn strip_laid(&self, strip: Strip, raw: Extent) -> StripLaid {
+        let (plan, laid) = self.strip_layout(strip, raw);
+        StripLaid {
+            plan,
+            laid,
+            from: self.lays_from(strip).map(|(i, p)| (i, *p)).collect(),
+            door: self.strip_door(strip),
+        }
+    }
+
+    /// `strip`'s plan and, if she has a piece on it, what it lays out
+    /// (see [`StripLaid`]).
+    fn strip_layout(&self, strip: Strip, raw: Extent) -> (StripPlan, Option<LaidOut>) {
+        let (plan, laid) = self.plan_strip(strip, raw);
+        if self.lays_from(strip).next().is_none() {
+            return (plan, None);
+        }
+        // Her door's strip, as its plan was judged; a space that yields
+        // refuses nothing: the strip lays out as with no door.
+        let laid = laid.unwrap_or_else(|| {
+            self.lay_strip(strip, plan.raw, plan.floor, None)
+                .map(|(l, _)| l)
+        });
+        (plan, laid)
+    }
+
+    /// [`Home::laid_and_shifted`] of this home, `was` the strips of a
+    /// home on the same panes laid out alone ([`Home::strips_laid`]): a
+    /// strip laid out from just what this home's lays out from
+    /// ([`Home::lays_from`]) is taken as `was` has it, every other is
+    /// laid out again. A move lays out only the strips it touches.
+    pub(super) fn relaid(&self, was: &[StripLaid]) -> LaidOut {
+        let fresh: Vec<Option<(StripPlan, Option<LaidOut>)>> = was
+            .iter()
+            .map(|s| {
+                let strip = s.plan.strip;
+                let same = s.door == self.strip_door(strip)
+                    && self
+                        .lays_from(strip)
+                        .eq(s.from.iter().map(|(i, p)| (*i, p)));
+                (!same).then(|| self.strip_layout(strip, s.plan.raw))
+            })
+            .collect();
+        let strips: Vec<(&StripPlan, Option<&LaidOut>)> = was
+            .iter()
+            .zip(&fresh)
+            .map(|(was, fresh)| match fresh {
+                Some((plan, laid)) => (plan, laid.as_ref()),
+                None => (&was.plan, was.laid.as_ref()),
+            })
+            .collect();
+        self.gathered(&strips)
+    }
+
+    /// Her strips laid out alone, in their order (each its plan and
+    /// what it lays out), gathered as [`Home::laid_and_shifted`] has
+    /// them: what they lay out strip by strip in the order she
+    /// furnished them, every one's plan.
+    fn gathered(&self, strips: &[(&StripPlan, Option<&LaidOut>)]) -> LaidOut {
+        let laid = || strips.iter().filter_map(|&(_, l)| l);
+        let mut shown: Vec<Shown> = Vec::with_capacity(laid().map(|l| l.shown.len()).sum());
+        let mut shifts = Vec::with_capacity(laid().map(|l| l.shifts.len()).sum());
         for strip in self.furnished() {
-            let Some(at) = plans.iter().position(|p| p.strip == strip) else {
-                continue;
-            };
-            let (Some(&plan), Some(laid)) = (plans.get(at), lays.get_mut(at)) else {
-                continue;
-            };
-            // Her door's strip, as its plan was judged; a space that
-            // yields refuses nothing: the strip lays out as with no door.
-            let laid = laid
-                .take()
-                .unwrap_or_else(|| self.lay_strip(strip, plan.raw, plan.floor, None));
-            if let Some(laid) = laid {
-                shown.extend(laid.shown);
-                shifts.extend(laid.shifts);
+            if let Some(&(_, Some(laid))) = strips.iter().find(|(p, _)| p.strip == strip) {
+                shown.extend_from_slice(&laid.shown);
+                shifts.extend_from_slice(&laid.shifts);
             }
         }
         LaidOut {
             shown,
             shifts,
-            plans,
+            plans: strips.iter().map(|&(p, _)| *p).collect(),
         }
     }
 
     /// `strip` laid out alone (see [`Home::laid_and_shifted`]): what
     /// stands packed on `floor`, what hangs on the `raw` wall, clear of
     /// what stands and of `space`; none of it if what stands doesn't
-    /// pack. Its plans are left empty.
+    /// pack. Its plans are left empty. With how many of her anchored
+    /// pieces on the strip it leaves out (whatever leaves them out: a
+    /// wall too narrow, no clear place to hang).
     fn lay_strip(
         &self,
         strip: Strip,
         raw: Extent,
         floor: Extent,
         space: Option<Rect>,
-    ) -> Option<LaidOut> {
-        let mut packed = pack(&self.on(strip, Lane::Floor), floor)?;
+    ) -> Option<(LaidOut, usize)> {
+        let standing_on = self.on(strip, Lane::Floor);
+        let hung_on = self.on(strip, Lane::Wall);
+        let mut packed = pack(&standing_on, floor)?;
         let standing: Vec<Shown> = packed
             .iter()
             .filter_map(|&(i, left)| Some(stand(self.props.get(i)?, strip, raw, left)))
             .collect();
-        let hung = pack_each(&self.on(strip, Lane::Wall), raw);
+        let hung = pack_each(&hung_on, raw);
         let clear = self.hung_clear(hung.clone(), strip, raw, space, &standing);
         let mut shifts = Vec::new();
         for &(index, left) in &hung {
@@ -1628,15 +1758,17 @@ impl Home {
         }
         packed.extend(clear);
         packed.sort_unstable();
-        let shown = packed
+        let shown: Vec<Shown> = packed
             .into_iter()
             .filter_map(|(index, left)| Some(stand(self.props.get(index)?, strip, raw, left)))
             .collect();
-        Some(LaidOut {
+        let left_out = (standing_on.len() + hung_on.len()).saturating_sub(shown.len());
+        let laid = LaidOut {
             shown,
             shifts,
             plans: Vec::new(),
-        })
+        };
+        Some((laid, left_out))
     }
 
     /// `hung`, her pieces on `strip`'s wall as [`pack_each`] has them on
@@ -4063,6 +4195,167 @@ mod tests {
                 });
             }
             prop_assert_eq!(kept(&room), was);
+        }
+
+        /// Her door's space is kept just when, laid out beside it, her
+        /// strip lays out every piece it lays out without it: the plan
+        /// that lays it out without the space only when a piece is left
+        /// out beside it (her window, behind a crowded floor) judges as
+        /// laying out both would. Her pieces on another strip change
+        /// nothing of it.
+        #[test]
+        fn her_door_space_is_kept_as_laying_out_both_ways_judges(
+            props in decorated(),
+            elsewhere in proptest::collection::vec(proptest::bool::weighted(0.25), 6),
+            wide in 16u16..60,
+            tall in 6u16..14,
+            right in any::<bool>(),
+        ) {
+            let side = if right { Side::Right } else { Side::Left };
+            let (_, nooks) = two_panes(wide, tall, &[]);
+            let users = Strip::Bottom(Nook::Users);
+            let props = props
+                .into_iter()
+                .zip(&elsewhere)
+                .map(|(p, &away)| Prop {
+                    strip: if away { Strip::Bottom(Nook::Playlist) } else { users },
+                    ..p
+                })
+                .collect();
+            let mut room = Home { props, door: door_on(Nook::Users, side) };
+            room.layout(&nooks);
+            let (strip, raw) = raw_strips(&nooks)[0];
+            prop_assert_eq!(strip, users);
+            let plan = room.extents(&nooks)[0];
+            let Some((wall, rect)) = space_of(raw, side, room.widest_standing(users)) else {
+                prop_assert_eq!(plan.space, None);
+                return Ok(());
+            };
+            let shown = |l: Option<(LaidOut, usize)>| l.map(|(l, _)| l.shown);
+            let doored = shown(room.lay_strip(users, raw, narrowed(raw, side), Some(rect)));
+            let doorless = shown(room.lay_strip(users, raw, raw, None));
+            let kept = match (&doored, &doorless) {
+                (Some(doored), Some(doorless)) => doorless
+                    .iter()
+                    .all(|s| doored.iter().any(|t| t.item == s.item)),
+                (doored, None) => doored.is_some(),
+                (None, Some(_)) => false,
+            };
+            prop_assert_eq!(plan.space, Some(Space { side, wall, rect, kept }));
+            let laid = room.laid_and_shifted(&nooks);
+            let want = if kept { doored } else { doorless };
+            let want = want.unwrap_or_default();
+            let got: Vec<Shown> = laid.shown.into_iter().filter(|s| s.strip == Some(users)).collect();
+            prop_assert_eq!(got, want);
+        }
+
+        /// A home laid out again from another's strips laid out alone
+        /// (only those whose pieces or door differ laid out afresh) lays
+        /// out just as laying it all out does (shown, shifts and plans,
+        /// in order), whatever moves where: one piece or two, across
+        /// strips, along one, turned, boxed or unboxed, settled or not,
+        /// off a strip that isn't here or onto one, her door moved or
+        /// gone, its space kept or yielding (her door often on a strip a
+        /// piece leaves or comes to, and sometimes on a narrow strip
+        /// crowded with her pieces). Her repair search weighs every move
+        /// this way. The oracle is `laid_and_shifted` as it is now (the
+        /// same strip-by-strip layout, gathered); that it lays out as the
+        /// old whole-home pass did is
+        /// `her_door_space_is_kept_as_laying_out_both_ways_judges`' and
+        /// the goldens' to show.
+        #[test]
+        fn a_move_relaid_strip_by_strip_is_laid_out_as_a_whole(
+            props in decorated(),
+            on in proptest::collection::vec(0usize..3, 6),
+            panes in 2usize..=3,
+            sizes in proptest::collection::vec((14u16..60, 6u16..14), 3),
+            crowded in proptest::option::of(14u16..24),
+            door in (0usize..4, 0usize..3, any::<bool>()),
+            redoor in proptest::option::of(proptest::option::of((0usize..3, any::<bool>()))),
+            moves in proptest::collection::vec(
+                (
+                    any::<proptest::sample::Index>(),
+                    (0usize..3, any::<bool>(), 0u16..40, any::<bool>(), 0u16..=1000),
+                    any::<bool>(),
+                    any::<bool>(),
+                ),
+                1..=2,
+            ),
+        ) {
+            let order = [Nook::Users, Nook::Playlist, Nook::List];
+            let side = |right: bool| if right { Side::Right } else { Side::Left };
+            let first = moves[0].0.index(props.len());
+            let (old, new) = (on[first % on.len()], moves[0].1 .0);
+            // Her door: none, anywhere, or on the strip her first moved
+            // piece leaves or comes to.
+            let (how, anywhere, right) = door;
+            let door_at = match how {
+                0 => None,
+                1 => Some(anywhere),
+                2 => Some(old),
+                _ => Some(new),
+            };
+            // A crowded door strip: narrow, every piece on it.
+            let crowd = crowded.zip(door_at);
+            let mut x = 0;
+            let nooks: Vec<(Nook, Rect)> = order
+                .iter()
+                .zip(&sizes)
+                .enumerate()
+                .take(panes)
+                .map(|(k, (&nook, &(w, h)))| {
+                    let w = match crowd {
+                        Some((narrow, at)) if at == k => narrow,
+                        _ => w,
+                    };
+                    let r = Rect::new(x, 0, w, h);
+                    x += w;
+                    (nook, r)
+                })
+                .collect();
+            let props: Vec<Prop> = props
+                .into_iter()
+                .zip(on.iter().cycle())
+                .map(|(p, &i)| {
+                    let i = crowd.map_or(i, |(_, at)| at);
+                    Prop { strip: Strip::Bottom(order[i]), ..p }
+                })
+                .collect();
+            let mut home = Home {
+                props,
+                door: door_at.and_then(|i| door_on(order[i], side(right))),
+            };
+            let was = home.strips_laid_out(&nooks);
+            prop_assert_eq!(home.relaid(&was), home.laid_and_shifted(&nooks));
+            for (moved, to, boxed, settled) in &moves {
+                let i = moved.index(home.props.len());
+                let &(strip, right, offset, left, at) = to;
+                home.props[i] = Prop {
+                    strip: Strip::Bottom(order[strip]),
+                    anchor: Some(Anchor { side: side(right), offset }),
+                    at,
+                    facing: if left { Facing::Left } else { Facing::Right },
+                    boxed: *boxed,
+                    settled: *settled,
+                    ..home.props[i]
+                };
+            }
+            if let Some(redoor) = redoor {
+                home.door = redoor.and_then(|(i, right)| door_on(order[i], side(right)));
+            }
+            let relaid = home.relaid(&was);
+            prop_assert_eq!(&relaid, &home.laid_and_shifted(&nooks));
+            // Strip by strip in the order she furnished them (her first
+            // piece on each, by index), whichever strips it laid again.
+            let mut strips: Vec<Option<Strip>> = relaid.shown.iter().map(|s| s.strip).collect();
+            strips.dedup();
+            let furnished: Vec<Option<Strip>> = home
+                .furnished()
+                .into_iter()
+                .map(Some)
+                .filter(|s| strips.contains(s))
+                .collect();
+            prop_assert_eq!(strips, furnished);
         }
     }
 

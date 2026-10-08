@@ -151,7 +151,13 @@ pub(super) struct Plan<'a> { pub nooks: &'a [(Nook, Rect)], pub chat: Rect, pub 
     target strip's extent (534, 548, 573, 595 and `search`'s 760, used for the `lefts` grid and the anchor offset at
     796-805) comes from a scratch home with the piece's strip already changed (any anchor, since `kept` is
     anchor-independent), computed once per candidate strip, never from `before` (F7). Judging after the move is
-    `scratch.laid_and_shifted(nooks)`.
+    `scratch.relaid(&before.strips)` (**amended, step 3p, 2026-10-08**): `before` keeps each strip laid out alone
+    (`StripLaid`, its plan and layout) **with what it was laid out from**, her pieces on it by index and her door's
+    wall if it's there (`Home::lays_from`, all a strip's layout reads); `relaid` takes a strip from `before` only when
+    the scratch home's pieces and door there are identical, and lays out every other strip afresh. So `before`'s plan
+    or layout is never used for a strip the move changed: a stale strip is unrepresentable, not guarded by a caller's
+    list. A new input to a strip's layout (steps 5/6) goes into that record at `strip_laid`, or `relaid` would
+    reuse a strip it changed. `laid_and_shifted(nooks)` is the same strip-by-strip layout, all of it fresh.
   - mod.rs: `furnish` 3206 (set-down pin on raw), `layout` 3269, `broken` caller 3366-3367, `stage_arrange` 3485
     (loop 3495).
   - Tests: rules.rs:1309 (`judged`), 1754, 2166; tests.rs:833 (compares a piece's floor to `plan.raw.floor`, equal
