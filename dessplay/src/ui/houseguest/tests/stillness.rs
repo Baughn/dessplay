@@ -1077,7 +1077,16 @@ fn drawn_stillness(rooms: &[Room]) -> Vec<(String, Seen)> {
                 runs.push(scope.spawn(move || {
                     let mut seen = Seen::default();
                     let mut stirs = 0u32;
-                    for (seed, mood) in moods {
+                    // And in the shopping room, a run that sees a fresh
+                    // still mid-watch (since the door batch's step 2 moved
+                    // her stage gifts, none of the four moods' runs there
+                    // does in line art: of 32 tried, only this one).
+                    let fresh_still: &[(u64, Mood)] = if room.name == "home, shopping" {
+                        &[(0, Mood::Ordinary)]
+                    } else {
+                        &[]
+                    };
+                    for (seed, mood) in moods.into_iter().chain(fresh_still.iter().copied()) {
                         let at = format!("{} {mood:?} seed {seed} graphics={graphics}", room.name);
                         let mut guest = fed_afternoon(room, seed, graphics, mood);
                         if room.name == "home, shopping" {

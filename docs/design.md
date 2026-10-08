@@ -1,6 +1,6 @@
 # DessPlay Design Document
 
-Last updated: 2026-10-07
+Last updated: 2026-10-08
 
 A synchronized video player for watch parties. Terminal-first, built for
 reliability over flaky connections. Server-coordinated, including relayed
@@ -1826,8 +1826,37 @@ this section states what is built.
   (hidden, still owned), and text never moves one. When a strip is
   gone or too small to hold its pieces, they move, together and in
   order, to the first other strip that holds them with its own pieces,
-  every moved piece on free cells, and stay there; with none, they're
-  all in the closet. **Wall pieces**: a piece that hangs (the poster,
+  every moved piece on free cells, none in the chat pane or another
+  strip's door space, and stay there; with none, they're all in the
+  closet. **Her door's space**: one wall of her strips is her external
+  door's, saved with her home once she has a piece. It's chosen from the
+  panes alone, among walls whose strip has her height clear over its
+  floor and room for the space beside her (or beside the widest piece
+  that stands there) and whose space misses the chat pane: a wall at
+  the screen's edge first (the nook's own edge), then one of her pieces'
+  strips, then one where the space would be kept (see below), then pane
+  order, the right before the left. A home with no wall saved (none
+  qualified yet) reads the same choice frame by frame, unsaved. It's
+  chosen again only when her pieces move off its strip: her door goes
+  with them, to the wall of the strip they move to (chosen as above
+  among that strip's walls, else among all), and they're laid out the
+  frame they move as they'll stay. Never for a resize, a frame too
+  short, or the chat pane coming to meet it. A pane hidden while
+  another strip can take her pieces is a move like any other: her
+  pieces and her door go there, and stay when the pane shows again.
+  Against that wall six
+  columns by her height and the floor row are her door's: what stands
+  on that strip packs beside them (an anchor from that wall counts from
+  the space's inner edge), and what hangs keeps out of them, but the
+  poster and the wall clock, which hang above; her window never hangs
+  into them. A piece's share of the way along is always of the whole
+  strip, between its walls. When keeping the space would cost the strip
+  a piece (what stands there doesn't pack beside it, or a piece pushed
+  along would leave a hung one nowhere to hang), it yields for that
+  frame: the strip lays out as with no door. A delivery through her door's wall rests just past the
+  space; its flap is in the wall itself
+  (why: [decisions](decisions.md#her-door-has-its-own-space-at-the-screens-edge-2026-10-08)).
+  **Wall pieces**: a piece that hangs (the poster,
   the window, the wall clock) hangs on its strip's wall, its bottom
   row 4 rows above the floor
   (above the tallest piece that stands, and her head), in a lane of its

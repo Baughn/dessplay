@@ -552,6 +552,22 @@ mod tests {
         );
     }
 
+    /// Her door's wall, once her record has one, is shown by its pane and
+    /// side, after her clock sent; without one, there's no `door` at all.
+    #[test]
+    fn houseguest_shows_her_doors_wall() {
+        assert!(houseguest(Some(RECORD), None).get("door").is_none());
+        let doored = RECORD.replace(
+            r#""clock_sent":true}"#,
+            r#""door":{"strip":{"Bottom":"Users"},"side":"Right"},"clock_sent":true}"#,
+        );
+        let json = houseguest(Some(&doored), None);
+        assert_eq!(json["door"], json!("Users right"));
+        let mut without = json.clone();
+        without.as_object_mut().unwrap().remove("door");
+        assert_eq!(without, houseguest(Some(RECORD), None));
+    }
+
     /// With a real date, her slot is judged by it, and the section says so.
     #[test]
     fn houseguest_slot_is_judged_by_the_date_given() {

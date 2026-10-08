@@ -625,6 +625,9 @@ and its tests 1309, 1754, 2166; mod.rs:3206-3420 (`furnish` → `frame`), 3485-3
    `door: None` (the yield). Guard.
 3. `whether_the_space_is_kept_never_depends_on_anchors` (proptest): `extents()[i].space.kept` is unchanged when the
    strip's pieces are re-anchored at random (T15). Guard; a mutant computing `kept` from `laid_on`/`fits` fails it.
+   **As built (step 2):** floor pieces only. Under the built yield rule (deviation 1 in door-notes.md: kept only
+   when no hung piece is lost either) a hung piece's anchor can flip `kept`; pinned by
+   `an_older_records_window_keeps_its_place_by_her_door` (its window at `Right 0` yields, at `Right 1` keeps).
 4. `only_the_window_hangs_into_her_door_space` (replaces the redundant hang check, T16): for each hung item,
    `stand(..)`'s rect on an extent meets that extent's space rect (rows `f-4..=f`) **iff** it is the window (an
    off-by-one `f-5` fails it through the poster at hang 4).
@@ -641,7 +644,12 @@ and its tests 1309, 1754, 2166; mod.rs:3206-3420 (`furnish` → `frame`), 3485-3
    (from step 6) DoorClear is broken (M5); a wall whose space meets the chat refused; an inner wall when no edge
    qualifies; a resize never re-chooses; **hiding the door's pane and showing it again** keeps the wall (M6, F14);
    `move_off` that moved the door strip's pieces re-chooses on the target; a short frame (rows < 4) saves nothing; a
-   saved wall whose space comes to meet the chat stays saved (F10).
+   saved wall whose space comes to meet the chat stays saved (F10). **As built (step 2):** the DoorClear clause
+   moves to step 6 (its to-do there); a hidden pane keeps the wall only while no other strip can take her pieces
+   (when one can, they move and her door with them, and showing the pane keeps both there: an open question for
+   the user against M6/F14); the move cases are `her_door_follows_her_pieces_not_the_best_wall`,
+   `her_pieces_moving_with_her_door_stand_once_where_they_stay` and `her_pieces_never_move_under_the_chat`, the
+   third key `her_door_goes_where_its_space_is_kept`.
 7. `the_first_tv_rests_past_the_space` (M3): a fresh ledger's first delivery rests with its trailing edge at `w-7`
    on the frame it arrives, and no later frame moves it. Red as designed before `wall()`.
 8. `an_older_record_migrates_without_closeting_anything` (moved here from step 6, T19): a proptest over records
@@ -651,7 +659,9 @@ and its tests 1309, 1754, 2166; mod.rs:3206-3420 (`furnish` → `frame`), 3485-3
    `the_clock_sent_round_trips` still passes; dump.rs's JSON test unchanged (no door) plus a case with one.
 10. rules: `every_repair_mends_and_breaks_nothing` (2281) and `rules_hold_across_a_resize_and_text` (1319) run with
     a door set; `the_fridge_and_the_bookshelf_want_a_wall` (1118) with the fridge beside the space; a repair onto
-    the door's strip lands at the left `search` chose (F7).
+    the door's strip lands at the left `search` chose (F7). **As built (step 2):** F7 is
+    `a_move_onto_her_door_strip_is_weighed_with_the_piece_there` (the proptests can't show it: a stale plan only
+    costs repairs).
 11. `a_poster_is_delivered_where_it_fits_boxed_and_hung` (room.rs:2915) asserts `flap.x` is a wall column (F8).
 - Migrate (T1): tests/window.rs:11-40 (`sofa_and_window_at`'s pinned columns), :307-380 (the old window at
   `Left,1`, the sofa/TV at `Left,0` on `home_screen`, where the door is Users' left wall), away.rs `HOME` (sofa at
@@ -863,6 +873,10 @@ chat: a test built on it proves nothing.
 `furnish` 3366-3401 (trigger), `mend` 3553; the guest's per-row said-day.
 
 **Tests first.** (Every test forces the mood; Lazy never mends, brain.rs:209 `home_acts`, T10.)
+- **Carried from step 2:** step 2 test 6's DoorClear clause (a crowded edge strip is still chosen, its space
+  yields, and DoorClear is broken, M5), deferred here; and decide how DoorClear blames a space that yields for a
+  hung piece (a window the narrowed floor would leave nowhere), which the rule as specified (floor pieces with no
+  use) can't name.
 1. `a_lamp_in_her_door_space_is_felt_and_moved` (tests.rs, `rule_home` 9790 pattern, an older record with `door`
    set; Industrious): the door's strip holds pieces whose widths sum to **raw−5 ..= raw−3** (packs raw, not
    narrowed, kept once the 3-wide lamp leaves), the lamp at `Anchor{Right,0}` and its neighbour a settled no-use

@@ -3446,6 +3446,17 @@ the film's still counts nothing.
   covers only what follows. Aligning them to her breathing's grid, or
   exempting sleep-talk as a stir is, and a night run of the tests, are
   the user's call.
+- **A change of hers less than a frame after a look's** (the door
+  batch's step 2, provisional): a musing due less than a frame after
+  her look up ends now waits a frame (`Osaka::free_to_muse`, both
+  musing sites); and (step 2's review) a line still showing as her look
+  ends shows on until a frame past it (`Osaka::end_look`; the shopping
+  room's Dreamy seed 2 case, once thought a key boundary, was this).
+  The class's other sources stay open: a scripted key boundary a moment
+  after a look's step, and a line said just after one of hers ends
+  (speech end isn't timestamped). The stillness tests are seed-lucky
+  against them; step 10's deep runs should target the class, and
+  whether the holds stay is the user's call.
 - **The stage's cue over a goodbye** cuts its rain short (T3's review):
   left as documented, by the orchestrator's call: a stage-only dev
   scene, predating T3 (decisions.md, "Her empty home rains out whenever

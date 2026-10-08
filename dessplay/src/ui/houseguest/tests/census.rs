@@ -2862,7 +2862,8 @@ fn every_pooled_line_shown_was_drawn_from_its_pool() {
 /// drawing modes, the shopping channel plays on each (it's on at her
 /// first watch), bedtime with her lamp on some, and some uses are
 /// spliced, the chopsticks among them; and on a visit cued one, a sata
-/// andagi (rare enough to play on none of the others). Each splice's
+/// andagi (rare: on the others, one plays on seed 2, just before the
+/// census ends). Each splice's
 /// count agrees with what she was heard to say: "Sata andagi." as many
 /// times as the andagis' branches name it, "Hold 'em by the ends!" once
 /// a bad split; a riddle's question and answer are both pooled lines;
@@ -2886,8 +2887,23 @@ fn the_census_counts_her_vignettes() {
             if let Some(scene) = cue {
                 guest.cue(scene);
             }
-            let (visit, _) = visit_from(&room, guest, 15, |_, _| {});
+            let (visit, guest) = visit_from(&room, guest, 15, |_, _| {});
+            // A splice still playing as the census ends was counted as it
+            // began, and only some of its lines heard (since her door's
+            // space moved her pieces along, an andagi on seed 2 begins 13 s
+            // before the end): its lines are at most its count.
+            let running = match &guest.state {
+                State::Visiting(visit) => visit.osaka.plays_since().is_some(),
+                _ => false,
+            };
             let get = |row: &BTreeMap<String, usize>, k: &str| row.get(k).copied().unwrap_or(0);
+            let heard = |said: usize, named: usize| {
+                if running {
+                    said <= named
+                } else {
+                    said == named
+                }
+            };
             assert_eq!(
                 get(&visit.scripts, "shopping"),
                 1,
@@ -2898,15 +2914,17 @@ fn the_census_counts_her_vignettes() {
                 .iter()
                 .map(|&n| n as usize * get(&visit.splices, &format!("sata andagi ×{n}")))
                 .sum();
-            assert_eq!(
+            assert!(
+                heard(get(&visit.said, SATA_ANDAGI), named),
+                "{at}: {} said, {named} named: {:?}",
                 get(&visit.said, SATA_ANDAGI),
-                named,
-                "{at}: {:?}",
                 visit.splices
             );
-            assert_eq!(
-                get(&visit.said, HOLD_EM),
-                get(&visit.splices, "chopsticks, bad"),
+            assert!(
+                heard(
+                    get(&visit.said, HOLD_EM),
+                    get(&visit.splices, "chopsticks, bad")
+                ),
                 "{at}: {:?}",
                 visit.splices
             );

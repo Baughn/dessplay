@@ -1,6 +1,6 @@
 # DessPlay Decision Log
 
-Last updated: 2026-10-07
+Last updated: 2026-10-08
 
 The reasoning behind the rules in [design.md](design.md): the failure that
 motivated each one, the alternatives that were rejected, and the date it
@@ -4890,6 +4890,29 @@ unwoken (`a_stirs_turn_ends_with_its_murmur_cut_short`, red before). The
 same open class as her look's (above): a line she says a moment before
 her act's key comes less than a frame before it (plan.md).
 
+**A musing waits a frame from her look's end (the door batch, step 2,
+2026-10-08):** her sky musings at the sill and her daydream's musings
+waited for her look up at the chat to be over, but one due a moment
+after it came less than a frame after its end: the door batch's push of
+her pieces moved her afternoon enough for the drawn test to find one
+("home, clock and window, to dusk Dreamy seed 2, an act from 503085
+flipped at 545400 and 546718", her watch's end and "Orange, then
+purple..."). Both now wait until a frame after a look's end, or say it
+at the end itself, with the look's own change (`Osaka::free_to_muse`,
+red first: `her_musing_at_the_sill_waits_a_frame_from_her_look_ending`
+and the daydream test's case). *(Step 2's review, 2026-10-08: the case
+seen once before that push, put down then to the shopping channel's
+key boundary, came back when the review's gift fix moved her afternoon
+("home, shopping Dreamy seed 2, an act from 50088 flipped at 95400 and
+96460"), and it was a line: what her look hid, her pitch, said on at
+94000 for 2460 ms, her look over at 95400, the line gone 1060 ms on. A
+line still showing as her look ends now shows on until a frame past it
+(`Osaka::end_look`; red first:
+`a_line_never_ends_within_a_frame_of_her_look_ending`). Provisional, as
+the musing's hold is.)* The class stays open where it hasn't been seen:
+a scripted key boundary less than a frame after a look's step, and what
+she says a moment after a line of hers ends (plan.md).
+
 **The drawn exemptions combine, and the sky shows round her in ASCII
 (phase 5c's tail, T4, 2026-10-08; T1's review left it):** the world's
 clock's own step (its footprint's changed cells and its dial or sky
@@ -5291,6 +5314,80 @@ rain but not the goodbye's image and pieces, which it paints over the
 dissolve until the rain starts, so in line art it would show a
 different frame; and she would arrive under her own goodbye. No golden
 scene covers any of these paths, so all 112 traces are unchanged.
+
+## Her door has its own space at the screen's edge (2026-10-08)
+
+**Rule:** one wall of her strips is her external door's (`Home.door`,
+saved in her record), chosen by the panes' geometry alone: walls at the
+screen's edge first, then her pieces' strips, then where the space
+would be kept, then pane order, right before left; never a wall whose
+space meets the chat pane. Six columns against it, her height
+and the floor row, are kept: the floor lane of that strip packs beside
+them, the hung lane keeps out of them but for the poster and the clock.
+The space yields (the strip lays out as with no door) when keeping it
+would cost the strip a piece. See
+[design.md](design.md#houseguest), *Her door's space*.
+
+**Why:** the user's plan for her door (plan.md, Phase 38, "Next: the
+door batch"): a reserved space at the screen's edge, floor against a
+wall, never over furniture. **Post-mortem:** her school-morning door
+stood at her feet, found by `restful`, the test for where she may stay,
+which knows nothing of her pieces' covers: on a school morning she
+could go out by a door standing in her sofa or her bed. The door's
+place is now computed from her home and the frame, never her feet; this
+step keeps its space (the door itself moves there in the next step).
+
+**Kept by narrowing, never by `blocked`:** `project` closets a piece
+whose cells meet `blocked`, so a space kept that way would send every
+older home's piece by the screen's edge to the closet. Narrowing the
+floor lane moves them along instead, in order, their anchors unchanged.
+
+**When it yields (the door batch's step 2, found by its proptest):** the
+design first had the space kept whenever what stands packed beside it,
+and a window hung into it go to the closet. An older record showed what
+that costs: the floor six columns narrower pushed her desk into her bed
+and her bed a column along, under her window hung at the far wall beside
+her poster, with nowhere left for the window to hang, so loading the
+record lost the window (`an_older_record_migrates_without_closeting_anything`,
+pinned by `an_older_records_window_keeps_its_place_by_her_door`). The
+space is now kept only when keeping it costs the strip nothing (what
+stands packs beside it, and every hung piece the doorless layout lays
+out is still laid out); else the strip lays out byte for byte as with no
+door, its window free to hang in the space (her door stands elsewhere).
+So whether it's kept depends on where a hung piece is anchored, not
+only on what stands: a repair is still judged on the strip as it would
+be laid out, so this costs a search candidates, never a wrong move.
+
+**Review of step 2 (2026-10-08):** the door was first re-chosen after
+the frame's layout, so the frame her pieces moved laid them out with no
+space, and the next frame hopped them six columns; and a moved piece
+could land in the new door's space. `move_off` now judges each target
+strip with her door already moved there, and the layout follows it. The
+tie-break "where what stands packs beside the space" now asks what
+`kept` asks (no hung piece lost either), so the chooser never prefers a
+wall whose space would yield at once. The design first said the wall
+is never chosen again for "a pane hidden a while": that only holds
+while no other strip can take her pieces. A hidden pane fails the
+layout like a pane that's gone, so her pieces move (as before this
+batch) and her door with them, and showing the pane again keeps both
+where they went. Left as built; whether a hidden pane should hold her
+pieces (and door) in place is an open question for the user.
+
+**Rejected:** a wall derived each frame (the first delivery would move
+it, and her pieces with it, and each pane drag would too); moving the
+room off its strip to make way (a whole room moves for six columns);
+choosing the wall inside `project` (every test of the layout would get
+a door; `Home::frame` settles it before the layout instead, and
+`project` only reads it). A saved wall the chat pane comes to meet is
+not chosen again: it's refused frame by frame, so dragging the pane back
+restores it.
+
+**Older builds:** the record keeps `door` after what she has seen and
+before her clock sent; an older build drops it when it saves the record
+again and lays the door strip's pieces against the raw wall, those
+anchored from the door's wall up to six columns nearer it, until a newer
+build chooses the wall again. Shares (`at`) are always of the raw strip,
+so nothing is lost; the version stays 1.
 
 ## Houseguest chooses by needs among the top few (2026-09-28)
 

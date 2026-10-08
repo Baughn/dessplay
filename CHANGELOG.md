@@ -13,6 +13,8 @@ Add new days at the top. Add new entries at the bottom of existing days.
 
 - Changed: Osaka's once-a-night Dream is said more slowly, each line
   held a little longer as she breathes in her sleep.
+- Changed: furniture by the screen's edge stands a little further
+  along, leaving room for Osaka's door.
 
 ## 2026-10-07
 

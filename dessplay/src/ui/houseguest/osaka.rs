@@ -2007,9 +2007,10 @@ pub(super) struct Osaka {
     /// Whether a slow blink showed at her last tick, so the next tick
     /// can say whether how she looks changed.
     blink_shown: bool,
-    /// When her last look up from her act ended: a slow blink begun
-    /// before then, begun under it, shows none of its remainder.
-    look_ended: u64,
+    /// When her last look up from her act ended, if she has looked up:
+    /// a slow blink begun before then, begun under it, shows none of its
+    /// remainder.
+    look_ended: Option<u64>,
     /// While a chat conversation continues she stands watching it.
     watch_until: u64,
     watch_x: i32,
@@ -2456,7 +2457,7 @@ impl Osaka {
             blink_until: 0,
             ticked: now,
             blink_shown: false,
-            look_ended: 0,
+            look_ended: None,
             watch_until: 0,
             looking_up: None,
             sill: None,
@@ -3231,15 +3232,30 @@ impl Osaka {
             .below("gap", hi.saturating_sub(lo) + 1)
     }
 
+    /// When a musing due at `at` (her daydream's, or at her sill) may be
+    /// said: once what she's saying and her look up at the chat are over,
+    /// and never within a frame after her look's end (a change of hers
+    /// waits a frame from a look's: phase 5c's tail, T4's sibling); at its
+    /// very end, it shows with it. `at` itself when nothing holds it.
+    fn free_to_muse(&self, at: u64) -> u64 {
+        let speaking = self.speech.map_or(0, |(_, until)| until);
+        let looking = self.looking_up.map_or(0, |look| look.until);
+        // Never looked up: nothing to settle from.
+        let settling = match self.look_ended {
+            Some(ended) if at > ended && at < ended + USE_FRAME_MS => ended + USE_FRAME_MS,
+            _ => 0,
+        };
+        speaking.max(looking).max(settling)
+    }
+
     /// Her daydream session's next musing is due at `at` (phase 5c B6):
     /// said now, the `said`th, drawn from the session's whims, unless
     /// she's saying something or looking up at the chat, when it waits
-    /// for that to be over. The last one said, the session is over: she
-    /// spaces out to the end.
+    /// for that to be over, or her look ended less than a frame ago
+    /// ([`Osaka::free_to_muse`]). The last one said, the session is over:
+    /// she spaces out to the end.
     fn muse_on(&mut self, session: Session, at: u64) {
-        let speaking = self.speech.map_or(0, |(_, until)| until);
-        let looking = self.looking_up.map_or(0, |look| look.until);
-        let busy = speaking.max(looking);
+        let busy = self.free_to_muse(at);
         let next = if busy > at {
             Some(Session {
                 next: busy,
@@ -3836,7 +3852,7 @@ impl Osaka {
             Some(look) => look.since.min(start + BLINK_MS),
             None => start + BLINK_MS,
         };
-        (start >= self.look_ended).then_some((start, end))
+        (start >= self.look_ended.unwrap_or(0)).then_some((start, end))
     }
 
     /// Whether she's in a slow blink at `now` (see [`Osaka::held_blinks`]).
@@ -4983,12 +4999,11 @@ impl Osaka {
     /// the `said`th, from the sky as it is now ([`mind::sky_musings`]),
     /// drawn from the session's whims (none, if every line of that sky's
     /// is cooling), unless she's saying something or looking up at the
-    /// chat, when it waits for that to be over. The last one said, she
+    /// chat, when it waits for that to be over, or her look ended less
+    /// than a frame ago ([`Osaka::free_to_muse`]). The last one said, she
     /// leans on in silence.
     fn sill_on(&mut self, session: Session, at: u64) {
-        let speaking = self.speech.map_or(0, |(_, until)| until);
-        let looking = self.looking_up.map_or(0, |look| look.until);
-        let busy = speaking.max(looking);
+        let busy = self.free_to_muse(at);
         self.sill = if busy > at {
             Some(Session {
                 next: busy,
@@ -8800,11 +8815,25 @@ impl Osaka {
     /// ([`Osaka::stir_dozing`]) says its murmur, which holds; nodding off
     /// under her look (her tick) is her act's next key, whose bob starts
     /// on its own grid; and a new act ([`Osaka::set`]) clears the hold.
+    /// A line still showing that would end less than a frame after it
+    /// shows on until a frame after it (a change of hers waits a frame
+    /// from a look's, as [`Osaka::free_to_muse`] has a musing wait).
     fn end_look(&mut self, at: u64) {
         if let Some(look) = self.looking_up.take() {
-            self.look_ended = at;
+            self.look_ended = Some(at);
             if let Some(back) = look.back {
                 self.facing = back;
+            }
+            if let Some((text, until)) = self.speech
+                && until > at
+                && until < at + USE_FRAME_MS
+            {
+                tracing::trace!(
+                    until,
+                    at,
+                    "houseguest: her line shows a frame past her look"
+                );
+                self.speech = Some((text, at + USE_FRAME_MS));
             }
         }
     }
@@ -17656,7 +17685,22 @@ mod tests {
                     Some(Bubble::Say(text)),
                     "{case}: at {at}"
                 );
-                at += speech_ms(text);
+                // Said for its length; or, her look ending less than a
+                // frame before that, until a frame after her look's end.
+                // (A line her next act says over it ends it as it would.)
+                let natural = at + speech_ms(text);
+                osaka.tick(natural - 1, None, &terrain, &chances, &mut rng);
+                at = match osaka.speech {
+                    Some((said, until)) if said == text => {
+                        let held = osaka.look_ended.map(|ended| ended + USE_FRAME_MS);
+                        assert!(
+                            until == natural || (until > natural && Some(until) == held),
+                            "{case}: {text} said at {at} until {until}"
+                        );
+                        until
+                    }
+                    _ => natural,
+                };
             }
             osaka.tick(at, None, &terrain, &chances, &mut rng);
             assert!(
@@ -19211,6 +19255,19 @@ mod tests {
                 [0, look, look + 12_000].map(|at: u64| at.next_multiple_of(250)),
                 "{whims}: {late:?}"
             );
+            // A chat line whose look is over 600 ms before the second
+            // (at 11 400): it waits a frame from the look's end (phase 5c's
+            // tail, T4's sibling; the door batch's step 2), and the third a
+            // gap after it.
+            let (settled, ..) = said(Mood::Dreamy, whims, Some(6_000));
+            let ended = 6_000 + WATCH_MS.max(LOOK_UP_MS);
+            assert_eq!(ended, 11_400);
+            assert_eq!(
+                settled.iter().map(|&(at, _)| at).collect::<Vec<_>>(),
+                [0, ended + USE_FRAME_MS, ended + USE_FRAME_MS + 12_000]
+                    .map(|at: u64| at.next_multiple_of(250)),
+                "{whims}: {settled:?}"
+            );
             // Industrious, her mood's none: nothing to say.
             let (silent, play, session, ..) = said(Mood::Industrious, whims, None);
             assert!(silent.is_empty(), "{whims}: {silent:?}");
@@ -19970,6 +20027,132 @@ mod tests {
             assert!(matches!(osaka.act, Act::Use { seat, .. } if seat == sill_seat()));
         }
         assert!(checked >= 8, "only {checked} mused");
+    }
+
+    /// A line still showing as her look up ends, due to end less than a
+    /// frame after it, shows on until a frame after it: the look's end and
+    /// the line's are never within a frame (the door batch's step 2
+    /// review, "home, shopping Dreamy seed 2": what her look hid, her
+    /// pitch, said at 94000 for 2460 ms, her look over at 95400, the line
+    /// gone at 96460). A line ending with the look, or a frame or more
+    /// after it, keeps its end.
+    #[test]
+    fn a_line_never_ends_within_a_frame_of_her_look_ending() {
+        let terrain = floor_at(15);
+        let chances = Chances::default();
+        for after in [0, 1, 1060, USE_FRAME_MS - 1, USE_FRAME_MS, 3000] {
+            let mut rng = Rng(5);
+            let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+            osaka.splice_rows = &[];
+            osaka.credit = Some(Want::Use(Use::LookOut));
+            osaka.start_job(Job::Use(sill_seat()), 0, &chances, &mut rng);
+            osaka.tick(9_999, None, &terrain, &chances, &mut rng);
+            osaka.look(10_000, 0, false, &terrain);
+            let end = osaka.looking_up.expect("she looks up").until;
+            let text = "A cat bed! For a cat!";
+            osaka.speech = Some((text, end + after));
+            while osaka.looking_up.is_some() {
+                let now = osaka.due();
+                assert!(now <= end, "after {after}: past her look's end");
+                osaka.tick(now, None, &terrain, &chances, &mut rng);
+            }
+            assert_eq!(osaka.look_ended, Some(end), "after {after}");
+            let want = if after == 0 {
+                None
+            } else if after < USE_FRAME_MS {
+                Some((text, end + USE_FRAME_MS))
+            } else {
+                Some((text, end + after))
+            };
+            assert_eq!(osaka.speech, want, "after {after}");
+        }
+    }
+
+    /// A musing due in the first frame of the clock, before she has ever
+    /// looked up, isn't held: no look has ended to settle from.
+    #[test]
+    fn a_musing_before_she_ever_looked_up_waits_for_nothing() {
+        let mut rng = Rng(5);
+        let osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+        assert_eq!(osaka.look_ended, None);
+        for at in [1, 500, USE_FRAME_MS - 1] {
+            assert_eq!(osaka.free_to_muse(at), 0, "due at {at}");
+        }
+    }
+
+    /// Her next musing at her sill, due less than a frame after her look
+    /// up at the chat is over, waits until a frame after it (phase 5c's
+    /// tail, T4's sibling, found when the door batch's step 2 moved her
+    /// pieces: "home, clock and window, to dusk Dreamy seed 2, an act from
+    /// 503085 flipped at 545400 and 546718", her watch's end and a
+    /// musing): a change of hers waits a frame from a look's. Never
+    /// dropped: it comes then, while she still leans there.
+    #[test]
+    fn her_musing_at_the_sill_waits_a_frame_from_her_look_ending() {
+        let terrain = floor_at(15);
+        let chances = Chances::default();
+        let mut checked = 0;
+        for whims in 0..32u64 {
+            for after in [1, 500, USE_FRAME_MS - 1] {
+                let at = format!("whims {whims}, due {after} ms after her look");
+                let mut rng = Rng(5);
+                let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+                osaka.splice_rows = &[];
+                osaka.whims = Whims(whims);
+                osaka.credit = Some(Want::Use(Use::LookOut));
+                osaka.start_job(Job::Use(sill_seat()), 0, &chances, &mut rng);
+                // When she'd muse first, undisturbed.
+                let mut quiet = osaka.clone();
+                let first = loop {
+                    let now = quiet.due();
+                    if now >= 60_000 {
+                        break None;
+                    }
+                    quiet.tick(now, None, &terrain, &chances, &mut rng);
+                    if let Some(&(_, _, when)) = quiet
+                        .said_lines()
+                        .iter()
+                        .find(|(pool, ..)| *pool == mind::PoolId::Sky)
+                    {
+                        break Some(when);
+                    }
+                };
+                let Some(first) = first else { continue };
+                // A line whose look is over `after` ms before it.
+                let Some(line) = first.checked_sub(LOOK_UP_MS + after) else {
+                    continue;
+                };
+                if line <= script::LOOK_OUT_LINE_MS {
+                    continue;
+                }
+                osaka.tick(line - 1, None, &terrain, &chances, &mut rng);
+                osaka.look(line, 0, false, &terrain);
+                let mut now = line;
+                let mut mused = None;
+                while now < first + 30_000 {
+                    now = osaka.due();
+                    osaka.tick(now, None, &terrain, &chances, &mut rng);
+                    if let Some(&(_, _, when)) = osaka
+                        .said_lines()
+                        .iter()
+                        .find(|(pool, ..)| *pool == mind::PoolId::Sky)
+                    {
+                        mused = Some(when);
+                        break;
+                    }
+                }
+                let when = mused.unwrap_or_else(|| panic!("{at}: her musing was dropped"));
+                let ended = osaka.look_ended.expect("she looked up");
+                assert!(ended > line, "{at}: her look is over ({ended})");
+                assert!(
+                    when == ended || when >= ended + USE_FRAME_MS,
+                    "{at}: mused at {when}, her look over at {ended}"
+                );
+                assert!(matches!(osaka.act, Act::Use { seat, .. } if seat == sill_seat()));
+                checked += 1;
+            }
+        }
+        assert!(checked >= 12, "only {checked} mused");
     }
 
     /// From her sill she settles in where she is (phase 5c D6), as often

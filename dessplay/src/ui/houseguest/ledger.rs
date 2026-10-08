@@ -34,13 +34,23 @@
 //! build's), or anything that isn't an id, is skipped, and the rest of
 //! the record still reads.
 //!
+//! Her external door's wall (a strip and its side) comes next, written
+//! only once she has one, and read leniently: anything this build can't
+//! read as a wall reads as none, without failing the record (the next
+//! frame chooses again, deterministically from her home and the panes).
+//! An older build drops it when it saves the record again, and lays the
+//! pieces on that strip against the raw wall: those anchored from the
+//! door's wall stand up to 6 columns nearer it, in her door's space,
+//! until a newer build chooses the wall again (shares, `at`, are always
+//! of the raw strip, so nothing is lost).
+//!
 //! Whether her wall clock has been sent comes last, written only once it
 //! has, and read leniently: anything but `true` reads as not yet.
 
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 
-use super::room::{Anchor, Furniture, Home, Nook, Prop, Strip};
+use super::room::{Anchor, DoorWall, Furniture, Home, Nook, Prop, Side, Strip};
 use super::sprite::Facing;
 
 /// The format this build writes.
@@ -209,6 +219,9 @@ impl Ledger {
             }
             home.props.push(piece);
         }
+        home.door = raw
+            .door
+            .and_then(|v| serde_json::from_value::<DoorWall>(v).ok());
         let ordered = raw
             .ordered
             .and_then(|v| serde_json::from_value::<Furniture>(v).ok())
@@ -276,6 +289,7 @@ impl Ledger {
             legend_at: self.legend_at,
             calendar_on: self.calendar_on.map(|d| d.format(DATE).to_string()),
             seen: self.seen.clone(),
+            door: self.home.door,
             clock_sent: self.clock_sent,
         };
         serde_json::to_string(&raw).unwrap_or_default()
@@ -347,6 +361,14 @@ impl Ledger {
             seen: self.seen.clone(),
             calendar_on: self.calendar_on.map(|d| d.format(DATE).to_string()),
             clock_sent: self.clock_sent,
+            door: self.home.door.map(|door| {
+                let Strip::Bottom(nook) = door.strip;
+                let side = match door.side {
+                    Side::Left => "left",
+                    Side::Right => "right",
+                };
+                format!("{nook:?} {side}")
+            }),
             owns: self
                 .home
                 .props
@@ -396,6 +418,9 @@ pub struct Summary {
     pub calendar_on: Option<String>,
     /// Her wall clock has been sent.
     pub clock_sent: bool,
+    /// Her external door's wall, once she has one ("Users right").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub door: Option<String>,
     /// The pieces she owns.
     pub owns: Vec<Owned>,
     /// Bought and not yet delivered.
@@ -594,6 +619,9 @@ struct Saved {
     /// Left out until she has shown something rare.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     seen: Vec<String>,
+    /// Her door's wall; left out until she has one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    door: Option<DoorWall>,
     /// Left out until her wall clock has been sent.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     clock_sent: bool,
@@ -650,6 +678,8 @@ struct Raw {
     calendar_on: Option<serde_json::Value>,
     #[serde(default)]
     seen: Option<serde_json::Value>,
+    #[serde(default)]
+    door: Option<serde_json::Value>,
     #[serde(default)]
     clock_sent: Option<serde_json::Value>,
 }
@@ -1240,6 +1270,71 @@ mod tests {
             );
             assert_eq!(Ledger::from_json(&text), Ok(furnished()), "{garbage}");
         }
+    }
+
+    /// Her door's wall comes after what she has seen and before her clock
+    /// sent, only once she has one, and reads back.
+    #[test]
+    fn a_door_wall_round_trips() {
+        let text = furnished().to_json();
+        assert!(!text.contains("door"), "{text}");
+        let mut doored = Ledger {
+            clock_sent: true,
+            seen: vec!["dream".to_owned()],
+            ..furnished()
+        };
+        doored.home.door = Some(DoorWall {
+            strip: Strip::Bottom(Nook::Users),
+            side: Side::Right,
+        });
+        let text = doored.to_json();
+        assert!(
+            text.ends_with(
+                r#""seen":["dream"],"door":{"strip":{"Bottom":"Users"},"side":"Right"},"clock_sent":true}"#
+            ),
+            "{text}"
+        );
+        assert_eq!(Ledger::from_json(&text), Ok(doored.clone()));
+        assert_eq!(doored.summary(None).door.as_deref(), Some("Users right"));
+        assert_eq!(furnished().summary(None).door, None);
+    }
+
+    /// A door's wall this build can't read reads as none, without failing
+    /// the record.
+    #[test]
+    fn a_garbled_door_wall_reads_as_none() {
+        for garbage in [
+            // (Read as none by any lenient field; here for completeness.)
+            "null",
+            "1",
+            "\"Users\"",
+            "[]",
+            "{}",
+            r#"{"strip":{"Bottom":"Chat"},"side":"Right"}"#,
+            r#"{"strip":{"Bottom":"Users"},"side":"Up"}"#,
+        ] {
+            let text = furnished().to_json().replace(
+                r#""bought_on":6}"#,
+                &format!(r#""bought_on":6,"door":{garbage}}}"#),
+            );
+            assert!(text.contains(r#""door""#), "{garbage}: not in {text}");
+            assert_eq!(Ledger::from_json(&text), Ok(furnished()), "{garbage}");
+        }
+    }
+
+    /// An older build reads a record with her door's wall as one without.
+    #[test]
+    fn an_older_build_reads_past_the_door() {
+        let mut doored = furnished();
+        doored.home.door = Some(DoorWall {
+            strip: Strip::Bottom(Nook::Playlist),
+            side: Side::Left,
+        });
+        assert!(doored.to_json().contains("door"));
+        assert_eq!(
+            as_an_older_build_reads(&doored.to_json()),
+            as_an_older_build_reads(&furnished().to_json())
+        );
     }
 
     /// Her wall clock and window are pieces older builds don't know: they

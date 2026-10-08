@@ -207,13 +207,16 @@ fn advert(ledger: &Ledger, shop_now: bool, needs: &brain::Needs) -> Option<Furni
 }
 
 /// Her wall clock as `shown` on the strips of `nooks`, if it's out of
-/// its box on one (see [`osaka::Chances::clock`]).
+/// its box on one (see [`osaka::Chances::clock`]). The raw strips: the
+/// room she can read it from is the whole strip, her door's space too.
 fn clock_on(shown: &[Shown], nooks: &[(Nook, Rect)]) -> Option<osaka::ClockOn> {
     let clock = shown
         .iter()
         .find(|s| s.item == Furniture::Clock && !s.boxed && s.scrap.is_none())?;
     let strip = clock.strip?;
-    let (_, extent) = room::strips(nooks).into_iter().find(|&(s, _)| s == strip)?;
+    let (_, extent) = room::raw_strips(nooks)
+        .into_iter()
+        .find(|&(s, _)| s == strip)?;
     let (cols, _) = clock.size();
     Some(osaka::ClockOn {
         x: clock.left + i32::from(cols) / 2,
@@ -224,9 +227,10 @@ fn clock_on(shown: &[Shown], nooks: &[(Nook, Rect)]) -> Option<osaka::ClockOn> {
 }
 
 /// How pretty the room she stands in at `(x, y)` is: the beauty of what
-/// shows on the strip whose floor that is (0 off any strip).
+/// shows on the strip whose floor that is (0 off any strip). The raw
+/// strips: standing in her door's space, she's in that room.
 fn beauty_at(shown: &[Shown], nooks: &[(Nook, Rect)], (x, y): (i32, i32)) -> f64 {
-    room::strips(nooks)
+    room::raw_strips(nooks)
         .into_iter()
         .find(|(_, e)| e.floor == y && (e.from..e.to).contains(&x))
         .map_or(0.0, |(strip, _)| {
@@ -3196,6 +3200,16 @@ fn bubble_spot(
         .find(|&(start, row)| (start..start + len).all(|x| blank(x, row)))
 }
 
+/// The frame's geometry her home is laid out on: `view`'s quiet panes
+/// and chat pane, on `buf`'s screen.
+fn plan_of<'a>(view: &'a IdleView, buf: &Buffer) -> room::Plan<'a> {
+    room::Plan {
+        nooks: &view.nooks,
+        chat: view.chat,
+        screen: buf.area,
+    }
+}
+
 /// Where her furniture stands this frame: the piece she set down taken
 /// where it goes (if it fits there), then any delivery, then the stage's
 /// gift; the rules of her home judged, how she'd put one right worked
@@ -3224,11 +3238,12 @@ fn furnish(
         moved.contains(&(ux, uy)) || view.protected.iter().any(|r| r.contains((ux, uy).into()))
     };
     let home = &mut ledger.home;
-    let mut shown = home.project(buf, &view.nooks, &blocked);
+    let plan = plan_of(view, buf);
+    let mut shown = home.frame(buf, plan, &blocked).0;
     // The stage: a sofa turned away from her TV.
     let cued = std::mem::take(arranging) && stage_arrange(home, buf, view, &blocked);
     if cued {
-        shown = home.project(buf, &view.nooks, &blocked);
+        shown = home.frame(buf, plan, &blocked).0;
     }
     let made: Vec<Rect> = visit.made.iter().map(|m| m.piece.cover()).collect();
     // The piece she set down: where it goes if it fits there and puts
@@ -3250,19 +3265,26 @@ fn furnish(
             .filter(|_| visit.osaka.carrying() == Some(piece));
         match episode.map(|ep| judge_move(home, &frame, &ep)) {
             Some(Some(_)) => {
-                let strips = room::strips(&view.nooks);
-                if let Some(&(_, e)) = strips.iter().find(|(s, _)| *s == to.strip)
-                    && let Some(prop) = home.props.iter_mut().find(|p| p.item == piece)
-                {
-                    let cols = piece.spec().footprint.0;
+                let cols = piece.spec().footprint.0;
+                if let Some(prop) = home.props.iter_mut().find(|p| p.item == piece) {
                     prop.strip = to.strip;
                     prop.anchor = Some(to.anchor);
-                    prop.at = e.pin(e.left(to.anchor, cols), cols).1;
                     prop.facing = to.facing;
                     prop.settled = true;
                 }
+                // Its share of the way along, of the raw strip, where its
+                // anchor stands it on the floor.
+                let plans = home.extents(&view.nooks);
+                if let Some(plan) = plans.iter().find(|p| p.strip == to.strip)
+                    && let Some(prop) = home.props.iter_mut().find(|p| p.item == piece)
+                {
+                    let lane = prop.lane();
+                    prop.at = plan
+                        .pin(lane, plan.along(lane).left(to.anchor, cols), cols)
+                        .1;
+                }
                 visit.osaka.set_down_done(piece, now);
-                shown = home.project(buf, &view.nooks, &blocked);
+                shown = home.frame(buf, plan, &blocked).0;
             }
             Some(None) => {
                 let back = home
@@ -3319,14 +3341,14 @@ fn furnish(
     if let Some(item) = ledger.ordered
         && ledger.bought_on < ledger.visits
         && awake
-        && let Some((prop, flap)) = home.doorstep(buf, &view.nooks, &shown, &blocked, &seats, item)
+        && let Some((prop, flap)) = home.doorstep(buf, plan, &shown, &blocked, &seats, item)
         && home.add(prop)
     {
         tracing::info!(?item, strip = ?prop.strip, "houseguest: a parcel arrived");
         visit.flap = Some((flap, now));
         ledger.ordered = None;
         visit.osaka.say(PARCEL, now);
-        shown = home.project(buf, &view.nooks, &blocked);
+        shown = home.frame(buf, plan, &blocked).0;
     }
     // Her wall clock (phase 5b D7, Q3): a gift, once ever, on her
     // doorstep, the first time she's up and about with her clock fed to
@@ -3349,22 +3371,23 @@ fn furnish(
             .iter()
             .any(|p| p.item == Furniture::Tv && !p.boxed)
         && let Some((prop, flap)) =
-            home.doorstep(buf, &view.nooks, &shown, &blocked, &seats, Furniture::Clock)
+            home.doorstep(buf, plan, &shown, &blocked, &seats, Furniture::Clock)
         && home.add(prop)
     {
         tracing::info!(strip = ?prop.strip, "houseguest: her wall clock arrived");
         visit.flap = Some((flap, now));
         ledger.clock_sent = true;
         visit.osaka.say(PARCEL, now);
-        shown = home.project(buf, &view.nooks, &blocked);
+        shown = home.frame(buf, plan, &blocked).0;
     }
     if let Some(item) = gift.take() {
         shown = place_gift(home, item, note, buf, view, &shown, &blocked, rng);
     }
     // The rules of her home, judged where her pieces are laid out (text
     // closeting one doesn't count), once the frame's home is final.
-    let laid = home.layout(&view.nooks);
-    let broken = rules::broken(&laid, &room::strips(&view.nooks), home);
+    let laid_out = home.laid_out(&view.nooks);
+    let broken = rules::broken(&laid_out, home);
+    let laid = laid_out.shown;
     if broken != visit.broken {
         tracing::trace!(
             broken = ?broken.iter().map(rules::Broken::label).collect::<Vec<_>>(),
@@ -3490,9 +3513,11 @@ fn stage_arrange(
 ) -> bool {
     use room::{Anchor, Side};
     use sprite::Facing;
-    let before = home.clone().project(buf, &view.nooks, blocked);
+    let plan = plan_of(view, buf);
+    let before = home.frame(buf, plan, blocked).0;
     let tv_cols = Furniture::Tv.spec().footprint.0;
-    for (strip, e) in room::strips(&view.nooks) {
+    for strip_plan in home.extents(&view.nooks) {
+        let (strip, e) = (strip_plan.strip, strip_plan.floor);
         let room::Strip::Bottom(nook) = strip;
         for side in [Side::Left, Side::Right] {
             // Both face into the room: the sofa, past the TV, away from
@@ -3508,7 +3533,9 @@ fn stage_arrange(
             ] {
                 let anchor = Anchor { side, offset };
                 let cols = item.spec().footprint.0;
-                let at = e.pin(e.left(anchor, cols), cols).1;
+                let at = strip_plan
+                    .pin(room::Lane::Floor, e.left(anchor, cols), cols)
+                    .1;
                 let prop = room::Prop {
                     anchor: Some(anchor),
                     ..room::Prop::new(item, nook, at, facing)
@@ -3520,7 +3547,10 @@ fn stage_arrange(
                     }
                 }
             }
-            let shown = tried.project(buf, &view.nooks, blocked);
+            // A try, as a frame would lay it out (her door where it would
+            // settle), logging nothing until it's kept.
+            tried.door = tried.wall(plan);
+            let shown = tried.project_with(buf, plan, blocked).0;
             let shows = |item: Furniture| shown.iter().any(|s| s.item == item);
             if shows(Furniture::Tv)
                 && shows(Furniture::Sofa)
@@ -3531,6 +3561,9 @@ fn stage_arrange(
                     ?side,
                     "houseguest: (stage) a sofa turned from the TV"
                 );
+                if tried.door != home.door {
+                    tracing::info!(wall = ?tried.door, "houseguest: her door's wall");
+                }
                 *home = tried;
                 return true;
             }
@@ -3641,7 +3674,7 @@ fn place_gift(
     let result = if home.owns(item) {
         Err(format!("she already has a {}", item.spec().name))
     } else {
-        match home.spot(buf, &view.nooks, shown, blocked, item, rng) {
+        match home.spot(buf, plan_of(view, buf), shown, blocked, item, rng) {
             Some(prop) => {
                 let strip = prop.strip;
                 tracing::info!(?item, ?strip, at = prop.at, "houseguest: new furniture");
@@ -3655,7 +3688,7 @@ fn place_gift(
         }
     };
     *note = Some(result);
-    home.project(buf, &view.nooks, blocked)
+    home.frame(buf, plan_of(view, buf), blocked).0
 }
 
 /// The kinds of her real pieces `shown` (boxed or not): what stands in
@@ -4701,7 +4734,7 @@ fn paint_empty(
         view.protected.iter().any(|r| r.contains((ux, uy).into()))
     };
     let before = ledger.clone();
-    let shown = ledger.home.project(buf, &view.nooks, &blocked);
+    let shown = ledger.home.frame(buf, plan_of(view, buf), &blocked).0;
     let changed = *ledger != before;
     let covers: Vec<Rect> = shown.iter().map(Shown::cover).collect();
     let line_art = graphics.is_some();

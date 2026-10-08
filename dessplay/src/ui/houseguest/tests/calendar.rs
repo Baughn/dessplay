@@ -499,9 +499,12 @@ fn delivered_on_a_frame_with_its_line_on_screen() {
     }
 }
 
-/// Her home with a fridge (for her meals) and her bed.
+/// Her home with a fridge (for her meals) and her bed. The fridge stands
+/// against the Users pane's right wall, clear of her first TV, which comes
+/// in at the left past her door's space (by the left wall, it would push
+/// the fridge from its wall, and she'd say so over her meal's line).
 const FRIDGE: [(Furniture, Nook, u16); 2] = [
-    (Furniture::Fridge, Nook::Users, 0),
+    (Furniture::Fridge, Nook::Users, 1000),
     (Furniture::Bed, Nook::Playlist, 300),
 ];
 

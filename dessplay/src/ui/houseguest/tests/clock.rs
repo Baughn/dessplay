@@ -23,10 +23,15 @@ fn screens() -> [(&'static str, (Buffer, IdleView)); 2] {
 }
 
 /// [`HOME`] at `at` with her wall clock and window hung on the Users
-/// wall, facing `facing` (her clock long since sent).
+/// wall, facing `facing` (her clock long since sent). The window hangs
+/// beside her clock, over nothing that stands and with room to lean at
+/// it from either end: between her door's space at Users' left wall
+/// and her sofa (which stands 6 columns along from that space, on
+/// 18..27, so a window between it and her TV would meet it or leave her
+/// no room at one end).
 fn timed_home(seed: u64, at: routine::GameTime, facing: sprite::Facing, graphics: bool) -> Guest {
     let mut guest = home_at(seed, at, &HOME, graphics);
-    for (item, x) in [(Furniture::Clock, 150), (Furniture::Window, 550)] {
+    for (item, x) in [(Furniture::Clock, 150), (Furniture::Window, 200)] {
         assert!(
             guest
                 .ledger
@@ -714,14 +719,15 @@ fn she_looks_out_only_of_a_window_she_can_reach() {
             // it hangs with its corner behind it instead: never out of
             // reach). (On the 50-wide pane: the sofa at 550 stands on
             // 22..31, the window at 550 would hang on 25..29, wholly
-            // behind it, so it hangs on 29..33; the sofa at 359 on 15..24,
-            // the window at 478 on 22..26, its two left columns behind
-            // the sofa.)
+            // behind it, so it hangs on 29..33; the sofa at 210 on 15..24
+            // (anchored 8 columns from the left wall, and so 6 more along
+            // from her door's space there), the window at 478 on 22..26,
+            // its two left columns behind the sofa.)
             for (piece, x, hung_at, facing) in [
                 (Furniture::Lamp, 550, 550, sprite::Facing::Right),
                 (Furniture::Lamp, 550, 550, sprite::Facing::Left),
                 (Furniture::Sofa, 550, 550, sprite::Facing::Right),
-                (Furniture::Sofa, 359, 478, sprite::Facing::Right),
+                (Furniture::Sofa, 210, 478, sprite::Facing::Right),
             ] {
                 let at = format!("{at} over her {piece:?} at {x} hung at {hung_at} {facing:?}");
                 let mut guest = home_at(
