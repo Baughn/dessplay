@@ -275,7 +275,8 @@ and the carried piece's `ghost` (mod.rs:3403). Every caller builds them with one
 3. **The strict fallback** (`Set::Floor(why)`): if `prev` is a `Set::Floor` spot that still passes this check, it
    stays (M12); else the nearest spot to the space's spot (or `middle(size)` mod.rs:4600 with no wall), by L1 then
    y then x, with `platform` under her box's floor row, her box's cells not `protected`, `her_box(x, y)` meeting no
-   obstacle, and the box missing `plan.chat`. **Text-blind** (not `room::free`, which tests `rect()`, map B1; not
+   obstacle, the box missing `plan.chat`, and (the user's answer, 2026-10-08, step 4a) no plain wall `│`/`┃` in
+   her box above its floor row: it never straddles a pane's border. **Text-blind** (not `room::free`, which tests `rect()`, map B1; not
    `restful`, the root cause; never `furnish`): the spot moves only when pieces, the chat, a protected pane or the
    lines change, never with a pane's text (C7). Identical in both modes.
 4. Else `None`.

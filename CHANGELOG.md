@@ -17,7 +17,7 @@ Add new days at the top. Add new entries at the bottom of existing days.
   along, leaving room for Osaka's door.
 - Fixed: while Osaka is at school her door no longer stands over her
   bed, sofa or desk, or in the chat pane; it stands by the screen's
-  edge where there's room.
+  edge where there's room, and never across a pane's border.
 
 ## 2026-10-07
 

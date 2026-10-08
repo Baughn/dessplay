@@ -2252,7 +2252,8 @@ this section states what is built.
   its wall) when the space is kept and free (nothing she made in it,
   clear of the chat pane, its wall and floor drawn as lines, nothing in
   it protected); else at the nearest floor spot where her box meets
-  none of her pieces, clear of the chat pane and of protected cells (a
+  none of her pieces, clear of the chat pane and of protected cells,
+  never straddling a pane's border (a
   spot it stood at stays while it still fits, so it never hops); else
   nowhere. Text never moves it nor hides it: it stands over pane text;
   only a protected pane (one in use) hides it, and it's back when the

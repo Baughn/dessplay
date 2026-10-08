@@ -278,7 +278,9 @@ fn in_space(
 
 /// Whether her door may stand face-on at `(x, y)`: her box on `screen`,
 /// a floor's line under all of its floor row, none of its cells
-/// protected, meeting no obstacle and missing the chat pane. Text-blind.
+/// protected, no plain wall (`│`) above its floor row (it never
+/// straddles a pane's border), meeting no obstacle and missing the chat
+/// pane. Otherwise text-blind.
 fn on_floor(
     (x, y): (i32, i32),
     screen: Rect,
@@ -295,6 +297,7 @@ fn on_floor(
         && !room::in_chat(chat, her)
         && !obstacles.iter().any(|o| o.intersects(her))
         && (y - HEIGHT..=y).all(|cy| (x - half..=x + half).all(|cx| !ground.protected(cx, cy)))
+        && (y - HEIGHT..y).all(|cy| (x - half..=x + half).all(|cx| !ground.wall(cx, cy)))
 }
 
 /// The middle of `screen`, at its foot: where her door is looked for
@@ -408,6 +411,28 @@ mod tests {
                 return true;
             };
             !self.area.contains((x, y).into())
+        }
+    }
+
+    /// A face-on fallback door never straddles a pane's border (the
+    /// user's answer, 2026-10-08): no cell of her box above the floor row
+    /// is a plain wall. The wall's own stroke on the floor row is floor.
+    #[test]
+    fn a_fallback_door_never_straddles_a_pane_border() {
+        let area = Rect::new(0, 0, 100, 30);
+        let ground = Lines {
+            area,
+            floor: 12,
+            wall: 50,
+        };
+        let half = WIDTH / 2;
+        for x in 40..=60 {
+            let across = (x - half..=x + half).contains(&50);
+            assert_eq!(
+                on_floor((x, 12), area, Rect::default(), &[], &ground),
+                !across,
+                "x {x}"
+            );
         }
     }
 

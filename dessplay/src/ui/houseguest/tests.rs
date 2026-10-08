@@ -6953,8 +6953,9 @@ fn ledge_glyph(symbol: &str) -> bool {
 /// Whether the door design's strict fallback (D4, step 3) takes her box
 /// standing at `(x, y)`: on the screen, a ledge under all 5 cells of its
 /// floor row, none of its cells protected, meeting none of `covers` and
-/// missing `chat` (`Rect::default()`: no chat). Text-blind, as D4 is:
-/// what stands above the floor doesn't matter.
+/// missing `chat` (`Rect::default()`: no chat), and straddling no
+/// pane's border (no `│`/`┃` above the floor row: the user's answer,
+/// 2026-10-08). Otherwise text-blind, as D4 is.
 fn door_floor(
     real: &Buffer,
     protected: &[Rect],
@@ -6971,6 +6972,7 @@ fn door_floor(
         && her.positions().all(|at| {
             !protected.iter().any(|r| r.contains(at))
                 && (i32::from(at.y) != y || ledge_glyph(real.cell(at).unwrap().symbol()))
+                && (i32::from(at.y) == y || !matches!(real.cell(at).unwrap().symbol(), "│" | "┃"))
         })
 }
 

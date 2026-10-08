@@ -5423,6 +5423,13 @@ step 5.
 *Rejected:* hiding the door while text is in its space (the user chose
 the door over the text: it's how you know she's out); keeping the old
 spot while it still fits (that's the bug).
+*A face-on door never straddles a pane's border* (the user's answer,
+2026-10-08, step 4a): D4's strict fallback read no line above the floor
+row, so a fallback door (and her coming home out of it) could stand
+across a pane's `│`, half in each pane. `on_floor` now refuses a plain
+wall (`│`/`┃`) on any of her box's rows above the floor; the floor
+row's own stroke is floor. *Rejected:* letting it straddle (it read as
+the door being in neither room).
 
 **Older builds:** the record keeps `door` after what she has seen and
 before her clock sent; an older build drops it when it saves the record

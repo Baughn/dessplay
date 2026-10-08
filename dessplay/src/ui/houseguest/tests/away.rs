@@ -2034,12 +2034,10 @@ fn her_door_is_never_in_the_chat_on_the_chat_cases() {
             let covers = laid_covers(&guest, &view);
             match name {
                 "(i)" => {
-                    // OPEN QUESTION (i) (door-notes, step 3): this spot is
-                    // (67, 26), her box over List's right border (column
-                    // 69): D4's fallback reads no line above the floor.
-                    // If the user has a face-on door refuse a pane's `│`,
-                    // `door_floor` and this spot change with it.
-                    assert_eq!(door.spot(), (67, 26), "{at}: across List's wall");
+                    // The user's answer (i), 2026-10-08: a face-on door
+                    // never straddles a pane's border. (67, 26) would put
+                    // her box over List's right border (column 69).
+                    assert_eq!(door.spot(), (66, 26), "{at}: clear of List's wall");
                     assert_eq!(door.set(), door::Set::Floor(door::Fallback::Yield), "{at}");
                     let space = space_spot(&real, &view, Nook::Users, room::Side::Right);
                     assert_eq!(
