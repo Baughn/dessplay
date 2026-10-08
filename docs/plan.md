@@ -3558,6 +3558,12 @@ share it.
   - **Only her external door** is kept out of the chat; doors in space
     (about 1.5 s, in her own box; the errand's arrival at the accordion)
     are unchanged.
+- **Second round (2026-10-08):** her door **stands over pane text** while
+  she's out (only a protected pane hides it); she steps through the doorway
+  at **walking pace**; the chat-pane line is *"People are talking here..."*.
+  The working design is
+  [door/design.md](proposals/2026-10-02-houseguest-mind/door/design.md)
+  (steps 1–10; it records the rest as decided unless the user objects).
 - **Decided unless the user objects:** the no-home door uses the same edge
   chooser, unsaved; door-position logging (the spot at info as she goes
   out, a fallback or yield at debug with its reason).
