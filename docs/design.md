@@ -2327,6 +2327,31 @@ this section states what is built.
   moves with it (facing out going out, into the room coming in).
   Nothing is delivered on her way out (a parcel waits for her). The visit ends only once her door has closed
   behind her.
+  In its space her door is drawn side-on in the wall: shut, it is two
+  columns (the wall's own and one before it), turned toward the room,
+  its parcel flap in its lower half. She goes through it at her walking
+  pace, a column a step, cut at the wall's line with the door's front
+  post in front of her; coming in, she holds side-on facing the room
+  until it has shut, and turns to you only as she says she's home. The
+  doorway shows the window's sky at her time of day (a day sky when her
+  clock isn't fed to her). It shows, shut, from the moment she sets off
+  for it (her line, or any walk or heading to it to go out) and, once
+  shown, stays while she's in its space: it never appears or goes beside
+  her, but for text: over pane text, apart from her beats through it,
+  it goes once it has stood there 4 s, even beside her (below). While
+  she's out through it (school, a dash's or work's gap), her slippers
+  stand before it and a card hangs on its knob; they go as it opens. Its
+  own two columns stand over pane text for as long as she's out; her
+  slippers stand only on blank cells and lines (else they aren't drawn).
+  Walking to it or away from it, it stands over text only in passing
+  (4 s), then hides there until her beats through it begin. Any cell of
+  it in a pane in use hides all of it (she still steps through its
+  doorway, cut short of the wall). A goodbye as she steps through it has
+  her jump out of the doorway to wave at her spot, the door behind her
+  as it stood. At a fallback spot (face-on) there's no cue: the shut
+  door stands while she's out, through a work gap too, facing out the
+  one way its spot does throughout (it never turns with her)
+  (why: [decisions](decisions.md#her-door-is-drawn-side-on-2026-10-08)).
   Her home stands empty meanwhile: her pieces, the lamp and TV off, the
   cat as he'll be when she's back, her door. It shows when a visit would
   (the idle gate open, or a resident) and goes as one does: a visitor's
@@ -2334,8 +2359,8 @@ this section states what is built.
   visits off or too small a terminal removes it at once, and a chat line
   changes nothing. With no furniture there's nothing to show. Where
   her door stands is worked out each frame from her home and the
-  frame, never from where she went out: in its space (face-on, facing
-  its wall) when the space is kept and free (nothing she made in it,
+  frame, never from where she went out: in its space (side-on, in its
+  wall) when the space is kept and free (nothing she made in it,
   clear of the chat pane, its wall and floor drawn as lines, nothing in
   it protected); else at the nearest floor spot where her box meets
   none of her pieces, clear of the chat pane and of protected cells,

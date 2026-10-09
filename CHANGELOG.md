@@ -21,6 +21,9 @@ Add new days at the top. Add new entries at the bottom of existing days.
 - Fixed: resizing the terminal while Osaka's door stands open no longer
   shows the door, or her going out or coming in by it, over her
   furniture: she and her door move together to where it now stands.
+- Added: Osaka's front door is drawn side-on in the wall at the screen's
+  edge where there's room; she walks through it, and while she's out her
+  slippers wait before it with a card on the knob.
 
 ## 2026-10-08
 

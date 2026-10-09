@@ -1076,6 +1076,41 @@ fn coming_in(guest: &Guest, now: u64) -> bool {
     matches!(&guest.state, State::Visiting(visit) if visit.osaka.in_by_her_door(now).is_some())
 }
 
+/// The cells her own door may hide text in for as long as she's out
+/// (the user's answer, door batch): while her home stands empty, or in
+/// a visit's gap through it (its beats 6 and 7, she's out), its own
+/// cells: side-on, the shut door's two columns at its wall over its four
+/// rows and the floor row (worked out from the wall's column alone; never
+/// its slippers'), the floor row because its image stands on it
+/// (`Layer::standing`: the image takes in the row under it and redraws
+/// its line); face-on, its box, standing the same way.
+fn out_over_text(guest: &Guest, now: u64) -> Option<Rect> {
+    let spot = match &guest.state {
+        State::Away(empty) => empty
+            .door
+            .as_ref()
+            .filter(|door| !door.cells.is_empty())
+            .map(|door| door.spot),
+        State::Visiting(visit) => match visit.osaka.front_door(now) {
+            Some((spot, osaka::FrontBeat::Wall(6 | 7, _))) => Some(spot),
+            Some((spot, osaka::FrontBeat::Floor(_))) if visit.osaka.hidden(now) => Some(spot),
+            _ => None,
+        },
+        _ => None,
+    }?;
+    let (_, floor) = spot.spot();
+    match spot.wall() {
+        Some((side, wall)) => {
+            let left = match side {
+                room::Side::Right => wall - 1,
+                room::Side::Left => wall,
+            };
+            Some(Rect::new(left as u16, (floor - 4) as u16, 2, 5))
+        }
+        None => spot.rect(),
+    }
+}
+
 /// Her door's space, from where it stands in its wall (worked out from
 /// the wall's column and the floor alone, as the door design names it),
 /// if it stands in one.
@@ -1369,16 +1404,10 @@ fn long_visit_of(
                 }
             }
             // Her closed door, drawn while she's out, stands over text
-            // (the user's answer, door batch): its box hides what's there
-            // for as long as she's out.
-            let shut = match &guest.state {
-                State::Away(empty) => empty
-                    .door
-                    .as_ref()
-                    .filter(|door| !door.cells.is_empty())
-                    .and_then(|door| door.spot.rect()),
-                _ => None,
-            };
+            // (the user's answer, door batch): its own columns hide
+            // what's there for as long as she's out (her slippers'
+            // columns never stand over text: checked).
+            let shut = out_over_text(&guest, now);
             if graphics {
                 // What she moved raining out as she went out by her
                 // routine shows it as it was, holes and all, a moment.
@@ -1419,7 +1448,24 @@ fn long_visit_of(
                     );
                     let with = visit.image.iter().flat_map(|i| &i.with);
                     let union = with.fold(her, |r, p| r.union(p.cover()));
-                    (furniture, area(union))
+                    // Her own door, apart from her image: only what of
+                    // it was drawn (none while it's hidden, and nothing
+                    // her image's rect has counted already).
+                    let door = visit.front.map_or(0, |(front, _)| {
+                        let (left, top, right, bottom) = front.bounds();
+                        (top..bottom)
+                            .flat_map(|y| (left..right).map(move |x| (x, y)))
+                            .filter_map(|(x, y)| {
+                                Some((u16::try_from(x).ok()?, u16::try_from(y).ok()?))
+                            })
+                            .filter(|&(x, y)| {
+                                !union.contains((x, y).into())
+                                    && frame.cell((x, y)) != real.cell((x, y))
+                                    && !raining(&guest, (x, y))
+                            })
+                            .count()
+                    });
+                    (furniture, area(union) + door)
                 }
                 // Her door's box (counted as hers): its image takes in no
                 // piece (it meets none).
@@ -1841,6 +1887,8 @@ fn visiting_at(guest: &mut Guest, real: &Buffer, view: &IdleView, (x, y): (i32, 
         judging: None,
         ghost: None,
         door: None,
+        front: None,
+        front_apart: None,
         size: (real.area.width, real.area.height),
         tuck: false,
         looks: Looks::default(),

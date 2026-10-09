@@ -1096,6 +1096,36 @@ pace). snippets.md's beats note ("the slippers vanish as she steps into them") c
 `draw_flap`'s rule. Text under the door for hours: the slippers' columns only over calm cells. `first_due` needs
 each step or nothing repaints mid-beat. Never make `Osaka::door()` return the wall door for beat 6.
 
+**As built (step 8, 2026-10-09).** osaka.rs: `DoorBeat.step` marks beats 2 and 10; `beat_ms(beat, to, gap)` is the
+one timing (her own door's steps `STEP_THROUGH_MS = 4 × WALK_MS`); `door_beat(elapsed, gap, to)` and `door_at` (index,
+beat, start, end) take the door's `to`, and `through_ms(to)`/`there_ms(to)` replace `DOOR_THROUGH_MS`/
+`DOOR_THERE_MS`, so no reader can time her own door as a door in space; `retimed` keeps a door's beat when
+`door_follows` turns it Home↔Space. `wall_beat(beat, into, shift)` (draw-only): `d` is 1..=4 in beat 2 (`1 +
+into/WALK_MS`) and 3..=0 in beat 10 (`3 - into/WALK_MS`, so her last step in lands at her spot, `Side`); with a shift,
+`Carry` from her first step in through 12 (C13 over C12 for those beats). `Osaka::front_door(now) -> (DoorSpot,
+FrontBeat::{Wall(index, WallBeat), Floor(DoorFrame)})` in every beat incl. the gap (face-on: closed through it);
+`door_in_space(now)` for doors in space; `bound_for_her_door()` (set_off, or a `Job::Leave` walk or heading).
+`first_due` wakes at each step. mod.rs: `placement::Front` (spot, side-on look with sky and crop, or face-on frame,
+and `d`) builds the door's `Cut`, its `post()`, her cut `her(layer)`, her ASCII cell `her_cell` and its glyphs
+`cells()`; `Figure { her, door, front }` carries it when it's in her image (`Figure::cuts(her_layer)`), `Placement`
+unchanged. `front_of` (C3: the act's door at her feet; else bound for it, or it stood last frame and her box meets
+`DoorSpot::room()`), `front_shown` (none with a protected cell; in beats over text in passing; apart from them over
+text for `FRONT_PASSING_MS` = 4 s, its start kept with the latch in `Visit.front: Option<(Front, Option<u64>)>`, so a door that comes again stands over text in passing afresh), `cue_crop` (slippers only on calm cells). In line art the
+door is in her image when their boxes meet, else its own image (`Visit.front_apart`, held by a goodbye as
+`Leaving.front`). `wall_glyph` is the one rule for a wall column (`draw_flap` uses it). `paint_empty` draws
+`Front::at(spot, AWAY, sky, ..)` through `draw_front` (replacing `draw_door`; `Door::closed` is gone). Deviations: the
+`dead_code` allows stay on `WallDoor::Plate` and `art::lean` (step 9 uses them); `open_flap` is not renamed (the
+door's wall cells sit in its image in line art, and the Hidden check runs in line art only); tests.rs:3634's goodbye
+test is about a door in space and needed no change.
+*Review fixes (step 8, 2026-10-10):* `Osaka::redirect_door(to, gap, now)` is the one way a begun door's `to`/`gap`
+change (door_follows, errand, evict, school's gap; `retimed` takes both sides' gaps; it refreshes `act_due`). A door
+hidden whole by a pane in use still cuts her: `Figure` carries `doorway` (the door as it stands) beside `front` (the
+drawn one), `Sprite` likewise; in line art the hidden door's doorway is `Front::short_of_wall` (her image claims no
+wall cell, else it's refused). `front_whole` (`cue_crop`, then the protected test on the cropped bounds) is the one
+rule for `paint_empty` and `front_shown`. The face-on door faces `spot.out()` in every path. `Guest::next_tick` wakes
+when a door's `FRONT_PASSING_MS` runs out. A goodbye draws `Figure::out_of_doorway` (her at her spot, the door
+`stood`, no post). design.md states the text exception to "never beside her" (decisions.md says why).
+
 ### Step 9. Parcels through her door's flap (~750 lines)
 
 **Goal.** D9.
@@ -1136,6 +1166,11 @@ cells cut each other out. The plate swung up reaches `w-5`: inside the space, cl
   header ("for review, not wired in", `worktree.diff` "against `1e44b050`") marked stale-fixed (committed in
   `8eaa25c1`, wired by steps 7-9), and its beats note on the slippers corrected (they go at beat 8).
 - plan.md Phase 38: the batch's record (what landed per step, the census numbers, deviations).
+- Open from step 8's review (map §5's known deviation): in line art `Empty.door.cells` and the frozen cells of her
+  door's image are its ASCII glyph cells only, so a 4-column Away cue's slipper columns are never burst by
+  `door_rain` (an errand) or a goodbye: they go with the image. Either add the cropped image's covered cells
+  (`Front::bounds` rows top..bottom-1) as blank burst cells in `draw_front`/`draw_art`'s `doorway`, or record the
+  deviation in decisions.md as accepted.
 
 ## Goldens
 

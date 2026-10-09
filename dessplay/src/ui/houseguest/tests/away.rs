@@ -52,41 +52,46 @@ fn roomy_screens() -> [(&'static str, (Buffer, IdleView)); 2] {
     [("quiet", home_screen()), ("texty", (texty, view))]
 }
 
-/// Her closed door standing at `door`, as it's drawn.
-fn closed(door: door::DoorSpot) -> Door {
-    let (x, y) = door.spot();
-    Door::closed(x, y, door.out())
+/// Her closed door standing at `door`, as it's drawn while she's out
+/// (her slippers before it, side-on in its wall; face-on, shut).
+fn closed(door: door::DoorSpot) -> Front {
+    Front::at(door, AWAY, art::Sky::Day, None, 0)
 }
 
 /// Whether `frame` shows her closed door at `door` in her empty home
 /// (`empty`, just painted), strictly: none of its cells under any of her
 /// pieces (that's a failure, not a skip); in ASCII, every glyph of it
 /// drawn, over text too (only a wide glyph's cells, which it can't take,
-/// are passed over), and at least one; in line art, her door's image,
-/// closed, there, taking in no piece, with cells of her box drawn.
+/// are passed over; its wall's column over the wall's line), and at
+/// least one; in line art, her door's image, closed, there, taking in no
+/// piece, with cells of it drawn.
 fn door_shows(empty: &Empty, frame: &Buffer, real: &Buffer, door: door::DoorSpot) -> bool {
     let covers: Vec<Rect> = empty.shown.iter().map(Shown::cover).collect();
-    let under_a_piece = closed(door).cells().any(|(x, y, _)| {
-        let (Ok(x), Ok(y)) = (u16::try_from(x), u16::try_from(y)) else {
-            return false;
-        };
-        covers.iter().any(|r| r.contains((x, y).into()))
+    let front = closed(door);
+    let (left, top, right, bottom) = front.bounds();
+    let under_a_piece = (top..bottom - 1).any(|y| {
+        (left..right).any(|x| {
+            let (Ok(x), Ok(y)) = (u16::try_from(x), u16::try_from(y)) else {
+                return false;
+            };
+            covers.iter().any(|r| r.contains((x, y).into()))
+        })
     });
     if under_a_piece {
         return false;
     }
     match &empty.image {
         Some(image) => {
-            let drawn = image.figure.door().map(|d| d.cells().collect::<Vec<_>>());
-            drawn == Some(closed(door).cells().collect())
+            let drawn = (top..bottom).any(|y| (left..right).any(|x| differs(frame, real, (x, y))));
+            image.figure.front().map(Front::spot) == Some(door)
                 && image.figure.her().is_none()
                 && image.with.is_empty()
-                && box_changed(frame, real, door.spot()) > 0
+                && drawn
         }
         None => {
             let mut seen = 0;
             let mut after_wide = false;
-            for (x, y, glyph) in closed(door).cells() {
+            for (x, y, glyph, _) in front.cells() {
                 let (Ok(x), Ok(y)) = (u16::try_from(x), u16::try_from(y)) else {
                     continue;
                 };
@@ -647,9 +652,9 @@ fn resident_at(graphics: bool) -> Guest {
 }
 
 /// A focused pane that takes in only part of her door (its drawn cells
-/// from its middle column rightwards) keeps all of it away: no half a
-/// door outside the pane, and it never moves meanwhile; left alone, it's
-/// back in its space.
+/// in its wall's own column: it stands side-on in the wall) keeps all of
+/// it away: no half a door outside the pane, and it never moves
+/// meanwhile; left alone, it's back in its space.
 #[test]
 fn a_focused_pane_across_her_door_keeps_all_of_it_away() {
     let (w, h) = (100, 30);
@@ -660,13 +665,13 @@ fn a_focused_pane_across_her_door_keeps_all_of_it_away() {
         let quiet = resident_view(w, h, None);
         let mut now = until_away(&mut guest, &real, &quiet, 0);
         let door = guest.closed_door().expect("her door");
-        assert!(door.wall().is_some(), "{at}: in its space");
-        // Her door's drawn cells from its middle column rightwards.
+        let (_, wall) = door.wall().unwrap_or_else(|| panic!("{at}: in its space"));
+        // Her door's drawn cells in its wall's own column.
         let drawn = &empty_of(&guest).expect("away").door.as_ref().unwrap().cells;
         let right: Vec<(u16, u16)> = drawn
             .iter()
             .copied()
-            .filter(|&(x, _)| i32::from(x) >= door.spot().0)
+            .filter(|&(x, _)| i32::from(x) == wall)
             .collect();
         assert!(!right.is_empty(), "{at}: drawn");
         let focus = right
@@ -683,7 +688,8 @@ fn a_focused_pane_across_her_door_keeps_all_of_it_away() {
             .collect();
         let outside: Vec<(u16, u16)> = closed(door)
             .cells()
-            .filter_map(|(x, y, _)| Some((u16::try_from(x).ok()?, u16::try_from(y).ok()?)))
+            .into_iter()
+            .filter_map(|(x, y, ..)| Some((u16::try_from(x).ok()?, u16::try_from(y).ok()?)))
             .filter(|&c| !focus.contains(c.into()) && !covers.iter().any(|r| r.contains(c.into())))
             .collect();
         assert!(!outside.is_empty(), "{at}: some of it outside");
@@ -1285,7 +1291,7 @@ fn an_errand_from_her_empty_home_rains_her_door_out() {
         let State::Visiting(_) = &guest.state else {
             panic!("{at}: visiting");
         };
-        let raining = closed(door).cells().any(|(x, y, _)| {
+        let raining = closed(door).cells().into_iter().any(|(x, y, ..)| {
             let (Ok(x), Ok(y)) = (u16::try_from(x), u16::try_from(y)) else {
                 return false;
             };
@@ -1567,7 +1573,7 @@ fn her_days_case_out_of_her_bed_as_school_begins() {
 
 /// Whether a rain of hers paints any cell of her closed door at `door`.
 fn door_raining(guest: &Guest, door: door::DoorSpot) -> bool {
-    closed(door).cells().any(|(x, y, _)| {
+    closed(door).cells().into_iter().any(|(x, y, ..)| {
         let (Ok(x), Ok(y)) = (u16::try_from(x), u16::try_from(y)) else {
             return false;
         };
@@ -4260,4 +4266,1420 @@ fn a_parcel_is_never_left_on_a_doorstep_in_the_chat() {
             "{at}: left in the chat: {elsewhere:?}"
         );
     }
+}
+
+// ---- Her door side-on in its wall (door batch, step 8) ----
+
+/// The wall door looks among `looks` (what was painted, in order).
+fn wall_doors(looks: &[Look]) -> Vec<(art::WallDoor, art::Sky, u8)> {
+    looks
+        .iter()
+        .filter_map(|look| match *look {
+            Look::WallDoor { door, sky, cols } => Some((door, sky, cols)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Her door's wall and floor row, standing in its space (asserted).
+fn wall_of(door: door::DoorSpot) -> (room::Side, i32, i32) {
+    let door::Set::Wall { side, wall } = door.set() else {
+        panic!("not at its wall: {door:?}");
+    };
+    (side, wall, door.spot().1)
+}
+
+/// The columns `cols` wide at `wall` on `side`, toward the room (the
+/// wall's own column one of them).
+fn toward_room(side: room::Side, wall: i32, cols: i32) -> std::ops::RangeInclusive<i32> {
+    match side {
+        room::Side::Right => wall - cols + 1..=wall,
+        room::Side::Left => wall..=wall + cols - 1,
+    }
+}
+
+/// Whether `frame` changed the cell at `(x, y)` from `real`.
+fn differs(frame: &Buffer, real: &Buffer, (x, y): (i32, i32)) -> bool {
+    let (Ok(x), Ok(y)) = (u16::try_from(x), u16::try_from(y)) else {
+        return false;
+    };
+    frame.cell((x, y)) != real.cell((x, y))
+}
+
+/// One wall's case: its name, the frame, its view, her pieces, and the
+/// side her door's wall is on.
+type WallCase = (
+    &'static str,
+    Buffer,
+    IdleView,
+    Vec<(Furniture, Nook, u16)>,
+    room::Side,
+);
+
+/// Her empty home with her door on each wall: on [`home_screen`] by
+/// Users' left wall (the screen's edge, column 0), on [`rooms_frame`]
+/// by Users' right (column 99).
+fn both_walls() -> [WallCase; 2] {
+    let (left, left_view) = home_screen();
+    let (right, right_view) = rooms_frame(100, 30);
+    [
+        ("left", left, left_view, HOME.to_vec(), room::Side::Left),
+        (
+            "right",
+            right,
+            right_view,
+            vec![(Furniture::Sofa, Nook::Users, 300)],
+            room::Side::Right,
+        ),
+    ]
+}
+
+/// While she's out her door stands side-on in its wall (door batch D8),
+/// not face-on in her box: in line art one image of `Look::WallDoor`
+/// shut with her slippers before it, over its own columns at the wall
+/// (four, on a quiet space) and nothing else of the space; in ASCII the
+/// shut door's two columns of glyphs, the wall's own `|` over the
+/// border's line. A key rains it out, the wall's line back as it was.
+/// Both walls, both modes.
+#[test]
+fn her_door_shows_side_on_in_the_wall() {
+    for (name, real, view, pieces, side) in both_walls() {
+        for graphics in [false, true] {
+            let at = format!("{name} graphics={graphics}");
+            let (mut guest, now) = away_on(&real, &view, &pieces, graphics);
+            if let Some(graphics) = guest.graphics.as_mut() {
+                graphics.take_looks();
+            }
+            let frame = paint(&mut guest, &real, &view, now);
+            let door = guest.closed_door().expect("her door");
+            let (wall_side, wall, floor) = wall_of(door);
+            assert_eq!(wall_side, side, "{at}: {door:?}");
+            let shut = art::WallDoor::Shut {
+                flap: 0,
+                away: true,
+            };
+            let cols = if graphics {
+                let looks = guest.graphics.as_mut().expect("line art").take_looks();
+                assert!(
+                    !looks.iter().any(|l| matches!(l, Look::Door(_))),
+                    "{at}: no face-on door: {looks:?}"
+                );
+                let doors = wall_doors(&looks);
+                assert_eq!(doors.len(), 1, "{at}: {looks:?}");
+                assert_eq!(doors[0].0, shut, "{at}");
+                i32::from(doors[0].2)
+            } else {
+                for (dx, dy, glyph) in sprite::wall_door_cells(shut, side) {
+                    let (x, y) = (wall + dx, floor + dy);
+                    let got = frame
+                        .cell((x as u16, y as u16))
+                        .map(|c| c.symbol().to_owned());
+                    assert_eq!(got, Some(glyph.to_string()), "{at}: at ({x}, {y})");
+                }
+                2
+            };
+            assert_eq!(cols, if graphics { 4 } else { 2 }, "{at}: a quiet space");
+            // Nothing else of her space is drawn over.
+            let drawn = toward_room(side, wall, cols);
+            let space = toward_room(side, wall, room::SPACE + 1);
+            for y in floor - sprite::HEIGHT..=floor {
+                for x in space.clone() {
+                    let changed = differs(&frame, &real, (x, y));
+                    if !drawn.contains(&x) {
+                        assert!(!changed, "{at}: ({x}, {y}) outside its columns");
+                    } else if y < floor && x != wall {
+                        assert!(changed, "{at}: ({x}, {y}) of the door not drawn");
+                    }
+                }
+            }
+            // What it painted over its wall's line is kept for the rain
+            // to put back: each of the door's cells in the wall's column,
+            // over the border's own line.
+            let empty = empty_of(&guest).expect("her home empty");
+            for (dx, dy, glyph) in sprite::wall_door_cells(shut, side) {
+                if dx != 0 {
+                    continue;
+                }
+                let (x, y) = (wall as u16, (floor + dy) as u16);
+                let kept = empty
+                    .painted
+                    .iter()
+                    .find(|c| (c.x, c.y) == (x, y))
+                    .unwrap_or_else(|| panic!("{at}: ({x}, {y}) not kept for the rain"));
+                assert_eq!(
+                    kept.under.symbol(),
+                    real[(x, y)].symbol(),
+                    "{at}: ({x}, {y})"
+                );
+                assert!(matches!(kept.under.symbol(), "│" | "┃"), "{at}: ({x}, {y})");
+                if !graphics {
+                    assert_eq!(kept.glyph, glyph, "{at}: ({x}, {y})");
+                    assert!(
+                        empty
+                            .door
+                            .as_ref()
+                            .is_some_and(|d| d.cells.contains(&(x, y))),
+                        "{at}: ({x}, {y}) not among its drawn cells"
+                    );
+                }
+            }
+            // A key: her home rains out, the wall's line back; every
+            // frame of the rain has her door's glyph or the wall's line
+            // in the wall's column, never a hole.
+            guest.activity(now);
+            let end = now + dissolve::DURATION_MS;
+            let mut t = now;
+            while t < end {
+                t += 50;
+                let frame = paint(&mut guest, &real, &view, t);
+                for dy in -sprite::HEIGHT..0 {
+                    let cell = (wall as u16, (floor + dy) as u16);
+                    assert!(
+                        !frame[cell].symbol().trim().is_empty(),
+                        "{at}: at {t}: a hole in the wall at {cell:?}"
+                    );
+                }
+            }
+            let end = run(&mut guest, &real, &view, t, t + 1000);
+            assert_eq!(end, real, "{at}: the rain restores the frame");
+        }
+    }
+}
+
+/// The one rule for a wall's own column (her door's glyphs there, a
+/// parcel's flap): drawn only over a plain vertical line (`│`/`┃`),
+/// never over anything else there (a corner, a title's letter), and
+/// never in a protected cell (a flap may come in by a pane in use; her
+/// door is hidden whole there before it gets here); what it drew over is
+/// kept for the rain.
+#[test]
+fn a_wall_glyph_goes_only_over_a_plain_wall_line() {
+    let area = Rect::new(0, 0, 3, 4);
+    let mut buf = Buffer::empty(area);
+    buf.set_string(1, 0, "│", Style::new());
+    buf.set_string(1, 1, "┃", Style::new());
+    buf.set_string(1, 2, "┤", Style::new());
+    buf.set_string(1, 3, "T", Style::new());
+    let before = buf.clone();
+    let protected = [Rect::new(1, 1, 1, 1)];
+    let drawn: Vec<Option<char>> = (0..4)
+        .map(|y| super::wall_glyph(&mut buf, 1, y, '|', &protected).map(|f| f.glyph))
+        .collect();
+    assert_eq!(drawn, vec![Some('|'), None, None, None]);
+    assert_eq!(buf[(1, 0)].symbol(), "|");
+    for y in 1..4 {
+        assert_eq!(buf[(1, y)], before[(1, y)], "row {y} untouched");
+    }
+    let mut again = before.clone();
+    let kept = super::wall_glyph(&mut again, 1, 0, '|', &[]).expect("over the line");
+    assert_eq!(kept.under, before[(1, 0)], "the line kept for the rain");
+}
+
+/// One frame of the stage's school scene: when, her door's beat (if
+/// she's in one of her front door's), the looks painted, the frame, and
+/// her (where, pose, what she says, in sight).
+struct SchoolFrame {
+    now: u64,
+    beat: Option<(door::DoorSpot, usize, osaka::WallBeat)>,
+    looks: Vec<Look>,
+    frame: Buffer,
+    at: (i32, i32),
+    pose: Pose,
+    said: Option<Bubble>,
+    hidden: bool,
+    /// Her own door as the frame stood it, drawn or not (C3's latch).
+    front: Option<Front>,
+}
+
+/// The stage's school scene cued on `view` of `real` (her `pieces`, her
+/// clock at `start`, fed or not): she walks to her door, goes out through
+/// it, is out 5 s, and comes back in, saying she's home; then 10 s more.
+/// Every frame painted, at most 50 ms apart.
+fn school_scene_frames(
+    real: &Buffer,
+    view: &IdleView,
+    pieces: &[(Furniture, Nook, u16)],
+    start: routine::GameTime,
+    graphics: bool,
+    fed: bool,
+) -> (Guest, Vec<SchoolFrame>) {
+    let mut guest = home_at(4, start, pieces, graphics);
+    if !fed {
+        guest = guest.unfed();
+    }
+    school_scene_of(guest, real, view, graphics)
+}
+
+/// [`school_scene_frames`] for `guest` as made (her clock at its start).
+fn school_scene_of(
+    mut guest: Guest,
+    real: &Buffer,
+    view: &IdleView,
+    graphics: bool,
+) -> (Guest, Vec<SchoolFrame>) {
+    let mut now = until_visiting(&mut guest, real, view, 0);
+    guest.cue(Scene::School);
+    let mut frames = Vec::new();
+    let (mut hidden, mut home) = (false, None);
+    let limit = now + 120_000;
+    while home.is_none_or(|t| now < t + 10_000) {
+        assert!(now < limit, "graphics={graphics}: never home again");
+        now += guest
+            .next_tick(now)
+            .map_or(50, |d| d.as_millis() as u64)
+            .clamp(1, 50);
+        guest.advance(now);
+        if let Some(graphics) = guest.graphics.as_mut() {
+            graphics.take_looks();
+        }
+        let frame = paint(&mut guest, real, view, now);
+        let looks = guest
+            .graphics
+            .as_mut()
+            .map(Graphics::take_looks)
+            .unwrap_or_default();
+        let State::Visiting(visit) = &guest.state else {
+            panic!("graphics={graphics}: visiting throughout");
+        };
+        let osaka = &visit.osaka;
+        let (pose, _, said) = osaka.appearance(now);
+        hidden |= osaka.hidden(now);
+        if hidden && home.is_none() && says(said, mind::HOME) {
+            home = Some(now);
+        }
+        frames.push(SchoolFrame {
+            now,
+            beat: osaka.wall_beat(now),
+            looks,
+            frame,
+            at: (osaka.x, osaka.y),
+            pose,
+            said,
+            hidden: osaka.hidden(now),
+            front: visit.front.map(|(front, _)| front),
+        });
+    }
+    (guest, frames)
+}
+
+/// Going out through her door in an inner wall and coming back in, she
+/// steps through it a column every `WALK_MS` (beats 2 and 10), each step
+/// held one `WALK_MS`, the last too (beat 3 and 11 begin one after it),
+/// and nothing of her is drawn past the wall: no cell beyond it changes,
+/// and in ASCII none of her glyphs stand in it. Both walls: a right one
+/// (chat case (ii): Users' right wall at column 49, Playlist's pane
+/// beyond it) and a left one (her door in Playlist's left wall at column
+/// 50 on [`home_screen`], Users' border and pane beyond it). In line art
+/// the door's front post is drawn after her while she's in the doorway.
+/// Both modes.
+#[test]
+fn going_out_she_is_clipped_at_the_wall() {
+    let (right, right_view) = chat_over_every_edge_space();
+    let (left, left_view) = home_screen();
+    let cases = [
+        (right, right_view, None, (room::Side::Right, 49)),
+        (
+            left,
+            left_view,
+            Some(room::DoorWall {
+                strip: room::Strip::Bottom(Nook::Playlist),
+                side: room::Side::Left,
+            }),
+            (room::Side::Left, 50),
+        ),
+    ];
+    for (real, view, wall_of_door, want) in cases {
+        for graphics in [false, true] {
+            let at = format!("{want:?} graphics={graphics}");
+            let mut guest = home_at(
+                4,
+                tue(15, 0),
+                &[(Furniture::Sofa, Nook::Users, 500)],
+                graphics,
+            );
+            if wall_of_door.is_some() {
+                guest.ledger.home.door = wall_of_door;
+            }
+            let (_, frames) = school_scene_of(guest, &real, &view, graphics);
+            clipped_at_the_wall(&at, &real, &frames, want);
+        }
+    }
+}
+
+/// [`going_out_she_is_clipped_at_the_wall`]'s checks on one scene's
+/// `frames` over `real`, her door in the wall `want`.
+fn clipped_at_the_wall(at: &str, real: &Buffer, frames: &[SchoolFrame], want: (room::Side, i32)) {
+    let mut steps: Vec<(usize, u64, i32)> = Vec::new();
+    let mut begins: std::collections::BTreeMap<usize, u64> = std::collections::BTreeMap::new();
+    for f in frames {
+        let Some((door, beat, wall_beat)) = f.beat else {
+            continue;
+        };
+        begins.entry(beat).or_insert(f.now);
+        let (side, wall, floor) = wall_of(door);
+        assert_eq!((side, wall), want, "{at}");
+        // Nothing of her or her door past the wall's column.
+        let past = match side {
+            room::Side::Right => wall + 1..wall + 1 + sprite::WIDTH,
+            room::Side::Left => wall - sprite::WIDTH..wall,
+        };
+        for y in floor - sprite::HEIGHT..=floor {
+            for x in past.clone() {
+                assert!(
+                    !differs(&f.frame, real, (x, y)),
+                    "{at}: beat {beat} at {}: ({x}, {y}) past the wall",
+                    f.now
+                );
+            }
+        }
+        let Some((_, d)) = wall_beat.her.filter(|_| beat == 2 || beat == 10) else {
+            continue;
+        };
+        steps.push((beat, f.now, d));
+        if f.looks.is_empty() {
+            // ASCII: the wall's own column is her door's glyph or the
+            // wall's line, never hers.
+            for y in floor - sprite::HEIGHT..floor {
+                let cell = f.frame.cell((wall as u16, y as u16)).map(|c| c.symbol());
+                let door_glyph = sprite::wall_door_cells(wall_beat.door, side)
+                    .into_iter()
+                    .find(|&(dx, dy, _)| dx == 0 && floor + dy == y)
+                    .map(|(_, _, g)| g.to_string());
+                let real_glyph = real.cell((wall as u16, y as u16)).map(|c| c.symbol());
+                assert!(
+                    cell == real_glyph || cell.map(str::to_owned) == door_glyph,
+                    "{at}: beat {beat} d={d} at {}: {cell:?} in the wall at ({wall}, {y})",
+                    f.now
+                );
+            }
+        } else if d > 0 {
+            let her = f.looks.iter().position(|l| matches!(l, Look::Pose(..)));
+            let post = f.looks.iter().position(|l| {
+                matches!(
+                    l,
+                    Look::WallDoor {
+                        door: art::WallDoor::Post,
+                        ..
+                    }
+                )
+            });
+            assert!(
+                her.is_some() && post > her,
+                "{at}: the post over her at {}: {:?}",
+                f.now,
+                f.looks
+            );
+        }
+    }
+    for (beat, ds) in [(2, [1, 2, 3, 4]), (10, [3, 2, 1, 0])] {
+        let seen: Vec<(u64, i32)> = steps
+            .iter()
+            .filter(|s| s.0 == beat)
+            .map(|s| (s.1, s.2))
+            .collect();
+        let mut order: Vec<i32> = seen.iter().map(|s| s.1).collect();
+        order.dedup();
+        assert_eq!(order, ds, "{at}: her steps in beat {beat}");
+        // A column per WALK_MS: each step begins WALK_MS after the last
+        // (to the frame's 50 ms), and the next beat WALK_MS after the
+        // last step: each held one WALK_MS.
+        let mut starts: Vec<u64> = ds
+            .iter()
+            .map(|&d| seen.iter().find(|s| s.1 == d).expect("a step").0)
+            .collect();
+        starts.push(*begins.get(&(beat + 1)).expect("the next beat"));
+        for pair in starts.windows(2) {
+            let gap = pair[1] - pair[0];
+            assert!(
+                (osaka::WALK_MS - 50..=osaka::WALK_MS + 50).contains(&gap),
+                "{at}: beat {beat} steps then the next beat {starts:?}"
+            );
+        }
+    }
+}
+
+/// While she's out through her door, her slippers stand before it with a
+/// card on its knob (`Shut { away: true }`): in her empty home, on a cold
+/// start in school hours, and in a visit's gap (beats 6 and 7); they go
+/// as the door opens (`Ajar` at 8, `Open` at 9), and never show while
+/// she's in. Line art (ASCII has no cue).
+#[test]
+fn while_shes_out_her_slippers_stand_before_it() {
+    let away = art::WallDoor::Shut {
+        flap: 0,
+        away: true,
+    };
+    // Her empty home, and a cold start in school hours.
+    let (real, view) = home_screen();
+    for start in [tue(9, 0), tue(12, 30)] {
+        let mut guest = home_at(4, start, &HOME, true);
+        let mut now = 0;
+        paint(&mut guest, &real, &view, now);
+        while empty_of(&guest).is_none_or(|e| e.size == (0, 0)) {
+            assert!(now < 120_000, "{start:?}: her home never stood empty");
+            shell_step(&mut guest, &real, &view, &mut now, true);
+        }
+        guest.graphics.as_mut().expect("line art").take_looks();
+        paint(&mut guest, &real, &view, now);
+        let looks = guest.graphics.as_mut().expect("line art").take_looks();
+        let doors = wall_doors(&looks);
+        assert!(
+            doors.iter().any(|d| d.0 == away),
+            "{start:?}: her slippers before it: {looks:?}"
+        );
+    }
+    // A visit's gap: the stage's school scene.
+    let (real, view) = rooms_frame(100, 30);
+    let (_, frames) = school_scene_frames(
+        &real,
+        &view,
+        &[(Furniture::Sofa, Nook::Users, 300)],
+        tue(15, 0),
+        true,
+        true,
+    );
+    let mut seen = std::collections::BTreeSet::new();
+    for f in &frames {
+        let doors = wall_doors(&f.looks);
+        let slippers = doors.iter().any(|d| d.0 == away);
+        match f.beat {
+            Some((_, beat @ (6 | 7), _)) => {
+                assert!(slippers, "beat {beat} at {}: {:?}", f.now, f.looks);
+                seen.insert(beat);
+            }
+            Some((_, 8, _)) => {
+                assert!(!slippers, "beat 8 at {}", f.now);
+                assert!(doors.iter().any(|d| d.0 == art::WallDoor::Ajar));
+                seen.insert(8);
+            }
+            Some((_, 9, _)) => {
+                assert!(!slippers, "beat 9 at {}", f.now);
+                assert!(doors.iter().any(|d| d.0 == art::WallDoor::Open));
+                seen.insert(9);
+            }
+            _ => assert!(!slippers, "at {}: slippers while she's in", f.now),
+        }
+    }
+    assert_eq!(
+        seen.into_iter().collect::<Vec<_>>(),
+        vec![6, 7, 8, 9],
+        "every beat of her coming back seen"
+    );
+}
+
+/// Out to school, the frame of beat 6 (her slippers' first) is the one
+/// that ends the visit: she's gone out by her routine (`gone_out`) just
+/// as before the side-on door, and her empty home shows it. Both modes.
+#[test]
+fn a_school_exit_still_ends_the_visit() {
+    let (real, view) = home_screen();
+    for graphics in [false, true] {
+        let at = format!("graphics={graphics}");
+        let mut guest = home_at(4, tue(8, 10), &HOME, graphics);
+        let mut now = until_visiting(&mut guest, &real, &view, 0);
+        let school = real_of(&guest, now, tue(8, 15));
+        loop {
+            assert!(now < school + 120_000, "{at}: never out");
+            let next = now
+                + guest
+                    .next_tick(now)
+                    .map_or(50, |d| d.as_millis() as u64)
+                    .clamp(1, 50);
+            if let State::Visiting(visit) = &guest.state
+                && let Some((_, beat, wall_beat)) = visit.osaka.wall_beat(next)
+                && beat == 6
+            {
+                assert_eq!(
+                    wall_beat.door,
+                    art::WallDoor::Shut {
+                        flap: 0,
+                        away: true
+                    },
+                    "{at}"
+                );
+                assert!(visit.osaka.gone_out(next).is_some(), "{at}: out at beat 6");
+                now = next;
+                guest.advance(now);
+                paint(&mut guest, &real, &view, now);
+                assert!(empty_of(&guest).is_some(), "{at}: her home empty");
+                break;
+            }
+            now = next;
+            guest.advance(now);
+            paint(&mut guest, &real, &view, now);
+            assert!(
+                !matches!(guest.state, State::Away(_)),
+                "{at}: out before her door's beat 6"
+            );
+        }
+    }
+}
+
+/// Whether a frame shows her front door side-on at `wall` (`floor` its
+/// floor row): in line art a wall door look (every frame paints some
+/// look: her pieces at least, asserted), in ASCII its wall column's `|`.
+fn shows_wall_door(f: &SchoolFrame, real: &Buffer, wall: i32, floor: i32, graphics: bool) -> bool {
+    if graphics {
+        assert!(!f.looks.is_empty(), "at {}: no looks taken", f.now);
+        !wall_doors(&f.looks).is_empty()
+    } else {
+        let cell = f.frame.cell((wall as u16, (floor - 1) as u16));
+        cell.is_some_and(|c| c.symbol() == "|") && differs(&f.frame, real, (wall, floor - 1))
+    }
+}
+
+/// Her door never pops in or out beside her (C3): from the first frame
+/// that shows it, no frame shows it or stops showing it while her box
+/// meets her door's space. The stage's school scene on a quiet space (no
+/// text under it, so nothing hides it in passing); it shows while she's
+/// in her door's space (not vacuous). The design's one exception (it may
+/// appear beside her as she sets off, if she sets off in its space) isn't
+/// reached here: she's cued from outside the space, so its appearing is
+/// asserted away from her too. Both modes.
+#[test]
+fn her_door_never_pops_beside_her() {
+    let (real, view) = rooms_frame(100, 30);
+    let space = space_spot(&real, &view, Nook::Users, room::Side::Right);
+    let (wall, floor) = (99, space.1);
+    let rect = Rect::new(
+        (wall - room::SPACE) as u16,
+        (floor - sprite::HEIGHT) as u16,
+        room::SPACE as u16,
+        sprite::HEIGHT as u16 + 1,
+    );
+    for graphics in [false, true] {
+        let at = format!("graphics={graphics}");
+        let (_, frames) = school_scene_frames(
+            &real,
+            &view,
+            &[(Furniture::Sofa, Nook::Users, 300)],
+            tue(15, 0),
+            graphics,
+            true,
+        );
+        let mut shown_beside = 0;
+        let mut last: Option<bool> = None;
+        for f in &frames {
+            let shows = shows_wall_door(f, &real, wall, floor, graphics);
+            let meets =
+                !f.hidden && room::her_box(f.at.0, f.at.1).is_some_and(|b| b.intersects(rect));
+            if meets && shows {
+                shown_beside += 1;
+            }
+            if let Some(was) = last
+                && was != shows
+            {
+                assert!(
+                    !meets,
+                    "{at}: her door {} beside her at {} ({:?})",
+                    if shows { "popped in" } else { "went" },
+                    f.now,
+                    f.at
+                );
+            }
+            last = Some(shows);
+        }
+        assert!(shown_beside > 0, "{at}: never shown beside her");
+    }
+}
+
+/// The doorway shows the window's sky (D8): every look of her door that
+/// shows outside (ajar or open) is under `Sky::at` her time of day; unfed,
+/// a day sky, as her window's. Line art.
+#[test]
+fn the_doorway_shows_the_windows_sky() {
+    let (real, view) = rooms_frame(100, 30);
+    let pieces = [(Furniture::Sofa, Nook::Users, 300)];
+    for (start, fed) in [(tue(18, 0), true), (tue(21, 30), true), (tue(15, 0), false)] {
+        let at = format!("{start:?} fed={fed}");
+        let (guest, frames) = school_scene_frames(&real, &view, &pieces, start, true, fed);
+        let mut outside = 0;
+        for f in &frames {
+            let want = guest.time_of_day(f.now).map_or(art::Sky::Day, art::Sky::at);
+            for (door, sky, _) in wall_doors(&f.looks) {
+                if door.shows_sky() {
+                    outside += 1;
+                    assert_eq!(sky, want, "{at}: {door:?} at {}", f.now);
+                }
+            }
+        }
+        assert!(outside > 0, "{at}: the doorway never showed");
+        if fed {
+            let sky = art::Sky::at((start.minutes() % (24 * 60)) as u16);
+            assert_ne!(sky, art::Sky::Day, "{at}: a sky not the day's");
+        }
+    }
+}
+
+/// Coming in, she holds side-on facing the room from her last step in
+/// (beat 10's last) through her door shutting (12), and her one turn to
+/// the viewer is the line she says as she's home (C12): the next pose
+/// after them is that line's. Both modes.
+#[test]
+fn she_turns_to_the_viewer_once_coming_in() {
+    let (real, view) = rooms_frame(100, 30);
+    for graphics in [false, true] {
+        let at = format!("graphics={graphics}");
+        let (_, frames) = school_scene_frames(
+            &real,
+            &view,
+            &[(Furniture::Sofa, Nook::Users, 300)],
+            tue(15, 0),
+            graphics,
+            true,
+        );
+        let last_step = frames
+            .iter()
+            .position(|f| matches!(f.beat, Some((_, 10, b)) if b.her.is_some_and(|h| h.1 == 0)))
+            .unwrap_or_else(|| panic!("{at}: no last step in"));
+        let mut held = 0;
+        let mut turned = None;
+        for f in &frames[last_step..] {
+            if f.beat.is_some() {
+                assert_eq!(f.pose, Pose::Side, "{at}: side-on at {}", f.now);
+                held += 1;
+                continue;
+            }
+            if f.pose != Pose::Side {
+                turned = Some(f);
+                break;
+            }
+        }
+        assert!(held > 0, "{at}");
+        let turned = turned.unwrap_or_else(|| panic!("{at}: never turned"));
+        assert_eq!(turned.pose, Pose::Stand, "{at}: to the viewer");
+        assert!(
+            says(turned.said, mind::HOME),
+            "{at}: as she says she's home: {:?}",
+            turned.said
+        );
+    }
+}
+
+/// Her slippers never stand over text (door batch D8; the user's answer
+/// lets her door's own two columns stand over it): on the wordy screen
+/// the users listed run under the slippers' columns by her door (Users'
+/// left wall), so it's drawn cropped to the shut door's two columns,
+/// and the text there shows the whole while she's out. Line art (ASCII
+/// draws no slippers).
+#[test]
+fn her_slippers_never_stand_over_text() {
+    let (real, view) = wordy_home_screen();
+    let (mut guest, mut now) = away_on(&real, &view, &HOME, true);
+    let door = guest.closed_door().expect("her door");
+    let (side, wall, floor) = wall_of(door);
+    assert_eq!((side, wall), (room::Side::Left, 0));
+    let slippers: Vec<(i32, i32)> = (floor - sprite::HEIGHT..floor)
+        .flat_map(|y| (wall + 2..=wall + 3).map(move |x| (x, y)))
+        .collect();
+    let texty = slippers
+        .iter()
+        .filter(|&&(x, y)| {
+            real.cell((x as u16, y as u16))
+                .is_some_and(|c| !c.symbol().trim().is_empty())
+        })
+        .count();
+    assert!(texty > 0, "the precondition: text under her slippers");
+    let end = now + 30_000;
+    let mut frames = 0;
+    while now < end {
+        now += 1000;
+        guest.advance(now);
+        guest.graphics.as_mut().expect("line art").take_looks();
+        let frame = paint(&mut guest, &real, &view, now);
+        let looks = guest.graphics.as_mut().expect("line art").take_looks();
+        let doors = wall_doors(&looks);
+        assert_eq!(
+            doors,
+            vec![(
+                art::WallDoor::Shut {
+                    flap: 0,
+                    away: true
+                },
+                art::Sky::Day,
+                2
+            )],
+            "at {now}: cropped to its own two columns"
+        );
+        for &at in &slippers {
+            assert!(!differs(&frame, &real, at), "at {now}: {at:?} drawn over");
+        }
+        frames += 1;
+    }
+    assert!(frames > 0);
+}
+
+/// Her door stands over text only in passing while she's in (door batch
+/// C9): with words in its own columns, as she sets off from the far end
+/// of her home and walks to it (a walk far longer than that), then goes
+/// out through it, no text is hidden behind it
+/// (or her) for longer than her image may hide it, and it's drawn over
+/// the words at least once (in her beats). In line art by the hidden-text
+/// check (her home empty after, the door's own columns stand over the
+/// words: exempt); in ASCII, its glyphs over the words outside her beats
+/// for no longer than [`super::FRONT_PASSING_MS`] (and a frame) at a
+/// time. Both modes.
+#[test]
+fn her_door_stands_over_text_only_in_passing_as_she_goes() {
+    let (mut real, view) = home_screen();
+    for row in 12..16u16 {
+        real.set_string(1, row, "zz", Style::new());
+    }
+    for graphics in [false, true] {
+        let at = format!("graphics={graphics}");
+        // At Playlist's right end as school begins: a long walk to her door.
+        let (mut guest, mut now) = set_down_before_school(&real, &view, (95, 16), graphics);
+        let school = now;
+        let mut hidden = Hidden::default();
+        let (mut over, mut walked) = (0, 0);
+        let mut apart_since: Option<u64> = None;
+        while !matches!(guest.state, State::Away(_)) {
+            assert!(now < school + 120_000, "{at}: never out");
+            now += guest
+                .next_tick(now)
+                .map_or(50, |d| d.as_millis() as u64)
+                .clamp(1, 250);
+            guest.advance(now);
+            if let Some(graphics) = guest.graphics.as_mut() {
+                graphics.take_looks();
+            }
+            let frame = paint(&mut guest, &real, &view, now);
+            let looks = guest
+                .graphics
+                .as_mut()
+                .map(Graphics::take_looks)
+                .unwrap_or_default();
+            let (layer, in_beats): (Vec<(u16, u16)>, bool) = match &guest.state {
+                State::Visiting(visit) => {
+                    if visit.osaka.bound_for_her_door() {
+                        walked += 1;
+                    }
+                    (
+                        visit.layer.cells().collect(),
+                        visit.osaka.front_door(now).is_some(),
+                    )
+                }
+                _ => (Vec::new(), true),
+            };
+            let drawn = door_over_words(graphics, &looks, &frame, &real);
+            if drawn {
+                over += 1;
+            }
+            if graphics {
+                let shut = out_over_text(&guest, now);
+                hidden
+                    .check_raining(
+                        &frame,
+                        &real,
+                        &layer,
+                        &open_flap(&guest, now),
+                        |at| raining(&guest, at) || shut.is_some_and(|r| r.contains(at.into())),
+                        now,
+                    )
+                    .unwrap_or_else(|e| panic!("{e}"));
+            } else if drawn && !in_beats {
+                let since = *apart_since.get_or_insert(now);
+                assert!(
+                    now - since <= super::FRONT_PASSING_MS + 250,
+                    "{at}: over the words from {since} to {now}"
+                );
+            } else {
+                apart_since = None;
+            }
+        }
+        assert!(walked > 0, "{at}: she walked to her door");
+        assert!(over > 0, "{at}: her door drawn over the words");
+    }
+}
+
+/// Whether her shut door (in [`home_screen`]'s left wall, floor row 16)
+/// is drawn over the words in its own column (1): in line art a wall
+/// door look with that cell drawn over; in ASCII its glyphs there.
+fn door_over_words(graphics: bool, looks: &[Look], frame: &Buffer, real: &Buffer) -> bool {
+    if graphics {
+        return !wall_doors(looks).is_empty() && differs(frame, real, (1, 13));
+    }
+    let shut = art::WallDoor::Shut {
+        flap: 0,
+        away: false,
+    };
+    sprite::wall_door_cells(shut, room::Side::Left)
+        .into_iter()
+        .filter(|&(dx, _, _)| dx == 1)
+        .any(|(dx, dy, glyph)| {
+            let cell = (dx as u16, (16 + dy) as u16);
+            frame[cell].symbol() == glyph.to_string() && differs(frame, real, (dx, 16 + dy))
+        })
+}
+
+/// Each time she goes to her door, it stands over text in passing
+/// afresh (door batch C9): home from school through it at 12:45 over the
+/// words in its own columns (its time over them run out as she walks
+/// off), later sent out again from the far end of her home (the stage's
+/// school scene), it's drawn over the words as she walks to it, before
+/// her beats through it begin. Both modes.
+#[test]
+fn her_door_over_text_shows_in_passing_each_time_she_goes() {
+    let (mut real, view) = home_screen();
+    for row in 12..16u16 {
+        real.set_string(1, row, "zz", Style::new());
+    }
+    for graphics in [false, true] {
+        let at = format!("graphics={graphics}");
+        let (mut guest, now) = away_on(&real, &view, &HOME, graphics);
+        let mut now = now;
+        assert!(
+            home_at_1245(&mut guest, &real, &view, now).is_some(),
+            "{at}: home"
+        );
+        // A while in, then at Playlist's right end, sent out again.
+        let later = now + 40_000;
+        while now < later {
+            shell_step(&mut guest, &real, &view, &mut now, true);
+        }
+        while now < real_of(&guest, now, tue(12, 46)) {
+            shell_step(&mut guest, &real, &view, &mut now, true);
+        }
+        let State::Visiting(visit) = &mut guest.state else {
+            panic!("{at}: visiting");
+        };
+        visit.osaka.place(95, 16, now);
+        paint(&mut guest, &real, &view, now);
+        guest.cue(Scene::School);
+        let mut walked_over = 0;
+        let limit = now + 120_000;
+        loop {
+            assert!(now < limit, "{at}: never through her door");
+            now += guest
+                .next_tick(now)
+                .map_or(50, |d| d.as_millis() as u64)
+                .clamp(1, 250);
+            guest.advance(now);
+            if let Some(graphics) = guest.graphics.as_mut() {
+                graphics.take_looks();
+            }
+            let frame = paint(&mut guest, &real, &view, now);
+            let looks = guest
+                .graphics
+                .as_mut()
+                .map(Graphics::take_looks)
+                .unwrap_or_default();
+            let osaka = &visit_of(&guest).osaka;
+            if osaka.wall_beat(now).is_some() {
+                break;
+            }
+            if osaka.bound_for_her_door() && door_over_words(graphics, &looks, &frame, &real) {
+                walked_over += 1;
+            }
+        }
+        assert!(
+            walked_over > 0,
+            "{at}: her door over the words as she walked to it"
+        );
+    }
+}
+
+/// A pane in use across her door's wall column hides her door whole
+/// (door batch, step 8, deviation 6: no half a door beside a pane in
+/// use), never her: going out through it (beats 2 to 4) with such a
+/// pane focused, no cell of her door is drawn, while she's still drawn
+/// stepping through its doorway (`d` columns toward the wall, as
+/// though it stood); the pane left alone again mid-way, her door comes
+/// back whole at once. The pane is the wall's own column only, so it
+/// never meets her box (she's never turned aside). Both modes.
+#[test]
+fn a_pane_in_use_across_her_doors_wall_hides_it_whole_not_her() {
+    let (real, quiet) = rooms_frame(100, 30);
+    for graphics in [false, true] {
+        let at = format!("graphics={graphics}");
+        let sofa = [(Furniture::Sofa, Nook::Users, 300)];
+        let mut guest = home_at(4, tue(15, 0), &sofa, graphics);
+        let mut now = until_visiting(&mut guest, &real, &quiet, 0);
+        guest.cue(Scene::School);
+        let limit = now + 120_000;
+        let step = |guest: &mut Guest, view: &IdleView, now: &mut u64| {
+            *now += guest
+                .next_tick(*now)
+                .map_or(50, |d| d.as_millis() as u64)
+                .clamp(1, 50);
+            guest.advance(*now);
+            if let Some(graphics) = guest.graphics.as_mut() {
+                graphics.take_looks();
+            }
+            let frame = paint(guest, &real, view, *now);
+            let looks = guest
+                .graphics
+                .as_mut()
+                .map(Graphics::take_looks)
+                .unwrap_or_default();
+            let beat = match &guest.state {
+                State::Visiting(visit) => visit.osaka.wall_beat(*now),
+                _ => None,
+            };
+            (frame, looks, beat)
+        };
+        // To her first step through it.
+        let (door, wall, floor) = loop {
+            assert!(now < limit, "{at}: never through her door");
+            let (_, _, beat) = step(&mut guest, &quiet, &mut now);
+            if let Some((door, 2, _)) = beat {
+                let (side, wall, floor) = wall_of(door);
+                assert_eq!(side, room::Side::Right, "{at}");
+                break (door, wall, floor);
+            }
+        };
+        let x = door.spot().0;
+        let strip = Rect::new(wall as u16, 0, 1, 30);
+        // In use (else no pane is kept from her: `Guest::gate`), by a
+        // resident (else she'd say goodbye).
+        let focused = IdleView {
+            busy: Some(Busy::Playing),
+            resident: true,
+            focus: Some(strip),
+            ..quiet.clone()
+        };
+        // Focused to beat 3's middle.
+        let (mut stepping, mut out) = (0, 0);
+        let leave = loop {
+            assert!(now < limit, "{at}: never past beat 3");
+            let (frame, looks, beat) = step(&mut guest, &focused, &mut now);
+            let Some((_, index, wall_beat)) = beat else {
+                panic!("{at}: out of her door's beats at {now}");
+            };
+            assert!(
+                wall_doors(&looks).is_empty(),
+                "{at}: beat {index} at {now}: her door drawn by a pane in use: {looks:?}"
+            );
+            if index == 3 && out > 3 {
+                break now;
+            }
+            if index >= 3 {
+                // Out of sight behind it: nothing of it, nor of her.
+                out += 1;
+                for y in floor - sprite::HEIGHT..floor {
+                    for cx in x - sprite::WIDTH / 2..wall {
+                        assert!(
+                            !differs(&frame, &real, (cx, y)),
+                            "{at}: beat {index} at {now}: ({cx}, {y}) drawn"
+                        );
+                    }
+                }
+                continue;
+            }
+            // (At 4 she's through: none of her in ASCII, C19.)
+            let Some((_, d)) = wall_beat.her.filter(|&(_, d)| d == 3) else {
+                continue;
+            };
+            // Stepped `d` toward the wall: nothing of her left of her
+            // box moved on (its first column `x - 2 + d`), something in it.
+            stepping += 1;
+            let left = x - sprite::WIDTH / 2 + d - 1;
+            for y in floor - sprite::HEIGHT..floor {
+                assert!(
+                    !differs(&frame, &real, (left, y)),
+                    "{at}: d={d} at {now}: ({left}, {y}) drawn: she's not in the doorway"
+                );
+            }
+            assert!(
+                (floor - sprite::HEIGHT..floor).any(|y| (left + 1..wall).any(|cx| differs(
+                    &frame,
+                    &real,
+                    (cx, y)
+                ))),
+                "{at}: d={d} at {now}: she's not drawn"
+            );
+        };
+        assert!(stepping > 0, "{at}: never seen stepping through");
+        // Left alone: her door whole from the next frame, to beat 6.
+        let mut back = 0;
+        loop {
+            assert!(now < leave + 5_000, "{at}: never out");
+            let (frame, looks, beat) = step(&mut guest, &quiet, &mut now);
+            let Some((_, index @ 3..=5, wall_beat)) = beat else {
+                break;
+            };
+            back += 1;
+            if graphics {
+                let doors: Vec<(art::WallDoor, u8)> =
+                    wall_doors(&looks).iter().map(|d| (d.0, d.2)).collect();
+                assert_eq!(
+                    doors,
+                    vec![(wall_beat.door, wall_beat.door.cols())],
+                    "{at}: beat {index} at {now}: her door whole"
+                );
+            } else {
+                for (dx, dy, glyph) in sprite::wall_door_cells(wall_beat.door, room::Side::Right) {
+                    let cell = frame.cell(((wall + dx) as u16, (floor + dy) as u16));
+                    assert_eq!(
+                        cell.map(|c| c.symbol().to_owned()),
+                        Some(glyph.to_string()),
+                        "{at}: beat {index} at {now}: ({}, {}) of her door",
+                        wall + dx,
+                        floor + dy
+                    );
+                }
+            }
+        }
+        assert!(back > 0, "{at}: never seen back");
+    }
+}
+
+/// A pane in use over her slippers' columns alone only crops them (the
+/// user's answer: only a protected pane hides her door, and only the
+/// door's own cells count; the slippers are cropped wherever they
+/// can't stand): while she's out, her door still stands, its own two
+/// columns, as a visit's gap stands it. Line art (ASCII draws no
+/// slippers).
+#[test]
+fn a_pane_in_use_over_her_slippers_only_crops_them() {
+    let (real, quiet) = home_screen();
+    let (mut guest, mut now) = away_on(&real, &quiet, &HOME, true);
+    let door = guest.closed_door().expect("her door");
+    let (side, wall, floor) = wall_of(door);
+    assert_eq!((side, wall), (room::Side::Left, 0));
+    let slippers = Rect::new(
+        (wall + 2) as u16,
+        (floor - sprite::HEIGHT) as u16,
+        2,
+        sprite::HEIGHT as u16,
+    );
+    let focused = IdleView {
+        busy: Some(Busy::Playing),
+        resident: true,
+        focus: Some(slippers),
+        ..quiet.clone()
+    };
+    for _ in 0..5 {
+        now += 1000;
+        guest.advance(now);
+        guest.graphics.as_mut().expect("line art").take_looks();
+        let frame = paint(&mut guest, &real, &focused, now);
+        let looks = guest.graphics.as_mut().expect("line art").take_looks();
+        assert_eq!(guest.closed_door(), Some(door), "at {now}: never moved");
+        assert_eq!(
+            wall_doors(&looks),
+            vec![(super::AWAY, art::Sky::Day, 2)],
+            "at {now}: her door, its own two columns"
+        );
+        for y in floor - sprite::HEIGHT..floor {
+            for x in wall + 2..=wall + 3 {
+                assert!(
+                    !differs(&frame, &real, (x, y)),
+                    "at {now}: ({x}, {y}) drawn"
+                );
+            }
+        }
+    }
+}
+
+/// Her face-on fallback door (a short terminal: its wall's strip too
+/// short for its space) never pops in or out beside her, and never
+/// turns (C3, step 8 review): from the frame that stands it, it comes
+/// and goes only while her box is clear of it, and faces out the one
+/// way its spot does (`DoorSpot::out`) throughout, through her beats,
+/// her coming in and its staying after, never with her. Both modes.
+#[test]
+fn her_face_on_door_never_pops_or_turns_beside_her() {
+    let (real, view) = real_frame(&mut real_ui(), 100, 20);
+    for graphics in [false, true] {
+        let at = format!("graphics={graphics}");
+        let mut guest = home_at(
+            4,
+            tue(15, 0),
+            &[(Furniture::Sofa, Nook::Users, 300)],
+            graphics,
+        );
+        guest.ledger.home.door = Some(room::DoorWall {
+            strip: room::Strip::Bottom(Nook::Users),
+            side: room::Side::Right,
+        });
+        let (_, frames) = school_scene_of(guest, &real, &view, graphics);
+        let (mut beside, mut faced) = (0, 0);
+        let mut last: Option<bool> = None;
+        let mut spot = None;
+        for f in &frames {
+            spot = f.front.map(Front::spot).or(spot);
+            if let Some(front) = f.front {
+                let spot = front.spot();
+                assert!(spot.wall().is_none(), "{at}: face-on: {spot:?}");
+                assert_eq!(
+                    front.facing(),
+                    Some(spot.out()),
+                    "{at}: at {} it faces its spot's way out",
+                    f.now
+                );
+                faced += 1;
+            }
+            let shows = f.front.is_some();
+            let meets = !f.hidden
+                && spot
+                    .and_then(|spot: door::DoorSpot| spot.room())
+                    .zip(room::her_box(f.at.0, f.at.1))
+                    .is_some_and(|(room, her)| room.intersects(her));
+            if meets && shows {
+                beside += 1;
+            }
+            if let Some(was) = last
+                && was != shows
+            {
+                assert!(
+                    !meets,
+                    "{at}: her door {} beside her at {} ({:?})",
+                    if shows { "popped in" } else { "went" },
+                    f.now,
+                    f.at
+                );
+            }
+            last = Some(shows);
+        }
+        assert!(faced > 0 && beside > 0, "{at}: never stood beside her");
+    }
+}
+
+/// Her door's time over text in passing ends on time (step 8 review):
+/// home through it at 12:45 with words in its own columns, while it
+/// stands over them after her beats, her guest's next tick is never
+/// later than when its time there runs out
+/// ([`super::FRONT_PASSING_MS`]), and the frame painted then has it
+/// gone from over the words, however still she stands. Driven by her
+/// own ticks alone. Both modes.
+#[test]
+fn her_door_over_text_goes_on_time_however_still_she_stands() {
+    let (mut real, view) = home_screen();
+    for row in 12..16u16 {
+        real.set_string(1, row, "zz", Style::new());
+    }
+    for graphics in [false, true] {
+        let at = format!("graphics={graphics}");
+        let (mut guest, now) = away_on(&real, &view, &HOME, graphics);
+        let mut now = now;
+        assert!(
+            home_at_1245(&mut guest, &real, &view, now).is_some(),
+            "{at}: home"
+        );
+        let limit = now + 60_000;
+        let (mut timed, mut ended) = (0, 0);
+        let mut due_end: Option<u64> = None;
+        while now < limit {
+            let tick = guest
+                .next_tick(now)
+                .map_or(60_000, |d| d.as_millis() as u64)
+                .max(1);
+            let next = now + tick;
+            if let Some(end) = due_end.filter(|&end| end > now) {
+                assert!(
+                    next <= end,
+                    "{at}: at {now} the next tick {next} is past {end}"
+                );
+                timed += 1;
+            }
+            now = next;
+            guest.advance(now);
+            if let Some(graphics) = guest.graphics.as_mut() {
+                graphics.take_looks();
+            }
+            let frame = paint(&mut guest, &real, &view, now);
+            let looks = guest
+                .graphics
+                .as_mut()
+                .map(Graphics::take_looks)
+                .unwrap_or_default();
+            if due_end.is_some_and(|end| now >= end) {
+                // Its time over the words is out: none of it is drawn
+                // (she may stand over them still: her own image may).
+                assert!(wall_doors(&looks).is_empty(), "{at}: at {now}: {looks:?}");
+                if !graphics {
+                    let shut = art::WallDoor::Shut {
+                        flap: 0,
+                        away: false,
+                    };
+                    for (dx, dy, glyph) in sprite::wall_door_cells(shut, room::Side::Left) {
+                        let cell = frame.cell((dx as u16, (16 + dy) as u16));
+                        assert_ne!(
+                            cell.map(|c| c.symbol().to_owned()),
+                            Some(glyph.to_string()),
+                            "{at}: at {now}: ({dx}, {}) of her door",
+                            16 + dy
+                        );
+                    }
+                }
+                ended += 1;
+                due_end = None;
+            }
+            let State::Visiting(visit) = &guest.state else {
+                break;
+            };
+            let end = visit
+                .front
+                .and_then(|(_, since)| since)
+                .map(|since| since + super::FRONT_PASSING_MS);
+            if due_end.is_none() && end.is_some() && ended == 0 {
+                // Still beside it, a good while (nothing of hers wakes
+                // the frame).
+                let State::Visiting(visit) = &mut guest.state else {
+                    unreachable!()
+                };
+                visit.osaka.stand_still(now + 20_000, now);
+            }
+            due_end = end;
+        }
+        assert!(
+            timed > 0 && ended > 0,
+            "{at}: its time over the words never ran out"
+        );
+    }
+}
+
+/// A goodbye as she steps through her door (beat 2, a step or more
+/// into its doorway): she jumps up out of it, startled then waving at
+/// her spot, uncut (no post of her door over her), her door behind her
+/// as it stood, open. Line art (ASCII's goodbye is her letters).
+#[test]
+fn a_goodbye_mid_doorway_has_her_jump_out_of_it() {
+    let (real, view) = rooms_frame(100, 30);
+    let mut guest = home_at(4, tue(15, 0), &[(Furniture::Sofa, Nook::Users, 300)], true);
+    let mut now = until_visiting(&mut guest, &real, &view, 0);
+    guest.cue(Scene::School);
+    let limit = now + 120_000;
+    loop {
+        assert!(now < limit, "never in her doorway");
+        now += guest
+            .next_tick(now)
+            .map_or(50, |d| d.as_millis() as u64)
+            .clamp(1, 50);
+        guest.advance(now);
+        paint(&mut guest, &real, &view, now);
+        if visit_of(&guest)
+            .osaka
+            .wall_beat(now)
+            .is_some_and(|(_, beat, b)| beat == 2 && b.her.is_some_and(|(_, d)| d >= 2))
+        {
+            break;
+        }
+    }
+    guest.activity(now);
+    assert!(matches!(guest.state, State::Leaving(_)), "a goodbye");
+    let start = now;
+    let (mut her, mut doors) = (0, 0);
+    while now < start + dissolve::RAIN_FROM_MS {
+        now += 50;
+        guest.graphics.as_mut().expect("line art").take_looks();
+        paint(&mut guest, &real, &view, now);
+        let looks = guest.graphics.as_mut().expect("line art").take_looks();
+        let walls = wall_doors(&looks);
+        assert!(
+            !walls.iter().any(|d| d.0 == art::WallDoor::Post),
+            "at {now}: her door's post over her: {looks:?}"
+        );
+        if walls.iter().any(|d| d.0 == art::WallDoor::Open) {
+            doors += 1;
+        }
+        if looks
+            .iter()
+            .any(|l| matches!(l, Look::Pose(..) | Look::Wave(..)))
+        {
+            her += 1;
+        }
+    }
+    assert!(
+        her > 0 && doors > 0,
+        "her ({her}) and her door ({doors}) drawn"
+    );
+}
+
+/// A goodbye while her door stands apart from her (her walk to it after
+/// her set-off, its own image) holds it as it stood until the rain, and
+/// no longer: a wall door look in the goodbye's frames before
+/// `RAIN_FROM_MS`, none after. Line art.
+#[test]
+fn a_goodbye_on_her_way_to_her_door_holds_it_to_the_rain() {
+    let (real, view) = home_screen();
+    let (mut guest, mut now) = set_down_before_school(&real, &view, (95, 16), true);
+    let limit = now + 120_000;
+    loop {
+        assert!(now < limit, "never on her way with her door apart");
+        now += guest
+            .next_tick(now)
+            .map_or(50, |d| d.as_millis() as u64)
+            .clamp(1, 250);
+        guest.advance(now);
+        paint(&mut guest, &real, &view, now);
+        let visit = visit_of(&guest);
+        if visit.osaka.bound_for_her_door() && visit.front_apart.is_some() {
+            break;
+        }
+    }
+    guest.activity(now);
+    assert!(matches!(guest.state, State::Leaving(_)), "a goodbye");
+    let start = now;
+    let (mut held, mut after) = (0, 0);
+    while now < start + dissolve::DURATION_MS {
+        now += 50;
+        guest.graphics.as_mut().expect("line art").take_looks();
+        paint(&mut guest, &real, &view, now);
+        let looks = guest.graphics.as_mut().expect("line art").take_looks();
+        let doors = wall_doors(&looks);
+        if now < start + dissolve::RAIN_FROM_MS {
+            assert_eq!(
+                doors.iter().map(|d| d.0).collect::<Vec<_>>(),
+                vec![art::WallDoor::Shut {
+                    flap: 0,
+                    away: false
+                }],
+                "at {now}: her door as it stood"
+            );
+            held += 1;
+        } else {
+            assert!(doors.is_empty(), "at {now}: past the rain: {looks:?}");
+            after += 1;
+        }
+    }
+    assert!(held > 0 && after > 0);
+}
+
+/// In a visit's gap (beats 6 and 7: the stage's school scene, out a few
+/// seconds and back), her slippers stand only on calm cells, as while
+/// she's out: on the wordy screen, with the users listed under the
+/// slippers' columns by her door, it's drawn cropped to the shut door's
+/// own two columns, and nothing of those columns is drawn over. Line
+/// art (ASCII draws no slippers).
+#[test]
+fn in_a_visits_gap_her_slippers_never_stand_over_text() {
+    let (real, view) = wordy_home_screen();
+    let guest = home_at(4, tue(15, 0), &HOME, true);
+    let (_, frames) = school_scene_of(guest, &real, &view, true);
+    let mut gap = 0;
+    for f in &frames {
+        let Some((door, beat @ (6 | 7), _)) = f.beat else {
+            continue;
+        };
+        let (side, wall, floor) = wall_of(door);
+        assert_eq!((side, wall), (room::Side::Left, 0));
+        let texty = (floor - sprite::HEIGHT..floor)
+            .flat_map(|y| (wall + 2..=wall + 3).map(move |x| (x, y)))
+            .any(|(x, y)| {
+                real.cell((x as u16, y as u16))
+                    .is_some_and(|c| !c.symbol().trim().is_empty())
+            });
+        assert!(texty, "the precondition: text under her slippers");
+        let doors: Vec<(art::WallDoor, u8)> =
+            wall_doors(&f.looks).iter().map(|d| (d.0, d.2)).collect();
+        assert_eq!(
+            doors,
+            vec![(super::AWAY, 2)],
+            "beat {beat} at {}: cropped to its own two columns",
+            f.now
+        );
+        for y in floor - sprite::HEIGHT..floor {
+            for x in wall + 2..=wall + 3 {
+                assert!(
+                    !differs(&f.frame, &real, (x, y)),
+                    "beat {beat} at {}: ({x}, {y}) drawn over",
+                    f.now
+                );
+            }
+        }
+        gap += 1;
+    }
+    assert!(gap > 0, "never in her door's gap");
 }

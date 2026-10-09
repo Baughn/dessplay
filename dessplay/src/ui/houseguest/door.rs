@@ -82,7 +82,6 @@ impl DoorSpot {
     }
 
     /// Its wall, if it stands in one.
-    #[cfg(test)]
     pub(super) fn wall(self) -> Option<(Side, i32)> {
         match self.at {
             Set::Wall { side, wall } => Some((side, wall)),
@@ -93,6 +92,29 @@ impl DoorSpot {
     /// Whether it stands where it does because her pieces fill its space.
     pub(super) fn bumped(self) -> bool {
         self.at == Set::Floor(Fallback::Yield)
+    }
+
+    /// The cells its beats take, which her box meets while she's at it
+    /// (door batch C3): in its wall, its space (the six columns before
+    /// the wall, her height and the floor row); face-on, her box at its
+    /// spot.
+    pub(super) fn room(self) -> Option<Rect> {
+        match self.at {
+            Set::Wall { side, wall } => {
+                let left = match side {
+                    Side::Right => wall - room::SPACE,
+                    Side::Left => wall + 1,
+                };
+                let top = self.y - HEIGHT;
+                Some(Rect::new(
+                    u16::try_from(left).ok()?,
+                    u16::try_from(top).ok()?,
+                    u16::try_from(room::SPACE).ok()?,
+                    u16::try_from(HEIGHT + 1).ok()?,
+                ))
+            }
+            Set::Floor(_) => room::her_box(self.x, self.y),
+        }
     }
 
     /// The box her door takes (her box, standing at its spot).

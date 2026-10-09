@@ -250,8 +250,8 @@ fn a_door_forced_onto_her_sofa_stands_in_its_space_instead() {
     assert!(image.with.is_empty(), "its image takes in {:?}", image.with);
     let looks = guest.graphics.as_mut().expect("line art").take_looks();
     assert!(
-        looks.iter().any(|l| matches!(l, Look::Door(_))),
-        "her door is drawn: {looks:?}"
+        looks.iter().any(|l| matches!(l, Look::WallDoor { .. })),
+        "her door is drawn side-on in its wall: {looks:?}"
     );
 }
 

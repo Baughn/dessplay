@@ -1115,9 +1115,9 @@ pub(super) fn render_door(
 }
 
 /// Her front door, seen side-on in the wall at the screen's edge
-/// (`art/wall-door.svg`; drawn by `graphics::Look::WallDoor`, not yet
-/// wired in).
-#[cfg_attr(not(test), allow(dead_code))]
+/// (`art/wall-door.svg`; drawn by `graphics::Look::WallDoor`, which
+/// `placement::Front` lays: in her empty home and apart from her by
+/// `paint_empty`/`draw_front`, in her image by `draw_art`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) enum WallDoor {
     /// Shut. `flap`: its parcel flap swung up into the room by that
@@ -1139,10 +1139,12 @@ pub(super) enum WallDoor {
     /// already drawn by the shut door) is unused, and past 90 (swung
     /// back past level) is never drawn (`flap_plate` asserts it). The
     /// same bound holds for `Shut { flap }`.
+    // Drawn by the parcel's slide through her door's flap (door batch
+    // step 9); until then, only the tests build it.
+    #[cfg_attr(not(test), allow(dead_code))]
     Plate(u8),
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 impl WallDoor {
     /// The columns of its 6 × 4 frame it inks, counted from the wall's
     /// own (snippets.md, Geometry): shut, the wall's column and the one
@@ -1237,7 +1239,6 @@ const HEDGE_DAY: [u8; 3] = [0x7f, 0xb0, 0x7a];
 /// The hedge outside her door under `sky`: the day's green, mixed toward
 /// the skyline the window shows then (props.svg, the town's silhouette
 /// in each `window-sky-*`), the more the darker the hour.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(super) fn hedge(sky: Sky) -> [u8; 3] {
     let (skyline, k): ([u8; 3], f32) = match sky {
         Sky::Day => return HEDGE_DAY,
@@ -1314,7 +1315,6 @@ fn wall_door_scene(body: &str, facing: Facing, line: &str) -> String {
 /// Left). The whole 6 × 4 frame is
 /// drawn at `width / cols` a column and cut, so a crop is a plain part
 /// of the whole.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(super) fn render_wall_door(
     door: WallDoor,
     sky: Sky,
@@ -1347,6 +1347,8 @@ pub(super) fn render_wall_door(
 /// at (57.5, 82), the frame's units with the wall's line at 70), then
 /// with its free edge on the lid (`168 - 64·scale`, the parcel drawn at
 /// `scale = min(cols·20/100, 1)`). It rises as the parcel comes out.
+// Used by the parcel's slide through her door's flap (door batch step
+// 9); until then, only the tests call it.
 #[cfg_attr(not(test), allow(dead_code))]
 pub(super) fn lean(item: Furniture, lead: i32) -> u8 {
     let scale = (f32::from(item.spec().footprint.0) * CELL_UNITS.0 / PARCEL.0).min(1.0);

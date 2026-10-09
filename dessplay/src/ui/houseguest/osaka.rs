@@ -6,7 +6,7 @@ use super::Rng;
 use super::art::{self, DoorFrame};
 use super::brain::{self, Mood, Need, Needs, Rising, Spot, Want};
 use super::calendar::{self, Owed, Tints};
-use super::door::DoorSpot;
+use super::door::{DoorSpot, Set};
 use super::layer::Placed;
 use super::mind::{self, Beat, Bind, Ctx, Heading, Here, Lines, Loss, PoolId, RIDDLES, Whims};
 use super::rarity::{self, Pity, Rares};
@@ -406,7 +406,7 @@ fn heave_ms(glyphs: usize) -> u64 {
 }
 
 /// Milliseconds per cell walked (3 cells/s: dreamy, not brisk).
-const WALK_MS: u64 = 333;
+pub(super) const WALK_MS: u64 = 333;
 /// Milliseconds per row climbed.
 const CLIMB_MS: u64 = 500;
 /// Gravity in rows/s² — honest for a four-row-tall person.
@@ -1286,6 +1286,73 @@ impl Through {
     }
 }
 
+/// Her front door side-on in its wall in one of her beats through it
+/// (door batch D8): the door's state, and her, if she's in sight, posed
+/// `d` columns from her spot toward the wall (her image cut at its line).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct WallBeat {
+    pub door: art::WallDoor,
+    pub her: Option<(Pose, i32)>,
+}
+
+/// Her own door in one of her beats through it (see
+/// [`Osaka::front_door`]): side-on in its wall, the beat's index and
+/// what's drawn; or face-on (a fallback), its frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum FrontBeat {
+    Wall(usize, WallBeat),
+    Floor(DoorFrame),
+}
+
+/// What her side-on door draws `into` ms into beat `beat` of `DOOR`
+/// (door batch D8, the approved table, with C2, C11-C13): shut, ajar,
+/// open as she steps out through it a column a [`WALK_MS`] (`d` 1 to
+/// 4, toward the wall); open, ajar, shut behind her; her slippers before
+/// it and a card on its knob while she's out (the gap and the far door's
+/// first beat), gone as it opens; open as she steps in (`d` 3 to 0,
+/// carrying her shopping home from work, `shift`); ajar and shut with her
+/// held side-on facing the room (or holding her shopping). Draw-only: the
+/// beats' timing and what they mean are `DOOR`'s.
+fn wall_beat(beat: usize, into: u64, shift: bool) -> WallBeat {
+    use art::WallDoor::{Ajar, Open, Shut};
+    let shut = Shut {
+        flap: 0,
+        away: false,
+    };
+    let away = Shut {
+        flap: 0,
+        away: true,
+    };
+    let step = i32::try_from(into / WALK_MS).unwrap_or(i32::MAX);
+    let side = (Pose::Side, 0);
+    let held = if shift { (Pose::Carry(0), 0) } else { side };
+    let walk = |d: i32| Pose::Walk(d.rem_euclid(4) as u8);
+    let (door, her) = match beat {
+        0 => (shut, Some(side)),
+        1 => (Ajar, Some(side)),
+        2 => {
+            let d = step.saturating_add(1).min(4);
+            (Open, Some((walk(d), d)))
+        }
+        3 | 9 => (Open, None),
+        4 | 8 => (Ajar, None),
+        5 => (shut, None),
+        6 | 7 => (away, None),
+        10 => {
+            let d = 3 - step.min(3);
+            let pose = match d {
+                _ if shift => Pose::Carry(d.rem_euclid(2) as u8),
+                0 => Pose::Side,
+                _ => walk(d),
+            };
+            (Open, Some((pose, d)))
+        }
+        11 => (Ajar, Some(held)),
+        _ => (shut, Some(held)),
+    };
+    WallBeat { door, her }
+}
+
 /// One beat of going through a door: the door (if shown), whether she
 /// is, whether it's the far end yet, and for how long.
 struct DoorBeat {
@@ -1293,6 +1360,9 @@ struct DoorBeat {
     her: bool,
     there: bool,
     ms: u64,
+    /// She steps through the doorway in it (out, or in): through her
+    /// own door, at her walking pace ([`STEP_THROUGH_MS`]).
+    step: bool,
 }
 
 /// A door appears, she steps through, it shuts and goes; a door appears
@@ -1303,96 +1373,133 @@ const DOOR: [DoorBeat; 13] = [
         her: true,
         there: false,
         ms: 600,
+        step: false,
     },
     DoorBeat {
         door: Some(DoorFrame::Ajar),
         her: true,
         there: false,
         ms: 300,
+        step: false,
     },
     DoorBeat {
         door: Some(DoorFrame::Open),
         her: true,
         there: false,
         ms: 700,
+        step: true,
     },
     DoorBeat {
         door: Some(DoorFrame::Open),
         her: false,
         there: false,
         ms: 400,
+        step: false,
     },
     DoorBeat {
         door: Some(DoorFrame::Ajar),
         her: false,
         there: false,
         ms: 250,
+        step: false,
     },
     DoorBeat {
         door: Some(DoorFrame::Closed),
         her: false,
         there: false,
         ms: 350,
+        step: false,
     },
     DoorBeat {
         door: None,
         her: false,
         there: false,
         ms: 600,
+        step: false,
     },
     DoorBeat {
         door: Some(DoorFrame::Closed),
         her: false,
         there: true,
         ms: 400,
+        step: false,
     },
     DoorBeat {
         door: Some(DoorFrame::Ajar),
         her: false,
         there: true,
         ms: 250,
+        step: false,
     },
     DoorBeat {
         door: Some(DoorFrame::Open),
         her: false,
         there: true,
         ms: 350,
+        step: false,
     },
     DoorBeat {
         door: Some(DoorFrame::Open),
         her: true,
         there: true,
         ms: 600,
+        step: true,
     },
     DoorBeat {
         door: Some(DoorFrame::Ajar),
         her: true,
         there: true,
         ms: 300,
+        step: false,
     },
     DoorBeat {
         door: Some(DoorFrame::Closed),
         her: true,
         there: true,
         ms: 400,
+        step: false,
     },
 ];
 
-/// The door beat `elapsed` ms in, and when the next begins; `None` once
-/// it's over. `gap` stretches the time between the doors (she's away).
-fn door_beat(elapsed: u64, gap: u64) -> Option<(&'static DoorBeat, u64)> {
+/// How long she takes over each step through her own door's doorway
+/// (beats 2 and 10, door batch C11): her walking pace, a column a
+/// [`WALK_MS`] over the four between her spot and through the wall.
+const STEP_THROUGH_MS: u64 = 4 * WALK_MS;
+
+/// How long `beat` of a door to `to` lasts: `gap` stretches the time
+/// between the doors (she's away), and her own door (`Through::Home`)
+/// her steps through it, to walking pace. Every door's timing goes
+/// through here, so none reads another door's.
+fn beat_ms(beat: &DoorBeat, to: Through, gap: u64) -> u64 {
+    if beat.door.is_none() {
+        beat.ms.max(gap)
+    } else if beat.step && matches!(to, Through::Home(_)) {
+        STEP_THROUGH_MS
+    } else {
+        beat.ms
+    }
+}
+
+/// The door beat `elapsed` ms into a door to `to` with `gap` between
+/// its doors: its index, the beat, when it began and when the next
+/// begins; `None` once it's over.
+fn door_at(elapsed: u64, gap: u64, to: Through) -> Option<(usize, &'static DoorBeat, u64, u64)> {
     let mut end: u64 = 0;
+    let mut start: u64 = 0;
     // Saturating: her routine's door out has a gap that never ends
     // (`u64::MAX`, see `Osaka::leaving`).
     script::at(&DOOR, elapsed, |beat| {
-        end = end.saturating_add(if beat.door.is_none() {
-            beat.ms.max(gap)
-        } else {
-            beat.ms
-        });
+        start = end;
+        end = end.saturating_add(beat_ms(beat, to, gap));
         end
     })
-    .map(|(_, beat, end)| (beat, end))
+    .map(|(index, beat, end)| (index, beat, start, end))
+}
+
+/// The door beat `elapsed` ms into a door to `to`, and when the next
+/// begins; `None` once it's over (see [`door_at`]).
+fn door_beat(elapsed: u64, gap: u64, to: Through) -> Option<(&'static DoorBeat, u64)> {
+    door_at(elapsed, gap, to).map(|(_, beat, _, end)| (beat, end))
 }
 
 /// What she heads for her door for, on her way out by it for `why`
@@ -1409,31 +1516,48 @@ fn leave_want(why: Leave) -> Want {
 /// through her door before she comes back in.
 const STAGE_GAP_MS: u64 = 5000;
 
-/// How long a door takes to let her through and close behind her: the
-/// beats before the gap.
-const DOOR_THROUGH_MS: u64 = {
-    let mut ms = 0;
-    let mut i = 0;
-    while i < DOOR.len() && DOOR[i].door.is_some() {
-        ms += DOOR[i].ms;
-        i += 1;
-    }
-    ms
-};
+/// When a door begun at `since`, its beats timed for `from` (a door to
+/// it with its gap), began as a door `to` (to it, with its gap: its
+/// beats timed so) that stands at `now` in the same beat as far in
+/// (clamped to the beat): her own door's steps take longer than a door
+/// in space's (see [`beat_ms`]), and a gap is beat 6's length, so a door
+/// that turns from one to the other mid-way keeps its beat, never
+/// jumping back or on (her shown again, or gone at once). Only
+/// [`Act::redirect_door`] calls it.
+fn retimed(since: u64, now: u64, from: (Through, u64), to: (Through, u64)) -> u64 {
+    let Some((index, _, start, _)) = door_at(now.saturating_sub(since), from.1, from.0) else {
+        return since;
+    };
+    let into = now.saturating_sub(since).saturating_sub(start);
+    let before: u64 = DOOR
+        .iter()
+        .take(index)
+        .map(|beat| beat_ms(beat, to.0, to.1))
+        .fold(0, u64::saturating_add);
+    let length = DOOR.get(index).map_or(1, |beat| beat_ms(beat, to.0, to.1));
+    now.saturating_sub(before.saturating_add(into.min(length.saturating_sub(1))))
+}
 
-/// How far into a door's beats (with no gap) the far door first shows,
-/// closed: a door she comes out of starts there, so a door standing
-/// closed where she comes out (her closed door while she's away, see
-/// `State::Away`) goes straight on into hers, and never blinks away.
-const DOOR_THERE_MS: u64 = {
-    let mut ms = 0;
-    let mut i = 0;
-    while i < DOOR.len() && !DOOR[i].there {
-        ms += DOOR[i].ms;
-        i += 1;
-    }
-    ms
-};
+/// How long a door to `to` takes to let her through and close behind
+/// her: the beats before the gap.
+fn through_ms(to: Through) -> u64 {
+    DOOR.iter()
+        .take_while(|beat| beat.door.is_some())
+        .map(|beat| beat_ms(beat, to, 0))
+        .sum()
+}
+
+/// How far into a door's beats to `to` (with no gap) the far door first
+/// shows, closed: a door she comes out of starts there, so a door
+/// standing closed where she comes out (her closed door while she's
+/// away, see `State::Away`) goes straight on into hers, and never
+/// blinks away.
+fn there_ms(to: Through) -> u64 {
+    DOOR.iter()
+        .take_while(|beat| !beat.there)
+        .map(|beat| beat_ms(beat, to, 0))
+        .sum()
+}
 
 /// A spot on a floor where her box is `clear` (of the focused pane),
 /// chosen at random, the chat's floors [`CHAT_FACTOR`] as likely.
@@ -2818,6 +2942,12 @@ impl Osaka {
         )
     }
 
+    /// Test fixture: stand still where she is from `now` to `until`.
+    #[cfg(test)]
+    pub fn stand_still(&mut self, until: u64, now: u64) {
+        self.set(Act::Stand { until }, now);
+    }
+
     /// Test fixture: reach for `swap` now (she must stand at its spot).
     #[cfg(test)]
     pub fn swap_now(&mut self, swap: super::scenes::Swap, now: u64) {
@@ -2925,6 +3055,26 @@ impl Osaka {
     /// frame sees the door where it stood before a resize; and again by
     /// her tick (`take_in`: the same chances, a no-op then).
     ///
+    /// Her door (`Act::Door`) turned to `to` with `gap` between its
+    /// doors, at `now`, in the beat it stands in (as far in, see
+    /// [`retimed`]): the one way a door's far side or gap changes once
+    /// it's begun (door batch, step 8 review), so a door of hers turned
+    /// into one in space (or back) by whatever turns it never jumps a
+    /// beat, and her wakes follow its new beats. Nothing but a door.
+    fn redirect_door(&mut self, to: Through, gap: u64, now: u64) {
+        let Act::Door {
+            since,
+            to: was,
+            gap: had,
+        } = &mut self.act
+        else {
+            return;
+        };
+        *since = retimed(*since, now, (*was, *had), (to, gap));
+        (*was, *had) = (to, gap);
+        self.act_due = self.first_due(now);
+    }
+
     /// Out at work by a door in space (a focused pane moved her door's
     /// far side, or there was no door of hers to go to; door batch M10):
     /// while she's out of sight between its doors, where the frame stands
@@ -2941,14 +3091,14 @@ impl Osaka {
     ) {
         let (x, y) = (self.x, self.y);
         let at_work = self.shift == Some(Shift::Out);
-        let Act::Door { since, to, gap } = &mut self.act else {
+        let Act::Door { since, to, gap } = self.act else {
             return;
         };
-        let Some((beat, _)) = door_beat(now.saturating_sub(*since), *gap) else {
+        let Some((beat, _)) = door_beat(now.saturating_sub(since), gap, to) else {
             return;
         };
         let there = beat.there;
-        let door = match *to {
+        let door = match to {
             Through::Home(door) => door,
             Through::Space(spot) => {
                 let out = !there && beat.door.is_none();
@@ -2957,10 +3107,10 @@ impl Osaka {
                 // with the focus unprotected, isn't the frame's) keeps
                 // her coming home where she went, clear of the focus.
                 if let Some(fresh) =
-                    through.filter(|_| at_work && *gap > 0 && out && seen == through)
+                    through.filter(|_| at_work && gap > 0 && out && seen == through)
                 {
                     tracing::debug!(from = ?spot, to = ?fresh.spot(), "houseguest: home from work by her door");
-                    *to = Through::Home(fresh);
+                    self.redirect_door(Through::Home(fresh), gap, now);
                 }
                 return;
             }
@@ -2975,7 +3125,7 @@ impl Osaka {
         match through {
             Some(fresh) if fresh != door => {
                 tracing::debug!(from = ?door.spot(), to = ?fresh.spot(), there, "houseguest: her door moved while she's through it");
-                *to = Through::Home(fresh);
+                self.redirect_door(Through::Home(fresh), gap, now);
                 if there {
                     self.out_of(Through::Home(fresh));
                 } else {
@@ -2986,7 +3136,7 @@ impl Osaka {
             Some(_) => {}
             None => {
                 tracing::debug!(from = ?door.spot(), there, "houseguest: her door's gone while she's through it");
-                *to = Through::Space((x, y));
+                self.redirect_door(Through::Space((x, y)), gap, now);
             }
         }
     }
@@ -3003,7 +3153,9 @@ impl Osaka {
                 since,
                 to: Through::Home(door),
                 gap,
-            } if door_beat(now.saturating_sub(since), gap).is_some() => Some(door),
+            } if door_beat(now.saturating_sub(since), gap, Through::Home(door)).is_some() => {
+                Some(door)
+            }
             _ => None,
         }
     }
@@ -3188,8 +3340,24 @@ impl Osaka {
             }
             Act::Out { .. } => now + WALK_MS,
             Act::Away { until, .. } => until,
-            Act::Door { since, gap, .. } => door_beat(now.saturating_sub(since), gap)
-                .map_or(now, |(_, end)| since.saturating_add(end)),
+            // As each beat ends; through her own door, at each of her
+            // steps through its doorway too (her side-on door draws them,
+            // `wall_beat`), or nothing repaints mid-step.
+            Act::Door { since, to, gap } => match door_at(now.saturating_sub(since), gap, to) {
+                Some((_, beat, start, end)) => {
+                    let end = since.saturating_add(end);
+                    if beat.step && matches!(to, Through::Home(_)) {
+                        let into = now.saturating_sub(since).saturating_sub(start);
+                        let step = since
+                            .saturating_add(start)
+                            .saturating_add((into / WALK_MS + 1) * WALK_MS);
+                        step.min(end)
+                    } else {
+                        end
+                    }
+                }
+                None => now,
+            },
             Act::Look {
                 surprised_until, ..
             } => surprised_until,
@@ -3826,13 +3994,13 @@ impl Osaka {
             return false;
         }
         let through = match self.act {
-            Act::Door { since, gap, .. } => {
-                door_beat(at.saturating_sub(since), gap).is_some_and(|(beat, _)| !beat.there)
+            Act::Door { since, to, gap } => {
+                door_beat(at.saturating_sub(since), gap, to).is_some_and(|(beat, _)| !beat.there)
             }
             _ => false,
         };
-        match &mut self.act {
-            Act::Door { gap, .. } if through => *gap = u64::MAX,
+        match self.act {
+            Act::Door { to, .. } if through => self.redirect_door(to, u64::MAX, at),
             _ => return false,
         }
         self.leaving = Some(Routine::School);
@@ -3962,7 +4130,7 @@ impl Osaka {
                 to: Through::Home(door),
                 gap,
             } if (self.x, self.y) == door.spot()
-                && door_beat(now.saturating_sub(since), gap)
+                && door_beat(now.saturating_sub(since), gap, Through::Home(door))
                     .is_some_and(|(beat, _)| !beat.there) =>
             {
                 Some(door)
@@ -3980,7 +4148,7 @@ impl Osaka {
                 since,
                 to: Through::Home(door),
                 gap,
-            } if door_beat(now.saturating_sub(since), gap)
+            } if door_beat(now.saturating_sub(since), gap, Through::Home(door))
                 .is_some_and(|(beat, _)| beat.there && beat.door.is_some()) =>
             {
                 Some(door)
@@ -4379,7 +4547,7 @@ impl Osaka {
                     at,
                 );
             }
-            Act::Door { since, to, gap } => match door_beat(at.saturating_sub(since), gap) {
+            Act::Door { since, to, gap } => match door_beat(at.saturating_sub(since), gap, to) {
                 Some((beat, _)) => {
                     if beat.there {
                         self.out_of(to);
@@ -6024,6 +6192,17 @@ impl Osaka {
                     ..
                 }
             )
+            || matches!(&self.act, Act::Walk { then: Then::Job(job), .. } if leave(job))
+    }
+
+    /// Whether she's bound for her own door to go out by it: her line
+    /// said as she set off (`set_off`, latched), or walking or heading to
+    /// it (a `Job::Leave`, work's way and the stage's too). Her door
+    /// shows from then (door batch D8, C3).
+    pub fn bound_for_her_door(&self) -> bool {
+        let leave = |job: &Job| matches!(job, Job::Leave { .. });
+        self.set_off.is_some()
+            || self.heading.as_ref().is_some_and(|h| leave(&h.job))
             || matches!(&self.act, Act::Walk { then: Then::Job(job), .. } if leave(job))
     }
 
@@ -9815,17 +9994,68 @@ impl Osaka {
     pub fn hidden(&self, now: u64) -> bool {
         match self.act {
             Act::Away { .. } => true,
-            Act::Door { since, gap, .. } => {
-                door_beat(now.saturating_sub(since), gap).is_some_and(|(beat, _)| !beat.her)
+            Act::Door { since, to, gap } => {
+                door_beat(now.saturating_sub(since), gap, to).is_some_and(|(beat, _)| !beat.her)
             }
             _ => false,
+        }
+    }
+
+    /// Her own door she's going through (`Through::Home`), as it stands
+    /// at `now` in its beats (door batch D8): its spot, and side-on in
+    /// its wall the beat and what it draws ([`wall_beat`]), or face-on
+    /// (a fallback) its frame, standing closed through the gap (no cue
+    /// there). `None` through a door in space, or none.
+    pub fn front_door(&self, now: u64) -> Option<(DoorSpot, FrontBeat)> {
+        let Act::Door {
+            since,
+            to: to @ Through::Home(door),
+            gap,
+        } = self.act
+        else {
+            return None;
+        };
+        let (index, beat, start, _) = door_at(now.saturating_sub(since), gap, to)?;
+        Some(match door.set() {
+            Set::Wall { .. } => {
+                let into = now.saturating_sub(since).saturating_sub(start);
+                let shift = self.shift == Some(Shift::Out);
+                (door, FrontBeat::Wall(index, wall_beat(index, into, shift)))
+            }
+            Set::Floor(_) => (
+                door,
+                FrontBeat::Floor(beat.door.unwrap_or(DoorFrame::Closed)),
+            ),
+        })
+    }
+
+    /// Her front door side-on in its wall, as her beat through it draws
+    /// it at `now` ([`Osaka::front_door`]): its spot, the beat, and what's
+    /// drawn.
+    #[cfg(test)]
+    pub fn wall_beat(&self, now: u64) -> Option<(DoorSpot, usize, WallBeat)> {
+        match self.front_door(now)? {
+            (door, FrontBeat::Wall(index, beat)) => Some((door, index, beat)),
+            (_, FrontBeat::Floor(_)) => None,
+        }
+    }
+
+    /// The door in space she's going through, if any, as it looks at
+    /// `now` (her own door is [`Osaka::front_door`]'s to draw).
+    pub fn door_in_space(&self, now: u64) -> Option<DoorFrame> {
+        match self.act {
+            Act::Door {
+                to: Through::Space(_),
+                ..
+            } => self.door(now),
+            _ => None,
         }
     }
 
     /// The door she's going through, if any, as it looks at `now`.
     pub fn door(&self, now: u64) -> Option<DoorFrame> {
         match self.act {
-            Act::Door { since, gap, .. } => door_beat(now.saturating_sub(since), gap)?.0.door,
+            Act::Door { since, to, gap } => door_beat(now.saturating_sub(since), gap, to)?.0.door,
             _ => None,
         }
     }
@@ -9848,7 +10078,7 @@ impl Osaka {
     /// door's beats only), to poke the scrollback accordion under it.
     pub fn arrive_for_errand(spot: (i32, i32), now: u64, rng: &mut Rng) -> Self {
         let act = Act::Door {
-            since: now.saturating_sub(DOOR_THROUGH_MS),
+            since: now.saturating_sub(through_ms(Through::Space(spot))),
             to: Through::Space(spot),
             gap: 0,
         };
@@ -9870,7 +10100,7 @@ impl Osaka {
     /// unit: she said good morning already, so no hello.
     pub fn back_through_door(to: Through, why: Routine, now: u64, rng: &mut Rng) -> Self {
         let act = Act::Door {
-            since: now.saturating_sub(DOOR_THERE_MS),
+            since: now.saturating_sub(there_ms(to)),
             to,
             gap: 0,
         };
@@ -9892,7 +10122,7 @@ impl Osaka {
     /// first meeting (the stage's) has hers after.
     pub fn dash_in(to: Through, met: bool, now: u64, rng: &mut Rng) -> Self {
         let act = Act::Door {
-            since: now.saturating_sub(DOOR_THERE_MS),
+            since: now.saturating_sub(there_ms(to)),
             to,
             gap: 0,
         };
@@ -9922,7 +10152,7 @@ impl Osaka {
         self.dash = Some(Dash::In);
         self.set(
             Act::Door {
-                since: now.saturating_sub(DOOR_THERE_MS),
+                since: now.saturating_sub(there_ms(Through::Home(door))),
                 to: Through::Home(door),
                 gap: 0,
             },
@@ -9962,23 +10192,20 @@ impl Osaka {
             return;
         }
         match self.act {
-            Act::Door { since, gap, .. } => {
+            Act::Door { since, to, gap } => {
                 let there =
-                    door_beat(at.saturating_sub(since), gap).is_none_or(|(beat, _)| beat.there);
+                    door_beat(at.saturating_sub(since), gap, to).is_none_or(|(beat, _)| beat.there);
                 if !there {
                     // Not out of it yet: it opens on the accordion
                     // instead (a shift through it can wait).
                     self.cut_shift(at);
-                    if let Act::Door { to, gap, .. } = &mut self.act {
-                        *to = Through::Space(spot);
-                        *gap = 0;
-                    }
+                    self.redirect_door(Through::Space(spot), 0, at);
                 }
             }
             Act::Away { .. } | Act::Out { .. } => {
                 self.set(
                     Act::Door {
-                        since: at.saturating_sub(DOOR_THROUGH_MS),
+                        since: at.saturating_sub(through_ms(Through::Space(spot))),
                         to: Through::Space(spot),
                         gap: 0,
                     },
@@ -10117,8 +10344,8 @@ impl Osaka {
             if !clear((self.x, self.y)) {
                 tracing::debug!("houseguest: out of the focused pane, out for good");
                 match &mut self.act {
-                    Act::Door { since, gap, .. } => {
-                        *since = (*since).min(now.saturating_sub(DOOR_THROUGH_MS));
+                    Act::Door { since, to, gap } => {
+                        *since = (*since).min(now.saturating_sub(through_ms(*to)));
                         *gap = u64::MAX;
                         self.act_due = self.first_due(now);
                     }
@@ -10139,7 +10366,7 @@ impl Osaka {
             }
             return true;
         }
-        match &mut self.act {
+        match self.act {
             // Out of sight: when she's back in, she'll be moved on.
             Act::Away { .. } => return true,
             // Not through yet: the far door opens somewhere else instead.
@@ -10148,7 +10375,7 @@ impl Osaka {
             // reason to move it (door batch, step 4b). Still focused as
             // she comes back out, she's moved on from there (below).
             Act::Door { since, to, gap } => {
-                let beat = door_beat(now.saturating_sub(*since), *gap);
+                let beat = door_beat(now.saturating_sub(since), gap, to);
                 let there = beat.is_none_or(|(beat, _)| beat.there);
                 let out = beat.is_some_and(|(beat, _)| beat.door.is_none());
                 if out && matches!(to, Through::Home(_)) {
@@ -10166,7 +10393,7 @@ impl Osaka {
                         return false;
                     };
                     tracing::debug!(?spot, "houseguest: her door opens elsewhere");
-                    *to = Through::Space(spot);
+                    self.redirect_door(Through::Space(spot), gap, now);
                     return true;
                 }
             }
@@ -10195,7 +10422,7 @@ impl Osaka {
         };
         self.set(
             Act::Door {
-                since: now.saturating_sub(DOOR_THROUGH_MS),
+                since: now.saturating_sub(through_ms(Through::Space(spot))),
                 to: Through::Space(spot),
                 gap,
             },
@@ -10395,8 +10622,8 @@ impl Osaka {
         };
         let share = match (&self.act, shift) {
             // Through her door to work, whose gap is her shift.
-            (Act::Door { since, gap, .. }, Shift::Out) if *gap > 0 => {
-                at.saturating_sub(since.saturating_add(DOOR_THROUGH_MS)) as f64 / *gap as f64
+            (Act::Door { since, to, gap }, Shift::Out) if *gap > 0 => {
+                at.saturating_sub(since.saturating_add(through_ms(*to))) as f64 / *gap as f64
             }
             // Back out of it.
             (_, Shift::Out) => 1.0,
@@ -10722,12 +10949,20 @@ impl Osaka {
             Act::Clamber { .. } | Act::Out { .. } | Act::Away { .. } => {
                 (Pose::Walk(self.x.rem_euclid(4) as u8), Face::Vacant, None)
             }
-            Act::Door { since, gap, .. } => {
-                let there = door_beat(now.saturating_sub(since), gap).is_some_and(|(b, _)| b.there);
+            Act::Door { since, to, gap } => {
+                let there =
+                    door_beat(now.saturating_sub(since), gap, to).is_some_and(|(b, _)| b.there);
                 let face = if there { Face::Pleased } else { Face::Curious };
                 // Home from work: her shopping comes in with her (door
-                // batch C13), as she holds it once in.
-                let pose = if there && self.shift == Some(Shift::Out) {
+                // batch C13), as she holds it once in. Through her own
+                // door side-on in its wall, as its beat draws her (D8).
+                let wall = match self.front_door(now) {
+                    Some((_, FrontBeat::Wall(_, beat))) => beat.her.map(|(pose, _)| pose),
+                    _ => None,
+                };
+                let pose = if let Some(pose) = wall {
+                    pose
+                } else if there && self.shift == Some(Shift::Out) {
                     Pose::Carry((now.saturating_sub(since) / 700 % 2) as u8)
                 } else {
                     Pose::Stand
@@ -13087,7 +13322,7 @@ mod tests {
         let door = wall_door(20, 10);
         let moved = wall_door(30, 10);
         let elsewhere = DoorSpot::at(25, 10, Set::Floor(Fallback::Protected));
-        let mid = DOOR_THROUGH_MS + 100;
+        let mid = through_ms(Through::Home(door)) + 100;
         for (through, want) in [
             (None, Through::Space((20, 10))),
             (Some(moved), Through::Home(moved)),
@@ -13113,7 +13348,10 @@ mod tests {
         let pushed = DoorSpot::at(32, 10, Set::Floor(Fallback::Yield));
         assert!(pushed.bumped());
         for near in [100, 1_700] {
-            assert!(door_beat(near, 5_000).is_some_and(|(b, _)| !b.there && b.door.is_some()));
+            assert!(
+                door_beat(near, 5_000, Through::Home(door))
+                    .is_some_and(|(b, _)| !b.there && b.door.is_some())
+            );
             for fresh in [moved, pushed] {
                 let mut osaka = Osaka::standing_at(20, 10, 0, &mut rng);
                 open(&mut osaka, door);
@@ -13146,10 +13384,10 @@ mod tests {
         // Both with her out of sight behind it (its first far beats) and
         // with her in its doorway.
         for there in [
-            DOOR_THROUGH_MS + 5_000 + 10,
-            DOOR_THROUGH_MS + 5_000 + 1_100,
+            through_ms(Through::Home(door)) + 5_000 + 10,
+            through_ms(Through::Home(door)) + 5_000 + 1_100,
         ] {
-            let her = door_beat(there, 5_000).map(|(b, _)| (b.there, b.her));
+            let her = door_beat(there, 5_000, Through::Home(door)).map(|(b, _)| (b.there, b.her));
             assert!(matches!(her, Some((true, _))), "{there}");
             for (through, want, feet) in [
                 (Some(moved), Through::Home(moved), (30, 10)),
@@ -13188,7 +13426,7 @@ mod tests {
         // Its last beat over: nothing to follow.
         let mut osaka = Osaka::standing_at(20, 10, 0, &mut rng);
         open(&mut osaka, door);
-        let done = DOOR_THROUGH_MS + 5_000 + 60_000;
+        let done = through_ms(Through::Home(door)) + 5_000 + 60_000;
         let chances = Chances {
             door: Some(moved),
             door_through: Some(moved),
@@ -13210,7 +13448,7 @@ mod tests {
         let terrain = floor_at(15);
         let door = wall_door(20, 15);
         let focus = Rect::new(15, 8, 12, 9);
-        for (now, moved) in [(100, true), (DOOR_THROUGH_MS + 100, false)] {
+        for (now, moved) in [(100, true), (through_ms(Through::Home(door)) + 100, false)] {
             let mut rng = Rng(5);
             let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
             osaka.act = Act::Door {
@@ -14806,7 +15044,7 @@ mod tests {
     /// whether she's shown at its far side.
     fn shown_there(osaka: &Osaka, now: u64) -> bool {
         match osaka.act {
-            Act::Door { since, gap, .. } => door_beat(now.saturating_sub(since), gap)
+            Act::Door { since, to, gap } => door_beat(now.saturating_sub(since), gap, to)
                 .is_some_and(|(beat, _)| beat.there && beat.her),
             _ => false,
         }
@@ -15054,6 +15292,68 @@ mod tests {
             }
         }
         assert_eq!(osaka.speech.map(|(line, _)| line), Some(HOME));
+    }
+
+    /// A door of hers turned into a door in space mid-way keeps its
+    /// beat, whoever turns it (door batch, step 8 review): her own
+    /// door's steps take walking pace, a door in space's don't, so an
+    /// errand breaking in, or a focused pane over her door, late in
+    /// beat 2 (she's still shown, stepping through) or in beat 5 (out of
+    /// sight, the door shutting) must leave her in that beat, shown or
+    /// hidden as she was, never a beat on (gone at once) or back.
+    #[test]
+    fn her_door_turned_into_one_in_space_keeps_its_beat() {
+        let terrain = floor_at(15);
+        let door = wall_door(20, 15);
+        let to = Through::Home(door);
+        let gap = 5_000;
+        // Late in each beat: past where a door in space's would end.
+        let late = |index: usize| {
+            let mut start = 0;
+            for (i, beat) in DOOR.iter().enumerate() {
+                let end = start + beat_ms(beat, to, gap);
+                if i == index {
+                    return end - 20;
+                }
+                start = end;
+            }
+            unreachable!()
+        };
+        let beat_of = |osaka: &Osaka, now: u64| match osaka.act {
+            Act::Door { since, to, gap } => door_at(now - since, gap, to).map(|(i, ..)| i),
+            _ => None,
+        };
+        for index in [2, 5] {
+            let now = late(index);
+            for how in ["errand", "evict"] {
+                let mut rng = Rng(4);
+                let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+                osaka.act = Act::Door { since: 0, to, gap };
+                let hidden = osaka.hidden(now);
+                assert_eq!(beat_of(&osaka, now), Some(index));
+                match how {
+                    "errand" => osaka.errand((5, 15), &terrain, now),
+                    _ => {
+                        assert!(osaka.evict(Rect::new(17, 10, 7, 6), &terrain, None, now, &mut rng))
+                    }
+                }
+                assert!(
+                    matches!(
+                        osaka.act,
+                        Act::Door {
+                            to: Through::Space(_),
+                            ..
+                        }
+                    ),
+                    "{how}: {:?}",
+                    osaka.act
+                );
+                // The frame that turned it (as far in, clamped to the
+                // beat: the next may go on, as the beat would).
+                assert_eq!(beat_of(&osaka, now), Some(index), "{how} in beat {index}");
+                assert_eq!(osaka.hidden(now), hidden, "{how} in beat {index}");
+            }
+        }
     }
 
     /// Her walk to her door for work follows the frame's door, as

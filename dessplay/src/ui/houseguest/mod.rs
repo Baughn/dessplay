@@ -271,15 +271,16 @@ impl Rng {
     }
 }
 
-use placement::{BoxArt, Door, Figure};
+use placement::{BoxArt, Figure, Front};
 
 /// What of hers stands in her box in a frame, as line art: her, made
 /// only of her in sight, and her door.
 mod placement {
-    use super::art::DoorFrame;
-    use super::graphics::{Layer, Look};
+    use super::art::{self, DoorFrame};
+    use super::door::DoorSpot;
+    use super::graphics::{Cut, Layer, Look};
     use super::osaka::Osaka;
-    use super::room::Shown;
+    use super::room::{Shown, Side};
     use super::sprite::{self, Face, Pose, SpriteCell};
 
     /// That a layer showing her (posed or waving) was made of her in
@@ -358,28 +359,16 @@ mod placement {
     }
 
     impl Door {
-        /// Hers at `now`, if one stands.
+        /// Hers at `now`, if one stands: a door in space (her own door
+        /// is a [`Front`]).
         pub(super) fn of(osaka: &Osaka, now: u64) -> Option<Self> {
-            osaka.door(now).map(|frame| Self {
+            osaka.door_in_space(now).map(|frame| Self {
                 frame,
                 x: osaka.x,
                 y: osaka.y,
                 facing: osaka.facing,
                 standing: osaka.standing(),
             })
-        }
-
-        /// Her door standing closed on the floor at `(x, y)`, facing
-        /// `facing`, with her out of sight behind it (she's out: see
-        /// `State::Away`).
-        pub(super) fn closed(x: i32, y: i32, facing: sprite::Facing) -> Self {
-            Self {
-                frame: DoorFrame::Closed,
-                x,
-                y,
-                facing,
-                standing: true,
-            }
         }
 
         /// The door as it stood.
@@ -414,22 +403,81 @@ mod placement {
     pub(super) struct Figure {
         her: Option<Placement>,
         door: Option<Door>,
+        /// Her own door, when it's drawn in the same image as her.
+        front: Option<Front>,
+        /// Her own door as it stands, drawn or not (hidden whole while a
+        /// pane in use meets it): her doorway's offset and cut are its,
+        /// never [`Placement`]'s, so she steps through it all the same.
+        doorway: Option<Front>,
     }
 
     impl Figure {
-        /// What stands in her box at `now`, if anything does.
-        pub(super) fn of(osaka: &Osaka, now: u64) -> Option<Self> {
+        /// What stands in her box at `now`, if anything does, with her
+        /// own door `front` drawn in the same image if it's given, and
+        /// her in the doorway of her own door as it stands (`doorway`,
+        /// drawn or not).
+        pub(super) fn of(
+            osaka: &Osaka,
+            front: Option<Front>,
+            doorway: Option<Front>,
+            now: u64,
+        ) -> Option<Self> {
             let (her, door) = (Placement::of(osaka, now), Door::of(osaka, now));
-            (her.is_some() || door.is_some()).then_some(Self { her, door })
+            (her.is_some() || door.is_some() || front.is_some()).then_some(Self {
+                her,
+                door,
+                front,
+                doorway: doorway.or(front),
+            })
         }
 
-        /// Her door standing alone, with her out (her closed door in her
-        /// empty home): nothing of her in it.
-        pub(super) fn door_alone(door: Door) -> Self {
+        /// It as a goodbye draws it: she jumps up out of her doorway (at
+        /// her spot, uncut, the door as it stood behind her, its post
+        /// gone with her step).
+        pub(super) fn out_of_doorway(self) -> Self {
+            Self {
+                front: self.front.map(Front::stood),
+                doorway: None,
+                ..self
+            }
+        }
+
+        /// Her own door standing alone, with her out (her closed door in
+        /// her empty home, or one a visit draws apart from her): nothing
+        /// of her in it.
+        pub(super) fn front_alone(front: Front) -> Self {
             Self {
                 her: None,
-                door: Some(door),
+                door: None,
+                front: Some(front),
+                doorway: None,
             }
+        }
+
+        /// Her own door in its image, if it's in it.
+        pub(super) fn front(self) -> Option<Front> {
+            self.front
+        }
+
+        /// Her own door whose doorway she stands in, drawn or not.
+        pub(super) fn doorway(self) -> Option<Front> {
+            self.doorway
+        }
+
+        /// The layers of its image, back to front, but the pieces: her
+        /// door in space, her own door, her (`her`: her layer as she's
+        /// drawn, posed or waving; cut at her doorway) and her own door's
+        /// post in front of her.
+        pub(super) fn cuts(self, her: Option<Layer>) -> Vec<Cut> {
+            let mut cuts = Vec::with_capacity(4);
+            cuts.extend(self.door.map(|door| Cut::from(door.layer())));
+            cuts.extend(self.front.map(Front::cut));
+            cuts.extend(her.map(|her| match self.doorway {
+                Some(front) => front.her(her),
+                None => her.into(),
+            }));
+            cuts.extend(self.front.and_then(Front::post));
+            cuts
         }
 
         /// Her, if she's in sight.
@@ -443,12 +491,293 @@ mod placement {
         }
 
         /// The floor cell under it, if it stands (her, else her door:
-        /// both stand where she does).
+        /// both stand where she does; else her own door's spot).
         #[cfg(test)]
         fn feet(self) -> Option<(i32, i32)> {
             self.her
                 .and_then(Placement::feet)
                 .or_else(|| self.door.and_then(Door::feet))
+                .or_else(|| self.front.map(|front| front.spot.spot()))
+        }
+    }
+
+    /// Her own door as a frame stands it (door batch D8): side-on in its
+    /// wall ([`Look::WallDoor`], under the sky outside, cropped to `cols`
+    /// columns at the wall), or face-on at a fallback spot
+    /// ([`Look::Door`]); with her `d` columns from its spot toward the
+    /// wall as she steps through it (cut at the wall's line).
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(super) struct Front {
+        spot: DoorSpot,
+        look: FrontLook,
+        d: i32,
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum FrontLook {
+        Wall {
+            door: art::WallDoor,
+            sky: art::Sky,
+            cols: u8,
+            side: Side,
+            wall: i32,
+        },
+        Floor {
+            frame: DoorFrame,
+            facing: sprite::Facing,
+        },
+    }
+
+    impl Front {
+        /// Her door at `spot`: in its wall, `door` as it stands, under
+        /// `sky`, cropped to `crop` columns (its own, else) at the wall,
+        /// her `d` columns into its doorway; face-on (a fallback spot),
+        /// shut and facing out.
+        pub(super) fn at(
+            spot: DoorSpot,
+            door: art::WallDoor,
+            sky: art::Sky,
+            crop: Option<u8>,
+            d: i32,
+        ) -> Self {
+            match spot.wall() {
+                Some((side, wall)) => Self {
+                    spot,
+                    look: FrontLook::Wall {
+                        door,
+                        sky,
+                        cols: crop.unwrap_or(door.cols()).clamp(1, door.cols()),
+                        side,
+                        wall,
+                    },
+                    d,
+                },
+                None => Self::face_on(spot, DoorFrame::Closed, spot.out()),
+            }
+        }
+
+        /// Her door face-on at `spot` (a fallback), `frame` as it stands,
+        /// facing `facing`.
+        pub(super) fn face_on(spot: DoorSpot, frame: DoorFrame, facing: sprite::Facing) -> Self {
+            Self {
+                spot,
+                look: FrontLook::Floor { frame, facing },
+                d: 0,
+            }
+        }
+
+        /// Where it stands.
+        pub(super) fn spot(self) -> DoorSpot {
+            self.spot
+        }
+
+        /// Which way it faces, face-on (`None` side-on).
+        #[cfg(test)]
+        pub(super) fn facing(self) -> Option<sprite::Facing> {
+            match self.look {
+                FrontLook::Floor { facing, .. } => Some(facing),
+                FrontLook::Wall { .. } => None,
+            }
+        }
+
+        /// It as it stands with nobody in its doorway (no post).
+        pub(super) fn stood(self) -> Self {
+            Self { d: 0, ..self }
+        }
+
+        /// Its doorway as it cuts her while it's hidden whole (a pane in
+        /// use meets it, the wall's own column at least): at the
+        /// wall's near column, so her image claims nothing of the wall's
+        /// (else it's refused whole there, and she's gone); face-on, as
+        /// it is.
+        pub(super) fn short_of_wall(self) -> Self {
+            match self.look {
+                FrontLook::Wall {
+                    door,
+                    sky,
+                    cols,
+                    side,
+                    wall,
+                } => Self {
+                    look: FrontLook::Wall {
+                        door,
+                        sky,
+                        cols,
+                        side,
+                        wall: match side {
+                            Side::Right => wall - 1,
+                            Side::Left => wall + 1,
+                        },
+                    },
+                    ..self
+                },
+                FrontLook::Floor { .. } => self,
+            }
+        }
+
+        /// It side-on cropped to `cols` of its columns at the wall (at
+        /// least one, at most its own); face-on, as it is.
+        pub(super) fn cropped(self, cols: u8) -> Self {
+            match self.look {
+                FrontLook::Wall {
+                    door,
+                    sky,
+                    side,
+                    wall,
+                    ..
+                } => Self {
+                    look: FrontLook::Wall {
+                        door,
+                        sky,
+                        cols: cols.clamp(1, door.cols()),
+                        side,
+                        wall,
+                    },
+                    ..self
+                },
+                FrontLook::Floor { .. } => self,
+            }
+        }
+
+        /// Its state side-on in its wall, and how many columns of it are
+        /// drawn; `None` face-on.
+        pub(super) fn wall_door(self) -> Option<(art::WallDoor, u8)> {
+            match self.look {
+                FrontLook::Wall { door, cols, .. } => Some((door, cols)),
+                FrontLook::Floor { .. } => None,
+            }
+        }
+
+        /// The door's own layer, behind her.
+        pub(super) fn cut(self) -> Cut {
+            let (x, y) = self.spot.spot();
+            match self.look {
+                FrontLook::Wall {
+                    door,
+                    sky,
+                    cols,
+                    side,
+                    wall,
+                } => wall_layer(Look::wall_door(door, sky, Some(cols)), side, wall, y),
+                FrontLook::Floor { frame, facing } => Layer {
+                    look: Look::Door(frame),
+                    facing,
+                    at: (x, y),
+                    standing: true,
+                },
+            }
+            .into()
+        }
+
+        /// Its front post, drawn after her while she's in its doorway
+        /// (side-on only).
+        pub(super) fn post(self) -> Option<Cut> {
+            match self.look {
+                FrontLook::Wall {
+                    sky, side, wall, ..
+                } if self.d > 0 => {
+                    let post = Look::wall_door(art::WallDoor::Post, sky, None);
+                    Some(wall_layer(post, side, wall, self.spot.spot().1).into())
+                }
+                _ => None,
+            }
+        }
+
+        /// Her layer `her` as its doorway cuts it: `d` columns toward the
+        /// wall, nothing of her past the wall's line (side-on only).
+        pub(super) fn her(self, her: Layer) -> Cut {
+            match self.look {
+                FrontLook::Wall { side, wall, .. } => {
+                    let toward = match side {
+                        Side::Right => 2 * self.d,
+                        Side::Left => -2 * self.d,
+                    };
+                    Cut {
+                        layer: her,
+                        clip: Some((side, wall)),
+                        dx: i8::try_from(toward).unwrap_or(0),
+                    }
+                }
+                FrontLook::Floor { .. } => her.into(),
+            }
+        }
+
+        /// Her cell `(x, y)` (as ASCII draws her at her spot) where its
+        /// doorway puts it: `d` columns toward the wall, or nowhere past
+        /// its wall's column or once she's through (ASCII's cut, C19).
+        pub(super) fn her_cell(self, (x, y): (i32, i32)) -> Option<(i32, i32)> {
+            match self.look {
+                FrontLook::Wall { side, wall, .. } => {
+                    if self.d >= 4 {
+                        return None;
+                    }
+                    match side {
+                        Side::Right => (x + self.d < wall).then_some((x + self.d, y)),
+                        Side::Left => (x - self.d > wall).then_some((x - self.d, y)),
+                    }
+                }
+                FrontLook::Floor { .. } => Some((x, y)),
+            }
+        }
+
+        /// Its glyphs as ASCII draws them, at their columns and rows, and
+        /// whether each is in the wall's own column (drawn only over its
+        /// line).
+        pub(super) fn cells(self) -> Vec<(i32, i32, char, bool)> {
+            let (x, y) = self.spot.spot();
+            match self.look {
+                FrontLook::Wall {
+                    door, side, wall, ..
+                } => sprite::wall_door_cells(door, side)
+                    .into_iter()
+                    .map(|(dx, dy, glyph)| (wall + dx, y + dy, glyph, dx == 0))
+                    .collect(),
+                FrontLook::Floor { frame, facing } => sprite::door_cells(frame as usize, facing)
+                    .into_iter()
+                    .map(|SpriteCell { dx, dy, glyph, .. }| (x + dx, y + dy, glyph, false))
+                    .collect(),
+            }
+        }
+
+        /// The cells its image covers (with the floor row under it):
+        /// left, top, right and bottom, the last two exclusive.
+        pub(super) fn bounds(self) -> (i32, i32, i32, i32) {
+            let (x, y) = self.spot.spot();
+            match self.look {
+                FrontLook::Wall {
+                    cols, side, wall, ..
+                } => {
+                    let cols = i32::from(cols);
+                    let left = match side {
+                        Side::Right => wall - cols + 1,
+                        Side::Left => wall,
+                    };
+                    (left, y - sprite::HEIGHT, left + cols, y + 1)
+                }
+                FrontLook::Floor { .. } => (
+                    x - sprite::WIDTH / 2,
+                    y - sprite::HEIGHT,
+                    x + sprite::WIDTH / 2 + 1,
+                    y + 1,
+                ),
+            }
+        }
+    }
+
+    /// A side-on door's layer `look` standing in its wall `wall` on `side`
+    /// with its floor row `floor`: its box's last column (a right wall)
+    /// or first (a left wall) the wall's.
+    fn wall_layer(look: Look, side: Side, wall: i32, floor: i32) -> Layer {
+        let (cols, _) = look.size();
+        let (x, facing) = match side {
+            Side::Right => (wall - cols / 2 + 1, sprite::Facing::Right),
+            Side::Left => (wall + cols / 2, sprite::Facing::Left),
+        };
+        Layer {
+            look,
+            facing,
+            at: (x, floor),
+            standing: true,
         }
     }
 
@@ -522,6 +851,16 @@ struct Visit {
     /// ([`door::door_place`] on the visit's own terrain), if anywhere:
     /// the next frame's `prev`.
     door: Option<door::DoorSpot>,
+    /// Her own door as the last frame stood it, drawn or not, if it
+    /// stood: it stays while her box meets it (door batch C3); and since
+    /// when it has stood over text apart from her beats through it (as
+    /// she walks to it, or after): drawn there only in passing
+    /// ([`FRONT_PASSING_MS`]). The time goes with the door: a door that
+    /// comes again stands over text in passing afresh.
+    front: Option<(Front, Option<u64>)>,
+    /// Her own door drawn on its own in the last frame (in line art, not
+    /// in her image): a goodbye holds it until the rain.
+    front_apart: Option<Front>,
     size: (u16, u16),
     /// The visit began at night by her routine: at its first paint she's
     /// tucked in, if her bed or sofa is shown ([`Osaka::tuck_in`]).
@@ -638,6 +977,9 @@ struct Leaving {
     props: Vec<Shown>,
     /// How it looked then (A22): the TV on, the lamp off, as they were.
     looks: Looks,
+    /// Her own door drawn on its own in the last frame (line art), held
+    /// until the rain.
+    front: Option<Front>,
 }
 
 /// She's on her way to the chat's scrollback accordion, or poking it.
@@ -1353,6 +1695,7 @@ impl Guest {
                         startled,
                         props: visit.apart,
                         looks: visit.looks,
+                        front: visit.front_apart,
                     }));
                 }
             }
@@ -1404,6 +1747,7 @@ impl Guest {
             startled: sprite::Face::Surprised,
             props: empty.apart,
             looks: empty.looks,
+            front: None,
         }));
     }
 
@@ -1992,11 +2336,20 @@ impl Guest {
                 .chain(self.next_dash(now))
                 .chain(self.next_quarter(&empty.shown, now))
                 .min(),
+            // Her own door's time over text in passing runs out (it's
+            // hidden there then), as the flap's does.
             State::Visiting(visit) => Some(
                 visit
                     .flap
                     .map(|(_, since)| since + FLAP_MS)
                     .into_iter()
+                    .chain(
+                        visit
+                            .front
+                            .and_then(|(_, since)| since)
+                            .map(|since| since + FRONT_PASSING_MS)
+                            .filter(|&t| t > now),
+                    )
                     .chain(self.next_quarter(&visit.shown, now))
                     .fold(visit.osaka.wakes_at(), u64::min),
             ),
@@ -2213,11 +2566,10 @@ impl Guest {
                             at.wave((t / dissolve::WAVE_MS).is_multiple_of(2))
                         }
                     });
-                    let door = image.figure.door().map(Door::layer);
                     // The pieces in it as they looked (A22): the lamp
                     // stays off, the TV on, to the rain.
                     let looks = &leaving.looks;
-                    let layers: Vec<graphics::Layer> = image
+                    let cuts: Vec<graphics::Cut> = image
                         .with
                         .iter()
                         .map(|p| {
@@ -2228,12 +2580,18 @@ impl Guest {
                                 false,
                                 looks.state(p.item),
                             );
-                            prop_layer(p, look)
+                            prop_layer(p, look).into()
                         })
-                        .chain(door)
-                        .chain(her)
+                        .chain(image.figure.out_of_doorway().cuts(her))
                         .collect();
-                    graphics.paint_layers(buf, &layers, &|x, y| terrain.open(x, y));
+                    graphics.paint_cuts(buf, &cuts, &|x, y| terrain.open(x, y));
+                }
+                // Her own door, drawn apart from her, as it stood.
+                if let (Some(front), Some(graphics)) = (leaving.front, &mut self.graphics)
+                    && t < dissolve::RAIN_FROM_MS
+                    && untouched
+                {
+                    graphics.paint_cuts(buf, &[front.cut()], &|x, y| terrain.open(x, y));
                 }
                 Rains::Painted
             }
@@ -2555,11 +2913,50 @@ impl Guest {
                 // (two images would cut each other out), if anything of
                 // hers stands in it: out of sight, her door shut, every
                 // piece is drawn on its own.
-                let figure = Figure::of(&visit.osaka, now).filter(|_| self.graphics.is_some());
+                // Her own door (door batch D8): where it stands this
+                // frame, and what of it is drawn (over text only in
+                // passing; her slippers only on calm cells). In line art
+                // it's in her image wherever the two meet (always, as
+                // she goes through it), else an image of its own.
+                let sky = time.map_or(art::Sky::Day, art::Sky::at);
+                let front = front_of(visit, sky, now);
+                let mut since = visit.front.and_then(|(_, since)| since);
+                let front_drawn = front.and_then(|front| {
+                    front_shown(
+                        front,
+                        &visit.osaka,
+                        buf,
+                        &visit.terrain,
+                        &view.protected,
+                        &mut since,
+                        now,
+                    )
+                });
+                visit.front = front.map(|front| (front, since));
                 let covers: Vec<Rect> = visit.shown.iter().map(Shown::cover).collect();
+                let together = front_drawn.filter(|front| {
+                    Figure::of(&visit.osaka, None, None, now).is_some() && {
+                        let her = terrain::image(visit.osaka.x, visit.osaka.y, &covers);
+                        let (left, top, right, bottom) = front.bounds();
+                        left < her.right && her.left < right && top < her.bottom && her.top < bottom
+                    }
+                });
+                // Her cut at her doorway is her door's as it stands, drawn
+                // or not (hidden whole by a pane in use, she still steps
+                // through it, cut short of the wall it meets).
+                let doorway = match front_drawn {
+                    Some(_) => front,
+                    None => front.map(Front::short_of_wall),
+                };
+                let figure = Figure::of(&visit.osaka, together, doorway, now)
+                    .filter(|_| self.graphics.is_some());
+                let front_apart =
+                    front_drawn.filter(|_| together.is_none() && self.graphics.is_some());
                 let drawn = match figure {
-                    Some(_) => terrain::image(visit.osaka.x, visit.osaka.y, &covers).with,
-                    None => vec![false; covers.len()],
+                    Some(_) if Figure::of(&visit.osaka, None, None, now).is_some() => {
+                        terrain::image(visit.osaka.x, visit.osaka.y, &covers).with
+                    }
+                    _ => vec![false; covers.len()],
                 };
                 let (mut with, mut apart) = (Vec::new(), Vec::new());
                 for (&piece, drawn) in visit.shown.iter().zip(drawn) {
@@ -2601,6 +2998,18 @@ impl Guest {
                     &looks,
                     self.truecolor,
                 ));
+                visit.front_apart = None;
+                if let Some(front) = front_apart {
+                    let (painted, image) = draw_front(
+                        buf,
+                        self.graphics.as_mut(),
+                        front,
+                        &visit.terrain,
+                        &view.protected,
+                    );
+                    layer.extend(painted);
+                    visit.front_apart = image.map(|_| front);
+                }
                 let drawn = match &mut self.graphics {
                     Some(graphics) => {
                         let (painted, image, drawn) = draw_art(
@@ -2625,9 +3034,13 @@ impl Guest {
                             &visit.osaka,
                             &visit.terrain,
                             &visit.shown,
+                            Some(Sprite {
+                                front: front_drawn,
+                                doorway: front,
+                                protected: &view.protected,
+                            }),
                             now,
                             self.truecolor,
-                            true,
                         );
                         layer.extend(painted);
                         visit.image = None;
@@ -2799,6 +3212,8 @@ impl Guest {
             judging: None,
             ghost: None,
             door: None,
+            front: None,
+            front_apart: None,
             size,
             tuck,
             looks: Looks::default(),
@@ -3220,23 +3635,38 @@ fn ink(part: Part, truecolor: bool) -> Ink {
 /// Her door's glyphs' ink, and the letters they rain as.
 const DOOR_INK: Ink = Ink::new(Color::LightMagenta, Modifier::empty());
 
+/// Her glyphs as [`draw`] paints them in ASCII: with her own door as
+/// the frame stands it (`front`, drawn or not: its wall's column only
+/// over the wall's line, clear of `protected`), her door in space, and
+/// her cut at her own door's doorway.
+struct Sprite<'a> {
+    front: Option<Front>,
+    /// Her own door as it stands, drawn or not: where its doorway puts
+    /// her.
+    doorway: Option<Front>,
+    protected: &'a [Rect],
+}
+
 /// Paint her (and any bubble) into `buf`, returning what was painted
 /// over what, and the bubble drawn, if one was (it shows only where
-/// there's room for it).
-#[allow(clippy::too_many_arguments)]
+/// there's room for it). With no `sprite`, the bubble alone (line art
+/// draws the rest).
 fn draw(
     buf: &mut Buffer,
     osaka: &Osaka,
     terrain: &Terrain,
     shown: &[Shown],
+    sprite: Option<Sprite<'_>>,
     now: u64,
     truecolor: bool,
-    with_sprite: bool,
 ) -> (Vec<Frozen>, Option<Bubble>) {
-    let (sprite, bubble) = osaka.picture(now);
+    let (cells, bubble) = osaka.picture(now);
     let hidden = osaka.hidden(now);
+    let with_sprite = sprite.is_some();
+    let front = sprite.as_ref().and_then(|s| s.front);
+    let doorway = sprite.as_ref().and_then(|s| s.doorway.or(s.front));
     let door = osaka
-        .door(now)
+        .door_in_space(now)
         .filter(|_| with_sprite)
         .map(|frame| sprite::door_cells(frame as usize, osaka.facing))
         .unwrap_or_default();
@@ -3252,29 +3682,34 @@ fn draw(
             )
         })
         .collect();
-    // Her sprite over the door; she's gone while through it.
-    wanted.retain(|&(x, y, ..)| {
-        hidden
-            || !sprite
-                .iter()
-                .any(|c| (osaka.x + c.dx, osaka.y + c.dy) == (x, y))
-    });
-    wanted.extend(
-        sprite
-            .iter()
-            .filter(|_| with_sprite && !hidden)
-            .map(|cell| {
-                let face = (cell.part == Part::Head && (-1..=1).contains(&cell.dx))
-                    .then(|| (cell.dx + 1) as usize);
-                (
-                    osaka.x + cell.dx,
-                    osaka.y + cell.dy,
-                    cell.glyph,
-                    ink(cell.part, truecolor),
-                    face,
-                )
-            }),
-    );
+    // Her own door's glyphs in the room (its wall's column apart: only
+    // over the wall's line, below).
+    let mut wall = Vec::new();
+    for (x, y, glyph, in_wall) in front.map(Front::cells).unwrap_or_default() {
+        if in_wall {
+            wall.push((x, y, glyph));
+        } else {
+            wanted.push((x, y, glyph, DOOR_INK, None));
+        }
+    }
+    // Her, where her own door's doorway puts her (cut at its wall).
+    let her: Vec<(i32, i32, char, Ink, Option<usize>)> = cells
+        .iter()
+        .filter(|_| with_sprite && !hidden)
+        .filter_map(|cell| {
+            let at = (osaka.x + cell.dx, osaka.y + cell.dy);
+            let (x, y) = match doorway {
+                Some(front) => front.her_cell(at)?,
+                None => at,
+            };
+            let face = (cell.part == Part::Head && (-1..=1).contains(&cell.dx))
+                .then(|| (cell.dx + 1) as usize);
+            Some((x, y, cell.glyph, ink(cell.part, truecolor), face))
+        })
+        .collect();
+    // Her sprite over the doors; she's gone while through them.
+    wanted.retain(|&(x, y, ..)| !her.iter().any(|&(hx, hy, ..)| (hx, hy) == (x, y)));
+    wanted.extend(her);
     let mut drawn = None;
     if let Some(bubble) = bubble.filter(|_| !hidden) {
         let text = bubble.text();
@@ -3299,7 +3734,7 @@ fn draw(
             buf.cell((x, y)).cloned().map(|under| (x, y, under))
         })
         .collect();
-    let mut painted = Vec::with_capacity(wanted.len());
+    let mut painted = Vec::with_capacity(wanted.len() + wall.len());
     for ((x, y, glyph, ink, face), under) in wanted.into_iter().zip(unders) {
         if let Some((ux, uy, under)) = under
             && put(buf, x, y, glyph, ink)
@@ -3315,6 +3750,11 @@ fn draw(
             });
         }
     }
+    let protected = sprite.map_or(&[][..], |s| s.protected);
+    painted.extend(
+        wall.into_iter()
+            .filter_map(|(x, y, glyph)| wall_glyph(buf, x, y, glyph, protected)),
+    );
     (painted, drawn)
 }
 
@@ -4440,41 +4880,44 @@ const FLAP_MS: u64 = 800;
 /// its hinge at the top, wherever the wall is a plain vertical line
 /// clear of protected cells.
 fn draw_flap(buf: &mut Buffer, flap: room::Flap, age: u64, protected: &[Rect]) -> Vec<Frozen> {
-    let mut painted = Vec::new();
     if age >= FLAP_MS {
-        return painted;
+        return Vec::new();
     }
     let glyph = match flap.side {
         room::Side::Left => '╲',
         room::Side::Right => '╱',
     };
-    for y in flap.rows.0..flap.rows.1 {
-        let (Ok(x), Ok(y)) = (u16::try_from(flap.x), u16::try_from(y)) else {
-            continue;
-        };
-        if protected.iter().any(|r| r.contains((x, y).into())) {
-            continue;
-        }
-        let Some(cell) = buf.cell_mut((x, y)) else {
-            continue;
-        };
-        if !matches!(cell.symbol(), "│" | "┃") {
-            continue;
-        }
-        let under = cell.clone();
-        let ink = Ink::new(cell.fg, Modifier::empty());
-        cell.set_char(glyph);
-        painted.push(Frozen {
-            x,
-            y,
-            glyph,
-            ink,
-            under,
-            face: None,
-            burst: false,
-        });
+    (flap.rows.0..flap.rows.1)
+        .filter_map(|y| wall_glyph(buf, flap.x, y, glyph, protected))
+        .collect()
+}
+
+/// Draw `glyph` into a wall's own column at `(x, y)` (her door's, a
+/// parcel's flap), in the wall's own ink: only over a plain vertical
+/// line (`│`/`┃`), and never in a protected cell. Returns what it
+/// painted over the line, for the rain to put back. The one way
+/// anything of hers goes in a wall's column.
+fn wall_glyph(buf: &mut Buffer, x: i32, y: i32, glyph: char, protected: &[Rect]) -> Option<Frozen> {
+    let (x, y) = (u16::try_from(x).ok()?, u16::try_from(y).ok()?);
+    if protected.iter().any(|r| r.contains((x, y).into())) {
+        return None;
     }
-    painted
+    let cell = buf.cell_mut((x, y))?;
+    if !matches!(cell.symbol(), "│" | "┃") {
+        return None;
+    }
+    let under = cell.clone();
+    let ink = Ink::new(cell.fg, Modifier::empty());
+    cell.set_char(glyph);
+    Some(Frozen {
+        x,
+        y,
+        glyph,
+        ink,
+        under,
+        face: None,
+        burst: false,
+    })
 }
 
 /// The cat in his bed in ASCII, if he's there (its inside row), curled
@@ -4805,14 +5248,41 @@ fn draw_art(
         let (ux, uy) = (u16::try_from(x).ok()?, u16::try_from(y).ok()?);
         Some((ux, uy, buf.cell((ux, uy))?.clone()))
     };
+    let front = figure.and_then(Figure::front);
+    let through = figure.and_then(Figure::doorway);
     let mut body: Vec<Frozen> = Vec::new();
+    // Her own door in her image bursts into its own glyphs, as in ASCII
+    // (under her, where she stands over it).
+    let mut doorway: Vec<Frozen> = front
+        .map(Front::cells)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|(x, y, glyph, _)| {
+            let (x, y, under) = under(buf, x, y)?;
+            Some(Frozen {
+                x,
+                y,
+                glyph,
+                ink: DOOR_INK,
+                under,
+                face: None,
+                burst: true,
+            })
+        })
+        .collect();
     if her.is_some() {
-        // Her box bursts into her letters.
+        // Her box bursts into her letters (where her own door's
+        // doorway puts her).
         for dy in -sprite::HEIGHT..0 {
             for dx in -(sprite::WIDTH / 2)..=(sprite::WIDTH / 2) {
-                let Some((x, y, under)) = under(buf, osaka.x + dx, osaka.y + dy) else {
+                let at = (osaka.x + dx, osaka.y + dy);
+                let Some((cx, cy)) = through.map_or(Some(at), |front| front.her_cell(at)) else {
                     continue;
                 };
+                let Some((x, y, under)) = under(buf, cx, cy) else {
+                    continue;
+                };
+                doorway.retain(|cell| (cell.x, cell.y) != (x, y));
                 let cell = sprite.iter().find(|c| c.dx == dx && c.dy == dy);
                 body.push(Frozen {
                     x,
@@ -4877,16 +5347,19 @@ fn draw_art(
             })
         }));
     }
-    layers.extend(door.map(Door::layer));
-    layers.extend(her.map(|at| at.pose(pose, face)));
+    let mut cuts: Vec<graphics::Cut> = layers.into_iter().map(Into::into).collect();
+    cuts.extend(figure.map_or_else(Vec::new, |figure| {
+        figure.cuts(her.map(|at| at.pose(pose, face)))
+    }));
     for piece in &back_to_front(&with) {
-        layers.extend(part(piece, true).map(|layer| prop_layer(piece, layer)));
+        cuts.extend(part(piece, true).map(|layer| graphics::Cut::from(prop_layer(piece, layer))));
     }
+    body.extend(doorway);
     let placed = graphics
-        .paint_layers(buf, &layers, &|x, y| terrain.open(x, y))
+        .paint_cuts(buf, &cuts, &|x, y| terrain.open(x, y))
         .is_some();
     let mut painted = if placed { body } else { Vec::new() };
-    let (bubble, drawn) = draw(buf, osaka, terrain, shown, now, truecolor, false);
+    let (bubble, drawn) = draw(buf, osaka, terrain, shown, None, now, truecolor);
     painted.extend(bubble);
     let image = figure
         .filter(|_| placed)
@@ -4991,22 +5464,23 @@ fn paint_empty(
     if spot != prev {
         log_door(spot, "her empty home");
     }
-    // Hidden while any cell of it is in a pane she keeps clear.
-    let standing = spot.filter(|&spot| {
-        let (x, y) = spot.spot();
-        !Door::closed(x, y, spot.out()).cells().any(|(cx, cy, _)| {
-            let (Ok(ux), Ok(uy)) = (u16::try_from(cx), u16::try_from(cy)) else {
-                return true;
-            };
-            view.protected.iter().any(|r| r.contains((ux, uy).into()))
-        })
-    });
     let mut terrain = if view.protected == unkept {
         ground
     } else {
         Terrain::read(buf, &view.protected, line_art)
     };
     terrain.furnish(covers.iter().copied());
+    // Side-on in its wall with her slippers before it (only on calm
+    // cells), under the window's sky (door batch D8); face-on, shut.
+    // Hidden while any cell of it is in a pane she keeps clear.
+    let sky = time.map_or(art::Sky::Day, art::Sky::at);
+    let standing = spot.and_then(|spot| {
+        front_whole(
+            Front::at(spot, AWAY, sky, None, 0),
+            &terrain,
+            &view.protected,
+        )
+    });
     // Nobody's watching, reading by the lamp or petting him; her clock
     // and window tell the time all the same.
     let world = World {
@@ -5026,10 +5500,8 @@ fn paint_empty(
     let mut painted = draw_props(buf, graphics.as_deref_mut(), &shown, &looks, truecolor);
     let mut image = None;
     let mut cells = Vec::new();
-    if let Some(spot) = standing {
-        let (x, y) = spot.spot();
-        let door = Door::closed(x, y, spot.out());
-        let (drawn, art) = draw_door(buf, graphics, door, Vec::new(), &looks, &terrain, truecolor);
+    if let Some(front) = standing {
+        let (drawn, art) = draw_front(buf, graphics, front, &terrain, &view.protected);
         cells = drawn.iter().map(|cell| (cell.x, cell.y)).collect();
         painted.extend(drawn);
         image = art;
@@ -5057,19 +5529,19 @@ fn log_door(spot: Option<door::DoorSpot>, whose: &'static str) {
     }
 }
 
-/// Paint her door standing on its own (she's out, see [`paint_empty`]):
-/// as glyphs, or as line art in one image with the pieces it overlaps
-/// (`with`). Returns what was painted over what (the cells it covers,
-/// bursting into its glyphs, and each piece's), and in line art the
-/// image, if it was placed (a goodbye holds it until the rain).
-fn draw_door(
+/// Paint her own door standing on its own (she's out, see
+/// [`paint_empty`]; or apart from her in a visit): as glyphs (its wall's
+/// column only over the wall's line, clear of `protected`: see
+/// [`wall_glyph`]), or as line art in an image of its own. Returns what
+/// was painted over what (the cells it covers, bursting into its glyphs
+/// in line art), and in line art the image, if it was placed (a goodbye
+/// holds it until the rain).
+fn draw_front(
     buf: &mut Buffer,
     graphics: Option<&mut Graphics>,
-    door: Door,
-    with: Vec<Shown>,
-    looks: &Looks,
+    front: Front,
     terrain: &Terrain,
-    truecolor: bool,
+    protected: &[Rect],
 ) -> (Vec<Frozen>, Option<BoxArt>) {
     // Only what it may cover (clipped to the same cells): the rest it
     // never drew, and mustn't rain over.
@@ -5082,8 +5554,10 @@ fn draw_door(
     };
     let Some(graphics) = graphics else {
         let mut painted = Vec::new();
-        for (x, y, glyph) in door.cells() {
-            if let Some((ux, uy, under)) = under(buf, x, y)
+        for (x, y, glyph, in_wall) in front.cells() {
+            if in_wall {
+                painted.extend(wall_glyph(buf, x, y, glyph, protected));
+            } else if let Some((ux, uy, under)) = under(buf, x, y)
                 && put(buf, x, y, glyph, DOOR_INK)
             {
                 painted.push(Frozen {
@@ -5099,9 +5573,10 @@ fn draw_door(
         }
         return (painted, None);
     };
-    let mut body: Vec<Frozen> = door
+    let body: Vec<Frozen> = front
         .cells()
-        .filter_map(|(x, y, glyph)| {
+        .into_iter()
+        .filter_map(|(x, y, glyph, _)| {
             let (x, y, under) = under(buf, x, y)?;
             Some(Frozen {
                 x,
@@ -5114,39 +5589,155 @@ fn draw_door(
             })
         })
         .collect();
-    let mut layers = Vec::with_capacity(with.len() + 1);
-    for piece in &back_to_front(&with) {
-        let look = piece_look(
-            piece,
-            art::Layer::Whole,
-            looks.tv,
-            false,
-            looks.state(piece.item),
-        );
-        layers.push(prop_layer(piece, look));
-        body.extend(piece.cells().filter_map(|(x, y, glyph)| {
-            let (ux, uy) = (u16::try_from(x).ok()?, u16::try_from(y).ok()?);
-            Some(Frozen {
-                x: ux,
-                y: uy,
-                glyph: glyph.unwrap_or('.'),
-                ink: prop_ink(piece.item, truecolor),
-                under: buf.cell((ux, uy))?.clone(),
-                face: None,
-                burst: true,
-            })
-        }));
-    }
-    layers.push(door.layer());
     if graphics
-        .paint_layers(buf, &layers, &|x, y| terrain.open(x, y))
+        .paint_cuts(buf, &[front.cut()], &|x, y| terrain.open(x, y))
         .is_some()
     {
-        let figure = Figure::door_alone(door);
-        (body, Some(BoxArt { figure, with }))
+        let figure = Figure::front_alone(front);
+        (
+            body,
+            Some(BoxArt {
+                figure,
+                with: Vec::new(),
+            }),
+        )
     } else {
         (Vec::new(), None)
     }
+}
+
+/// Her own door shut while she's out: side-on, her slippers before it
+/// and a card on its knob (door batch D8; face-on, plain shut).
+const AWAY: art::WallDoor = art::WallDoor::Shut {
+    flap: 0,
+    away: true,
+};
+
+/// How long her own door stands over text apart from her beats through
+/// it (as she walks to it, or as she walks off from it), before it's
+/// hidden there till her beats begin or she's past it: in passing, as
+/// her own image is (door batch C9), within the 10 s her image may hide
+/// text for, with her beats (3 to 4 s) on either side.
+const FRONT_PASSING_MS: u64 = 4_000;
+
+/// Her own door as a visit's frame stands it, drawn or not (door batch
+/// D8, C3): through it, as its beat stands it (at her feet: side-on in
+/// its wall, or face-on); bound for it (her line said as she set off, or
+/// on her way to it), shut at its spot (`visit.door`); and once it
+/// stood, on while her box meets it. `sky` is the doorway's.
+fn front_of(visit: &Visit, sky: art::Sky, now: u64) -> Option<Front> {
+    let osaka = &visit.osaka;
+    if let Some((spot, beat)) = osaka.front_door(now) {
+        return Some(match beat {
+            osaka::FrontBeat::Wall(_, beat) => {
+                Front::at(spot, beat.door, sky, None, beat.her.map_or(0, |(_, d)| d))
+            }
+            // Facing out its spot's way, as it stands before and after
+            // her beats (never with her, or it turns beside her).
+            osaka::FrontBeat::Floor(frame) => Front::face_on(spot, frame, spot.out()),
+        });
+    }
+    let spot = visit.door?;
+    let beside = || {
+        !osaka.hidden(now)
+            && room::her_box(osaka.x, osaka.y)
+                .zip(spot.room())
+                .is_some_and(|(her, room)| her.intersects(room))
+    };
+    let stays = visit.front.is_some() && beside();
+    (osaka.bound_for_her_door() || stays).then(|| {
+        let shut = art::WallDoor::Shut {
+            flap: 0,
+            away: false,
+        };
+        Front::at(spot, shut, sky, None, 0)
+    })
+}
+
+/// What of her own door `front` a visit's frame draws (`None`: none of
+/// it): none while any cell of it is `protected` (no half a door beside
+/// a pane in use, as while she's out); her slippers before it only on
+/// calm cells (`terrain`'s), else
+/// the shut door's own two columns; over text (`buf`'s) while she's out
+/// through it, and in her beats through it (in passing); apart from them
+/// (walking to it or away), for [`FRONT_PASSING_MS`] from when it first
+/// stood over text (`since`), and hidden there after.
+fn front_shown(
+    front: Front,
+    osaka: &Osaka,
+    buf: &Buffer,
+    terrain: &Terrain,
+    protected: &[Rect],
+    since: &mut Option<u64>,
+    now: u64,
+) -> Option<Front> {
+    let front = front_whole(front, terrain, protected)?;
+    let (left, top, right, bottom) = front.bounds();
+    if osaka.front_door(now).is_some() {
+        *since = None;
+        return Some(front);
+    }
+    let over_text = (top..bottom - 1).any(|y| {
+        (left..right).any(|x| {
+            let (Ok(x), Ok(y)) = (u16::try_from(x), u16::try_from(y)) else {
+                return false;
+            };
+            buf.cell((x, y)).is_some_and(|cell| {
+                let symbol = cell.symbol();
+                !symbol.trim().is_empty()
+                    && !symbol
+                        .chars()
+                        .next()
+                        .is_some_and(|c| graphics::strokes(c).is_some())
+            })
+        })
+    });
+    if !over_text {
+        *since = None;
+        return Some(front);
+    }
+    let from = *since.get_or_insert(now);
+    (now.saturating_sub(from) < FRONT_PASSING_MS).then_some(front)
+}
+
+/// Her own door `front` as it may stand at all, in a visit or while
+/// she's out (one rule for both): her slippers before it cropped off
+/// unless they stand on calm cells ([`cue_crop`]), then none of it while
+/// any cell left of it is `protected` (no half a door beside a pane in
+/// use). The slippers are only ever cropped, never a reason to hide it.
+fn front_whole(front: Front, terrain: &Terrain, protected: &[Rect]) -> Option<Front> {
+    let front = cue_crop(front, terrain);
+    let (left, top, right, bottom) = front.bounds();
+    let guarded = (top..bottom - 1).any(|y| {
+        (left..right).any(|x| {
+            let (Ok(x), Ok(y)) = (u16::try_from(x), u16::try_from(y)) else {
+                return true;
+            };
+            protected.iter().any(|r| r.contains((x, y).into()))
+        })
+    });
+    (!guarded).then_some(front)
+}
+
+/// Her own door with her slippers before it (`Shut { away: true }`)
+/// cropped to the shut door's own two columns unless every cell of the
+/// slippers' is calm in `terrain` (blank, or a line): the door itself
+/// stands over text, they never do.
+fn cue_crop(front: Front, terrain: &Terrain) -> Front {
+    let Some((art::WallDoor::Shut { away: true, .. }, cols)) = front.wall_door() else {
+        return front;
+    };
+    if cols <= 2 {
+        return front;
+    }
+    let (left, top, right, bottom) = front.bounds();
+    let slippers = match front.spot().wall() {
+        Some((room::Side::Right, _)) => left..right - 2,
+        Some((room::Side::Left, _)) => left + 2..right,
+        None => return front,
+    };
+    let calm = (top..bottom - 1).all(|y| slippers.clone().all(|x| terrain.calm(x, y)));
+    if calm { front } else { front.cropped(2) }
 }
 
 #[cfg(test)]

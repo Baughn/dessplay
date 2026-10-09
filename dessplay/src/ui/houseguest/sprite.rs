@@ -472,13 +472,13 @@ const DOOR: [[&str; 4]; 3] = [
     [" ___ ", "|*.*|", "|.*.|", "|___|"],
 ];
 
-/// Her front door side-on (not yet wired in): rows f-4
-/// ..= f-1 of columns to-3 ..= to at a right wall, the last column the
-/// wall's own (its border glyph painted over, as the flap is today);
+/// Her front door side-on (`placement::Front::cells`, drawn by
+/// `draw_front` and `draw`): rows f-4 ..= f-1 of columns to-3 ..= to
+/// at a right wall, the last column the wall's own (its border glyph
+/// painted over, by `wall_glyph`'s rule, as the flap is);
 /// mirrored for a left wall ([`mirror_wall`]). Shut, the flap open
 /// (a parcel through it), ajar, open (the leaf face-on behind her, the
 /// doorway's daylight `.`). Spaces are left as they are.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(super) const WALL_DOOR: [[&str; 4]; 4] = [
     ["  /|", "  o|", "  #|", "  #|"],
     ["  /|", "  o|", " /.|", "  .|"],
@@ -489,7 +489,6 @@ pub(super) const WALL_DOOR: [[&str; 4]; 4] = [
 /// A glyph of her front door mirrored for a left wall: [`mirror`], and
 /// the open leaf's `[`/`]` too (her own sprites keep theirs: a book held
 /// open reads the same either way, sprite.rs's `READ`).
-#[cfg_attr(not(test), allow(dead_code))]
 pub(super) fn mirror_wall(c: char) -> char {
     match c {
         '[' => ']',
@@ -506,7 +505,6 @@ pub(super) fn mirror_wall(c: char) -> char {
 /// second, ajar and open the others; `Post` is the wall's column alone
 /// (its `|`s, over her in the doorway); `Plate` draws nothing (the
 /// flap's own state shows it). There is no ASCII Away cue.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(super) fn wall_door_cells(door: WallDoor, side: Side) -> Vec<(i32, i32, char)> {
     let (rows, from) = match door {
         WallDoor::Shut { flap: 0, .. } => (WALL_DOOR[0], 0),

@@ -968,17 +968,19 @@ fn golden_tucked_in() {
 /// Re-recorded in the door batch's step 4b: work goes out by her door
 /// (every seed, both modes, first differs as she stops at her door's
 /// spot (3, 16) on her way to work and opens it, where she walked on off
-/// the screen's edge).
+/// the screen's edge). Again in step 8: her door side-on in its wall
+/// (every seed, both modes, first differs in the cells as she sets off
+/// for work, her door shown shut from then).
 #[test]
 fn golden_weekend() {
     check(
         "weekend",
         weekend,
         &[
-            (0, 0x8abc3f341512e9fc, 0x03bd5ff97a628bee),
-            (1, 0x6e71302cca23acee, 0xca1d3fb0011cff7c),
-            (2, 0x7f7f1c0ce10971ce, 0xbd3545e8677a4fe3),
-            (3, 0x9ab549fe0548ff43, 0x0da300f40538a4d0),
+            (0, 0x4522015659ba2ea3, 0xf173eeb95d09b2cf),
+            (1, 0x263d21edfee6272b, 0x4eda700ca005411b),
+            (2, 0x08e861f97e87d9a4, 0x4799ff6daac505b6),
+            (3, 0x2e4a4b553dc8638f, 0xc62c438878e1a12b),
         ],
     );
 }
@@ -987,34 +989,41 @@ fn golden_weekend() {
 /// space by her door's wall, not where she went out (the traces first
 /// differ at the first `away` frame, in its cells only). Again in step
 /// 4a: she walks to her door to go out (the traces first differ at her
-/// set-off, a `Walk` where her door used to open at her feet).
+/// set-off, a `Walk` where her door used to open at her feet). Again in
+/// step 8: her door side-on in its wall (every seed, both modes, first
+/// differs in the cells at her set-off line, her door shown shut from
+/// then; then her steps through it at her walking pace, and the Away
+/// cue).
 #[test]
 fn golden_school_morning() {
     check(
         "school",
         school_morning,
         &[
-            (0, 0x91075bdec21b3928, 0x848a7905623507b4),
-            (1, 0x0f128be02e54c273, 0x6d547e08b421c6e2),
-            (2, 0x64ed2451177b3d6f, 0xf1bc13ffb1852e11),
-            (3, 0x77580f827acc6c9e, 0x805e919c3bcddff3),
+            (0, 0xba5b948d298b5810, 0xfec85922a8ba0c51),
+            (1, 0x21ba3c2301bac0f1, 0x835cfeb33916c8cc),
+            (2, 0x981baa710182263e, 0x8fb1b7c1ca5d16c3),
+            (3, 0x5ea1bdd35162955f, 0x5025ccd62e6d551e),
         ],
     );
 }
 
 /// Re-recorded in the door batch's step 3: her Away door, and her
 /// coming home, at its space (Users' left on `home_screen`, spot (3, 16)),
-/// not the middle (the traces differ from the first frame).
+/// not the middle (the traces differ from the first frame). Again in
+/// step 8: her door side-on in its wall, her slippers before it (every
+/// seed, both modes, first differs at the first `away` frame, in its
+/// cells; then her steps in at her walking pace, side-on).
 #[test]
 fn golden_home_from_school() {
     check(
         "home",
         home_from_school,
         &[
-            (0, 0x57d801e451d6d919, 0x99b1d3cc8ee740da),
-            (1, 0xb2309a261c8fe65b, 0xd001cf6dd53aac69),
-            (2, 0xd01fad3f4e1bbbc4, 0x5a38302ec795bc8b),
-            (3, 0xe0bfbe0ac513afac, 0xf3e147b040f3e30c),
+            (0, 0x78fc4bb9c41ee7c8, 0x6b8985207b9022f2),
+            (1, 0xb65699e9b343dcd2, 0x09d3ed7c3003cb33),
+            (2, 0x41964cbdfe5cbc29, 0x1fd771e64e60510c),
+            (3, 0x0528d931f8191aa8, 0xbf69121db81202d2),
         ],
     );
 }
@@ -1022,17 +1031,19 @@ fn golden_home_from_school() {
 /// Re-recorded in the door batch's step 3: she dashes in out of her door
 /// at its space (3, 16), not the middle (the traces differ from the first
 /// frame). Again in step 4a: out again, she walks back to her door (the
-/// traces first differ at her set-off, after "Forgot my lunch!").
+/// traces first differ at her set-off, after "Forgot my lunch!"). Again
+/// in step 8: her door side-on in its wall (every seed, both modes,
+/// first differs at the first `away` frame, in its cells).
 #[test]
 fn golden_dash_home() {
     check(
         "dash",
         dash_home,
         &[
-            (0, 0xdda02d0adc807b20, 0x52b53bc3b5dddaa3),
-            (1, 0xb2e0362c93ef47a0, 0x244cb8cbcf4b6863),
-            (2, 0x68ffd923bfa9eb29, 0x51197acb6b4a7b43),
-            (3, 0xa1ec79ac1f6f261d, 0x7fa41a266b0269ee),
+            (0, 0x61dd50dbc2f20bca, 0x744a8eed8f766bf5),
+            (1, 0xc3596699cdec09f6, 0x69068221698c51e9),
+            (2, 0x635a659bd36a9ac1, 0xdf301af3a68a3d55),
+            (3, 0x3bbc22b1cf6d21c7, 0x2850c209247b4b38),
         ],
     );
 }
@@ -1097,12 +1108,16 @@ fn golden_dash_home() {
 /// rest unchanged; the trace diff is in that commit). (The door batch's
 /// step 5 moved them, nothing made in the chat pane; step 6m, makeshift
 /// pieces allowed there again, moved them back: every trace
-/// byte-identical to step 4b's.)
+/// byte-identical to step 4b's.) Again in the door batch's step 8, her
+/// door side-on in its wall (seeds 0 and 1 in line art, 1 and 3 in
+/// ASCII: each first differs on her way out to work, in the cells as she
+/// walks to her door (it shows shut from her setting off) or in her
+/// beats through it, now at her walking pace; the rest unchanged).
 const UNFED_STAGE: [(u64, u64, u64); 4] = [
-    (0, 0x708733793f400284, 0x941bf0a431f5b066),
-    (1, 0xa4a798e2a1a79945, 0x51c67cb9d4c2829e),
+    (0, 0x708733793f400284, 0xb63d1863d4c49483),
+    (1, 0x65cc16bd9db0447d, 0x59f4d576f9ca007a),
     (2, 0xec15f92e2f11cc74, 0xf73152a21a71ba81),
-    (3, 0xaf26d1f42948b458, 0xc45aa53bb13f470a),
+    (3, 0xceb577e1f9e80e5a, 0xc45aa53bb13f470a),
 ];
 
 /// The resident's tables at the end of phase 5b step 3, but for step 5a's
@@ -1204,10 +1219,14 @@ const UNFED_RESIDENT: [(u64, u64, u64); 4] = [
 /// her way to work cut by a chat line, the shift's length is now drawn
 /// as she sets off, so the stream that times her standing blinks moved,
 /// first showing on the frame after the look (a blink no longer shown);
-/// seeds 2 and 3 unchanged; the trace diff is in that commit).
+/// seeds 2 and 3 unchanged; the trace diff is in that commit), and the
+/// door batch's step 8, her door side-on in its wall (seeds 0 and 1,
+/// both modes: each first differs on her way out to work, in the cells as
+/// she walks to her door (it shows shut from her setting off) or in her
+/// beats through it, now at her walking pace; seeds 2 and 3 unchanged).
 const UNFED_FURNISHED: [(u64, u64, u64); 4] = [
-    (0, 0xd68c121f21096143, 0xe5248391f31579c5),
-    (1, 0xe11d39f391f8b0a6, 0xc6712cdb6f6c3b91),
+    (0, 0x30aad98405a282a0, 0xa638f7d4dd53d616),
+    (1, 0x39a3e52edb493e9c, 0xd510ee464bfdd762),
     (2, 0x926059ace43e7151, 0x9d52a9c8d4e177e1),
     (3, 0x79407de0d1328d6f, 0xcc2d79b8d69e779b),
 ];

@@ -89,7 +89,6 @@ pub(super) enum Look {
     /// it with [`Look::wall_door`]; whatever it holds, it is drawn and
     /// keyed as that builds it (its size, and `Graphics::resolve`), so
     /// one image never has two keys.
-    #[cfg_attr(not(test), allow(dead_code))]
     WallDoor {
         door: art::WallDoor,
         sky: art::Sky,
@@ -103,7 +102,6 @@ impl Look {
     /// over text, 2): `sky` is `Day` for a state that shows nothing of
     /// outside (it draws the same under every sky), and the crop keeps
     /// to 1 ..= its own.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(super) fn wall_door(door: art::WallDoor, sky: art::Sky, crop: Option<u8>) -> Self {
         let own = door.cols();
         Self::WallDoor {
@@ -123,7 +121,7 @@ impl Look {
     }
 
     /// The box it fills, in cells (columns, rows above the floor).
-    fn size(self) -> (i32, i32) {
+    pub(super) fn size(self) -> (i32, i32) {
         match self {
             Self::Tv(_) | Self::Film(..) => {
                 let (cols, rows) = Furniture::Tv.spec().footprint;

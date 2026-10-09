@@ -5809,6 +5809,72 @@ excusing the first frame after a resize in the tests (it is drawn);
 building the chances before her tick (her tick decides what the frame
 draws, so the frame has to come after it).
 
+## Her door is drawn side-on (2026-10-08)
+
+**Rule:** her own door in its space is drawn side-on in the wall
+(`Look::WallDoor`, the approved sheet B), not face-on in her box. Its
+beats keep the face-on table's timing and meaning (`DOOR`, `door()`,
+`hidden`, `gone_out` unchanged: beat 6 is still the gap that ends a
+school visit); a draw-only `wall_beat` maps each beat to the door's
+state and her pose and step. Her own door stretches the two beats in
+which she steps through it (2 and 10) to her walking pace, a column a
+`WALK_MS` (`beat_ms`; every door's timing goes through it, and a
+begun door's far side or gap changes only through `redirect_door`,
+which retimes it, so a door that turns from her own to one in space
+mid-way, by whatever turns it (her door moving or going, an errand, a
+focused pane), keeps its beat: `retimed`). Her image is cut at the wall's line (a `graphics::Cut`
+with the wall's column and her offset), and the door's front post is
+drawn after her while she's in the doorway; ASCII drops her cells at
+the wall's column and hides her once she's four columns in. The
+doorway shows the window's sky. While she's out through it, her
+slippers stand before it with a card on its knob. It shows from her
+set-off (her line, or any walk or heading to it to go out) until her
+box leaves its space; over text, apart from her beats, for 4 s at a
+time, beside her or not (the frame wakes when that runs out). Any
+cell of it in a pane in use hides it whole; she still steps through
+its doorway, cut short of the wall. A goodbye mid-doorway has her jump
+out of it to wave. A face-on fallback door faces its spot's way out
+throughout. Anything of hers in a wall's
+own column goes through one rule (`wall_glyph`: only over a plain
+vertical line, never protected, the line kept for the rain), the
+flap's and the door's alike.
+
+**Why:** the user approved sheet B over A (the one-column edge-on door
+read as a pink post): two columns turned toward the room read as a
+door, with room for the parcel flap in its lower half. The cut is what
+makes "going through the door" read: half-through frames, the wall in
+front of her. Walking pace (the user's answer): the sheet's thirds were
+about three times her walking speed, a lurch after a calm walk, and a
+change of pace draws the eye (her stillness rules). Showing it from her
+set-off ties its one appearance to her line or her turn toward it, so
+it never pops in or out beside her (C3). The cue, always while she's
+out (a dash's or work's short gap too), means one thing: "shut with
+slippers before it" is her out. Its own two columns stand over text
+for as long as she's out (the user's answer), but her slippers never
+do, and before and after her beats it stands over text only in passing
+(4 s), as her own image does, so a long walk to it never hides text for
+long. A door that stands where the timing of its beats depends on what
+it is had to carry that in every reader, so `door_beat` takes the
+door's `to`: no reader can time her own door as a door in space.
+The text exception to "never beside her" (step 8 review): the
+user's two rules meet when she stands beside her door over text after
+her beats (her arrival line, `Act::Home`), and "text is never hidden
+for long" wins over "never pops beside her", as it does for her own
+image; keeping the door over text for as long as she stood there would
+let her hide text indefinitely by standing still. A pane in use hiding
+the door must not hide her too (she'd walk in place, then vanish), so
+her doorway is the door as it stands, drawn or not. A goodbye's wave
+cut half into the wall reads as nothing; "she jumps up out of anything
+she was in" covers the doorway too. The face-on door's facing came
+from hers in its beats and from its spot otherwise, so it turned
+beside her as the latch took over; its spot alone decides it now.
+Coming in, she holds side-on through beat 12 and turns to you only for
+her line (C12); with her shopping (a shift), she carries it from her
+first step in (C13 over C12 for those beats). *Rejected:* A (a post);
+the sheet's thirds (a lurch); her pose and step in `Placement` (the
+goldens hash it; her doorway rides in `Figure` beside it); a door shown
+only in its beats (it would pop in beside her).
+
 ## Houseguest chooses by needs among the top few (2026-09-28)
 
 **Rule:** Her next act is a weighted-random pick among the four
