@@ -368,6 +368,19 @@ impl Keep {
     pub(super) fn refuses(&self, cover: Rect) -> bool {
         room::in_chat(self.chat, cover) || self.spaces.iter().any(|s| s.intersects(cover))
     }
+
+    /// Whether a placement puts a piece that showed (in `was`, outside
+    /// this) newly in it, where `now` lays it out: moved, and inside. A
+    /// piece already inside stays (no new placement), as does one that
+    /// doesn't move, or goes to the closet (it's put nowhere).
+    pub(super) fn takes_in(&self, was: &[Shown], now: &[Shown]) -> bool {
+        was.iter()
+            .filter(|w| w.scrap.is_none() && !self.refuses(w.cover()))
+            .any(|w| {
+                now.iter()
+                    .any(|n| n.item == w.item && n.cover() != w.cover() && self.refuses(n.cover()))
+            })
+    }
 }
 
 #[cfg(test)]

@@ -3920,3 +3920,170 @@ fn a_lamp_in_the_space_is_bumped_into_coming_home_from_work() {
         }
     }
 }
+
+// ---- No furniture in the chat pane (door batch, step 5) ----
+
+/// [`by_playlists_right_wall`] with the chat pane laid over Playlist's
+/// right end (columns 90..=99, a custom layout's grid overlapping it),
+/// where every makeshift sofa she could make there would stand.
+fn chat_by_playlists_right_wall() -> (Buffer, IdleView, Rect) {
+    let (real, mut view, _) = by_playlists_right_wall();
+    let chat = Rect::new(90, 13, 10, 14);
+    view.chat = chat;
+    (real, view, chat)
+}
+
+/// The makeshift pieces of `guest`'s visit meeting the chat pane `chat`.
+fn made_in_chat(guest: &Guest, chat: Rect) -> Vec<Rect> {
+    visit_of(guest)
+        .made
+        .iter()
+        .map(|m| m.piece.cover())
+        .filter(|&c| room::in_chat(chat, c))
+        .collect()
+}
+
+/// She never makes a piece in the chat pane (D3; the user: "no furniture
+/// in the chat pane"), cued to make a sofa where the only sofa she could
+/// make would stand in it: the cue finds no room, and nothing she makes
+/// meets the chat. (With nothing kept out, that sofa is on offer:
+/// asserted.) Through the visiting frame, so its own keep-out is what
+/// keeps it out (step 3's left the chat out).
+#[test]
+fn nothing_is_made_in_the_chat() {
+    let (real, view, chat) = chat_by_playlists_right_wall();
+    for graphics in [false, true] {
+        let at = format!("graphics={graphics}");
+        let mut guest = home_at(
+            3,
+            tue(14, 0),
+            &[(Furniture::Sofa, Nook::Users, 0)],
+            graphics,
+        );
+        let mut now = until_visiting(&mut guest, &real, &view, 0);
+        paint(&mut guest, &real, &view, now);
+        assert_ne!(guest.ledger.home.door, Some(PLAYLIST_RIGHT), "{at}");
+        let visit = visit_of(&guest);
+        let mut solid = view.protected.clone();
+        solid.extend(visit.shown.iter().map(Shown::cover));
+        let pulls = scenes::pulls(&real, &visit.terrain, &solid);
+        let offered = builds(&real, visit, &pulls, &solid, &door::Keep::default());
+        assert!(
+            offered
+                .iter()
+                .any(|b| b.piece.item == Furniture::Sofa && room::in_chat(chat, b.piece.cover())),
+            "{at}: a sofa on offer in the chat"
+        );
+        guest.cue(Scene::MakeSofa);
+        let end = now + 30_000;
+        while now < end {
+            shell_step(&mut guest, &real, &view, &mut now, true);
+            assert!(
+                made_in_chat(&guest, chat).is_empty(),
+                "{at}: made in the chat at {now}"
+            );
+        }
+        assert!(
+            matches!(guest.cue_note(), Some(Err(_))),
+            "{at}: {:?}",
+            guest.cue_note()
+        );
+    }
+}
+
+/// A made piece the chat pane comes to meet falls apart (D3's symmetric
+/// path): her sofa of text by Playlist's right wall, then the chat laid
+/// over it (a layout changed under her): at the next frame it's gone,
+/// its text back in its line.
+#[test]
+fn a_made_piece_the_chat_comes_to_meet_falls_apart() {
+    for graphics in [false, true] {
+        let at = format!("graphics={graphics}");
+        let (mut guest, mut now, real, view, _) = made_by_playlists_right_wall(graphics);
+        let [made] = visit_of(&guest).made.as_slice() else {
+            panic!("{at}: one piece");
+        };
+        let torn = made.torn.clone();
+        let (_, chatted, chat) = chat_by_playlists_right_wall();
+        assert!(room::in_chat(chat, made.piece.cover()), "{at}: under it");
+        // It stands a frame first.
+        now += 100;
+        guest.advance(now);
+        paint(&mut guest, &real, &view, now);
+        assert_eq!(visit_of(&guest).made.len(), 1, "{at}: it stands");
+        now += 100;
+        guest.advance(now);
+        paint(&mut guest, &real, &chatted, now);
+        assert!(
+            visit_of(&guest).made.is_empty(),
+            "{at}: it fell apart: {:?}",
+            visit_of(&guest).made
+        );
+        let frame = paint(&mut guest, &real, &chatted, now);
+        for &(x, y) in &torn {
+            assert_eq!(frame[(x, y)], real[(x, y)], "{at}: {:?} back", (x, y));
+        }
+    }
+}
+
+/// [`rooms_frame`] at 100×30 with the chat pane over List's floor by its
+/// left wall (columns 0..=19, rows 14..=26: a custom layout's grid
+/// overlapping List), the wall a parcel comes in by first (the screen's
+/// edge, the first pane).
+fn chat_by_lists_left_wall() -> (Buffer, IdleView, Rect) {
+    let (real, mut view) = rooms_frame(100, 30);
+    let chat = Rect::new(0, 14, 20, 13);
+    view.chat = chat;
+    (real, view, chat)
+}
+
+/// Her lamp on order, delivered on `view`: where its box stands once
+/// it's in (her TV on Users, her door's wall chosen by it).
+fn a_lamp_delivered(real: &Buffer, view: &IdleView, graphics: bool) -> Shown {
+    let mut guest = home_at(
+        3,
+        tue(14, 0),
+        &[(Furniture::Tv, Nook::Users, 500)],
+        graphics,
+    );
+    guest.ledger.ordered = Some(Furniture::Lamp);
+    guest.ledger.bought_on = 0;
+    let mut now = until_visiting(&mut guest, real, view, 0);
+    let end = now + 180_000;
+    while !guest.ledger.home.owns(Furniture::Lamp) {
+        assert!(now < end, "graphics={graphics}: never delivered");
+        shell_step(&mut guest, real, view, &mut now, true);
+    }
+    paint(&mut guest, real, view, now);
+    *visit_of(&guest)
+        .shown
+        .iter()
+        .find(|s| s.item == Furniture::Lamp)
+        .expect("its box shows")
+}
+
+/// A parcel is never left on a doorstep in the chat pane (D3): with the
+/// chat over the floor by List's left wall (where it comes in with no
+/// chat there: asserted), her lamp comes in by another wall, its box
+/// clear of the chat.
+#[test]
+fn a_parcel_is_never_left_on_a_doorstep_in_the_chat() {
+    let (real, view, chat) = chat_by_lists_left_wall();
+    let apart = IdleView {
+        chat: Rect::default(),
+        ..view.clone()
+    };
+    for graphics in [false, true] {
+        let at = format!("graphics={graphics}");
+        let there = a_lamp_delivered(&real, &apart, graphics);
+        assert!(
+            room::in_chat(chat, there.cover()),
+            "{at}: with no chat it comes in there: {there:?}"
+        );
+        let elsewhere = a_lamp_delivered(&real, &view, graphics);
+        assert!(
+            !room::in_chat(chat, elsewhere.cover()),
+            "{at}: left in the chat: {elsewhere:?}"
+        );
+    }
+}

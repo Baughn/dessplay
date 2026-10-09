@@ -2284,15 +2284,9 @@ impl Guest {
                 // The place of the piece in her pocket is kept for it.
                 let mut kept = view.protected.clone();
                 kept.extend(visit.ghost);
-                // Her door's space is kept clear of what she made (the
-                // chat pane too, from the door batch's step 5).
-                let keep = door::Keep::of(
-                    &self.ledger.home,
-                    room::Plan {
-                        chat: Rect::default(),
-                        ..plan_of(view, buf)
-                    },
-                );
+                // Her door's space and the chat pane are kept clear of
+                // what she made (door batch, D3).
+                let keep = door::Keep::of(&self.ledger.home, plan_of(view, buf));
                 tend_made(visit, buf, &kept, &keep, size, now);
                 visit.shown.extend(visit.made.iter().map(|made| made.piece));
                 let gone = |piece: room::PieceRef| !visit.shown.iter().any(|s| s.piece() == piece);
@@ -3339,12 +3333,14 @@ fn furnish(
     // its rule right still (judged with the move made: its own place is
     // free), else she lets it go.
     if let Some((piece, to)) = visit.set_down.take() {
+        let keep = door::Keep::of(home, plan);
         let frame = rules::Frame {
             buf,
             nooks: &view.nooks,
             blocked: &blocked,
             shown: &shown,
             made: &made,
+            keep: &keep,
         };
         let episode = visit
             .osaka
@@ -3408,21 +3404,15 @@ fn furnish(
     // terrain, read once, when a delivery first asks (the visit's is
     // last frame's, read after this).
     let fresh: std::cell::RefCell<Option<Terrain>> = std::cell::RefCell::new(None);
-    // What she made stands clear of her door's space as it is now: the
-    // home before the delivery's (D3 wants the after-delivery home's, a
-    // delivery that moves her door's wall judged on its new space: the
-    // door batch's step 5). Until then `tend_made` catches it a frame on.
-    let keep = door::Keep::of(
-        home,
-        room::Plan {
-            chat: Rect::default(),
-            ..plan
-        },
-    );
+    // What she made stands clear of the chat pane and of her door's
+    // space as the home will be with the delivery in it (D3: a delivery
+    // that moves her door's wall is judged on its new space), as
+    // `tend_made` will judge it.
     let mut kept = view.protected.clone();
     kept.extend(visit.ghost);
     let (makeshift, layer) = (&visit.made, &visit.layer);
-    let seats = |piece: &Shown, after: &[Shown]| {
+    let seats = |piece: &Shown, after: &[Shown], then: &room::Home| {
+        let keep = door::Keep::of(then, plan);
         let mut fresh = fresh.borrow_mut();
         let terrain = fresh.get_or_insert_with(|| {
             // As the visit's is read (`Visit::solid`).
@@ -3506,12 +3496,14 @@ fn furnish(
         visit.osaka.feel(key, (Furniture::Sofa, room::Use::Lounge));
     }
     mend(home, buf, view, visit, &shown, &blocked, force, now);
+    let keep = door::Keep::of(home, plan);
     let frame = rules::Frame {
         buf,
         nooks: &view.nooks,
         blocked: &blocked,
         shown: &shown,
         made: &made,
+        keep: &keep,
     };
     visit.judging = visit.osaka.episode().map(|ep| Judging {
         piece: ep.repair.piece,
@@ -3652,7 +3644,15 @@ fn stage_arrange(
             tried.door = tried.wall(plan);
             let shown = tried.project_with(buf, plan, blocked).0;
             let shows = |item: Furniture| shown.iter().any(|s| s.item == item);
-            if shows(Furniture::Tv)
+            // Never set down in the chat pane or her door's space (D3),
+            // nor pushing a piece that showed newly into either.
+            let keep = door::Keep::of(&tried, plan);
+            let kept_out = keep.takes_in(&before, &shown)
+                || shown.iter().any(|s| {
+                    matches!(s.item, Furniture::Tv | Furniture::Sofa) && keep.refuses(s.cover())
+                });
+            if !kept_out
+                && shows(Furniture::Tv)
                 && shows(Furniture::Sofa)
                 && before.iter().all(|b| shows(b.item))
             {
@@ -3711,7 +3711,7 @@ fn mend(
     moved.sort_unstable();
     moved.dedup();
     let mut hasher = std::hash::DefaultHasher::new();
-    (home, &view.nooks, &wanted, &moved).hash(&mut hasher);
+    (home, &view.nooks, view.chat, &wanted, &moved).hash(&mut hasher);
     let basis = hasher.finish();
     let due = force.is_some()
         || visit
@@ -3721,12 +3721,14 @@ fn mend(
         return;
     }
     let made: Vec<Rect> = visit.made.iter().map(|m| m.piece.cover()).collect();
+    let keep = door::Keep::of(home, plan_of(view, buf));
     let frame = rules::Frame {
         buf,
         nooks: &view.nooks,
         blocked,
         shown,
         made: &made,
+        keep: &keep,
     };
     let mut examined = 0;
     let found = targets
@@ -3972,9 +3974,9 @@ fn tend_made(
 /// Whether the makeshift piece `made` still stands among the real pieces
 /// `real`: every glyph torn off for it still torn off, and it still fits
 /// where she made it, clear of them, of `moved` text, of anything
-/// `protected`, and of what `keep` keeps clear (her door's space: one
-/// that comes to meet it takes it apart; see [`tend_made`]; a delivery
-/// asks it of the room it would make).
+/// `protected`, and of what `keep` keeps clear (the chat pane and her
+/// door's space: one that comes to meet it takes it apart; see
+/// [`tend_made`]; a delivery asks it of the room it would make).
 fn made_stands(
     made: &Made,
     layer: &layer::TextLayer,
@@ -4088,8 +4090,8 @@ fn builds(
         !protected.iter().any(|r| r.contains((ux, uy).into())) && clear_of_real(&visit.shown, x, y)
     };
     // Where she'd stay once it's made, judged with it in her image: to
-    // crumple it, and then to use it. Never where `keep` keeps clear (her
-    // door's space), once per candidate.
+    // crumple it, and then to use it. Never where `keep` keeps clear (the
+    // chat pane and her door's space), once per candidate.
     let then = |piece: &Shown| {
         if keep.refuses(piece.cover()) {
             return Vec::new();

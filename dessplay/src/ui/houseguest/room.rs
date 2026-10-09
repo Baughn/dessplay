@@ -13,6 +13,7 @@ use tuirealm::ratatui::style::Color;
 
 use super::Rng;
 use super::cells::{untouchable, width};
+use super::door::Keep;
 use super::graphics::strokes;
 use super::sprite::Facing;
 
@@ -1900,11 +1901,12 @@ impl Home {
     /// those hung go along, where their share of the way puts them. With
     /// only hung pieces, to the first whose wall holds them all that way.
     /// None of them may meet `plan`'s chat pane, nor the target's door
-    /// space (kept or not). Her door goes with them if it was on `strip`:
-    /// to the target's wall [`choose`] picks, else the first that
-    /// qualifies; each target judged with her door already there, so the
-    /// pieces are laid out the frame they move as they'll stay. Where
-    /// they went, if they moved.
+    /// space (kept or not), where they stand nor where they're laid
+    /// out, nor push a piece already there newly into either. Her door
+    /// goes with them if it was on `strip`: to the target's wall
+    /// [`choose`] picks, else the first that qualifies; each target
+    /// judged with her door already there, so the pieces are laid out the
+    /// frame they move as they'll stay. Where they went, if they moved.
     fn move_off(
         &mut self,
         strip: Strip,
@@ -1916,6 +1918,8 @@ impl Home {
             .filter(|&i| self.props.get(i).is_some_and(|p| p.strip == strip))
             .collect();
         let follows = self.door.is_some_and(|d| d.strip == strip);
+        // Where the pieces staying are laid out before any move.
+        let was = self.laid_and_shifted(plan.nooks).shown;
         let target = raw_strips(plan.nooks)
             .into_iter()
             .filter(|&(s, _)| s != strip)
@@ -1965,7 +1969,28 @@ impl Home {
                                     && space.is_none_or(|r| !cover.intersects(r))
                             })
                         });
-                all_free.then_some((to, strip_plan, moved, packed))
+                // Nor, as they're laid out there (a window hung by its
+                // share, where a space that yields doesn't move it), in
+                // what the frame keeps new pieces out of (D3), her door
+                // where the frame will have it: neither those that move,
+                // nor any they push along newly into it (judged against
+                // where it's laid out now).
+                let kept_out = || {
+                    let judged = Home {
+                        door: moved.wall(plan),
+                        ..moved.clone()
+                    };
+                    let keep = Keep::of(&judged, plan);
+                    let now = judged.laid_and_shifted(plan.nooks).shown;
+                    keep.takes_in(&was, &now)
+                        || now.iter().any(|s| {
+                            keep.refuses(s.cover())
+                                && leaving
+                                    .iter()
+                                    .any(|&i| moved.props.get(i).is_some_and(|p| p.item == s.item))
+                        })
+                };
+                (all_free && !kept_out()).then_some((to, strip_plan, moved, packed))
             });
         let (to, strip_plan, mut moved, packed) = target?;
         tracing::trace!(from = ?strip, ?to, door = ?moved.door, "houseguest: her pieces move off");
@@ -1981,8 +2006,8 @@ impl Home {
     }
 
     /// Where `item` could go this frame: anywhere on a strip it fits,
-    /// clear of what's `shown` and of her door's space, chosen at random
-    /// (a stage gift: it stands where it's settled).
+    /// clear of what's `shown`, of her door's space and of the chat pane,
+    /// chosen at random (a stage gift: it stands where it's settled).
     pub fn spot(
         &self,
         buf: &Buffer,
@@ -2046,17 +2071,19 @@ impl Home {
                     // Where it's laid out once it's there, if at all
                     // (packed with what's on its lane, a window kept
                     // clear of what stands and of her door's space: else
-                    // it would only go to the closet); and never in her
-                    // door's space as the strip is with it there, kept or
-                    // not (a window hung there would stand aside, or not
-                    // at all).
+                    // it would only go to the closet); and never where
+                    // the frame keeps new pieces out (`Keep`: the chat
+                    // pane, and her door's space as the home is with it
+                    // there, kept or not: a window hung there would
+                    // stand aside, or not at all).
+                    // Nor pushing a piece that shows (or hanging one clear
+                    // of it) newly into what's kept out.
                     let mut with = home.clone();
                     with.props.push(prop);
                     let laid = with.laid_and_shifted(plan.nooks);
                     let at = *laid.shown.iter().find(|s| s.item == item)?;
-                    let space = laid.plan(strip).and_then(|p| p.space).map(|s| s.rect);
-                    space
-                        .is_none_or(|r| !at.cover().intersects(r))
+                    let keep = Keep::of(&with, plan);
+                    (!keep.refuses(at.cover()) && !keep.takes_in(shown, &laid.shown))
                         .then_some((prop, at))
                 })
             })
@@ -2087,8 +2114,9 @@ impl Home {
     /// can unpack it, and she'd fit to use the piece. Both are asked of
     /// `seats` (her seats at a piece, among the pieces shown: see
     /// `seats_of`), each on the whole room as it would show (the pieces
-    /// that made way where they'd be): with the box standing there, an
-    /// `Unpack` seat; with the piece out of its box, a seat for each way
+    /// that made way where they'd be), and her home as it will be then
+    /// (what keeps out her makeshift pieces: see `Keep`): with the box
+    /// standing there, an `Unpack` seat; with the piece out of its box, a seat for each way
     /// she uses it that asks room (see [`Use::asks_room`]), and to look
     /// out of a window first coming in where she could. So it's judged
     /// as her seats will be once it's there: in line art the image she'd
@@ -2105,7 +2133,7 @@ impl Home {
         plan: Plan,
         shown: &[Shown],
         blocked: &dyn Fn(i32, i32) -> bool,
-        seats: &dyn Fn(&Shown, &[Shown]) -> Vec<Seat>,
+        seats: &Seats<'_>,
         item: Furniture,
     ) -> Option<(Prop, Flap)> {
         let mut walls: Vec<(bool, Strip, Extent, Side)> = Vec::new();
@@ -2162,9 +2190,9 @@ impl Home {
                 door,
                 ..self.clone()
             };
-            let at = doored.admits(buf, shown, blocked, plan.nooks, parcel, Room::None)?;
+            let at = doored.admits(buf, shown, blocked, plan, parcel, Room::None)?;
             let room = if look { Room::ToLook } else { Room::ToUse };
-            doored.admits(buf, shown, blocked, plan.nooks, prop, room)?;
+            doored.admits(buf, shown, blocked, plan, prop, room)?;
             // The room as it will show with the box in it, then with the
             // piece out of it: her seats there are judged on each.
             let offers = |prop: Prop, wants: &[Use]| {
@@ -2175,7 +2203,7 @@ impl Home {
                 let Some(piece) = after.iter().find(|s| s.item == item) else {
                     return false;
                 };
-                let seats = seats(piece, &after);
+                let seats = seats(piece, &after, &with);
                 wants
                     .iter()
                     .all(|&what| seats.iter().any(|seat| seat.what == what))
@@ -2214,13 +2242,17 @@ impl Home {
     /// pieces in its lane there make way for it, packed in order
     /// (standing, on the floor beside her door's space; hung, on the raw
     /// wall): every one of them that shows still fits, and it fits on
-    /// blank, free cells, with the `room` around it she'd need.
+    /// blank, free cells, with the `room` around it she'd need. Never
+    /// where the frame keeps new pieces out (`Keep`: the chat pane and
+    /// her door's space, the piece where it's laid out), nor pushing one
+    /// that shows into it, nor where its coming makes her door's kept
+    /// space yield (door batch, D3).
     fn admits(
         &self,
         buf: &Buffer,
         shown: &[Shown],
         blocked: &dyn Fn(i32, i32) -> bool,
-        nooks: &[(Nook, Rect)],
+        plan: Plan,
         prop: Prop,
         room: Room,
     ) -> Option<Shown> {
@@ -2228,11 +2260,22 @@ impl Home {
         let mut with = self.clone();
         with.props.push(prop);
         let new = with.props.len() - 1;
-        let e = with
-            .extents(nooks)
-            .iter()
-            .find(|p| p.strip == strip)?
-            .along(lane);
+        let plans = with.extents(plan.nooks);
+        let e = plans.iter().find(|p| p.strip == strip)?.along(lane);
+        // Her door's space, kept before it came, is kept with it there.
+        let kept = |plans: &[StripPlan], door: Option<DoorWall>| {
+            let door = door?;
+            plans
+                .iter()
+                .find(|p| p.strip == door.strip)?
+                .space
+                .map(|s| s.kept)
+        };
+        if kept(&self.extents(plan.nooks), self.door) == Some(true)
+            && kept(&plans, with.door) != Some(true)
+        {
+            return None;
+        }
         let packed: Vec<(usize, Shown)> = pack(&with.on(strip, lane), e)?
             .into_iter()
             .filter_map(|(i, left)| Some((i, stand(with.props.get(i)?, strip, e, left))))
@@ -2270,7 +2313,19 @@ impl Home {
             (*i != new && !showing) || fits_here(*i, at)
         });
         let at = packed.iter().find(|(i, _)| *i == new).map(|(_, at)| *at)?;
-        all_fit.then_some(at)
+        // What the frame keeps out: the piece where it will be laid out
+        // (a window hung clear of what stands), and none that shows put
+        // newly in it by its coming, judged where the layout puts it (in
+        // either lane: what the new piece pushes along, and what hangs
+        // clear of it). One that goes to the closet isn't put anywhere.
+        let keep = Keep::of(&with, plan);
+        let laid_out = with.laid_and_shifted(plan.nooks).shown;
+        let laid = laid_out
+            .iter()
+            .find(|s| s.item == prop.item)
+            .copied()
+            .unwrap_or(at);
+        (all_fit && !keep.refuses(laid.cover()) && !keep.takes_in(shown, &laid_out)).then_some(at)
     }
 
     /// Take ownership of `prop`, unless she already has one (then this
@@ -2283,6 +2338,10 @@ impl Home {
         true
     }
 }
+
+/// Her seats at a piece shown among the pieces shown, her home as it
+/// will be then (see [`Home::doorstep`]).
+pub(super) type Seats<'a> = dyn Fn(&Shown, &[Shown], &Home) -> Vec<Seat> + 'a;
 
 /// `prop` as it stands at `left` on `strip`.
 fn stand(prop: &Prop, strip: Strip, extent: Extent, left: i32) -> Shown {
@@ -2471,7 +2530,7 @@ mod tests {
 
     /// Her seats at `piece` (every way she'd use it) as if she could stand
     /// anywhere: for a doorstep that judges only the room's cells.
-    fn anywhere(piece: &Shown, _: &[Shown]) -> Vec<Seat> {
+    fn anywhere(piece: &Shown, _: &[Shown], _: &Home) -> Vec<Seat> {
         piece
             .uses()
             .iter()
@@ -2480,7 +2539,7 @@ mod tests {
     }
 
     /// Her seats at `piece` as if she could stand nowhere.
-    fn nowhere(_: &Shown, _: &[Shown]) -> Vec<Seat> {
+    fn nowhere(_: &Shown, _: &[Shown], _: &Home) -> Vec<Seat> {
         Vec::new()
     }
 
@@ -3576,7 +3635,7 @@ mod tests {
                 Plan::bare(&nooks),
                 &shown,
                 &|_, _| false,
-                &|piece, _| {
+                &|piece, _, _| {
                     let unpack = piece.seat(Use::Unpack, 0);
                     match unpack.x != 21 || !piece.boxed {
                         true => piece
@@ -4793,5 +4852,388 @@ mod tests {
         let _ = home.frame(&buf, plan_on(&rest, Rect::default(), screen), &|_, _| false);
         assert_eq!(home.props[0].strip, Strip::Bottom(Nook::List));
         assert_eq!(home.door, door_on(Nook::List, Side::Right));
+    }
+
+    // ---- Keep-out for new placements (door batch, step 5) ----
+
+    /// Whether her door's space, on the wall `home` has (or would choose)
+    /// on `plan`, is kept: `None` with no wall, or no space on it.
+    fn kept_on(home: &Home, plan: Plan) -> Option<bool> {
+        let wall = home.wall(plan)?;
+        let scratch = Home {
+            door: Some(wall),
+            ..home.clone()
+        };
+        scratch
+            .extents(plan.nooks)
+            .into_iter()
+            .find(|p| p.strip == wall.strip)?
+            .space
+            .map(|s| s.kept)
+    }
+
+    /// Where `item` is laid out in `home` on `plan` as it comes in (her
+    /// door where it will be with it there; what the next frame moves
+    /// off a strip is `move_off`'s, checked apart), and what that frame
+    /// keeps out.
+    fn framed(home: &mut Home, plan: Plan, item: Furniture) -> Option<(Shown, Keep)> {
+        home.door = home.wall(plan);
+        let laid = home.laid_and_shifted(plan.nooks);
+        let at = *laid.shown.iter().find(|s| s.item == item)?;
+        Some((at, Keep::of(home, plan)))
+    }
+
+    /// A piece of `was` (showing) put newly in `keep` where `now` lays
+    /// it out: outside it before, inside it now, moved.
+    fn pushed_in(was: &[Shown], now: &[Shown], keep: &Keep) -> Option<(Shown, Shown)> {
+        was.iter()
+            .filter(|w| w.scrap.is_none() && !keep.refuses(w.cover()))
+            .find_map(|w| {
+                now.iter()
+                    .find(|n| n.item == w.item && n.cover() != w.cover() && keep.refuses(n.cover()))
+                    .map(|n| (*w, *n))
+            })
+    }
+
+    /// The body of [`no_placement_meets_the_keep`]: `props` on
+    /// [`two_panes`] (Users `wide` wide), a chat pane drawn at `chat`
+    /// over part of the screen (a custom layout's grid overlapping her
+    /// panes), her door saved at `door` or chosen. No new placement (a
+    /// delivery boxed and unpacked, a stage gift, a repair and the pieces
+    /// it pushes along, her pieces moved off a pane that's gone) meets
+    /// the chat or her door's space; a delivery never makes a kept space
+    /// yield.
+    fn placements_keep_out(
+        props: Vec<Prop>,
+        wide: u16,
+        chat: (u16, u16, u16, u16),
+        door: Option<(bool, bool)>,
+        which: proptest::sample::Index,
+        seed: u64,
+    ) -> Result<(), TestCaseError> {
+        let (buf, nooks) = two_panes(wide, 12, &[]);
+        let (cx, cy, cw, ch) = chat;
+        let chat = Rect::new(cx, cy, cw, ch).intersection(buf.area);
+        let plan = plan_on(&nooks, chat, buf.area);
+        let mut room = Home {
+            props,
+            door: door.map(|(users, right)| DoorWall {
+                strip: Strip::Bottom(if users { Nook::Users } else { Nook::Playlist }),
+                side: if right { Side::Right } else { Side::Left },
+            }),
+        };
+        let (shown, _) = room.frame(&buf, plan, &|_, _| false);
+        let keep = Keep::of(&room, plan);
+        let items: Vec<Furniture> = Furniture::ALL
+            .into_iter()
+            .filter(|&f| !room.owns(f))
+            .collect();
+        // A delivery of one she hasn't got: boxed where it comes in, and
+        // out of its box there.
+        if let Some(&item) = items.get(which.index(items.len().max(1))) {
+            let was = kept_on(&room, plan);
+            if let Some((parcel, _)) =
+                room.doorstep(&buf, plan, &shown, &|_, _| false, &anywhere, item)
+            {
+                for boxed in [true, false] {
+                    let mut with = room.clone();
+                    let added = with.add(Prop { boxed, ..parcel });
+                    prop_assert!(added);
+                    if was == Some(true) {
+                        prop_assert_eq!(
+                            kept_on(&with, plan),
+                            Some(true),
+                            "{:?} (boxed {}) made her door's space yield",
+                            item,
+                            boxed
+                        );
+                    }
+                    if let Some((at, keep)) = framed(&mut with, plan, item) {
+                        prop_assert!(
+                            !keep.refuses(at.cover()),
+                            "{:?} delivered (boxed {}) into {:?}",
+                            at,
+                            boxed,
+                            keep
+                        );
+                        let now = with.laid_and_shifted(plan.nooks).shown;
+                        let pushed = pushed_in(&shown, &now, &keep);
+                        prop_assert!(
+                            pushed.is_none(),
+                            "{:?} (boxed {}) pushed {:?} into {:?}",
+                            item,
+                            boxed,
+                            pushed,
+                            keep
+                        );
+                    }
+                }
+            }
+            // A stage gift of it.
+            if let Some(gift) = room.spot(&buf, plan, &shown, &|_, _| false, item, &mut Rng(seed)) {
+                let mut with = room.clone();
+                let added = with.add(gift);
+                prop_assert!(added);
+                if let Some((at, keep)) = framed(&mut with, plan, item) {
+                    prop_assert!(!keep.refuses(at.cover()), "gift {:?} in {:?}", at, keep);
+                    let now = with.laid_and_shifted(plan.nooks).shown;
+                    let pushed = pushed_in(&shown, &now, &keep);
+                    prop_assert!(
+                        pushed.is_none(),
+                        "gift {:?} pushed {:?} into {:?}",
+                        item,
+                        pushed,
+                        keep
+                    );
+                }
+            }
+        }
+        // Every repair of every rule broken: the piece where it's set
+        // down, unless it stays where it stood (turned round: an older
+        // piece in the chat is shown where it stands).
+        let laid = room.laid_out(&nooks);
+        let frame = super::super::rules::Frame {
+            buf: &buf,
+            nooks: &nooks,
+            blocked: &|_, _| false,
+            shown: &shown,
+            made: &[],
+            keep: &keep,
+        };
+        for target in super::super::rules::broken(&laid, &room) {
+            for repair in super::super::rules::search(&room, &frame, &target).repairs {
+                let stood = laid.shown.iter().find(|s| s.item == repair.piece);
+                prop_assert!(
+                    !keep.refuses(repair.at.cover())
+                        || stood.is_some_and(|s| s.cover() == repair.at.cover()),
+                    "{:?} mended into {:?}",
+                    repair.at,
+                    keep
+                );
+                // Nor any piece it pushes along (or hangs clear of it)
+                // put newly in it.
+                let mut mended = room.clone();
+                if let Some(p) = mended.props.iter_mut().find(|p| p.item == repair.piece) {
+                    p.strip = repair.to.strip;
+                    p.anchor = Some(repair.to.anchor);
+                    p.facing = repair.to.facing;
+                }
+                let now = mended.laid_and_shifted(&nooks).shown;
+                let others: Vec<Shown> = shown
+                    .iter()
+                    .filter(|s| s.item != repair.piece)
+                    .copied()
+                    .collect();
+                let pushed = pushed_in(&others, &now, &keep);
+                prop_assert!(
+                    pushed.is_none(),
+                    "{:?} mended pushed {:?} into {:?}",
+                    repair.at,
+                    pushed,
+                    keep
+                );
+            }
+        }
+        // Her pieces moved off a pane that's gone (a guard: step 2's
+        // `move_off` refuses both).
+        for gone in [Nook::Users, Nook::Playlist] {
+            let rest: Vec<(Nook, Rect)> =
+                nooks.iter().copied().filter(|&(n, _)| n != gone).collect();
+            let less = plan_on(&rest, chat, buf.area);
+            let mut moved = room.clone();
+            let (after, _) = moved.frame(&buf, less, &|_, _| false);
+            let keep = Keep::of(&moved, less);
+            // Nor any piece already where they went pushed newly into
+            // it (judged against where it's laid out before the move).
+            let before = room.laid_and_shifted(&rest).shown;
+            let pushed = pushed_in(&before, &after, &keep);
+            prop_assert!(
+                pushed.is_none(),
+                "moving off {:?} pushed {:?} into {:?}",
+                gone,
+                pushed,
+                keep
+            );
+            for s in after
+                .iter()
+                .filter(|s| s.strip != Some(Strip::Bottom(gone)))
+            {
+                let was = room
+                    .props
+                    .iter()
+                    .find(|p| p.item == s.item)
+                    .map(|p| p.strip);
+                if was == Some(Strip::Bottom(gone)) {
+                    prop_assert!(!keep.refuses(s.cover()), "{:?} moved into {:?}", s, keep);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(dessplay_core::test_support::proptest_cases(512)))]
+
+        /// No new piece is put in the chat pane or her door's space (D3):
+        /// see [`placements_keep_out`].
+        #[test]
+        fn no_placement_meets_the_keep(
+            props in decorated(),
+            wide in 24u16..60,
+            chat in (0u16..100, 0u16..12, 1u16..40, 1u16..13),
+            door in proptest::option::of((any::<bool>(), any::<bool>())),
+            which in any::<proptest::sample::Index>(),
+            seed in 0u64..1000,
+        ) {
+            placements_keep_out(props, wide, chat, door, which, seed)?;
+        }
+    }
+
+    /// [`no_placement_meets_the_keep`]'s find: her cat's bed, window and
+    /// poster moved off a hidden Users onto Playlist, her door on
+    /// Playlist's left wall. The bed packs clear of the space, but the
+    /// window, hung by its share of the way, lands in it (the space
+    /// yields: no hung piece is shifted out of one that yields), so the
+    /// move is refused: nothing is laid out in her door's space.
+    #[test]
+    fn a_window_moved_off_a_hidden_pane_never_hangs_in_her_door_space() {
+        let (buf, nooks) = two_panes(26, 12, &[]);
+        let mut home = Home {
+            props: vec![
+                Prop {
+                    anchor: Some(Anchor {
+                        side: Side::Right,
+                        offset: 0,
+                    }),
+                    ..prop(Furniture::CatBed, 0)
+                },
+                Prop {
+                    anchor: Some(Anchor {
+                        side: Side::Left,
+                        offset: 0,
+                    }),
+                    ..prop(Furniture::Window, 0)
+                },
+                prop(Furniture::Poster, 30),
+            ],
+            door: door_on(Nook::Playlist, Side::Left),
+        };
+        let playlist = [nooks[1]];
+        let less = plan_on(&playlist, Rect::default(), buf.area);
+        let (shown, _) = home.frame(&buf, less, &|_, _| false);
+        let keep = Keep::of(&home, less);
+        let laid = home.laid_and_shifted(&playlist).shown;
+        for s in shown.iter().chain(&laid) {
+            assert!(!keep.refuses(s.cover()), "{s:?} in {keep:?}");
+        }
+    }
+
+    /// Her pieces moved off a pane that's gone push none already where
+    /// they go newly into the chat pane (D3): her bed off a hidden Users
+    /// onto Playlist, whose TV stands at its right wall; packed against
+    /// the bed it would stand where the chat comes over (with no chat,
+    /// it stands there: asserted), so the move is refused.
+    #[test]
+    fn pieces_moved_off_a_hidden_pane_push_none_into_the_chat() {
+        let (buf, nooks) = two_panes(30, 12, &[]);
+        let right = Some(Anchor {
+            side: Side::Right,
+            offset: 0,
+        });
+        let home = Home {
+            props: vec![
+                Prop {
+                    strip: Strip::Bottom(Nook::Playlist),
+                    anchor: right,
+                    ..prop(Furniture::Tv, 0)
+                },
+                Prop {
+                    anchor: right,
+                    ..prop(Furniture::Bed, 0)
+                },
+            ],
+            door: door_on(Nook::Playlist, Side::Left),
+        };
+        let playlist = [nooks[1]];
+        let chat = Rect::new(53, 0, 5, 12);
+        let tv_in_chat = |home: &Home| {
+            home.laid_and_shifted(&playlist)
+                .shown
+                .iter()
+                .any(|s| s.item == Furniture::Tv && in_chat(chat, s.cover()))
+        };
+        assert!(!tv_in_chat(&home), "the TV stands clear of it");
+        let mut apart = home.clone();
+        let to = apart.move_off(
+            Strip::Bottom(Nook::Users),
+            &buf,
+            plan_on(&playlist, Rect::default(), buf.area),
+            &|_, _| false,
+        );
+        assert_eq!(to, Some(Strip::Bottom(Nook::Playlist)), "with no chat");
+        assert!(tv_in_chat(&apart), "with no chat, pushed where it comes");
+        let mut kept = home.clone();
+        let to = kept.move_off(
+            Strip::Bottom(Nook::Users),
+            &buf,
+            plan_on(&playlist, chat, buf.area),
+            &|_, _| false,
+        );
+        assert_eq!(to, None, "{:?}", kept.laid_and_shifted(&playlist).shown);
+        assert_eq!(kept, home);
+    }
+
+    /// [`no_placement_meets_the_keep`]'s rarest clause, pinned (found at
+    /// 16384 cases with the clause off): her sofa, poster, bed, bookshelf
+    /// and fridge from Users' left wall, her door on its right, the chat
+    /// over its floor. A lamp delivered, boxed or out of its box, never
+    /// makes her door's kept space yield (D3: only a transition is
+    /// refused; an older crowded home still gets parcels).
+    #[test]
+    fn a_lamp_delivered_never_makes_her_kept_door_space_yield() {
+        let (buf, nooks) = two_panes(36, 12, &[]);
+        let chat = Rect::new(4, 10, 27, 2).intersection(buf.area);
+        let plan = plan_on(&nooks, chat, buf.area);
+        let left = Some(Anchor {
+            side: Side::Left,
+            offset: 0,
+        });
+        let mut room = Home {
+            props: [
+                Furniture::Sofa,
+                Furniture::Poster,
+                Furniture::Bed,
+                Furniture::Bookshelf,
+                Furniture::Fridge,
+            ]
+            .into_iter()
+            .map(|item| Prop {
+                anchor: left,
+                ..prop(item, 0)
+            })
+            .collect(),
+            door: door_on(Nook::Users, Side::Right),
+        };
+        let (shown, _) = room.frame(&buf, plan, &|_, _| false);
+        assert_eq!(kept_on(&room, plan), Some(true), "kept before");
+        let (parcel, _) = room
+            .doorstep(
+                &buf,
+                plan,
+                &shown,
+                &|_, _| false,
+                &anywhere,
+                Furniture::Lamp,
+            )
+            .expect("it comes in by another wall");
+        for boxed in [true, false] {
+            let mut with = room.clone();
+            assert!(with.add(Prop { boxed, ..parcel }));
+            assert_eq!(
+                kept_on(&with, plan),
+                Some(true),
+                "boxed {boxed}: {parcel:?}"
+            );
+        }
     }
 }

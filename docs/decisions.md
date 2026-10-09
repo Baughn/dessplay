@@ -5578,6 +5578,66 @@ focused pane moves her out of her door's far side, so the gap can't
 tell them apart); drawing the shift at the door (an eviction mid-walk
 had no gap to give, C4).
 
+## No furniture in the chat pane (2026-10-08)
+
+**Rule:** no new piece of hers is ever put in the chat pane or her
+door's space (kept or not), in either drawing mode: not a delivery (the
+parcel, or the piece out of it, as laid out there; nor one that pushes
+a piece that shows into either, nor one whose coming makes her door's
+kept space yield), a stage gift, a repair (nor a piece it pushes along
+newly into either; a piece turned where it stands is no placement), her
+pieces moved off a strip (where they stand and where they're laid out),
+nor a makeshift piece; and no placement pushes a piece that shows (or
+hangs one clear of it) newly into either. A makeshift piece the chat
+pane or her door's space comes to meet falls apart. One predicate
+(`door::Keep`, built from the frame's `Plan` with its chat) is asked
+once per candidate placement at every site: `refuses` of the piece
+where it's laid out, and `takes_in` of every piece that showed (outside
+before, inside where the placement lays it out, moved): `Home::admits`
+(via `doorstep`), `Home::spot`, `Home::move_off` (the pieces that move
+and those already on the strip they go to), `rules::fits_now` (search,
+check and check again, the rules' `Frame` carrying the keep),
+`stage_arrange`, and the makeshift sites (`builds`, the frame's refusal
+of a `Make`, `made_stands` at both callers; the delivery's on the home
+as it will be with the delivery in). Pieces already standing in the
+chat (an older home, panes overlapping in a custom layout) are shown
+where they stand. Unpacking is no placement: a delivery is judged both
+boxed and out of its box where it comes in, so only a layout that
+changes before she unpacks it (a resize, the chat moved, her door's wall
+newly saved) can leave the piece out of its box in the chat or her
+door's space; it's then an older piece there, like any other (step 6's
+felt rules and the per-frame closet deal with it).
+
+**Why:** the user (2026-10-07): *"Furniture cannot be placed in the chat
+pane, since the chat pane is what is focused 95% of the time."* A keep-out
+on new placements, not a change to what `project` shows: widening
+`blocked` (the projection's closure) would closet every older piece in
+the chat, deleting it from sight with nothing for her to notice and move
+(the felt rule that moves it out comes with step 6), and would change
+what the frame shows rather than where she may put things. The check sits
+after the layout (`fits_now`, `admits` on the laid piece), never inside a
+strip's layout, so a strip's layout still reads only her pieces on it and
+her door (`Home::relaid`'s cache stays sound). The parcel and the piece
+are judged where they'll be laid out, since a window is laid clear of a
+kept space beside where it was packed. Found while building: a window
+moved with her pieces off a hidden pane hung by its share of the way
+into her door's space where that space yields (no hung piece is shifted
+out of a yielding space); `move_off` now judges where the moved pieces
+are laid out, not only where they pack. Found in review: the pieces a
+placement pushes along were judged only where they pack, and only in
+its own lane; a stage gift hanging her window clear of it went newly
+into the chat; pieces on the strip her pieces moved onto weren't
+judged at all. Each is now judged where the layout puts it, in either
+lane, by the one `takes_in`. Unpacking isn't held back until it would
+be clear (a wait could leave a parcel boxed for good). In the bundled
+layout all text is in the chat pane, so she no longer makes furniture
+of chat text there.
+*Rejected:* widening `blocked` (above); a keep-out read inside
+`lay_strip` (it would make a strip's layout depend on the chat and stale
+`relaid`); refusing a delivery whenever her door's space yields (an
+older crowded home would never get another parcel), rather than only
+when the delivery makes it yield.
+
 ## Houseguest chooses by needs among the top few (2026-09-28)
 
 **Rule:** Her next act is a weighted-random pick among the four

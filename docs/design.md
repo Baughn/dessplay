@@ -1804,7 +1804,10 @@ this section states what is built.
   room as it would show with the box there, then with the piece out of
   it (the pieces that made way, and what she made that it leaves
   standing, where they'd be: in line art the image she'd be drawn in
-  takes them in, as once it's there); a window comes
+  takes them in, as once it's there), never with the parcel or the
+  piece in the chat pane or her door's space (as laid out there),
+  pushing a piece that shows into either, nor where its coming would
+  make her door's kept space yield; a window comes
   in first where she could look out of it. With no such wall it
   waits
   (why: [decisions](decisions.md#a-parcel-comes-only-when-shes-up-and-can-stand-to-unpack-it-2026-10-05),
@@ -1838,8 +1841,18 @@ this section states what is built.
   gone or too small to hold its pieces, they move, together and in
   order, to the first other strip that holds them with its own pieces,
   every moved piece on free cells, none in the chat pane or another
-  strip's door space, and stay there; with none, they're all in the
-  closet. **Her door's space**: one wall of her strips is her external
+  strip's door space (where they stand nor where they're laid out:
+  a window hung by its share where a space yields counts), and stay
+  there; with none, they're all in the closet. **No new piece in the
+  chat pane**: nothing of hers is put there — no delivery, stage gift,
+  repair, piece moved off a strip, or makeshift piece, nor a piece any
+  of them pushes along or hangs clear of it — nor in her door's space
+  (kept or not). One check serves every placement, in both modes;
+  unpacking is no placement. A piece already standing in
+  the chat (an older home, a layout whose panes overlap) is shown where
+  it stands; turned where it stands is no new placement
+  (why: [decisions](decisions.md#no-furniture-in-the-chat-pane-2026-10-08)).
+  **Her door's space**: one wall of her strips is her external
   door's, saved with her home once she has a piece. It's chosen from the
   panes alone, among walls whose strip has her height clear over its
   floor and room for the space beside her (or beside the widest piece
@@ -2191,9 +2204,11 @@ this section states what is built.
   in shape it's for whatever the real piece is: the sofa for sitting
   on, napping on and watching TV from; the bed, for sleeping in, under
   a blanket of shreds. A heap she let be is offered for finishing.
+  It's never made in the chat pane or her door's space.
   It lasts for the visit, while every glyph torn
   for it is still torn off (its line unchanged, its pane not protected)
-  and it still fits where she made it, clear of her real furniture; a
+  and it still fits where she made it, clear of her real furniture, the
+  chat pane and her door's space (one coming to meet it takes it); a
   resize, or its pane gaining focus, takes it, and its text goes back
   (raining out of a focused pane). She makes at most one of each a
   visit and doesn't make a second while the first stands. **A real

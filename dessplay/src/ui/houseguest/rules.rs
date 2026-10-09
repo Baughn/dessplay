@@ -7,6 +7,7 @@
 //! yet). Each has a grievance: what she says while using a piece it
 //! involves, while it's broken.
 
+use super::door::Keep;
 use super::room::{
     self, Anchor, Extent, Furniture, Home, LaidOut, Nook, Prop, Role, Shown, Side, Strip,
     StripLaid, StripPlan, Use,
@@ -396,14 +397,16 @@ pub(super) const REPAIRS: usize = 3;
 pub(super) const CANDIDATES: usize = 2_000;
 
 /// The frame a repair is judged on: the screen, her quiet panes, the
-/// cells nothing of hers may cover, her pieces that show, and the
-/// makeshift pieces' footprints (which nothing moves onto).
+/// cells nothing of hers may cover, her pieces that show, the makeshift
+/// pieces' footprints (which nothing moves onto), and what no piece may
+/// be put on (the chat pane and her door's space: door batch, D3).
 pub(super) struct Frame<'a> {
     pub buf: &'a Buffer,
     pub nooks: &'a [(Nook, Rect)],
     pub blocked: &'a dyn Fn(i32, i32) -> bool,
     pub shown: &'a [Shown],
     pub made: &'a [Rect],
+    pub keep: &'a Keep,
 }
 
 impl Frame<'_> {
@@ -697,7 +700,11 @@ fn pushes_hung(
 /// Whether, her pieces laid out as `laid` with `piece` moved, `piece`
 /// stands on blank, free cells where she'd fit to use it, and every
 /// other piece that showed still fits (and she'd still fit to use those
-/// she would before).
+/// she would before). None is put where `frame` keeps pieces out (the
+/// chat pane, her door's space): `piece` unless it stays where it stood
+/// (turned), and none pushed along newly into it. Judged here, after
+/// the layout, once per candidate that passed: a strip's layout reads
+/// only her pieces on it and her door (see [`Home::relaid`]).
 fn fits_now(frame: &Frame, before: &Before, laid: &[Shown], piece: Furniture) -> bool {
     let fit = |at: &Shown| {
         let clear = |x: i32, y: i32| frame.clear(laid, at, x, y);
@@ -710,7 +717,10 @@ fn fits_now(frame: &Frame, before: &Before, laid: &[Shown], piece: Furniture) ->
     let Some(at) = laid.iter().find(|s| s.item == piece) else {
         return false;
     };
-    fit(at)
+    let stood = before.laid.iter().find(|s| s.item == piece);
+    let put_in = frame.keep.refuses(at.cover()) && stood.is_none_or(|s| s.cover() != at.cover());
+    !put_in
+        && fit(at)
         && room(at)
         && before
             .showing
@@ -719,7 +729,8 @@ fn fits_now(frame: &Frame, before: &Before, laid: &[Shown], piece: Furniture) ->
             .all(|(was, roomy)| {
                 laid.iter().find(|s| s.item == was.item).is_some_and(|now| {
                     // Where it stood, it still fits: nothing moved onto it.
-                    (now == was || fit(now)) && (!roomy || room(now))
+                    (now == was || (fit(now) && !frame.keep.takes_in(&[*was], &[*now])))
+                        && (!roomy || room(now))
                 })
             })
 }
@@ -1543,6 +1554,7 @@ mod tests {
             blocked: &|_, _| false,
             shown: &shown,
             made: &[],
+            keep: &Keep::default(),
         };
         let found = search(&home, &frame, &broken);
         assert!(found.examined <= CANDIDATES, "{}", found.examined);
@@ -1845,6 +1857,7 @@ mod tests {
                 blocked: &|_, _| false,
                 shown: &shown,
                 made: &[],
+                keep: &Keep::default(),
             };
             for r in &ties[1..] {
                 assert!(check(&after, &frame, r).is_none(), "nothing to mend: {r:?}");
@@ -1954,6 +1967,7 @@ mod tests {
             blocked: &|_, _| false,
             shown: &pieces,
             made: &[],
+            keep: &Keep::default(),
         };
         let (s, w) = (laid(&pieces, Sofa), laid(&pieces, Window));
         let shared = w.rect().intersection(s.rect());
@@ -2031,6 +2045,7 @@ mod tests {
             blocked: &|_, _| false,
             shown: &shown,
             made,
+            keep: &Keep::default(),
         };
         check(&home, &frame, r).is_some()
     }
@@ -2194,6 +2209,7 @@ mod tests {
                 blocked: &|_, _| false,
                 shown: &shown,
                 made: &[],
+                keep: &Keep::default(),
             };
             let found = search(&home, &frame, &broken);
             assert!(found.examined <= CANDIDATES, "{}", found.examined);
@@ -2268,6 +2284,7 @@ mod tests {
             blocked: &|_, _| false,
             shown: &shown,
             made: &[],
+            keep: &Keep::default(),
         };
         let found = search(&home, &frame, &broken);
         let raw = raw_strips(&nooks)[0].1;
@@ -2568,6 +2585,7 @@ mod tests {
             blocked: &block,
             shown: &shown,
             made: &made,
+            keep: &Keep::default(),
         };
         // The same home, later: resized, with more text and more
         // makeshift pieces.
@@ -2584,6 +2602,7 @@ mod tests {
             blocked: &block,
             shown: &later_shown,
             made: &later_made,
+            keep: &Keep::default(),
         };
         let laid_out = home.clone().laid_out(&nooks);
         let was = broken(&laid_out, &home);

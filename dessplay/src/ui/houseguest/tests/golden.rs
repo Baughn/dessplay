@@ -887,10 +887,10 @@ fn golden_stage_room() {
         "stage",
         stage_room,
         &[
-            (0, 0x82a43521ce2d85a9, 0x5324ad0ab77e294d),
-            (1, 0x9ff22574a22965dc, 0x2dffbc80fe0fecf2),
-            (2, 0x1968b506412a510e, 0xfddbedcec339d99b),
-            (3, 0xa51ad78330ce9b7e, 0x91b65c314fc22b97),
+            (0, 0x81e1d42f1c38ea77, 0xad85a02fb45390d4),
+            (1, 0x93060f533b2b35dd, 0xa824a823d47f367c),
+            (2, 0x330e05d383a04342, 0xcc4d4e8c65451fa7),
+            (3, 0x4f6bde08f0adb914, 0x980865f99a734a43),
         ],
     );
 }
@@ -901,10 +901,10 @@ fn golden_resident() {
         "resident",
         resident,
         &[
-            (0, 0x7dad8ef2e34e5a7c, 0xbbf7b7857c11fc23),
-            (1, 0xf193ef339b3b80c5, 0x9e3e3480ace7b635),
-            (2, 0x18e391964aa079e9, 0x4a36b186f0dad3e7),
-            (3, 0xc1bfe6a0a0eb5531, 0x219f8c000012e97a),
+            (0, 0xe0accc028db1d370, 0x8fa6ab83edbcc066),
+            (1, 0x621d9581cdeb0890, 0x86e5dc3c09c3cb7d),
+            (2, 0x7ba09e90cbe4cd32, 0x082c6b7490ed76d6),
+            (3, 0x9c3de9d65ddb05a0, 0xa7d1dce29c26f5a7),
         ],
     );
 }
@@ -1094,12 +1094,16 @@ fn golden_dash_home() {
 /// where before she went to work through a door where she stood (the run
 /// ended in its gap); seed 1, line art: her way to work cut short, the
 /// shift's length drawn as she set off moved a later beat's timing; the
-/// rest unchanged; the trace diff is in that commit).
+/// rest unchanged; the trace diff is in that commit), and the door
+/// batch's step 5, nothing made in the chat pane (each seed and mode
+/// first differs at its first frame: the sofa she's cued to make at 0 s
+/// is made of a line outside the stage's chat pane, so she walks
+/// elsewhere; the trace diff is in that commit).
 const UNFED_STAGE: [(u64, u64, u64); 4] = [
-    (0, 0x708733793f400284, 0x941bf0a431f5b066),
-    (1, 0xa4a798e2a1a79945, 0x51c67cb9d4c2829e),
-    (2, 0xec15f92e2f11cc74, 0xf73152a21a71ba81),
-    (3, 0xaf26d1f42948b458, 0xc45aa53bb13f470a),
+    (0, 0x7efab81ddc5c97ba, 0x75167edad4a5336d),
+    (1, 0x85d259a7a799c31e, 0x632da09b368f23bd),
+    (2, 0x64d487509c67d977, 0xcc1a3ff7a969a05b),
+    (3, 0x34d33a389b35be63, 0x9bfc7200f5211883),
 ];
 
 /// The resident's tables at the end of phase 5b step 3, but for step 5a's
@@ -1145,12 +1149,18 @@ const UNFED_STAGE: [(u64, u64, u64); 4] = [
 /// door's space (each seed and mode first differs at its first painted
 /// frame, her sofa or TV standing six columns along from her door's
 /// space; what she does follows from there; her record saves her door's
-/// wall; the trace diff is in that commit).
+/// wall; the trace diff is in that commit), and the door batch's step 5,
+/// nothing made in the chat pane (the resident's chat is the tall left
+/// box, where its text is: seeds 0, 2 and 3 in both modes first differ
+/// at the sofa she's cued to make at 140 s, no longer of chat text; seed
+/// 1 at 65 s in ASCII and 71 s in line art, at a decision with chat text
+/// no longer on offer to make, choosing otherwise; the trace diff is in
+/// that commit).
 const UNFED_RESIDENT: [(u64, u64, u64); 4] = [
-    (0, 0xae83572b8f74f265, 0x85d8066280988717),
-    (1, 0xa27439f50cffa068, 0x4434802f6b7eaeeb),
-    (2, 0xec6ab8140f10edef, 0xa35e3e8936345270),
-    (3, 0xee91647cff7780b8, 0x409e2de896d6fed3),
+    (0, 0x8a158b8468bfe50a, 0x3db0aad020b08ca7),
+    (1, 0x89f22ab1d1bab586, 0xaa279e7d6f3bdf26),
+    (2, 0x2141543a725d1737, 0x8868b4db62a29460),
+    (3, 0x9e8c8ebafa35b8a9, 0x549cf6940523e90f),
 ];
 
 /// The furnished home's tables at the end of phase 5b step 3, but for step

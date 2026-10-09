@@ -767,6 +767,81 @@ proptest! {
             30_000,
         )?;
     }
+
+    /// [`long_visits_with_the_chat_apart_never_touch_what_is_protected`]
+    /// with the chat pane reaching over part of Users ([`chat_over`], as a
+    /// custom layout's grid overlaps panes): the one geometry where a new
+    /// placement could land in the chat (T6). Nothing she makes stands in
+    /// it (asserted in [`long_visit_of`]; random text rarely makes a piece
+    /// here: [`long_visits_with_the_chat_over_a_nook_make_pieces`] and
+    /// `tests/away.rs`'s `nothing_is_made_in_the_chat` exercise it).
+    #[test]
+    fn long_visits_with_the_chat_over_a_nook_never_touch_what_is_protected(
+        seed in any::<u64>(),
+        graphics in any::<bool>(),
+        sizes in proptest::collection::vec((60u16..130, 18u16..45), 1..3),
+        // Over the whole screen (clipped by `scatter` and `long_visit_of`),
+        // so it reaches her nooks on the right as often as the chat.
+        text in proptest::collection::vec((0u16..130, 0u16..45, "[a-z漢─│ ]{1,6}"), 0..20),
+        skips in proptest::collection::vec((0u16..130, 0u16..45), 0..6),
+        chats in proptest::collection::vec(0u64..200_000, 0..4),
+        protect in (0u16..130, 0u16..45, 1u16..20, 1u16..6),
+        // Users or Playlist, the nooks of `chat_apart`.
+        owned in proptest::collection::vec((0usize..4, 1usize..3, 0u16..=1000, any::<bool>()), 0..5),
+    ) {
+        let owned: Vec<(Furniture, usize, u16, bool)> = owned
+            .into_iter()
+            .map(|(item, at, along, left)| (Furniture::ALL[item], at, along, left))
+            .collect();
+        long_visit_of(
+            Guest::new(seed),
+            graphics,
+            chat_over,
+            &sizes,
+            &text,
+            &skips,
+            &chats,
+            protect,
+            &owned,
+            Run {
+                out_every: Some(1000),
+                ..Run::default()
+            },
+            30_000,
+        )?;
+    }
+}
+
+/// [`long_visits_with_the_chat_over_a_nook_never_touch_what_is_protected`]'s
+/// non-vacuity companion: on [`chat_over`] with whole lines of text
+/// across Users (from the chat's part of it into hers), cued to make a
+/// sofa, she makes pieces that stand (`made > 0`), so its assertion
+/// that none meets the chat is exercised, in both modes. (Telling a
+/// chat-less keep apart is `tests/away.rs`'s `nothing_is_made_in_the_chat`.)
+#[test]
+fn long_visits_with_the_chat_over_a_nook_make_pieces() {
+    let line = "the quick brown fox jumps over";
+    let text: Vec<(u16, u16, String)> = (1..12).map(|y| (51, y, line.to_string())).collect();
+    for graphics in [false, true] {
+        let visited = long_visit_of(
+            Guest::new(0),
+            graphics,
+            chat_over,
+            &[(100, 30)],
+            &text,
+            &[],
+            &[],
+            (0, 28, 1, 1),
+            &[],
+            Run {
+                cue: Some(Scene::MakeSofa),
+                out_every: Some(1000),
+            },
+            30_000,
+        )
+        .unwrap();
+        assert!(visited.made > 0, "graphics={graphics}: nothing made");
+    }
 }
 
 /// A long visit on the bundled layout ([`real_frame`] of [`real_ui`],
@@ -930,6 +1005,8 @@ struct Visited {
     /// Visiting frames with a door in space open that she goes out by
     /// for good (`leaving`: no door to go to).
     space_doors: usize,
+    /// Makeshift pieces standing, summed over visiting frames.
+    made: usize,
     poses: std::collections::HashSet<std::mem::Discriminant<sprite::Pose>>,
 }
 
@@ -1054,6 +1131,20 @@ fn long_visit_of(
                     visited.visiting += 1;
                     let pose = visit.osaka.appearance(now).0;
                     visited.poses.insert(std::mem::discriminant(&pose));
+                    // Nothing she makes stands in the chat pane (door
+                    // batch, step 5: no new placement there; a piece of
+                    // hers already standing in an overlapping layout may,
+                    // until step 6's rule moves it).
+                    for made in &visit.made {
+                        prop_assert!(
+                            !room::in_chat(view.chat, made.piece.cover()),
+                            "{now}: her makeshift {:?} {:?} in the chat {:?}",
+                            made.piece.item,
+                            made.piece.cover(),
+                            view.chat
+                        );
+                        visited.made += 1;
+                    }
                     // Her external door, open in a visit, meets none of
                     // her pieces (door batch, step 4a: she walks to it,
                     // never opening it where she stands); nor does a door
@@ -4305,8 +4396,20 @@ fn her_night_on_each_surface_is_one_act_until_she_wakes() {
     use super::script::{ScriptId, Surface};
     use super::sprite::Pose;
     let homely = home_screen();
+    // The bundled layout, its text to make a bed of: all of it in its
+    // chat pane, where she makes nothing (door batch, step 5), so here
+    // that pane is no chat (only her night is under test).
     let mut ui = stage_ui();
-    let wordy = real_frame(&mut ui, 100, 30);
+    let wordy = {
+        let (real, view) = real_frame(&mut ui, 100, 30);
+        (
+            real,
+            IdleView {
+                chat: Rect::default(),
+                ..view
+            },
+        )
+    };
     for graphics in [false, true] {
         for (surface, made, pieces, (real, view)) in [
             (
@@ -8934,7 +9037,14 @@ fn she_tears_wide_glyphs_whole() {
         for scene in [Scene::MakeSofa, Scene::MakeBed] {
             let at = format!("{scene:?} graphics={graphics}");
             let mut ui = chat_ui((0..40).map(|i| LINES[i % LINES.len()].to_string()));
+            // Its lines are in its chat pane, where she makes nothing
+            // (door batch, step 5): that pane is no chat here (only her
+            // tearing is under test).
             let (real, view) = real_frame(&mut ui, 100, 30);
+            let view = IdleView {
+                chat: Rect::default(),
+                ..view
+            };
             let mut guest = Guest::new(2);
             if graphics {
                 guest.set_picker(kitty());
@@ -10141,8 +10251,9 @@ fn her_decisions_explain_themselves() {
     guest.cue(Scene::Arrive);
     paint(&mut guest, &real, &view, 0);
     let mut now = 0;
-    // Long enough for a score of decisions however still she is.
-    while now < 360_000 {
+    // Long enough for a score of decisions however still she is (she
+    // makes nothing of the chat pane's text: door batch, step 5).
+    while now < 420_000 {
         now += guest
             .next_tick(now)
             .map_or(1000, |d| d.as_millis() as u64)
@@ -11428,6 +11539,68 @@ fn the_repair_is_worked_out_again_only_when_it_may_have_changed() {
             "{case}: the fridge has somewhere to go"
         );
         assert!(repairs.iter().all(|r| r.key == wall), "{case}: {repairs:?}");
+    }
+}
+
+/// No repair sets a piece down in the chat pane (door batch, D3),
+/// through the honest interface: her sofa turned from the TV, felt; the
+/// repairs she works out with the chat apart include a move to cells
+/// the chat then comes over (a custom layout's grid laid over her pane,
+/// asserted). The next frame, well within the second (only the chat
+/// changed), she works it out again, and none of her repairs is there.
+#[test]
+fn no_repair_sets_a_piece_down_in_the_chat() {
+    use super::brain::Mood;
+    use super::room::Side;
+    use sprite::Facing;
+    for graphics in [false, true] {
+        let case = format!("graphics {graphics}");
+        let (mut guest, real, view) = rule_home(
+            &[
+                (Furniture::Tv, Side::Left, 0, Facing::Right, true),
+                (Furniture::Sofa, Side::Left, 12, Facing::Right, true),
+            ],
+            graphics,
+            1,
+        );
+        guest.cue(Scene::Arrive);
+        paint(&mut guest, &real, &view, 0);
+        let State::Visiting(visit) = &mut guest.state else {
+            panic!("visiting");
+        };
+        visit.osaka.set_mood(Mood::Ordinary);
+        let faces = rules::Grievance {
+            row: rules::FACES_ROW,
+            piece: Furniture::Sofa,
+        };
+        visit
+            .osaka
+            .feel(faces, (Furniture::Sofa, room::Use::Lounge));
+        paint(&mut guest, &real, &view, 10);
+        let mending = |guest: &Guest| visit_of(guest).mending.map(|(_, at)| at);
+        assert_eq!(mending(&guest), Some(10), "{case}: felt");
+        // A column a move she'd make covers, clear of every piece that
+        // shows now: the chat comes over it.
+        let shown: Vec<Rect> = visit_of(&guest).shown.iter().map(Shown::cover).collect();
+        let chat = visit_of(&guest)
+            .repairs
+            .iter()
+            .map(|r| r.at.cover())
+            .flat_map(|c| (c.x..c.right()).map(move |x| Rect::new(x, c.y, 1, c.height)))
+            .find(|&col| !shown.iter().any(|s| s.intersects(col)))
+            .unwrap_or_else(|| panic!("{case}: a move: {:?}", visit_of(&guest).repairs));
+        let chatted = IdleView {
+            chat,
+            ..view.clone()
+        };
+        paint(&mut guest, &real, &chatted, 20);
+        assert_eq!(mending(&guest), Some(20), "{case}: the chat moved");
+        let repairs = &visit_of(&guest).repairs;
+        assert!(!repairs.is_empty(), "{case}: somewhere else to go");
+        assert!(
+            repairs.iter().all(|r| !room::in_chat(chat, r.at.cover())),
+            "{case}: {chat:?} {repairs:?}"
+        );
     }
 }
 
