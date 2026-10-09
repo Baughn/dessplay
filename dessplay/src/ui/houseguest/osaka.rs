@@ -365,6 +365,10 @@ pub(super) enum HomeEvent {
     /// played: not as it was planned, or offered): seen from now on, and
     /// her pity for its tier starts again (phase 5b D6).
     Seen(ScriptId),
+    /// She said what's wrong with her home that she felt on sight, for
+    /// the rule on `row` of the table, on game day `day` (none: no
+    /// routine reaches her): not again that day (door batch, D7).
+    Grieved { row: usize, day: Option<u64> },
 }
 
 impl Chances {
@@ -2025,11 +2029,11 @@ impl Bubble {
 }
 
 /// A rule of her home she has felt broken, and the piece and use she
-/// felt it on.
+/// felt it on (none for one felt on sight: door batch, D7).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Felt {
     key: Grievance,
-    on: (Furniture, Use),
+    on: Option<(Furniture, Use)>,
     /// She set about putting it right and let it go: it stays as it is
     /// this visit.
     let_go: bool,
@@ -2141,7 +2145,8 @@ pub(super) struct Osaka {
     /// its space because her pieces fill it (`Fallback::Yield`: door
     /// batch M13): she bumped into what stands there. Set from the first
     /// moment she's back out of it (home from school, a dash, work, the
-    /// stage), never going out; read by her DoorClear rule (step 6).
+    /// stage), never going out; what lets her feel her DoorClear rule on
+    /// sight (`on_sight`, mod.rs).
     bumped: bool,
     /// She's leaving by her routine (A9): through her door, whose gap
     /// never ends (`u64::MAX`, nothing drawn), or out at the screen's
@@ -2244,6 +2249,16 @@ pub(super) struct Osaka {
     /// The piece she just set down, and what she felt was wrong using
     /// it: she sits back down to it (once).
     just_set: Option<(Furniture, Use)>,
+    /// The rules (rows of the table) she felt broken on sight and owes
+    /// saying so, once she's quiet (door batch, D7), oldest first.
+    owed_aloud: Vec<usize>,
+    /// What she's saying of what's wrong with her home, felt on sight,
+    /// and since when: for [`GRIEVANCE_MS`], standing (the act it's said
+    /// in; any other act ends it).
+    aloud: Option<(&'static str, u64)>,
+    /// Every such line she said, and when (tests).
+    #[cfg(test)]
+    aloud_said: Vec<(&'static str, u64)>,
     /// The things she has done about her home this visit (see
     /// [`Mood::home_acts`]).
     home_acts: u8,
@@ -2380,8 +2395,9 @@ pub(super) struct Osaka {
     /// then ([`script::bob_frame`], set by [`Osaka::hold_bob`]).
     bob_held: Option<(u64, u8)>,
     /// Until when she's saying good morning (see [`Osaka::begin_day`]),
-    /// or that she's home (from school or work): what would speak over
-    /// it waits (see [`Osaka::awake`]).
+    /// or that she's home (from school or work), or what's wrong with
+    /// her home that she felt on sight ([`Osaka::say_aloud`]): what would
+    /// speak over it waits (see [`Osaka::awake`]).
     morning_until: u64,
     /// Her home's master seed: her mornings key her new day's mood on it
     /// and the game day ([`brain::day_seed`]).
@@ -2605,6 +2621,10 @@ impl Osaka {
             owed: Vec::new(),
             lines: Lines::default(),
             felt: Vec::new(),
+            owed_aloud: Vec::new(),
+            aloud: None,
+            #[cfg(test)]
+            aloud_said: Vec::new(),
             episode: None,
             just_set: None,
             home_acts: 0,
@@ -4152,6 +4172,7 @@ impl Osaka {
         self.stir_until = 0;
         self.bob_held = None;
         self.sill = None;
+        self.aloud = None;
         // Anything she's set at is chosen afresh, unless she's settling
         // into it (which counts itself, once set: see `settle_in`).
         self.settled = 0;
@@ -4380,7 +4401,7 @@ impl Osaka {
                     );
                     self.felt.push(Felt {
                         key: grievance,
-                        on: (seat.item, seat.what),
+                        on: Some((seat.item, seat.what)),
                         let_go: false,
                     });
                 }
@@ -8032,6 +8053,15 @@ impl Osaka {
                 };
             }
         }
+        // What's wrong with her home that she felt on sight (door batch,
+        // D7): said once she's quiet (after her "I'm home!"), standing
+        // for it, while she has felt it broken still and not let it go.
+        if let Some(decision) = self.say_aloud(chances, at) {
+            return Decision {
+                heading,
+                ..decision
+            };
+        }
         // Something she lost: a glance toward it (maybe a word) first.
         if let Some(&beat) = self.owed.first() {
             tracing::debug!(?beat, "houseguest: a beat she owed");
@@ -8491,6 +8521,7 @@ impl Osaka {
         });
         self.calendar_due(chances, terrain, at).is_some()
             || day_off
+            || self.aloud_owed(chances).is_some()
             || !self.owed.is_empty()
             || self
                 .heading
@@ -8654,6 +8685,63 @@ impl Osaka {
         }
     }
 
+    /// The rule she'd say what's wrong with, felt on sight (see
+    /// [`Osaka::say_aloud`]): the first she owes that she has felt broken
+    /// still and not let go, while her mood would have her put it right
+    /// (her home acts not used up, as [`Osaka::to_mend`] asks). The one
+    /// place that rule is held: she comes to owe a line whatever her mood
+    /// (`on_sight`, mod.rs), so a rule felt mid-episode is said once that
+    /// episode is done, if she'd still mend.
+    fn aloud_owed(&self, chances: &Chances) -> Option<usize> {
+        if self.home_acts >= self.mood.home_acts() {
+            return None;
+        }
+        self.owed_aloud.iter().copied().find(|&row| {
+            chances
+                .broken
+                .iter()
+                .any(|b| b.row == row && self.felt.iter().any(|f| f.key == b.key && !f.let_go))
+        })
+    }
+
+    /// Say what's wrong with her home that she felt on sight (door batch,
+    /// D7), if she owes it ([`Osaka::aloud_owed`]): once she's quiet
+    /// (nothing she's saying, nor her "I'm home!" or good morning),
+    /// standing a moment, for [`GRIEVANCE_MS`], what she says under
+    /// [`Osaka::grumbling`] so a look at the chat waits for it; not yet
+    /// quiet, she stands until she is (what she'd do next might take her
+    /// off for long). Once a visit; owed but no longer broken (or let
+    /// go), it goes unsaid.
+    fn say_aloud(&mut self, chances: &Chances, at: u64) -> Option<Decision> {
+        let row = self.aloud_owed(chances)?;
+        let quiet = self
+            .speech
+            .map_or(at, |(_, until)| until)
+            .max(self.morning_until);
+        if quiet > at {
+            self.set(Act::Stand { until: quiet }, at);
+            return Some(Decision::reflex("home/on sight, once quiet"));
+        }
+        self.owed_aloud.retain(|&r| r != row);
+        let line = super::rules::RULES.get(row)?.grievance;
+        tracing::info!(line, "houseguest: says what's wrong with her home");
+        self.hush(at);
+        self.set(
+            Act::Stand {
+                until: at + GRIEVANCE_MS,
+            },
+            at,
+        );
+        self.aloud = Some((line, at));
+        // Nothing speaks over it (a parcel waits, as for her hello).
+        self.morning_until = self.morning_until.max(at + GRIEVANCE_MS);
+        #[cfg(test)]
+        self.aloud_said.push((line, at));
+        let day = self.day(at).map(|d| d.day);
+        self.events.push(HomeEvent::Grieved { row, day });
+        Some(Decision::reflex("home/on sight"))
+    }
+
     /// She lost something (`loss`, at `toward`): she owes a beat, played
     /// once the reflexes let her, before anything else she'd choose. An
     /// interrupted beat stays owed; past [`OWED`], the oldest goes.
@@ -8689,17 +8777,47 @@ impl Osaka {
         self.felt.iter().any(|f| f.key == key)
     }
 
-    /// The stage: she has felt `key` broken, using `on` (a piece, for a
-    /// use).
-    pub fn feel(&mut self, key: Grievance, on: (Furniture, Use)) {
-        if !self.has_felt(key) {
-            tracing::info!(rule = %key.label(), "houseguest: she felt {} (cued)", key.label());
-            self.felt.push(Felt {
-                key,
-                on,
-                let_go: false,
-            });
+    /// She has felt `key` broken: using `on` (a piece, for a use: the
+    /// stage's cue), or on sight with none (door batch, D7: a piece in
+    /// her door's space she bumped into coming home, or one in the chat
+    /// pane). Whether it's newly felt this visit.
+    pub fn feel(&mut self, key: Grievance, on: Option<(Furniture, Use)>) -> bool {
+        if self.has_felt(key) {
+            return false;
         }
+        let how = if on.is_some() { "cued" } else { "on sight" };
+        tracing::info!(rule = %key.label(), how, "houseguest: she felt {}", key.label());
+        self.felt.push(Felt {
+            key,
+            on,
+            let_go: false,
+        });
+        true
+    }
+
+    /// She'll say what's wrong with her home that she felt on sight, for
+    /// the rule on `row` of the table, once she's quiet (door batch, D7:
+    /// see [`Osaka::aloud`]): once a visit.
+    pub fn owe_aloud(&mut self, row: usize) {
+        if !self.owed_aloud.contains(&row) {
+            tracing::trace!(row, "houseguest: she'll say what's wrong once she's quiet");
+            self.owed_aloud.push(row);
+        }
+    }
+
+    /// The line she says what's wrong with her home with, felt on sight,
+    /// if she's saying one at `now` (standing, for [`GRIEVANCE_MS`]).
+    fn aloud_at(&self, now: u64) -> Option<&'static str> {
+        let (line, from) = self.aloud?;
+        (matches!(self.act, Act::Stand { .. }) && (from..from + GRIEVANCE_MS).contains(&now))
+            .then_some(line)
+    }
+
+    /// What she has said aloud of what's wrong with her home, felt on
+    /// sight, and when (tests).
+    #[cfg(test)]
+    pub fn said_aloud(&self) -> &[(&'static str, u64)] {
+        &self.aloud_said
     }
 
     /// The piece of her home she's moving, if she is.
@@ -8782,7 +8900,7 @@ impl Osaka {
             .felt
             .iter()
             .find(|f| f.key == ep.repair.key)
-            .map(|f| f.on);
+            .and_then(|f| f.on);
         // Done: nesting eased, whatever she was at when the frame took it.
         if self.credit == Some(Want::Arrange) {
             self.credit = None;
@@ -9023,13 +9141,15 @@ impl Osaka {
             .is_some_and(|(from, to)| (from..to).contains(&now))
     }
 
-    /// When her act has her say what's wrong with her home, if it does.
+    /// When her act has her say what's wrong with her home, if it does:
+    /// using a piece, or standing, saying what she felt on sight.
     fn grievance_span(&self) -> Option<(u64, u64)> {
         match self.act {
             Act::Use {
                 grievance: Some((_, from)),
                 ..
             } => Some((from, from + GRIEVANCE_MS)),
+            Act::Stand { .. } => self.aloud.map(|(_, from)| (from, from + GRIEVANCE_MS)),
             _ => None,
         }
     }
@@ -10170,7 +10290,6 @@ impl Osaka {
 
     /// Whether she has come in this visit through her door where her
     /// pieces filling its space pushed it (see the field).
-    #[allow(dead_code)] // Read by her DoorClear rule (door batch, step 6).
     pub(super) fn bumped(&self) -> bool {
         self.bumped
     }
@@ -10307,6 +10426,11 @@ impl Osaka {
             .map(|(text, _)| Bubble::Say(text))
             // What she says about her home isn't cut short.
             .filter(|_| !self.grumbling(now));
+        // What she felt on sight, said standing: she cranes round,
+        // saying so.
+        if let Some(line) = self.aloud_at(now) {
+            return (pose, Face::Curious, Some(Bubble::Say(line)));
+        }
         (pose, face, speech.or(bubble))
     }
 
@@ -22053,5 +22177,129 @@ mod tests {
                 "whims {whims}: the doze"
             );
         }
+    }
+
+    /// Her InChat grievance over a plant, felt on sight and owed (door
+    /// batch, D7), as a decision would see it: what's broken, the line,
+    /// and when she's quiet (Industrious, past her mood's first line,
+    /// said on her first decision).
+    fn owing_aloud(
+        osaka: &mut Osaka,
+        terrain: &Terrain,
+        rng: &mut Rng,
+    ) -> (Chances, &'static str, u64) {
+        let row = super::super::rules::RULES
+            .iter()
+            .position(|r| r.rule == super::super::rules::Rule::InChat)
+            .unwrap();
+        let key = Grievance {
+            row,
+            piece: Furniture::Plant,
+        };
+        let chances = Chances {
+            broken: vec![super::super::rules::Broken {
+                row,
+                pieces: vec![Furniture::Plant],
+                involved: vec![Furniture::Plant],
+                key,
+            }],
+            ..Chances::default()
+        };
+        osaka.set_mood(Mood::Industrious);
+        osaka.decide(0, terrain, &Chances::default(), rng);
+        let quiet = osaka
+            .speech
+            .map_or(0, |(_, until)| until)
+            .max(osaka.morning_until);
+        assert!(osaka.said_aloud().is_empty());
+        assert!(osaka.feel(key, None));
+        osaka.owe_aloud(row);
+        (chances, super::super::rules::RULES[row].grievance, quiet)
+    }
+
+    /// What she felt on sight waits for her to be quiet (door batch, C4):
+    /// her "I'm home!" or good morning still showing (`morning_until`), or
+    /// a line of hers (`speech`), she stands until it's over, saying
+    /// nothing, then says it whole. A guard of the door batch's step 6
+    /// review: said at once, it went over her hello (mutant C).
+    #[test]
+    fn a_line_felt_on_sight_waits_for_her_to_be_quiet() {
+        let terrain = floor_at(15);
+        for hello in [true, false] {
+            let at = format!("hello {hello}");
+            let mut rng = Rng(5);
+            let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+            let (chances, line, quiet) = owing_aloud(&mut osaka, &terrain, &mut rng);
+            let (now, until) = (quiet + 1000, quiet + 3000);
+            if hello {
+                osaka.morning_until = until;
+            } else {
+                osaka.speech = Some(("Hm.", until));
+            }
+            // Precondition: not quiet at the decision.
+            let quiet = osaka
+                .speech
+                .map_or(0, |(_, until)| until)
+                .max(osaka.morning_until);
+            assert!(quiet > now, "{at}");
+            osaka.decide(now, &terrain, &chances, &mut rng);
+            assert!(
+                matches!(osaka.act, Act::Stand { until: u } if u == until),
+                "{at}: {:?}",
+                osaka.act
+            );
+            assert!(osaka.said_aloud().is_empty(), "{at}");
+            osaka.decide(until, &terrain, &chances, &mut rng);
+            assert_eq!(osaka.said_aloud(), [(line, until)], "{at}");
+            for now in (until..until + GRIEVANCE_MS).step_by(100) {
+                assert_eq!(osaka.look_at(now).2, Some(Bubble::Say(line)), "{at} {now}");
+            }
+        }
+    }
+
+    /// While she says what she felt on sight, nothing speaks over it: a
+    /// parcel at the door waits for its end, as for her hello (`awake`).
+    /// Red under the door batch's step 6 review's mutant D (the line not
+    /// keeping her from saying "A parcel!").
+    #[test]
+    fn a_parcel_waits_for_her_line_felt_on_sight() {
+        let terrain = floor_at(15);
+        let mut rng = Rng(5);
+        let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+        let (chances, line, quiet) = owing_aloud(&mut osaka, &terrain, &mut rng);
+        osaka.decide(quiet, &terrain, &chances, &mut rng);
+        assert_eq!(osaka.said_aloud(), [(line, quiet)]);
+        assert!(!osaka.awake(quiet + 100), "a parcel waits");
+        assert!(!osaka.awake(quiet + GRIEVANCE_MS - 1), "a parcel waits");
+        assert!(
+            osaka.awake(quiet + GRIEVANCE_MS),
+            "then she's free to say so"
+        );
+    }
+
+    /// A chat line as she says what she felt on sight: her look up waits
+    /// for her to have said it (`grumbling` covers the line, standing),
+    /// so it shows whole, and then she looks up, startled. Red under the
+    /// door batch's step 6 review's mutant K (the look begun at once:
+    /// past its startle by the line's end).
+    #[test]
+    fn a_chat_line_waits_for_her_line_felt_on_sight() {
+        let terrain = floor_at(15);
+        let mut rng = Rng(5);
+        let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+        let (chances, line, quiet) = owing_aloud(&mut osaka, &terrain, &mut rng);
+        osaka.decide(quiet, &terrain, &chances, &mut rng);
+        assert_eq!(osaka.said_aloud(), [(line, quiet)]);
+        osaka.look_up(quiet + 100, 0);
+        for now in (quiet..quiet + GRIEVANCE_MS).step_by(100) {
+            assert_eq!(osaka.look_at(now).2, Some(Bubble::Say(line)), "{now}");
+        }
+        let end = quiet + GRIEVANCE_MS;
+        assert_eq!(osaka.looking_up.map(|l| l.since), Some(end));
+        assert_eq!(
+            osaka.look_at(end).2,
+            Some(Bubble::Bang),
+            "startled once it's said"
+        );
     }
 }

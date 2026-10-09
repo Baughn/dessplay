@@ -15,6 +15,8 @@ Add new days at the top. Add new entries at the bottom of existing days.
   walks off the screen's edge.
 - Changed: Osaka no longer builds furniture out of chat text in the chat
   pane.
+- Added: Osaka moves furniture out of her door's way, or out of the chat
+  pane, herself ("Can't get to the door!").
 
 ## 2026-10-08
 

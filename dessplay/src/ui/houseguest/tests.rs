@@ -11473,10 +11473,10 @@ fn the_repair_is_worked_out_again_only_when_it_may_have_changed() {
         ));
         visit
             .osaka
-            .feel(faces, (Furniture::Sofa, room::Use::Lounge));
+            .feel(faces, Some((Furniture::Sofa, room::Use::Lounge)));
         visit
             .osaka
-            .feel(wall, (Furniture::Fridge, room::Use::Snack));
+            .feel(wall, Some((Furniture::Fridge, room::Use::Snack)));
         let case = format!("graphics {graphics}");
         paint(&mut guest, &real, &view, 10);
         assert_eq!(mending(&guest), Some(10), "{case}: once felt");
@@ -11575,7 +11575,7 @@ fn no_repair_sets_a_piece_down_in_the_chat() {
         };
         visit
             .osaka
-            .feel(faces, (Furniture::Sofa, room::Use::Lounge));
+            .feel(faces, Some((Furniture::Sofa, room::Use::Lounge)));
         paint(&mut guest, &real, &view, 10);
         let mending = |guest: &Guest| visit_of(guest).mending.map(|(_, at)| at);
         assert_eq!(mending(&guest), Some(10), "{case}: felt");
@@ -13483,7 +13483,7 @@ fn wordy_rooms(w: u16, h: u16) -> Buffer {
 fn breaks(home: &room::Home, nooks: &[(Nook, Rect)]) -> Vec<rules::Grievance> {
     let mut home = home.clone();
     let laid = home.laid_out(nooks);
-    rules::broken(&laid, &home)
+    rules::broken(&laid, &home, &door::Keep::default())
         .into_iter()
         .map(|b| b.key)
         .collect()
@@ -14139,6 +14139,7 @@ mod census;
 mod clock;
 mod credit;
 mod dash;
+mod felt;
 mod film;
 mod golden;
 mod rain;

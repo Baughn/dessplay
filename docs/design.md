@@ -1,6 +1,6 @@
 # DessPlay Design Document
 
-Last updated: 2026-10-08
+Last updated: 2026-10-09
 
 A synchronized video player for watch parties. Terminal-first, built for
 reliability over flaky connections. Server-coordinated, including relayed
@@ -1850,8 +1850,24 @@ this section states what is built.
   (kept or not). One check serves every placement, in both modes;
   unpacking is no placement. A piece already standing in
   the chat (an older home, a layout whose panes overlap) is shown where
-  it stands; turned where it stands is no new placement
+  it stands, until she moves it out (the felt rule below); turned where
+  it stands is no new placement
   (why: [decisions](decisions.md#no-furniture-in-the-chat-pane-2026-10-08)).
+  **The closet for the chat**: a piece standing in the chat pane that no
+  room would take is hidden that frame (still in her home and her
+  record, never moved; nothing about it is saved), and shows again, where
+  it stands, as soon as a room would. A room takes it when its own strip
+  has a place along it clear of the chat and her door's space, or it
+  packs with another strip's pieces in its lane (anchored anywhere along
+  it, the others sliding aside as they do for any piece), clear of both,
+  pushing none of them newly into either, and leaving a kept door space
+  room to be; the pieces in the chat are placed so in layout order, each
+  with the places of those before it taken. A box is never hidden (it
+  shows where it stands, for her to unpack). The same in a visit and
+  while she's out, recomputed every frame; a change of what's hidden is
+  logged. A hidden piece isn't judged in the chat (she can't see it),
+  and still keeps her door's spot off it (it may be back any frame)
+  (why: [decisions](decisions.md#she-feels-her-door-blocked-and-a-piece-in-the-chat-on-sight-2026-10-09)).
   **Her door's space**: one wall of her strips is her external
   door's, saved with her home once she has a piece. It's chosen from the
   panes alone, among walls whose strip has her height clear over its
@@ -2060,8 +2076,13 @@ this section states what is built.
   to stand. Her sofa faces her TV (as above); her lamp stands on one
   strip with her bed or her desk, at most 3 cells between them; her
   fridge, and her bookshelf, stand within a cell of a wall of their
-  strip; her bed and her TV aren't in one room; and a piece she hasn't
-  settled doesn't spoil its room. A piece **spoils** a room when what
+  strip; her bed and her TV aren't in one room; a piece she hasn't
+  settled doesn't spoil its room; nothing stands in her door's space
+  (**DoorClear**, judged on the space her door's wall would have,
+  kept or yielding, wherever the space can exist at all: never on a
+  room too short or narrow for it); and nothing stands in the chat pane
+  (**InChat**, but a piece no room would take: it's in the closet).
+  Both are judged piece by piece, and felt on any use of the piece. A piece **spoils** a room when what
   the room is without it forbids something it brings, by the rooms
   table's "no" columns: a bed in a living room or a kitchen, a TV or a
   fridge in a bedroom (a desk spoils nothing: a study forbids nothing,
@@ -2081,7 +2102,20 @@ this section states what is built.
   Once its two frames have passed with her still on the piece she has
   felt it (said, whether or not the bubble found room to show; a chat
   line, which she looks up at from the piece, doesn't hide it); a use
-  cut short before then doesn't count. **Each rule is felt once a visit**, the first broken
+  cut short before then doesn't count. **She feels two on sight**,
+  needing no use (a lamp, a plant): DoorClear once she has bumped into
+  what fills her door's space, coming home out of her door where it
+  stood aside for it (from school, a dash, work, the stage; never on
+  the idle gate, and never for a fallback a short room, the chat, a
+  focused pane or no wall forced), and InChat whenever she's in sight
+  while a piece of hers stands in the chat. Felt on sight, she says so
+  ("Can't get to the door!", "People are talking here…") only when her
+  mood would have her put it right (judged when she'd say it, so one
+  felt while she mends another is said after), at most once a game day
+  per rule (once a visit while no routine reaches her), and only once
+  she's quiet after her arrival line ("I'm home!", her hello): she
+  stands until she is, then stands saying it for two frames, which a
+  look at the chat and a parcel's "A parcel!" wait for. **Each rule is felt once a visit**, the first broken
   one of a use, and forgotten when she leaves (nothing is kept). It
   doesn't draw on her beat lines. Watching the TV with a grievance due,
   she has her home on her mind instead of the shopping channel's
@@ -2108,8 +2142,11 @@ this section states what is built.
   when the sofa joins the TV that stands with a desk), no piece spoils
   a room it didn't (the moved piece the room it comes into, nor any
   other its own room as the moved piece comes or goes; and the moved
-  piece, one she hasn't settled, not the room it's set down in), every
-  strip that held its pieces still
+  piece, one she hasn't settled, not the room it's set down in), her
+  door's space that was kept is kept (it neither yields nor goes for
+  a piece too wide beside it), no piece that showed goes into the
+  chat's closet (a piece leaving the closet for it is no rule newly
+  broken), every strip that held its pieces still
   does, and it fits this frame (on blank free cells where she'd fit to
   use it; every other piece that showed still showing, clear of
   makeshift pieces). Cheapest first: a piece she hasn't settled goes to

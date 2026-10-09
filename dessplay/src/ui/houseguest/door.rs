@@ -164,7 +164,11 @@ impl<G: Ground> Ground for Ungated<'_, G> {
 /// Every cover her door's box mustn't meet: her pieces as laid out
 /// (`laid`: before any hiding by text or a focused pane, so a piece
 /// under a released pane counts), what she made this visit (`made`), and
-/// the place kept for the piece in her pocket (`ghost`).
+/// the place kept for the piece in her pocket (`ghost`). A piece hidden
+/// in the chat pane's closet counts too (door batch, D7; the step 6
+/// review's choice): it's back where it's laid the moment a room would
+/// take it, so her door never stands where a piece may reappear (and a
+/// piece straddling the chat's edge is never under her door).
 pub(super) fn obstacles(
     laid: &[Shown],
     made: impl IntoIterator<Item = Rect>,
@@ -362,6 +366,11 @@ impl Keep {
                 .into_iter()
                 .collect(),
         }
+    }
+
+    /// The chat pane it keeps pieces out of (empty: none).
+    pub(super) fn chat(&self) -> Rect {
+        self.chat
     }
 
     /// Whether a piece covering `cover` may not be put there.

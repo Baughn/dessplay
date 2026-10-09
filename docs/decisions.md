@@ -1,6 +1,6 @@
 # DessPlay Decision Log
 
-Last updated: 2026-10-08
+Last updated: 2026-10-09
 
 The reasoning behind the rules in [design.md](design.md): the failure that
 motivated each one, the alternatives that were rejected, and the date it
@@ -5637,6 +5637,107 @@ of chat text there.
 `relaid`); refusing a delivery whenever her door's space yields (an
 older crowded home would never get another parcel), rather than only
 when the delivery makes it yield.
+
+## She feels her door blocked and a piece in the chat on sight (2026-10-09)
+
+**Rule:** two rows at the end of the rules table. **DoorClear**: no
+piece out of its box stands in her door's space, judged piece by piece
+on the space her door's wall would have, kept or yielding, wherever a
+space can exist at all. **InChat**: no piece out of its box stands in
+the chat pane, piece by piece, but one no room would take (it's in the
+closet). Both are felt on any use of the piece, like any rule, and on
+sight: DoorClear once she has bumped into what fills the space (coming
+home out of her door where it stood aside for her pieces,
+`Fallback::Yield`), InChat whenever she's in sight while it's broken.
+Felt on sight she says so only if her mood would mend it, at most once
+a game day per rule (in memory on the guest: a restart may repeat it
+once; with no routine reaching her, no game day, so once a visit), and
+only once she's quiet after her arrival line, standing until she is,
+then standing for two frames under `grumbling()`. Lines: "Can't get to
+the door!" (the user's) and "People are talking here…": the user asked
+for "People are talking here..."; written with three dots it is 26
+characters, past a bubble's 24 (`BUBBLE_CHARS`), so the builder used the
+one-glyph narrow ellipsis. **A deviation pending the user** (keep the
+ellipsis, or raise the bubble limit, a design.md rule). **The closet
+for the chat**: a piece in the chat that no room takes is hidden per
+frame in `Home::frame` (Visiting and Away alike), never moved and never
+saved; `room::placements` assigns the pieces in the chat jointly, in
+layout order: own strip at any left clear of the chat and the space,
+else another strip's lane where it packs (`pack`, anchored anywhere
+along it) with that strip's pieces and those already assigned there,
+clear of both, pushing none of them newly into either, and never wider
+than a kept door space leaves room for. A box is never weighed.
+
+**Why:** the user's door batch decisions: older homes whose furniture
+fills the space are cleared by her, through a felt rule that phase 4's
+arranging answers; an older piece in the chat is shown where it stands
+until she moves it, and closeted per frame only when nowhere else would
+take it. *On sight*, because a lamp or a plant has no use to feel it on,
+and felt rules die with the visit, so feeling a blocked door going out
+would be forgotten before it could be mended: she feels it coming home,
+when she has just bumped into it; a fallback forced by a short room, the
+chat, a focused pane or no wall is never blamed on her furniture.
+DoorClear judges the would-be space, kept or not, since it's only ever
+broken while the space yields (a kept space is clear by construction); a
+space that yields for a hung piece with nothing standing in it blames
+nothing (there's nothing in her way), and a window hung low in a yielded
+space is blamed like any piece. *Said only when she'd mend*, so a lazy
+visit lives with it quietly (the documented gap: a piece some room would
+take shows in the chat until a mood that mends moves it), and an
+on-sight line is never a complaint she won't act on. *Once a game day
+per rule*, so a home that can't be put right (no repair exists) doesn't
+nag every visit, while she still feels it (and nests over it) each
+visit. *After her arrival line*, standing until she's quiet: said at a
+later decision she might be off on something long, and over her hello
+it would cut "I'm home!" short (C4). *The closet per frame, not
+persisted*: it's a fact about this frame's panes (a pane coming back, a
+chat moved, a resize), so a saved flag would go stale and could hide a
+piece for good; recomputing it costs only when a piece meets the chat.
+It lives in `Home::frame`, not `project`, so the rules, the repair
+search and every layout read stay on pure geometry (`Home::relaid`'s
+cache stays sound). An existing test moved with the rule: a move that
+set her sofa against her door's wall, inside the space that yields for
+it (F7's case), is now refused as breaking DoorClear.
+
+*From the step's review* (same day). *The closet packs*, as D7 says ("where
+it packs"), rather than wanting a free gap: a gap is stricter (free
+columns split 7 and 8 hold no 10-wide bed, though the room's pieces
+would slide aside for it), and a piece hidden for want of a gap is
+never moved, since a hidden piece isn't judged. *A box is never
+closeted*: nothing unpacks a hidden box (her seats are the pieces
+shown), and while a piece is boxed the shopping channel sells nothing,
+so a closeted box (a layout change can put an older one in the chat)
+would stop both for as long as the layout stood; shown, she unpacks it,
+and then it's a piece like any other. *A repair keeps her door's kept
+space kept*: the space exists only with room beside it for the widest
+piece standing, and is kept only if the strip packs beside it, so a
+move can make it yield or vanish without breaking a rule (DoorClear
+judges only a space, and only what stands in it); `evaluate` refuses
+that transition as `admits` does for a delivery. That leaves no move
+whose destination strip's plan differs from the plan before it (a
+yielding space or none lays the strip out raw either way), so F7's
+per-candidate "plan with the piece there" is gone: the grid is the plan
+before the move (it was only ever wrong where a hung piece's place
+decides the keep, and there the plan before is the right one). *The
+closet and a repair*: a repair may not put a piece that showed into the
+closet (it would vanish as she moved something else); a piece leaving
+the closet for a repair (a room now takes it) is no rule newly broken
+(it was in the chat all along). Judged with the closet as it was, so
+the closet is weighed for a move only after everything else passes, and
+only while a piece shows in the chat: the repair search stays under its
+millisecond with five pieces in the chat. *Where her mood is judged*:
+only when she'd say it (`aloud_owed`), so a rule felt while she's mending
+another is said once she's done, if she'd still mend. *Her door's spot*
+still keeps off a piece in the closet: it may be back any frame. *What
+the closet hides* is logged when it changes, since a piece vanishing is
+something the user sees.
+*Rejected:* feeling DoorClear only on the first frame she's in sight
+(she's in sight in the doorway before she's through it and has bumped
+into anything); judging InChat on stranded pieces (she'd grieve over
+what she can't see); the `"..."` spelling past the bubble limit (pending
+the user, above); a free gap for the closet (above); weighing the
+closet afresh on every move a repair search weighs (17 ms a search with
+five pieces in the chat, against a 1 ms bound).
 
 ## Houseguest chooses by needs among the top few (2026-09-28)
 

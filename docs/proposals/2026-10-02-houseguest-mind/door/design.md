@@ -976,6 +976,30 @@ it); decisions.md: the trigger (why on sight, why only when she'd mend, why once
 `Space` exists), or it is never broken while yielding, the only time it matters. Evaluate on the scratch home's
 `LaidOut`. `Felt.on` change ripples to `just_set` and the stage `feel`.
 
+**As built (2026-10-09).** Tests in `tests/felt.rs` (1-4, 6-9), room.rs `stranded_iff_no_room_takes_it`
+(5, over `room::placements`), rules.rs `every_repair_mends_and_breaks_nothing_with_the_chat_over_her_pieces` (10)
+and `a_crowded_edge_strip_keeps_her_door_and_breaks_door_clear` (step 2's M5 clause). Felt on sight on any
+in-sight frame (InChat) or once bumped (DoorClear: `Osaka::bumped`, set at `there`, after she's first in sight in
+the doorway), not only the first. Not quiet yet, she stands until she is (said at a later decision she could be
+off on something long). The InChat line is `"People are talking here…"` (narrow ellipsis: 26 characters with
+dots, past `BUBBLE_CHARS` 24): **a deviation pending the user** (keep it, or raise the limit). A space yielding for
+a hung piece with nothing in it blames nothing; a window in a yielded space is blamed like any piece. Goldens
+byte-identical.
+**After review (2026-10-09):** `stranded(home, laid, chat)` (D7's `home` back: anchors for packing). The closet
+**packs** on another strip (`pack`, the candidate anchored anywhere; none pushed newly into the chat or space; never
+wider than a kept space leaves room for), not a free gap; **a box is never closeted** (shown for her to unpack).
+`evaluate` refuses a move that makes her door's **kept space yield or vanish** (as `admits`), refuses one that puts a
+**shown piece into the closet**, and judges with the closet as it was (a piece leaving it is no newly broken rule);
+the closet is weighed last per move (perf: 0.42-0.45 ms with five pieces in the chat). **F7 is subsumed**:
+`plan_with` became `plan_of` (the plan before the move; decisions.md says why). The on-sight mood test is only at
+say time (`aloud_owed`; `on_sight` owes every newly felt row not said today), so a row felt mid-episode is said
+after. `Said::Visit` (no routine: once a visit) is documented and tested. Door obstacles keep closeted pieces. Test
+9 is three 60 s visits across Tue and Wed (`skip_clock`), not a day-long run: enough for C6 (once a day, felt every
+visit). Test 8's `Protected` half is a guard (a kept space has nothing to feel; `DoorSpot::bumped` is unit-tested
+in door.rs). Test 5's oracle is now independent (a real move and re-layout per strip and anchor), with a biased
+companion proptest and deterministic tests (room.rs); test 10 has deterministic DoorClear/InChat companions
+(`repairs_mend` returns a tally).
+
 ### Step 7. Art infrastructure (graphics.rs, art.rs, art/wall-door.svg, sprite.rs only; ~650 lines)
 
 **Goal.** D8's looks and compositing, unwired: `Look::WallDoor` with crop and sky, `WallDoor::Plate(u8)`, `Cut`
@@ -1247,7 +1271,9 @@ M = mechanics, T = tests, F = feasibility, C = character (their files beside thi
 - F4 accepted: sequential (or git worktree); `mirror_wall`, `mirror` unchanged.
 - F5 accepted: same as M23/C1; step 8 test 3's school-exit check.
 - F6 accepted: `returning`, `Scene::ALL` 58, the stage tests listed (D10).
-- F7 accepted: per-candidate-strip floors from a scratch home with the strip changed (D1).
+- F7 accepted: per-candidate-strip floors from a scratch home with the strip changed (D1). **Subsumed in step 6's
+  review:** with a repair refused for making her door's kept space yield or vanish, the plan before the move is the
+  plan after for every move accepted, so the grid is the plan before (`plan_of`).
 - F8 accepted: the flap's x from `raw`; room.rs:2915 asserts it.
 - F9 accepted: the workspace gate; `Summary.door: Option<String>` skipped when `None`.
 - F10 accepted: `Fallback::Chat` per frame, unsaved.

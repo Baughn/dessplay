@@ -13,3 +13,7 @@ cc a0afe9328e46e3fec30095eead4019c1874d6d3353c85a2a0fb25da222d48fab # shrinks to
 # The next came from step 11's mutation checks (phase 5c), not a real
 # failure; kept as cases that pin her low window.
 cc 22e8db545b66753e3ac101bcc7619a60a559889237488b3d1a8e60d90ecbc1b2 # shrinks to props = [Prop { item: Bookshelf, strip: Bottom(Playlist), anchor: Some(Anchor { side: Left, offset: 2 }), at: 0, facing: Right, boxed: false, settled: false }, Prop { item: Window, strip: Bottom(Playlist), anchor: Some(Anchor { side: Right, offset: 25 }), at: 0, facing: Right, boxed: false, settled: false }], width = 24, n = 2, text = [], makeshift = [], later_width = 24, later_text = [], later_makeshift = [], blocked = []
+# From the door batch's step 6 review (a mutant judging a repair's layout
+# with no chat pane: InChat newly broken for the window); pinned as
+# `a_clock_and_a_window_by_the_chat_case`.
+cc 2559dd89f91b30405cda0867ca171c226eccf9c0d5179b1f0abf8fe5c768ebb9 # shrinks to props = [Prop { item: Clock, strip: Bottom(Playlist), anchor: Some(Anchor { side: Left, offset: 49 }), at: 0, facing: Right, boxed: false, settled: false }, Prop { item: Window, strip: Bottom(Playlist), anchor: Some(Anchor { side: Left, offset: 44 }), at: 0, facing: Right, boxed: false, settled: false }], width = 70, n = 2, text = [], makeshift = [], later_width = 36, later_text = [], later_makeshift = [], blocked = [], door = None, chat = (19, 1, 32, 9)

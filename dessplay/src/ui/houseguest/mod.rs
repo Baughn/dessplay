@@ -795,6 +795,13 @@ pub struct Guest {
     gift: Option<Furniture>,
     /// The stage: the shopping channel is on whenever she watches.
     shop_now: bool,
+    /// The rules of her home (rows of the table) she last said aloud
+    /// were broken, felt on sight, and when (door batch, D7): each at
+    /// most once a game day. In memory only.
+    said_aloud: Vec<(usize, Said)>,
+    /// Her pieces the last frame hid in the chat pane's closet (door
+    /// batch, D7): a change is logged ([`note_closet`]). In memory only.
+    closet: Vec<Furniture>,
     /// The stage: the cat is home this visit.
     cat_now: bool,
     /// The stage: at the next paint, a sofa turned away from her TV (see
@@ -942,6 +949,8 @@ impl Guest {
             note: None,
             gift: None,
             shop_now: false,
+            said_aloud: Vec::new(),
+            closet: Vec::new(),
             cat_now: false,
             arranging: false,
             nudge: nudge::Nudge::default(),
@@ -1016,6 +1025,8 @@ impl Guest {
         self.meal_today = None;
         self.rares_today = None;
         self.night_today = None;
+        // What she said aloud was another home's (and another day's).
+        self.said_aloud.clear();
         self.unsaved = true;
         self.persist = true;
         self.gift = None;
@@ -1709,7 +1720,12 @@ impl Guest {
                 }
                 // Hers the moment she does it: whatever ends the visit
                 // before the next paint can't lose it.
-                self.unsaved |= record(&mut self.ledger, &mut self.shop_now, visit);
+                self.unsaved |= record(
+                    &mut self.ledger,
+                    &mut self.shop_now,
+                    &mut self.said_aloud,
+                    visit,
+                );
                 // Dashed home and still here as school ends (in on an
                 // errand at 12:44, say), not on her way out again: she's
                 // home, and it's a visit after all.
@@ -2151,6 +2167,7 @@ impl Guest {
                     self.truecolor,
                 );
                 self.unsaved |= changed;
+                note_closet(&mut self.closet, &self.ledger.home, &empty.shown, view);
                 Rains::ToPaint
             }
             State::Leaving(leaving) => {
@@ -2263,7 +2280,12 @@ impl Guest {
                 // closet this frame. Placed, it's solid to text; she walks
                 // in front of it.
                 let before = self.ledger.clone();
-                self.unsaved |= record(&mut self.ledger, &mut self.shop_now, visit);
+                self.unsaved |= record(
+                    &mut self.ledger,
+                    &mut self.shop_now,
+                    &mut self.said_aloud,
+                    visit,
+                );
                 let shown = furnish(
                     &mut self.ledger,
                     &mut self.gift,
@@ -2278,9 +2300,12 @@ impl Guest {
                     &mut self.rng,
                 );
                 visit.shown = shown;
+                note_closet(&mut self.closet, &self.ledger.home, &visit.shown, view);
                 if self.ledger != before {
                     self.unsaved = true;
                 }
+                let today = Said::of(visit.osaka.day(now).map(|d| d.day), self.ledger.visits);
+                on_sight(visit, &self.said_aloud, today, now);
                 // The place of the piece in her pocket is kept for it.
                 let mut kept = view.protected.clone();
                 kept.extend(visit.ghost);
@@ -2609,7 +2634,12 @@ impl Guest {
                 // bubble drawn): hers the moment it does, whatever ends
                 // the visit before the next tick.
                 if visit.osaka.shown(now, drawn).is_some() {
-                    self.unsaved |= record(&mut self.ledger, &mut self.shop_now, visit);
+                    self.unsaved |= record(
+                        &mut self.ledger,
+                        &mut self.shop_now,
+                        &mut self.said_aloud,
+                        visit,
+                    );
                 }
                 Rains::ToPaint
             }
@@ -2998,6 +3028,81 @@ impl Guest {
     }
 }
 
+/// When she said what's wrong with her home aloud, felt on sight (door
+/// batch, D7): the game day, or with no routine reaching her, the visit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Said {
+    Day(u64),
+    Visit(u64),
+}
+
+impl Said {
+    /// On game day `day` (none: no routine reaches her), visit `visits`.
+    fn of(day: Option<u64>, visits: u64) -> Self {
+        day.map_or(Self::Visit(visits), Self::Day)
+    }
+}
+
+/// Note which of her pieces a frame showing `shown` of `home` on `view`
+/// hid in the chat pane's closet (door batch, D7), logging the change
+/// from the last frame's (`closet`): a piece vanishing from view, or
+/// back, is a change the user sees. Weighed only when a piece of hers
+/// isn't shown (the closet is costly), so free on most frames.
+fn note_closet(closet: &mut Vec<Furniture>, home: &room::Home, shown: &[Shown], view: &IdleView) {
+    let unshown = |item: Furniture| !shown.iter().any(|s| s.scrap.is_none() && s.item == item);
+    let now: Vec<Furniture> = if home.props.iter().any(|p| unshown(p.item)) {
+        let laid = home.laid_and_shifted(&view.nooks);
+        if laid.shown.iter().any(|s| room::closetable(view.chat, s)) {
+            room::stranded(home, &laid, view.chat)
+                .into_iter()
+                .filter_map(|i| laid.shown.get(i).map(|s| s.item))
+                .filter(|&item| unshown(item))
+                .collect()
+        } else {
+            Vec::new()
+        }
+    } else {
+        Vec::new()
+    };
+    if now != *closet {
+        tracing::info!(closeted = ?now, was = ?closet, "houseguest: her pieces hidden in the chat pane (no room for them)");
+        *closet = now;
+    }
+}
+
+/// What's wrong with her home that she sees as it shows her (door batch,
+/// D7), on any frame she's in sight: a piece in the chat pane, always;
+/// one in her door's space once she has bumped into it, coming home out
+/// of her door where it stood aside for it. Neither needs a use of the
+/// piece (a lamp, a plant). Felt once a visit; newly felt, she owes
+/// saying so, at most once a game day per rule (`said`, `today`). Whether
+/// she says it, once she's quiet, is hers to judge then
+/// ([`osaka::Osaka`]'s `aloud_owed`: only while her mood would have her
+/// put it right, and it's still broken and not let go), so a rule felt
+/// while she's mending another is said once she's done.
+fn on_sight(visit: &mut Visit, said: &[(usize, Said)], today: Said, now: u64) {
+    if visit.osaka.hidden(now) {
+        return;
+    }
+    let bumped = visit.osaka.bumped();
+    let mut rows: Vec<usize> = Vec::new();
+    for b in &visit.broken {
+        let seen = match b.rule().map(|r| r.rule) {
+            Some(rules::Rule::DoorClear) => bumped,
+            Some(rules::Rule::InChat) => true,
+            _ => false,
+        };
+        if seen && visit.osaka.feel(b.key, None) && !rows.contains(&b.row) {
+            rows.push(b.row);
+        }
+    }
+    for row in rows {
+        if !said.contains(&(row, today)) {
+            visit.osaka.owe_aloud(row);
+        }
+    }
+}
+
 /// Her pity counters as `ledger` has them (phase 5b D6).
 fn pity_of(ledger: &Ledger) -> rarity::Pity {
     rarity::Pity::of(ledger.idle_min, ledger.rare_at, ledger.legend_at)
@@ -3006,7 +3111,12 @@ fn pity_of(ledger: &Ledger) -> rarity::Pity {
 /// Record what she did to her home since last asked: the ledger's part
 /// (an order, an unpacking) and the visit's (a makeshift piece crumpled
 /// into shape, or used). Returns whether the ledger changed.
-fn record(ledger: &mut Ledger, shop_now: &mut bool, visit: &mut Visit) -> bool {
+fn record(
+    ledger: &mut Ledger,
+    shop_now: &mut bool,
+    said_aloud: &mut Vec<(usize, Said)>,
+    visit: &mut Visit,
+) -> bool {
     let mut changed = false;
     for event in visit.osaka.take_events() {
         match event {
@@ -3043,6 +3153,12 @@ fn record(ledger: &mut Ledger, shop_now: &mut bool, visit: &mut Visit) -> bool {
                     ledger.calendar_on = Some(date);
                     changed = true;
                 }
+            }
+            // Said aloud: not again that day (in memory only: a restart
+            // may say it once more).
+            osaka::HomeEvent::Grieved { row, day } => {
+                said_aloud.retain(|&(r, _)| r != row);
+                said_aloud.push((row, Said::of(day, ledger.visits)));
             }
             // Seen from now on; something new, so her pity for its tier
             // starts again (not for one she'd seen already).
@@ -3476,7 +3592,7 @@ fn furnish(
     // The rules of her home, judged where her pieces are laid out (text
     // closeting one doesn't count), once the frame's home is final.
     let laid_out = home.laid_out(&view.nooks);
-    let broken = rules::broken(&laid_out, home);
+    let broken = rules::broken(&laid_out, home, &door::Keep::of(home, plan));
     let laid = laid_out.shown;
     if broken != visit.broken {
         tracing::trace!(
@@ -3493,7 +3609,9 @@ fn furnish(
     };
     let force = (cued && visit.broken.iter().any(|b| b.key == faces)).then_some(faces);
     if let Some(key) = force {
-        visit.osaka.feel(key, (Furniture::Sofa, room::Use::Lounge));
+        visit
+            .osaka
+            .feel(key, Some((Furniture::Sofa, room::Use::Lounge)));
     }
     mend(home, buf, view, visit, &shown, &blocked, force, now);
     let keep = door::Keep::of(home, plan);

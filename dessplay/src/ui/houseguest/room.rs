@@ -936,6 +936,268 @@ pub(super) fn in_chat(chat: Rect, rect: Rect) -> bool {
     !chat.is_empty() && !rect.is_empty() && chat.intersects(rect)
 }
 
+/// Her pieces `laid` (her home `home`) has in the chat pane (`chat`)
+/// that no room would take (door batch, D7: the closet), as indices into
+/// `laid.shown`: see [`placements`]. Pure.
+pub(super) fn stranded(home: &Home, laid: &LaidOut, chat: Rect) -> Vec<usize> {
+    placements(home, laid, chat)
+        .into_iter()
+        .filter_map(|(i, to)| to.is_none().then_some(i))
+        .collect()
+}
+
+/// Whether `s` is one of her pieces in the chat pane (`chat`) that the
+/// closet weighs ([`placements`]): on a strip, real, out of its box. A
+/// box in the chat is never closeted: it shows where it stands, for her
+/// to unpack (then it's a piece like any other).
+pub(super) fn closetable(chat: Rect, s: &Shown) -> bool {
+    s.strip.is_some() && s.scrap.is_none() && !s.boxed && in_chat(chat, s.cover())
+}
+
+/// Where each of her pieces `laid` has in the chat pane (`chat`) could
+/// go, if anywhere (door batch, D7), as its index into `laid.shown` and
+/// the strip and left: those [`closetable`], taken in layout order, and
+/// assigned jointly. On its own strip, any left along its lane where it
+/// would miss the chat and her door's space (its neighbours pack round
+/// it); else on another strip whose lane holds it (and where it would
+/// leave a kept door space room to be), anchored anywhere along that
+/// lane, where it [`pack`]s with the pieces there (anchored as `home`
+/// has them; those in the chat that are weighed themselves left out)
+/// and those already assigned there: it misses the chat and the space
+/// (kept or not), and none of the others is pushed newly into them
+/// (as [`super::door::Keep::takes_in`]). Own strip first, then the
+/// strips in order. A piece with none is stranded: in the closet this
+/// frame (hidden, never moved). Only a cheap stand-in for "a repair
+/// could move it": one some room takes is shown in the chat until a
+/// repair moves it, which needs a mood that mends (the documented gap,
+/// M20).
+pub(super) fn placements(
+    home: &Home,
+    laid: &LaidOut,
+    chat: Rect,
+) -> Vec<(usize, Option<(Strip, i32)>)> {
+    // Assigned so far: the piece's index among her props, anchor, needs
+    // and where it's taken to.
+    let mut taken: Vec<(usize, Anchor, (u16, u16), Shown)> = Vec::new();
+    let mut out = Vec::new();
+    for (i, piece) in laid.shown.iter().enumerate() {
+        if !closetable(chat, piece) {
+            continue;
+        }
+        let Some(own) = piece.strip else { continue };
+        let found = laid
+            .plans
+            .iter()
+            .filter(|p| p.strip == own)
+            .chain(laid.plans.iter().filter(|p| p.strip != own))
+            .find_map(|plan| {
+                if plan.strip == own {
+                    on_own_strip(plan, piece, chat)
+                } else {
+                    packed_on(home, laid, &taken, plan, piece, chat)
+                }
+            });
+        if let Some((anchor, at)) = found {
+            let index = home
+                .props
+                .iter()
+                .position(|p| p.item == piece.item)
+                .unwrap_or(usize::MAX);
+            let (cols, rows) = piece.size();
+            taken.push((index, anchor, (cols, rows + piece.lift()), at));
+        }
+        out.push((i, found.and_then(|(_, at)| Some((at.strip?, at.left)))));
+    }
+    out
+}
+
+/// `piece` (in the chat pane `chat`) set down on its own strip, `plan`:
+/// at any left along its lane missing the chat and her door's space, as
+/// the anchor that keeps it there and where it stands then.
+fn on_own_strip(plan: &StripPlan, piece: &Shown, chat: Rect) -> Option<(Anchor, Shown)> {
+    let (cols, rows) = piece.size();
+    let e = plan.along(piece.lane());
+    if !e.holds((cols, rows + piece.lift())) {
+        return None;
+    }
+    let left = first_clear(plan, piece, chat)?;
+    let at = Shown {
+        strip: Some(plan.strip),
+        ..at_left(piece, plan, left)
+    };
+    Some((e.pin(left, cols).0, at))
+}
+
+/// The first left along `piece`'s lane of `plan` (one that holds it)
+/// where its cover misses the chat pane `chat` and her door's space, if
+/// any. Its cover keeps its rows as it slides along, so only the
+/// columns where those two meet its rows matter: the first left is the
+/// far wall's, or just past one of them.
+fn first_clear(plan: &StripPlan, piece: &Shown, chat: Rect) -> Option<i32> {
+    let e = plan.along(piece.lane());
+    let span = e.to - e.from - i32::from(piece.size().0);
+    let base = Shown {
+        strip: Some(plan.strip),
+        ..at_left(piece, plan, e.from)
+    }
+    .cover();
+    if base.is_empty() {
+        return (span >= 0).then_some(e.from);
+    }
+    let rows = |r: Rect| r.y < base.bottom() && base.y < r.bottom();
+    let keep: Vec<Rect> = [
+        Some(chat).filter(|c| !c.is_empty()),
+        plan.space.map(|s| s.rect),
+    ]
+    .into_iter()
+    .flatten()
+    .filter(|&r| !r.is_empty() && rows(r))
+    .collect();
+    let (x, w) = (i32::from(base.x), i32::from(base.width));
+    let meets = |d: i32| {
+        keep.iter()
+            .any(|r| x + d < i32::from(r.right()) && i32::from(r.x) < x + d + w)
+    };
+    std::iter::once(0)
+        .chain(keep.iter().map(|r| i32::from(r.right()) - x))
+        .filter(|&d| (0..=span).contains(&d) && !meets(d))
+        .min()
+        .map(|d| e.from + d)
+}
+
+/// `s` at `left` on `plan`'s floor.
+fn at_left(s: &Shown, plan: &StripPlan, left: i32) -> Shown {
+    Shown {
+        left,
+        floor: plan.raw.floor,
+        ..*s
+    }
+}
+
+/// `piece` (in the chat pane `chat`) set down on another strip, `plan`:
+/// anchored anywhere along its lane, packed ([`pack`]) with the pieces
+/// standing there in that lane (as `home` anchors them; those
+/// [`closetable`] left out, unless `taken` there) and those `taken`
+/// there, so that it misses the chat and her door's space and pushes
+/// none of the others newly into them. Not where it's wider than her
+/// door's kept space leaves room for (see [`space_of`]). As the anchor
+/// and where it stands then.
+fn packed_on(
+    home: &Home,
+    laid: &LaidOut,
+    taken: &[(usize, Anchor, (u16, u16), Shown)],
+    plan: &StripPlan,
+    piece: &Shown,
+    chat: Rect,
+) -> Option<(Anchor, Shown)> {
+    let (cols, rows) = piece.size();
+    let lane = piece.lane();
+    let e = plan.along(lane);
+    let needs = (cols, rows + piece.lift());
+    if !e.holds(needs) {
+        return None;
+    }
+    if let Some(space) = plan.space.filter(|s| s.kept)
+        && lane == Lane::Floor
+        && space_of(plan.raw, space.side, cols).is_none()
+    {
+        return None;
+    }
+    let refuses = |r: Rect| in_chat(chat, r) || plan.space.is_some_and(|s| s.rect.intersects(r));
+    // No left along the lane misses the chat and the space: no packing
+    // will find one (the cheap test first: the closet is weighed for
+    // every move a repair search weighs while a piece meets the chat).
+    first_clear(plan, piece, chat)?;
+    let span = e.to - e.from - i32::from(cols);
+    // What stands there in that lane: by index, anchor, needs, and as
+    // it shows.
+    let mut there: Vec<(usize, Anchor, (u16, u16), Shown)> = laid
+        .shown
+        .iter()
+        .filter(|s| s.strip == Some(plan.strip) && s.lane() == lane && s.scrap.is_none())
+        .filter(|s| !closetable(chat, s))
+        .filter_map(|s| {
+            let index = home.props.iter().position(|p| p.item == s.item)?;
+            let (c, r) = s.size();
+            let anchor = home
+                .props
+                .get(index)?
+                .anchor
+                .unwrap_or_else(|| e.pin(s.left, c).0);
+            Some((index, anchor, (c, r + s.lift()), *s))
+        })
+        .collect();
+    there.extend(
+        taken
+            .iter()
+            .filter(|(.., at)| at.strip == Some(plan.strip) && at.lane() == lane)
+            .copied(),
+    );
+    let at_left = |s: &Shown, left: i32| at_left(s, plan, left);
+    // Where they stand without it: what "pushed newly in" is judged by.
+    let packing: Vec<(usize, Anchor, (u16, u16))> =
+        there.iter().map(|&(i, a, n, _)| (i, a, n)).collect();
+    let widths: i32 = packing.iter().map(|&(.., (c, _))| i32::from(c)).sum();
+    if widths + i32::from(cols) > e.to - e.from {
+        return None;
+    }
+    let alone = pack(&packing, e)?;
+    let index = home
+        .props
+        .iter()
+        .position(|p| p.item == piece.item)
+        .unwrap_or(usize::MAX);
+    let anchors = [Side::Left, Side::Right].into_iter().flat_map(|side| {
+        (0..=span).filter_map(move |offset| {
+            Some(Anchor {
+                side,
+                offset: u16::try_from(offset).ok()?,
+            })
+        })
+    });
+    let mut with = packing.clone();
+    with.push((
+        index,
+        Anchor {
+            side: Side::Left,
+            offset: 0,
+        },
+        needs,
+    ));
+    for anchor in anchors {
+        if let Some(last) = with.last_mut() {
+            last.1 = anchor;
+        }
+        let Some(lefts) = pack(&with, e) else {
+            continue;
+        };
+        let left_of = |i: usize, lefts: &[(usize, i32)]| {
+            lefts.iter().find(|&&(j, _)| j == i).map(|&(_, l)| l)
+        };
+        let Some(left) = left_of(index, &lefts) else {
+            continue;
+        };
+        let at = Shown {
+            strip: Some(plan.strip),
+            ..at_left(piece, left)
+        };
+        if refuses(at.cover()) {
+            continue;
+        }
+        let pushes_in = there.iter().any(|&(i, _, _, s)| {
+            let (Some(was), Some(now)) = (left_of(i, &alone), left_of(i, &lefts)) else {
+                return true;
+            };
+            let (was, now) = (at_left(&s, was).cover(), at_left(&s, now).cover());
+            was != now && refuses(now) && !refuses(was)
+        });
+        if !pushes_in {
+            return Some((anchor, at));
+        }
+    }
+    None
+}
+
 /// Whether a wall on `side` of a nook drawn at `rect` is at the
 /// screen's edge (read from the nook's rect, never a space's).
 pub(super) fn at_edge(rect: Rect, side: Side, screen: Rect) -> bool {
@@ -969,17 +1231,28 @@ fn space_of(raw: Extent, side: Side, widest: u16) -> Option<(i32, Rect)> {
     if i32::from(raw.rows) < HEIGHT || raw.to - raw.from < SPACE + wide {
         return None;
     }
-    let (wall, left) = match side {
-        Side::Right => (raw.to, raw.to - SPACE),
-        Side::Left => (raw.from - 1, raw.from),
+    let wall = match side {
+        Side::Right => raw.to,
+        Side::Left => raw.from - 1,
     };
-    let rect = Rect::new(
+    Some((wall, space_rect(raw, side)?))
+}
+
+/// Where her door's space would be against the wall on `side` of `raw`
+/// (its [`SPACE`] columns by her height and the floor row), whether or
+/// not it can be there (see [`space_of`]): none only off the screen.
+pub(super) fn space_rect(raw: Extent, side: Side) -> Option<Rect> {
+    use super::sprite::HEIGHT;
+    let left = match side {
+        Side::Right => raw.to - SPACE,
+        Side::Left => raw.from,
+    };
+    Some(Rect::new(
         u16::try_from(left).ok()?,
         u16::try_from(raw.floor - HEIGHT).ok()?,
         SPACE as u16,
         (HEIGHT + 1) as u16,
-    );
-    Some((wall, rect))
+    ))
 }
 
 /// Which wall her door would be in, chosen from the geometry of `plan`
@@ -1438,11 +1711,6 @@ impl Home {
             .collect()
     }
 
-    /// `strip`'s plan alone (see [`Home::extents`]), on `raw`.
-    pub(super) fn strip_plan(&self, strip: Strip, raw: Extent) -> StripPlan {
-        self.plan_strip(strip, raw).0
-    }
-
     /// `strip`'s plan (see [`Home::extents`]), and on her door's strip,
     /// where it has a space, the strip laid out as the plan has it (its
     /// space kept or yielding): judging the one lays out the other.
@@ -1537,7 +1805,21 @@ impl Home {
     ) -> (Vec<Shown>, bool) {
         let before = self.clone();
         self.settle_door(plan);
-        let (shown, moves) = self.project_with(buf, plan, blocked);
+        let (mut shown, moves) = self.project_with(buf, plan, blocked);
+        // The closet (door batch, D7): a piece in the chat pane that no
+        // room would take is hidden this frame (kept where it's laid, in
+        // her record), back as soon as one would.
+        if shown.iter().any(|s| in_chat(plan.chat, s.cover())) {
+            let laid = self.laid_and_shifted(plan.nooks);
+            let gone: Vec<Furniture> = stranded(self, &laid, plan.chat)
+                .into_iter()
+                .filter_map(|i| laid.shown.get(i).map(|s| s.item))
+                .collect();
+            if !gone.is_empty() {
+                tracing::trace!(?gone, "houseguest: in the chat pane with no room for it");
+                shown.retain(|s| s.scrap.is_some() || !gone.contains(&s.item));
+            }
+        }
         for (from, to) in moves {
             tracing::info!(?from, ?to, "houseguest: her pieces moved");
         }
@@ -5000,7 +5282,7 @@ mod tests {
             made: &[],
             keep: &keep,
         };
-        for target in super::super::rules::broken(&laid, &room) {
+        for target in super::super::rules::broken(&laid, &room, &keep) {
             for repair in super::super::rules::search(&room, &frame, &target).repairs {
                 let stood = laid.shown.iter().find(|s| s.item == repair.piece);
                 prop_assert!(
@@ -5234,6 +5516,376 @@ mod tests {
                 Some(true),
                 "boxed {boxed}: {parcel:?}"
             );
+        }
+    }
+
+    /// A piece in the chat with no gap anywhere wide enough for it is
+    /// still taken by another room when that room's pieces would pack
+    /// round it (door batch, D7: "where it packs"): Playlist's free
+    /// columns split 7 and 8, a 10-wide bed, so it's not in the closet.
+    #[test]
+    fn a_piece_the_other_room_packs_round_is_never_stranded() {
+        let (buf, nooks) = two_panes(30, 12, &[]);
+        let at = |item, nook, side, offset| Prop {
+            strip: Strip::Bottom(nook),
+            anchor: Some(Anchor { side, offset }),
+            ..Prop::new(item, nook, 0, Facing::Right)
+        };
+        let home = Home {
+            props: vec![
+                at(Furniture::Bed, Nook::Users, Side::Left, 4),
+                at(Furniture::Sofa, Nook::Playlist, Side::Left, 0),
+                at(Furniture::Tv, Nook::Playlist, Side::Left, 16),
+                at(Furniture::Desk, Nook::Playlist, Side::Right, 1),
+            ],
+            door: None,
+        };
+        let mut laid_home = home.clone();
+        let laid = laid_home.laid_out(&nooks);
+        let e = laid.plan(Strip::Bottom(Nook::Playlist)).unwrap().floor;
+        let mut free: Vec<i32> = Vec::new();
+        let mut run = 0;
+        for x in e.from..e.to {
+            let taken = laid.shown.iter().any(|s| {
+                s.strip == Some(Strip::Bottom(Nook::Playlist))
+                    && (s.left..s.left + i32::from(s.size().0)).contains(&x)
+            });
+            if taken {
+                if run > 0 {
+                    free.push(run);
+                }
+                run = 0;
+            } else {
+                run += 1;
+            }
+        }
+        if run > 0 {
+            free.push(run);
+        }
+        // Precondition: room enough in all, no gap wide enough.
+        assert!(free.iter().sum::<i32>() >= 10, "{free:?}");
+        assert!(free.iter().all(|&g| g < 10), "{free:?}");
+        let chat = nooks[0].1;
+        let bed = laid
+            .shown
+            .iter()
+            .position(|s| s.item == Furniture::Bed)
+            .unwrap();
+        assert!(in_chat(chat, laid.shown[bed].cover()));
+        let places = placements(&home, &laid, chat);
+        assert!(
+            matches!(places.as_slice(), [(i, Some((Strip::Bottom(Nook::Playlist), _)))] if *i == bed),
+            "{places:?} (free {free:?})"
+        );
+        // And a frame shows it, where it stands.
+        let plan = plan_on(&nooks, chat, buf.area);
+        let mut framed = home.clone();
+        let (shown, _) = framed.frame(&buf, plan, &|_, _| false);
+        assert!(shown.iter().any(|s| s.item == Furniture::Bed), "{shown:?}");
+    }
+
+    /// Whether a repair could move `item` (one of `home`'s pieces, in
+    /// the chat pane `chat`) out of the chat, as a brute force over every
+    /// strip of `nooks` and every anchor along it: the piece moved there,
+    /// her home laid out again for real; every piece still laid, the
+    /// piece clear of the chat and her door's space (as it would be,
+    /// before or after), none of the others newly pushed into them, and
+    /// a door space that was kept still kept. The first such strip and
+    /// anchor.
+    fn a_repair_could_move(
+        home: &Home,
+        nooks: &[(Nook, Rect)],
+        chat: Rect,
+        item: Furniture,
+    ) -> Option<(Strip, Anchor)> {
+        let before = home.clone().laid_out(nooks);
+        let kept = |laid: &LaidOut| {
+            laid.plans
+                .iter()
+                .find_map(|p| p.space)
+                .is_some_and(|s| s.kept)
+        };
+        let cells =
+            |r: Rect| (r.x..r.right()).flat_map(move |x| (r.y..r.bottom()).map(move |y| (x, y)));
+        let meets = |a: Rect, b: Rect| {
+            let b: Vec<(u16, u16)> = cells(b).collect();
+            cells(a).any(|c| b.contains(&c))
+        };
+        for plan in &before.plans {
+            for side in [Side::Left, Side::Right] {
+                for offset in 0..=(plan.raw.to - plan.raw.from).max(0) {
+                    let mut moved = home.clone();
+                    let p = moved.props.iter_mut().find(|p| p.item == item)?;
+                    p.strip = plan.strip;
+                    p.anchor = Some(Anchor {
+                        side,
+                        offset: offset as u16,
+                    });
+                    let after = moved.clone().laid_out(nooks);
+                    if after.shown.len() != before.shown.len() || (kept(&before) && !kept(&after)) {
+                        continue;
+                    }
+                    let spaces: Vec<Rect> = before
+                        .plans
+                        .iter()
+                        .chain(&after.plans)
+                        .filter_map(|p| p.space.map(|s| s.rect))
+                        .collect();
+                    let keeps = |r: Rect| {
+                        (!chat.is_empty() && meets(r, chat)) || spaces.iter().any(|&s| meets(r, s))
+                    };
+                    let Some(at) = after.shown.iter().find(|s| s.item == item) else {
+                        continue;
+                    };
+                    if keeps(at.cover()) {
+                        continue;
+                    }
+                    let pushed = before.shown.iter().filter(|b| b.item != item).any(|b| {
+                        after
+                            .shown
+                            .iter()
+                            .find(|a| a.item == b.item)
+                            .is_none_or(|a| {
+                                a.cover() != b.cover() && keeps(a.cover()) && !keeps(b.cover())
+                            })
+                    });
+                    if !pushed {
+                        return Some((
+                            plan.strip,
+                            Anchor {
+                                side,
+                                offset: offset as u16,
+                            },
+                        ));
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// The body of the closet's properties (door batch, D7; T25):
+    /// `props` on Users (or Playlist, where `playlist` says so and both
+    /// panes are here), her door where `door` says, the chat at `chat`.
+    /// Of her pieces in the chat pane, each [`placements`] assigns goes
+    /// somewhere its strip's lane holds and clear of the chat and her
+    /// door's space (cell by cell); with one in the chat, it's stranded
+    /// only if no repair could move it ([`a_repair_could_move`]: a piece
+    /// some room could take is never hidden). A box is never weighed. And
+    /// a frame hides just those stranded: none it shows, every other it
+    /// would show. How many it strands.
+    fn closet_case(
+        props: Vec<Prop>,
+        wide: u16,
+        playlist: &[bool],
+        both: bool,
+        chat: Rect,
+        door: Option<(bool, bool)>,
+    ) -> Result<usize, TestCaseError> {
+        let (buf, panes) = two_panes(wide, 12, &[]);
+        let nooks: Vec<(Nook, Rect)> = if both { panes.to_vec() } else { vec![panes[0]] };
+        let mut home = Home {
+            door: door.and_then(|(users, right)| {
+                door_on(
+                    if users || !both {
+                        Nook::Users
+                    } else {
+                        Nook::Playlist
+                    },
+                    if right { Side::Right } else { Side::Left },
+                )
+            }),
+            ..Home::default()
+        };
+        for (i, p) in props.into_iter().enumerate() {
+            let strip = if both && playlist.get(i).copied().unwrap_or(false) {
+                Strip::Bottom(Nook::Playlist)
+            } else {
+                Strip::Bottom(Nook::Users)
+            };
+            let p = Prop { strip, ..p };
+            prop_assert!(home.add(p), "{:?}", p);
+        }
+        let laid = home.laid_out(&nooks);
+        let inside = |s: &Shown| s.strip.is_some() && s.scrap.is_none() && in_chat(chat, s.cover());
+        let places = placements(&home, &laid, chat);
+        let weighed: Vec<usize> = (0..laid.shown.len())
+            .filter(|&i| inside(&laid.shown[i]) && !laid.shown[i].boxed)
+            .collect();
+        prop_assert_eq!(
+            places.iter().map(|&(i, _)| i).collect::<Vec<_>>(),
+            weighed.clone()
+        );
+        let mut strands = 0;
+        for &(i, to) in &places {
+            let piece = laid.shown[i];
+            match to {
+                Some((strip, left)) => {
+                    let plan = laid.plan(strip).unwrap();
+                    let e = plan.along(piece.lane());
+                    let (cols, rows) = piece.size();
+                    let at = Shown {
+                        strip: Some(strip),
+                        left,
+                        floor: plan.raw.floor,
+                        ..piece
+                    };
+                    prop_assert!(
+                        left >= e.from
+                            && left + i32::from(cols) <= e.to
+                            && e.rows >= rows + piece.lift()
+                    );
+                    prop_assert!(!in_chat(chat, at.cover()), "{:?} to {:?}", piece, at);
+                    prop_assert!(
+                        plan.space.is_none_or(|s| !s.rect.intersects(at.cover())),
+                        "{:?} to {:?}",
+                        piece,
+                        at
+                    );
+                }
+                None => {
+                    strands += 1;
+                    if weighed.len() == 1 {
+                        let could = a_repair_could_move(&home, &nooks, chat, piece.item);
+                        prop_assert!(
+                            could.is_none(),
+                            "{:?} stranded, but a repair could move it: {:?}",
+                            piece,
+                            could
+                        );
+                    }
+                }
+            }
+        }
+        // A frame hides just the stranded.
+        let plan = plan_on(&nooks, chat, buf.area);
+        let mut framed = home.clone();
+        let (shown, _) = framed.frame(&buf, plan, &|_, _| false);
+        let mut projected = home.clone();
+        projected.settle_door(plan);
+        let (all, _) = projected.project_with(&buf, plan, &|_, _| false);
+        let laid = projected.laid_and_shifted(&nooks);
+        let gone: Vec<Furniture> = stranded(&projected, &laid, chat)
+            .iter()
+            .map(|&i| laid.shown[i].item)
+            .collect();
+        let expected: Vec<Shown> = all
+            .into_iter()
+            .filter(|s| !gone.contains(&s.item))
+            .collect();
+        prop_assert_eq!(shown, expected);
+        Ok(strands)
+    }
+
+    /// The pieces of a closet case that strand most often: some boxed,
+    /// three wide floor pieces and a lamp.
+    fn crowded() -> impl Strategy<Value = Vec<Prop>> {
+        (
+            proptest::sample::subsequence(
+                vec![
+                    Furniture::Bed,
+                    Furniture::Sofa,
+                    Furniture::Desk,
+                    Furniture::Tv,
+                    Furniture::Lamp,
+                ],
+                2..=5,
+            ),
+            proptest::collection::vec(any::<bool>(), 5),
+        )
+            .prop_flat_map(|(items, boxed)| {
+                placed(items).prop_map(move |props| {
+                    props
+                        .into_iter()
+                        .zip(&boxed)
+                        .map(|(p, &b)| Prop {
+                            boxed: b && p.item != Furniture::Lamp,
+                            ..p
+                        })
+                        .collect()
+                })
+            })
+    }
+
+    /// A deterministic companion to the closet's properties: a bed in a
+    /// chat over all of Users, Playlist too full to take it, is hidden
+    /// by a frame (and only it), and back when the chat moves off.
+    #[test]
+    fn a_frame_hides_a_piece_no_room_takes() {
+        let (buf, nooks) = two_panes(30, 12, &[]);
+        let at = |item, nook, side, offset| Prop {
+            strip: Strip::Bottom(nook),
+            anchor: Some(Anchor { side, offset }),
+            ..Prop::new(item, nook, 0, Facing::Right)
+        };
+        let home = Home {
+            props: vec![
+                at(Furniture::Bed, Nook::Users, Side::Left, 4),
+                at(Furniture::Sofa, Nook::Playlist, Side::Left, 0),
+                at(Furniture::Tv, Nook::Playlist, Side::Left, 10),
+                at(Furniture::Desk, Nook::Playlist, Side::Right, 1),
+                at(Furniture::Fridge, Nook::Playlist, Side::Right, 9),
+                at(Furniture::Bookshelf, Nook::Playlist, Side::Left, 18),
+            ],
+            door: None,
+        };
+        let chat = nooks[0].1;
+        let laid = home.clone().laid_out(&nooks);
+        assert_eq!(laid.shown.len(), 6, "{:?}", laid.shown);
+        let bed = laid
+            .shown
+            .iter()
+            .position(|s| s.item == Furniture::Bed)
+            .unwrap();
+        assert_eq!(stranded(&home, &laid, chat), vec![bed]);
+        assert_eq!(
+            a_repair_could_move(&home, &nooks, chat, Furniture::Bed),
+            None
+        );
+        let mut framed = home.clone();
+        let (shown, _) = framed.frame(&buf, plan_on(&nooks, chat, buf.area), &|_, _| false);
+        let items: Vec<Furniture> = shown.iter().map(|s| s.item).collect();
+        assert!(!items.contains(&Furniture::Bed), "{items:?}");
+        assert_eq!(items.len(), 5, "{items:?}");
+        assert_eq!(framed.props, home.props, "never moved");
+        let (shown, _) = framed.frame(&buf, plan_on(&nooks, Rect::default(), buf.area), &|_, _| {
+            false
+        });
+        assert!(shown.iter().any(|s| s.item == Furniture::Bed));
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(dessplay_core::test_support::proptest_cases(256)))]
+
+        /// The closet, over any chat (see [`closet_case`]).
+        #[test]
+        fn stranded_iff_no_room_takes_it(
+            props in decorated(),
+            wide in 24u16..60,
+            playlist in proptest::collection::vec(any::<bool>(), 6),
+            both in any::<bool>(),
+            chat in (0u16..100, 0u16..12, 1u16..40, 1u16..13),
+            door in proptest::option::of((any::<bool>(), any::<bool>())),
+        ) {
+            let chat = Rect::new(chat.0, chat.1, chat.2, chat.3);
+            closet_case(props, wide, &playlist, both, chat, door)?;
+        }
+
+        /// The closet where it strands most (see [`closet_case`]): wide
+        /// pieces, some boxed, under a chat over most of Users' floor.
+        #[test]
+        fn stranded_iff_no_room_takes_it_with_the_chat_over_her_floor(
+            props in crowded(),
+            wide in 24u16..44,
+            playlist in proptest::collection::vec(any::<bool>(), 6),
+            both in any::<bool>(),
+            chat in (0u16..8, 4u16..10, 16u16..48),
+            door in proptest::option::of((any::<bool>(), any::<bool>())),
+        ) {
+            let chat = Rect::new(chat.0, chat.1, chat.2, 12 - chat.1);
+            // It strands about 23 pieces in 43 cases at 32 (measured
+            // 2026-10-09; the plain one, 2 in 43).
+            closet_case(props, wide, &playlist, both, chat, door)?;
         }
     }
 }
