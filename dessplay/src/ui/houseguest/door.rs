@@ -270,6 +270,13 @@ fn space(home: &Home, plan: Plan) -> Result<(Space, i32), Fallback> {
     Ok((space, strip.raw.floor))
 }
 
+/// Her door's space's rect on `plan` (see [`space`]), if there is one:
+/// what no piece of hers, makeshift or not, may be put on.
+#[cfg(test)]
+pub(super) fn space_rect(home: &Home, plan: Plan) -> Option<Rect> {
+    space(home, plan).ok().map(|(space, _)| space.rect)
+}
+
 /// Whether her door may stand in its `space` (its floor row `floor`)
 /// this frame, or why not, in that order: the space kept, nothing of
 /// hers in it, clear of the chat, its wall and floor drawn as lines, and
@@ -347,7 +354,8 @@ fn middle(screen: Rect) -> (i32, i32) {
 }
 
 /// What no new piece may be put on this frame: her door's space (kept
-/// or not, while it exists), and the chat pane.
+/// or not, while it exists), and the chat pane. A makeshift piece is
+/// judged by [`Keep::for_made`] instead (the space alone).
 #[derive(Clone, Debug, Default)]
 pub(super) struct Keep {
     chat: Rect,
@@ -375,7 +383,19 @@ impl Keep {
 
     /// Whether a piece covering `cover` may not be put there.
     pub(super) fn refuses(&self, cover: Rect) -> bool {
-        room::in_chat(self.chat, cover) || self.spaces.iter().any(|s| s.intersects(cover))
+        room::in_chat(self.chat, cover) || self.made_refuses(cover)
+    }
+
+    /// What a makeshift piece may not stand on: her door's space, never
+    /// the chat (the user, 2026-10-09: it lasts one visit, like a carried
+    /// prop, and in the bundled layout all text she could tear is chat
+    /// text).
+    pub(super) fn for_made(&self) -> MadeKeep<'_> {
+        MadeKeep(self)
+    }
+
+    fn made_refuses(&self, cover: Rect) -> bool {
+        self.spaces.iter().any(|s| s.intersects(cover))
     }
 
     /// Whether a placement puts a piece that showed (in `was`, outside
@@ -389,6 +409,19 @@ impl Keep {
                 now.iter()
                     .any(|n| n.item == w.item && n.cover() != w.cover() && self.refuses(n.cover()))
             })
+    }
+}
+
+/// [`Keep`] as a makeshift piece is judged by (see [`Keep::for_made`]):
+/// her door's space, kept or not, and not the chat pane. Its own type, so
+/// a made piece's site can't be handed the whole [`Keep`].
+#[derive(Clone, Copy, Debug)]
+pub(super) struct MadeKeep<'a>(&'a Keep);
+
+impl MadeKeep<'_> {
+    /// Whether a makeshift piece covering `cover` may not stand there.
+    pub(super) fn refuses(self, cover: Rect) -> bool {
+        self.0.made_refuses(cover)
     }
 }
 
@@ -440,6 +473,25 @@ mod tests {
             assert_eq!(at.wall(), None, "{why:?}");
         }
         assert!(!right.bumped());
+    }
+
+    /// A makeshift piece is refused her door's space only (step 6m): the
+    /// chat, which refuses every other piece, is no bar to it.
+    #[test]
+    fn a_made_piece_is_kept_out_of_her_door_space_but_not_the_chat() {
+        let keep = Keep {
+            chat: Rect::new(70, 0, 30, 14),
+            spaces: vec![Rect::new(94, 8, 5, 5)],
+        };
+        let in_chat = Rect::new(72, 8, 9, 5);
+        let in_space = Rect::new(92, 8, 6, 5);
+        let elsewhere = Rect::new(10, 20, 9, 5);
+        assert!(keep.refuses(in_chat));
+        assert!(keep.refuses(in_space));
+        assert!(!keep.refuses(elsewhere));
+        assert!(!keep.for_made().refuses(in_chat));
+        assert!(keep.for_made().refuses(in_space));
+        assert!(!keep.for_made().refuses(elsewhere));
     }
 
     /// Ground with a floor's line on every cell of row `floor`, a plain

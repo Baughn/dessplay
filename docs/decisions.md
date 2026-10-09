@@ -5587,9 +5587,11 @@ a piece that shows into either, nor one whose coming makes her door's
 kept space yield), a stage gift, a repair (nor a piece it pushes along
 newly into either; a piece turned where it stands is no placement), her
 pieces moved off a strip (where they stand and where they're laid out),
-nor a makeshift piece; and no placement pushes a piece that shows (or
-hangs one clear of it) newly into either. A makeshift piece the chat
-pane or her door's space comes to meet falls apart. One predicate
+nor a makeshift piece (its chat half undone on 2026-10-09: see [Makeshift
+pieces may stand in the chat pane](#makeshift-pieces-may-stand-in-the-chat-pane-2026-10-09));
+and no placement pushes a piece that shows (or hangs one clear of it)
+newly into either. A makeshift piece the chat pane or her door's space
+comes to meet falls apart (the chat half undone likewise). One predicate
 (`door::Keep`, built from the frame's `Plan` with its chat) is asked
 once per candidate placement at every site: `refuses` of the piece
 where it's laid out, and `takes_in` of every piece that showed (outside
@@ -5630,8 +5632,8 @@ into the chat; pieces on the strip her pieces moved onto weren't
 judged at all. Each is now judged where the layout puts it, in either
 lane, by the one `takes_in`. Unpacking isn't held back until it would
 be clear (a wait could leave a parcel boxed for good). In the bundled
-layout all text is in the chat pane, so she no longer makes furniture
-of chat text there.
+layout all text is in the chat pane, so she no longer made furniture
+of chat text there (the user then exempted makeshift pieces: below).
 *Rejected:* widening `blocked` (above); a keep-out read inside
 `lay_strip` (it would make a strip's layout depend on the chat and stale
 `relaid`); refusing a delivery whenever her door's space yields (an
@@ -5656,9 +5658,9 @@ only once she's quiet after her arrival line, standing until she is,
 then standing for two frames under `grumbling()`. Lines: "Can't get to
 the door!" (the user's) and "People are talking here…": the user asked
 for "People are talking here..."; written with three dots it is 26
-characters, past a bubble's 24 (`BUBBLE_CHARS`), so the builder used the
-one-glyph narrow ellipsis. **A deviation pending the user** (keep the
-ellipsis, or raise the bubble limit, a design.md rule). **The closet
+characters, past a bubble's 24 (`BUBBLE_CHARS`), so it has the one-glyph
+narrow ellipsis: the user's choice (2026-10-09), over raising the bubble
+limit. **The closet
 for the chat**: a piece in the chat that no room takes is hidden per
 frame in `Home::frame` (Visiting and Away alike), never moved and never
 saved; `room::placements` assigns the pieces in the chat jointly, in
@@ -5738,6 +5740,33 @@ what she can't see); the `"..."` spelling past the bubble limit (pending
 the user, above); a free gap for the closet (above); weighing the
 closet afresh on every move a repair search weighs (17 ms a search with
 five pieces in the chat, against a 1 ms bound).
+
+## Makeshift pieces may stand in the chat pane (2026-10-09)
+
+**Rule:** a makeshift piece (one she makes of torn text) may be made in,
+and may stand in, the chat pane; the chat coming to meet one doesn't
+take it apart. It's still never made in her door's space (kept or not),
+and her door's space coming to meet one still takes it apart. Bought
+pieces, hung decor, parcels, stage gifts, repairs and pieces moved off a
+strip still keep out of the chat. The made-piece sites (`builds`, the
+visiting frame's refusal of a `Make`, `made_stands` at both its callers,
+`tend_made` and the delivery's `seats`) take `door::MadeKeep`, a view of
+the frame's `Keep` (`Keep::for_made`) that refuses her door's space
+only: its own type, so a whole `Keep` can't be handed to them, and no
+call site passes a flag. A made piece stands on no strip, so InChat and
+the per-frame closet never judge or hide it.
+
+**Why:** the user (2026-10-09): *"Allow makeshift in chat."* A made
+piece lasts one visit, like a prop she carries, and in the bundled
+layout all the text she could tear is chat text: step 5's rule (no
+furniture in the chat pane) meant she made nothing there at all (time on
+made pieces on the stage 43% → 24%, its moving 8.0% → 5.6%). The chat
+rule is for what stays (*"the chat pane is what is focused 95% of the
+time"*); a heap of the chat's own shreds that goes with the visit isn't
+that. Her door's space stays refused: she goes out and comes in there.
+*Rejected:* a `Kind` argument or bool on `Keep::refuses` (every call
+site could pass the wrong one); building a `Keep` with an empty chat for
+the made sites (the same bool, hidden in a value).
 
 ## Her open door follows a resize in the frame it's drawn in (2026-10-09)
 

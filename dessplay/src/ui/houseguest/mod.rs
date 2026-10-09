@@ -2309,10 +2309,12 @@ impl Guest {
                 // The place of the piece in her pocket is kept for it.
                 let mut kept = view.protected.clone();
                 kept.extend(visit.ghost);
-                // Her door's space and the chat pane are kept clear of
-                // what she made (door batch, D3).
+                // Her door's space is kept clear of what she made (door
+                // batch, D3); the chat pane isn't (step 6m: makeshift
+                // pieces last a visit, like a carried prop).
                 let keep = door::Keep::of(&self.ledger.home, plan_of(view, buf));
-                tend_made(visit, buf, &kept, &keep, size, now);
+                let keep = keep.for_made();
+                tend_made(visit, buf, &kept, keep, size, now);
                 visit.shown.extend(visit.made.iter().map(|made| made.piece));
                 let gone = |piece: room::PieceRef| !visit.shown.iter().any(|s| s.piece() == piece);
                 let using = visit.osaka.use_span().map(|(seat, ..)| seat.piece);
@@ -2449,7 +2451,7 @@ impl Guest {
                 let swaps = scenes::swaps(buf, &visit.terrain, &holes, &visit.layer);
                 let mut solid = protected.clone();
                 solid.extend(visit.ghost);
-                let builds = builds(buf, visit, &pulls, &solid, &keep);
+                let builds = builds(buf, visit, &pulls, &solid, keep);
                 let borrows = borrows(visit, &pulls);
                 let (lift_at, judged) = arranging(visit);
                 let beauty_here =
@@ -3525,15 +3527,14 @@ fn furnish(
     // terrain, read once, when a delivery first asks (the visit's is
     // last frame's, read after this).
     let fresh: std::cell::RefCell<Option<Terrain>> = std::cell::RefCell::new(None);
-    // What she made stands clear of the chat pane and of her door's
-    // space as the home will be with the delivery in it (D3: a delivery
-    // that moves her door's wall is judged on its new space), as
-    // `tend_made` will judge it.
+    // What she made stands clear of her door's space as the home will be
+    // with the delivery in it (D3: a delivery that moves her door's wall
+    // is judged on its new space), as `tend_made` will judge it (the chat
+    // pane is no bar to it: step 6m).
     let mut kept = view.protected.clone();
     kept.extend(visit.ghost);
     let (makeshift, layer) = (&visit.made, &visit.layer);
     let seats = |piece: &Shown, after: &[Shown], then: &room::Home| {
-        let keep = door::Keep::of(then, plan);
         let mut fresh = fresh.borrow_mut();
         let terrain = fresh.get_or_insert_with(|| {
             // As the visit's is read (`Visit::solid`).
@@ -3541,10 +3542,7 @@ fn furnish(
             solid.extend(runs(layer.cells()));
             Terrain::read(buf, &solid, graphics)
         });
-        let standing = makeshift
-            .iter()
-            .filter(|m| made_stands(m, layer, buf, after, &moved, &kept, &keep))
-            .map(|m| m.piece);
+        let standing = made_standing_then(makeshift, layer, buf, after, &moved, &kept, then, plan);
         let room: Vec<Shown> = after.iter().copied().chain(standing).collect();
         terrain.furnish(room.iter().map(Shown::cover));
         seats_of(piece, &room, terrain, true)
@@ -4050,7 +4048,7 @@ fn tend_made(
     visit: &mut Visit,
     buf: &Buffer,
     protected: &[Rect],
-    keep: &door::Keep,
+    keep: door::MadeKeep<'_>,
     size: (u16, u16),
     now: u64,
 ) {
@@ -4097,9 +4095,10 @@ fn tend_made(
 /// Whether the makeshift piece `made` still stands among the real pieces
 /// `real`: every glyph torn off for it still torn off, and it still fits
 /// where she made it, clear of them, of `moved` text, of anything
-/// `protected`, and of what `keep` keeps clear (the chat pane and her
-/// door's space: one that comes to meet it takes it apart; see
-/// [`tend_made`]; a delivery asks it of the room it would make).
+/// `protected`, and of what `keep` keeps clear (her door's space, kept or
+/// not: one that comes to meet it takes it apart; see [`tend_made`]; a
+/// delivery asks it of the room it would make). The chat pane may come
+/// to meet it: it stands (step 6m).
 fn made_stands(
     made: &Made,
     layer: &layer::TextLayer,
@@ -4107,7 +4106,7 @@ fn made_stands(
     real: &[Shown],
     moved: &std::collections::HashSet<(u16, u16)>,
     protected: &[Rect],
-    keep: &door::Keep,
+    keep: door::MadeKeep<'_>,
 ) -> bool {
     if keep.refuses(made.piece.cover()) {
         return false;
@@ -4121,6 +4120,30 @@ fn made_stands(
             && clear_of_real(real, x, y)
     };
     layer.torn_intact(&made.torn) && room::fits(buf, &made.piece, &clear)
+}
+
+/// Of what she made (`made`), the pieces that stand once a delivery is
+/// in, as [`tend_made`] will judge them then (see [`made_stands`]): among
+/// `after`, the room as it will show, and clear of her door's space as
+/// her home `then` puts it on `plan` (D3: a delivery that moves her
+/// door's wall is judged on its new space; the chat pane is no bar to a
+/// made piece: step 6m). The `seats` a doorstep asks of read this.
+#[allow(clippy::too_many_arguments)]
+fn made_standing_then(
+    made: &[Made],
+    layer: &layer::TextLayer,
+    buf: &Buffer,
+    after: &[Shown],
+    moved: &std::collections::HashSet<(u16, u16)>,
+    protected: &[Rect],
+    then: &room::Home,
+    plan: room::Plan,
+) -> Vec<Shown> {
+    let keep = door::Keep::of(then, plan);
+    made.iter()
+        .filter(|m| made_stands(m, layer, buf, after, moved, protected, keep.for_made()))
+        .map(|m| m.piece)
+        .collect()
 }
 
 /// A makeshift piece `piece` of the glyphs just torn off `row` at
@@ -4194,7 +4217,7 @@ fn builds(
     visit: &Visit,
     pulls: &[scenes::Pull],
     protected: &[Rect],
-    keep: &door::Keep,
+    keep: door::MadeKeep<'_>,
 ) -> Vec<scenes::Build> {
     let wanted: Vec<Furniture> = scrap::MAKES
         .into_iter()
@@ -4213,8 +4236,9 @@ fn builds(
         !protected.iter().any(|r| r.contains((ux, uy).into())) && clear_of_real(&visit.shown, x, y)
     };
     // Where she'd stay once it's made, judged with it in her image: to
-    // crumple it, and then to use it. Never where `keep` keeps clear (the
-    // chat pane and her door's space), once per candidate.
+    // crumple it, and then to use it. Never where `keep` keeps clear (her
+    // door's space; the chat pane may have it: step 6m), once per
+    // candidate.
     let then = |piece: &Shown| {
         if keep.refuses(piece.cover()) {
             return Vec::new();

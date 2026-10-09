@@ -1845,10 +1845,13 @@ this section states what is built.
   a window hung by its share where a space yields counts), and stay
   there; with none, they're all in the closet. **No new piece in the
   chat pane**: nothing of hers is put there — no delivery, stage gift,
-  repair, piece moved off a strip, or makeshift piece, nor a piece any
-  of them pushes along or hangs clear of it — nor in her door's space
-  (kept or not). One check serves every placement, in both modes;
-  unpacking is no placement. A piece already standing in
+  repair, or piece moved off a strip, nor a piece any of them pushes
+  along or hangs clear of it — nor in her door's space (kept or not).
+  One check serves every placement, in both modes; unpacking is no
+  placement. Her makeshift pieces are exempt from the chat half (they
+  last one visit, like a carried prop, and in the bundled layout all
+  text she could tear is chat text), never from her door's space
+  (why: [decisions](decisions.md#makeshift-pieces-may-stand-in-the-chat-pane-2026-10-09)). A piece already standing in
   the chat (an older home, a layout whose panes overlap) is shown where
   it stands, until she moves it out (the felt rule below); turned where
   it stands is no new placement
@@ -2241,11 +2244,15 @@ this section states what is built.
   in shape it's for whatever the real piece is: the sofa for sitting
   on, napping on and watching TV from; the bed, for sleeping in, under
   a blanket of shreds. A heap she let be is offered for finishing.
-  It's never made in the chat pane or her door's space.
+  It's never made in her door's space; it may be made in the chat
+  pane, of the chat's text or any other
+  (why: [decisions](decisions.md#makeshift-pieces-may-stand-in-the-chat-pane-2026-10-09)).
   It lasts for the visit, while every glyph torn
   for it is still torn off (its line unchanged, its pane not protected)
-  and it still fits where she made it, clear of her real furniture, the
-  chat pane and her door's space (one coming to meet it takes it); a
+  and it still fits where she made it, clear of her real furniture and
+  her door's space (one coming to meet it takes it; the chat pane
+  coming to meet it doesn't, and neither InChat nor the closet ever
+  judges it: it stands on no strip); a
   resize, or its pane gaining focus, takes it, and its text goes back
   (raining out of a focused pane). She makes at most one of each a
   visit and doesn't make a second while the first stands. **A real

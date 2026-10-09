@@ -87,6 +87,23 @@ fn bottom_strip(width: u16, height: u16) -> Vec<Rect> {
     vec![Rect::new(0, height - 3, width, 3)]
 }
 
+/// Where her door's space stands on `view` for `guest`'s home, read
+/// independently of `door::space`/`Home::extents`: the raw strip of the
+/// wall `Home::wall` picks (saved, else chosen: that pick is shared with
+/// the code under test) and `room::space_rect` against it. Only when
+/// `door::space_rect` says there is one, and the two must agree.
+fn door_space_of(guest: &Guest, real: &Buffer, view: &IdleView) -> Option<Rect> {
+    let plan = plan_of(view, real);
+    let space = door::space_rect(&guest.ledger.home, plan)?;
+    let wall = guest.ledger.home.wall(plan)?;
+    let would = room::raw_strips(&view.nooks)
+        .into_iter()
+        .find(|(s, _)| *s == wall.strip)
+        .and_then(|(_, e)| room::space_rect(e, wall.side));
+    assert_eq!(Some(space), would, "her door's space read two ways");
+    would
+}
+
 /// Paint one frame over a copy of `real`.
 fn paint(guest: &mut Guest, real: &Buffer, view: &IdleView, now: u64) -> Buffer {
     let mut buf = real.clone();
@@ -771,10 +788,14 @@ proptest! {
     /// [`long_visits_with_the_chat_apart_never_touch_what_is_protected`]
     /// with the chat pane reaching over part of Users ([`chat_over`], as a
     /// custom layout's grid overlaps panes): the one geometry where a new
-    /// placement could land in the chat (T6). Nothing she makes stands in
-    /// it (asserted in [`long_visit_of`]; random text rarely makes a piece
-    /// here: [`long_visits_with_the_chat_over_a_nook_make_pieces`] and
-    /// `tests/away.rs`'s `nothing_is_made_in_the_chat` exercise it).
+    /// placement could land in the chat (T6). What she makes may stand in
+    /// it (step 6m), never in her door's space (asserted in
+    /// [`long_visit_of`]; random text rarely makes a piece here:
+    /// [`long_visits_with_the_chat_over_a_nook_make_pieces`] shows pieces
+    /// are made on this geometry, and `tests/away.rs`'s
+    /// `she_makes_furniture_from_chat_text` that they're made of chat
+    /// text; the space's own cases are `tests/away.rs`'s
+    /// `she_never_makes_a_piece_in_her_door_space` and its neighbours).
     #[test]
     fn long_visits_with_the_chat_over_a_nook_never_touch_what_is_protected(
         seed in any::<u64>(),
@@ -815,9 +836,11 @@ proptest! {
 /// [`long_visits_with_the_chat_over_a_nook_never_touch_what_is_protected`]'s
 /// non-vacuity companion: on [`chat_over`] with whole lines of text
 /// across Users (from the chat's part of it into hers), cued to make a
-/// sofa, she makes pieces that stand (`made > 0`), so its assertion
-/// that none meets the chat is exercised, in both modes. (Telling a
-/// chat-less keep apart is `tests/away.rs`'s `nothing_is_made_in_the_chat`.)
+/// sofa, she makes pieces that stand (`made > 0`), in both modes: its
+/// per-piece assertions run on something. (Nothing here shows a piece
+/// made near her door's space; that's `tests/away.rs`'s
+/// `she_never_makes_a_piece_in_her_door_space`. That she makes pieces
+/// of chat text at all is its `she_makes_furniture_from_chat_text`.)
 #[test]
 fn long_visits_with_the_chat_over_a_nook_make_pieces() {
     let line = "the quick brown fox jumps over";
@@ -1154,17 +1177,20 @@ fn long_visit_of(
                     visited.visiting += 1;
                     let pose = visit.osaka.appearance(now).0;
                     visited.poses.insert(std::mem::discriminant(&pose));
-                    // Nothing she makes stands in the chat pane (door
-                    // batch, step 5: no new placement there; a piece of
-                    // hers already standing in an overlapping layout may,
-                    // until step 6's rule moves it).
+                    // Nothing she makes stands in her door's space (door
+                    // batch, D3; kept or not). The chat pane is no bar to
+                    // a makeshift piece (step 6m: the user's "Allow
+                    // makeshift in chat"). The space is read off the raw
+                    // strip as well as `door::space` reads it, and the
+                    // two must agree (see `door_space_of`).
+                    let space = door_space_of(&guest, &real, &view);
                     for made in &visit.made {
                         prop_assert!(
-                            !room::in_chat(view.chat, made.piece.cover()),
-                            "{now}: her makeshift {:?} {:?} in the chat {:?}",
+                            space.is_none_or(|s| !s.intersects(made.piece.cover())),
+                            "{now}: her makeshift {:?} {:?} in her door's space {:?}",
                             made.piece.item,
                             made.piece.cover(),
-                            view.chat
+                            space
                         );
                         visited.made += 1;
                     }
@@ -4440,20 +4466,10 @@ fn her_night_on_each_surface_is_one_act_until_she_wakes() {
     use super::script::{ScriptId, Surface};
     use super::sprite::Pose;
     let homely = home_screen();
-    // The bundled layout, its text to make a bed of: all of it in its
-    // chat pane, where she makes nothing (door batch, step 5), so here
-    // that pane is no chat (only her night is under test).
+    // The bundled layout, its text (all of it in its chat pane) to make
+    // a bed of.
     let mut ui = stage_ui();
-    let wordy = {
-        let (real, view) = real_frame(&mut ui, 100, 30);
-        (
-            real,
-            IdleView {
-                chat: Rect::default(),
-                ..view
-            },
-        )
-    };
+    let wordy = real_frame(&mut ui, 100, 30);
     for graphics in [false, true] {
         for (surface, made, pieces, (real, view)) in [
             (
@@ -9081,14 +9097,7 @@ fn she_tears_wide_glyphs_whole() {
         for scene in [Scene::MakeSofa, Scene::MakeBed] {
             let at = format!("{scene:?} graphics={graphics}");
             let mut ui = chat_ui((0..40).map(|i| LINES[i % LINES.len()].to_string()));
-            // Its lines are in its chat pane, where she makes nothing
-            // (door batch, step 5): that pane is no chat here (only her
-            // tearing is under test).
             let (real, view) = real_frame(&mut ui, 100, 30);
-            let view = IdleView {
-                chat: Rect::default(),
-                ..view
-            };
             let mut guest = Guest::new(2);
             if graphics {
                 guest.set_picker(kitty());
@@ -10295,9 +10304,8 @@ fn her_decisions_explain_themselves() {
     guest.cue(Scene::Arrive);
     paint(&mut guest, &real, &view, 0);
     let mut now = 0;
-    // Long enough for a score of decisions however still she is (she
-    // makes nothing of the chat pane's text: door batch, step 5).
-    while now < 420_000 {
+    // Long enough for a score of decisions however still she is.
+    while now < 360_000 {
         now += guest
             .next_tick(now)
             .map_or(1000, |d| d.as_millis() as u64)

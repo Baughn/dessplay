@@ -645,9 +645,9 @@ fn nothing_is_made_under_her_window() {
             gap: 0,
         };
         let keep = door::Keep::default();
-        let bare = builds(&real, visit, &[pull(40)], &[], &keep);
+        let bare = builds(&real, visit, &[pull(40)], &[], keep.for_made());
         assert!(!bare.is_empty(), "{at}: a piece from bare floor");
-        let under = builds(&real, visit, &[pull(window.left + 1)], &[], &keep);
+        let under = builds(&real, visit, &[pull(window.left + 1)], &[], keep.for_made());
         assert!(
             under.is_empty(),
             "{at}: made under {window:?}: {:?}",

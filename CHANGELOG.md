@@ -13,8 +13,9 @@ Add new days at the top. Add new entries at the bottom of existing days.
 
 - Changed: Osaka leaves for work through her door too; she no longer
   walks off the screen's edge.
-- Changed: Osaka no longer builds furniture out of chat text in the chat
-  pane.
+- Changed: new furniture of Osaka's is never put in the chat pane (what
+  she builds out of text may still stand there, but never in her door's
+  way).
 - Added: Osaka moves furniture out of her door's way, or out of the chat
   pane, herself ("Can't get to the door!").
 - Fixed: resizing the terminal while Osaka's door stands open no longer

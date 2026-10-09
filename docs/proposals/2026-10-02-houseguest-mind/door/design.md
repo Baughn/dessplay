@@ -380,6 +380,12 @@ and the carried piece's `ghost` (mod.rs:3403). Every caller builds them with one
   last beat is it left. `opened_door` returns the act's Home door in every beat, so `door_through` is always read
   from the act's own spot. An act's door equal to the frame's own (`chances.door`, focus and all) is never moved:
   following the ungated read would hop a door opened beside a focused pane into it.
+- **Step 6m amendment (2026-10-09, the user's third-round answer; overrides D3 and step 5 for makeshift pieces):**
+  makeshift pieces are exempt from the chat rule: made, and left standing, in the chat pane; the chat coming to meet
+  one doesn't take it apart. Never in her door's space (kept or not); the space coming to meet one still does. The
+  made sites (`builds`, the visiting frame's `Make` refusal, `made_stands` via `tend_made` and the delivery's
+  `seats`) take `door::MadeKeep` (`Keep::for_made()`: the spaces only), a distinct type. Goldens: the stage and
+  resident traces step 5 moved are byte-identical to step 4b's again.
 
 **School** (`go_out` osaka.rs:5266, from `choose_next` 7371):
 - First entry (`set_off.is_none()`): say `LATE`/`OFF`, set `set_off = Some(why)`, log info with the spot. Face the
@@ -991,7 +997,7 @@ and `a_crowded_edge_strip_keeps_her_door_and_breaks_door_clear` (step 2's M5 cla
 in-sight frame (InChat) or once bumped (DoorClear: `Osaka::bumped`, set at `there`, after she's first in sight in
 the doorway), not only the first. Not quiet yet, she stands until she is (said at a later decision she could be
 off on something long). The InChat line is `"People are talking here…"` (narrow ellipsis: 26 characters with
-dots, past `BUBBLE_CHARS` 24): **a deviation pending the user** (keep it, or raise the limit). A space yielding for
+dots, past `BUBBLE_CHARS` 24): the user's choice (2026-10-09; was a deviation pending the user). A space yielding for
 a hung piece with nothing in it blames nothing; a window in a yielded space is blamed like any piece. Goldens
 byte-identical.
 **After review (2026-10-09):** `stranded(home, laid, chat)` (D7's `home` back: anchors for packing). The closet

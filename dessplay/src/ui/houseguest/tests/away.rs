@@ -2584,11 +2584,17 @@ fn a_scrap_in_her_door_space_makes_it_fall_back() {
             glyphs: "Tab Next pane | Enter Send".to_owned(),
             gap: 0,
         };
-        let middle = builds(&real, visit, &[pull(80)], &[], &keep);
+        let middle = builds(&real, visit, &[pull(80)], &[], keep.for_made());
         assert!(!middle.is_empty(), "{at}: a piece mid-strip");
-        let free = builds(&real, visit, &[pull(95)], &[], &door::Keep::default());
+        let free = builds(
+            &real,
+            visit,
+            &[pull(95)],
+            &[],
+            door::Keep::default().for_made(),
+        );
         assert!(!free.is_empty(), "{at}: one in the space, nothing kept");
-        let kept = builds(&real, visit, &[pull(95)], &[], &keep);
+        let kept = builds(&real, visit, &[pull(95)], &[], keep.for_made());
         assert!(
             kept.is_empty(),
             "{at}: made in her door's space: {:?}",
@@ -2652,7 +2658,13 @@ fn she_never_makes_a_piece_in_her_door_space() {
         let mut solid = view.protected.clone();
         solid.extend(visit.shown.iter().map(Shown::cover));
         let pulls = scenes::pulls(&real, &visit.terrain, &solid);
-        let offered = builds(&real, visit, &pulls, &solid, &door::Keep::default());
+        let offered = builds(
+            &real,
+            visit,
+            &pulls,
+            &solid,
+            door::Keep::default().for_made(),
+        );
         assert!(
             offered
                 .iter()
@@ -3995,7 +4007,8 @@ fn a_lamp_in_the_space_is_bumped_into_coming_home_from_work() {
     }
 }
 
-// ---- No furniture in the chat pane (door batch, step 5) ----
+// ---- No furniture in the chat pane (door batch, step 5), but her
+// makeshift pieces may stand there (step 6m) ----
 
 /// [`by_playlists_right_wall`] with the chat pane laid over Playlist's
 /// right end (columns 90..=99, a custom layout's grid overlapping it),
@@ -4003,6 +4016,16 @@ fn a_lamp_in_the_space_is_bumped_into_coming_home_from_work() {
 fn chat_by_playlists_right_wall() -> (Buffer, IdleView, Rect) {
     let (real, mut view, _) = by_playlists_right_wall();
     let chat = Rect::new(90, 13, 10, 14);
+    view.chat = chat;
+    (real, view, chat)
+}
+
+/// [`by_playlists_right_wall`] with the chat pane laid over Playlist's
+/// right half, its one line of text and all (columns 78..=99): as in the
+/// bundled layout, the only text she could tear is chat text.
+fn chat_text_by_playlists_right_wall() -> (Buffer, IdleView, Rect) {
+    let (real, mut view, _) = by_playlists_right_wall();
+    let chat = Rect::new(78, 13, 22, 14);
     view.chat = chat;
     (real, view, chat)
 }
@@ -4017,15 +4040,21 @@ fn made_in_chat(guest: &Guest, chat: Rect) -> Vec<Rect> {
         .collect()
 }
 
-/// She never makes a piece in the chat pane (D3; the user: "no furniture
-/// in the chat pane"), cued to make a sofa where the only sofa she could
-/// make would stand in it: the cue finds no room, and nothing she makes
-/// meets the chat. (With nothing kept out, that sofa is on offer:
-/// asserted.) Through the visiting frame, so its own keep-out is what
-/// keeps it out (step 3's left the chat out).
+/// She makes furniture of chat text, and it may stand in the chat pane
+/// (the user, 2026-10-09: "Allow makeshift in chat": it lasts one visit,
+/// like a carried prop): cued to make a sofa where the only text she
+/// could tear is in the chat, she makes one there, and it stands, its
+/// text torn off and drawn as hers (the chat pane's closet never hides
+/// one: by construction, InChat and the closet read only the home's laid
+/// pieces, and a made piece has no strip and a scrap). Her door's space
+/// still refuses one: here it's on Users' right wall, far from the
+/// text, so the per-frame check is only a guard; the space's own cases
+/// are [`she_never_makes_a_piece_in_her_door_space`] and
+/// [`a_scrap_in_her_door_space_makes_it_fall_back`]. Through the
+/// visiting frame.
 #[test]
-fn nothing_is_made_in_the_chat() {
-    let (real, view, chat) = chat_by_playlists_right_wall();
+fn she_makes_furniture_from_chat_text() {
+    let (real, view, chat) = chat_text_by_playlists_right_wall();
     for graphics in [false, true] {
         let at = format!("graphics={graphics}");
         let mut guest = home_at(
@@ -4037,40 +4066,55 @@ fn nothing_is_made_in_the_chat() {
         let mut now = until_visiting(&mut guest, &real, &view, 0);
         paint(&mut guest, &real, &view, now);
         assert_ne!(guest.ledger.home.door, Some(PLAYLIST_RIGHT), "{at}");
-        let visit = visit_of(&guest);
-        let mut solid = view.protected.clone();
-        solid.extend(visit.shown.iter().map(Shown::cover));
-        let pulls = scenes::pulls(&real, &visit.terrain, &solid);
-        let offered = builds(&real, visit, &pulls, &solid, &door::Keep::default());
-        assert!(
-            offered
-                .iter()
-                .any(|b| b.piece.item == Furniture::Sofa && room::in_chat(chat, b.piece.cover())),
-            "{at}: a sofa on offer in the chat"
-        );
         guest.cue(Scene::MakeSofa);
         let end = now + 30_000;
-        while now < end {
+        let mut made = false;
+        while now < end && !made {
             shell_step(&mut guest, &real, &view, &mut now, true);
-            assert!(
-                made_in_chat(&guest, chat).is_empty(),
-                "{at}: made in the chat at {now}"
-            );
+            let space = door_space_of(&guest, &real, &view);
+            for m in &visit_of(&guest).made {
+                assert!(
+                    space.is_none_or(|s| !s.intersects(m.piece.cover())),
+                    "{at}: made {:?} in her door's space {space:?} at {now}",
+                    m.piece.cover()
+                );
+            }
+            made = !made_in_chat(&guest, chat).is_empty();
         }
         assert!(
-            matches!(guest.cue_note(), Some(Err(_))),
+            matches!(guest.cue_note(), Some(Ok(_))),
             "{at}: {:?}",
             guest.cue_note()
         );
+        assert!(made, "{at}: nothing made in the chat");
+        // It stands: on later frames it's still there, its text still
+        // torn off its line.
+        for _ in 0..20 {
+            shell_step(&mut guest, &real, &view, &mut now, true);
+        }
+        let frame = paint(&mut guest, &real, &view, now);
+        let standing = visit_of(&guest)
+            .made
+            .iter()
+            .filter(|m| room::in_chat(chat, m.piece.cover()))
+            .collect::<Vec<_>>();
+        assert!(!standing.is_empty(), "{at}: it fell apart in the chat");
+        for m in standing {
+            for &(x, y) in &m.torn {
+                assert_ne!(frame[(x, y)], real[(x, y)], "{at}: {:?} torn off", (x, y));
+            }
+        }
     }
 }
 
-/// A made piece the chat pane comes to meet falls apart (D3's symmetric
-/// path): her sofa of text by Playlist's right wall, then the chat laid
-/// over it (a layout changed under her): at the next frame it's gone,
-/// its text back in its line.
+/// A made piece the chat pane comes to meet stands (D3 as amended by
+/// the user, 2026-10-09: makeshift pieces may stand in the chat): her
+/// sofa of text by Playlist's right wall, then the chat laid over it (a
+/// layout changed under her): at the next frame it still stands, its
+/// text still torn off. (Her door's space coming to meet one is
+/// [`a_made_piece_her_door_space_comes_to_meet_falls_apart`].)
 #[test]
-fn a_made_piece_the_chat_comes_to_meet_falls_apart() {
+fn a_made_piece_the_chat_comes_to_meet_stands() {
     for graphics in [false, true] {
         let at = format!("graphics={graphics}");
         let (mut guest, mut now, real, view, _) = made_by_playlists_right_wall(graphics);
@@ -4088,15 +4132,71 @@ fn a_made_piece_the_chat_comes_to_meet_falls_apart() {
         now += 100;
         guest.advance(now);
         paint(&mut guest, &real, &chatted, now);
-        assert!(
-            visit_of(&guest).made.is_empty(),
-            "{at}: it fell apart: {:?}",
+        assert_eq!(
+            made_in_chat(&guest, chat).len(),
+            1,
+            "{at}: it stands in the chat: {:?}",
             visit_of(&guest).made
         );
         let frame = paint(&mut guest, &real, &chatted, now);
         for &(x, y) in &torn {
-            assert_eq!(frame[(x, y)], real[(x, y)], "{at}: {:?} back", (x, y));
+            assert_ne!(frame[(x, y)], real[(x, y)], "{at}: {:?} torn off", (x, y));
         }
+    }
+}
+
+/// What she made stands, for a delivery's `seats`, as the home will be
+/// once the parcel is in (`made_standing_then`): one in the chat pane
+/// still stands (step 6m: the chat is no bar to it), and one the
+/// delivery's new door space would meet doesn't (D3: judged on the new
+/// space, not this frame's). Her sofa of text by Playlist's right wall,
+/// her door on Users': the chat laid over it, then her home as a
+/// delivery that put her door on Playlist's right wall would leave it.
+/// (End to end through a doorstep this can't be told apart: a parcel's
+/// box never meets a made piece's torn cells, `blocked` refuses them.)
+#[test]
+fn a_delivery_judges_what_she_made_on_its_new_door_space_not_the_chat() {
+    for graphics in [false, true] {
+        let at = format!("graphics={graphics}");
+        let (guest, _, real, view, space) = made_by_playlists_right_wall(graphics);
+        let visit = visit_of(&guest);
+        let [made] = visit.made.as_slice() else {
+            panic!("{at}: one piece");
+        };
+        assert!(made.piece.cover().intersects(space), "{at}: by the wall");
+        let (_, chatted, chat) = chat_by_playlists_right_wall();
+        assert!(
+            room::in_chat(chat, made.piece.cover()),
+            "{at}: under the chat"
+        );
+        let moved: std::collections::HashSet<(u16, u16)> = visit.layer.cells().collect();
+        let home = &guest.ledger.home;
+        let standing = |then: &room::Home, view: &IdleView| {
+            made_standing_then(
+                &visit.made,
+                &visit.layer,
+                &real,
+                &visit.shown,
+                &moved,
+                &view.protected,
+                then,
+                plan_of(view, &real),
+            )
+        };
+        assert_eq!(
+            standing(home, &chatted),
+            vec![made.piece],
+            "{at}: it stands in the chat"
+        );
+        let moved_door = room::Home {
+            door: Some(PLAYLIST_RIGHT),
+            ..home.clone()
+        };
+        assert_eq!(standing(home, &view), vec![made.piece], "{at}: it stands");
+        assert!(
+            standing(&moved_door, &view).is_empty(),
+            "{at}: her door's new space takes it"
+        );
     }
 }
 
