@@ -371,6 +371,15 @@ and the carried piece's `ghost` (mod.rs:3403). Every caller builds them with one
   `choose_next` on any decision outside the Away slot (plus `errand`, `place`). `Osaka::on_her_way_out()` (latch,
   `leaving`, a Leave walk/heading, a `Then::Out` walk) gates `awake`, so nothing is delivered on her way out.
   `leave_by(why)` is the one mapping from `Leave` to gap and `leaving`/`returning` (`start_job`, `out_at_feet`).
+- **Step 6d amendment (2026-10-09; overrides the above where they differ):** `door_follows` runs from the Visiting
+  paint as it reads her door (`door`, `door_through`), before recheck/evict/draw, as well as from `take_in`: the
+  tick reads the previous paint's chances, so a resize left an open door at the old frame's spot for one drawn
+  frame. It follows in every beat, and since the door is drawn at her feet (`Door::of`) she moves with it in every
+  beat: before the gap at the spot facing `fresh.out()` (as `through_her_door` stood her; never bumped), in the gap
+  feet only (out of sight), in the `there` beats by `out_of` (facing `into_room()`, bumped if pushed). Only after the
+  last beat is it left. `opened_door` returns the act's Home door in every beat, so `door_through` is always read
+  from the act's own spot. An act's door equal to the frame's own (`chances.door`, focus and all) is never moved:
+  following the ungated read would hop a door opened beside a focused pane into it.
 
 **School** (`go_out` osaka.rs:5266, from `choose_next` 7371):
 - First entry (`set_off.is_none()`): say `LATE`/`OFF`, set `set_off = Some(why)`, log info with the spot. Face the

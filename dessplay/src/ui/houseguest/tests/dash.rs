@@ -1324,6 +1324,75 @@ proptest! {
     }
 }
 
+/// [`a_dash_home_never_touches_what_is_protected`]'s draw pinned (door
+/// batch, step 6d): a resize (73 to 90 wide) while her door stands open
+/// at her right wall's space. Before the fix the open door kept the old
+/// frame's wall spot, which the wider frame's laid pieces covered (her
+/// open door on her bed).
+#[test]
+fn a_resize_while_her_door_is_open_moves_it_off_her_pieces() {
+    let owned = [
+        (Furniture::Bed, 1, 120, false),
+        (Furniture::Sofa, 1, 116, true),
+        (Furniture::Fridge, 2, 153, false),
+    ];
+    for graphics in [false, true] {
+        let mut guest = Guest::restore(Ledger::new_at(0, before_a_dash(0, 1)));
+        guest.set_date(date(2026, 6, 17));
+        long_visit_of(
+            guest,
+            graphics,
+            rooms_frame,
+            &[(73, 20), (90, 18)],
+            &[],
+            &[],
+            &[],
+            (0, 0, 1, 1),
+            &owned,
+            Run::default(),
+            120_000,
+        )
+        .unwrap_or_else(|e| panic!("graphics {graphics}: {e}"));
+    }
+}
+
+/// [`a_resize_while_her_door_is_open_moves_it_off_her_pieces`]'s dash,
+/// the resize landing as she comes in by her door (its far beats, door
+/// batch step 6d): the door she's in the doorway of moves to where the
+/// wider frame stands it, and she with it. Left at the narrower frame's
+/// wall it stood on her bed, as laid in the wider one. Its first frame
+/// at the new size is checked by [`long_visit_of`] as every frame is:
+/// her door drawn at the act's spot, on none of her pieces.
+#[test]
+fn a_resize_as_she_comes_in_by_her_door_moves_her_with_it() {
+    let owned = [
+        (Furniture::Bed, 1, 120, false),
+        (Furniture::Sofa, 1, 116, true),
+        (Furniture::Fridge, 2, 153, false),
+    ];
+    for graphics in [false, true] {
+        let mut guest = Guest::restore(Ledger::new_at(0, before_a_dash(0, 1)));
+        guest.set_date(date(2026, 6, 17));
+        long_visit_of(
+            guest,
+            graphics,
+            rooms_frame,
+            &[(73, 20), (90, 18)],
+            &[],
+            &[],
+            &[],
+            (0, 0, 1, 1),
+            &owned,
+            Run {
+                next_size_when: Some(coming_in),
+                ..Run::default()
+            },
+            120_000,
+        )
+        .unwrap_or_else(|e| panic!("graphics {graphics}: {e}"));
+    }
+}
+
 /// An overlay coming up on the paint she'd dash home on (her dash
 /// decided at the tick before), her home standing empty: the dash is
 /// off, and her home rains out, never just vanishing.

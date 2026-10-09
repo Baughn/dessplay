@@ -2896,17 +2896,34 @@ impl Osaka {
         self.beauty_here = chances.beauty_here;
         self.clock_on = chances.clock;
         self.rising = self.rising_in(chances);
-        self.door_follows(chances, now);
+        self.door_follows(chances.door, chances.door_through, now);
     }
 
-    /// Her external door, opened and not yet let her out at its far side
-    /// (`there`), follows where the frame stands it now (door batch D6,
-    /// C5, M8; `chances.door_through`): a resize mid-gap and she comes
-    /// back out where it stands. A focused pane over it is never a
+    /// Her external door, opened and not yet done with (its last beat
+    /// not over), follows where the frame stands it now (door batch D6,
+    /// C5, M8; `through`, the frame's door read without the focused
+    /// pane, from the opened door's spot): a resize mid-gap and she
+    /// comes back out where it stands. A focused pane over it is never a
     /// reason to move it (that door is read without the focus; the act
     /// keeps its spot and [`Osaka::evict`] handles the focus). With no
     /// door anywhere now, it's a door in space at her feet: a door at a
     /// stale spot can't be represented.
+    ///
+    /// Her door is drawn at her feet (`Door::of`), so in every beat it's
+    /// shown she moves with it (door batch, step 6d: a resize as it stood
+    /// open left it drawn where her pieces now stand). On its near side
+    /// (going out) she stands at it facing out of the room, as
+    /// [`Osaka::through_her_door`] stood her; let out at its far side
+    /// (its `there` beats, her coming in and the door closing behind
+    /// her) she's out of it into the room ([`Osaka::out_of`]: facing in,
+    /// and bumped if its space is filled). In the gap between (nothing
+    /// drawn) she's out of sight; her feet go with it all the same, so a
+    /// door gone then is a door in space where it last stood.
+    ///
+    /// Called by the frame as it reads her door (`seen`, and `through`,
+    /// read without the focused pane), so nothing drawn or judged that
+    /// frame sees the door where it stood before a resize; and again by
+    /// her tick (`take_in`: the same chances, a no-op then).
     ///
     /// Out at work by a door in space (a focused pane moved her door's
     /// far side, or there was no door of hers to go to; door batch M10):
@@ -2916,29 +2933,31 @@ impl Osaka {
     /// step 4b review). Only a shift's door (its gap above 0): a hop
     /// between floors on her way there, or an errand's door, is never
     /// one.
-    fn door_follows(&mut self, chances: &Chances, now: u64) {
+    pub(super) fn door_follows(
+        &mut self,
+        seen: Option<DoorSpot>,
+        through: Option<DoorSpot>,
+        now: u64,
+    ) {
         let (x, y) = (self.x, self.y);
         let at_work = self.shift == Some(Shift::Out);
         let Act::Door { since, to, gap } = &mut self.act else {
             return;
         };
-        let beat = door_beat(now.saturating_sub(*since), *gap);
-        let there = beat.is_none_or(|(beat, _)| beat.there);
-        if there {
+        let Some((beat, _)) = door_beat(now.saturating_sub(*since), *gap) else {
             return;
-        }
+        };
+        let there = beat.there;
         let door = match *to {
             Through::Home(door) => door,
             Through::Space(spot) => {
-                let out = beat.is_some_and(|(beat, _)| beat.door.is_none());
+                let out = !there && beat.door.is_none();
                 // Only where the frame stands her door as it is seen: a
                 // focused pane over it (the door she'd come through, read
                 // with the focus unprotected, isn't the frame's) keeps
                 // her coming home where she went, clear of the focus.
-                let seen = chances.door == chances.door_through;
-                if let Some(fresh) = chances
-                    .door_through
-                    .filter(|_| at_work && *gap > 0 && out && seen)
+                if let Some(fresh) =
+                    through.filter(|_| at_work && *gap > 0 && out && seen == through)
                 {
                     tracing::debug!(from = ?spot, to = ?fresh.spot(), "houseguest: home from work by her door");
                     *to = Through::Home(fresh);
@@ -2946,31 +2965,45 @@ impl Osaka {
                 return;
             }
         };
-        match chances.door_through {
+        // Where the frame stands her door now, focus and all: not stale.
+        // Read without the focus it may stand elsewhere (in its space,
+        // under the focused pane she opened it beside), but a focused
+        // pane is never a reason to move it.
+        if seen == Some(door) {
+            return;
+        }
+        match through {
             Some(fresh) if fresh != door => {
-                tracing::debug!(from = ?door.spot(), to = ?fresh.spot(), "houseguest: her door moved while she's through it");
+                tracing::debug!(from = ?door.spot(), to = ?fresh.spot(), there, "houseguest: her door moved while she's through it");
                 *to = Through::Home(fresh);
+                if there {
+                    self.out_of(Through::Home(fresh));
+                } else {
+                    (self.x, self.y) = fresh.spot();
+                    self.facing = fresh.out();
+                }
             }
             Some(_) => {}
             None => {
-                tracing::debug!(from = ?door.spot(), "houseguest: her door's gone while she's through it");
+                tracing::debug!(from = ?door.spot(), there, "houseguest: her door's gone while she's through it");
                 *to = Through::Space((x, y));
             }
         }
     }
 
-    /// The door of hers she's through, opened and not yet let her out
-    /// at its far side (`now`): what the frame reads her door from for
-    /// `Chances::door_through`.
+    /// The door of hers she's through at `now`, in any of its beats
+    /// (going out, out of sight, or coming back in by it): what the frame
+    /// reads her door from for `Chances::door_through`, so the door that
+    /// [`Osaka::door_follows`] moves is always read from its own spot
+    /// (D6), never from the frame's last door. `None` once its last beat
+    /// is over.
     pub fn opened_door(&self, now: u64) -> Option<DoorSpot> {
         match self.act {
             Act::Door {
                 since,
                 to: Through::Home(door),
                 gap,
-            } if door_beat(now.saturating_sub(since), gap).is_some_and(|(beat, _)| !beat.there) => {
-                Some(door)
-            }
+            } if door_beat(now.saturating_sub(since), gap).is_some() => Some(door),
             _ => None,
         }
     }
@@ -3931,6 +3964,24 @@ impl Osaka {
             } if (self.x, self.y) == door.spot()
                 && door_beat(now.saturating_sub(since), gap)
                     .is_some_and(|(beat, _)| !beat.there) =>
+            {
+                Some(door)
+            }
+            _ => None,
+        }
+    }
+
+    /// Her own door, if she's coming in by it at `now`: let out at its
+    /// far side (its `there` beats), the door shown, the act's door hers.
+    #[cfg(test)]
+    pub fn in_by_her_door(&self, now: u64) -> Option<DoorSpot> {
+        match self.act {
+            Act::Door {
+                since,
+                to: Through::Home(door),
+                gap,
+            } if door_beat(now.saturating_sub(since), gap)
+                .is_some_and(|(beat, _)| beat.there && beat.door.is_some()) =>
             {
                 Some(door)
             }
@@ -13016,8 +13067,12 @@ mod tests {
     /// feet; moved, it follows (`Chances::door_through`: the frame's door
     /// read without the focused pane, so a focus never moves it; see
     /// door.rs `a_focused_pane_never_moves_the_door_read_ungated`); the
-    /// frame's own door is not what it reads. Once she's out at its far
-    /// side it's left.
+    /// frame's own door is not what it reads. It's drawn at her feet, so
+    /// in every beat she moves with it (step 6d): facing out on its near
+    /// side, into the room (and bumped, once, by a door pushed out of its
+    /// space) at its far side; its last beat over, it's left. The frame
+    /// calls it directly as it reads her door, as her tick does through
+    /// `take_in`.
     #[test]
     fn her_door_mid_gap_follows_the_frame() {
         use super::super::door::{Fallback, Set};
@@ -13048,18 +13103,98 @@ mod tests {
             };
             osaka.take_in(&chances, mid);
             assert_eq!(osaka.through(), Some(want), "{through:?}");
+            // Out of sight in the gap, her feet go with it.
+            assert_eq!((osaka.x, osaka.y), want.spot(), "{through:?}");
         }
-        // At its far side already: left as it is.
+        // On its near side, the door drawn at her feet as it opens (her
+        // in its doorway, then gone through it): she stands at it where
+        // it stands now, facing out of the room by it, never bumped (the
+        // frame calls it directly, as it reads her door).
+        let pushed = DoorSpot::at(32, 10, Set::Floor(Fallback::Yield));
+        assert!(pushed.bumped());
+        for near in [100, 1_700] {
+            assert!(door_beat(near, 5_000).is_some_and(|(b, _)| !b.there && b.door.is_some()));
+            for fresh in [moved, pushed] {
+                let mut osaka = Osaka::standing_at(20, 10, 0, &mut rng);
+                open(&mut osaka, door);
+                osaka.facing = door.out();
+                assert_eq!(osaka.opened_door(near), Some(door));
+                osaka.door_follows(Some(fresh), Some(fresh), near);
+                assert_eq!(osaka.through(), Some(Through::Home(fresh)), "{near}");
+                assert_eq!((osaka.x, osaka.y), fresh.spot(), "{near}");
+                assert_eq!(osaka.facing, fresh.out(), "{near}");
+                assert!(!osaka.bumped(), "{near}");
+            }
+        }
+        // Opened beside a focused pane, where the frame stands it with
+        // the focus: read without the focus it would stand in its space,
+        // under the pane, but the focus never moves it (step 6d: the
+        // frame follows the door the same frame it opens).
+        let beside = DoorSpot::at(14, 10, Set::Floor(Fallback::Protected));
+        let mut osaka = Osaka::standing_at(14, 10, 0, &mut rng);
+        open(&mut osaka, beside);
+        let chances = Chances {
+            door: Some(beside),
+            door_through: Some(door),
+            ..Chances::default()
+        };
+        osaka.take_in(&chances, mid);
+        assert_eq!(osaka.through(), Some(Through::Home(beside)));
+        // At its far side already, coming in by it: she's in its
+        // doorway, so she moves with it (door batch, step 6d); with no
+        // door now, it's a door in space where she stands.
+        // Both with her out of sight behind it (its first far beats) and
+        // with her in its doorway.
+        for there in [
+            DOOR_THROUGH_MS + 5_000 + 10,
+            DOOR_THROUGH_MS + 5_000 + 1_100,
+        ] {
+            let her = door_beat(there, 5_000).map(|(b, _)| (b.there, b.her));
+            assert!(matches!(her, Some((true, _))), "{there}");
+            for (through, want, feet) in [
+                (Some(moved), Through::Home(moved), (30, 10)),
+                (Some(door), Through::Home(door), (20, 10)),
+                (None, Through::Space((20, 10)), (20, 10)),
+            ] {
+                let mut osaka = Osaka::standing_at(20, 10, 0, &mut rng);
+                open(&mut osaka, door);
+                assert_eq!(osaka.opened_door(there), Some(door));
+                let chances = Chances {
+                    door: through,
+                    door_through: through,
+                    ..Chances::default()
+                };
+                osaka.take_in(&chances, there);
+                assert_eq!(osaka.through(), Some(want), "{her:?}, {through:?}");
+                assert_eq!((osaka.x, osaka.y), feet, "{her:?}, {through:?}");
+                if want == Through::Home(moved) {
+                    assert_eq!(osaka.facing, want.into_room(), "{her:?}, {through:?}");
+                }
+                assert!(!osaka.bumped(), "{her:?}, {through:?}");
+            }
+            // Moved to a spot her pieces pushed it to: she bumped into
+            // what fills its space, once; moved on again, still once.
+            let mut osaka = Osaka::standing_at(20, 10, 0, &mut rng);
+            open(&mut osaka, door);
+            osaka.door_follows(Some(pushed), Some(pushed), there);
+            assert_eq!(osaka.through(), Some(Through::Home(pushed)), "{her:?}");
+            assert_eq!((osaka.x, osaka.y), pushed.spot(), "{her:?}");
+            assert!(osaka.bumped(), "{her:?}");
+            let further = DoorSpot::at(34, 10, Set::Floor(Fallback::Yield));
+            osaka.door_follows(Some(further), Some(further), there);
+            assert_eq!((osaka.x, osaka.y), further.spot(), "{her:?}");
+            assert!(osaka.bumped(), "{her:?}");
+        }
+        // Its last beat over: nothing to follow.
         let mut osaka = Osaka::standing_at(20, 10, 0, &mut rng);
         open(&mut osaka, door);
-        let there = DOOR_THROUGH_MS + 5_000 + 10;
-        assert_eq!(osaka.opened_door(there), None);
+        let done = DOOR_THROUGH_MS + 5_000 + 60_000;
         let chances = Chances {
             door: Some(moved),
             door_through: Some(moved),
             ..Chances::default()
         };
-        osaka.take_in(&chances, there);
+        osaka.take_in(&chances, done);
         assert_eq!(osaka.through(), Some(Through::Home(door)));
     }
 

@@ -5739,6 +5739,47 @@ the user, above); a free gap for the closet (above); weighing the
 closet afresh on every move a repair search weighs (17 ms a search with
 five pieces in the chat, against a 1 ms bound).
 
+## Her open door follows a resize in the frame it's drawn in (2026-10-09)
+
+**Rule:** the door she's going through or coming in by (`Act::Door`
+with `Through::Home`) is moved to where the frame stands her door by the
+frame itself, as it reads her door (`Osaka::door_follows` from the
+Visiting paint, before anything is judged or drawn), not only by her
+next tick. It is drawn at her feet, so in every beat it's shown she
+moves with it: on its near side (going out) standing at it facing out,
+as she opened it; at its far side (its `there` beats, coming in, the
+door closing behind her) out of it into the room (`out_of`: facing in,
+bumped if its space is filled). In the gap (nothing drawn) her feet go
+with it too, so a door gone then is a door in space where it last
+stood. The door the frame reads it from is the act's own in every beat
+(`opened_door`), never the frame's last door.
+
+**Why:** found by two proptests (door batch, step 6d): a resize while
+her door stood open drew it, for the first frame of the new size, at the
+old frame's wall spot, on a sofa or bed laid at the wider frame's wall.
+Her tick reads the chances the previous paint built, and the paint
+builds the new ones after; so a door act's spot was always a frame
+behind the frame. The class is every act whose spot is read from the
+frame's door (school, work's gap, a dash, the stage's school scene): the
+paint-time follow covers all of them, including a door she opened at
+her tick from last frame's chances. The first fix moved only the act's
+door (`to`) in the beats before the gap, but the door is drawn at her
+feet, so it was still drawn at the old spot on her bed (the review of
+step 6d; the tests had checked `to`, not what is drawn, and now check
+both). The `there` beats were left alone before (D6 followed only until
+she was let out); a resize there left the door and her on whatever the
+new frame laid there. She stands in its doorway, so moving her with it
+is the honest reading. A door that
+stands where the frame stands it now, focus and all, is never moved:
+read without the focus (`door_through`) a door she opened beside a
+focused pane would stand in its space under the pane, and following
+that hopped it into the pane a frame after it opened (evicted at once
+to a door in space); a focused pane is never a reason to move it,
+either way. *Rejected:*
+excusing the first frame after a resize in the tests (it is drawn);
+building the chances before her tick (her tick decides what the frame
+draws, so the frame has to come after it).
+
 ## Houseguest chooses by needs among the top few (2026-09-28)
 
 **Rule:** Her next act is a weighted-random pick among the four

@@ -2313,10 +2313,12 @@ this section states what is built.
   her way short, the next school morning says it again. With no door
   anywhere, or no way to its spot, she goes out by a door in space
   where she stands, but only out of every piece of hers (she steps
-  along her floor out of it first, and goes out there). Once she's
-  through her door, it follows the frame's door (a resize) but a
-  focused pane never moves it. Nothing is delivered on her way out (a
-  parcel waits for her). The visit ends only once her door has closed
+  along her floor out of it first, and goes out there). Any door of
+  hers she's going through or coming in by follows the frame's door (a
+  resize), in the very frame it's drawn in, but a focused pane never
+  moves it; it stands where she does, so in every beat it's shown she
+  moves with it (facing out going out, into the room coming in).
+  Nothing is delivered on her way out (a parcel waits for her). The visit ends only once her door has closed
   behind her.
   Her home stands empty meanwhile: her pieces, the lamp and TV off, the
   cat as he'll be when she's back, her door. It shows when a visit would

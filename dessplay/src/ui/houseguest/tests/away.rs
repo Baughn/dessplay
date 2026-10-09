@@ -1416,6 +1416,77 @@ proptest! {
     }
 }
 
+/// [`her_days_with_the_chat_apart_never_touch_what_is_protected`]'s deep
+/// draw pinned (door batch, step 6d): her door open at the right wall of
+/// a 79-wide frame, the frame resized to 97. Before the fix the open
+/// door kept the 79-wide frame's spot (wall 78), on her sofa laid at the
+/// wider frame's wall.
+#[test]
+fn a_resize_while_her_door_is_open_never_leaves_it_on_her_sofa() {
+    for graphics in [false, true] {
+        her_days(
+            2473510391964127931,
+            routine::GameTime {
+                day: 5,
+                h: 9,
+                m: 59,
+            },
+            graphics,
+            chat_apart,
+            &[(79, 18), (97, 18)],
+            &[],
+            &[],
+            &[],
+            (0, 0, 1, 1),
+            &[(Furniture::Sofa, 1, 518, false)],
+            Run {
+                out_every: Some(1000),
+                ..Run::default()
+            },
+        )
+        .unwrap_or_else(|e| panic!("graphics {graphics}: {e}"));
+    }
+}
+
+/// The stage's school scene (door batch D10) with the frame resized
+/// (73 to 90 wide, her bed and sofa laid by the wider frame's right
+/// wall) as her door stands open: as she goes out by it, and as she
+/// comes back in (door batch, step 6d). Each first frame at the new size
+/// is checked by [`long_visit_of`] as every frame is: her door drawn at
+/// the act's spot (she and it move together), on none of her pieces.
+#[test]
+fn a_resize_as_her_stage_school_door_stands_open_moves_her_with_it() {
+    let owned = [
+        (Furniture::Bed, 1, 120, false),
+        (Furniture::Sofa, 1, 116, true),
+    ];
+    let whens: [(&str, SizeWhen); 2] = [("going out", going_out), ("coming in", coming_in)];
+    for (what, when) in whens {
+        for graphics in [false, true] {
+            let mut guest = Guest::restore(Ledger::new_at(4, tue(15, 0)));
+            guest.set_date(date(2026, 6, 17));
+            long_visit_of(
+                guest,
+                graphics,
+                rooms_frame,
+                &[(73, 20), (90, 18)],
+                &[],
+                &[],
+                &[],
+                (0, 0, 1, 1),
+                &owned,
+                Run {
+                    cue: Some(Scene::School),
+                    out_every: Some(1000),
+                    next_size_when: Some(when),
+                },
+                120_000,
+            )
+            .unwrap_or_else(|e| panic!("{what}, graphics {graphics}: {e}"));
+        }
+    }
+}
+
 /// One of her days' runs: from `start` by her clock, mid-June, 120 s
 /// over `sizes` of `frame`, run as `how` says.
 #[allow(clippy::too_many_arguments)]
@@ -1900,6 +1971,7 @@ proptest! {
             Run {
                 cue: Some(scene),
                 out_every: Some(1000),
+                ..Run::default()
             },
             span,
         )?;
@@ -1934,6 +2006,7 @@ fn her_school_mornings_put_her_door_in_its_space_or_clear_of_her_pieces() {
             let how = Run {
                 cue: Some(Scene::Lounge),
                 out_every: Some(1000),
+                ..Run::default()
             };
             let visited = if full_space {
                 long_visit_of(
@@ -3602,6 +3675,7 @@ fn with_no_door_anywhere_she_steps_out_of_her_bed_to_go_out() {
             Run {
                 cue: Some(Scene::Sleep),
                 out_every: Some(500),
+                ..Run::default()
             },
             90_000,
         )

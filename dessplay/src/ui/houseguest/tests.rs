@@ -836,6 +836,7 @@ fn long_visits_with_the_chat_over_a_nook_make_pieces() {
             Run {
                 cue: Some(Scene::MakeSofa),
                 out_every: Some(1000),
+                ..Run::default()
             },
             30_000,
         )
@@ -934,6 +935,7 @@ fn a_long_visit_cued_to_nap_naps() {
                 Run {
                     cue,
                     out_every: Some(1000),
+                    ..Run::default()
                 },
                 30_000,
             )
@@ -1029,6 +1031,26 @@ struct Run {
     /// whole size's span in one step: she never comes, or her empty home
     /// is seen a frame or two.
     out_every: Option<u64>,
+    /// Each size but the last ends early, at the first frame (all its
+    /// checks done) after which this holds of her at its time: the next
+    /// size is then the next frame's, so a resize lands just where a run
+    /// asks (her coming in by her door, say).
+    next_size_when: Option<SizeWhen>,
+}
+
+/// What ends a size early ([`Run::next_size_when`]): of her at a time.
+type SizeWhen = fn(&Guest, u64) -> bool;
+
+/// For [`Run::next_size_when`]: whether she's going out by her own door
+/// at `now`, standing at it (its near beats).
+fn going_out(guest: &Guest, now: u64) -> bool {
+    matches!(&guest.state, State::Visiting(visit) if visit.osaka.out_by_her_door(now).is_some())
+}
+
+/// For [`Run::next_size_when`]: whether she's coming in by her own door
+/// at `now` (its far beats, the door shown).
+fn coming_in(guest: &Guest, now: u64) -> bool {
+    matches!(&guest.state, State::Visiting(visit) if visit.osaka.in_by_her_door(now).is_some())
 }
 
 /// Her door's space, from where it stands in its wall (worked out from
@@ -1098,7 +1120,8 @@ fn long_visit_of(
     let mut now = 0;
     let span = span / sizes.len() as u64;
     let mut mark = ChatMark::default();
-    for &(w, h) in sizes {
+    for (i, &(w, h)) in sizes.iter().enumerate() {
+        let last = i + 1 == sizes.len();
         let (mut real, base) = frame(w, h);
         scatter(&mut real, text, skips);
         let (px, py, pw, ph) = protect;
@@ -1179,6 +1202,24 @@ fn long_visit_of(
                                 piece.cover()
                             );
                         }
+                    }
+                    // Her own door as it's drawn (at her feet: see
+                    // `Door::of`), in any beat it's shown: where the act
+                    // has it, so on none of her pieces either (door batch,
+                    // step 6d: a resize as it stood open left it drawn at
+                    // the old frame's spot while the act had moved on).
+                    if let Some(osaka::Through::Home(door)) = visit.osaka.through()
+                        && visit.osaka.door(now).is_some()
+                    {
+                        let feet = (visit.osaka.x, visit.osaka.y);
+                        prop_assert_eq!(
+                            feet,
+                            door.spot(),
+                            "{}: her door drawn at {:?}, the act's at {:?}",
+                            now,
+                            feet,
+                            door
+                        );
                     }
                 }
                 State::Away(_) => visited.away += 1,
@@ -1390,6 +1431,9 @@ fn long_visit_of(
                 && let Some(scene) = cue.take()
             {
                 guest.cue(scene);
+            }
+            if !last && how.next_size_when.is_some_and(|when| when(&guest, now)) {
+                break;
             }
         }
     }

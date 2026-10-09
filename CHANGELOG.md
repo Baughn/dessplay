@@ -17,6 +17,9 @@ Add new days at the top. Add new entries at the bottom of existing days.
   pane.
 - Added: Osaka moves furniture out of her door's way, or out of the chat
   pane, herself ("Can't get to the door!").
+- Fixed: resizing the terminal while Osaka's door stands open no longer
+  shows the door, or her going out or coming in by it, over her
+  furniture: she and her door move together to where it now stands.
 
 ## 2026-10-08
 

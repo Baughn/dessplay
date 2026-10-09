@@ -2406,6 +2406,11 @@ impl Guest {
                     log_door(door, "her visit");
                 }
                 visit.door = door;
+                // The door she's through stands where the frame stands
+                // it now, before anything of this frame is judged or
+                // drawn (her tick read last frame's: a resize since
+                // would leave it where her pieces now stand).
+                visit.osaka.door_follows(door, door_through, now);
                 // Out of the focused pane, through her door.
                 // Text came up where she stays (under her, or under the
                 // image she's drawn in): she gets up.
