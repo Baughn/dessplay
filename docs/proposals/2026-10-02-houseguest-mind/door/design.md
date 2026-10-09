@@ -493,6 +493,10 @@ and the carried piece's `ghost` (mod.rs:3403). Every caller builds them with one
   via per-sky gradients in `art/wall-door.svg` (unfed → `Day`, matching the window's `Plain`, art.rs:1269). Step 7
   keeps (and adds) `#[cfg_attr(not(test), allow(dead_code))]` on everything it introduces; step 8 removes them all
   (art.rs:1119, 1220; sprite.rs:478, and step 7's).
+  *As built (Step 7's As-built note): `wd-beyond`/`wd-day` are gone; the unfilled `wd-doorway`, `wd-hedge` and
+  `wd-flap-hole` are filled with `wd-sky-<sky>` and `art::hedge(sky)`. Build the look with `Look::wall_door(door,
+  sky, crop)`; the cache keys any `WallDoor` look as that builds it (sky `Day` for a state not showing outside, the
+  crop kept to 1 ..= `cols()`).*
 - **Layer clip and offset** (graphics.rs:136, `Key` 154, `key` 568, `compose` 735): `Layer`'s fields stay as
   they are (its literals in mod.rs: `Placement::layer` ~327, `Door::layer` 381, `prop_layer` 4094-4105). A new
   `pub(super) struct Cut { layer: Layer, clip: Option<(Side, i32)> /* the wall column */, dx: i8 /* half
@@ -1020,7 +1024,7 @@ companion proptest and deterministic tests (room.rs); test 10 has deterministic 
 **Goal.** D8's looks and compositing, unwired: `Look::WallDoor` with crop and sky, `WallDoor::Plate(u8)`, `Cut`
 (clip and `dx`) with `paint_cuts` and `paint_layers` as its wrapper, the cut's bounds clipped at the wall, `lean` in
 production art, `wall_door_cells(state, side)` and `mirror_wall` in sprite.rs (`mirror` unchanged), per-sky
-gradients for `wd-beyond`/`wd-flap-hole` and the hedge's tint. **No edit outside these four files**; every new item
+gradients for `wd-beyond`/`wd-flap-hole` and the hedge's tint (as built: `wd-doorway`/`wd-flap-hole`, see below). **No edit outside these four files**; every new item
 unconstructed outside tests carries `#[cfg_attr(not(test), allow(dead_code))]` or clippy's `-D warnings` fails.
 
 **Tests first.** `a_clipped_layer_paints_nothing_past_the_wall` (graphics.rs; both sides; red: no clip; this is
@@ -1033,6 +1037,19 @@ columns` (sprite.rs:780) extended to the left wall (red: `[`/`]` unmirrored); `h
 **Exit.** The gate; no golden moves (nothing wired); `image_census` unchanged. No CHANGELOG (invisible).
 **Traps.** `Look` is in the cache `Key` (graphics.rs:154): keep the new look `Copy + Hash + Eq`. The wall line's
 pixel column is `w*cw + (cw-t)/2` from `LineGeometry` (graphics.rs:179), not the sheet's `line_x`.
+
+**As built (step 7, 2026-10-09).** `art::WallDoor::{cols, shows_sky}` (`Plate(u8)` crops like `Shut { flap }`: 6,
+or 2 at 0°); `render_wall_door(door, sky, cols, ..)` draws the whole 6-column frame at `width / cols` a column and
+crops the wall's side; `art::hedge(sky)` (the day's green mixed toward the window's skyline); `art::lean`. In
+`wall-door.svg` the doorway and the flap's hole are unfilled paths (`wd-doorway`, `wd-hedge`, `wd-flap-hole`) that
+`wall_door_body` fills through `<use fill=..>` with `wd-sky-<sky>` and the hedge's colour (`wd-beyond`/`wd-day` are
+gone). `graphics::Cut` offsets by `dx` half columns flooring (`dx * cw / 2` pixels) and its cells widen a column on
+an odd `dx`; `Key`'s layer origin is `i16` (negative when cut at a left wall). `sprite::wall_door_cells(door, side)`
+gives `(dx, dy, glyph)` from the wall's column and floor row; `Post` is the wall's `|`s, `Plate` nothing. The sheet
+gained two bands (the doorway and the flap's hole under each sky), regenerated in `art/`. Review fixes: `Look::wall_door(door, sky,
+crop)` builds the look and `Graphics::resolve` keys every `WallDoor` look as it builds it; `key` folds whole
+columns of `dx` into the origin and drops a clip that cuts none of the layer's pixels, so neither is a second
+image; `flap_plate` asserts at most 90° (`Plate(0)` unused) and `render_wall_door` whole columns.
 
 ### Step 8. The side-on door, wired (~1300 lines)
 

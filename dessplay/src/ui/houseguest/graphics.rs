@@ -23,7 +23,7 @@ use tuirealm::ratatui::widgets::Widget;
 use super::art::{self, Rig};
 use super::film::{FilmId, TvPicture};
 use super::placement::InSight;
-use super::room::Furniture;
+use super::room::{Furniture, Side};
 use super::scrap;
 use super::sprite::{Face, Facing, HEIGHT, Pose, WIDTH};
 
@@ -83,9 +83,45 @@ pub(super) enum Look {
     Piece(Furniture, art::PieceState),
     /// A makeshift piece she made of text, or part of it.
     Scrap(Furniture, scrap::Scrap, scrap::Part),
+    /// Her front door side-on in the wall, under the sky outside, its
+    /// frame cropped to the `cols` columns nearest the wall (facing
+    /// Right: a right wall, the wall's column last; Left, first). Build
+    /// it with [`Look::wall_door`]; whatever it holds, it is drawn and
+    /// keyed as that builds it (its size, and `Graphics::resolve`), so
+    /// one image never has two keys.
+    #[cfg_attr(not(test), allow(dead_code))]
+    WallDoor {
+        door: art::WallDoor,
+        sky: art::Sky,
+        cols: u8,
+    },
 }
 
 impl Look {
+    /// Her front door in `door`'s state under `sky`, cropped to its own
+    /// columns ([`art::WallDoor::cols`]) or `crop` of them (the Away cue
+    /// over text, 2): `sky` is `Day` for a state that shows nothing of
+    /// outside (it draws the same under every sky), and the crop keeps
+    /// to 1 ..= its own.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(super) fn wall_door(door: art::WallDoor, sky: art::Sky, crop: Option<u8>) -> Self {
+        let own = door.cols();
+        Self::WallDoor {
+            door,
+            sky: if door.shows_sky() { sky } else { art::Sky::Day },
+            cols: crop.unwrap_or(own).clamp(1, own),
+        }
+    }
+
+    /// The look as drawn: a [`Look::WallDoor`] as [`Look::wall_door`]
+    /// builds it, every other look itself.
+    fn normal(self) -> Self {
+        match self {
+            Self::WallDoor { door, sky, cols } => Self::wall_door(door, sky, Some(cols)),
+            _ => self,
+        }
+    }
+
     /// The box it fills, in cells (columns, rows above the floor).
     fn size(self) -> (i32, i32) {
         match self {
@@ -102,6 +138,7 @@ impl Look {
                 (i32::from(cols), i32::from(rows))
             }
             Self::Pose(..) | Self::Wave(..) | Self::Door(_) => (WIDTH, HEIGHT),
+            Self::WallDoor { door, cols, .. } => (i32::from(cols.clamp(1, door.cols())), HEIGHT),
         }
     }
 
@@ -124,6 +161,10 @@ impl Look {
             Self::Piece(item, state) => art::render_piece(item, state, facing, LINE, width, height),
             Self::Scrap(item, made, part) => {
                 scrap::render(item, &made, part, facing, LINE, width, height)
+            }
+            Self::WallDoor { door, sky, cols } => {
+                let cols = cols.clamp(1, door.cols());
+                art::render_wall_door(door, sky, cols, facing, LINE, width, height)
             }
         }
     }
@@ -150,11 +191,59 @@ impl Layer {
     }
 }
 
+/// A layer as painted: offset `dx` half columns (positive right) from
+/// its box, and cut at a wall's line if `clip` holds one (`(side, w)`:
+/// nothing drawn past the middle of column `w` on that side, as she
+/// steps through her door). Its cells are its box's, widened a column
+/// when the offset is odd and cut at column `w` (inclusive), so a
+/// doorway at an inner wall never claims the next pane's cells.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(super) struct Cut {
+    pub layer: Layer,
+    pub clip: Option<(Side, i32)>,
+    pub dx: i8,
+}
+
+impl From<Layer> for Cut {
+    fn from(layer: Layer) -> Self {
+        Self {
+            layer,
+            clip: None,
+            dx: 0,
+        }
+    }
+}
+
+impl Cut {
+    /// Its cells' left column, top row, columns and rows, or `None` when
+    /// the clip leaves nothing of it.
+    fn bounds(&self) -> Option<(i32, i32, i32, i32)> {
+        let (x, y, width, rows) = self.layer.bounds();
+        // In half columns: the image's left edge floors, its right edge
+        // rounds up (`compose` puts it `dx * cw / 2` pixels over,
+        // flooring).
+        let dx = i32::from(self.dx);
+        let mut left = (2 * x + dx).div_euclid(2);
+        let mut right = (2 * (x + width) + dx + 1).div_euclid(2);
+        match self.clip {
+            Some((Side::Right, w)) => right = right.min(w + 1),
+            Some((Side::Left, w)) => left = left.max(w),
+            None => {}
+        }
+        (left < right).then_some((left, y, right - left, rows))
+    }
+}
+
+/// One layer of a [`Key`]: what, facing, its box origin within the
+/// image (negative when cut at a left wall), whether it stands on the
+/// floor row, its wall's column within the image if cut, and its offset
+/// in half columns.
+type KeyLayer = (Look, Facing, (i16, i16), bool, Option<(Side, i16)>, i8);
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct Key {
-    /// Back to front: what, facing, its box origin within the image, and
-    /// whether it stands on the floor row.
-    layers: Vec<(Look, Facing, (u16, u16), bool)>,
+    /// Back to front.
+    layers: Vec<KeyLayer>,
     /// The image in cells.
     size: (u16, u16),
     /// The line glyphs the image covers and redraws, with their colours,
@@ -472,9 +561,11 @@ impl Graphics {
         }
     }
 
-    /// `look` as drawn: her TV's programme is the film's still while
-    /// there's one to show.
+    /// `look` as drawn: as [`Look::normal`] has it (her front door
+    /// keyed as [`Look::wall_door`] builds it), and her TV's programme
+    /// the film's still while there's one to show.
     fn resolve(&self, look: Look) -> Look {
+        let look = look.normal();
         match (look, &self.film.showing) {
             (Look::Tv(art::Channel::Programme(card)), Some(still)) => Look::Film(still.id(), card),
             _ => look,
@@ -506,7 +597,19 @@ impl Graphics {
         layers: &[Layer],
         open: &dyn Fn(i32, i32) -> bool,
     ) -> Option<Rect> {
-        let (key, (vx0, vy0)) = self.key(buf, layers, open)?;
+        let cuts: Vec<Cut> = layers.iter().copied().map(Cut::from).collect();
+        self.paint_cuts(buf, &cuts, open)
+    }
+
+    /// [`Graphics::paint_layers`] for layers that may be offset or cut
+    /// at a wall's line ([`Cut`]).
+    pub fn paint_cuts(
+        &mut self,
+        buf: &mut Buffer,
+        cuts: &[Cut],
+        open: &dyn Fn(i32, i32) -> bool,
+    ) -> Option<Rect> {
+        let (key, (vx0, vy0)) = self.key(buf, cuts, open)?;
         let clip = key.clip;
         self.clock += 1;
         let stamp = self.clock;
@@ -559,7 +662,19 @@ impl Graphics {
         layers: &[Layer],
         open: &dyn Fn(i32, i32) -> bool,
     ) -> Option<RgbaImage> {
-        let (key, _) = self.key(buf, layers, open)?;
+        let cuts: Vec<Cut> = layers.iter().copied().map(Cut::from).collect();
+        self.canvas_cuts(buf, &cuts, open)
+    }
+
+    /// [`Graphics::canvas`] for [`Cut`]s.
+    #[cfg(test)]
+    pub fn canvas_cuts(
+        &self,
+        buf: &Buffer,
+        cuts: &[Cut],
+        open: &dyn Fn(i32, i32) -> bool,
+    ) -> Option<RgbaImage> {
+        let (key, _) = self.key(buf, cuts, open)?;
         self.compose(&key)
     }
 
@@ -568,14 +683,18 @@ impl Graphics {
     fn key(
         &self,
         buf: &Buffer,
-        layers: &[Layer],
+        cuts: &[Cut],
         open: &dyn Fn(i32, i32) -> bool,
     ) -> Option<(Key, (i32, i32))> {
         let (cw, ch) = self.cell();
         if cw == 0 || ch == 0 {
             return None;
         }
-        let bounds: Vec<_> = layers.iter().map(Layer::bounds).collect();
+        // A cut that leaves nothing isn't painted.
+        let (cuts, bounds): (Vec<&Cut>, Vec<_>) = cuts
+            .iter()
+            .filter_map(|cut| Some((cut, cut.bounds()?)))
+            .unzip();
         let left = bounds.iter().map(|b| b.0).min()?;
         let top = bounds.iter().map(|b| b.1).min()?;
         let right = bounds.iter().map(|b| b.0 + b.2).max()?;
@@ -589,8 +708,8 @@ impl Graphics {
             return None;
         }
         let floor = |cx: i32, cy: i32| {
-            layers.iter().zip(&bounds).any(|(layer, b)| {
-                layer.standing && cy == layer.at.1 && (b.0..b.0 + b.2).contains(&cx)
+            cuts.iter().zip(&bounds).any(|(cut, b)| {
+                cut.layer.standing && cy == cut.layer.at.1 && (b.0..b.0 + b.2).contains(&cx)
             })
         };
         let mut lines = Vec::new();
@@ -624,15 +743,31 @@ impl Graphics {
             (vy1 - vy0) as u16,
         );
         let key = Key {
-            layers: layers
+            layers: cuts
                 .iter()
-                .zip(&bounds)
-                .map(|(layer, b)| {
+                .map(|cut| {
+                    let layer = &cut.layer;
+                    let (bx, by, width, _) = layer.bounds();
+                    // A whole column of offset is a box a column over,
+                    // and a cut that doesn't reach its pixels is none:
+                    // keyed so, an image has one key however it's cut.
+                    let (bx, dx) = (bx + i32::from(cut.dx).div_euclid(2), cut.dx.rem_euclid(2));
+                    let (cw, t) = (cw as i32, self.line.thickness as i32);
+                    let x0 = bx * cw + (i32::from(dx) * cw).div_euclid(2);
+                    let clip = cut.clip.filter(|&(side, w)| {
+                        let line = w * cw + (cw - t).div_euclid(2);
+                        match side {
+                            Side::Right => x0 + width * cw > line,
+                            Side::Left => x0 < line + t,
+                        }
+                    });
                     (
                         self.resolve(layer.look),
                         layer.facing,
-                        ((b.0 - left) as u16, (b.1 - top) as u16),
+                        ((bx - left) as i16, (by - top) as i16),
                         layer.standing,
+                        clip.map(|(side, w)| (side, (w - left) as i16)),
+                        dx,
                     )
                 })
                 .collect(),
@@ -730,6 +865,28 @@ impl Graphics {
             .ok()
     }
 
+    /// `body`, placed with its left edge at pixel `x` of the image,
+    /// with nothing past the wall's line in the image's column `w` on
+    /// `side`: the line is where the terminal draws `│` in that cell
+    /// (`draw_glyph`'s `(cw - t) / 2`), and the line itself is cut too,
+    /// so the wall stays drawn in front of her.
+    fn cut_at_wall(&self, mut body: RgbaImage, x: i64, side: Side, w: i64) -> RgbaImage {
+        let (cw, _) = self.cell();
+        let t = i64::from(self.line.thickness);
+        let line = w * i64::from(cw) + (i64::from(cw) - t).div_euclid(2);
+        for (px, _, p) in body.enumerate_pixels_mut() {
+            let sx = x + i64::from(px);
+            let past = match side {
+                Side::Right => sx >= line,
+                Side::Left => sx < line + t,
+            };
+            if past {
+                p.0[3] = 0;
+            }
+        }
+        body
+    }
+
     /// Compose one frame: its lines, then its layers, cropped to what
     /// shows.
     fn compose(&self, key: &Key) -> Option<RgbaImage> {
@@ -744,7 +901,7 @@ impl Graphics {
                 draw_alien(&mut canvas, c, color, origin, (cw, ch));
             }
         }
-        for &(look, facing, (ox, oy), standing) in &key.layers {
+        for &(look, facing, (ox, oy), standing, clip, dx) in &key.layers {
             let (width, height) = look.size();
             // Feet rest on the line when standing, on the box floor
             // otherwise.
@@ -759,12 +916,13 @@ impl Graphics {
                 }
                 _ => look.render(facing, cw * width as u32, feet),
             }?;
-            image::imageops::overlay(
-                &mut canvas,
-                &body,
-                i64::from(u32::from(ox) * cw),
-                i64::from(u32::from(oy) * ch),
-            );
+            // Offset by half columns, flooring (as `Cut::bounds` counts).
+            let x = i64::from(ox) * i64::from(cw) + (i64::from(dx) * i64::from(cw)).div_euclid(2);
+            let body = match clip {
+                Some((side, w)) => self.cut_at_wall(body, x, side, i64::from(w)),
+                None => body,
+            };
+            image::imageops::overlay(&mut canvas, &body, x, i64::from(oy) * i64::from(ch));
         }
         let (cx, cy, cwn, chn) = key.clip;
         Some(
@@ -984,6 +1142,306 @@ mod tests {
         assert_eq!(graphics.counts().encoded, encoded, "no new image");
         graphics.set_film(None);
         assert_eq!(paint(&mut graphics), vec![NEWS], "cleared at once");
+    }
+
+    /// A blank screen with a wall's `│` down column `w` (in an odd
+    /// colour, to tell its pixels), her standing centred on it.
+    fn her_at_a_wall(w: i32) -> (Buffer, Layer) {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 20, 8));
+        for y in 0..8 {
+            buf.set_string(w as u16, y, "│", Style::new().fg(Color::Rgb(1, 2, 3)));
+        }
+        let her = Layer {
+            look: Look::Pose(Pose::Stand, Face::Vacant, InSight::assumed()),
+            facing: Facing::Right,
+            at: (w, HEIGHT + 1),
+            standing: false,
+        };
+        (buf, her)
+    }
+
+    /// Cut at a wall's line (step 7, D8), her image keeps to her side of
+    /// it at both walls, still or offset a half column either way (her
+    /// stepping through): its cells stop at the wall's column (so a
+    /// doorway at an inner wall never claims the next pane's), the
+    /// line's own pixels there are the wall's colour (redrawn, she isn't
+    /// over them), past it nothing is drawn, and on her side she is (her
+    /// middle stands on the line, so she's cut through). Painted, at a
+    /// left wall (her box's origin left of the image), the image is
+    /// placed and kept like any other.
+    #[test]
+    fn a_clipped_layer_paints_nothing_past_the_wall() {
+        let w = 10;
+        for cell in [(9u16, 19u16), (10, 20)] {
+            let mut graphics = graphics_at(cell);
+            let (cw, ch) = (u32::from(cell.0), u32::from(cell.1));
+            let t = LineGeometry::for_cell(ch).thickness;
+            for side in [Side::Right, Side::Left] {
+                // Her box is columns w-2 ..= w+2, a half column over with
+                // an odd offset: the columns of it on her side of w.
+                for (dx, cols) in [(-1i8, [4, 3]), (0, [3, 3]), (1, [3, 4])] {
+                    let cols = cols[usize::from(side == Side::Left)];
+                    let at = format!("{cell:?} {side:?} {dx}");
+                    let (buf, her) = her_at_a_wall(w);
+                    let cut = Cut {
+                        layer: her,
+                        clip: Some((side, w)),
+                        dx,
+                    };
+                    let mine = |x: i32, _| match side {
+                        Side::Right => x <= w,
+                        Side::Left => x >= w,
+                    };
+                    let image = graphics.canvas_cuts(&buf, &[cut], &mine).unwrap();
+                    assert_eq!(
+                        image.dimensions(),
+                        (cols * cw, u32::from(HEIGHT as u16) * ch),
+                        "{at}"
+                    );
+                    let line = match side {
+                        Side::Right => (cols - 1) * cw + (cw - t) / 2,
+                        Side::Left => (cw - t) / 2,
+                    };
+                    let mut hers = 0;
+                    for (x, y, p) in image.enumerate_pixels() {
+                        let on_line = (line..line + t).contains(&x);
+                        let past = match side {
+                            Side::Right => x >= line + t,
+                            Side::Left => x < line,
+                        };
+                        if on_line {
+                            assert_eq!(p.0, [1, 2, 3, 255], "{at}: the line at ({x}, {y})");
+                        } else if past {
+                            assert_eq!(p.0[3], 0, "{at}: drawn past the line at ({x}, {y})");
+                        } else if p.0[3] > 0 {
+                            hers += 1;
+                        }
+                    }
+                    let beside = match side {
+                        Side::Right => line - 1,
+                        Side::Left => line + t,
+                    };
+                    assert!(
+                        (0..image.height()).any(|y| image.get_pixel(beside, y).0[3] > 0),
+                        "{at}: she's drawn up to the line"
+                    );
+                    assert!(hers > 100, "{at}: {hers} pixels of her");
+                    let encoded = graphics.counts().encoded;
+                    for again in [0, 1] {
+                        // Painting fills the buffer: a fresh one each time.
+                        let (mut buf, _) = her_at_a_wall(w);
+                        let rect = graphics.paint_cuts(&mut buf, &[cut], &mine).unwrap();
+                        let left = match side {
+                            Side::Right => w + 1 - cols as i32,
+                            Side::Left => w,
+                        };
+                        assert_eq!(
+                            (i32::from(rect.x), u32::from(rect.width)),
+                            (left, cols),
+                            "{at}: placed"
+                        );
+                        assert_eq!(graphics.counts().encoded, encoded + 1, "{at}: {again}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// Offset by a half column either way, her image is the same pixels
+    /// moved `cw / 2` (flooring) over, in a box a column wider; and a cut
+    /// that leaves nothing of her paints nothing.
+    #[test]
+    fn an_offset_layer_moves_by_half_columns() {
+        let graphics = graphics_at((9, 19));
+        let buf = Buffer::empty(Rect::new(0, 0, 20, 8));
+        let her = Layer {
+            look: Look::Pose(Pose::Walk(1), Face::Vacant, InSight::assumed()),
+            facing: Facing::Right,
+            at: (8, HEIGHT + 1),
+            standing: false,
+        };
+        let base = graphics.canvas(&buf, &[her], &|_, _| true).unwrap();
+        for (dx, shift) in [(1i8, 4u32), (-1, 4)] {
+            let cut = Cut {
+                layer: her,
+                clip: None,
+                dx,
+            };
+            let moved = graphics.canvas_cuts(&buf, &[cut], &|_, _| true).unwrap();
+            assert_eq!(
+                moved.dimensions(),
+                (base.width() + 9, base.height()),
+                "{dx}"
+            );
+            for (x, y, p) in moved.enumerate_pixels() {
+                let want = x
+                    .checked_sub(shift)
+                    .filter(|&bx| bx < base.width())
+                    .map_or(0, |bx| base.get_pixel(bx, y).0[3]);
+                assert_eq!(p.0[3], want, "{dx}: ({x}, {y})");
+            }
+        }
+        // Wholly past a right wall at column 5 (her box is 6 ..= 10).
+        let gone = Cut {
+            layer: her,
+            clip: Some((Side::Right, 5)),
+            dx: 0,
+        };
+        assert!(graphics.canvas_cuts(&buf, &[gone], &|_, _| true).is_none());
+    }
+
+    /// Her front door as a look, shut (2 columns), open (4) and its flap
+    /// swung up (6): standing on the floor in the wall's column, cropped
+    /// to its state's columns, each of them inked.
+    #[test]
+    fn a_wall_door_look_stands_in_its_columns() {
+        let graphics = graphics_at((9, 19));
+        let (w, f) = (12, 6);
+        let mut buf = Buffer::empty(Rect::new(0, 0, 20, 8));
+        buf.set_string(0, f as u16, "─".repeat(20), Style::new());
+        let doors = [
+            (
+                art::WallDoor::Shut {
+                    flap: 0,
+                    away: false,
+                },
+                2,
+            ),
+            (art::WallDoor::Open, 4),
+            (
+                art::WallDoor::Shut {
+                    flap: 90,
+                    away: false,
+                },
+                6,
+            ),
+        ];
+        for (door, cols) in doors {
+            for facing in [Facing::Right, Facing::Left] {
+                let at = format!("{door:?} {facing:?}");
+                let look = Look::wall_door(door, art::Sky::Day, None);
+                assert_eq!(look.size(), (cols, HEIGHT), "{at}");
+                // Centred on its middle column, its last (a right wall)
+                // or first (a left wall) in the wall's.
+                let centre = match facing {
+                    Facing::Right => w - cols / 2 + 1,
+                    Facing::Left => w + cols / 2,
+                };
+                let door_layer = Layer {
+                    look,
+                    facing,
+                    at: (centre, f),
+                    standing: true,
+                };
+                let (left, ..) = door_layer.bounds();
+                let want = match facing {
+                    Facing::Right => w - cols + 1,
+                    Facing::Left => w,
+                };
+                assert_eq!(left, want, "{at}");
+                let image = graphics.canvas(&buf, &[door_layer], &|_, _| true).unwrap();
+                assert_eq!(image.width(), 9 * cols as u32, "{at}");
+                for col in 0..cols as u32 {
+                    let inked = (0..19 * 4)
+                        .any(|y| (col * 9..col * 9 + 9).any(|x| image.get_pixel(x, y).0[3] > 64));
+                    assert!(inked, "{at}: column {col}");
+                }
+            }
+        }
+    }
+
+    /// One image, one key: her door showing nothing of outside is the
+    /// same image under every sky, and a crop past its own columns its
+    /// own (one that shows outside, one image a sky); her cut at a wall
+    /// whose line she doesn't reach, or offset whole columns, is the
+    /// image of her plainly there.
+    #[test]
+    fn an_image_is_keyed_once_however_it_is_built() {
+        let (w, f) = (12, 6);
+        // Painting fills the buffer: a fresh one each time.
+        let floor = || {
+            let mut buf = Buffer::empty(Rect::new(0, 0, 24, 8));
+            buf.set_string(0, f as u16, "─".repeat(24), Style::new());
+            buf
+        };
+        for (door, skies) in [
+            (
+                art::WallDoor::Shut {
+                    flap: 0,
+                    away: false,
+                },
+                1,
+            ),
+            (art::WallDoor::Post, 1),
+            (art::WallDoor::Open, 5),
+        ] {
+            let mut graphics = graphics_at((9, 19));
+            for sky in art::Sky::ALL {
+                for cols in [door.cols(), 6, 9] {
+                    let look = Look::WallDoor { door, sky, cols };
+                    let layer = Layer {
+                        look,
+                        facing: Facing::Right,
+                        at: (w - i32::from(door.cols()) / 2 + 1, f),
+                        standing: true,
+                    };
+                    graphics
+                        .paint_layers(&mut floor(), &[layer], &|_, _| true)
+                        .unwrap();
+                }
+            }
+            assert_eq!(graphics.cached(), skies, "{door:?}");
+        }
+        let mut graphics = graphics_at((9, 19));
+        let her = |x| Layer {
+            look: Look::Pose(Pose::Walk(1), Face::Vacant, InSight::assumed()),
+            facing: Facing::Right,
+            at: (x, HEIGHT + 1),
+            standing: false,
+        };
+        let mut paint = |cut: Cut| {
+            let mut buf = Buffer::empty(Rect::new(0, 0, 24, 8));
+            graphics.paint_cuts(&mut buf, &[cut], &|_, _| true).unwrap();
+            graphics.cached()
+        };
+        // Her box is columns 8 ..= 12; its pixels end at 13 · 9.
+        assert_eq!(paint(her(10).into()), 1);
+        for clip in [(Side::Right, 13), (Side::Right, 20), (Side::Left, 7)] {
+            let cut = Cut {
+                layer: her(10),
+                clip: Some(clip),
+                dx: 0,
+            };
+            assert_eq!(paint(cut), 1, "{clip:?}: cuts nothing");
+        }
+        for dx in [-4i8, -2, 2, 4] {
+            let cut = Cut {
+                layer: her(10 - i32::from(dx) / 2),
+                clip: None,
+                dx,
+            };
+            assert_eq!(paint(cut), 1, "{dx}: whole columns");
+        }
+        let half = paint(Cut {
+            layer: her(10),
+            clip: None,
+            dx: 1,
+        });
+        assert_eq!(half, 2, "a half column is another image");
+        for (x, dx) in [(11, -1i8), (9, 3)] {
+            let cut = Cut {
+                layer: her(x),
+                clip: None,
+                dx,
+            };
+            assert_eq!(paint(cut), 2, "{x} {dx}: the same half column");
+        }
+        let cut = Cut {
+            layer: her(10),
+            clip: Some((Side::Right, 12)),
+            dx: 0,
+        };
+        assert_eq!(paint(cut), 3, "a cut that bites");
     }
 
     proptest::proptest! {

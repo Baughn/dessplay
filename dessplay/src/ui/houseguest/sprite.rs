@@ -2,6 +2,9 @@
 //! and mirrored for left. The anchor is bottom-centre: she stands *on*
 //! the floor row, so the sprite occupies the four rows above it.
 
+use super::art::WallDoor;
+use super::room::Side;
+
 /// Sprite width in cells (the anchor is the middle column).
 pub(super) const WIDTH: i32 = 5;
 /// Sprite height in cells, all above the floor row.
@@ -469,10 +472,10 @@ const DOOR: [[&str; 4]; 3] = [
     [" ___ ", "|*.*|", "|.*.|", "|___|"],
 ];
 
-/// Her front door side-on (a model sheet, not yet wired in): rows f-4
+/// Her front door side-on (not yet wired in): rows f-4
 /// ..= f-1 of columns to-3 ..= to at a right wall, the last column the
 /// wall's own (its border glyph painted over, as the flap is today);
-/// mirrored for a left wall (`mirror`, and `[`/`]`). Shut, the flap open
+/// mirrored for a left wall ([`mirror_wall`]). Shut, the flap open
 /// (a parcel through it), ajar, open (the leaf face-on behind her, the
 /// doorway's daylight `.`). Spaces are left as they are.
 #[cfg_attr(not(test), allow(dead_code))]
@@ -482,6 +485,54 @@ pub(super) const WALL_DOOR: [[&str; 4]; 4] = [
     [" \\.|", " |.|", " o.|", " |.|"],
     ["[].|", "[].|", "o].|", "[].|"],
 ];
+
+/// A glyph of her front door mirrored for a left wall: [`mirror`], and
+/// the open leaf's `[`/`]` too (her own sprites keep theirs: a book held
+/// open reads the same either way, sprite.rs's `READ`).
+#[cfg_attr(not(test), allow(dead_code))]
+pub(super) fn mirror_wall(c: char) -> char {
+    match c {
+        '[' => ']',
+        ']' => '[',
+        other => mirror(other),
+    }
+}
+
+/// Her front door's ASCII in `door`'s state, set in a wall on `side`:
+/// each drawn glyph as `(dx, dy, glyph)` from the wall's column and the
+/// floor row (dx -3 ..= 0 at a right wall, 0 ..= 3 at a left; dy -4 ..=
+/// -1), spaces left out (they show what's under). Shut is
+/// [`WALL_DOOR`]'s first state, the flap swung up (any angle) its
+/// second, ajar and open the others; `Post` is the wall's column alone
+/// (its `|`s, over her in the doorway); `Plate` draws nothing (the
+/// flap's own state shows it). There is no ASCII Away cue.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(super) fn wall_door_cells(door: WallDoor, side: Side) -> Vec<(i32, i32, char)> {
+    let (rows, from) = match door {
+        WallDoor::Shut { flap: 0, .. } => (WALL_DOOR[0], 0),
+        WallDoor::Shut { .. } => (WALL_DOOR[1], 0),
+        WallDoor::Ajar => (WALL_DOOR[2], 0),
+        WallDoor::Open => (WALL_DOOR[3], 0),
+        WallDoor::Post => (WALL_DOOR[3], 3),
+        WallDoor::Plate(_) => return Vec::new(),
+    };
+    let mut out = Vec::new();
+    for (row, text) in rows.iter().enumerate() {
+        for (col, glyph) in text.chars().enumerate().skip(from) {
+            if glyph == ' ' {
+                continue;
+            }
+            // Column 3 is the wall's.
+            let along = col as i32 - 3;
+            let (dx, glyph) = match side {
+                Side::Right => (along, glyph),
+                Side::Left => (-along, mirror_wall(glyph)),
+            };
+            out.push((dx, row as i32 - 4, glyph));
+        }
+    }
+    out
+}
 
 /// The door's cells (its drawn glyphs), relative to her anchor like
 /// [`SpriteCell`]s; `frame` 0 shut, 1 ajar, 2 open. The hinge is on the
@@ -791,5 +842,116 @@ mod tests {
             let least = [2, 1, 1, 0][i];
             assert_eq!(used, Some(least), "{i}");
         }
+        // Its cells at both walls: inside the four columns by the wall,
+        // the wall's own always the `|`, and a left wall the right's
+        // mirror image, the open leaf's `[]` reading `[]` still.
+        let states = [
+            WallDoor::Shut {
+                flap: 0,
+                away: false,
+            },
+            WallDoor::Shut {
+                flap: 0,
+                away: true,
+            },
+            WallDoor::Shut {
+                flap: 30,
+                away: false,
+            },
+            WallDoor::Ajar,
+            WallDoor::Open,
+            WallDoor::Post,
+        ];
+        for door in states {
+            let right = wall_door_cells(door, Side::Right);
+            let left = wall_door_cells(door, Side::Left);
+            assert!(!right.is_empty(), "{door:?}");
+            for &(dx, dy, glyph) in &right {
+                assert!(
+                    (-3..=0).contains(&dx) && (-4..=-1).contains(&dy),
+                    "{door:?}"
+                );
+                assert!(glyph.is_ascii_graphic(), "{door:?}");
+            }
+            let wall: Vec<char> = (-4..=-1)
+                .map(|y| {
+                    let at = right.iter().find(|&&(dx, dy, _)| (dx, dy) == (0, y));
+                    at.map_or(' ', |&(_, _, glyph)| glyph)
+                })
+                .collect();
+            assert_eq!(wall, vec!['|'; 4], "{door:?}");
+            let mirrored: Vec<(i32, i32, char)> = right
+                .iter()
+                .map(|&(dx, dy, glyph)| (-dx, dy, mirror_wall(glyph)))
+                .collect();
+            assert_eq!(left, mirrored, "{door:?}");
+        }
+        // Over her in the doorway, the post is the wall's column alone
+        // (none of the open leaf's cells), and the plate draws nothing.
+        let post: Vec<(i32, i32, char)> = (-4..=-1).map(|dy| (0, dy, '|')).collect();
+        for side in [Side::Right, Side::Left] {
+            assert_eq!(wall_door_cells(WallDoor::Post, side), post, "{side:?}");
+            assert_eq!(
+                wall_door_cells(WallDoor::Plate(45), side),
+                vec![],
+                "{side:?}"
+            );
+        }
+        let row = |side, y| -> String {
+            let cells = wall_door_cells(WallDoor::Open, side);
+            let xs: Vec<i32> = match side {
+                Side::Right => (-3..=0).collect(),
+                Side::Left => (0..=3).collect(),
+            };
+            xs.into_iter()
+                .map(|x| {
+                    cells
+                        .iter()
+                        .find(|&&(dx, dy, _)| (dx, dy) == (x, y))
+                        .map_or(' ', |&(_, _, glyph)| glyph)
+                })
+                .collect()
+        };
+        assert_eq!(row(Side::Right, -4), "[].|");
+        assert_eq!(row(Side::Left, -4), "|.[]", "the leaf's panel");
+        assert_eq!(row(Side::Left, -2), "|.[o", "its knob at the far end");
+        let ajar = wall_door_cells(WallDoor::Ajar, Side::Left);
+        assert!(ajar.contains(&(2, -4, '/')), "{ajar:?}");
+        assert!(wall_door_cells(WallDoor::Plate(40), Side::Right).is_empty());
+    }
+
+    /// Her own sprites mirror as they always have: the wall door's
+    /// `[`/`]` swap is its own ([`mirror_wall`]), never [`mirror`]'s, so
+    /// the book she reads (`[]`) stays a book facing left.
+    #[test]
+    fn her_sprites_mirror_as_before() {
+        let before = |c: char| match c {
+            '/' => '\\',
+            '\\' => '/',
+            '<' => '>',
+            '>' => '<',
+            '(' => ')',
+            ')' => '(',
+            other => other,
+        };
+        for c in (32u8..127).map(char::from) {
+            assert_eq!(mirror(c), before(c), "{c:?}");
+        }
+        let mut brackets = 0;
+        for pose in ALL {
+            let right = cells(pose, Facing::Right, Face::Blink);
+            for cell in cells(pose, Facing::Left, Face::Blink) {
+                let from = right
+                    .iter()
+                    .find(|r| r.dx == -cell.dx && r.dy == cell.dy && r.part == cell.part);
+                if let Some(from) = from
+                    && matches!(from.glyph, '[' | ']')
+                {
+                    assert_eq!(cell.glyph, from.glyph, "{pose:?}");
+                    brackets += 1;
+                }
+            }
+        }
+        assert!(brackets > 0, "a pose holds a bracket");
     }
 }

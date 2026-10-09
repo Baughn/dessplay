@@ -1,5 +1,5 @@
 <!-- Her front door, set in the wall at the screen's edge and seen
-     side-on (a model sheet for review, not yet wired in).
+     side-on (`art.rs` WallDoor).
 
      Frame 120 x 168: 6 x 4 cells at 20 x 42 units per cell (props.svg's
      scale), the floor along the bottom edge. Parts are authored with the
@@ -17,10 +17,39 @@
      The rejected candidate (A), for the sheet's comparison: the door
      strictly edge-on, in the wall column alone. -->
 <defs>
-  <linearGradient id="wd-day" x1="0" y1="0" x2="0" y2="1">
+  <!-- Outside, by the time of day (`art.rs` Sky), top to the horizon:
+       derived from the window's skies (props.svg, window-sky-*), whose
+       flat bands become a gradient's stops. Dawn's and dusk's are the
+       window's three bands' colours. Evening's adds a mid-stop (#4f5ba2,
+       at 0.65) between the window's top and its low band (#6a5ea8).
+       Night's is the window's one flat #2c3f72 with a darker top
+       (#22325e) and a lighter horizon (#3b4f86) added. The day's is the
+       approved sheet's daylight (#8fd0f0 at the top, where the window
+       has #7cc4ec, then #d9f0f6 and #fff1c4). -->
+  <linearGradient id="wd-sky-day" x1="0" y1="0" x2="0" y2="1">
     <stop offset="0" stop-color="#8fd0f0"/>
     <stop offset="0.75" stop-color="#d9f0f6"/>
     <stop offset="1" stop-color="#fff1c4"/>
+  </linearGradient>
+  <linearGradient id="wd-sky-dawn" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="#a9c7ec"/>
+    <stop offset="0.45" stop-color="#f7bfcc"/>
+    <stop offset="1" stop-color="#ffe0a6"/>
+  </linearGradient>
+  <linearGradient id="wd-sky-dusk" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="#7a4f9a"/>
+    <stop offset="0.45" stop-color="#d0637e"/>
+    <stop offset="1" stop-color="#f2924a"/>
+  </linearGradient>
+  <linearGradient id="wd-sky-evening" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="#36579a"/>
+    <stop offset="0.65" stop-color="#4f5ba2"/>
+    <stop offset="1" stop-color="#6a5ea8"/>
+  </linearGradient>
+  <linearGradient id="wd-sky-night" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="#22325e"/>
+    <stop offset="0.75" stop-color="#2c3f72"/>
+    <stop offset="1" stop-color="#3b4f86"/>
   </linearGradient>
 
   <!-- ===== A (rejected): edge-on, in the wall column ===== -->
@@ -48,11 +77,11 @@
     <rect x="70" y="5" width="9" height="159" fill="#f4a6c6" stroke="currentColor" stroke-width="2"/>
     <rect x="41" y="162" width="38" height="6" rx="1" fill="#c69c6d" stroke="currentColor" stroke-width="1.8"/>
   </g>
-  <!-- Outside, through the empty doorway: daylight, a hedge. -->
-  <g id="wd-beyond">
-    <path d="M 46 15 L 70 9 L 70 162 L 46 162 Z" fill="url(#wd-day)"/>
-    <path d="M 46 162 L 46 148 C 54 143 62 142 70 144 L 70 162 Z" fill="#7fb07a"/>
-  </g>
+  <!-- Outside, through the empty doorway: the sky and a hedge. Unfilled:
+       `art.rs` fills them by the time of day (a wd-sky-* gradient, and
+       the hedge's green toward the window's skyline). -->
+  <path id="wd-doorway" d="M 46 15 L 70 9 L 70 162 L 46 162 Z"/>
+  <path id="wd-hedge" d="M 46 162 L 46 148 C 54 143 62 142 70 144 L 70 162 Z"/>
 
   <!-- ===== B: the leaf ===== -->
 
@@ -70,11 +99,10 @@
     <path d="M 51 86 L 64 84.5 L 64 88 L 51 89.5 Z" fill="#eaa2c3"/>
     <rect x="54" y="148" width="8" height="4" rx="1" fill="#e8c34a" stroke="currentColor" stroke-width="1.1"/>
   </g>
-  <!-- The flap's hole, open: daylight. (The flap itself, swung up into
-       the room by an angle, is drawn by `art.rs`: see `flap_plate`.) -->
-  <g id="wd-flap-hole">
-    <path d="M 49 83 L 66 81 L 66 159 L 49 159 Z" fill="url(#wd-day)" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
-  </g>
+  <!-- The flap's hole, open: outside, filled by `art.rs` with the
+       doorway's sky. (The flap itself, swung up into the room by an
+       angle, is drawn by `art.rs`: see `flap_plate`.) -->
+  <path id="wd-flap-hole" d="M 49 83 L 66 81 L 66 159 L 49 159 Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
 
   <!-- Ajar: turned about 50 degrees on its back hinge (x = 46),
        foreshortened, its free edge nearer (taller). -->
