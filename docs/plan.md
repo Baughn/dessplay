@@ -3572,6 +3572,12 @@ share it.
 - **Second round (2026-10-08):** her door **stands over pane text** while
   she's out (only a protected pane hides it); she steps through the doorway
   at **walking pace**; the chat-pane line is *"People are talking here..."*.
+  **Third round (2026-10-08/09):** her fallback door never straddles a
+  pane's border; **makeshift pieces are exempt from the chat rule** (they
+  last one visit, like carried props; in the bundled layout nearly all the
+  text she crumples is chat text) but never stand in her door's space;
+  the chat line is *"People are talking here…"* (one ellipsis glyph, to fit
+  the 24-character bubble).
   The working design is
   [door/design.md](proposals/2026-10-02-houseguest-mind/door/design.md)
   (steps 1–10; it records the rest as decided unless the user objects).
