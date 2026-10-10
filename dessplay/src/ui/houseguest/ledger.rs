@@ -34,6 +34,20 @@
 //! build's), or anything that isn't an id, is skipped, and the rest of
 //! the record still reads.
 //!
+//! What she has put up (phase 6a: a shelf, its pane, anchor, rise and
+//! stages up) comes next, written only once she has, and read before
+//! her pieces, leniently, entry by entry: a structure this build doesn't
+//! know (a later build's), one it can't take (more stages up than a
+//! shelf has, lower than a shelf hangs), a shelf after the first, or
+//! anything that isn't one, is skipped, and the rest of the record still
+//! reads. A piece anchored on a shelf the record has finished, that
+//! takes its kind, stands on it out of its box; on a shelf the record
+//! lacks or hasn't finished, one that doesn't take it, or boxed, it
+//! keeps its pane and its share and lands on that pane's floor. Builds
+//! from before shelves ignore them and drop them when they save; a piece
+//! on a shelf loses its anchor there and goes to its room's pane at its
+//! share (dropped where its room has no pane on record).
+//!
 //! Her external door's wall (a strip and its side) comes next, written
 //! only once she has one, and read leniently: anything this build can't
 //! read as a wall reads as none, without failing the record (the next
@@ -52,6 +66,7 @@ use serde::{Deserialize, Serialize};
 
 use super::room::{Anchor, DoorWall, Furniture, Home, Nook, Prop, Side, Strip};
 use super::sprite::Facing;
+use super::structures::Structure;
 
 /// The format this build writes.
 const VERSION: u32 = 1;
@@ -187,7 +202,12 @@ impl Ledger {
             .into_iter()
             .filter_map(|v| serde_json::from_value::<Furniture>(v).ok())
             .collect();
-        let mut home = Home::default();
+        // Her structures first: a piece's anchor on a shelf is read
+        // against them.
+        let mut home = Home {
+            structures: structures(raw.structures.as_ref()),
+            ..Home::default()
+        };
         for prop in raw
             .props
             .into_iter()
@@ -211,14 +231,23 @@ impl Ledger {
                 settled: !unsettled.contains(&prop.item),
                 ..Prop::new(prop.item, nook, prop.at, prop.facing)
             };
+            // On a shelf, it stands there only if the record has that
+            // shelf finished (only a finished shelf is a strip: phase 6a
+            // D6), the shelf takes its kind, and it's out of its box (a
+            // parcel only ever comes in on a floor, and she unpacks it
+            // there).
+            let held_up = |strip: Strip| {
+                home.shelf(strip.nook()).is_some_and(|s| s.finished())
+                    && strip.takes(prop.item)
+                    && !prop.boxed
+            };
             match anchored {
-                Some(a) if a.strip.is_floor() => {
+                Some(a) if a.strip.is_floor() || held_up(a.strip) => {
                     piece.strip = a.strip;
                     piece.anchor = a.anchor;
                 }
-                // On a shelf the record has no structure for (phase 6a
-                // D2: this build reads none yet), it keeps only its pane
-                // and its share: it lands on that pane's floor.
+                // Anywhere else on a shelf (phase 6a D2), it keeps only
+                // its pane and its share: it lands on that pane's floor.
                 Some(a) => piece.strip = a.strip.room(),
                 None => {}
             }
@@ -294,6 +323,7 @@ impl Ledger {
             legend_at: self.legend_at,
             calendar_on: self.calendar_on.map(|d| d.format(DATE).to_string()),
             seen: self.seen.clone(),
+            structures: self.home.structures.clone(),
             door: self.home.door,
             clock_sent: self.clock_sent,
         };
@@ -366,6 +396,19 @@ impl Ledger {
             seen: self.seen.clone(),
             calendar_on: self.calendar_on.map(|d| d.format(DATE).to_string()),
             clock_sent: self.clock_sent,
+            structures: self
+                .home
+                .structures
+                .iter()
+                .map(|s| match *s {
+                    Structure::Shelf(shelf) => format!(
+                        "{:?} shelf, {} of {} up",
+                        shelf.nook,
+                        shelf.built,
+                        super::structures::SHELF_STAGES
+                    ),
+                })
+                .collect(),
             door: self.home.door.map(|door| {
                 let nook = door.strip.nook();
                 let side = match door.side {
@@ -426,6 +469,9 @@ pub struct Summary {
     pub calendar_on: Option<String>,
     /// Her wall clock has been sent.
     pub clock_sent: bool,
+    /// What she has put up, once she has ("Users shelf, 2 of 2 up").
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub structures: Vec<String>,
     /// Her external door's wall, once she has one ("Users right").
     #[serde(skip_serializing_if = "Option::is_none")]
     pub door: Option<String>,
@@ -541,6 +587,31 @@ fn seen(value: Option<&serde_json::Value>) -> Vec<String> {
     out
 }
 
+/// Her structures, as read: each entry one this build knows and can
+/// take ([`super::structures::Shelf::sound`]), in the order written;
+/// anything else (a later build's kind, a value that isn't one, a list
+/// that isn't one) skipped, and so (6a) is a shelf after the first.
+fn structures(value: Option<&serde_json::Value>) -> Vec<Structure> {
+    let mut out: Vec<Structure> = Vec::new();
+    for structure in value
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|v| serde_json::from_value::<Structure>(v.clone()).ok())
+    {
+        match structure {
+            // One shelf in all (phase 6a: one kit), so one a pane.
+            Structure::Shelf(shelf) => {
+                let shelved = out.iter().any(|s| matches!(s, Structure::Shelf(_)));
+                if shelf.sound() && !shelved {
+                    out.push(structure);
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Whether a count is left out of the record (serde's
 /// `skip_serializing_if` takes a reference).
 fn is_zero(n: &u64) -> bool {
@@ -627,6 +698,9 @@ struct Saved {
     /// Left out until she has shown something rare.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     seen: Vec<String>,
+    /// What she has put up; left out until she has.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    structures: Vec<Structure>,
     /// Her door's wall; left out until she has one.
     #[serde(skip_serializing_if = "Option::is_none")]
     door: Option<DoorWall>,
@@ -687,17 +761,42 @@ struct Raw {
     #[serde(default)]
     seen: Option<serde_json::Value>,
     #[serde(default)]
+    structures: Option<serde_json::Value>,
+    #[serde(default)]
     door: Option<serde_json::Value>,
     #[serde(default)]
     clock_sent: Option<serde_json::Value>,
 }
+
+/// A record as a build with shelves writes it, by hand (phase 6a): a
+/// finished shelf on the List pane, the plant on it, a boxed shelf
+/// kit, the day's stages paced; the sofa makes Users the living room.
+/// (Read by the ledger's tests and by the paint's, `tests/away.rs`.)
+#[cfg(test)]
+pub(super) const SHELF_RECORD: &str = concat!(
+    r#"{"version":1,"master_seed":42,"visits":7,"#,
+    r#""rooms":[["Living","Users"],["Bedroom","Playlist"]],"#,
+    r#""props":[{"item":"Sofa","at":0,"facing":"Left","boxed":false},"#,
+    r#"{"item":"Bed","at":500,"facing":"Right","boxed":true},"#,
+    r#"{"item":"Plant","at":480,"facing":"Right","boxed":false},"#,
+    r#"{"item":"ShelfKit","at":200,"facing":"Right","boxed":true}],"#,
+    r#""anchors":[{"item":"Sofa","strip":{"Bottom":"Users"},"anchor":{"side":"Left","offset":0}},"#,
+    r#"{"item":"Bed","strip":{"Bottom":"Playlist"},"anchor":{"side":"Right","offset":7}},"#,
+    r#"{"item":"Plant","strip":{"Shelf":"List"},"anchor":{"side":"Left","offset":4}},"#,
+    r#"{"item":"ShelfKit","strip":{"Bottom":"List"},"anchor":null}],"#,
+    r#""ordered":"Desk","bought_on":6,"#,
+    r#""structures":[{"Shelf":{"nook":"List","anchor":{"side":"Left","offset":12},"rise":7,"built":2}}],"#,
+    r#""paced":{"on":{"Day":3},"stages":1}}"#,
+);
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::super::room::Side;
     use super::super::script::ScriptId;
+    use super::super::structures::{LOW_RISE, SHELF_STAGES, Shelf, Structure};
     use super::*;
+    use proptest::prelude::*;
 
     fn furnished() -> Ledger {
         let mut ledger = Ledger::new(42);
@@ -1341,10 +1440,49 @@ mod tests {
         }
     }
 
-    /// A piece anchored on a shelf the record has no structure for (here,
-    /// any: phase 6a D2) keeps only its pane and its share: it reads back
-    /// on that pane's floor, unanchored, where its share puts it. Small
-    /// decor or not, on its room's pane or another.
+    /// A shelf on `nook`'s pane, finished, 12 columns from its left wall,
+    /// high.
+    fn shelf_on(nook: Nook) -> Structure {
+        Structure::Shelf(Shelf {
+            nook,
+            anchor: Anchor {
+                side: Side::Left,
+                offset: 12,
+            },
+            rise: 7,
+            built: 2,
+        })
+    }
+
+    /// [`furnished`] with `item` anchored on `nook`'s shelf (added at 300
+    /// if it isn't one of its pieces), and the record's shelves on
+    /// `shelves`' panes.
+    fn on_a_shelf(item: Furniture, nook: Nook, shelves: &[Nook]) -> Ledger {
+        let mut ledger = furnished();
+        ledger.home.structures = shelves.iter().map(|&n| shelf_on(n)).collect();
+        if !ledger.home.owns(item) {
+            assert!(ledger.home.add(Prop {
+                anchor: Some(Anchor {
+                    side: Side::Left,
+                    offset: 9,
+                }),
+                ..Prop::new(item, nook, 300, Facing::Right)
+            }));
+        }
+        let piece = ledger
+            .home
+            .props
+            .iter_mut()
+            .find(|p| p.item == item)
+            .unwrap();
+        piece.strip = Strip::Shelf(nook);
+        ledger
+    }
+
+    /// A piece anchored on a shelf the record has no structure for (none,
+    /// or only another pane's: phase 6a D2) keeps only its pane and its
+    /// share: it reads back on that pane's floor, unanchored, where its
+    /// share puts it. Small decor or not, on its room's pane or another.
     #[test]
     fn a_piece_on_a_shelf_the_record_lacks_lands_on_its_pane() {
         for (item, nook) in [
@@ -1352,47 +1490,561 @@ mod tests {
             (Furniture::Clock, Nook::List),
             (Furniture::Sofa, Nook::Users),
         ] {
-            let mut ledger = furnished();
-            if item != Furniture::Sofa {
-                assert!(ledger.home.add(Prop {
-                    anchor: Some(Anchor {
-                        side: Side::Left,
-                        offset: 9,
-                    }),
-                    ..Prop::new(item, nook, 300, Facing::Right)
-                }));
+            for shelves in [&[][..], &[Nook::Playlist]] {
+                let ledger = on_a_shelf(item, nook, shelves);
+                let was = *ledger.home.props.iter().find(|p| p.item == item).unwrap();
+                // The dump names a shelf by its pane.
+                let owned = ledger.summary(None).owns;
+                let owned = owned.iter().find(|o| o.item == format!("{item:?}"));
+                assert_eq!(
+                    owned.map(|o| o.strip.as_str()),
+                    Some(format!("{nook:?} shelf").as_str())
+                );
+                let text = ledger.to_json();
+                assert!(
+                    text.contains(&format!(r#"{{"Shelf":"{nook:?}"}}"#)),
+                    "{text}"
+                );
+                let read = Ledger::from_json(&text).unwrap();
+                let piece = read.home.props.iter().find(|p| p.item == item).unwrap();
+                assert_eq!(piece.strip, Strip::Bottom(nook), "{item:?} {shelves:?}");
+                assert_eq!(piece.anchor, None, "{item:?} {shelves:?}");
+                assert_eq!(piece.at, was.at, "{item:?} {shelves:?}");
+                // Everything else reads as it was written.
+                let mut rest = read.clone();
+                rest.home.props.retain(|p| p.item != item);
+                let mut want = ledger.clone();
+                want.home.props.retain(|p| p.item != item);
+                assert_eq!(rest, want, "{item:?} {shelves:?}");
             }
-            let i = ledger
-                .home
-                .props
-                .iter()
-                .position(|p| p.item == item)
-                .unwrap();
-            let was = ledger.home.props[i];
-            ledger.home.props[i].strip = Strip::Shelf(nook);
-            // The dump names a shelf by its pane.
-            let owned = ledger.summary(None).owns;
-            let owned = owned.iter().find(|o| o.item == format!("{item:?}"));
-            assert_eq!(
-                owned.map(|o| o.strip.as_str()),
-                Some(format!("{nook:?} shelf").as_str())
-            );
+        }
+    }
+
+    /// A piece anchored on a shelf the record has stays on it, anchored,
+    /// only if the shelf is finished (phase 6a D6: only a finished shelf
+    /// is a strip), takes it (small decor) and it's out of its box. Any
+    /// other (furniture, a parcel, or on a shelf not yet all up) keeps
+    /// only its pane and its share: it lands on that pane's floor, and
+    /// the rest of the record reads as written. Each row says which, from
+    /// the spec (`Spec.shelf`: the plant and the clock), not from
+    /// `Strip::takes`.
+    #[test]
+    fn a_piece_on_a_shelf_the_record_has_stays_on_it_if_it_takes_it() {
+        for built in 0..=SHELF_STAGES {
+            for (item, nook, boxed, small) in [
+                (Furniture::Plant, Nook::Users, false, true),
+                (Furniture::Clock, Nook::List, false, true),
+                (Furniture::Sofa, Nook::Users, false, false),
+                (Furniture::Plant, Nook::Users, true, true),
+                (Furniture::Clock, Nook::List, true, true),
+            ] {
+                let at = format!("{item:?} boxed={boxed} built={built}");
+                let mut ledger = on_a_shelf(item, nook, &[nook]);
+                for structure in &mut ledger.home.structures {
+                    let Structure::Shelf(shelf) = structure;
+                    shelf.built = built;
+                }
+                let piece = ledger.home.props.iter_mut().find(|p| p.item == item);
+                piece.unwrap().boxed = boxed;
+                let was = *ledger.home.props.iter().find(|p| p.item == item).unwrap();
+                let read = Ledger::from_json(&ledger.to_json()).unwrap();
+                if small && !boxed && built == SHELF_STAGES {
+                    assert_eq!(read, ledger, "{at}");
+                    continue;
+                }
+                let piece = read.home.props.iter().find(|p| p.item == item).unwrap();
+                assert_eq!(piece.strip, Strip::Bottom(nook), "{at}");
+                assert_eq!(piece.anchor, None, "{at}");
+                assert_eq!(piece.at, was.at, "{at}");
+                assert_eq!(piece.boxed, boxed, "{at}");
+                // Everything else, the shelf too, reads as it was written.
+                let mut rest = read.clone();
+                rest.home.props.retain(|p| p.item != item);
+                let mut want = ledger.clone();
+                want.home.props.retain(|p| p.item != item);
+                assert_eq!(rest, want, "{at}");
+            }
+        }
+    }
+
+    /// [`furnished`], a finished shelf on the Users pane, and the plant
+    /// on it.
+    fn shelved() -> Ledger {
+        let mut ledger = on_a_shelf(Furniture::Plant, Nook::Users, &[Nook::Users]);
+        let plant = plant_of(&mut ledger);
+        plant.at = 480;
+        plant.anchor = Some(Anchor {
+            side: Side::Left,
+            offset: 3,
+        });
+        ledger
+    }
+
+    /// The record's plant.
+    fn plant_of(ledger: &mut Ledger) -> &mut Prop {
+        ledger
+            .home
+            .props
+            .iter_mut()
+            .find(|p| p.item == Furniture::Plant)
+            .expect("her plant")
+    }
+
+    /// Her shelf reads back as it was written, built or not, and the dump
+    /// lists it with how far up it is; the plant stands on it once it's
+    /// finished (before then, on its pane's floor below).
+    #[test]
+    fn a_shelf_round_trips() {
+        for built in 0..=SHELF_STAGES {
+            let mut ledger = shelved();
+            let Some(Structure::Shelf(shelf)) = ledger.home.structures.first_mut() else {
+                panic!("a shelf");
+            };
+            shelf.built = built;
+            if built < SHELF_STAGES {
+                let plant = plant_of(&mut ledger);
+                plant.strip = Strip::Bottom(Nook::Users);
+                plant.anchor = None;
+            }
             let text = ledger.to_json();
-            assert!(
-                text.contains(&format!(r#"{{"Shelf":"{nook:?}"}}"#)),
-                "{text}"
+            assert!(text.contains(r#""structures":"#), "{text}");
+            assert_eq!(Ledger::from_json(&text), Ok(ledger.clone()), "{text}");
+            assert_eq!(
+                ledger.summary(None).structures,
+                [format!("Users shelf, {built} of 2 up")]
+            );
+        }
+        // A low shelf too, at the lowest a shelf hangs.
+        let mut ledger = shelved();
+        ledger.home.structures = vec![Structure::Shelf(Shelf {
+            nook: Nook::List,
+            anchor: Anchor {
+                side: Side::Right,
+                offset: 0,
+            },
+            rise: LOW_RISE,
+            built: SHELF_STAGES,
+        })];
+        plant_of(&mut ledger).strip = Strip::Shelf(Nook::List);
+        let text = ledger.to_json();
+        assert_eq!(Ledger::from_json(&text), Ok(ledger), "{text}");
+        // With none, the record and the dump have no word of them.
+        assert!(!furnished().to_json().contains("structures"));
+        assert!(furnished().summary(None).structures.is_empty());
+    }
+
+    /// The record with a shelf, as this build writes it, character for
+    /// character: its structures after what she has seen and before her
+    /// door's wall, and the piece on it anchored on it.
+    #[test]
+    fn the_record_with_a_shelf_as_written() {
+        let mut ledger = Ledger {
+            clock_sent: true,
+            seen: vec!["dream".to_owned()],
+            ..shelved()
+        };
+        ledger.home.door = Some(DoorWall {
+            strip: Strip::Bottom(Nook::Playlist),
+            side: Side::Left,
+        });
+        assert_eq!(
+            ledger.to_json(),
+            concat!(
+                r#"{"version":1,"master_seed":42,"visits":7,"#,
+                r#""rooms":[["Living","Users"],["Bedroom","Playlist"]],"#,
+                r#""props":[{"item":"Sofa","at":0,"facing":"Left","boxed":false},"#,
+                r#"{"item":"Tv","at":900,"facing":"Left","boxed":false},"#,
+                r#"{"item":"Bed","at":500,"facing":"Right","boxed":true},"#,
+                r#"{"item":"Plant","at":480,"facing":"Right","boxed":false}],"#,
+                r#""anchors":[{"item":"Sofa","strip":{"Bottom":"Users"},"anchor":{"side":"Left","offset":0}},"#,
+                r#"{"item":"Tv","strip":{"Bottom":"Users"},"anchor":null},"#,
+                r#"{"item":"Bed","strip":{"Bottom":"Playlist"},"anchor":{"side":"Right","offset":7}},"#,
+                r#"{"item":"Plant","strip":{"Shelf":"Users"},"anchor":{"side":"Left","offset":3}}],"#,
+                r#""ordered":"Desk","bought_on":6,"seen":["dream"],"#,
+                r#""structures":[{"Shelf":{"nook":"Users","anchor":{"side":"Left","offset":12},"rise":7,"built":2}}],"#,
+                r#""door":{"strip":{"Bottom":"Playlist"},"side":"Left"},"clock_sent":true}"#,
+            )
+        );
+    }
+
+    /// A structure this build can't take is skipped, entry by entry,
+    /// without failing the record or the entries it can: garbage, a later
+    /// build's kind, an unknown pane, more stages up than a shelf has, a
+    /// shelf lower than any hangs, a second shelf on a pane, and (6a) a
+    /// second shelf at all; a piece on the shelf it keeps stays on it.
+    #[test]
+    fn a_structure_this_build_cannot_take_is_skipped() {
+        let entry = |nook: &str, side: &str, rise: u16, built: u8| {
+            format!(
+                r#"{{"Shelf":{{"nook":"{nook}","anchor":{{"side":"{side}","offset":5}},"rise":{rise},"built":{built}}}}}"#
+            )
+        };
+        let kept = serde_json::to_string(&shelf_on(Nook::Users)).unwrap();
+        let before = [
+            "1".to_owned(),
+            "null".to_owned(),
+            r#""Shelf""#.to_owned(),
+            "[]".to_owned(),
+            "{}".to_owned(),
+            r#"{"Ladder":{"nook":"Users","built":1}}"#.to_owned(),
+            r#"{"Shelf":"Users"}"#.to_owned(),
+            r#"{"Shelf":{"nook":"Users","rise":7,"built":2}}"#.to_owned(),
+            entry("Chat", "Left", 7, 2),
+            entry("Users", "Up", 7, 2),
+            entry("List", "Left", 7, SHELF_STAGES + 1),
+            entry("List", "Left", LOW_RISE - 1, 0),
+        ];
+        let after = [
+            // A second shelf on her shelf's pane, and one on another.
+            entry("Users", "Right", 9, 1),
+            entry("List", "Left", 7, 2),
+            entry("Playlist", "Right", LOW_RISE, 0),
+        ];
+        let cases = before
+            .iter()
+            .map(|bad| format!("[{bad},{kept}]"))
+            .chain(after.iter().map(|bad| format!("[{kept},{bad}]")));
+        let written = shelved().to_json();
+        assert!(
+            written.contains(&format!(r#""structures":[{kept}]"#)),
+            "{written}"
+        );
+        for structures in cases {
+            let text = written.replace(
+                &format!(r#""structures":[{kept}]"#),
+                &format!(r#""structures":{structures}"#),
+            );
+            assert!(text.contains(&structures), "{structures}: not in {text}");
+            assert_eq!(Ledger::from_json(&text), Ok(shelved()), "{structures}");
+        }
+        // Each bad entry alone: no shelf, and the plant on its pane.
+        for bad in &before {
+            let text = written.replace(
+                &format!(r#""structures":[{kept}]"#),
+                &format!(r#""structures":[{bad}]"#),
+            );
+            let mut read = Ledger::from_json(&text).unwrap();
+            assert!(read.home.structures.is_empty(), "{bad}");
+            let plant = *plant_of(&mut read);
+            assert_eq!(plant.strip, Strip::Bottom(Nook::Users), "{bad}");
+            assert_eq!(plant.anchor, None, "{bad}");
+            assert_eq!(plant.at, 480, "{bad}");
+        }
+        // The boundaries themselves are taken, as written; the plant
+        // stands on the shelf only once it's finished.
+        for (rise, built) in [(LOW_RISE, 0), (LOW_RISE, SHELF_STAGES), (40, 1), (40, 2)] {
+            let good = entry("Users", "Right", rise, built);
+            let text = written.replace(
+                &format!(r#""structures":[{kept}]"#),
+                &format!(r#""structures":[{good}]"#),
+            );
+            let mut read = Ledger::from_json(&text).unwrap();
+            assert_eq!(
+                read.home.structures,
+                [Structure::Shelf(Shelf {
+                    nook: Nook::Users,
+                    anchor: Anchor {
+                        side: Side::Right,
+                        offset: 5,
+                    },
+                    rise,
+                    built,
+                })],
+                "{good}"
+            );
+            let plant = *plant_of(&mut read);
+            let on = if built == SHELF_STAGES {
+                Strip::Shelf(Nook::Users)
+            } else {
+                Strip::Bottom(Nook::Users)
+            };
+            assert_eq!(plant.strip, on, "{good}");
+            assert_eq!(plant.at, 480, "{good}");
+        }
+        // A field a later build adds to a shelf (step 8's `fresh`) is
+        // ignored: the shelf is kept as if it weren't there.
+        let fresh = format!(r#"{},"fresh":{{"Day":3}}}}}}"#, &kept[..kept.len() - 2]);
+        assert!(
+            fresh.ends_with(r#""built":2,"fresh":{"Day":3}}}"#),
+            "{fresh}"
+        );
+        let text = written.replace(
+            &format!(r#""structures":[{kept}]"#),
+            &format!(r#""structures":[{fresh}]"#),
+        );
+        assert!(text.contains(&fresh), "{text}");
+        assert_eq!(Ledger::from_json(&text), Ok(shelved()), "{fresh}");
+        // A whole field that isn't a list of them reads as none.
+        for garbage in ["1", "null", "{}", r#""Shelf""#] {
+            let text = written.replace(
+                &format!(r#""structures":[{kept}]"#),
+                &format!(r#""structures":{garbage}"#),
             );
             let read = Ledger::from_json(&text).unwrap();
-            let piece = read.home.props.iter().find(|p| p.item == item).unwrap();
-            assert_eq!(piece.strip, Strip::Bottom(nook), "{item:?}");
-            assert_eq!(piece.anchor, None, "{item:?}");
-            assert_eq!(piece.at, was.at, "{item:?}");
-            // Everything else reads as it was written.
+            assert!(read.home.structures.is_empty(), "{garbage}");
+        }
+        // A kit (a later step's kind, unknown here) both boxed and up as
+        // her shelf: the shelf is kept, the box skipped (6a: one kit).
+        let text = written.replace(
+            r#""props":["#,
+            r#""props":[{"item":"ShelfKit","at":200,"facing":"Right","boxed":true},"#,
+        );
+        assert!(text.contains("ShelfKit"), "{text}");
+        assert_eq!(Ledger::from_json(&text), Ok(shelved()));
+    }
+
+    /// The kinds of piece the builds before shelves know (phase 6a), as
+    /// they're written.
+    const PRE_SHELF_KINDS: [&str; 12] = [
+        "Sofa",
+        "Tv",
+        "Bed",
+        "Desk",
+        "Lamp",
+        "Bookshelf",
+        "Fridge",
+        "CatBed",
+        "Plant",
+        "Poster",
+        "Clock",
+        "Window",
+    ];
+
+    /// What a build from before shelves (phase 6a) reads of a record,
+    /// frozen from its `from_json` (at `d1f53e7d`): each piece of a kind
+    /// it knows, once, on its room's pane from `rooms` at its share, else
+    /// on the pane of its strip; anchored only from a floor's entry, so a
+    /// piece on a shelf loses its anchor and goes to its room's pane, and
+    /// is dropped if its room has none. It ignores `structures` (and any
+    /// other field it doesn't know), and drops them when it saves.
+    fn as_a_pre_shelf_build_reads(text: &str) -> Vec<(Furniture, Nook, Option<Anchor>, u16)> {
+        #[derive(Deserialize)]
+        enum OldStrip {
+            Bottom(Nook),
+        }
+        #[derive(Deserialize)]
+        struct OldAnchor {
+            item: String,
+            strip: OldStrip,
+            #[serde(default)]
+            anchor: Option<Anchor>,
+        }
+        let raw: serde_json::Value = serde_json::from_str(text).unwrap();
+        assert_eq!(raw["version"], 1, "it can't read {text}");
+        let mut rooms: Vec<(RoomKind, Nook)> = Vec::new();
+        for room in raw["rooms"].as_array().unwrap() {
+            let (kind, nook): (RoomKind, Nook) = serde_json::from_value(room.clone()).unwrap();
+            if !rooms.iter().any(|&(k, n)| k == kind || n == nook) {
+                rooms.push((kind, nook));
+            }
+        }
+        let anchors: Vec<OldAnchor> = raw["anchors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|a| serde_json::from_value::<OldAnchor>(a.clone()).ok())
+            .filter(|a| PRE_SHELF_KINDS.contains(&a.item.as_str()))
+            .collect();
+        let mut out: Vec<(Furniture, Nook, Option<Anchor>, u16)> = Vec::new();
+        for prop in raw["props"].as_array().unwrap() {
+            let Some(name) = prop["item"]
+                .as_str()
+                .filter(|n| PRE_SHELF_KINDS.contains(n))
+            else {
+                continue;
+            };
+            let item = serde_json::from_value::<Furniture>(prop["item"].clone()).unwrap();
+            if out.iter().any(|&(i, ..)| i == item) {
+                continue;
+            }
+            let at = prop["at"].as_u64().unwrap() as u16;
+            let anchored = anchors.iter().find(|a| a.item == name);
+            let room = rooms.iter().find(|&&(k, _)| k == RoomKind::of(item));
+            let Some(nook) = room.map(|&(_, nook)| nook).or_else(|| {
+                anchored.map(|a| {
+                    let OldStrip::Bottom(nook) = a.strip;
+                    nook
+                })
+            }) else {
+                continue;
+            };
+            out.push(match anchored {
+                Some(a) => {
+                    let OldStrip::Bottom(strip) = a.strip;
+                    (item, strip, a.anchor, at)
+                }
+                None => (item, nook, None, at),
+            });
+        }
+        out
+    }
+
+    /// A build from before shelves reads a record with one as the model
+    /// says, which is what it was seen to do (2026-10-10, `d1f53e7d`'s
+    /// `from_json` on these two records): the plant on the shelf goes,
+    /// unanchored at its share, to the living room's pane, or, with no
+    /// living room on record, is dropped; the kit is skipped; the rest
+    /// reads as written.
+    #[test]
+    fn a_pre_shelf_build_reads_a_record_with_a_shelf() {
+        let left = |offset| {
+            Some(Anchor {
+                side: Side::Left,
+                offset,
+            })
+        };
+        let right = |offset| {
+            Some(Anchor {
+                side: Side::Right,
+                offset,
+            })
+        };
+        assert_eq!(
+            as_a_pre_shelf_build_reads(SHELF_RECORD),
+            [
+                (Furniture::Sofa, Nook::Users, left(0), 0),
+                (Furniture::Bed, Nook::Playlist, right(7), 500),
+                (Furniture::Plant, Nook::Users, None, 480),
+            ]
+        );
+        let no_living = SHELF_RECORD
+            .replace(r#"["Living","Users"],"#, "")
+            .replace(r#"{"item":"Sofa","at":0,"facing":"Left","boxed":false},"#, "")
+            .replace(
+                r#"{"item":"Sofa","strip":{"Bottom":"Users"},"anchor":{"side":"Left","offset":0}},"#,
+                "",
+            );
+        assert!(!no_living.contains("Sofa"), "{no_living}");
+        assert_eq!(
+            as_a_pre_shelf_build_reads(&no_living),
+            [(Furniture::Bed, Nook::Playlist, right(7), 500)]
+        );
+        // What this build writes, it reads the same way.
+        assert_eq!(
+            as_a_pre_shelf_build_reads(&shelved().to_json()),
+            [
+                (Furniture::Sofa, Nook::Users, left(0), 0),
+                (Furniture::Tv, Nook::Users, None, 900),
+                (Furniture::Bed, Nook::Playlist, right(7), 500),
+                (Furniture::Plant, Nook::Users, None, 480),
+            ]
+        );
+        // And the oldest builds, which know no plant, alike but for it.
+        assert_eq!(
+            as_an_older_build_reads(SHELF_RECORD),
+            [
+                (Furniture::Sofa, Nook::Users, 0),
+                (Furniture::Bed, Nook::Playlist, 500),
+            ]
+        );
+    }
+
+    /// This build reads the hand-written record with its shelf: the shelf
+    /// and the plant on it as written; the kit (a later step's kind) and
+    /// the pacing (a later step's field) aren't read.
+    #[test]
+    fn this_build_reads_a_record_with_a_shelf() {
+        let read = Ledger::from_json(SHELF_RECORD).unwrap();
+        let anchor = |side, offset| Some(Anchor { side, offset });
+        assert_eq!(
+            read.home,
+            Home {
+                props: vec![
+                    Prop {
+                        anchor: anchor(Side::Left, 0),
+                        ..Prop::new(Furniture::Sofa, Nook::Users, 0, Facing::Left)
+                    },
+                    Prop {
+                        anchor: anchor(Side::Right, 7),
+                        boxed: true,
+                        ..Prop::new(Furniture::Bed, Nook::Playlist, 500, Facing::Right)
+                    },
+                    Prop {
+                        strip: Strip::Shelf(Nook::List),
+                        anchor: anchor(Side::Left, 4),
+                        ..Prop::new(Furniture::Plant, Nook::List, 480, Facing::Right)
+                    },
+                ],
+                door: None,
+                structures: vec![shelf_on(Nook::List)],
+            }
+        );
+    }
+
+    /// One entry of a record's `structures`, as a test writes it: garbage
+    /// a build can't read as a structure, or a shelf, any geometry.
+    #[derive(Clone, Debug)]
+    enum Entry {
+        Garbage(&'static str),
+        Shelf(Shelf),
+    }
+
+    fn entries() -> impl Strategy<Value = Vec<Entry>> {
+        let nook = proptest::sample::select(vec![Nook::List, Nook::Users, Nook::Playlist]);
+        let side = proptest::sample::select(vec![Side::Left, Side::Right]);
+        // Mostly about the bounds, sometimes anything at all.
+        let rise = prop_oneof![3 => 0u16..10, 1 => any::<u16>()];
+        let built = prop_oneof![3 => 0u8..4, 1 => any::<u8>()];
+        let shelf = (nook, side, any::<u16>(), rise, built).prop_map(
+            |(nook, side, offset, rise, built)| {
+                Entry::Shelf(Shelf {
+                    nook,
+                    anchor: Anchor { side, offset },
+                    rise,
+                    built,
+                })
+            },
+        );
+        let garbage = proptest::sample::select(vec![
+            "1",
+            "null",
+            "[]",
+            "{}",
+            r#""Shelf""#,
+            r#"{"Shelf":"Users"}"#,
+            r#"{"Ladder":{"nook":"Users","built":1}}"#,
+        ])
+        .prop_map(Entry::Garbage);
+        proptest::collection::vec(prop_oneof![shelf, garbage], 0..5)
+    }
+
+    proptest! {
+        /// A record's structures read back as the first shelf in them
+        /// that this build can take, whatever else is around it, and
+        /// nothing else of the record changes. The oracle is written out
+        /// here, not `Shelf::sound`: no more than 2 stages up, at least 5
+        /// rows above the floor (phase 6a D2, D3).
+        #[test]
+        fn only_the_first_sound_shelf_is_read(entries in entries()) {
+            let written: Vec<String> = entries
+                .iter()
+                .map(|e| match e {
+                    Entry::Garbage(text) => (*text).to_owned(),
+                    Entry::Shelf(shelf) => serde_json::to_string(&Structure::Shelf(*shelf)).unwrap(),
+                })
+                .collect();
+            let text = furnished().to_json().replace(
+                r#""bought_on":6}"#,
+                &format!(r#""bought_on":6,"structures":[{}]}}"#, written.join(",")),
+            );
+            prop_assert!(text.contains(r#""structures":["#), "{}", text);
+            let want: Vec<Structure> = entries
+                .iter()
+                .find_map(|e| match e {
+                    Entry::Shelf(shelf) if shelf.built <= 2 && shelf.rise >= 5 => {
+                        Some(Structure::Shelf(*shelf))
+                    }
+                    _ => None,
+                })
+                .into_iter()
+                .collect();
+            let read = Ledger::from_json(&text).unwrap();
+            prop_assert_eq!(&read.home.structures, &want);
             let mut rest = read.clone();
-            rest.home.props.retain(|p| p.item != item);
-            let mut want = ledger.clone();
-            want.home.props.retain(|p| p.item != item);
-            assert_eq!(rest, want, "{item:?}");
+            rest.home.structures.clear();
+            prop_assert_eq!(rest, furnished());
+            // And what it kept, it writes back as it read it.
+            prop_assert_eq!(Ledger::from_json(&read.to_json()), Ok(read));
         }
     }
 

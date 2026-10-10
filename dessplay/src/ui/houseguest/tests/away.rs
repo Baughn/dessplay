@@ -1287,7 +1287,10 @@ fn an_errand_from_her_empty_home_rains_her_door_out() {
         now += 100;
         guest.advance(now);
         let accordion = Rect::new(10, 8, 20, 1);
-        assert!(guest.send(&real, &view, accordion, now), "{at}: sent");
+        assert!(
+            guest.send(&real, &view, &Written::none(), accordion, now),
+            "{at}: sent"
+        );
         let State::Visiting(_) = &guest.state else {
             panic!("{at}: visiting");
         };
@@ -1692,7 +1695,10 @@ fn an_errand_as_she_comes_in_from_her_empty_home_rains_her_door_out() {
                 );
             }
             let accordion = Rect::new(10, 8, 20, 1);
-            assert!(guest.send(&real, &view, accordion, now), "{at}: sent");
+            assert!(
+                guest.send(&real, &view, &Written::none(), accordion, now),
+                "{at}: sent"
+            );
             assert!(matches!(guest.state, State::Visiting(_)), "{at}: visiting");
             assert!(door_raining(&guest, door), "{at}: her door rains out");
         }
@@ -3693,7 +3699,10 @@ fn an_errand_on_her_way_out_has_her_set_off_again() {
         }
         // On List's floor.
         let accordion = Rect::new(10, 26, 20, 1);
-        assert!(guest.send(&real, &view, accordion, now), "{at}: sent");
+        assert!(
+            guest.send(&real, &view, &Written::none(), accordion, now),
+            "{at}: sent"
+        );
         let seen = way_out(&mut guest, &real, &view, &mut now, 120_000);
         assert!(seen.opened.is_some(), "{at}: {seen:?}");
         assert_eq!(seen.off_lines + usize::from(seen.late), 2, "{at}: {seen:?}");
@@ -7182,4 +7191,69 @@ fn door_shots() {
     );
     all_drawn(&full, "the short terminal");
     save(&full[0].image, "short-terminal.png");
+}
+
+/// A piece her record puts on a shelf (phase 6a step 2a: the reader
+/// keeps the plant on its finished List shelf) is never shown before
+/// shelves are strips (step 3): no plan holds it up, so it's hidden,
+/// and never moved, visiting and away, in both drawing modes; nothing
+/// in the paint trips over it.
+#[test]
+fn a_restored_piece_on_a_shelf_is_never_shown() {
+    let (w, h) = (100, 30);
+    let on_its_shelf = |guest: &Guest, at: &str| {
+        let plant = guest
+            .ledger
+            .home
+            .props
+            .iter()
+            .find(|p| p.item == Furniture::Plant)
+            .unwrap_or_else(|| panic!("{at}: her plant"));
+        assert_eq!(plant.strip, room::Strip::Shelf(Nook::List), "{at}: moved");
+    };
+    for graphics in [false, true] {
+        for away in [false, true] {
+            let at = format!("graphics={graphics} away={away}");
+            let mut ledger = Ledger::from_json(ledger::SHELF_RECORD).expect("it reads");
+            ledger.clock_sent = true;
+            if away {
+                ledger.clock = tue(9, 0).minutes();
+            }
+            let mut guest = Guest::restore(ledger);
+            guest.set_date(date(2026, 6, 17));
+            if graphics {
+                guest.set_picker(kitty());
+            }
+            on_its_shelf(&guest, &at);
+            let (real, view) = if away {
+                (wordy_rooms(w, h), resident_view(w, h, None))
+            } else {
+                rooms_frame(w, h)
+            };
+            let mut now = if away {
+                until_away(&mut guest, &real, &view, 0)
+            } else {
+                until_visiting(&mut guest, &real, &view, 0)
+            };
+            let (mut frames, mut sofa) = (0, 0);
+            for _ in 0..300 {
+                shell_step(&mut guest, &real, &view, &mut now, true);
+                let shown = match &guest.state {
+                    State::Visiting(visit) => &visit.shown,
+                    State::Away(empty) => &empty.shown,
+                    _ => continue,
+                };
+                frames += 1;
+                sofa += usize::from(shown.iter().any(|s| s.item == Furniture::Sofa));
+                assert!(
+                    shown.iter().all(|s| s.item != Furniture::Plant),
+                    "{at}: shown at {now}"
+                );
+                on_its_shelf(&guest, &at);
+            }
+            assert!(frames > 250, "{at}: {frames} frames in her home");
+            // Her other pieces are shown: the frames are her home's.
+            assert_eq!(sofa, frames, "{at}: her sofa");
+        }
+    }
 }

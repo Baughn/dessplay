@@ -143,6 +143,7 @@ mod script;
 mod sprite;
 pub mod stage;
 mod stillness;
+mod structures;
 mod terrain;
 
 use std::time::Duration;
@@ -161,6 +162,7 @@ use osaka::{Bubble, Osaka};
 use room::Shown;
 pub use room::{Furniture, Nook};
 use sprite::{Part, Pose};
+use structures::Written;
 use terrain::Terrain;
 
 /// What the shopping channel sells, in order (the TV comes first, on
@@ -2506,8 +2508,14 @@ impl Guest {
         let as_drawn = view;
         let view = &whole_glyphs(buf, self.gate(view, now));
         let size = (buf.area.width, buf.area.height);
+        // What her structures wrote into the frame (phase 6a D4): every
+        // terrain read from here on, and every `under` a cell of hers
+        // records, takes it; the layout's text checks (`fits`,
+        // `project_with`) take it from step 3 (D6); bubbles read the
+        // written frame on purpose. This build writes none yet (step 2b).
+        let written = Written::none();
         self.errand_progress(view, now);
-        self.nudge_due(buf, view, now);
+        self.nudge_due(buf, view, &written, now);
         if let State::Arriving(how, _) = self.state {
             // Her empty home, if she's coming in from it: the visit
             // shows her pieces from this frame on, or, if she doesn't
@@ -2515,7 +2523,8 @@ impl Guest {
             let home = self.take_home();
             self.state = State::Absent;
             if size.0 >= MIN_WIDTH && size.1 >= MIN_HEIGHT {
-                let terrain = Terrain::read(buf, &view.protected, self.graphics.is_some());
+                let terrain =
+                    Terrain::read_with(buf, &view.protected, self.graphics.is_some(), &written);
                 let kind = self.kind_of(how == How::Dash);
                 // Each visit draws from its own seed.
                 self.rng = Rng(self.seed_of(kind));
@@ -2629,6 +2638,7 @@ impl Guest {
                     buf,
                     view,
                     &unkept,
+                    &written,
                     nudge,
                     time,
                     now,
@@ -2649,7 +2659,11 @@ impl Guest {
                 // must never look like "the UI changed here".
                 let t = now.saturating_sub(leaving.dissolve.started());
                 let untouched = leaving.dissolve.unchanged(buf);
-                let terrain = Terrain::read(buf, &view.protected, true);
+                // The goodbye's frame shows nothing of her structures
+                // (phase 6a D4: the arm that ends a frame without her
+                // home undoes them before it reads), so it reads the
+                // real frame alone: the one production read with none.
+                let terrain = Terrain::read_with(buf, &view.protected, true, &Written::none());
                 nudge.paint(buf, now);
                 leaving.dissolve.paint(buf, now);
                 // Her rains on to their ends, before the goodbye's own
@@ -2770,6 +2784,7 @@ impl Guest {
                     &mut self.note,
                     buf,
                     view,
+                    &written,
                     visit,
                     time.is_some(),
                     self.graphics.is_some(),
@@ -2847,6 +2862,7 @@ impl Guest {
                     &protected,
                     &view.protected,
                     self.graphics.is_some(),
+                    &written,
                 );
                 visit.terrain.furnish(visit.shown.iter().map(Shown::cover));
                 visit.size = size;
@@ -3131,6 +3147,7 @@ impl Guest {
                 }
                 layer.extend(draw_props(
                     buf,
+                    &written,
                     self.graphics.as_mut(),
                     &apart,
                     &looks,
@@ -3140,6 +3157,7 @@ impl Guest {
                 if let Some(front) = front_apart {
                     let (painted, image) = draw_front(
                         buf,
+                        &written,
                         self.graphics.as_mut(),
                         front,
                         &visit.terrain,
@@ -3152,6 +3170,7 @@ impl Guest {
                     Some(graphics) => {
                         let (painted, image, drawn) = draw_art(
                             buf,
+                            &written,
                             graphics,
                             &visit.osaka,
                             &visit.terrain,
@@ -3169,6 +3188,7 @@ impl Guest {
                     None => {
                         let (painted, drawn) = draw(
                             buf,
+                            &written,
                             &visit.osaka,
                             &visit.terrain,
                             &visit.shown,
@@ -3411,7 +3431,7 @@ impl Guest {
     /// isn't here), or — visits off, or nowhere for her to stand on it —
     /// it shakes by itself. Not while something covers the panes or
     /// someone's selecting in the chat, and not mid-goodbye.
-    fn nudge_due(&mut self, buf: &Buffer, view: &IdleView, now: u64) {
+    fn nudge_due(&mut self, buf: &Buffer, view: &IdleView, written: &Written, now: u64) {
         if !self.nudge.due(now) {
             return;
         }
@@ -3426,13 +3446,20 @@ impl Guest {
         self.nudge.poked(now);
         let size = (buf.area.width, buf.area.height);
         let roomy = size.0 >= MIN_WIDTH && size.1 >= MIN_HEIGHT;
-        if !(visits && roomy && self.send(buf, view, accordion, now)) {
+        if !(visits && roomy && self.send(buf, view, written, accordion, now)) {
             self.nudge.shake(now);
         }
     }
 
     /// Send her to poke `accordion`. False when there's no floor on it.
-    fn send(&mut self, buf: &Buffer, view: &IdleView, accordion: Rect, now: u64) -> bool {
+    fn send(
+        &mut self,
+        buf: &Buffer,
+        view: &IdleView,
+        written: &Written,
+        accordion: Rect,
+        now: u64,
+    ) -> bool {
         // The errand overrides the focused pane (the accordion's usually
         // in it).
         let mut protected: Vec<Rect> = view
@@ -3446,7 +3473,7 @@ impl Guest {
         if let State::Visiting(visit) = &self.state {
             protected = visit.solid(&protected);
         }
-        let terrain = Terrain::read(buf, &protected, self.graphics.is_some());
+        let terrain = Terrain::read_with(buf, &protected, self.graphics.is_some(), written);
         let Some(spot) = accordion_spot(&terrain, accordion) else {
             tracing::debug!("houseguest: nowhere to stand on the accordion");
             return false;
@@ -3791,8 +3818,10 @@ struct Sprite<'a> {
 /// over what, and the bubble drawn, if one was (it shows only where
 /// there's room for it). With no `sprite`, the bubble alone (line art
 /// draws the rest).
+#[allow(clippy::too_many_arguments)]
 fn draw(
     buf: &mut Buffer,
+    written: &Written,
     osaka: &Osaka,
     terrain: &Terrain,
     shown: &[Shown],
@@ -3871,7 +3900,7 @@ fn draw(
             let (Ok(x), Ok(y)) = (u16::try_from(x), u16::try_from(y)) else {
                 return None;
             };
-            buf.cell((x, y)).cloned().map(|under| (x, y, under))
+            written.real(buf, x, y).map(|under| (x, y, under))
         })
         .collect();
     let mut painted = Vec::with_capacity(wanted.len() + wall.len());
@@ -4010,6 +4039,7 @@ fn furnish(
     note: &mut Option<Result<String, String>>,
     buf: &Buffer,
     view: &IdleView,
+    written: &Written,
     visit: &mut Visit,
     fed: bool,
     graphics: bool,
@@ -4120,7 +4150,7 @@ fn furnish(
             // As the visit's is read (`Visit::solid`).
             let mut solid = view.protected.clone();
             solid.extend(runs(layer.cells()));
-            Terrain::read(buf, &solid, graphics)
+            Terrain::read_with(buf, &solid, graphics, written)
         });
         let standing = made_standing_then(makeshift, layer, buf, after, &moved, &kept, then, plan);
         let room: Vec<Shown> = after.iter().copied().chain(standing).collect();
@@ -5337,6 +5367,7 @@ fn overlapping(pieces: &[Shown]) -> Vec<Vec<Shown>> {
 /// image ([`overlapping`]).
 fn draw_props(
     buf: &mut Buffer,
+    written: &Written,
     graphics: Option<&mut Graphics>,
     shown: &[Shown],
     looks: &Looks,
@@ -5360,7 +5391,7 @@ fn draw_props(
                     .find(|&&(at, _)| at == (x, y))
                     .map(|&(_, over)| over)
                     .or(glyph);
-                Some((ux, uy, glyph, buf.cell((ux, uy))?.clone()))
+                Some((ux, uy, glyph, written.real(buf, ux, uy)?))
             })
             .collect()
     };
@@ -5487,6 +5518,7 @@ fn draw_props(
 #[allow(clippy::too_many_arguments)]
 fn draw_art(
     buf: &mut Buffer,
+    written: &Written,
     graphics: &mut Graphics,
     osaka: &Osaka,
     terrain: &Terrain,
@@ -5510,7 +5542,7 @@ fn draw_art(
             return None;
         }
         let (ux, uy) = (u16::try_from(x).ok()?, u16::try_from(y).ok()?);
-        Some((ux, uy, buf.cell((ux, uy))?.clone()))
+        Some((ux, uy, written.real(buf, ux, uy)?))
     };
     let front = figure.and_then(Figure::front);
     let through = figure.and_then(Figure::doorway);
@@ -5605,7 +5637,7 @@ fn draw_art(
                 y: uy,
                 glyph: glyph.unwrap_or('.'),
                 ink: prop_ink(piece.item, truecolor),
-                under: buf.cell((ux, uy))?.clone(),
+                under: written.real(buf, ux, uy)?,
                 face: None,
                 burst: true,
             })
@@ -5623,7 +5655,7 @@ fn draw_art(
         .paint_cuts(buf, &cuts, &|x, y| terrain.open(x, y))
         .is_some();
     let mut painted = if placed { body } else { Vec::new() };
-    let (bubble, drawn) = draw(buf, osaka, terrain, shown, None, now, truecolor);
+    let (bubble, drawn) = draw(buf, written, osaka, terrain, shown, None, now, truecolor);
     painted.extend(bubble);
     let image = figure
         .filter(|_| placed)
@@ -5672,6 +5704,7 @@ fn paint_empty(
     buf: &mut Buffer,
     view: &IdleView,
     unkept: &[Rect],
+    written: &Written,
     nudge: &nudge::Nudge,
     time: Option<u16>,
     now: u64,
@@ -5720,7 +5753,7 @@ fn paint_empty(
     let line_art = graphics.is_some();
     // Her door, read off the frame as drawn: never moved by a pane kept
     // clear a while, nor by text.
-    let ground = Terrain::read(buf, unkept, line_art);
+    let ground = Terrain::read_with(buf, unkept, line_art, written);
     let laid = ledger.home.laid_and_shifted(plan.nooks).shown;
     let obstacles = door::obstacles(&laid, [], None);
     let prev = empty.door.as_ref().map(|door| door.spot);
@@ -5731,7 +5764,7 @@ fn paint_empty(
     let mut terrain = if view.protected == unkept {
         ground
     } else {
-        Terrain::read(buf, &view.protected, line_art)
+        Terrain::read_with(buf, &view.protected, line_art, written)
     };
     terrain.furnish(covers.iter().copied());
     // Side-on in its wall with her slippers before it (only on calm
@@ -5761,11 +5794,18 @@ fn paint_empty(
     nudge.paint(buf, now);
     // Her door meets none of her pieces (D4): every piece is drawn on its
     // own, and her door's image takes in none.
-    let mut painted = draw_props(buf, graphics.as_deref_mut(), &shown, &looks, truecolor);
+    let mut painted = draw_props(
+        buf,
+        written,
+        graphics.as_deref_mut(),
+        &shown,
+        &looks,
+        truecolor,
+    );
     let mut image = None;
     let mut cells = Vec::new();
     if let Some(front) = standing {
-        let (drawn, art) = draw_front(buf, graphics, front, &terrain, &view.protected);
+        let (drawn, art) = draw_front(buf, written, graphics, front, &terrain, &view.protected);
         cells = drawn.iter().map(|cell| (cell.x, cell.y)).collect();
         painted.extend(drawn);
         image = art;
@@ -5802,6 +5842,7 @@ fn log_door(spot: Option<door::DoorSpot>, whose: &'static str) {
 /// holds it until the rain).
 fn draw_front(
     buf: &mut Buffer,
+    written: &Written,
     graphics: Option<&mut Graphics>,
     front: Front,
     terrain: &Terrain,
@@ -5814,7 +5855,7 @@ fn draw_front(
             return None;
         }
         let (ux, uy) = (u16::try_from(x).ok()?, u16::try_from(y).ok()?);
-        Some((ux, uy, buf.cell((ux, uy))?.clone()))
+        Some((ux, uy, written.real(buf, ux, uy)?))
     };
     let Some(graphics) = graphics else {
         let mut painted = Vec::new();

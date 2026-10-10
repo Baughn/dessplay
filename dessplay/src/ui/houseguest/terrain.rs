@@ -8,6 +8,7 @@ use tuirealm::ratatui::buffer::Buffer;
 use tuirealm::ratatui::layout::{Position, Rect};
 
 use super::sprite::{HEIGHT, WIDTH};
+use super::structures::Written;
 
 const HALF: i32 = WIDTH / 2;
 /// Platforms narrower than this many standing positions are ignored.
@@ -219,15 +220,36 @@ impl Terrain {
     /// she passes over single-width text but only stays where her box is
     /// blank or lines ([`Terrain::restful`]); she only stands on lines it
     /// can redraw. Wide glyphs stay solid.
-    pub fn read(buf: &Buffer, protected: &[Rect], graphics: bool) -> Self {
-        Self::read_guarded(buf, protected, protected, graphics)
+    ///
+    /// `written` is what her structures wrote into the frame this paint
+    /// (phase 6a D4): every terrain read in a paint takes it, as every
+    /// `under` a cell of hers records does (the layout's text checks
+    /// take it from step 3, D6; bubbles read the written frame on
+    /// purpose). This build writes none yet.
+    pub fn read_with(buf: &Buffer, protected: &[Rect], graphics: bool, written: &Written) -> Self {
+        Self::read_guarded(buf, protected, protected, graphics, written)
     }
 
-    /// [`Terrain::read`], her body kept out of `solid`, her external door
-    /// ([`super::door::Ground::protected`]) out of `guarded` only: a
+    /// [`Terrain::read_with`] a frame nothing of hers was written into
+    /// (tests).
+    #[cfg(test)]
+    pub fn read(buf: &Buffer, protected: &[Rect], graphics: bool) -> Self {
+        Self::read_with(buf, protected, graphics, &Written::none())
+    }
+
+    /// [`Terrain::read_with`], her body kept out of `solid`, her external
+    /// door ([`super::door::Ground::protected`]) out of `guarded` only: a
     /// visit's terrain is solid where she moved text too, which is text
     /// to her door, never a protected pane (text never moves it).
-    pub fn read_guarded(buf: &Buffer, solid: &[Rect], guarded: &[Rect], graphics: bool) -> Self {
+    pub fn read_guarded(
+        buf: &Buffer,
+        solid: &[Rect],
+        guarded: &[Rect],
+        graphics: bool,
+        // Read from step 2b (D5: her structures' cells are lines, but
+        // neither ledge nor pole of hers); nothing is written yet.
+        _written: &Written,
+    ) -> Self {
         let area = buf.area;
         let (width, height) = (i32::from(area.width), i32::from(area.height));
         let mut open = Vec::with_capacity((width * height).max(0) as usize);

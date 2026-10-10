@@ -568,6 +568,38 @@ mod tests {
         assert_eq!(without, houseguest(Some(RECORD), None));
     }
 
+    /// Her shelf, once her record has one, is shown by its pane and how
+    /// many of its stages are up, and a piece standing on it by the
+    /// shelf's pane; without one, there's no `structures` at all.
+    #[test]
+    fn houseguest_shows_her_shelf() {
+        assert!(houseguest(Some(RECORD), None).get("structures").is_none());
+        let shelf =
+            r#"{"Shelf":{"nook":"Users","anchor":{"side":"Left","offset":12},"rise":7,"built":2}}"#;
+        let shelved = RECORD
+            .replace(
+                r#""clock_sent":true}"#,
+                &format!(r#""structures":[{shelf}],"clock_sent":true}}"#),
+            )
+            .replace(
+                r#"{"item":"Bed","at":500,"facing":"Right","boxed":true}],"#,
+                r#"{"item":"Bed","at":500,"facing":"Right","boxed":true},
+                 {"item":"Plant","at":480,"facing":"Right","boxed":false}],
+        "anchors":[{"item":"Plant","strip":{"Shelf":"Users"},"anchor":{"side":"Left","offset":3}}],"#,
+            );
+        assert!(shelved.contains("Plant"), "{shelved}");
+        let json = houseguest(Some(&shelved), None);
+        assert_eq!(json["structures"], json!(["Users shelf, 2 of 2 up"]));
+        assert_eq!(
+            json["owns"][2],
+            json!({ "item": "Plant", "boxed": false, "settled": true, "strip": "Users shelf" })
+        );
+        let mut without = json.clone();
+        without.as_object_mut().unwrap().remove("structures");
+        without["owns"].as_array_mut().unwrap().pop();
+        assert_eq!(without, houseguest(Some(RECORD), None));
+    }
+
     /// With a real date, her slot is judged by it, and the section says so.
     #[test]
     fn houseguest_slot_is_judged_by_the_date_given() {

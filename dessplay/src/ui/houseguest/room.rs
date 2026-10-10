@@ -16,6 +16,7 @@ use super::cells::{untouchable, width};
 use super::door::Keep;
 use super::graphics::strokes;
 use super::sprite::Facing;
+use super::structures::{Shelf, Structure};
 
 /// A piece of furniture.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -1796,12 +1797,21 @@ pub(super) struct Home {
     /// [`Home::settle_door`]); `None`, chosen afresh each frame (see
     /// [`Home::wall`]).
     pub door: Option<DoorWall>,
+    /// What she has put up (phase 6a: a shelf at most).
+    pub structures: Vec<Structure>,
 }
 
 impl Home {
     /// Whether she owns `item`.
     pub fn owns(&self, item: Furniture) -> bool {
         self.props.iter().any(|p| p.item == item)
+    }
+
+    /// Her shelf in `nook`'s pane, if she has put one up there.
+    pub fn shelf(&self, nook: Nook) -> Option<Shelf> {
+        self.structures.iter().find_map(|s| match *s {
+            Structure::Shelf(shelf) => (shelf.nook == nook).then_some(shelf),
+        })
     }
 
     /// Unpack `item`: it's out of its box. False if it wasn't boxed.
@@ -4762,6 +4772,7 @@ mod tests {
         let mut room = Home {
             props,
             door: door_on(nook, side),
+            structures: Vec::new(),
         };
         let laid = room.layout(&nooks);
         let rect = nooks.iter().find(|(n, _)| *n == nook).unwrap().1;
@@ -4793,7 +4804,11 @@ mod tests {
         narrow: u16,
         door: Option<DoorWall>,
     ) -> Result<(), TestCaseError> {
-        let mut room = Home { props, door };
+        let mut room = Home {
+            props,
+            door,
+            structures: Vec::new(),
+        };
         let (buf, nooks) = two_panes(wide, 12, &[]);
         let plan = Plan {
             nooks: &nooks,
@@ -4941,6 +4956,7 @@ mod tests {
                     strip: Strip::Bottom(if users { Nook::Users } else { Nook::Playlist }),
                     side: if right { Side::Right } else { Side::Left },
                 }),
+                structures: Vec::new(),
             };
             let (shown, _) = room.frame(&buf, plan, &|_, _| false);
             let gifts: Vec<Furniture> = Furniture::ALL.into_iter().filter(|&f| !room.owns(f)).collect();
@@ -5006,7 +5022,7 @@ mod tests {
             anchors in proptest::collection::vec((any::<bool>(), 0u16..60), 5),
         ) {
             let side = if right { Side::Right } else { Side::Left };
-            let mut room = Home { props, door: door_on(Nook::Users, side) };
+            let mut room = Home { props, door: door_on(Nook::Users, side), structures: Vec::new() };
             let (_, nooks) = users(wide, &[]);
             room.layout(&nooks);
             let kept = |room: &Home| room.extents(&nooks)[0].space.map(|s| s.kept);
@@ -5045,7 +5061,7 @@ mod tests {
                     ..p
                 })
                 .collect();
-            let mut room = Home { props, door: door_on(Nook::Users, side) };
+            let mut room = Home { props, door: door_on(Nook::Users, side), structures: Vec::new() };
             room.layout(&nooks);
             let PaneStrip { strip, raw, .. } = pane_strips(&nooks)[0];
             prop_assert_eq!(strip, users);
@@ -5148,6 +5164,7 @@ mod tests {
             let mut home = Home {
                 props,
                 door: door_at.and_then(|i| door_on(order[i], side(right))),
+                structures: Vec::new(),
             };
             let was = home.strips_laid_out(&nooks);
             prop_assert_eq!(home.relaid(&was), home.laid_and_shifted(&nooks));
@@ -5565,6 +5582,7 @@ mod tests {
                 anchored(Furniture::Window, Side::Left, 9),
             ],
             door: None,
+            structures: Vec::new(),
         };
         let (shown, _) = room.frame(&buf, plan, &|_, _| false);
         let lamp = room
@@ -5686,6 +5704,7 @@ mod tests {
                 strip: Strip::Bottom(if users { Nook::Users } else { Nook::Playlist }),
                 side: if right { Side::Right } else { Side::Left },
             }),
+            structures: Vec::new(),
         };
         let (shown, _) = room.frame(&buf, plan, &|_, _| false);
         let keep = Keep::of(&room, plan);
@@ -5882,6 +5901,7 @@ mod tests {
                 prop(Furniture::Poster, 30),
             ],
             door: door_on(Nook::Playlist, Side::Left),
+            structures: Vec::new(),
         };
         let playlist = [nooks[1]];
         let less = plan_on(&playlist, Rect::default(), buf.area);
@@ -5918,6 +5938,7 @@ mod tests {
                 },
             ],
             door: door_on(Nook::Playlist, Side::Left),
+            structures: Vec::new(),
         };
         let playlist = [nooks[1]];
         let chat = Rect::new(53, 0, 5, 12);
@@ -5978,6 +5999,7 @@ mod tests {
             })
             .collect(),
             door: door_on(Nook::Users, Side::Right),
+            structures: Vec::new(),
         };
         let (shown, _) = room.frame(&buf, plan, &|_, _| false);
         assert_eq!(kept_on(&room, plan), Some(true), "kept before");
@@ -6022,6 +6044,7 @@ mod tests {
                 at(Furniture::Desk, Nook::Playlist, Side::Right, 1),
             ],
             door: None,
+            structures: Vec::new(),
         };
         let mut laid_home = home.clone();
         let laid = laid_home.laid_out(&nooks);
@@ -6311,6 +6334,7 @@ mod tests {
                 at(Furniture::Bookshelf, Nook::Playlist, Side::Left, 18),
             ],
             door: None,
+            structures: Vec::new(),
         };
         let chat = nooks[0].1;
         let laid = home.clone().laid_out(&nooks);

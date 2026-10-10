@@ -2646,10 +2646,21 @@ this section states what is built.
   (game minutes since Monday 16:00), her idle minutes and where her pity
   last started, the rare things she has shown, the date her calendar was
   last delivered, and whether her wall clock was sent; each is left out
-  while it's the default. What happens to her is saved at once; time
-  alone is saved every 30 game minutes (5 real) and at each change of
-  her routine's part of the day. Every way out of the UI loop hands back
-  her record, its clock brought up to that moment, and the pane sizes,
+  while it's the default. With phase 6a it holds what she has put up
+  (her shelf: its pane, where along its back wall, its rise and the
+  stages up), left out until she has, read before her pieces and entry
+  by entry (one this build can't take, or a shelf after the first, is
+  skipped); a piece anchored on a shelf the record has finished, that
+  takes its kind, stands on it out of its box, and any other piece
+  anchored on a shelf (one the record lacks or hasn't finished, one
+  that doesn't take it, or a parcel) lands on that pane's floor at its
+  share. Builds from before shelves ignore them and drop them when
+  they save; there a piece on a shelf goes to its room's pane at its
+  share, unanchored, or is dropped where its room has no pane on
+  record. What happens to her is saved at once; time alone is saved
+  every 30 game minutes (5 real) and at each change of her routine's
+  part of the day. Every way out of the UI loop hands back her record,
+  its clock brought up to that moment, and the pane sizes,
   saved once the UI thread has ended; a SIGHUP, a panicked UI thread,
   and a failure while the session starts up are not saved (a crash loses
   at most the last batch of her time). One client process holds a

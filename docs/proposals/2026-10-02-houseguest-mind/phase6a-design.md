@@ -2,7 +2,8 @@
 
 **Working design, 2026-10-10; amended the same day twice: with the user's answers, and after four critiques (their files
 are in `phase6/`: `critic-mechanics.md`, `critic-feasibility.md`, `critic-tests.md`, `critic-character.md`; every
-finding's disposition closes this file); and with step 1's as-built notes (D1, step 1).** Brief: docs/plan.md, Phase 38, "Phase 6 — structures (brief, 2026-10-10)";
+finding's disposition closes this file); with step 1's as-built notes (D1, step 1); and with step 2a's review (D1, D2:
+only a finished shelf holds a piece the record puts on it, never a parcel; the Tests field order).** Brief: docs/plan.md, Phase 38, "Phase 6 — structures (brief, 2026-10-10)";
 plan.md wins over everything here, but for the one place this design departs from the brief's wording, said in D4.
 Code maps at `60727649`: [phase6/map-terrain.md](phase6/map-terrain.md) and [phase6/map-life.md](phase6/map-life.md);
 this design overrides them where it says so. Proposal: [../2026-10-02-houseguest-mind.md](../2026-10-02-houseguest-mind.md),
@@ -157,8 +158,8 @@ impl Strip {
      closet's agreement with the search): `rules::search`'s `Places` loop (rules.rs:930), `placements` (room.rs:978)
      and `on_own_strip`/`packed_on`.
   `Spec.shelf` lands with it (step 1: twelve rows, true for the plant and the clock), so `takes` is never a
-  placeholder. The ledger read never puts a piece on a shelf that doesn't take it (or that the record lacks) either:
-  it lands on that pane's floor at its share, unanchored (D2).
+  placeholder. The ledger read never puts a piece on a shelf that doesn't take it (or that the record lacks or hasn't
+  finished, or boxed) either: it lands on that pane's floor at its share, unanchored (D2).
 - **Lanes depend on the strip.** On a shelf everything stands: `lift(item, boxed, strip)` (room.rs:697) is 0 there;
   `Prop::lane`/`needs` (room.rs:708-722), `Shown::lift`/`lane` (room.rs:1448-1462) pass their strip. Every place that
   lanes a piece for a candidate strip uses the candidate's lane: `search`'s `plan.along(old.lane())` (rules.rs:935),
@@ -199,8 +200,13 @@ pub(super) struct Shelf { pub nook: Nook, pub anchor: Anchor, pub rise: u16, pub
   build's ladder, garbage) is skipped; so is a second shelf on one pane, a second shelf at all (6a), `built` above
   `SHELF_STAGES`, or a rise under `LOW_RISE`. `paced` lands in step 5c, the same way.
 - **Pieces on shelves.** `SavedAnchor.strip` is a `Strip`, so a shelf piece writes `{"Shelf":"Users"}`. On read, a
-  piece whose anchor names a shelf the record lacks, or a shelf that doesn't `take` it, keeps only its pane and its
-  `at`: it lands on that pane's floor at its share.
+  piece stays on its shelf only if the record has that shelf **finished** (`Shelf::finished`: all `SHELF_STAGES` up;
+  only a finished shelf is a strip, D6), the shelf `take`s its kind, and it's out of its box. Any other (a shelf the
+  record lacks or hasn't finished, one that doesn't take it, a parcel) keeps only its pane and its `at`: it lands on
+  that pane's floor at its share, unanchored. (Step 2a's review: a piece kept on an unfinished shelf would have no plan
+  until it was finished, hidden yet owned, out of every rule's and the closet's sight; and a parcel only ever comes in
+  on a floor, where she unpacks it. Nothing in production writes either; the reader refuses both.) A shelf too high for
+  the frame (rise 40) is kept with what's on it: that's D3's hiding, back when a frame holds it.
 - **A kit is never an unboxed prop, by one accessor** (step 5b): `Prop.boxed` and `Shown.boxed` become private to
   room.rs, read through `boxed()` = `self.boxed || self.item.is_kit()` (read by `lane`, `lift`, `needs`, `uses`, beauty,
   `piece_look`, and every caller outside room.rs), set only by constructors; `Home::unbox` returns false for a kit.
@@ -508,7 +514,7 @@ By step:
   lacks lands on its pane. **Before the reader changes**, a hand-written 6a record (a shelf, the plant on it, a boxed
   kit, `paced`) is read by today's `from_json` and the outcome recorded; that reader is frozen as the model
   `as_a_pre_shelf_build_reads` beside `as_an_older_build_reads`. Goldens: `the_record_with_a_shelf_as_written`
-  (character for character, with `structures`, `seen`, `door`, `paced`, `clock_sent`: pinning field order), and
+  (character for character, pinning field order: `seen`, `structures`, `door`, then 5c's `paced`, then `clock_sent`), and
   `the_record_as_written` and dump.rs's unchanged. `rises_clear_every_hung_and_standing_piece`.
 - **2b.**
   - `read_ground_takes_only_blank_free_cells` (proptest): half the shelves valid by construction for their frame, the
@@ -647,6 +653,17 @@ reader of them. Behaviour-free by construction. **Sites.** New structures.rs (ty
 ledger.rs (fields, `Raw`, structures before props, `Summary`, module doc); terrain.rs:229 (signature; `read` →
 `#[cfg(test)]`); mod.rs 2515, 2649, 3411-3446, 4003/4120, 5345, 5499, 5601, 5716, 5727, 5805, 3871. **Tests.** Step
 2a's list. **Exit.** Goldens, snapshots, ledger and dump goldens unchanged. **Docs.** design.md *Her record* (2641).
+**As built.** `Shelf` has no `fresh` yet (its `Dated` is 5c's; step 8 adds it, skipped when `None`), and
+`the_record_with_a_shelf_as_written` pins `structures` between `seen` and `door` with no `paced` (5c adds it to the
+golden). The kit-as-a-prop-and-a-shelf case is a guard until 5b (`ShelfKit` is an unknown kind here). Today's reader
+(`d1f53e7d`) was run on the hand-written record, as the *Older builds* bullet predicts: the plant on the shelf goes to
+the Living pane at its share, unanchored, or is dropped with no Living pane on record; the kit is skipped. The
+production read is `Terrain::read_with(.., &Written)`; `Terrain::read` is `#[cfg(test)]`. Only `Written::none`/`real`
+and `Home::shelf` exist yet (the rest has no production reader before 2b); the constants without one are
+`#[cfg(test)]`. Review fixes: the reader keeps a piece on a shelf only if the shelf is finished and the piece unboxed
+(D2); `only_the_first_sound_shelf_is_read` (proptest, its own strategy), a later build's extra shelf field (`fresh`)
+read past, `houseguest_shows_her_shelf` (dump.rs), and a paint-level test restoring the hand-written record
+(`a_restored_piece_on_a_shelf_is_never_shown`, tests/away.rs, visiting and away).
 
 ### Step 2b. `read_ground` (~1150 lines)
 
