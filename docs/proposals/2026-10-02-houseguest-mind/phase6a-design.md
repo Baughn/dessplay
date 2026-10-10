@@ -1,23 +1,31 @@
 # Phase 6a (shelves and the gremlin): implementation design
 
-**Working design, 2026-10-10, before critiques; amended the same day with the user's answers (*User decisions*,
-second round).** Brief: docs/plan.md, Phase 38, "Phase 6 — structures (brief,
-2026-10-10)" (plan.md wins over everything here). Code maps at `60727649`: [phase6/map-terrain.md](phase6/map-terrain.md)
-and [phase6/map-life.md](phase6/map-life.md); this design overrides them where it says so. Proposal:
-[../2026-10-02-houseguest-mind.md](../2026-10-02-houseguest-mind.md), *Structures from the UI's own lines*, *Rooms from
-contents*, *Rules, not an objective*. The gremlin's art is **approved** (variant A: [phase6/art/snippets.md](phase6/art/snippets.md),
-its last section; `worktree.diff` holds the drawing, of which only the `gremlin` group is wired, step 7). Paths are relative to `dessplay/src/ui/houseguest/` unless noted. Every
-line cited was checked at `4c5c7151` (`dessplay/` unchanged since the maps).
+**Working design, 2026-10-10; amended the same day twice: with the user's answers, and after four critiques (their files
+are in `phase6/`: `critic-mechanics.md`, `critic-feasibility.md`, `critic-tests.md`, `critic-character.md`; every
+finding's disposition closes this file).** Brief: docs/plan.md, Phase 38, "Phase 6 — structures (brief, 2026-10-10)";
+plan.md wins over everything here, but for the one place this design departs from the brief's wording, said in D4.
+Code maps at `60727649`: [phase6/map-terrain.md](phase6/map-terrain.md) and [phase6/map-life.md](phase6/map-life.md);
+this design overrides them where it says so. Proposal: [../2026-10-02-houseguest-mind.md](../2026-10-02-houseguest-mind.md),
+*Structures from the UI's own lines*, *Rooms from contents*, *Rules, not an objective*. The gremlin's art is approved
+(variant A: [phase6/art/snippets.md](phase6/art/snippets.md), its last section; of `worktree.diff` only the `gremlin`
+group is wired, in step 7). Paths are relative to `dessplay/src/ui/houseguest/` unless noted. Lines were checked at
+`4c5c7151`; the critics re-checked them at `ad7f4af7` (`dessplay/` unchanged).
 
-**Geometry words**, used throughout. A **pane strip** is today's `Strip::Bottom(nook)` with its raw `Extent { from, to,
-floor: f, rows }` (room.rs:741; interior rows `f-rows ..= f-1`). `WIDTH` = 5, `HEIGHT` = 4 (sprite.rs:9-11). Her box
-standing on `f` is rows `f-4 ..= f-1`. The **wall lane** is where hung pieces hang: the poster and the clock (hang 4, 2
-rows tall: room.rs:310, 325) take rows `f-6 ..= f-5`; the window (hang 1) rows `f-3 ..= f-2`. A shelf's **rise** is how
-many rows above its pane's floor it hangs (its row `y = f - rise`); its **host** is the pane strip it hangs in. A **high**
-shelf hangs above the wall lane (rise ≥ `HIGH_RISE` = 7); a **low** one just over her head (rise `LOW_RISE` = 5), in the
-wall lane's rows, so the poster and the clock pack beside it. Its **block** is a low shelf's columns across the wall
-lane's rows `f-6 ..= f-5`: where no hung piece may hang. **Small
-decor** is what may stand on a shelf (`Spec.shelf`: the plant, the clock, the gremlin).
+**Geometry words**, used throughout.
+- A **pane strip** is today's `Strip::Bottom(nook)`, with its raw `Extent { from, to, floor: f, rows }` (room.rs:741;
+  interior rows `f-rows ..= f-1`). `WIDTH` = 5, `HEIGHT` = 4 (sprite.rs:9-11), `SPACE` = 6 (room.rs:823).
+- Her box standing on `f` is rows `f-4 ..= f-1`.
+- The **wall lane** is where hung pieces hang: the poster and the clock (hang 4, 2 rows tall: room.rs:310, 325) take
+  rows `f-6 ..= f-5`; the window (hang 1) rows `f-3 ..= f-2`.
+- A shelf's **rise** is how many rows above its pane's floor it hangs (its row `y = f - rise`). Its **host** is the pane
+  strip it hangs in.
+- A **high** shelf hangs above the wall lane (rise ≥ `HIGH_RISE` = 7). A **low** one hangs just over her head (rise
+  `LOW_RISE` = 5), in the wall lane's rows, so the poster and the clock pack beside it. Its **block** is a low shelf's
+  run's columns across the wall lane's rows `f-6 ..= f-5`, where no hung piece may hang.
+- A shelf's **run** is `SHELF_WIDTH` = 10 cells drawn `┬────────┬` (brackets at both ends). A half-built one is the
+  bracket at its wall's end and the half of the run nearer that wall (`┬────`, 5 cells). Its **margin** is the 2 cells
+  past each end of the run, on its row.
+- **Small decor** is what may stand on a shelf (`Spec.shelf`: the plant, the clock, the gremlin).
 
 ## User decisions
 
@@ -31,76 +39,92 @@ From plan.md (2026-10-10), overriding the proposal:
 - **A shelf hangs on the back wall, off the sides**: a `─` run at least a body-width from either side wall, so nothing
   reaches it until 6b's ladder.
 - **Door-batch rules hold**: no structure in the chat pane or her door's space, and no shelf above her door's space.
-- **On a shelf**: a new **gremlin** figurine (model sheet first) and small decor (the plant, the clock); never furniture.
+- **On a shelf**: a new **gremlin** figurine and small decor (the plant, the clock); never furniture.
 - **6a's payoff**: decor on a shelf counts toward the room's beauty, and she sometimes stands under it and gazes up (a
   still act, inside 5c's band).
 - Every 6a step keeps the golden hashes and terrain snapshots unchanged in a home with no structure.
 
-The user's answers to this design's questions (2026-10-10, second round), overriding anything below that says otherwise:
-- **Shelf height: "Highest that fits."** A shelf hangs above the wall decor (high: never meeting the poster or the
-  clock, with room for her to stand on it in 6b) where the pane is tall enough; otherwise just over her head (low),
-  with the poster and the clock packing beside it on the wall. Both are built (D3 and D3a; steps 4 and 5).
-- **The plant and the clock go up only by a repair** that finds the shelf the best place for them; a clock on a shelf
-  is a mantel clock, same art. The gremlin always wants the shelf (`High`).
-- **Lines as proposed**, all four: `"A shelf! Up high!"`, `"Aww, a little gremlin!"`, `"It wants a shelf..."`, `"Up it
-  goes..."`.
+Second round, the user's answers to this design's questions (2026-10-10):
+- **Shelf height: "Highest that fits."** High (above the wall decor, never meeting the poster or the clock, with room for
+  her to stand on it in 6b) where the pane allows; otherwise low (just over her head), the poster and the clock packing
+  beside it. Both are built (D3, D3a; steps 4 and 5a).
+- **The plant and the clock go up only by a repair** that finds the shelf the best place for them; a clock on a shelf is
+  a mantel clock, same art. The gremlin always wants the shelf (`High`).
+- **Lines**, all four: the kit's pitch `"A shelf! Up high!"`, the gremlin's `"Aww, a little gremlin!"`, the grievance
+  `"It wants a shelf..."`, and `"Up it goes..."` at a build stage's start.
 - **The gremlin's art: variant A** (lavender glaze, flat wooden plinth, 2 × 2 cells), ASCII `oo` / `ww`; variants B, C
-  and D are never wired. Step 7 no longer waits on approval.
+  and D are never wired. Step 7 doesn't wait on anything.
+
+Third round (2026-10-10, after the critiques):
+- **The user's terminal is 191×46.** Step 3 measures the bundled layout there too (which pane takes a high shelf, which a
+  low one, with typical content); step 9's review shots are at 191×46; the stage scenes run on a frame where a shelf
+  fits, as the `LookOut` precedent does (tests.rs:2371-2384).
+- **Reaching up: "a little hop."** She hops at the moment a shelf's stage goes up, or a piece goes up onto a high shelf
+  (D7c).
+- **Brackets**: the shelf is drawn `┬────────┬`, with 2 blank cells past each end, rows with no text preferred; a
+  half-built shelf shows one bracket and half the run. For 6b: the brackets' stubs never count as climbable poles.
+- **All four extras are in 6a** (step 8, each budgeted): the gremlin's tiny life (he turns round while she's asleep or
+  out, and she notices: `"?"`, `"Did you move...?"`); a gaze-up line pool (`"Hi, little guy."`, `"You stay up there."`,
+  `"Behave, okay?"`, `"He's watchin' me..."`) and more gazing for a day or two after something new goes up; pleased
+  beats (`Act::Admire`'s `"hehe"` after each build stage and after setting a piece on the shelf, and a wished kit's
+  pitch `"A shelf for the gremlin!"`); the flat-pack gag (the kit's unpack ending on `"Which way's up?"`).
 
 ## Decided unless the user objects
 
 Each is recorded in decisions.md when it lands.
-- **Two heights, high first** (the user's "highest that fits"). High: rise `HIGH_RISE` = 7, the first row above every
-  hung piece (derived from the `Spec` table, pinned by a test), with `HEIGHT` clear rows above it when it's put up;
-  hung pieces and a high shelf never meet by construction. Low: rise `LOW_RISE` = `HEIGHT` + 1 = 5, the row just over
-  her head, with `LOW_ABOVE` = 2 clear rows above it (the gremlin's height, the clock's too: the plant, 3 tall, stands
-  on a low shelf only where a third row is clear, else `Extent::holds` keeps it off), so a low shelf needs a pane 9
-  rows tall (7 inside: The List in the bundled layout at 100×30 qualifies by geometry), a high one 13 (11 inside). The
-  height is chosen once, when it goes up, and saved as its rise (D3).
-- **A low shelf's block is the wall's**: hung pieces (the poster, the clock) keep out of it as the window keeps clear
-  of what stands (`hung_clear`, generalised: D3a), hanging at the nearest clear place in their order or, with none,
-  alone in the closet. A low shelf is only ever put up where it meets no hung piece as laid out, so going up never
-  pushes one; later deliveries and moves pack beside it. The window (rows `f-3 ..= f-2`) never meets either height.
-- **6b's standing** needs `HEIGHT` clear rows over a shelf: every high shelf has them when it goes up; a low one only in
-  a pane at least 11 rows tall (9 inside). A low shelf in a shorter pane is for decor only, and 6b's ladder trigger
-  ("she wants up there") must name a shelf she could stand on.
-- **`SHELF_WIDTH` = 10** (the gremlin, the plant and the clock side by side, and at least the 7 cells a platform needs
-  for 6b); one shelf a pane at most, and in 6a one shelf in all (one of each piece: one kit).
-- **One fixed ink** for structure glyphs (`SHELF_INK`, the bundled theme's unfocused-border grey, looked up in
-  `style.css` in step 2 and pinned), because a stroke's colour is part of her image's cache key (map-terrain §5).
-- **Where it goes is chosen on the frame** when she unpacks the kit (blank cells now, the pane she'd want), then saved
-  (host, anchor from the nearer wall, rise). It's never chosen again: a frame that can't hold it (text or a protected
-  pane over it, its pane hidden, too narrow or short, the chat or her door's space come to meet it) hides it and
-  what stands on it for that frame, as the closet hides a piece. Rejected: choosing it text-blind like her door (text
-  fills most panes from the top, so a shelf chosen over text would mostly be hidden).
-- **Two build stages** after unpacking: the first puts up the half of the run nearer its wall, the second the rest. A
-  stage is a 6 s act standing under it, arms up (`Pose::Stretch`, existing art). Unpacking is no stage (it's the
-  existing `Unpack`), so a kit unpacked on a Tuesday afternoon is half up that day and done on Wednesday.
+- **Two heights, high first.** High: rise from `HIGH_RISE` = 7 (the first row above every hung piece, derived from the
+  `Spec` table), with `HEIGHT` clear rows over the run when it goes up; hung pieces never meet it. Low: rise
+  `LOW_RISE` = `HEIGHT` + 1 = 5, with `LOW_ABOVE` = 2 clear rows over it (the gremlin's height and the clock's; the
+  plant, 3 tall, stands on a low shelf only where a third row is clear, else `Extent::holds` keeps it off). So a low
+  shelf needs a pane 9 rows tall (7 inside), a high one 13 (11 inside). Chosen once, when it goes up, saved as its rise.
+- **A low shelf's block belongs to the shelf**: hung pieces keep out of it, as the window keeps clear of what stands
+  (`hung_clear`, generalised: D3a). A low shelf goes up only where it meets no hung piece as laid out, so it never
+  pushes one; later deliveries and moves hang beside it. The block is geometry only (D3a).
+- **6b's standing** needs `HEIGHT` clear rows over a shelf: every high shelf has them when it goes up; a low one only
+  in a pane 11 rows or taller. A low shelf in a shorter pane is for decor only, and 6b's ladder trigger must name a
+  shelf she could stand on.
+- **Off the sides by `max(WIDTH, SPACE)` = 6 columns**, margin included, from both walls (the run itself `EDGE` = 8
+  in), purely geometric: no door space (6 columns against its wall) can ever meet a run or its margin, whatever her
+  door does, so the door chooser never picks a wall whose space
+  would, by construction, and a shelf's layout reads no door.
+- **One shelf a pane at most; in 6a one shelf in all** (one kit, one of each piece).
+- **Its ink is its host's border's**: each frame, the `fg` of the host pane's bottom border cell under the run's middle,
+  as `wall_glyph` takes the wall's (mod.rs:5157-5167). Her image keys already hold border colours, so no new cache
+  key; it follows the user's theme and the pane's focus as the borders do.
+- **Where it goes is chosen on the frame** when she unpacks the kit, then saved. It's never chosen again: a frame that
+  can't hold it (text or a protected pane over it or its margin, its pane hidden, too narrow or short, the chat come
+  to meet it) hides it and what stands on it for that frame, all at once, no rain, back when the frame holds it (as
+  text closets a piece today; no hysteresis, as pieces have none). Rejected: choosing it text-blind like her door
+  (text fills most panes from the top, so such a shelf would mostly be hidden).
+- **Two build stages** after unpacking: the half nearer its wall, then the rest. She puts the first up straight after
+  unpacking (chained, as a crumple chains to a use), so the box never just vanishes; the second on a later game day.
+  A stage is a 6 s act standing beside where it goes, arms up (`Pose::Stretch`, `Face::Curious`, no `"nnn~"`), its
+  cells appearing at the end with the hop.
+- **The hop is for high shelves**: a stage of a high shelf, and a piece set down onto a high shelf, end in one beat of
+  `Pose::Jack(1)` (arms up, feet apart, lifted: art.rs:247-261; ASCII `JACK[1]`, sprite.rs:424), about 400 ms, then
+  `Act::Admire` (step 8). A low shelf is within her reach: `Pose::Stretch` only. Existing frames, no new art. A bigger
+  hop (her image a row up) would be code, not art (a `Rig` with a larger `bob`): not done unless the user asks.
+- **Reaching a shelf is arms up**: a lift from or a set-down onto a shelf draws `Pose::Stretch` (`Face::Curious`),
+  never `Pose::ToeTouch`.
 - **Building is not a home act**: the per-day pacing bounds it, not her mood's 0–3 cap (else a lazy streak stalls it).
-- **She can't stand on a shelf in 6a**, structurally: shelf cells are no ledge of hers (D5). Pieces still stand on it,
-  because `fits` reads the glyph in the frame, not the terrain.
-- **The gremlin stands anywhere small decor stands**, on a floor too; it **wants up high** (a new rule, `High`), felt
-  on sight. That felt rule is what the wishlist reads: with no shelf, the shelf kit goes first in the queue; with a
-  shelf up, the rule's repair carries the gremlin up. Rejected: a gremlin that may only stand on a shelf (its parcel
-  comes in on the floor, so it would need a carry anyway, and the story would lose its "It wants a shelf...").
-- On a shelf every piece stands: the clock stands on it as a mantel clock, same art (the user's answer above). The plant
-  and the clock go up only by a repair (InChat, DoorClear), rare in practice.
-- **The gaze up is a use** of what stands on a shelf, `Use::Admire`, offered only for a piece on a shelf, from the
-  floor under it, `Pose::Gaze` held (existing art). Using her things in a pretty room already eases *beauty*
-  (design.md:1571-1577); no new need.
-- **The kit is sold last** (after furniture and decor) unless wished, and only on a frame where a shelf could go up
-  now (D7), so a boxed kit, which holds the channel up as any box does, never waits on a short or text-filled pane.
-- **Where the lines go** (approved above): the kit's pitch, the gremlin's pitch (not the sheet's suggested `"Hehehe. He
-  looks like trouble!"`, which is over 24 characters), the grievance, and the line at a build stage's start.
-- **Older builds**: they ignore `structures` and drop it when they save; a piece on a shelf falls back to its room's
-  pane (its `at` is written as its share along the host pane, so it lands under where the shelf was); the gremlin and
-  the kit are skipped as unknown kinds.
+- **She can't stand on a shelf in 6a**, structurally: shelf cells are neither ledge nor pole of hers (D5). Pieces still
+  stand on it, but only on cells `read_ground` wrote this frame.
+- **The gremlin stands anywhere small decor stands**, a floor too, and **wants up high** (a rule, `High`). It's sold
+  only on a frame where a shelf stands or could go up; `High` is felt only then, only on the gremlin's room's floor,
+  facing it. That felt rule is what the wishlist reads.
+- **The gaze up is a use**, `Use::GazeUp`, of the gremlin or the plant standing on a shelf (not the clock: her clock
+  glance already looks at it), offered only on the shelf's room's floor, from beside the piece facing it, 20–45 s:
+  `"hehe"` for its first 2–3 s, then `Pose::Gaze`, `Face::Curious`.
+- **The kit is sold last** (after furniture and decor) unless wished, and only on a frame where a shelf could go up now;
+  a wish that can't be sold this frame doesn't block the next catalogue piece.
+- **Older builds** (today's, pre-shelf): they ignore `structures` and drop it when they save; a piece on a shelf loses
+  its anchor and goes to its kind's room pane from `rooms` (the Living pane for the plant, the clock, the gremlin),
+  at its share, and is dropped if no Living piece stands; the gremlin and the kit are skipped as unknown kinds. Step
+  2a records what today's reader actually does with a hand-written 6a record.
 
 ## Design
 
 ### D1. Strips: a shelf variant, one admission rule, no zips
-
-**Types** (room.rs:629):
 
 ```rust
 pub(super) enum Strip {
@@ -109,50 +133,48 @@ pub(super) enum Strip {
     Shelf(Nook),
 }
 impl Strip {
-    /// The pane it's in (total: every strip has one).
-    pub fn nook(self) -> Nook;
-    /// The room it's in: its pane's floor. A shelf is part of the room below, never a room.
-    pub fn room(self) -> Strip;        // Strip::Bottom(self.nook())
-    /// Whether `item` may stand on it: a pane's floor takes anything; a shelf, small decor only.
-    pub fn takes(self, item: Furniture) -> bool;
+    pub fn nook(self) -> Nook;                 // total: every strip has a pane
+    pub fn room(self) -> Strip;                // Strip::Bottom(self.nook()): a shelf is part of the room below
+    pub fn takes(self, item: Furniture) -> bool; // a floor takes anything; a shelf, `Spec.shelf` kinds only
 }
 ```
 
 - **The seven irrefutable `let Strip::Bottom(nook) = ..`** (ledger.rs:205, 365, 553; rules.rs:433; mod.rs:1624, 4341;
-  room.rs:2321) all need only the pane: each becomes `.nook()` (ledger.rs:205 then falls back to a shelf piece's own
-  pane, which is right). rules.rs:433 and mod.rs:1624 print the strip (`Users shelf`), so the stage shows it.
+  room.rs:2321) all need only the pane: each becomes `.nook()`. rules.rs:433 and mod.rs:1624 print the strip
+  (`Users shelf`); `Summary.owns` (ledger.rs:464-473) prints a shelf piece's strip as `Users shelf` too.
 - **No zips.** `raw_strips` (room.rs:805) becomes `pane_strips(nooks) -> Vec<PaneStrip>` with `PaneStrip { nook, rect,
   strip, raw }`; `choose` (room.rs:1279) and `doorstep` (room.rs:2429) read `rect` from it instead of zipping
-  `plan.nooks` with the strips by position. Shelves never enter `pane_strips`: they come only from `Home::extents`
-  (D6), so the misalignment class can't recur.
-- **Floors-only paths take a pane by type.** `move_off(&mut self, from: Nook, ..)` (room.rs:2196) iterates
-  `pane_strips` for targets; `project_with` (room.rs:2159) moves only `Strip::Bottom` strips off (a shelf whose plan is
-  gone hides its pieces; it never moves them). `doorstep`, `spot` (stage gifts), `stage_arrange` (mod.rs:4329) and the
-  door's chooser iterate `pane_strips`. No parcel, gift or door ever lands on a shelf.
-- **One admission rule**, `Strip::takes`, read in exactly two places:
-  1. `Home::on` (room.rs:1839), which every layout reads (`lay_strip` room.rs:2019): a piece a strip doesn't take is
-     never laid out there. So every search that judges a candidate by the layout refuses it with no filter of its own:
-     the repair's `evaluate` ("a piece left out", rules.rs:605), `spot`'s `find(item)?` (room.rs:2391), `admits`.
-  2. `StripPlan::takes(item)`, which every per-piece enumeration of plans calls before generating candidates (a cost
-     saving, and the closet's agreement with the search): `rules::search`'s `Places` loop (rules.rs:930), `placements`
-     (room.rs:978) and its `on_own_strip`/`packed_on`.
-  The ledger read refuses it too (D2). `Extent::holds` alone would admit a sofa on a 10-wide shelf, so geometry is no
-  guard.
-- **Lanes depend on the strip.** On a shelf everything stands: `lift(item, boxed, strip)` (room.rs:697) is 0 on a
-  shelf; `Prop::lane`/`needs` (room.rs:708-722), `Shown::lift`/`lane` (room.rs:1448-1462) pass their strip. The
-  search's `plan.along(old.lane())` (rules.rs:932) becomes the lane the piece would have on the candidate strip, and its
-  `holds((cols, rows))` the rows it would need there.
-- **Where she stands to reach a piece.** `StripPlan` gains `host: Extent` (the pane's raw extent; a pane plan's own
-  `raw`). `stand(prop, plan, left)` (room.rs:2684) sets a new `Shown::stood: i32`, the floor she stands on to reach it
-  (`host.floor`). `reach` (mod.rs:4273), `Shown::seat` (room.rs:1534 `y: self.floor`) and `room_for` read `stood`;
-  for a pane piece it equals `floor`, so nothing moves. `StripPlan::pin`'s share (`at`) is of `host` (D2's older-build
-  note).
+  `plan.nooks` with strips by position. Shelves never enter `pane_strips`.
+- **Floors-only paths take a pane by type.** `move_off(&mut self, from: Nook, ..)` (room.rs:2196) iterates `pane_strips`
+  for targets; `project_with` (room.rs:2159) moves only `Strip::Bottom` strips off (a shelf whose plan is gone hides its
+  pieces, never moves them). `doorstep`, `spot`, `stage_arrange` (mod.rs:4329) and the door's chooser iterate
+  `pane_strips`.
+- **One admission rule**, `Strip::takes`, read in two places only:
+  1. `Home::on` (room.rs:1839), which every layout reads (`lay_strip`, room.rs:2019): a piece a strip doesn't take is
+     never laid out there, so every search that judges a candidate by its layout refuses it with no filter of its own
+     (the repair's `evaluate`, rules.rs:605; `spot`'s `find(item)?`; `admits`).
+  2. `StripPlan::takes(item)`, called by every per-piece enumeration of plans before it makes candidates (cost, and the
+     closet's agreement with the search): `rules::search`'s `Places` loop (rules.rs:930), `placements` (room.rs:978)
+     and `on_own_strip`/`packed_on`.
+  `Spec.shelf` lands with it (step 1: twelve rows, true for the plant and the clock), so `takes` is never a
+  placeholder. The ledger read refuses an untaken piece too (D2).
+- **Lanes depend on the strip.** On a shelf everything stands: `lift(item, boxed, strip)` (room.rs:697) is 0 there;
+  `Prop::lane`/`needs` (room.rs:708-722), `Shown::lift`/`lane` (room.rs:1448-1462) pass their strip. Every place that
+  lanes a piece for a candidate strip uses the candidate's lane: `search`'s `plan.along(old.lane())` and `holds`
+  (rules.rs:935), and `evaluate`'s `e` and `pin` (rules.rs:626, 634).
+- **Where she stands to reach a piece.** `StripPlan` gains `host: Extent` (a pane plan's own `raw`). `stand(prop, plan,
+  left)` (room.rs:2684) sets a new `Shown::stood: i32`, the floor she stands on to reach it (`host.floor`). `middle_of`
+  (mod.rs:4266, read by `reach`, `set_down_refused`'s way back at 4079 and `Judged.home` at 4316), `Shown::seat`
+  (room.rs:1534) and `room_for` (room.rs:2738) read `stood`; for a pane piece it equals `floor`, so nothing moves.
+  `StripPlan::pin`'s share (`at`) is of `host`.
 - **Rooms are floors.** `Home::rooms` (room.rs:1663), `role_among` (room.rs:616), `has_room`/`becomes_den`
-  (rules.rs:575-597) and `Before.roles` (rules.rs:548) key on `strip.room()`, iterating pane plans only, so a shelf is
-  never a room of its own (a decor-only shelf would read as a den). `Faces`, `Near`, `Apart`, `AgainstWall` and
-  `Belongs` never involve small decor (it offers only `Decor` and forbids nothing), so they stay on `strip`.
-- `DoorWall` (room.rs:827) deserializes through `#[serde(try_from = ..)]` refusing a shelf strip, so a garbled record
-  can't put her door on one; the chooser only ever makes `Bottom` walls.
+  (rules.rs:575-597), `Before.roles` (rules.rs:548), `evaluate`'s tier and `role_without`/`role_of(laid, to.strip)`
+  (rules.rs:753-770), and `spoils`/`newly_spoilt` (rules.rs:689-690) key on `strip.room()`, iterating pane plans only:
+  a shelf is never a room (a decor-only shelf would read as a den), and an empty shelf is no "strip with nothing on it"
+  tier. `Faces`, `Near`, `Apart`, `AgainstWall` and `Belongs` never involve small decor, so they stay on `strip`.
+- `DoorWall` (room.rs:827) deserializes through `#[serde(try_from = ..)]` refusing a shelf strip. In code only the
+  chooser makes one, from `pane_strips`; making `DoorWall.strip` a `Nook` in memory would touch every `d.strip == strip`
+  comparison for a state no code path builds, so the guard is the deserializer.
 
 ### D2. The structure model and the ledger
 
@@ -162,507 +184,587 @@ impl Strip {
 pub(super) enum Structure { Shelf(Shelf) }
 
 /// A shelf on `nook`'s back wall: `SHELF_WIDTH` cells from `anchor` (its near end, counted from that wall of the
-/// pane's raw strip), `rise` rows above the pane's floor; `built` of `SHELF_STAGES` stages up.
-pub(super) struct Shelf { pub nook: Nook, pub anchor: Anchor, pub rise: u16, pub built: u8 }
+/// pane's raw strip), `rise` rows above the pane's floor; `built` of `SHELF_STAGES` (2) stages up; `fresh`, the day
+/// something last went up on it (step 8).
+pub(super) struct Shelf { pub nook: Nook, pub anchor: Anchor, pub rise: u16, pub built: u8, pub fresh: Option<Dated> }
 ```
 
-- `Home { props, door, structures: Vec<Structure> }` (room.rs:1631). `Hash`/`PartialEq` pick it up (the mend basis and
-  `paint_empty`'s `changed`). `Home::owns(Furniture::ShelfKit)` is true while the kit is a prop **or** a shelf stands
-  (one of each). `Home::shelf(nook)`, `Home::shelves()` read it.
-- **Ledger** (ledger.rs, by the pattern of `door` and `seen`): `Saved.structures: Vec<Structure>` with
-  `skip_serializing_if = "Vec::is_empty"`, declared before `door` (so `the_clock_sent_round_trips`, which asserts the
-  JSON ends with `clock_sent`, holds); `Raw.structures: Option<serde_json::Value>`, read entry by entry: an entry that
-  isn't a structure this build knows (a later build's ladder, garbage) is skipped; a second shelf on one pane, a
-  `built` above `SHELF_STAGES` or a rise of 0 is skipped. Step 4 adds `paced` the same way (D7).
+- `Home { props, door, structures: Vec<Structure> }` (room.rs:1631). `Home::owns(ShelfKit)` is true while the kit is a
+  prop **or** a shelf stands. `Home::shelf(nook)`, `Home::shelves()` read it. (The mend basis hash, mod.rs:4441, changes
+  value with the new field even when empty; it's only compared for equality and isn't traced.)
+- **Ledger** (ledger.rs, by the pattern of `door` and `seen`): `Saved.structures` with `skip_serializing_if =
+  "Vec::is_empty"`, declared before `door`; `Raw.structures: Option<serde_json::Value>`, read **before** the props (a
+  shelf piece's anchor is checked against it), entry by entry: an entry that isn't a structure this build knows (a later
+  build's ladder, garbage) is skipped; so is a second shelf on one pane, a second shelf at all (6a), `built` above
+  `SHELF_STAGES`, or a rise under `LOW_RISE`. `paced` lands in step 5c, the same way.
 - **Pieces on shelves.** `SavedAnchor.strip` is a `Strip`, so a shelf piece writes `{"Shelf":"Users"}`. On read, a
-  piece whose anchor names a shelf the record has no shelf for, or a shelf that doesn't `take` it (garbage), keeps
-  only its pane (`strip.nook()`) and its `at`: it lands on that pane's floor where its share puts it.
-- **A kit is never an unboxed prop**: `from_json` drops a `ShelfKit` prop recorded unboxed; `Home::add` debug-asserts it.
-- `an_unknown_strip_falls_back_to_the_rooms_pane` (ledger.rs:859) feeds `{"Shelf":3}`, which still fails to parse (a
-  shelf is `{"Shelf":"Users"}`), but it is renamed to feed `{"Ledge":3}` so it keeps testing an unknown strip.
-- `Summary` (ledger.rs:391) gains `structures: Vec<String>` (`"Users shelf, 2 of 2 up"`), skipped when empty, so dump.rs's
-  JSON golden holds.
-- Module doc (ledger.rs:1-46) and design.md *Her record* (design.md:2641) say what's kept and what older builds lose.
+  piece whose anchor names a shelf the record lacks, or a shelf that doesn't `take` it, keeps only its pane and its
+  `at`: it lands on that pane's floor at its share.
+- **A kit is never an unboxed prop, by one accessor** (step 5b): `Prop.boxed` and `Shown.boxed` become private to
+  room.rs, read through `boxed()` = `self.boxed || self.item.is_kit()` (read by `lane`, `lift`, `needs`, `uses`, beauty,
+  `piece_look`, and every caller outside room.rs), set only by constructors; `Home::unbox` returns false for a kit.
+  So no path, scratch (`doorstep`'s unboxed probe, room.rs:2448-2462), stage (`give`, `spot`) or record, can show or
+  judge an unboxed kit; it's always its box.
+- `an_unknown_strip_falls_back_to_the_rooms_pane` (ledger.rs:859) is changed to feed `{"Ledge":3}` so it keeps testing
+  an unknown strip.
+- `Summary` (ledger.rs:391) gains `structures: Vec<String>` (`"Users shelf, 2 of 2 up"`), skipped when empty, so
+  dump.rs's JSON golden holds.
 
 ### D3. Where a shelf goes, and whether it stands this frame
 
-**Geometry** (pure; read by `Home::extents`, D6): `Shelf::run(host: Extent, door: Option<Space>) -> Option<Run>` with
-`Run { from, to, y }`: `from` from the anchor (`Side::Left`: `host.from + offset`; `Side::Right`: `host.to - offset -
-SHELF_WIDTH`), `to = from + SHELF_WIDTH`, `y = host.floor - rise`. `None` (it can't hang this frame) unless
-`from >= host.from + WIDTH`, `to <= host.to - WIDTH`, `LOW_RISE <= rise <= host.rows` (inside the pane, never in
-her box's rows or a standing piece's), and the run's columns
-miss the columns of her door's space on this strip **wherever the space can exist, kept or yielding** (`space_of`,
-room.rs:1232; the space is 6 wide, more than `WIDTH`, so the side rule alone wouldn't keep it out). A built-1 shelf's
-run is the half nearer its wall.
+**Geometry** (pure; read by `Home::extents`, D6): `Shelf::run(host: Extent) -> Option<Run>` with `Run { from, to, y }`:
+`from` from the anchor (`Side::Left`: `host.from + offset`; `Side::Right`: `host.to - offset - SHELF_WIDTH`), `to = from
++ SHELF_WIDTH`, `y = host.floor - rise`. `None` (it can't hang this frame) unless `from >= host.from + EDGE` and `to <=
+host.to - EDGE`, with `EDGE` = `max(WIDTH, SPACE)` + 2 (the margin) = 8, and `LOW_RISE <= rise` and `host.rows - rise >=
+LOW_ABOVE` (inside the pane with room for decor). No door input. A built-1 shelf's run is the bracket and half nearer its
+wall; built 0 draws nothing (D3a still blocks for it).
 
 **Choosing the spot** (`Home::shelf_spot(buf, plan, keep_off, kit_at) -> Option<Shelf>`, room.rs, no RNG):
-- **Highest that fits, then her preference** (the user's rule): every pane is tried high before any is tried low, so a
-  high shelf in another pane beats a low one in the gremlin's. Within a height, panes in order: the pane of the gremlin
-  if it stands on a floor (it wants up there), the pane she unpacks the kit in (`kit_at`), then `plan.nooks` order.
-  Never a pane meeting `plan.chat`.
-- **High**: rise from `HIGH_RISE` up to `host.rows - HEIGHT` (lowest first: text fills panes from the top, and lower is
-  nearer her), the run **and the `HEIGHT` rows above it** free. **Low**: rise `LOW_RISE` only, the run and the
-  `LOW_ABOVE` rows above it free, and its block meeting no hung piece of the host as laid out
-  (`laid_and_shifted(plan.nooks)`, the host's `Lane::Wall` pieces), so going up never pushes one.
-- Per rise, lefts in `host.from + WIDTH ..= host.to - WIDTH - SHELF_WIDTH` ordered by the distance of the run's middle
-  from the gremlin's middle if it's in this pane, else the pane's middle (the left first of two as near). The first
-  spot whose run passes D3's geometry and whose cells pass D4's per-cell test on this frame wins. One pass per pane
-  builds a column-wise "free cells upward" count, so the search is linear in the pane's cells (~1.5k a pane), cheap
-  enough to ask every paint while a boxed kit waits.
-- Saved with `anchor` from the nearer wall (as `Extent::pin` does), its rise (which says high or low for good) and
-  `built: 0`. A pane that grows later keeps a low shelf low; one that shrinks hides it (below).
+- **Highest that fits**: every pane is tried high before any is tried low.
+- **High**: rise from `HIGH_RISE` up to `host.rows - HEIGHT`, the run, its margin and the `HEIGHT` rows over the run free.
+  **Low**: rise `LOW_RISE` only, the run, its margin and the `LOW_ABOVE` rows over it free, and its block meeting no hung
+  piece of the host as laid out (`laid_and_shifted(plan.nooks)`, the host's `Lane::Wall` pieces).
+- Within a height, candidates in this order: panes (the gremlin's pane if it stands on a floor, the pane she unpacks in
+  (`kit_at`), then `plan.nooks` order; never a pane meeting `plan.chat`); then **rows with no text** before rows with
+  text elsewhere in the pane's interior (the user's preference: a shelf among a table's text reads as the UI's own
+  rule); then a high run that **touches no hung piece** (columns meeting a poster or clock right below it, at rise 7)
+  before one that does; then the lowest rise; then lefts ordered by the distance of the run's middle from the gremlin's
+  middle if it's in this pane, else the pane's middle, the left first of two as near.
+- One pass per pane builds a column-wise "free cells upward" count and a per-row "has text" flag, so the search is
+  linear in the pane's cells (~1.5k a pane). It's computed only when asked (D7b: the channel's queue resolving to the
+  kit or the gremlin; a boxed kit shown), never every paint.
+- Saved with `anchor` from the nearer wall, its rise (which says high or low for good) and `built: 0`. A pane that grows
+  later keeps a low shelf low; one that shrinks below the geometry hides it.
 
-**Per frame** a shelf stands when D3's geometry holds (else `Home::extents` has no plan for it, D6) and every cell of its
-(built) run passes D4's test. Otherwise it's hidden that frame, and what stands on it with it (their floor row isn't a
-line, so `fits` (room.rs:2839) refuses them): never moved, never re-hung, back when the frame holds it. The change is
-logged at debug once per change.
+**Per frame** a shelf stands when its geometry holds (else `Home::extents` has no plan for it) and every cell of its
+built run and margin passes D4's test. Otherwise it's hidden that frame, with what stands on it (they stand only on
+written cells: D6), never moved, never re-hung. Logged at debug once per change.
 
-`HIGH_RISE` = `max(hang + rows)` over the hung kinds + 1 = 7, and `LOW_RISE` = `HEIGHT` + 1 = 5; a test computes both
-(from the `Spec` rows and from `sprite::HEIGHT` and the tallest standing piece), so a new hung piece that reaches higher,
-or a standing one taller than her, fails it. The ledger skips a shelf whose rise is under `LOW_RISE`.
+`HIGH_RISE` = `max(hang + rows)` over the hung kinds + 1 = 7, `LOW_RISE` = `HEIGHT` + 1 = 5; both land in step 2a with
+the test that computes them (from the `Spec` rows, `sprite::HEIGHT` and the tallest standing piece).
 
 ### D3a. A low shelf in the wall lane
 
-- **The block**: for a shelf with rise under `HIGH_RISE`, its run's columns across the wall lane's rows that its row and
-  the rows above it reach (`f-6 ..= f-5` for `LOW_RISE`). A placed shelf has a block from `built: 0`, so nothing hangs
-  where it is going up.
+- **The block**: for a shelf with rise under `HIGH_RISE`, its run's columns across the wall lane's rows its row and the
+  rows over it reach (`f-6 ..= f-5` at `LOW_RISE`). It exists whenever the shelf's geometry holds, from `built: 0`,
+  whatever the frame's cells: layout stays pure geometry (room.rs:1884-1886).
 - **Hung pieces keep out of it.** `hung_clear` (room.rs:2074) today moves only the window clear of what stands, to the
-  nearest place between its neighbours on the wall that meets none, keeping its order, else left out alone. It takes
-  the host's blocks as obstacles for **every** hung piece (the poster, the clock, the window, though the window's rows
-  never meet one), by the same search: a poster whose anchor puts it over the shelf hangs beside it, at the nearest
-  clear place in its order; on a wall too crowded for that, it's in the closet alone (a wall never moves a room). Its
-  `shifts` entries say so, as for the window, so the repair search's "a pushed hung piece" refusal (rules.rs:605) and
-  the door batch's yield rule (`plan_strip`, room.rs:1721) see it.
-- **The host's layout reads its shelf**, so it's an input of the pane strip's layout: `Home::lays_from` and
-  `StripLaid` (room.rs:891, 1852) record the host's shelves beside its pieces and door, and `relaid` lays the pane out
-  again when they differ (the door batch's no-stale-strip rule, D6).
-- **Placements see it**: `fits` already refuses a hung piece over the shelf's glyphs (its body must be blank); the
-  block makes that a layout fact, so a delivered or moved poster is laid out beside the shelf rather than laid over it
-  and hidden. `doorstep`, `spot` and the repair search judge by the layout and need nothing more.
-- **Her wall clock as a gift** (mod.rs:4156-4190) and a window delivery are laid out the same way.
-- The decor on a low shelf stands in rows `f-8 ..= f-6`, above the window and beside any hung piece (the block covers
-  `f-6`; rows above `f-6` are above the wall lane).
+  nearest place between its neighbours that meets none, keeping its order, else leaves it out alone. It takes the
+  host's blocks as obstacles for **every** hung piece by the same search: a poster whose anchor puts it over a low shelf
+  hangs beside it; on a wall too crowded for that, it's in the closet alone. Its `shifts` say so, so the repair search's
+  pushed-hung refusal (rules.rs:605) and the yield rule (`plan_strip`, room.rs:1721) see it. With no block it is
+  exactly today's `hung_clear` (step 4 proves it against a frozen copy).
+- **The host's layout reads its shelf**: `Home::lays_from` and `StripLaid` (room.rs:891, 1852) record the host's shelves
+  beside its pieces and door, and `relaid` (room.rs:1969) lays the pane out again when they differ. A shelf strip's own
+  layout reads its `Shelf` record and `plan.host`; `StripLaid` records both, so neither strip is ever reused stale.
+- The window (rows `f-3 ..= f-2`) never meets either height; decor on a low shelf stands in rows `f-8 ..= f-6`, beside
+  any hung piece.
 
-### D4. `read_ground`: one write, before every read
+### D4. `read_ground`: one write, before every read, undone by every arm that doesn't own it
 
 ```rust
 /// What `read_ground` wrote into the frame this paint: each cell, with the real cell it covers.
+#[must_use = "an arm keeps it (into its painted list) or undoes it"]
 pub(super) struct Written { cells: Vec<Frozen> }      // structures.rs (new module)
 impl Written {
     pub fn none() -> Self;
     pub fn contains(&self, x: i32, y: i32) -> bool;
-    /// The frame as the app drew it at (x, y): what `read_ground` covered, else `buf`'s cell.
-    pub fn real(&self, buf: &Buffer, x: u16, y: u16) -> Option<Cell>;
-    pub fn frozen(&self) -> &[Frozen];
+    pub fn real(&self, buf: &Buffer, x: u16, y: u16) -> Option<Cell>;   // what the app drew there
+    pub fn keep(self, painted: &mut Vec<Frozen>);   // structure cells first: the bottom layer
+    pub fn undo(self, buf: &mut Buffer);            // each written cell back to its `under`
 }
-/// Write her structures into `buf` where each stands this frame (all of its cells or none of them).
 pub(super) fn read_ground(buf: &mut Buffer, home: &Home, plan: Plan, keep_off: &KeepOff) -> Written;
 ```
 
-- **The per-cell test** (shared with `shelf_spot`): on screen; blank (`symbol().trim().is_empty()`), not a wide glyph's
-  trailer (`width(cell(x-1)) < 2`, as `fits` checks), not untouchable; outside every `keep_off.protected` rect (the
-  **gated** view's, so a focused pane hides it), outside `plan.chat`; not a cell of her layer (`visit.layer.cells()`,
-  layer.rs:291: moved text, its sources and torn cells), not in a made piece's cover, not in the cover of a laid piece
-  other than those on this shelf. Each written cell becomes a `Frozen { glyph: '─', ink: SHELF_INK, under: <the real
-  cell>, face: None, burst: false }`.
+- **The per-cell test** (shared by `read_ground` and `shelf_spot`; tested against an independent oracle): on screen;
+  blank (`symbol().trim().is_empty()`), not a wide glyph's trailer (`width(cell(x-1)) < 2`), not untouchable; outside
+  every `keep_off.protected` rect (the **gated** view's), outside `plan.chat`; not a cell of her layer (the layer's
+  **pre-validate** cells, `visit.layer.cells()`, layer.rs:291: moved text, sources, torn cells); not in a made piece's
+  cover; not in the cover of a laid piece other than those on this shelf. A written cell is `Frozen { glyph: '┬' or
+  '─', ink: <the host border's fg>, under: <the real cell>, face: None, burst: false }`.
 - **Where it runs: once, at the top of `paint_state`** (mod.rs:2499), after `observe`, `gate` and `whole_glyphs`
-  (2501-2504) and before `errand_progress`/`nudge_due` (2506-2507), for `Arriving`, `Away` and `Visiting`; `Absent`
-  shows no home and `Leaving` writes nothing (below). It can go before the visit's `layer.validate` (2747) because
-  validate reads only the layer's own cells (layer.rs:516-560, `fits` 301-327), which `read_ground` never writes; its
-  `keep_off` uses the layer before validation (a superset: conservative). So every read of the paint sees the same
-  frame, which closes the map's three missed sites at once: the errand's read in `Guest::send` (mod.rs:3432), the
-  delivery's lazy read in `furnish` (mod.rs:4120), and her empty home's `ground`/`terrain` reads in `paint_empty`
-  (5716, 5727); and the arrival's read (2515) and `home.frame` (2534) both follow it.
-- **Made structural:** the production terrain reads take `&Written` (D5). `Terrain::read` without it becomes
-  `#[cfg(test)]` (the test helpers in scenes.rs, terrain.rs and mind.rs:1980), so a new production read site that
-  skipped the structures wouldn't compile. `nudge_due`/`send`, `furnish` and `paint_empty` take `&Written`.
-- **Keep-out.** Its cells join `base` (mod.rs:2799: no pulled or swapped text, no made piece lands on them) and the
-  made pieces' keep (`tend_made` judges made pieces on `buf`, where the glyph already isn't blank). Bubbles already
-  avoid every non-blank cell (`bubble_spot`, mod.rs:3897-3903). Not `Visit::solid` (mod.rs:1020): she walks in front of
-  a shelf as of a border.
-- **Rains.** Its frozen cells join the frame's painted list: `visit.painted` (mod.rs:3187) and `empty.painted`
-  (mod.rs:5769). So the focused-pane rain (mod.rs:2724-2745) rains a shelf out of a focused pane (and D3 keeps it out
-  while focused), `rain_home` takes it with her empty home, and the goodbye's dissolve owns it.
-- **The goodbye.** `Leaving` writes nothing: the dissolve, built from `visit.painted`, paints the structure cells as
-  frozen glyphs and rains them out with the rest; writing them again each goodbye frame would keep them up after their
-  rain and break the final `end == real` (tests.rs:1526). What stops a shelf from costing her the wave
-  (`Dissolve::unchanged`, dissolve.rs:220, compares each burst cell's `under` with the live frame) is fixed where
-  `under` is taken: every `under` recorded for her rains reads through `Written::real`: `draw_art`'s `under` closure
-  (mod.rs:5499), the prop unders in `draw_props` (`unders_of`, mod.rs:5345; mod.rs:5601), `paint_empty`'s (5805). So
-  her image's under-cells are the real frame's (blank where a shelf glyph stood), the goodbye frame (no structures)
-  matches them, and two frozen cells at one place never disagree about what to put back. In 6a her box never meets a
-  shelf (even a low one hangs a row above her head), so this is a guard for 6b, tested as such.
+  (2501-2504) and before `errand_progress`/`nudge_due` (2506-2507), in every state but `Leaving`, and only at or above
+  `MIN_WIDTH`×`MIN_HEIGHT` (mod.rs:248). It can precede the visit's `layer.validate` (2747) because validate reads only
+  the layer's own cells (layer.rs:516-560, `fits` 301-327), which `read_ground` never writes. This departs from the
+  brief's wording ("right after `layer.validate`") for that reason; plan.md's record says so when step 2b lands, and
+  `TextLayer::validate`'s doc ("call before anything of hers is painted", layer.rs:513-515) gains the exception.
+- **Owned or undone, every frame, whatever the state became.** The state can change after the write within the paint
+  (`errand_progress` → `leave`, mod.rs:3403; the arrival's `call_off` → `rain_home`, 2585/1858; `out_by_door` → `leave`,
+  2359; the `vanish` returns at 2580, 2613, 2907; `send` from `Absent` beginning a visit). So the match's arms, not the
+  state at the top, decide: `Visiting` and `Away` `keep` it into their painted list (structure cells first:
+  `visit.painted` at mod.rs:3187, `empty.painted` at 5769); `Arriving` that becomes a visit keeps it; `Absent`,
+  `Leaving`, a failed arrival and every `vanish` return `undo` it before they read `buf`. `Written` is `#[must_use]` and
+  moved into exactly one of the two. So "the goodbye's frame has no structures" holds whatever state the frame began in,
+  and a visit begun by `send` from `Absent` has its shelf on its first frame.
+- **Made structural:** the production terrain reads take `&Written`; `Terrain::read` without it becomes `#[cfg(test)]`
+  (its six production callers are all in mod.rs: 2515, 2649, 3446, 4120, 5716, 5727). The goodbye's read at 2649 passes
+  `&Written::none()` (it has undone the cells), the only production call that does, with a comment saying why.
+  `nudge_due`/`send`, `furnish` and `paint_empty` take `&Written`.
+- **Keep-out.** The whole placed run and margin of every shelf whose geometry holds, written or not (an unbuilt half,
+  a run hidden by text), joins `base` (mod.rs:2799: no pulled or swapped text, no made piece lands there) and the made
+  keep. Bubbles already avoid non-blank cells (`bubble_spot`, mod.rs:3897-3903). Not `Visit::solid` (mod.rs:1020): she
+  walks in front of a shelf as of a border.
+- **Rains.** Kept cells go first into the painted lists, so they're the bottom layer the dissolve's stacking expects
+  (`first_at`, dissolve.rs:106-110: the first cell at a place holds the real UI's `under`). The focused-pane rain
+  (mod.rs:2724-2745) rains a shelf out of a focused pane (and D3 keeps it out while focused), `rain_home` takes it with
+  her empty home, and the goodbye's dissolve owns it.
+- **Every burst cell's `under` reads through `Written::real`**: `draw_art`'s closure (mod.rs:5499, her box and doorway),
+  the pieces in her image (5601), line-art `unders_of` (5345), `draw_front` (5805, shared with the visit at 3138), and
+  ASCII `draw` (3871). Other cells keep the cell they were drawn over (the dissolve stacks them on purpose). This is 6a
+  work, not a 6b guard: her box can cross a shelf's row in 6a, standing on a text `─` in the host pane or climbing a
+  text `│` (the long-visit alphabet has both, tests.rs:708). Then `Dissolve::unchanged` (dissolve.rs:220) compares her
+  burst cells with the goodbye's frame, which has no shelf, and they match.
+- **Her fallback door never stands over a shelf**: `Ground` (door.rs:141) gains `structure(x, y)` (from the terrain's
+  `STRUCTURE` flag; door.rs's two test impls at 532, 581 answer false), and `on_floor` (door.rs:353-367) refuses a box
+  meeting one, as it refuses a wall glyph.
 - **The rule's exception, documented:** decisions.md *Houseguest reads the frame she stands on (2026-10-01)* gains an
-  amendment and design.md:2619-2622 a clause: her structures are the one thing of hers written **before** the reads,
-  because they're terrain: once a paint, by `read_ground`, before anything reads the frame; the goodbye is the one frame
-  without them (its dissolve owns their cells); every `under` she records is the real frame's. The code comments at
-  mod.rs:2596-2603, 2643-2646 and 2744-2746 say the same.
+  amendment and design.md:2619-2622 a clause: her structures are the one thing of hers written before the reads,
+  because they're terrain: once a paint, before anything reads the frame, and undone by every frame that doesn't show
+  her home; every burst `under` she records is the real frame's. The comments at mod.rs:2596-2603, 2643-2646 and
+  2744-2746 say the same.
 
-### D5. The terrain: lines, but no ledge of hers (6a)
+### D5. The terrain: lines, but neither ledge nor pole of hers (6a)
 
-- `Terrain::read_guarded(buf, solid, guarded, graphics, written)` (terrain.rs:229): a new `lines` flag `STRUCTURE`
-  (16) on written cells, and `ledges.push(!skip && floor && !structure)` (terrain.rs:263) with `LEDGE` likewise. So a
-  shelf is never a platform (`add_platforms`, terrain.rs:318), never a `Ground::ledge` (her face-on fallback door,
-  door.rs:353-367, never stands on one) and gives no link (`find_links`, terrain.rs:518: its `─` is no pole). It's still
-  `STROKE` and `quiet`, so she passes in front of it and her line-art image redraws it (graphics.rs:598-760), as a
-  border.
-- That's what keeps her off a shelf in 6a: `settle`'s "no landing: the nearest platform" (osaka.rs:10230), arrivals,
-  `find_rest`, doors in space and `nearest_clear` all pick among platforms, and there is none there. 6b lifts the flag
-  for a shelf her ladder reaches.
-- With nothing written, the flag is never set: the terrain snapshots (snapshots/*default_layout_terrain_*) and every
-  terrain read are unchanged.
+- `Terrain::read_guarded(buf, solid, guarded, graphics, written)` (terrain.rs:229): a `lines` flag `STRUCTURE` (16) on
+  written cells; `ledges.push(!skip && floor && !structure)` and `poles.push(!skip && pole(symbol) && !structure)`
+  (terrain.rs:263-264), `LEDGE` likewise. So a shelf is never a platform (`add_platforms`, terrain.rs:318), never a
+  `Ground::ledge`, and its brackets (`┬`, which `pole` would take) give no link (`find_links`, terrain.rs:518). It stays
+  `STROKE` and `quiet`: she passes in front of it and her line-art image redraws it (`┬` is in `strokes`,
+  graphics.rs:333) as a border.
+- That keeps her off a shelf in 6a: `settle`'s nearest-platform fallback (osaka.rs:10230), arrivals, `find_rest`, doors
+  in space and `nearest_clear` pick among platforms, and there is none there. 6b lifts the ledge half for a shelf her
+  ladder reaches; the brackets stay no pole (the user's note).
+- With nothing written the flag is never set: the terrain snapshots and every terrain read are unchanged.
 
 ### D6. Shelves as strips
 
 - `Home::extents(nooks)` (room.rs:1711) and every layout path built on raw strips (`pin_anchors` 1867, `laid_out` 1894,
-  `strips_laid_out` 1901, `laid_and_shifted` 1914, `strips_laid` 1929) take their strips from one
-  `Home::raw_extents(nooks) -> Vec<(Strip, Extent, Extent /*host*/)>`: the pane strips in `nooks` order, **then** each
-  **finished** shelf whose run hangs this frame (D3), as `Strip::Shelf(nook)` with `Extent { from, to, floor: y, rows:
-  host.rows - rise }`, no space, `host` its pane's raw extent. Panes first, so every test indexing `extents(..)[i]` still
-  reads a pane. An unfinished shelf is drawn (D4) but no strip.
-- **No stale shelf plan** (the door batch's `relaid` rule, door/design.md D1): a shelf's plan reads its `Shelf` record,
-  its host's extent and her door's wall on its host (D3's space columns). `strip_door(strip)` (room.rs:1860) for a shelf
-  reads the door on `strip.room()`; `StripLaid` (room.rs:891) records the `Shelf` and `plan.host` beside `from` and
-  `door`, and `relaid` (room.rs:1969) lays a shelf strip out again whenever any of them differs, so a move that changes
-  any input of a shelf's layout can never reuse the old one.
-- **Pieces on a shelf** are laid out by the same packing in anchor order, show where `fits` holds (their floor row is the
-  shelf's glyphs, written before `furnish`), and are hidden with it. `Shown::cover` of a piece on a shelf is its body and
-  the shelf cells under it: solid to text, like any piece's.
+  `strips_laid_out` 1901, `laid_and_shifted` 1914, `strips_laid` 1929) take their strips from one `Home::raw_extents`:
+  the pane strips in `nooks` order, **then** each **finished** shelf whose geometry holds, as `Strip::Shelf(nook)` with
+  `Extent { from, to, floor: y, rows: host.rows - rise }`, no space, `host` its pane's raw extent. Panes first, so every
+  test indexing `extents(..)[i]` still reads a pane.
+- **Pieces on a shelf stand only on written cells.** `project_with` and `fits` (room.rs:2159, 2839) take `&Written`, and
+  a piece on `Strip::Shelf` shows only where every cell of its floor row is a written cell this frame. The app's own
+  `────` rule across a hidden run never holds one up. The layout stays pure: rules judge "up there" while it's hidden.
 - **Moves onto a shelf** come only from the repair search, which already enumerates every plan (rules.rs:930) and now
-  meets the shelf's plan for small decor. `fits_now` (rules.rs:837) judges it on the frame (the shelf drawn). The
-  pocket carry needs no change but `reach` reading `stood`: she lifts and sets down standing on the floor under it.
-- **`move_off` never touches a shelf** (D1): a shelf's pieces aren't moved to a floor when the shelf can't hang, nor are
-  a floor's pieces moved onto a shelf when a pane goes.
-- **The closet** (`stranded`/`placements`, room.rs:946-1100) considers a shelf only for pieces it takes, so it agrees with
-  the search (`stranded_iff_no_room_takes_it`, room.rs:5917).
-- `clock_on` (mod.rs:213) reads the room's floor: the pane strip of `clock.strip.room()`, so her glance at a clock on a
-  shelf is taken from its room's floor.
+  meets a shelf's plan for small decor. On a shelf, its candidate lefts are the one centring the piece on the run (a
+  lone ornament stands mid-shelf) and the packed places beside pieces already there. `fits_now` (rules.rs:837) judges it
+  on the frame, the shelf written. The pocket carry stands her on `stood`; `Act::Lift`/`Act::SetDown` on a shelf draw
+  `Pose::Stretch`.
+- **InChat skips shelf pieces**: a shelf the chat comes to meet is hidden (D4's test), so its pieces aren't judged in
+  the chat (InChat's judge and `closetable`, room.rs:957, skip `Strip::Shelf`); a repair never carries them down for it.
+- **`move_off` never touches a shelf** (D1).
+- **The closet** (`stranded`/`placements`, room.rs:946-1100) considers a shelf only for pieces it takes.
+- `clock_on` (mod.rs:213) reads the pane strip of `clock.strip.room()`, so her glance at a mantel clock is taken from its
+  room's floor.
 
-### D7. The kit: sold, delivered, unpacked, put up
+### D7. The kit
 
-- **The kind.** `Furniture::ShelfKit` (room.rs:20, `ALL` 13), a `Spec` (`name` "shelf kit", the pitch above, footprint
-  (5, 2) so its parcel shows whole, `offers: &[]`, `beauty: 0.0`, `uses: &[]`, an ASCII flat pack that fills the
-  footprint for the lint at room.rs:2884, never drawn unboxed), and two new `Spec` fields: `kit: Option<Kit>` (`Kit::Shelf`)
-  and `shelf: bool` (true for the plant, the clock, the gremlin). `legacy()` false; `RoomKind::of` → `Living`
-  (ledger.rs:575); `scrap` and `art::parts` arms (boxed only: its parcel is `art/delivery.svg` scaled by footprint).
-- **The channel** (`advert`, mod.rs:194): `advert(ledger, shop_now, needs, wish, shelf_room)`. The queue is the wished
-  kit first, if any; else, beauty pressing, decor then furniture, else furniture then decor (as today); kits last.
-  `CATALOGUE` (mod.rs:169) appends `ShelfKit` (its tier comes from `Spec.kit`, so the array's order within a tier is
-  unchanged). A kit is sold only while `shelf_room`: `shelf_spot` finds a spot **on this frame** (geometry and blank
-  cells), computed where `advert` is (mod.rs:2955, 3008, which have the frame), so a kit is never bought for panes full
-  of text; a boxed kit counts for `advert`'s `idle` (mod.rs:196), so one that can't go up would stop the channel. The
-  residual risk (the frame changes for good between purchase and unpacking: a resize, a layout change) is accepted: the
-  box waits, visibly, and the channel with it, until a frame has a spot; logged at debug once per change. The cadence
-  (`SHOP_EVERY`, every third visit) is unchanged; the wish only reorders.
-- **Delivery**: as any parcel, through her door's flap (`doorstep`, pane strips only).
-- **Unpacking**: the existing `Unpack` (4–6 s, osaka.rs:1787), but the kit's unpack seat is offered only on a frame where
-  `shelf_spot` finds a spot (`seats`/`spots_for`, mod.rs:4537-4600, gain a flag as `cat` does), so she never unpacks a
-  kit with nowhere to put it. `HomeEvent::Unpacked(ShelfKit)` in `record` (mod.rs:3688) sets `visit.raise = Some(kit)`
-  instead of `unbox` (it needs the frame, as `SetDown` does); `furnish` (mod.rs:4003) chooses the spot on its frame and
-  calls `Home::raise(shelf)`: the prop goes, `Structure::Shelf(.. built: 0)` comes, logged at info with its pane, rise
-  and columns. With no spot by then (the frame changed in her 4–6 s), the box stays shut, logged at debug, and her
-  unpack seat waits for a spot again.
-- **Building**: `Want::Build` (brain.rs:520, `ALL`; def `row(12.0, [(Nesting, 1.0)])`, `own_sake`, between Arrange's 6
-  and Unpack's 40; tuned in step 5's census), method `build/stage` (mind.rs) binding `Job::PutUp(PutUp { x, y, side })`
-  (scenes.rs:236) at `Chances.build` (osaka.rs:29): the spot under the unfinished shelf's next half, on its pane's
-  floor, where she may stay (`reach`'s test). `Act::PutUp { since, until }` (6 s, `Moves::Still`, the ActProps of
-  `Act::SetDown`), `Pose::Stretch` held, `"Up it goes..."` at its start; at its end `HomeEvent::Built`, which `record`
-  commits: `built += 1`, `paced` updated, saved at once (decisions.md:3299, "events at once"). Cut short, nothing is
-  committed; she'll be offered it again.
+#### D7a. Choosing a spot (step 5a): D3's `shelf_spot`, pure, with its oracle and cost test.
+
+#### D7b. The kind, the channel, delivery, unpacking (step 5b)
+
+- **The kind.** `Furniture::ShelfKit` (room.rs:20), appended to `ALL` (13). `Spec` (`name` "shelf kit", its pitch,
+  footprint (5, 2) so its parcel shows whole, `offers: &[]`, `beauty: 0.0`, `uses: &[]`, an ASCII flat pack filling the
+  footprint for the lint at room.rs:2884) plus `Spec.kit: Option<Kit>` (`Kit::Shelf`); `Furniture::is_kit()`.
+  `legacy()` false; `RoomKind::of` → `Living` (ledger.rs:575); `scrap` arm; `art::parts` gives it nothing unboxed (it's
+  never unboxed: D2's accessor), and the art lints that render unboxed pieces (`every_prop_renders_inside_its_footprint`,
+  art.rs:4325; the review sheets at art.rs:3406, 4384) iterate `ALL` less kits, saying why;
+  `every_parcel_and_channel_renders_inside_its_box` (art.rs:3357) and `lean_rests_the_flap_on_the_parcel` (4236) include
+  it (its parcel).
+- **Frozen kinds for old tests.** `#[cfg(test)] Furniture::PRE_SHELF: [Self; 12]` (today's `ALL`) and
+  `CATALOGUE[..10]`: every existing strategy, proptest body and kind lint is pinned to them (step 5b's list, from a grep
+  of `Furniture::ALL` and `CATALOGUE` in tests and strategies: rules.rs:1459, 2798; room.rs:3237, 4519, 5264;
+  tests.rs:5656-5658, 7789, 7810; mind.rs:1708; rules.rs:1447; brain.rs:995; tests/credit.rs:129). Their seeds keep
+  meaning what they meant. The kit and the gremlin get new proptest functions sharing those bodies.
+- **The stage**: `give` and `wishlist()` (mod.rs:1486, 1508) skip kits (`give(ShelfKit)` puts up a finished shelf where
+  `shelf_spot` says, as `Scene::Shelf` does); `send_parcel` may send the kit.
+- **The channel** (`advert`, mod.rs:194): `advert(ledger, shop_now, needs, wish, shelf_room)`. A three-way `next` by
+  tier (furniture, decor, kits; the tier from `Spec.kit` and `decor()`): the wished kit first if it can be sold now;
+  else, beauty pressing, decor then furniture, else furniture then decor (as today); kits last. `CATALOGUE` (mod.rs:169)
+  appends `ShelfKit`. The kit (and, step 7, the gremlin) is sold only when `shelf_room`: `shelf_spot` finds a spot on
+  this frame, computed only when the queue resolves to one of them. A wish that can't be sold now doesn't block the next
+  piece. A boxed kit counts for `advert`'s `idle` (mod.rs:196); the residual risk (the frame changes for good between
+  purchase and unpacking) is accepted: the box waits visibly, logged at debug once per change.
+- **Delivery**: as any parcel, through her door's flap (`doorstep`, pane strips only). The doorstep's `seats` closure
+  (mod.rs:4125) judges the kit's box with an ungated `Unpack` seat (she could open it), so the kit's delivery never
+  waits on a shelf spot.
+- **Unpacking**: the existing `Unpack` (4–6 s, osaka.rs:1787), but the kit's unpack seat in `seats`/`spots_for`
+  (mod.rs:4537-4600) is offered only while `shelf_spot` finds a spot (a flag computed in the paint, as `cat` is, only
+  while a boxed kit is shown). **The kit is the one parcel exempt from "unpacked at once"** (design.md *Getting
+  furniture*; `every_parcel_on_her_doorstep_gets_unpacked`, tests.rs:5632, stays pinned to the pre-shelf catalogue):
+  she can't open a shelf she can't put up. `HomeEvent::Unpacked(ShelfKit)` in `record` (mod.rs:3688) sets `visit.raise =
+  Some(kit)` instead of `unbox`; `raise` persists on `Visit` until the next `furnish` (`record` runs twice a paint,
+  2756 and 3189), which chooses the spot on its frame and calls `Home::raise(shelf)`: the prop goes, the shelf comes
+  (`built: 0`), logged at info. With no spot by then, or the visit ending first, the box stays shut (debug) and she
+  unpacks it again once a spot exists.
+
+#### D7c. Putting it up (step 5c)
+
+- `Want::PutUp` (brain.rs:520, `ALL`; `row(12.0, [(Nesting, 1.0)])`, `own_sake`, between Arrange's 6 and Unpack's 40),
+  method `put-up/stage` (mind.rs) binding `Job::PutUp(PutUp { x, y, side })` (scenes.rs:236) at `Chances.put_up`
+  (osaka.rs:29): beside the run's next half, on its room's floor, facing it, where she may stay. Offered only while the
+  next half's cells (and margin) pass D4's test on the frame, and `paced` allows.
+- **Chained after unpacking**: `Unpacked(ShelfKit)` sets `Osaka.then_put_up`; her next decision takes `PutUp` in the
+  Continuation bucket if it's offered (as a crumple chains to `Act::Admire` and a use, osaka.rs:4826-4832), else drops
+  the chain silently. The flat-pack line (step 8) plays before she walks.
+- `Act::PutUp { since, until }` (6 s, `Moves::Still`, `Act::SetDown`'s ActProps): `Pose::Stretch`, `Face::Curious`, no
+  `"nnn~"`; `"Up it goes..."` at its start. At its end `HomeEvent::PutUp`, which `record` commits after re-checking the
+  half's cells on that frame (not committed if they fail): `built += 1`, `paced` updated, saved at once. On a high
+  shelf the commit frame starts the hop: one beat of `Pose::Jack(1)`, about 400 ms (an `Act::Hop { until }`,
+  `Moves::Still`, no line), then (step 8) `Act::Admire`. Cut short, nothing is committed.
+- **Set-downs onto a high shelf hop too**: `Act::SetDown`'s commit onto a high shelf is followed by the same `Act::Hop`.
 - **Pacing.** `Ledger.paced: Option<Paced { on: Dated, stages: u8 }>` (skipped when `None`). `Dated` is today's `Said`
   (mod.rs:3593), moved to ledger.rs and made serializable: the game day (`Osaka::day`, osaka.rs:4365), or with no clock
-  reaching her the visit. `Build` is offered only while `paced` isn't today's with `STAGES_A_DAY` (1) done. So it's per
-  game day, survives a restart, and in the unfed tables (no clock) is per visit.
-- **Credit and lints**: `credit_path(Build, "build/stage")` (osaka.rs:7647; tests/credit.rs:19), the cue lint
-  (`every_want_can_be_cued`, tests.rs:10580: `Scene::Build`, D11), `all_lists_every_want` (brain.rs:1144),
-  `every_want_has_a_sane_row` (brain.rs:1210), the act lints (ActProps).
+  reaching her the visit. `PutUp` is offered only while `paced` isn't today's with `STAGES_A_DAY` (1) done. A stage is
+  never offered on the unpacking day if one was done (it can't have been: one kit).
+- **Credit and lints**: `credit_path(PutUp, "put-up/stage")` (osaka.rs:7647; tests/credit.rs:19), the cue lint
+  (`Scene::PutUp`), `all_lists_every_want` (brain.rs:1144), `every_want_has_a_sane_row` (brain.rs:1210), the act lints,
+  the exhaustive `Act` matches (osaka.rs:1003, 1229, 1282, 3516, 4864, 5569, 8078, 8132, 11247, …: the compiler finds them).
 
-### D8. The gaze up: `Use::Admire`
+### D8. The gaze up: `Use::GazeUp`
 
-- `Use::Admire` (room.rs:410, `ALL` 12): not `inside`, not `asks_room` (like `LookOut`: offered only where she can get
-  under it), `lingers`. `Shown::uses()` (room.rs:1437) gives `[Admire]` for a real, unboxed piece standing on a shelf,
-  else what it gave before; its spots (`spots_for`, mod.rs:4570) are under its middle, then beside it, at `stood`,
-  facing it; `seats_of`'s `restful` check (mod.rs:4547) applies.
-- `Want::Use(Use::Admire)`: `row(5.0, [(Daydreams, 0.4)])` (a little under `Gaze`'s 6/0.5, brain.rs:716), no factors.
-  Its script (script.rs, as `LookOut`'s arms: 525, 642, 744, 1453, 2465, 2512, 2546): `Posed::Still(Pose::Gaze)`, no
-  line; duration 8–16 s (osaka.rs:1787 table). Being a use of her things, it eases *beauty* in a pretty room as every
-  use does (osaka.rs:7475-7583), and the room is pretty because of what's on the shelf (D10).
-- Within the band: a still use reached by a short walk on her own floor. Step 6 re-measures (Census).
+- `Use::GazeUp` (room.rs:410, `ALL` 12): not `inside`, not `asks_room` (as `LookOut`), `lingers`; not in `ANY_USE`'s
+  felt-on lists (rules.rs:61): a piece on a shelf is in no chat, no door space, and set there by her. `Shown::uses()`
+  (room.rs:1437) gives `[GazeUp]` for a real, unboxed gremlin or plant standing on a shelf (the clock excluded), else
+  what it gave before. Its spots (`spots_for`, mod.rs:4570): beside the piece, her box's near edge one or two columns
+  past the piece's, still under the run, facing it (`Pose::Gaze` is in profile); at `stood`; offered only while she
+  stands on the shelf's room floor (no climb for it). `seats_of`'s `restful` check applies.
+- `Want::Use(Use::GazeUp)`: `row(5.0, [(Daydreams, 0.4)])` (under `Gaze`'s 6/0.5, brain.rs:716); step 8 adds the
+  freshness factor. Its script (script.rs; `LookOut`'s arms are at 469, 500, 539, 584, 619, 643, 685, 724, 758, 845,
+  1458, 2479, 2517, 2558, the or-pattern ones to read): a prelude of `Act::Admire`'s look (`Face::Pleased`, `"hehe"`,
+  2–3 s), then `Posed::Still(Pose::Gaze)`, `Face::Curious`; 20–45 s (osaka.rs:1787 table), so 5c's settling-in applies.
+  A use of her things, it eases *beauty* in a pretty room as every use does (osaka.rs:7475-7583).
+- Lookups by kind (`Guest::cue`'s `_` arm, mod.rs:1541-1548; `Scene::furniture()`, stage.rs:296; brain.rs:995) find no
+  piece for `GazeUp`: `Scene::GazeUp` sets up its own shelf with the plant on it.
 
 ### D9. The gremlin, `High`, and the wishlist (step 7)
 
-- `Furniture::Gremlin` (`ALL` 14): the approved variant A, as phase6/art/snippets.md's *Suggested `Spec`* has it:
-  footprint (2, 2), ASCII `oo` / `ww` (mirror-safe), ink `(Rgb(178, 154, 224), LightMagenta)`, `symmetric: false`,
-  `offers: &[Decor]`, `beauty: 1.0`, `hang: None`, plus `shelf: true`; the pitch is `"Aww, a little gremlin!"` (the
-  user's choice above, not the sheet's). Art: only the `gremlin` group from `worktree.diff` goes into `art/props.svg`
-  (never `-tall`, `-jade` or `-wide`); `art::parts` (art.rs:1373) gains `(Furniture::Gremlin, _) => &["gremlin"]`.
-  `CATALOGUE` gets it after the poster (decor tier). `RoomKind::of` → `Living`; ledger kind lists
-  (`an_older_build_skips_the_clock_and_the_window`, ledger.rs:1345) extended.
+- `Furniture::Gremlin`, appended to `ALL` (14): the approved variant A as `snippets.md`'s *Suggested `Spec`* has it:
+  footprint (2, 2), ASCII `oo` / `ww`, ink `(Rgb(178, 154, 224), LightMagenta)`, `symmetric: false`, `offers: &[Decor]`,
+  `beauty: 1.0`, `hang: None`, `shelf: true`; pitch `"Aww, a little gremlin!"` (the user's choice, not the sheet's
+  suggestion, which is over 24 characters). Art: only the `gremlin` group from `worktree.diff` into `art/props.svg`;
+  `art::parts` gains `(Furniture::Gremlin, _) => &["gremlin"]`. `RoomKind::of` → `Living`; ledger kind-list tests
+  (ledger.rs:1345) extended. `CATALOGUE` gets it after the poster; it's sold only when a shelf stands or `shelf_room`
+  holds (D7b), so the story it starts can finish.
 - `Rule::High(Furniture)` (rules.rs:19): broken while the piece is laid out, out of its box, on a strip that isn't a
-  shelf. A `RULES` row appended (rules.rs:74; row indices of the others unchanged): `High(Gremlin)`, felt on sight,
-  grievance `"It wants a shelf..."`. `kind(row)` (rules.rs:191) gains its label. `on_sight` (mod.rs:3642) feels it as
-  `InChat` (whenever she's in sight while it's broken), said on the same terms (when her mood would mend, once a game day).
-  With a shelf up, the search's only mending move is onto a shelf (D6), carried as any repair; with none, no move mends
-  it and it's what the wishlist reads. Then she is as with a DoorClear no move mends today: `Arrange` is offered while
-  a felt rule is broken (`may_arrange`, osaka.rs:8444, from `to_mend` 9639, which doesn't ask for a repair) and its
-  `lift` finds none (mind.rs:689), so it doesn't bind; *nesting* rises for the visit. Step 7 checks in the census's want
-  table that this costs her no slot of `choose`'s four; if it does, `may_arrange` also asks for a repair (the class,
-  DoorClear included).
+  shelf. A `RULES` row appended (rules.rs:74; indices of the others unchanged): `High(Gremlin)`, felt on sight, grievance
+  `"It wants a shelf..."`; `kind(row)` (rules.rs:191) gains its label. `search` gives `High` only shelf strips as places
+  (a floor can't mend it), so an unmendable `High` costs no search.
+- **Felt only where it means something**: `on_sight` (mod.rs:3642) feels `High` only while she stands on the gremlin's
+  room's floor and a shelf stands or `shelf_room` holds; she says it turned to face it, on the InChat terms (her mood
+  would mend, once a game day). With a shelf up it's said only on a visit she'll mend (`to_mend`'s cap, osaka.rs:9639),
+  so the carry follows the line.
+- With no shelf, no move mends it: `Arrange` is offered (`may_arrange`, osaka.rs:8444) and its `lift` finds none
+  (mind.rs:689), so it doesn't bind; whims are keyed by name and an unbound want draws nothing (brain.rs:883-920).
+  Step 7 checks in the census's want table that this costs her no slot of `choose`'s four; if it does, `may_arrange`
+  also asks for a repair (the class, DoorClear included).
 - **The wishlist**: `Rule::wants(self) -> Option<Furniture>` (`High(_)` → `ShelfKit`; 6b and 6c add theirs). `wish` =
   for the first rule she has felt this visit (`Osaka.felt`, in the order felt) that is still broken and whose kit she
-  doesn't own, that kit. Computed where `advert` is (mod.rs:2955, 3008).
+  doesn't own, that kit. Per visit, as felt rules are; she feels it again on sight early in the next. Computed where
+  `advert` is (mod.rs:2955, 3008).
 
 ### D10. Beauty from a shelf
 
-`beauty_at` (mod.rs:233): her room is the pane strip whose floor she stands on (`pane_strips`), and its beauty sums
-what shows, unboxed and real, whose `strip.room()` is that strip: a shelf's decor counts for the room below, a hidden
-shelf's doesn't (it isn't shown). Nothing else changes: *beauty* rises in a plain room and is eased by rest and use in a
-pretty one (design.md:1571).
+`beauty_at` (mod.rs:233): her room is the pane strip whose floor she stands on (`pane_strips`), and its beauty sums what
+shows, unboxed and real, whose `strip.room()` is that strip: a shelf's decor counts for the room below, a hidden
+shelf's doesn't (it isn't shown).
 
 ### D11. The stage
 
-`Scene::Build` (stage.rs:28): gives her a shelf where `shelf_spot` puts it (built 0), clears today's pacing, cues
-`Build`. `Scene::Shelf`: a finished shelf with the plant on it (the gremlin from step 7). `Scene::Admire`: cues the use.
-`Scene::ALL` (stage.rs:170) grows from 58 to 61. The stage room is the bundled layout at 100×30: no pane takes a high
-shelf there, and only The List (9 rows, 7 inside) takes a low one by geometry, at rows 1–3 of the screen, where its
-entries are drawn from the top. If the stage room's List leaves those rows blank in 10 columns `WIDTH` off its walls,
-the three scenes run there with a low shelf (step 5 checks and says which). Otherwise
-`every_scene_has_a_spot_in_the_stage_room` (tests.rs:1762) runs these three on the smallest bundled frame step 3
-measures for a low shelf, and the example (`examples/houseguest.rs`) says so when the terminal is too short.
+`Scene::PutUp` (stage.rs:28): gives her a shelf where `shelf_spot` puts it (`built: 0`), clears today's pacing, cues
+`PutUp`. `Scene::Shelf`: a finished shelf with the plant on it (the gremlin from step 7). `Scene::GazeUp`: its own shelf
+and plant, then the use. `Scene::ALL` (stage.rs:170) grows from 58 to 61.
+
+`every_scene_has_a_spot_in_the_stage_room` (tests.rs:2355) loops `(100, 30)` and `(80, 24)`. At 100×30 two bundled
+panes are 9 rows (The List and the Playlist, `[Add New]` on its first inside row): a low shelf by geometry, if
+`stage_ui`'s content leaves its rows blank. Step 3 checks which; the three scenes follow the `LookOut` precedent
+(tests.rs:2371-2384): where no pane takes a shelf on that frame, their note is `Err`, asserted, with the frame
+asserted to be one that can't (`80×24` always: no pane is 9 rows). Each gets an early "visibly happened" observable in
+the `happened` match (tests.rs:2454): `Pose::Stretch` for PutUp, `Pose::Gaze` for GazeUp. A test beside it runs the
+three on a frame where a shelf fits (`rooms(100, 30)`: Users 13 rows), so they're exercised whatever the stage room
+holds.
 
 ## Tests
 
 The door batch's rules hold: written first, run, **confirmed failing for the stated reason** (a test that can't be red
-today is a **guard**, proven by a reviewer's mutant); deterministic (seeded, game times via `tue`/`sat`/`home_at`);
-every houseguest test loops `for graphics in [false, true]`; panes filled with text where terrain matters; pinned case
-counts through `proptest_cases(N)`; a proptest failure committed to its regressions file and pinned as a unit test.
-**No existing proptest's strategy changes** (their `cc` seeds would replay as other cases): shelves are new proptest
-functions sharing the bodies.
+today is a **guard**, proven by a reviewer's mutant); deterministic; every houseguest test loops `for graphics in
+[false, true]`; panes filled with text where terrain matters; pinned case counts through `proptest_cases(N)`; a proptest
+failure committed to its regressions file and pinned as a unit test. **No existing proptest's strategy or value space
+changes**, and **appending to a strategy's domain is a strategy change**: old strategies are pinned to
+`Furniture::PRE_SHELF` and `CATALOGUE[..10]` (D7b); new kinds and shelves get new functions sharing the bodies, with
+their own strategies. Each step's exit greps `Furniture::ALL` and `CATALOGUE` in strategies and proptest bodies. **Oracles
+are independent**: geometry is computed from the `Shelf` record and the nook rect alone, never from `extents`,
+`Written` or the shared per-cell function.
 
-- **Structures take only what's theirs** (`read_ground_takes_only_blank_free_cells`, structures.rs, proptest): random
-  frames (text, wide glyphs, protected rects, a chat rect, a door wall), random shelves (any geometry, any `built`),
-  random layer and made cells: every written cell was blank and not a trailer, outside every protected rect and the
-  chat, outside her door's space columns, off every layer, made and laid cover; each shelf is all or nothing; with no
-  structures the buffer is byte-identical and `Written` empty.
-- **No furniture on a shelf, ever** (`only_small_decor_stands_on_a_shelf`, room.rs, proptest over homes with every kind
-  anchored on random strips, shelves included): `laid_and_shifted` lays no piece on a strip that doesn't take it;
-  `search` proposes no such move (rules.rs); `spot`, `doorstep` and `move_off` never target a shelf; `placements` agrees
-  with the search (`stranded_iff_no_room_takes_it` runs with shelves); `from_json` of such a record lays it on its pane.
-- **Where a shelf goes** (`a_shelf_hangs_as_high_as_fits`, proptest over panes of every height, text, doors, chats,
-  hung pieces): every `shelf_spot` result is `WIDTH` off both walls, misses the door's space columns (computed by hand
-  from the nook rect, never read from `space.rect`), not in the chat; either high (rise `>= HIGH_RISE`, `HEIGHT` free
-  rows above at choice) or low (rise `LOW_RISE`, `LOW_ABOVE` free rows above, its block meeting no hung piece as laid
-  out); and low only when no pane has a high spot on that frame. `HIGH_RISE` and `LOW_RISE` equal the values computed
-  from the `Spec` rows and her height (`rises_clear_every_hung_and_standing_piece`).
-- **The wall lane packs beside a low shelf** (`no_hung_piece_meets_a_low_shelf`, room.rs proptest beside
-  `the_wall_lane_keeps_order_and_never_moves_the_room` 4164, `decorated()` pieces and a random low shelf): no laid
-  hung piece meets a block; hung order is kept; a resize and back restores; a high shelf changes no hung piece's place
-  (byte-identical layout to no shelf); a `relaid` home equals a fresh layout with a shelf on a touched pane
-  (`a_move_relaid_strip_by_strip_is_laid_out_as_a_whole`, room.rs:4663, run with shelves). Plus
-  `a_poster_delivered_hangs_beside_a_low_shelf` and `putting_up_a_low_shelf_never_pushes_a_hung_piece`.
-- **She never stands on a shelf in 6a** (`a_shelf_is_no_floor_of_hers`): terrain with and without the written cells has
-  the same platforms and links; in the long-visit host, her feet are never on a written cell.
-- **Long visits with shelves keep every covering property**: `long_visits_with_a_shelf_never_touch_what_is_protected`
-  (tests.rs) and `her_days_with_a_shelf_never_touch_what_is_protected` (tests/away.rs): `owned` plus a random shelf
-  (pane, side, offset, rise, `built`, valid or not) and small decor on it; `long_visit_of`'s checks extended: "each real
-  piece stands on a strip here" (tests.rs:1365) reads `home.extents`; "on lines, over blank" (tests.rs:1376) accepts a
-  floor row that is a written cell; every frozen cell's `under` equals `real` (the guard for D4's `under`); the final
-  `end == real` (tests.rs:1526) still holds, so the goodbye rains every shelf out.
-- **The goodbye still waves beside a shelf** (`she_waves_goodbye_under_her_shelf`): a visit with a finished shelf and
-  the plant on it, she under it; at the goodbye, `untouched` is true, the startled beat and the wave are drawn, the shelf
-  rains out. Plus a dissolve unit test with a structure cell under her image (6b's case) built by hand: `unchanged`
-  holds when unders come through `Written::real`, fails when taken from the written frame (the mutant).
-- **Text, focus, resize** (both modes): text over the shelf hides it and what's on it, and back when it goes; a focused
-  pane rains it out and keeps it out; a resize narrower than D3 allows hides it, and a resize and back restores it,
-  pieces on it at their anchors; hiding its pane hides it, moves nothing.
-- **Ledger**: `a_shelf_round_trips`, `an_older_build_reads_past_the_structures` (`as_an_older_build_reads`), garbage
-  entries skipped one by one, a later build's structure skipped, a piece on a shelf the record lacks lands on its pane,
-  an unboxed kit dropped, `paced` round trip; `the_record_as_written` (ledger.rs:773) and dump.rs's golden unchanged.
-- **The kit** (step 5): `the_kit_is_sold_last_and_at_the_usual_cadence`; `no_kit_is_sold_where_no_pane_takes_a_shelf`;
-  `the_kit_comes_through_her_door_and_goes_up_a_stage_a_day` (fed clock: unpacked Tue 16:00, half up that day, whole
-  not before Wed's start, a restart between keeps the count); `a_kit_with_nowhere_to_go_stays_boxed`.
-- **Moves onto a shelf** (step 3): `a_plant_in_the_chat_goes_up_on_her_shelf` (InChat, only the shelf free: carried
-  there, set down from under it, shown, rule mended).
-- **Beauty** (step 3): `beauty_counts_what_stands_on_her_shelf` (unit on `beauty_at`), and a hidden shelf's doesn't.
-- **Admire** (step 6): `she_gazes_up_at_what_is_on_her_shelf` (cue and seeded), never at a piece on a floor.
-- **The gremlin** (step 7): `the_gremlin_wants_a_shelf_and_gets_one` (end to end over game days: bought, felt, "It
-  wants a shelf...", the kit wished first, delivered, put up over two days, the gremlin carried up, the rule mended);
-  `a_felt_high_rule_puts_the_kit_first`; `an_unfelt_one_doesn't`.
-- **Gates** (every step): `cargo fmt`, `cargo clippy --workspace --all-targets -- -D warnings`, `PROPTEST_CASES=32
-  cargo nextest run --workspace --all-targets`. Steps 2 and 5 also run the perf tests (`--profile full --release`).
+By step:
+- **1.** `takes` unit table; `a_garbled_record_never_puts_her_door_on_a_shelf` (red within the step: the variant first,
+  then the `try_from`; the rest of the record reads intact); one unit test per floors-only site (`move_off`,
+  `project_with`, `doorstep`, `spot`, the door's chooser) with a shelf the only free run (they land on a step-3 shelf
+  plan, so they're written in step 3 and listed here for the class).
+- **2a.** Ledger: `a_shelf_round_trips`; garbage, a later build's structure, a second shelf, `built` =
+  `SHELF_STAGES + 1`, rise `LOW_RISE - 1`, a kit both as a prop and a shelf, each skipped; a piece on a shelf the record
+  lacks lands on its pane. **Before the reader changes**, a hand-written 6a record (a shelf, the plant on it, a boxed
+  kit, `paced`) is read by today's `from_json` and the outcome recorded; that reader is frozen as the model
+  `as_a_pre_shelf_build_reads` beside `as_an_older_build_reads`. Goldens: `the_record_with_a_shelf_as_written`
+  (character for character, with `structures`, `seen`, `door`, `paced`, `clock_sent`: pinning field order), and
+  `the_record_as_written` and dump.rs's unchanged. `rises_clear_every_hung_and_standing_piece`.
+- **2b.**
+  - `read_ground_takes_only_blank_free_cells` (proptest): half the shelves valid by construction for their frame, the
+    rest any geometry; text, wide glyphs, protected and focused rects, a chat, layer and made cells, laid pieces. Every
+    written cell blank and no trailer, its margin blank, outside protected, chat, layer, made and other laid covers;
+    inside `host.from + EDGE .. host.to - EDGE` on row `host.floor - rise`; each shelf all or nothing; `built: 0` writes
+    nothing, `built: 1` exactly the bracket and the half nearer its wall, `built: 2` `┬────────┬`; with no structures
+    the buffer byte-identical. Non-vacuity: written-shelf counts over the run.
+  - `a_shelf_is_no_floor_of_hers`: a finished shelf with ≥ 4 on-screen rows over it, both modes: terrain with and
+    without the written cells has the same platforms, links and `Ground::ledge`; no pole at a bracket.
+  - **The goodbye, frame by frame** (`her_shelf_rains_out_with_her_goodbye`, both modes, a finished shelf with the plant):
+    for `t < RAIN_FROM_MS` every shelf cell shows its frozen glyph; for `SETTLE_BY_MS ≤ t < DURATION_MS` every shelf cell
+    equals `real`; in no `Leaving` frame does a settled shelf cell show the glyph again. Red against "Leaving writes".
+  - `an_errand_goodbye_rains_her_shelf_out` and `a_called_off_arrival_rains_her_shelf_out`: every frozen shelf cell is
+    painted at least once after `RAIN_FROM_MS`, never settled on the first frame. Red against the write keyed on the
+    state at the top.
+  - **Direct `under` tests**: `draw_art`, `draw_props` (both modes), `draw_front` and ASCII `draw` with a hand-made
+    `Written` (a `#[cfg(test)]` constructor) whose cell lies in her box or a piece's footprint: every burst `Frozen`
+    there has `under ==` the real cell. Mutant: the closure reads `buf`.
+  - `she_waves_goodbye_under_her_shelf`: a smoke test (her standing on a text `─` under it), not the guard.
+  - `her_fallback_door_never_stands_over_her_shelf`.
+  - Text, focus, resize, both modes, visiting **and away** (`paint_empty`): text over the run or its margin hides the
+    whole shelf at once and what's on it, back when it goes; a cursor over one cell toggles all ten (asserted: the
+    decided behaviour); a focused pane rains it out and keeps it out; too narrow hides it, a resize and back restores it;
+    hiding its pane hides it and moves nothing.
+- **3.**
+  - `only_small_decor_stands_on_a_shelf` (new proptest over every kind anchored on random strips, shelves included):
+    `laid_and_shifted` lays none on a strip that doesn't take it; `search` proposes none; `placements` agrees with the
+    search (a new `stranded_iff_no_room_takes_it_with_a_shelf`); `from_json` of such a record lays it on its pane.
+  - `a_piece_stands_on_its_shelf_only_where_it_was_written`: a host row of the app's `────` under a hidden run holds no
+    piece up.
+  - The floors-only unit tests (step 1's list).
+  - `a_plant_in_the_chat_goes_up_on_her_shelf`: an industrious mood forced, its precondition asserted (`search` returns
+    exactly the shelf move, centred), carried up, set down arms up (`Pose::Stretch`, never `ToeTouch`), shown, mended.
+  - `every_repair_mends_and_breaks_nothing_with_a_shelf` (new function: high shelves, small decor, furniture breaking
+    InChat/DoorClear).
+  - Siblings: a clock on a shelf gives `ClockOn` at the host's floor (and a fed run where she reads the time from it); a
+    decor-only shelf adds no room and moving the plant onto it changes no role; a shelf piece's seat, reach and
+    `middle_of` are at `host.floor`; text over the shelf in a running visit lowers the beauty she feels.
+  - **Long visits with shelves** (`long_visits_with_a_shelf_never_touch_what_is_protected` on `rooms_frame`, and a
+    `chat_over` variant; `her_days_with_a_shelf_never_touch_what_is_protected`, tests/away.rs): `long_visit_of` gains a
+    `structures` argument and an `owned` form placing small decor on a strip; `proptest_cases(16)`, 60 000 ms spans,
+    each measured in its commit (target ≈ 3 s at 32 cases). Per frame, visiting and away: `most` counts the frame's
+    shelf cells; each shelf all or nothing; no shelf cell protected, in the chat, a layer cell, in a made cover or in
+    another piece's cover, or within `SPACE` columns of either wall; every shown piece on a shelf is small decor on a
+    finished shelf, its floor row the independently computed run (ASCII: `┬`/`─` there; line art: in the piece's image);
+    her feet never on a shelf cell; at written positions every burst `under` equals `real` and the first frozen cell at
+    each place has `under == real`; the final `end == real`. A size step drops the host pane and restores it: the
+    record unchanged, pieces back at their anchors. Non-vacuity companion (both modes): frames with a high shelf
+    written, a low one written, a piece on a shelf, a shelf hidden by text, and one coming back.
+- **4.** `no_hung_piece_meets_a_low_shelf` (new room.rs proptest: heights up to 20, the clock in the hung set, a shelf
+  of either height; each height asserted to occur); `a_high_shelf_changes_no_hung_place`; with no shelf, `hung_clear`
+  equals a frozen `#[cfg(test)]` copy of today's over `decorated()` (`PRE_SHELF`) homes, `shifts` listing only the
+  window (deleted in step 9); `a_move_relaid_strip_by_strip_is_laid_out_as_a_whole_with_a_shelf` (new function; red with
+  `StripLaid` not recording the shelf); `a_poster_delivered_hangs_beside_a_low_shelf`;
+  `every_repair_mends_and_breaks_nothing_with_a_low_shelf`.
+- **5a.** `a_shelf_hangs_as_high_as_fits`: a brute-force oracle over the frame (every pane, rise and left, written
+  without the shared per-cell function): `shelf_spot(..).is_some() == oracle.any()`, and the result is the oracle's first
+  in D3's order. Generator: panes exactly 9 and 13 tall among others, text, wide glyphs, standing, hung and made pieces,
+  layer cells, protected and focused rects, doors, chats; counts of high, low and none each non-zero.
+  `shelf_spot_is_cheap` (cells visited ≤ k × pane cells) and an ignored timing test beside `repair_search_is_cheap`
+  (rules.rs:2295): `read_ground` plus `shelf_spot` on a 400-wide dense three-pane frame.
+- **5b.** `the_kit_is_sold_last_and_at_the_usual_cadence`; `no_kit_is_sold_where_no_pane_takes_a_shelf` (geometry: the
+  bundled layout at 80×24; text: a tall pane whose rows are full); `a_kit_is_never_unboxed` (every path: stage, doorstep
+  probe, record); `a_delivered_kit_is_unpacked_iff_a_shelf_can_go_up` (new property: its unpack seat offered iff
+  `shelf_spot` finds a spot; when offered, the other promises of `every_parcel_on_her_doorstep_gets_unpacked` hold);
+  `a_kit_with_nowhere_to_go_stays_boxed`.
+- **5c.** Pacing, deterministic, on offers not choices: `Ledger::new_at(.., tue(15, 50))` with the kit boxed
+  (precondition asserted); after stage 1, `PutUp` absent from her offers for the rest of Tuesday, across a restart
+  (`Guest::restore(Ledger::from_json(&guest.ledger.to_json()))`); offered again across 23:59 → 00:00; the unfed case, one
+  a visit. Red against `paced` not saved, or reset by a restart. `unpacking_a_kit_puts_its_first_half_up`; `a_stage_is_
+  never_committed_over_text`; `she_hops_up_to_a_high_shelf` (the commit frame followed by `Pose::Jack(1)`; none for a
+  low shelf).
+- **6.** A property over the shelf long visits: every `GazeUp` has its piece on a shelf, her feet at `host.floor`,
+  beside it, facing it; `she_gazes_up_at_what_is_on_her_shelf` (a seed with its precondition asserted: offered),
+  opening on `"hehe"`.
+- **7.** `the_gremlin_wants_a_shelf_and_gets_one` (end to end over game days, on a home lacking a furniture piece and a
+  decor piece, so "first" is visible); `a_felt_high_rule_puts_the_kit_first`; `a_rule_felt_last_visit_is_no_wish_this_
+  one`; `no_gremlin_is_sold_where_no_shelf_can_go`; `no_gremlin_grievance_where_no_shelf_can_go` (every pane full of
+  text, a fed day, both modes: the line never said, `Arrange` never offered for it); `the_grievance_is_said_in_its_room_
+  facing_it`; `every_repair_mends_and_breaks_nothing_with_a_gremlin`; `rules_hold` with a gremlin (new functions).
+- **8.** One test per extra (step 8).
+- **9.** Look: a fixed-frame `Scene::Shelf` test in ASCII pinning cells and ink (`┬────────┬`, the plant on it), and a
+  line-art check that the brackets and run reach the image keyed with the host border's colour.
+
+**Gates** (every step): `cargo fmt`, `cargo clippy --workspace --all-targets -- -D warnings` (no `dead_code`: each item
+has a production reader in its own step, or is `#[cfg(test)]` until it does), `PROPTEST_CASES=32 cargo nextest run
+--workspace --all-targets`. The CPU perf test is `dessplay-rendezvous/tests/perf.rs::houseguest_visit_cpu_is_negligible`
+(no shelf in it); steps 2b and 5a carry their own cost tests instead.
 
 ## Steps
 
 Each step: one implementer (tests first and confirmed failing, implement, the gate, commit with `jj commit`), two
-reviewers, a fixer. Strictly sequential. Sizes are changed lines, tests included. **No push of `master` mid-phase**; no
-protocol change, so `stable` stays put.
+reviewers, a fixer. Strictly sequential, each compiling and passing the gate alone. Sizes are changed lines, tests
+included. **No push of `master` mid-phase**; no protocol change, so `stable` stays put. **Goldens**: every step is
+predicted byte-identical (no golden scene has a structure, kit or gremlin; `read_ground` writes nothing; the new ledger
+fields are skipped when empty; new wants and uses are offered only with a shelf; new guards test for a shelf before
+drawing a whim); any move is investigated with the trace diff (testing-strategy.md:776-819), never re-recorded on faith.
 
-### Step 0. This design, its critiques, the gremlin's sheet (docs)
+| Step | What | Lines |
+|---|---|---|
+| 0 | This design, the critiques, the approved sheet (docs) | — |
+| 1 | Strips: `Strip::Shelf`, `takes`, `Spec.shelf`, rooms are floors, `pane_strips`, `stood` (refactor) | ~750 |
+| 2a | Structures and the ledger; `Written` threaded as `none()`; `Terrain::read` test-only; rises | ~850 |
+| 2b | `read_ground`: the write, keep/undo, the terrain flag, rains, unders, keep-out, door fallback | ~1150 |
+| 3 | Shelves as strips: written-only floors, small decor, repairs onto them, beauty, the measurement | ~1300 |
+| 4 | The low shelf: the wall lane hangs beside its block | ~800 |
+| 5a | `shelf_spot`: highest that fits, its oracle, its cost | ~650 |
+| 5b | The kit: kind, frozen kinds, the `boxed()` accessor, channel, delivery, unpack gate, `raise` | ~1200 |
+| 5c | Putting it up: want, job, act, chaining, pacing, the hop | ~1050 |
+| 6 | The gaze up | ~650 |
+| 7 | The gremlin, `High`, the wishlist | ~1050 |
+| 8 | The four extras | ~350 |
+| 9 | Census, deep runs, review shots, docs | ~450 |
 
-Critiques (mechanics, tests, feasibility, character) beside this file in `phase6/`, resolved here. The gremlin's sheet
-is done and approved (variant A: `phase6/art/`, `snippets.md`'s last section); it's committed with this design, and
-nothing of `worktree.diff` is applied until step 7, which takes only its `gremlin` group.
+### Step 1. Strips (refactor, ~750 lines)
 
-### Step 1. Strips: `Strip::Shelf`, `takes`, rooms, no zips (refactor, ~650 lines)
+**Goal.** D1 with no shelf anywhere. **Sites.** room.rs:629 (enum, `nook`/`room`/`takes`), the `Spec.shelf` column,
+697-722 and 1448-1462 (lanes by strip), 805 (`pane_strips`), 837-868 (`StripPlan.host`, `takes`, `pin` of `host`),
+1272-1321 (`choose` without the zip), 1663-1686 (`rooms`), 1839 (`on` admits), 1867-1990 (one `Home::raw_extents`,
+panes only for now), 2159-2296 (`move_off(from: Nook)`), 2297-2390 (`spot`), 2419-2560 (`doorstep` without the zip),
+2684 (`stand` → `stood`), 978-1100 (closet: `takes`), 1534, 2738; rules.rs:433, 548-597, 626, 634, 689-690, 753-770,
+930-935; ledger.rs:205, 365, 553, 859, `DoorWall` try_from; mod.rs:213-245, 1624, 4266, 4339-4341. **Exit.** Every golden
+byte-identical, snapshots unchanged. **Traps.** `Strip` is a ledger key: serde names unchanged for `Bottom`.
+`furnished()` stays per strip (layout order); only rooms gather.
 
-**Goal.** D1 with no shelf anywhere: nothing a user or a golden can see moves.
-**Sites.** room.rs:629 (enum, `nook`/`room`/`takes`), 697-722 and 1448-1462 (lanes by strip), 805 (`pane_strips`),
-837-868 (`StripPlan.host`, `takes`, `pin` of `host`), 1272-1321 (`choose` without the zip), 1663-1686 (`rooms`), 1839
-(`on` admits), 1867-1990 (raw strips through one `Home::raw_extents`, panes only for now), 2159-2296 (`move_off(from:
-Nook)`, pane targets), 2297-2390 (`spot`), 2419-2560 (`doorstep` without the zip), 2684 (`stand` → `stood`), 978-1100
-(closet: `takes`), `Shown::seat` 1534, `room_for` 2738; rules.rs:433, 548-597 (rooms by `room()`), 930 (`takes`, lane
-per candidate); ledger.rs:205, 365, 553, 859 (rename), `DoorWall` try_from; mod.rs:213-245 (`clock_on`, `beauty_at` by
-`room()`), 1624, 4273 (`reach` reads `stood`), 4339-4341 (`stage_arrange`).
-**Tests first.** `takes` unit table; `a_garbled_record_never_puts_her_door_on_a_shelf` (red: today `{"Shelf":..}`
-can't parse at all, so it's a guard until the variant exists; a mutant without the try_from proves it); the room.rs
-proptests run unchanged.
-**Exit.** The gate; **every golden byte-identical** and the terrain snapshots unchanged (any move: stop).
-**Traps.** `Strip` derives `Hash` and is a ledger key: serde names unchanged for `Bottom`. `furnished()` stays per
-strip (layout order); only `rooms()` gathers.
+### Step 2a. Structures and the ledger, threaded (~850 lines)
 
-### Step 2. Structures: the model, the ledger, `read_ground`, the terrain flag (~1300 lines)
+**Goal.** D2's model and ledger, `Written` threaded everywhere as `none()` (every production terrain read takes it; the
+`under` sites read through `real`, a no-op), `HIGH_RISE`/`LOW_RISE`/`LOW_ABOVE`/`EDGE`/`SHELF_WIDTH` with the ledger's
+reader of them. Behaviour-free by construction. **Sites.** New structures.rs (types, constants, `Written`); room.rs:1631;
+ledger.rs (fields, `Raw`, structures before props, `Summary`, module doc); terrain.rs:229 (signature; `read` →
+`#[cfg(test)]`); mod.rs 2515, 2649, 3411-3446, 4003/4120, 5345, 5499, 5601, 5716, 5727, 5805, 3871. **Tests.** Step
+2a's list. **Exit.** Goldens, snapshots, ledger and dump goldens unchanged. **Docs.** design.md *Her record* (2641).
 
-**Goal.** D2, D4, D5, and D3's geometry and per-frame test: a shelf in a home (tests only: nothing gives her one yet)
-is drawn, rains, hides and is no floor of hers. Not yet a strip.
-**Sites.** New structures.rs (`Structure`, `Shelf`, `Run`, `Written`, `read_ground`, the per-cell test, `HIGH_RISE`,
-`SHELF_WIDTH`, `SHELF_INK`); room.rs:1631 (`Home.structures`, `owns`); ledger.rs (fields, `Raw`, `Summary`, module
-doc); terrain.rs:229-263 (the flag; `read` → cfg(test)); mod.rs:2499-2507 (the one call), 2515 and 2534 (arrival),
-2643-2650 (Leaving: its read at 2649 becomes `read_guarded(.., &Written::none())`, the only production call passing
-`none()`, with a comment saying why), 2724-2747 (comments), 2799 (`base`), 3187 (`painted`), 3411-3446 (`nudge_due`/`send`
-take `&Written`), 4003/4120 (`furnish`), 5345/5499/5601/5805 (unders), 5660-5769 (`paint_empty`); door.rs:532, 581
-(test `Ground` impls unchanged: no new method).
-**Tests first.** D4's property; the terrain equality (`a_shelf_is_no_floor_of_hers`); text/focus/resize hiding; the
-dissolve `under` unit test; ledger tests; `rises_clear_every_hung_and_standing_piece`. Red: none of the API exists, so each is red by not
-compiling; each is then run against a mutant (`read_ground` skipping one check) and must fail.
-**Exit.** The gate; goldens byte-identical, snapshots unchanged; the ledger and dump goldens unchanged. Measure
-`read_ground`'s cost with no structures (must be a no-op: one `is_empty`).
-**Docs.** decisions.md: the amendment to *reads the frame she stands on* (D4's exception) and a new entry *Her
-structures are the UI's own lines* (why line glyphs, why written before the reads, why the goodbye has none, why no
-ledge of hers in 6a; rejected: written just before `Terrain::read`, which `fits` would miss; re-writing in the goodbye).
-design.md:2619-2622 (the exception), *Her record* (2641: structures).
-**Traps.** `read_ground` runs before `validate`: it must take the layer's **pre-validate** cells, never `solid` alone
-(sources and torn cells aren't in `solid`). `Leaving` must not write. Frozen structure cells are `burst: false`.
+### Step 2b. `read_ground` (~1150 lines)
 
-### Step 3. Shelves as strips: small decor up there, moves, beauty (~1100 lines)
+**Goal.** D4, D5, D3's geometry and per-frame test; hand-placed shelves are drawn, rain, hide and are no floor of hers.
+Not yet strips. **Sites.** structures.rs (`read_ground`, the per-cell test, keep/undo, the ink); terrain.rs:229-264 (the
+flag on ledges and poles); door.rs:141, 353-367, 532, 581 (`structure`); mod.rs:2499-2507 (the write), the arms' keep and
+undo (2580, 2585, 2613, 2643-2650, 2907, 3187, 5769), 2724-2747 (comments), 2799 (`base`, keep-out); layer.rs:513-515
+(doc). **Tests.** Step 2b's list. **Exit.** Goldens unchanged; `read_ground` with no structures is one `is_empty`.
+**Docs.** decisions.md: the amendment to *reads the frame she stands on*, and *Her structures are the UI's own lines*
+(why line glyphs on brackets, why written before the reads, why undone by every frame not showing her home, why neither
+ledge nor pole in 6a; rejected: written just before `Terrain::read`, which `fits` would miss; re-writing in the goodbye;
+a write keyed on the state at the top). design.md:2619-2622. plan.md: the departure from the brief's wording.
+**Traps.** Pre-validate layer cells, never `solid` alone. Structure `Frozen`s first and `burst: false`.
 
-**Goal.** D6, D10, and the `Spec.shelf` field: a finished shelf is a strip; the plant and the clock may stand on it (by
-a repair); what's on it counts for the room's beauty. Measure the smallest bundled-layout terminal whose panes take a
-high shelf and a low one, by geometry (a `real_frame` test printing both per pane, ignored, its output recorded in the
-commit and in plan.md). High shelves only, hand-placed in tests, until step 4.
-**Sites.** room.rs (`Spec.shelf` for PLANT 296, CLOCK 325; `raw_extents` adds finished shelves; `lift` on a shelf);
-rules.rs:905-1050 (candidates on shelves; `fits_now`); mod.rs:213-245, 4273; tests.rs:1365-1410 (`long_visit_of`'s
-checks), the two new long-visit proptests.
-**Tests first.** `only_small_decor_stands_on_a_shelf` (red on the step-1 tree only through a mutant of `on`'s admission:
-it's the guard of D1's class); `a_plant_in_the_chat_goes_up_on_her_shelf` (red: no shelf plan); `beauty_counts_what_
-stands_on_her_shelf` (red); the long-visit proptests with shelves (red on `long_visit_of`'s strip check until
-updated); `a_shelf_hidden_hides_what_stands_on_it_and_moves_nothing`.
-**Exit.** The gate; goldens byte-identical (no golden home has a shelf); `repair_search_is_cheap` (rules.rs:2295) under
-its bound with a shelf on each pane.
-**Docs.** design.md *Strips and anchors* (1850: a shelf is a strip for small decor, hidden with what's on it), *Rooms
-from contents* (1957: a shelf is part of the room below), the beauty clause (1571).
-**Traps.** The clock changes lane when it moves to a shelf (`Wall` → `Floor`): the search's extent and rows come from
-the candidate strip. `fits_now`'s `room(at)` asks nothing of decor (no uses that ask room).
+### Step 3. Shelves as strips (~1300 lines)
 
-### Step 4. The low shelf: the wall lane packs beside it (~700 lines)
+**Goal.** D6, D10, the floors-only tests: a finished shelf is a strip; small decor may stand on it (only on written
+cells), by a repair; it counts for beauty. **The measurement** (an ignored `real_frame` test, its output in the commit
+and plan.md): for the bundled layout at 100×30, 80×24, 191×46 and heights 32, 35, 40, 50 at width 100, with typical
+content (3–5 users, ~10 playlist rows, ~20 franchises; `chatty_ui` or a fuller fixture), which pane takes a high shelf
+and which a low one; and which of the stage room's 9-row panes does (D11). **Sites.** room.rs (`raw_extents` adds
+finished shelves; `fits`/`project_with` take `&Written`; the shelf's centred lefts); rules.rs:905-1050; mod.rs:213-245,
+4266, the lift/set-down pose on a shelf (osaka.rs:11246-11249); tests.rs long-visit additions. **Exit.** Goldens
+unchanged; `repair_search_is_cheap` under its bound with a shelf on each pane. **Docs.** design.md *Strips and anchors*
+(1850), *Rooms from contents* (1957), beauty (1571). **Traps.** The clock changes lane on a shelf. InChat skips shelf
+pieces.
 
-**Goal.** D3a: a shelf at `LOW_RISE` is a strip like a high one, and the poster, the clock (and in principle the window)
-hang beside its block. Hand-placed in tests; nothing puts one up yet.
-**Sites.** structures.rs (the block, `LOW_RISE`, `LOW_ABOVE`); room.rs:1839-1860 (`lays_from`, `strip_door`), 891 and
-1969 (`StripLaid` records the host's shelves, `relaid`), 2019-2131 (`lay_strip`, `hung_clear` with blocks for every hung
-piece), 1721 (`plan_strip`: the yield rule sees a hung piece the block left out); rules.rs:605 (`evaluate`'s pushed-hung
-refusal, unchanged, now also met by blocks).
-**Tests first.** `no_hung_piece_meets_a_low_shelf` (red: today a poster anchored there is laid over the shelf and hidden
-by `fits`); `a_poster_delivered_hangs_beside_a_low_shelf` (red: the delivery lays it over the shelf, so `doorstep`
-refuses the wall or it comes in hidden); the relaid property with shelves (red with `StripLaid` not recording the shelf:
-proven by that mutant).
-**Exit.** The gate; goldens byte-identical (no shelf anywhere: `hung_clear` with no blocks is today's); the room.rs
-wall-lane proptests unchanged; `repair_search_is_cheap` under its bound with a low shelf on each pane.
-**Docs.** design.md *Wall pieces* (1925): a low shelf's columns are no hung piece's; decisions.md *A shelf hangs as high
-as fits* (the user's "highest that fits"; why two heights and not any; why the block and not packing shelves into the
-wall lane as pieces; why a low shelf is put up only where it pushes no hung piece; what 6b inherits).
-**Traps.** A block is a layout input of the **pane** strip (not of the shelf strip): forget it in `StripLaid` and a repair
-judged on a stale wall passes. The window's own clearance rule (`may_overlap`, room.rs:99) is unchanged: blocks are
-obstacles for it too, but its rows never meet one.
+### Step 4. The low shelf (~800 lines)
 
-### Step 5. The kit: sold, delivered, unpacked, put up a stage a day (~1550 lines)
+**Goal.** D3a. **Sites.** structures.rs (the block); room.rs:891, 1839-1860, 1969 (`StripLaid` records shelves),
+2019-2131 (`hung_clear` with blocks for every hung piece), 1721. **Exit.** Goldens unchanged; the frozen-`hung_clear`
+identity property; `repair_search_is_cheap` with a low shelf on each pane. **Docs.** design.md *Wall pieces* (1925);
+decisions.md *A shelf hangs as high as fits* (the user's rule; why two heights; why the block, not shelves packed into
+the wall lane as pieces; why a low shelf never pushes a hung piece going up; what 6b inherits). **Traps.** A block is an
+input of the **pane** strip's layout.
 
-**Goal.** D7 and `Scene::Build`/`Scene::Shelf`. User-visible from here.
-**Sites.** room.rs:20-140 (kind, `ALL`, `legacy`, `spec`, `Spec.kit`), `Home::raise`, `shelf_spot` (both heights, high
-first: D3); mod.rs:166-208
-(`CATALOGUE`, `advert`), 2955/3008 (`shelf_room`), 3673-3720 (`record`: `Unpacked` of a kit, `Built`), 4003ff
-(`furnish`: raise), 4537-4600 (unpack seat gate), `Said` → ledger `Dated`; ledger.rs (`paced`); osaka.rs:29 (`Chances.build`),
-406 (`HomeEvent::Built`), the `Act::PutUp` arms, 1787 (duration), 7647 (credit); brain.rs (`Want::Build`); mind.rs
-(`build/stage`); scenes.rs:236 (`Job::PutUp`); stage.rs (scenes); art.rs `parts` (kit boxed only); scrap.rs arm.
-**Tests first.** The four kit tests (Tests); `a_shelf_hangs_as_high_as_fits`; `every_want_can_be_cued` (red until
-`Scene::Build`); the act lints. Check the stage room's List for a low shelf (D11) and say in the commit which frame the
-three scenes run on.
-**Exit.** The gate; goldens predicted byte-identical (no golden home exhausts the catalogue, `Want::Build` is never
-offered without a shelf): checked with a trace diff (`HOUSEGUEST_GOLDEN_TRACE`, testing-strategy.md:776), and a move is
-a finding, not a re-record. Census: `visit_census` both modes unchanged; the kit's own numbers from a new ignored
-`shelf_census` (her days from a kit's delivery to a finished shelf, in `rooms(100, 30)`, over seeds).
-**CHANGELOG.** "Added: the shopping channel sells Osaka a shelf kit; she puts the shelf up on a wall, a bit a day."
-**Docs.** design.md *Getting furniture* (1787: the kit, its tier, the wishlist's place, `shelf_room`), a new
-*Structures* bullet (the kit, unpacking, two stages a day apart, pacing, where it hangs: high where it fits, else low,
-hidden when the frame can't hold it); decisions.md: *She puts up a shelf, a stage a game day* (why per game day, why not a home act, why chosen on
-the frame, why never re-hung).
-**Traps.** `Unpacked(ShelfKit)` must never reach `Home::unbox`. `her_home_fills_up_over_visits` (tests.rs:5574) and the
-catalogue pins (tests.rs:5220, 5433, 5998, 11925) may count `CATALOGUE`'s length: update with the reason.
-`send_parcel` (mod.rs:1490) walks `[Tv] + CATALOGUE`, so the stage can now send a kit.
+### Step 5a. `shelf_spot` (~650 lines)
 
-### Step 6. The gaze up (~600 lines)
+**Goal.** D3's choice, pure, with its oracle and cost tests, and `Scene::Shelf` (D11), its first production reader
+(the stage gives her a finished shelf where `shelf_spot` puts it), so nothing is dead code before 5b. **Sites.**
+room.rs (`shelf_spot`, the free-upward pass); stage.rs, mod.rs:1517-1545 (the scene); the `every_scene_…` exception.
 
-**Goal.** D8 and `Scene::Admire`.
-**Sites.** room.rs:410-500 (`Use`), 1437 (`uses`); mod.rs:4570 (spots); script.rs (Admire's arms and keys);
-osaka.rs:1787; brain.rs (`Want::Use(Admire)` row); stage.rs.
-**Tests first.** `she_gazes_up_at_what_is_on_her_shelf`; the script/cue lints (`every_script_can_be_cued`,
-tests.rs:10679).
-**Exit.** The gate; goldens byte-identical (no shelf in any). Band (below) measured on the shelf room.
-**CHANGELOG.** "Added: Osaka sometimes stands under her shelf and gazes up at what's on it."
-**Docs.** design.md *Using her furniture* (1969); decisions.md one line under the step-5 entry.
+### Step 5b. The kit (~1200 lines)
 
-### Step 7. The gremlin, `High`, the wishlist (art approved: variant A; ~1000 lines)
+**Goal.** D7b, `Scene::PutUp`'s setup. User-visible from here (a kit that goes up as `built: 0`, put up in 5c; no push
+mid-phase). **Sites.** room.rs:20-140 (kind, `ALL`, `PRE_SHELF`, `Spec.kit`, `is_kit`), the `boxed` accessor (room.rs and
+every outside reader), `Home::raise`; mod.rs:166-208 (`CATALOGUE`, `advert`), 1486-1510 (stage), 2955/3008, 3673-3720,
+4003ff, 4125, 4537-4600; art.rs lints; scrap.rs; the frozen-kind list (D7b). **Exit.** Goldens predicted unchanged,
+checked by trace diff. **CHANGELOG.** "Added: the shopping channel sells Osaka a shelf kit for her wall." **Docs.**
+design.md *Getting furniture* (1787: the kit, tiers, `shelf_room`, the one parcel not unpacked at once). **Traps.**
+`Unpacked(ShelfKit)` never reaches `unbox`.
 
-**Goal.** D9.
-**Sites.** room.rs (kind, `Spec`), art/props.svg (group from the sheet), art.rs:1373 (`parts`); mod.rs:169 (`CATALOGUE`),
-194 (`advert`'s `wish`), 2955/3008, 3642 (`on_sight`); rules.rs:19, 74, 191 (rule, row, label), `Rule::wants`;
-ledger.rs:575 and the kind-list tests; stage.rs (`Scene::Shelf` puts it up).
-**Tests first.** The three gremlin tests (Tests); `the_channel_sells_decor_when_her_room_feels_bare` (tests.rs:5220)
-still passes.
-**Exit.** The gate; goldens byte-identical (no golden home owns a gremlin; the rule is never broken without one);
-`rules_hold` (rules.rs:1564) and `every_repair_mends_and_breaks_nothing` with a gremlin.
-**CHANGELOG.** "Added: a gremlin figurine for Osaka's shelf; it wants to be up high, and she'll get a shelf for it."
-**Docs.** design.md *The rules of her home* (2101: `High`, felt on sight, its line), *Getting furniture* (the wishlist);
-decisions.md *The gremlin wants up high* (why a rule, why felt on sight, the wishlist as felt rules naming kits, the
-rejected shelf-only gremlin).
+### Step 5c. Putting it up (~1050 lines)
 
-### Step 8. Census, deep runs, docs (~250 lines)
+**Goal.** D7c. **Sites.** brain.rs (`Want::PutUp`); mind.rs (`put-up/stage`); scenes.rs:236 (`Job::PutUp`); osaka.rs:29
+(`Chances.put_up`), 406 (`HomeEvent::PutUp`), the `Act::PutUp` and `Act::Hop` arms, 1787, 4826-4832 (the chain), 7647;
+`Said` → ledger `Dated`; ledger.rs (`paced`); mod.rs:3673-3720; stage.rs. **Exit.** Goldens unchanged; `visit_census`
+unchanged; `shelf_census` (below). **CHANGELOG.** "Added: Osaka puts her shelf up on the wall, a bit a day, with a
+little hop." **Docs.** design.md new *Structures* bullet (unpacking, two stages a day apart, pacing, the hop, where it
+hangs, hidden when the frame can't hold it); decisions.md *She puts up a shelf, a stage a game day* (why per game day,
+why not a home act, why chained after unpacking, why chosen on the frame, why never re-hung).
 
-Census and band (below) recorded in plan.md's Phase 38 record; the deep run clean (each failure pinned and fixed in
-its own commit first); design.md read through (strips, structures, rules, beauty, record); CLAUDE.md's index line for
-this design; plan.md's record (per step, deviations, the census); the gremlin's `snippets.md` header marked wired.
+### Step 6. The gaze up (~650 lines)
 
-## Goldens
+**Goal.** D8, `Scene::GazeUp`. **Sites.** room.rs:410-500, 1437; mod.rs:4570; script.rs; osaka.rs:1787; brain.rs;
+rules.rs:61; stage.rs. **Exit.** Goldens unchanged; the band on the shelf rooms (Census). **CHANGELOG.** "Added: Osaka
+sometimes stands by her shelf and gazes up at what's on it." **Docs.** design.md *Using her furniture* (1969).
 
-- Every step is predicted **byte-identical**: no golden scene has a structure, a kit or a gremlin; `read_ground` writes
-  nothing and `Written` is empty; the ledger's new fields are skipped when empty; new wants and uses are offered only
-  with a shelf; new guards check for a shelf before drawing a whim. Any move is investigated with the trace diff
-  (testing-strategy.md:776-819), never re-recorded on faith.
-- No new golden scene in 6a (the stage room takes a low shelf at best, and only if its List is blank there); the
-  long-visit and day properties carry shelves instead.
+### Step 7. The gremlin, `High`, the wishlist (~1050 lines)
+
+**Goal.** D9. **Sites.** room.rs (kind, `Spec`), art/props.svg (`gremlin` group only), art.rs:1373; mod.rs:169, 194,
+2955/3008, 3642; rules.rs:19, 74, 191, 930 (`High`'s places), `Rule::wants`; ledger.rs:575 and kind-list tests;
+stage.rs. **Exit.** Goldens unchanged. **CHANGELOG.** "Added: a gremlin figurine for Osaka's shelf; it wants to be up
+high, and she'll get a shelf for it." **Docs.** design.md *The rules of her home* (2101), *Getting furniture* (the
+wishlist, the gremlin's gate); decisions.md *The gremlin wants up high* (why a rule, why felt only in its room and only
+when a shelf can be, the wishlist as felt rules naming kits; rejected: a shelf-only gremlin).
+
+### Step 8. The four extras (~350 lines)
+
+Each reuses what's there; each has one test, red first.
+1. **The gremlin's tiny life (~120).** Once a game day, at the first moment she falls asleep for the night or goes out
+   by her door, a draw keyed on (master seed, game day), 1 in 20, turns a gremlin standing on a shelf round (its saved
+   `facing`, written at once; `symmetric: false` mirrors him for free) and sets `Guest.turned` (in memory, as the day's
+   other carried state). Her next gaze up at him opens on `"?"`, then `"Did you move...?"` instead of `"hehe"`, and
+   clears it. Test: a fed night, the draw forced by seed; the facing flips while she's asleep, never while she's awake
+   and in sight; the next gaze up's lines.
+2. **The gaze-up pool and freshness (~120).** `PoolId::Shelf` (mind.rs:1180, as `Sky` for the window's sill) with
+   `"Hi, little guy."`, `"You stay up there."`, `"Behave, okay?"`, `"He's watchin' me..."`, at most one a gaze after the
+   opening, cooled as pools are; for the gremlin only (the plant gets the opening alone). `Shelf.fresh` is set to today
+   when a stage completes or a piece is set on the shelf; a `Factor` on `GazeUp` (×2 for that game day and the next).
+   Test: the boost on the day after, gone the day after that; one pool line at most a gaze.
+3. **Pleased beats (~80).** `Act::Admire` (`"hehe"`, 1.2 s) after each committed stage (after the hop, on a high shelf)
+   and after a set-down on a shelf (~40); a wished kit's pitch `"A shelf for the gremlin!"` (24: `line!` checks it) when
+   `advert`'s item came from the wish (`Play.wished`, script.rs:204) (~40). Tests: the beat follows each; the wished
+   pitch only when wished.
+4. **The flat-pack gag (~30).** The kit's unpack ends on `"Which way's up?"` in place of `"ooh"` (a per-item bubble in
+   `UNPACK`'s last key, script.rs:2225-2238). Test: the kit's unpack's last bubble.
+
+**CHANGELOG.** "Added: Osaka's gremlin has a life of his own." **Docs.** design.md *Using her furniture*, *Getting
+furniture* lines.
+
+### Step 9. Census, deep runs, review shots, docs (~450 lines)
+
+Census and band (below) in plan.md's record; the deep run clean (each failure pinned and fixed first); **review shots**
+at 191×46 from an ignored test on `Graphics::shot` (as the door batch's `door_shots`), into
+`phase6/shots/` with a README: the kit unpacked, each stage with the hop, the half shelf, the carry up, the gaze up, a
+high shelf in the user's layout and a low one, the gremlin turned; the frozen `hung_clear` copy deleted; design.md
+read through; CLAUDE.md's index line for this design; plan.md's record; `snippets.md`'s header marked wired.
 
 ## Census, band and stillness
 
-- The band rooms (`furnished_room`, `resident_room`, the stage) have no shelf, so their numbers can't move; steps 5 and 6
+- The band rooms (`furnished_room`, `resident_room`, the stage) have no shelf, so their numbers can't move; steps 5c and 6
   confirm it.
-- New ignored measurements in tests/census.rs: `shelf_room()` (`rooms(100, 30)`, the furnished pieces, a finished high
-  shelf on Users with the plant and the clock on it) and `low_shelf_room()` (`home_screen`'s 9-row panes, a low shelf
-  with the clock on it and the poster hung beside it), run through `visit_census` both modes and the band's per-mood share and
-  set-off cap (tests/band.rs) at the census seeds. Admire's walks are short and on her floor; if the shelf room's share
-  or set-offs leave the band, that is a finding for the user (tune Admire's weight), not a retune of the band.
-- `shelf_census`: game days from a kit's delivery to a finished shelf (expected 1–2), and from a gremlin's delivery to
-  it standing on the shelf, over 32 seeds, recorded in plan.md.
+- New ignored rooms in tests/census.rs, chosen to be rooms that occur (step 3's measurement): `shelf_room()` (a high
+  shelf on Users, the user's 191×46 if it takes one there, else `rooms(100, 30)`; the plant and the gremlin on it from
+  step 7) and `low_shelf_room()` (`home_screen`'s 9-row panes, a low shelf, the poster hung beside it). Through
+  `visit_census` both modes and the band's per-mood share and set-off cap (tests/band.rs) at the census seeds, with the
+  window's look-outs a game day (the user's 2–6), since GazeUp's *daydreams* term competes with `LookOut`. Out of the
+  band: a finding for the user (GazeUp's weight), not a band retune.
+- `shelf_census`: game days from a kit's delivery to a finished shelf (expected 1–2) and from a gremlin's delivery to it
+  on the shelf; her `"It wants a shelf..."` lines in between; over 32 seeds; in plan.md.
 
-## Deep runs (step 8)
+## Deep runs (step 9)
 
 `PROPTEST_CASES=256 cargo nextest run --release --profile deep -p dessplay houseguest` (read nextest's own exit code);
 `CENSUS_BAND_SEEDS=<n> cargo nextest run --release --profile band --run-ignored all -p dessplay -E
@@ -672,23 +774,118 @@ this design; plan.md's record (per step, deviations, the census); the gremlin's 
 
 | Step | design.md | decisions.md |
 |---|---|---|
-| 2 | 2619-2622 (structures before the reads); *Her record* 2641 | amendment to 2263 (*reads the frame she stands on*); new *Her structures are the UI's own lines* |
-| 3 | *Strips and anchors* 1850; *Rooms from contents* 1957; beauty 1571 | (in step 2's entry: small decor only; rooms are floors) |
-| 4 | *Wall pieces* 1925 (a low shelf's block: the poster and the clock hang beside it) | *A shelf hangs as high as fits* |
-| 5 | *Getting furniture* 1787; new *Structures* bullet (both heights) | *She puts up a shelf, a stage a game day* |
-| 6 | *Using her furniture* 1969 | a line under step 5's |
-| 7 | *The rules of her home* 2101; *Getting furniture* (wishlist) | *The gremlin wants up high* |
-| 8 | read-through; CLAUDE.md line; plan.md record | — |
+| 2a | *Her record* 2641 | — |
+| 2b | 2619-2622 (structures before the reads) | amendment to 2263; *Her structures are the UI's own lines* |
+| 3 | *Strips and anchors* 1850; *Rooms from contents* 1957; beauty 1571 | (in 2b's entry: small decor only, written-only floors, rooms are floors) |
+| 4 | *Wall pieces* 1925 | *A shelf hangs as high as fits* |
+| 5b | *Getting furniture* 1787 | (in 5c's entry) |
+| 5c | new *Structures* bullet | *She puts up a shelf, a stage a game day* |
+| 6 | *Using her furniture* 1969 | a line under 5c's |
+| 7 | *The rules of her home* 2101; *Getting furniture* | *The gremlin wants up high* |
+| 8 | *Using her furniture*; *Getting furniture* | a line under 7's |
+| 9 | read-through; CLAUDE.md line; plan.md record (incl. the brief-wording departure) | — |
 
 ## Not in 6a
 
-The ladder, the pole check in `settle` (osaka.rs:10169) and `Clamber`, standing on a shelf (6b: lift D5's flag for a
-shelf her ladder reaches, and only one with `HEIGHT` clear rows over it: every high shelf, a low one only in a pane 11
-rows or taller); raising a low shelf when its pane grows; partitions, rooms as regions, `Connected` (6c); a second shelf or kit; posters on shelves;
-re-hanging a shelf the frame can't hold.
+The ladder, the pole check in `settle` (osaka.rs:10169) and `Clamber`, standing on a shelf (6b: lift D5's ledge half for
+a shelf her ladder reaches and only one with `HEIGHT` clear rows over it; the brackets stay no pole); partitions, rooms as
+regions, `Connected` (6c); a second shelf or kit; posters on shelves; re-hanging a shelf the frame can't hold, or raising
+a low shelf when its pane grows; standing on the kit's box to reach (a natural 6b prequel); the cells of a stage growing
+under her hands (the hop marks the moment instead).
 
 ## Questions for the user
 
-None open. The first round's three (shelf height, the plant and the clock, the lines and the sheet) are answered in
-*User decisions*, second round. One for 6b, not 6a: whether a low shelf in a pane too short to stand on should ever be
-taken down and put up high when its pane grows (6a never re-hangs one).
+None open. Fourth round (2026-10-10, the user):
+- **High means standable**, as designed: a high shelf keeps `HEIGHT` clear rows over its run. Step 3 measures how often
+  each height fits at 191×46 with real content; revisit only if the measurement surprises.
+- **The hop is for high shelves only** (D7c as designed): a low shelf is in her reach, so she stretches up.
+- **Built as a workflow** per group of steps, as the door batch was (implement → correctness review → tests review with
+  mutants → fixer; a 256-case deep run after each workflow).
+
+## Critique dispositions
+
+M = mechanics, F = feasibility, T = tests, C = character (`phase6/critic-*.md`). A = accepted, D = amended differently,
+R = rejected.
+
+| Finding | | Disposition |
+|---|---|---|
+| M1 major | A | `Written` kept or undone by the arm that ends the frame (D4); errand and called-off-arrival tests (2b). |
+| M2 major | A | Structure cells first in painted lists; "every burst cell" through `real`; two-part long-visit check (D4, 3). |
+| M3 major | A | Claim dropped; `under` fix is 6a work; fallback door refuses structure cells via `Ground::structure` (D4). |
+| M4 major | D | Coordinator's choice: `EDGE` margin (≥ `SPACE`) makes door and shelf disjoint by geometry; no door input (D3). |
+| M5 major | A | Shelf pieces stand only on written cells; `fits`/`project_with` take `&Written` (D6). |
+| M6 major | A | `PRE_SHELF` frozen kinds; kits out of real-piece lints; appending a domain is a strategy change (D7b, Tests). |
+| M7 minor | A | InChat and `closetable` skip shelf pieces (D6). |
+| M8 minor | A | `evaluate`'s `e`/`pin` lane by the candidate strip (D1). |
+| M9 minor | A | `middle_of` reads `stood` (D1). |
+| M10 minor | A | `Scene::GazeUp` sets up its own shelf; GazeUp out of `ANY_USE` (D8). |
+| M11 minor | A | Older-build claim reworded; structures read before props (Decided, D2). |
+| M12 minor | A | One rule: rise ≥ `LOW_RISE` and `LOW_ABOVE` rows; `paced` in 5c (D2, D3). |
+| M13 minor | A | PutUp offered and committed only with the half's cells clear; keep-out takes the whole placed run (D4, D7c). |
+| M14 minor | A | Doorstep judges the kit ungated; `raise` persists to the next `furnish`; visit ending: box stays shut (D7b). |
+| M15 minor | A | Three-way `next`; `shelf_room` only when queued; `High` searches shelves only (D7b, D9). |
+| M16 minor | A | `PutUp` want/job/act/chance/event; `Use::GazeUp` (D7c, D8). |
+| M17 minor | A | Tier, `role_without`, `spoils`/`newly_spoilt` key on `room()` (D1). |
+| F1 blocker | A | As M6, `PRE_SHELF` and `CATALOGUE[..10]` with the site list (D7b). |
+| F2 blocker | A | The kit is the one parcel exempt; its own property (D7b, 5b). |
+| F3 major | A | `boxed()` accessor, private field, `unbox` refuses kits; debug-assert dropped (D2). |
+| F4 major | A | Kits excluded from unboxed-render lints, included in parcel lints, with the reason (D7b). |
+| F5 major | A | `EDGE` margin (D3). |
+| F6 major | A | Step 5 split into 5a, 5b, 5c. |
+| F7 major | A | Step 2 split into 2a (threading), 2b (behaviour); brief departure and `validate` doc noted (D4). |
+| F8 major | A | Check scoped to written positions and first cells; ASCII `draw` (3871) added (D4, 3). |
+| F9 major | D | Two 9-row panes noted; `LookOut` precedent; the pane is checked in step 3 (step 0 runs no code) (D11). |
+| F10 major | A | Frozen `hung_clear` oracle, identity property (4). |
+| F11 minor | A | `Spec.shelf` in step 1; rises in 2a; `paced` in 5c. |
+| F12 minor | A | Block is geometry only (D3a). |
+| F13 minor | A | Gated computation; `shelf_spot_is_cheap` and a timing test; perf test location corrected (D3, Tests). |
+| F14 minor | A | As M17. |
+| F15 minor | A | An unsellable wish doesn't block the next piece (D7b). |
+| F16 minor | A | As M13. |
+| F17 minor | A | No dead code per step; gate wording (Tests). |
+| F18 minor | A | No write below the minimum size; failed arrival undoes (D4). |
+| F19 minor | A | Ink from the host border's fg (Decided). |
+| F20 minor | R | `DoorWall.strip: Nook` touches every comparison for a state no code builds; the deserializer guards (D1). |
+| F21 minor | D | Refs fixed (2355; LookOut's script arms; `Summary.owns`); `Written` kept: dissolve's local is another module. |
+| F22 minor | A | As M11. |
+| T1 blocker | A | As M6, F1. |
+| T2 blocker | A | Frame-by-frame goodbye; direct `under` tests; waves test demoted to smoke (2b). |
+| T3 major | A | `most` counts shelf cells; per-frame structure checks (3). |
+| T4 major | A | Independent oracles from the record and nook rect (Tests). |
+| T5 major | A | Brute-force oracle, ordering, non-zero counts, wider generator (5a). |
+| T6 major | A | Biased generator, geometry and stage clauses, `built: 0` (2b). |
+| T7 major | A | `structures` argument, `rooms_frame` + `chat_over`, companion, pane drop/restore, 16 cases (3). |
+| T8 major | A | New room.rs functions with own strategies (4). |
+| T9 major | D | With the `EDGE` margin the property is "no shelf cell within `SPACE` of either wall", every frame (3). |
+| T10 major | A | Deterministic pacing on offers, restart, midnight, unfed (5c). |
+| T11 major | A | Homes lacking furniture and decor; per-visit wish pinned; two no-kit cases (5b, 7). |
+| T12 major | A | Hand-written 6a record through today's reader; `as_a_pre_shelf_build_reads`; golden both ways (2a). |
+| T13 major | A | Sibling-site tests (1, 3). |
+| T14 major | A | Repair properties with shelves at 3, 4 and 7; mood forced (3). |
+| T15 minor | A | Red within step 1 (Tests). |
+| T16 minor | A | Boundary tests (2a). |
+| T17 minor | A | Finished shelf, rows over it, `Ground::ledge`, poles (2b). |
+| T18 minor | A | Line fixed; `Err` at 80×24; observables (D11). |
+| T19 minor | A | Away repeats; whole-shelf toggle asserted, no rain, no hysteresis (Decided, 2b). |
+| T20 minor | A | ASCII fixed-frame and line-art ink checks (9). |
+| T21 minor | A | Operation-count test (5a). |
+| T22 minor | A | GazeUp property (6). |
+| C1 major | A | Measurement with content at several heights and 191×46; Users as the realistic host; census rooms that occur (3). |
+| C2 major | A | Gremlin sold only when a shelf stands or can; `High` felt only then; tests (D9, 7). |
+| C3 major | A | Arms up for shelf lifts and set-downs; the hop (the user's answer) for high shelves (Decided, D7c). |
+| C4 major | A | 2-cell margin (the user's brackets answer); no-text rows preferred (D3). |
+| C5 major | A | Beside it, facing it, opening `"hehe"`, then the pool (step 8) (D8). |
+| C6 minor | A | (a): the first stage chained after unpacking (D7c). |
+| C7 minor | D | `Face::Curious`, no `"nnn~"`; cells appear at the end with the hop rather than growing (the hop marks it). |
+| C8 minor | A | Felt only in its room, facing it; said after a shelf is up only on a visit she'll mend (D9). |
+| C9 minor | A | 20–45 s; only from the shelf's room floor; clock excluded; look-outs counted (D8, Census). |
+| C10 minor | A | Untouching runs ordered first at a height (D3). |
+| C11 minor | A | Centred left on a shelf (D6). |
+| C12 minor | A | Shelf scenes on a frame that fits; review shots at 191×46 (D11, 9). |
+| C13 minor | A | `Use::GazeUp` (D8). |
+| C14 idea | D | `Act::Admire` after stages and shelf set-downs (user's extra 3); "There!" and a straight-into-gaze not added. |
+| C15 idea | A | The user's extra 3: `"A shelf for the gremlin!"` (8). |
+| C16 idea | A | The user's extra 4 (8). |
+| C17 idea | A | The user's extra 2 (8). |
+| C18 idea | A | The user's extra 1 (8). |
+| C19 idea | A | The user's brackets answer; bracket stubs no pole (D5). |
