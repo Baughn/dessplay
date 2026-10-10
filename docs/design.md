@@ -1767,7 +1767,11 @@ this section states what is built.
   between floors on the way, as any walk; landing, she goes on to it),
   and with no door of hers anywhere, or no way to it, goes by a door in
   space where she stands, once she's out of any piece of hers (never in
-  her bed or sofa). Her room stands furnished while she's gone
+  her bed or sofa; with nowhere clear of them, work can wait). Moved
+  out of a focused pane on her way, the door in space she takes for it
+  opens clear of her pieces too; with nowhere clear of them and the
+  pane both, work can wait, and she's moved out of the pane by a door
+  between floors (the visit goes on). Her room stands furnished while she's gone
   (one to three minutes, the door's gap); a chat or IRC line meanwhile
   doesn't fetch her (mischief is still undone at once). Her door's
   pane focused while she's out doesn't move it. She comes back out of
@@ -2339,7 +2343,20 @@ this section states what is built.
   her way short, the next school morning says it again. With no door
   anywhere, or no way to its spot, she goes out by a door in space
   where she stands, but only out of every piece of hers (she steps
-  along her floor out of it first, and goes out there). Any door of
+  along her floor out of it first, and goes out there; with no room on
+  her floor, she goes to the nearest floor that has some, a hop or a
+  door in space between floors on the way, and goes out there; standing
+  on no floor, she takes a door in space to the nearest room; with no
+  room on any floor, she stays in for now, standing a moment, and her
+  routine sends her again). Where she made for is judged again as she
+  gets there. Her door gone while she's through it
+  becomes a door in space where it stood, or, a piece of hers laid
+  there, at the nearest place clear of her pieces (she with it). A door
+  in space she goes out by is judged again each frame it's drawn in
+  (going out, and coming in), and moves the same way if a piece of hers
+  has been laid over it. With no room on any floor, going out she isn't
+  out after all (she stays in, as above); out of sight or coming in, it
+  stays where it stood. Any door of
   hers she's going through or coming in by follows the frame's door (a
   resize), in the very frame it's drawn in, but a focused pane never
   moves it; it stands where she does, so in every beat it's shown she

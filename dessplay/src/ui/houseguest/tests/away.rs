@@ -1156,7 +1156,7 @@ fn rained_out_on_her_way_to_school_she_is_simply_gone() {
             let focus = Rect::new((x - 3).max(0) as u16, (y - 6).max(0) as u16, 7, 7);
             let mut rng = Rng(77);
             let terrain = visit.terrain.clone();
-            assert!(visit.osaka.evict(focus, &terrain, None, now, &mut rng));
+            assert!(visit.osaka.evict(focus, &terrain, &[], None, now, &mut rng));
             assert_eq!(rng.0, Rng(77).0, "{at}: nothing drawn");
             assert!(visit.osaka.gone_out(now).is_some(), "{at}: out at once");
             guest.advance(now);

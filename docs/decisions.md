@@ -5925,6 +5925,68 @@ so a parcel that waited for her to leave the space came minutes
 later, after the cue's unpack scene). In ASCII the slide's first three
 beats draw nothing new, so the tick wakes only as the flap shuts.
 
+## A way out in space is clear of her pieces (2026-10-10)
+
+**Rule:** every door in space she goes out by (school, work, the
+stage's) opens where her box meets none of `chances.obstacles` (her
+pieces as laid, what she made, the place kept for the piece in her
+pocket). `osaka::Clear` is that spot, made only by `Clear::of`. Every
+way a door of hers that's a way out (a gap) comes to stand in space
+goes through two functions that take a `Clear`: `Osaka::open_out` (her
+way out where she stands, `out_at`, and `evict`'s door out of a focused
+pane on her way to work) and `Osaka::redirect_out` (`evict` moving one,
+`door_follows` re-judging one). That holds by type only that far:
+`Through::Space` itself still holds a raw spot, shared with doors
+between floors and the errand's, which aren't ways out; the sites that
+pick the `Clear` (`nearest_clear`, `evict`'s clear-of-all pick) do so
+by judgement. Where they find nowhere clear, no way out opens on a
+piece: going out, she isn't out after all (what going out set is
+undone, work let go, and she stands, `nowhere_clear`); out of sight or
+coming in, the door stays where it stood (she must come in somewhere),
+judged again each frame it's drawn in until there's room. A way out's
+spot is judged again against each frame it's drawn in (going out, and
+coming in, where she comes home), never only as it opened: a resize or
+a delivery can lay a piece over it. `out_where_clear` finds the nearest clear place
+(`nearest_clear`: her floor, then floors she can reach, then any; calm
+first; then nearest) and makes for it as a job (`Job::Out`, which
+replaced `Then::Out`), so a hop between floors keeps where she's going
+and why (a heading, re-found while still clear); with no clear place
+anywhere she stands a moment (`OUT_AGAIN_MS`) and her routine sends her
+again (work is let go). The sibling places a door of hers becomes one
+in space follow the same rule: her door gone while she's through it
+(`door_follows`) opens at the nearest clear place, she with it in its
+beats; a focused pane moving a door that's a way out (`evict`, a gap)
+picks only a place clear of her pieces too (a door between floors, as
+any, only clear of the pane), and with none she isn't out after all:
+her door out of the pane is then a door between floors, her shift let
+go, and the visit goes on. On no floor of hers, she goes to the
+nearest clear place by a door in space, as any walk with no way there.
+Standing in for want of room is said at info the first time since she
+last went out, at debug as her routine tries again (every
+`OUT_AGAIN_MS`, unchanged: the design's "standing a moment").
+**Why:** a deep run (step 10a) had her dash home with her TV, fridge
+and sofa filling her floor and her door on no floor of hers: with no
+clear column on her floor, `out_where_clear` fell back to her feet and
+the school door opened on her TV. The other doors in space (between
+floors, the accordion errand's, the arrival with no door, already
+judged against her pieces) aren't ways out.
+*Also step 10a:* a goodbye mid-way out with her side-on door in its
+wall rains the wall column as her empty home's rain does (step 8: "the
+wall glyph is restored by the rain"); the test oracle had exempted only
+the empty home's rain, so it now counts a goodbye's rain as hers over
+exactly what the visit's last frame showed of hers.
+*Rejected:* falling back to her feet when nothing is clear (the bug);
+re-judging a way out only as it opened (the step 10a review: a resize
+during its near beats left it on her TV, and a shift's door came home
+where it was judged at departure); re-judging it in its gap too (nothing
+of it is drawn then: it's judged as its far door first shows); a new `Through` variant for ways out (the
+rule holds at the two constructors; doors between floors would split
+from ways out in every beat's arithmetic for no gain);
+leaving the wall column out of her door's frozen cells (it's what
+`door_rain` and a focused pane over the wall read, step 8); a travel
+hop without a job (work's way on and the stage's would be lost on
+landing).
+
 ## Houseguest chooses by needs among the top few (2026-09-28)
 
 **Rule:** Her next act is a weighted-random pick among the four

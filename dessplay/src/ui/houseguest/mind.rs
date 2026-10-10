@@ -1523,6 +1523,11 @@ impl Heading {
             }
             // Her door, wherever the frame stands it now.
             Job::Leave { why, .. } => chances.door.map(|spot| Job::Leave { spot, why: *why }),
+            // The place she was making for to go out, while it's still
+            // clear of her pieces as this frame lays them (door batch,
+            // step 10a).
+            Job::Out { at, why } => super::osaka::Clear::of(at.spot(), &chances.obstacles)
+                .map(|at| Job::Out { at, why: *why }),
         }
     }
 
@@ -1532,7 +1537,7 @@ impl Heading {
             Job::Pull(p) | Job::Borrow(p) => p.row,
             Job::Swap(s) => s.row,
             Job::Build(b) => b.row,
-            Job::Use(_) | Job::Lift(_) | Job::SetDown(_) | Job::Leave { .. } => 0,
+            Job::Use(_) | Job::Lift(_) | Job::SetDown(_) | Job::Leave { .. } | Job::Out { .. } => 0,
         }
     }
 }

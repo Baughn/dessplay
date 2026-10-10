@@ -2886,7 +2886,9 @@ impl Guest {
                 // it now, before anything of this frame is judged or
                 // drawn (her tick read last frame's: a resize since
                 // would leave it where her pieces now stand).
-                visit.osaka.door_follows(door, door_through, now);
+                visit
+                    .osaka
+                    .door_follows(door, door_through, (&visit.terrain, &obstacles), now);
                 // Out of the focused pane, through her door.
                 // Text came up where she stays (under her, or under the
                 // image she's drawn in): she gets up.
@@ -2894,7 +2896,7 @@ impl Guest {
                 let evicted = view.focus.is_some_and(|focus| {
                     !visit
                         .osaka
-                        .evict(focus, &visit.terrain, chat, now, &mut self.rng)
+                        .evict(focus, &visit.terrain, &obstacles, chat, now, &mut self.rng)
                 });
                 if evicted
                     || size.0 < MIN_WIDTH

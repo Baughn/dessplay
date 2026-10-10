@@ -12,6 +12,11 @@ Add new days at the top. Add new entries at the bottom of existing days.
 ## 2026-10-10
 
 - Added: parcels come in through the flap in Osaka's front door.
+- Fixed: with her floor full of furniture and no way to her door, Osaka
+  no longer opens a door to go out right on her TV or sofa; she goes
+  where there's room first. A resize while she's going out or coming
+  home moves that door off her furniture too, and with no room at all
+  she stays in rather than leaving.
 
 ## 2026-10-09
 

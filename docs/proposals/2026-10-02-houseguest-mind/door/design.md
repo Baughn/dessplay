@@ -1196,6 +1196,17 @@ the act wait are now pinned by dedicated guards (see the step's notes).
 
 - Census (below) recorded in plan.md's Phase 38 record. Deep runs (below) clean, any failure pinned and fixed in
   its own commit first.
+  *Step 10a (2026-10-10), the deep run after step 9:* two failures, pinned and fixed in their own commits.
+  `her_days_case_a_wall_cell_left_changed` (a goodbye raining her side-on door's wall column): the oracle, not the
+  code (a goodbye's rain counts as hers over what the visit's last frame showed, `Showed` in tests.rs).
+  `a_dash_home_never_opens_her_door_in_space_on_her_tv`: `out_where_clear` fell back to her feet with no clear
+  column on her floor; now `osaka::Clear` (made only by `Clear::of`) is the one way out in space's spot,
+  `Job::Out` (replacing `Then::Out`) carries it across floors, and `door_follows`' gone-door arm and `evict` pick
+  clear spots too (decisions.md "A way out in space is clear of her pieces"). Its review: every way out in space
+  stands through `open_out`/`redirect_out` (both take a `Clear`) and is judged again each frame it's drawn in
+  (going out, coming in); with nowhere clear, going out she isn't out after all (`not_out_after_all`), and
+  `evict` with no place clear of the pane and her pieces lets the way out go (a door between floors) instead of
+  ending the visit; off any floor she goes to the nearest room by a door in space.
 - design.md read through for leftovers of "where she left" / feet; brief §5.1's rule text is the final wording
   (`Strips and anchors`, *Away at school*, work, deliveries).
 - CLAUDE.md: the door-batch line becomes "implemented", pointing at this design and plan.md's record; snippets.md

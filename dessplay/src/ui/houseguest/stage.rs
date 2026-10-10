@@ -458,7 +458,7 @@ pub(super) fn direct(
     let (terrain, osaka) = (&visit.terrain, &mut visit.osaka);
     // The frame as it is (her tick may not have seen it yet): where her
     // clock hangs, for a glance up at it.
-    osaka.take_in(chances, now);
+    osaka.take_in(chances, terrain, now);
     let name = scene.name();
     osaka.cue(scene.cue());
     match scene {

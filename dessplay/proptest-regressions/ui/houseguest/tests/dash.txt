@@ -7,3 +7,4 @@
 cc fbf3259c5d2aea870a765452738f0612a29295ecf000006274c17f6bf5dc32ee # shrinks to from = 0, wordy = false, graphics = false, chats = [(0, 0)], ends = None, closet = None
 cc 367fcf58c725051e63a9d6dfdf32d858ea598b1092a6a807d4daafb78d1ed9cd # shrinks to from = 0, wordy = false, graphics = false, chats = [], ends = Some(0), closet = None
 cc 7bbdae18093ebfbf1405e9ad1da35b40638f75bb632c0bbed8337979ac803bc4 # shrinks to seed = 0, from = 1, graphics = false, sizes = [(73, 20), (90, 18)], text = [], skips = [], chats = [], protect = (0, 0, 1, 1), owned = [(2, 1, 120, false), (0, 1, 116, true)], fridge = (2, 153)
+cc 80f2056dfc65d72f9bbaf32f22ba797f947717f87e4f276ae38cb98baf48463a # shrinks to seed = 0, from = 1, graphics = true, sizes = [(60, 35)], text = [(50, 11, "aa漢")], skips = [], chats = [], protect = (0, 0, 1, 1), owned = [(0, 1, 737, false), (1, 1, 0, false)], fridge = (1, 0)

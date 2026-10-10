@@ -1356,6 +1356,40 @@ fn a_resize_while_her_door_is_open_moves_it_off_her_pieces() {
     }
 }
 
+/// [`a_dash_home_never_touches_what_is_protected`]'s deep draw pinned
+/// (door batch, step 10a): 60×35 in line art (and ASCII), her sofa and TV on
+/// Users, her fridge on Users. Before the fix her door stood open in
+/// space at (37, 15), on her TV.
+#[test]
+fn a_dash_home_never_opens_her_door_in_space_on_her_tv() {
+    let text = [(50, 11, "aa漢".to_owned())];
+    let owned = [
+        (Furniture::Sofa, 1, 737, false),
+        (Furniture::Tv, 1, 0, false),
+        (Furniture::Fridge, 1, 0, false),
+    ];
+    // Found in line art (a wide glyph cut her floor); ASCII runs the
+    // same scenario too, as its siblings do.
+    for graphics in [false, true] {
+        let mut guest = Guest::restore(Ledger::new_at(0, before_a_dash(0, 1)));
+        guest.set_date(date(2026, 6, 17));
+        long_visit_of(
+            guest,
+            graphics,
+            rooms_frame,
+            &[(60, 35)],
+            &text,
+            &[],
+            &[],
+            (0, 0, 1, 1),
+            &owned,
+            Run::default(),
+            120_000,
+        )
+        .unwrap_or_else(|e| panic!("graphics {graphics}: {e}"));
+    }
+}
+
 /// [`a_resize_while_her_door_is_open_moves_it_off_her_pieces`]'s dash,
 /// the resize landing as she comes in by her door (its far beats, door
 /// batch step 6d): the door she's in the doorway of moves to where the

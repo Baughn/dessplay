@@ -4240,23 +4240,26 @@ fn a_night_visit_ends_with_a_sleepy_goodbye() {
     }
 }
 
-/// Out at work through a door in place, with her sofa in her box, she
+/// Out of sight through a door in place, with her sofa in her box, she
 /// isn't there: a visitor's key gets no goodbye from her (no startled
-/// beat, no wave). While her door still stands it stays drawn until the
-/// rain and only its glyphs rain from her box; once it's shut behind
-/// her, nothing of her box rains out but the sofa. The sofa stays drawn
-/// until the rain either way. (Phase 5b: the goodbye's image was taken
-/// from her box whether she was in it or not.) In both drawing modes.
+/// beat, no wave). While her door still stands (a door between floors:
+/// a way out of hers never stands on a piece, door batch step 10a) it
+/// stays drawn until the rain and only its glyphs rain from her box;
+/// once it's shut behind her (out at work, in its gap), nothing of her
+/// box rains out but the sofa. The sofa stays drawn until the rain
+/// either way. (Phase 5b: the goodbye's image was taken from her box
+/// whether she was in it or not.) In both drawing modes.
 #[test]
 fn a_goodbye_while_she_is_out_shows_nothing_of_her() {
     use super::graphics::Look;
     use super::sprite::Face;
     let (real, view) = home_screen();
     for graphics in [false, true] {
-        // Through her door, it still standing; then shut behind her.
+        // Through a door, it still standing; then shut behind her.
         for standing in [true, false] {
+            let way = if standing { Way::Hop } else { Way::InGap };
             let (mut guest, now, (x, y), piece) =
-                out_at_work(&real, &view, graphics, 0, |osaka, now| {
+                out_at_work(&real, &view, graphics, 0, way, |osaka, now| {
                     osaka.hidden(now) && osaka.door(now).is_some() == standing
                 });
             let what = format!("graphics={graphics} door={standing}");
@@ -4380,7 +4383,7 @@ fn a_goodbye_while_she_is_out_shows_nothing_of_her() {
 fn a_door_on_a_protected_floor_redraws_only_its_floor() {
     let (real, view) = home_screen();
     for graphics in [false, true] {
-        let (_, _, (x, y), _) = out_at_work(&real, &view, graphics, 12, |_, _| true);
+        let (_, _, (x, y), _) = out_at_work(&real, &view, graphics, 12, Way::Work, |_, _| true);
         let floor = Rect::new(
             (x - sprite::WIDTH / 2) as u16,
             y as u16,
@@ -4393,7 +4396,8 @@ fn a_door_on_a_protected_floor_redraws_only_its_floor() {
             protected: protected.clone(),
             ..view.clone()
         };
-        let (mut guest, mut now, at, _) = out_at_work(&real, &view, graphics, 12, |_, _| true);
+        let (mut guest, mut now, at, _) =
+            out_at_work(&real, &view, graphics, 12, Way::Work, |_, _| true);
         assert_eq!(at, (x, y), "graphics={graphics}");
         let (mut doors, mut redrawn) = (0, 0);
         loop {
@@ -4431,6 +4435,21 @@ fn a_door_on_a_protected_floor_redraws_only_its_floor() {
     }
 }
 
+/// How [`out_at_work`] sends her out where she's set down.
+#[derive(Clone, Copy)]
+enum Way {
+    /// To work (a door in space there, if her box is clear of her sofa).
+    Work,
+    /// Through a door between floors (its near door drawn there, never
+    /// judged against her pieces: not a way out), as `go_to` sends her
+    /// with no way to a floor.
+    Hop,
+    /// Out at work in her door's gap (nothing of it drawn) where she
+    /// stood, as a resize while she's out can leave it over a piece (a
+    /// way out is judged again as its far door shows).
+    InGap,
+}
+
 /// Her sofa's home (seed 3, a Saturday at 11:00), she visiting, set down
 /// `dx` columns right of the middle of her sofa and sent to work with no
 /// door of hers anywhere and nothing of hers in her way (chances with no
@@ -4440,14 +4459,17 @@ fn a_door_on_a_protected_floor_redraws_only_its_floor() {
 /// sofa. (The frame's own chances would have her step out of her sofa
 /// first, `out_where_clear`; these tests are about what's drawn and
 /// rained of her box while she's out with a piece in it, as a door in
-/// space between floors or out of a focused pane can still leave her.)
-/// Her work through her door is `work_goes_out_by_her_door`
-/// (tests/away.rs).
+/// space between floors or out of a focused pane can still leave her.
+/// A way out's door is judged again each frame it's drawn in, so it
+/// stands there only in its gap, out of sight: door batch, step 10a
+/// review: see [`Way`].) Her work through her door is
+/// `work_goes_out_by_her_door` (tests/away.rs).
 fn out_at_work(
     real: &Buffer,
     view: &IdleView,
     graphics: bool,
     dx: i32,
+    way: Way,
     when: impl Fn(&Osaka, u64) -> bool,
 ) -> (Guest, u64, (i32, i32), Shown) {
     let sofa = [(Furniture::Sofa, Nook::Users, 300)];
@@ -4461,9 +4483,15 @@ fn out_at_work(
     };
     visit.osaka.place(x, y, now);
     let terrain = visit.terrain.clone();
-    visit
-        .osaka
-        .go_to_work(&terrain, &osaka::Chances::default(), now, &mut Rng(1));
+    match way {
+        Way::Work => {
+            visit
+                .osaka
+                .go_to_work(&terrain, &osaka::Chances::default(), now, &mut Rng(1));
+        }
+        Way::Hop => visit.osaka.through_door((x + 20, y), now),
+        Way::InGap => visit.osaka.out_at_work_in_gap(60_000, now),
+    }
     paint(&mut guest, real, view, now);
     loop {
         let State::Visiting(visit) = &guest.state else {

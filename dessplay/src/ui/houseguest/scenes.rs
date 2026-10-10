@@ -253,6 +253,13 @@ pub(super) enum Job {
         spot: DoorSpot,
         why: Leave,
     },
+    /// Go out by a door in space at `at`, clear of her pieces, for `why`
+    /// (door batch M25, step 10a): no door of hers to go to, or no way to
+    /// its spot.
+    Out {
+        at: super::osaka::Clear,
+        why: Leave,
+    },
 }
 
 /// Why she goes out by her door (door batch D6), so which gap it opens
@@ -305,6 +312,7 @@ impl Job {
             Self::SetDown(set) => JobRef::SetDown(set),
             Self::Borrow(p) => JobRef::Borrow(p),
             Self::Leave { spot, why } => JobRef::Leave(*spot, *why),
+            Self::Out { at, why } => JobRef::Out(*at, *why),
         }
     }
 
@@ -323,10 +331,11 @@ impl Job {
         self.by_ref().side()
     }
 
-    /// Why she's going out, if it's her way out by her door.
+    /// Why she's going out, if it's her way out: by her door, or by a
+    /// door in space where it's clear.
     pub fn leave(&self) -> Option<Leave> {
         match self {
-            Self::Leave { why, .. } => Some(*why),
+            Self::Leave { why, .. } | Self::Out { why, .. } => Some(*why),
             _ => None,
         }
     }
@@ -352,6 +361,7 @@ pub(super) enum JobRef<'a> {
     SetDown(&'a SetDown),
     Borrow(&'a Pull),
     Leave(DoorSpot, Leave),
+    Out(super::osaka::Clear, Leave),
 }
 
 impl JobRef<'_> {
@@ -365,6 +375,7 @@ impl JobRef<'_> {
             Self::Lift(l) => (l.x, l.y),
             Self::SetDown(s) => (s.x, s.y),
             Self::Leave(door, _) => door.spot(),
+            Self::Out(clear, _) => clear.spot(),
         }
     }
 
@@ -380,9 +391,9 @@ impl JobRef<'_> {
             Self::Build(b) => on(b.row, b.cells.clone()),
             Self::Swap(s) => vec![s.a.source, s.a.at, s.b.source, s.b.at],
             Self::Use(_) | Self::Lift(_) | Self::SetDown(_) => Vec::new(),
-            // Never asked: `Act::at_job` yields no Leave (at her door
-            // she's at an `Act::Door`), and a door is about no text.
-            Self::Leave(..) => Vec::new(),
+            // Never asked: `Act::at_job` yields no Leave or Out (at her
+            // door she's at an `Act::Door`), and a door is about no text.
+            Self::Leave(..) | Self::Out(..) => Vec::new(),
         }
     }
 
@@ -402,6 +413,9 @@ impl JobRef<'_> {
                 super::sprite::Facing::Left => Side::Left,
                 super::sprite::Facing::Right => Side::Right,
             },
+            // A door in space opens before her as she faces it, to the
+            // right (as one lets her in: `Through::into_room`).
+            Self::Out(..) => Side::Right,
         }
     }
 
@@ -412,9 +426,9 @@ impl JobRef<'_> {
             Self::Swap(s) => (s.row, s.y),
             Self::Build(b) => (b.row, b.y),
             Self::Use(_) => return 1,
-            // Never asked: `Act::at_job` yields no Leave (at her door
-            // she's at an `Act::Door`). It would be the knob.
-            Self::Leave(..) => return 1,
+            // Never asked: `Act::at_job` yields no Leave or Out (at her
+            // door she's at an `Act::Door`). It would be the knob.
+            Self::Leave(..) | Self::Out(..) => return 1,
             // Bent down to the piece at her feet.
             Self::Lift(_) | Self::SetDown(_) => return (HEIGHT - 1) as u8,
         };
