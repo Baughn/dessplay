@@ -732,4 +732,4 @@ that her trace is unchanged).
 shipped numbers and band, the deviations, the user's decisions and what is left open) is in
 [docs/plan.md](../../plan.md), Phase 38, "Phase 5c — stillness (done 2026-10-07)"; the closing numbers are
 [phase5c/baseline.md](phase5c/baseline.md), "Census pass (step 13)". The door batch comes next
-(plan.md, "Next: the door batch").
+(plan.md Phase 38, "The door batch (brief, 2026-10-07)"; built: "The door batch (done 2026-10-10)").

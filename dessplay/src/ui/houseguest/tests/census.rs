@@ -2977,3 +2977,61 @@ fn the_census_counts_her_vignettes() {
         );
     }
 }
+
+/// The three census tests step 4b re-sampled, measured on their
+/// original samples (door batch, step 10: plan.md Phase 38, "The door
+/// batch (done 2026-10-10)", the census honesty table). Prints, asserts
+/// nothing: `cargo nextest run -p dessplay --run-ignored only --no-capture
+/// -E 'test(census_on_original_samples)'`. The original samples:
+/// `an_uninterrupted_trip_runs_its_course` six seeds (at least 8 trips);
+/// `her_mood_shows` four visits a mood (eight as gated); and
+/// `the_census_counts_her_vignettes` the shopping channel on every visit
+/// (as gated: only on visits she watched).
+#[test]
+#[ignore = "a measurement for the user: prints the original samples"]
+fn census_on_original_samples() {
+    let quiet = Room {
+        chat_every: None,
+        ..furnished_room()
+    };
+    let (mut set_off, mut let_go) = (0, 0);
+    for seed in 0..9 {
+        let visit = simulate(&quiet, seed, 10, None);
+        set_off += visit.headings.get("set off").copied().unwrap_or(0);
+        let_go += visit.headings.get("let go: Other").copied().unwrap_or(0);
+        eprintln!("PROBE trip seed {seed}: cumulative set off {set_off}, let go {let_go}");
+    }
+    let room = resident_room();
+    let at = |g: &BTreeMap<&str, u64>, k: &str| g.get(k).copied().unwrap_or(0);
+    for n in [4, 8] {
+        let in_mood = |mood: Mood| {
+            let visits: Vec<Visit> = (0..n)
+                .map(|seed| simulate(&room, seed, 15, Some(mood)))
+                .collect();
+            grouped(&visits)
+        };
+        let (lazy, busy) = (in_mood(Mood::Lazy), in_mood(Mood::Industrious));
+        let (dreamy, ordinary) = (in_mood(Mood::Dreamy), in_mood(Mood::Ordinary));
+        eprintln!(
+            "PROBE mood n={n}: furniture lazy {} busy {}; exercise lazy {} busy {}; \
+             spacing out dreamy {} ordinary {}",
+            at(&lazy, "furniture"),
+            at(&busy, "furniture"),
+            at(&lazy, "exercise"),
+            at(&busy, "exercise"),
+            at(&dreamy, "spacing out"),
+            at(&ordinary, "spacing out"),
+        );
+    }
+    for graphics in [false, true] {
+        for seed in 0..3 {
+            let guest = arrive_in(&quiet, seed, graphics, None);
+            let (visit, _) = visit_from(&quiet, guest, 15, |_, _| {});
+            let watched = visit.time.keys().any(|k| k.starts_with("use:Watch"));
+            eprintln!(
+                "PROBE vignettes seed {seed} graphics={graphics}: watched {watched}, shopping {:?}",
+                visit.scripts.get("shopping")
+            );
+        }
+    }
+}

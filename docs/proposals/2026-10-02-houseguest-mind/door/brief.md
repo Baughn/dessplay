@@ -1,7 +1,8 @@
 # Her door: the bug and the reserved space
 
 **Investigation brief, 2026-10-07** (read-only, written during phase 5c; kept here as the door batch's
-starting point). Where it and docs/plan.md's *Next: the door batch* disagree, **plan.md wins**: the user
+starting point). Where it and docs/plan.md's Phase 38 *The door batch (brief, 2026-10-07)* disagree, **plan.md wins**
+(the batch as built: plan.md's *The door batch (done 2026-10-10)* and [design.md](design.md)): the user
 has since answered its questions (§8): parcels come through a flap **in her door** (its Q1, B, not A),
 the approved door is the sheet's **B, two columns, turned slightly** ([art/snippets.md](art/snippets.md)),
 older homes whose furniture fills the space have her **clear it herself** (§7's optional felt rule, now
@@ -403,7 +404,7 @@ chain would end with `Job::Leave`, her walk to her door.
    an older home's piece in the chat pane until she has moved it out.
 
 Not asked, decided here (veto welcome):
-- ~~The space yields quietly; she doesn't mend it herself for now.~~ *(Superseded: she clears it herself, through a felt rule, "Can't get to the door!"; plan.md, "Next: the door batch".)*
+- ~~The space yields quietly; she doesn't mend it herself for now.~~ *(Superseded: she clears it herself, through a felt rule, "Can't get to the door!"; plan.md Phase 38, "The door batch (brief, 2026-10-07)".)*
 - With no home, the door uses the same edge chooser, unsaved.
 - The door shows only while she's out or going through. Its presence is the "out" cue the user
   wants, so it isn't a permanent fixture.

@@ -1,6 +1,6 @@
 # DessPlay Design Document
 
-Last updated: 2026-10-09
+Last updated: 2026-10-10
 
 A synchronized video player for watch parties. Terminal-first, built for
 reliability over flaky connections. Server-coordinated, including relayed
@@ -2379,6 +2379,10 @@ this section states what is built.
   stand before it and a card hangs on its knob; they go as it opens. Its
   own two columns stand over pane text for as long as she's out; her
   slippers stand only on blank cells and lines (else they aren't drawn).
+  In line art, when her door rains out (an errand, her empty home, a
+  goodbye), the slippers go with its image as the rain begins; only the
+  door's own columns rain (why: [decisions](decisions.md#her-door-is-drawn-side-on-2026-10-08),
+  accepted at the batch's end, open to the user).
   Walking to it or away from it, it stands over text only in passing
   (4 s), then hides there until her beats through it begin. Any cell of
   it in a pane in use hides all of it (she still steps through its

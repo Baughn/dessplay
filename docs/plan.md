@@ -1,6 +1,6 @@
 # DessPlay Implementation Plan
 
-Last updated: 2026-10-07
+Last updated: 2026-10-10
 
 The initial 10 phases are bottom-up; later numbered phases capture feature
 batches. Each phase produces testable artifacts. The first
@@ -2105,7 +2105,7 @@ welcome; the only goal is "watching her is kind of fun".
 
 ## Phase 38: Houseguest mind and home
 
-**Status: phases 0–4 done (2026-10-02 and 2026-10-03); phase 5 split into 5a (vignettes, done 2026-10-03) and 5b (the clock, done 2026-10-05; record below). Phase 5c, stillness, done 2026-10-07 (record below). master was pushed by the user at 5b step 5c (2026-10-04) to test it, and again at 5c step 11's record (2026-10-06), and at 5c's tail T2 (A) (2026-10-07); everything after that is unpushed (T2's review fixes, T3 and T4). Next: the door batch (below), then phase 6.** Design: [the mind
+**Status: phases 0–4 done (2026-10-02 and 2026-10-03); phase 5 split into 5a (vignettes, done 2026-10-03) and 5b (the clock, done 2026-10-05; record below). Phase 5c, stillness, done 2026-10-07 (record below). The door batch (her door's reserved space, the side-on door, parcels through its flap, no furniture in the chat pane) done 2026-10-10 (record below). master was pushed by the user at 5b step 5c (2026-10-04) to test it, and again at 5c step 11's record (2026-10-06), and at 5c's tail T2 (A) (2026-10-07); everything after that is unpushed (T2's review fixes, T3 and T4, and the whole door batch). Next: phase 6.** Design: [the mind
 and home proposal](proposals/2026-10-02-houseguest-mind.md) (direction
 agreed with the user; their answers are its *Decisions*). Its migration
 plan numbers its own phases 0–8; this section records them.
@@ -3475,15 +3475,15 @@ the film's still counts nothing.
 - **A busy client's `school_out`** (step 1's hand-off): **resolved in
   T3.** Every arrival from her empty home now carries it until she's
   in, and one that comes to nothing rains it out.
-- **Her door overlapping her furniture** (the user's report): the door
-  batch, next.
+- ~~**Her door overlapping her furniture**~~ (the user's report):
+  **resolved by the door batch** (2026-10-10, record below).
 - 5b's still-open items: rares a home can't show, her pane-corner column.
 - In ASCII the bare stage's industrious afternoon sets off 3.05–3.26
   times a minute (fed, 15 minutes), over the line-art cap of 3; the band
   is pinned in line art (the user's client), and ASCII is dev and test
   only.
 
-### Next: the door batch (planned, 2026-10-07)
+### The door batch (brief, 2026-10-07)
 
 The user's report (2026-10-06): *"she just left for school directly from
 bed, from a door that's now stuck visible overlapping said bed."* The
@@ -3590,6 +3590,222 @@ share it.
   regression at 08:14; layout properties that no floor piece or window
   meets the space and that a home packing both ways keeps its anchors and
   order; an older record migrating without closeting anything.
+
+### The door batch (done 2026-10-10)
+
+Built as the [working design](proposals/2026-10-02-houseguest-mind/door/design.md)
+says, with its amendments and the hand-off notes' coordinator steps (3p,
+6d, 6m, 10a); its code map is [door/map.md](proposals/2026-10-02-houseguest-mind/door/map.md),
+its four critiques sit beside it, the art is in
+[door/art/](proposals/2026-10-02-houseguest-mind/door/art/) (its
+`snippets.md` now says what was wired), and real game frames for the
+user's eye are in [door/shots/](proposals/2026-10-02-houseguest-mind/door/shots/)
+(README lists them). The rules are in design.md (*Strips and anchors*,
+*Away at school*, the part-time job, *Getting furniture*, the phase-4
+rules) and the reasons in decisions.md (the 2026-10-08 to 2026-10-10
+door entries). Each step was implemented tests first, reviewed twice
+(correctness, and tests proven by mutants) and fixed; each commit
+carries its red-first evidence and its golden trace check (where each
+moved trace first differs and why). Nothing was pushed mid-batch;
+`stable` was not moved (no protocol change).
+
+**The bug and the aim.** *"She just left for school directly from bed,
+from a door that's now stuck visible overlapping said bed."* Her
+external door's spot came from her feet. Now it comes from her home and
+the frame alone: a reserved space at the screen's edge that no piece
+stands in, a strict fallback that meets no piece when the space yields,
+and every routine exit and return (school, dashes, work) through it.
+
+**What was built, by step:**
+- **1.** Honest fixtures: the tests' chat pane laid where a screen
+  would put it (the old `view()` put it over the List box), chat cases
+  built on purpose (a space yielding to the chat's floor, every edge
+  space under the chat, no wall or no floor outside it), `long_visit_of`
+  taking a frame and counting what it saw (non-vacuity).
+- **2.** The space: `Home.door` (a saved `DoorWall`, chosen once from
+  the panes: an edge wall first, then her pieces' strips, then where the
+  space is kept), `Home::extents`/`StripPlan`, pieces packing beside six
+  columns at that wall. The space yields (the strip laid out as if
+  doorless) when keeping it would cost the strip a piece. Her door moves
+  only with her pieces. Ledger `door`, `--dump` shows it.
+- **3.** `door.rs`: `door_place` (the one constructor of `DoorSpot`), the
+  strict fallback (nearest floor spot meeting no piece, the chat or a
+  protected cell), `Keep` (the space and the chat refused to new
+  placements). While she's at school her door stands at its space, never
+  on her bed, sofa or desk or in the chat. **3p:** the repair search
+  lays out again only the strips a move touches (back under 0.5 ms).
+- **4a.** First the user's border answer: a fallback door never
+  straddles a pane's border. Then she gets up and walks to her door to
+  leave for school (`Job::Leave`, the `set_off` latch apart from
+  `leaving`, `Through::{Home, Space}`); her walk follows the frame's door.
+- **4b.** Work goes out and comes home through her door too, never off a
+  screen edge (`Leave::Work`, `Shift::{Going, Out}`, `let_work_go`).
+- **5.** Nothing new of hers is put in the chat pane (deliveries, gifts,
+  repairs, moves off a pane: `Keep::takes_in` the one "pushed newly in"
+  test).
+- **6.** Felt rules `DoorClear` ("Can't get to the door!") and `InChat`
+  ("People are talking here…"), felt on sight, said once quiet and at
+  most once a game day; the per-frame closet for a piece in the chat no
+  room takes. **6d:** a resize while her door stands open moves it (and
+  her) in the frame it's drawn in. **6m:** makeshift pieces may stand in
+  the chat (the user's third-round answer), never in her door's space
+  (`Keep::for_made`).
+- **7.** The side-on door's art made production: `Look::WallDoor` under
+  any sky, `graphics::Cut` (offset by half columns, cut at the wall's
+  line), the hedge tinted per sky, `art::lean`.
+- **8.** The side-on door wired: her beats (`wall_beat`), walking pace
+  through the doorway, the front post over her, the Away cue (slippers
+  and a card) while she's out and in every gap, the doorway's sky, the
+  door over text while she's out (only a pane in use hides it), in
+  passing otherwise.
+- **9.** Parcels through her door's flap, sliding out past its space in
+  four beats; a delivery waits for her door's act, her box or her walk
+  in the space; another wall's `draw_flap` only when her door's strip
+  can't take it.
+- **10a.** The deep run after step 9: a goodbye's rain over her door's
+  wall column was the oracle's, not the code's (`Showed`); a way out in
+  space with no clear column on her floor opened on her TV, now
+  unrepresentable (`osaka::Clear`, `Job::Out`, `open_out`/`redirect_out`).
+- **10.** This record, the census reading below, the docs (CLAUDE.md,
+  snippets.md), and `door_shots` (an ignored test that renders real
+  frames to PNG: `Graphics::take_shots`/`shot`).
+
+**The user's answers** (each in door/design.md's *User decisions*):
+first round (2026-10-07/08): the reserved space; sheet B; slippers and a
+card while she's out; the doorway follows the window's sky; work always
+through her door; older homes cleared through a felt rule; no furniture
+and no door of hers in the chat; with no edge wall outside the chat an
+inner wall, then the nearest clear floor, else no door while she's out.
+Second round (2026-10-08): her door stands over text; walking pace
+through the doorway; the chat line. Third round (2026-10-08/09): the
+fallback never straddles a pane's border; makeshift pieces may stand in
+the chat; the line keeps the one-glyph ellipsis (it fits the 24-character
+bubble).
+
+**Deviations from the design** (each in its step's commit and in
+door/design.md's as-built notes): the space's yield rule is "keeping it
+costs the strip no piece" (step 2; D1 would have lost an older record's
+window); a hidden pane moves her pieces and door like any move (step 2);
+`DoorSpot`'s ground is a `Ground` trait over flags `Terrain` already
+reads (step 3); her door follows a resize in the frame it's drawn in,
+through its far beats too, she with it (6d); the walking-pace stretch
+applies to a face-on fallback door too (step 8); a delivery waits for her
+walk into the space, not only her box (step 9); a way out in space is
+`Clear` by type (10a). Not done, recorded instead: the slipper columns'
+rain (decisions.md, *Her door is drawn side-on*, last paragraph).
+
+**Census, band and stillness** (step 10; measured at the batch's end,
+`7aaf24de`, against the tree before it, `057311b1`, run fresh; logs in
+the job's `tmp/step10/`). No threshold or cap was changed.
+- *Visit census* (`visit_census`, unfed, 16 visits × 30 min; moving %
+  in sight / set-offs a minute):
+
+  | room | before the batch | after 4b | after 5 | final |
+  |---|---|---|---|---|
+  | stage, ASCII | 8.0 / 2.00 | 8.0 / 2.00 | 5.6 / 1.98 | 8.0 / 2.00 |
+  | stage, line art | 6.1 / 1.55 | 6.1 / 1.55 | 4.0 / 1.23 | 6.1 / 1.55 |
+  | home (both modes) | 17.2 / 1.03 | 18.4 / 1.07 | 18.4 / 1.07 | 18.0 / 1.07 |
+  | resident (both modes) | 10.7 / 0.98 | 9.6 / 0.99 | 9.6 / 0.99 | 10.3 / 1.00 |
+
+  Step 5 cut the stage's makes from chat text (time on made pieces
+  43 → 24% ASCII); 6m restored them exactly (the stage's traces are
+  step 4b's again). Home and resident move by the space's 6-column
+  push, which shifts her pieces and so her trips.
+- *Band* (`--profile band`, `CENSUS_BAND_SEEDS=64`, release): the stage
+  is identical in every cell before and after. Home within 1.2 points
+  of before in every cell (Ordinary chat 22.0 → 21.0%, quiet 22.0 →
+  20.8%); resident Industrious chat 15.8 → 14.4%, quiet 16.2 → 15.0%,
+  Ordinary quiet 9.4 → 11.1%; spreads home 2.62 → 2.66, resident
+  2.61 → 2.43. Two lines fail, both identically before the batch: the
+  stage's industrious chat (9.0% at a floor of 9, just under it) and
+  the stage's spread (1.50 under 1.60, whose aim is 1.43). At the gate's
+  strength (2 seeds) 17 of 18 pass before and after; the one failure is
+  that same stage line (8.8%).
+- *Day census* (`day_census`, 6 runs a room; stage / home / resident):
+  school days at 08:00 she's here 24.8 / 25.7 / 25.4% before and
+  26.2 / 28.2 / 29.4% after (the walk to her door), moving 8 / 15 / 7%
+  of that hour before and 15 / 21 / 18% after; in the Away slot (a
+  dash in sight) moving 52 / 62 / 64% before and 80 / 89 / 90% after,
+  of which by her routine (to and from her door) 36.5 / 20.8 / 45.8%
+  before and 74.8 / 74.1 / 88.1% after. Across the week she's here
+  48.4 / 49.8 / 49.8% before and 48.3 / 49.9 / 49.9% after. The home's
+  window looking out rose from 140 to 247 in 42 game days (her pieces
+  stand elsewhere beside the space). The band and stillness gates run
+  afternoons and never see a school morning: nothing gated moved.
+- *Three census tests pass only by re-sampling* (step 4b; the design
+  calls such changes findings, not retunes). Measured on the final tree
+  with their original samples:
+
+  | test | original sample, final tree | as gated now |
+  |---|---|---|
+  | `an_uninterrupted_trip_runs_its_course` | 6 seeds: 5 set-offs, under its 8 (**fails**); no trip let go | 9 seeds: 10 set-offs |
+  | `her_mood_shows` | 4 visits a mood: lazy over industrious on furniture and under it on exercise hold; dreamy spaces out **14% less** than ordinary (**fails**) | 8 visits: dreamy 9% more |
+  | `the_census_counts_her_vignettes` | the shopping channel on every visit: seed 1 never sits down to the TV in either mode (**fails**) | only on visits she watched, 3 of 4 watched |
+
+  Work leaving by her door no longer leaves her on another floor to set
+  off from (the trips), and the moods' margins are thin at these sample
+  sizes: dreamy against ordinary flips sign between 4 and 8 visits.
+  Re-run the original samples with the ignored
+  `census::census_on_original_samples` (`cargo nextest run -p dessplay
+  --run-ignored only --no-capture -E 'test(census_on_original_samples)'`;
+  it prints, asserts nothing; seeds and visit lengths as the tests').
+- *Deep runs*: `PROPTEST_CASES=256 --release --profile deep -p dessplay
+  houseguest` 952/952 after 10a's review (the production code since is
+  unchanged); the perf tests (`--profile full --release`) 4/4 at the
+  end; the workspace gate green at every step.
+
+**Open, for the user:**
+- **(a) The space's yield rule.** Kept only when keeping it costs the
+  strip no piece; otherwise the strip is laid out exactly as with no
+  door, and a window may hang in the space. The alternative (D1 as
+  written) loses an older record's window on load.
+- **(c) Hung deliveries through her door's wall**: a poster or clock
+  comes in boxed past the space and, unpacked, hangs against the wall
+  itself (above the space), six columns from where its box stood.
+- **(d) A hidden pane moves her pieces and her door for good**, as a
+  pane that's gone does; both stay when it shows again. Should a hidden
+  pane hold them instead?
+- **(f) No floor outside the chat at all** (a custom layout): no door is
+  drawn while she's out, and her 12:45 homecoming is called off (she
+  comes in on the idle gate later, wherever she lands). Should she come
+  home by a door in space inside the chat instead?
+- **(g) Her door's pane focused at 12:45**: she comes home out of the
+  fallback beside the pane rather than waiting for it. Fine?
+- **(h) The stage's DashIn** now goes by her door, so the scene walks
+  about 30 s before "Forgot my lunch!".
+- **(b)/(e) The stillness holds** (`free_to_muse`, `end_look`) are
+  provisional (listed above under 5c's open items).
+- **The three re-sampled census tests** (table above): a meaningful
+  dreamy-versus-ordinary measure, or a larger sample fixed up front?
+- **Coming home while her door's pane is focused through a shift**, she
+  comes home where she went (a door in space), not at her door (step
+  4b's fixer's choice).
+- **A door pool line on her way out**: a door in space taken on her way
+  to her door says a door line ("Huh? How'd I get here?") as any door in
+  space does.
+- **The slippers don't rain** in line art when her door rains out; they
+  go with the image (decisions.md). The fix is small if wanted.
+- **The short terminal's face-on door derezzes the pane title** its top
+  row covers (`door/shots/short-terminal.png`): it stands clear of every
+  piece and never across a pane's side wall (│), but its top row stands
+  on the Playlist pane's top border, over its title (the rule bars only a
+  plain side wall above its floor row; the face-on door stands over
+  text, as decided). Fine?
+- **Found, not fixed:** a floor delivery can strand a hung piece (a
+  sofa parcel making her space kept, so her window hung at the wall no
+  longer shows; step 9); a walk to a piece that goes into the closet
+  mid-walk isn't cut short (`lost_seat`'s sibling); the stage's school
+  scene may be lost after a hop across floors to a way out in space
+  (10a); cued as she drops in, the stage's school scene sets her down
+  on the platform whose middle is nearest her door, not on her door's
+  floor as its comment says (`door/shots/school-scene-dusk.png`: on the
+  ledge below, she walks away to climb up first; stage-only); with her floors full for good in school time she re-tries
+  going out every 3 s (`OUT_AGAIN_MS`, logged at debug after the first);
+  `Fallback::Blocked` is unreachable through the guest today (tested on
+  `door_place` directly, M18); a parcel can be unseen for up to 650 ms
+  if her door's image can't be placed, and a rain mid-slide bursts no
+  parcel glyphs (step 9); a goodbye mid-doorway rains her letters from
+  her doorway offset, `d` columns from where she waved (step 8).
 
 ### Later (ideas, the user)
 

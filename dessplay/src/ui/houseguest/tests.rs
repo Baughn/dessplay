@@ -6257,11 +6257,14 @@ fn text_near_a_hung_poster_closets_only_what_it_covers() {
 /// HiDPI 18×38. (In play each piece is its own image; here they're
 /// composed into one.)
 #[test]
-#[ignore = "writes a PNG for review"]
+#[ignore = "writes a PNG for review: set HOUSEGUEST_HUNG"]
 #[allow(deprecated)]
 fn hung_poster_sheet() {
     use super::graphics::{Layer, Look};
-    let path = std::env::var("HOUSEGUEST_HUNG").expect("HOUSEGUEST_HUNG");
+    let Ok(path) = std::env::var("HOUSEGUEST_HUNG") else {
+        eprintln!("HOUSEGUEST_HUNG unset; nothing written");
+        return;
+    };
     let (real, view) = home_screen();
     let mut images = Vec::new();
     for cell in [(9u16, 19u16), (18, 38)] {

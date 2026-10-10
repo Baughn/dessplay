@@ -6834,3 +6834,352 @@ fn a_parcel_by_a_yielding_space_comes_through_the_walls_flap() {
         }
     }
 }
+
+// ---- Shots for the user's eye (door batch, step 10) ----
+
+/// A frame `film` shot: what it shows (a label), the frame as a
+/// terminal would show it, and where her door stood.
+struct Shot {
+    label: String,
+    image: image::RgbaImage,
+    door: Option<door::DoorSpot>,
+    /// How many of her images it carried (each shot shows her, her door
+    /// or a piece of hers: none is the shooting broken).
+    images: usize,
+}
+
+/// Paints `guest` (line art) on `view` of `real` from `now`, at most
+/// 50 ms apart, until `done` (within `limit` ms), shooting the frame
+/// each time `label` names it something new. Returns when it stopped.
+fn film(
+    guest: &mut Guest,
+    (real, view): (&Buffer, &IdleView),
+    (mut now, limit): (u64, u64),
+    shots: &mut Vec<Shot>,
+    mut label: impl FnMut(&Guest, u64) -> Option<String>,
+    mut done: impl FnMut(&Guest, u64) -> bool,
+) -> u64 {
+    let end = now + limit;
+    loop {
+        if let Some(graphics) = guest.graphics.as_mut() {
+            graphics.take_shots();
+        }
+        let frame = paint(guest, real, view, now);
+        let graphics = guest.graphics.as_mut().expect("line art");
+        let images = graphics.take_shots();
+        if let Some(label) = label(guest, now)
+            && shots.iter().all(|s| s.label != label)
+        {
+            let door = match &guest.state {
+                State::Visiting(visit) => visit
+                    .osaka
+                    .wall_beat(now)
+                    .map(|(spot, ..)| spot)
+                    .or(visit.door),
+                _ => guest.closed_door(),
+            };
+            let image = guest
+                .graphics
+                .as_ref()
+                .expect("line art")
+                .shot(&frame, &images);
+            let images = images.len();
+            shots.push(Shot {
+                label,
+                image,
+                door,
+                images,
+            });
+        }
+        if done(guest, now) || now >= end {
+            return now;
+        }
+        now += guest
+            .next_tick(now)
+            .map_or(50, |d| d.as_millis() as u64)
+            .clamp(1, 50);
+        guest.advance(now);
+    }
+}
+
+/// What a frame of her going out or coming home shows, for [`film`]:
+/// her door's beat (each of her steps through it its own), her walk to
+/// it (a shot every 1.5 s, three at most), her empty home, and her
+/// line as she's home. Her walk is only her last leg to her door
+/// ([`Osaka::walking_to_her_door`]), not a hop toward it nor a walk she
+/// finishes first.
+fn door_label(walk_from: &std::cell::Cell<Option<u64>>, guest: &Guest, now: u64) -> Option<String> {
+    match &guest.state {
+        State::Visiting(visit) => {
+            let osaka = &visit.osaka;
+            if let Some((_, beat, wall)) = osaka.wall_beat(now) {
+                let step = wall
+                    .her
+                    .filter(|_| matches!(beat, 2 | 10))
+                    .map(|(_, d)| format!(", her {d} into it"))
+                    .unwrap_or_default();
+                return Some(format!("beat {beat:02}: {:?}{step}", wall.door));
+            }
+            if says(osaka.appearance(now).2, mind::HOME) {
+                return Some("home: her line".into());
+            }
+            if osaka.walking_to_her_door() {
+                let from = walk_from.get().unwrap_or(now);
+                walk_from.set(Some(from));
+                let k = (now - from) / 1500;
+                return (k < 3).then(|| format!("walk {k}: to her door"));
+            }
+            None
+        }
+        State::Away(_) => Some("out: her empty home".into()),
+        _ => None,
+    }
+}
+
+/// `shots` cropped round their door (36 columns by 11 rows, the floor
+/// row second from the bottom; the screen's middle when none stands),
+/// labelled, in a sheet `across` wide; `cell` is the picker's.
+fn contact_sheet(shots: &[Shot], (cw, ch): (u32, u32), across: usize) -> image::RgbaImage {
+    const BG: image::Rgba<u8> = image::Rgba([30, 33, 39, 255]);
+    let (cols, rows) = (36u32, 11u32);
+    let (tw, th) = (cols * cw, rows * ch);
+    let pad = 12;
+    let label_h = ch + 4;
+    let down = shots.len().div_ceil(across) as u32;
+    let mut sheet = image::RgbaImage::from_pixel(
+        pad + across as u32 * (tw + pad),
+        pad + down * (th + label_h + pad),
+        BG,
+    );
+    for (i, shot) in shots.iter().enumerate() {
+        let (sw, sh) = (shot.image.width() / cw, shot.image.height() / ch);
+        let (x, y) = shot.door.map_or((sw / 2, sh / 2), |d| {
+            let (x, y) = d.spot();
+            (x.max(0) as u32, y.max(0) as u32)
+        });
+        let left = x.saturating_sub(cols / 2).min(sw.saturating_sub(cols));
+        let top = (y + 2).saturating_sub(rows).min(sh.saturating_sub(rows));
+        let crop = image::imageops::crop_imm(
+            &shot.image,
+            left * cw,
+            top * ch,
+            tw.min(shot.image.width()),
+            th.min(shot.image.height()),
+        )
+        .to_image();
+        let (gx, gy) = ((i % across) as u32, (i / across) as u32);
+        let (ox, oy) = (pad + gx * (tw + pad), pad + gy * (th + label_h + pad));
+        let mut label = Buffer::empty(Rect::new(0, 0, cols as u16, 1));
+        label.set_string(0, 0, &shot.label, Style::default());
+        let label = Graphics::new(kitty()).expect("kitty").shot(&label, &[]);
+        image::imageops::overlay(&mut sheet, &label, i64::from(ox), i64::from(oy));
+        image::imageops::overlay(&mut sheet, &crop, i64::from(ox), i64::from(oy + label_h));
+    }
+    sheet
+}
+
+/// Her door as the bundled layout shows it, in line art at 9×19 px
+/// cells, for the user's eye (door batch, step 10):
+/// `HOUSEGUEST_DOOR_SHOTS=docs/proposals/2026-10-02-houseguest-mind/door/shots
+/// cargo nextest run -p dessplay --run-ignored only -E
+/// 'test(door_shots)'`. Writes (README.md there lists them):
+/// - `school-morning.png`: a school morning, she walks to her door and
+///   out through it at 08:15, her home empty with her slippers before it,
+///   and she comes home through it at 12:45;
+/// - `out-day.png`: her empty home that morning, the whole screen;
+/// - `school-scene-dusk.png`: the stage's school scene at 18:00, the
+///   doorway under the dusk sky;
+/// - `parcel.png`: a parcel sliding in through her door's flap;
+/// - `short-terminal.png`: her face-on door at the fallback on a
+///   100×20 terminal while she's out, the whole screen.
+///
+/// Line art only: the shots are for the user's eye on her art, and ASCII
+/// is dev/test-only (never reviewed as art). Without the variable set it
+/// writes nothing and passes, so `--run-ignored all` sweeps stay green.
+#[test]
+#[ignore = "writes PNGs for review: set HOUSEGUEST_DOOR_SHOTS"]
+fn door_shots() {
+    let Ok(dir) = std::env::var("HOUSEGUEST_DOOR_SHOTS") else {
+        eprintln!("door_shots: HOUSEGUEST_DOOR_SHOTS unset; nothing written");
+        return;
+    };
+    std::fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("creating {dir}: {e}"));
+    let save = |image: &image::RgbaImage, name: &str| {
+        let path = format!("{dir}/{name}");
+        image
+            .save(&path)
+            .unwrap_or_else(|e| panic!("saving {path}: {e}"));
+    };
+    // Every shot carried her images (she, her door, a piece of hers is in
+    // each): none is the shooting itself broken.
+    let all_drawn = |shots: &[Shot], what: &str| {
+        assert!(!shots.is_empty(), "{what}: no shots");
+        for shot in shots {
+            assert!(
+                shot.images > 0,
+                "{what}: {:?} carried none of her images",
+                shot.label
+            );
+        }
+    };
+    let cell = (9, 19);
+    let pieces = [
+        (Furniture::Sofa, Nook::Users, 300),
+        (Furniture::Tv, Nook::Users, 800),
+        (Furniture::Bed, Nook::Playlist, 300),
+        (Furniture::Lamp, Nook::Playlist, 800),
+    ];
+    let (real, view) = real_frame(&mut real_ui(), 100, 30);
+    // A school morning: out at 08:15, home at 12:45.
+    let mut guest = home_at(4, tue(8, 10), &pieces, true);
+    let now = until_visiting(&mut guest, &real, &view, 0);
+    let mut shots = Vec::new();
+    let walk = std::cell::Cell::new(None);
+    let now = film(
+        &mut guest,
+        (&real, &view),
+        (now, 10 * 60_000),
+        &mut shots,
+        |g, t| door_label(&walk, g, t),
+        |g, _| empty_of(g).is_some(),
+    );
+    let mut full = Vec::new();
+    film(
+        &mut guest,
+        (&real, &view),
+        (now, 0),
+        &mut full,
+        |_, _| Some("out".into()),
+        |_, _| true,
+    );
+    assert!(
+        empty_of(&guest).is_some(),
+        "out-day shows her out, the Away cue"
+    );
+    guest.skip_clock(now);
+    let mut homecoming = Vec::new();
+    let walk = std::cell::Cell::new(None);
+    let mut said = None;
+    film(
+        &mut guest,
+        (&real, &view),
+        (now, 5 * 60_000),
+        &mut homecoming,
+        |g, t| door_label(&walk, g, t).map(|l| format!("12:45 {l}")),
+        |g, t| {
+            let home =
+                matches!(&g.state, State::Visiting(v) if says(v.osaka.appearance(t).2, mind::HOME));
+            if home && said.is_none() {
+                said = Some(t);
+            }
+            said.is_some_and(|s| t > s + 500)
+        },
+    );
+    shots.extend(homecoming.into_iter().filter(|s| !s.label.contains("out:")));
+    all_drawn(&shots, "school morning");
+    all_drawn(&full, "out, the whole screen");
+    assert!(
+        shots.iter().any(|s| s.label.starts_with("walk"))
+            && shots.iter().any(|s| s.label.starts_with("out:")),
+        "her walk to her door and her empty home: {:?}",
+        shots.iter().map(|s| &s.label).collect::<Vec<_>>()
+    );
+    save(&contact_sheet(&shots, cell, 4), "school-morning.png");
+    save(&full[0].image, "out-day.png");
+    // The stage's school scene at dusk: the doorway's sky.
+    let mut guest = home_at(4, tue(18, 0), &pieces, true);
+    let now = until_visiting(&mut guest, &real, &view, 0);
+    guest.cue(Scene::School);
+    let mut shots = Vec::new();
+    let walk = std::cell::Cell::new(None);
+    let mut said = None;
+    film(
+        &mut guest,
+        (&real, &view),
+        (now, 120_000),
+        &mut shots,
+        |g, t| door_label(&walk, g, t),
+        |g, t| {
+            let home =
+                matches!(&g.state, State::Visiting(v) if says(v.osaka.appearance(t).2, mind::HOME));
+            if home && said.is_none() {
+                said = Some(t);
+            }
+            said.is_some_and(|s| t > s + 500)
+        },
+    );
+    all_drawn(&shots, "school scene at dusk");
+    assert!(
+        shots.iter().any(|s| s.label.starts_with("walk"))
+            && shots.iter().any(|s| s.label.starts_with("beat 06")),
+        "her walk to her door and her door shut while she's out: {:?}",
+        shots.iter().map(|s| &s.label).collect::<Vec<_>>()
+    );
+    save(&contact_sheet(&shots, cell, 4), "school-scene-dusk.png");
+    // A parcel through her door's flap (her sofa alone, so the parcel
+    // takes her door's strip).
+    let mut guest = home_at(4, tue(13, 0), &pieces[..1], true);
+    let now = until_visiting(&mut guest, &real, &view, 0);
+    guest.send_parcel();
+    let mut shots = Vec::new();
+    let mut flap = None;
+    film(
+        &mut guest,
+        (&real, &view),
+        (now, 120_000),
+        &mut shots,
+        |g, t| {
+            let State::Visiting(visit) = &g.state else {
+                return None;
+            };
+            let since = visit.flap.map(|(_, since)| since)?;
+            flap = visit.flap.map(|(flap, _)| flap);
+            let age = t - since;
+            let beat = SLIDE_BEATS.iter().take_while(|&&b| age >= b).count();
+            let rest = SLIDE_BEATS.len();
+            (age <= FLAP_MS + 200).then(|| match beat {
+                b if b == rest && age >= FLAP_MS => "the flap shut, the parcel in".to_string(),
+                b if b == rest => "the parcel at rest".to_string(),
+                b => format!(
+                    "slide beat {b} (from {} ms)",
+                    b.checked_sub(1).map_or(0, |i| SLIDE_BEATS[i])
+                ),
+            })
+        },
+        |g, t| matches!(&g.state, State::Visiting(v) if v.flap.is_some_and(|(_, s)| t > s + FLAP_MS + 200)),
+    );
+    all_drawn(&shots, "the parcel");
+    let flap = flap.expect("its flap");
+    assert!(flap.door, "through her door: {flap:?}");
+    save(&contact_sheet(&shots, cell, 3), "parcel.png");
+    // A short terminal: the face-on fallback while she's out.
+    let (real, view) = real_frame(&mut real_ui(), 100, 20);
+    let mut guest = home_at(4, tue(9, 0), &[(Furniture::Sofa, Nook::Users, 300)], true);
+    guest.ledger.home.door = Some(room::DoorWall {
+        strip: room::Strip::Bottom(Nook::Users),
+        side: room::Side::Right,
+    });
+    let now = until_away(&mut guest, &real, &view, 0);
+    let mut full = Vec::new();
+    film(
+        &mut guest,
+        (&real, &view),
+        (now, 0),
+        &mut full,
+        |_, _| Some("out".into()),
+        |_, _| true,
+    );
+    // What the README says it shows: her out (the Away cue) by her door
+    // standing face-on at the fallback, the strip too short for a space.
+    assert!(empty_of(&guest).is_some(), "the short terminal: she's out");
+    let door = guest
+        .closed_door()
+        .expect("the short terminal: her door drawn");
+    assert_eq!(
+        door.set(),
+        door::Set::Floor(door::Fallback::Short),
+        "the short terminal: face-on at the fallback"
+    );
+    all_drawn(&full, "the short terminal");
+    save(&full[0].image, "short-terminal.png");
+}

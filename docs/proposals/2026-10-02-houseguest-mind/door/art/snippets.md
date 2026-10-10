@@ -1,6 +1,31 @@
-# Her front door, side-on, with its parcel flap (for review, not wired in)
+# Her front door, side-on, with its parcel flap (approved B; wired)
 
-Last updated: 2026-10-07 (round 1, for review)
+Last updated: 2026-10-10 (wired by the door batch, steps 7-9; the sheet below is the round-1 review, kept as it was
+except where marked "as built")
+
+> **As built (2026-10-10).** B was approved and is wired. The art code was committed in `8eaa25c1` (so
+> `worktree.diff` and "against `1e44b050`" below are history: never re-apply the diff), made production by the door
+> batch's step 7 (`art.rs`, `graphics.rs`, `sprite.rs`, `art/wall-door.svg`) and drawn in play by steps 8 (the
+> door, her steps through it, the Away cue) and 9 (parcels through the flap). Where this sheet and the code differ,
+> [the door batch's design](../design.md) and design.md (*Away at school*, *Getting furniture*) are the rule:
+> - **SVG ids.** `wd-beyond` and `wd-day` are gone. The doorway, the hedge and the flap's hole are the unfilled
+>   paths `wd-doorway`, `wd-hedge` and `wd-flap-hole`, filled per sky by `wall_door_body(door, sky)` with the
+>   gradients `wd-sky-{night,dawn,day,dusk,evening}` (derived from the window's sky stops; `wd-sky-day` is the old
+>   `wd-day`) and the hedge tinted by `art::hedge(sky)`.
+> - **Rust.** `art::render_wall_door(door, sky, cols, facing, line, width, height)` (it was `(door, facing, line,
+>   ..)`): the 6-column frame drawn and cropped to `cols` columns at the wall. Looks are built by
+>   `Look::wall_door(door, sky, crop)` (sky is `Day` for a state that shows none of it). `WallDoor::Plate(u8)` is the
+>   flap's plate alone, drawn over a sliding parcel. `lean` is production (`art::lean`), not sheet-only; the clip at
+>   the wall's line is `graphics::Cut`.
+> - **Her beats** (osaka.rs `wall_beat`): 6-7 `Shut { away: true }`, 8 `Ajar`, 9 `Open`, so **the slippers go at
+>   beat 8**, as the door opens, not at 10. She steps through at walking pace (`4 × WALK_MS` a column), not in
+>   thirds: beat 2 is `d = 1 ..= 4`, beat 10 is `d = 3 ..= 0`, her last step in side-on (`Side`) through beat 12;
+>   with a shift she carries her shopping (`Carry`) from her first step in. The Away cue shows in every gap (a
+>   dash's and work's too). The doorway follows the window's sky.
+> - **ASCII.** The flap's open rows (`WALL_DOOR[1]`) show at any angle; the plate is drawn only while the flap is
+>   up (angle above 0). Her cells are dropped at the wall's column and beyond, and she's hidden from `d = 4`.
+> - **The flap's beats** are built as tabled below; a delivery waits while her door's act runs or her box (or her
+>   walk) meets the space, and comes through another wall's `draw_flap` only when her door's strip can't take it.
 
 This is the model sheet for her external door, seen side-on in a wall at the screen's edge, with a parcel flap
 in it. It's the art half of the door-space fix (`scratchpad/door/brief.md` §5.3; the user: "The door can stay drawn
@@ -192,7 +217,8 @@ the table is relative to her spot (box `to-5 ..= to-1`); `d` is columns toward t
 | 12 | Closed + her (400) | `Shut` | as 11; then she walks off (`Walk`) |
 
 - **The Away cue's span.** `away` is true from the gap (6) until she's back in (beat 10), including a cold start in
-  school hours and `paint_empty`'s Away door. The slippers vanish as she steps into them.
+  school hours and `paint_empty`'s Away door. The slippers vanish as she steps into them. *As built: `away` holds
+  through beats 6-7 only; the slippers go at beat 8, as the door opens (C2).*
 - **Dashes and work by door** use the same beats with their own gaps. During a short gap the cue may show or not;
   I'd show it, so that "her door shut with slippers before it" always means she's out.
 - **The clip is new.** Her image is cut at the wall's line, the middle of column `to`. Today her image is always

@@ -1,7 +1,7 @@
 # The door batch: implementation design
 
 **Working design, 2026-10-08, amended after four critiques (mechanics, tests, feasibility, character; their files
-sit beside this one).** Brief: docs/plan.md, Phase 38, "Next: the door batch" (plan.md wins over everything here).
+sit beside this one).** Brief: docs/plan.md, Phase 38, "The door batch (brief, 2026-10-07)" (plan.md wins over everything here); as built: "The door batch (done 2026-10-10)".
 Investigation: [brief.md](brief.md) (partly stale). Code map: [map.md](map.md); its last section ("Gaps and
 corrections") overrides its earlier sections, and this design overrides both. Art: [art/snippets.md](art/snippets.md)
 (approved B; the art code is **already committed** in `8eaa25c1` as dead code: `art::WallDoor` art.rs:1121,
@@ -51,7 +51,8 @@ From plan.md (2026-10-07) and the user's answers (2026-10-08):
   drawn over pane text: the pane loses its last column in those 4 rows meanwhile. Only a protected pane (a focused
   one in use, the status bar, …) hides her door. The slippers still show only on calm cells (cropped otherwise).
 - **Walking pace through the doorway** (beats 2 and 10 at `4 × WALK_MS`), not the sheet's thirds.
-- **The InChat line is `"People are talking here..."`.**
+- **The InChat line is `"People are talking here..."`.** *(Third round, 2026-10-09: with the single-glyph
+  ellipsis, `"People are talking here…"`, which fits the 24-character bubble; the user's choice.)*
 
 **Decided unless the user objects** (each recorded in decisions.md when it lands):
 - The no-home door uses the same wall chooser, unsaved. Door logging: the spot at info as she goes out, a fallback
@@ -1218,6 +1219,15 @@ the act wait are now pinned by dedicated guards (see the step's notes).
   `door_rain` (an errand) or a goodbye: they go with the image. Either add the cropped image's covered cells
   (`Front::bounds` rows top..bottom-1) as blank burst cells in `draw_front`/`draw_art`'s `doorway`, or record the
   deviation in decisions.md as accepted.
+  *Step 10 (2026-10-10): recorded in decisions.md as accepted (*Her door is drawn side-on*, last paragraph), and in
+  plan.md's open items for the user.*
+- *As built (step 10, 2026-10-10):* the census, band and day census measured against the tree before the batch
+  (`057311b1`) and the three re-sampled census tests on their original samples, all in plan.md's record (Phase 38,
+  "The door batch (done 2026-10-10)"); design.md read through (no rule from her feet left; brief §5.1's rule is what
+  *Strips and anchors* and *Away at school* say); CLAUDE.md and snippets.md updated; real frames for the user's eye
+  in `shots/` from the ignored `door_shots` test (tests/away.rs), on a small `#[cfg(test)]` facility in graphics.rs
+  (`Graphics::take_shots` records each image painted as composed; `Graphics::shot` renders a frame's cells with the
+  vendored DejaVu Sans and lays the images over them).
 
 ## Goldens
 

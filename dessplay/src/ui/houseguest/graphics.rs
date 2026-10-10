@@ -500,6 +500,10 @@ pub(super) struct Graphics {
     /// take (see [`Graphics::take_looks`]).
     #[cfg(test)]
     looks: Option<Vec<Look>>,
+    /// While shooting, every image painted since the last take, as
+    /// composed, and the cells it covers (see [`Graphics::take_shots`]).
+    #[cfg(test)]
+    shots: Option<Vec<(RgbaImage, Rect)>>,
 }
 
 /// What her images have cost so far (tests measure the budget by it).
@@ -539,6 +543,8 @@ impl Graphics {
             seen: std::collections::HashSet::new(),
             #[cfg(test)]
             looks: None,
+            #[cfg(test)]
+            shots: None,
         })
     }
 
@@ -647,6 +653,13 @@ impl Graphics {
         #[cfg(test)]
         if let Some(looks) = self.looks.as_mut() {
             looks.extend(key.layers.iter().map(|layer| layer.0));
+        }
+        #[cfg(test)]
+        if self.shots.is_some()
+            && let Some(image) = self.compose(&key)
+            && let Some(shots) = self.shots.as_mut()
+        {
+            shots.push((image, rect));
         }
         Some(rect)
     }
@@ -811,6 +824,128 @@ impl Graphics {
     #[cfg(test)]
     pub fn take_looks(&mut self) -> Vec<Look> {
         self.looks.replace(Vec::new()).unwrap_or_default()
+    }
+
+    /// Every image painted since the last take, as composed, with the
+    /// cells it covers (shooting from now on: see [`Graphics::shot`]).
+    #[cfg(test)]
+    pub fn take_shots(&mut self) -> Vec<(RgbaImage, Rect)> {
+        self.shots.replace(Vec::new()).unwrap_or_default()
+    }
+
+    /// The frame `buf` as a terminal would show it, for review: its
+    /// cells at this picker's cell size (line glyphs as her images
+    /// redraw them, text in DejaVu Sans, a glyph the font lacks as its
+    /// alien block pattern), and over them `images`, her images as
+    /// painted ([`Graphics::take_shots`]).
+    #[cfg(test)]
+    #[allow(clippy::expect_used)]
+    pub fn shot(&self, buf: &Buffer, images: &[(RgbaImage, Rect)]) -> RgbaImage {
+        use ab_glyph::{Font, FontRef, PxScale, ScaleFont};
+        use unicode_width::UnicodeWidthStr;
+        const FONT: &[u8] = include_bytes!("../../../assets/DejaVuSans.ttf");
+        let font = FontRef::try_from_slice(FONT).expect("the vendored font");
+        let (cw, ch) = self.cell();
+        let area = buf.area;
+        let bg = |color: Color| match color {
+            Color::Reset => rgb(crate::ui::theme::TRUECOLOR_BACKGROUND),
+            other => rgb(other),
+        };
+        let mut image = RgbaImage::new(cw * u32::from(area.width), ch * u32::from(area.height));
+        let scale = PxScale::from(ch as f32 * 0.8);
+        let scaled = font.as_scaled(scale);
+        let cells = || {
+            (area.top()..area.bottom()).flat_map(move |y| {
+                (area.left()..area.right()).map(move |x| {
+                    let origin = (u32::from(x - area.x) * cw, u32::from(y - area.y) * ch);
+                    (&buf[(x, y)], origin)
+                })
+            })
+        };
+        // Every cell's background first, so a glyph wider than its cell
+        // isn't cut by the next cell's.
+        for (cell, origin) in cells() {
+            let [r, g, b] = bg(cell.bg);
+            for py in origin.1..origin.1 + ch {
+                for px in origin.0..origin.0 + cw {
+                    image.put_pixel(px, py, Rgba([r, g, b, 255]));
+                }
+            }
+        }
+        for (cell, origin) in cells() {
+            let Some(c) = cell.symbol().chars().next().filter(|c| !c.is_whitespace()) else {
+                continue;
+            };
+            let fg = rgb(cell.fg);
+            if strokes(c).is_some() {
+                draw_glyph(&mut image, c, fg, origin, (cw, ch), self.line);
+                continue;
+            }
+            let id = font.glyph_id(c);
+            if id.0 == 0 {
+                draw_alien(&mut image, c, fg, origin, (cw, ch));
+                continue;
+            }
+            // DejaVu Sans is proportional: a glyph wider than the
+            // cells it takes (two for a wide one) is squeezed into
+            // them, as a terminal's monospace font would draw it.
+            let room = (cw * cell.symbol().width().max(1) as u32) as f32;
+            let advance = scaled.h_advance(id);
+            let squeeze = (room / advance).min(1.0);
+            let glyph_scale = PxScale {
+                x: scale.x * squeeze,
+                y: scale.y,
+            };
+            let left = origin.0 as f32 + ((room - advance * squeeze) / 2.0).max(0.0);
+            let base = origin.1 as f32 + (ch as f32 + scaled.ascent() + scaled.descent()) / 2.0;
+            let glyph = id.with_scale_and_position(glyph_scale, ab_glyph::point(left, base));
+            if let Some(outline) = font.outline_glyph(glyph) {
+                let bounds = outline.px_bounds();
+                outline.draw(|gx, gy, coverage| {
+                    let px = bounds.min.x as i64 + i64::from(gx);
+                    let py = bounds.min.y as i64 + i64::from(gy);
+                    let (Ok(px), Ok(py)) = (u32::try_from(px), u32::try_from(py)) else {
+                        return;
+                    };
+                    if px >= image.width() || py >= image.height() {
+                        return;
+                    }
+                    let under = image.get_pixel(px, py).0;
+                    let mix = |a: u8, b: u8| {
+                        (f32::from(a) * (1.0 - coverage) + f32::from(b) * coverage) as u8
+                    };
+                    image.put_pixel(
+                        px,
+                        py,
+                        Rgba([
+                            mix(under[0], fg[0]),
+                            mix(under[1], fg[1]),
+                            mix(under[2], fg[2]),
+                            255,
+                        ]),
+                    );
+                });
+            }
+        }
+        for (shot, rect) in images {
+            let at = (
+                i64::from(rect.x.saturating_sub(area.x)) * i64::from(cw),
+                i64::from(rect.y.saturating_sub(area.y)) * i64::from(ch),
+            );
+            // Under her images the terminal shows their placeholders'
+            // background: the canvas's.
+            let [r, g, b] = bg(Color::Reset);
+            for py in 0..u32::from(rect.height) * ch {
+                for px in 0..u32::from(rect.width) * cw {
+                    let (x, y) = (at.0 as u32 + px, at.1 as u32 + py);
+                    if x < image.width() && y < image.height() {
+                        image.put_pixel(x, y, Rgba([r, g, b, 255]));
+                    }
+                }
+            }
+            image::imageops::overlay(&mut image, shot, at.0, at.1);
+        }
+        image
     }
 
     /// Measure her working set from now on (see [`Graphics::reuses`];

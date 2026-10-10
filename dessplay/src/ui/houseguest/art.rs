@@ -2045,7 +2045,7 @@ mod tests {
     /// side-on (vacant, blink, droop); her eating at the open fridge
     /// (melon bread for reference, then the andagi whole and bitten).
     #[test]
-    #[ignore = "writes PNGs for review"]
+    #[ignore = "writes PNGs for review: set HOUSEGUEST_VIGNETTES"]
     fn vignette_sheet() {
         enum Shot {
             /// A held part alone, at 4× her scale.
@@ -2060,7 +2060,10 @@ mod tests {
         const BG: image::Rgba<u8> = image::Rgba([30, 33, 39, 255]);
         const GRID: image::Rgba<u8> = image::Rgba([44, 49, 58, 255]);
         const FLOOR: image::Rgba<u8> = image::Rgba([139, 148, 158, 255]);
-        let dir = std::env::var("HOUSEGUEST_VIGNETTES").expect("HOUSEGUEST_VIGNETTES");
+        let Ok(dir) = std::env::var("HOUSEGUEST_VIGNETTES") else {
+            eprintln!("HOUSEGUEST_VIGNETTES unset; nothing written");
+            return;
+        };
         let her = |face| Rig::for_pose(Pose::Stand, face);
         let side = |face| Rig::for_pose(Pose::Side, face);
         let rows: Vec<Vec<Shot>> = vec![
@@ -2446,7 +2449,7 @@ mod tests {
     ///    her in `Gaze` under the window, at 16:00 (day) and 23:00
     ///    (night).
     #[test]
-    #[ignore = "writes PNGs for review"]
+    #[ignore = "writes PNGs for review: set HOUSEGUEST_CLOCK"]
     fn clock_sheet() {
         enum Draw {
             /// A piece in a state at (x, y), its top row (standing: its
@@ -2464,7 +2467,10 @@ mod tests {
         const BG: image::Rgba<u8> = image::Rgba([30, 33, 39, 255]);
         const FLOOR: image::Rgba<u8> = image::Rgba([139, 148, 158, 255]);
         const RED: image::Rgba<u8> = image::Rgba([224, 82, 82, 255]);
-        let dir = std::env::var("HOUSEGUEST_CLOCK").expect("HOUSEGUEST_CLOCK");
+        let Ok(dir) = std::env::var("HOUSEGUEST_CLOCK") else {
+            eprintln!("HOUSEGUEST_CLOCK unset; nothing written");
+            return;
+        };
         let hung = |item, state, facing, at| Draw::Piece(item, state, facing, at, false);
         let mut draws = Vec::new();
         // 1. The window.
@@ -2716,7 +2722,7 @@ mod tests {
     /// 10. the programme cards, then the colour bars and the sunrise
     ///     for reference.
     #[test]
-    #[ignore = "writes PNGs for review"]
+    #[ignore = "writes PNGs for review: set HOUSEGUEST_STILLNESS"]
     fn stillness_sheet() {
         use super::super::room::MadeId;
         use super::super::scrap::{self, Scrap};
@@ -2746,7 +2752,10 @@ mod tests {
         const FLOOR: image::Rgba<u8> = image::Rgba([139, 148, 158, 255]);
         const TEXT: image::Rgba<u8> = image::Rgba([201, 209, 217, 255]);
         const DIM: image::Rgba<u8> = image::Rgba([110, 118, 129, 255]);
-        let dir = std::env::var("HOUSEGUEST_STILLNESS").expect("HOUSEGUEST_STILLNESS");
+        let Ok(dir) = std::env::var("HOUSEGUEST_STILLNESS") else {
+            eprintln!("HOUSEGUEST_STILLNESS unset; nothing written");
+            return;
+        };
         let glyphs: Vec<(char, Color)> = "Frieren 12"
             .chars()
             .zip(
@@ -3246,9 +3255,12 @@ mod tests {
     /// then her using each (beside it, facing it, her box a cell clear),
     /// at 1×, 2× and 4× with the cell grid and the floor line.
     #[test]
-    #[ignore = "writes a PNG for review"]
+    #[ignore = "writes a PNG for review: set HOUSEGUEST_CATALOGUE"]
     fn catalogue_sheet() {
-        let path = std::env::var("HOUSEGUEST_CATALOGUE").expect("HOUSEGUEST_CATALOGUE");
+        let Ok(path) = std::env::var("HOUSEGUEST_CATALOGUE") else {
+            eprintln!("HOUSEGUEST_CATALOGUE unset; nothing written");
+            return;
+        };
         let (cw, ch) = (9u32, 19u32);
         let scales = [1u32, 2, 4];
         let span = |s: u32| cw * s * 13;
@@ -3375,14 +3387,17 @@ mod tests {
     /// TV on each channel frame; her sitting beside it watching the
     /// shopping channel. 1×, 2× and 4×, with the cell grid and floor line.
     #[test]
-    #[ignore = "writes a PNG for review"]
+    #[ignore = "writes a PNG for review: set HOUSEGUEST_DELIVERY"]
     fn delivery_sheet() {
         enum Item {
             Parcel(Furniture, bool),
             Tv(Channel),
             Watching(Channel),
         }
-        let path = std::env::var("HOUSEGUEST_DELIVERY").expect("HOUSEGUEST_DELIVERY");
+        let Ok(path) = std::env::var("HOUSEGUEST_DELIVERY") else {
+            eprintln!("HOUSEGUEST_DELIVERY unset; nothing written");
+            return;
+        };
         let (cw, ch) = (9u32, 19u32);
         let scales = [1u32, 2, 4];
         let span = |s: u32| cw * s * 16;
@@ -3465,9 +3480,12 @@ mod tests {
     /// mirrored on the right; 1×, 2× and 4×, with the cell grid and the
     /// floor line.
     #[test]
-    #[ignore = "writes a PNG for review"]
+    #[ignore = "writes a PNG for review: set HOUSEGUEST_DOOR"]
     fn door_sheet() {
-        let path = std::env::var("HOUSEGUEST_DOOR").expect("HOUSEGUEST_DOOR");
+        let Ok(path) = std::env::var("HOUSEGUEST_DOOR") else {
+            eprintln!("HOUSEGUEST_DOOR unset; nothing written");
+            return;
+        };
         let (cw, ch) = (9u32, 19u32);
         let scales = [1u32, 2, 4];
         let span = |s: u32| cw * s * 7;
@@ -3554,7 +3572,7 @@ mod tests {
     ///    its hedge darkening with it;
     /// 9. the flap's hole under each sky, at a left wall.
     #[test]
-    #[ignore = "writes PNGs for review"]
+    #[ignore = "writes PNGs for review: set HOUSEGUEST_WALL_DOOR"]
     fn wall_door_sheet() {
         #[derive(Clone, Copy, PartialEq)]
         enum Wall {
@@ -3592,7 +3610,10 @@ mod tests {
         const BG: image::Rgba<u8> = image::Rgba([30, 33, 39, 255]);
         const FLOOR: image::Rgba<u8> = image::Rgba([139, 148, 158, 255]);
         const DIM: image::Rgba<u8> = image::Rgba([110, 118, 129, 255]);
-        let dir = std::env::var("HOUSEGUEST_WALL_DOOR").expect("HOUSEGUEST_WALL_DOOR");
+        let Ok(dir) = std::env::var("HOUSEGUEST_WALL_DOOR") else {
+            eprintln!("HOUSEGUEST_WALL_DOOR unset; nothing written");
+            return;
+        };
         let rig = Rig::for_pose;
         let band = |k: u32| 7 + 8 * k;
         let mut draws: Vec<Draw> = Vec::new();
@@ -4252,9 +4273,12 @@ mod tests {
     /// Each pose at 1× (9×19 px cells) and 2×, over the dark theme, with
     /// the cell grid and the floor line.
     #[test]
-    #[ignore = "writes a PNG for review"]
+    #[ignore = "writes a PNG for review: set HOUSEGUEST_SHEET"]
     fn model_sheet() {
-        let path = std::env::var("HOUSEGUEST_SHEET").expect("HOUSEGUEST_SHEET");
+        let Ok(path) = std::env::var("HOUSEGUEST_SHEET") else {
+            eprintln!("HOUSEGUEST_SHEET unset; nothing written");
+            return;
+        };
         let poses = poses();
         let (cw, ch) = (9u32, 19u32);
         let scales = [1u32, 2, 4];
@@ -4346,9 +4370,12 @@ mod tests {
     /// 2× and 4×, over the dark theme, with the cell grid and the floor
     /// line both stand on.
     #[test]
-    #[ignore = "writes a PNG for review"]
+    #[ignore = "writes a PNG for review: set HOUSEGUEST_PROPS"]
     fn props_sheet() {
-        let path = std::env::var("HOUSEGUEST_PROPS").expect("HOUSEGUEST_PROPS");
+        let Ok(path) = std::env::var("HOUSEGUEST_PROPS") else {
+            eprintln!("HOUSEGUEST_PROPS unset; nothing written");
+            return;
+        };
         let (cw, ch) = (9u32, 19u32);
         let scales = [1u32, 2, 4];
         // Prop, a cell's gap, her, a cell's gap.
@@ -4459,9 +4486,12 @@ mod tests {
     /// Each use facing right (left half) and mirrored (right half), at
     /// 1×, 2× and 4×, with the cell grid and the floor line.
     #[test]
-    #[ignore = "writes a PNG for review"]
+    #[ignore = "writes a PNG for review: set HOUSEGUEST_USE"]
     fn use_sheet() {
-        let path = std::env::var("HOUSEGUEST_USE").expect("HOUSEGUEST_USE");
+        let Ok(path) = std::env::var("HOUSEGUEST_USE") else {
+            eprintln!("HOUSEGUEST_USE unset; nothing written");
+            return;
+        };
         let (cw, ch) = (9u32, 19u32);
         let scales = [1u32, 2, 4];
         // Up to 12 cells of scene plus a cell either side.

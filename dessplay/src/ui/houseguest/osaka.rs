@@ -6428,6 +6428,20 @@ impl Osaka {
             || matches!(&self.act, Act::Walk { then: Then::Job(job), .. } if leave(job))
     }
 
+    /// Whether this step of hers is her walk to her own door (the last
+    /// leg, not a leg of a hop toward it, nor what she finishes first):
+    /// the shots' "to her door" (tests/away.rs `door_label`).
+    #[cfg(test)]
+    pub fn walking_to_her_door(&self) -> bool {
+        matches!(
+            &self.act,
+            Act::Walk {
+                then: Then::Job(Job::Leave { .. }),
+                ..
+            }
+        )
+    }
+
     /// Whether she's free at `now` for a gift on her doorstep (her wall
     /// clock, phase 5b D7): up and here ([`Osaka::awake`]), not walking
     /// off the screen nor going through a door (out of sight in a

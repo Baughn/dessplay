@@ -570,9 +570,12 @@ mod tests {
     /// at 1×, 2× and 4× over the dark theme, with the cell grid and floor:
     /// `HOUSEGUEST_SCRAPS=/tmp/scraps.png cargo test scraps_sheet -- --ignored`.
     #[test]
-    #[ignore = "writes a PNG for review"]
+    #[ignore = "writes a PNG for review: set HOUSEGUEST_SCRAPS"]
     fn scraps_sheet() {
-        let path = std::env::var("HOUSEGUEST_SCRAPS").expect("HOUSEGUEST_SCRAPS");
+        let Ok(path) = std::env::var("HOUSEGUEST_SCRAPS") else {
+            eprintln!("HOUSEGUEST_SCRAPS unset; nothing written");
+            return;
+        };
         let (cw, ch) = (9u32, 19u32);
         let scales = [1u32, 2, 4];
         let span = |s: u32| cw * s * 10;

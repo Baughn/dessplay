@@ -1,6 +1,6 @@
 # DessPlay Decision Log
 
-Last updated: 2026-10-09
+Last updated: 2026-10-10
 
 The reasoning behind the rules in [design.md](design.md): the failure that
 motivated each one, the alternatives that were rejected, and the date it
@@ -5874,6 +5874,19 @@ first step in (C13 over C12 for those beats). *Rejected:* A (a post);
 the sheet's thirds (a lurch); her pose and step in `Placement` (the
 goldens hash it; her doorway rides in `Figure` beside it); a door shown
 only in its beats (it would pop in beside her).
+
+*Accepted at the batch's end (step 10, 2026-10-10), open to the user:*
+in line art, when her door rains out (an errand's `door_rain`, her
+empty home raining out, a goodbye), only its ASCII glyph cells burst into the
+rain: the shut door's two columns. The two slipper columns of the
+four-column Away cue aren't frozen cells, so they go with the image at
+the rain's start instead of raining. It was left so (rather than adding
+the image's covered cells as blank burst cells in `draw_front` and
+`draw_art`'s doorway) because the change would move the line-art
+goodbye and errand traces and the rain oracles were tightened in the
+same week; the slippers are two small columns of floor, gone a moment
+before the door beside them rains. If the user wants them to rain too,
+that is the fix.
 
 ## Parcels come in through her door's flap (2026-10-10)
 

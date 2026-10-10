@@ -1,7 +1,7 @@
 # Critique: her character and the art (door batch working design)
 
 Lens: what the user will **see**, checked against the approved sheet B (`art/wall-door-1x-nn3x.png`,
-`art/snippets.md`) and plan.md Phase 38 "Next: the door batch". Paths are relative to
+`art/snippets.md`) and plan.md Phase 38 "The door batch (brief, 2026-10-07)". Paths are relative to
 `dessplay/src/ui/houseguest/` unless noted. Checked as claimed: the art is in the tree as dead code
 (art.rs:1119/1121 `WallDoor`, :1146 `flap_plate`, :1221 `render_wall_door`; sprite.rs:478/479 `WALL_DOOR`);
 `first_due` is at osaka.rs:2861; `Pose::Side` exists (sprite.rs:425); the door pose is fixed `Pose::Stand` at
