@@ -215,7 +215,7 @@ impl From<Layer> for Cut {
 impl Cut {
     /// Its cells' left column, top row, columns and rows, or `None` when
     /// the clip leaves nothing of it.
-    fn bounds(&self) -> Option<(i32, i32, i32, i32)> {
+    pub(super) fn bounds(&self) -> Option<(i32, i32, i32, i32)> {
         let (x, y, width, rows) = self.layer.bounds();
         // In half columns: the image's left edge floors, its right edge
         // rounds up (`compose` puts it `dx * cw / 2` pixels over,

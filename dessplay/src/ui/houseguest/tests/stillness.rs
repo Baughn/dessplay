@@ -1004,6 +1004,96 @@ fn no_long_act_flips_drawn_cells_faster_than_a_frame() {
     drawn_stillness(&[tv_only, shopping, windowed, resident_room()].map(at_afternoon));
 }
 
+/// A parcel due while she watches TV keeps her still (door batch T12,
+/// Open choice 3): it waits until she's walking or an act of hers has just
+/// begun (its slide through her door's flap, five changes in 650 ms,
+/// would break the drawn stillness rule), so her watch, held over 40 s
+/// with the parcel due 15 s into it, passes the drawn rule ([`judge`]),
+/// and the parcel comes after it (not vacuous). Both modes. Red before
+/// step 9: it came mid-watch.
+#[test]
+fn a_parcel_keeps_her_still() {
+    let room = at_afternoon(Room {
+        name: "home, TV only",
+        owns: &[Furniture::Tv],
+        ..furnished_room()
+    });
+    for graphics in [false, true] {
+        let at = format!("graphics={graphics}");
+        let mut guest = fed_afternoon(&room, 0, graphics, Mood::Lazy);
+        guest.cue(Scene::Watch);
+        let mut now = 0;
+        let (mut watch, mut ended, mut came, mut sent) = (None, None, None, false);
+        let mut paints = Vec::new();
+        while came.is_none() || ended.is_none() {
+            assert!(
+                now < 600_000,
+                "{at}: the parcel never came, or her watch never ended"
+            );
+            now += 100;
+            guest.advance(now);
+            if let Some(graphics) = guest.graphics.as_mut() {
+                graphics.take_looks();
+            }
+            let frame = paint(&mut guest, &room.real, &room.view, now);
+            let looks: Vec<(String, Look)> = match guest.graphics.as_mut() {
+                Some(graphics) => {
+                    let mut looks: Vec<(String, Look)> = graphics
+                        .take_looks()
+                        .into_iter()
+                        .map(|look| (format!("{look:?}"), look))
+                        .collect();
+                    looks.sort_by(|a, b| a.0.cmp(&b.0));
+                    looks
+                }
+                None => Vec::new(),
+            };
+            let State::Visiting(visit) = &guest.state else {
+                panic!("{at}: visiting throughout");
+            };
+            let osaka = &visit.osaka;
+            came = came.or(visit.flap.map(|(_, since)| since));
+            let watching = osaka
+                .use_span()
+                .is_some_and(|(seat, ..)| seat.what == Use::Watch);
+            let since = osaka.act_started();
+            match watch {
+                None if watching => watch = Some(since),
+                Some(from) if ended.is_none() && since != from => ended = Some(now),
+                _ => {}
+            }
+            let Some(from) = watch.filter(|_| ended.is_none()) else {
+                continue;
+            };
+            paints.push(drawn_of(
+                &guest,
+                &room.real,
+                &frame,
+                looks,
+                (now, graphics),
+                false,
+                false,
+            ));
+            if !sent && now >= from + 15_000 {
+                sent = true;
+                guest.send_parcel();
+            }
+        }
+        let from = watch.expect("she watched");
+        let end = ended.expect("her watch ended");
+        assert!(
+            end > from + 40_000,
+            "{at}: the precondition: a watch over 40 s"
+        );
+        assert!(sent, "{at}: sent mid-watch");
+        if let Err((before, t, what)) = judge(&paints, from) {
+            panic!("{at}: her watch from {from} flipped at {before} and {t}: {what}");
+        }
+        let came = came.expect("it came");
+        assert!(came >= end, "{at}: it came at {came}, mid-watch (to {end})");
+    }
+}
+
 /// [`no_long_act_flips_drawn_cells_faster_than_a_frame`] in the home with
 /// her wall clock as well as her window (the day census's home), where
 /// her clock's dial steps each game quarter-hour (about 150 s at 6×) and
@@ -1053,6 +1143,80 @@ fn no_long_act_flips_drawn_cells_faster_than_a_frame_by_her_clock() {
                 assert!(seen.mutants[4] > 0, "{at}: no sky step in ASCII to try");
             }
         }
+    }
+}
+
+/// What a paint of `guest` drew over `real` (`frame`, with its `looks` in
+/// line art) at `now`, as the drawn stillness rule judges it: her, her
+/// pieces, and every cell changed. `hook`: Chiyo-chichi's bob showing;
+/// `delivered`: a fresh still for her film came with this paint.
+#[allow(clippy::too_many_arguments)]
+fn drawn_of(
+    guest: &Guest,
+    real: &Buffer,
+    frame: &Buffer,
+    looks: Vec<(String, Look)>,
+    (now, graphics): (u64, bool),
+    hook: bool,
+    delivered: bool,
+) -> Drawn {
+    let State::Visiting(visit) = &guest.state else {
+        panic!("visiting");
+    };
+    let osaka = &visit.osaka;
+    let mut cells = std::collections::BTreeMap::new();
+    let width = usize::from(real.area.width);
+    for (i, (got, want)) in frame.content.iter().zip(&real.content).enumerate() {
+        if got != want {
+            let cell = if got.symbol().contains('\x1b') {
+                "image".to_owned()
+            } else {
+                format!("{got:?}")
+            };
+            cells.insert(((i % width) as u16, (i / width) as u16), cell);
+        }
+    }
+    Drawn {
+        t: now,
+        graphics,
+        shown: (
+            osaka.appearance(now),
+            (osaka.x, osaka.y, osaka.facing),
+            osaka.prop(now),
+            osaka.dark(now),
+        ),
+        key: osaka.key_at(now),
+        cells,
+        looks,
+        her: crate::ui::houseguest::room::her_box(osaka.x, osaka.y),
+        glyphs: if graphics {
+            Vec::new()
+        } else {
+            let (sprite, _) = osaka.picture(now);
+            sprite
+                .iter()
+                .filter_map(|c| {
+                    Some((
+                        u16::try_from(osaka.x + c.dx).ok()?,
+                        u16::try_from(osaka.y + c.dy).ok()?,
+                    ))
+                })
+                .collect()
+        },
+        tv: visit
+            .shown
+            .iter()
+            .find(|piece| piece.item == Furniture::Tv)
+            .map(|piece| piece.rect()),
+        pieces: visit.shown.iter().map(|piece| piece.rect()).collect(),
+        clocks: shown_rects(visit, Furniture::Clock),
+        windows: shown_rects(visit, Furniture::Window),
+        hook,
+        chat: osaka.looking_up_at_chat() || osaka.stirring_at_chat(now),
+        delivered,
+        world: guest
+            .time_of_day(now)
+            .map(|minute| (art::Dial::at(minute), art::Sky::at(minute))),
     }
 }
 
@@ -1240,62 +1404,15 @@ fn drawn_stillness(rooms: &[Room]) -> Vec<(String, Seen)> {
                                 }
                                 _ => 0,
                             };
-                            let mut cells = std::collections::BTreeMap::new();
-                            let width = usize::from(room.real.area.width);
-                            for (i, (got, want)) in
-                                frame.content.iter().zip(&room.real.content).enumerate()
-                            {
-                                if got != want {
-                                    let cell = if got.symbol().contains('\x1b') {
-                                        "image".to_owned()
-                                    } else {
-                                        format!("{got:?}")
-                                    };
-                                    cells.insert(((i % width) as u16, (i / width) as u16), cell);
-                                }
-                            }
-                            let drawn = Drawn {
-                                t: now,
-                                graphics,
-                                shown: (
-                                    osaka.appearance(now),
-                                    (osaka.x, osaka.y, osaka.facing),
-                                    osaka.prop(now),
-                                    osaka.dark(now),
-                                ),
-                                key: osaka.key_at(now),
-                                cells,
+                            let drawn = drawn_of(
+                                &guest,
+                                &room.real,
+                                &frame,
                                 looks,
-                                her: crate::ui::houseguest::room::her_box(osaka.x, osaka.y),
-                                glyphs: if graphics {
-                                    Vec::new()
-                                } else {
-                                    let (sprite, _) = osaka.picture(now);
-                                    sprite
-                                        .iter()
-                                        .filter_map(|c| {
-                                            Some((
-                                                u16::try_from(osaka.x + c.dx).ok()?,
-                                                u16::try_from(osaka.y + c.dy).ok()?,
-                                            ))
-                                        })
-                                        .collect()
-                                },
-                                tv: visit
-                                    .shown
-                                    .iter()
-                                    .find(|piece| piece.item == Furniture::Tv)
-                                    .map(|piece| piece.rect()),
-                                pieces: visit.shown.iter().map(|piece| piece.rect()).collect(),
-                                clocks: shown_rects(visit, Furniture::Clock),
-                                windows: shown_rects(visit, Furniture::Window),
-                                hook: now <= hook_end,
-                                chat: osaka.looking_up_at_chat() || osaka.stirring_at_chat(now),
+                                (now, graphics),
+                                now <= hook_end,
                                 delivered,
-                                world: guest
-                                    .time_of_day(now)
-                                    .map(|minute| (art::Dial::at(minute), art::Sky::at(minute))),
-                            };
+                            );
                             act.get_or_insert((since, watch, shopping, Vec::new()))
                                 .3
                                 .push(drawn);

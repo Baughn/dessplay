@@ -1792,11 +1792,30 @@ this section states what is built.
   *Her window and wall clock*). What she buys arrives on a later visit as a
   parcel ("A parcel!"), once she's up and in sight (not asleep or up in
   the night, not on a dash home, not between her doors, and after her
-  "I'm home!"), pushed in through a **flap** in a wall of one of
-  her strips (below), a wall at the screen's edge first: the wall's
-  line cells just above the floor show the flap swung in (`╱`/`╲`) for
-  800 ms, and the parcel stands against that wall, facing into the
-  room, where the piece will stand. The pieces already on that strip
+  "I'm home!"), pushed in through the **flap in her front door** when
+  her door's space is kept (the flap, its lower half, rides up on the
+  parcel as it slides out across the space, 650 ms in four beats, then
+  shuts; the door stands shut for the flap's 800 ms, drawn over text as
+  in her beats through it; in ASCII the door's open-flap rows, the
+  parcel at its spot at once), to rest just past the space; only when
+  her door's strip can't take it (the space yielding, no room) through
+  a **flap** in a wall of one of her strips (below), a wall at the
+  screen's edge first: the wall's line cells just above the floor show
+  the flap swung in (`╱`/`╲`) for 800 ms (so too her door's wall while
+  her door doesn't stand at it that frame). The parcel stands against
+  that wall (through her door: just past its space), facing into the
+  room, where the piece will stand. It waits while she goes through a
+  door of hers or is out, while her box meets her door's space or the
+  room her door stands in, or would within the flap's 800 ms on her way
+  (a walk's next columns, a climb's or a clamber's end), judged on the
+  space of the wall the parcel comes in by (her first parcel's chooses
+  her door's wall) as well as where her door stands (it never slides
+  through her or her slippers), and while she's held in an act (it
+  comes as she walks, or as an act begins: its slide never breaks her
+  stillness; the stage's parcel scene excepted, from its cue till its
+  parcel has come)
+  (why: [decisions](decisions.md#parcels-come-in-through-her-doors-flap-2026-10-10)).
+  The pieces already on that strip
   make way (packed in order, the newcomer nearest the wall), but only
   where every one that shows still fits, the parcel's cells are blank
   and free, she can stand to unpack it and she'd fit to use it, each

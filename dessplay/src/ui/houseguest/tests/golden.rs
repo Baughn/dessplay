@@ -881,44 +881,56 @@ fn the_golden_driver_advances_her_before_input_like_the_shell() {
     }
 }
 
+/// Re-recorded in the review of the door batch's step 9: in ASCII her tick no longer wakes for the first three beats of a
+/// parcel's slide through her door's flap (they draw nothing new there):
+/// the frames 150, 350 and 500 ms after each door flap are gone, nothing
+/// else moves.
 #[test]
 fn golden_stage_room() {
     check(
         "stage",
         stage_room,
         &[
-            (0, 0x82a43521ce2d85a9, 0x5324ad0ab77e294d),
-            (1, 0x9ff22574a22965dc, 0x2dffbc80fe0fecf2),
-            (2, 0x1968b506412a510e, 0xfddbedcec339d99b),
-            (3, 0xa51ad78330ce9b7e, 0x91b65c314fc22b97),
+            (0, 0xe2fec148ec12b270, 0xc107b09752d4a612),
+            (1, 0x1d400ea199081f2b, 0x2dffbc80fe0fecf2),
+            (2, 0x010496b3fe12985a, 0x15dbbec735eeb3bf),
+            (3, 0x3f4472f83d2bb369, 0xba6e88c91e93ef28),
         ],
     );
 }
 
+/// Re-recorded in the review of the door batch's step 9: in ASCII her tick no longer wakes for the first three beats of a
+/// parcel's slide through her door's flap (they draw nothing new there):
+/// the frames 150, 350 and 500 ms after each door flap are gone, nothing
+/// else moves.
 #[test]
 fn golden_resident() {
     check(
         "resident",
         resident,
         &[
-            (0, 0x7dad8ef2e34e5a7c, 0xbbf7b7857c11fc23),
-            (1, 0xf193ef339b3b80c5, 0x9e3e3480ace7b635),
-            (2, 0x18e391964aa079e9, 0x4a36b186f0dad3e7),
-            (3, 0xc1bfe6a0a0eb5531, 0x219f8c000012e97a),
+            (0, 0xd17f3822383bc800, 0x3dec675fd66c56b7),
+            (1, 0x247158bda3a15a76, 0x65d5666d03586ddc),
+            (2, 0x1425bb1fc1c38afa, 0x3e43ad9d35ec9c9e),
+            (3, 0xb533eb93b5c4b281, 0x58fd78f65e923aa2),
         ],
     );
 }
 
+/// Re-recorded in the review of the door batch's step 9: in ASCII her tick no longer wakes for the first three beats of a
+/// parcel's slide through her door's flap (they draw nothing new there):
+/// the frames 150, 350 and 500 ms after each door flap are gone, nothing
+/// else moves.
 #[test]
 fn golden_furnished_home() {
     check(
         "furnished",
         furnished,
         &[
-            (0, 0x3d7631b2dab10a61, 0x7639b3c5251c12f5),
-            (1, 0xd50ca4ac2ab6868d, 0xd8b394fb0d7ccff2),
-            (2, 0xea0954023fa2121d, 0x937d5165f32f7168),
-            (3, 0x2f4fd9c8c2dd190e, 0xe90d229123649d8d),
+            (0, 0xa0aa04a0267121ec, 0x1d4c424eeaa52914),
+            (1, 0x9515b5809b428592, 0xbdedca4c30a55f53),
+            (2, 0x38fece8d7cf58537, 0xa948c39b5c4accec),
+            (3, 0x2283392a1434d72b, 0x7093c78cae7ac7eb),
         ],
     );
 }
@@ -937,16 +949,23 @@ fn golden_errand() {
     );
 }
 
+/// Re-recorded in the review of the door batch's step 9: in ASCII her tick no longer wakes for the first three beats of a
+/// parcel's slide through her door's flap (they draw nothing new there):
+/// the frames 150, 350 and 500 ms after each door flap are gone, nothing
+/// else moves; seed 2, both modes, her parcel waits till she
+/// has climbed down the pole at column 2 and walked clear of her door's
+/// space (her landing meets it; first differs at 40 853 ms, the "A
+/// parcel!" mid-climb), and comes as she walks off (x 9).
 #[test]
 fn golden_homework_evening() {
     check(
         "evening",
         homework_evening,
         &[
-            (0, 0x061838ff3f4ebb25, 0x3f9b12351b6540d2),
-            (1, 0x6b94cda040511219, 0xea7f128aed37d778),
-            (2, 0xc0bb663d312fc2d0, 0x252bcf86fdcf35e1),
-            (3, 0xf295ea0bf24b0127, 0x3244fbf05b4664c3),
+            (0, 0xbd5abaf23ceeec91, 0xaf6fbfde973eefd8),
+            (1, 0x01eed595e5a630da, 0x6109531dae2d4923),
+            (2, 0x3852420169fcb0b7, 0xec69b3b873a05eff),
+            (3, 0xe047f2fc5e30ae19, 0xea537d52101b88c7),
         ],
     );
 }
@@ -971,16 +990,20 @@ fn golden_tucked_in() {
 /// the screen's edge). Again in step 8: her door side-on in its wall
 /// (every seed, both modes, first differs in the cells as she sets off
 /// for work, her door shown shut from then).
+/// Again in the review of step 9: in ASCII her tick no longer wakes for the first three beats of a
+/// parcel's slide through her door's flap (they draw nothing new there):
+/// the frames 150, 350 and 500 ms after each door flap are gone, nothing
+/// else moves.
 #[test]
 fn golden_weekend() {
     check(
         "weekend",
         weekend,
         &[
-            (0, 0x4522015659ba2ea3, 0xf173eeb95d09b2cf),
-            (1, 0x263d21edfee6272b, 0x4eda700ca005411b),
-            (2, 0x08e861f97e87d9a4, 0x4799ff6daac505b6),
-            (3, 0x2e4a4b553dc8638f, 0xc62c438878e1a12b),
+            (0, 0x145efd3b5d280b34, 0x8c73e81a771feaa7),
+            (1, 0xf846436161e8df8a, 0xb107026470b677c1),
+            (2, 0x73fd4f01b9ca4476, 0xa89b331defd8c45c),
+            (3, 0x12a83cab457520cd, 0x460afe69923e84e8),
         ],
     );
 }
@@ -994,16 +1017,23 @@ fn golden_weekend() {
 /// differs in the cells at her set-off line, her door shown shut from
 /// then; then her steps through it at her walking pace, and the Away
 /// cue).
+/// Again in the review of step 9: in ASCII her tick no longer wakes for the first three beats of a
+/// parcel's slide through her door's flap (they draw nothing new there):
+/// the frames 150, 350 and 500 ms after each door flap are gone, nothing
+/// else moves; seed 2, both modes, her parcel waits till she
+/// has climbed down the pole at column 2 and walked clear of her door's
+/// space (her landing meets it; first differs at 40 853 ms, the "A
+/// parcel!" mid-climb), and comes as she walks off (x 9).
 #[test]
 fn golden_school_morning() {
     check(
         "school",
         school_morning,
         &[
-            (0, 0xba5b948d298b5810, 0xfec85922a8ba0c51),
-            (1, 0x21ba3c2301bac0f1, 0x835cfeb33916c8cc),
-            (2, 0x981baa710182263e, 0x8fb1b7c1ca5d16c3),
-            (3, 0x5ea1bdd35162955f, 0x5025ccd62e6d551e),
+            (0, 0x9b62fcb1d0ea37b0, 0x152c7c9e0c1b0f30),
+            (1, 0xacd4efbe43ef588b, 0xac724a85325f52ce),
+            (2, 0x7b5b47179af87e31, 0x59d49253bfb32f4f),
+            (3, 0xd79a05e230b0b2bb, 0xd5869a8f3e95d974),
         ],
     );
 }
@@ -1014,16 +1044,20 @@ fn golden_school_morning() {
 /// step 8: her door side-on in its wall, her slippers before it (every
 /// seed, both modes, first differs at the first `away` frame, in its
 /// cells; then her steps in at her walking pace, side-on).
+/// Again in the review of step 9: in ASCII her tick no longer wakes for the first three beats of a
+/// parcel's slide through her door's flap (they draw nothing new there):
+/// the frames 150, 350 and 500 ms after each door flap are gone, nothing
+/// else moves.
 #[test]
 fn golden_home_from_school() {
     check(
         "home",
         home_from_school,
         &[
-            (0, 0x78fc4bb9c41ee7c8, 0x6b8985207b9022f2),
-            (1, 0xb65699e9b343dcd2, 0x09d3ed7c3003cb33),
-            (2, 0x41964cbdfe5cbc29, 0x1fd771e64e60510c),
-            (3, 0x0528d931f8191aa8, 0xbf69121db81202d2),
+            (0, 0xa0a708d7406f753f, 0xd4fdd0273348ad68),
+            (1, 0x6b6b3bc03e7f1748, 0x137f2923e077f8fa),
+            (2, 0x36dc3d904af2bad7, 0xc2cf1ee6f6309a9f),
+            (3, 0xa634a31220ea6323, 0x44bf871e06367000),
         ],
     );
 }
@@ -1112,12 +1146,23 @@ fn golden_dash_home() {
 /// door side-on in its wall (seeds 0 and 1 in line art, 1 and 3 in
 /// ASCII: each first differs on her way out to work, in the cells as she
 /// walks to her door (it shows shut from her setting off) or in her
-/// beats through it, now at her walking pace; the rest unchanged).
+/// beats through it, now at her walking pace; the rest unchanged). Again
+/// in the door batch's step 9, parcels through her door's flap: every
+/// seed first differs at 255 s, the stage's parcel cue (the parcel comes
+/// through her door's flap and slides out, with a wake at each beat of
+/// its slide; seed 1 in line art, she's going through a door at the cue,
+/// so it waits until she's through it; seed 3 in line art, it comes in
+/// by her door's wall, so she walks to another floor to unpack it); the
+/// rest unchanged.
+/// Again in the review of step 9: in ASCII her tick no longer wakes for the first three beats of a
+/// parcel's slide through her door's flap (they draw nothing new there):
+/// the frames 150, 350 and 500 ms after each door flap are gone, nothing
+/// else moves.
 const UNFED_STAGE: [(u64, u64, u64); 4] = [
-    (0, 0x708733793f400284, 0xb63d1863d4c49483),
-    (1, 0x65cc16bd9db0447d, 0x59f4d576f9ca007a),
-    (2, 0xec15f92e2f11cc74, 0xf73152a21a71ba81),
-    (3, 0xceb577e1f9e80e5a, 0xc45aa53bb13f470a),
+    (0, 0xb076e03e81fb3122, 0xacf7e4caa6d60954),
+    (1, 0xeedb10c3828732e3, 0xedade970efd8b9f3),
+    (2, 0x5c8c5cba45faf6fa, 0x0752ed35c0db5ddc),
+    (3, 0x4049a9418989f82e, 0x6ffddade2117b258),
 ];
 
 /// The resident's tables at the end of phase 5b step 3, but for step 5a's

@@ -293,8 +293,8 @@ fn space(home: &Home, plan: Plan) -> Result<(Space, i32), Fallback> {
 }
 
 /// Her door's space's rect on `plan` (see [`space`]), if there is one:
-/// what no piece of hers, makeshift or not, may be put on.
-#[cfg(test)]
+/// what no piece of hers, makeshift or not, may be put on, and no parcel
+/// slides through her in.
 pub(super) fn space_rect(home: &Home, plan: Plan) -> Option<Rect> {
     space(home, plan).ok().map(|(space, _)| space.rect)
 }

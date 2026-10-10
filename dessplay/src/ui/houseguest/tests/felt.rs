@@ -22,6 +22,13 @@ const USERS_RIGHT: DoorWall = DoorWall {
     side: Side::Right,
 };
 
+/// [`LAMP_HOME`] with her door by Users' right wall, of a Tuesday
+/// afternoon (her door's space yielding to the lamp): the door batch's
+/// step 9 sends it a parcel.
+pub(super) fn lamp_home(graphics: bool) -> Guest {
+    anchored_home(4, tue(13, 0), &LAMP_HOME, Some(USERS_RIGHT), graphics)
+}
+
 /// The DoorClear row of the table.
 fn door_row() -> usize {
     rules::RULES
@@ -150,7 +157,7 @@ fn broken_on(guest: &Guest, real: &Buffer, view: &IdleView) -> Vec<rules::Grieva
 }
 
 /// Her door's space on Users, as her home lays it out on `view`.
-fn users_space(guest: &Guest, view: &IdleView) -> room::Space {
+pub(super) fn users_space(guest: &Guest, view: &IdleView) -> room::Space {
     guest
         .ledger
         .home

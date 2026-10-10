@@ -1650,6 +1650,12 @@ const DREAM_AFTER_MS: u64 = 30 * 60_000;
 /// before the Dream comes: not the instant she lies down.
 pub(super) const DREAM_SETTLE_MS: u64 = 20_000;
 
+/// How long after an act of hers begins a parcel may still come in
+/// ([`Osaka::free_for_a_parcel`]): its slide and its flap (under a
+/// second) are over long before the act's first 10 s, which the drawn
+/// stillness rule leaves to settling in (phase 5c D7).
+const PARCEL_AT_START_MS: u64 = 2_000;
+
 /// How long until her `k`th sleep-talk after the one before it (the
 /// 0th: after the night act's start), drawn from the night act's
 /// starting decision's `whims`: a pure schedule, no draw from either
@@ -2946,6 +2952,19 @@ impl Osaka {
     #[cfg(test)]
     pub fn stand_still(&mut self, until: u64, now: u64) {
         self.set(Act::Stand { until }, now);
+    }
+
+    /// Test fixture: walk along her floor to column `to` from `now`,
+    /// choosing again once there.
+    #[cfg(test)]
+    pub fn walk_to(&mut self, to: i32, now: u64) {
+        self.set(
+            Act::Walk {
+                to,
+                then: Then::Nothing,
+            },
+            now,
+        );
     }
 
     /// Test fixture: reach for `swap` now (she must stand at its spot).
@@ -6220,6 +6239,52 @@ impl Osaka {
             && self.greeted
             && self.speech.is_none_or(|(_, until)| until <= now)
             && self.calendar_settled(now, chances, terrain)
+    }
+
+    /// Whether a parcel may come in at `now` (door batch D9, C10 and
+    /// Open choice 3): never as she goes through a door of hers or while
+    /// she's out (her slippers in her door's space), and only while she's
+    /// on her way somewhere (walking, climbing) or an act of hers has
+    /// only just begun ([`PARCEL_AT_START_MS`]): its slide through her
+    /// door's flap and the flap shutting (a handful of changes in under a
+    /// second) never come in the middle of an act that holds her still.
+    /// `staged`: the stage's parcel scene, whose cue sends her to unpack
+    /// it, whatever she's at. (Up and here, [`Osaka::awake`], is the
+    /// caller's.)
+    pub fn free_for_a_parcel(&self, staged: bool, now: u64) -> bool {
+        match self.act {
+            Act::Out { .. } | Act::Door { .. } => false,
+            Act::Walk { .. } | Act::Climb { .. } | Act::Clamber { .. } => true,
+            _ => staged || now < self.act_since.saturating_add(PARCEL_AT_START_MS),
+        }
+    }
+
+    /// Where her feet stand now and, on her way somewhere, where they'll
+    /// stand within `ms` (door batch C10: what a parcel's slide must keep
+    /// clear of): a walk's columns ahead, one a [`WALK_MS`]; a climb's or
+    /// a clamber's way to its end, however long it takes her (both rare,
+    /// and slower than a walk). Every other act holds her where she
+    /// stands until it ends (one that ends within `ms` and walks her off
+    /// begins its walk after a slide has begun: a parcel only comes as an
+    /// act begins or on her way, [`Osaka::free_for_a_parcel`]).
+    pub fn feet_within(&self, ms: u64) -> Vec<(i32, i32)> {
+        let row = |from: i32, to: i32, y: i32| {
+            let step = if to < from { -1 } else { 1 };
+            (0..=(to - from).abs()).map(move |d| (from + d * step, y))
+        };
+        match self.act {
+            Act::Walk { to, .. } => {
+                let steps = i32::try_from(ms.div_ceil(WALK_MS)).unwrap_or(i32::MAX);
+                let ahead = (to - self.x).clamp(-steps, steps);
+                row(self.x, self.x + ahead, self.y).collect()
+            }
+            Act::Climb { to_y } => row(self.y, to_y, self.x).map(|(y, x)| (x, y)).collect(),
+            Act::Clamber { column, to_y, to_x } => row(self.x, column, self.y)
+                .chain(row(self.y, to_y, column).map(|(y, x)| (x, y)))
+                .chain(row(column, to_x, to_y))
+                .collect(),
+            _ => vec![(self.x, self.y)],
+        }
     }
 
     /// Whether her calendar has nothing more to do at `now` before

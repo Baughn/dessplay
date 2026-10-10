@@ -648,12 +648,16 @@ pub(super) struct Anchor {
 
 /// The flap a delivery comes in through: wall column `x`, the rows
 /// `rows.0..rows.1` just above the floor, in the wall on `side` of the
-/// strip.
+/// strip; `door`, the flap in her own door, standing in its space by
+/// her door's wall (door batch D9), else one in the wall itself (a
+/// fallback); `item`, what's in the parcel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Flap {
     pub x: i32,
     pub rows: (i32, i32),
     pub side: Side,
+    pub door: bool,
+    pub item: Furniture,
 }
 
 /// A piece she owns, standing on `strip`; `boxed` until she unpacks it.
@@ -2387,9 +2391,12 @@ impl Home {
         spots.get(rng.below(spots.len() as u64) as usize).copied()
     }
 
-    /// Where a delivery of `item` comes in this frame: through a flap in
-    /// one of her strips' walls, preferring a wall at the screen's edge,
-    /// to stand against it facing into the room, unsettled (she never
+    /// Where a delivery of `item` comes in this frame: through the flap
+    /// in her own door, by her door's wall, if its space is kept there
+    /// ([`Home::through_her_door`]: it stands just past the space; door
+    /// batch D9; the flap's `door`); else through a flap in one of her
+    /// strips' walls, preferring a wall at the screen's edge; to stand
+    /// against it facing into the room, unsettled (she never
     /// chose where it stands). The pieces already on
     /// that strip make way, packed in order, but only where every one of
     /// them that shows still fits, its box fits on blank, free cells, she
@@ -2418,14 +2425,16 @@ impl Home {
         seats: &Seats<'_>,
         item: Furniture,
     ) -> Option<(Prop, Flap)> {
-        let mut walls: Vec<(bool, Strip, Extent, Side)> = Vec::new();
+        let mut walls: Vec<(bool, bool, Strip, Extent, Side)> = Vec::new();
         for (&(_, rect), (strip, e)) in plan.nooks.iter().zip(raw_strips(plan.nooks)) {
             for side in [Side::Right, Side::Left] {
-                walls.push((at_edge(rect, side, plan.screen), strip, e, side));
+                let wall = DoorWall { strip, side };
+                let door = self.through_her_door(plan, wall, item);
+                walls.push((door, at_edge(rect, side, plan.screen), strip, e, side));
             }
         }
-        // The screen's edge first; otherwise in pane order.
-        walls.sort_by_key(|&(edge, ..)| !edge);
+        // Her door first; then the screen's edge; otherwise in pane order.
+        walls.sort_by_key(|&(door, edge, ..)| (!door, !edge));
         let looks: &[bool] = if item.spec().uses.contains(&Use::LookOut) {
             &[true, false]
         } else {
@@ -2434,89 +2443,135 @@ impl Home {
         let tries = looks
             .iter()
             .flat_map(|&look| walls.iter().map(move |&wall| (look, wall)));
-        tries.into_iter().find_map(|(look, (_, strip, e, side))| {
-            let prop = Prop {
-                item,
-                strip,
-                anchor: Some(Anchor { side, offset: 0 }),
-                at: match side {
-                    Side::Left => 0,
-                    Side::Right => 1000,
-                },
-                facing: match side {
-                    Side::Left => Facing::Right,
-                    Side::Right => Facing::Left,
-                },
-                boxed: false,
-                // She never chose where it stands.
-                settled: false,
-            };
-            // Its box stands on the floor, where she can get to it to
-            // unpack it (judged as her seats are, not as room to use a
-            // piece: a box narrower than her at a wall has her take in
-            // the wall's line); then the piece, standing there or hung
-            // above, must fit with room to use it.
-            let parcel = Prop {
-                boxed: true,
-                ..prop
-            };
-            // Judged with her door where it will be once it's in (her
-            // first piece's arrival chooses it): it stands past her
-            // door's space from the frame it arrives.
-            let door = {
-                let mut with = self.clone();
-                with.props.push(parcel);
-                with.wall(plan)
-            };
-            let doored = Home {
-                door,
-                ..self.clone()
-            };
-            let at = doored.admits(buf, shown, blocked, plan, parcel, Room::None)?;
-            let room = if look { Room::ToLook } else { Room::ToUse };
-            doored.admits(buf, shown, blocked, plan, prop, room)?;
-            // The room as it will show with the box in it, then with the
-            // piece out of it: her seats there are judged on each.
-            let offers = |prop: Prop, wants: &[Use]| {
-                let mut with = self.clone();
-                with.door = door;
-                with.props.push(prop);
-                let (after, _) = with.project_with(buf, plan, blocked);
-                let Some(piece) = after.iter().find(|s| s.item == item) else {
-                    return false;
+        tries
+            .into_iter()
+            .find_map(|(look, (through, _, strip, e, side))| {
+                let prop = Prop {
+                    item,
+                    strip,
+                    anchor: Some(Anchor { side, offset: 0 }),
+                    at: match side {
+                        Side::Left => 0,
+                        Side::Right => 1000,
+                    },
+                    facing: match side {
+                        Side::Left => Facing::Right,
+                        Side::Right => Facing::Left,
+                    },
+                    boxed: false,
+                    // She never chose where it stands.
+                    settled: false,
                 };
-                let seats = seats(piece, &after, &with);
-                wants
-                    .iter()
-                    .all(|&what| seats.iter().any(|seat| seat.what == what))
-            };
-            let uses: Vec<Use> = item
-                .spec()
-                .uses
-                .iter()
-                .copied()
-                .filter(|&what| what.asks_room() || look && what == Use::LookOut)
-                .collect();
-            if !offers(parcel, &[Use::Unpack]) || !offers(prop, &uses) {
-                return None;
-            }
-            // The flap is in the wall itself (the raw strip's).
-            let x = match side {
-                Side::Left => e.from - 1,
-                Side::Right => e.to,
-            };
-            Some((
-                Prop {
+                // Its box stands on the floor, where she can get to it to
+                // unpack it (judged as her seats are, not as room to use a
+                // piece: a box narrower than her at a wall has her take in
+                // the wall's line); then the piece, standing there or hung
+                // above, must fit with room to use it.
+                let parcel = Prop {
                     boxed: true,
                     ..prop
-                },
-                Flap {
-                    x,
-                    rows: (at.floor - 2, at.floor),
-                    side,
-                },
-            ))
-        })
+                };
+                // Judged with her door where it will be once it's in (her
+                // first piece's arrival chooses it): it stands past her
+                // door's space from the frame it arrives.
+                let door = {
+                    let mut with = self.clone();
+                    with.props.push(parcel);
+                    with.wall(plan)
+                };
+                let doored = Home {
+                    door,
+                    ..self.clone()
+                };
+                let at = doored.admits(buf, shown, blocked, plan, parcel, Room::None)?;
+                let room = if look { Room::ToLook } else { Room::ToUse };
+                doored.admits(buf, shown, blocked, plan, prop, room)?;
+                // The room as it will show with the box in it, then with the
+                // piece out of it: her seats there are judged on each.
+                let offers = |prop: Prop, wants: &[Use]| {
+                    let mut with = self.clone();
+                    with.door = door;
+                    with.props.push(prop);
+                    let (after, _) = with.project_with(buf, plan, blocked);
+                    let Some(piece) = after.iter().find(|s| s.item == item) else {
+                        return false;
+                    };
+                    let seats = seats(piece, &after, &with);
+                    wants
+                        .iter()
+                        .all(|&what| seats.iter().any(|seat| seat.what == what))
+                };
+                let uses: Vec<Use> = item
+                    .spec()
+                    .uses
+                    .iter()
+                    .copied()
+                    .filter(|&what| what.asks_room() || look && what == Use::LookOut)
+                    .collect();
+                if !offers(parcel, &[Use::Unpack]) || !offers(prop, &uses) {
+                    return None;
+                }
+                // The flap is in the wall itself (the raw strip's).
+                let x = match side {
+                    Side::Left => e.from - 1,
+                    Side::Right => e.to,
+                };
+                Some((
+                    Prop {
+                        boxed: true,
+                        ..prop
+                    },
+                    Flap {
+                        x,
+                        rows: (at.floor - 2, at.floor),
+                        side,
+                        door: through,
+                        item,
+                    },
+                ))
+            })
+    }
+
+    /// Whether a delivery of `item` against `wall` comes in through her
+    /// door's flap (door batch D9): `wall` is her door's wall with it in
+    /// (her first piece's arrival chooses it), and her door's space there
+    /// is kept (her pieces leave it free; the parcel stands beside it).
+    /// Its space yielding to a piece hung there (her window, with its
+    /// poster beside it, has nowhere else to hang), the parcel can still
+    /// stand on the floor past it: it comes in by the wall's own flap
+    /// (`a_parcel_by_a_yielding_space_comes_through_the_walls_flap`).
+    fn through_her_door(&self, plan: Plan, wall: DoorWall, item: Furniture) -> bool {
+        let mut with = self.clone();
+        with.props.push(Prop {
+            item,
+            strip: wall.strip,
+            anchor: Some(Anchor {
+                side: wall.side,
+                offset: 0,
+            }),
+            at: match wall.side {
+                Side::Left => 0,
+                Side::Right => 1000,
+            },
+            facing: match wall.side {
+                Side::Left => Facing::Right,
+                Side::Right => Facing::Left,
+            },
+            boxed: true,
+            settled: false,
+        });
+        if with.wall(plan) != Some(wall) {
+            return false;
+        }
+        Home {
+            door: Some(wall),
+            ..self.clone()
+        }
+        .extents(plan.nooks)
+        .iter()
+        .find(|p| p.strip == wall.strip)
+        .and_then(|p| p.space)
+        .is_some_and(|space| space.kept)
     }
 
     /// Where `prop`, new, would stand on its strip this frame (her door

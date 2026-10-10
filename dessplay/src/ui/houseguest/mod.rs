@@ -471,7 +471,7 @@ mod placement {
         pub(super) fn cuts(self, her: Option<Layer>) -> Vec<Cut> {
             let mut cuts = Vec::with_capacity(4);
             cuts.extend(self.door.map(|door| Cut::from(door.layer())));
-            cuts.extend(self.front.map(Front::cut));
+            cuts.extend(self.front.map(Front::cuts).unwrap_or_default());
             cuts.extend(her.map(|her| match self.doorway {
                 Some(front) => front.her(her),
                 None => her.into(),
@@ -511,6 +511,10 @@ mod placement {
         spot: DoorSpot,
         look: FrontLook,
         d: i32,
+        /// A parcel sliding in through its flap (door batch D9): the
+        /// parcel's layer at rest, and how many half columns toward the
+        /// wall it is from there (cut at the wall's line).
+        parcel: Option<(Layer, i8)>,
     }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -551,6 +555,7 @@ mod placement {
                         wall,
                     },
                     d,
+                    parcel: None,
                 },
                 None => Self::face_on(spot, DoorFrame::Closed, spot.out()),
             }
@@ -563,7 +568,63 @@ mod placement {
                 spot,
                 look: FrontLook::Floor { frame, facing },
                 d: 0,
+                parcel: None,
             }
+        }
+
+        /// It side-on with `parcel` (its layer at rest) sliding in
+        /// through its flap, `dx` half columns toward the wall from there
+        /// (door batch D9); face-on, as it is (no flap).
+        pub(super) fn sliding(self, parcel: Layer, dx: i8) -> Self {
+            match self.look {
+                FrontLook::Wall { .. } => Self {
+                    parcel: Some((parcel, dx)),
+                    ..self
+                },
+                FrontLook::Floor { .. } => self,
+            }
+        }
+
+        /// The parcel sliding in through its flap, as its layer is cut at
+        /// the wall's line, if one is.
+        fn parcel_cut(self) -> Option<Cut> {
+            let FrontLook::Wall { side, wall, .. } = self.look else {
+                return None;
+            };
+            self.parcel.map(|(layer, dx)| Cut {
+                layer,
+                clip: Some((side, wall)),
+                dx,
+            })
+        }
+
+        /// Whether a parcel is sliding in through it.
+        pub(super) fn delivering(self) -> bool {
+            self.parcel.is_some()
+        }
+
+        /// The layers of its image, back to front, before her: the door,
+        /// and a parcel sliding in through its flap with the flap's plate
+        /// riding on it (door batch D9; one image: the plate and the
+        /// parcel over the same cells would cut each other out).
+        pub(super) fn cuts(self) -> Vec<Cut> {
+            let mut cuts = vec![self.cut()];
+            if let Some(parcel) = self.parcel_cut() {
+                cuts.push(parcel);
+                if let FrontLook::Wall {
+                    door: art::WallDoor::Shut { flap, .. },
+                    sky,
+                    side,
+                    wall,
+                    ..
+                } = self.look
+                    && flap > 0
+                {
+                    let plate = Look::wall_door(art::WallDoor::Plate(flap), sky, None);
+                    cuts.push(wall_layer(plate, side, wall, self.spot.spot().1).into());
+                }
+            }
+            cuts
         }
 
         /// Where it stands.
@@ -578,6 +639,13 @@ mod placement {
                 FrontLook::Floor { facing, .. } => Some(facing),
                 FrontLook::Wall { .. } => None,
             }
+        }
+
+        /// The parcel sliding in through its flap, as its layer is cut
+        /// (door batch D9), if one is.
+        #[cfg(test)]
+        pub(super) fn parcel(self) -> Option<Cut> {
+            self.parcel_cut()
         }
 
         /// It as it stands with nobody in its doorway (no post).
@@ -739,9 +807,24 @@ mod placement {
             }
         }
 
-        /// The cells its image covers (with the floor row under it):
-        /// left, top, right and bottom, the last two exclusive.
+        /// The cells its image covers (with the floor row under it, and
+        /// a parcel sliding in through its flap): left, top, right and
+        /// bottom, the last two exclusive.
         pub(super) fn bounds(self) -> (i32, i32, i32, i32) {
+            let (left, top, right, bottom) = self.door_bounds();
+            match self.parcel_cut().and_then(|cut| cut.bounds()) {
+                Some((x, y, cols, rows)) => (
+                    left.min(x),
+                    top.min(y),
+                    right.max(x + cols),
+                    bottom.max(y + rows),
+                ),
+                None => (left, top, right, bottom),
+            }
+        }
+
+        /// The cells the door's own image covers (with the floor row).
+        fn door_bounds(self) -> (i32, i32, i32, i32) {
             let (x, y) = self.spot.spot();
             match self.look {
                 FrontLook::Wall {
@@ -830,8 +913,16 @@ struct Visit {
     /// The text she held torn off its line at the last paint (see
     /// `Osaka::holding`).
     reel: Option<scenes::Held>,
-    /// The flap a parcel just came in through, and when.
+    /// The flap a parcel just came in through (her door's, or a wall's),
+    /// and when.
     flap: Option<(room::Flap, u64)>,
+    /// Why a delivery due waited at the last frame it was asked (logged
+    /// once per change; door batch D9, C10).
+    parcel_wait: Option<ParcelWait>,
+    /// The stage's parcel scene was cued and its parcel hasn't come yet:
+    /// it comes whatever act holds her ([`Osaka::free_for_a_parcel`]'s
+    /// `staged`), as soon as nothing else holds it back.
+    staged_parcel: bool,
     /// The rules of her home broken in the last frame.
     broken: Vec<rules::Broken>,
     /// How she'd put right the rule she would mend, as last worked out.
@@ -2038,10 +2129,17 @@ impl Guest {
                 }
             }
             State::Visiting(visit) => {
+                // The flap's time up; or a parcel sliding in through her
+                // door's flap, a beat of it ending (her tick wakes at each:
+                // `next_tick`; in ASCII only its last, the flap shutting).
+                let graphics = self.graphics.is_some();
                 let flapped = visit
                     .flap
                     .take_if(|&mut (_, since)| now >= since + FLAP_MS)
-                    .is_some();
+                    .is_some()
+                    || visit.flap.is_some_and(|(flap, since)| {
+                        flap.door && (graphics || now >= since + SLIDE_BEATS[3])
+                    });
                 // Her pity as it stands, for a new day's draw.
                 visit.osaka.set_pity(pity_of(&self.ledger));
                 let changed =
@@ -2341,8 +2439,22 @@ impl Guest {
             State::Visiting(visit) => Some(
                 visit
                     .flap
-                    .map(|(_, since)| since + FLAP_MS)
                     .into_iter()
+                    .flat_map(|(flap, since)| {
+                        // Each beat of a parcel's slide through her door's
+                        // flap (in ASCII only its last: the open flap's
+                        // glyphs stand till then), and the flap's end.
+                        let beats = match (flap.door, self.graphics.is_some()) {
+                            (true, true) => &SLIDE_BEATS[..],
+                            (true, false) => &SLIDE_BEATS[3..],
+                            (false, _) => &[],
+                        };
+                        beats
+                            .iter()
+                            .map(move |&end| since + end)
+                            .filter(move |&t| t > now)
+                            .chain([since + FLAP_MS])
+                    })
                     .chain(
                         visit
                             .front
@@ -2591,7 +2703,7 @@ impl Guest {
                     && t < dissolve::RAIN_FROM_MS
                     && untouched
                 {
-                    graphics.paint_cuts(buf, &[front.cut()], &|x, y| terrain.open(x, y));
+                    graphics.paint_cuts(buf, &front.cuts(), &|x, y| terrain.open(x, y));
                 }
                 Rains::Painted
             }
@@ -2638,6 +2750,10 @@ impl Guest {
                 // closet this frame. Placed, it's solid to text; she walks
                 // in front of it.
                 let before = self.ledger.clone();
+                // The stage's parcel: it comes whatever she's at (its
+                // scene sends her to unpack it), from the cue's paint till
+                // it has come.
+                visit.staged_parcel |= self.cue == Some(stage::Scene::Parcel);
                 self.unsaved |= record(
                     &mut self.ledger,
                     &mut self.shop_now,
@@ -2919,7 +3035,10 @@ impl Guest {
                 // it's in her image wherever the two meet (always, as
                 // she goes through it), else an image of its own.
                 let sky = time.map_or(art::Sky::Day, art::Sky::at);
-                let front = front_of(visit, sky, now);
+                let graphics = self.graphics.is_some();
+                let front = front_of(visit, sky, graphics, now);
+                let at_her_door = flap_front(visit, sky, graphics, now).is_some();
+                let delivering = at_her_door && visit.osaka.front_door(now).is_none();
                 let mut since = visit.front.and_then(|(_, since)| since);
                 let front_drawn = front.and_then(|front| {
                     front_shown(
@@ -2929,6 +3048,7 @@ impl Guest {
                         &visit.terrain,
                         &view.protected,
                         &mut since,
+                        delivering,
                         now,
                     )
                 });
@@ -2958,8 +3078,17 @@ impl Guest {
                     }
                     _ => vec![false; covers.len()],
                 };
+                // A parcel sliding in through her door's flap is drawn in
+                // its door's image, not where it will rest (door batch
+                // D9; ASCII draws it at rest at once).
+                let sliding = front_drawn
+                    .filter(|front| front.delivering() && self.graphics.is_some())
+                    .and_then(|_| visit.flap.map(|(flap, _)| flap.item));
                 let (mut with, mut apart) = (Vec::new(), Vec::new());
                 for (&piece, drawn) in visit.shown.iter().zip(drawn) {
+                    if sliding.is_some_and(|item| piece.item == item && piece.boxed) {
+                        continue;
+                    }
                     if drawn {
                         with.push(piece);
                     } else {
@@ -2983,7 +3112,11 @@ impl Guest {
                         .collect(),
                 };
                 nudge.paint(buf, now);
-                if let Some((flap, since)) = visit.flap {
+                // The wall's own flap: a fallback wall's, or her door's
+                // while her door doesn't stand at it this frame.
+                if let Some((flap, since)) = visit.flap
+                    && !(flap.door && at_her_door)
+                {
                     layer.extend(draw_flap(
                         buf,
                         flap,
@@ -3202,6 +3335,8 @@ impl Guest {
             shown: Vec::new(),
             apart: Vec::new(),
             flap: None,
+            parcel_wait: None,
+            staged_parcel: false,
             made: Vec::new(),
             next_made: room::MadeId(0),
             reel: None,
@@ -3987,14 +4122,31 @@ fn furnish(
         terrain.furnish(room.iter().map(Shown::cover));
         seats_of(piece, &room, terrain, true)
     };
+    // Each delivery due waits while one comes in (a flap open), while
+    // she's not free for it, or while she'd be in its way, judged twice:
+    // on her door's space as it stands, then on the space of the wall the
+    // parcel would come in by (her first piece's arrival chooses it).
+    // Why one waits this frame (the last asked), traced once per change.
+    let mut wait = None;
+    let staged = visit.staged_parcel;
     if let Some(item) = ledger.ordered
         && ledger.bought_on < ledger.visits
         && awake
+        && waited(parcel_may_come(visit, home, plan, staged, now), &mut wait)
         && let Some((prop, flap)) = home.doorstep(buf, plan, &shown, &blocked, &seats, item)
+        && waited(clear_of_her(visit, home, plan, prop), &mut wait)
         && home.add(prop)
     {
-        tracing::info!(?item, strip = ?prop.strip, "houseguest: a parcel arrived");
+        tracing::info!(
+            ?item,
+            strip = ?prop.strip,
+            door = flap.door,
+            side = ?flap.side,
+            x = flap.x,
+            "houseguest: a parcel arrived"
+        );
         visit.flap = Some((flap, now));
+        visit.staged_parcel = false;
         ledger.ordered = None;
         visit.osaka.say(PARCEL, now);
         shown = home.frame(buf, plan, &blocked).0;
@@ -4013,21 +4165,34 @@ fn furnish(
         && visit
             .osaka
             .free_for_a_gift(now, &visit.chances, &visit.terrain)
-        && visit.flap.is_none()
         && !home.owns(Furniture::Clock)
         && home
             .props
             .iter()
             .any(|p| p.item == Furniture::Tv && !p.boxed)
+        && waited(parcel_may_come(visit, home, plan, false, now), &mut wait)
         && let Some((prop, flap)) =
             home.doorstep(buf, plan, &shown, &blocked, &seats, Furniture::Clock)
+        && waited(clear_of_her(visit, home, plan, prop), &mut wait)
         && home.add(prop)
     {
-        tracing::info!(strip = ?prop.strip, "houseguest: her wall clock arrived");
+        tracing::info!(
+            strip = ?prop.strip,
+            door = flap.door,
+            side = ?flap.side,
+            x = flap.x,
+            "houseguest: her wall clock arrived"
+        );
         visit.flap = Some((flap, now));
         ledger.clock_sent = true;
         visit.osaka.say(PARCEL, now);
         shown = home.frame(buf, plan, &blocked).0;
+    }
+    if wait != visit.parcel_wait {
+        if let Some(why) = wait {
+            tracing::trace!(?why, "houseguest: a delivery waits");
+        }
+        visit.parcel_wait = wait;
     }
     if let Some(item) = gift.take() {
         shown = place_gift(home, item, note, buf, view, &shown, &blocked, rng);
@@ -4873,12 +5038,102 @@ fn paint_prop_art(buf: &mut Buffer, graphics: &mut Graphics, prop: &Shown, looks
         .is_some()
 }
 
+/// Why a delivery due waits (door batch D9, C10).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ParcelWait {
+    /// Another's flap is still open (two never meet).
+    Flap,
+    /// She's not free for it ([`Osaka::free_for_a_parcel`]).
+    Busy,
+    /// She stands, or will within its slide, in its way ([`in_its_way`]).
+    InItsWay,
+}
+
+/// Whether a delivery due may go on (`judged`), noting why not in
+/// `wait` (the frame's; `furnish` traces it once per change).
+fn waited(judged: Result<(), ParcelWait>, wait: &mut Option<ParcelWait>) -> bool {
+    match judged {
+        Ok(()) => true,
+        Err(why) => {
+            *wait = Some(why);
+            false
+        }
+    }
+}
+
+/// Whether a parcel may come in at `now` to `home` on `plan` (both
+/// deliveries: what she ordered and her wall clock; door batch D9, C10),
+/// or why it waits: no flap still open (two never meet), she's free for
+/// it ([`Osaka::free_for_a_parcel`]: not through her door nor out, and
+/// not mid-way through an act that holds her still, unless `staged`:
+/// the stage's parcel scene), and she's not in its way ([`in_its_way`])
+/// as her home stands. Judged again once the doorstep has found its
+/// place ([`clear_of_her`]).
+fn parcel_may_come(
+    visit: &Visit,
+    home: &room::Home,
+    plan: room::Plan,
+    staged: bool,
+    now: u64,
+) -> Result<(), ParcelWait> {
+    if visit.flap.is_some() {
+        Err(ParcelWait::Flap)
+    } else if !visit.osaka.free_for_a_parcel(staged, now) {
+        Err(ParcelWait::Busy)
+    } else if in_its_way(visit, home, plan) {
+        Err(ParcelWait::InItsWay)
+    } else {
+        Ok(())
+    }
+}
+
+/// Whether she's in a parcel's way with `prop` come in to `home` on
+/// `plan` ([`in_its_way`] judged on her home as it will be: her first
+/// piece's arrival chooses her door's wall, which needn't be the one her
+/// empty home would).
+fn clear_of_her(
+    visit: &Visit,
+    home: &room::Home,
+    plan: room::Plan,
+    prop: room::Prop,
+) -> Result<(), ParcelWait> {
+    let mut with = home.clone();
+    with.props.push(prop);
+    if in_its_way(visit, &with, plan) {
+        Err(ParcelWait::InItsWay)
+    } else {
+        Ok(())
+    }
+}
+
+/// Whether she'd be in the way of a parcel coming in to `home` on `plan`
+/// (door batch C10): her box where she stands, or where her way takes
+/// her while its flap is open ([`Osaka::feet_within`] [`FLAP_MS`]),
+/// meets her door's space there (kept or not: [`door::space_rect`]) or
+/// the room her door's beats take where it stood last frame
+/// ([`door::DoorSpot::room`]), so nothing slides through her.
+fn in_its_way(visit: &Visit, home: &room::Home, plan: room::Plan) -> bool {
+    let rooms: Vec<Rect> = door::space_rect(home, plan)
+        .into_iter()
+        .chain(visit.door.and_then(door::DoorSpot::room))
+        .collect();
+    visit
+        .osaka
+        .feet_within(FLAP_MS)
+        .into_iter()
+        .filter_map(|(x, y)| room::her_box(x, y))
+        .any(|her| rooms.iter().any(|&room| her.intersects(room)))
+}
+
 /// How long a delivery's flap stands open.
 const FLAP_MS: u64 = 800;
 
-/// The flap a parcel came in through, `age` ms ago: open, swung in on
-/// its hinge at the top, wherever the wall is a plain vertical line
-/// clear of protected cells.
+/// The flap in a wall a parcel came in through, `age` ms ago: open,
+/// swung in on its hinge at the top, wherever the wall is a plain
+/// vertical line clear of protected cells. A fallback wall's (her door's
+/// strip couldn't take the parcel), or her door's wall while her door
+/// doesn't stand at it this frame; else the parcel comes through her
+/// door's own flap ([`flap_front`]).
 fn draw_flap(buf: &mut Buffer, flap: room::Flap, age: u64, protected: &[Rect]) -> Vec<Frozen> {
     if age >= FLAP_MS {
         return Vec::new();
@@ -5590,7 +5845,7 @@ fn draw_front(
         })
         .collect();
     if graphics
-        .paint_cuts(buf, &[front.cut()], &|x, y| terrain.open(x, y))
+        .paint_cuts(buf, &front.cuts(), &|x, y| terrain.open(x, y))
         .is_some()
     {
         let figure = Figure::front_alone(front);
@@ -5622,10 +5877,12 @@ const FRONT_PASSING_MS: u64 = 4_000;
 
 /// Her own door as a visit's frame stands it, drawn or not (door batch
 /// D8, C3): through it, as its beat stands it (at her feet: side-on in
-/// its wall, or face-on); bound for it (her line said as she set off, or
+/// its wall, or face-on); a parcel coming in through its flap
+/// ([`flap_front`]); bound for it (her line said as she set off, or
 /// on her way to it), shut at its spot (`visit.door`); and once it
-/// stood, on while her box meets it. `sky` is the doorway's.
-fn front_of(visit: &Visit, sky: art::Sky, now: u64) -> Option<Front> {
+/// stood, on while her box meets it. `sky` is the doorway's; `graphics`,
+/// whether the frame is drawn in line art.
+fn front_of(visit: &Visit, sky: art::Sky, graphics: bool, now: u64) -> Option<Front> {
     let osaka = &visit.osaka;
     if let Some((spot, beat)) = osaka.front_door(now) {
         return Some(match beat {
@@ -5636,6 +5893,9 @@ fn front_of(visit: &Visit, sky: art::Sky, now: u64) -> Option<Front> {
             // her beats (never with her, or it turns beside her).
             osaka::FrontBeat::Floor(frame) => Front::face_on(spot, frame, spot.out()),
         });
+    }
+    if let Some(front) = flap_front(visit, sky, graphics, now) {
+        return Some(front);
     }
     let spot = visit.door?;
     let beside = || {
@@ -5654,14 +5914,98 @@ fn front_of(visit: &Visit, sky: art::Sky, now: u64) -> Option<Front> {
     })
 }
 
+/// Whether her door standing at `spot` is where `flap` is: its wall
+/// column, side and floor row (one space; two strips' walls may share a
+/// column, never a floor row too).
+fn at_the_flap(flap: room::Flap, spot: door::DoorSpot) -> bool {
+    spot.wall() == Some((flap.side, flap.x)) && spot.spot().1 == flap.rows.1
+}
+
+/// The ends of a parcel's slide's beats through her door's flap, ms from
+/// its coming (door batch D9; snippets.md, "The flap's beats"): nosing
+/// out, half out, out, settling; at rest from the last, the flap shut
+/// till [`FLAP_MS`].
+const SLIDE_BEATS: [u64; 4] = [150, 350, 500, 650];
+
+/// Her own door as a parcel comes in through its flap (door batch D9),
+/// while the flap's time runs ([`FLAP_MS`]): side-on at its spot this
+/// frame (`visit.door`, only while it stands where the flap is,
+/// [`at_the_flap`]: else none, and the flap is drawn in the wall,
+/// [`draw_flap`]), its flap riding up on the parcel as it slides out
+/// ([`slide_at`]; in line art, `graphics`: in ASCII the parcel stands at
+/// its rest at once, drawn with her pieces), then shut.
+fn flap_front(visit: &Visit, sky: art::Sky, graphics: bool, now: u64) -> Option<Front> {
+    let (flap, since) = visit.flap.filter(|&(flap, _)| flap.door)?;
+    let age = now.checked_sub(since).filter(|&age| age < FLAP_MS)?;
+    let spot = visit.door.filter(|&spot| at_the_flap(flap, spot))?;
+    let parcel = visit
+        .shown
+        .iter()
+        .find(|piece| piece.item == flap.item && piece.boxed);
+    let (angle, dx) = parcel.map_or((0, None), |parcel| slide_at(flap, parcel, age));
+    let dx = dx.filter(|_| graphics);
+    let shut = art::WallDoor::Shut {
+        flap: angle,
+        away: false,
+    };
+    let front = Front::at(spot, shut, sky, None, 0);
+    Some(match (parcel, dx) {
+        (Some(parcel), Some(dx)) => {
+            front.sliding(prop_layer(parcel, Look::Parcel(parcel.item, false)), dx)
+        }
+        _ => front,
+    })
+}
+
+/// Where a parcel coming in through her door's flap (`flap`) stands
+/// `age` ms after (door batch D9; snippets.md, "The flap's beats", as
+/// the approved sheet draws them): the flap's angle as it rides on the
+/// parcel, and the parcel's offset in half columns toward the wall from
+/// `parcel`, where it rests (`None` once it's there). Its leading edge,
+/// in half columns from the wall's line into the room: a column past
+/// the door's back post, half out, out (the flap falling back), half way
+/// to its rest.
+fn slide_at(flap: room::Flap, parcel: &Shown, age: u64) -> (u8, Option<i8>) {
+    let (cols, _) = parcel.size();
+    let pc = i32::from(cols);
+    // The wall's line, in half columns; the parcel's leading edge at
+    // rest, from it.
+    let line = 2 * flap.x + 1;
+    let rest = match flap.side {
+        room::Side::Right => 2 * parcel.left - line,
+        room::Side::Left => line - 2 * pc - 2 * parcel.left,
+    };
+    let (half, out) = (-3 - pc, -4 - 2 * pc);
+    let (angle, lead) = match age {
+        a if a < SLIDE_BEATS[0] => (art::lean(flap.item, -5), -5),
+        a if a < SLIDE_BEATS[1] => (art::lean(flap.item, half), half),
+        a if a < SLIDE_BEATS[2] => (10, out),
+        a if a < SLIDE_BEATS[3] => (4, (out + rest) / 2),
+        _ => return (0, None),
+    };
+    let toward = match flap.side {
+        room::Side::Right => lead - rest,
+        room::Side::Left => rest - lead,
+    };
+    // Within a few columns of its rest (its leads are the sheet's): a
+    // geometry gone wrong shows in tests, and is drawn at rest.
+    debug_assert!(
+        i8::try_from(toward).is_ok(),
+        "a parcel's slide {toward} half columns from its rest: {flap:?} {parcel:?}"
+    );
+    (angle, Some(i8::try_from(toward).unwrap_or(0)))
+}
+
 /// What of her own door `front` a visit's frame draws (`None`: none of
 /// it): none while any cell of it is `protected` (no half a door beside
 /// a pane in use, as while she's out); her slippers before it only on
 /// calm cells (`terrain`'s), else
 /// the shut door's own two columns; over text (`buf`'s) while she's out
-/// through it, and in her beats through it (in passing); apart from them
+/// through it, in her beats through it, and while a parcel comes in
+/// through its flap (`delivering`: all in passing); apart from them
 /// (walking to it or away), for [`FRONT_PASSING_MS`] from when it first
 /// stood over text (`since`), and hidden there after.
+#[allow(clippy::too_many_arguments)]
 fn front_shown(
     front: Front,
     osaka: &Osaka,
@@ -5669,11 +6013,12 @@ fn front_shown(
     terrain: &Terrain,
     protected: &[Rect],
     since: &mut Option<u64>,
+    delivering: bool,
     now: u64,
 ) -> Option<Front> {
     let front = front_whole(front, terrain, protected)?;
     let (left, top, right, bottom) = front.bounds();
-    if osaka.front_door(now).is_some() {
+    if delivering || osaka.front_door(now).is_some() {
         *since = None;
         return Some(front);
     }

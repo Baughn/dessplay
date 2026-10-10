@@ -5875,6 +5875,56 @@ the sheet's thirds (a lurch); her pose and step in `Placement` (the
 goldens hash it; her doorway rides in `Figure` beside it); a door shown
 only in its beats (it would pop in beside her).
 
+## Parcels come in through her door's flap (2026-10-10)
+
+The door batch's step 9 (working design D9, C10, T12, Open choice 3).
+The user asked for the door's lower half to be a parcel flap ("parcels
+[come] through a flap in the door", sheet B), so a delivery tries her
+door's wall first whenever her door's space is kept there, and rests
+just past the space (where pieces stand, never in it). The old wall
+flap (`╱`/`╲`) survives as the fallback: her door's strip may have no
+room (the space yielding to her pieces, a full strip), and a frame
+whose door stands elsewhere (a makeshift piece or a pane in use over
+the space, the chat over it) has no door at that wall to slide through,
+so the wall's own flap shows there as before rather than a door
+appearing where her door isn't. The slide is the approved sheet's four
+beats (the flap riding on the parcel, falling back once it's out),
+drawn as one image with the door and the flap's plate (two images over
+the same cells cut each other out); in ASCII the door's open-flap rows
+and the parcel at its spot at once (ASCII has no review and no offset
+drawing).
+
+It waits while she's going through a door of hers or out (her slippers
+stand in the space), and while her box meets her door's space: a
+parcel never slides through her (C10). It also waits while an act of
+hers holds her still, coming as she walks or as an act has just begun
+(2 s): five changes in 650 ms mid-act would break the drawn stillness
+rule, and a parcel isn't urgent, so the wait was chosen over a sixth
+exemption (Open choice 3's recommendation). The stage's parcel scene
+skips that last wait: its cue sends her to unpack it at once. Text
+under her door never hides the door during the slide (in passing, as
+in her beats through it). *Rejected:* a sixth stillness exemption; a
+letterbox flap (the sheet's alternative); the parcel stopping in the
+space beside the door (it would block her going-out spot until
+unpacked).
+
+The step's review (2026-10-10) closed three ways a parcel could still
+slide through her: judged on where she stood as it came, a walk (or a
+climb down a pole by the wall) took her into the space mid-slide, so
+the wait now reads where her way takes her within the flap's 800 ms
+(a walk's next columns, a climb's or clamber's end: conservative, as
+both are rare); her first parcel was judged on the space of the wall
+her empty home would choose, not the one it came in by (it chooses her
+door's wall), so it is judged again on the home with it in; and the
+door's look matched the flap by its column only, though two strips'
+walls can share a column, so it matches the floor row too. A delivery
+still waits rather than going to another wall: the door is the
+parcel's way in. The stage's exemption from the act wait now lasts
+from its cue till its parcel comes (it held only on the cue's paint,
+so a parcel that waited for her to leave the space came minutes
+later, after the cue's unpack scene). In ASCII the slide's first three
+beats draw nothing new, so the tick wakes only as the flap shuts.
+
 ## Houseguest chooses by needs among the top few (2026-09-28)
 
 **Rule:** Her next act is a weighted-random pick among the four

@@ -2576,6 +2576,7 @@ fn a_scrap_in_her_door_space_makes_it_fall_back() {
             &[(Furniture::Sofa, Nook::Users, 0)],
             graphics,
         );
+        tv_held_back(&mut guest);
         let now = until_visiting(&mut guest, &real, &view, 0);
         paint(&mut guest, &real, &view, now);
         let visit = visit_of(&guest);
@@ -4208,8 +4209,8 @@ fn a_delivery_judges_what_she_made_on_its_new_door_space_not_the_chat() {
 
 /// [`rooms_frame`] at 100×30 with the chat pane over List's floor by its
 /// left wall (columns 0..=19, rows 14..=26: a custom layout's grid
-/// overlapping List), the wall a parcel comes in by first (the screen's
-/// edge, the first pane).
+/// overlapping List), the wall a parcel comes in by first (her door's,
+/// [`LIST_LEFT`]).
 fn chat_by_lists_left_wall() -> (Buffer, IdleView, Rect) {
     let (real, mut view) = rooms_frame(100, 30);
     let chat = Rect::new(0, 14, 20, 13);
@@ -4217,8 +4218,15 @@ fn chat_by_lists_left_wall() -> (Buffer, IdleView, Rect) {
     (real, view, chat)
 }
 
+/// Her door on List's left wall (the screen's edge).
+const LIST_LEFT: room::DoorWall = room::DoorWall {
+    strip: room::Strip::Bottom(Nook::List),
+    side: room::Side::Left,
+};
+
 /// Her lamp on order, delivered on `view`: where its box stands once
-/// it's in (her TV on Users, her door's wall chosen by it).
+/// it's in (her TV on Users, her door by List's left wall: a parcel
+/// comes in through her door first).
 fn a_lamp_delivered(real: &Buffer, view: &IdleView, graphics: bool) -> Shown {
     let mut guest = home_at(
         3,
@@ -4226,6 +4234,7 @@ fn a_lamp_delivered(real: &Buffer, view: &IdleView, graphics: bool) -> Shown {
         &[(Furniture::Tv, Nook::Users, 500)],
         graphics,
     );
+    guest.ledger.home.door = Some(LIST_LEFT);
     guest.ledger.ordered = Some(Furniture::Lamp);
     guest.ledger.bought_on = 0;
     let mut now = until_visiting(&mut guest, real, view, 0);
@@ -5682,4 +5691,1117 @@ fn in_a_visits_gap_her_slippers_never_stand_over_text() {
         gap += 1;
     }
     assert!(gap > 0, "never in her door's gap");
+}
+
+// ---- Parcels through her door's flap (door batch, step 9) ----
+
+/// The ends of a parcel's slide's beats through her door's flap, ms
+/// from its coming (D9; snippets.md, "The flap's beats"): nosing out,
+/// half out, out, settling; at rest from the last.
+const SLIDE_BEATS: [u64; 4] = [150, 350, 500, 650];
+
+/// One frame as a parcel came in: its age, the frame, the looks painted
+/// (line art), her own door as the frame stood it, and her feet.
+struct FlapFrame {
+    age: u64,
+    frame: Buffer,
+    looks: Vec<Look>,
+    front: Option<Front>,
+    her: (i32, i32),
+    /// The parcel as it shows (where it rests).
+    parcel: Option<Shown>,
+}
+
+/// Sends `guest` (visiting on `view` of `real`) a parcel at `from`, and
+/// paints at most 50 ms apart until it has come in (within two minutes)
+/// and for [`FLAP_MS`] and a little more after (or until another
+/// comes): when it came, its flap, the frames from then, and when they
+/// ended.
+fn a_parcel_comes(
+    guest: &mut Guest,
+    real: &Buffer,
+    view: &IdleView,
+    from: u64,
+) -> (u64, room::Flap, Vec<FlapFrame>, u64) {
+    guest.send_parcel();
+    let mut now = from;
+    let mut came: Option<(u64, room::Flap)> = None;
+    let mut frames = Vec::new();
+    loop {
+        if let Some(graphics) = guest.graphics.as_mut() {
+            graphics.take_looks();
+        }
+        let frame = paint(guest, real, view, now);
+        let looks = guest
+            .graphics
+            .as_mut()
+            .map(Graphics::take_looks)
+            .unwrap_or_default();
+        let State::Visiting(visit) = &guest.state else {
+            panic!("visiting throughout");
+        };
+        if came.is_none() {
+            came = visit
+                .flap
+                .filter(|&(_, since)| since >= from)
+                .map(|(flap, since)| (since, flap));
+        }
+        match came {
+            Some((since, _)) if visit.flap.is_some_and(|(_, at)| at != since) => break,
+            Some((since, flap)) => {
+                frames.push(FlapFrame {
+                    age: now - since,
+                    frame,
+                    looks,
+                    front: visit.front.map(|(front, _)| front),
+                    her: (visit.osaka.x, visit.osaka.y),
+                    parcel: visit
+                        .shown
+                        .iter()
+                        .find(|s| s.item == flap.item && s.boxed)
+                        .copied(),
+                });
+                if now >= since + FLAP_MS + 200 {
+                    break;
+                }
+            }
+            None => assert!(now < from + 120_000, "the parcel never came"),
+        }
+        now += guest
+            .next_tick(now)
+            .map_or(50, |d| d.as_millis() as u64)
+            .clamp(1, 50);
+        guest.advance(now);
+    }
+    let (since, flap) = came.expect("it came");
+    (since, flap, frames, now)
+}
+
+/// Whether the cell `(x, y)` is in her box standing at `her`.
+fn in_her_box(her: (i32, i32), (x, y): (i32, i32)) -> bool {
+    room::her_box(her.0, her.1).is_some_and(|b| {
+        let (Ok(x), Ok(y)) = (u16::try_from(x), u16::try_from(y)) else {
+            return false;
+        };
+        b.contains((x, y).into())
+    })
+}
+
+/// A parcel comes in through the flap in her own door (door batch D9):
+/// side-on in her door's wall, the flap riding up on the parcel as it
+/// slides out (in line art the door's flap swung up, the parcel cut at
+/// the wall's line and the flap's plate over it, at least three angles
+/// of it; in ASCII the door's open-flap rows, and the parcel at its spot
+/// at once), then the door shut; it rests just past her door's space
+/// (its trailing edge 7 columns from the wall), and once the flap's time
+/// is up her door is gone again. Never the wall's own flap glyphs. Both
+/// walls, both modes. Red before step 9: the wall's `╲`/`╱`, no door.
+#[test]
+fn a_parcel_comes_in_through_her_door() {
+    for (name, real, view, pieces, side) in both_walls() {
+        for graphics in [false, true] {
+            let at = format!("{name} graphics={graphics}");
+            let mut guest = home_at(4, tue(13, 0), &pieces, graphics);
+            let now = until_visiting(&mut guest, &real, &view, 0);
+            let (_, flap, frames, now) = a_parcel_comes(&mut guest, &real, &view, now);
+            assert!(flap.door, "{at}: through her door: {flap:?}");
+            assert_eq!(flap.side, side, "{at}: {flap:?}");
+            let (wall, floor) = (flap.x, flap.rows.1);
+            let rect = frames[0].parcel.expect("the parcel shows").rect();
+            match side {
+                room::Side::Right => {
+                    assert_eq!(i32::from(rect.right()) - 1, wall - 7, "{at}: {rect:?}");
+                }
+                room::Side::Left => assert_eq!(i32::from(rect.x), wall + 7, "{at}: {rect:?}"),
+            }
+            let space = Rect::new(
+                match side {
+                    room::Side::Right => wall - room::SPACE,
+                    room::Side::Left => wall + 1,
+                } as u16,
+                (floor - sprite::HEIGHT) as u16,
+                room::SPACE as u16,
+                (sprite::HEIGHT + 1) as u16,
+            );
+            let shut = |flap| art::WallDoor::Shut { flap, away: false };
+            let mut angles = std::collections::BTreeSet::new();
+            let mut leads = Vec::new();
+            for f in &frames {
+                let at = format!("{at} at {}", f.age);
+                for y in floor - sprite::HEIGHT..floor {
+                    let cell = f.frame[(wall as u16, y as u16)].symbol();
+                    assert!(!matches!(cell, "╲" | "╱"), "{at}: the wall's flap at {y}");
+                }
+                let beside = room::her_box(f.her.0, f.her.1).is_some_and(|b| b.intersects(space));
+                let doors = wall_doors(&f.looks);
+                if f.age < 650 {
+                    if graphics {
+                        let up = doors
+                            .iter()
+                            .find_map(|&(door, ..)| match door {
+                                art::WallDoor::Shut { flap, away: false } => Some(flap),
+                                _ => None,
+                            })
+                            .unwrap_or_else(|| panic!("{at}: no door: {:?}", f.looks));
+                        if up > 0 {
+                            assert!(
+                                doors.iter().any(|d| d.0 == art::WallDoor::Plate(up)),
+                                "{at}: the plate over the parcel: {doors:?}"
+                            );
+                        }
+                        assert!(
+                            f.looks.contains(&Look::Parcel(flap.item, false)),
+                            "{at}: the parcel: {:?}",
+                            f.looks
+                        );
+                        let cut = f
+                            .front
+                            .and_then(Front::parcel)
+                            .unwrap_or_else(|| panic!("{at}: no parcel sliding"));
+                        assert_eq!(cut.clip, Some((side, wall)), "{at}");
+                        let (left, _, cols, _) = cut.bounds().expect("some of it");
+                        match side {
+                            room::Side::Right => assert!(left + cols <= wall + 1, "{at}"),
+                            room::Side::Left => assert!(left >= wall, "{at}"),
+                        }
+                        angles.insert(up);
+                        // Its leading edge, the room's side of it.
+                        leads.push(match side {
+                            room::Side::Right => left,
+                            room::Side::Left => left + cols,
+                        });
+                    } else {
+                        assert!(
+                            f.front.and_then(Front::parcel).is_none(),
+                            "{at}: ASCII draws the parcel at rest, never sliding"
+                        );
+                        for (dx, dy, glyph) in sprite::wall_door_cells(shut(45), side) {
+                            let (x, y) = (wall + dx, floor + dy);
+                            if in_her_box(f.her, (x, y)) {
+                                continue;
+                            }
+                            assert_eq!(
+                                f.frame[(x as u16, y as u16)].symbol(),
+                                glyph.to_string(),
+                                "{at}: the open flap's ({x}, {y})"
+                            );
+                        }
+                        assert!(
+                            rect.positions().any(|p| f.frame.cell(p) != real.cell(p)),
+                            "{at}: the parcel at its spot at once"
+                        );
+                    }
+                } else if f.age < FLAP_MS {
+                    if graphics {
+                        assert_eq!(
+                            doors.iter().map(|d| d.0).collect::<Vec<_>>(),
+                            vec![shut(0)],
+                            "{at}: shut"
+                        );
+                    } else {
+                        for (dx, dy, glyph) in sprite::wall_door_cells(shut(0), side) {
+                            let (x, y) = (wall + dx, floor + dy);
+                            if in_her_box(f.her, (x, y)) {
+                                continue;
+                            }
+                            assert_eq!(
+                                f.frame[(x as u16, y as u16)].symbol(),
+                                glyph.to_string(),
+                                "{at}: the shut door's ({x}, {y})"
+                            );
+                        }
+                    }
+                } else if !beside {
+                    if graphics {
+                        assert!(doors.is_empty(), "{at}: her door gone: {doors:?}");
+                    } else {
+                        for y in floor - sprite::HEIGHT..floor {
+                            assert!(!differs(&f.frame, &real, (wall, y)), "{at}: ({wall}, {y})");
+                        }
+                    }
+                }
+            }
+            if graphics {
+                assert!(angles.len() >= 3, "{at}: the flap's angles {angles:?}");
+                // It slides: from by the wall's line into the room, frame
+                // by frame, short of where it rests till its last beat.
+                leads.dedup();
+                assert!(leads.len() >= 3, "{at}: where it slid {leads:?}");
+                let (first, last) = (leads[0], leads[leads.len() - 1]);
+                let rest = match side {
+                    room::Side::Right => i32::from(rect.x),
+                    room::Side::Left => i32::from(rect.right()),
+                };
+                match side {
+                    room::Side::Right => {
+                        assert!(leads.windows(2).all(|w| w[1] < w[0]), "{at}: {leads:?}");
+                        assert!(first >= wall - 3, "{at}: from the wall: {leads:?}");
+                        assert!(last > rest, "{at}: short of its rest {rest}: {leads:?}");
+                    }
+                    room::Side::Left => {
+                        assert!(leads.windows(2).all(|w| w[1] > w[0]), "{at}: {leads:?}");
+                        assert!(first <= wall + 4, "{at}: from the wall: {leads:?}");
+                        assert!(last < rest, "{at}: short of its rest {rest}: {leads:?}");
+                    }
+                }
+            }
+            // The next comes in through her door too, to the same place,
+            // and pushes the first along.
+            let first = flap.item;
+            let (_, next, frames, _) = a_parcel_comes(&mut guest, &real, &view, now);
+            assert!(next.door && next.item != first, "{at}: {next:?}");
+            let rested = frames[0].parcel.expect("the next shows").rect();
+            match side {
+                room::Side::Right => assert_eq!(rested.right(), rect.right(), "{at}"),
+                room::Side::Left => assert_eq!(rested.x, rect.x, "{at}"),
+            }
+            let State::Visiting(visit) = &guest.state else {
+                panic!("{at}: visiting");
+            };
+            let pushed = visit
+                .shown
+                .iter()
+                .find(|s| s.item == first)
+                .expect("the first still shows")
+                .rect();
+            assert!(!pushed.intersects(rested), "{at}: pushed along: {pushed:?}");
+        }
+    }
+}
+
+/// With her door's space yielding (her pieces fill it:
+/// [`super::felt::lamp_home`]), a parcel comes in through another wall's flap, today's
+/// `╲`/`╱` over the wall's line, not through her door. Both modes. A
+/// guard (every flap was the wall's before step 9): a mutant putting
+/// every parcel through her door makes it red. (Here the full lane
+/// refuses her door's wall whatever the flag says; a space yielding to
+/// a hung piece, the floor past it free, is
+/// [`a_parcel_by_a_yielding_space_comes_through_the_walls_flap`].)
+#[test]
+fn a_parcel_with_her_door_space_yielding_comes_through_another_wall() {
+    let (real, view) = chat_by_a_full_space();
+    for graphics in [false, true] {
+        let at = format!("graphics={graphics}");
+        let mut guest = super::felt::lamp_home(graphics);
+        let space = super::felt::users_space(&guest, &view);
+        assert!(!space.kept, "{at}: the precondition: the space yields");
+        let now = until_visiting(&mut guest, &real, &view, 0);
+        let (_, flap, frames, _) = a_parcel_comes(&mut guest, &real, &view, now);
+        assert!(!flap.door, "{at}: {flap:?}");
+        assert_ne!(
+            (flap.side, flap.x),
+            (space.side, space.wall),
+            "{at}: not her door's wall"
+        );
+        let first = &frames[0];
+        let glyph = match flap.side {
+            room::Side::Right => "╱",
+            room::Side::Left => "╲",
+        };
+        for y in flap.rows.0..flap.rows.1 {
+            assert_eq!(
+                first.frame[(flap.x as u16, y as u16)].symbol(),
+                glyph,
+                "{at}: the wall's flap at {y}"
+            );
+        }
+        assert!(
+            wall_doors(&first.looks).is_empty(),
+            "{at}: no door of hers: {:?}",
+            first.looks
+        );
+    }
+}
+
+/// No parcel slides through her or her slippers (door batch C10): one
+/// due as she goes out through her door and while she's out (the stage's
+/// school and work scenes: her beats and her gap), or while she stands
+/// in her door's space, waits; it comes once she's clear of it, through
+/// her door, and she stays clear of it every frame its flap is open.
+/// Both modes. Red before step 9: it came with her in the space (her
+/// beats and gap were already kept out by her being on her way out or
+/// coming home: guards; a door's act `awake` lets through is
+/// [`a_parcel_waits_out_a_door_in_space`]'s).
+#[test]
+fn no_parcel_slides_through_her_or_her_slippers() {
+    let (real, view) = home_screen();
+    for graphics in [false, true] {
+        for scene in [Scene::School, Scene::Work] {
+            let at = format!("{scene:?} graphics={graphics}");
+            let mut guest = home_at(4, tue(13, 0), &HOME, graphics);
+            let mut now = until_visiting(&mut guest, &real, &view, 0);
+            // Her arrival over, then the scene, and the parcel due.
+            now = run_quiet(&mut guest, &real, &view, now, 20_000);
+            guest.cue(scene);
+            let (mut went, mut came, mut sent) = (false, None, false);
+            // Her shift is up to 3 minutes.
+            let limit = now + 420_000;
+            while came.is_none_or(|(_, since)| now < since + FLAP_MS) {
+                assert!(now < limit, "{at}: the parcel never came");
+                now += guest
+                    .next_tick(now)
+                    .map_or(50, |d| d.as_millis() as u64)
+                    .clamp(1, 50);
+                guest.advance(now);
+                paint(&mut guest, &real, &view, now);
+                let State::Visiting(visit) = &guest.state else {
+                    panic!("{at}: visiting throughout");
+                };
+                let osaka = &visit.osaka;
+                let through = osaka.front_door(now).is_some();
+                went |= through;
+                // Due once she's set off for her door.
+                if !sent && (osaka.bound_for_her_door() || through) {
+                    sent = true;
+                    guest.send_parcel();
+                    continue;
+                }
+                // Every frame of its slide and its flap: never in her
+                // beats, never through her.
+                came = came.or(visit.flap);
+                if let Some((flap, since)) = came
+                    && now < since + FLAP_MS
+                {
+                    let age = now - since;
+                    assert!(!through, "{at}: a parcel at {age} in her beats");
+                    assert!(
+                        !in_the_slides_way(visit, flap, now),
+                        "{at}: a parcel at {age} through her"
+                    );
+                }
+            }
+            assert!(went, "{at}: she went through her door");
+            assert!(
+                came.is_some_and(|(f, _)| f.door),
+                "{at}: through her door: {came:?}"
+            );
+        }
+        // Standing in her door's space, still: it waits; moved out of it,
+        // it comes. (A fixture: she's put there and moved out directly.
+        // The scenes above bring her there honestly, coming home, and
+        // [`a_parcel_waits_for_her_walk_into_her_doors_space`] walks her
+        // in.)
+        let at = format!("in her space graphics={graphics}");
+        let mut guest = Guest::new(3);
+        if graphics {
+            guest.set_picker(kitty());
+        }
+        let (_, users) = view.nooks[0];
+        let floor = i32::from(users.bottom()) - 1;
+        visiting_at(&mut guest, &real, &view, (users.x as i32 + 3, floor));
+        guest.ledger.visits = 1;
+        let State::Visiting(visit) = &mut guest.state else {
+            panic!("{at}: visiting");
+        };
+        visit.osaka.stand_still(60_000, 0);
+        guest.send_parcel();
+        let mut now = 0;
+        while now < 20_000 {
+            paint(&mut guest, &real, &view, now);
+            let State::Visiting(visit) = &guest.state else {
+                panic!("{at}: visiting");
+            };
+            assert!(visit.flap.is_none(), "{at}: a parcel at {now} through her");
+            now += 500;
+            guest.advance(now);
+        }
+        let State::Visiting(visit) = &mut guest.state else {
+            panic!("{at}: visiting");
+        };
+        visit.osaka.x = 75;
+        visit.osaka.stand_still(now + 60_000, now);
+        paint(&mut guest, &real, &view, now);
+        let State::Visiting(visit) = &guest.state else {
+            panic!("{at}: visiting");
+        };
+        assert!(
+            visit.flap.is_some_and(|(flap, _)| flap.door),
+            "{at}: it came through her door once she was clear: {:?}",
+            visit.flap
+        );
+    }
+}
+
+/// [`run`] from `from` for `ms`, painting every frame the shell would:
+/// when it ended.
+fn run_quiet(guest: &mut Guest, real: &Buffer, view: &IdleView, from: u64, ms: u64) -> u64 {
+    run(guest, real, view, from, from + ms);
+    from + ms
+}
+
+/// The slide repaints at each of its beats (door batch D9): her tick
+/// wakes at each beat's end and the shell is told the screen changed
+/// there, and at the flap's end, each beat's frame unlike the last (in
+/// line art, the looks painted). In ASCII the open flap's glyphs stand
+/// till the parcel rests (the parcel stands at its rest at once), so it
+/// wakes only as the flap shuts and at the flap's end, not for beats
+/// that draw nothing new.
+#[test]
+fn the_slide_repaints_at_each_beat() {
+    let (real, view) = home_screen();
+    for graphics in [false, true] {
+        let at = format!("graphics={graphics}");
+        let mut guest = Guest::new(3);
+        if graphics {
+            guest.set_picker(kitty());
+        }
+        let (_, users) = view.nooks[0];
+        let floor = i32::from(users.bottom()) - 1;
+        visiting_at(&mut guest, &real, &view, (75, floor));
+        guest.ledger.visits = 1;
+        let State::Visiting(visit) = &mut guest.state else {
+            panic!("{at}: visiting");
+        };
+        // Still through the flap's time, so only it changes the frame.
+        visit.osaka.stand_still(60_000, 0);
+        guest.send_parcel();
+        let first = paint(&mut guest, &real, &view, 0);
+        let State::Visiting(visit) = &guest.state else {
+            panic!("{at}: visiting");
+        };
+        let (flap, since) = visit.flap.expect("it came at once");
+        assert!(flap.door, "{at}: through her door");
+        let ends: &[u64] = if graphics {
+            &SLIDE_BEATS
+        } else {
+            &SLIDE_BEATS[3..]
+        };
+        let mut now = since;
+        let mut last = (
+            first,
+            guest
+                .graphics
+                .as_mut()
+                .map(Graphics::take_looks)
+                .unwrap_or_default(),
+        );
+        for &end in ends.iter().chain([&FLAP_MS]) {
+            let due = since + end;
+            let mut changed = false;
+            while now < due {
+                let wake = now
+                    + guest
+                        .next_tick(now)
+                        .map_or(u64::MAX, |d| d.as_millis() as u64);
+                assert!(
+                    wake <= due,
+                    "{at}: no wake by {end} (next at {})",
+                    wake - since
+                );
+                // Still, nothing else wakes her tick meanwhile.
+                assert_eq!(wake, due, "{at}: woken at {} for nothing", wake - since);
+                now = wake;
+                changed = guest.advance(now);
+                assert!(
+                    !changed || now == due,
+                    "{at}: a change told at {} between beats",
+                    now - since
+                );
+            }
+            assert!(changed, "{at}: the screen unchanged at {end}");
+            let frame = paint(&mut guest, &real, &view, now);
+            let looks = guest
+                .graphics
+                .as_mut()
+                .map(Graphics::take_looks)
+                .unwrap_or_default();
+            if graphics {
+                assert_ne!(looks, last.1, "{at}: the same looks at {end}");
+            } else {
+                assert!(frame != last.0, "{at}: the same frame at {end}");
+            }
+            last = (frame, looks);
+        }
+    }
+}
+
+/// A parcel due while she goes through a door in space (an ordinary
+/// door, not her own: one her being up and about lets through) waits
+/// till the door's act is over, then comes, through her door (door
+/// batch D9: a delivery waits while a door's act runs). Both modes. A
+/// guard: a mutant letting a parcel come in a door's act makes it red.
+#[test]
+fn a_parcel_waits_out_a_door_in_space() {
+    let (real, view) = home_screen();
+    for graphics in [false, true] {
+        let at = format!("graphics={graphics}");
+        let mut guest = Guest::new(3);
+        if graphics {
+            guest.set_picker(kitty());
+        }
+        visiting_at(&mut guest, &real, &view, (40, 16));
+        guest.ledger.visits = 1;
+        let State::Visiting(visit) = &mut guest.state else {
+            panic!("{at}: visiting");
+        };
+        visit.osaka.through_door((60, 16), 0);
+        guest.send_parcel();
+        let (mut now, mut doors) = (0, 0);
+        let came = loop {
+            assert!(now < 30_000, "{at}: the parcel never came");
+            paint(&mut guest, &real, &view, now);
+            let State::Visiting(visit) = &guest.state else {
+                panic!("{at}: visiting");
+            };
+            let in_door = matches!(visit.osaka.through(), Some(osaka::Through::Space(_)));
+            doors += usize::from(in_door);
+            if let Some((flap, _)) = visit.flap {
+                assert!(!in_door, "{at}: a parcel at {now} in her door's act");
+                break flap;
+            }
+            now += guest
+                .next_tick(now)
+                .map_or(50, |d| d.as_millis() as u64)
+                .clamp(1, 50);
+            guest.advance(now);
+        };
+        assert!(doors > 0, "{at}: the precondition: she went through it");
+        assert!(came.door, "{at}: through her door: {came:?}");
+    }
+}
+
+/// Her door standing face-on (its wall's top protected: it falls back to
+/// the nearest floor clear of its space), a parcel waits while she stands
+/// where that door stands (the room its beats take, clear of the space),
+/// and comes once she's moved off (door batch C10). Both modes. A guard:
+/// a mutant judging only the space makes it red.
+#[test]
+fn a_parcel_waits_for_her_off_her_face_on_door() {
+    let (real, mut view) = home_screen();
+    view.protected.push(Rect::new(0, 12, 7, 5));
+    for graphics in [false, true] {
+        let at = format!("graphics={graphics}");
+        let mut guest = Guest::new(3);
+        if graphics {
+            guest.set_picker(kitty());
+        }
+        visiting_at(&mut guest, &real, &view, (40, 16));
+        guest.ledger.visits = 1;
+        let State::Visiting(visit) = &mut guest.state else {
+            panic!("{at}: visiting");
+        };
+        visit.osaka.stand_still(600_000, 0);
+        paint(&mut guest, &real, &view, 0);
+        let State::Visiting(visit) = &mut guest.state else {
+            panic!("{at}: visiting");
+        };
+        let spot = visit.door.expect("a door");
+        assert!(
+            spot.wall().is_none(),
+            "{at}: the precondition: face-on: {spot:?}"
+        );
+        let (x, y) = spot.spot();
+        let space = door::space_rect(&guest.ledger.home, plan_of(&view, &real)).expect("a space");
+        assert!(
+            !room::her_box(x, y).is_some_and(|b| b.intersects(space)),
+            "{at}: the precondition: clear of the space: {spot:?} {space:?}"
+        );
+        (visit.osaka.x, visit.osaka.y) = (x, y);
+        visit.osaka.stand_still(600_000, 0);
+        guest.send_parcel();
+        let (_, since) =
+            slide_clear_of_her(&mut guest, &real, &view, (0, 120_000), &at, |guest, now| {
+                if now >= 20_000
+                    && let State::Visiting(visit) = &mut guest.state
+                    && visit.osaka.x == x
+                {
+                    visit.osaka.x = 40;
+                    visit.osaka.stand_still(now + 600_000, now);
+                }
+            });
+        assert!(since >= 20_000, "{at}: it waited for her: {since}");
+    }
+}
+
+/// A parcel through her door's flap while her door doesn't stand at its
+/// wall this frame (the wall's top protected: her door falls back
+/// face-on) comes in through the wall's own flap there, `╲` over the
+/// wall's line, with no door of hers drawn (D9's fallback look; the
+/// review of step 9). Both modes. A guard: a mutant never drawing the
+/// wall's flap for her door's makes it red (no flap at all).
+#[test]
+fn a_parcel_by_her_doors_wall_comes_through_the_walls_flap() {
+    let (real, mut view) = home_screen();
+    view.protected.push(Rect::new(0, 12, 1, 2));
+    for graphics in [false, true] {
+        let at = format!("graphics={graphics}");
+        let mut guest = Guest::new(3);
+        if graphics {
+            guest.set_picker(kitty());
+        }
+        visiting_at(&mut guest, &real, &view, (40, 16));
+        guest.ledger.visits = 1;
+        let State::Visiting(visit) = &mut guest.state else {
+            panic!("{at}: visiting");
+        };
+        visit.osaka.stand_still(600_000, 0);
+        let (_, flap, frames, _) = a_parcel_comes(&mut guest, &real, &view, 0);
+        assert!(
+            flap.door && (flap.side, flap.x) == (room::Side::Left, 0),
+            "{at}: the precondition: her door's flap: {flap:?}"
+        );
+        let State::Visiting(visit) = &guest.state else {
+            panic!("{at}: visiting");
+        };
+        assert!(
+            visit.door.is_some_and(|spot| spot.wall().is_none()),
+            "{at}: the precondition: her door face-on: {:?}",
+            visit.door
+        );
+        for f in frames.iter().filter(|f| f.age < FLAP_MS) {
+            let at = format!("{at} at {}", f.age);
+            for y in flap.rows.0..flap.rows.1 {
+                assert_eq!(
+                    f.frame[(0, y as u16)].symbol(),
+                    "╲",
+                    "{at}: the wall's flap at {y}"
+                );
+            }
+            assert!(
+                wall_doors(&f.looks).is_empty(),
+                "{at}: no door of hers: {:?}",
+                f.looks
+            );
+        }
+    }
+}
+
+/// The stage's parcel cue brings its parcel at the cue's paint, though
+/// she's long since begun an act that holds her still; the same parcel
+/// ordered with no cue waits (door batch Open choice 3: never mid-act).
+/// Both modes. A guard: a mutant giving the cue no exemption makes it
+/// red, one giving it to every delivery too.
+#[test]
+fn only_the_stages_parcel_comes_mid_act() {
+    let (real, view) = home_screen();
+    for graphics in [false, true] {
+        for cued in [true, false] {
+            let at = format!("cued={cued} graphics={graphics}");
+            let mut guest = Guest::new(3);
+            if graphics {
+                guest.set_picker(kitty());
+            }
+            visiting_at(&mut guest, &real, &view, (40, 16));
+            guest.ledger.visits = 1;
+            let State::Visiting(visit) = &mut guest.state else {
+                panic!("{at}: visiting");
+            };
+            visit.osaka.stand_still(600_000, 0);
+            paint(&mut guest, &real, &view, 0);
+            if cued {
+                guest.cue(Scene::Parcel);
+            } else {
+                guest.send_parcel();
+            }
+            let mut now = 5_000;
+            paint(&mut guest, &real, &view, now);
+            let came = |guest: &Guest| match &guest.state {
+                State::Visiting(visit) => visit.flap.is_some(),
+                _ => panic!("visiting"),
+            };
+            if cued {
+                assert!(came(&guest), "{at}: at the cue's paint");
+                continue;
+            }
+            while now < 15_000 {
+                assert!(!came(&guest), "{at}: mid-act at {now}");
+                now += 500;
+                guest.advance(now);
+                paint(&mut guest, &real, &view, now);
+            }
+        }
+    }
+}
+
+/// The room a parcel coming in through her door's flap `flap` slides
+/// through: her door's space by its wall (the six columns past the wall,
+/// her height above its floor row and the floor row).
+fn slide_space(flap: room::Flap) -> Rect {
+    let left = match flap.side {
+        room::Side::Right => flap.x - room::SPACE,
+        room::Side::Left => flap.x + 1,
+    };
+    Rect::new(
+        left as u16,
+        (flap.rows.1 - sprite::HEIGHT) as u16,
+        room::SPACE as u16,
+        (sprite::HEIGHT + 1) as u16,
+    )
+}
+
+/// Whether she, in sight in `visit` at `now`, stands where a parcel
+/// coming in through her door's flap `flap` would slide through her:
+/// in the space it slides through, or in the room her door's beats take
+/// where it stands.
+fn in_the_slides_way(visit: &Visit, flap: room::Flap, now: u64) -> bool {
+    let osaka = &visit.osaka;
+    !osaka.hidden(now)
+        && room::her_box(osaka.x, osaka.y).is_some_and(|her| {
+            std::iter::once(slide_space(flap))
+                .chain(visit.door.and_then(door::DoorSpot::room))
+                .any(|room| her.intersects(room))
+        })
+}
+
+/// Paints `guest` (visiting on `view` of `real`) from `from` as the
+/// shell would, at most 50 ms apart, until a parcel that came in from
+/// `from` on has had its flap's time ([`FLAP_MS`]), asserting on every
+/// frame of a flap through her door that she isn't in its way
+/// ([`in_the_slides_way`]): the flap, and when it came. `meanwhile` runs
+/// after each paint (the frame's `now`). Panics if none came by `limit`.
+fn slide_clear_of_her(
+    guest: &mut Guest,
+    real: &Buffer,
+    view: &IdleView,
+    (from, limit): (u64, u64),
+    at: &str,
+    mut meanwhile: impl FnMut(&mut Guest, u64),
+) -> (room::Flap, u64) {
+    let mut now = from;
+    let mut came = None;
+    loop {
+        paint(guest, real, view, now);
+        let State::Visiting(visit) = &guest.state else {
+            panic!("{at}: visiting throughout");
+        };
+        came = came.or(visit.flap.filter(|&(_, since)| since >= from));
+        if let Some((flap, since)) = came {
+            if now >= since + FLAP_MS {
+                return (flap, since);
+            }
+            assert!(
+                !flap.door || !in_the_slides_way(visit, flap, now),
+                "{at}: {flap:?} at {} through her at ({}, {})",
+                now - since,
+                visit.osaka.x,
+                visit.osaka.y
+            );
+        }
+        assert!(now < limit, "{at}: the parcel never came");
+        meanwhile(guest, now);
+        now += guest
+            .next_tick(now)
+            .map_or(50, |d| d.as_millis() as u64)
+            .clamp(1, 50);
+        guest.advance(now);
+    }
+}
+
+/// A parcel due as she walks toward her door's space (an ordinary walk,
+/// not out through her door) waits until no step she takes while its
+/// flap is open brings her into the space it slides through (door batch
+/// C10; the review of step 9: it was judged on where she stood as it
+/// came, and she walked into its slide). Both modes. Red before the fix:
+/// it came with her two columns from the space, and she stepped into it
+/// mid-slide.
+#[test]
+fn a_parcel_waits_for_her_walk_into_her_doors_space() {
+    let (real, view) = home_screen();
+    for graphics in [false, true] {
+        let at = format!("graphics={graphics}");
+        let mut guest = Guest::new(3);
+        if graphics {
+            guest.set_picker(kitty());
+        }
+        // Users' floor; her door by its left wall (the space columns 1-6).
+        visiting_at(&mut guest, &real, &view, (10, 16));
+        guest.ledger.visits = 1;
+        let State::Visiting(visit) = &mut guest.state else {
+            panic!("{at}: visiting");
+        };
+        visit.osaka.walk_to(3, 0);
+        guest.send_parcel();
+        let (flap, since) =
+            slide_clear_of_her(&mut guest, &real, &view, (0, 120_000), &at, |guest, now| {
+                // Clear of it after 20 s, still.
+                if now >= 20_000
+                    && let State::Visiting(visit) = &mut guest.state
+                    && visit.osaka.x < 10
+                {
+                    visit.osaka.x = 40;
+                    visit.osaka.stand_still(now + 600_000, now);
+                }
+            });
+        assert!(since >= 20_000, "{at}: it waited for her: {since}");
+        assert!(flap.door, "{at}: through her door: {flap:?}");
+    }
+}
+
+/// Her first parcel (no door of hers saved) waits for her to be clear of
+/// the space of the door it actually comes through: here the wall the
+/// empty home would choose (Users' left) can't take it (a protected pane
+/// past the space), so it comes through Playlist's right, which becomes
+/// her door, and she stands in that space. Once she's clear, it comes
+/// through there (door batch C10; the review of step 9: only the empty
+/// home's choice was judged). Both modes. Red before the fix: it slid
+/// through her at once.
+#[test]
+fn her_first_parcel_waits_for_her_by_the_door_it_takes() {
+    let (real, mut view) = home_screen();
+    view.protected.push(Rect::new(7, 9, 12, 8));
+    for graphics in [false, true] {
+        let at = format!("graphics={graphics}");
+        let mut guest = Guest::new(3);
+        if graphics {
+            guest.set_picker(kitty());
+        }
+        visiting_at(&mut guest, &real, &view, (96, 16));
+        guest.ledger.visits = 1;
+        let State::Visiting(visit) = &mut guest.state else {
+            panic!("{at}: visiting");
+        };
+        visit.osaka.stand_still(600_000, 0);
+        paint(&mut guest, &real, &view, 0);
+        let plan = plan_of(&view, &real);
+        assert_eq!(
+            guest.ledger.home.wall(plan).map(|w| (w.strip, w.side)),
+            Some((room::Strip::Bottom(Nook::Users), room::Side::Left)),
+            "{at}: the precondition: the empty home's door on Users' left"
+        );
+        guest.send_parcel();
+        let (flap, since) =
+            slide_clear_of_her(&mut guest, &real, &view, (0, 120_000), &at, |guest, now| {
+                // Clear of it after 20 s, still.
+                if now >= 20_000
+                    && let State::Visiting(visit) = &mut guest.state
+                    && visit.osaka.x == 96
+                {
+                    visit.osaka.x = 75;
+                    visit.osaka.stand_still(now + 600_000, now);
+                }
+            });
+        assert!(since >= 20_000, "{at}: it waited for her: {since}");
+        assert!(
+            flap.door && (flap.side, flap.x) == (room::Side::Right, 99),
+            "{at}: through her door on Playlist's right: {flap:?}"
+        );
+    }
+}
+
+/// A flap through her door is drawn as her door only while her door
+/// stands at that wall's own strip: if it moves to another strip whose
+/// wall shares the column (List's left over Users' left, column 0) while
+/// the flap is open, the flap shows in the wall where the parcel comes
+/// in, never as her door on the other strip, apart from its parcel
+/// (the review of step 9: the match read only the side and column).
+/// Both modes. Red before the fix: her door with its flap open on List.
+#[test]
+fn a_door_flap_stays_on_its_own_strip() {
+    let list = Rect::new(0, 0, 50, 8);
+    let users = Rect::new(0, 8, 50, 9);
+    let playlist = Rect::new(50, 0, 50, 17);
+    let real = {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 100, 20));
+        for area in [list, users, playlist] {
+            tuirealm::ratatui::widgets::Widget::render(
+                tuirealm::ratatui::widgets::Block::bordered(),
+                area,
+                &mut buf,
+            );
+        }
+        buf
+    };
+    let view = IdleView {
+        nooks: vec![
+            (Nook::List, list),
+            (Nook::Users, users),
+            (Nook::Playlist, playlist),
+        ],
+        ..view(bottom_strip(100, 20))
+    };
+    for graphics in [false, true] {
+        let at = format!("graphics={graphics}");
+        let mut guest = Guest::new(3);
+        if graphics {
+            guest.set_picker(kitty());
+        }
+        visiting_at(&mut guest, &real, &view, (75, 16));
+        guest.ledger.visits = 1;
+        let State::Visiting(visit) = &mut guest.state else {
+            panic!("{at}: visiting");
+        };
+        visit.osaka.stand_still(600_000, 0);
+        guest.send_parcel();
+        paint(&mut guest, &real, &view, 0);
+        let State::Visiting(visit) = &guest.state else {
+            panic!("{at}: visiting");
+        };
+        let (flap, since) = visit.flap.expect("it came at once");
+        assert!(
+            flap.door && (flap.side, flap.x) == (room::Side::Left, 0),
+            "{at}: the precondition: through her door at column 0: {flap:?}"
+        );
+        let saved = guest.ledger.home.door.expect("her door saved");
+        let other = if saved.strip == room::Strip::Bottom(Nook::List) {
+            Nook::Users
+        } else {
+            Nook::List
+        };
+        guest.ledger.home.door = Some(room::DoorWall {
+            strip: room::Strip::Bottom(other),
+            side: room::Side::Left,
+        });
+        let mut now = since;
+        let mut moved = false;
+        while now < since + SLIDE_BEATS[3] {
+            now += 50;
+            guest.advance(now);
+            if let Some(graphics) = guest.graphics.as_mut() {
+                graphics.take_looks();
+            }
+            let frame = paint(&mut guest, &real, &view, now);
+            let looks = guest
+                .graphics
+                .as_mut()
+                .map(Graphics::take_looks)
+                .unwrap_or_default();
+            let State::Visiting(visit) = &guest.state else {
+                panic!("{at}: visiting");
+            };
+            let Some(spot) = visit.door else { continue };
+            if spot.spot().1 == flap.rows.1 {
+                continue;
+            }
+            moved = true;
+            let at = format!("{at} at {}", now - since);
+            assert!(
+                visit
+                    .front
+                    .is_none_or(|(front, _)| front.spot().spot().1 == flap.rows.1),
+                "{at}: her door on the other strip: {:?}",
+                visit.front
+            );
+            assert!(
+                wall_doors(&looks)
+                    .iter()
+                    .all(|(door, ..)| !matches!(door, art::WallDoor::Shut { flap: 1.., .. })),
+                "{at}: her door's flap open: {looks:?}"
+            );
+            for y in flap.rows.0..flap.rows.1 {
+                assert_eq!(
+                    frame[(0, y as u16)].symbol(),
+                    "╲",
+                    "{at}: the wall's flap at {y}"
+                );
+            }
+        }
+        assert!(moved, "{at}: the precondition: her door moved strips");
+    }
+}
+
+/// The stage's parcel, cued while she stands in her door's space, comes
+/// as soon as she's clear of it, whatever act holds her (the cue's own
+/// exemption from the wait for an act's start lasts until it comes; the
+/// review of step 9: it held only on the cue's paint). Both modes. Red
+/// before the fix: it waited for her act to end.
+#[test]
+fn the_stages_parcel_comes_once_she_is_clear_of_her_door() {
+    let (real, view) = home_screen();
+    for graphics in [false, true] {
+        let at = format!("graphics={graphics}");
+        let mut guest = Guest::new(3);
+        if graphics {
+            guest.set_picker(kitty());
+        }
+        visiting_at(&mut guest, &real, &view, (3, 16));
+        guest.ledger.visits = 1;
+        let State::Visiting(visit) = &mut guest.state else {
+            panic!("{at}: visiting");
+        };
+        visit.osaka.stand_still(600_000, 0);
+        paint(&mut guest, &real, &view, 0);
+        guest.cue(Scene::Parcel);
+        paint(&mut guest, &real, &view, 5_000);
+        let State::Visiting(visit) = &mut guest.state else {
+            panic!("{at}: visiting");
+        };
+        assert!(
+            visit.flap.is_none(),
+            "{at}: the precondition: not through her"
+        );
+        // Clear of her door, held long since by an act.
+        visit.osaka.x = 75;
+        visit.osaka.stand_still(600_000, 0);
+        paint(&mut guest, &real, &view, 5_050);
+        let State::Visiting(visit) = &guest.state else {
+            panic!("{at}: visiting");
+        };
+        assert!(
+            visit.flap.is_some_and(|(flap, _)| flap.door),
+            "{at}: it came once she was clear: {:?}",
+            visit.flap
+        );
+    }
+}
+
+/// Her door's space yielding to her window hung by its wall (it has
+/// nowhere else to hang, her poster beside it), though the floor past
+/// the space is free: a parcel comes in by that wall, her door's, but
+/// through the wall's own flap (`╲` over the wall's line, no door of
+/// hers drawn), every frame of its flap, never through her door, which
+/// didn't stand there as it came (D9: through her door only while its
+/// space is kept; the review of step 9). Both modes. A guard: a mutant
+/// dropping the `kept` clause of `Home::through_her_door` makes it red
+/// (her door, standing there once the parcel's in, slides it through).
+#[test]
+fn a_parcel_by_a_yielding_space_comes_through_the_walls_flap() {
+    use crate::ui::houseguest::room::{Anchor, DoorWall, Prop, Side, Strip};
+    let (real, view) = home_screen();
+    for graphics in [false, true] {
+        let at = format!("graphics={graphics}");
+        let mut ledger = Ledger::new_at(4, tue(13, 0));
+        ledger.clock_sent = true;
+        for (item, nook, side, offset) in [
+            (Furniture::Window, Nook::Users, Side::Left, 0),
+            (Furniture::Poster, Nook::Users, Side::Left, 1),
+            (Furniture::Tv, Nook::Playlist, Side::Right, 0),
+        ] {
+            assert!(ledger.home.add(Prop {
+                anchor: Some(Anchor { side, offset }),
+                ..Prop::new(item, nook, 0, sprite::Facing::Right)
+            }));
+        }
+        let wall = DoorWall {
+            strip: Strip::Bottom(Nook::Users),
+            side: Side::Left,
+        };
+        ledger.home.door = Some(wall);
+        let mut guest = Guest::restore(ledger);
+        guest.set_date(date(2026, 6, 17));
+        if graphics {
+            guest.set_picker(kitty());
+        }
+        let space = guest
+            .ledger
+            .home
+            .extents(&view.nooks)
+            .into_iter()
+            .find(|p| p.strip == wall.strip)
+            .and_then(|p| p.space)
+            .expect("a space");
+        assert!(!space.kept, "{at}: the precondition: it yields: {space:?}");
+        let now = until_visiting(&mut guest, &real, &view, 0);
+        let (_, flap, frames, _) = a_parcel_comes(&mut guest, &real, &view, now);
+        assert_eq!(
+            (flap.side, flap.x),
+            (Side::Left, 0),
+            "{at}: by her door's wall: {flap:?}"
+        );
+        assert!(!flap.door, "{at}: not through her door: {flap:?}");
+        for f in frames.iter().filter(|f| f.age < FLAP_MS) {
+            let at = format!("{at} at {}", f.age);
+            for y in flap.rows.0..flap.rows.1 {
+                assert_eq!(
+                    f.frame[(0, y as u16)].symbol(),
+                    "╲",
+                    "{at}: the wall's flap at {y}"
+                );
+            }
+            assert!(
+                wall_doors(&f.looks).is_empty(),
+                "{at}: no door of hers: {:?}",
+                f.looks
+            );
+        }
+    }
 }

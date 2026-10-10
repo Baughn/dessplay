@@ -9,6 +9,10 @@ append-only; you cannot reword or remove existing entries.
 
 Add new days at the top. Add new entries at the bottom of existing days.
 
+## 2026-10-10
+
+- Added: parcels come in through the flap in Osaka's front door.
+
 ## 2026-10-09
 
 - Changed: Osaka leaves for work through her door too; she no longer

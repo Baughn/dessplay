@@ -1156,6 +1156,42 @@ past the space; another wall's flap only when her door can't take it; the wait).
 **Traps.** Door, parcel, plate (and her, if in the space) are **one** `paint_cuts` call: two images over the same
 cells cut each other out. The plate swung up reaches `w-5`: inside the space, clear of the parcel at `≤ w-7`.
 
+**As built (step 9, 2026-10-10).** room.rs: `Flap { .., door: bool, item: Furniture }` (`item` added: the slide needs the
+parcel's look, `lean` and footprint); `Home::through_her_door(plan, wall, item)` per wall (that wall is her door's with
+the parcel in, and its space is kept there), sorted first in `doorstep`. osaka.rs: `Osaka::free_for_a_parcel(staged,
+now)` (never in `Act::Door`/`Out`; a walk or climb; else within `PARCEL_AT_START_MS` = 2 s of the act's start, unless
+`staged`, the stage's parcel cue). mod.rs: `parcel_may_come(visit, home, plan, staged, now)` gates **both** deliveries
+(no flap open, free, her box clear of `door::space_rect` and of `visit.door`'s `room()`; `door::space_rect` is no longer
+cfg(test)); `furnish(.., staged, ..)`; `SLIDE_BEATS` [150, 350, 500, 650], `flap_front(visit, sky, now)` (a door flap
+under `FLAP_MS`, only while `visit.door` stands at the flap's wall) and `slide_at(flap, parcel, age) -> (angle, dx)`
+(the sheet's leads, `dx` from the parcel's shown rest); `front_of` asks `flap_front` after her own door's act;
+`Front { .., parcel: Option<(Layer, i8)> }`, `Front::sliding`, `delivering`, `cuts()` (door, parcel cut at the wall,
+plate when the flap's up; used by `Figure::cuts`, `draw_front` and the goodbye), `bounds()` unions the parcel's;
+`front_shown(.., delivering, ..)` (shown over text in passing); the paint leaves the sliding parcel out of `with`/`apart`
+in line art; `draw_flap` only for a wall's flap (a fallback, or her door's wall with no door standing there);
+`advance` reports a change while a door flap is open, `next_tick` wakes at each beat. `WallDoor::Plate` and `art::lean`
+lost their dead-code allows. Tests: tests/away.rs "Parcels through her door's flap" (1, 2, 3, 6), tests/stillness.rs
+`a_parcel_keeps_her_still` (4; the Drawn builder extracted as `drawn_of`). Deviations: test 3's door-act and gap halves
+are guards (`awake` already kept a parcel out then; the red was her standing in the space); test 2 is a guard proven by
+the always-through-her-door mutant; `open_flap` and its callers are unchanged (the wall's own flap still shows at her
+door's wall while her door doesn't stand there: `a_parcel_by_her_doors_wall_with_her_door_elsewhere`, a long-visit case
+found when `open_flap` left door flaps out). Fixtures migrated
+(her first TV now comes in through her door and pushes along what stood there): `tv_held_back` in
+`her_home_outlives_a_restart`, `her_fridge_by_the_screen_edge_leaves_room_for_her_door`,
+`a_scrap_in_her_door_space_makes_it_fall_back`; `a_lamp_delivered` puts her door on List's left (`LIST_LEFT`).
+
+**Review fixes (step 9).** `parcel_may_come` returns `Result<(), ParcelWait>` (`Flap`/`Busy`/`InItsWay`, traced once per
+change via `visit.parcel_wait`); `in_its_way` reads her boxes at `Osaka::feet_within(FLAP_MS)` (a walk's next
+`ceil(800/WALK_MS)` columns, a climb's or clamber's whole way) against `door::space_rect` and `visit.door.room()`;
+`clear_of_her` judges it again after `doorstep` on the home with the parcel in (both deliveries); the delivery waits
+(never re-routed to another wall). `at_the_flap(flap, spot)` matches the floor row as well as side and column.
+`flap_front(.., graphics, ..)` attaches the sliding parcel in line art only. `visit.staged_parcel` latches the stage's
+exemption from its cue till its parcel comes. In ASCII `next_tick`/`advance` wake only at 650 ms and `FLAP_MS`.
+`slide_at` debug-asserts its offset fits `i8`. `through_her_door`'s `kept` clause decides when the space yields to a
+hung piece with the floor past it free (`a_parcel_by_a_yielding_space_comes_through_the_walls_flap`). The pinned `a_parcel_by_her_doors_wall_with_her_door_elsewhere` loops both modes; no regressions-file
+seed was recorded for it because the failure was the test oracle's, not production's. Tests 2, 3's door-act half and
+the act wait are now pinned by dedicated guards (see the step's notes).
+
 ### Step 10. Census, docs, deep runs (docs and test runs; ~200 lines)
 
 - Census (below) recorded in plan.md's Phase 38 record. Deep runs (below) clean, any failure pinned and fixed in

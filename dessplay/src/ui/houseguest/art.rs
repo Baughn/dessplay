@@ -1139,9 +1139,6 @@ pub(super) enum WallDoor {
     /// already drawn by the shut door) is unused, and past 90 (swung
     /// back past level) is never drawn (`flap_plate` asserts it). The
     /// same bound holds for `Shut { flap }`.
-    // Drawn by the parcel's slide through her door's flap (door batch
-    // step 9); until then, only the tests build it.
-    #[cfg_attr(not(test), allow(dead_code))]
     Plate(u8),
 }
 
@@ -1347,9 +1344,6 @@ pub(super) fn render_wall_door(
 /// at (57.5, 82), the frame's units with the wall's line at 70), then
 /// with its free edge on the lid (`168 - 64·scale`, the parcel drawn at
 /// `scale = min(cols·20/100, 1)`). It rises as the parcel comes out.
-// Used by the parcel's slide through her door's flap (door batch step
-// 9); until then, only the tests call it.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(super) fn lean(item: Furniture, lead: i32) -> u8 {
     let scale = (f32::from(item.spec().footprint.0) * CELL_UNITS.0 / PARCEL.0).min(1.0);
     let top = WALL_DOOR_FRAME.1 - 64.0 * scale;

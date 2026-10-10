@@ -660,7 +660,9 @@ impl Hidden {
 
 /// The wall cells of the flap a parcel is coming in through at `now`,
 /// while it stands open ([`FLAP_MS`] from its delivery): none once it
-/// has shut, nor outside a visit.
+/// has shut, nor outside a visit. Her door's flap too (door batch D9):
+/// its wall's own flap shows there while her door doesn't stand at it
+/// (else the cells are her door's: her text layer or her door's image).
 fn open_flap(guest: &Guest, now: u64) -> Vec<(u16, u16)> {
     let State::Visiting(visit) = &guest.state else {
         return Vec::new();
@@ -1880,6 +1882,8 @@ fn visiting_at(guest: &mut Guest, real: &Buffer, view: &IdleView, (x, y): (i32, 
         next_made: room::MadeId(0),
         reel: None,
         flap: None,
+        parcel_wait: None,
+        staged_parcel: false,
         broken: Vec::new(),
         repairs: Vec::new(),
         mending: None,
@@ -3282,6 +3286,9 @@ fn her_home_outlives_a_restart() {
     let stored = Ledger::from_json(&ledger.to_json()).unwrap();
     let mut guest = Guest::restore(stored);
     assert!(guest.final_ledger(0).is_none(), "unchanged since restored");
+    // Her first TV, due on this second visit, would come in through her
+    // door by the sofa and push it along.
+    tv_held_back(&mut guest);
     guest.cue(Scene::Arrive);
     paint(&mut guest, &real, &view, 0);
     let State::Visiting(visit) = &guest.state else {
@@ -4464,6 +4471,14 @@ fn home_at(
     guest
 }
 
+/// Her first TV held back on order (as the census's stage holds it):
+/// it would come in through her door's flap and stand just past its
+/// space, pushing along what a test set there (door batch D9).
+fn tv_held_back(guest: &mut Guest) {
+    guest.ledger.ordered = Some(Furniture::Tv);
+    guest.ledger.bought_on = 1_000;
+}
+
 /// One step as the shell takes it from `now`: a tick, and a paint if it
 /// says the screen could change (or `always`).
 fn shell_step(guest: &mut Guest, real: &Buffer, view: &IdleView, now: &mut u64, always: bool) {
@@ -5543,60 +5558,6 @@ fn her_home_fills_up_over_visits() {
     }
 }
 
-/// A parcel comes in through a flap in the wall at the screen's edge
-/// and stands against it, boxed; the flap is open as it comes, then
-/// shut. The next comes through the same flap and pushes the first
-/// along. In both drawing modes.
-#[test]
-fn a_parcel_comes_in_through_a_flap_at_the_screens_edge() {
-    for graphics in [false, true] {
-        let (real, view) = home_screen();
-        let (_, users) = view.nooks[0];
-        let floor = i32::from(users.bottom()) - 1;
-        let wall = |frame: &Buffer| {
-            [floor - 2, floor - 1].map(|y| frame[(users.x, y as u16)].symbol().to_owned())
-        };
-        let mut guest = Guest::new(3);
-        if graphics {
-            guest.set_picker(kitty());
-        }
-        // Standing across the screen, out of the flap's way (arriving,
-        // she'd come in at that edge, in front of it).
-        visiting_at(&mut guest, &real, &view, (75, floor));
-        guest.ledger.visits = 1;
-        guest.send_parcel();
-        let frame = paint(&mut guest, &real, &view, 0);
-        let parcel = guest.ledger.home.props[0];
-        assert_eq!(parcel.item, Furniture::Tv);
-        assert!(parcel.boxed);
-        assert_eq!(parcel.strip, room::Strip::Bottom(Nook::Users));
-        let shown = |guest: &Guest, item| match &guest.state {
-            State::Visiting(visit) => visit.shown.iter().find(|s| s.item == item).copied(),
-            _ => None,
-        };
-        let tv = shown(&guest, Furniture::Tv).expect("the parcel shows");
-        // Against her door's space at that wall, from the frame it came
-        // in (her door's wall chosen with it).
-        let past = i32::from(users.x) + 1 + room::SPACE;
-        assert_eq!(tv.left, past, "against her door's space");
-        assert_eq!(wall(&frame), ["╲", "╲"], "the flap is open");
-        let now = FLAP_MS + 100;
-        assert!(guest.advance(now), "the flap shuts");
-        let frame = paint(&mut guest, &real, &view, now);
-        assert_eq!(wall(&frame), ["│", "│"]);
-        guest.send_parcel();
-        let frame = paint(&mut guest, &real, &view, now);
-        assert_eq!(wall(&frame), ["╲", "╲"]);
-        let sofa = shown(&guest, Furniture::Sofa).expect("the next parcel shows");
-        let tv = shown(&guest, Furniture::Tv).expect("the TV still shows");
-        assert_eq!(sofa.left, past, "{sofa:?}");
-        assert!(
-            tv.left >= sofa.rect().right() as i32,
-            "pushed along: {tv:?}"
-        );
-    }
-}
-
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(dessplay_core::test_support::proptest_cases(12)))]
 
@@ -5626,6 +5587,36 @@ proptest! {
         which in 0usize..=CATALOGUE.len(),
     ) {
         a_parcel_on_her_doorstep(seed, graphics, (w, h), &text, &owned, tv, which)?;
+    }
+}
+
+/// [`long_visits_never_touch_what_is_protected`]'s case (found in line
+/// art) that found the wall's own flap shown at her door's wall (column
+/// 0, the parcel's door flap with her door not standing there that
+/// frame): the door batch's step 9 had the test's `open_flap` leave her
+/// door's flap out, though production draws the wall's flap there then.
+/// The failure was the oracle's (a test helper changed mid-step), never
+/// production's, so no seed went to the regressions file: this case is
+/// its record. Both modes (ASCII draws the wall's flap there too).
+#[test]
+fn a_parcel_by_her_doors_wall_with_her_door_elsewhere() {
+    let owned = [
+        (Furniture::ALL[3], 2, 863, false),
+        (Furniture::ALL[1], 0, 347, false),
+    ];
+    for graphics in [false, true] {
+        long_visit(
+            0,
+            graphics,
+            &[(60, 18), (60, 20)],
+            &[(0, 12, "a".to_owned())],
+            &[],
+            &[],
+            (0, 0, 1, 2),
+            &owned,
+            200_000,
+        )
+        .unwrap_or_else(|e| panic!("graphics={graphics}: {e}"));
     }
 }
 
@@ -7623,6 +7614,7 @@ fn her_fridge_by_the_screen_edge_leaves_room_for_her_door() {
             &[(Furniture::Fridge, Nook::Users, 1000)],
             graphics,
         );
+        tv_held_back(&mut guest);
         let now = until_visiting(&mut guest, &real, &view, 0);
         paint(&mut guest, &real, &view, now);
         assert_eq!(
