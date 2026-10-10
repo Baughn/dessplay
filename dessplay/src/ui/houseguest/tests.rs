@@ -637,9 +637,11 @@ impl Hidden {
             } else {
                 prop_assert!(
                     blank || layer.contains(&at),
-                    "cell {:?} ({:?}) changed outside the text layer",
+                    "cell {:?} ({:?}) changed outside the text layer (to {:?}, at {})",
                     at,
-                    want.symbol()
+                    want.symbol(),
+                    got.symbol(),
+                    now
                 );
             }
         }
@@ -1176,6 +1178,7 @@ fn long_visit_of(
         ));
     }
     let mut hidden = Hidden::default();
+    let mut showed = Showed::default();
     let mut visited = Visited::default();
     let mut now = 0;
     let span = span / sizes.len() as u64;
@@ -1418,7 +1421,7 @@ fn long_visit_of(
                     &real,
                     &layer,
                     &flap,
-                    |at| raining(&guest, at) || shut.is_some_and(|r| r.contains(at.into())),
+                    |at| showed.raining(&guest, at) || shut.is_some_and(|r| r.contains(at.into())),
                     now,
                 )?;
             }
@@ -1432,7 +1435,10 @@ fn long_visit_of(
                 .enumerate()
                 .filter(|(i, (a, b))| {
                     let at = ((i % width) as u16, (i / width) as u16);
-                    a != b && !layer.contains(&at) && !flap.contains(&at) && !raining(&guest, at)
+                    a != b
+                        && !layer.contains(&at)
+                        && !flap.contains(&at)
+                        && !showed.raining(&guest, at)
                 })
                 .count();
             // Her box (with its floor row), a bubble, her furniture,
@@ -1463,7 +1469,7 @@ fn long_visit_of(
                             .filter(|&(x, y)| {
                                 !union.contains((x, y).into())
                                     && frame.cell((x, y)) != real.cell((x, y))
-                                    && !raining(&guest, (x, y))
+                                    && !showed.raining(&guest, (x, y))
                             })
                             .count()
                     });
@@ -1499,6 +1505,7 @@ fn long_visit_of(
                 most,
                 debug
             );
+            showed.saw(&guest, &frame, &real);
             // After the frame's checks, so they all read the state it
             // was painted in (an arrival cued replaces it at once).
             if matches!(guest.state, State::Visiting(_))
@@ -1526,6 +1533,42 @@ fn raining(guest: &Guest, (x, y): (u16, u16)) -> bool {
     match &guest.state {
         State::Away(_) => guest.fades.iter().any(|fade| fade.painting(x, y)),
         _ => false,
+    }
+}
+
+/// What the last visiting frame showed of hers: the cells it changed
+/// from the real frame. A goodbye rains only those (its frozen cells are
+/// that frame's), as they showed: her letters over text and lines, her
+/// door's wall column in its wall (door batch, step 10a: before her door
+/// stood in a wall, a goodbye's rain only ever fell on blank cells).
+#[derive(Default)]
+struct Showed(std::collections::BTreeSet<(u16, u16)>);
+
+impl Showed {
+    /// Take in a frame just checked: a visit's, what it showed.
+    fn saw(&mut self, guest: &Guest, frame: &Buffer, real: &Buffer) {
+        if !matches!(guest.state, State::Visiting(_)) {
+            return;
+        }
+        let width = usize::from(real.area.width);
+        self.0 = frame
+            .content
+            .iter()
+            .zip(&real.content)
+            .enumerate()
+            .filter(|(_, (got, want))| got != want)
+            .map(|(i, _)| ((i % width) as u16, (i / width) as u16))
+            .collect();
+    }
+
+    /// Whether a cell is a rain of hers: her empty home's ([`raining`]),
+    /// or her goodbye's over what the visit's last frame showed of hers
+    /// (never over a cell it didn't).
+    fn raining(&self, guest: &Guest, (x, y): (u16, u16)) -> bool {
+        match &guest.state {
+            State::Leaving(leaving) => leaving.dissolve.painting(x, y) && self.0.contains(&(x, y)),
+            _ => raining(guest, (x, y)),
+        }
     }
 }
 

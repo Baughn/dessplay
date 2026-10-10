@@ -1454,6 +1454,35 @@ fn a_resize_while_her_door_is_open_never_leaves_it_on_her_sofa() {
     }
 }
 
+/// [`her_days_with_the_chat_apart_never_touch_what_is_protected`]'s deep
+/// draw pinned (door batch, step 10a): Tuesday 08:12, 64×29 in line
+/// art, wide-glyph text by the chat. Before the fix a cell of a pane's
+/// wall column (63, 8) changed outside the text layer.
+#[test]
+fn her_days_case_a_wall_cell_left_changed() {
+    her_days(
+        0,
+        routine::GameTime {
+            day: 1,
+            h: 8,
+            m: 12,
+        },
+        true,
+        chat_apart,
+        &[(64, 29)],
+        &[(50, 8, " a".to_owned()), (40, 21, "a漢││漢".to_owned())],
+        &[(51, 21), (33, 8)],
+        &[],
+        (0, 0, 1, 1),
+        &[],
+        Run {
+            out_every: Some(1000),
+            ..Run::default()
+        },
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+}
+
 /// The stage's school scene (door batch D10) with the frame resized
 /// (73 to 90 wide, her bed and sofa laid by the wider frame's right
 /// wall) as her door stands open: as she goes out by it, and as she
