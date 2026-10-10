@@ -3775,8 +3775,8 @@ the job's `tmp/step10/`). No threshold or cap was changed.
   about 30 s before "Forgot my lunch!".
 - **(b)/(e) The stillness holds** (`free_to_muse`, `end_look`) are
   provisional (listed above under 5c's open items).
-- **The three re-sampled census tests** (table above): a meaningful
-  dreamy-versus-ordinary measure, or a larger sample fixed up front?
+- ~~**The three re-sampled census tests**~~ (table above): **resolved
+  2026-10-10**, the user: "Seems fine"; the re-sampled tests stand.
 - **Coming home while her door's pane is focused through a shift**, she
   comes home where she went (a door in space), not at her door (step
   4b's fixer's choice).
@@ -3785,12 +3785,10 @@ the job's `tmp/step10/`). No threshold or cap was changed.
   space does.
 - **The slippers don't rain** in line art when her door rains out; they
   go with the image (decisions.md). The fix is small if wanted.
-- **The short terminal's face-on door derezzes the pane title** its top
-  row covers (`door/shots/short-terminal.png`): it stands clear of every
-  piece and never across a pane's side wall (│), but its top row stands
-  on the Playlist pane's top border, over its title (the rule bars only a
-  plain side wall above its floor row; the face-on door stands over
-  text, as decided). Fine?
+- ~~**The short terminal's face-on door derezzes the pane title**~~
+  (`door/shots/short-terminal.png`): **resolved 2026-10-10**, the user:
+  "We'll let it stand." It stands clear of every piece and never across
+  a pane's side wall; its top row may cover a pane's top border and title.
 - **Found, not fixed:** a floor delivery can strand a hung piece (a
   sofa parcel making her space kept, so her window hung at the wall no
   longer shows; step 9); a walk to a piece that goes into the closet
