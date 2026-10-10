@@ -2105,7 +2105,7 @@ welcome; the only goal is "watching her is kind of fun".
 
 ## Phase 38: Houseguest mind and home
 
-**Status: phases 0–4 done (2026-10-02 and 2026-10-03); phase 5 split into 5a (vignettes, done 2026-10-03) and 5b (the clock, done 2026-10-05; record below). Phase 5c, stillness, done 2026-10-07 (record below). The door batch (her door's reserved space, the side-on door, parcels through its flap, no furniture in the chat pane) done 2026-10-10 (record below). master was pushed by the user at 5b step 5c (2026-10-04) to test it, and again at 5c step 11's record (2026-10-06), and at 5c's tail T2 (A) (2026-10-07); everything after that is unpushed (T2's review fixes, T3 and T4, and the whole door batch). Next: phase 6.** Design: [the mind
+**Status: phases 0–4 done (2026-10-02 and 2026-10-03); phase 5 split into 5a (vignettes, done 2026-10-03) and 5b (the clock, done 2026-10-05; record below). Phase 5c, stillness, done 2026-10-07 (record below). The door batch (her door's reserved space, the side-on door, parcels through its flap, no furniture in the chat pane) done 2026-10-10 (record below). master was pushed by the user at 5b step 5c (2026-10-04) to test it, and again at 5c step 11's record (2026-10-06), and at 5c's tail T2 (A) (2026-10-07); everything after that is unpushed (T2's review fixes, T3 and T4, and the whole door batch). Next: phase 6, split into 6a (shelves and the gremlin), 6b (the stepladder) and 6c (partitions); brief below.** Design: [the mind
 and home proposal](proposals/2026-10-02-houseguest-mind.md) (direction
 agreed with the user; their answers are its *Decisions*). Its migration
 plan numbers its own phases 0–8; this section records them.
@@ -3804,6 +3804,83 @@ the job's `tmp/step10/`). No threshold or cap was changed.
   if her door's image can't be placed, and a rain mid-slide bursts no
   parcel glyphs (step 9); a goodbye mid-doorway rains her letters from
   her doorway offset, `d` columns from where she waved (step 8).
+
+### Phase 6 — structures (brief, 2026-10-10)
+
+The proposal's row 6 (*Structures from the UI's own lines*): a shelf, a
+stepladder and a partition, drawn with the UI's own line glyphs in blank
+cells. Code maps at `60727649`:
+[phase6/map-terrain.md](proposals/2026-10-02-houseguest-mind/phase6/map-terrain.md)
+(strips, rooms, terrain, climbing, line art, read sites, tests) and
+[phase6/map-life.md](proposals/2026-10-02-houseguest-mind/phase6/map-life.md)
+(the channel, decor, organising, the ledger, methods, the docs' rules).
+
+**What the maps changed.** The proposal predates the clock and the door
+batch:
+- A *visit* is no longer a short stay: a resident's runs from 12:45 to
+  08:15. `felt` and `home_acts` live on the per-visit `Osaka`.
+- In the bundled layout every floor is already climb-linked, so
+  `Connected` (three door trips between two rooms) would never prompt a
+  ladder there.
+- A room is a strip at about fifteen sites (`role_of`, `Apart`, `Faces`,
+  `Near`, `beauty_at`, `clock_on`, the repair search, …); a repair is a
+  piece move (`Repair { piece, to }`); `pack` knows only a floor's two
+  ends.
+- The channel sells one `Furniture` at a time in `CATALOGUE` order
+  every third visit; there's no wishlist (`Guest::wishlist` is a stage
+  helper) and no gremlin.
+- `Strip` has one variant, matched irrefutably at seven sites;
+  `raw_strips` builds strips from panes alone, and two loops zip panes
+  with strips by position.
+- A structure must be in the buffer before `fits` (a shelf's `─` to
+  stand on), so `read_ground` goes right after `layer.validate`, not just
+  before `Terrain::read`. The proposal's read sites miss three: her empty
+  home while she's out (`paint_empty`), the delivery's lazy read in
+  `furnish`, and the errand read. The goodbye's `Dissolve::unchanged`
+  compares her image's recorded under-cells with the live frame, so a
+  goodbye frame without structures would lose her wave.
+- `settle`'s Climb arm checks no pole, and the terrain keeps no pole
+  grid.
+
+**The user's decisions (2026-10-10):**
+- **Split in three**, each with its own brief and record: **6a** shelves
+  and the gremlin, **6b** the stepladder, **6c** partitions.
+- **The ladder is for reaching her shelf.** A shelf hangs where no climb
+  reaches it; she wants up there (the gremlin, a nap, the view) and the
+  ladder is how she gets there. That replaces `Connected` as the ladder's
+  trigger (it may return with 6c, if partitions cut a floor's way
+  through).
+- **Pacing is per game day**, not per visit: one build stage a game day
+  (a three-stage ladder takes about three days), counts reset at the
+  day's start and saved in the ledger, so a restart doesn't reset them.
+- **Structures are bought kits**: the channel sells a shelf kit, the
+  ladder and a folding partition like any piece; they come boxed through
+  her door's flap, and she unpacks and puts them up in stages. A
+  **wishlist** puts the kit a felt need wants first in the queue, at the
+  channel's usual cadence.
+- **A shelf hangs on the back wall, off the sides**: a `─` run at least a
+  body-width from either side wall, so nothing reaches it until 6b's
+  ladder.
+- **Door-batch rules hold for structures**: none in the chat pane or in
+  her door's space, and no shelf above her door's space.
+- **On a shelf**: a new **gremlin** figurine (the user's "gremlin for the
+  mantelpiece"; model sheet first), and small decor (the plant, the
+  clock) may go up there too; never furniture.
+- **6a's payoff** before any ladder: decor on a shelf counts toward the
+  room's beauty, and she sometimes stands under it and gazes up (a still
+  act, inside 5c's band).
+
+**6a working design** (next):
+[phase6a-design.md](proposals/2026-10-02-houseguest-mind/phase6a-design.md),
+critiques in `phase6/`, then the gremlin's model sheet for the user. Not
+in 6a: partitions, rooms as regions, the pole check (6b, with the
+ladder), `Connected`. Every 6a step keeps the golden hashes and terrain
+snapshots unchanged in a home with no structure (`read_ground` writes
+nothing; the ledger's `structures` field is skipped when empty).
+
+**Still open from the door batch** (above, *Open, for the user*): (a),
+(c), (d), (f), (g), (h) and the found-not-fixed list; parked, not part
+of phase 6 unless the user says so.
 
 ### Later (ideas, the user)
 
