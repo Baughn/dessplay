@@ -3836,7 +3836,11 @@ batch:
   stand on), so `read_ground` goes right after `layer.validate`, not just
   before `Terrain::read`. The proposal's read sites miss three: her empty
   home while she's out (`paint_empty`), the delivery's lazy read in
-  `furnish`, and the errand read. The goodbye's `Dissolve::unchanged`
+  `furnish`, and the errand read. *As built (6a step 2b, the one
+  departure from this wording):* it runs once at the top of the paint,
+  before `layer.validate` too, which reads only her layer's own cells
+  (a structure never takes one), so the arrival's and the errand's
+  reads see it as well. The goodbye's `Dissolve::unchanged`
   compares her image's recorded under-cells with the live frame, so a
   goodbye frame without structures would lose her wave.
 - `settle`'s Climb arm checks no pole, and the terrain keeps no pole

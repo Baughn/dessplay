@@ -11,6 +11,7 @@ use tuirealm::ratatui::layout::Rect;
 
 use super::room::{self, Home, Plan, Shown, Side, Space};
 use super::sprite::{Facing, HEIGHT, WIDTH};
+use super::structures;
 
 /// Where her external door stands this frame. Only [`door_place`] makes
 /// one (and the tests, [`DoorSpot::at`]).
@@ -147,6 +148,9 @@ pub(super) trait Ground {
     fn stroke(&self, x: i32, y: i32) -> bool;
     /// Protected (or off the screen): nothing of hers goes there.
     fn protected(&self, x: i32, y: i32) -> bool;
+    /// One of her structures' cells (phase 6a D4): her door never stands
+    /// over one.
+    fn structure(&self, x: i32, y: i32) -> bool;
 }
 
 /// `ground` with the focused pane (`focus`, if the frame protects one)
@@ -181,6 +185,10 @@ impl<G: Ground> Ground for Ungated<'_, G> {
         });
         !focused && self.ground.protected(x, y)
     }
+
+    fn structure(&self, x: i32, y: i32) -> bool {
+        self.ground.structure(x, y)
+    }
 }
 
 /// Every cover her door's box mustn't meet: her pieces as laid out
@@ -204,8 +212,8 @@ pub(super) fn obstacles(
 }
 
 /// Where her external door stands this frame on `plan`, for `home`, her
-/// box meeting none of `obstacles`, read off `ground` (see the module
-/// doc). `prev`, the spot it stood at last: a fallback spot that still
+/// box meeting none of `obstacles` nor her shelves' runs and margins,
+/// read off `ground` (see the module doc). `prev`, the spot it stood at last: a fallback spot that still
 /// passes stays (so it never hops). `None`: nowhere at all.
 pub(super) fn door_place(
     home: &Home,
@@ -240,7 +248,17 @@ pub(super) fn door_place(
             }
         }
     };
-    let fits = |(x, y): (i32, i32)| on_floor((x, y), screen, plan.chat, obstacles, ground);
+    // Her shelves' runs and margins, shown this frame or not (phase 6a
+    // D4's keep-out, by geometry, as for the rest of hers): a fallback
+    // spot chosen while a shelf is hidden (text on its row, its pane
+    // focused) never meets it when it shows again, so the door never
+    // hops for it. The terrain's own refusal (`Ground::structure`) is
+    // the second check, for what was written.
+    let shelves = structures::kept_out(home, plan.nooks);
+    let fits = |(x, y): (i32, i32)| {
+        on_floor((x, y), screen, plan.chat, obstacles, ground)
+            && room::her_box(x, y).is_some_and(|her| !shelves.iter().any(|s| s.intersects(her)))
+    };
     let face = |x: i32| {
         if 2 * (x - i32::from(screen.x)) < i32::from(screen.width) {
             Facing::Left
@@ -364,6 +382,7 @@ fn on_floor(
         && !obstacles.iter().any(|o| o.intersects(her))
         && (y - HEIGHT..=y).all(|cy| (x - half..=x + half).all(|cx| !ground.protected(cx, cy)))
         && (y - HEIGHT..y).all(|cy| (x - half..=x + half).all(|cx| !ground.wall(cx, cy)))
+        && (y - HEIGHT..=y).all(|cy| (x - half..=x + half).all(|cx| !ground.structure(cx, cy)))
 }
 
 /// The middle of `screen`, at its foot: where her door is looked for
@@ -382,11 +401,20 @@ fn middle(screen: Rect) -> (i32, i32) {
 pub(super) struct Keep {
     chat: Rect,
     spaces: Vec<Rect>,
+    /// Her shelves' runs and margins (phase 6a D4): kept from what she
+    /// makes only. No real piece can meet one: one standing tops out
+    /// below a shelf's lowest rise, and a hung piece keeps out of a low
+    /// shelf's block from step 4.
+    shelves: Vec<Rect>,
 }
 
 impl Keep {
     /// [`Keep`] on `plan` for `home`: her door's space on its wall (the
     /// saved one, else the one chosen this frame), and `plan`'s chat.
+    /// Her shelves' rects are pure geometry (no layout, nothing read off
+    /// the frame, nothing allocated with none on record), a sliver of
+    /// what finding the space (`Home::extents`) costs, so they're taken
+    /// eagerly although only [`MadeKeep`] reads them.
     pub(super) fn of(home: &Home, plan: Plan) -> Self {
         Self {
             chat: plan.chat,
@@ -395,6 +423,7 @@ impl Keep {
                 .map(|(space, _)| space.rect)
                 .into_iter()
                 .collect(),
+            shelves: structures::kept_out(home, plan.nooks),
         }
     }
 
@@ -405,7 +434,7 @@ impl Keep {
 
     /// Whether a piece covering `cover` may not be put there.
     pub(super) fn refuses(&self, cover: Rect) -> bool {
-        room::in_chat(self.chat, cover) || self.made_refuses(cover)
+        room::in_chat(self.chat, cover) || self.in_space(cover)
     }
 
     /// What a makeshift piece may not stand on: her door's space, never
@@ -416,8 +445,12 @@ impl Keep {
         MadeKeep(self)
     }
 
-    fn made_refuses(&self, cover: Rect) -> bool {
+    fn in_space(&self, cover: Rect) -> bool {
         self.spaces.iter().any(|s| s.intersects(cover))
+    }
+
+    fn made_refuses(&self, cover: Rect) -> bool {
+        self.in_space(cover) || self.shelves.iter().any(|s| s.intersects(cover))
     }
 
     /// Whether a placement puts a piece that showed (in `was`, outside
@@ -504,6 +537,7 @@ mod tests {
         let keep = Keep {
             chat: Rect::new(70, 0, 30, 14),
             spaces: vec![Rect::new(94, 8, 5, 5)],
+            shelves: Vec::new(),
         };
         let in_chat = Rect::new(72, 8, 9, 5);
         let in_space = Rect::new(92, 8, 6, 5);
@@ -514,6 +548,42 @@ mod tests {
         assert!(!keep.for_made().refuses(in_chat));
         assert!(keep.for_made().refuses(in_space));
         assert!(!keep.for_made().refuses(elsewhere));
+    }
+
+    /// Her shelf's run and margin (phase 6a D4) keep out what she makes,
+    /// as her door's space does, whatever of it shows; a real piece
+    /// isn't judged by it (none can meet one).
+    #[test]
+    fn a_made_piece_is_kept_off_her_shelf() {
+        let home = Home {
+            structures: vec![structures::Structure::Shelf(structures::Shelf {
+                nook: room::Nook::Users,
+                anchor: room::Anchor {
+                    side: Side::Left,
+                    offset: 12,
+                },
+                rise: 7,
+                built: 1,
+            })],
+            ..Home::default()
+        };
+        let nooks = [(room::Nook::Users, Rect::new(50, 0, 50, 13))];
+        let plan = Plan {
+            nooks: &nooks,
+            chat: Rect::default(),
+            screen: Rect::new(0, 0, 100, 30),
+        };
+        let keep = Keep::of(&home, plan);
+        // Its run is 63..73 on row 5, its margin two cells past each end.
+        for (x, kept) in [(60, false), (61, true), (66, true), (74, true), (75, false)] {
+            let cover = Rect::new(x, 3, 1, 3);
+            assert_eq!(keep.for_made().refuses(cover), kept, "x {x}");
+            assert!(!keep.refuses(cover), "x {x}: a real piece");
+        }
+        assert!(
+            !keep.for_made().refuses(Rect::new(63, 6, 10, 2)),
+            "under it"
+        );
     }
 
     /// Ground with a floor's line on every cell of row `floor`, a plain
@@ -540,6 +610,175 @@ mod tests {
                 return true;
             };
             !self.area.contains((x, y).into())
+        }
+        fn structure(&self, _: i32, _: i32) -> bool {
+            false
+        }
+    }
+
+    /// Her fallback door never stands over her shelf (phase 6a D4): no
+    /// cell of her box, its floor row included, is one her structures
+    /// wrote, though a shelf is a line and she could stand under it.
+    #[test]
+    fn her_fallback_door_never_stands_over_her_shelf() {
+        struct Shelved {
+            lines: Lines,
+            /// Row, and columns `from..to`.
+            shelf: (i32, i32, i32),
+        }
+        impl Ground for Shelved {
+            fn ledge(&self, x: i32, y: i32) -> bool {
+                self.lines.ledge(x, y)
+            }
+            fn wall(&self, x: i32, y: i32) -> bool {
+                self.lines.wall(x, y)
+            }
+            fn stroke(&self, x: i32, y: i32) -> bool {
+                self.lines.stroke(x, y) || self.structure(x, y)
+            }
+            fn protected(&self, x: i32, y: i32) -> bool {
+                self.lines.protected(x, y)
+            }
+            fn structure(&self, x: i32, y: i32) -> bool {
+                let (row, from, to) = self.shelf;
+                y == row && (from..to).contains(&x)
+            }
+        }
+        let area = Rect::new(0, 0, 100, 30);
+        let half = WIDTH / 2;
+        // Rows of her box (`8..=12`), and just over and under it.
+        for row in [7, 8, 10, 12, 13] {
+            let ground = Shelved {
+                lines: Lines {
+                    area,
+                    floor: 12,
+                    wall: 99,
+                },
+                shelf: (row, 30, 40),
+            };
+            for x in 20..=50 {
+                let meets = (12 - HEIGHT..=12).contains(&row)
+                    && (x - half..=x + half).any(|cx| (30..40).contains(&cx));
+                assert_eq!(
+                    on_floor((x, 12), area, Rect::default(), &[], &ground),
+                    !meets,
+                    "row {row} x {x}"
+                );
+            }
+        }
+    }
+
+    /// Her fallback door never stands where her shelf would be, shown
+    /// or not (phase 6a D4's keep-out, by geometry), so it never hops
+    /// when a hidden shelf shows: chosen while text is on its margin, or
+    /// while its pane is focused (read [`Ungated`], as the door she's
+    /// through is), it stays where it stood once the shelf shows, its box
+    /// meeting neither the run nor the margin. The only floors are two
+    /// runs of text `─` on row 9, under the shelf (nearer where her door
+    /// is looked for) and past it; her door's spaces are taken by her
+    /// pieces. Through the frame's own terrain, both modes.
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn her_fallback_door_never_hops_for_her_shelf() {
+        use super::super::terrain::Terrain;
+        let home = Home {
+            structures: vec![structures::Structure::Shelf(structures::Shelf {
+                nook: room::Nook::Users,
+                anchor: room::Anchor {
+                    side: Side::Left,
+                    offset: 12,
+                },
+                rise: 7,
+                built: 2,
+            })],
+            door: Some(room::DoorWall {
+                strip: room::Strip::Bottom(room::Nook::Users),
+                side: Side::Left,
+            }),
+            ..Home::default()
+        };
+        let users = Rect::new(50, 0, 50, 13);
+        let nooks = [(room::Nook::Users, users)];
+        let plan = Plan {
+            nooks: &nooks,
+            chat: Rect::default(),
+            screen: Rect::new(0, 0, 100, 30),
+        };
+        // Its run `63..73` on row 5, and its margin.
+        let kept = Rect::new(61, 5, 14, 1);
+        let mut real = tuirealm::ratatui::buffer::Buffer::empty(plan.screen);
+        tuirealm::ratatui::widgets::Widget::render(
+            tuirealm::ratatui::widgets::Block::bordered(),
+            users,
+            &mut real,
+        );
+        real.set_string(
+            60,
+            9,
+            "─".repeat(17),
+            tuirealm::ratatui::style::Style::new(),
+        );
+        real.set_string(
+            80,
+            9,
+            "─".repeat(15),
+            tuirealm::ratatui::style::Style::new(),
+        );
+        // Her pieces over every spot on Users' floor, its spaces among them.
+        let obstacles = [Rect::new(50, 10, 50, 3)];
+        let none = structures::KeepOff {
+            protected: &[],
+            layer: &[],
+            made: &[],
+        };
+        let texty = {
+            let mut texty = real.clone();
+            texty.set_string(74, 5, "x", tuirealm::ratatui::style::Style::new());
+            texty
+        };
+        for graphics in [false, true] {
+            for focused in [false, true] {
+                let at = format!("graphics={graphics} focused={focused}");
+                // Hidden: text on its margin, or its pane focused (kept
+                // clear: the gated view's, which the shelf is written by).
+                let (mut hidden, protected) = if focused {
+                    (real.clone(), vec![users])
+                } else {
+                    (texty.clone(), Vec::new())
+                };
+                let keep_off = structures::KeepOff {
+                    protected: &protected,
+                    ..none
+                };
+                let written = structures::read_ground(&mut hidden, &home, plan, &keep_off);
+                assert!(!written.meets(kept), "{at}: hidden");
+                let terrain = Terrain::read_with(&hidden, &protected, graphics, &written);
+                let ungated = Ungated {
+                    ground: &terrain,
+                    focus: focused.then_some(users),
+                };
+                let first = door_place(&home, plan, &obstacles, &ungated, None);
+                written.undo(&mut hidden);
+                let first = first.expect("a door");
+                assert!(matches!(first.set(), Set::Floor(_)), "{at}: {first:?}");
+                // Shown.
+                let mut shown = real.clone();
+                let written = structures::read_ground(&mut shown, &home, plan, &none);
+                assert!(written.meets(kept), "{at}: shown");
+                let terrain = Terrain::read_with(&shown, &[], graphics, &written);
+                let again = door_place(&home, plan, &obstacles, &terrain, Some(first));
+                let ungated = Ungated {
+                    ground: &terrain,
+                    focus: None,
+                };
+                let through = door_place(&home, plan, &obstacles, &ungated, Some(first));
+                written.undo(&mut shown);
+                assert_eq!(again, Some(first), "{at}: it stays");
+                assert_eq!(through, Some(first), "{at}: read ungated, it stays");
+                let (x, y) = first.spot();
+                let her = room::her_box(x, y).expect("on the screen");
+                assert!(!her.intersects(kept), "{at}: {first:?} meets her shelf");
+            }
         }
     }
 
@@ -592,6 +831,9 @@ mod tests {
                         .ok()
                         .zip(u16::try_from(y).ok())
                         .is_some_and(|(x, y)| self.focus.contains((x, y).into()))
+            }
+            fn structure(&self, x: i32, y: i32) -> bool {
+                self.lines.structure(x, y)
             }
         }
         let area = Rect::new(0, 0, 100, 30);
@@ -659,6 +901,7 @@ mod tests {
             let keep = Keep {
                 chat,
                 spaces: Vec::new(),
+                shelves: Vec::new(),
             };
             assert!(!keep.refuses(Rect::new(48, 8, 9, 5)), "{chat:?}");
             assert!(!keep.refuses(Rect::new(93, 8, 6, 5)), "{chat:?}");

@@ -2302,6 +2302,16 @@ takes in any piece its rectangle meets, not only those meeting her box
 piece she plans is judged with its own cover in her image, at the spot
 she'll crumple it as well as where she'll use it.
 
+**Amendment (2026-10-10, phase 6a):** her structures are the one thing
+of hers written into the frame before the reads, because they're
+terrain (her pieces stand on a shelf's `─`). They're written once a
+paint, before anything reads the frame, and every frame that doesn't
+show her home undoes them before it reads; every `under` a cell of hers
+records is the real frame's. So the rule's point holds: every read in a
+paint is of one picture, and the goodbye compares her image's cells
+with the frame the app drew. See
+[Her structures are the UI's own lines](#her-structures-are-the-uis-own-lines-2026-10-10).
+
 ## Houseguest rechecks where she rests (2026-10-01)
 
 **Rule:** While she rests where she settled calm, uses a piece, or
@@ -5999,6 +6009,47 @@ leaving the wall column out of her door's frozen cells (it's what
 `door_rain` and a focused pane over the wall read, step 8); a travel
 hop without a job (work's way on and the stage's would be lost on
 landing).
+
+## Her structures are the UI's own lines (2026-10-10)
+
+**Rule:** What she puts up (phase 6a: a shelf on a pane's back wall) is
+drawn in the UI's own line glyphs, `┬────────┬`, in the ink of its
+pane's border, only on blank cells nothing else holds (no text, no
+protected or focused pane, not the chat, not her moved text, what she
+made or a piece's cover), with two blank cells past each end; all of it
+or none, each frame, never moved. It's written into the frame once a
+paint, before anything reads it; a frame that shows her home (visiting,
+or standing empty) keeps it as the bottom layer of what it painted, and
+every other frame (her goodbye, her coming in called off, a frame too
+small) undoes it before it reads. It's a line she walks in front of,
+but neither ledge nor pole of hers in 6a; her door never stands on its
+run or its margin, and nothing she moves, swaps or makes lands there,
+shown or not. See [design.md](design.md#houseguest).
+
+**Why:** The proposal's *structures from the UI's own lines*: a shelf
+should look like part of the interface, so it takes the line glyphs and
+the border colour, and stays out of the UI's way like everything of
+hers. It's terrain (in step 3 small decor stands on its `─`, which
+`fits` reads), so it's in the frame before the first read, not just
+before the terrain read, which the layout's text checks would miss.
+Which arm undoes it is decided where the frame ends, not by the state
+at the top of the paint, because the state changes within a paint (an
+errand done, out by her door with no home to show, an arrival coming to
+nothing): a write kept by the state at the top left the shelf in the
+frame her goodbye froze against, so its cells settled at once instead
+of raining. A goodbye never writes it again (it would show over the
+real frame once the rain settled). Her image's cells over a shelf
+record the real frame, so the goodbye's frame, with no shelf, still
+matches them and she waves. What of hers keeps off it keeps off its
+geometry, the whole placed run and margin, not this frame's cells: a
+shelf hidden a while (text on its row, its pane focused) shows again
+where her door or her text already stands otherwise, and her door would
+hop for it (step 2b's review). Brackets at both ends, so it reads as a
+shelf and not the UI's rule running on, and no pole: 6b's ladder is how
+she gets up there, and only to a shelf with room over it. *Rejected:*
+writing it just before the terrain read (the layout would miss it);
+re-writing it in the goodbye; a write keyed on the state at the top of
+the paint.
 
 ## Houseguest chooses by needs among the top few (2026-09-28)
 

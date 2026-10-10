@@ -3,7 +3,8 @@
 **Working design, 2026-10-10; amended the same day twice: with the user's answers, and after four critiques (their files
 are in `phase6/`: `critic-mechanics.md`, `critic-feasibility.md`, `critic-tests.md`, `critic-character.md`; every
 finding's disposition closes this file); with step 1's as-built notes (D1, step 1); and with step 2a's review (D1, D2:
-only a finished shelf holds a piece the record puts on it, never a parcel; the Tests field order).** Brief: docs/plan.md, Phase 38, "Phase 6 — structures (brief, 2026-10-10)";
+only a finished shelf holds a piece the record puts on it, never a parcel; the Tests field order); and with step 2b's
+review (D3: the log; D4: where the write runs out of the house, the keep-out for her door and her pulls; Gates).** Brief: docs/plan.md, Phase 38, "Phase 6 — structures (brief, 2026-10-10)";
 plan.md wins over everything here, but for the one place this design departs from the brief's wording, said in D4.
 Code maps at `60727649`: [phase6/map-terrain.md](phase6/map-terrain.md) and [phase6/map-life.md](phase6/map-life.md);
 this design overrides them where it says so. Proposal: [../2026-10-02-houseguest-mind.md](../2026-10-02-houseguest-mind.md),
@@ -245,7 +246,9 @@ wall; built 0 draws nothing (D3a still blocks for it).
 
 **Per frame** a shelf stands when its geometry holds (else `Home::extents` has no plan for it) and every cell of its
 built run and margin passes D4's test. Otherwise it's hidden that frame, with what stands on it (they stand only on
-written cells: D6), never moved, never re-hung. Logged at debug once per change.
+written cells: D6), never moved, never re-hung. Logged at info once per change of what her home shows, as the
+closet is (`note_closet`; CLAUDE.md: a user-visible state change; step 2b's review), from the arm that keeps the
+cells.
 
 `HIGH_RISE` = `max(hang + rows)` over the hung kinds + 1 = 7, `LOW_RISE` = `HEIGHT` + 1 = 5; both land in step 2a with
 the test that computes them (from the `Spec` rows, `sprite::HEIGHT` and the tallest standing piece).
@@ -291,7 +294,9 @@ pub(super) fn read_ground(buf: &mut Buffer, home: &Home, plan: Plan, keep_off: &
   '─', ink: <the host border's fg>, under: <the real cell>, face: None, burst: false }`.
 - **Where it runs: once, at the top of `paint_state`** (mod.rs:2499), after `observe`, `gate` and `whole_glyphs`
   (2501-2504) and before `errand_progress`/`nudge_due` (2506-2507), in every state but `Leaving`, and only at or above
-  `MIN_WIDTH`×`MIN_HEIGHT` (mod.rs:248). It can precede the visit's `layer.validate` (2747) because validate reads only
+  `MIN_WIDTH`×`MIN_HEIGHT` (mod.rs:248). In `Absent` only when the paint could begin a visit (visits on and a poke due:
+  `nudge_due` → `send` is the one way in within a paint), so the commonest frames write and undo nothing (step 2b's
+  review). It can precede the visit's `layer.validate` (2747) because validate reads only
   the layer's own cells (layer.rs:516-560, `fits` 301-327), which `read_ground` never writes. This departs from the
   brief's wording ("right after `layer.validate`") for that reason; plan.md's record says so when step 2b lands, and
   `TextLayer::validate`'s doc ("call before anything of hers is painted", layer.rs:513-515) gains the exception.
@@ -308,8 +313,9 @@ pub(super) fn read_ground(buf: &mut Buffer, home: &Home, plan: Plan, keep_off: &
   `&Written::none()` (it has undone the cells), the only production call that does, with a comment saying why.
   `nudge_due`/`send`, `furnish` and `paint_empty` take `&Written`.
 - **Keep-out.** The whole placed run and margin of every shelf whose geometry holds, written or not (an unbuilt half,
-  a run hidden by text), joins `base` (mod.rs:2799: no pulled or swapped text, no made piece lands there) and the made
-  keep. Bubbles already avoid non-blank cells (`bubble_spot`, mod.rs:3897-3903). Not `Visit::solid` (mod.rs:1020): she
+  a run hidden by text), joins `base` (mod.rs:2799: no pulled or swapped text, no made piece lands there), the made
+  keep, the text reads that offer her pulls (so none is offered across a shelf, to be refused once she's there), and
+  her fallback door's spots (below). Bubbles already avoid non-blank cells (`bubble_spot`, mod.rs:3897-3903). Not `Visit::solid` (mod.rs:1020): she
   walks in front of a shelf as of a border.
 - **Rains.** Kept cells go first into the painted lists, so they're the bottom layer the dissolve's stacking expects
   (`first_at`, dissolve.rs:106-110: the first cell at a place holds the real UI's `under`). The focused-pane rain
@@ -323,7 +329,10 @@ pub(super) fn read_ground(buf: &mut Buffer, home: &Home, plan: Plan, keep_off: &
   burst cells with the goodbye's frame, which has no shelf, and they match.
 - **Her fallback door never stands over a shelf**: `Ground` (door.rs:141) gains `structure(x, y)` (from the terrain's
   `STRUCTURE` flag; door.rs's two test impls at 532, 581 answer false), and `on_floor` (door.rs:353-367) refuses a box
-  meeting one, as it refuses a wall glyph.
+  meeting one, as it refuses a wall glyph. That reads only this frame's cells, so `door_place` also refuses a box meeting
+  the keep-out (step 2b's review): a spot chosen while a shelf is hidden would otherwise meet it when it shows, and the
+  door would hop. The terrain's check stays as a second one (redundant in production: written cells lie in the
+  keep-out).
 - **The rule's exception, documented:** decisions.md *Houseguest reads the frame she stands on (2026-10-01)* gains an
   amendment and design.md:2619-2622 a clause: her structures are the one thing of hers written before the reads,
   because they're terrain: once a paint, before anything reads the frame, and undone by every frame that doesn't show
@@ -603,7 +612,10 @@ By step:
 **Gates** (every step): `cargo fmt`, `cargo clippy --workspace --all-targets -- -D warnings` (no `dead_code`: each item
 has a production reader in its own step, or is `#[cfg(test)]` until it does), `PROPTEST_CASES=32 cargo nextest run
 --workspace --all-targets`. The CPU perf test is `dessplay-rendezvous/tests/perf.rs::houseguest_visit_cpu_is_negligible`
-(no shelf in it); steps 2b and 5a carry their own cost tests instead.
+(no shelf in it); steps 2b and 5a carry their own cost tests instead: 2b's is deterministic (out of the house,
+`read_ground` writes, and lays out, nothing unless the paint could bring her in, as no frame then shows a shelf;
+`out_of_the_house_her_shelf_is_written_only_when_she_could_come`), and the timing of `read_ground` with a shelf on a
+dense frame is 5a's ignored timing test.
 
 ## Steps
 

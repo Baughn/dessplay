@@ -137,6 +137,10 @@ const GUARDED: u8 = 2;
 const WALL: u8 = 4;
 /// Any box-drawing glyph.
 const STROKE: u8 = 8;
+/// A cell her structures wrote this frame (phase 6a D5): a line (it's
+/// [`STROKE`], and her image redraws it), but neither ledge nor pole of
+/// hers.
+const STRUCTURE: u8 = 16;
 
 /// A walkable stretch: she can stand centred on any `x` in `x0..=x1`
 /// with her feet on row `y`.
@@ -225,7 +229,8 @@ impl Terrain {
     /// (phase 6a D4): every terrain read in a paint takes it, as every
     /// `under` a cell of hers records does (the layout's text checks
     /// take it from step 3, D6; bubbles read the written frame on
-    /// purpose). This build writes none yet.
+    /// purpose). What's written is a line, but neither ledge nor pole of
+    /// hers (phase 6a D5: she can't stand on a shelf in 6a).
     pub fn read_with(buf: &Buffer, protected: &[Rect], graphics: bool, written: &Written) -> Self {
         Self::read_guarded(buf, protected, protected, graphics, written)
     }
@@ -246,9 +251,7 @@ impl Terrain {
         solid: &[Rect],
         guarded: &[Rect],
         graphics: bool,
-        // Read from step 2b (D5: her structures' cells are lines, but
-        // neither ledge nor pole of hers); nothing is written yet.
-        _written: &Written,
+        written: &Written,
     ) -> Self {
         let area = buf.area;
         let (width, height) = (i32::from(area.width), i32::from(area.height));
@@ -281,9 +284,12 @@ impl Terrain {
                 let guarded = guarded.iter().any(|r| r.contains(position));
                 open.push(free && (!graphics || quiet || narrow));
                 calm.push(free && (!graphics || quiet));
-                let floor = ledge(symbol) && (!graphics || redrawable());
+                // Her structures' cells: lines, but neither ledge nor
+                // pole of hers (phase 6a D5).
+                let structure = written.contains(i32::from(position.x), i32::from(position.y));
+                let floor = ledge(symbol) && (!graphics || redrawable()) && !structure;
                 ledges.push(!skip && floor);
-                poles.push(!skip && pole(symbol));
+                poles.push(!skip && pole(symbol) && !structure);
                 let stroke = (!skip).then(|| box_drawing(symbol)).flatten();
                 let mut flags = 0;
                 for (on, flag) in [
@@ -291,6 +297,7 @@ impl Terrain {
                     (guarded || skip, GUARDED),
                     (matches!(stroke, Some('│' | '┃')), WALL),
                     (stroke.is_some(), STROKE),
+                    (structure, STRUCTURE),
                 ] {
                     if on {
                         flags |= flag;
@@ -643,6 +650,10 @@ impl super::door::Ground for Terrain {
 
     fn protected(&self, x: i32, y: i32) -> bool {
         self.line_flags(x, y) & GUARDED != 0
+    }
+
+    fn structure(&self, x: i32, y: i32) -> bool {
+        self.line_flags(x, y) & STRUCTURE != 0
     }
 }
 

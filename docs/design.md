@@ -2619,7 +2619,16 @@ this section states what is built.
   she comes straight back through a door). She stands on the accordion —
   its diagonals are a floor, and it's protected like the input: she
   never moves or covers it; its shake is hers, painted after anything
-  of hers reads the frame, so it never moves her floor — where her box covers the least of the log's
+  of hers reads the frame, so it never moves her floor (her structures,
+  a shelf she has put up, are the one thing of hers written before the
+  reads, because they're terrain: once a paint, before anything reads
+  the frame, each all of it or none, only on blank cells nothing else
+  holds; a frame that doesn't show her home has them undone before it
+  reads, so her goodbye's frame shows none; every cell of hers drawn
+  over one records the real frame under it; they're lines she walks in
+  front of, but neither floor nor pole of hers, and her door never
+  stands on one's run or margin, shown or not
+  (why: [decisions](decisions.md#her-structures-are-the-uis-own-lines-2026-10-10))) — where her box covers the least of the log's
   text (rightmost on a tie), and pokes it for 2 s ("Somebody said
   something."); it shakes as she starts. She walks there only from a
   couple of body-widths away; otherwise she comes by door, and if she's

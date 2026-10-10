@@ -17,7 +17,7 @@ use unicode_width::UnicodeWidthChar;
 /// The whole dissolve; the overlay is gone after this.
 pub(super) const DURATION_MS: u64 = 3750;
 /// Every rain column has settled by this point (then a safety band).
-const SETTLE_BY_MS: u64 = 3600;
+pub(super) const SETTLE_BY_MS: u64 = 3600;
 /// Rain begins after her startled beat.
 pub(super) const RAIN_FROM_MS: u64 = 675;
 /// Latest any column may start.

@@ -889,14 +889,20 @@ pub(super) fn pane_strips(nooks: &[(Nook, Rect)]) -> Vec<PaneStrip> {
             nook,
             rect,
             strip: Strip::Bottom(nook),
-            raw: Extent {
-                from: i32::from(rect.x) + 1,
-                to: i32::from(rect.right()) - 1,
-                floor: i32::from(rect.bottom()) - 1,
-                rows: rect.height.saturating_sub(2),
-            },
+            raw: pane_raw(rect),
         })
         .collect()
+}
+
+/// A pane's raw floor strip (see [`pane_strips`]): inside its borders,
+/// on its bottom border's row.
+pub(super) fn pane_raw(rect: Rect) -> Extent {
+    Extent {
+        from: i32::from(rect.x) + 1,
+        to: i32::from(rect.right()) - 1,
+        floor: i32::from(rect.bottom()) - 1,
+        rows: rect.height.saturating_sub(2),
+    }
 }
 
 /// A strip's geometry this frame, before her door's space: `raw`, its

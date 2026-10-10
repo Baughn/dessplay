@@ -1240,6 +1240,13 @@ pub struct Guest {
     /// Her pieces the last frame hid in the chat pane's closet (door
     /// batch, D7): a change is logged ([`note_closet`]). In memory only.
     closet: Vec<Furniture>,
+    /// The panes whose shelves her home showed in the last paint (phase
+    /// 6a D3): a change is logged. In memory only.
+    shelves_shown: Vec<Nook>,
+    /// The panes whose shelves this paint's arm kept (her home shows
+    /// them), set by the arm that keeps what was written, else none: what
+    /// [`Guest::paint`] logs against `shelves_shown`. In memory only.
+    shelves_kept: Vec<Nook>,
     /// The stage: the cat is home this visit.
     cat_now: bool,
     /// The stage: at the next paint, a sofa turned away from her TV (see
@@ -1389,6 +1396,8 @@ impl Guest {
             shop_now: false,
             said_aloud: Vec::new(),
             closet: Vec::new(),
+            shelves_shown: Vec::new(),
+            shelves_kept: Vec::new(),
             cat_now: false,
             arranging: false,
             nudge: nudge::Nudge::default(),
@@ -2498,6 +2507,72 @@ impl Guest {
             let size = (buf.area.width, buf.area.height);
             paint_fades(&mut self.fades, buf, size, now);
         }
+        // Her shelves as her home showed them this frame (an arm that
+        // undid what was written showed none; a goodbye's rain is no
+        // shelf standing): logged as it changes.
+        if self.shelves_kept != self.shelves_shown {
+            tracing::info!(
+                shown = ?self.shelves_kept,
+                was = ?self.shelves_shown,
+                "houseguest: her shelves shown (where the frame holds them)"
+            );
+            self.shelves_shown = self.shelves_kept.clone();
+        }
+    }
+
+    /// Her structures written into the frame this paint (phase 6a D4:
+    /// see [`structures::read_ground`]), kept off her layer's cells
+    /// (before it's validated: moved text, its sources, torn cells) and
+    /// what she made, visiting; none mid-goodbye, nor where she has no
+    /// room, nor while she's out of the house in a paint that can't
+    /// bring her in (every frame of the commonest state, the video
+    /// playing, with nothing to show and so nothing to write and undo).
+    fn read_ground(
+        &mut self,
+        buf: &mut Buffer,
+        view: &IdleView,
+        size: (u16, u16),
+        now: u64,
+    ) -> Written {
+        // Out of the house, only an errand begins a visit within a
+        // paint (`nudge_due` → `send`: visits on and a poke due); every
+        // other arrival comes through `State::Arriving`, set by a tick.
+        let out_for_now =
+            matches!(self.state, State::Absent) && !(view.delay.is_some() && self.nudge.due(now));
+        let written = if self.ledger.home.structures.is_empty()
+            || out_for_now
+            || matches!(self.state, State::Leaving(_))
+            || size.0 < MIN_WIDTH
+            || size.1 < MIN_HEIGHT
+        {
+            Written::none()
+        } else {
+            let (layer, made): (Vec<(u16, u16)>, Vec<Rect>) = match &self.state {
+                State::Visiting(visit) => (
+                    visit.layer.cells().collect(),
+                    visit.made.iter().map(|m| m.piece.cover()).collect(),
+                ),
+                State::Absent | State::Arriving(..) | State::Away(_) | State::Leaving(_) => {
+                    (Vec::new(), Vec::new())
+                }
+            };
+            let keep_off = structures::KeepOff {
+                protected: &view.protected,
+                layer: &layer,
+                made: &made,
+            };
+            structures::read_ground(buf, &self.ledger.home, plan_of(view, buf), &keep_off)
+        };
+        // The accordion's shake slides its row's cells after this (it's
+        // hers, painted with the rest of her): never a cell of her
+        // structures, since the accordion is in the chat pane and
+        // protected there (app.rs), both of which a structure keeps off
+        // (`structures::free`).
+        debug_assert!(
+            self.nudge.accordion().is_none_or(|a| !written.meets(a)),
+            "a structure written on the accordion"
+        );
+        written
     }
 
     /// Paint her state over the finished frame (see [`Guest::paint`]).
@@ -2508,12 +2583,19 @@ impl Guest {
         let as_drawn = view;
         let view = &whole_glyphs(buf, self.gate(view, now));
         let size = (buf.area.width, buf.area.height);
-        // What her structures wrote into the frame (phase 6a D4): every
-        // terrain read from here on, and every `under` a cell of hers
-        // records, takes it; the layout's text checks (`fits`,
+        // Her structures, written into the frame once (phase 6a D4):
+        // they're terrain, so before anything reads it. Every terrain
+        // read from here on, and every `under` a cell of hers records,
+        // takes what was written; the layout's text checks (`fits`,
         // `project_with`) take it from step 3 (D6); bubbles read the
-        // written frame on purpose. This build writes none yet (step 2b).
-        let written = Written::none();
+        // written frame on purpose. Not mid-goodbye (its frame shows
+        // nothing of them), nor where she has no room. The state may
+        // change below (an errand done, out by her door, an arrival
+        // coming to nothing), so the arm of the match that ends the frame
+        // decides: one showing her home keeps the cells, every other
+        // undoes them before it reads the frame.
+        self.shelves_kept.clear();
+        let written = self.read_ground(buf, view, size, now);
         self.errand_progress(view, now);
         self.nudge_due(buf, view, &written, now);
         if let State::Arriving(how, _) = self.state {
@@ -2607,15 +2689,21 @@ impl Guest {
         // Her time of day, as her clock and window show it.
         let time = self.time_of_day(now);
         // The accordion's shake is hers, painted like the rest of her:
-        // after everything that reads the real frame, and under her.
+        // after everything that reads the real frame, and under her. It
+        // slides its own row's cells, never a cell of her structures:
+        // the accordion lies in the chat pane and is protected there
+        // (app.rs), and a structure is written on neither
+        // (`structures::free`; asserted in `Guest::read_ground`).
         let nudge = &self.nudge;
         match &mut self.state {
             State::Absent | State::Arriving(..) => {
+                written.undo(buf);
                 nudge.paint(buf, now);
                 Rains::ToPaint
             }
             State::Away(empty) => {
                 if size.0 < MIN_WIDTH || size.1 < MIN_HEIGHT {
+                    written.undo(buf);
                     // As a visit leaves for no room: shown again only
                     // after another idle delay (the gate, still open,
                     // would show it at once, to go again at this paint).
@@ -2630,6 +2718,7 @@ impl Guest {
                 // pane: her closed door never moves for a pane kept clear
                 // a while (it's hidden there meanwhile).
                 let unkept = whole_glyphs(buf, as_drawn.clone()).protected;
+                self.shelves_kept = written.shown_on().to_vec();
                 let changed = paint_empty(
                     empty,
                     &mut self.fades,
@@ -2638,7 +2727,7 @@ impl Guest {
                     buf,
                     view,
                     &unkept,
-                    &written,
+                    written,
                     nudge,
                     time,
                     now,
@@ -2649,6 +2738,13 @@ impl Guest {
                 Rains::ToPaint
             }
             State::Leaving(leaving) => {
+                // Her goodbye's frame shows nothing of her structures:
+                // what was written this paint (her state changed under it:
+                // an errand done, out by her door with no home to show, an
+                // arrival coming to nothing) goes before anything reads
+                // the frame. What her home last showed of them is in the
+                // dissolve, with the real cells under it.
+                written.undo(buf);
                 if leaving.dissolve.size() != size {
                     // The geometry she froze against is gone.
                     self.vanish();
@@ -2660,9 +2756,8 @@ impl Guest {
                 let t = now.saturating_sub(leaving.dissolve.started());
                 let untouched = leaving.dissolve.unchanged(buf);
                 // The goodbye's frame shows nothing of her structures
-                // (phase 6a D4: the arm that ends a frame without her
-                // home undoes them before it reads), so it reads the
-                // real frame alone: the one production read with none.
+                // (undone above), so it reads the real frame alone: the
+                // one production read with none.
                 let terrain = Terrain::read_with(buf, &view.protected, true, &Written::none());
                 nudge.paint(buf, now);
                 leaving.dissolve.paint(buf, now);
@@ -2736,7 +2831,8 @@ impl Guest {
                 }
                 // A pane was just focused: what of hers was in it rains
                 // away at once (no startled beat), while she carries on
-                // elsewhere.
+                // elsewhere. Her shelf too: while it's kept clear it isn't
+                // written there (phase 6a D4).
                 if let Some(focus) = view.focus {
                     let out: Vec<Frozen> = visit
                         .painted
@@ -2759,7 +2855,8 @@ impl Guest {
                     }
                 }
                 // Read before paint: the layer validates against the real
-                // frame, then its cells join the protected set so she
+                // frame (her structures, written already, are on none of
+                // its cells), then its cells join the protected set so she
                 // never stands over moved text or the holes it left.
                 visit.layer.validate(buf, &view.protected);
                 // Her furniture stands on blank cells, clear of protected
@@ -2817,6 +2914,10 @@ impl Guest {
                 let mut base = view.protected.clone();
                 base.extend(visit.shown.iter().map(Shown::cover));
                 base.extend(visit.ghost);
+                // Her shelves' runs and margins, shown or not (phase 6a
+                // D4): no text she moves or swaps goes there.
+                let shelves = structures::kept_out(&self.ledger.home, &view.nooks);
+                base.extend(shelves.iter().copied());
                 let mut gripped = true;
                 for op in visit.osaka.take_ops() {
                     // A piece she set out to make where her door's space
@@ -2923,6 +3024,7 @@ impl Guest {
                     || !visit.osaka.settle(now, &visit.terrain)
                 {
                     tracing::info!("houseguest left (no room)");
+                    written.undo(buf);
                     self.vanish();
                     self.quiet_since = now;
                     return Rains::ToPaint;
@@ -2934,8 +3036,12 @@ impl Guest {
                 // A line she moved isn't hers to pull again (it's
                 // protected), but its letters are hers to swap where
                 // they now sit: swaps read the frame with her layer on.
-                // Text reads keep every piece solid.
+                // Text reads keep every piece solid, and her shelves' runs
+                // and margins (phase 6a D4: what `apply` refuses against
+                // `base`, so no pull is offered across one, to be refused
+                // once she's there).
                 protected.extend(visit.shown.iter().map(Shown::cover));
+                protected.extend(shelves);
                 let pulls = scenes::pulls(buf, &visit.terrain, &protected);
                 // The stage places her after her text is drawn: the
                 // frame as it was, to draw again if that let go of text.
@@ -3207,6 +3313,11 @@ impl Guest {
                 };
                 visit.apart = apart;
                 visit.looks = looks;
+                // Her structures first: the bottom layer, the real frame
+                // under them (her goodbye and a focused pane's rain take
+                // them with the rest).
+                self.shelves_kept = written.shown_on().to_vec();
+                written.keep(&mut layer);
                 visit.painted = layer;
                 // Her calendar's entry, delivered as it shows (its line the
                 // bubble drawn): hers the moment it does, whatever ends
@@ -5704,7 +5815,7 @@ fn paint_empty(
     buf: &mut Buffer,
     view: &IdleView,
     unkept: &[Rect],
-    written: &Written,
+    written: Written,
     nudge: &nudge::Nudge,
     time: Option<u16>,
     now: u64,
@@ -5753,7 +5864,7 @@ fn paint_empty(
     let line_art = graphics.is_some();
     // Her door, read off the frame as drawn: never moved by a pane kept
     // clear a while, nor by text.
-    let ground = Terrain::read_with(buf, unkept, line_art, written);
+    let ground = Terrain::read_with(buf, unkept, line_art, &written);
     let laid = ledger.home.laid_and_shifted(plan.nooks).shown;
     let obstacles = door::obstacles(&laid, [], None);
     let prev = empty.door.as_ref().map(|door| door.spot);
@@ -5764,7 +5875,7 @@ fn paint_empty(
     let mut terrain = if view.protected == unkept {
         ground
     } else {
-        Terrain::read_with(buf, &view.protected, line_art, written)
+        Terrain::read_with(buf, &view.protected, line_art, &written)
     };
     terrain.furnish(covers.iter().copied());
     // Side-on in its wall with her slippers before it (only on calm
@@ -5796,7 +5907,7 @@ fn paint_empty(
     // own, and her door's image takes in none.
     let mut painted = draw_props(
         buf,
-        written,
+        &written,
         graphics.as_deref_mut(),
         &shown,
         &looks,
@@ -5805,11 +5916,13 @@ fn paint_empty(
     let mut image = None;
     let mut cells = Vec::new();
     if let Some(front) = standing {
-        let (drawn, art) = draw_front(buf, written, graphics, front, &terrain, &view.protected);
+        let (drawn, art) = draw_front(buf, &written, graphics, front, &terrain, &view.protected);
         cells = drawn.iter().map(|cell| (cell.x, cell.y)).collect();
         painted.extend(drawn);
         image = art;
     }
+    // Her structures first: the bottom layer (see the visit's paint).
+    written.keep(&mut painted);
     empty.apart = shown.clone();
     empty.shown = shown;
     empty.image = image;

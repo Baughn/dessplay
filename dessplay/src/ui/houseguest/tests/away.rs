@@ -2733,7 +2733,7 @@ fn she_never_makes_a_piece_in_her_door_space() {
 /// [`by_playlists_right_wall`] with her sofa on Users (her door at Users'
 /// right wall): she makes a sofa by Playlist's right wall, out of the
 /// way of her door. Returns when it's made, and the frame.
-fn made_by_playlists_right_wall(graphics: bool) -> (Guest, u64, Buffer, IdleView, Rect) {
+pub(super) fn made_by_playlists_right_wall(graphics: bool) -> (Guest, u64, Buffer, IdleView, Rect) {
     let (real, view, space) = by_playlists_right_wall();
     let mut guest = home_at(
         3,
