@@ -245,6 +245,7 @@ fn no_wakeups_for_the_time_without_a_clock_or_window() {
                 strip: None,
                 left: 10,
                 floor: 16,
+                stood: 16,
                 scrap: None,
             };
             let clock = guest.game_clock(now).expect("met");

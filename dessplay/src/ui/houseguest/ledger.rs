@@ -200,12 +200,10 @@ impl Ledger {
             let room = rooms.iter().find(|&&(k, _)| k == RoomKind::of(prop.item));
             // A piece with neither a strip nor its room's pane on record
             // is dropped: it could never be placed.
-            let Some(nook) = room.map(|&(_, nook)| nook).or_else(|| {
-                anchored.map(|a| {
-                    let Strip::Bottom(nook) = a.strip;
-                    nook
-                })
-            }) else {
+            let Some(nook) = room
+                .map(|&(_, nook)| nook)
+                .or_else(|| anchored.map(|a| a.strip.nook()))
+            else {
                 continue;
             };
             let mut piece = Prop {
@@ -213,9 +211,16 @@ impl Ledger {
                 settled: !unsettled.contains(&prop.item),
                 ..Prop::new(prop.item, nook, prop.at, prop.facing)
             };
-            if let Some(a) = anchored {
-                piece.strip = a.strip;
-                piece.anchor = a.anchor;
+            match anchored {
+                Some(a) if a.strip.is_floor() => {
+                    piece.strip = a.strip;
+                    piece.anchor = a.anchor;
+                }
+                // On a shelf the record has no structure for (phase 6a
+                // D2: this build reads none yet), it keeps only its pane
+                // and its share: it lands on that pane's floor.
+                Some(a) => piece.strip = a.strip.room(),
+                None => {}
             }
             home.props.push(piece);
         }
@@ -362,7 +367,7 @@ impl Ledger {
             calendar_on: self.calendar_on.map(|d| d.format(DATE).to_string()),
             clock_sent: self.clock_sent,
             door: self.home.door.map(|door| {
-                let Strip::Bottom(nook) = door.strip;
+                let nook = door.strip.nook();
                 let side = match door.side {
                     Side::Left => "left",
                     Side::Right => "right",
@@ -377,7 +382,10 @@ impl Ledger {
                     item: format!("{:?}", p.item),
                     boxed: p.boxed,
                     settled: p.settled,
-                    strip: format!("{:?}", p.strip),
+                    strip: match p.strip {
+                        Strip::Bottom(_) => format!("{:?}", p.strip),
+                        Strip::Shelf(nook) => format!("{nook:?} shelf"),
+                    },
                 })
                 .collect(),
             ordered: self.ordered.map(|item| format!("{item:?}")),
@@ -550,7 +558,7 @@ fn rooms(home: &Home) -> Vec<(RoomKind, Nook)> {
         if out.iter().any(|&(k, _)| k == kind) {
             continue;
         }
-        let Strip::Bottom(nook) = prop.strip;
+        let nook = prop.strip.nook();
         let taken = |n: Nook| out.iter().any(|&(_, t)| t == n);
         let free = [nook, Nook::List, Nook::Users, Nook::Playlist]
             .into_iter()
@@ -857,13 +865,24 @@ mod tests {
     /// the piece's room's pane.
     #[test]
     fn an_unknown_strip_falls_back_to_the_rooms_pane() {
-        let text = furnished()
-            .to_json()
-            .replace(r#"{"Bottom":"Playlist"}"#, r#"{"Shelf":3}"#);
-        let ledger = Ledger::from_json(&text).unwrap();
-        let bed = ledger.home.props[2];
-        assert_eq!(bed.strip, Strip::Bottom(Nook::Playlist));
-        assert_eq!(bed.anchor, None);
+        // A strip this build doesn't know, and a shelf (known) whose pane
+        // is garbled or isn't one of hers: each its own path through
+        // serde, and each falls back alike.
+        for strip in [
+            r#"{"Ledge":3}"#,
+            r#"{"Shelf":3}"#,
+            r#"{"Shelf":"Chat"}"#,
+            r#"{"Shelf":null}"#,
+        ] {
+            let text = furnished()
+                .to_json()
+                .replace(r#"{"Bottom":"Playlist"}"#, strip);
+            assert!(text.contains(strip), "{strip}: not in {text}");
+            let ledger = Ledger::from_json(&text).unwrap();
+            let bed = ledger.home.props[2];
+            assert_eq!(bed.strip, Strip::Bottom(Nook::Playlist), "{strip}");
+            assert_eq!(bed.anchor, None, "{strip}");
+        }
     }
 
     /// A delivery she hasn't settled is listed after everything else; it
@@ -1319,6 +1338,81 @@ mod tests {
             );
             assert!(text.contains(r#""door""#), "{garbage}: not in {text}");
             assert_eq!(Ledger::from_json(&text), Ok(furnished()), "{garbage}");
+        }
+    }
+
+    /// A piece anchored on a shelf the record has no structure for (here,
+    /// any: phase 6a D2) keeps only its pane and its share: it reads back
+    /// on that pane's floor, unanchored, where its share puts it. Small
+    /// decor or not, on its room's pane or another.
+    #[test]
+    fn a_piece_on_a_shelf_the_record_lacks_lands_on_its_pane() {
+        for (item, nook) in [
+            (Furniture::Plant, Nook::Users),
+            (Furniture::Clock, Nook::List),
+            (Furniture::Sofa, Nook::Users),
+        ] {
+            let mut ledger = furnished();
+            if item != Furniture::Sofa {
+                assert!(ledger.home.add(Prop {
+                    anchor: Some(Anchor {
+                        side: Side::Left,
+                        offset: 9,
+                    }),
+                    ..Prop::new(item, nook, 300, Facing::Right)
+                }));
+            }
+            let i = ledger
+                .home
+                .props
+                .iter()
+                .position(|p| p.item == item)
+                .unwrap();
+            let was = ledger.home.props[i];
+            ledger.home.props[i].strip = Strip::Shelf(nook);
+            // The dump names a shelf by its pane.
+            let owned = ledger.summary(None).owns;
+            let owned = owned.iter().find(|o| o.item == format!("{item:?}"));
+            assert_eq!(
+                owned.map(|o| o.strip.as_str()),
+                Some(format!("{nook:?} shelf").as_str())
+            );
+            let text = ledger.to_json();
+            assert!(
+                text.contains(&format!(r#"{{"Shelf":"{nook:?}"}}"#)),
+                "{text}"
+            );
+            let read = Ledger::from_json(&text).unwrap();
+            let piece = read.home.props.iter().find(|p| p.item == item).unwrap();
+            assert_eq!(piece.strip, Strip::Bottom(nook), "{item:?}");
+            assert_eq!(piece.anchor, None, "{item:?}");
+            assert_eq!(piece.at, was.at, "{item:?}");
+            // Everything else reads as it was written.
+            let mut rest = read.clone();
+            rest.home.props.retain(|p| p.item != item);
+            let mut want = ledger.clone();
+            want.home.props.retain(|p| p.item != item);
+            assert_eq!(rest, want, "{item:?}");
+        }
+    }
+
+    /// A door's wall on a shelf (phase 6a D1: a record garbled, or
+    /// hand-edited) reads as none, without failing the record: her door
+    /// is only ever in a pane's wall, and the rest reads intact.
+    #[test]
+    fn a_garbled_record_never_puts_her_door_on_a_shelf() {
+        for side in ["Left", "Right"] {
+            for nook in ["List", "Users", "Playlist"] {
+                let garbage = format!(r#"{{"strip":{{"Shelf":"{nook}"}},"side":"{side}"}}"#);
+                let text = furnished().to_json().replace(
+                    r#""bought_on":6}"#,
+                    &format!(r#""bought_on":6,"door":{garbage}}}"#),
+                );
+                assert!(text.contains(r#""door""#), "{garbage}: not in {text}");
+                let read = Ledger::from_json(&text);
+                assert_eq!(read.as_ref().map(|l| l.home.door), Ok(None), "{garbage}");
+                assert_eq!(read, Ok(furnished()), "{garbage}");
+            }
         }
     }
 

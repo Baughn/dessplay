@@ -234,11 +234,11 @@ fn a_lamp_in_her_door_space_is_felt_and_moved() {
         let mut guest = anchored_home(4, tue(9, 0), &LAMP_HOME, Some(USERS_RIGHT), graphics);
         // The record packs on the raw strip, not beside the space; with
         // the lamp gone it would.
-        let raw = room::raw_strips(&view.nooks)
+        let raw = room::pane_strips(&view.nooks)
             .into_iter()
-            .find(|(s, _)| *s == Strip::Bottom(Nook::Users))
+            .find(|p| p.strip == Strip::Bottom(Nook::Users))
             .unwrap()
-            .1;
+            .raw;
         let cols: i32 = LAMP_HOME
             .iter()
             .map(|p| i32::from(p.0.spec().footprint.0))
@@ -719,10 +719,10 @@ fn on_a_short_terminal_she_never_feels_her_door_blocked() {
                         visit.broken
                     );
                     // Where the space would stand at Users' right wall.
-                    let users = room::raw_strips(&view.nooks)
+                    let users = room::pane_strips(&view.nooks)
                         .into_iter()
-                        .find(|(s, _)| *s == USERS_RIGHT.strip)
-                        .map(|(_, e)| e);
+                        .find(|p| p.strip == USERS_RIGHT.strip)
+                        .map(|p| p.raw);
                     let would = users.and_then(|e| room::space_rect(e, Side::Right));
                     let laid = guest.ledger.home.clone().laid_out(&view.nooks).shown;
                     if laid.iter().any(|s| {

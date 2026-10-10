@@ -2,7 +2,7 @@
 
 **Working design, 2026-10-10; amended the same day twice: with the user's answers, and after four critiques (their files
 are in `phase6/`: `critic-mechanics.md`, `critic-feasibility.md`, `critic-tests.md`, `critic-character.md`; every
-finding's disposition closes this file).** Brief: docs/plan.md, Phase 38, "Phase 6 — structures (brief, 2026-10-10)";
+finding's disposition closes this file); and with step 1's as-built notes (D1, step 1).** Brief: docs/plan.md, Phase 38, "Phase 6 — structures (brief, 2026-10-10)";
 plan.md wins over everything here, but for the one place this design departs from the brief's wording, said in D4.
 Code maps at `60727649`: [phase6/map-terrain.md](phase6/map-terrain.md) and [phase6/map-life.md](phase6/map-life.md);
 this design overrides them where it says so. Proposal: [../2026-10-02-houseguest-mind.md](../2026-10-02-houseguest-mind.md),
@@ -157,11 +157,12 @@ impl Strip {
      closet's agreement with the search): `rules::search`'s `Places` loop (rules.rs:930), `placements` (room.rs:978)
      and `on_own_strip`/`packed_on`.
   `Spec.shelf` lands with it (step 1: twelve rows, true for the plant and the clock), so `takes` is never a
-  placeholder. The ledger read refuses an untaken piece too (D2).
+  placeholder. The ledger read never puts a piece on a shelf that doesn't take it (or that the record lacks) either:
+  it lands on that pane's floor at its share, unanchored (D2).
 - **Lanes depend on the strip.** On a shelf everything stands: `lift(item, boxed, strip)` (room.rs:697) is 0 there;
   `Prop::lane`/`needs` (room.rs:708-722), `Shown::lift`/`lane` (room.rs:1448-1462) pass their strip. Every place that
-  lanes a piece for a candidate strip uses the candidate's lane: `search`'s `plan.along(old.lane())` and `holds`
-  (rules.rs:935), and `evaluate`'s `e` and `pin` (rules.rs:626, 634).
+  lanes a piece for a candidate strip uses the candidate's lane: `search`'s `plan.along(old.lane())` (rules.rs:935),
+  and `evaluate`'s `e` and `pin` (rules.rs:626, 634). (`holds` there keeps its footprint-only test: see step 1.)
 - **Where she stands to reach a piece.** `StripPlan` gains `host: Extent` (a pane plan's own `raw`). `stand(prop, plan,
   left)` (room.rs:2684) sets a new `Shown::stood: i32`, the floor she stands on to reach it (`host.floor`). `middle_of`
   (mod.rs:4266, read by `reach`, `set_down_refused`'s way back at 4079 and `Judged.home` at 4316), `Shown::seat`
@@ -632,7 +633,11 @@ panes only for now), 2159-2296 (`move_off(from: Nook)`), 2297-2390 (`spot`), 241
 2684 (`stand` → `stood`), 978-1100 (closet: `takes`), 1534, 2738; rules.rs:433, 548-597, 626, 634, 689-690, 753-770,
 930-935; ledger.rs:205, 365, 553, 859, `DoorWall` try_from; mod.rs:213-245, 1624, 4266, 4339-4341. **Exit.** Every golden
 byte-identical, snapshots unchanged. **Traps.** `Strip` is a ledger key: serde names unchanged for `Bottom`.
-`furnished()` stays per strip (layout order); only rooms gather.
+`furnished()` stays per strip (layout order); only rooms gather (the door chooser's "her pieces' strip" key reads
+`furnished()` mapped through `Strip::room`). **As built.** `rules::search`'s `e.holds((cols, rows))` keeps today's
+footprint-only test on purpose (only `along` takes the candidate lane): adding the hang there would move the
+`examined` counts, and on a shelf it is exact anyway, since lift there is 0. An older record's share is of the
+`host` both ways (`StripPlan::pin` writes it, `RawStrip::anchor_at`, read by `Home::pin_anchors`, reads it back).
 
 ### Step 2a. Structures and the ledger, threaded (~850 lines)
 

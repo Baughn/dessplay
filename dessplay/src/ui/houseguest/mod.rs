@@ -208,16 +208,18 @@ fn advert(ledger: &Ledger, shop_now: bool, needs: &brain::Needs) -> Option<Furni
 }
 
 /// Her wall clock as `shown` on the strips of `nooks`, if it's out of
-/// its box on one (see [`osaka::Chances::clock`]). The raw strips: the
-/// room she can read it from is the whole strip, her door's space too.
+/// its box on one (see [`osaka::Chances::clock`]). The raw pane strips:
+/// the room she can read it from is its room's whole floor (a shelf's
+/// clock is read from the floor below), her door's space too.
 fn clock_on(shown: &[Shown], nooks: &[(Nook, Rect)]) -> Option<osaka::ClockOn> {
     let clock = shown
         .iter()
         .find(|s| s.item == Furniture::Clock && !s.boxed && s.scrap.is_none())?;
-    let strip = clock.strip?;
-    let (_, extent) = room::raw_strips(nooks)
+    let room = clock.strip?.room();
+    let extent = room::pane_strips(nooks)
         .into_iter()
-        .find(|&(s, _)| s == strip)?;
+        .find(|p| p.strip == room)?
+        .raw;
     let (cols, _) = clock.size();
     Some(osaka::ClockOn {
         x: clock.left + i32::from(cols) / 2,
@@ -228,16 +230,17 @@ fn clock_on(shown: &[Shown], nooks: &[(Nook, Rect)]) -> Option<osaka::ClockOn> {
 }
 
 /// How pretty the room she stands in at `(x, y)` is: the beauty of what
-/// shows on the strip whose floor that is (0 off any strip). The raw
-/// strips: standing in her door's space, she's in that room.
+/// shows in the room whose floor that is (on it, or on a shelf above it:
+/// [`room::in_room`]; 0 off any pane's floor). The raw pane strips:
+/// standing in her door's space, she's in that room.
 fn beauty_at(shown: &[Shown], nooks: &[(Nook, Rect)], (x, y): (i32, i32)) -> f64 {
-    room::raw_strips(nooks)
+    room::pane_strips(nooks)
         .into_iter()
-        .find(|(_, e)| e.floor == y && (e.from..e.to).contains(&x))
-        .map_or(0.0, |(strip, _)| {
+        .find(|p| p.raw.floor == y && (p.raw.from..p.raw.to).contains(&x))
+        .map_or(0.0, |p| {
             shown
                 .iter()
-                .filter(|s| s.strip == Some(strip) && !s.boxed && s.scrap.is_none())
+                .filter(|s| room::in_room(s, p.strip) && !s.boxed && s.scrap.is_none())
                 .map(|s| s.item.spec().beauty)
                 .sum()
         })
@@ -1621,7 +1624,7 @@ impl Guest {
             .home
             .rooms()
             .iter()
-            .map(|&(room::Strip::Bottom(nook), role)| format!("{nook:?} {role:?}"))
+            .map(|&(strip, role)| format!("{:?} {role:?}", strip.nook()))
             .collect::<Vec<_>>()
             .join(", ")
     }
@@ -4262,9 +4265,10 @@ fn judge_move(home: &room::Home, frame: &rules::Frame, ep: &osaka::Episode) -> O
     }
 }
 
-/// The middle of `at`, on its floor.
+/// The middle of `at`, on the floor she reaches it from
+/// ([`Shown::stood`]: its own, but for a piece on a shelf).
 fn middle_of(at: &Shown) -> (i32, i32) {
-    (at.left + i32::from(at.size().0) / 2, at.floor)
+    (at.left + i32::from(at.size().0) / 2, at.stood)
 }
 
 /// Where she'd stand to lift `at`, or set it down there: beside it on
@@ -4338,7 +4342,10 @@ fn stage_arrange(
     let tv_cols = Furniture::Tv.spec().footprint.0;
     for strip_plan in home.extents(&view.nooks) {
         let (strip, e) = (strip_plan.strip, strip_plan.floor);
-        let room::Strip::Bottom(nook) = strip;
+        // Only on a pane's floor: the TV and the sofa stand on no shelf.
+        let room::Strip::Bottom(nook) = strip else {
+            continue;
+        };
         for side in [Side::Left, Side::Right] {
             // Both face into the room: the sofa, past the TV, away from
             // it.

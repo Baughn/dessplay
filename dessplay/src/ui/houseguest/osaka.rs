@@ -11719,6 +11719,7 @@ mod tests {
             strip: Some(Strip::Bottom(super::super::room::Nook::Users)),
             left: 6,
             floor: 10,
+            stood: 10,
             scrap: None,
         };
         Episode {
@@ -20544,6 +20545,7 @@ mod tests {
                 strip: None,
                 left: 22,
                 floor: 15,
+                stood: 15,
                 scrap: None,
             },
             then: Use::Lounge,
@@ -22692,6 +22694,7 @@ mod tests {
                         strip: None,
                         left: 40,
                         floor: 15,
+                        stood: 15,
                         scrap: made.then(|| super::super::scrap::Scrap::new(MadeId(0), &[], 0)),
                     };
                     let seat = piece.seat(what, 0);
@@ -22731,6 +22734,7 @@ mod tests {
                     strip: None,
                     left: 17,
                     floor: 15,
+                    stood: 15,
                     scrap: Some(super::super::scrap::Scrap::new(MadeId(0), &[], 0)),
                 },
                 then,
@@ -22801,6 +22805,7 @@ mod tests {
                 strip: None,
                 left: 28,
                 floor: 15,
+                stood: 15,
                 scrap: Some(super::super::scrap::Scrap::new(MadeId(0), &[], 0)),
             },
             then: Use::Homework,

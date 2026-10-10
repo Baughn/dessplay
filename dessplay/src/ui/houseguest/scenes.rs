@@ -920,6 +920,7 @@ pub(super) fn builds(
                     strip: None,
                     left: pull.x - i32::from(cols) / 2,
                     floor: pull.y,
+                    stood: pull.y,
                     scrap: Some(done),
                 };
                 if !fits(buf, &piece, clear) || !roomy(buf, &piece, clear) {

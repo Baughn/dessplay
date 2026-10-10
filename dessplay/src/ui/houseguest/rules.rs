@@ -352,13 +352,14 @@ fn spoils(layout: &[Shown], strip: Strip, piece: Furniture) -> bool {
 }
 
 /// Every piece out of its box that spoils its room as `layout` has it,
-/// and the room (whether a piece spoils a room hangs only on what's in
-/// it, so the same pair before and after a move is the same spoiling).
+/// and the room (its floor: [`Strip::room`]; whether a piece spoils a
+/// room hangs only on what's in it, so the same pair before and after a
+/// move is the same spoiling).
 fn spoilt(layout: &[Shown]) -> Vec<(Strip, Furniture)> {
     layout
         .iter()
         .filter(|s| !s.boxed && s.scrap.is_none())
-        .filter_map(|s| Some((s.strip?, s.item)))
+        .filter_map(|s| Some((s.strip?.room(), s.item)))
         .filter(|&(strip, item)| spoils(layout, strip, item))
         .collect()
 }
@@ -367,19 +368,20 @@ fn spoilt(layout: &[Shown]) -> Vec<(Strip, Furniture)> {
 /// to `to`, a piece spoils a room it didn't (`was`, [`spoilt`] before
 /// the move): the moved piece the room it comes into, or another the
 /// room it stands in as that one comes or goes. Only those two rooms
-/// hold other pieces than before; a move along its own strip changes
-/// none.
+/// hold other pieces than before; a move within its own room (along its
+/// strip, or between its floor and a shelf over it) changes none.
 fn newly_spoilt(
     was: &[(Strip, Furniture)],
     after: &[Shown],
     from: Option<Strip>,
     to: Strip,
 ) -> bool {
+    let (from, to) = (from.map(Strip::room), to.room());
     from != Some(to)
         && after
             .iter()
             .filter(|s| !s.boxed && s.scrap.is_none())
-            .filter_map(|s| Some((s.strip?, s.item)))
+            .filter_map(|s| Some((s.strip?.room(), s.item)))
             .filter(|&(strip, _)| strip == to || Some(strip) == from)
             .any(|pair| !was.contains(&pair) && spoils(after, pair.0, pair.1))
 }
@@ -430,7 +432,10 @@ pub(super) struct Repair {
 impl Repair {
     /// A few words for the stage: what she'd move where.
     pub fn label(&self) -> String {
-        let Strip::Bottom(nook) = self.to.strip;
+        let strip = match self.to.strip {
+            Strip::Bottom(nook) => format!("{nook:?}"),
+            Strip::Shelf(nook) => format!("{nook:?} shelf"),
+        };
         let side = match self.to.anchor.side {
             Side::Left => "L",
             Side::Right => "R",
@@ -440,7 +445,7 @@ impl Repair {
             Facing::Right => ">",
         };
         format!(
-            "{} to {nook:?} {side}{} {facing} (tier {}, {} cells)",
+            "{} to {strip} {side}{} {facing} (tier {}, {} cells)",
             self.piece.spec().name,
             self.to.anchor.offset,
             self.tier,
@@ -522,7 +527,8 @@ struct Before {
     strips: Vec<StripLaid>,
     laid: Vec<Shown>,
     broken: Vec<Broken>,
-    /// Every strip with a piece out of its box on it, and its role.
+    /// Every room ([`Strip::room`]: a pane's floor) with a piece out of
+    /// its box in it, on its floor or its shelf, and its role.
     roles: Vec<(Strip, Role)>,
     /// Every piece that spoils its room, and the room.
     spoilt: Vec<(Strip, Furniture)>,
@@ -550,9 +556,10 @@ impl Before {
             shifts,
             plans,
         } = out;
+        // Rooms are floors: a shelf is part of the room below.
         let roles = plans
             .iter()
-            .filter(|p| has_room(&laid, p.strip))
+            .filter(|p| p.strip.is_floor() && has_room(&laid, p.strip))
             .map(|p| (p.strip, room::role_of(&laid, p.strip)))
             .collect();
         let spoilt = spoilt(&laid);
@@ -588,10 +595,11 @@ fn becomes_den(roles: &[(Strip, Role)], laid: &[Shown]) -> bool {
     })
 }
 
-/// Whether `strip` has a piece out of its box on it (a room).
+/// Whether `strip`'s room ([`Strip::room`]) has a piece out of its box
+/// in it (a room).
 fn has_room(laid: &[Shown], strip: Strip) -> bool {
     laid.iter()
-        .any(|s| s.strip == Some(strip) && !s.boxed && s.scrap.is_none())
+        .any(|s| room::in_room(s, strip) && !s.boxed && s.scrap.is_none())
 }
 
 /// `piece` set down at `to`: the repair of `key` it would be and her
@@ -623,7 +631,9 @@ fn evaluate(
     if plan.strip != to.strip {
         return None;
     }
-    let e = plan.along(old.lane());
+    // Laned as it would be there (a clock on a shelf stands).
+    let lane = old.lane_on(to.strip);
+    let e = plan.along(lane);
     if old.boxed || (old.strip, old.anchor, old.facing) == (to.strip, Some(to.anchor), to.facing) {
         return None;
     }
@@ -631,7 +641,7 @@ fn evaluate(
     let moved = Prop {
         strip: to.strip,
         anchor: Some(to.anchor),
-        at: plan.pin(old.lane(), e.left(to.anchor, cols), cols).1,
+        at: plan.pin(lane, e.left(to.anchor, cols), cols).1,
         facing: to.facing,
         ..old
     };
@@ -756,7 +766,7 @@ fn evaluate(
         }
     } else if !laid
         .iter()
-        .any(|s| s.strip == Some(to.strip) && s.item != piece)
+        .any(|s| room::in_room(s, to.strip) && s.item != piece)
     {
         2
     } else if room::role_without(laid, to.strip, piece) == Role::Den
@@ -932,7 +942,11 @@ pub(super) fn search(home: &Home, frame: &Frame, target: &Broken) -> Search {
             let Some(plan) = plan_of(&before, strip) else {
                 continue;
             };
-            let e = plan.along(old.lane());
+            // Only where it may stand, laned as it would be there.
+            if !plan.takes(piece) {
+                continue;
+            }
+            let e = plan.along(old.lane_on(strip));
             let beside = |s: &&Shown| with.contains(&s.item) && s.strip == Some(strip) && !s.boxed;
             let keeps_company = with.is_empty() || before.laid.iter().any(|s| beside(&s));
             // Apart: never on the strip the other one stands on.
@@ -1100,6 +1114,7 @@ struct Spot {
     cost: u32,
     left: i32,
     floor: i32,
+    stood: i32,
 }
 
 impl Trials {
@@ -1137,6 +1152,7 @@ impl Trials {
                 cost: r.cost,
                 left: r.at.left,
                 floor: r.at.floor,
+                stood: r.at.stood,
             });
         }
         trials
@@ -1159,6 +1175,7 @@ impl Trials {
                 facing: spot.to.facing,
                 left: spot.left,
                 floor: spot.floor,
+                stood: spot.stood,
                 ..like.at
             },
             ..*like
@@ -1169,7 +1186,7 @@ impl Trials {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
-    use super::super::room::{Anchor, DoorWall, Nook, Prop, Side, raw_strips};
+    use super::super::room::{Anchor, DoorWall, Nook, Prop, Side, pane_strips};
     use super::super::sprite::Facing;
     use super::*;
     use Furniture::*;
@@ -1182,6 +1199,47 @@ mod tests {
             anchor: Some(Anchor { side, offset }),
             ..Prop::new(item, nook, 0, facing)
         }
+    }
+
+    /// The stage's words for a repair name its strip: a floor by its
+    /// pane, a shelf as that pane's shelf (phase 6a D1).
+    #[test]
+    fn a_repair_onto_a_shelf_says_so() {
+        let to = |strip: Strip| Repair {
+            key: Grievance {
+                row: 0,
+                piece: Plant,
+            },
+            piece: Plant,
+            to: Placement {
+                strip,
+                anchor: Anchor {
+                    side: Side::Right,
+                    offset: 3,
+                },
+                facing: Facing::Left,
+            },
+            at: Shown {
+                item: Plant,
+                facing: Facing::Left,
+                boxed: false,
+                strip: Some(strip),
+                left: 10,
+                floor: 6,
+                stood: 12,
+                scrap: None,
+            },
+            cost: 7,
+            tier: 1,
+        };
+        assert_eq!(
+            to(Strip::Shelf(Nook::Users)).label(),
+            "potted plant to Users shelf R3 < (tier 1, 7 cells)"
+        );
+        assert_eq!(
+            to(Strip::Bottom(Nook::Users)).label(),
+            "potted plant to Users R3 < (tier 1, 7 cells)"
+        );
     }
 
     fn unsettled(prop: Prop) -> Prop {
@@ -2006,7 +2064,7 @@ mod tests {
     fn the_fridge_goes_to_a_wall_clear_of_text() {
         let rule = Rule::AgainstWall(Fridge);
         let fridge = at(Fridge, Nook::Users, Side::Left, 15, Facing::Right);
-        let e = raw_strips(&panes(40))[0].1;
+        let e = pane_strips(&panes(40))[0].raw;
         let (_, repairs) = mend(40, &[fridge], &[], rule);
         let best = repairs.first().expect("a repair");
         assert_eq!(best.cost, 16 - 2, "{best:?}");
@@ -2445,7 +2503,7 @@ mod tests {
         // The first place along the strip, and the place by the wall as
         // the plan with the sofa there has it: the space yields for either.
         let before = Before::new(&home, &frame);
-        let raw = raw_strips(&nooks)[0].1;
+        let raw = pane_strips(&nooks)[0].raw;
         let first = Placement {
             strip: users,
             anchor: Anchor {

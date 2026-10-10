@@ -96,10 +96,10 @@ fn door_space_of(guest: &Guest, real: &Buffer, view: &IdleView) -> Option<Rect> 
     let plan = plan_of(view, real);
     let space = door::space_rect(&guest.ledger.home, plan)?;
     let wall = guest.ledger.home.wall(plan)?;
-    let would = room::raw_strips(&view.nooks)
+    let would = room::pane_strips(&view.nooks)
         .into_iter()
-        .find(|(s, _)| *s == wall.strip)
-        .and_then(|(_, e)| room::space_rect(e, wall.side));
+        .find(|p| p.strip == wall.strip)
+        .and_then(|p| room::space_rect(p.raw, wall.side));
     assert_eq!(Some(space), would, "her door's space read two ways");
     would
 }
@@ -1364,11 +1364,11 @@ fn long_visit_of(
             let flap = open_flap(&guest, now);
             // Each real piece stands on the floor of a strip that's
             // here this frame.
-            let strips = room::raw_strips(&view.nooks);
+            let strips = room::pane_strips(&view.nooks);
             for prop in shown.iter().filter(|s| s.scrap.is_none()) {
-                let here = strips.iter().find(|(s, _)| Some(*s) == prop.strip);
+                let here = strips.iter().find(|p| Some(p.strip) == prop.strip);
                 prop_assert!(
-                    here.is_some_and(|(_, e)| e.floor == prop.floor),
+                    here.is_some_and(|p| p.raw.floor == prop.floor),
                     "{:?}",
                     prop
                 );
@@ -2374,9 +2374,9 @@ fn every_scene_has_a_spot_in_the_stage_room() {
                 // so.
                 let (_, rows) = Furniture::Window.spec().footprint;
                 let hung = Furniture::Window.spec().hang.unwrap_or(0) + rows;
-                let no_wall = room::raw_strips(&view.nooks)
+                let no_wall = room::pane_strips(&view.nooks)
                     .iter()
-                    .all(|(_, extent)| extent.rows < hung);
+                    .all(|p| p.raw.rows < hung);
                 if scene == Scene::LookOut && no_wall {
                     assert!(matches!(note, Some(Err(_))), "{at}: {note:?}");
                     assert!(width < 100, "{at}: the stage room's panes hold it");
@@ -6546,6 +6546,7 @@ fn every_piece_shows_what_her_script_shows_on_it() {
             strip: None,
             left: 40,
             floor: 20,
+            stood: 20,
             scrap: None,
         };
         for prop in props {
@@ -9139,6 +9140,7 @@ fn a_real_piece_wins_nineteen_times_in_twenty() {
         strip: None,
         left: 40,
         floor: 20,
+        stood: 20,
         scrap: Some(scrap::Scrap::new(MadeId(1), &[], 0)),
     };
     let build = Build {
@@ -10200,6 +10202,7 @@ fn a_real_desk_stands_boxed_or_not_and_a_paper_one_is_not_real() {
         strip: None,
         left: 10,
         floor: 15,
+        stood: 15,
         scrap: made.then(|| super::scrap::Scrap::new(super::room::MadeId(0), &[], 0)),
     };
     assert_eq!(
@@ -11264,6 +11267,7 @@ fn a_made_sofa_mostly_faces_the_tv() {
             strip: None,
             left: x - 3,
             floor: 20,
+            stood: 20,
             scrap: Some(scrap::Scrap::new(MadeId(0), &[], 0)),
         },
         then,
@@ -12927,6 +12931,7 @@ fn pocket_on_a_floor(
             strip: Some(Strip::Bottom(Nook::Users)),
             left,
             floor: 10,
+            stood: 10,
             scrap: None,
         },
         cost: 1,
@@ -14296,6 +14301,25 @@ proptest! {
             prop_assert_eq!(share, want, "left {:?} at {} of {:?}", what, at, [since, body_start, body_end, until]);
         }
     }
+}
+
+/// Where she goes to lift or set down a piece, to reach it, and where her
+/// home's middle is judged from, is the floor she stands on to reach it
+/// ([`Shown::stood`]): for a piece on a shelf, its pane's floor below,
+/// not the shelf's run (phase 6a D1).
+#[test]
+fn she_reaches_a_shelf_piece_from_its_panes_floor() {
+    let piece = Shown {
+        item: Furniture::Plant,
+        facing: sprite::Facing::Right,
+        boxed: false,
+        strip: Some(room::Strip::Shelf(Nook::Users)),
+        left: 30,
+        floor: 14,
+        stood: 20,
+        scrap: None,
+    };
+    assert_eq!(middle_of(&piece), (31, 20));
 }
 
 mod away;

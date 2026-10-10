@@ -177,6 +177,9 @@ pub(super) struct Spec {
     /// right (as line art and in ASCII): the clock's dial and the
     /// window's sky would read wrong mirrored.
     pub symmetric: bool,
+    /// Small decor: it may stand on a shelf (phase 6a; see
+    /// [`Strip::takes`]). Never furniture.
+    pub shelf: bool,
 }
 
 const SOFA: Spec = Spec {
@@ -192,6 +195,7 @@ const SOFA: Spec = Spec {
     hang: None,
     beauty: 0.0,
     symmetric: false,
+    shelf: false,
 };
 const TV: Spec = Spec {
     name: "TV",
@@ -206,6 +210,7 @@ const TV: Spec = Spec {
     hang: None,
     beauty: 0.0,
     symmetric: false,
+    shelf: false,
 };
 const BED: Spec = Spec {
     name: "bed",
@@ -221,6 +226,7 @@ const BED: Spec = Spec {
     hang: None,
     beauty: 0.0,
     symmetric: false,
+    shelf: false,
 };
 const DESK: Spec = Spec {
     name: "desk",
@@ -236,6 +242,7 @@ const DESK: Spec = Spec {
     hang: None,
     beauty: 0.0,
     symmetric: false,
+    shelf: false,
 };
 const LAMP: Spec = Spec {
     name: "lamp",
@@ -250,6 +257,7 @@ const LAMP: Spec = Spec {
     hang: None,
     beauty: 0.0,
     symmetric: false,
+    shelf: false,
 };
 const BOOKSHELF: Spec = Spec {
     name: "bookshelf",
@@ -264,6 +272,7 @@ const BOOKSHELF: Spec = Spec {
     hang: None,
     beauty: 0.0,
     symmetric: false,
+    shelf: false,
 };
 const FRIDGE: Spec = Spec {
     name: "fridge",
@@ -278,6 +287,7 @@ const FRIDGE: Spec = Spec {
     hang: None,
     beauty: 0.0,
     symmetric: false,
+    shelf: false,
 };
 const CAT_BED: Spec = Spec {
     name: "cat bed",
@@ -292,6 +302,7 @@ const CAT_BED: Spec = Spec {
     hang: None,
     beauty: 0.0,
     symmetric: false,
+    shelf: false,
 };
 const PLANT: Spec = Spec {
     name: "potted plant",
@@ -306,6 +317,7 @@ const PLANT: Spec = Spec {
     hang: None,
     beauty: 1.0,
     symmetric: false,
+    shelf: true,
 };
 const POSTER: Spec = Spec {
     name: "poster",
@@ -321,6 +333,7 @@ const POSTER: Spec = Spec {
     hang: Some(4),
     beauty: 1.0,
     symmetric: false,
+    shelf: false,
 };
 const CLOCK: Spec = Spec {
     name: "wall clock",
@@ -337,6 +350,7 @@ const CLOCK: Spec = Spec {
     hang: Some(4),
     beauty: 0.5,
     symmetric: true,
+    shelf: true,
 };
 const WINDOW: Spec = Spec {
     name: "window",
@@ -356,6 +370,7 @@ const WINDOW: Spec = Spec {
     hang: Some(1),
     beauty: 0.0,
     symmetric: true,
+    shelf: false,
 };
 
 /// The glyph at `(dx, dy)` of `item`'s ASCII drawing facing `facing`, if
@@ -602,21 +617,27 @@ pub(super) fn forbids(role: Role) -> &'static [Offer] {
         .map_or(&[], |rule| rule.forbids)
 }
 
-/// The role `strip` has as laid out: from what's out of its box there.
+/// The role `strip`'s room has as laid out: from what's out of its box
+/// there (its pane's floor and any shelf above it: [`Strip::room`]).
 pub(super) fn role_of(layout: &[Shown], strip: Strip) -> Role {
     role_among(layout, strip, None)
 }
 
-/// The role `strip` would have as laid out without `piece` (whether a
-/// piece completes its room, or spoils it).
+/// The role `strip`'s room would have as laid out without `piece`
+/// (whether a piece completes its room, or spoils it).
 pub(super) fn role_without(layout: &[Shown], strip: Strip, piece: Furniture) -> Role {
     role_among(layout, strip, Some(piece))
+}
+
+/// Whether `s` is in `strip`'s room ([`Strip::room`]): rooms are floors.
+pub(super) fn in_room(s: &Shown, strip: Strip) -> bool {
+    s.strip.map(Strip::room) == Some(strip.room())
 }
 
 fn role_among(layout: &[Shown], strip: Strip, without: Option<Furniture>) -> Role {
     let offers: Vec<Offer> = layout
         .iter()
-        .filter(|s| s.strip == Some(strip) && !s.boxed && s.scrap.is_none())
+        .filter(|s| in_room(s, strip) && !s.boxed && s.scrap.is_none())
         .filter(|s| Some(s.item) != without)
         .flat_map(|s| s.item.spec().offers.iter().copied())
         .collect();
@@ -629,6 +650,41 @@ fn role_among(layout: &[Shown], strip: Strip, without: Option<Furniture>) -> Rol
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub(super) enum Strip {
     Bottom(Nook),
+    /// The shelf she put up in `nook`'s pane (one a pane at most; phase
+    /// 6a). Its floor is the shelf's run; it's part of the room below
+    /// ([`Strip::room`]), never a room of its own.
+    Shelf(Nook),
+}
+
+impl Strip {
+    /// The pane it's in: every strip has one.
+    pub fn nook(self) -> Nook {
+        match self {
+            Self::Bottom(nook) | Self::Shelf(nook) => nook,
+        }
+    }
+
+    /// The room it's part of: its pane's floor (a shelf is part of the
+    /// room below it, never a room of its own).
+    pub fn room(self) -> Strip {
+        Self::Bottom(self.nook())
+    }
+
+    /// Whether it's a pane's floor (not a shelf): a room of its own.
+    pub fn is_floor(self) -> bool {
+        matches!(self, Self::Bottom(_))
+    }
+
+    /// Whether `item` may stand on it: a floor takes anything; a shelf,
+    /// small decor only ([`Spec::shelf`]). The one admission rule:
+    /// [`Home::on`] lays out nothing a strip doesn't take, and every
+    /// enumeration of places asks [`StripPlan::takes`] first.
+    pub fn takes(self, item: Furniture) -> bool {
+        match self {
+            Self::Bottom(_) => true,
+            Self::Shelf(_) => item.spec().shelf,
+        }
+    }
 }
 
 /// Which wall of its strip an anchor counts from.
@@ -691,33 +747,42 @@ pub(super) enum Lane {
     Wall,
 }
 
-/// The rows between the floor and the bottom row of `item`, out of its
-/// box or not: its hang, once it's out of a box (a parcel stands on the
-/// floor); 0 for a piece that stands.
-fn lift(item: Furniture, boxed: bool) -> u16 {
-    if boxed {
-        0
-    } else {
-        item.spec().hang.unwrap_or(0)
+/// The rows between the floor of `strip` and the bottom row of `item`,
+/// out of its box or not: its hang, once it's out of a box (a parcel
+/// stands on the floor); 0 for a piece that stands, and on a shelf,
+/// where everything stands (phase 6a D1: a clock on a shelf is a mantel
+/// clock). Off any strip (none: as a floor).
+fn lift(item: Furniture, boxed: bool, strip: Option<Strip>) -> u16 {
+    match strip {
+        Some(Strip::Shelf(_)) => 0,
+        Some(Strip::Bottom(_)) | None if boxed => 0,
+        Some(Strip::Bottom(_)) | None => item.spec().hang.unwrap_or(0),
     }
+}
+
+/// The lane a piece lifted `lift` rows off its floor is in.
+fn lane_of(lift: u16) -> Lane {
+    if lift > 0 { Lane::Wall } else { Lane::Floor }
 }
 
 impl Prop {
     /// Which lane of its strip it's in: a piece that hangs is on the
     /// wall once it's out of its box.
     pub fn lane(&self) -> Lane {
-        if lift(self.item, self.boxed) > 0 {
-            Lane::Wall
-        } else {
-            Lane::Floor
-        }
+        self.lane_on(self.strip)
+    }
+
+    /// Which lane it would be in on `strip` (a place a search weighs for
+    /// it: a candidate strip's lane, not its own).
+    pub fn lane_on(&self, strip: Strip) -> Lane {
+        lane_of(lift(self.item, self.boxed, Some(strip)))
     }
 
     /// The columns it takes along its strip, and the rows above the floor
     /// it needs clear (up to its top, hung or standing).
     fn needs(&self) -> (u16, u16) {
         let (cols, rows) = self.item.spec().footprint;
-        (cols, rows + lift(self.item, self.boxed))
+        (cols, rows + lift(self.item, self.boxed, Some(self.strip)))
     }
 
     /// `item` `at` thousandths of the way along `nook`'s floor, not yet
@@ -796,52 +861,122 @@ impl Extent {
     }
 }
 
-/// The strips of the quiet panes this frame, each between its walls.
+/// A quiet pane's floor this frame: the pane `nook`, drawn at `rect`,
+/// and its strip (its bottom border) `raw` between its walls.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct PaneStrip {
+    pub nook: Nook,
+    pub rect: Rect,
+    pub strip: Strip,
+    pub raw: Extent,
+}
+
+/// The floors of the quiet panes this frame, in `nooks`' order, each
+/// between its walls: the panes' own strips, never a shelf (phase 6a
+/// D1), so whatever pairs a pane with its floor reads both from here.
 /// Raw: a strip's floor lane is narrowed by her door's space (see
 /// [`Home::extents`]), which every placement reads; only pinning (an
 /// anchor's share of the way along, as older builds read it) and the
 /// two readers of "which room is she in" (`clock_on`, `beauty_at` in
 /// mod.rs, where the space is as much the room as the rest) read this.
-pub(super) fn raw_strips(nooks: &[(Nook, Rect)]) -> Vec<(Strip, Extent)> {
+/// Every floors-only path (her door's wall, a delivery's flap, a
+/// strip's pieces moving off, a stage gift) iterates these.
+pub(super) fn pane_strips(nooks: &[(Nook, Rect)]) -> Vec<PaneStrip> {
     nooks
         .iter()
-        .map(|&(nook, rect)| {
-            (
-                Strip::Bottom(nook),
-                Extent {
-                    from: i32::from(rect.x) + 1,
-                    to: i32::from(rect.right()) - 1,
-                    floor: i32::from(rect.bottom()) - 1,
-                    rows: rect.height.saturating_sub(2),
-                },
-            )
+        .map(|&(nook, rect)| PaneStrip {
+            nook,
+            rect,
+            strip: Strip::Bottom(nook),
+            raw: Extent {
+                from: i32::from(rect.x) + 1,
+                to: i32::from(rect.right()) - 1,
+                floor: i32::from(rect.bottom()) - 1,
+                rows: rect.height.saturating_sub(2),
+            },
         })
         .collect()
+}
+
+/// A strip's geometry this frame, before her door's space: `raw`, its
+/// own extent between its ends; `host`, its pane's floor's (the floor
+/// she stands on to reach what's on it: its own, for a pane's floor),
+/// what an anchor's share of the way along is of, both ways
+/// ([`StripPlan::pin`] and [`RawStrip::anchor_at`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct RawStrip {
+    pub strip: Strip,
+    pub raw: Extent,
+    pub host: Extent,
+}
+
+impl RawStrip {
+    /// The anchor on this strip of a piece `cols` wide `at` thousandths
+    /// of the way along its `host` (an older record's share, as
+    /// [`StripPlan::pin`] writes it): where the share puts it on the
+    /// host, kept on the raw strip.
+    pub(super) fn anchor_at(&self, at: u16, cols: u16) -> Anchor {
+        self.raw.pin(self.host.share(at, cols), cols).0
+    }
 }
 
 /// The columns her door's space takes along a strip, against its wall.
 pub(super) const SPACE: i32 = 6;
 
-/// Her external door's wall: a side of one strip (saved).
+/// Her external door's wall: a side of one strip (saved). Always a
+/// pane's floor: only [`choose`] makes one, from [`pane_strips`], and
+/// a record naming a shelf doesn't read (phase 6a D1; a `Nook` in
+/// memory would touch every comparison for a state no code builds).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(try_from = "SavedDoorWall")]
 pub(super) struct DoorWall {
     pub strip: Strip,
     pub side: Side,
 }
 
+/// [`DoorWall`] as a record has it, before its strip is checked.
+#[derive(serde::Deserialize)]
+struct SavedDoorWall {
+    strip: Strip,
+    side: Side,
+}
+
+impl TryFrom<SavedDoorWall> for DoorWall {
+    type Error = &'static str;
+
+    fn try_from(saved: SavedDoorWall) -> Result<Self, Self::Error> {
+        match saved.strip {
+            Strip::Bottom(_) => Ok(Self {
+                strip: saved.strip,
+                side: saved.side,
+            }),
+            Strip::Shelf(_) => Err("her door is never on a shelf"),
+        }
+    }
+}
+
 /// A strip as this frame lays it out: `raw` between its walls; `floor`,
 /// what its floor lane packs on (raw less her door's space, when it's
 /// kept); `space`, her door's reserved rect on this strip, if it can
-/// exist at all.
+/// exist at all; `host`, its pane's floor's raw extent (its own `raw`,
+/// for a pane's floor): where she stands to reach what's on it, and
+/// what an anchor's share of the way along is of.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct StripPlan {
     pub strip: Strip,
     pub raw: Extent,
     pub floor: Extent,
     pub space: Option<Space>,
+    pub host: Extent,
 }
 
 impl StripPlan {
+    /// Whether `item` may stand here ([`Strip::takes`]): asked by every
+    /// enumeration of places before it weighs one.
+    pub(super) fn takes(&self, item: Furniture) -> bool {
+        self.strip.takes(item)
+    }
+
     /// What a piece in `lane` is laid along: standing, the floor; hung,
     /// the raw wall.
     pub(super) fn along(&self, lane: Lane) -> Extent {
@@ -853,12 +988,12 @@ impl StripPlan {
 
     /// The anchor that keeps a piece in `lane`, `cols` wide, at `left`
     /// (laid along [`StripPlan::along`] it), and its share of the way
-    /// along `raw` (as older builds read it: shares are always of the raw
-    /// strip).
+    /// along `host` (as older builds read it: shares are always of the
+    /// raw pane floor's).
     pub(super) fn pin(&self, lane: Lane, left: i32, cols: u16) -> (Anchor, u16) {
         (
             self.along(lane).pin(left, cols).0,
-            self.raw.pin(left, cols).1,
+            self.host.pin(left, cols).1,
         )
     }
 }
@@ -994,6 +1129,7 @@ pub(super) fn placements(
             .iter()
             .filter(|p| p.strip == own)
             .chain(laid.plans.iter().filter(|p| p.strip != own))
+            .filter(|p| p.takes(piece.item))
             .find_map(|plan| {
                 if plan.strip == own {
                     on_own_strip(plan, piece, chat)
@@ -1008,7 +1144,7 @@ pub(super) fn placements(
                 .position(|p| p.item == piece.item)
                 .unwrap_or(usize::MAX);
             let (cols, rows) = piece.size();
-            taken.push((index, anchor, (cols, rows + piece.lift()), at));
+            taken.push((index, anchor, (cols, rows + at.lift()), at));
         }
         out.push((i, found.and_then(|(_, at)| Some((at.strip?, at.left)))));
     }
@@ -1020,15 +1156,12 @@ pub(super) fn placements(
 /// the anchor that keeps it there and where it stands then.
 fn on_own_strip(plan: &StripPlan, piece: &Shown, chat: Rect) -> Option<(Anchor, Shown)> {
     let (cols, rows) = piece.size();
-    let e = plan.along(piece.lane());
-    if !e.holds((cols, rows + piece.lift())) {
+    let e = plan.along(piece.lane_on(plan.strip));
+    if !e.holds((cols, rows + piece.lift_on(plan.strip))) {
         return None;
     }
     let left = first_clear(plan, piece, chat)?;
-    let at = Shown {
-        strip: Some(plan.strip),
-        ..at_left(piece, plan, left)
-    };
+    let at = at_left(piece, plan, left);
     Some((e.pin(left, cols).0, at))
 }
 
@@ -1038,13 +1171,9 @@ fn on_own_strip(plan: &StripPlan, piece: &Shown, chat: Rect) -> Option<(Anchor, 
 /// columns where those two meet its rows matter: the first left is the
 /// far wall's, or just past one of them.
 fn first_clear(plan: &StripPlan, piece: &Shown, chat: Rect) -> Option<i32> {
-    let e = plan.along(piece.lane());
+    let e = plan.along(piece.lane_on(plan.strip));
     let span = e.to - e.from - i32::from(piece.size().0);
-    let base = Shown {
-        strip: Some(plan.strip),
-        ..at_left(piece, plan, e.from)
-    }
-    .cover();
+    let base = at_left(piece, plan, e.from).cover();
     if base.is_empty() {
         return (span >= 0).then_some(e.from);
     }
@@ -1069,11 +1198,19 @@ fn first_clear(plan: &StripPlan, piece: &Shown, chat: Rect) -> Option<i32> {
         .map(|d| e.from + d)
 }
 
-/// `s` at `left` on `plan`'s floor.
+/// `s` at `left` on `plan`'s strip: its strip, floor and where she'd
+/// stand to reach it ([`Shown::stood`]) all from the plan, as [`stand`]
+/// sets them for a piece laid out.
 fn at_left(s: &Shown, plan: &StripPlan, left: i32) -> Shown {
+    debug_assert!(
+        !plan.strip.is_floor() || plan.host == plan.raw,
+        "a floor is its own host: {plan:?}"
+    );
     Shown {
+        strip: Some(plan.strip),
         left,
         floor: plan.raw.floor,
+        stood: plan.host.floor,
         ..*s
     }
 }
@@ -1095,9 +1232,9 @@ fn packed_on(
     chat: Rect,
 ) -> Option<(Anchor, Shown)> {
     let (cols, rows) = piece.size();
-    let lane = piece.lane();
+    let lane = piece.lane_on(plan.strip);
     let e = plan.along(lane);
-    let needs = (cols, rows + piece.lift());
+    let needs = (cols, rows + piece.lift_on(plan.strip));
     if !e.holds(needs) {
         return None;
     }
@@ -1181,10 +1318,7 @@ fn packed_on(
         let Some(left) = left_of(index, &lefts) else {
             continue;
         };
-        let at = Shown {
-            strip: Some(plan.strip),
-            ..at_left(piece, left)
-        };
+        let at = at_left(piece, left);
         if refuses(at.cover()) {
             continue;
         }
@@ -1263,20 +1397,26 @@ pub(super) fn space_rect(raw: Extent, side: Side) -> Option<Rect> {
 /// for `home` (see [`Home::wall`]), among `strips` (all, when `None`). A
 /// wall qualifies when its strip is here, has room for her door's space
 /// (see [`Home::extents`]) and that space misses the chat pane. Of
-/// those: at the screen's edge first; then on a strip her pieces stand
-/// on; then where the space would be kept (her floor pieces pack beside
+/// those: at the screen's edge first; then in a room her pieces are in
+/// (its floor or its shelf); then where the space would be kept (her floor pieces pack beside
 /// it and no hung piece is lost to it, as [`Home::extents`] judges it;
 /// only a tie-break: a crowded edge wall of her own strip still wins,
 /// and its space yields until she clears it); then in pane order, right
 /// before left.
 fn choose(home: &Home, plan: Plan, only: Option<Strip>) -> Option<DoorWall> {
-    let mine = home.furnished();
+    // The rooms her pieces are in (a pane whose pieces all stand on its
+    // shelf is hers too: rooms are floors).
+    let mine: Vec<Strip> = home.furnished().into_iter().map(Strip::room).collect();
     // Not at the screen's edge, not her pieces' strip, its space not kept,
     // the pane's place, the left side: least first.
     type Key = (bool, bool, bool, usize, bool);
     let mut best: Option<(Key, DoorWall)> = None;
-    for (index, (&(_, rect), (strip, raw))) in
-        plan.nooks.iter().zip(raw_strips(plan.nooks)).enumerate()
+    for (
+        index,
+        PaneStrip {
+            rect, strip, raw, ..
+        },
+    ) in pane_strips(plan.nooks).into_iter().enumerate()
     {
         if only.is_some_and(|s| s != strip) {
             continue;
@@ -1296,7 +1436,11 @@ fn choose(home: &Home, plan: Plan, only: Option<Strip>) -> Option<DoorWall> {
                 door: Some(wall),
                 ..home.clone()
             }
-            .plan_strip(strip, raw)
+            .plan_strip(RawStrip {
+                strip,
+                raw,
+                host: raw,
+            })
             .0
             .space
             .is_some_and(|s| s.kept);
@@ -1410,6 +1554,13 @@ pub(super) struct Shown {
     pub left: i32,
     /// The floor row it stands on (just below its footprint).
     pub floor: i32,
+    /// The floor row she stands on to reach it: its own `floor`, but for
+    /// a piece on a shelf (phase 6a D1), its pane's floor below. Derived
+    /// from the strip's plan by [`stand`] and [`at_left`], the two ways a
+    /// piece is placed on a strip; anything else (a makeshift piece, a
+    /// test's) stands where it's reached, `stood == floor`. A struct
+    /// update that moves `floor` must set it too.
+    pub stood: i32,
     /// Makeshift, crumpled out of torn-off text (never boxed).
     pub scrap: Option<super::scrap::Scrap>,
 }
@@ -1444,21 +1595,32 @@ impl Shown {
 
     /// The rows between the floor and its bottom row: its hang, while
     /// it's hung on the wall; 0 standing on the floor (and while it's
-    /// boxed, or makeshift).
+    /// boxed, or makeshift, or on a shelf).
     pub fn lift(&self) -> u16 {
+        self.lifted(self.strip)
+    }
+
+    /// [`Shown::lift`] on `strip` (a place weighed for it there: a
+    /// candidate strip's, not its own).
+    pub fn lift_on(&self, strip: Strip) -> u16 {
+        self.lifted(Some(strip))
+    }
+
+    fn lifted(&self, strip: Option<Strip>) -> u16 {
         match self.scrap {
             Some(_) => 0,
-            None => lift(self.item, self.boxed),
+            None => lift(self.item, self.boxed, strip),
         }
     }
 
     /// Which lane of its strip it's in.
     pub fn lane(&self) -> Lane {
-        if self.lift() > 0 {
-            Lane::Wall
-        } else {
-            Lane::Floor
-        }
+        lane_of(self.lift())
+    }
+
+    /// Which lane it would be in on `strip` (see [`Shown::lift_on`]).
+    pub fn lane_on(&self, strip: Strip) -> Lane {
+        lane_of(self.lift_on(strip))
     }
 
     /// Its top row.
@@ -1536,7 +1698,7 @@ impl Shown {
             item: self.item,
             piece: self.piece(),
             x,
-            y: self.floor,
+            y: self.stood,
             facing,
         }
     }
@@ -1658,19 +1820,27 @@ impl Home {
         self.props.iter().any(|p| p.boxed)
     }
 
-    /// Her rooms: each strip her pieces stand on, and what it is from
+    /// Her rooms: each pane's floor her pieces stand in (on it, or on a
+    /// shelf above it: a shelf is part of the room below, never a room of
+    /// its own), in the order she furnished them, and what it is from
     /// what's out of its box there.
     pub fn rooms(&self) -> Vec<(Strip, Role)> {
-        self.furnished()
+        let mut rooms: Vec<Strip> = Vec::new();
+        for strip in self.furnished() {
+            if !rooms.contains(&strip.room()) {
+                rooms.push(strip.room());
+            }
+        }
+        rooms
             .into_iter()
-            .map(|strip| {
+            .map(|room| {
                 let offers: Vec<Offer> = self
                     .props
                     .iter()
-                    .filter(|p| p.strip == strip && !p.boxed)
+                    .filter(|p| p.strip.room() == room && !p.boxed)
                     .flat_map(|p| p.item.spec().offers.iter().copied())
                     .collect();
-                (strip, role(&offers))
+                (room, role(&offers))
             })
             .collect()
     }
@@ -1709,20 +1879,36 @@ impl Home {
     /// only on what stands there; a hung piece's place may decide it.
     /// Needs no screen and no chat.
     pub(super) fn extents(&self, nooks: &[(Nook, Rect)]) -> Vec<StripPlan> {
-        raw_strips(nooks)
+        self.raw_extents(nooks)
             .into_iter()
-            .map(|(strip, raw)| self.plan_strip(strip, raw).0)
+            .map(|raw| self.plan_strip(raw).0)
+            .collect()
+    }
+
+    /// Her strips' geometry this frame, before her door's space: every
+    /// layout path's one source of strips (pinning, laying out, the
+    /// plans). The pane strips in `nooks`' order ([`pane_strips`]); a
+    /// shelf she has put up joins them after the panes (phase 6a D6).
+    fn raw_extents(&self, nooks: &[(Nook, Rect)]) -> Vec<RawStrip> {
+        pane_strips(nooks)
+            .into_iter()
+            .map(|p| RawStrip {
+                strip: p.strip,
+                raw: p.raw,
+                host: p.raw,
+            })
             .collect()
     }
 
     /// `strip`'s plan (see [`Home::extents`]), and on her door's strip,
     /// where it has a space, the strip laid out as the plan has it (its
     /// space kept or yielding): judging the one lays out the other.
-    fn plan_strip(&self, strip: Strip, raw: Extent) -> (StripPlan, Option<Option<LaidOut>>) {
+    fn plan_strip(&self, at: RawStrip) -> (StripPlan, Option<Option<LaidOut>>) {
+        let RawStrip { strip, raw, host } = at;
         let mut laid = None;
         let space = self.strip_door(strip).and_then(|d| {
             let (wall, rect) = space_of(raw, d.side, self.widest_standing(strip))?;
-            let doored = self.lay_strip(strip, raw, narrowed(raw, d.side), Some(rect));
+            let doored = self.lay_strip(at, narrowed(raw, d.side), Some(rect));
             // Laid out with the space, every piece on the strip that
             // could be laid out is (none left out, as `lay_strip` counts
             // them, whatever left it out): laid out without it, no more
@@ -1740,7 +1926,7 @@ impl Home {
                 }
                 doored => doored.map(|(l, _)| l),
             };
-            let doorless = self.lay_strip(strip, raw, raw, None).map(|(l, _)| l);
+            let doorless = self.lay_strip(at, raw, None).map(|(l, _)| l);
             let kept = match (&doored, &doorless) {
                 (Some(doored), Some(doorless)) => doorless
                     .shown
@@ -1766,6 +1952,7 @@ impl Home {
             raw,
             floor,
             space,
+            host,
         };
         (plan, laid)
     }
@@ -1835,10 +2022,13 @@ impl Home {
     }
 
     /// Her pieces in `lane` of `strip`, as [`pack`] takes them (with the
-    /// rows each needs clear above the floor), those that are anchored.
+    /// rows each needs clear above the floor), those that are anchored
+    /// and that it takes ([`Strip::takes`]: every layout reads this, so
+    /// a piece is never laid out on a strip that doesn't take it, and
+    /// every search that judges a place by its layout refuses it there).
     fn on(&self, strip: Strip, lane: Lane) -> Vec<(usize, Anchor, (u16, u16))> {
         self.lays_from(strip)
-            .filter(|(_, p)| p.lane() == lane)
+            .filter(|(_, p)| p.lane() == lane && strip.takes(p.item))
             .filter_map(|(i, p)| Some((i, p.anchor?, p.needs())))
             .collect()
     }
@@ -1862,15 +2052,18 @@ impl Home {
     }
 
     /// Anchor every piece that has only a share of the way along (an
-    /// older record's) where that share puts it, if its strip is here.
-    /// Always on the raw strip (a share is of the way between its walls).
-    fn pin_anchors(&mut self, strips: &[(Strip, Extent)]) {
+    /// older record's) where that share puts it, if its strip is here:
+    /// the share is of its `host` (its pane's floor, as
+    /// [`StripPlan::pin`] takes it), the anchor on its own raw strip
+    /// (see [`RawStrip::anchor_at`]).
+    fn pin_anchors(&mut self, nooks: &[(Nook, Rect)]) {
+        let strips = self.raw_extents(nooks);
         for prop in &mut self.props {
             if prop.anchor.is_none()
-                && let Some(&(_, e)) = strips.iter().find(|(s, _)| *s == prop.strip)
+                && let Some(at) = strips.iter().find(|s| s.strip == prop.strip)
             {
                 let cols = prop.item.spec().footprint.0;
-                prop.anchor = Some(e.pin(e.share(prop.at, cols), cols).0);
+                prop.anchor = Some(at.anchor_at(prop.at, cols));
             }
         }
     }
@@ -1892,14 +2085,14 @@ impl Home {
 
     /// [`Home::layout`], with what [`Home::laid_and_shifted`] tells of it.
     pub(super) fn laid_out(&mut self, nooks: &[(Nook, Rect)]) -> LaidOut {
-        self.pin_anchors(&raw_strips(nooks));
+        self.pin_anchors(nooks);
         self.laid_and_shifted(nooks)
     }
 
     /// [`Home::laid_out`], strip by strip ([`Home::strips_laid`]): what
     /// [`Home::relaid`] lays a move out from.
     pub(super) fn strips_laid_out(&mut self, nooks: &[(Nook, Rect)]) -> Vec<StripLaid> {
-        self.pin_anchors(&raw_strips(nooks));
+        self.pin_anchors(nooks);
         self.strips_laid(nooks)
     }
 
@@ -1912,9 +2105,10 @@ impl Home {
     /// packed on each strip's floor, those hung on the raw wall, both
     /// clear of her door's space while it's kept.
     pub(super) fn laid_and_shifted(&self, nooks: &[(Nook, Rect)]) -> LaidOut {
-        let strips: Vec<(StripPlan, Option<LaidOut>)> = raw_strips(nooks)
+        let strips: Vec<(StripPlan, Option<LaidOut>)> = self
+            .raw_extents(nooks)
             .into_iter()
-            .map(|(strip, raw)| self.strip_layout(strip, raw))
+            .map(|raw| self.strip_layout(raw))
             .collect();
         let strips: Vec<_> = strips.iter().map(|(p, l)| (p, l.as_ref())).collect();
         self.gathered(&strips)
@@ -1927,16 +2121,17 @@ impl Home {
     /// ([`Home::lays_from`]), so a move lays out again only the strips
     /// it touches ([`Home::relaid`]).
     pub(super) fn strips_laid(&self, nooks: &[(Nook, Rect)]) -> Vec<StripLaid> {
-        raw_strips(nooks)
+        self.raw_extents(nooks)
             .into_iter()
-            .map(|(strip, raw)| self.strip_laid(strip, raw))
+            .map(|raw| self.strip_laid(raw))
             .collect()
     }
 
     /// `strip` laid out alone (see [`Home::strips_laid`]), with what
     /// it was laid out from.
-    fn strip_laid(&self, strip: Strip, raw: Extent) -> StripLaid {
-        let (plan, laid) = self.strip_layout(strip, raw);
+    fn strip_laid(&self, raw: RawStrip) -> StripLaid {
+        let strip = raw.strip;
+        let (plan, laid) = self.strip_layout(raw);
         StripLaid {
             plan,
             laid,
@@ -1947,17 +2142,14 @@ impl Home {
 
     /// `strip`'s plan and, if she has a piece on it, what it lays out
     /// (see [`StripLaid`]).
-    fn strip_layout(&self, strip: Strip, raw: Extent) -> (StripPlan, Option<LaidOut>) {
-        let (plan, laid) = self.plan_strip(strip, raw);
-        if self.lays_from(strip).next().is_none() {
+    fn strip_layout(&self, raw: RawStrip) -> (StripPlan, Option<LaidOut>) {
+        let (plan, laid) = self.plan_strip(raw);
+        if self.lays_from(raw.strip).next().is_none() {
             return (plan, None);
         }
         // Her door's strip, as its plan was judged; a space that yields
         // refuses nothing: the strip lays out as with no door.
-        let laid = laid.unwrap_or_else(|| {
-            self.lay_strip(strip, plan.raw, plan.floor, None)
-                .map(|(l, _)| l)
-        });
+        let laid = laid.unwrap_or_else(|| self.lay_strip(raw, plan.floor, None).map(|(l, _)| l));
         (plan, laid)
     }
 
@@ -1975,7 +2167,13 @@ impl Home {
                     && self
                         .lays_from(strip)
                         .eq(s.from.iter().map(|(i, p)| (*i, p)));
-                (!same).then(|| self.strip_layout(strip, s.plan.raw))
+                (!same).then(|| {
+                    self.strip_layout(RawStrip {
+                        strip,
+                        raw: s.plan.raw,
+                        host: s.plan.host,
+                    })
+                })
             })
             .collect();
         let strips: Vec<(&StripPlan, Option<&LaidOut>)> = was
@@ -2018,20 +2216,20 @@ impl Home {
     /// wall too narrow, no clear place to hang).
     fn lay_strip(
         &self,
-        strip: Strip,
-        raw: Extent,
+        at: RawStrip,
         floor: Extent,
         space: Option<Rect>,
     ) -> Option<(LaidOut, usize)> {
+        let RawStrip { strip, raw, host } = at;
         let standing_on = self.on(strip, Lane::Floor);
         let hung_on = self.on(strip, Lane::Wall);
         let mut packed = pack(&standing_on, floor)?;
         let standing: Vec<Shown> = packed
             .iter()
-            .filter_map(|&(i, left)| Some(stand(self.props.get(i)?, strip, raw, left)))
+            .filter_map(|&(i, left)| Some(stand(self.props.get(i)?, strip, raw, host, left)))
             .collect();
         let hung = pack_each(&hung_on, raw);
-        let clear = self.hung_clear(hung.clone(), strip, raw, space, &standing);
+        let clear = self.hung_clear(hung.clone(), at, space, &standing);
         let mut shifts = Vec::new();
         for &(index, left) in &hung {
             let Some(prop) = self.props.get(index) else {
@@ -2047,7 +2245,7 @@ impl Home {
         packed.sort_unstable();
         let shown: Vec<Shown> = packed
             .into_iter()
-            .filter_map(|(index, left)| Some(stand(self.props.get(index)?, strip, raw, left)))
+            .filter_map(|(index, left)| Some(stand(self.props.get(index)?, strip, raw, host, left)))
             .collect();
         let left_out = (standing_on.len() + hung_on.len()).saturating_sub(shown.len());
         let laid = LaidOut {
@@ -2074,8 +2272,11 @@ impl Home {
     fn hung_clear(
         &self,
         mut hung: Vec<(usize, i32)>,
-        strip: Strip,
-        e: Extent,
+        RawStrip {
+            strip,
+            raw: e,
+            host,
+        }: RawStrip,
         space: Option<Rect>,
         standing: &[Shown],
     ) -> Vec<(usize, i32)> {
@@ -2091,7 +2292,7 @@ impl Home {
                 continue;
             };
             let meets = |left: i32| {
-                let at = stand(prop, strip, e, left);
+                let at = stand(prop, strip, e, host, left);
                 space.is_some_and(|r| at.rect().intersects(r))
                     || standing
                         .iter()
@@ -2104,7 +2305,7 @@ impl Home {
             // Where she could lean on its sill (a window) from an end
             // clear of every piece that stands.
             let leans = |left: i32| {
-                let at = stand(prop, strip, e, left);
+                let at = stand(prop, strip, e, host, left);
                 at.look_out_spots().iter().any(|&x| {
                     her_box(x, at.floor)
                         .is_some_and(|b| !standing.iter().any(|s| b.intersects(s.cover())))
@@ -2165,10 +2366,15 @@ impl Home {
         let mut laid = self.laid_out(plan.nooks);
         let mut moves = Vec::new();
         for strip in self.furnished() {
+            // Only a pane's floor moves off: a shelf whose plan is gone
+            // hides what's on it, never moves it (phase 6a D1).
+            let Strip::Bottom(nook) = strip else {
+                continue;
+            };
             let packs = laid
                 .plan(strip)
                 .is_some_and(|p| pack(&self.on(strip, Lane::Floor), p.floor).is_some());
-            if !packs && let Some(to) = self.move_off(strip, buf, plan, blocked) {
+            if !packs && let Some(to) = self.move_off(nook, buf, plan, blocked) {
                 moves.push((strip, to));
                 laid = self.laid_and_shifted(plan.nooks);
             }
@@ -2182,8 +2388,9 @@ impl Home {
         (shown, moves)
     }
 
-    /// Move `strip`'s pieces, together, to the first other strip whose
-    /// floor holds those that stand with its own, each on free cells;
+    /// Move the pieces on `from`'s floor, together, to the first other
+    /// pane's floor ([`pane_strips`]: never a shelf) that holds those
+    /// that stand with its own, each on free cells;
     /// those hung go along, where their share of the way puts them. With
     /// only hung pieces, to the first whose wall holds them all that way.
     /// None of them may meet `plan`'s chat pane, nor the target's door
@@ -2195,21 +2402,22 @@ impl Home {
     /// frame they move as they'll stay. Where they went, if they moved.
     fn move_off(
         &mut self,
-        strip: Strip,
+        from: Nook,
         buf: &Buffer,
         plan: Plan,
         blocked: &dyn Fn(i32, i32) -> bool,
     ) -> Option<Strip> {
+        let strip = Strip::Bottom(from);
         let leaving: Vec<usize> = (0..self.props.len())
             .filter(|&i| self.props.get(i).is_some_and(|p| p.strip == strip))
             .collect();
         let follows = self.door.is_some_and(|d| d.strip == strip);
         // Where the pieces staying are laid out before any move.
         let was = self.laid_and_shifted(plan.nooks).shown;
-        let target = raw_strips(plan.nooks)
+        let target = pane_strips(plan.nooks)
             .into_iter()
-            .filter(|&(s, _)| s != strip)
-            .find_map(|(to, raw)| {
+            .filter(|p| p.strip != strip)
+            .find_map(|PaneStrip { strip: to, raw, .. }| {
                 // Pieces never anchored, and hung ones, are anchored by
                 // their share there (of the raw strip, as every share).
                 let mut moved = self.clone();
@@ -2248,7 +2456,7 @@ impl Home {
                         .filter(|(i, _)| leaving.contains(i))
                         .all(|&(i, left)| {
                             moved.props.get(i).is_some_and(|p| {
-                                let at = stand(p, to, e, left);
+                                let at = stand(p, to, e, strip_plan.host, left);
                                 let cover = at.cover();
                                 fits(buf, &at, &|x, y| !blocked(x, y))
                                     && !in_chat(plan.chat, cover)
@@ -2314,11 +2522,10 @@ impl Home {
         // there (her first piece chooses it), and the places along the
         // strip as its plan with the piece there has them: standing, on
         // the floor (beside her door's space); hung, along the wall.
-        let spots: Vec<(Prop, bool)> = raw_strips(plan.nooks)
+        let spots: Vec<(Prop, bool)> = pane_strips(plan.nooks)
             .into_iter()
-            .filter_map(|(strip, _)| {
+            .filter_map(|PaneStrip { nook, strip, .. }| {
                 let mut probe = self.clone();
-                let Strip::Bottom(nook) = strip;
                 probe.props.push(Prop {
                     anchor: Some(Anchor {
                         side: Side::Left,
@@ -2426,7 +2633,13 @@ impl Home {
         item: Furniture,
     ) -> Option<(Prop, Flap)> {
         let mut walls: Vec<(bool, bool, Strip, Extent, Side)> = Vec::new();
-        for (&(_, rect), (strip, e)) in plan.nooks.iter().zip(raw_strips(plan.nooks)) {
+        for PaneStrip {
+            rect,
+            strip,
+            raw: e,
+            ..
+        } in pane_strips(plan.nooks)
+        {
             for side in [Side::Right, Side::Left] {
                 let wall = DoorWall { strip, side };
                 let door = self.through_her_door(plan, wall, item);
@@ -2598,7 +2811,8 @@ impl Home {
         with.props.push(prop);
         let new = with.props.len() - 1;
         let plans = with.extents(plan.nooks);
-        let e = plans.iter().find(|p| p.strip == strip)?.along(lane);
+        let strip_plan = *plans.iter().find(|p| p.strip == strip)?;
+        let e = strip_plan.along(lane);
         // Her door's space, kept before it came, is kept with it there.
         let kept = |plans: &[StripPlan], door: Option<DoorWall>| {
             let door = door?;
@@ -2615,7 +2829,12 @@ impl Home {
         }
         let packed: Vec<(usize, Shown)> = pack(&with.on(strip, lane), e)?
             .into_iter()
-            .filter_map(|(i, left)| Some((i, stand(with.props.get(i)?, strip, e, left))))
+            .filter_map(|(i, left)| {
+                Some((
+                    i,
+                    stand(with.props.get(i)?, strip, e, strip_plan.host, left),
+                ))
+            })
             .collect();
         // What shows anywhere else stays where it is: on other strips, and
         // in the strip's other lane.
@@ -2680,8 +2899,14 @@ impl Home {
 /// will be then (see [`Home::doorstep`]).
 pub(super) type Seats<'a> = dyn Fn(&Shown, &[Shown], &Home) -> Vec<Seat> + 'a;
 
-/// `prop` as it stands at `left` on `strip`.
-fn stand(prop: &Prop, strip: Strip, extent: Extent, left: i32) -> Shown {
+/// `prop` as it stands at `left` on `strip` (between its ends
+/// `extent`), reached from `host`'s floor (its pane's: see
+/// [`Shown::stood`]).
+fn stand(prop: &Prop, strip: Strip, extent: Extent, host: Extent, left: i32) -> Shown {
+    debug_assert!(
+        !strip.is_floor() || extent.floor == host.floor,
+        "a floor's pieces are reached from it: {strip:?} {extent:?} {host:?}"
+    );
     Shown {
         item: prop.item,
         facing: prop.facing,
@@ -2689,6 +2914,7 @@ fn stand(prop: &Prop, strip: Strip, extent: Extent, left: i32) -> Shown {
         strip: Some(strip),
         left,
         floor: extent.floor,
+        stood: host.floor,
         scrap: None,
     }
 }
@@ -2782,7 +3008,7 @@ fn room_for(
         };
         spots
             .iter()
-            .any(|&x| fits(x, at.floor) && floor(x, at.floor))
+            .any(|&x| fits(x, at.stood) && floor(x, at.stood))
     })
 }
 
@@ -2875,9 +3101,210 @@ mod tests {
             .collect()
     }
 
+    /// A strip's extent: columns `from..to`, its floor row, the rows
+    /// clear above it.
+    fn extent(from: i32, to: i32, floor: i32, rows: u16) -> Extent {
+        Extent {
+            from,
+            to,
+            floor,
+            rows,
+        }
+    }
+
     /// Her seats at `piece` as if she could stand nowhere.
     fn nowhere(_: &Shown, _: &[Shown], _: &Home) -> Vec<Seat> {
         Vec::new()
+    }
+
+    /// What each strip takes (phase 6a D1): a floor, every kind; a shelf,
+    /// small decor only (the plant and the clock), never furniture, a
+    /// poster or her window. Every pane's strips alike; a strip's pane
+    /// and room are its own pane's floor.
+    #[test]
+    fn a_floor_takes_anything_and_a_shelf_small_decor_only() {
+        use Furniture::*;
+        let small = [Plant, Clock];
+        for nook in [Nook::List, Nook::Users, Nook::Playlist] {
+            for (strip, wants) in [
+                (Strip::Bottom(nook), Furniture::ALL.to_vec()),
+                (Strip::Shelf(nook), small.to_vec()),
+            ] {
+                assert_eq!(strip.nook(), nook);
+                assert_eq!(strip.room(), Strip::Bottom(nook));
+                let takes: Vec<Furniture> = Furniture::ALL
+                    .into_iter()
+                    .filter(|&item| strip.takes(item))
+                    .collect();
+                assert_eq!(takes, wants, "{strip:?}");
+            }
+        }
+        // The table, row by row: nothing but small decor says it may.
+        for item in Furniture::ALL {
+            assert_eq!(item.spec().shelf, small.contains(&item), "{item:?}");
+        }
+    }
+
+    /// On a shelf everything stands (phase 6a D1): the wall clock there
+    /// is a mantel clock, laned and lifted as standing whether it's
+    /// weighed for the shelf (a candidate) or stands on it; on a floor
+    /// it hangs. Boxed, it's a parcel on either.
+    #[test]
+    fn on_a_shelf_everything_stands() {
+        let hang = Furniture::Clock.spec().hang.unwrap();
+        let rows = Furniture::Clock.spec().footprint.1;
+        let (floor, shelf) = (Strip::Bottom(Nook::Users), Strip::Shelf(Nook::Users));
+        for boxed in [false, true] {
+            let clock = Prop {
+                boxed,
+                ..Prop::new(Furniture::Clock, Nook::Users, 0, Facing::Right)
+            };
+            let hung = if boxed { 0 } else { hang };
+            assert_eq!(clock.lane_on(shelf), Lane::Floor, "boxed={boxed}");
+            assert_eq!(clock.lane_on(floor), lane_of(hung), "boxed={boxed}");
+            let on_shelf = Prop {
+                strip: shelf,
+                ..clock
+            };
+            assert_eq!((on_shelf.lane(), on_shelf.needs().1), (Lane::Floor, rows));
+            assert_eq!(clock.needs().1, rows + hung, "boxed={boxed}");
+            let shown = stand(&clock, floor, extent(0, 20, 10, 9), extent(0, 20, 10, 9), 2);
+            assert_eq!(
+                (shown.lift_on(shelf), shown.lane_on(shelf)),
+                (0, Lane::Floor)
+            );
+            assert_eq!(shown.lift_on(floor), hung, "boxed={boxed}");
+            let up = Shown {
+                strip: Some(shelf),
+                ..shown
+            };
+            assert_eq!((up.lift(), up.lane()), (0, Lane::Floor), "boxed={boxed}");
+        }
+    }
+
+    /// Rooms are floors (phase 6a D1): a piece on a pane's shelf is in
+    /// that pane's room, asked by its floor or its shelf, and in no other
+    /// pane's; a room's role reads what's on its shelf with what's on its
+    /// floor, asked either way.
+    #[test]
+    fn a_shelf_is_part_of_the_room_below() {
+        let users = extent(0, 30, 10, 9);
+        let at = |item: Furniture, strip: Strip, left: i32| {
+            let prop = Prop {
+                strip,
+                ..Prop::new(item, strip.nook(), 0, Facing::Right)
+            };
+            stand(&prop, strip, users, users, left)
+        };
+        let (floor, shelf) = (Strip::Bottom(Nook::Users), Strip::Shelf(Nook::Users));
+        let plant = at(Furniture::Plant, shelf, 2);
+        assert!(in_room(&plant, floor) && in_room(&plant, shelf));
+        assert!(!in_room(&plant, Strip::Bottom(Nook::List)));
+        assert!(!in_room(&plant, Strip::Shelf(Nook::List)));
+        let bed = at(Furniture::Bed, floor, 10);
+        assert!(in_room(&bed, shelf));
+        let laid = [plant, bed];
+        assert_eq!(role_of(&laid, floor), Role::Bedroom);
+        assert_eq!(role_of(&laid, shelf), Role::Bedroom);
+        assert_eq!(role_without(&laid, shelf, Furniture::Bed), Role::Den);
+        assert_eq!(role_of(&laid, Strip::Shelf(Nook::List)), Role::Den);
+    }
+
+    /// The admission rule as every layout reads it (phase 6a D1):
+    /// [`Home::on`] lists, of a strip's anchored pieces, only those it
+    /// takes. A sofa an odd record put on a shelf is never laid out
+    /// there; a plant is.
+    #[test]
+    fn a_shelf_lays_out_only_what_it_takes() {
+        let shelf = Strip::Shelf(Nook::Users);
+        let anchor = Anchor {
+            side: Side::Left,
+            offset: 0,
+        };
+        let mut home = Home::default();
+        for item in [Furniture::Sofa, Furniture::Plant] {
+            assert!(home.add(Prop {
+                strip: shelf,
+                anchor: Some(anchor),
+                ..Prop::new(item, Nook::Users, 0, Facing::Right)
+            }));
+        }
+        let on: Vec<Furniture> = home
+            .on(shelf, Lane::Floor)
+            .into_iter()
+            .map(|(i, ..)| home.props[i].item)
+            .collect();
+        assert_eq!(on, [Furniture::Plant]);
+    }
+
+    /// Where she stands to reach a piece is [`Shown::stood`], not its own
+    /// floor (phase 6a D1: the pane's floor under a shelf): her seats at
+    /// it are on that floor, and a piece placed by its plan takes it
+    /// from the plan's host.
+    #[test]
+    fn she_reaches_a_shelf_piece_from_the_floor_below() {
+        let (host, run) = (extent(0, 30, 12, 11), extent(8, 18, 6, 5));
+        let shelf = Strip::Shelf(Nook::Users);
+        let prop = Prop {
+            strip: shelf,
+            ..Prop::new(Furniture::Plant, Nook::Users, 0, Facing::Right)
+        };
+        let up = stand(&prop, shelf, run, host, 9);
+        assert_eq!((up.floor, up.stood), (6, 12));
+        for what in Use::ALL {
+            assert_eq!(up.seat(what, 3).y, 12, "{what:?}");
+        }
+        let plan = StripPlan {
+            strip: shelf,
+            raw: run,
+            floor: run,
+            space: None,
+            host,
+        };
+        let moved = at_left(&Shown { stood: 6, ..up }, &plan, 10);
+        assert_eq!(
+            (moved.strip, moved.floor, moved.stood),
+            (Some(shelf), 6, 12)
+        );
+    }
+
+    /// An older record's share of the way along is of the host both ways
+    /// (phase 6a D1): [`RawStrip::anchor_at`] reads it back where
+    /// [`StripPlan::pin`] wrote it, on a shelf as on a floor, give or take
+    /// the column a thousandth rounds away; and a share the run can't
+    /// hold puts the piece at the run's nearer end.
+    #[test]
+    fn a_share_is_of_the_host_both_ways() {
+        let host = extent(1, 61, 12, 11);
+        let cols = Furniture::Plant.spec().footprint.0;
+        for (strip, raw) in [
+            (Strip::Bottom(Nook::Users), host),
+            (Strip::Shelf(Nook::Users), extent(20, 30, 6, 5)),
+        ] {
+            let plan = StripPlan {
+                strip,
+                raw,
+                floor: raw,
+                space: None,
+                host,
+            };
+            let at = RawStrip { strip, raw, host };
+            for left in raw.from..=raw.to - i32::from(cols) {
+                let (_, share) = plan.pin(Lane::Floor, left, cols);
+                let back = raw.left(at.anchor_at(share, cols), cols);
+                assert!(
+                    (back - left).abs() <= 1,
+                    "{strip:?}: {left} came back {back}"
+                );
+            }
+        }
+        let shelf = RawStrip {
+            strip: Strip::Shelf(Nook::Users),
+            raw: extent(20, 30, 6, 5),
+            host,
+        };
+        assert_eq!(shelf.raw.left(shelf.anchor_at(0, cols), cols), 20);
+        assert_eq!(shelf.raw.left(shelf.anchor_at(1000, cols), cols), 27);
     }
 
     #[test]
@@ -4194,7 +4621,7 @@ mod tests {
                 }
             }
             for s in &laid {
-                let &(_, e) = raw_strips(&nooks).iter().find(|(t, _)| Some(*t) == s.strip).unwrap();
+                let e = pane_strips(&nooks).into_iter().find(|p| Some(p.strip) == s.strip).unwrap().raw;
                 let r = s.rect();
                 prop_assert!(i32::from(r.x) >= e.from && i32::from(r.right()) <= e.to, "{:?}", s);
                 prop_assert!(i32::from(r.y) > e.floor - i32::from(e.rows) - 1, "inside: {:?}", s);
@@ -4225,10 +4652,10 @@ mod tests {
             // strip, or (with no room there) nothing moves.
             let (small, at_small) = two_panes(narrow, tall, &[]);
             let users_strip = Strip::Bottom(Nook::Users);
-            let small_users = raw_strips(&at_small)
+            let small_users = pane_strips(&at_small)
                 .into_iter()
-                .find(|(s, _)| *s == users_strip)
-                .map(|(_, e)| e)
+                .find(|p| p.strip == users_strip)
+                .map(|p| p.raw)
                 .unwrap();
             let holds = pack(&pinned.on(users_strip, Lane::Floor), small_users).is_some();
             let _ = room.project(&small, &at_small, &|_, _| false);
@@ -4415,11 +4842,11 @@ mod tests {
         match strip_plan.space {
             Some(space) if !space.kept => prop_assert_eq!(&laid, &doorless, "the yield"),
             Some(_) => {
-                let raw = raw_strips(&nooks)
+                let raw = pane_strips(&nooks)
                     .into_iter()
-                    .find(|(s, _)| *s == wall.strip)
+                    .find(|p| p.strip == wall.strip)
                     .unwrap()
-                    .1;
+                    .raw;
                 let (from, to) = match wall.side {
                     Side::Left => (raw.from + 6, raw.to),
                     Side::Right => (raw.from, raw.to - 6),
@@ -4440,9 +4867,9 @@ mod tests {
             None => prop_assert_eq!(&laid, &doorless, "no space"),
         }
         let (small, at_small) = two_panes(narrow, 12, &[]);
-        if raw_strips(&at_small)
+        if pane_strips(&at_small)
             .iter()
-            .any(|&(strip, e)| pack(&pinned.on(strip, Lane::Floor), e).is_none())
+            .any(|p| pack(&pinned.on(p.strip, Lane::Floor), p.raw).is_none())
         {
             // Too narrow for what stands: they may move off.
             return Ok(());
@@ -4620,7 +5047,7 @@ mod tests {
                 .collect();
             let mut room = Home { props, door: door_on(Nook::Users, side) };
             room.layout(&nooks);
-            let (strip, raw) = raw_strips(&nooks)[0];
+            let PaneStrip { strip, raw, .. } = pane_strips(&nooks)[0];
             prop_assert_eq!(strip, users);
             let plan = room.extents(&nooks)[0];
             let Some((wall, rect)) = space_of(raw, side, room.widest_standing(users)) else {
@@ -4628,8 +5055,9 @@ mod tests {
                 return Ok(());
             };
             let shown = |l: Option<(LaidOut, usize)>| l.map(|(l, _)| l.shown);
-            let doored = shown(room.lay_strip(users, raw, narrowed(raw, side), Some(rect)));
-            let doorless = shown(room.lay_strip(users, raw, raw, None));
+            let at = RawStrip { strip: users, raw, host: raw };
+            let doored = shown(room.lay_strip(at, narrowed(raw, side), Some(rect)));
+            let doorless = shown(room.lay_strip(at, raw, None));
             let kept = match (&doored, &doorless) {
                 (Some(doored), Some(doorless)) => doorless
                     .iter()
@@ -4788,7 +5216,7 @@ mod tests {
                         continue;
                     }
                     checked.insert(item);
-                    let at = stand(&prop, Strip::Bottom(Nook::Users), raw, x);
+                    let at = stand(&prop, Strip::Bottom(Nook::Users), raw, raw, x);
                     assert_eq!(
                         at.rect().intersects(space),
                         item == Furniture::Window,
@@ -5502,7 +5930,7 @@ mod tests {
         assert!(!tv_in_chat(&home), "the TV stands clear of it");
         let mut apart = home.clone();
         let to = apart.move_off(
-            Strip::Bottom(Nook::Users),
+            Nook::Users,
             &buf,
             plan_on(&playlist, Rect::default(), buf.area),
             &|_, _| false,
@@ -5511,7 +5939,7 @@ mod tests {
         assert!(tv_in_chat(&apart), "with no chat, pushed where it comes");
         let mut kept = home.clone();
         let to = kept.move_off(
-            Strip::Bottom(Nook::Users),
+            Nook::Users,
             &buf,
             plan_on(&playlist, chat, buf.area),
             &|_, _| false,
@@ -5777,18 +6205,18 @@ mod tests {
             match to {
                 Some((strip, left)) => {
                     let plan = laid.plan(strip).unwrap();
-                    let e = plan.along(piece.lane());
+                    // Laned and lifted as it would be there (a candidate
+                    // strip's lane, not its own: phase 6a D1), and where
+                    // she'd stand to reach it read from the plan.
+                    prop_assert!(plan.takes(piece.item), "{:?} to {:?}", piece, strip);
+                    let e = plan.along(piece.lane_on(strip));
                     let (cols, rows) = piece.size();
-                    let at = Shown {
-                        strip: Some(strip),
-                        left,
-                        floor: plan.raw.floor,
-                        ..piece
-                    };
+                    let at = at_left(&piece, plan, left);
+                    prop_assert_eq!(at.stood, plan.host.floor);
                     prop_assert!(
                         left >= e.from
                             && left + i32::from(cols) <= e.to
-                            && e.rows >= rows + piece.lift()
+                            && e.rows >= rows + piece.lift_on(strip)
                     );
                     prop_assert!(!in_chat(chat, at.cover()), "{:?} to {:?}", piece, at);
                     prop_assert!(
