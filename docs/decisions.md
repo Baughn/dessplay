@@ -1,6 +1,6 @@
 # DessPlay Decision Log
 
-Last updated: 2026-10-10
+Last updated: 2026-10-11
 
 The reasoning behind the rules in [design.md](design.md): the failure that
 motivated each one, the alternatives that were rejected, and the date it
@@ -6121,6 +6121,56 @@ in a 9-row pane keeps two rows clear and the plant is three tall: the
 stage room at 100×30 is that case), else nothing, and then nothing of
 hers moves (a build call the user kept, 2026-10-11, over a bare shelf
 there or a third clear row for every low shelf).
+
+## She puts up a shelf, a stage a game day (2026-10-11)
+
+**Rule:** Opened, her kit goes up on her wall as her shelf, nothing of it
+up yet, where one goes on that frame (chosen there once, saved, and
+never chosen again: a frame that can't hold it hides it). She puts it up
+in two stages, the half nearer its wall and then the rest: the first
+straight after she opens the kit (a moment, then to it, before anything
+she'd choose), the next on a later game day. At most one stage a game
+day (unfed, a visit), counted in her record. A stage is a want of its
+own, nesting, worth doing for its own sake, offered only while one is
+due today and the frame would show the shelf with it up; not one of her
+home acts, so her mood's limit on those doesn't bound it. She stands on
+its room's floor beside the half, reaches up for 6 s ("Up it goes..."),
+and it's up once the paint takes it, judged by the same test as the
+offer (the shelf, its next stage up, all of it and its margin free but
+what she has up already and shows): cut short, or with text come over
+it, nothing goes up. On a high shelf she hops as it goes up, and as she
+sets a piece up on one. See [design.md](design.md#houseguest).
+
+**Why:** The user's pacing is per game day, not per visit: a resident's
+visit runs from 12:45 to 08:15, so per visit would put a shelf up in one
+evening; saved so a restart can't reset it (a restart is a new visit,
+and her days are her clock's). Her mood bounds what she does to put her
+home right (0 to 3 home acts a visit), and a lazy streak would stall a
+shelf for days; the day's pace bounds it instead. Chained after the
+unpacking, so the box never just vanishes into a bare `built: 0` shelf
+with nothing to show for it (the critique's C6: she opens it and sets to
+it at once). Chosen on the frame she opens it on, with the frame's text
+in view, because a text-blind choice (as her door's) would mostly be
+hidden under text; and never re-hung, because a shelf that moved as the
+frame changed would carry what stands on it about, and the UI's lines
+don't move under a user's eye either. The offer and the commit read one
+predicate, which is what the next paint's write reads, so what she puts
+up is never hidden the moment it's up and never over text (the step-2b
+review's open wording, "the next half's cells and margin", settled as
+that). The hop is the user's ("a little hop"): a high shelf is over her
+reach, a low one isn't. What she put up isn't hers to choose again
+until a paint has judged it: her mind runs between paints, and a frame
+that came late would still offer the stage she had just finished,
+sending her back to it only to lose her way when it went up. The day is
+`Dated` (the door batch's `Said`, saved): the game day, or unfed the
+visit. Its kind could only switch mid-day if her clock stopped reaching
+her, and in a running client it reaches her from her first meeting on
+(unfed is a test mode, as for `Said`); a build older than this drops the
+count with every field it doesn't know, at worst one more stage that
+day. Accepted, not keyed on the visit too. Rejected: a stage per visit
+(an evening's shelf); building as a home act (stalled by her mood); the
+cells of a stage growing under her hands (the hop marks the moment
+instead).
 
 ## Houseguest chooses by needs among the top few (2026-09-28)
 

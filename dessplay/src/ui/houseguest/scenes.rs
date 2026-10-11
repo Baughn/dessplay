@@ -247,6 +247,8 @@ pub(super) enum Job {
     /// Borrow a strip of a line to read beside where she tore it, and
     /// slide it back (phase 5c D5, HG #72).
     Borrow(Pull),
+    /// Put the next stage of her shelf up (phase 6a D7c).
+    PutUp(PutUp),
     /// Go out by her external door, standing at its spot (door batch
     /// D6): `why` says which gap its door opens on.
     Leave {
@@ -302,6 +304,19 @@ pub(super) struct SetDown {
     pub side: Side,
 }
 
+/// Putting stage `to` of her shelf on `nook`'s wall up (phase 6a D7c),
+/// standing at `(x, y)` (on its room's floor, beside the half it puts
+/// up) facing `side`. Whether she hops as it goes up is the commit's
+/// (`structures::Stage::high`, on the frame that takes it).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct PutUp {
+    pub nook: super::room::Nook,
+    pub to: u8,
+    pub x: i32,
+    pub y: i32,
+    pub side: Side,
+}
+
 impl Job {
     /// The job, borrowed.
     pub fn by_ref(&self) -> JobRef<'_> {
@@ -313,6 +328,7 @@ impl Job {
             Self::Lift(lift) => JobRef::Lift(lift),
             Self::SetDown(set) => JobRef::SetDown(set),
             Self::Borrow(p) => JobRef::Borrow(p),
+            Self::PutUp(p) => JobRef::PutUp(p),
             Self::Leave { spot, why } => JobRef::Leave(*spot, *why),
             Self::Out { at, why } => JobRef::Out(*at, *why),
         }
@@ -362,6 +378,7 @@ pub(super) enum JobRef<'a> {
     Lift(&'a Lift),
     SetDown(&'a SetDown),
     Borrow(&'a Pull),
+    PutUp(&'a PutUp),
     Leave(DoorSpot, Leave),
     Out(super::osaka::Clear, Leave),
 }
@@ -376,6 +393,7 @@ impl JobRef<'_> {
             Self::Use(seat) => (seat.x, seat.y),
             Self::Lift(l) => (l.x, l.y),
             Self::SetDown(s) => (s.x, s.y),
+            Self::PutUp(p) => (p.x, p.y),
             Self::Leave(door, _) => door.spot(),
             Self::Out(clear, _) => clear.spot(),
         }
@@ -392,7 +410,7 @@ impl JobRef<'_> {
             Self::Borrow(p) => on(p.row, p.strip()),
             Self::Build(b) => on(b.row, b.cells.clone()),
             Self::Swap(s) => vec![s.a.source, s.a.at, s.b.source, s.b.at],
-            Self::Use(_) | Self::Lift(_) | Self::SetDown(_) => Vec::new(),
+            Self::Use(_) | Self::Lift(_) | Self::SetDown(_) | Self::PutUp(_) => Vec::new(),
             // Never asked: `Act::at_job` yields no Leave or Out (at her
             // door she's at an `Act::Door`), and a door is about no text.
             Self::Leave(..) | Self::Out(..) => Vec::new(),
@@ -410,6 +428,7 @@ impl JobRef<'_> {
             },
             Self::Lift(l) => l.side,
             Self::SetDown(s) => s.side,
+            Self::PutUp(p) => p.side,
             // Facing out, toward her door's wall.
             Self::Leave(door, _) => match door.out() {
                 super::sprite::Facing::Left => Side::Left,
@@ -433,6 +452,8 @@ impl JobRef<'_> {
             Self::Leave(..) | Self::Out(..) => return 1,
             // Bent down to the piece at her feet.
             Self::Lift(_) | Self::SetDown(_) => return (HEIGHT - 1) as u8,
+            // Arms up, over her head.
+            Self::PutUp(_) => return 0,
         };
         (i32::from(row) - (y - HEIGHT)).clamp(0, HEIGHT - 1) as u8
     }

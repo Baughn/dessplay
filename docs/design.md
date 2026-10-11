@@ -1849,12 +1849,34 @@ this section states what is built.
   to open it from, whatever the frame), but its seat is offered only
   while a shelf could go up on the frame, and opened it's no piece: it
   goes up on her wall as her shelf where one goes on the next frame (the
-  pane she opened it in first), not yet built (she puts it up in
-  stages: phase 6a step 5c), the kit gone; with nowhere for it by then the box stays
+  pane she opened it in first), nothing of it up yet (she puts it up in
+  stages: *Structures*), the kit gone; with nowhere for it by then the box stays
   shut, to be opened again once one could. While no shelf could go up
   the box waits in sight (and, boxed, keeps the channel off). A kit is
   never out of its box any other way: as read from her record, or given
   by the stage (her shelf instead, finished where one goes).
+- **Structures** (phase 6a): what she puts up with the UI's own lines.
+  Her shelf, opened from its kit, hangs where one goes on that frame
+  (as high as fits: *Furniture*, below), chosen once and saved, never
+  hung again elsewhere; a frame that can't hold it hides it, and what
+  stands on it, whole, back when the frame holds it. She puts it up in
+  two stages, the half nearer its wall (its bracket and half its run)
+  and then the rest: the first straight after she opens the kit, the
+  next on a later game day; at most one stage a game day (unfed, one a
+  visit), counted in her record, so a restart doesn't reset it. A stage
+  is a want of its own (nesting, for its own sake), not one of her home
+  acts (her mood doesn't bound it: the day's pace does), offered only
+  while one is due and the frame would show the shelf with it up. She
+  stands on its room's floor beside the half it puts up and reaches up
+  for 6 s ("Up it goes..."); it's up once the paint takes it, by the
+  same test (the shelf with it up written whole: its cells and margin
+  blank and free, but what of it she has up already); till that paint,
+  it isn't hers to choose again. Cut short, or with text come over it,
+  nothing goes up (refused at the paint, she glances at where it would
+  have gone), and she may try again while it's due. As a stage of a
+  high shelf goes up, and as she sets a piece up on one, she hops (a
+  beat, arms up), if she still stands back from it (not once she has
+  set about something else); a low shelf is in her reach (why: [decisions](decisions.md#she-puts-up-a-shelf-a-stage-a-game-day-2026-10-11)).
 - **Furniture** (phase 3): a sofa (9×3 cells), TV (6×4), bed (10×3),
   desk (7×3), floor lamp (3×4), bookshelf (5×4), fridge (4×4), cat
   bed (4×2) and window (4×2, hung on the wall), and, just for looks, a
@@ -2699,7 +2721,9 @@ this section states what is built.
   last delivered, and whether her wall clock was sent; each is left out
   while it's the default. With phase 6a it holds what she has put up
   (her shelf: its pane, where along its back wall, its rise and the
-  stages up), left out until she has, read before her pieces and entry
+  stages up; and the stages put up on her last day of building, by game
+  day or, unfed, by visit, left out until she has put one up, and read
+  as none where it's garbled), left out until she has, read before her pieces and entry
   by entry (one this build can't take, or a shelf after the first, is
   skipped); a piece anchored on a shelf the record has finished, that
   takes its kind, stands on it out of its box, and any other piece

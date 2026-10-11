@@ -157,6 +157,7 @@ use dissolve::{Dissolve, Frozen};
 pub use film::TvPicture;
 use graphics::{Graphics, Look};
 pub use idle::{Busy, ChatMark, IdleView, Scrollback, asks, grow};
+use ledger::Dated;
 pub use ledger::{Ledger, Owned, Pities, Summary, TierPity};
 use osaka::{Bubble, Osaka};
 use room::Shown;
@@ -1014,6 +1015,17 @@ struct Visit {
     /// Whether a shelf could go up on the last frame, while her kit
     /// showed in its box (none otherwise): logged once per change.
     kit_room: Option<bool>,
+    /// The stage of her shelf she put up (phase 6a D7c), by its pane and
+    /// what it brings it to: for the next paint to take, if its frame
+    /// would show it up (else it isn't up, and she may put it up again).
+    put_up: Option<(Nook, u8)>,
+    /// Her shelf's next stage, as the last paint offered it: due today,
+    /// and its frame would show it up (phase 6a D7c).
+    stage: Option<structures::Stage>,
+    /// Her shelf's next stage as last logged: its pane, what it brings
+    /// it to, and whether she has a spot beside it to stand and put it up
+    /// (`Chances::put_up`): logged once per change ([`note_stage`]).
+    stage_noted: Option<(Nook, u8, bool)>,
 }
 
 /// What a paint makes of the move she's making (the `osaka::Judged`
@@ -1302,7 +1314,7 @@ pub struct Guest {
     /// The rules of her home (rows of the table) she last said aloud
     /// were broken, felt on sight, and when (door batch, D7): each at
     /// most once a game day. In memory only.
-    said_aloud: Vec<(usize, Said)>,
+    said_aloud: Vec<(usize, Dated)>,
     /// Her pieces the last frame hid in the chat pane's closet (door
     /// batch, D7): a change is logged ([`note_closet`]). In memory only.
     closet: Vec<Furniture>,
@@ -1641,6 +1653,8 @@ impl Guest {
             // A shelf, put up at the next paint before her structures are
             // written (it needs the frame, and shows on it).
             stage::Scene::Shelf => self.shelving = Some(Shelving::Decor),
+            // Her shelf, with nothing up yet, likewise.
+            stage::Scene::PutUp => self.shelving = Some(Shelving::PutUp),
             _ => {
                 if let Some(what) = scene.furniture()
                     && let Some(&item) = Furniture::ALL
@@ -2676,8 +2690,10 @@ impl Guest {
     /// clear, her clock, a mantel clock there), given her if she hasn't
     /// it, centred. Where none would show (her shelf can't hang on this
     /// frame, or the frame hides it), her pieces stay where they are, and
-    /// [`stage::direct`] says so. Before her structures are written, so
-    /// this frame shows it.
+    /// [`stage::direct`] says so. For [`stage::Scene::PutUp`], her shelf
+    /// with nothing of it up yet (unless something of hers stands on it),
+    /// and today's stages forgotten, for her to put up. Before her
+    /// structures are written, so this frame shows it.
     fn stage_shelf(&mut self, buf: &Buffer, view: &IdleView, shelving: Shelving) {
         let plan = plan_of(view, buf);
         let (layer, made) = self.kept_off();
@@ -2699,17 +2715,44 @@ impl Guest {
             }
             return;
         };
-        let shelf = Shelf {
-            built: structures::SHELF_STAGES,
-            ..shelf
+        // Her shelf to put up (`Scene::PutUp`): nothing up yet, and
+        // today's stages forgotten; unless it's up and something of hers
+        // stands on it already: then nothing changes (the cue's note says
+        // there's nothing to put up).
+        if shelving == Shelving::PutUp
+            && shelf.finished()
+            && self
+                .ledger
+                .home
+                .props
+                .iter()
+                .any(|p| p.strip == room::Strip::Shelf(shelf.nook))
+        {
+            tracing::info!(
+                ?shelf,
+                "houseguest: her shelf is up with something on it, nothing to put up (the stage)"
+            );
+            return;
+        }
+        let built = match shelving {
+            Shelving::PutUp => 0,
+            Shelving::Decor | Shelving::Bare => structures::SHELF_STAGES,
         };
+        let shelf = Shelf { built, ..shelf };
         self.ledger.home.structures = vec![Structure::Shelf(shelf)];
+        if shelving == Shelving::PutUp {
+            self.ledger.paced = None;
+        }
         // Her kit, if she had it in its box, is this shelf.
         self.ledger.home.props.retain(|p| !p.item.is_kit());
         self.unsaved = true;
         if shelving == Shelving::Bare {
             tracing::info!(?shelf, "houseguest: her shelf up, bare (the stage)");
             self.note = Some(Ok(format!("her shelf on {:?}", shelf.nook)));
+            return;
+        }
+        if shelving == Shelving::PutUp {
+            tracing::info!(?shelf, "houseguest: her shelf to put up (the stage)");
             return;
         }
         let decor = shelf_decor(&self.ledger.home, shelf.nook, buf, view, &keep_off);
@@ -3029,6 +3072,7 @@ impl Guest {
                     &mut self.said_aloud,
                     visit,
                 );
+                let today = Dated::of(visit.osaka.day(now).map(|d| d.day), self.ledger.visits);
                 let shown = furnish(
                     &mut self.ledger,
                     &mut self.gift,
@@ -3044,11 +3088,14 @@ impl Guest {
                 );
                 visit.shown = shown;
                 let kit_room = kit_room(&self.ledger, self.shop_now, buf, view, visit);
+                // Her shelf going up (phase 6a D7c): the stage she put up
+                // taken where the frame shows it, and the next as it
+                // offers it, on the frame as `furnish` left her home.
+                put_up_stage(&mut self.ledger, written.over(buf), view, visit, today, now);
                 note_closet(&mut self.closet, &self.ledger.home, &visit.shown, view);
                 if self.ledger != before {
                     self.unsaved = true;
                 }
-                let today = Said::of(visit.osaka.day(now).map(|d| d.day), self.ledger.visits);
                 on_sight(visit, &self.said_aloud, today, now);
                 // The place of the piece in her pocket is kept for it.
                 let mut kept = view.protected.clone();
@@ -3210,6 +3257,10 @@ impl Guest {
                 let builds = builds(written.over(buf), visit, &pulls, &solid, keep);
                 let borrows = borrows(visit, &pulls);
                 let (lift_at, judged) = arranging(visit);
+                let put_up = visit
+                    .stage
+                    .and_then(|stage| put_up_at(stage, &visit.terrain, visit.osaka.x));
+                note_stage(visit, put_up.is_some());
                 let beauty_here =
                     beauty_at(&visit.shown, &view.nooks, (visit.osaka.x, visit.osaka.y));
                 let clock = clock_on(&visit.shown, &view.nooks);
@@ -3246,6 +3297,7 @@ impl Guest {
                         repairs: visit.repairs.clone(),
                         lift_at: lift_at.clone(),
                         judged,
+                        put_up,
                         beauty_here,
                         clock,
                         door,
@@ -3306,6 +3358,7 @@ impl Guest {
                     repairs: visit.repairs.clone(),
                     lift_at,
                     judged,
+                    put_up,
                     beauty_here,
                     clock,
                     door,
@@ -3659,6 +3712,9 @@ impl Guest {
             looks: Looks::default(),
             raise: None,
             kit_room: None,
+            put_up: None,
+            stage: None,
+            stage_noted: None,
         }));
     }
 
@@ -3906,21 +3962,9 @@ enum Shelving {
     Decor,
     /// Her shelf, finished, bare (her kit given: [`Guest::give`]).
     Bare,
-}
-
-/// When she said what's wrong with her home aloud, felt on sight (door
-/// batch, D7): the game day, or with no routine reaching her, the visit.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Said {
-    Day(u64),
-    Visit(u64),
-}
-
-impl Said {
-    /// On game day `day` (none: no routine reaches her), visit `visits`.
-    fn of(day: Option<u64>, visits: u64) -> Self {
-        day.map_or(Self::Visit(visits), Self::Day)
-    }
+    /// Her shelf, with no stage up yet, and today's stages forgotten
+    /// ([`stage::Scene::PutUp`]): she puts its first stage up.
+    PutUp,
 }
 
 /// Note which of her pieces a frame showing `shown` of `home` on `view`
@@ -3960,7 +4004,7 @@ fn note_closet(closet: &mut Vec<Furniture>, home: &room::Home, shown: &[Shown], 
 /// ([`osaka::Osaka`]'s `aloud_owed`: only while her mood would have her
 /// put it right, and it's still broken and not let go), so a rule felt
 /// while she's mending another is said once she's done.
-fn on_sight(visit: &mut Visit, said: &[(usize, Said)], today: Said, now: u64) {
+fn on_sight(visit: &mut Visit, said: &[(usize, Dated)], today: Dated, now: u64) {
     if visit.osaka.hidden(now) {
         return;
     }
@@ -3994,7 +4038,7 @@ fn pity_of(ledger: &Ledger) -> rarity::Pity {
 fn record(
     ledger: &mut Ledger,
     shop_now: &mut bool,
-    said_aloud: &mut Vec<(usize, Said)>,
+    said_aloud: &mut Vec<(usize, Dated)>,
     visit: &mut Visit,
 ) -> bool {
     let mut changed = false;
@@ -4037,6 +4081,8 @@ fn record(
             // Hers once the frame takes it: at the paint (it must fit
             // where it goes then).
             osaka::HomeEvent::SetDown { piece, to } => visit.set_down = Some((piece, to)),
+            // Up once the frame would show it up: at the paint.
+            osaka::HomeEvent::PutUp { nook, to } => visit.put_up = Some((nook, to)),
             // Owed once a day: not again this date.
             osaka::HomeEvent::Calendar(date) => {
                 if ledger.calendar_on != Some(date) {
@@ -4049,7 +4095,7 @@ fn record(
             // may say it once more).
             osaka::HomeEvent::Grieved { row, day } => {
                 said_aloud.retain(|&(r, _)| r != row);
-                said_aloud.push((row, Said::of(day, ledger.visits)));
+                said_aloud.push((row, Dated::of(day, ledger.visits)));
             }
             // Seen from now on; something new, so her pity for its tier
             // starts again (not for one she'd seen already).
@@ -4327,6 +4373,128 @@ fn plan_of<'a>(view: &'a IdleView, buf: &Buffer) -> room::Plan<'a> {
     }
 }
 
+/// The stage of her shelf she put up (phase 6a D7c), taken on the frame
+/// `drawn` if it would show it up there (the shelf, its next stage up,
+/// written all of it as the next paint would: [`structures::next_stage`])
+/// and it's the stage due: up, counted for `today`, and saved; she's
+/// told (nesting eased; on a high shelf, a hop). Not if the frame would
+/// hide it (text come over it, a piece of hers in the way): it isn't up,
+/// she's told (a glance at where it would have gone), and she may put it
+/// up again. Then (whatever came of it) her shelf's next stage, as this
+/// frame offers it: while one is due `today` ([`Ledger::may_build`]) and
+/// the frame would show it up. With nothing to take and nothing of hers
+/// to put up today, the frame isn't read.
+fn put_up_stage(
+    ledger: &mut Ledger,
+    drawn: Drawn,
+    view: &IdleView,
+    visit: &mut Visit,
+    today: Dated,
+    now: u64,
+) {
+    let building = ledger
+        .home
+        .structures
+        .iter()
+        .any(|&Structure::Shelf(shelf)| !shelf.finished());
+    if visit.put_up.is_none() && !(building && ledger.may_build(today)) {
+        visit.stage = None;
+        return;
+    }
+    let plan = plan_of(view, drawn.buf());
+    let (layer, made) = visit.shelf_keep_off();
+    let keep_off = structures::KeepOff {
+        protected: &view.protected,
+        layer: &layer,
+        made: &made,
+    };
+    if let Some((nook, to)) = visit.put_up.take() {
+        let stage = structures::next_stage(drawn, &ledger.home, plan, &keep_off)
+            .filter(|stage| (stage.nook, stage.to) == (nook, to));
+        match stage {
+            Some(stage) if ledger.home.put_up(nook, to) => {
+                ledger.built_today(today);
+                tracing::info!(
+                    ?nook,
+                    stage = to,
+                    of = structures::SHELF_STAGES,
+                    high = stage.high,
+                    "houseguest: a stage of her shelf up"
+                );
+                visit.osaka.put_up_done(stage.high, now);
+            }
+            _ => {
+                tracing::debug!(
+                    ?nook,
+                    stage = to,
+                    "houseguest: a stage of her shelf put up where the frame wouldn't show it (not up)"
+                );
+                let toward = structures::stage_half(&ledger.home, plan.nooks, nook, to)
+                    .map(|half| ((half.from + half.to) / 2, half.y));
+                visit.osaka.put_up_refused(toward);
+            }
+        }
+    }
+    visit.stage = ledger
+        .may_build(today)
+        .then(|| structures::next_stage(drawn, &ledger.home, plan, &keep_off))
+        .flatten();
+}
+
+/// Log her shelf's next stage as this paint offers it, once per change
+/// (phase 6a D7c): due and the frame would show it up ([`Visit::stage`]),
+/// and whether she has a spot beside it to stand (`stands`: else it
+/// isn't offered her, though due).
+fn note_stage(visit: &mut Visit, stands: bool) {
+    let noted = visit.stage.map(|stage| (stage.nook, stage.to, stands));
+    if noted == visit.stage_noted {
+        return;
+    }
+    match noted {
+        Some((nook, to, true)) => {
+            tracing::debug!(
+                ?nook,
+                stage = to,
+                "houseguest: her shelf's next stage, on offer"
+            );
+        }
+        Some((nook, to, false)) => tracing::debug!(
+            ?nook,
+            stage = to,
+            "houseguest: her shelf's next stage is due, but nowhere beside it is hers to stand"
+        ),
+        None => tracing::debug!("houseguest: no stage of her shelf on offer"),
+    }
+    visit.stage_noted = noted;
+}
+
+/// Where she'd stand to put `stage` up (phase 6a D7c): on its pane's
+/// floor beside the half it puts up, just clear of it (as she stands
+/// beside a piece to lift it), the side nearer `near` first, where she
+/// may stay; facing it.
+fn put_up_at(stage: structures::Stage, terrain: &Terrain, near: i32) -> Option<scenes::PutUp> {
+    let half = sprite::WIDTH / 2;
+    let (from, to) = (stage.half.from, stage.half.to);
+    let middle = (from + to) / 2;
+    let mut xs = [from - half - 1, to + half];
+    xs.sort_by_key(|&x| ((x - near).abs(), x));
+    let x = xs.into_iter().find(|&x| {
+        terrain.platform_at(x, stage.floor).is_some() && terrain.restful(x, stage.floor)
+    })?;
+    let side = if x > middle {
+        scenes::Side::Left
+    } else {
+        scenes::Side::Right
+    };
+    Some(scenes::PutUp {
+        nook: stage.nook,
+        to: stage.to,
+        x,
+        y: stage.floor,
+        side,
+    })
+}
+
 /// Whether her shelf could go up on this frame (phase 6a D7b:
 /// [`room::Home::shelf_spot`], with what her visit keeps off it as the
 /// paint reads it), asked only while her kit shows in its box (its
@@ -4475,7 +4643,10 @@ fn furnish(
         match episode.map(|ep| judge_move(home, &frame, &ep)) {
             Some(Some(_)) => {
                 home.set_down(piece, to, &view.nooks);
-                visit.osaka.set_down_done(piece, now);
+                // Up on a high shelf, she hops (phase 6a D7c).
+                visit
+                    .osaka
+                    .set_down_done(piece, home.up_high(to.strip), now);
                 shown = home.frame(drawn, plan, &blocked).0;
             }
             Some(None) => {

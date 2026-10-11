@@ -1229,6 +1229,13 @@ fn a_plant_in_the_chat_goes_up_on_her_shelf() {
         );
         now = up.unwrap_or_else(|| panic!("{at}: never put it up"));
         assert!(stretched, "{at}: never reached up");
+        // Up on a high shelf (rise 7), a little hop as the frame takes it
+        // (phase 6a D7c).
+        let hop = |guest: &Guest, now: u64| match &guest.state {
+            State::Visiting(visit) => visit.osaka.appearance(now).0 == sprite::Pose::Jack(1),
+            _ => false,
+        };
+        assert!(hop(&guest, now), "{at}: no hop as it went up");
         let frame = next(&mut guest, &real, &view, &mut now, 250);
         let State::Visiting(visit) = &guest.state else {
             panic!("{at}: visiting")
@@ -1260,6 +1267,55 @@ fn a_plant_in_the_chat_goes_up_on_her_shelf() {
                 .any(|b| b.rule().map(|r| r.rule) == Some(rules::Rule::InChat)),
             "{at}: mended"
         );
+    }
+}
+
+/// A piece set up on a low shelf is in her reach: arms up, and no hop
+/// (phase 6a D7c; a high shelf's hop is
+/// [`a_plant_in_the_chat_goes_up_on_her_shelf`]'s). Her plant in the
+/// chat with only a low shelf to go to (Users', rise 5: its run on row
+/// 7, the chat from row 8), industrious: from the frame it's up on it,
+/// no hop. Both modes.
+#[test]
+fn a_plant_set_up_on_a_low_shelf_gets_no_hop() {
+    let (real, view) = rooms_frame(100, 30);
+    let view = IdleView {
+        chat: Rect::new(0, 8, 100, 22),
+        ..view
+    };
+    let shelf = room::Strip::Shelf(Nook::Users);
+    for graphics in [false, true] {
+        let at = format!("graphics={graphics}");
+        let mut guest = home_at(
+            5,
+            tue(14, 0),
+            &[(Furniture::Plant, Nook::List, 400)],
+            graphics,
+        );
+        let Structure::Shelf(high) = users_shelf();
+        let low = Shelf { rise: 5, ..high };
+        assert!(!low.high(), "{at}: {low:?}");
+        guest.ledger.home.structures.push(Structure::Shelf(low));
+        let now = until_visiting(&mut guest, &real, &view, 0);
+        let State::Visiting(visit) = &mut guest.state else {
+            unreachable!()
+        };
+        visit.osaka.set_mood(brain::Mood::Industrious);
+        let up = run_until(&mut guest, &real, &view, now, now + 300_000, |guest, _| {
+            guest
+                .ledger
+                .home
+                .props
+                .iter()
+                .any(|p| p.item == Furniture::Plant && p.strip == shelf)
+        });
+        let mut now = up.unwrap_or_else(|| panic!("{at}: never put it up"));
+        let until = now + 1_000;
+        while now < until {
+            let osaka = &visit_of(&guest).osaka;
+            assert_ne!(osaka.act_name(), "Hop", "{at}: hopped at {now}");
+            shell_step(&mut guest, &real, &view, &mut now, true);
+        }
     }
 }
 
@@ -1822,7 +1878,7 @@ fn the_stage_moves_nothing_up_on_a_shelf_the_frame_hides() {
 /// Three panes 10 rows tall (a low shelf at most, with three rows over
 /// its run: room for the plant by geometry), on a screen 100×30 with
 /// [`rooms`]' protected strip along the bottom.
-fn low_rooms() -> (Buffer, IdleView) {
+pub(super) fn low_rooms() -> (Buffer, IdleView) {
     let nooks = vec![
         (Nook::List, Rect::new(0, 0, 50, 10)),
         (Nook::Users, Rect::new(50, 0, 50, 10)),

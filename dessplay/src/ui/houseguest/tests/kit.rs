@@ -13,7 +13,7 @@ use crate::ui::houseguest::structures::{
 
 /// Everything the channel sold before her kit (her TV out of its box
 /// among it) on [`rooms`]' floors, and the channel due: her kit is next.
-fn all_but_the_kit(seed: u64, graphics: bool) -> Guest {
+pub(super) fn all_but_the_kit(seed: u64, graphics: bool) -> Guest {
     use Furniture::*;
     let pieces = [
         (Tv, Nook::Users, 150),
@@ -38,7 +38,7 @@ fn all_but_the_kit(seed: u64, graphics: bool) -> Guest {
 }
 
 /// Her visit begun on `real`, the frame painted once.
-fn arrived(guest: &mut Guest, real: &Buffer, view: &IdleView) -> Buffer {
+pub(super) fn arrived(guest: &mut Guest, real: &Buffer, view: &IdleView) -> Buffer {
     guest.cue(Scene::Arrive);
     let frame = paint(guest, real, view, 0);
     assert!(matches!(guest.state, State::Visiting(_)), "visiting");
@@ -55,7 +55,7 @@ fn visit_of(guest: &Guest) -> &Visit {
 /// Where her shelf would go up on `frame` for `guest`'s home as the
 /// paint reads it (what her visit keeps off it as it stood), the pane
 /// her kit is in first.
-fn shelf_spot_of(guest: &Guest, frame: &Buffer, view: &IdleView) -> Option<Shelf> {
+pub(super) fn shelf_spot_of(guest: &Guest, frame: &Buffer, view: &IdleView) -> Option<Shelf> {
     let (layer, made) = match &guest.state {
         State::Visiting(visit) => visit.shelf_keep_off(),
         _ => (Vec::new(), Vec::new()),

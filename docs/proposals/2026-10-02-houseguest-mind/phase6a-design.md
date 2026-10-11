@@ -830,6 +830,36 @@ unchanged; `shelf_census` (below). **CHANGELOG.** "Added: Osaka puts her shelf u
 little hop." **Docs.** design.md new *Structures* bullet (unpacking, two stages a day apart, pacing, the hop, where it
 hangs, hidden when the frame can't hold it); decisions.md *She puts up a shelf, a stage a game day* (why per game day,
 why not a home act, why chained after unpacking, why chosen on the frame, why never re-hung).
+**As built.** One predicate offers and commits a stage: `structures::next_stage(drawn, home, plan, keep_off) ->
+Option<Stage { nook, to, high, half: Run, floor }>`, true where the shelf at `built + 1` would be written whole on the
+frame (its cells and margin `free`, or written by her already this paint: the half up and shown), which settles 2b's
+open wording ("the next half's segment ±2") as "what the next paint would write"; `read_ground` and it share
+`structures::showing`. The paint (`put_up_stage`, mod.rs, right after `kit_room`) takes the stage her act put up
+(`HomeEvent::PutUp { nook, to }` → `Visit.put_up`, as a set-down is: `record` runs in the tick too, with no frame)
+only if `next_stage` names it, then `Home::put_up`, `Ledger::built_today(today)` and `Osaka::put_up_done(high, now)`
+(nesting eased, `Via::PutUp`; on a high shelf `Act::Hop`, 400 ms, `Pose::Jack(1)`, only while she still stands back
+from it); then `Visit.stage` for this frame, gated by `Ledger::may_build(today)` (`STAGES_A_DAY` = 1, `Paced { on:
+Dated, stages }`, `Dated` the old `Said`). `Chances.put_up: Option<scenes::PutUp { nook, to, high, x, y, side }>`
+is resolved beside `arranging` on her terrain (`put_up_at`: her middle `WIDTH/2 + 1` left of the half or `WIDTH/2`
+right of it, the nearer first, on the pane's floor where she may stay, facing it). The act ends on `Act::Stand`
+(`AFTER_CARRY_MS`) so the paint judges it before she decides. Her kit's unpack ends on the same stand with
+`Osaka.then_put_up` set; `choose_next` takes it once (after her routine, owed beats and a move under way, before a
+piece she made) and goes to `chances.put_up` in the Continuation bucket ("put-up/stage"). A set-down onto a high
+shelf hops too (`set_down_done(piece, high, now)`). `Scene::PutUp` is `Shelving::PutUp`: her shelf (`shelf_spot`'s,
+or hers) at `built: 0` unless something stands on it, `paced` cleared, staged at the top of the paint as
+`Scene::Shelf` is; `direct` pursues `chances.put_up`. **The shelf census** (`shelf_census`, ignored, release, 3 s):
+32 of 32 seeds finished, stage 1 Monday 16:01–16:28 straight after opening, stage 2 first thing Tuesday (07:01–07:36:
+`PutUp` at 12, for its own sake, is her first choice on waking), 0.63 game days from delivery (sd 0.01). **Review
+fixes.** `Shelf::high()` holds the high rule (the block, `Stage.high`, and `Home::up_high(strip)` for a set-down's
+hop: a shelf strip only); `scenes::PutUp` has no `high` (the commit's `Stage.high` decides the hop). She hops only
+while `Osaka.standing_back` (set as the post-act stand of `Act::PutUp`/`Act::SetDown` starts, cleared by `set`).
+`Osaka.put_up_waits` holds the stage she put up until the paint answers (`put_up_done`, or `put_up_refused(toward)`:
+credit cleared, a `Loss::Heading` glance at the half, `structures::stage_half`); meanwhile `mind::put_up` (via
+`Ctx.put_up_waits`) and the chain don't offer it, so a late paint can't send her back to it. `put_up_stage` reads
+no frame when nothing's to take and nothing's due; the offer is logged once per change at the chances site
+(`note_stage`, with "due, but nowhere to stand"). `Scene::PutUp` on a finished shelf with something on it changes
+nothing. `Dated`'s kind switch is accepted (unfed is test-only; decisions.md). `visit_census` re-run, both modes,
+against the parent: identical but for wall time.
 
 ### Step 6. The gaze up (~650 lines)
 

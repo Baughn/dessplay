@@ -167,11 +167,15 @@ pub enum Scene {
     /// high as fits), with small decor on it (her plant, or on a low
     /// shelf with no room over it for the plant, her clock).
     Shelf,
+    /// Her shelf, nothing of it up yet, where one goes (as high as
+    /// fits), and today's stages forgotten: she puts its first stage up,
+    /// arms up ("Up it goes..."), with a hop if it hangs high.
+    PutUp,
 }
 
 impl Scene {
     /// Every scene, in menu order.
-    pub const ALL: [Scene; 59] = [
+    pub const ALL: [Scene; 60] = [
         Self::Arrive,
         Self::Pull,
         Self::Swap,
@@ -231,6 +235,7 @@ impl Scene {
         Self::LookOut,
         Self::ClockGlance,
         Self::Shelf,
+        Self::PutUp,
     ];
 
     /// A short menu label.
@@ -295,6 +300,7 @@ impl Scene {
             Self::LookOut => "look out of the window",
             Self::ClockGlance => "glance at the clock",
             Self::Shelf => "her shelf",
+            Self::PutUp => "put her shelf up",
         }
     }
 
@@ -393,7 +399,8 @@ impl Scene {
             | Self::School
             | Self::Arrange
             | Self::LookOut
-            | Self::Shelf => None,
+            | Self::Shelf
+            | Self::PutUp => None,
         }
     }
 
@@ -483,6 +490,26 @@ pub(super) fn direct(
                 format!("{name}: her {} up on it{over}", s.item.spec().name)
             })
             .ok_or_else(|| format!("{name}: no shelf of hers, or nothing on it, shows here")),
+        // Her shelf was put up with nothing up yet before the frame was
+        // written (the guest's `stage_shelf`): she sets off to put its
+        // first stage up, where the frame offers it.
+        Scene::PutUp => {
+            let put_up = chances
+                .put_up
+                .ok_or_else(|| format!("{name}: no shelf of hers to put up shows here"))?;
+            let job = Job::PutUp(put_up);
+            let away = match job.side() {
+                Side::Left => 1,
+                Side::Right => -1,
+            };
+            let start = approach(terrain, put_up.x, put_up.y, away);
+            osaka.place(start, put_up.y, now);
+            osaka.pursue(job, now);
+            Ok(format!(
+                "{name}: stage {} over {:?}, at ({}, {})",
+                put_up.to, put_up.nook, put_up.x, put_up.y
+            ))
+        }
         // In through her door (where her home and the frame stand it,
         // the door batch): what she forgot, she goes for as she first
         // decides (her routine sends her out after, at school time).

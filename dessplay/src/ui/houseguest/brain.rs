@@ -537,6 +537,9 @@ pub(super) enum Want {
     /// Put right a rule of her home she has felt broken: lift a piece,
     /// carry it, and set it down where it's right.
     Arrange,
+    /// Put the next stage of her shelf up (phase 6a D7c): a stage a game
+    /// day, offered only while one is due and the frame would hold it.
+    PutUp,
 }
 
 /// Something that makes a want more or less likely, beyond her needs.
@@ -647,7 +650,7 @@ const fn in_chat(def: DesireDef) -> DesireDef {
 
 impl Want {
     /// Every want there is (the order she considers them in).
-    pub const ALL: [Want; 29] = [
+    pub const ALL: [Want; 30] = [
         Self::Stand,
         Self::SpaceOut,
         Self::Sneeze,
@@ -677,6 +680,7 @@ impl Want {
         Self::Use(Use::Crumple),
         Self::Use(Use::LookOut),
         Self::Arrange,
+        Self::PutUp,
     ];
 
     /// Its row of the table.
@@ -802,6 +806,14 @@ impl Want {
             // mood leaves her something to do about it: nesting is all
             // it answers.
             Self::Arrange => row(6.0, &[(Need::Nesting, 1.0)]),
+            // Her shelf, going up (phase 6a D7c): nesting, and worth doing
+            // for its own sake whatever her mood (its pace is a stage a
+            // game day, not her mood's to set: not a home act), between
+            // arranging her home and a parcel.
+            Self::PutUp => DesireDef {
+                own_sake: true,
+                ..row(12.0, &[(Need::Nesting, 1.0)])
+            },
         }
     }
 }
@@ -1155,8 +1167,9 @@ mod tests {
             Want::Use(_) => 8,
             Want::Work => 9,
             Want::Arrange => 10,
+            Want::PutUp => 11,
         };
-        for k in 0..11 {
+        for k in 0..12 {
             assert!(Want::ALL.iter().any(|&w| kind(w) == k), "kind {k} missing");
         }
         for a in Activity::ALL {

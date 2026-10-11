@@ -169,6 +169,7 @@ fn on_the_stage_nearer_text_is_on_her_own_floor() {
                     episode: None,
                     just_set: None,
                     may_arrange: false,
+                    put_up_waits: false,
                     near: true,
                 };
                 for (want, spots) in [

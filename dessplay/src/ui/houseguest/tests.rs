@@ -2517,6 +2517,9 @@ fn visiting_at(guest: &mut Guest, real: &Buffer, view: &IdleView, (x, y): (i32, 
         looks: Looks::default(),
         raise: None,
         kit_room: None,
+        put_up: None,
+        stage: None,
+        stage_noted: None,
     }));
 }
 
@@ -2966,7 +2969,7 @@ fn every_scene_has_a_spot_in_the_stage_room() {
                 let no_shelf = room::pane_strips(&view.nooks)
                     .iter()
                     .all(|p| p.raw.rows < structures::LOW_RISE + structures::LOW_ABOVE);
-                if scene == Scene::Shelf && no_shelf {
+                if matches!(scene, Scene::Shelf | Scene::PutUp) && no_shelf {
                     assert!(matches!(note, Some(Err(_))), "{at}: {note:?}");
                     assert!(width < 100, "{at}: the stage room's List holds one");
                     assert!(guest.ledger.home.structures.is_empty(), "{at}");
@@ -3103,6 +3106,9 @@ fn every_scene_has_a_spot_in_the_stage_room() {
                             .is_some_and(|p| p.own == script::ScriptId::LookOut),
                         // Up, with something of hers shown on it.
                         Scene::Shelf => visit.shown.iter().any(room::Shown::on_shelf),
+                        // At her shelf, putting its stage up (arms up:
+                        // her Stretch idle draws the same pose).
+                        Scene::PutUp => visit.osaka.act_name() == "PutUp",
                         // Chosen as the use starts (the andagi plays
                         // after the snack, past the cap: see
                         // her_vignettes_play_at_her_things).
@@ -6417,6 +6423,30 @@ proptest! {
     }
 }
 
+/// [`a_delivered_kit_is_unpacked_iff_a_shelf_can_go_up`]'s failure of
+/// 2026-10-11 (its oracle's, not her home's): her kit opened in the tick
+/// just before the paint the frame turns on, so the turn found it out of
+/// its box. Opened then, it's judged as opened on the frame before.
+#[test]
+fn a_kit_opened_as_the_frame_turns_was_opened_before_it() {
+    let crowd = Crowd {
+        panes: 1,
+        low: false,
+    };
+    let result = a_parcel_of(
+        327_372_511_084_254_927,
+        false,
+        (105, 20),
+        &[],
+        &[(11, 0, 0, false)],
+        (0, 0),
+        Furniture::ShelfKit,
+        crowd,
+        Some(40_000),
+    );
+    assert!(result.is_ok(), "{result:?}");
+}
+
 /// One case of [`a_delivered_kit_is_unpacked_iff_a_shelf_can_go_up`].
 #[derive(Clone, Debug)]
 struct KitDraw {
@@ -6487,7 +6517,7 @@ fn kit_draw() -> impl Strategy<Value = KitDraw> {
 fn kit_draws_meet_every_outcome() {
     use proptest::strategy::ValueTree;
     use proptest::test_runner::{Config, TestRng, TestRunner};
-    use structures::{HIGH_RISE, KeepOff};
+    use structures::KeepOff;
     let mut runner = TestRunner::new_with_rng(
         Config::default(),
         TestRng::deterministic_rng(proptest::test_runner::RngAlgorithm::ChaCha),
@@ -6520,7 +6550,7 @@ fn kit_draws_meet_every_outcome() {
         };
         let first = spot(&real);
         seen[regime][match first {
-            Some(s) if s.rise >= HIGH_RISE => 0,
+            Some(s) if s.high() => 0,
             Some(_) => 1,
             None => 2,
         }] += 1;
@@ -6918,6 +6948,10 @@ fn a_parcel_of(
             continue;
         };
         assert_untouched_but_feet(&frame, real, &protected, feet(visit))?;
+        // Opened on the very paint the frame turns (her unpacking ended
+        // in the tick before it): opened on the frame before, judged as
+        // such below (no case afresh).
+        let turn = turn && boxed(&guest);
         if delivered.is_none() && guest.ledger.home.owns(item) || turn {
             prop_assert!(boxed(&guest), "{item:?} came unboxed");
             delivered.get_or_insert(now);
@@ -6945,8 +6979,8 @@ fn a_parcel_of(
             .any(|s| s.what == room::Use::Unpack && s.item == item);
         seat |= seated;
         seat_lately |= seated;
-        // The oracle mirrors the paint's order (an assumption to revisit
-        // when step 5c moves what follows the raise): `kit_room` asks
+        // The oracle mirrors the paint's order (step 5c left it: her
+        // shelf's stages are taken after `kit_room`): `kit_room` asks
         // after `furnish`, before her layer and what she made change this
         // frame, so with what her visit kept off as the last frame left
         // it (`Visit::shelf_keep_off`, the one source the paint reads);
@@ -11752,6 +11786,7 @@ fn every_want_can_be_cued() {
             Want::Use(Use::Crumple) => &[Scene::MakeSofa, Scene::MakeBed, Scene::MakeDesk],
             Want::Use(Use::LookOut) => &[Scene::LookOut],
             Want::Arrange => &[Scene::Arrange],
+            Want::PutUp => &[Scene::PutUp],
         };
         assert!(
             matches!(want, Want::Stand | Want::Walk) || !scenes.is_empty(),
@@ -14277,7 +14312,7 @@ fn every_other_spot_gone_she_keeps_it_where_it_is() {
             osaka.tick(now, None, &terrain, &judged(&osaka), &mut rng);
             if !set && osaka.episode().is_some_and(|e| e.set_down) {
                 // The frame takes it.
-                osaka.set_down_done(Furniture::Sofa, now);
+                osaka.set_down_done(Furniture::Sofa, false, now);
                 set = true;
             }
             if set && osaka.episode().is_none() {
@@ -15462,6 +15497,7 @@ mod felt;
 mod film;
 mod golden;
 mod kit;
+mod put_up;
 mod rain;
 mod rares;
 mod shelf;

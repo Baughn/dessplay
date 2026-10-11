@@ -19,8 +19,8 @@ use super::door::Keep;
 use super::graphics::strokes;
 use super::sprite::{self, Facing};
 use super::structures::{
-    self, Drawn, EDGE, HIGH_RISE, KeepOff, LOW_ABOVE, LOW_RISE, MARGIN, SHELF_WIDTH, Shelf,
-    Structure,
+    self, Drawn, EDGE, HIGH_RISE, KeepOff, LOW_ABOVE, LOW_RISE, MARGIN, SHELF_STAGES, SHELF_WIDTH,
+    Shelf, Structure,
 };
 
 /// A piece of furniture.
@@ -2102,6 +2102,30 @@ impl Home {
             Structure::Shelf(shelf) => Structure::Shelf(Shelf { built: 0, ..shelf }),
         });
         true
+    }
+
+    /// Whether what's set down on `strip` is up high: on a high shelf
+    /// of hers ([`Shelf::high`]), which she hops up to (phase 6a D7c).
+    /// Never a floor, nor a low shelf (in her reach).
+    pub fn up_high(&self, strip: Strip) -> bool {
+        match strip {
+            Strip::Shelf(nook) => self.shelf(nook).is_some_and(|shelf| shelf.high()),
+            Strip::Bottom(_) => false,
+        }
+    }
+
+    /// Stage `to` of her shelf on `nook`'s wall up (phase 6a D7c): its
+    /// next, and no further than finished. False, and nothing changes,
+    /// unless she has a shelf there with just the stage before it up.
+    pub fn put_up(&mut self, nook: Nook, to: u8) -> bool {
+        for structure in &mut self.structures {
+            let Structure::Shelf(shelf) = structure;
+            if shelf.nook == nook && shelf.built.checked_add(1) == Some(to) && to <= SHELF_STAGES {
+                shelf.built = to;
+                return true;
+            }
+        }
+        false
     }
 
     /// Whether anything is still in its box.
@@ -8018,6 +8042,67 @@ pub(in crate::ui::houseguest) mod shelves {
         }
         assert!(up >= 8 && moves >= 4, "{up} up, {moves} moves up");
     }
+
+    /// A stage of her shelf goes up only onto the stage before it, no
+    /// further than finished (phase 6a D7c): from nothing up, stage 1 and
+    /// then 2; never a stage already up, one ahead, past the last, on a
+    /// pane with no shelf of hers, or on a finished shelf. Refused,
+    /// nothing changes. (A guard: the paint only puts up the stage
+    /// `next_stage` names.)
+    #[test]
+    fn a_stage_goes_up_only_onto_the_stage_before_it() {
+        use super::super::structures::SHELF_STAGES;
+        let home = |built| Home {
+            structures: vec![shelf_on(Nook::Users, 12, 7, built)],
+            ..Home::default()
+        };
+        let refused = |built: u8, nook: Nook, to: u8| {
+            let mut at = home(built);
+            assert!(!at.put_up(nook, to), "{built} → {nook:?} {to}");
+            assert_eq!(at, home(built), "{built} → {nook:?} {to}");
+        };
+        let mut building = home(0);
+        assert!(building.put_up(Nook::Users, 1));
+        assert_eq!(building, home(1));
+        assert!(building.put_up(Nook::Users, 2));
+        assert_eq!(building, home(2));
+        assert_eq!(SHELF_STAGES, 2);
+        for (built, nook, to) in [
+            (0, Nook::Users, 0),
+            (0, Nook::Users, 2),
+            (1, Nook::Users, 1),
+            (1, Nook::Users, 3),
+            (0, Nook::List, 1),
+            (1, Nook::Playlist, 2),
+            (2, Nook::Users, 2),
+            (2, Nook::Users, 3),
+        ] {
+            refused(built, nook, to);
+        }
+        let mut none = Home::default();
+        assert!(!none.put_up(Nook::Users, 1));
+        assert_eq!(none, Home::default());
+    }
+
+    /// What's set down up on a high shelf of hers goes up high (she hops
+    /// to it: phase 6a D7c); on a low one it's in her reach, and on a
+    /// floor (a high shelf's pane's too) it's down low; a shelf strip
+    /// with no shelf of hers on it, none.
+    #[test]
+    fn only_a_high_shelf_is_up_high() {
+        let home = |rise| Home {
+            structures: vec![shelf_on(Nook::Users, 12, rise, 2)],
+            ..Home::default()
+        };
+        let high = home(7);
+        assert!(high.up_high(Strip::Shelf(Nook::Users)));
+        assert!(!high.up_high(Strip::Bottom(Nook::Users)));
+        assert!(!high.up_high(Strip::Shelf(Nook::List)));
+        assert!(!high.up_high(Strip::Bottom(Nook::List)));
+        let low = home(5);
+        assert!(!low.up_high(Strip::Shelf(Nook::Users)));
+        assert!(!low.up_high(Strip::Bottom(Nook::Users)));
+    }
 }
 
 /// The low shelf (phase 6a, step 4, D3a): a shelf hung under the top of
@@ -8201,7 +8286,7 @@ mod low_shelf {
             }) {
                 prop_assert!(!run.hangs_over(s.rect()), "{:?} meets {:?}", s, run);
             }
-            if run.shelf.rise < HIGH_RISE {
+            if !run.shelf.high() {
                 seen.moved += laid
                     .shifts
                     .iter()
@@ -8232,7 +8317,7 @@ mod low_shelf {
                 };
                 for run in runs.iter().filter(|r| Strip::Bottom(r.shelf.nook) == strip) {
                     prop_assert!(!run.hangs_over(at.rect()), "{:?} placed on {:?}", at, run);
-                    if run.shelf.rise < HIGH_RISE {
+                    if !run.shelf.high() {
                         seen.placed += 1;
                     }
                 }
@@ -8249,7 +8334,7 @@ mod low_shelf {
             .collect();
         prop_assert_eq!(&shown_on, &built, "{:?}", laid.shown);
         for run in runs.iter().filter(|r| !r.built.is_empty()) {
-            if run.shelf.rise < HIGH_RISE {
+            if !run.shelf.high() {
                 seen.low += 1;
                 seen.six += usize::from(run.shelf.rise == LOW_RISE + 1);
             } else {

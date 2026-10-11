@@ -111,6 +111,10 @@ pub(super) struct Ctx<'a> {
     /// She'd put a rule of her home right: one she felt is broken
     /// still, and her mood leaves her something to do about her home.
     pub may_arrange: bool,
+    /// She has put a stage of her shelf up that the frame has yet to
+    /// take or refuse (phase 6a D7c): it isn't hers to choose again
+    /// meanwhile, whatever the last frame offered.
+    pub put_up_waits: bool,
     /// Nearer spots draw her (phase 5c M6; [`Stillness::near`]): see
     /// [`Near`].
     ///
@@ -269,6 +273,8 @@ const TRAVEL: &[Method] = &[m("travel/link", take_link), m("travel/door", door_a
 const WORK: &[Method] = &[m("work", work)];
 const PULL: &[Method] = &[m("pull", pull)];
 const SWAP: &[Method] = &[m("swap", swap)];
+/// Her shelf's next stage, where the frame offers it (phase 6a D7c).
+const PUT_UP: &[Method] = &[m("put-up/stage", put_up)];
 /// The most progressed step first: what she's carrying comes before
 /// lifting anything.
 const ARRANGE: &[Method] = &[
@@ -313,7 +319,19 @@ pub(super) fn methods(want: Want) -> &'static [Method] {
         Want::Use(Use::Read) => READ,
         Want::Use(_) => USE,
         Want::Arrange => ARRANGE,
+        Want::PutUp => PUT_UP,
     }
+}
+
+/// The next stage of her shelf, beside where it goes: offered by the
+/// frame only while one is due today and the frame would show it up
+/// (`Chances::put_up`), and not while the frame has yet to take the
+/// one she put up.
+fn put_up(c: &Ctx, _: Whims, _: Want) -> Option<Bind> {
+    c.chances
+        .put_up
+        .filter(|_| !c.put_up_waits)
+        .map(|p| Bind::Job(Job::PutUp(p)))
 }
 
 /// Space out musing (saying a musing, or now and then telling a
@@ -1523,6 +1541,12 @@ impl Heading {
                 let ((x, y), side) = judged.spot?;
                 Some(Job::SetDown(SetDown { x, y, side, ..*was }))
             }
+            // The same stage of her shelf, wherever the frame has her
+            // stand for it now.
+            Job::PutUp(was) => chances
+                .put_up
+                .filter(|p| (p.nook, p.to) == (was.nook, was.to))
+                .map(Job::PutUp),
             // Her door, wherever the frame stands it now.
             Job::Leave { why, .. } => chances.door.map(|spot| Job::Leave { spot, why: *why }),
             // The place she was making for to go out, while it's still
@@ -1539,7 +1563,12 @@ impl Heading {
             Job::Pull(p) | Job::Borrow(p) => p.row,
             Job::Swap(s) => s.row,
             Job::Build(b) => b.row,
-            Job::Use(_) | Job::Lift(_) | Job::SetDown(_) | Job::Leave { .. } | Job::Out { .. } => 0,
+            Job::Use(_)
+            | Job::Lift(_)
+            | Job::SetDown(_)
+            | Job::PutUp(_)
+            | Job::Leave { .. }
+            | Job::Out { .. } => 0,
         }
     }
 }
@@ -1996,6 +2025,7 @@ mod tests {
             episode: None,
             just_set: None,
             may_arrange: false,
+            put_up_waits: false,
             near,
         }
     }

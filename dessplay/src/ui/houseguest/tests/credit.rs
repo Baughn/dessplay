@@ -384,6 +384,22 @@ fn what_she_chooses_eases_what_it_serves() {
         "use/borrow",
         check(&mut room, read, "use/borrow", 5 * MINUTE),
     );
+    // Her shelf going up (phase 6a D7c): where the stage room's frame
+    // takes one, nothing of it up yet; its first stage chosen, put up,
+    // and taken by the frame.
+    {
+        use crate::ui::houseguest::structures::{Shelf, Structure};
+        let mut room = stage_room(9, &[]);
+        let spot = super::kit::shelf_spot_of(&room.guest, &room.real, &room.view)
+            .expect("the stage room takes a shelf");
+        room.guest.ledger.home.structures = vec![Structure::Shelf(Shelf { built: 0, ..spot })];
+        paint(&mut room.guest, &room.real, &room.view, 0);
+        note(
+            Want::PutUp,
+            "put-up/stage",
+            check(&mut room, Want::PutUp, "put-up/stage", 5 * MINUTE),
+        );
+    }
     // Arranging: her sofa turned from her TV, felt as she lounges, and her
     // home on her mind; lifted, carried, set down, and sat back down to.
     {

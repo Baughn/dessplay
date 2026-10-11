@@ -3035,3 +3035,106 @@ fn census_on_original_samples() {
         }
     }
 }
+
+/// Her shelf from her kit (phase 6a, step 5c; design "Census, band and
+/// stillness"): over 32 seeds, everything else hers on [`rooms`] at
+/// 100×30 (its List takes a high shelf) and her kit on order on Monday at
+/// 16:00, run as the shell would with nobody at the keys, for up to five
+/// game days: when it came, when she opened it, and when each stage went
+/// up; and how many game days from its coming to her shelf finished (the
+/// design expects 1 to 2: a stage a game day, the first straight after
+/// she opens it). Step 7 adds the gremlin's: from his coming to him up on
+/// it, and her "It wants a shelf..." lines between. Ignored; run by hand:
+///
+/// ```text
+/// cargo test --release -p dessplay --lib shelf_census -- --ignored --nocapture
+/// ```
+#[test]
+#[ignore = "the shelf census: run by hand in release with --nocapture"]
+fn shelf_census() {
+    use crate::ui::houseguest::structures::Structure;
+    const SEEDS: u64 = 32;
+    const DAYS: u64 = 5;
+    let started = std::time::Instant::now();
+    /// What one run came to: when (game minutes since her clock's
+    /// start) her kit came, she opened it, and each stage went up.
+    #[derive(Default, Debug)]
+    struct Run {
+        came: Option<u64>,
+        opened: Option<u64>,
+        stages: Vec<u64>,
+    }
+    let run = |seed: u64| {
+        let (real, view) = rooms_frame(100, 30);
+        let mut guest = super::kit::all_but_the_kit(seed, false);
+        guest.ledger.ordered = Some(Furniture::ShelfKit);
+        let until = guest.ledger.clock + DAYS * 24 * 60;
+        let mut out = Run::default();
+        let mut now = 0;
+        paint(&mut guest, &real, &view, now);
+        while guest.ledger.clock < until && out.stages.len() < 2 {
+            now += guest
+                .next_tick(now)
+                .map_or(1000, |d| d.as_millis() as u64)
+                .clamp(1, 1000);
+            if guest.advance(now) {
+                paint(&mut guest, &real, &view, now);
+            }
+            let clock = guest.ledger.clock;
+            let home = &guest.ledger.home;
+            if out.came.is_none() && home.owns(Furniture::ShelfKit) {
+                out.came = Some(clock);
+            }
+            let built = home.structures.first().map(|s| match *s {
+                Structure::Shelf(shelf) => shelf.built,
+            });
+            if out.opened.is_none() && built.is_some() {
+                out.opened = Some(clock);
+            }
+            while out.stages.len() < usize::from(built.unwrap_or(0)) {
+                out.stages.push(clock);
+            }
+        }
+        out
+    };
+    let runs: Vec<(u64, Run)> = std::thread::scope(|scope| {
+        let runs: Vec<_> = (0..SEEDS)
+            .map(|seed| (seed, scope.spawn(move || run(seed))))
+            .collect();
+        runs.into_iter()
+            .map(|(seed, run)| (seed, run.join().expect("a run")))
+            .collect()
+    });
+    let when = |minutes: u64| {
+        let day = routine::day_time(minutes * 60_000, false);
+        when(&day)
+    };
+    let label = |at: Option<u64>| at.map_or_else(|| "-".to_owned(), when);
+    eprintln!(
+        "\n== shelf census: {SEEDS} seeds, rooms 100x30, her kit on order Mon 16:00, up to {DAYS} game days ({:.0} s)",
+        started.elapsed().as_secs_f64()
+    );
+    let mut days = Vec::new();
+    for (seed, run) in &runs {
+        let finished = run.stages.get(1).copied();
+        let took = run
+            .came
+            .zip(finished)
+            .map(|(came, done)| (done - came) as f64 / (24.0 * 60.0));
+        eprintln!(
+            "  seed {seed:>2}: came {}, opened {}, stage 1 {}, stage 2 {}{}",
+            label(run.came),
+            label(run.opened),
+            label(run.stages.first().copied()),
+            label(finished),
+            took.map_or_else(String::new, |d| format!(" ({d:.2} game days)"))
+        );
+        days.extend(took);
+    }
+    let (mean, sd) = mean_sd(&days);
+    let max = days.iter().copied().fold(0.0, f64::max);
+    eprintln!(
+        "  finished {} of {SEEDS}; game days from its coming to finished: mean {mean:.2}, sd {sd:.2}, max {max:.2}",
+        days.len()
+    );
+}

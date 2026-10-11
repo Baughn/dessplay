@@ -82,6 +82,14 @@ impl Shelf {
         self.built == SHELF_STAGES
     }
 
+    /// Whether it hangs high (rise [`HIGH_RISE`] or more: above every
+    /// hung piece), else low, in her reach (D3, D3a). The one place the
+    /// rule is held: a low shelf's block, and her hop as a stage of a
+    /// high one goes up or a piece goes up onto one (D7c), read it.
+    pub fn high(&self) -> bool {
+        self.rise >= HIGH_RISE
+    }
+
     /// Where its run hangs on its pane's raw strip `host` this frame
     /// (D3): `SHELF_WIDTH` cells from its anchor, `rise` rows above the
     /// floor. `None` where it can't hang this frame: its run or margin
@@ -115,7 +123,7 @@ impl Shelf {
     /// built (from its first stage on, it's where it will be): pure
     /// geometry, `None` where it can't hang this frame or hangs high.
     pub fn block(&self, host: Extent) -> Option<Rect> {
-        if self.rise >= HIGH_RISE {
+        if self.high() {
             return None;
         }
         let kept = self.run(host)?.kept();
@@ -262,33 +270,11 @@ pub(super) fn read_ground(
     let laid = home.laid_and_shifted(plan.nooks).shown;
     let mut written = Written::none();
     for (shelf, host, run) in shelves {
-        // What stands on this shelf stands on its cells; every other
-        // piece's cover is kept clear of it.
-        let covers: Vec<Rect> = laid
-            .iter()
-            .filter(|s| s.strip != Some(Strip::Shelf(shelf.nook)))
-            .map(Shown::cover)
-            .collect();
-        let cells = shelf.built_on(run);
-        let (Some(&(first, _)), Some(&(last, _))) = (cells.first(), cells.last()) else {
+        let Some((cells, ink)) =
+            showing(buf, &|_, _| false, shelf, host, run, plan, keep_off, &laid)
+        else {
             continue;
         };
-        // Its pane's border under its middle: the ink it's drawn in, and
-        // the background a blank of its pane has.
-        let border = u16::try_from(run.from + SHELF_WIDTH / 2)
-            .ok()
-            .zip(u16::try_from(host.floor).ok())
-            .and_then(|at| buf.cell(at));
-        let bg = border.map_or(Color::Reset, |cell| cell.bg);
-        if !(first - MARGIN..=last + MARGIN)
-            .all(|x| free(buf, (x, run.y), plan, keep_off, &covers, bg))
-        {
-            continue;
-        }
-        let ink = Ink::new(
-            border.map_or(Color::Reset, |cell| cell.fg),
-            Modifier::empty(),
-        );
         for (x, glyph) in cells {
             let (Ok(ux), Ok(uy)) = (u16::try_from(x), u16::try_from(run.y)) else {
                 continue;
@@ -311,6 +297,119 @@ pub(super) fn read_ground(
         written.shown_on.push(shelf.nook);
     }
     written
+}
+
+/// What of `shelf`, hung at `run` on its pane's raw strip `host`, the
+/// frame `buf` shows (D4): its built cells, each with its glyph, and the
+/// ink it's drawn in, if every one of them and its margin is [`free`]
+/// (or `mine`: a cell her structures have written already this paint);
+/// none of it else (all of it or none). What stands on it stands on its
+/// cells; every other piece's cover in `laid` is kept clear of it.
+#[allow(clippy::too_many_arguments)]
+fn showing(
+    buf: &Buffer,
+    mine: &dyn Fn(i32, i32) -> bool,
+    shelf: Shelf,
+    host: Extent,
+    run: Run,
+    plan: Plan,
+    keep_off: &KeepOff,
+    laid: &[Shown],
+) -> Option<(Vec<(i32, char)>, Ink)> {
+    let covers: Vec<Rect> = laid
+        .iter()
+        .filter(|s| s.strip != Some(Strip::Shelf(shelf.nook)))
+        .map(Shown::cover)
+        .collect();
+    let cells = shelf.built_on(run);
+    let (&(first, _), &(last, _)) = (cells.first()?, cells.last()?);
+    // Its pane's border under its middle: the ink it's drawn in, and
+    // the background a blank of its pane has.
+    let border = u16::try_from(run.from + SHELF_WIDTH / 2)
+        .ok()
+        .zip(u16::try_from(host.floor).ok())
+        .and_then(|at| buf.cell(at));
+    let bg = border.map_or(Color::Reset, |cell| cell.bg);
+    let holds = (first - MARGIN..=last + MARGIN)
+        .all(|x| mine(x, run.y) || free(buf, (x, run.y), plan, keep_off, &covers, bg));
+    let ink = Ink::new(
+        border.map_or(Color::Reset, |cell| cell.fg),
+        Modifier::empty(),
+    );
+    holds.then_some((cells, ink))
+}
+
+/// The next stage of her shelf, where the frame would show it up
+/// (phase 6a D7c): `to` of [`SHELF_STAGES`], the columns of the half it
+/// puts up on its run's row, and its pane's floor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Stage {
+    pub nook: Nook,
+    pub to: u8,
+    /// It hangs high ([`Shelf::high`]): she hops as it goes up.
+    pub high: bool,
+    /// The half it puts up: columns `from..to` of its run's row.
+    pub half: Run,
+    /// Its pane's floor: where she stands to put it up.
+    pub floor: i32,
+}
+
+/// The next stage of `home`'s shelf (one not yet finished), if the frame
+/// `drawn` would show the shelf with it up: every cell of it and its
+/// margin [`free`] but what her structures wrote into it this paint (the
+/// stages up so far, shown). So a stage is offered, and taken once it's
+/// done, only where the next paint would show it (D7c: what she puts up
+/// is never hidden the moment it's up, and never over text).
+pub(super) fn next_stage(
+    drawn: Drawn,
+    home: &Home,
+    plan: Plan,
+    keep_off: &KeepOff,
+) -> Option<Stage> {
+    let (shelf, host, run) = hung(home, plan.nooks).find(|(shelf, ..)| !shelf.finished())?;
+    let next = Shelf {
+        built: shelf.built + 1,
+        ..shelf
+    };
+    let laid = home.laid_and_shifted(plan.nooks).shown;
+    let mine = |x: i32, y: i32| drawn.written().contains(x, y);
+    showing(drawn.buf(), &mine, next, host, run, plan, keep_off, &laid)?;
+    Some(Stage {
+        nook: shelf.nook,
+        to: next.built,
+        high: shelf.high(),
+        half: half(shelf, run, next.built)?,
+        floor: host.floor,
+    })
+}
+
+/// The half stage `to` of her shelf on `nook`'s wall puts up, on this
+/// frame's panes `nooks` (phase 6a D7c), if that shelf hangs on them:
+/// where a stage the frame refused would have gone.
+pub(super) fn stage_half(home: &Home, nooks: &[(Nook, Rect)], nook: Nook, to: u8) -> Option<Run> {
+    let (shelf, _, run) = hung(home, nooks).find(|(shelf, ..)| shelf.nook == nook)?;
+    half(shelf, run, to)
+}
+
+/// The half stage `to` of `shelf` puts up on `run`: the columns of its
+/// row it has with `to` stages up and hasn't with one fewer.
+fn half(shelf: Shelf, run: Run, to: u8) -> Option<Run> {
+    let up = Shelf {
+        built: to.checked_sub(1)?,
+        ..shelf
+    }
+    .built_on(run);
+    let half: Vec<i32> = Shelf { built: to, ..shelf }
+        .built_on(run)
+        .into_iter()
+        .map(|(x, _)| x)
+        .filter(|x| !up.iter().any(|(at, _)| at == x))
+        .collect();
+    Some(Run {
+        from: *half.first()?,
+        to: *half.last()? + 1,
+        y: run.y,
+    })
 }
 
 /// What her structures wrote into the frame this paint: each cell, with

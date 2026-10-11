@@ -14,7 +14,7 @@ use super::room::{Furniture, MadeId, PieceRef, Seat, Use};
 use super::routine::{self, DayTime};
 use super::rules::{Grievance, Placement, Repair, TIE_CELLS, Trials};
 use super::scenes::{
-    Build, Grip, Held, Job, JobRef, LayerOp, Leave, Lift, Pull, SetDown, Side, Swap,
+    Build, Grip, Held, Job, JobRef, LayerOp, Leave, Lift, Pull, PutUp, SetDown, Side, Swap,
 };
 use super::script::{
     self, Chat, ClockGlance, Cue, Play, Prop, ScriptId, SpliceCtx, SpliceId, Surface,
@@ -63,6 +63,10 @@ pub(super) struct Chances {
     pub lift_at: Vec<LiftAt>,
     /// What the frame made of the piece she's moving, if she is.
     pub judged: Option<Judged>,
+    /// The next stage of her shelf, where she'd stand to put it up
+    /// (phase 6a D7c): only while one is due today and the frame would
+    /// show it up.
+    pub put_up: Option<PutUp>,
     /// How pretty the room she's in is: what's pretty on the strip she
     /// stands on (0 off any strip).
     pub beauty_here: f64,
@@ -421,6 +425,10 @@ pub(super) enum HomeEvent {
     /// A piece of hers set down at `to`: hers once the frame takes it
     /// (it must fit there then; see `Guest::paint`).
     SetDown { piece: Furniture, to: Placement },
+    /// Stage `to` of her shelf on `nook`'s wall put up (phase 6a D7c):
+    /// up once the frame would show it (the paint judges it), counted
+    /// for the day.
+    PutUp { nook: super::room::Nook, to: u8 },
     /// What her calendar owed her on this real date has shown: not owed
     /// again that date (phase 5b D5).
     Calendar(chrono::NaiveDate),
@@ -533,6 +541,13 @@ const WAIT_MS: u64 = 300;
 const UNREACHED_MS: u64 = 2000;
 /// Lifting a piece.
 const HUP: &str = line!("Hup!");
+/// Putting a stage of her shelf up, arms up (phase 6a D7c).
+pub(super) const PUT_UP_MS: u64 = 6000;
+/// The little hop as a stage of a high shelf goes up, or a piece onto
+/// one: one beat of her jumping jack's lifted frame.
+const HOP_MS: u64 = 400;
+/// At a stage of her shelf, as she reaches up.
+const UP_IT_GOES: &str = line!("Up it goes...");
 /// Her homework on the floor over, the first time a visit (phase 5c D5).
 pub(super) const MY_BACK: &str = line!("My back...");
 /// Trying a piece where she has set it down.
@@ -827,6 +842,18 @@ enum Act {
         since: u64,
         until: u64,
     },
+    /// Putting a stage of her shelf up, arms up (phase 6a D7c): it's up
+    /// at `until`, once the frame takes it.
+    PutUp {
+        put_up: PutUp,
+        since: u64,
+        until: u64,
+    },
+    /// A little hop, arms up (phase 6a D7c): a stage of a high shelf up,
+    /// or a piece set up on one.
+    Hop {
+        until: u64,
+    },
 }
 
 /// How what she did came to ease her needs: the one place that eases
@@ -847,6 +874,9 @@ pub(super) enum Via {
     /// Whole, as the frame takes the piece she set down
     /// ([`Osaka::set_down_done`]).
     SetDown,
+    /// Whole, as the frame takes the stage of her shelf she put up
+    /// ([`Osaka::put_up_done`]).
+    PutUp,
 }
 
 /// How a chosen want comes to ease what it serves (see
@@ -1003,7 +1033,10 @@ fn census_moves(act: &Act) -> Moves {
         | Act::Borrow { .. }
         | Act::Use { .. }
         | Act::Lift { .. }
-        | Act::SetDown { .. } => Moves::Still,
+        | Act::SetDown { .. }
+        // Arms up at her shelf, and the hop as it goes up: on the spot.
+        | Act::PutUp { .. }
+        | Act::Hop { .. } => Moves::Still,
     }
 }
 
@@ -1230,6 +1263,7 @@ impl Act {
             Self::Use { seat, .. } => Some(JobRef::Use(seat)),
             Self::Lift { lift, .. } => Some(JobRef::Lift(lift)),
             Self::SetDown { set, .. } => Some(JobRef::SetDown(set)),
+            Self::PutUp { put_up, .. } => Some(JobRef::PutUp(put_up)),
             _ => None,
         }
     }
@@ -1283,6 +1317,7 @@ impl Act {
             } => (Stays::Job, OnChat::LooksUp),
             Self::Lift { .. }
             | Self::SetDown { .. }
+            | Self::PutUp { .. }
             | Self::Pull { .. }
             | Self::Tear { .. }
             | Self::Borrow { .. }
@@ -1298,6 +1333,7 @@ impl Act {
             | Self::Dazed { .. }
             | Self::Look { .. }
             | Self::Admire { .. }
+            | Self::Hop { .. }
             | Self::Glance { .. }
             | Self::Sneeze { .. }
             | Self::PutBack { .. }
@@ -2445,6 +2481,21 @@ pub(super) struct Osaka {
     /// The piece she just set down, and what she felt was wrong using
     /// it: she sits back down to it (once).
     just_set: Option<(Furniture, Use)>,
+    /// She has just opened her shelf kit (phase 6a D7c): her next
+    /// decision puts its first stage up, if the frame offers it (else
+    /// it's let go).
+    then_put_up: bool,
+    /// The stage of her shelf she put up, till the frame takes it
+    /// ([`Osaka::put_up_done`]) or refuses it ([`Osaka::put_up_refused`])
+    /// (phase 6a D7c): it isn't hers to choose again meanwhile (the last
+    /// frame may offer it still, if none has been painted since).
+    put_up_waits: Option<PutUp>,
+    /// She stands back a moment from what she just put up or set down,
+    /// for the frame to take it: set as that stand starts (the end of
+    /// `Act::PutUp` and `Act::SetDown`), cleared as any act after it is
+    /// set ([`Osaka::set`]). Only then does she hop up to it
+    /// ([`Osaka::hop_if`]).
+    standing_back: bool,
     /// The rules (rows of the table) she felt broken on sight and owes
     /// saying so, once she's quiet (door batch, D7), oldest first.
     owed_aloud: Vec<usize>,
@@ -2824,6 +2875,9 @@ impl Osaka {
             aloud_said: Vec::new(),
             episode: None,
             just_set: None,
+            then_put_up: false,
+            put_up_waits: None,
+            standing_back: false,
             home_acts: 0,
             #[cfg(test)]
             beats: Vec::new(),
@@ -3080,6 +3134,7 @@ impl Osaka {
                         JobRef::Use(seat) => format!("{:?} ({:?})", seat.what, seat.item),
                         JobRef::Lift(l) => format!("lifting the {}", l.repair.piece.spec().name),
                         JobRef::SetDown(s) => format!("setting the {} down", s.piece.spec().name),
+                        JobRef::PutUp(p) => format!("her shelf's stage {}", p.to),
                         JobRef::Leave(_, why) => format!("her door ({why:?})"),
                         JobRef::Out(_, why) => format!("out where it's clear ({why:?})"),
                     };
@@ -3519,6 +3574,8 @@ impl Osaka {
             Act::Lift { since, until, .. } | Act::SetDown { since, until, .. } => {
                 (since + (now.saturating_sub(since) / LIFT_FRAME_MS + 1) * LIFT_FRAME_MS).min(until)
             }
+            // Held still, arms up, till it's up.
+            Act::PutUp { until, .. } | Act::Hop { until } => until,
             Act::Clamber { column, to_y, .. } => {
                 if self.x == column && self.y != to_y {
                     now + CLIMB_MS
@@ -4577,6 +4634,7 @@ impl Osaka {
         // isn't cut by this.)
         self.looking_up = None;
         self.stir_until = 0;
+        self.standing_back = false;
         self.bob_held = None;
         self.sill = None;
         self.aloud = None;
@@ -4824,6 +4882,19 @@ impl Osaka {
                         tracing::info!(item = ?seat.item, "houseguest: unpacked");
                         self.events.push(HomeEvent::Unpacked(seat.item));
                     }
+                    // Her kit opened (phase 6a D7c): a moment, for the
+                    // frame to put it up as what it puts up, then she puts
+                    // its first stage up straight away, if the frame
+                    // offers it (see `choose_next`).
+                    if seat.what == Use::Unpack && seat.item.is_kit() {
+                        self.then_put_up = true;
+                        return self.set(
+                            Act::Stand {
+                                until: at + AFTER_CARRY_MS,
+                            },
+                            at,
+                        );
+                    }
                     if seat.what == Use::Crumple
                         && let PieceRef::Made(id) = seat.piece
                     {
@@ -4887,6 +4958,32 @@ impl Osaka {
                     },
                     at,
                 );
+                self.standing_back = true;
+            }
+            // Up: hers once the frame takes it (`put_up_done`), a moment
+            // after; cut short before this, nothing went up.
+            Act::PutUp { put_up, until, .. } => {
+                if at < until {
+                    self.act_due = self.first_due(at);
+                    return;
+                }
+                tracing::debug!(
+                    nook = ?put_up.nook,
+                    stage = put_up.to,
+                    "houseguest: put a stage of her shelf up"
+                );
+                self.events.push(HomeEvent::PutUp {
+                    nook: put_up.nook,
+                    to: put_up.to,
+                });
+                self.set(
+                    Act::Stand {
+                        until: at + AFTER_CARRY_MS,
+                    },
+                    at,
+                );
+                self.standing_back = true;
+                self.put_up_waits = Some(put_up);
             }
             Act::Tear {
                 build,
@@ -4951,9 +5048,11 @@ impl Osaka {
                 }
                 self.act_due = self.first_due(at);
             }
-            Act::Stand { .. } | Act::SpaceOut { .. } | Act::Admire { .. } | Act::PutBack { .. } => {
-                self.decide(at, terrain, chances, rng)
-            }
+            Act::Stand { .. }
+            | Act::SpaceOut { .. }
+            | Act::Admire { .. }
+            | Act::Hop { .. }
+            | Act::PutBack { .. } => self.decide(at, terrain, chances, rng),
             Act::Glance { .. } => {
                 // Paid (an interrupted glance stays owed).
                 if !self.owed.is_empty() {
@@ -5577,6 +5676,30 @@ impl Osaka {
                         set,
                         since: at,
                         until: at + SET_DOWN_MS,
+                    }
+                } else {
+                    Act::Stand {
+                        until: at + WAIT_MS,
+                    }
+                }
+            }
+            // Beside where her shelf's next stage goes, while the frame
+            // still offers it: arms up, "Up it goes...".
+            Job::PutUp(put_up) => {
+                let offered = chances
+                    .put_up
+                    .is_some_and(|p| (p.nook, p.to) == (put_up.nook, put_up.to));
+                if offered {
+                    tracing::debug!(
+                        nook = ?put_up.nook,
+                        stage = put_up.to,
+                        "houseguest: putting a stage of her shelf up"
+                    );
+                    self.say(UP_IT_GOES, at);
+                    Act::PutUp {
+                        put_up,
+                        since: at,
+                        until: at + PUT_UP_MS,
                     }
                 } else {
                     Act::Stand {
@@ -7718,6 +7841,8 @@ impl Osaka {
                 "arrange/use-it" => Some(CreditPath::AsUse),
                 _ => None,
             },
+            // Whole, as the frame takes the stage she put up.
+            Want::PutUp => (method == "put-up/stage").then_some(CreditPath::By(Via::PutUp)),
         }
     }
 
@@ -8084,7 +8209,7 @@ impl Osaka {
             | Act::Sneeze { .. }
             | Act::PutBack { .. }
             | Act::Admire { .. } => "mischief",
-            Act::Lift { .. } | Act::SetDown { .. } => "home",
+            Act::Lift { .. } | Act::SetDown { .. } | Act::PutUp { .. } | Act::Hop { .. } => "home",
             Act::Stand { .. }
             | Act::Look { .. }
             | Act::Glance { .. }
@@ -8138,7 +8263,7 @@ impl Osaka {
         let kind = |job: &Job| match job {
             Job::Pull(_) | Job::Swap(_) | Job::Build(_) | Job::Borrow(_) => "to text",
             Job::Use(_) => "to seat",
-            Job::Lift(_) | Job::SetDown(_) => "to home",
+            Job::Lift(_) | Job::SetDown(_) | Job::PutUp(_) => "to home",
             // On her way out by her door for her routine (door batch D6).
             Job::Leave { .. } => "routine",
             // Out of a piece, to go out where it's clear (door batch
@@ -8352,6 +8477,8 @@ impl Osaka {
         // What she just finished counts before she chooses anew.
         self.credit_done(at);
         self.got_what_she_came_for(at);
+        // Her kit just opened (phase 6a D7c): this decision only.
+        let put_up_next = std::mem::take(&mut self.then_put_up);
         self.catch_up_day(at);
         // Her set-off line is latched for this school time only: whatever
         // cut her way out short (a chat line, a startle, a focused pane),
@@ -8451,6 +8578,7 @@ impl Osaka {
             episode: self.episode,
             just_set: self.just_set,
             may_arrange: !self.to_mend(&chances.broken).is_empty(),
+            put_up_waits: self.put_up_waits.is_some(),
             near: self.stillness.near,
         };
         // With her wall clock where she can see it, her routine's first
@@ -8650,6 +8778,21 @@ impl Osaka {
             ctx.episode = self.episode;
             ctx.just_set = self.just_set;
             ctx.may_work = self.may_work(chances, at);
+        }
+        // Her kit just opened: up goes its first stage, straight after
+        // (phase 6a D7c), if the frame offers it; else it's let go, and
+        // it waits for a decision of hers like any.
+        if put_up_next
+            && self.put_up_waits.is_none()
+            && let Some(put_up) = chances.put_up
+            && self.go_to(Want::PutUp, Job::PutUp(put_up), here, terrain, at)
+        {
+            tracing::debug!("houseguest: her kit opened, its first stage next");
+            self.credit = Some(Want::PutUp);
+            return Decision {
+                heading,
+                ..Decision::of(Bucket::Continuation, "put-up/stage")
+            };
         }
         // A piece she made and hasn't finished with: she finishes it, or
         // uses it, before choosing anything new.
@@ -9391,18 +9534,79 @@ impl Osaka {
         self.pursue(Job::Lift(lift), at);
     }
 
+    /// The frame took the stage of her shelf she put up (phase 6a D7c):
+    /// it's up, one thing done about her home (nesting eased; not a home
+    /// act: a stage a game day bounds it, not her mood), and on a `high`
+    /// shelf she hops as it goes up, if she's still standing back from
+    /// it.
+    pub fn put_up_done(&mut self, high: bool, now: u64) {
+        tracing::debug!(
+            high,
+            "houseguest: a stage of her shelf is up, as she sees it"
+        );
+        self.put_up_waits = None;
+        if self.credit == Some(Want::PutUp) {
+            self.credit = None;
+        }
+        self.serve(Want::PutUp, 1.0, Spot::Any, Via::PutUp, now);
+        self.hop_if(high, now);
+    }
+
+    /// The frame wouldn't take the stage of her shelf she put up (it
+    /// would hide it: text come over where it goes, a piece of hers in
+    /// the way): it isn't up, nothing is eased, and she glances at where
+    /// it would have gone (`toward`; else beside where she put it up), as
+    /// at a heading lost. It's hers to put up again where the frame
+    /// offers it.
+    pub fn put_up_refused(&mut self, toward: Option<(i32, i32)>) {
+        let Some(put_up) = self.put_up_waits.take() else {
+            return;
+        };
+        tracing::debug!(
+            nook = ?put_up.nook,
+            stage = put_up.to,
+            "houseguest: the frame refused the stage she put up"
+        );
+        if self.credit == Some(Want::PutUp) {
+            self.credit = None;
+        }
+        let beside = match put_up.side {
+            Side::Left => put_up.x - 1,
+            Side::Right => put_up.x + 1,
+        };
+        self.owe(Loss::Heading, toward.unwrap_or((beside, put_up.y)));
+    }
+
+    /// A little hop, arms up, if `high` (a stage of a high shelf up, or
+    /// a piece set up on one: phase 6a D7c), while she still stands back
+    /// from it (`standing_back`: whatever she has set about since is
+    /// hers to finish).
+    fn hop_if(&mut self, high: bool, now: u64) {
+        if high && self.standing_back {
+            tracing::debug!("houseguest: a little hop, up high");
+            self.set(
+                Act::Hop {
+                    until: now + HOP_MS,
+                },
+                now,
+            );
+        }
+    }
+
     /// The frame took the piece she set down, `piece`: it stands where
     /// it's right. The first time, it's one thing done about her home,
     /// and nesting eases. Next she sits back down where she felt it was
     /// wrong: pleased ("There!"), or, with another spot she means to try
     /// it in, a moment's thought first (see [`Osaka::arrange_next`]).
-    pub fn set_down_done(&mut self, piece: Furniture, now: u64) {
+    /// Set up on a `high` shelf, she hops as it goes up (phase 6a D7c).
+    pub fn set_down_done(&mut self, piece: Furniture, high: bool, now: u64) {
         let Some(mut ep) = self
             .episode
             .take_if(|e| e.pocket && e.repair.piece == piece)
         else {
             return;
         };
+        self.hop_if(high, now);
         tracing::info!(
             ?piece,
             repair = %ep.repair.label(),
@@ -11254,6 +11458,9 @@ impl Osaka {
             }
             // Up to a shelf, arms up (phase 6a): it's over her head.
             Act::Lift { lift, .. } if lift.up => (Pose::Stretch, Face::Curious, None),
+            Act::PutUp { .. } => (Pose::Stretch, Face::Curious, None),
+            // Up it went, high: a little hop, arms up.
+            Act::Hop { .. } => (Pose::Jack(1), Face::Happy, None),
             Act::SetDown { set, .. } if !set.to.strip.is_floor() => {
                 (Pose::Stretch, Face::Curious, None)
             }

@@ -58,6 +58,12 @@
 //! until a newer build chooses the wall again (shares, `at`, are always
 //! of the raw strip, so nothing is lost).
 //!
+//! The stages of her structures she put up on her last day of building
+//! (phase 6a D7c: the game day, or unfed the visit, and how many) come
+//! next, written only once she has put one up, and read leniently:
+//! anything this build can't read as that reads as none (she may put one
+//! up today), without failing the record.
+//!
 //! Whether her wall clock has been sent comes last, written only once it
 //! has, and read leniently: anything but `true` reads as not yet.
 
@@ -109,6 +115,59 @@ pub struct Ledger {
     /// Her wall clock has been sent (phase 5b D7): a one-time gift on her
     /// doorstep, never again, even once it's gone.
     pub(super) clock_sent: bool,
+    /// The stages of her structures she has put up on the day she last
+    /// put one up (phase 6a D7c): one a game day ([`STAGES_A_DAY`]),
+    /// kept across a restart.
+    pub(super) paced: Option<Paced>,
+}
+
+/// A day of hers, as what she does once a day counts it: the game day,
+/// or with no clock reaching her (unfed), the visit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub(super) enum Dated {
+    Day(u64),
+    Visit(u64),
+}
+
+impl Dated {
+    /// On game day `day` (none: no routine reaches her), visit `visits`.
+    pub(super) fn of(day: Option<u64>, visits: u64) -> Self {
+        day.map_or(Self::Visit(visits), Self::Day)
+    }
+}
+
+/// How many stages of her structures she puts up in a day of hers
+/// (phase 6a, the user's pacing: per game day, not per visit).
+pub(super) const STAGES_A_DAY: u8 = 1;
+
+/// The stages she put up `on` her last day of building (phase 6a D7c).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub(super) struct Paced {
+    pub on: Dated,
+    pub stages: u8,
+}
+
+impl Ledger {
+    /// Whether she may put a stage of a structure up `today`: not once
+    /// she has put up [`STAGES_A_DAY`] that day.
+    pub(super) fn may_build(&self, today: Dated) -> bool {
+        self.paced
+            .is_none_or(|p| p.on != today || p.stages < STAGES_A_DAY)
+    }
+
+    /// She put a stage up `today`: counted, for the day.
+    pub(super) fn built_today(&mut self, today: Dated) {
+        self.paced = Some(match self.paced {
+            Some(p) if p.on == today => Paced {
+                stages: p.stages.saturating_add(1),
+                ..p
+            },
+            _ => Paced {
+                on: today,
+                stages: 1,
+            },
+        });
+    }
 }
 
 impl Ledger {
@@ -127,6 +186,7 @@ impl Ledger {
             calendar_on: None,
             seen: Vec::new(),
             clock_sent: false,
+            paced: None,
         }
     }
 
@@ -279,6 +339,9 @@ impl Ledger {
                 .as_ref()
                 .and_then(serde_json::Value::as_bool)
                 .unwrap_or(false),
+            paced: raw
+                .paced
+                .and_then(|v| serde_json::from_value::<Paced>(v).ok()),
         })
     }
 
@@ -327,6 +390,7 @@ impl Ledger {
             seen: self.seen.clone(),
             structures: self.home.structures.clone(),
             door: self.home.door,
+            paced: self.paced,
             clock_sent: self.clock_sent,
         };
         serde_json::to_string(&raw).unwrap_or_default()
@@ -707,6 +771,9 @@ struct Saved {
     /// Her door's wall; left out until she has one.
     #[serde(skip_serializing_if = "Option::is_none")]
     door: Option<DoorWall>,
+    /// The day's stages put up; left out until she has put one up.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    paced: Option<Paced>,
     /// Left out until her wall clock has been sent.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     clock_sent: bool,
@@ -767,6 +834,8 @@ struct Raw {
     structures: Option<serde_json::Value>,
     #[serde(default)]
     door: Option<serde_json::Value>,
+    #[serde(default)]
+    paced: Option<serde_json::Value>,
     #[serde(default)]
     clock_sent: Option<serde_json::Value>,
 }
@@ -1638,12 +1707,18 @@ mod tests {
 
     /// The record with a shelf, as this build writes it, character for
     /// character: its structures after what she has seen and before her
-    /// door's wall, and the piece on it anchored on it.
+    /// door's wall, the piece on it anchored on it, and the day's stages
+    /// put up after her door's wall, before her wall clock (phase 6a
+    /// D7c).
     #[test]
     fn the_record_with_a_shelf_as_written() {
         let mut ledger = Ledger {
             clock_sent: true,
             seen: vec!["dream".to_owned()],
+            paced: Some(Paced {
+                on: Dated::Day(3),
+                stages: 1,
+            }),
             ..shelved()
         };
         ledger.home.door = Some(DoorWall {
@@ -1665,9 +1740,26 @@ mod tests {
                 r#"{"item":"Plant","strip":{"Shelf":"Users"},"anchor":{"side":"Left","offset":3}}],"#,
                 r#""ordered":"Desk","bought_on":6,"seen":["dream"],"#,
                 r#""structures":[{"Shelf":{"nook":"Users","anchor":{"side":"Left","offset":12},"rise":7,"built":2}}],"#,
-                r#""door":{"strip":{"Bottom":"Playlist"},"side":"Left"},"clock_sent":true}"#,
+                r#""door":{"strip":{"Bottom":"Playlist"},"side":"Left"},"#,
+                r#""paced":{"on":{"Day":3},"stages":1},"clock_sent":true}"#,
             )
         );
+        // Unfed, the day is her visit's; read back as written.
+        let unfed = Ledger {
+            paced: Some(Paced {
+                on: Dated::Visit(7),
+                stages: 1,
+            }),
+            ..shelved()
+        };
+        let text = unfed.to_json();
+        assert!(
+            text.contains(r#""paced":{"on":{"Visit":7},"stages":1}"#),
+            "{text}"
+        );
+        assert_eq!(Ledger::from_json(&text), Ok(unfed));
+        // With none, no word of it.
+        assert!(!shelved().to_json().contains("paced"));
     }
 
     /// A structure this build can't take is skipped, entry by entry,
@@ -1943,11 +2035,18 @@ mod tests {
     }
 
     /// This build reads the hand-written record with its shelf: the shelf
-    /// and the plant on it as written; the kit (a later step's kind) and
-    /// the pacing (a later step's field) aren't read.
+    /// and the plant on it as written; the day's stages put up (phase 6a
+    /// D7c); the kit, its shelf up, isn't (it's that shelf).
     #[test]
     fn this_build_reads_a_record_with_a_shelf() {
         let read = Ledger::from_json(SHELF_RECORD).unwrap();
+        assert_eq!(
+            read.paced,
+            Some(Paced {
+                on: Dated::Day(3),
+                stages: 1
+            })
+        );
         let anchor = |side, offset| Some(Anchor { side, offset });
         assert_eq!(
             read.home,
@@ -1972,6 +2071,36 @@ mod tests {
                 structures: vec![shelf_on(Nook::List)],
             }
         );
+    }
+
+    /// A day's stages this build can't read (garbage, a later build's
+    /// day) read as none put up (she may put one up today), and the rest
+    /// of the record reads as ever.
+    #[test]
+    fn a_pace_this_build_cannot_read_is_none() {
+        let base = Ledger::from_json(SHELF_RECORD).unwrap();
+        for garbage in [
+            "1",
+            "null",
+            "[]",
+            r#"{"on":"Day","stages":1}"#,
+            r#"{"on":{"Day":3}}"#,
+            r#"{"on":{"Week":3},"stages":1}"#,
+            r#"{"on":{"Day":-1},"stages":1}"#,
+            r#"{"on":{"Day":3},"stages":256}"#,
+        ] {
+            let text = SHELF_RECORD.replace(r#"{"on":{"Day":3},"stages":1}"#, garbage);
+            let read = Ledger::from_json(&text).unwrap_or_else(|e| panic!("{garbage}: {e}"));
+            assert_eq!(read.paced, None, "{garbage}");
+            assert_eq!(
+                Ledger {
+                    paced: None,
+                    ..base.clone()
+                },
+                read,
+                "{garbage}"
+            );
+        }
     }
 
     /// One entry of a record's `structures`, as a test writes it: garbage
