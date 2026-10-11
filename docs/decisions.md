@@ -6074,6 +6074,46 @@ text** (the user's fifth round): a blank in reverse video (a list's
 selection bar past its entry's text) or in a colour unlike its pane's
 hides the shelf, as the UI's own highlight shouldn't be cut by it.
 
+## A shelf hangs as high as fits (2026-10-10)
+
+**Rule:** Her shelf hangs **high**, above every piece that hangs (7 rows
+up or more, with her height clear over it for 6b), where its pane allows;
+otherwise **low**, just over her head (5 rows up, two rows clear over it
+for small decor), and the pane is chosen high before low. Chosen once,
+when it goes up, and kept: its rise says high or low for good. A low
+shelf blocks the wall lane under it: its run's columns and its margin's,
+from the top of the lane down to its own row, whatever of it is up. No
+piece that hangs hangs there: one whose anchor puts it there hangs at the
+nearest place beside it, keeping its order on the wall (in the closet
+alone on a wall too crowded for that), as her window keeps clear of what
+stands. A high shelf changes no hung place. A low shelf goes up only
+where its block meets no piece hung there as laid out, so it never
+pushes one going up; later deliveries and moves hang beside it, judged
+where the layout hangs what they push along. See
+[design.md](design.md#houseguest).
+
+**Why:** The user's rule ("highest that fits"): a shelf up high reads as
+a shelf, above the poster and the clock, and leaves room to stand on it
+once she has a ladder (6b). But the bundled layout's panes are short at
+common sizes (at 100×30 only The List takes a shelf, and only low: step
+3's measurement), so a shelf only ever hung high would rarely go up at
+all; two heights, high first, keep the rule and still let her have one.
+The block is geometry, a rule of the pane's layout like her door's
+space, not shelves packed into the wall lane as pieces: a shelf isn't a
+hung piece (it's drawn in the UI's lines, written each frame, hidden
+whole by text), and packing it among them would move it as they come and
+go, where a shelf, once up, never moves. It spans the margin too, because
+the shelf shows only with two blank cells past each end of its run: a
+poster hung flush against the run would hide it every frame (a build
+call, 2026-10-11, put to the user). Only the
+window looks for a place to lean on its sill when it's moved aside; the
+rest go to the nearest place. It never pushes a hung piece going up so
+that putting up a shelf takes nothing down that she had hung. *6b
+inherits*: a high shelf is the one she can stand on (her height clear
+over it, which every high shelf has going up, and a low one only in a
+pane 11 rows or taller); a low shelf is for decor, and the ladder's
+trigger must name a shelf she could stand on.
+
 ## Houseguest chooses by needs among the top few (2026-09-28)
 
 **Rule:** Her next act is a weighted-random pick among the four

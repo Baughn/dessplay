@@ -845,7 +845,9 @@ fn pushes_hung(
 /// chat pane, her door's space): `piece` unless it stays where it stood
 /// (turned), and none pushed along newly into it. Judged here, after
 /// the layout, once per candidate that passed: a strip's layout reads
-/// only her pieces on it and her door (see [`Home::relaid`]).
+/// only her pieces on it, her door and her shelf in its pane (a low
+/// one's block; `Home::lays_from` is the one list; see
+/// [`Home::relaid`]).
 fn fits_now(frame: &Frame, before: &Before, laid: &[Shown], piece: Furniture) -> bool {
     let fit = |at: &Shown| {
         let clear = |x: i32, y: i32| frame.clear(laid, at, x, y);
@@ -2406,13 +2408,16 @@ mod tests {
         // grid over her panes): five of her pieces in it, so every move
         // weighed judges the closet (the door batch, step 6 review).
         let chats = [Rect::default(), Rect::new(0, rows, width, 2 * rows)];
-        // And with a high shelf up on each pane (phase 6a, step 3), small
+        // And with a high shelf up on each pane (phase 6a, step 3), or a
+        // low one (step 4: each pane's layout reads its block), small
         // decor on two: every layout lays the shelves out too.
         let cases = doors
             .into_iter()
             .flat_map(|d| [(d, false), (d, true)])
             .flat_map(|(d, dense)| chats.map(|chat| (d, dense, chat)))
-            .flat_map(|(d, dense, chat)| [false, true].map(|shelved| (d, dense, chat, shelved)));
+            .flat_map(|(d, dense, chat)| {
+                [None, Some(7), Some(5)].map(|shelved| (d, dense, chat, shelved))
+            });
         for (door, dense, chat, shelved) in cases {
             use super::super::structures::{KeepOff, Shelf, Structure, read_ground};
             let text = if dense { floors.clone() } else { Vec::new() };
@@ -2422,7 +2427,7 @@ mod tests {
                 door,
                 ..Home::default()
             };
-            if shelved {
+            if let Some(rise) = shelved {
                 for nook in [Nook::Users, Nook::Playlist, Nook::List] {
                     home.structures.push(Structure::Shelf(Shelf {
                         nook,
@@ -2430,7 +2435,7 @@ mod tests {
                             side: Side::Left,
                             offset: 100,
                         },
-                        rise: 7,
+                        rise,
                         built: 2,
                     }));
                 }
@@ -2457,9 +2462,9 @@ mod tests {
             let written = read_ground(&mut buf, &home, plan, &keep_off);
             // (The chat over the Playlist and List hides their shelves.)
             let (up, on) = match (shelved, chat.is_empty()) {
-                (false, _) => (0, 0),
-                (true, true) => (3, 2),
-                (true, false) => (1, 1),
+                (None, _) => (0, 0),
+                (Some(_), true) => (3, 2),
+                (Some(_), false) => (1, 1),
             };
             assert_eq!(written.shown_on().len(), up);
             let shown = home
@@ -2511,7 +2516,7 @@ mod tests {
                 .min()
                 .unwrap_or_default();
             eprintln!(
-                "repair search (dense {dense}, door {door:?}, chat {chat:?}, shelved {shelved}): \
+                "repair search (dense {dense}, door {door:?}, chat {chat:?}, shelved {shelved:?}): \
                  {per_search:?}, {} moves (release baseline 2026-10-08: 0.43-0.48 ms; bound 1 ms)",
                 found.examined
             );
@@ -2523,7 +2528,7 @@ mod tests {
             if !cfg!(debug_assertions) {
                 assert!(
                     per_search < std::time::Duration::from_millis(1),
-                    "dense {dense}, door {door:?}, chat {chat:?}, shelved {shelved}: {per_search:?}"
+                    "dense {dense}, door {door:?}, chat {chat:?}, shelved {shelved:?}: {per_search:?}"
                 );
             }
             written.keep(&mut Vec::new());
@@ -3088,6 +3093,22 @@ mod tests {
             );
         }
         prop_assert!(!solid.iter().any(|m| m.intersects(at.rect())), "{:?}", r);
+        // No piece that hangs meets a shelf: its run or margin, from its
+        // row up (a low shelf's block, phase 6a D3a), worked out from the
+        // record and the panes alone.
+        for run in super::super::tests::shelf_runs(home, nooks) {
+            for s in after.iter().filter(|s| {
+                s.strip == Some(Strip::Bottom(run.shelf.nook)) && s.lane() == room::Lane::Wall
+            }) {
+                prop_assert!(
+                    !run.hangs_over(s.rect()),
+                    "{:?} meets {:?} by {:?}",
+                    s,
+                    run,
+                    r
+                );
+            }
+        }
         // Never set down where the frame keeps pieces out (the chat pane,
         // her door's space), but where it stood (turned).
         let stood = laid_of(&laid, r.piece);
@@ -3454,7 +3475,24 @@ mod tests {
     /// small decor maybe anchored on its pane's shelf instead (`Left` up
     /// to 7 along it).
     fn shelved_pieces() -> impl Strategy<Value = Vec<Prop>> {
-        proptest::sample::subsequence(SHELVED_KINDS.to_vec(), 2..=6).prop_flat_map(|items| {
+        shelved_pieces_of(&SHELVED_KINDS)
+    }
+
+    /// The kinds [`low_shelved_pieces`] draws from (its own list): those
+    /// of [`SHELVED_KINDS`] and her window, so every piece that hangs is
+    /// among them.
+    const LOW_SHELVED_KINDS: [Furniture; 8] = [Sofa, Tv, Bed, Lamp, Plant, Clock, Poster, Window];
+
+    /// Her pieces for
+    /// [`every_repair_mends_and_breaks_nothing_with_a_low_shelf`]: as
+    /// [`shelved_pieces`], of [`LOW_SHELVED_KINDS`].
+    fn low_shelved_pieces() -> impl Strategy<Value = Vec<Prop>> {
+        shelved_pieces_of(&LOW_SHELVED_KINDS)
+    }
+
+    /// The body of [`shelved_pieces`] and its kin, of `kinds`.
+    fn shelved_pieces_of(kinds: &'static [Furniture]) -> impl Strategy<Value = Vec<Prop>> {
+        proptest::sample::subsequence(kinds.to_vec(), 2..=6).prop_flat_map(|items| {
             let n = items.len();
             (
                 Just(items),
@@ -3509,6 +3547,26 @@ mod tests {
         offsets: &[u16],
         rises: &[bool],
     ) -> Vec<super::super::structures::Structure> {
+        let rises: Vec<u16> = (0..n)
+            .map(|i| {
+                if rises.get(i).copied().unwrap_or(false) {
+                    8
+                } else {
+                    7
+                }
+            })
+            .collect();
+        shelves_at(width, n, offsets, &rises)
+    }
+
+    /// [`shelves_on`], each shelf `rises` rows up (7 where none is
+    /// given).
+    fn shelves_at(
+        width: u16,
+        n: usize,
+        offsets: &[u16],
+        rises: &[u16],
+    ) -> Vec<super::super::structures::Structure> {
         use super::super::structures::{EDGE, SHELF_WIDTH, Shelf, Structure};
         let room = i32::from(width) - 2 - 2 * EDGE - SHELF_WIDTH + 1;
         [Nook::Users, Nook::Playlist, Nook::List]
@@ -3524,11 +3582,7 @@ mod tests {
                         side: Side::Left,
                         offset: u16::try_from(EDGE + along).unwrap(),
                     },
-                    rise: if rises.get(i).copied().unwrap_or(false) {
-                        8
-                    } else {
-                        7
-                    },
+                    rise: rises.get(i).copied().unwrap_or(7),
                     built: 2,
                 })
             })
@@ -3576,6 +3630,115 @@ mod tests {
             let draw = Draw { props, width, n, text, makeshift, later_width, later_text, later_makeshift, blocked };
             repairs_mend_on(draw, door, chat, 14, structures)?;
         }
+
+        /// [`every_repair_mends_and_breaks_nothing_with_a_shelf`] with a
+        /// low shelf up in each pane (at `LOW_RISE`, or one row higher,
+        /// its block then that one row), or a high one (phase 6a, step 4),
+        /// her poster, clock and window among her pieces: every repair
+        /// still mends and breaks nothing, and no piece that hangs meets
+        /// a shelf's run or margin from its row up (see [`mends`]: a low
+        /// shelf's block), set down or pushed along.
+        #[test]
+        fn every_repair_mends_and_breaks_nothing_with_a_low_shelf(
+            props in low_shelved_pieces(),
+            width in 30u16..120,
+            n in 2usize..=3,
+            text in proptest::collection::vec((1u16..120, 0u16..42), 0..40),
+            makeshift in proptest::collection::vec((1u16..120, 0u16..42, 2u16..6, 1u16..3), 0..3),
+            later_width in 30u16..120,
+            later_text in proptest::collection::vec((1u16..120, 0u16..42), 0..40),
+            later_makeshift in proptest::collection::vec((1u16..120, 0u16..42, 2u16..6, 1u16..3), 0..3),
+            blocked in proptest::collection::vec((1u16..120, 0u16..42, 1u16..8, 1u16..4), 0..3),
+            door in proptest::option::of((0usize..3, any::<bool>())),
+            chat in proptest::option::of((0u16..120, 0u16..42, 1u16..40, 1u16..20)),
+            offsets in proptest::collection::vec(any::<u16>(), 3),
+            rises in proptest::collection::vec(prop_oneof![2 => Just(5u16), 1 => Just(6u16), 1 => Just(7u16)], 3),
+        ) {
+            let door = door.map(|(strip, right)| DoorWall {
+                strip: Strip::Bottom([Nook::Users, Nook::Playlist, Nook::List][strip % n]),
+                side: if right { Side::Right } else { Side::Left },
+            });
+            let chat = chat.map(|c| Rect::new(c.0, c.1, c.2, c.3));
+            let structures = shelves_at(width, n, &offsets, &rises);
+            let draw = Draw { props, width, n, text, makeshift, later_width, later_text, later_makeshift, blocked };
+            repairs_mend_on(draw, door, chat, 14, structures)?;
+        }
+    }
+
+    /// The deterministic companion of
+    /// [`every_repair_mends_and_breaks_nothing_with_a_low_shelf`]: her
+    /// poster against Users' left wall (Users alone) under a chat over
+    /// its first 18 columns, her shelf low in Users (`Left` 19 from the left wall:
+    /// its run 20..30, its margin 18..32): InChat is broken, and repaired,
+    /// never with the poster hung on the shelf's block (the nearest
+    /// place clear of the chat, 18, meets its margin), and checked to
+    /// mend it and break nothing. Graphics-independent: the search and
+    /// its checks read no drawing mode (`read_ground` writes the same
+    /// glyphs in both).
+    #[test]
+    fn a_poster_in_the_chat_is_repaired_beside_a_low_shelf() {
+        let props = vec![at(Poster, Nook::Users, Side::Left, 0, Facing::Right)];
+        let draw = Draw {
+            props: props.clone(),
+            width: 60,
+            n: 1,
+            text: Vec::new(),
+            makeshift: Vec::new(),
+            later_width: 60,
+            later_text: Vec::new(),
+            later_makeshift: Vec::new(),
+            blocked: Vec::new(),
+        };
+        let chat = Rect::new(0, 0, 18, 14);
+        let shelves = shelves_at(60, 1, &[11], &[5]);
+        let tally = repairs_mend_on(draw, None, Some(chat), 14, shelves.clone())
+            .unwrap_or_else(|e| panic!("{e}"));
+        let in_chat = row(Rule::InChat);
+        assert!(
+            tally.iter().any(|&(r, found)| r == in_chat && found > 0),
+            "{tally:?}"
+        );
+        // Where the search puts it: past the shelf, never on its block.
+        let nooks = three(60, 14, 1);
+        let buf = screen(&nooks, 60, 14, &[]);
+        let mut home = Home {
+            structures: shelves,
+            ..Home::default()
+        };
+        for p in props {
+            assert!(home.add(p));
+        }
+        let plan = room::Plan {
+            nooks: &nooks,
+            chat,
+            screen: buf.area,
+        };
+        let keep = Keep::of(&home, plan);
+        let shown = home
+            .project_with(Drawn::bare(&buf), room::Plan::bare(&nooks), &|_, _| false)
+            .0;
+        let frame = Frame {
+            drawn: Drawn::bare(&buf),
+            nooks: &nooks,
+            blocked: &|_, _| false,
+            shown: &shown,
+            made: &[],
+            keep: &keep,
+        };
+        let laid_out = home.clone().laid_out(&nooks);
+        let target = broken(&laid_out, &home, &keep)
+            .into_iter()
+            .find(|b| b.rule().map(|r| r.rule) == Some(Rule::InChat))
+            .expect("her poster in the chat");
+        let found = search(&home, &frame, &target);
+        let users: Vec<i32> = found
+            .repairs
+            .iter()
+            .filter(|r| r.to.strip == Strip::Bottom(Nook::Users))
+            .map(|r| r.at.left)
+            .collect();
+        assert!(!users.is_empty(), "{found:?}");
+        assert!(users.iter().all(|&left| left >= 32), "{users:?}");
     }
 
     /// The deterministic companion of

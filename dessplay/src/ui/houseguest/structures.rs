@@ -30,8 +30,8 @@ pub(super) const SHELF_STAGES: u8 = 2;
 /// The lowest rise of a high shelf: the first row above every hung
 /// piece (above the poster's and the clock's, hung 4 and 2 rows tall),
 /// so none ever meets it. Derived from the `Spec` table
-/// (`rises_clear_every_hung_and_standing_piece`).
-#[cfg(test)] // Read from step 4 (D3a: a low shelf's block, under it).
+/// (`rises_clear_every_hung_and_standing_piece`). A shelf any lower
+/// blocks the wall lane under it ([`Shelf::block`]).
 pub(super) const HIGH_RISE: u16 = 7;
 
 /// The rise of a low shelf, the lowest any shelf hangs: just over her
@@ -104,6 +104,25 @@ impl Shelf {
             to,
             y: host.floor - i32::from(self.rise),
         })
+    }
+
+    /// Its block on its pane's raw strip `host` (D3a), where it hangs
+    /// lower than a high shelf: its run's columns and its margin's, from
+    /// the top of the wall lane (the highest row a piece hangs in) down to
+    /// its own row. No piece that hangs hangs there, so none ever meets
+    /// it or hides it (its margin must be clear for it to show: [`free`]),
+    /// and what stands on it stands clear of them all. Whatever of it is
+    /// built (from its first stage on, it's where it will be): pure
+    /// geometry, `None` where it can't hang this frame or hangs high.
+    pub fn block(&self, host: Extent) -> Option<Rect> {
+        if self.rise >= HIGH_RISE {
+            return None;
+        }
+        let kept = self.run(host)?.kept();
+        let top = host.floor - i32::from(HIGH_RISE - 1);
+        let rows = u16::try_from(i32::from(kept.y) - top + 1).ok()?;
+        let y = u16::try_from(top).ok()?;
+        Some(Rect::new(kept.x, y, kept.width, rows))
     }
 
     /// The cells of `run` up so far, each with its glyph: none before

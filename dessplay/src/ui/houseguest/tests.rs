@@ -972,7 +972,7 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(dessplay_core::test_support::proptest_cases(16)))]
 
     /// [`long_visits_never_touch_what_is_protected`] with her shelf up
-    /// (phase 6a, step 3), high, small decor on it, text anywhere: every
+    /// (phase 6a, step 3), high or low (step 4), small decor on it, text anywhere: every
     /// frame's shelf checks hold ([`check_shelves`]: written whole or
     /// not at all, never over what's protected or the chat, her layer,
     /// what she made or another piece, off the sides; what stands on it
@@ -988,7 +988,7 @@ proptest! {
         chats in proptest::collection::vec(0u64..60_000, 0..3),
         protect in (0u16..130, 0u16..45, 1u16..20, 1u16..6),
         owned in proptest::collection::vec((0usize..4, 0usize..3, 0u16..=1000, any::<bool>()), 0..4),
-        shelf in (0usize..3, any::<bool>(), 8u16..30, 7u16..=10),
+        shelf in (0usize..3, any::<bool>(), 8u16..30, 5u16..=10),
         up in proptest::collection::vec((any::<bool>(), 0u16..8), 1..3),
         drop in any::<bool>(),
     ) {
@@ -1010,7 +1010,7 @@ proptest! {
         chats in proptest::collection::vec(0u64..60_000, 0..3),
         protect in (0u16..130, 0u16..45, 1u16..20, 1u16..6),
         owned in proptest::collection::vec((0usize..4, 1usize..3, 0u16..=1000, any::<bool>()), 0..4),
-        shelf in (1usize..3, any::<bool>(), 8u16..30, 7u16..=10),
+        shelf in (1usize..3, any::<bool>(), 8u16..30, 5u16..=10),
         up in proptest::collection::vec((any::<bool>(), 0u16..8), 1..3),
         drop in any::<bool>(),
     ) {
@@ -1856,6 +1856,18 @@ pub(super) struct ShelfRun {
     pub pane: Rect,
 }
 
+impl ShelfRun {
+    /// Whether `r` (a piece that hangs on this run's pane) meets the
+    /// run's columns or its margin's (2 cells past each end) at the
+    /// run's row or above: a low shelf's block (phase 6a D3a), worked out
+    /// from the record and the pane alone. No hung piece ever does.
+    pub(super) fn hangs_over(&self, r: Rect) -> bool {
+        i32::from(r.x) < self.to + 2
+            && self.from - 2 < i32::from(r.right())
+            && i32::from(r.y) <= self.y
+    }
+}
+
 /// Her shelves whose geometry holds on `nooks` (see [`ShelfRun`]).
 pub(super) fn shelf_runs(home: &room::Home, nooks: &[(Nook, Rect)]) -> Vec<ShelfRun> {
     home.structures
@@ -1987,6 +1999,15 @@ fn check_shelves(
                 run,
                 x
             );
+        }
+        // No piece that hangs on its pane meets its run or margin from
+        // its row up, written or not (a low shelf's block: phase 6a
+        // D3a), so none of hers ever hides it.
+        for s in shown
+            .iter()
+            .filter(|s| s.strip == Some(room::Strip::Bottom(nook)) && s.lane() == room::Lane::Wall)
+        {
+            prop_assert!(!run.hangs_over(s.rect()), "{:?} meets {:?}", s, run);
         }
         // Off the sides: a body or her door's space from either wall.
         for &x in &cols {

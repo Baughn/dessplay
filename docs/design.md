@@ -1960,7 +1960,16 @@ this section states what is built.
   nor does a window come in over one, but for a sofa covering its
   corner, and no move of hers pushes it aside. Nothing is made where it
   would meet a piece of hers
-  (why: [decisions](decisions.md#her-window-hangs-low-for-her-to-lean-on-2026-10-06)). It needs no floor beneath
+  (why: [decisions](decisions.md#her-window-hangs-low-for-her-to-lean-on-2026-10-06)).
+  Her shelf hangs above every hung piece where its pane allows, else
+  low, just over her head; a low shelf blocks the wall lane under it
+  (its run's columns and its margin's, from the top of the lane down to
+  its row, whatever of it is up), and a piece that hangs there hangs at
+  the nearest place beside it by the same rule, keeping its order (in
+  the closet alone on a wall too crowded), so none meets or hides it; a
+  delivery or a move is judged where the layout hangs what it pushes
+  along beside the block; a high one changes no hung place
+  (why: [decisions](decisions.md#a-shelf-hangs-as-high-as-fits-2026-10-10)). It needs no floor beneath
   it, and the wall never moves a room: a hung piece its wall doesn't
   hold (too low, or crowded: in anchor order, each that fits beside
   those before it hangs) is in the closet alone, while a strip too

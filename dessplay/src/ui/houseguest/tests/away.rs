@@ -1529,7 +1529,7 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(dessplay_core::test_support::proptest_cases(16)))]
 
     /// [`her_days_never_touch_what_is_protected`] with her shelf up (phase
-    /// 6a, step 3), small decor on it: through her week she goes out and
+    /// 6a, step 3), high or low (step 4), small decor on it: through her week she goes out and
     /// comes home, her home standing empty between, and every frame's
     /// shelf checks hold, visiting and away (see `check_shelves`).
     #[test]
@@ -1542,7 +1542,7 @@ proptest! {
         chats in proptest::collection::vec(0u64..60_000, 0..3),
         protect in (0u16..130, 0u16..45, 1u16..20, 1u16..6),
         owned in proptest::collection::vec((0usize..2, 1usize..3, 0u16..=1000, any::<bool>()), 0..3),
-        shelf in (0usize..3, any::<bool>(), 8u16..30, 7u16..=10),
+        shelf in (0usize..3, any::<bool>(), 8u16..30, 5u16..=10),
         up in proptest::collection::vec((any::<bool>(), 0u16..8), 1..3),
     ) {
         const KINDS: [Furniture; 2] = [Furniture::Sofa, Furniture::Bed];

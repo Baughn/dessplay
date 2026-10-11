@@ -23,7 +23,8 @@ group is wired, in step 7). Paths are relative to `dessplay/src/ui/houseguest/` 
   strip it hangs in.
 - A **high** shelf hangs above the wall lane (rise ≥ `HIGH_RISE` = 7). A **low** one hangs just over her head (rise
   `LOW_RISE` = 5), in the wall lane's rows, so the poster and the clock pack beside it. Its **block** is a low shelf's
-  run's columns across the wall lane's rows `f-6 ..= f-5`, where no hung piece may hang.
+  run's columns and its margin's (as built in step 4: a poster flush against the run would cover its margin and hide
+  it) across the wall lane's rows `f-6 ..= f-5`, where no hung piece may hang.
 - A shelf's **run** is `SHELF_WIDTH` = 10 cells drawn `┬────────┬` (brackets at both ends). A half-built one is the
   bracket at its wall's end and the half of the run nearer that wall (`┬────`, 5 cells). Its **margin** is the 2 cells
   past each end of the run, on its row.
@@ -256,15 +257,23 @@ the test that computes them (from the `Spec` rows, `sprite::HEIGHT` and the tall
 
 ### D3a. A low shelf in the wall lane
 
-- **The block**: for a shelf with rise under `HIGH_RISE`, its run's columns across the wall lane's rows its row and the
-  rows over it reach (`f-6 ..= f-5` at `LOW_RISE`). It exists whenever the shelf's geometry holds, from `built: 0`,
+- **The block**: for a shelf with rise under `HIGH_RISE`, its run's columns and its margin's (step 4) across the wall
+  lane's rows from the lane's top (`f - (HIGH_RISE - 1)`) down to its own row (`f-6 ..= f-5` at `LOW_RISE`):
+  `Shelf::block(host)`. It exists whenever the shelf's geometry holds, from `built: 0`,
   whatever the frame's cells: layout stays pure geometry (room.rs:1884-1886).
 - **Hung pieces keep out of it.** `hung_clear` (room.rs:2074) today moves only the window clear of what stands, to the
   nearest place between its neighbours that meets none, keeping its order, else leaves it out alone. It takes the
   host's blocks as obstacles for **every** hung piece by the same search: a poster whose anchor puts it over a low shelf
   hangs beside it; on a wall too crowded for that, it's in the closet alone. Its `shifts` say so, so the repair search's
   pushed-hung refusal (rules.rs:605) and the yield rule (`plan_strip`, room.rs:1721) see it. With no block it is
-  exactly today's `hung_clear` (step 4 proves it against a frozen copy).
+  exactly today's `hung_clear` (step 4 proves it against a frozen copy). "Too crowded" is judged between its
+  neighbours' places on the wall alone (as packing has them), even a neighbour about to be moved past the block itself
+  (so a wall with room once the order is kept can still leave one out; the rule as written, kept).
+- **What makes way is judged where it will hang.** A delivery (`Home::admits`) and hung pieces moving off a pane that's
+  gone (`Home::move_off`) judge a piece that packing puts on a block where the layout hangs it beside the block, and
+  refuse if it's left out (step 4's review: the block has no stand-in among what shows, as what stands has for her
+  window, which is still judged where packing puts it, as before 6a). Only a block ever moves a poster or the clock,
+  so with no low shelf both are exactly as before.
 - **The host's layout reads its shelf**: `Home::lays_from` and `StripLaid` (room.rs:891, 1852) record the host's shelves
   beside its pieces and door, and `relaid` (room.rs:1969) lays the pane out again when they differ. A shelf strip's own
   layout reads its `Shelf` record and `plan.host`; `StripLaid` records both, so neither strip is ever reused stale.
@@ -576,11 +585,17 @@ By step:
     record unchanged, pieces back at their anchors. Non-vacuity companion (both modes): frames with a high shelf
     written, a low one written, a piece on a shelf, a shelf hidden by text, and one coming back.
 - **4.** `no_hung_piece_meets_a_low_shelf` (new room.rs proptest: heights up to 20, the clock in the hung set, a shelf
-  of either height; each height asserted to occur); `a_high_shelf_changes_no_hung_place`; with no shelf, `hung_clear`
+  of either height, a low one at `LOW_RISE` or a row higher; each asserted to occur; the closet's placements out of a
+  chat checked too); `a_high_shelf_changes_no_hung_place`; with no shelf, `hung_clear`
   equals a frozen `#[cfg(test)]` copy of today's over `decorated()` (`PRE_SHELF`) homes, `shifts` listing only the
   window (deleted in step 9); `a_move_relaid_strip_by_strip_is_laid_out_as_a_whole_with_a_shelf` (new function; red with
   `StripLaid` not recording the shelf); `a_poster_delivered_hangs_beside_a_low_shelf`;
-  `every_repair_mends_and_breaks_nothing_with_a_low_shelf`.
+  `every_repair_mends_and_breaks_nothing_with_a_low_shelf` (rises 5, 6 and 7). **A sanctioned exception to the strategy
+  freeze**: step 4 widened step 3's shelved long visits (both) and `her_days_with_a_shelf_never_touch_what_is_protected`
+  from rises `7..=10` to `5..=10`, as step 3's notes asked (they were high-only until the block existed); they are 6a's
+  own strategies, no pre-6a one changes, and no committed regression seed touches a shelf. Their homes hang nothing, so
+  their hung-piece check is a guard; step 9 may add a long visit of its own whose kinds hang (poster, clock) beside a
+  low shelf.
 - **5a.** `a_shelf_hangs_as_high_as_fits`: a brute-force oracle over the frame (every pane, rise and left, written
   without the shared per-cell function): `shelf_spot(..).is_some() == oracle.any()`, and the result is the oracle's first
   in D3's order. Generator: panes exactly 9 and 13 tall among others, text, wide glyphs, standing, hung and made pieces,
@@ -728,7 +743,15 @@ measurement's List figures were re-taken with twenty franchises in The List (`fu
 identity property; `repair_search_is_cheap` with a low shelf on each pane. **Docs.** design.md *Wall pieces* (1925);
 decisions.md *A shelf hangs as high as fits* (the user's rule; why two heights; why the block, not shelves packed into
 the wall lane as pieces; why a low shelf never pushes a hung piece going up; what 6b inherits). **Traps.** A block is an
-input of the **pane** strip's layout.
+input of the **pane** strip's layout. **As built.** The block (`Shelf::block`, structures.rs) spans the margin's
+columns too: D4 shows a shelf only with its margin clear of every other laid cover, so a poster flush against the run
+would hide it every frame. `StripPlan.block` carries it (a pane's floor under a low shelf; `None` on a shelf), read by
+`hung_clear` (via `Home::block_on`) and by the closet (`first_clear`'s keep and `packed_on`'s refusal: a hung piece in
+the chat is never placed on a block the layout would move it off). Only her window looks for a place to lean when moved
+aside; every other hung piece goes to the nearest place. `StripLaid.shelf` records the pane's shelf; `relaid` reuses
+`was` only while every strip's recorded shelf is this home's, else it works the strips out again from `was`'s pane
+floors (`Home::with_shelves`, shared with `raw_extents`) and lays them all out (never taken within a search). After
+review: a delivery and a hung move judge what packing puts on the block where the layout hangs it (D3a).
 
 ### Step 5a. `shelf_spot` (~650 lines)
 
@@ -847,7 +870,7 @@ under her hands (the hop marks the moment instead).
 
 ## Questions for the user
 
-None open. Fourth round (2026-10-10, the user):
+One open (fifth round, below: the block spanning its margin). Fourth round (2026-10-10, the user):
 - **High means standable**, as designed: a high shelf keeps `HEIGHT` clear rows over its run. Step 3 measures how often
   each height fits at 191×46 with real content; revisit only if the measurement surprises.
 - **The hop is for high shelves only** (D7c as designed): a low shelf is in her reach, so she stretches up.
@@ -863,6 +886,10 @@ Fifth round (2026-10-11, during the build; the hand-off notes have the detail):
   shelf lands on that pane's floor at its share (2a's choice (a)); a half-built shelf is shown while its built half and 2
   cells past each end of that half are blank and free; a makeshift piece a shelf's geometry comes to meet falls apart and
   the shelf shows, as with her door's space; a shelf shown or hidden is logged at info, as the closet is.
+- **Raised for the user, open** (step 4's build call, 2026-10-11; reversible): a low shelf's **block spans its margin's
+  columns too** (the run ± 2), not only the run's as "Decided unless the user objects" and D3a first said. Why: D4
+  shows a shelf only while its margin is clear of every other laid cover, so a poster hung flush against the run would
+  hide the shelf every frame. The cost: a low shelf keeps 14 columns of the wall lane, not 10.
 
 ## Critique dispositions
 
