@@ -50,6 +50,10 @@ pub enum Furniture {
     Clock,
     /// A window on the wall, with the sky of her time of day outside.
     Window,
+    /// A flat-pack shelf, boxed (phase 6a D7b): never unpacked into a
+    /// piece; opened, it goes up on her wall as her shelf
+    /// ([`Home::raise`]).
+    ShelfKit,
 }
 
 impl Furniture {
@@ -57,7 +61,29 @@ impl Furniture {
     /// stable; the first eight are the oldest builds', see
     /// [`Furniture::legacy`]). What the channel sells, in order, is
     /// `CATALOGUE`.
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 13] = [
+        Self::Sofa,
+        Self::Tv,
+        Self::Bed,
+        Self::Desk,
+        Self::Lamp,
+        Self::Bookshelf,
+        Self::Fridge,
+        Self::CatBed,
+        Self::Plant,
+        Self::Poster,
+        Self::Clock,
+        Self::Window,
+        Self::ShelfKit,
+    ];
+
+    /// Every piece before her kits (phase 6a step 5b): today's `ALL` as
+    /// it was, which every older test's strategy, proptest body and kind
+    /// lint draws from, so their seeds keep meaning what they meant
+    /// (appending to a strategy's domain changes it). New kinds get new
+    /// tests.
+    #[cfg(test)]
+    pub(super) const PRE_SHELF: [Self; 12] = [
         Self::Sofa,
         Self::Tv,
         Self::Bed,
@@ -77,6 +103,12 @@ impl Furniture {
         self.spec().offers.contains(&Offer::Decor)
     }
 
+    /// Whether it's a kit (phase 6a D7b): always its box, opened only to
+    /// go up as a structure.
+    pub(super) fn is_kit(self) -> bool {
+        self.spec().kit.is_some()
+    }
+
     /// Whether the oldest builds that read her record know it (the first
     /// eight kinds): they skip every later one, so it claims no room's
     /// pane in what's written for them.
@@ -90,7 +122,7 @@ impl Furniture {
             | Self::Bookshelf
             | Self::Fridge
             | Self::CatBed => true,
-            Self::Plant | Self::Poster | Self::Clock | Self::Window => false,
+            Self::Plant | Self::Poster | Self::Clock | Self::Window | Self::ShelfKit => false,
         }
     }
 
@@ -140,6 +172,7 @@ impl Furniture {
             Self::Poster => &POSTER,
             Self::Clock => &CLOCK,
             Self::Window => &WINDOW,
+            Self::ShelfKit => &SHELF_KIT,
         }
     }
 }
@@ -186,6 +219,25 @@ pub(super) struct Spec {
     /// Small decor: it may stand on a shelf (phase 6a; see
     /// [`Strip::takes`]). Never furniture.
     pub shelf: bool,
+    /// A kit (phase 6a D7b): what it puts up, never unpacked into a piece
+    /// ([`Furniture::is_kit`]).
+    pub kit: Option<Kit>,
+}
+
+/// What a kit puts up (phase 6a D7b; 6b and 6c add theirs).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Kit {
+    /// Her shelf ([`Shelf`]).
+    Shelf,
+}
+
+impl Kit {
+    /// Whether `structure` is what it puts up.
+    fn puts_up(self, structure: Structure) -> bool {
+        match (self, structure) {
+            (Self::Shelf, Structure::Shelf(_)) => true,
+        }
+    }
 }
 
 const SOFA: Spec = Spec {
@@ -202,6 +254,7 @@ const SOFA: Spec = Spec {
     beauty: 0.0,
     symmetric: false,
     shelf: false,
+    kit: None,
 };
 const TV: Spec = Spec {
     name: "TV",
@@ -217,6 +270,7 @@ const TV: Spec = Spec {
     beauty: 0.0,
     symmetric: false,
     shelf: false,
+    kit: None,
 };
 const BED: Spec = Spec {
     name: "bed",
@@ -233,6 +287,7 @@ const BED: Spec = Spec {
     beauty: 0.0,
     symmetric: false,
     shelf: false,
+    kit: None,
 };
 const DESK: Spec = Spec {
     name: "desk",
@@ -249,6 +304,7 @@ const DESK: Spec = Spec {
     beauty: 0.0,
     symmetric: false,
     shelf: false,
+    kit: None,
 };
 const LAMP: Spec = Spec {
     name: "lamp",
@@ -264,6 +320,7 @@ const LAMP: Spec = Spec {
     beauty: 0.0,
     symmetric: false,
     shelf: false,
+    kit: None,
 };
 const BOOKSHELF: Spec = Spec {
     name: "bookshelf",
@@ -279,6 +336,7 @@ const BOOKSHELF: Spec = Spec {
     beauty: 0.0,
     symmetric: false,
     shelf: false,
+    kit: None,
 };
 const FRIDGE: Spec = Spec {
     name: "fridge",
@@ -294,6 +352,7 @@ const FRIDGE: Spec = Spec {
     beauty: 0.0,
     symmetric: false,
     shelf: false,
+    kit: None,
 };
 const CAT_BED: Spec = Spec {
     name: "cat bed",
@@ -309,6 +368,7 @@ const CAT_BED: Spec = Spec {
     beauty: 0.0,
     symmetric: false,
     shelf: false,
+    kit: None,
 };
 const PLANT: Spec = Spec {
     name: "potted plant",
@@ -324,6 +384,7 @@ const PLANT: Spec = Spec {
     beauty: 1.0,
     symmetric: false,
     shelf: true,
+    kit: None,
 };
 const POSTER: Spec = Spec {
     name: "poster",
@@ -340,6 +401,7 @@ const POSTER: Spec = Spec {
     beauty: 1.0,
     symmetric: false,
     shelf: false,
+    kit: None,
 };
 const CLOCK: Spec = Spec {
     name: "wall clock",
@@ -357,6 +419,7 @@ const CLOCK: Spec = Spec {
     beauty: 0.5,
     symmetric: true,
     shelf: true,
+    kit: None,
 };
 const WINDOW: Spec = Spec {
     name: "window",
@@ -377,6 +440,26 @@ const WINDOW: Spec = Spec {
     beauty: 0.0,
     symmetric: true,
     shelf: false,
+    kit: None,
+};
+const SHELF_KIT: Spec = Spec {
+    name: "shelf kit",
+    pitch: line!("A shelf! Up high!"),
+    // As wide as a parcel and as tall, so its box shows whole.
+    footprint: (5, 2),
+    // A flat pack (only ever drawn as its box; the noise her goodbye
+    // bursts it into).
+    ascii: &["_____", "[===]"],
+    ink: (Color::Rgb(192, 150, 100), Color::Yellow),
+    uses: &[],
+    offers: &[],
+    sit: None,
+    comfort: 1.0,
+    hang: None,
+    beauty: 0.0,
+    symmetric: false,
+    shelf: false,
+    kit: Some(Kit::Shelf),
 };
 
 /// The glyph at `(dx, dy)` of `item`'s ASCII drawing facing `facing`, if
@@ -643,7 +726,7 @@ pub(super) fn in_room(s: &Shown, strip: Strip) -> bool {
 fn role_among(layout: &[Shown], strip: Strip, without: Option<Furniture>) -> Role {
     let offers: Vec<Offer> = layout
         .iter()
-        .filter(|s| in_room(s, strip) && !s.boxed && s.scrap.is_none())
+        .filter(|s| in_room(s, strip) && !s.boxed() && s.scrap.is_none())
         .filter(|s| Some(s.item) != without)
         .flat_map(|s| s.item.spec().offers.iter().copied())
         .collect();
@@ -725,7 +808,30 @@ pub(super) struct Flap {
     pub item: Furniture,
 }
 
-/// A piece she owns, standing on `strip`; `boxed` until she unpacks it.
+/// Whether a piece is still in its delivery box, as it was set (a
+/// delivery, the record, her unpacking it). The bit is room.rs's own:
+/// everything else reads it through [`Prop::boxed`] and
+/// [`Shown::boxed`], which say a kit is always its box (phase 6a D2: a
+/// kit is never unpacked into a piece; it goes up as a structure), so no
+/// path, scratch, stage or record, shows or judges an unboxed kit,
+/// whatever was set.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub(super) struct Boxed(bool);
+
+impl From<bool> for Boxed {
+    fn from(boxed: bool) -> Self {
+        Self(boxed)
+    }
+}
+
+impl std::fmt::Debug for Boxed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+/// A piece she owns, standing on `strip`; boxed until she unpacks it
+/// ([`Prop::boxed`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) struct Prop {
     pub item: Furniture,
@@ -737,7 +843,8 @@ pub(super) struct Prop {
     /// set whenever the anchor is.
     pub at: u16,
     pub facing: Facing,
-    pub boxed: bool,
+    /// As set: read it through [`Prop::boxed`].
+    pub boxed: Boxed,
     /// She has set it where it stands (a delivery hasn't: it stands
     /// where it came in, until she moves it).
     pub settled: bool,
@@ -775,6 +882,11 @@ fn lane_of(lift: u16) -> Lane {
 }
 
 impl Prop {
+    /// Whether it's still in its delivery box: a kit always is.
+    pub fn boxed(&self) -> bool {
+        self.boxed.0 || self.item.is_kit()
+    }
+
     /// Which lane of its strip it's in: a piece that hangs is on the
     /// wall once it's out of its box.
     pub fn lane(&self) -> Lane {
@@ -784,14 +896,14 @@ impl Prop {
     /// Which lane it would be in on `strip` (a place a search weighs for
     /// it: a candidate strip's lane, not its own).
     pub fn lane_on(&self, strip: Strip) -> Lane {
-        lane_of(lift(self.item, self.boxed, Some(strip)))
+        lane_of(lift(self.item, self.boxed(), Some(strip)))
     }
 
     /// The columns it takes along its strip, and the rows above the floor
     /// it needs clear (up to its top, hung or standing).
     fn needs(&self) -> (u16, u16) {
         let (cols, rows) = self.item.spec().footprint;
-        (cols, rows + lift(self.item, self.boxed, Some(self.strip)))
+        (cols, rows + lift(self.item, self.boxed(), Some(self.strip)))
     }
 
     /// `item` `at` thousandths of the way along `nook`'s floor, not yet
@@ -803,7 +915,7 @@ impl Prop {
             anchor: None,
             at: at.min(1000),
             facing,
-            boxed: false,
+            boxed: false.into(),
             settled: true,
         }
     }
@@ -1127,7 +1239,7 @@ pub(super) fn stranded(home: &Home, laid: &LaidOut, chat: Rect) -> Vec<usize> {
 pub(super) fn closetable(chat: Rect, s: &Shown) -> bool {
     s.strip.is_some_and(Strip::is_floor)
         && s.scrap.is_none()
-        && !s.boxed
+        && !s.boxed()
         && in_chat(chat, s.cover())
 }
 
@@ -1167,7 +1279,7 @@ pub(super) fn placements(
             .iter()
             .filter(|p| p.strip == own)
             .chain(laid.plans.iter().filter(|p| p.strip != own))
-            .filter(|p| p.takes(piece.item, piece.boxed))
+            .filter(|p| p.takes(piece.item, piece.boxed()))
             .find_map(|plan| {
                 if plan.strip == own {
                     on_own_strip(plan, piece, chat)
@@ -1588,8 +1700,9 @@ fn pack_each(pieces: &[(usize, Anchor, (u16, u16))], extent: Extent) -> Vec<(usi
 pub(super) struct Shown {
     pub item: Furniture,
     pub facing: Facing,
-    /// Still in its delivery box (drawn as the box).
-    pub boxed: bool,
+    /// Still in its delivery box (drawn as the box), as set: read it
+    /// through [`Shown::boxed`].
+    pub boxed: Boxed,
     /// The strip it stands on (none for makeshift pieces, which stand
     /// where she made them).
     pub strip: Option<Strip>,
@@ -1609,6 +1722,12 @@ pub(super) struct Shown {
 }
 
 impl Shown {
+    /// Whether it's still in its delivery box (drawn as the box): a kit
+    /// always is.
+    pub fn boxed(&self) -> bool {
+        self.boxed.0 || self.item.is_kit()
+    }
+
     /// Which piece it is.
     pub fn piece(&self) -> PieceRef {
         match self.scrap {
@@ -1629,7 +1748,7 @@ impl Shown {
     /// into shape while it's makeshift and still a heap; once it's in
     /// shape, a makeshift piece is for what the real one is.
     pub fn uses(&self) -> &'static [Use] {
-        match (self.boxed, self.scrap) {
+        match (self.boxed(), self.scrap) {
             (true, _) => &[Use::Unpack],
             (false, Some(scrap)) if !scrap.done() => &[Use::Crumple],
             (false, _) => self.item.spec().uses,
@@ -1652,7 +1771,7 @@ impl Shown {
     fn lifted(&self, strip: Option<Strip>) -> u16 {
         match self.scrap {
             Some(_) => 0,
-            None => lift(self.item, self.boxed, strip),
+            None => lift(self.item, self.boxed(), strip),
         }
     }
 
@@ -1777,7 +1896,7 @@ impl Shown {
         } else {
             (other, self)
         };
-        let real = |s: &Shown| !s.boxed && s.scrap.is_none();
+        let real = |s: &Shown| !s.boxed() && s.scrap.is_none();
         real(window)
             && real(sofa)
             && window.item == Furniture::Window
@@ -1818,7 +1937,7 @@ impl Shown {
             (0..cols).map(move |dx| {
                 let glyph = if let Some(scrap) = self.scrap {
                     scrap.cell(self.item, self.facing, dx, dy).map(|(c, _)| c)
-                } else if self.boxed {
+                } else if self.boxed() {
                     parcel_glyph(cols, rows, dx, dy)
                 } else {
                     glyph(self.item, self.facing, dx, dy)
@@ -1830,7 +1949,7 @@ impl Shown {
 
     /// The TV's screen: the two cells inside its brackets.
     pub fn screen(&self) -> Option<[(i32, i32); 2]> {
-        (self.item == Furniture::Tv && !self.boxed).then(|| {
+        (self.item == Furniture::Tv && !self.boxed()).then(|| {
             let y = self.floor - 2;
             [(self.left + 2, y), (self.left + 3, y)]
         })
@@ -1850,9 +1969,14 @@ pub(super) struct Home {
 }
 
 impl Home {
-    /// Whether she owns `item`.
+    /// Whether she owns `item`: a kit, boxed or put up (phase 6a D2: she
+    /// has her shelf kit while it's a parcel and once it's her shelf).
     pub fn owns(&self, item: Furniture) -> bool {
         self.props.iter().any(|p| p.item == item)
+            || item
+                .spec()
+                .kit
+                .is_some_and(|kit| self.structures.iter().any(|&s| kit.puts_up(s)))
     }
 
     /// Her shelf in `nook`'s pane, if she has put one up there.
@@ -1946,20 +2070,43 @@ impl Home {
         None
     }
 
-    /// Unpack `item`: it's out of its box. False if it wasn't boxed.
+    /// Unpack `item`: it's out of its box. False if it wasn't boxed, or
+    /// it's a kit (never out of its box: it goes up as a structure,
+    /// [`Home::raise`]).
     pub fn unbox(&mut self, item: Furniture) -> bool {
-        match self.props.iter_mut().find(|p| p.item == item && p.boxed) {
+        if item.is_kit() {
+            return false;
+        }
+        match self.props.iter_mut().find(|p| p.item == item && p.boxed()) {
             Some(prop) => {
-                prop.boxed = false;
+                prop.boxed = false.into();
                 true
             }
             None => false,
         }
     }
 
+    /// Her kit `item` opened, and up as `structure` (phase 6a D7b), not
+    /// yet built (`built: 0`; she puts it up in stages): the kit goes,
+    /// the structure comes. False, and nothing changes, unless `item` is
+    /// a kit that puts `structure` up, it's here in its box, and nothing
+    /// is up yet (one structure in all, in 6a).
+    pub fn raise(&mut self, item: Furniture, structure: Structure) -> bool {
+        let puts_up = item.spec().kit.is_some_and(|kit| kit.puts_up(structure));
+        let kit = self.props.iter().position(|p| p.item == item);
+        let Some(i) = kit.filter(|_| puts_up && self.structures.is_empty()) else {
+            return false;
+        };
+        self.props.remove(i);
+        self.structures.push(match structure {
+            Structure::Shelf(shelf) => Structure::Shelf(Shelf { built: 0, ..shelf }),
+        });
+        true
+    }
+
     /// Whether anything is still in its box.
     pub fn boxed(&self) -> bool {
-        self.props.iter().any(|p| p.boxed)
+        self.props.iter().any(|p| p.boxed())
     }
 
     /// Her rooms: each pane's floor her pieces stand in (on it, or on a
@@ -1979,7 +2126,7 @@ impl Home {
                 let offers: Vec<Offer> = self
                     .props
                     .iter()
-                    .filter(|p| p.strip.room() == room && !p.boxed)
+                    .filter(|p| p.strip.room() == room && !p.boxed())
                     .flat_map(|p| p.item.spec().offers.iter().copied())
                     .collect();
                 (room, role(&offers))
@@ -2241,7 +2388,7 @@ impl Home {
     fn on_lanes(&self, strip: Strip) -> (Vec<Laned>, Vec<Laned>) {
         let (mut floor, mut wall) = (Vec::new(), Vec::new());
         for (i, p) in self.lays_from(strip) {
-            let Some(anchor) = p.anchor.filter(|_| strip.takes(p.item, p.boxed)) else {
+            let Some(anchor) = p.anchor.filter(|_| strip.takes(p.item, p.boxed())) else {
                 continue;
             };
             match p.lane() {
@@ -2948,7 +3095,7 @@ impl Home {
                         anchor: Some(anchor),
                         at,
                         facing,
-                        boxed: false,
+                        boxed: false.into(),
                         settled: true,
                     };
                     if !e.holds(prop.needs()) {
@@ -3064,7 +3211,7 @@ impl Home {
                         Side::Left => Facing::Right,
                         Side::Right => Facing::Left,
                     },
-                    boxed: false,
+                    boxed: false.into(),
                     // She never chose where it stands.
                     settled: false,
                 };
@@ -3074,7 +3221,7 @@ impl Home {
                 // the wall's line); then the piece, standing there or hung
                 // above, must fit with room to use it.
                 let parcel = Prop {
-                    boxed: true,
+                    boxed: true.into(),
                     ..prop
                 };
                 // Judged with her door where it will be once it's in (her
@@ -3124,7 +3271,7 @@ impl Home {
                 };
                 Some((
                     Prop {
-                        boxed: true,
+                        boxed: true.into(),
                         ..prop
                     },
                     Flap {
@@ -3163,7 +3310,7 @@ impl Home {
                 Side::Left => Facing::Right,
                 Side::Right => Facing::Left,
             },
-            boxed: true,
+            boxed: true.into(),
             settled: false,
         });
         if with.wall(plan) != Some(wall) {
@@ -3305,7 +3452,12 @@ impl Home {
         if self.owns(prop.item) {
             return false;
         }
-        self.props.push(prop);
+        // A kit's bit as its accessor reads it (always boxed), so no two
+        // kits differ by a bit nothing reads.
+        self.props.push(Prop {
+            boxed: prop.boxed().into(),
+            ..prop
+        });
         true
     }
 }
@@ -3792,7 +3944,7 @@ mod tests {
         let (floor, shelf) = (Strip::Bottom(Nook::Users), Strip::Shelf(Nook::Users));
         for boxed in [false, true] {
             let clock = Prop {
-                boxed,
+                boxed: boxed.into(),
                 ..Prop::new(Furniture::Clock, Nook::Users, 0, Facing::Right)
             };
             let hung = if boxed { 0 } else { hang };
@@ -4288,7 +4440,7 @@ mod tests {
         }
         let mut boxed = home(Nook::Users, &[prop(Sofa, 0)]);
         assert!(boxed.add(Prop {
-            boxed: true,
+            boxed: true.into(),
             ..prop(Tv, 1000)
         }));
         assert_eq!(boxed.rooms(), [(Strip::Bottom(Nook::Users), Role::Den)]);
@@ -4300,7 +4452,7 @@ mod tests {
 
     /// The pieces that stand on the floor.
     fn standing() -> Vec<Furniture> {
-        Furniture::ALL
+        Furniture::PRE_SHELF
             .into_iter()
             .filter(|f| f.spec().hang.is_none())
             .collect()
@@ -4564,7 +4716,7 @@ mod tests {
         };
         let anchored = |item: Furniture, side: Side, offset: u16, boxed: bool| Prop {
             anchor: Some(Anchor { side, offset }),
-            boxed,
+            boxed: boxed.into(),
             ..prop(item, 0)
         };
         for side in [Side::Left, Side::Right] {
@@ -4820,7 +4972,7 @@ mod tests {
         );
         // Boxed, it's a parcel on the floor.
         let parcel = Shown {
-            boxed: true,
+            boxed: true.into(),
             ..poster
         };
         assert_eq!(
@@ -5016,7 +5168,7 @@ mod tests {
                 Furniture::Poster,
             )
             .expect("room for it");
-        assert!(prop.boxed);
+        assert!(prop.boxed());
         assert_eq!(prop.lane(), Lane::Floor);
         assert_eq!(flap.rows, (6, 8), "the flap is at the floor");
         assert_eq!(prop.anchor.map(|a| a.side), Some(Side::Right));
@@ -5043,7 +5195,7 @@ mod tests {
                 &|_, _| false,
                 &|piece, _, _| {
                     let unpack = piece.seat(Use::Unpack, 0);
-                    match unpack.x != 21 || !piece.boxed {
+                    match unpack.x != 21 || !piece.boxed() {
                         true => piece
                             .uses()
                             .iter()
@@ -5201,7 +5353,7 @@ mod tests {
                 continue;
             };
             assert!(room.add(Prop {
-                boxed: false,
+                boxed: false.into(),
                 ..window
             }));
             let shown = room.project(buf, &nooks, &|_, _| false);
@@ -5591,7 +5743,7 @@ mod tests {
                 structures: Vec::new(),
             };
             let (shown, _) = room.frame(Drawn::bare(&buf), plan, &|_, _| false);
-            let gifts: Vec<Furniture> = Furniture::ALL.into_iter().filter(|&f| !room.owns(f)).collect();
+            let gifts: Vec<Furniture> = Furniture::PRE_SHELF.into_iter().filter(|&f| !room.owns(f)).collect();
             prop_assume!(!gifts.is_empty());
             let item = gifts[gift.index(gifts.len())];
             let Some(prop) = room.spot(Drawn::bare(&buf), plan, &shown, &|_, _| false, item, &mut Rng(seed)) else {
@@ -5814,7 +5966,7 @@ mod tests {
                     anchor: Some(Anchor { side: side(right), offset }),
                     at,
                     facing: if left { Facing::Left } else { Facing::Right },
-                    boxed: *boxed,
+                    boxed: (*boxed).into(),
                     settled: *settled,
                     ..home.props[i]
                 };
@@ -6364,7 +6516,7 @@ mod tests {
         };
         let (shown, _) = room.frame(Drawn::bare(&buf), plan, &|_, _| false);
         let keep = Keep::of(&room, plan);
-        let items: Vec<Furniture> = Furniture::ALL
+        let items: Vec<Furniture> = Furniture::PRE_SHELF
             .into_iter()
             .filter(|&f| !room.owns(f))
             .collect();
@@ -6382,7 +6534,10 @@ mod tests {
             ) {
                 for boxed in [true, false] {
                     let mut with = room.clone();
-                    let added = with.add(Prop { boxed, ..parcel });
+                    let added = with.add(Prop {
+                        boxed: boxed.into(),
+                        ..parcel
+                    });
                     prop_assert!(added);
                     if was == Some(true) {
                         prop_assert_eq!(
@@ -6683,7 +6838,10 @@ mod tests {
             .expect("it comes in by another wall");
         for boxed in [true, false] {
             let mut with = room.clone();
-            assert!(with.add(Prop { boxed, ..parcel }));
+            assert!(with.add(Prop {
+                boxed: boxed.into(),
+                ..parcel
+            }));
             assert_eq!(
                 kept_on(&with, plan),
                 Some(true),
@@ -6908,7 +7066,7 @@ mod tests {
         };
         let places = placements(&home, &laid, chat);
         let weighed: Vec<usize> = (0..laid.shown.len())
-            .filter(|&i| inside(&laid.shown[i]) && !laid.shown[i].boxed)
+            .filter(|&i| inside(&laid.shown[i]) && !laid.shown[i].boxed())
             .collect();
         prop_assert_eq!(
             places.iter().map(|&(i, _)| i).collect::<Vec<_>>(),
@@ -6924,7 +7082,7 @@ mod tests {
                     // strip's lane, not its own: phase 6a D1), and where
                     // she'd stand to reach it read from the plan.
                     prop_assert!(
-                        plan.takes(piece.item, piece.boxed),
+                        plan.takes(piece.item, piece.boxed()),
                         "{:?} to {:?}",
                         piece,
                         strip
@@ -7002,7 +7160,7 @@ mod tests {
                         .into_iter()
                         .zip(&boxed)
                         .map(|(p, &b)| Prop {
-                            boxed: b && p.item != Furniture::Lamp,
+                            boxed: (b && p.item != Furniture::Lamp).into(),
                             ..p
                         })
                         .collect()
@@ -7342,7 +7500,7 @@ pub(in crate::ui::houseguest) mod shelves {
         let made = Shown {
             item: Furniture::Sofa,
             facing: Facing::Right,
-            boxed: false,
+            boxed: false.into(),
             strip: None,
             left: 64,
             floor: 5,
@@ -7428,7 +7586,7 @@ pub(in crate::ui::houseguest) mod shelves {
                 ..Home::default()
             };
             assert!(home.add(Prop {
-                boxed,
+                boxed: boxed.into(),
                 ..on(Furniture::Plant, shelf, 3)
             }));
             let laid = home.laid_out(&nooks);
@@ -7667,7 +7825,7 @@ pub(in crate::ui::houseguest) mod shelves {
                 Strip::Bottom(nook)
             };
             let _ = home.add(Prop {
-                boxed,
+                boxed: boxed.into(),
                 ..on(EVERY_KIND[kind], strip, offset)
             });
         }
@@ -7676,7 +7834,7 @@ pub(in crate::ui::houseguest) mod shelves {
         let laid = home.laid_out(&nooks);
         let mut up = 0;
         for s in laid.shown.iter().filter(|s| s.on_shelf()) {
-            prop_assert!(ok(s.item, s.boxed), "{:?} on a shelf", s);
+            prop_assert!(ok(s.item, s.boxed()), "{:?} on a shelf", s);
             up += 1;
         }
         // Searched: no repair puts anything else up there.
@@ -7713,7 +7871,7 @@ pub(in crate::ui::houseguest) mod shelves {
         for p in &home.props {
             let back = read.home.props.iter().find(|q| q.item == p.item);
             let kept = read.home.shelf(p.strip.nook()).is_some();
-            let want = if p.strip.is_floor() || (kept && ok(p.item, p.boxed)) {
+            let want = if p.strip.is_floor() || (kept && ok(p.item, p.boxed())) {
                 p.strip
             } else {
                 p.strip.room()
@@ -7820,12 +7978,12 @@ pub(in crate::ui::houseguest) mod shelves {
                             let side = if right { Side::Right } else { Side::Left };
                             if up && item.spec().shelf {
                                 Prop {
-                                    boxed,
+                                    boxed: boxed.into(),
                                     ..on(item, Strip::Shelf(Nook::Users), offset % 8)
                                 }
                             } else {
                                 Prop {
-                                    boxed,
+                                    boxed: boxed.into(),
                                     anchor: Some(Anchor { side, offset }),
                                     ..Prop::new(item, Nook::Users, 0, Facing::Right)
                                 }
@@ -8267,7 +8425,7 @@ mod low_shelf {
                     strip: strip_of(*strip),
                     anchor: Some(Anchor { side: side(*right), offset: *offset }),
                     facing: if *left { Facing::Left } else { Facing::Right },
-                    boxed: *boxed,
+                    boxed: (*boxed).into(),
                     ..home.props[i]
                 };
                 prop_assert_eq!(home.relaid_keeping(&was, &mut kept), home.laid_and_shifted(&nooks));
@@ -9150,7 +9308,9 @@ mod spot {
             let hung: Vec<Rect> = laid
                 .iter()
                 .filter(|s| {
-                    s.strip == Some(Strip::Bottom(nook)) && !s.boxed && s.item.spec().hang.is_some()
+                    s.strip == Some(Strip::Bottom(nook))
+                        && !s.boxed()
+                        && s.item.spec().hang.is_some()
                 })
                 .map(Shown::rect)
                 .collect();

@@ -7731,6 +7731,12 @@ impl Osaka {
         std::mem::take(&mut self.events)
     }
 
+    /// A test's: as if she had just done `event` to her home.
+    #[cfg(test)]
+    pub(super) fn did(&mut self, event: HomeEvent) {
+        self.events.push(event);
+    }
+
     /// The paint refused `op` (the frame didn't allow it). A put-back is
     /// tried again shortly. Mischief that never happened owes nothing:
     /// what was queued to follow it is cancelled, and a swap she'd have
@@ -11723,7 +11729,7 @@ mod tests {
         let at = super::super::room::Shown {
             item: Furniture::Sofa,
             facing: Facing::Left,
-            boxed: false,
+            boxed: false.into(),
             strip: Some(Strip::Bottom(super::super::room::Nook::Users)),
             left: 6,
             floor: 10,
@@ -20609,7 +20615,7 @@ mod tests {
             piece: super::super::room::Shown {
                 item: Furniture::Sofa,
                 facing: Facing::Left,
-                boxed: false,
+                boxed: false.into(),
                 strip: None,
                 left: 22,
                 floor: 15,
@@ -22759,7 +22765,7 @@ mod tests {
                     let piece = Shown {
                         item,
                         facing,
-                        boxed: false,
+                        boxed: false.into(),
                         strip: None,
                         left: 40,
                         floor: 15,
@@ -22799,7 +22805,7 @@ mod tests {
                 piece: Shown {
                     item,
                     facing: Facing::Right,
-                    boxed: false,
+                    boxed: false.into(),
                     strip: None,
                     left: 17,
                     floor: 15,
@@ -22870,7 +22876,7 @@ mod tests {
             piece: Shown {
                 item: Furniture::Desk,
                 facing: Facing::Right,
-                boxed: false,
+                boxed: false.into(),
                 strip: None,
                 left: 28,
                 floor: 15,

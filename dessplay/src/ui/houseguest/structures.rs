@@ -483,7 +483,7 @@ mod tests {
         for item in Furniture::ALL {
             for boxed in [false, true] {
                 let piece = Prop {
-                    boxed,
+                    boxed: boxed.into(),
                     ..Prop::new(item, Nook::Users, 500, Facing::Right)
                 };
                 match (piece.lane(), item.spec().hang) {

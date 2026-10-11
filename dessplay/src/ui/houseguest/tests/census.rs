@@ -519,7 +519,7 @@ pub(super) fn visit_feeding(
                 let lamp = visit
                     .shown
                     .iter()
-                    .any(|s| s.item == Furniture::Lamp && !s.boxed);
+                    .any(|s| s.item == Furniture::Lamp && !s.boxed());
                 for (splice, name) in named(play, lamp) {
                     let row = if splice {
                         &mut out.splices
@@ -1567,7 +1567,7 @@ fn day_guest(room: &Room, seed: u64, date: Option<chrono::NaiveDate>) -> Guest {
     };
     for item in room.owns {
         assert!(
-            visit.shown.iter().any(|s| s.item == *item && !s.boxed),
+            visit.shown.iter().any(|s| s.item == *item && !s.boxed()),
             "{} seed {seed}: {item:?} not shown: {:?}",
             room.name,
             visit.shown
@@ -1712,7 +1712,7 @@ pub(super) fn fed_afternoon(room: &Room, seed: u64, graphics: bool, mood: Mood) 
     visit.osaka.set_mood(mood);
     for item in room.owns {
         assert!(
-            visit.shown.iter().any(|s| s.item == *item && !s.boxed),
+            visit.shown.iter().any(|s| s.item == *item && !s.boxed()),
             "{at}: {item:?} not shown: {:?}",
             visit.shown
         );
@@ -1739,7 +1739,7 @@ pub(super) fn afternoon(
             .home
             .props
             .iter()
-            .map(|p| (p.item, p.boxed))
+            .map(|p| (p.item, p.boxed()))
             .collect();
         pieces.sort_by_key(|&(item, boxed)| (format!("{item:?}"), boxed));
         pieces
@@ -2203,7 +2203,7 @@ fn live_for(room: &Room, seed: u64, date: Option<chrono::NaiveDate>, until: u64)
                 let lamp = visit
                     .shown
                     .iter()
-                    .any(|s| s.item == Furniture::Lamp && !s.boxed);
+                    .any(|s| s.item == Furniture::Lamp && !s.boxed());
                 for (_, name) in named(play, lamp) {
                     events.push(if play.own == ScriptId::ClockGlance {
                         match play.branch {
@@ -2616,7 +2616,7 @@ fn the_census_home_shows_every_piece() {
             };
             for item in room.owns {
                 assert!(
-                    visit.shown.iter().any(|s| s.item == *item && !s.boxed),
+                    visit.shown.iter().any(|s| s.item == *item && !s.boxed()),
                     "seed {seed} graphics={graphics}: {item:?} not shown: {:?}",
                     visit.shown
                 );

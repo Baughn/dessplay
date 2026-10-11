@@ -613,13 +613,13 @@ fn her_tv_wants_a_still_only_for_her_programme_in_line_art() {
                     .iter_mut()
                     .find(|s| s.item == Furniture::Tv)
                     .expect("her TV");
-                tv.boxed = true;
+                tv.boxed = true.into();
                 let boxed_wants = guest.tv_wants_picture();
                 let State::Visiting(visit) = &mut guest.state else {
                     unreachable!()
                 };
                 for s in visit.shown.iter_mut().filter(|s| s.item == Furniture::Tv) {
-                    s.boxed = false;
+                    s.boxed = false.into();
                 }
                 assert!(!boxed_wants, "at {now}: a boxed TV wants a still");
                 boxed += 1;

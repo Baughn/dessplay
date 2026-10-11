@@ -1367,7 +1367,7 @@ proptest! {
     ) {
         let owned: Vec<(Furniture, usize, u16, bool)> = owned
             .into_iter()
-            .map(|(item, at, along, left)| (Furniture::ALL[item], at, along, left))
+            .map(|(item, at, along, left)| (Furniture::PRE_SHELF[item], at, along, left))
             .collect();
         her_days(
             seed,
@@ -1404,7 +1404,7 @@ proptest! {
     ) {
         let owned: Vec<(Furniture, usize, u16, bool)> = owned
             .into_iter()
-            .map(|(item, at, along, left)| (Furniture::ALL[item], at, along, left))
+            .map(|(item, at, along, left)| (Furniture::PRE_SHELF[item], at, along, left))
             .collect();
         her_days(
             seed,
@@ -1640,7 +1640,7 @@ fn her_days_case_pulling_text_as_school_begins() {
     let mut guest = Guest::restore(Ledger::new_at(12_452_213_708_426_597_514, tue(8, 12)));
     guest.set_date(date(2026, 6, 17));
     let text = [(28, 11, "漢漢a".to_owned()), (0, 0, "漢".to_owned())];
-    let owned = [(Furniture::ALL[1], 0, 0, false)];
+    let owned = [(Furniture::PRE_SHELF[1], 0, 0, false)];
     long_visit_of(
         guest,
         true,
@@ -1666,7 +1666,7 @@ fn her_days_case_out_of_her_bed_as_school_begins() {
     for graphics in [false, true] {
         let mut guest = Guest::restore(Ledger::new_at(61_518_700_694_217, tue(8, 12)));
         guest.set_date(date(2026, 6, 17));
-        let owned = [(Furniture::ALL[2], 0, 369, false)];
+        let owned = [(Furniture::PRE_SHELF[2], 0, 369, false)];
         assert_eq!(owned[0].0, Furniture::Bed);
         let visited = long_visit_of(
             guest,
@@ -5879,7 +5879,7 @@ fn a_parcel_comes(
                     parcel: visit
                         .shown
                         .iter()
-                        .find(|s| s.item == flap.item && s.boxed)
+                        .find(|s| s.item == flap.item && s.boxed())
                         .copied(),
                 });
                 if now >= since + FLAP_MS + 200 {

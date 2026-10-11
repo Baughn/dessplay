@@ -1,6 +1,6 @@
 # DessPlay Design Document
 
-Last updated: 2026-10-10
+Last updated: 2026-10-11
 
 A synchronized video player for watch parties. Terminal-first, built for
 reliability over flaky connections. Server-coordinated, including relayed
@@ -1792,8 +1792,12 @@ this section states what is built.
   shopping channel comes on (Chiyo-chichi) and she buys the next piece
   she lacks — sofa, bed, desk, lamp, bookshelf, fridge, cat bed, window,
   in that order, then decor (a potted plant, a poster), but decor first while
-  beauty is the most pressing of her needs (none higher) — the moment
-  it comes on,
+  beauty is the most pressing of her needs (none higher), and last of
+  all her shelf kit (phase 6a: kits after the furniture and the decor),
+  sold only on a frame where a shelf could go up (*Strips and anchors*:
+  where her shelf goes is chosen on the frame), asked only once the
+  queue comes to it; one that can't be sold then holds up nothing after
+  it — the moment it comes on,
   whatever happens next. Her wall clock isn't sold: it's a gift (see
   *Her window and wall clock*). What she buys arrives on a later visit as a
   parcel ("A parcel!"), once she's up and in sight (not asleep or up in
@@ -1840,11 +1844,22 @@ this section states what is built.
   [decisions](decisions.md#a-window-comes-in-where-she-can-look-out-of-it-2026-10-05)).
   She unpacks it (her strongest wish while it's there) and it
   becomes the piece. A parcel stays boxed, across visits, until she
-  finishes unpacking it.
+  finishes unpacking it. **Her shelf kit** is the one parcel not
+  unpacked at once: it comes in as any does (its box judged with a seat
+  to open it from, whatever the frame), but its seat is offered only
+  while a shelf could go up on the frame, and opened it's no piece: it
+  goes up on her wall as her shelf where one goes on the next frame (the
+  pane she opened it in first), not yet built (she puts it up in
+  stages: phase 6a step 5c), the kit gone; with nowhere for it by then the box stays
+  shut, to be opened again once one could. While no shelf could go up
+  the box waits in sight (and, boxed, keeps the channel off). A kit is
+  never out of its box any other way: as read from her record, or given
+  by the stage (her shelf instead, finished where one goes).
 - **Furniture** (phase 3): a sofa (9×3 cells), TV (6×4), bed (10×3),
   desk (7×3), floor lamp (3×4), bookshelf (5×4), fridge (4×4), cat
   bed (4×2) and window (4×2, hung on the wall), and, just for looks, a
   potted plant (3×3), a poster (4×2, hung) and a wall clock (3×2, hung),
+  and a shelf kit (5×2, only ever its box: *Getting furniture*),
   drawn in her style (outlined, soft fills) as line art, or as
   ASCII without graphics. She owns her furniture across visits; each
   kind is one row of a catalogue (name, footprint, drawing, ink, uses,

@@ -226,8 +226,11 @@ impl Ledger {
             else {
                 continue;
             };
+            // A kit is always its box (phase 6a D2), whatever the record
+            // says: read so, it's written back as read.
+            let boxed = prop.boxed || prop.item.is_kit();
             let mut piece = Prop {
-                boxed: prop.boxed,
+                boxed: boxed.into(),
                 settled: !unsettled.contains(&prop.item),
                 ..Prop::new(prop.item, nook, prop.at, prop.facing)
             };
@@ -238,7 +241,7 @@ impl Ledger {
             // there).
             let held_up = |strip: Strip| {
                 home.shelf(strip.nook()).is_some_and(|s| s.finished())
-                    && strip.takes(prop.item, prop.boxed)
+                    && strip.takes(prop.item, boxed)
             };
             match anchored {
                 Some(a) if a.strip.is_floor() || held_up(a.strip) => {
@@ -294,7 +297,7 @@ impl Ledger {
                     item: p.item,
                     at: p.at,
                     facing: p.facing,
-                    boxed: p.boxed,
+                    boxed: p.boxed(),
                 })
                 .collect(),
             anchors: self
@@ -422,7 +425,7 @@ impl Ledger {
                 .iter()
                 .map(|p| Owned {
                     item: format!("{:?}", p.item),
-                    boxed: p.boxed,
+                    boxed: p.boxed(),
                     settled: p.settled,
                     strip: match p.strip {
                         Strip::Bottom(_) => format!("{:?}", p.strip),
@@ -658,7 +661,8 @@ impl RoomKind {
             | Furniture::Plant
             | Furniture::Poster
             | Furniture::Clock
-            | Furniture::Window => Self::Living,
+            | Furniture::Window
+            | Furniture::ShelfKit => Self::Living,
             Furniture::Bed | Furniture::Desk | Furniture::Lamp | Furniture::Bookshelf => {
                 Self::Bedroom
             }
@@ -810,7 +814,7 @@ mod tests {
             );
         }
         assert!(ledger.home.add(Prop {
-            boxed: true,
+            boxed: true.into(),
             ..Prop::new(Furniture::Bed, Nook::Playlist, 500, Facing::Right)
         }));
         // The sofa and the bed have stood on their strips; the TV not yet.
@@ -1544,7 +1548,7 @@ mod tests {
                     shelf.built = built;
                 }
                 let piece = ledger.home.props.iter_mut().find(|p| p.item == item);
-                piece.unwrap().boxed = boxed;
+                piece.unwrap().boxed = boxed.into();
                 let was = *ledger.home.props.iter().find(|p| p.item == item).unwrap();
                 let read = Ledger::from_json(&ledger.to_json()).unwrap();
                 if small && !boxed && built == SHELF_STAGES {
@@ -1555,7 +1559,7 @@ mod tests {
                 assert_eq!(piece.strip, Strip::Bottom(nook), "{at}");
                 assert_eq!(piece.anchor, None, "{at}");
                 assert_eq!(piece.at, was.at, "{at}");
-                assert_eq!(piece.boxed, boxed, "{at}");
+                assert_eq!(piece.boxed(), boxed, "{at}");
                 // Everything else, the shelf too, reads as it was written.
                 let mut rest = read.clone();
                 rest.home.props.retain(|p| p.item != item);
@@ -1955,7 +1959,7 @@ mod tests {
                     },
                     Prop {
                         anchor: anchor(Side::Right, 7),
-                        boxed: true,
+                        boxed: true.into(),
                         ..Prop::new(Furniture::Bed, Nook::Playlist, 500, Facing::Right)
                     },
                     Prop {

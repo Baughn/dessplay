@@ -492,13 +492,13 @@ fn a_box_in_the_chat_is_shown_and_unpacked() {
     let (real, view) = chat_over_users(false, 22);
     let chat = view.chat;
     let pieces = [(Furniture::Bed, Nook::Users, Side::Left, 0, Facing::Right)];
-    let boxed = |guest: &Guest| prop_of(guest, Furniture::Bed).boxed;
+    let boxed = |guest: &Guest| prop_of(guest, Furniture::Bed).boxed();
     for graphics in [false, true] {
         let at = format!("graphics={graphics}");
         let boxed_home = |at_time| {
             let mut guest = anchored_home(5, at_time, &pieces, Some(USERS_RIGHT), graphics);
             for p in &mut guest.ledger.home.props {
-                p.boxed = true;
+                p.boxed = true.into();
                 p.settled = false;
             }
             guest
@@ -506,7 +506,7 @@ fn a_box_in_the_chat_is_shown_and_unpacked() {
         // Precondition: in the chat, and no room would take it out of
         // its box either.
         let mut probe = boxed_home(tue(14, 0));
-        probe.ledger.home.props[0].boxed = false;
+        probe.ledger.home.props[0].boxed = false.into();
         let mut home = probe.ledger.home.clone();
         let laid = home.laid_out(&view.nooks);
         assert!(room::in_chat(chat, laid.shown[0].cover()), "{at}");
@@ -522,7 +522,7 @@ fn a_box_in_the_chat_is_shown_and_unpacked() {
             empty
                 .shown
                 .iter()
-                .any(|s| s.item == Furniture::Bed && s.boxed),
+                .any(|s| s.item == Furniture::Bed && s.boxed()),
             "{at}: the box shows while she's out"
         );
         // Visiting: she unpacks it.
@@ -532,7 +532,7 @@ fn a_box_in_the_chat_is_shown_and_unpacked() {
             visit_of(&guest)
                 .shown
                 .iter()
-                .any(|s| s.item == Furniture::Bed && s.boxed),
+                .any(|s| s.item == Furniture::Bed && s.boxed()),
             "{at}: the box shows"
         );
         let unpacked = run_until(&mut guest, &real, &view, now, now + 10 * 60_000, |g, _| {

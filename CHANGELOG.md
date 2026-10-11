@@ -9,6 +9,10 @@ append-only; you cannot reword or remove existing entries.
 
 Add new days at the top. Add new entries at the bottom of existing days.
 
+## 2026-10-11
+
+- Added: the shopping channel sells Osaka a shelf kit for her wall.
+
 ## 2026-10-10
 
 - Added: parcels come in through the flap in Osaka's front door.

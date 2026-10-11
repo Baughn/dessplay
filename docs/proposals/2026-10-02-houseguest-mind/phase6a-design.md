@@ -799,6 +799,27 @@ every outside reader), `Home::raise`; mod.rs:166-208 (`CATALOGUE`, `advert`), 14
 checked by trace diff. **CHANGELOG.** "Added: the shopping channel sells Osaka a shelf kit for her wall." **Docs.**
 design.md *Getting furniture* (1787: the kit, tiers, `shelf_room`, the one parcel not unpacked at once). **Traps.**
 `Unpacked(ShelfKit)` never reaches `unbox`.
+**As built.** The boxed bit is a newtype, `room::Boxed(bool)` with its `bool` private to room.rs, in `pub boxed: Boxed`
+fields of `Prop` and `Shown`, read everywhere through `Prop::boxed()`/`Shown::boxed()` (= the bit `|| item.is_kit()`):
+the same guarantee as a private field for reads (no code outside room.rs reads the raw bit as a bool, so no reader can
+see an unboxed kit), without breaking every struct literal and `..base` update outside room.rs (some sixty, mostly
+tests). The raw bit is still compared by the derived `PartialEq`/`Hash` and printed by `Debug`, so the bit is
+normalized where a kit comes in: `Home::add` and `Ledger::from_json` set it to what the accessor reads (a record's
+kit written `"boxed":false` reads in boxed and writes back as read), and a write of `false.into()` to a kit is
+harmless, as the accessor still says boxed. The frozen-kind sites D7b lists that still read `Furniture::ALL`
+(brain.rs and osaka.rs test strategies, mind.rs, tests/credit.rs: `ALL.find(|f| f.spec().uses.contains(..))`) are
+immune because the kit has no `uses` and comes last in `ALL`, so every `find` returns what it did; step 7's gremlin
+has a use (`GazeUp`, step 6) and must re-check them. `advert(ledger, shop_now, needs, wish,
+shelf_room: &dyn Fn() -> bool)`: the wish is `None` from production until step 7 computes it (its test passes it);
+`shelf_room` is asked only for a kit at the head of what's left. The paint asks `shelf_spot` once (mod.rs `kit_room`,
+right after `furnish`, before her layer is painted, what her visit keeps off as of the last frame) only while her kit
+shows or the queue (asked with room assumed) comes to a kit, and hands the answer to `seats` (`kit_room`, read by
+`spots_for`) and to `advert`. `furnish` takes `visit.raise` first, before laying out the frame: `Home::raise(shelf)`
+puts the shelf up `built: 0` (written from the next frame on: structures change after `read_ground` in that paint,
+harmless as built 0 writes nothing and `kept_out` is geometry). The stage's `give(ShelfKit)` puts up a finished,
+bare shelf (`Guest.shelving: Option<Shelving>`, `Bare`, beside `Scene::Shelf`'s `Decor`), and the stage's shelf
+replaces a boxed kit. `Scene::PutUp` is step 5c's (it needs `Want::PutUp`). Old strategies pin to
+`Furniture::PRE_SHELF` (room.rs, `#[cfg(test)]`) and tests.rs `PRE_SHELF_CATALOGUE` (= `CATALOGUE[..10]`, asserted).
 
 ### Step 5c. Putting it up (~1050 lines)
 

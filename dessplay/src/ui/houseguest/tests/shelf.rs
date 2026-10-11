@@ -1663,7 +1663,7 @@ fn the_stage_puts_her_shelf_up_where_one_fits() {
                 (from + (10 - cols) / 2, y, floor),
                 "{at}"
             );
-            assert!(!on.boxed, "{at}");
+            assert!(!on.boxed(), "{at}");
         }
     }
 }
@@ -1895,7 +1895,7 @@ fn the_stage_puts_up_the_plant_she_has() {
                 guest.set_picker(kitty());
             }
             assert!(guest.ledger.home.add(room::Prop {
-                boxed,
+                boxed: boxed.into(),
                 ..room::Prop::new(Furniture::Plant, Nook::Playlist, 300, Facing::Left)
             }));
             let (_, note) = stage_shelf(&mut guest, &real, &view);
@@ -1906,7 +1906,7 @@ fn the_stage_puts_up_the_plant_she_has() {
                 .props
                 .iter()
                 .filter(|p| p.item == Furniture::Plant)
-                .map(|p| (p.strip, p.facing, p.boxed))
+                .map(|p| (p.strip, p.facing, p.boxed()))
                 .collect();
             assert_eq!(
                 plants,
@@ -1915,7 +1915,7 @@ fn the_stage_puts_up_the_plant_she_has() {
             );
             let on: Vec<_> = up_on(&guest, Nook::List)
                 .iter()
-                .map(|s| (s.item, s.facing, s.boxed))
+                .map(|s| (s.item, s.facing, s.boxed()))
                 .collect();
             assert_eq!(on, [(Furniture::Plant, Facing::Left, false)], "{at}");
         }

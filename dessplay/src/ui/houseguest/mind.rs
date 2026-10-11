@@ -852,7 +852,8 @@ impl Furniture {
             | Self::Plant
             | Self::Poster
             | Self::Window
-            | Self::Clock => None,
+            | Self::Clock
+            | Self::ShelfKit => None,
         }
     }
 }
@@ -2134,7 +2135,7 @@ mod tests {
             piece: Shown {
                 item: Furniture::Sofa,
                 facing: Facing::Right,
-                boxed: false,
+                boxed: false.into(),
                 strip: None,
                 left: x - 3,
                 floor: y,
@@ -2191,7 +2192,7 @@ mod tests {
             piece: Shown {
                 item: Furniture::Sofa,
                 facing: Facing::Right,
-                boxed: false,
+                boxed: false.into(),
                 strip: None,
                 left: x - 3,
                 floor: 10,

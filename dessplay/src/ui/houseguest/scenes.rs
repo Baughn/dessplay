@@ -918,7 +918,7 @@ pub(super) fn builds(
                 let piece = Shown {
                     item,
                     facing,
-                    boxed: false,
+                    boxed: false.into(),
                     strip: None,
                     left: pull.x - i32::from(cols) / 2,
                     floor: pull.y,

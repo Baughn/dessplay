@@ -1303,7 +1303,7 @@ proptest! {
     ) {
         let mut owned: Vec<(Furniture, usize, u16, bool)> = owned
             .into_iter()
-            .map(|(item, at, along, left)| (Furniture::ALL[item], at, along, left))
+            .map(|(item, at, along, left)| (Furniture::PRE_SHELF[item], at, along, left))
             .collect();
         owned.push((Furniture::Fridge, fridge.0, fridge.1, false));
         let mut guest = Guest::restore(Ledger::new_at(seed, before_a_dash(seed, from)));

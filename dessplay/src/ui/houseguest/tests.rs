@@ -713,7 +713,7 @@ proptest! {
     ) {
         let owned: Vec<(Furniture, usize, u16, bool)> = owned
             .into_iter()
-            .map(|(item, at, along, left)| (Furniture::ALL[item], at, along, left))
+            .map(|(item, at, along, left)| (Furniture::PRE_SHELF[item], at, along, left))
             .collect();
         long_visit(seed, graphics, &sizes, &text, &skips, &chats, protect, &owned, 200_000)?;
     }
@@ -736,7 +736,7 @@ proptest! {
     ) {
         let mut owned: Vec<(Furniture, usize, u16, bool)> = owned
             .into_iter()
-            .map(|(item, at, along, left)| (Furniture::ALL[item], at, along, left))
+            .map(|(item, at, along, left)| (Furniture::PRE_SHELF[item], at, along, left))
             .collect();
         let decor = decor.into_iter().map(|(poster, at, along, left)| {
             let item = if poster { Furniture::Poster } else { Furniture::Plant };
@@ -769,7 +769,7 @@ proptest! {
     ) {
         let owned: Vec<(Furniture, usize, u16, bool)> = owned
             .into_iter()
-            .map(|(item, at, along, left)| (Furniture::ALL[item], at, along, left))
+            .map(|(item, at, along, left)| (Furniture::PRE_SHELF[item], at, along, left))
             .collect();
         long_visit_of(
             Guest::new(seed),
@@ -816,7 +816,7 @@ proptest! {
     ) {
         let owned: Vec<(Furniture, usize, u16, bool)> = owned
             .into_iter()
-            .map(|(item, at, along, left)| (Furniture::ALL[item], at, along, left))
+            .map(|(item, at, along, left)| (Furniture::PRE_SHELF[item], at, along, left))
             .collect();
         long_visit_of(
             Guest::new(seed),
@@ -2057,7 +2057,7 @@ fn check_shelves(
         visited.shelf_pieces_away += usize::from(matches!(guest.state, State::Away(_)));
         visited.shelf_pieces_last += usize::from(visited.on_last);
         prop_assert!(
-            s.item.spec().shelf && !s.boxed && s.scrap.is_none(),
+            s.item.spec().shelf && !s.boxed() && s.scrap.is_none(),
             "{:?}",
             s
         );
@@ -2515,6 +2515,8 @@ fn visiting_at(guest: &mut Guest, real: &Buffer, view: &IdleView, (x, y): (i32, 
         size: (real.area.width, real.area.height),
         tuck: false,
         looks: Looks::default(),
+        raise: None,
+        kit_room: None,
     }));
 }
 
@@ -3085,7 +3087,7 @@ fn every_scene_has_a_spot_in_the_stage_room() {
                             .made
                             .iter()
                             .any(|m| m.piece.scrap.is_some_and(|s| s.stage > 0)),
-                        Scene::Parcel => guest.ledger.home.props.iter().any(|p| !p.boxed),
+                        Scene::Parcel => guest.ledger.home.props.iter().any(|p| !p.boxed()),
                         Scene::Shopping => guest.ledger.ordered.is_some(),
                         // Through her door, never off the screen's edge
                         // (door batch, step 4b).
@@ -5839,16 +5841,25 @@ fn the_channel_sells_decor_when_her_room_feels_bare() {
     }
     let bare = Needs::with(&[(Need::Beauty, 0.9), (Need::Fun, 0.5)]);
     let fun = Needs::with(&[(Need::Beauty, 0.5), (Need::Fun, 0.9)]);
-    assert_eq!(advert(&ledger, false, &fun), Some(Furniture::Bed));
-    assert_eq!(advert(&ledger, false, &bare), Some(Furniture::Plant));
+    assert_eq!(
+        advert(&ledger, false, &fun, None, &|| false),
+        Some(Furniture::Bed)
+    );
+    assert_eq!(
+        advert(&ledger, false, &bare, None, &|| false),
+        Some(Furniture::Plant)
+    );
     assert!(ledger.home.add(room::Prop::new(
         Furniture::Plant,
         Nook::Users,
         0,
         sprite::Facing::Right
     )));
-    assert_eq!(advert(&ledger, false, &bare), Some(Furniture::Poster));
-    for item in CATALOGUE.iter().filter(|i| !i.decor()) {
+    assert_eq!(
+        advert(&ledger, false, &bare, None, &|| false),
+        Some(Furniture::Poster)
+    );
+    for item in PRE_SHELF_CATALOGUE.iter().filter(|i| !i.decor()) {
         let _ = ledger.home.add(room::Prop::new(
             *item,
             Nook::Playlist,
@@ -5857,7 +5868,7 @@ fn the_channel_sells_decor_when_her_room_feels_bare() {
         ));
     }
     assert_eq!(
-        advert(&ledger, false, &fun),
+        advert(&ledger, false, &fun, None, &|| false),
         Some(Furniture::Poster),
         "nothing else left"
     );
@@ -5867,7 +5878,11 @@ fn the_channel_sells_decor_when_her_room_feels_bare() {
         0,
         sprite::Facing::Right
     )));
-    assert_eq!(advert(&ledger, false, &bare), None, "she has it all");
+    assert_eq!(
+        advert(&ledger, false, &bare, None, &|| false),
+        None,
+        "she has it all"
+    );
 }
 
 /// The channel sells her window after her cat bed and before the decor
@@ -5893,13 +5908,130 @@ fn the_window_is_sold_after_the_cat_bed() {
         );
     }
     assert!(ledger.home.owns(Furniture::CatBed));
-    assert_eq!(advert(&ledger, false, &fun), Some(Furniture::Window));
-    assert_eq!(advert(&ledger, false, &bare), Some(Furniture::Plant));
+    assert_eq!(
+        advert(&ledger, false, &fun, None, &|| false),
+        Some(Furniture::Window)
+    );
+    assert_eq!(
+        advert(&ledger, false, &bare, None, &|| false),
+        Some(Furniture::Plant)
+    );
     // One piece short of the cat bed, the cat bed comes first.
     ledger.home.props.retain(|p| p.item != Furniture::CatBed);
-    assert_eq!(advert(&ledger, false, &fun), Some(Furniture::CatBed));
+    assert_eq!(
+        advert(&ledger, false, &fun, None, &|| false),
+        Some(Furniture::CatBed)
+    );
     assert!(!CATALOGUE.contains(&Furniture::Clock), "a gift");
     assert!(!Furniture::Window.decor() && Furniture::Clock.decor());
+}
+
+/// Her shelf kit (phase 6a D7b) is sold last, after the furniture and
+/// the decor whatever her mood, at the channel's usual cadence, and only
+/// while a shelf could go up on the frame (asked only once the queue
+/// comes to it); owned, boxed or up as her shelf, it's never sold again.
+/// A wished kit comes first, at the same cadence; a wish that can't be
+/// sold now doesn't hold up the next piece; boxed, it holds up every
+/// piece. The channel's choice alone: nothing is painted, so no
+/// graphics loop.
+#[test]
+fn the_kit_is_sold_last_and_at_the_usual_cadence() {
+    use super::brain::{Need, Needs};
+    use super::structures::{Shelf, Structure};
+    use Furniture::{Bed, Poster, ShelfKit, Tv};
+    let bare = Needs::with(&[(Need::Beauty, 0.9), (Need::Fun, 0.5)]);
+    let fun = Needs::with(&[(Need::Beauty, 0.5), (Need::Fun, 0.9)]);
+    let asked = std::cell::Cell::new(0);
+    let room = || {
+        asked.set(asked.get() + 1);
+        true
+    };
+    let none = || false;
+    let piece = |item| room::Prop::new(item, Nook::Users, 0, sprite::Facing::Right);
+    let mut ledger = Ledger::new(1);
+    ledger.visits = 9;
+    let owned = std::iter::once(Tv).chain(PRE_SHELF_CATALOGUE);
+    for item in owned.filter(|&item| item != Bed && item != Poster) {
+        assert!(ledger.home.add(piece(item)), "{item:?}");
+    }
+    // Furniture, then decor, before the kit, whatever her mood; the room
+    // for a shelf not asked about on the way.
+    assert_eq!(advert(&ledger, false, &fun, None, &room), Some(Bed));
+    assert_eq!(advert(&ledger, false, &bare, None, &room), Some(Poster));
+    assert!(ledger.home.add(piece(Bed)));
+    assert_eq!(advert(&ledger, false, &fun, None, &room), Some(Poster));
+    assert_eq!(asked.get(), 0, "asked before the queue came to the kit");
+    assert!(ledger.home.add(piece(Poster)));
+    for needs in [&fun, &bare] {
+        assert_eq!(advert(&ledger, false, needs, None, &room), Some(ShelfKit));
+    }
+    assert_eq!(asked.get(), 2);
+    // Only while a shelf could go up.
+    assert_eq!(advert(&ledger, false, &fun, None, &none), None);
+    // At the usual cadence: not within `SHOP_EVERY` visits of her last
+    // buy (but when the stage puts the channel on), nor while something
+    // is on order or still boxed.
+    ledger.bought_on = ledger.visits + 1 - SHOP_EVERY;
+    assert_eq!(advert(&ledger, false, &fun, None, &room), None);
+    assert_eq!(advert(&ledger, true, &fun, None, &room), Some(ShelfKit));
+    ledger.bought_on = 0;
+    ledger.ordered = Some(ShelfKit);
+    assert_eq!(advert(&ledger, false, &fun, None, &room), None, "on order");
+    ledger.ordered = None;
+    // Hers, boxed or up as her shelf: never sold again.
+    assert!(ledger.home.add(piece(ShelfKit)));
+    assert_eq!(advert(&ledger, true, &fun, None, &room), None, "boxed");
+    ledger.home.props.retain(|p| p.item != ShelfKit);
+    ledger.home.structures.push(Structure::Shelf(Shelf {
+        nook: Nook::Users,
+        anchor: room::Anchor {
+            side: room::Side::Left,
+            offset: 12,
+        },
+        rise: 7,
+        built: 0,
+    }));
+    assert!(ledger.home.owns(ShelfKit));
+    assert_eq!(advert(&ledger, false, &fun, None, &room), None, "up");
+    assert_eq!(
+        advert(&ledger, false, &fun, Some(ShelfKit), &room),
+        None,
+        "wished, and up"
+    );
+    // Wished: first, ahead of the furniture she lacks, at the same
+    // cadence; where no shelf could go up, the next piece as ever.
+    ledger.home.structures.clear();
+    ledger.home.props.retain(|p| p.item != Bed);
+    // Her kit in its box holds the channel off (idle), the bed she lacks
+    // and all: nothing else is sold while it waits.
+    assert!(ledger.home.add(piece(ShelfKit)));
+    assert_eq!(advert(&ledger, true, &fun, None, &room), None, "boxed");
+    ledger.home.props.retain(|p| p.item != ShelfKit);
+    assert_eq!(
+        advert(&ledger, false, &fun, Some(ShelfKit), &room),
+        Some(ShelfKit)
+    );
+    assert_eq!(
+        advert(&ledger, false, &fun, Some(ShelfKit), &none),
+        Some(Bed)
+    );
+    ledger.bought_on = ledger.visits + 1 - SHOP_EVERY;
+    assert_eq!(advert(&ledger, false, &fun, Some(ShelfKit), &room), None);
+    // Her TV first, always.
+    ledger.bought_on = 0;
+    ledger.home.props.retain(|p| p.item != Tv);
+    assert_eq!(advert(&ledger, false, &fun, Some(ShelfKit), &room), None);
+}
+
+/// The pins of the older tests' domains (phase 6a D7b): the kinds and
+/// the catalogue as they were before her kits, each a prefix of today's.
+/// Catalogue data alone: nothing is painted, so no graphics loop.
+#[test]
+fn the_pre_shelf_kinds_are_todays_first() {
+    assert_eq!(Furniture::PRE_SHELF[..], Furniture::ALL[..12]);
+    assert_eq!(PRE_SHELF_CATALOGUE[..], CATALOGUE[..10]);
+    assert!(Furniture::PRE_SHELF.iter().all(|f| !f.is_kit()));
+    assert!(Furniture::ALL[12..].iter().any(|f| f.is_kit()));
 }
 
 /// [`home_screen`] with chat text above her panes.
@@ -5951,7 +6083,7 @@ fn her_wall_clock_comes_once_on_a_fed_visit_with_a_tv() {
             let (mut guest, real, view) =
                 given(5, true, graphics, &[Furniture::Sofa, Furniture::Tv]);
             for prop in &mut guest.ledger.home.props {
-                prop.boxed |= prop.item == Furniture::Tv && tv_boxed;
+                prop.boxed = (prop.boxed() || prop.item == Furniture::Tv && tv_boxed).into();
             }
             assert!(!guest.ledger.clock_sent, "{at}");
             let tv_boxed_now = |guest: &Guest| {
@@ -5960,7 +6092,7 @@ fn her_wall_clock_comes_once_on_a_fed_visit_with_a_tv() {
                     .home
                     .props
                     .iter()
-                    .any(|p| p.item == Furniture::Tv && p.boxed)
+                    .any(|p| p.item == Furniture::Tv && p.boxed())
             };
             let (mut came, mut said, mut unpacked) = (None, false, None);
             let mut now = 0;
@@ -6004,7 +6136,7 @@ fn her_wall_clock_comes_once_on_a_fed_visit_with_a_tv() {
                     .home
                     .props
                     .iter()
-                    .any(|p| p.item == Furniture::Clock && p.boxed)
+                    .any(|p| p.item == Furniture::Clock && p.boxed())
             };
             let until = now + 300_000;
             while boxed(&guest) {
@@ -6212,7 +6344,7 @@ fn her_home_fills_up_over_visits() {
     assert!(
         home.props
             .iter()
-            .any(|p| p.item == Furniture::Tv && !p.boxed),
+            .any(|p| p.item == Furniture::Tv && !p.boxed()),
         "she unpacked her TV: {home:?}"
     );
     assert!(
@@ -6262,12 +6394,158 @@ proptest! {
             Just(Vec::new()),
             proptest::collection::vec((0u16..60, 0u16..18, "[a-z漢─│ ]{1,6}"), 1..12),
         ],
-        owned in proptest::collection::vec((0usize..Furniture::ALL.len(), 0usize..3, 0u16..=1000, any::<bool>()), 0..5),
+        owned in proptest::collection::vec((0usize..Furniture::PRE_SHELF.len(), 0usize..3, 0u16..=1000, any::<bool>()), 0..5),
         tv in (0usize..3, 0u16..=1000),
-        which in 0usize..=CATALOGUE.len(),
+        which in 0usize..=PRE_SHELF_CATALOGUE.len(),
     ) {
         a_parcel_on_her_doorstep(seed, graphics, (w, h), &text, &owned, tv, which)?;
     }
+
+    /// Her shelf kit delivered to her doorstep (phase 6a D7b) is opened
+    /// exactly when a shelf could go up: its seat is offered on each frame
+    /// iff [`room::Home::shelf_spot`] finds a spot there and she could
+    /// stand to open it; offered, every other promise of
+    /// [`every_parcel_on_her_doorstep_gets_unpacked`] holds, and opened,
+    /// it's up as her shelf. Its own strategy ([`kit_draw`]: the older
+    /// one's, with a [`Crowd`] filling some or all of her panes, so that
+    /// whether a shelf could go up varies with the frame, one pane or one
+    /// height left: [`kit_draws_meet_every_outcome`]).
+    #[test]
+    fn a_delivered_kit_is_unpacked_iff_a_shelf_can_go_up(draw in kit_draw()) {
+        let KitDraw { seed, graphics, size, text, owned, tv, crowd, swap } = draw;
+        a_parcel_of(seed, graphics, size, &text, &owned, tv, Furniture::ShelfKit, crowd, swap)?;
+    }
+}
+
+/// One case of [`a_delivered_kit_is_unpacked_iff_a_shelf_can_go_up`].
+#[derive(Clone, Debug)]
+struct KitDraw {
+    seed: u64,
+    graphics: bool,
+    size: (u16, u16),
+    text: Vec<(u16, u16, String)>,
+    owned: Vec<(usize, usize, u16, bool)>,
+    tv: (usize, u16),
+    crowd: Crowd,
+    /// How long after her kit came the frame turns to its other.
+    swap: Option<u64>,
+}
+
+/// [`a_delivered_kit_is_unpacked_iff_a_shelf_can_go_up`]'s strategy:
+/// [`every_parcel_on_her_doorstep_gets_unpacked`]'s, with a [`Crowd`]
+/// (any set of her panes, with or without a low shelf's rows left).
+fn kit_draw() -> impl Strategy<Value = KitDraw> {
+    (
+        any::<u64>(),
+        any::<bool>(),
+        (60u16..130, 18u16..45),
+        prop_oneof![
+            Just(Vec::new()),
+            proptest::collection::vec((0u16..60, 0u16..18, "[a-z漢─│ ]{1,6}"), 1..12),
+        ],
+        proptest::collection::vec(
+            (
+                0usize..Furniture::PRE_SHELF.len(),
+                0usize..3,
+                0u16..=1000,
+                any::<bool>(),
+            ),
+            0..5,
+        ),
+        (0usize..3, 0u16..=1000),
+        (0u8..8, any::<bool>()).prop_map(|(panes, low)| Crowd { panes, low }),
+        prop_oneof![Just(None), (1u64..=6).prop_map(|k| Some(k * 20_000))],
+    )
+        .prop_map(
+            |(seed, graphics, size, text, owned, tv, crowd, swap)| KitDraw {
+                seed,
+                graphics,
+                size,
+                text,
+                owned,
+                tv,
+                crowd,
+                swap,
+            },
+        )
+}
+
+/// The non-vacuity of [`a_delivered_kit_is_unpacked_iff_a_shelf_can_go_up`]'s
+/// strategy, on 256 fixed draws of [`kit_draw`], read off each case's
+/// frames and home as set up (pure: no visit run). Her text alone never
+/// decides it (the strategy's few short words fill no pane's rows): on a
+/// clear frame a shelf can always go up. Crowding some of her panes
+/// leaves one pane or none (a shelf, or none); crowding them with a low
+/// shelf's rows left, a low shelf where no high one goes; and the swap
+/// turns a frame where one could go up into one where none could, and
+/// the reverse (her seat comes and goes within a case). Measured
+/// (2026-10-11), as `[high, low, none]`: clear `[31, 0, 0]`, some
+/// crowded `[89, 17, 16]`, a low shelf's rows left `[75, 28, 0]` (the
+/// high ones in the panes left clear); swaps that make room 7, that
+/// take it 11. The thresholds are about half.
+#[test]
+fn kit_draws_meet_every_outcome() {
+    use proptest::strategy::ValueTree;
+    use proptest::test_runner::{Config, TestRng, TestRunner};
+    use structures::{HIGH_RISE, KeepOff};
+    let mut runner = TestRunner::new_with_rng(
+        Config::default(),
+        TestRng::deterministic_rng(proptest::test_runner::RngAlgorithm::ChaCha),
+    );
+    let mut seen = [[0usize; 3]; 3];
+    let mut swaps = [0usize; 2];
+    for _ in 0..256 {
+        let d = kit_draw().new_tree(&mut runner).unwrap().current();
+        let (guest, real, view, _) = parcel_case(
+            d.seed,
+            d.graphics,
+            d.size,
+            &d.text,
+            &d.owned,
+            d.tv,
+            Furniture::ShelfKit,
+            d.crowd,
+        );
+        let keep_off = KeepOff {
+            protected: &view.protected,
+            layer: &[],
+            made: &[],
+        };
+        let home = &guest.ledger.home;
+        let spot = |real: &Buffer| home.shelf_spot(real, plan_of(&view, real), &keep_off, None);
+        let regime = match d.crowd {
+            Crowd { panes: 0, .. } => 0,
+            Crowd { low: false, .. } => 1,
+            Crowd { low: true, .. } => 2,
+        };
+        let first = spot(&real);
+        seen[regime][match first {
+            Some(s) if s.rise >= HIGH_RISE => 0,
+            Some(_) => 1,
+            None => 2,
+        }] += 1;
+        if d.swap.is_some() {
+            let other = spot(&parcel_frame(d.size, &d.text, other_crowd(d.crowd)));
+            match (first, other) {
+                (None, Some(_)) => swaps[0] += 1,
+                (Some(_), None) => swaps[1] += 1,
+                _ => {}
+            }
+        }
+    }
+    eprintln!("{seen:?} {swaps:?}");
+    assert_eq!(
+        seen[0][2], 0,
+        "the strategy's text now decides it on a clear frame (not a bug: re-measure this \
+         test's counts and its doc): {seen:?}"
+    );
+    assert!(seen[0][0] >= 15, "{seen:?}");
+    assert!(
+        seen[1][0] >= 44 && seen[1][1] >= 8 && seen[1][2] >= 8,
+        "{seen:?}"
+    );
+    assert!(seen[2][1] >= 14, "{seen:?}");
+    assert!(swaps[0] >= 3 && swaps[1] >= 5, "{swaps:?}");
 }
 
 /// [`long_visits_never_touch_what_is_protected`]'s case (found in line
@@ -6281,8 +6559,8 @@ proptest! {
 #[test]
 fn a_parcel_by_her_doors_wall_with_her_door_elsewhere() {
     let owned = [
-        (Furniture::ALL[3], 2, 863, false),
-        (Furniture::ALL[1], 0, 347, false),
+        (Furniture::PRE_SHELF[3], 2, 863, false),
+        (Furniture::PRE_SHELF[1], 0, 347, false),
     ];
     for graphics in [false, true] {
         long_visit(
@@ -6316,15 +6594,15 @@ fn a_parcel_by_her_doors_wall_with_her_door_elsewhere() {
 #[test]
 fn parcels_she_could_not_unpack() {
     for graphics in [false, true] {
-        let cat_bed = CATALOGUE
+        let cat_bed = PRE_SHELF_CATALOGUE
             .iter()
             .position(|&i| i == Furniture::CatBed)
             .expect("sold");
-        let lamp = CATALOGUE
+        let lamp = PRE_SHELF_CATALOGUE
             .iter()
             .position(|&i| i == Furniture::Lamp)
             .expect("sold");
-        let sofa = CATALOGUE
+        let sofa = PRE_SHELF_CATALOGUE
             .iter()
             .position(|&i| i == Furniture::Sofa)
             .expect("sold");
@@ -6336,7 +6614,7 @@ fn parcels_she_could_not_unpack() {
         let text = [(8, 11, "a".to_owned())];
         a_parcel_on_her_doorstep(0, graphics, (60, 19), &text, &[], (0, 0), sofa)
             .unwrap_or_else(|e| panic!("graphics={graphics}: {e}"));
-        let desk = CATALOGUE
+        let desk = PRE_SHELF_CATALOGUE
             .iter()
             .position(|&i| i == Furniture::Desk)
             .expect("sold");
@@ -6364,7 +6642,7 @@ fn a_clock_she_passed_over() {
         &[],
         &[(0, 0, 0, false)],
         (1, 522),
-        CATALOGUE.len(),
+        PRE_SHELF_CATALOGUE.len(),
     )
     .unwrap_or_else(|e| panic!("{e}"));
 }
@@ -6380,22 +6658,133 @@ type Laid = (Furniture, Option<room::Strip>, i32, i32);
 /// some one case in a hundred thousand.
 const PASSED_OVER: u32 = 14;
 
+/// What the channel sold before her kits (phase 6a step 5b): every
+/// older test's strategy and body that draws from the catalogue draws
+/// from this, so its seeds keep meaning what they meant.
+const PRE_SHELF_CATALOGUE: [Furniture; 10] = [
+    Furniture::Sofa,
+    Furniture::Bed,
+    Furniture::Desk,
+    Furniture::Lamp,
+    Furniture::Bookshelf,
+    Furniture::Fridge,
+    Furniture::CatBed,
+    Furniture::Window,
+    Furniture::Plant,
+    Furniture::Poster,
+];
+
 /// One case of [`every_parcel_on_her_doorstep_gets_unpacked`]: on a
 /// `w`×`h` screen with `text`, her TV out of its box at `tv` (nook,
-/// thousandths along) and `owned` pieces, `CATALOGUE[which]` on order
-/// (one past the end: her wall clock, owed).
+/// thousandths along) and `owned` pieces, `PRE_SHELF_CATALOGUE[which]`
+/// on order (one past the end: her wall clock, owed). See
+/// [`a_parcel_of`].
 fn a_parcel_on_her_doorstep(
+    seed: u64,
+    graphics: bool,
+    size: (u16, u16),
+    text: &[(u16, u16, String)],
+    owned: &[(usize, usize, u16, bool)],
+    tv: (usize, u16),
+    which: usize,
+) -> Result<(), TestCaseError> {
+    let item = PRE_SHELF_CATALOGUE
+        .get(which)
+        .copied()
+        .unwrap_or(Furniture::Clock);
+    a_parcel_of(
+        seed,
+        graphics,
+        size,
+        text,
+        owned,
+        tv,
+        item,
+        Crowd::default(),
+        None,
+    )
+}
+
+/// `real` with every row of every pane's inside in `nooks` above her
+/// head's (the rows a shelf needs, low or high) full of text, her floors
+/// clear to stand on.
+fn crowded(real: &Buffer, nooks: &[(Nook, Rect)]) -> Buffer {
+    crowded_by(
+        real,
+        nooks,
+        Crowd {
+            panes: u8::MAX,
+            low: false,
+        },
+    )
+}
+
+/// Which of her panes [`a_parcel_of`] fills with text ([`crowded_by`]).
+#[derive(Clone, Copy, Debug, Default)]
+struct Crowd {
+    /// A bit for each pane of `nooks` in order (none: the frame as it
+    /// is).
+    panes: u8,
+    /// The rows a low shelf takes (its run's and the `LOW_ABOVE` over
+    /// it) left clear in each pane filled: only a low shelf could go up
+    /// there.
+    low: bool,
+}
+
+/// `real` with the panes of `nooks` that `crowd` names full of text
+/// above her head ([`crowded`]), or, with `crowd.low`, above a low
+/// shelf's rows.
+fn crowded_by(real: &Buffer, nooks: &[(Nook, Rect)], crowd: Crowd) -> Buffer {
+    use structures::{LOW_ABOVE, LOW_RISE};
+    let mut real = real.clone();
+    let left = if crowd.low { LOW_RISE + LOW_ABOVE } else { 4 };
+    for (i, &(_, rect)) in nooks.iter().enumerate() {
+        if crowd.panes & 1 << i == 0 {
+            continue;
+        }
+        let floor = rect.bottom() - 1;
+        for y in rect.y + 1..floor.saturating_sub(left) {
+            for x in rect.x + 1..rect.right().saturating_sub(1) {
+                real[(x, y)].set_symbol("x");
+            }
+        }
+    }
+    real
+}
+
+/// [`rooms`] at `size`, `crowd`ed, with `text` scattered over it.
+fn parcel_frame((w, h): (u16, u16), text: &[(u16, u16, String)], crowd: Crowd) -> Buffer {
+    let mut real = crowded_by(&rooms(w, h), &nooks(w, h), crowd);
+    scatter(&mut real, text, &[]);
+    real
+}
+
+/// The frame [`a_parcel_of`] swaps to: with any pane crowded, none;
+/// with none, all.
+fn other_crowd(crowd: Crowd) -> Crowd {
+    match crowd.panes {
+        0 => Crowd {
+            panes: u8::MAX,
+            low: false,
+        },
+        _ => Crowd::default(),
+    }
+}
+
+/// [`a_parcel_of`]'s case as set up: her home (her TV out of its box,
+/// `owned`, `item` on order or owed), the frame (`crowd`ed, `text`
+/// scattered over it), the view, and its protected cells.
+#[allow(clippy::too_many_arguments)]
+fn parcel_case(
     seed: u64,
     graphics: bool,
     (w, h): (u16, u16),
     text: &[(u16, u16, String)],
     owned: &[(usize, usize, u16, bool)],
     tv: (usize, u16),
-    which: usize,
-) -> Result<(), TestCaseError> {
-    use super::brain::Want;
-    use super::osaka::Bucket;
-    let item = CATALOGUE.get(which).copied().unwrap_or(Furniture::Clock);
+    item: Furniture,
+    crowd: Crowd,
+) -> (Guest, Buffer, IdleView, Vec<Rect>) {
     let nook = [Nook::List, Nook::Users, Nook::Playlist];
     let mut guest = home_at(seed, mon(16, 0), &[], graphics);
     // Her TV first, out of its box (the clock comes only then), unless
@@ -6403,7 +6792,7 @@ fn a_parcel_on_her_doorstep(
     let pieces = std::iter::once((Furniture::Tv, tv.0, tv.1, false)).chain(
         owned
             .iter()
-            .map(|&(piece, at, along, left)| (Furniture::ALL[piece], at, along, left)),
+            .map(|&(piece, at, along, left)| (Furniture::PRE_SHELF[piece], at, along, left)),
     );
     for (piece, at, along, left) in pieces {
         if piece == item {
@@ -6425,21 +6814,69 @@ fn a_parcel_on_her_doorstep(
         guest.ledger.ordered = Some(item);
         guest.ledger.bought_on = 0;
     }
-    let mut real = rooms(w, h);
-    scatter(&mut real, text, &[]);
+    let real = parcel_frame((w, h), text, crowd);
     let protected = bottom_strip(w, h);
     let view = IdleView {
         nooks: nooks(w, h),
         ..view(protected.clone())
     };
+    (guest, real, view, protected)
+}
+
+/// [`a_parcel_on_her_doorstep`] with `item` on order (her wall clock:
+/// owed), on a frame with the panes `crowd` names full of text. Her
+/// shelf kit (phase 6a D7b) is the one parcel not unpacked at once: its
+/// seat to open it from is offered on a frame exactly when the
+/// doorstep's (ungated) seat is there and a shelf could go up on it
+/// ([`room::Home::shelf_spot`], with what her visit kept off as the
+/// paint read it); delivered, the ungated seat is there within five
+/// seconds as for any parcel; opened, it's up as her shelf (`built: 0`),
+/// the kit gone; every other promise holds as for any parcel, while she
+/// has the seat. With `swap`, that long after it came the frame turns
+/// to its other ([`other_crowd`]: one where a shelf could go up becomes
+/// one where none could, or the reverse), and the case begins again
+/// from there as if it had just come: her seat to open it from comes
+/// and goes with the frame. Kept waiting three minutes with no seat
+/// (the frame changing no more), the case has shown what it can.
+#[allow(clippy::too_many_arguments)]
+fn a_parcel_of(
+    seed: u64,
+    graphics: bool,
+    size: (u16, u16),
+    text: &[(u16, u16, String)],
+    owned: &[(usize, usize, u16, bool)],
+    tv: (usize, u16),
+    item: Furniture,
+    crowd: Crowd,
+    swap: Option<u64>,
+) -> Result<(), TestCaseError> {
+    use super::brain::Want;
+    use super::osaka::Bucket;
+    let (mut guest, first, view, protected) =
+        parcel_case(seed, graphics, size, text, owned, tv, item, crowd);
+    let other = parcel_frame(size, text, other_crowd(crowd));
     let boxed = |guest: &Guest| {
         guest
             .ledger
             .home
             .props
             .iter()
-            .any(|p| p.item == item && p.boxed)
+            .any(|p| p.item == item && p.boxed())
     };
+    // Her kit: what her visit kept off a shelf as the last frame left it
+    // (the paint asks before this frame's changes), and whether the
+    // doorstep's ungated seat has been there.
+    let kit = item.is_kit();
+    let mut kept_last: (Vec<(u16, u16)>, Vec<Rect>) = (Vec::new(), Vec::new());
+    // The oracle's last answer, on what it was asked with (the frame,
+    // her home and what was kept off): a shelf spot is asked on every
+    // frame her kit shows, and its inputs rarely change.
+    type Asked = (bool, Vec<room::Prop>, (Vec<(u16, u16)>, Vec<Rect>), bool);
+    let mut asked: Option<Asked> = None;
+    // The frame swapped (from then on, the case begins again), when,
+    // and whether her kit's seat has been there since then.
+    let (mut swapped, mut base, mut seat_lately) = (false, 0, false);
+    let mut ungated = false;
     let mut now = 0;
     let mut delivered = None;
     // Where everything stood as it was delivered, and her text layer.
@@ -6460,22 +6897,31 @@ fn a_parcel_on_her_doorstep(
     };
     // Long enough for `PASSED_OVER` choices, while it's boxed and she
     // hasn't set about it.
-    while now < 20 * 60_000 || delivered.is_some() && set_about.is_none() && now < 50 * 60_000 {
+    while now < 20 * 60_000
+        || delivered.is_some() && set_about.is_none() && (seat || !kit) && now < 50 * 60_000
+    {
         now += guest
             .next_tick(now)
             .map_or(1000, |d| d.as_millis() as u64)
             .clamp(1, 1000);
         guest.advance(now);
-        let frame = paint(&mut guest, &real, &view, now);
+        let turn = !swapped
+            && delivered
+                .zip(swap)
+                .is_some_and(|(since, after)| now >= since + after);
+        swapped |= turn;
+        let real = if swapped { &other } else { &first };
+        let frame = paint(&mut guest, real, &view, now);
         let State::Visiting(visit) = &guest.state else {
             prop_assert!(delivered.is_none(), "gone at {now}, {item:?} boxed");
             prop_assert!(now < 60_000, "she never came");
             continue;
         };
-        assert_untouched_but_feet(&frame, &real, &protected, feet(visit))?;
-        if delivered.is_none() && guest.ledger.home.owns(item) {
+        assert_untouched_but_feet(&frame, real, &protected, feet(visit))?;
+        if delivered.is_none() && guest.ledger.home.owns(item) || turn {
             prop_assert!(boxed(&guest), "{item:?} came unboxed");
-            delivered = Some(now);
+            delivered.get_or_insert(now);
+            (base, seat_lately, passed_over, set_about) = (now, false, 0, None);
             as_delivered = visit.layer.is_empty().then(|| laid(visit));
             // Her choices from here on.
             scored = visit.osaka.factored.len();
@@ -6498,11 +6944,71 @@ fn a_parcel_on_her_doorstep(
             .iter()
             .any(|s| s.what == room::Use::Unpack && s.item == item);
         seat |= seated;
+        seat_lately |= seated;
+        // The oracle mirrors the paint's order (an assumption to revisit
+        // when step 5c moves what follows the raise): `kit_room` asks
+        // after `furnish`, before her layer and what she made change this
+        // frame, so with what her visit kept off as the last frame left
+        // it (`Visit::shelf_keep_off`, the one source the paint reads);
+        // and her seat at the piece is re-derived with `cat` false, as
+        // the cat changes no seat to unpack from.
+        let kept_then = std::mem::replace(&mut kept_last, visit.shelf_keep_off());
+        let shown_kit = visit.shown.iter().find(|s| s.item == item && s.boxed());
+        if kit && let Some(piece) = shown_kit {
+            let home = &guest.ledger.home;
+            let room = match &asked {
+                Some((on, props, kept, room))
+                    if *on == swapped && *props == home.props && *kept == kept_then =>
+                {
+                    *room
+                }
+                _ => {
+                    let (layer, made) = &kept_then;
+                    let keep_off = structures::KeepOff {
+                        protected: &view.protected,
+                        layer,
+                        made,
+                    };
+                    let room = home
+                        .shelf_spot(real, plan_of(&view, real), &keep_off, None)
+                        .is_some();
+                    asked = Some((swapped, home.props.clone(), kept_then.clone(), room));
+                    room
+                }
+            };
+            let open = seats_of(piece, &visit.shown, &visit.terrain, false, true)
+                .iter()
+                .any(|s| s.what == room::Use::Unpack);
+            ungated |= open;
+            prop_assert_eq!(
+                seated,
+                room && open,
+                "her kit's seat at {} (a shelf could go up: {}, her seat there: {})",
+                now,
+                room,
+                open
+            );
+            // No seat for three minutes since it came (or the frame
+            // swapped), the frame to change no more: it waits in its box,
+            // as it should.
+            if !seat_lately && (swapped || swap.is_none()) && now > base + 180_000 {
+                return Ok(());
+            }
+        }
         // Nothing has moved since it came: no text of hers, every piece
         // where it stood (else what's checked below may have changed).
         let unchanged = visit.layer.is_empty() && as_delivered.as_ref() == Some(&laid(visit));
         if !boxed(&guest) {
             prop_assert!(seat, "{item:?} unpacked from no seat");
+            if kit {
+                let home = &guest.ledger.home;
+                prop_assert!(!home.props.iter().any(|p| p.item == item), "{:?}", home);
+                prop_assert!(
+                    matches!(home.structures[..], [structures::Structure::Shelf(s)] if s.built == 0),
+                    "opened, not up: {:?}",
+                    home
+                );
+            }
             // Out of its box, nothing moved, she can use it every way she
             // was let in for: it came only where she'd fit to.
             if unchanged {
@@ -6523,11 +7029,16 @@ fn a_parcel_on_her_doorstep(
             return Ok(());
         }
         prop_assert!(
-            seat || now < since + 5_000,
+            if kit { ungated } else { seat } || now < since + 5_000,
             "{item:?} delivered at {since} with no seat to unpack it: {:?}",
             visit.shown
         );
         if !unchanged && (seat || !text.is_empty()) {
+            // Her choices since are past checking, but the frame is yet
+            // to turn: her kit's seat is still checked till then.
+            if swap.is_some() && !swapped {
+                continue;
+            }
             return Ok(());
         }
         // Her strongest wish, not a certain one (she rolls among the top
@@ -6626,7 +7137,7 @@ fn she_unpacks_delivered_decor() {
             guest.ledger.bought_on = 0;
             paint(&mut guest, &real, &view, 0);
             let parcel = shown_piece(&guest, item).unwrap_or_else(|| panic!("{at}: delivered"));
-            assert!(parcel.boxed, "{at}");
+            assert!(parcel.boxed(), "{at}");
             assert_eq!(parcel.lane(), room::Lane::Floor, "{at}");
             let mut now = 0;
             while now < 10 * 60_000 && guest.ledger.home.boxed() {
@@ -6685,11 +7196,14 @@ fn deliveries_are_unsettled_and_stage_gifts_settled() {
         guest.ledger.bought_on = 0;
         paint(&mut guest, &real, &view, 0);
         let tv = prop_of(&guest, Furniture::Tv);
-        assert!(tv.boxed && !tv.settled, "graphics {graphics}: {tv:?}");
+        assert!(tv.boxed() && !tv.settled, "graphics {graphics}: {tv:?}");
         guest.give(Furniture::Lamp);
         paint(&mut guest, &real, &view, 100);
         let lamp = prop_of(&guest, Furniture::Lamp);
-        assert!(!lamp.boxed && lamp.settled, "graphics {graphics}: {lamp:?}");
+        assert!(
+            !lamp.boxed() && lamp.settled,
+            "graphics {graphics}: {lamp:?}"
+        );
         // Saved and read back, each is as it was.
         let back = ledger::Ledger::from_json(&guest.ledger.to_json()).unwrap();
         let settled: Vec<(Furniture, bool)> = back
@@ -6952,7 +7466,7 @@ fn an_interrupted_unpacking_waits_for_her() {
             .home
             .props
             .iter()
-            .any(|p| p.item == item && p.boxed)
+            .any(|p| p.item == item && p.boxed())
     );
     guest.activity(1500);
     let now = 1500 + dissolve::DURATION_MS;
@@ -6965,7 +7479,7 @@ fn an_interrupted_unpacking_waits_for_her() {
             .home
             .props
             .iter()
-            .any(|p| p.item == item && !p.boxed),
+            .any(|p| p.item == item && !p.boxed()),
         "unpacked on the next visit: {:?}",
         guest.ledger.home
     );
@@ -7151,7 +7665,7 @@ fn every_piece_shows_what_her_script_shows_on_it() {
         let piece = Shown {
             item,
             facing: sprite::Facing::Right,
-            boxed: false,
+            boxed: false.into(),
             strip: None,
             left: 40,
             floor: 20,
@@ -8396,7 +8910,7 @@ proptest! {
     /// with the closet).
     #[test]
     fn an_older_record_migrates_without_closeting_anything(
-        pieces in proptest::sample::subsequence(Furniture::ALL.to_vec(), 1..=7),
+        pieces in proptest::sample::subsequence(Furniture::PRE_SHELF.to_vec(), 1..=7),
         places in proptest::collection::vec(
             (
                 0usize..3,
@@ -8417,7 +8931,7 @@ proptest! {
     /// 256 for (step 2's review).
     #[test]
     fn an_older_crowded_record_migrates_without_closeting_anything(
-        pieces in proptest::sample::subsequence(Furniture::ALL.to_vec(), 1..=7),
+        pieces in proptest::sample::subsequence(Furniture::PRE_SHELF.to_vec(), 1..=7),
         window in any::<bool>(),
         places in proptest::collection::vec(
             (
@@ -9006,7 +9520,7 @@ proptest! {
         let quiet = [Nook::Users, Nook::Playlist];
         for &(item, at, along, left) in &owned {
             let _ = guest.ledger.home.add(room::Prop::new(
-                Furniture::ALL[item],
+                Furniture::PRE_SHELF[item],
                 quiet[at],
                 along,
                 if left { sprite::Facing::Left } else { sprite::Facing::Right },
@@ -9745,7 +10259,7 @@ fn a_real_piece_wins_nineteen_times_in_twenty() {
     let piece = Shown {
         item: Furniture::Sofa,
         facing: sprite::Facing::Right,
-        boxed: false,
+        boxed: false.into(),
         strip: None,
         left: 40,
         floor: 20,
@@ -10493,7 +11007,7 @@ proptest! {
         let nook = [Nook::List, Nook::Users, Nook::Playlist];
         for &(item, at, along, left) in &owned {
             let _ = guest.ledger.home.add(room::Prop::new(
-                Furniture::ALL[item],
+                Furniture::PRE_SHELF[item],
                 nook[at],
                 along,
                 if left { sprite::Facing::Left } else { sprite::Facing::Right },
@@ -10807,7 +11321,7 @@ fn a_real_desk_stands_boxed_or_not_and_a_paper_one_is_not_real() {
     let desk = |boxed: bool, made: bool| Shown {
         item: Furniture::Desk,
         facing: super::sprite::Facing::Right,
-        boxed,
+        boxed: boxed.into(),
         strip: None,
         left: 10,
         floor: 15,
@@ -10821,7 +11335,7 @@ fn a_real_desk_stands_boxed_or_not_and_a_paper_one_is_not_real() {
     for graphics in [false, true] {
         let (mut guest, real, view) = given(5, true, graphics, &[Furniture::Desk]);
         for prop in &mut guest.ledger.home.props {
-            prop.boxed |= prop.item == Furniture::Desk;
+            prop.boxed = (prop.boxed() || prop.item == Furniture::Desk).into();
         }
         // Monday 21:00 on: homework time.
         guest.set_feed_clock(true);
@@ -10842,12 +11356,12 @@ fn a_real_desk_stands_boxed_or_not_and_a_paper_one_is_not_real() {
                 .iter()
                 .find(|s| s.item == Furniture::Desk && s.scrap.is_none());
             let shown = shown.unwrap_or_else(|| panic!("graphics {graphics}: no desk at {now}"));
-            boxed |= shown.boxed;
-            unboxed |= !shown.boxed;
+            boxed |= shown.boxed();
+            unboxed |= !shown.boxed();
             assert!(
                 visit.chances.real.contains(&Furniture::Desk),
                 "graphics {graphics} at {now}: boxed {}: {:?}",
-                shown.boxed,
+                shown.boxed(),
                 visit.chances.real
             );
             let floor = Want::Idle(Activity::FloorHomework);
@@ -11872,7 +12386,7 @@ fn a_made_sofa_mostly_faces_the_tv() {
         piece: Shown {
             item: Furniture::Sofa,
             facing: sprite::Facing::Right,
-            boxed: false,
+            boxed: false.into(),
             strip: None,
             left: x - 3,
             floor: 20,
@@ -13536,7 +14050,7 @@ fn pocket_on_a_floor(
         at: Shown {
             item: Furniture::Sofa,
             facing: sprite::Facing::Left,
-            boxed: false,
+            boxed: false.into(),
             strip: Some(Strip::Bottom(Nook::Users)),
             left,
             floor: 10,
@@ -14927,7 +15441,7 @@ fn she_reaches_a_shelf_piece_from_its_panes_floor() {
     let piece = Shown {
         item: Furniture::Plant,
         facing: sprite::Facing::Right,
-        boxed: false,
+        boxed: false.into(),
         strip: Some(room::Strip::Shelf(Nook::Users)),
         left: 30,
         floor: 14,
@@ -14947,6 +15461,7 @@ mod dash;
 mod felt;
 mod film;
 mod golden;
+mod kit;
 mod rain;
 mod rares;
 mod shelf;

@@ -52,7 +52,7 @@ fn looks_of(guest: &Guest, item: Furniture) -> Option<PieceState> {
     };
     shown
         .iter()
-        .any(|s| s.item == item && !s.boxed)
+        .any(|s| s.item == item && !s.boxed())
         .then(|| looks.state(item))
 }
 
@@ -241,7 +241,7 @@ fn no_wakeups_for_the_time_without_a_clock_or_window() {
             let window = |boxed: bool| Shown {
                 item: Furniture::Window,
                 facing: sprite::Facing::Right,
-                boxed,
+                boxed: boxed.into(),
                 strip: None,
                 left: 10,
                 floor: 16,
@@ -804,11 +804,11 @@ fn she_looks_out_only_of_a_window_she_can_reach() {
                 if boxed.is_some() {
                     let mut window =
                         room::Prop::new(Furniture::Window, Nook::Users, 550, sprite::Facing::Right);
-                    window.boxed = true;
+                    window.boxed = true.into();
                     assert!(guest.ledger.home.add(window));
                     let mut clock =
                         room::Prop::new(Furniture::Clock, Nook::Users, 150, sprite::Facing::Right);
-                    clock.boxed = true;
+                    clock.boxed = true.into();
                     assert!(guest.ledger.home.add(clock));
                 }
                 let now = until_visiting(&mut guest, &real, &view, 0);
@@ -923,7 +923,7 @@ fn a_delivered_window_is_one_she_can_look_out_of() {
                 continue;
             };
             delivered += 1;
-            window.boxed = false;
+            window.boxed = false.into();
             paint(&mut guest, &real, &view, now);
             if look_out_seats(&guest).is_empty() {
                 tracing::debug!("{at}: no window seat");

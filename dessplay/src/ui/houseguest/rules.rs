@@ -287,7 +287,7 @@ fn judge_each(
     let here = |item: Furniture| {
         layout
             .iter()
-            .find(|s| s.item == item && s.scrap.is_none() && !s.boxed && s.strip.is_some())
+            .find(|s| s.item == item && s.scrap.is_none() && !s.boxed() && s.strip.is_some())
     };
     let settled = |item: Furniture| {
         home.props
@@ -337,7 +337,7 @@ fn judge_each(
         Rule::Belongs => {
             for s in layout {
                 let Some(strip) = s.strip else { continue };
-                if s.scrap.is_some() || s.boxed || settled(s.item) {
+                if s.scrap.is_some() || s.boxed() || settled(s.item) {
                     continue;
                 }
                 if spoils(layout, strip, s.item) {
@@ -353,7 +353,7 @@ fn judge_each(
                 for s in layout {
                     if s.strip == Some(plan.strip)
                         && s.scrap.is_none()
-                        && !s.boxed
+                        && !s.boxed()
                         && s.cover().intersects(space.rect)
                     {
                         push(&[s.item], &[s.item]);
@@ -387,7 +387,7 @@ fn spoils(layout: &[Shown], strip: Strip, piece: Furniture) -> bool {
 fn spoilt(layout: &[Shown]) -> Vec<(Strip, Furniture)> {
     layout
         .iter()
-        .filter(|s| !s.boxed && s.scrap.is_none())
+        .filter(|s| !s.boxed() && s.scrap.is_none())
         .filter_map(|s| Some((s.strip?.room(), s.item)))
         .filter(|&(strip, item)| spoils(layout, strip, item))
         .collect()
@@ -409,7 +409,7 @@ fn newly_spoilt(
     from != Some(to)
         && after
             .iter()
-            .filter(|s| !s.boxed && s.scrap.is_none())
+            .filter(|s| !s.boxed() && s.scrap.is_none())
             .filter_map(|s| Some((s.strip?.room(), s.item)))
             .filter(|&(strip, _)| strip == to || Some(strip) == from)
             .any(|pair| !was.contains(&pair) && spoils(after, pair.0, pair.1))
@@ -630,7 +630,7 @@ fn becomes_den(roles: &[(Strip, Role)], laid: &[Shown]) -> bool {
 /// in it (a room).
 fn has_room(laid: &[Shown], strip: Strip) -> bool {
     laid.iter()
-        .any(|s| room::in_room(s, strip) && !s.boxed && s.scrap.is_none())
+        .any(|s| room::in_room(s, strip) && !s.boxed() && s.scrap.is_none())
 }
 
 /// `piece` set down at `to`: the repair of `key` it would be and her
@@ -669,7 +669,8 @@ fn evaluate(
     // Laned as it would be there (a clock on a shelf stands).
     let lane = old.lane_on(to.strip);
     let e = plan.along(lane);
-    if old.boxed || (old.strip, old.anchor, old.facing) == (to.strip, Some(to.anchor), to.facing) {
+    if old.boxed() || (old.strip, old.anchor, old.facing) == (to.strip, Some(to.anchor), to.facing)
+    {
         return None;
     }
     let cols = piece.spec().footprint.0;
@@ -1008,11 +1009,12 @@ pub(super) fn search(home: &Home, frame: &Frame, target: &Broken) -> Search {
                 continue;
             };
             // Only where it may stand, laned as it would be there.
-            if !plan.takes(piece, old.boxed) {
+            if !plan.takes(piece, old.boxed()) {
                 continue;
             }
             let e = plan.along(old.lane_on(strip));
-            let beside = |s: &&Shown| with.contains(&s.item) && s.strip == Some(strip) && !s.boxed;
+            let beside =
+                |s: &&Shown| with.contains(&s.item) && s.strip == Some(strip) && !s.boxed();
             let keeps_company = with.is_empty() || before.laid.iter().any(|s| beside(&s));
             // Apart: never on the strip the other one stands on.
             let apart_from = match rule {
@@ -1293,7 +1295,7 @@ mod tests {
             at: Shown {
                 item: Plant,
                 facing: Facing::Left,
-                boxed: false,
+                boxed: false.into(),
                 strip: Some(strip),
                 left: 10,
                 floor: 6,
@@ -1322,7 +1324,7 @@ mod tests {
 
     fn boxed(prop: Prop) -> Prop {
         Prop {
-            boxed: true,
+            boxed: true.into(),
             ..prop
         }
     }
@@ -1585,7 +1587,7 @@ mod tests {
     /// Some of her pieces, each anchored on one of the two strips, either
     /// way round, settled or not, boxed or not.
     fn pieces() -> impl Strategy<Value = Vec<Prop>> {
-        proptest::sample::subsequence(Furniture::ALL.to_vec(), 1..=6).prop_flat_map(|items| {
+        proptest::sample::subsequence(Furniture::PRE_SHELF.to_vec(), 1..=6).prop_flat_map(|items| {
             let n = items.len();
             (
                 Just(items),
@@ -1611,7 +1613,7 @@ mod tests {
                             let facing = if left { Facing::Left } else { Facing::Right };
                             Prop {
                                 settled,
-                                boxed,
+                                boxed: boxed.into(),
                                 ..at(item, nook, side, offset, facing)
                             }
                         })
@@ -1713,7 +1715,7 @@ mod tests {
         for b in &first {
             for piece in b.involved.iter().chain(&b.pieces) {
                 prop_assert!(
-                    laid.iter().any(|s| s.item == *piece && !s.boxed),
+                    laid.iter().any(|s| s.item == *piece && !s.boxed()),
                     "{:?} in {:?}",
                     piece,
                     b
@@ -3143,7 +3145,7 @@ mod tests {
     /// Some of her pieces, each anchored on one of three strips, either
     /// way round, settled or not, boxed or not.
     fn pieces3() -> impl Strategy<Value = Vec<Prop>> {
-        proptest::sample::subsequence(Furniture::ALL.to_vec(), 2..=8).prop_flat_map(|items| {
+        proptest::sample::subsequence(Furniture::PRE_SHELF.to_vec(), 2..=8).prop_flat_map(|items| {
             let n = items.len();
             (
                 Just(items),
@@ -3169,7 +3171,7 @@ mod tests {
                             let facing = if left { Facing::Left } else { Facing::Right };
                             Prop {
                                 settled,
-                                boxed,
+                                boxed: boxed.into(),
                                 ..at(item, nook, side, offset, facing)
                             }
                         })
@@ -3732,7 +3734,7 @@ mod tests {
                             let side = if right { Side::Right } else { Side::Left };
                             let piece = Prop {
                                 settled,
-                                boxed,
+                                boxed: boxed.into(),
                                 ..at(item, nook, side, offset, Facing::Right)
                             };
                             if up && item.spec().shelf && !boxed {

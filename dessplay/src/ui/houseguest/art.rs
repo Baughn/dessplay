@@ -1392,6 +1392,9 @@ fn parts(prop: Furniture, layer: Layer) -> &'static [&'static str] {
         // Plain, the hands both point at 12.
         (Furniture::Clock, _) => &["clock", "clock-hand-hour", "clock-hand-minute", "clock-pin"],
         (Furniture::Window, _) => &["window-sky-day", "window"],
+        // Never out of its box (phase 6a D7b: a kit goes up as a
+        // structure), so it's only ever drawn as its parcel.
+        (Furniture::ShelfKit, _) => &[],
     }
 }
 
@@ -4322,9 +4325,15 @@ mod tests {
         sheet.save(path).unwrap();
     }
 
+    /// Every kind she has out of its box: not a kit, only ever drawn as
+    /// its parcel (phase 6a D7b), so it has no art of its own to render.
+    fn unboxed_kinds() -> impl Iterator<Item = Furniture> {
+        Furniture::ALL.into_iter().filter(|f| !f.is_kit())
+    }
+
     #[test]
     fn every_prop_renders_inside_its_footprint() {
-        for prop in Furniture::ALL {
+        for prop in unboxed_kinds() {
             let (cols, rows) = prop.spec().footprint;
             for facing in [Facing::Left, Facing::Right] {
                 let (w, h) = (u32::from(cols) * 9, u32::from(rows) * 19);
@@ -4381,14 +4390,14 @@ mod tests {
         // Prop, a cell's gap, her, a cell's gap.
         let span = |s: u32| cw * s * 18;
         let row_h = ch * 4 * 6;
-        let rows = Furniture::ALL.len() as u32 * 2;
+        let rows = unboxed_kinds().count() as u32 * 2;
         let mut sheet = image::RgbaImage::from_pixel(
             scales.iter().map(|&s| span(s)).sum(),
             row_h * rows,
             image::Rgba([13, 17, 23, 255]),
         );
         let her = Rig::for_pose(Pose::Stand, Face::Vacant);
-        for (index, prop) in Furniture::ALL.into_iter().enumerate() {
+        for (index, prop) in unboxed_kinds().enumerate() {
             for (variant, outline) in [false, true].into_iter().enumerate() {
                 let row = index as u32 * 2 + variant as u32;
                 let mut x0 = 0;
