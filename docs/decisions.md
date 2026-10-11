@@ -6183,9 +6183,9 @@ Beside the piece, not under it: her gaze is in profile, so from under it
 she'd look at the wall (the character critique's C5). "hehe" first, so
 the look reads as hers and pleased, not the idle gaze at nothing. Her
 clock is left out (gazing at a mantel clock reads as clock-watching).
-20–45 s, as long as her other still acts (C9). *Provisional, open with
-the user:* no settling chain from it (D8 says "5c's settling-in
-applies"; read so far as the linger alone, since a GazeUp → Sit chain,
+20–45 s, as long as her other still acts (C9). *Kept by the user
+(2026-10-11):* no settling chain from it (D8 says "5c's settling-in
+applies"; read as the linger alone, since a GazeUp → Sit chain,
 as Gaze → Sit, would grow `settle_chains_ms` and the band's guard; a gaze
 up that ran its course just ends). Rejected: a use in the plant's
 catalogue row (it would be offered on a floor too, and every kind lookup
@@ -6203,7 +6203,8 @@ she went on gazing up at air (or sitting beside a sofa that had moved,
 or lifting at a spot it had left). Judged only on a resize: a parcel
 coming in may nudge a piece she's on aside (`Home::doorstep`), and every
 6a step keeps a home without a structure as it was (the goldens move if
-that's judged too: an open question for the user). Unpacking is never
+that's judged too; the user's answer, 2026-10-11: she moves with the
+piece, a fix of its own after 6a). Unpacking is never
 judged: the piece is out of its box from her first moment at it, laid
 out where its kind goes, and her spot was the box's.
 

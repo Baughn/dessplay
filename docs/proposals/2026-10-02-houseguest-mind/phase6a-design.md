@@ -882,8 +882,7 @@ the frame's seats: `stage::direct` picks the seat before it places her. `Want::U
 `Want::ALL` (31), `row(5.0, [(Daydreams, 0.4)])`, no factors (not a fun source, not in the chat). `ScriptId::GazeUp`
 (`ALL` 28): `Still(Pose::Stand)`, `Face::Pleased`, `Bubble::Hehe` for `GAZE_UP_PLEASED_MS` (2500), then
 `Still(Pose::Gaze)`, `Face::Curious`, the rest; `Common`, `Chat::Look`, `OnChat::LooksUp`. `use_duration` 20–45 s.
-No settling arm (**provisional, an open question for the user**: D8's "5c's settling-in applies" was read as the
-linger alone; a GazeUp → Sit chain as Gaze's would grow `settle_chains_ms` and the band's guard).
+No settling arm (**kept by the user, 2026-10-11**: D8's "5c's settling-in applies" is the linger alone; a GazeUp → Sit chain as Gaze's would grow `settle_chains_ms` and the band's guard).
 `census_group` "spacing out" (as `LookOut`); the census names it "gaze up". `Scene::GazeUp` (`ALL` 61) is
 `Shelving::Gazed` (review fix: `shelf_decor` takes a kind filter, `Furniture::gazed_up_at`; where none shows, her
 home is left unchanged, no shelf and no clock saved) with `furniture()` = `GazeUp` through `direct`'s seat arm (notes
@@ -994,7 +993,7 @@ under her hands (the hop marks the moment instead).
 
 ## Questions for the user
 
-Three open from step 6's review (the last list below). Fourth round (2026-10-10, the user):
+None open. Fourth round (2026-10-10, the user):
 - **High means standable**, as designed: a high shelf keeps `HEIGHT` clear rows over its run. Step 3 measures how often
   each height fits at 191×46 with real content; revisit only if the measurement surprises.
 - **The hop is for high shelves only** (D7c as designed): a low shelf is in her reach, so she stretches up.
@@ -1020,13 +1019,14 @@ Fifth round (2026-10-11, during the build; the hand-off notes have the detail):
   case. D11 said "a finished shelf with the plant on it". Alternatives: leave the shelf bare there (the note then
   `Err`), or require a third clear row for a low shelf (D3 would then refuse every 9-row pane).
 
-Open (step 6's review, 2026-10-11; the hand-off notes have the detail):
-- **Settling-in after the gaze up**: D8's "so 5c's settling-in applies" built as the linger alone (no GazeUp → Sit
-  chain); provisional until the user says.
-- **GazeUp's weight**: with her plant up she gazes up rarely (1 visit in 16, 0.05 a game day in `shelf_room`); raise
-  it, or leave it rare?
-- **A parcel nudging a piece she's on** leaves her a column off it (since before 6a); judging it as a resize is now
-  judged would move the goldens of homes with no structure, so it waits for the user.
+Sixth round (2026-10-11, the user, on step 5c's and step 6's build calls):
+- **The put-up pace is kept**: stage 1 straight after opening, stage 2 first thing the next morning (0.63 game days
+  from delivery in the shelf census; the design expected 1–2). She is keen, and finishes as soon as she may.
+- **She gazes up about once a game day** with her plant up (built: 0.05 a game day, 1 visit in 16 in `shelf_room`).
+  Step 8 retunes `Want::Use(GazeUp)` to that, measured in `day_census` on `shelf_room`, before its freshness boost.
+- **No settling chain after the gaze up**: the mood linger alone, as built.
+- **A parcel nudging a piece she's on** (since before 6a): she moves with the piece. A fix of its own after 6a, since
+  it moves the goldens of homes with no structure.
 
 ## Critique dispositions
 
