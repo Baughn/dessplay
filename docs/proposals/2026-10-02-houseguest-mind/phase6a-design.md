@@ -137,7 +137,7 @@ pub(super) enum Strip {
 impl Strip {
     pub fn nook(self) -> Nook;                 // total: every strip has a pane
     pub fn room(self) -> Strip;                // Strip::Bottom(self.nook()): a shelf is part of the room below
-    pub fn takes(self, item: Furniture) -> bool; // a floor takes anything; a shelf, `Spec.shelf` kinds only
+    pub fn takes(self, item: Furniture, boxed: bool) -> bool; // a floor takes anything; a shelf, `Spec.shelf` kinds out of their box
 }
 ```
 
@@ -151,7 +151,8 @@ impl Strip {
   for targets; `project_with` (room.rs:2159) moves only `Strip::Bottom` strips off (a shelf whose plan is gone hides its
   pieces, never moves them). `doorstep`, `spot`, `stage_arrange` (mod.rs:4329) and the door's chooser iterate
   `pane_strips`.
-- **One admission rule**, `Strip::takes`, read in two places only:
+- **One admission rule**, `Strip::takes` (the kind and whether it's boxed: a shelf takes no parcel; as built in step 3's
+  review fixes), read in two places, and by the ledger read:
   1. `Home::on` (room.rs:1839), which every layout reads (`lay_strip`, room.rs:2019): a piece a strip doesn't take is
      never laid out there, so every search that judges a candidate by its layout refuses it with no filter of its own
      (the repair's `evaluate`, rules.rs:605; `spot`'s `find(item)?`; `admits`).
@@ -159,8 +160,8 @@ impl Strip {
      closet's agreement with the search): `rules::search`'s `Places` loop (rules.rs:930), `placements` (room.rs:978)
      and `on_own_strip`/`packed_on`.
   `Spec.shelf` lands with it (step 1: twelve rows, true for the plant and the clock), so `takes` is never a
-  placeholder. The ledger read never puts a piece on a shelf that doesn't take it (or that the record lacks or hasn't
-  finished, or boxed) either: it lands on that pane's floor at its share, unanchored (D2).
+  placeholder. The ledger read (`held_up`) never puts a piece on a shelf that doesn't take it (or that the record lacks
+  or hasn't finished) either: it lands on that pane's floor at its share, unanchored (D2).
 - **Lanes depend on the strip.** On a shelf everything stands: `lift(item, boxed, strip)` (room.rs:697) is 0 there;
   `Prop::lane`/`needs` (room.rs:708-722), `Shown::lift`/`lane` (room.rs:1448-1462) pass their strip. Every place that
   lanes a piece for a candidate strip uses the candidate's lane: `search`'s `plan.along(old.lane())` (rules.rs:935),
@@ -701,7 +702,24 @@ finished shelves; `fits`/`project_with` take `&Written`; the shelf's centred lef
 4266, the lift/set-down pose on a shelf (osaka.rs:11246-11249); tests.rs long-visit additions. **Exit.** Goldens
 unchanged; `repair_search_is_cheap` under its bound with a shelf on each pane. **Docs.** design.md *Strips and anchors*
 (1850), *Rooms from contents* (1957), beauty (1571). **Traps.** The clock changes lane on a shelf. InChat skips shelf
-pieces.
+pieces. **As built.** `raw_extents` adds each shelf `Shelf::finished()` (the reader's predicate) whose `Shelf::run`
+holds. `fits`, `project_with`, `Home::frame`, `move_off`, `spot`, `doorstep`, `admits` and `rules::Frame` take the
+paint's frame with what was written into it (`Drawn`; made pieces too, via `tend_made`/`made_stands`/`builds`); a piece on a shelf stands only on written
+cells, and no other piece stands on one. `closetable` takes floors only (so InChat and the closet skip shelf pieces);
+a shelf takes no parcel, by the one admission rule itself (`Strip::takes(item, boxed)`, read by `Home::on`,
+`StripPlan::takes` in `search` and `placements`, and the ledger's `held_up`: the boxed question of step 2a's review).
+The layout's text checks take a `structures::Drawn` (the paint's buffer with what was written into it, made only by
+`Written::over`), never a buffer and a `Written` apart; a set-down is `Home::set_down`. `rules::search` weighs,
+on a shelf, only `shelf_lefts` (centred, and packed beside each piece there) and `here`. `scenes::Lift.up` and
+`Judged.up` carry "on a shelf" to the pose (`Pose::Stretch`, `Face::Curious` for a lift off or a set-down onto one).
+The measurement is in plan.md (6a step 3's measurement): at 100×30 the bundled List pane is 9 rows and Users and the
+Playlist 8 (not "List and the Playlist 9", as D11 says): only List takes a shelf there (low), the stage room likewise.
+The repair properties' oracle (`mends`) now judges "newly broken" with the closet as it was, as `evaluate` does and
+as the door batch decided (decisions.md, "The closet and a repair": a piece leaving the closet for a repair is no rule
+newly broken); the new shelf property found the old oracle's disagreement on its first run, and the case, with no
+shelf, is pinned as `a_repair_may_let_a_piece_out_of_the_closet`. For a piece on a shelf, `mends` checks it stands on
+the run worked out from the record and the pane's rect (`stands_on_its_shelf`), not through `room::fits`. The
+measurement's List figures were re-taken with twenty franchises in The List (`fuller_ui`).
 
 ### Step 4. The low shelf (~800 lines)
 
@@ -839,7 +857,8 @@ None open. Fourth round (2026-10-10, the user):
 Fifth round (2026-10-11, during the build; the hand-off notes have the detail):
 - **A styled blank hides the shelf, as text does** (the user): a blank cell in reverse video, or with a background unlike
   its pane's (a list's selection bar past its entry's text), counts as occupied, so the shelf and what stands on it are
-  hidden that frame. To be built in step 3 (`structures::free` and the step-2b oracle's `expected`).
+  hidden that frame. Built in step 3 (`structures::free` takes the pane's background, read off the host border's
+  cell under the run's middle, as the ink is; the step-2b oracle's `expected` likewise).
 - **Decided by the coordinator** (build agents' open questions, reversible): a piece the record puts on an unfinished
   shelf lands on that pane's floor at its share (2a's choice (a)); a half-built shelf is shown while its built half and 2
   cells past each end of that half are blank and free; a makeshift piece a shelf's geometry comes to meet falls apart and

@@ -151,6 +151,56 @@ fn her_shelf_shows_only_where_the_frame_holds_it() {
                 let frame = next(&mut guest, &real, &quiet, &mut now, 250);
                 shows(&guest, &frame, &real, &format!("{phase}: gone again"));
             }
+            // A styled blank is as good as text (the user's fifth round):
+            // a selection bar in reverse video across its row (a list's
+            // highlighted entry past its text), then one blank of its
+            // margin in a colour unlike its pane's.
+            use tuirealm::ratatui::style::{Color, Modifier};
+            for (rect, style, what) in [
+                (
+                    Rect::new(51, ROW, 48, 1),
+                    Style::new().add_modifier(Modifier::REVERSED),
+                    "a selection bar",
+                ),
+                (
+                    Rect::new(74, ROW, 1, 1),
+                    Style::new().bg(Color::Blue),
+                    "a tinted blank",
+                ),
+            ] {
+                let mut styled = real.clone();
+                styled.set_style(rect, style);
+                let phase = format!("{at}: {what}");
+                let frame = next(&mut guest, &styled, &quiet, &mut now, 250);
+                hides(&guest, &frame, &styled, &phase);
+                let frame = next(&mut guest, &real, &quiet, &mut now, 250);
+                shows(&guest, &frame, &real, &format!("{phase}: gone again"));
+            }
+            // Users in a theme's background of its own (a layout's
+            // `background-color`), border and inside: her shelf shows on
+            // its blanks; one cell of its run in the terminal's background
+            // is a blank unlike its pane's, and hides it.
+            let mut themed = real.clone();
+            themed.set_style(
+                Rect::new(50, 0, 50, 13),
+                Style::new().bg(Color::Indexed(236)),
+            );
+            let phase = format!("{at}: a themed pane");
+            let frame = next(&mut guest, &themed, &quiet, &mut now, 250);
+            shows(&guest, &frame, &themed, &phase);
+            let mut unthemed = themed.clone();
+            unthemed.set_style(Rect::new(68, ROW, 1, 1), Style::new().bg(Color::Reset));
+            let frame = next(&mut guest, &unthemed, &quiet, &mut now, 250);
+            hides(
+                &guest,
+                &frame,
+                &unthemed,
+                &format!("{phase}, a terminal's blank"),
+            );
+            let frame = next(&mut guest, &themed, &quiet, &mut now, 250);
+            shows(&guest, &frame, &themed, &format!("{phase} again"));
+            let frame = next(&mut guest, &real, &quiet, &mut now, 250);
+            shows(&guest, &frame, &real, &format!("{phase}: gone again"));
             // Its pane focused, the client in use: it rains out at once,
             // and stays out while it's focused.
             let users = nooks(100, 30)[1].1;
@@ -241,51 +291,111 @@ fn her_shelf_shows_only_where_the_frame_holds_it() {
     }
 }
 
-/// Her goodbye, frame by frame (both modes): before the rain her shelf
-/// shows as it was frozen; once the rain has settled, the real frame; and
-/// no cell of it the rain has settled shows it again (the goodbye's frame
-/// is never written into).
+/// Her goodbye, frame by frame (both modes), with her plant up on her
+/// shelf and with none: before the rain her shelf shows as it was frozen
+/// (in line art, but for the cells her plant's image takes in), and her
+/// plant shows; once the rain has settled, the real frame; no cell of
+/// the shelf the rain has settled shows it again (the goodbye's frame is
+/// never written into); and every cell of the shelf, and every cell her
+/// plant was drawn on, rains.
 #[test]
 fn her_shelf_rains_out_with_her_goodbye() {
-    for graphics in [false, true] {
-        let at = format!("graphics={graphics}");
-        let (real, view) = rooms_frame(100, 30);
-        let mut guest = shelved(7, sat(14, 0), graphics);
-        let mut now = until_visiting(&mut guest, &real, &view, 0);
-        let frame = next(&mut guest, &real, &view, &mut now, 250);
-        shows(&guest, &frame, &real, &at);
-        guest.activity(now);
-        assert!(matches!(guest.state, State::Leaving(_)), "{at}: leaving");
-        let start = now;
-        let mut settled = [false; 10];
-        let mut rained = [false; 10];
-        while now < start + dissolve::DURATION_MS {
-            let frame = paint(&mut guest, &real, &view, now);
-            let t = now - start;
-            let State::Leaving(leaving) = &guest.state else {
-                panic!("{at}: leaving at {t}");
+    // Her plant on the run at 66 (`Left` 3), rows 2..5, on row 5's cells.
+    let plant_at = 66..69u16;
+    let plant_cells: Vec<(u16, u16)> = (2..ROW)
+        .flat_map(|y| plant_at.clone().map(move |x| (x, y)))
+        .collect();
+    // Without her plant too: then every cell of the run shows its glyph
+    // before the rain, in line art as well.
+    for plant in [false, true] {
+        for graphics in [false, true] {
+            let at = format!("plant={plant} graphics={graphics}");
+            let (real, view) = rooms_frame(100, 30);
+            let mut guest = shelved(7, sat(14, 0), graphics);
+            if plant {
+                assert!(guest.ledger.home.add(room::Prop {
+                    item: Furniture::Plant,
+                    ..mantel_clock()
+                }));
+            }
+            let mut now = until_visiting(&mut guest, &real, &view, 0);
+            next(&mut guest, &real, &view, &mut now, 250);
+            let State::Visiting(visit) = &guest.state else {
+                panic!("{at}: visiting");
             };
-            for (i, x) in RUN.enumerate() {
-                let shown = frame[(x, ROW)].symbol().to_owned();
-                if t < dissolve::RAIN_FROM_MS {
-                    assert_eq!(
-                        shown,
-                        GLYPHS.chars().nth(i).unwrap().to_string(),
-                        "{at}: t {t} x {x}"
+            assert_eq!(
+                visit.shown.iter().any(|s| s.item == Furniture::Plant
+                    && s.strip == Some(room::Strip::Shelf(Nook::Users))),
+                plant,
+                "{at}: her plant up"
+            );
+            guest.activity(now);
+            assert!(matches!(guest.state, State::Leaving(_)), "{at}: leaving");
+            let start = now;
+            let mut settled = [false; 10];
+            let mut rained = [false; 10];
+            // Each cell of her plant: drawn before the rain (not the real
+            // cell), and painted by the rain.
+            let mut plant_drawn = vec![false; plant_cells.len()];
+            let mut plant_rained = vec![false; plant_cells.len()];
+            while now < start + dissolve::DURATION_MS {
+                let frame = paint(&mut guest, &real, &view, now);
+                let t = now - start;
+                let State::Leaving(leaving) = &guest.state else {
+                    panic!("{at}: leaving at {t}");
+                };
+                for (i, x) in RUN.enumerate() {
+                    let shown = frame[(x, ROW)].symbol().to_owned();
+                    let under_plant = plant && graphics && plant_at.contains(&x);
+                    if t < dissolve::RAIN_FROM_MS && !under_plant {
+                        assert_eq!(
+                            shown,
+                            GLYPHS.chars().nth(i).unwrap().to_string(),
+                            "{at}: t {t} x {x}"
+                        );
+                    }
+                    let painting = leaving.dissolve.painting(x, ROW);
+                    rained[i] |= painting && t >= dissolve::RAIN_FROM_MS;
+                    if settled[i] || t >= dissolve::SETTLE_BY_MS {
+                        assert_eq!(frame[(x, ROW)], real[(x, ROW)], "{at}: t {t} x {x} settled");
+                    }
+                    settled[i] |= !painting;
+                }
+                for (i, &(x, y)) in plant_cells.iter().enumerate().filter(|_| plant) {
+                    let painting = leaving.dissolve.painting(x, y);
+                    plant_rained[i] |= painting && t >= dissolve::RAIN_FROM_MS;
+                    if t < dissolve::RAIN_FROM_MS {
+                        plant_drawn[i] |= frame[(x, y)] != real[(x, y)];
+                        if !graphics {
+                            assert_ne!(
+                                frame[(x, y)],
+                                real[(x, y)],
+                                "{at}: t {t} her plant at {x},{y}"
+                            );
+                        }
+                    }
+                    if t >= dissolve::SETTLE_BY_MS {
+                        assert_eq!(frame[(x, y)], real[(x, y)], "{at}: t {t} {x},{y} settled");
+                    }
+                }
+                now += dissolve::FRAME_MS;
+            }
+            assert_eq!(rained, [true; 10], "{at}: each cell rained");
+            // Every cell her plant was drawn on rains (in line art its
+            // image is frozen whole: some of its cells may be blank in
+            // it; in ASCII every cell has a glyph).
+            if plant {
+                assert!(plant_drawn.iter().any(|&d| d), "{at}: her plant drawn");
+                for (i, cell) in plant_cells.iter().enumerate() {
+                    assert!(
+                        !plant_drawn[i] || plant_rained[i],
+                        "{at}: her plant at {cell:?} rained"
                     );
                 }
-                let painting = leaving.dissolve.painting(x, ROW);
-                rained[i] |= painting && t >= dissolve::RAIN_FROM_MS;
-                if settled[i] || t >= dissolve::SETTLE_BY_MS {
-                    assert_eq!(frame[(x, ROW)], real[(x, ROW)], "{at}: t {t} x {x} settled");
-                }
-                settled[i] |= !painting;
             }
-            now += dissolve::FRAME_MS;
+            assert_eq!(paint(&mut guest, &real, &view, now), real, "{at}: the end");
+            gone_for_good(&mut guest, &real, &view, now, &at);
         }
-        assert_eq!(rained, [true; 10], "{at}: each cell rained");
-        assert_eq!(paint(&mut guest, &real, &view, now), real, "{at}: the end");
-        gone_for_good(&mut guest, &real, &view, now, &at);
     }
 }
 
@@ -972,5 +1082,507 @@ fn no_pull_is_offered_across_her_shelf() {
         let bare = scenes::pulls(&real, &visit.terrain, &view.protected);
         assert!(across(&bare), "{at}: a pull across it, but for her shelf");
         assert!(!across(&visit.chances.pulls), "{at}: offered across it");
+    }
+}
+
+/// No swap is offered across her shelf, shown or not, nor made there
+/// (phase 6a D4: what she moves or swaps keeps off its run and margin):
+/// standing on a text floor under it, a word on its row with letters on
+/// its margin (hiding it), she's offered no swap of a letter there,
+/// though read without the shelf there is one (not vacuous); cued to
+/// swap letters, nothing of her layer ever lands on the run or margin.
+/// The swaps read the keep-out the frame applies her layer by (`base`),
+/// not her pulls' (`protected`). Both modes.
+#[test]
+fn no_swap_is_offered_across_her_shelf() {
+    let mut real = rooms(100, 30);
+    // A floor whose box rows reach her shelf's row (`scenes::PULL_ROWS`),
+    // and a word from its margin's last cell (74) on.
+    real.set_string(52, 8, "─".repeat(40), Style::new());
+    real.set_string(74, ROW, "wxyz", Style::new());
+    let view = in_use(100, None);
+    let kept = 61..=74u16;
+    let on_it = |(x, y): (u16, u16)| y == ROW && kept.contains(&x);
+    let across = |swaps: &[scenes::Swap]| {
+        swaps.iter().any(|s| {
+            [s.a.at, s.a.source, s.b.at, s.b.source]
+                .into_iter()
+                .any(on_it)
+        })
+    };
+    for graphics in [false, true] {
+        let at = format!("graphics={graphics}");
+        let mut guest = Guest::new(7);
+        if graphics {
+            guest.set_picker(kitty());
+        }
+        guest.ledger.home.structures.push(users_shelf());
+        visiting_at(&mut guest, &real, &view, (68, 8));
+        let frame = paint(&mut guest, &real, &view, 1);
+        hides(&guest, &frame, &real, &at);
+        let visit = visit_of(&guest);
+        let bare = scenes::swaps(&real, &visit.terrain, &view.protected, &visit.layer);
+        assert!(across(&bare), "{at}: a swap across it, but for her shelf");
+        assert!(!across(&visit.chances.swaps), "{at}: offered across it");
+        // Cued to swap letters: whatever she swaps, none of it there.
+        guest.cue(Scene::Swap);
+        let mut now = 1;
+        for _ in 0..120 {
+            now += 250;
+            guest.advance(now);
+            paint(&mut guest, &real, &view, now);
+            let State::Visiting(visit) = &guest.state else {
+                break;
+            };
+            assert!(
+                !visit.layer.cells().any(on_it),
+                "{at}: her layer on her shelf at {now}"
+            );
+        }
+    }
+}
+
+/// [`rooms`] at 100×30 with the chat pane laid over all of it below row
+/// 6 (a custom layout's grid: List and the Playlist in it, Users' lower
+/// rows too), her three panes hers: no floor of hers takes a piece
+/// anew, and her shelf in Users (run `63..73` on row 5) is clear of it.
+fn chat_below_her_shelf() -> (Buffer, IdleView) {
+    let (real, view) = rooms_frame(100, 30);
+    let view = IdleView {
+        chat: Rect::new(0, 6, 100, 24),
+        ..view
+    };
+    (real, view)
+}
+
+/// Her plant in the chat with only her shelf to go to (phase 6a, step
+/// 3): industrious, she feels it, works out the one move there is (the
+/// precondition: up on the shelf, centred on the run at 66), carries it
+/// up from the floor below and sets it down arms up (`Pose::Stretch`,
+/// never bending to it), and it stands on her shelf, mended. Both
+/// modes.
+#[test]
+fn a_plant_in_the_chat_goes_up_on_her_shelf() {
+    let (real, view) = chat_below_her_shelf();
+    let shelf = room::Strip::Shelf(Nook::Users);
+    for graphics in [false, true] {
+        let at = format!("graphics={graphics}");
+        let mut guest = home_at(
+            5,
+            tue(14, 0),
+            &[(Furniture::Plant, Nook::List, 400)],
+            graphics,
+        );
+        guest.ledger.home.structures.push(users_shelf());
+        let mut now = until_visiting(&mut guest, &real, &view, 0);
+        let State::Visiting(visit) = &mut guest.state else {
+            unreachable!()
+        };
+        visit.osaka.set_mood(brain::Mood::Industrious);
+        // The precondition: the one move she works out is up there.
+        let found = run_until(
+            &mut guest,
+            &real,
+            &view,
+            now,
+            now + 60_000,
+            |guest, _| matches!(&guest.state, State::Visiting(v) if !v.repairs.is_empty()),
+        );
+        now = found.unwrap_or_else(|| panic!("{at}: never worked out a move"));
+        let State::Visiting(visit) = &guest.state else {
+            unreachable!()
+        };
+        let moves: Vec<(Furniture, room::Strip, i32)> = visit
+            .repairs
+            .iter()
+            .map(|r| (r.piece, r.to.strip, r.at.left))
+            .collect();
+        assert_eq!(moves, [(Furniture::Plant, shelf, 66)], "{at}");
+        // Carried up and set down, arms up.
+        let mut stretched = false;
+        let up = run_until(
+            &mut guest,
+            &real,
+            &view,
+            now,
+            now + 240_000,
+            |guest, now| {
+                let State::Visiting(visit) = &guest.state else {
+                    return false;
+                };
+                if visit.osaka.carrying() == Some(Furniture::Plant) {
+                    let pose = visit.osaka.appearance(now).0;
+                    assert!(
+                        !matches!(pose, sprite::Pose::ToeTouch(_)),
+                        "{at}: bent to it at {now}"
+                    );
+                    stretched |= pose == sprite::Pose::Stretch;
+                }
+                guest
+                    .ledger
+                    .home
+                    .props
+                    .iter()
+                    .any(|p| p.item == Furniture::Plant && p.strip == shelf)
+            },
+        );
+        now = up.unwrap_or_else(|| panic!("{at}: never put it up"));
+        assert!(stretched, "{at}: never reached up");
+        let frame = next(&mut guest, &real, &view, &mut now, 250);
+        let State::Visiting(visit) = &guest.state else {
+            panic!("{at}: visiting")
+        };
+        let plant = visit.shown.iter().find(|s| s.item == Furniture::Plant);
+        assert_eq!(
+            plant.map(|s| (s.strip, s.left, s.floor, s.stood)),
+            Some((Some(shelf), 66, i32::from(ROW), 12)),
+            "{at}"
+        );
+        // Her shelf under it, written (in line art the plant's image takes
+        // in the run's cells it stands on, and redraws them).
+        if !graphics {
+            assert_eq!(run_of(&frame), GLYPHS, "{at}: on her shelf");
+        }
+        let kept: Vec<u16> = painted(&guest)
+            .iter()
+            .filter(|c| c.y == ROW && !c.burst && matches!(c.glyph, '┬' | '─'))
+            .map(|c| c.x)
+            .collect();
+        assert!(RUN.clone().all(|x| kept.contains(&x)), "{at}: {kept:?}");
+        let State::Visiting(visit) = &guest.state else {
+            unreachable!()
+        };
+        assert!(
+            !visit
+                .broken
+                .iter()
+                .any(|b| b.rule().map(|r| r.rule) == Some(rules::Rule::InChat)),
+            "{at}: mended"
+        );
+    }
+}
+
+/// Her clock up on her Users shelf (a mantel clock), standing at 66
+/// along its run.
+fn mantel_clock() -> room::Prop {
+    room::Prop {
+        strip: room::Strip::Shelf(Nook::Users),
+        anchor: Some(room::Anchor {
+            side: room::Side::Left,
+            offset: 3,
+        }),
+        ..room::Prop::new(Furniture::Clock, Nook::Users, 0, sprite::Facing::Right)
+    }
+}
+
+/// A clock on a shelf is read from its room's floor (phase 6a D6): where
+/// it's offered to her, it's over Users' floor (row 12, wall to wall),
+/// at its middle; and as she leaves for school (08:15), standing on that
+/// floor, she glances up at it ("Time for school!"). Both modes.
+#[test]
+fn she_reads_the_time_off_her_mantel_clock_from_the_floor_below() {
+    use super::super::script::{ClockGlance, SCHOOL_TIME, ScriptId};
+    let (real, view) = rooms_frame(100, 30);
+    for graphics in [false, true] {
+        let mut glanced = 0;
+        for seed in 0..3u64 {
+            let at = format!("graphics={graphics} {seed}");
+            let mut guest = home_at(seed, tue(8, 10), &PIECES, graphics);
+            guest.ledger.home.structures.push(users_shelf());
+            assert!(guest.ledger.home.add(mantel_clock()));
+            let mut now = until_visiting(&mut guest, &real, &view, 0);
+            let due = real_of(&guest, now, tue(8, 15));
+            while now + 3000 < due {
+                shell_step(&mut guest, &real, &view, &mut now, true);
+            }
+            let State::Visiting(visit) = &mut guest.state else {
+                panic!("{at}: visiting");
+            };
+            visit.osaka.place(60, 12, now);
+            visit.osaka.offer_only = Some((brain::Want::Stand, "stand"));
+            paint(&mut guest, &real, &view, now);
+            let decided = visit_of(&guest).osaka.decisions.len();
+            let first = |guest: &Guest| {
+                visit_of(guest).osaka.decisions[decided..]
+                    .iter()
+                    .find(|d| d.at >= due && d.method.starts_with("routine/"))
+                    .map(|d| d.method)
+            };
+            while first(&guest).is_none() && now < due + 30_000 {
+                shell_step(&mut guest, &real, &view, &mut now, true);
+            }
+            let visit = visit_of(&guest);
+            assert_eq!(
+                visit.chances.clock,
+                Some(osaka::ClockOn {
+                    x: 67,
+                    floor: 12,
+                    from: 51,
+                    to: 99
+                }),
+                "{at}"
+            );
+            if first(&guest).is_none() {
+                assert!(visit.osaka.hidden(now), "{at}: no routine by {now}");
+                continue;
+            }
+            let osaka = &visit.osaka;
+            if visit
+                .chances
+                .clock
+                .and_then(|c| c.seen_from((osaka.x, osaka.y)))
+                .is_none()
+            {
+                continue;
+            }
+            assert_eq!(first(&guest), Some("routine/glance"), "{at}");
+            assert_eq!(
+                osaka.plays().map(|p| (p.own, p.branch)),
+                Some((ScriptId::ClockGlance, ClockGlance::School.branch())),
+                "{at}"
+            );
+            assert_eq!(
+                osaka.appearance(now).2,
+                Some(osaka::Bubble::Say(SCHOOL_TIME)),
+                "{at}"
+            );
+            glanced += 1;
+        }
+        assert!(glanced >= 1, "graphics={graphics}: never glanced up");
+    }
+}
+
+/// Decor on her shelf counts for the room below (phase 6a D10), only
+/// while it shows: standing on Users' floor in a visit (put there, and
+/// staying), she feels her plant up on the shelf in the room's beauty
+/// (what her chances hold, as the paint works it out where she stands);
+/// text over the shelf's margin hides it (and the plant), and the beauty
+/// she feels drops by the plant's; the text gone, it's back. Both modes.
+#[test]
+fn her_shelf_decor_is_pretty_only_while_it_shows() {
+    let (real, view) = rooms_frame(100, 30);
+    let plant = Furniture::Plant.spec().beauty;
+    for graphics in [false, true] {
+        let at = format!("graphics={graphics}");
+        let mut guest = shelved(6, sat(14, 0), graphics);
+        assert!(guest.ledger.home.add(room::Prop {
+            item: Furniture::Plant,
+            ..mantel_clock()
+        }));
+        let mut now = until_visiting(&mut guest, &real, &view, 0);
+        // A frame of `buf` with her on Users' floor (`60, 12`): the beauty
+        // she feels there, and the room's as `beauty_at` sums it.
+        let mut felt = |guest: &mut Guest, buf: &Buffer| {
+            now += 250;
+            guest.advance(now);
+            let State::Visiting(visit) = &mut guest.state else {
+                panic!("{at}: visiting");
+            };
+            visit.osaka.place(60, 12, now);
+            visit.osaka.offer_only = Some((brain::Want::Stand, "stand"));
+            paint(guest, buf, &view, now);
+            let State::Visiting(visit) = &guest.state else {
+                panic!("{at}: visiting");
+            };
+            assert_eq!((visit.osaka.x, visit.osaka.y), (60, 12), "{at}");
+            let summed = beauty_at(&visit.shown, &view.nooks, (60, 12));
+            assert!((visit.chances.beauty_here - summed).abs() < 1e-9, "{at}");
+            visit.chances.beauty_here
+        };
+        let shown = felt(&mut guest, &real);
+        let mut texty = real.clone();
+        texty.set_string(74, ROW, "x", Style::new());
+        let hidden = felt(&mut guest, &texty);
+        assert!(
+            (shown - hidden - plant).abs() < 1e-9,
+            "{at}: {shown} then {hidden}"
+        );
+        let back = felt(&mut guest, &real);
+        assert!((back - shown).abs() < 1e-9, "{at}: back");
+    }
+}
+
+/// Where a shelf could go up on `buf` (phase 6a, step 3's measurement):
+/// for each of `view`'s panes, how many places a high shelf has (rise
+/// `HIGH_RISE` and up, its run and margin free and her height clear
+/// over the run) and a low one (rise `LOW_RISE`, `LOW_ABOVE` clear), by
+/// D4's per-cell test with nothing of hers on the frame; and the first
+/// of each (rise, offset from the left).
+fn shelf_places(buf: &Buffer, view: &IdleView) -> Vec<String> {
+    use super::super::structures::{EDGE, KeepOff, LOW_ABOVE, LOW_RISE, SHELF_WIDTH, free};
+    let plan = room::Plan {
+        nooks: &view.nooks,
+        chat: view.chat,
+        screen: buf.area,
+    };
+    let keep_off = KeepOff {
+        protected: &view.protected,
+        layer: &[],
+        made: &[],
+    };
+    let mut out = Vec::new();
+    for &(nook, rect) in &view.nooks {
+        let raw = room::pane_raw(rect);
+        let bg = |from: i32| {
+            buf.cell((
+                u16::try_from(from + SHELF_WIDTH / 2).unwrap_or(0),
+                u16::try_from(raw.floor).unwrap_or(0),
+            ))
+            .map_or(tuirealm::ratatui::style::Color::Reset, |c| c.bg)
+        };
+        let fits = |rise: u16, over: u16, from: i32| {
+            let y = raw.floor - i32::from(rise);
+            (from - 2..from + SHELF_WIDTH + 2)
+                .all(|x| free(buf, (x, y), plan, &keep_off, &[], bg(from)))
+                && (1..=i32::from(over)).all(|k| {
+                    (from..from + SHELF_WIDTH)
+                        .all(|x| free(buf, (x, y - k), plan, &keep_off, &[], bg(from)))
+                })
+        };
+        let froms: Vec<i32> = (raw.from + EDGE..=raw.to - EDGE - SHELF_WIDTH).collect();
+        let her = sprite::HEIGHT as u16;
+        let highs: Vec<(u16, i32)> = (7..=raw.rows.saturating_sub(her))
+            .flat_map(|rise| froms.iter().map(move |&f| (rise, f)))
+            .filter(|&(rise, f)| fits(rise, her, f))
+            .collect();
+        let lows: Vec<(u16, i32)> = if raw.rows >= LOW_RISE + LOW_ABOVE {
+            froms
+                .iter()
+                .map(|&f| (LOW_RISE, f))
+                .filter(|&(rise, f)| fits(rise, LOW_ABOVE, f))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        out.push(format!(
+            "{nook:?} {}x{} ({} rows inside): high {} (first {:?}), low {} (first {:?})",
+            rect.width,
+            rect.height,
+            raw.rows,
+            highs.len(),
+            highs.first().map(|&(r, f)| (r, f - raw.from)),
+            lows.len(),
+            lows.first().map(|&(r, f)| (r, f - raw.from)),
+        ));
+    }
+    out
+}
+
+/// The measurement (phase 6a, step 3; the user's third round): on the
+/// bundled layout with typical content (an evening's chat, ten playlist
+/// rows, four users: `fuller_ui`), at 100×30, 80×24, the user's
+/// 191×46, and 100 wide at 32, 35, 40 and 50 tall, which panes take a
+/// high shelf and which a low one; and the stage room's (`stage_ui` at
+/// 100×30). Printed for plan.md's record. `cargo nextest run -p dessplay
+/// --run-ignored only --no-capture -E 'test(/where_a_shelf_could_go/)'`.
+#[test]
+#[ignore = "a measurement: prints, asserts nothing"]
+fn where_a_shelf_could_go() {
+    let sizes = [
+        (100, 30),
+        (80, 24),
+        (191, 46),
+        (100, 32),
+        (100, 35),
+        (100, 40),
+        (100, 50),
+    ];
+    for (w, h) in sizes {
+        for (name, mut ui) in [
+            ("fuller", super::super::stage::fuller_ui()),
+            ("empty", real_ui()),
+        ] {
+            let (buf, view) = real_frame(&mut ui, w, h);
+            eprintln!("{w}x{h} {name}: chat {:?}", view.chat);
+            for line in shelf_places(&buf, &view) {
+                eprintln!("  {line}");
+            }
+        }
+    }
+    let (buf, view) = real_frame(&mut stage_ui(), 100, 30);
+    eprintln!("stage room 100x30: chat {:?}", view.chat);
+    for line in shelf_places(&buf, &view) {
+        eprintln!("  {line}");
+    }
+}
+
+/// She reaches a piece on her shelf arms up, wired from what she'd move
+/// (phase 6a D6; `arranging`): a repair that takes her plant off her
+/// shelf puts it among the pieces she'd lift as one up there, and a move
+/// she's judging onto her shelf is judged as one up there; the same off
+/// and onto Users' floor, not. (No rule of 6a moves a piece off a shelf:
+/// this is the wiring for step 7's.) Both modes.
+#[test]
+fn she_lifts_from_her_shelf_and_sets_down_on_it_arms_up() {
+    let (real, view) = rooms_frame(100, 30);
+    for graphics in [false, true] {
+        for up in [true, false] {
+            let at = format!("graphics={graphics} up={up}");
+            let mut guest = shelved(4, sat(14, 0), graphics);
+            let plant = room::Prop {
+                item: Furniture::Plant,
+                ..mantel_clock()
+            };
+            let plant = if up {
+                plant
+            } else {
+                room::Prop {
+                    strip: room::Strip::Bottom(Nook::Users),
+                    ..plant
+                }
+            };
+            assert!(guest.ledger.home.add(plant));
+            let now = until_visiting(&mut guest, &real, &view, 0);
+            paint(&mut guest, &real, &view, now);
+            let State::Visiting(visit) = &mut guest.state else {
+                panic!("{at}: visiting");
+            };
+            let shown = *visit
+                .shown
+                .iter()
+                .find(|s| s.item == Furniture::Plant)
+                .unwrap_or_else(|| panic!("{at}: her plant shown"));
+            assert_eq!(shown.on_shelf(), up, "{at}");
+            let to = rules::Placement {
+                strip: if up {
+                    room::Strip::Bottom(Nook::Users)
+                } else {
+                    room::Strip::Shelf(Nook::Users)
+                },
+                anchor: room::Anchor {
+                    side: room::Side::Right,
+                    offset: 2,
+                },
+                facing: sprite::Facing::Right,
+            };
+            visit.repairs = vec![rules::Repair {
+                key: rules::Grievance {
+                    row: 0,
+                    piece: Furniture::Plant,
+                },
+                piece: Furniture::Plant,
+                to,
+                at: shown,
+                cost: 1,
+                tier: 0,
+            }];
+            // Judging a move onto where the plant stands now: up there
+            // or on the floor.
+            visit.judging = Some(Judging {
+                piece: Furniture::Plant,
+                to,
+                pocket: false,
+                target: Some(shown),
+                showing: Some(shown),
+                laid: Some(shown),
+            });
+            let (lift_at, judged) = arranging(visit);
+            assert_eq!(
+                lift_at.iter().map(|l| (l.0, l.3)).collect::<Vec<_>>(),
+                [(Furniture::Plant, up)],
+                "{at}: lifted"
+            );
+            assert_eq!(judged.map(|j| j.up), Some(up), "{at}: set down");
+        }
     }
 }

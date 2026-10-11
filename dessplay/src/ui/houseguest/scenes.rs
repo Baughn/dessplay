@@ -287,6 +287,8 @@ pub(super) struct Lift {
     pub x: i32,
     pub y: i32,
     pub side: Side,
+    /// Whether it stands on a shelf: she reaches up for it, arms up.
+    pub up: bool,
 }
 
 /// Setting `piece` down at `to`, standing at `(x, y)` (beside where it
@@ -893,7 +895,7 @@ fn segment(buf: &Buffer, protected: &[Rect], start: u16, row: u16, dir: i32) -> 
 /// tears from — so she stands over it as she crumples. `then` says what
 /// she could use the finished piece for there (a sofa may face a TV).
 pub(super) fn builds(
-    buf: &Buffer,
+    drawn: super::structures::Drawn,
     pulls: &[Pull],
     items: &[super::room::Furniture],
     id: super::room::MadeId,
@@ -923,7 +925,7 @@ pub(super) fn builds(
                     stood: pull.y,
                     scrap: Some(done),
                 };
-                if !fits(buf, &piece, clear) || !roomy(buf, &piece, clear) {
+                if !fits(drawn, &piece, clear) || !roomy(drawn.buf(), &piece, clear) {
                     continue;
                 }
                 let count = (pull.cells.len() - 2).min(scrap::GLYPHS);
@@ -932,7 +934,7 @@ pub(super) fn builds(
                     Side::Right => pull.cells.iter().take(count).copied().collect(),
                     Side::Left => pull.cells.iter().rev().take(count).copied().collect(),
                 };
-                let glyphs = glyphs_at(buf, pull.row, &cells);
+                let glyphs = glyphs_at(drawn.buf(), pull.row, &cells);
                 for what in then(&piece) {
                     out.push(Build {
                         x: pull.x,

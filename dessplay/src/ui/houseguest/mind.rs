@@ -687,11 +687,11 @@ fn carry(c: &Ctx, _: Whims, _: Want) -> Option<Bind> {
 /// whim among its places as good as the cheapest, the others kept to
 /// try it in after: [`Trials`]).
 fn lift(c: &Ctx, w: Whims, _: Want) -> Option<Bind> {
-    let (repair, trials, (x, y), side) = match c.episode {
+    let (repair, trials, (x, y), side, up) = match c.episode {
         Some(ep) if !ep.pocket && !ep.trying => {
             let judged = c.chances.judged.filter(|j| j.of(&ep) && j.holds)?;
             let (spot, side) = judged.spot?;
-            (ep.repair, ep.trials, spot, side)
+            (ep.repair, ep.trials, spot, side, judged.up)
         }
         Some(_) => return None,
         None => {
@@ -705,12 +705,12 @@ fn lift(c: &Ctx, w: Whims, _: Want) -> Option<Bind> {
                 ties.swap(i, j);
             }
             let repair = *ties.first()?;
-            let &(_, spot, side) = c
+            let &(_, spot, side, up) = c
                 .chances
                 .lift_at
                 .iter()
                 .find(|(p, ..)| *p == repair.piece)?;
-            (repair, Trials::of(&ties), spot, side)
+            (repair, Trials::of(&ties), spot, side, up)
         }
     };
     Some(Bind::Job(Job::Lift(Lift {
@@ -719,6 +719,7 @@ fn lift(c: &Ctx, w: Whims, _: Want) -> Option<Bind> {
         x,
         y,
         side,
+        up,
     })))
 }
 

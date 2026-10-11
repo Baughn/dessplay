@@ -3882,6 +3882,40 @@ ladder), `Connected`. Every 6a step keeps the golden hashes and terrain
 snapshots unchanged in a home with no structure (`read_ground` writes
 nothing; the ledger's `structures` field is skipped when empty).
 
+**6a step 3's measurement** (2026-10-11, the ignored
+`where_a_shelf_could_go` in `tests/shelf.rs`: the bundled layout, D4's
+per-cell test, nothing of hers on the frame; "typical content" is an
+evening's chat, ten playlist rows, four known users and twenty
+franchises in The List, five of them in a user's Watching group,
+`fuller_ui`; re-measured with the franchises in step 3's review fixes).
+Places a high shelf (rise ≥ 7, her height clear over it) / a low one
+(rise 5, two rows clear) has, per pane:
+- 100×30 (chat 50×25): List 50×9 — high 0, low 9 (23 empty); Users
+  50×8 and the Playlist 50×8 — none. The stage room (`stage_ui`: no
+  franchises) has List's 23 low places: only List takes a shelf (low),
+  so D11's scenes that need one run on another frame (the `LookOut`
+  precedent).
+- 80×24: no pane takes one (panes 6–7 rows tall).
+- 100×32 and 100×35: every pane 9–10 rows, low only (with content:
+  List 9 and 7, Users 5, Playlist 11).
+- 100×40: low only (panes 11–12 rows, 9–10 inside: high needs 11).
+- 100×50: all three take a high one (List 29, Users 21, Playlist 33
+  with content) and a low one.
+- 191×46 (the user's terminal): all three take a high one (List 108,
+  Users 52, Playlist 112 with content; Users has 11 rows inside, rise
+  7 exactly) and a low one.
+
+So at the user's size every pane takes a high shelf; at the common
+100-wide sizes below 50 tall only low ones fit, and at 80×24 none.
+
+**A trap 6a leaves for 6b and 6c** (step 3's review): `room::fits`
+stands a piece on `Strip::Shelf(n)` on any written cell
+(`Written::contains` scans every structure's cells), not only shelf
+`n`'s run. Right while there is one shelf in all (6a); once a second
+shelf, 6b's ladder or 6c's partitions write cells that could line up
+with a piece's floor row, `fits` must ask for its own shelf's cells
+(e.g. `Written::contains_on(nook, x, y)`, the cells keyed by structure).
+
 **Still open from the door batch** (above, *Open, for the user*): (a),
 (c), (d), (f), (g), (h) and the found-not-fixed list; parked, not part
 of phase 6 unless the user says so.

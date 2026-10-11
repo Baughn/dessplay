@@ -188,14 +188,17 @@ pub(super) struct KeepOff<'a> {
 
 /// Whether a structure may be written at `(x, y)` (D4's per-cell test):
 /// on screen; blank, not the second half of a wide glyph, not an image
-/// cell; outside `keep_off` and `plan`'s chat; and in no cover of
-/// `laid`.
+/// cell; unstyled, as its pane is (`bg` its pane's background: a blank
+/// in reverse video, as a list's selection bar past its entry's text, or
+/// in another colour, is as good as text: the user's fifth round);
+/// outside `keep_off` and `plan`'s chat; and in no cover of `laid`.
 pub(super) fn free(
     buf: &Buffer,
     (x, y): (i32, i32),
     plan: Plan,
     keep_off: &KeepOff,
     laid: &[Rect],
+    bg: Color,
 ) -> bool {
     let (Ok(ux), Ok(uy)) = (u16::try_from(x), u16::try_from(y)) else {
         return false;
@@ -209,6 +212,8 @@ pub(super) fn free(
         .is_some_and(|left| width(left) > 1);
     let at = (ux, uy).into();
     cell.symbol().trim().is_empty()
+        && !cell.modifier.contains(Modifier::REVERSED)
+        && cell.bg == bg
         && !trailer
         && !untouchable(cell)
         && !keep_off.protected.iter().any(|r| r.contains(at))
@@ -249,14 +254,18 @@ pub(super) fn read_ground(
         let (Some(&(first, _)), Some(&(last, _))) = (cells.first(), cells.last()) else {
             continue;
         };
-        if !(first - MARGIN..=last + MARGIN).all(|x| free(buf, (x, run.y), plan, keep_off, &covers))
-        {
-            continue;
-        }
+        // Its pane's border under its middle: the ink it's drawn in, and
+        // the background a blank of its pane has.
         let border = u16::try_from(run.from + SHELF_WIDTH / 2)
             .ok()
             .zip(u16::try_from(host.floor).ok())
             .and_then(|at| buf.cell(at));
+        let bg = border.map_or(Color::Reset, |cell| cell.bg);
+        if !(first - MARGIN..=last + MARGIN)
+            .all(|x| free(buf, (x, run.y), plan, keep_off, &covers, bg))
+        {
+            continue;
+        }
         let ink = Ink::new(
             border.map_or(Color::Reset, |cell| cell.fg),
             Modifier::empty(),
@@ -301,10 +310,24 @@ pub(super) struct Written {
     shown_on: Vec<Nook>,
 }
 
+/// Nothing written, for as long as a test needs it (a frame it builds
+/// and returns).
+#[cfg(test)]
+pub(super) static NOTHING: Written = Written {
+    cells: Vec::new(),
+    shown_on: Vec::new(),
+};
+
 impl Written {
     /// Nothing written: the frame is the app's own.
     pub fn none() -> Self {
         Self::default()
+    }
+
+    /// The frame as her layout reads it: `buf`, which this was written
+    /// into ([`Drawn`]).
+    pub fn over<'a>(&'a self, buf: &'a Buffer) -> Drawn<'a> {
+        Drawn { buf, written: self }
     }
 
     /// Cells written by hand (tests of what reads through it).
@@ -357,6 +380,37 @@ impl Written {
                 *at = cell.under;
             }
         }
+    }
+}
+
+/// The frame as her layout reads it (phase 6a D6): the buffer, with what
+/// her structures wrote into it this paint. Every layout read that judges
+/// the frame's cells (`room::fits` and all built on it) takes one, so a
+/// buffer is never read apart from what was written into it: a piece on
+/// a shelf stands only on its written cells, and no other piece on one.
+/// Made only by [`Written::over`] (in production, the paint's own
+/// `Written` over its buffer; a test's frame with none, [`Drawn::bare`]).
+#[derive(Clone, Copy)]
+pub(super) struct Drawn<'a> {
+    buf: &'a Buffer,
+    written: &'a Written,
+}
+
+impl<'a> Drawn<'a> {
+    /// The frame's cells, her structures' included.
+    pub fn buf(self) -> &'a Buffer {
+        self.buf
+    }
+
+    /// What her structures wrote into it.
+    pub fn written(self) -> &'a Written {
+        self.written
+    }
+
+    /// A frame with nothing of hers written into it (tests).
+    #[cfg(test)]
+    pub fn bare(buf: &'a Buffer) -> Self {
+        NOTHING.over(buf)
     }
 }
 
@@ -489,7 +543,14 @@ mod ground {
     /// past). `crowd` puts something at the edge of its built run's
     /// margin: 2, a wide glyph just outside it, its second half on the
     /// margin's first cell; 3, an image's (blank) cell on a cell of the
-    /// run or its margin, chosen by `pick`; else nothing.
+    /// run or its margin, chosen by `pick`; else nothing. (Only the
+    /// hand-made draws below use 4, a selection bar in reverse video
+    /// across the pane's whole row; 5, a blank in a colour unlike its
+    /// pane's on the cell `pick` chooses; 6, the whole pane, border and
+    /// inside, in a theme's background of its own; and 7, that, with the
+    /// cell `pick` chooses of its built run or margin back in the
+    /// terminal's: the strategy never makes them, so its value space is
+    /// unchanged.)
     #[derive(Clone, Debug)]
     struct ShelfDraw {
         how: u8,
@@ -599,6 +660,9 @@ mod ground {
     struct Scene {
         buf: Buffer,
         nooks: Vec<(Nook, Rect)>,
+        /// Each themed pane's background, as the draw declares it (any
+        /// other pane's is the terminal's, `Color::Reset`).
+        themes: Vec<(Nook, Color)>,
         home: Home,
         protected: Vec<Rect>,
         chat: Rect,
@@ -613,8 +677,10 @@ mod ground {
         let mut nooks = Vec::new();
         let mut home = Home::default();
         // What crowds a shelf's margin: wide glyphs `(x, y)`, before the
-        // frame's sanitized, and image cells, after.
+        // frame's sanitized, and image cells and styled blanks, after.
         let (mut wide, mut images) = (Vec::new(), Vec::new());
+        let mut styled: Vec<(Rect, Style)> = Vec::new();
+        let mut themes = Vec::new();
         for (i, &(top, bottom, ink, ref shelf)) in draw.panes.iter().enumerate() {
             let i16 = u16::try_from(i).unwrap();
             let x = i16 * draw.width / n;
@@ -674,6 +740,31 @@ mod ground {
                     let span = last - first + 5;
                     images.push((first - 2 + i32::from(shelf.pick) % span, y));
                 }
+                4 => styled.push((
+                    Rect::new(pane.x + 1, u16::try_from(y).unwrap(), pane.width - 2, 1),
+                    Style::new().add_modifier(Modifier::REVERSED),
+                )),
+                5 => {
+                    let span = last - first + 5;
+                    let x = first - 2 + i32::from(shelf.pick) % span;
+                    styled.push((
+                        Rect::new(u16::try_from(x).unwrap(), u16::try_from(y).unwrap(), 1, 1),
+                        Style::new().bg(Color::Blue),
+                    ));
+                }
+                6 | 7 => {
+                    let theme = Color::Indexed(236);
+                    themes.push((NOOKS[i], theme));
+                    styled.push((pane, Style::new().bg(theme)));
+                    if shelf.crowd == 7 {
+                        let span = last - first + 5;
+                        let x = first - 2 + i32::from(shelf.pick) % span;
+                        styled.push((
+                            Rect::new(u16::try_from(x).unwrap(), u16::try_from(y).unwrap(), 1, 1),
+                            Style::new().bg(Color::Reset),
+                        ));
+                    }
+                }
                 _ => {}
             }
         }
@@ -699,6 +790,9 @@ mod ground {
                     .set_diff_option(tuirealm::ratatui::buffer::CellDiffOption::Skip);
             }
         }
+        for (rect, style) in styled {
+            buf.set_style(rect, style);
+        }
         for &(kind, pane, at) in &draw.pieces {
             if let Some(&(nook, _)) = nooks.get(pane) {
                 home.add(Prop::new(KINDS[kind], nook, at, Facing::Right));
@@ -710,6 +804,7 @@ mod ground {
         Scene {
             buf,
             nooks,
+            themes,
             home,
             protected: draw.protected.iter().copied().map(rect).collect(),
             chat: draw.chat.map(rect).unwrap_or_default(),
@@ -775,7 +870,17 @@ mod ground {
                     .buf
                     .cell((ux - 1, uy))
                     .is_some_and(|c| unicode_width::UnicodeWidthStr::width(c.symbol()) > 1);
+            // A styled blank (a selection bar, a cell in a colour unlike
+            // its pane's) is as good as text: the user's fifth round. Its
+            // pane's background as the draw declares it.
+            let pane_bg = scene
+                .themes
+                .iter()
+                .find(|(n, _)| *n == shelf.nook)
+                .map_or(Color::Reset, |&(_, bg)| bg);
             cell.symbol().trim().is_empty()
+                && !cell.modifier.contains(Modifier::REVERSED)
+                && cell.bg == pane_bg
                 && !trailer
                 && !image_cell(cell)
                 && !scene.protected.iter().any(|r| r.contains(at))
@@ -1140,6 +1245,42 @@ mod ground {
                         (0, 1),
                         "{at}: an image at {pick}"
                     );
+                }
+            }
+        }
+    }
+
+    /// A styled blank hides a shelf as text does (the user's fifth round):
+    /// a selection bar in reverse video across its row (a list's
+    /// highlighted entry, past its text), or a blank in a colour unlike
+    /// its pane's on any cell of its built run or margin. A pane in a
+    /// theme's background of its own (a layout's `background-color`)
+    /// holds its shelf on blanks in that background, and a blank in the
+    /// terminal's there is one unlike its pane's. Both sides, both
+    /// stages, against the oracle (which takes the pane's background
+    /// from the draw, not the frame).
+    #[test]
+    fn a_styled_blank_hides_a_shelf() {
+        for right in [false, true] {
+            for built in [1, 2] {
+                let at = format!("right={right} built={built}");
+                let bar = alone(as_drawn(right, 20, 7, built, 4, 0));
+                let seen = takes_only_blank_free_cells(&bar).expect(&at);
+                assert_eq!((seen.written, seen.hidden), (0, 1), "{at}: a selection bar");
+                let themed = alone(as_drawn(right, 20, 7, built, 6, 0));
+                let seen = takes_only_blank_free_cells(&themed).expect(&at);
+                assert_eq!((seen.written, seen.hidden), (1, 0), "{at}: a themed pane");
+                let span = if built == 1 { 9 } else { 14 };
+                for pick in 0..span {
+                    for (crowd, what) in [(5, "a tinted blank"), (7, "a terminal's blank")] {
+                        let tinted = alone(as_drawn(right, 20, 7, built, crowd, pick));
+                        let seen = takes_only_blank_free_cells(&tinted).expect(&at);
+                        assert_eq!(
+                            (seen.written, seen.hidden),
+                            (0, 1),
+                            "{at}: {what} at {pick}"
+                        );
+                    }
                 }
             }
         }

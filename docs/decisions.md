@@ -6051,6 +6051,29 @@ writing it just before the terrain read (the layout would miss it);
 re-writing it in the goodbye; a write keyed on the state at the top of
 the paint.
 
+*(2026-10-11, step 3: a finished shelf is a strip, after the panes'
+floors.)* **Small decor only**, never furniture or a parcel: one admission
+rule (`Strip::takes`: its kind, never a box) read by the layout itself,
+so every search that judges a place by its layout refuses the rest
+without a filter of its own. **Written-only floors**: what's on a shelf
+stands only on its cells written this frame, because the app's own
+`────` where a hidden shelf would be is the same glyph and must hold
+nothing up; and nothing else stands on a written cell. **Rooms are
+floors**: a shelf is part of the room below (its decor counts for that
+room's role and beauty while it shows), never a room of its own, since
+a decor-only shelf would read as a den. **Only a repair puts a piece up
+there** (centred on the run, as a lone ornament stands mid-shelf, or
+packed beside what's there): deliveries, stage gifts, her door's wall
+and pieces moving off a gone pane take a pane's floor by type, and a
+shelf whose pane is gone hides its pieces, never moves them. **The chat
+never weighs what's on a shelf**: a shelf the chat meets is hidden with
+its pieces, so neither the closet nor InChat judges them, and no repair
+carries one down for the chat. She reaches one from the floor below,
+arms up (`Pose::Stretch`), never bending. **A styled blank is as good as
+text** (the user's fifth round): a blank in reverse video (a list's
+selection bar past its entry's text) or in a colour unlike its pane's
+hides the shelf, as the UI's own highlight shouldn't be cut by it.
+
 ## Houseguest chooses by needs among the top few (2026-09-28)
 
 **Rule:** Her next act is a weighted-random pick among the four

@@ -536,6 +536,7 @@ pub(super) fn direct(
                     x,
                     y,
                     side,
+                    up: at.on_shelf(),
                 },
                 now,
             );
@@ -784,6 +785,43 @@ pub fn stage_ui() -> Ui {
     )
 }
 
+/// The real UI as it typically stands (phase 6a, step 3's measurement):
+/// an evening's chat, ten playlist rows, four known users, and twenty
+/// franchises in The List.
+#[cfg(test)]
+pub(super) fn fuller_ui() -> Ui {
+    const SERIES: [&str; 20] = [
+        "Frieren",
+        "Azumanga Daioh",
+        "Haibane Renmei",
+        "Mushishi",
+        "Yotsuba to!",
+        "Yuru Yuri",
+        "K-On!",
+        "Non Non Biyori",
+        "Natsume Yuujinchou",
+        "Hyouka",
+        "Aria the Animation",
+        "Shirobako",
+        "Barakamon",
+        "Flying Witch",
+        "Laid-Back Camp",
+        "Girls' Last Tour",
+        "Mob Psycho 100",
+        "Spy x Family",
+        "Bocchi the Rock!",
+        "Dungeon Meshi",
+    ];
+    let files: Vec<String> = (1..=10).map(|i| format!("Frieren - {i:02}.mkv")).collect();
+    let files: Vec<&str> = files.iter().map(String::as_str).collect();
+    room_ui_full(
+        (0..40).map(|i| format!("line {i} of the evening")),
+        &files,
+        &["ana", "bob", "cho", "dee"],
+        &SERIES,
+    )
+}
+
 /// The stage's playlist: the text she tears off for furniture.
 const PLAYLIST: [&str; 6] = [
     "Azumanga Daioh - 01.mkv",
@@ -800,11 +838,74 @@ pub(super) fn chat_ui(lines: impl Iterator<Item = String>) -> Ui {
 
 /// The real UI with chat `lines` and a playlist of `files`.
 fn room_ui(lines: impl Iterator<Item = String>, files: &[&str]) -> Ui {
+    room_ui_with(lines, files, &[])
+}
+
+/// [`room_ui`], with `known` users (offline) in the Users pane.
+fn room_ui_with(lines: impl Iterator<Item = String>, files: &[&str], known: &[&str]) -> Ui {
+    room_ui_full(lines, files, known, &[])
+}
+
+/// [`room_ui_with`], with an entry of The List for each of `series`
+/// (a franchise each, in turn Active, Planned, on the Short List,
+/// Finished and Waiting; the first five committed to by `known`'s first
+/// user, so they're in her Watching group).
+fn room_ui_full(
+    lines: impl Iterator<Item = String>,
+    files: &[&str],
+    known: &[&str],
+    series: &[&str],
+) -> Ui {
     use dessplay_core::playlist::NewPlaylistEntry;
     use dessplay_core::state::CrdtState;
-    use dessplay_core::types::{ActorId, Ed2kHash, SharedTimestamp};
+    use dessplay_core::types::{
+        ActorId, Ed2kHash, ListEntryId, ListStatus, SeriesListEntry, SeriesWatchState,
+        SharedTimestamp,
+    };
     let mut ui = real_ui();
     let mut state = CrdtState::new();
+    const STATUSES: [ListStatus; 5] = [
+        ListStatus::Active,
+        ListStatus::Planned,
+        ListStatus::ShortList,
+        ListStatus::Finished,
+        ListStatus::Waiting,
+    ];
+    for (i, &name) in series.iter().enumerate() {
+        let id = ListEntryId(100 + i as u128);
+        state.put_list_entry(
+            ActorId::SERVER,
+            SharedTimestamp(1),
+            id,
+            SeriesListEntry {
+                name: name.into(),
+                nero_name: None,
+                genre: None,
+                notes: Vec::new(),
+                recommender: None,
+                status: STATUSES[i % STATUSES.len()],
+                status_note: None,
+                source: None,
+                watchers: Default::default(),
+                anidb_series_id: None,
+                local_aliases: Default::default(),
+                manual_files: Default::default(),
+                anidb_unavailable: false,
+            },
+        );
+        if let Some(&user) = known.first()
+            && i < 5
+        {
+            state.set_series_preference(
+                ActorId::SERVER,
+                SharedTimestamp(2),
+                UserId::new(user),
+                id,
+                SeriesWatchState::Watching,
+                None,
+            );
+        }
+    }
     for (i, &file) in files.iter().enumerate() {
         state.push_playlist_entry(
             ActorId::SERVER,
@@ -821,6 +922,8 @@ fn room_ui(lines: impl Iterator<Item = String>, files: &[&str]) -> Ui {
     let senders = ["kim", "bob", "ana"];
     let view = dessplay_core::state::StateView {
         playlist: state.view().playlist,
+        list_entries: state.view().list_entries,
+        series_preference: state.view().series_preference,
         chat: lines
             .enumerate()
             .map(|(i, text)| dessplay_core::types::ChatMessage {
@@ -833,6 +936,13 @@ fn room_ui(lines: impl Iterator<Item = String>, files: &[&str]) -> Ui {
     };
     ui.apply_snapshot(UiSnapshot {
         view: std::sync::Arc::new(view),
+        known_offline: known
+            .iter()
+            .map(|&name| dessplay_core::net::KnownUser {
+                username: UserId::new(name),
+                last_seen: 1,
+            })
+            .collect(),
         ..UiSnapshot::default()
     });
     ui

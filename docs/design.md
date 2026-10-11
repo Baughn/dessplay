@@ -1570,7 +1570,9 @@ this section states what is built.
   her desk answer them; *nesting* rises only while a rule of her home she
   has felt is broken (see *The rules of her home*); *beauty* rises (over
   twenty minutes) only while she's in a plain room, on a strip where
-  nothing pretty shows (or on none), and no want answers it: resting
+  nothing pretty shows (decor on its shelf counts for the room below,
+  while it shows: a shelf hidden by text is no prettier than none) (or
+  on none), and no want answers it: resting
   (sitting, lying, gazing; not exercise) or using her things (not the
   chores of unpacking a parcel or crumpling text) in a pretty room eases
   it as she does them (by the share done, times the room's beauty up to 1;
@@ -1850,7 +1852,17 @@ this section states what is built.
   high it hangs if it does). **Strips and
   anchors**: a strip is a floor her home stands on — a quiet pane's
   bottom border between its walls (Users, Playlist, or The List, never
-  the chat). Each piece stands on a strip at an anchor: a wall side and
+  the chat) — or a shelf she has finished putting up there (its run,
+  after the panes' floors; one hidden this frame is still a strip).
+  Only small decor stands on a shelf (the plant and the clock, a clock
+  there standing as a mantel clock), never a parcel, and only on the
+  cells of it written this frame (the app's own `────` where a hidden
+  shelf would be holds nothing up); she reaches it from the floor below,
+  arms up. Only a repair puts a piece up there (centred on the run, or
+  packed beside what's on it already); a delivery, a stage gift, her
+  door's wall and pieces moving off a gone strip only ever take a pane's
+  floor, and a shelf whose pane is gone hides what's on it, never moves
+  it. Each piece stands on a strip at an anchor: a wall side and
   an offset of its near edge from that wall, which a resize keeps. A
   strip's pieces stand in anchor order (those from the left wall,
   nearest first, then those from the right, farthest first; of two
@@ -1892,7 +1904,10 @@ this section states what is built.
   shows where it stands, for her to unpack). The same in a visit and
   while she's out, recomputed every frame; a change of what's hidden is
   logged. A hidden piece isn't judged in the chat (she can't see it),
-  and still keeps her door's spot off it (it may be back any frame)
+  nor is a piece on a shelf (a shelf the chat comes to meet is hidden,
+  with what's on it: neither the closet nor InChat weighs it, so no
+  repair carries one down for the chat), and a hidden piece still keeps
+  her door's spot off it (it may be back any frame)
   (why: [decisions](decisions.md#she-feels-her-door-blocked-and-a-piece-in-the-chat-on-sight-2026-10-09)).
   **Her door's space**: one wall of her strips is her external
   door's, saved with her home once she has a piece. It's chosen from the
@@ -1954,8 +1969,10 @@ this section states what is built.
   with only hung pieces moves them to the first other wall that holds
   them all on free cells, else they're in the closet. Boxed, it's a parcel
   on the floor; a delivery comes in only where both the parcel and the
-  hung piece fit. **Rooms from contents**: her rooms are her strips,
-  and what each is comes from what's out of its box there, by the
+  hung piece fit. **Rooms from contents**: her rooms are her panes'
+  floors (a shelf is part of the room below, never a room of its own),
+  and what each is comes from what's out of its box there (on its
+  floor or its shelf), by the
   first row of a table it meets: a living room needs a screen and a
   seat and no bed; a bedroom a bed, and no screen or fridge; a study a
   desk; a kitchen a fridge, and no bed; anything else is a den. Pieces
@@ -2623,7 +2640,8 @@ this section states what is built.
   a shelf she has put up, are the one thing of hers written before the
   reads, because they're terrain: once a paint, before anything reads
   the frame, each all of it or none, only on blank cells nothing else
-  holds; a frame that doesn't show her home has them undone before it
+  holds (a blank in reverse video, as a list's selection bar, or in a
+  colour unlike its pane's, is as good as text); a frame that doesn't show her home has them undone before it
   reads, so her goodbye's frame shows none; every cell of hers drawn
   over one records the real frame under it; they're lines she walks in
   front of, but neither floor nor pole of hers, and her door never

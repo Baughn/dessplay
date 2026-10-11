@@ -162,7 +162,7 @@ use osaka::{Bubble, Osaka};
 use room::Shown;
 pub use room::{Furniture, Nook};
 use sprite::{Part, Pose};
-use structures::Written;
+use structures::{Drawn, Written};
 use terrain::Terrain;
 
 /// What the shopping channel sells, in order (the TV comes first, on
@@ -2625,7 +2625,7 @@ impl Guest {
                     };
                     let plan = plan_of(view, buf);
                     let home = &mut guest.ledger.home;
-                    guest.unsaved |= home.frame(buf, plan, &blocked).1;
+                    guest.unsaved |= home.frame(written.over(buf), plan, &blocked).1;
                     let laid = home.laid_and_shifted(plan.nooks).shown;
                     let obstacles = door::obstacles(&laid, [], None);
                     let spot = door::door_place(home, plan, &obstacles, &terrain, prev);
@@ -2879,9 +2879,8 @@ impl Guest {
                     &mut self.gift,
                     &mut self.arranging,
                     &mut self.note,
-                    buf,
+                    written.over(buf),
                     view,
-                    &written,
                     visit,
                     time.is_some(),
                     self.graphics.is_some(),
@@ -2903,7 +2902,7 @@ impl Guest {
                 // pieces last a visit, like a carried prop).
                 let keep = door::Keep::of(&self.ledger.home, plan_of(view, buf));
                 let keep = keep.for_made();
-                tend_made(visit, buf, &kept, keep, size, now);
+                tend_made(visit, written.over(buf), &kept, keep, size, now);
                 visit.shown.extend(visit.made.iter().map(|made| made.piece));
                 let gone = |piece: room::PieceRef| !visit.shown.iter().any(|s| s.piece() == piece);
                 let using = visit.osaka.use_span().map(|(seat, ..)| seat.piece);
@@ -3052,7 +3051,7 @@ impl Guest {
                 let swaps = scenes::swaps(buf, &visit.terrain, &holes, &visit.layer);
                 let mut solid = protected.clone();
                 solid.extend(visit.ghost);
-                let builds = builds(buf, visit, &pulls, &solid, keep);
+                let builds = builds(written.over(buf), visit, &pulls, &solid, keep);
                 let borrows = borrows(visit, &pulls);
                 let (lift_at, judged) = arranging(visit);
                 let beauty_here =
@@ -4148,9 +4147,8 @@ fn furnish(
     gift: &mut Option<Furniture>,
     arranging: &mut bool,
     note: &mut Option<Result<String, String>>,
-    buf: &Buffer,
+    drawn: Drawn,
     view: &IdleView,
-    written: &Written,
     visit: &mut Visit,
     fed: bool,
     graphics: bool,
@@ -4165,12 +4163,12 @@ fn furnish(
         moved.contains(&(ux, uy)) || view.protected.iter().any(|r| r.contains((ux, uy).into()))
     };
     let home = &mut ledger.home;
-    let plan = plan_of(view, buf);
-    let mut shown = home.frame(buf, plan, &blocked).0;
+    let plan = plan_of(view, drawn.buf());
+    let mut shown = home.frame(drawn, plan, &blocked).0;
     // The stage: a sofa turned away from her TV.
-    let cued = std::mem::take(arranging) && stage_arrange(home, buf, view, &blocked);
+    let cued = std::mem::take(arranging) && stage_arrange(home, drawn, view, &blocked);
     if cued {
-        shown = home.frame(buf, plan, &blocked).0;
+        shown = home.frame(drawn, plan, &blocked).0;
     }
     let made: Vec<Rect> = visit.made.iter().map(|m| m.piece.cover()).collect();
     // The piece she set down: where it goes if it fits there and puts
@@ -4179,7 +4177,7 @@ fn furnish(
     if let Some((piece, to)) = visit.set_down.take() {
         let keep = door::Keep::of(home, plan);
         let frame = rules::Frame {
-            buf,
+            drawn,
             nooks: &view.nooks,
             blocked: &blocked,
             shown: &shown,
@@ -4194,26 +4192,9 @@ fn furnish(
             .filter(|_| visit.osaka.carrying() == Some(piece));
         match episode.map(|ep| judge_move(home, &frame, &ep)) {
             Some(Some(_)) => {
-                let cols = piece.spec().footprint.0;
-                if let Some(prop) = home.props.iter_mut().find(|p| p.item == piece) {
-                    prop.strip = to.strip;
-                    prop.anchor = Some(to.anchor);
-                    prop.facing = to.facing;
-                    prop.settled = true;
-                }
-                // Its share of the way along, of the raw strip, where its
-                // anchor stands it on the floor.
-                let plans = home.extents(&view.nooks);
-                if let Some(plan) = plans.iter().find(|p| p.strip == to.strip)
-                    && let Some(prop) = home.props.iter_mut().find(|p| p.item == piece)
-                {
-                    let lane = prop.lane();
-                    prop.at = plan
-                        .pin(lane, plan.along(lane).left(to.anchor, cols), cols)
-                        .1;
-                }
+                home.set_down(piece, to, &view.nooks);
                 visit.osaka.set_down_done(piece, now);
-                shown = home.frame(buf, plan, &blocked).0;
+                shown = home.frame(drawn, plan, &blocked).0;
             }
             Some(None) => {
                 let back = home
@@ -4261,9 +4242,10 @@ fn furnish(
             // As the visit's is read (`Visit::solid`).
             let mut solid = view.protected.clone();
             solid.extend(runs(layer.cells()));
-            Terrain::read_with(buf, &solid, graphics, written)
+            Terrain::read_with(drawn.buf(), &solid, graphics, drawn.written())
         });
-        let standing = made_standing_then(makeshift, layer, buf, after, &moved, &kept, then, plan);
+        let standing =
+            made_standing_then(makeshift, layer, drawn, after, &moved, &kept, then, plan);
         let room: Vec<Shown> = after.iter().copied().chain(standing).collect();
         terrain.furnish(room.iter().map(Shown::cover));
         seats_of(piece, &room, terrain, true)
@@ -4279,7 +4261,7 @@ fn furnish(
         && ledger.bought_on < ledger.visits
         && awake
         && waited(parcel_may_come(visit, home, plan, staged, now), &mut wait)
-        && let Some((prop, flap)) = home.doorstep(buf, plan, &shown, &blocked, &seats, item)
+        && let Some((prop, flap)) = home.doorstep(drawn, plan, &shown, &blocked, &seats, item)
         && waited(clear_of_her(visit, home, plan, prop), &mut wait)
         && home.add(prop)
     {
@@ -4295,7 +4277,7 @@ fn furnish(
         visit.staged_parcel = false;
         ledger.ordered = None;
         visit.osaka.say(PARCEL, now);
-        shown = home.frame(buf, plan, &blocked).0;
+        shown = home.frame(drawn, plan, &blocked).0;
     }
     // Her wall clock (phase 5b D7, Q3): a gift, once ever, on her
     // doorstep, the first time she's up and about with her clock fed to
@@ -4318,7 +4300,7 @@ fn furnish(
             .any(|p| p.item == Furniture::Tv && !p.boxed)
         && waited(parcel_may_come(visit, home, plan, false, now), &mut wait)
         && let Some((prop, flap)) =
-            home.doorstep(buf, plan, &shown, &blocked, &seats, Furniture::Clock)
+            home.doorstep(drawn, plan, &shown, &blocked, &seats, Furniture::Clock)
         && waited(clear_of_her(visit, home, plan, prop), &mut wait)
         && home.add(prop)
     {
@@ -4332,7 +4314,7 @@ fn furnish(
         visit.flap = Some((flap, now));
         ledger.clock_sent = true;
         visit.osaka.say(PARCEL, now);
-        shown = home.frame(buf, plan, &blocked).0;
+        shown = home.frame(drawn, plan, &blocked).0;
     }
     if wait != visit.parcel_wait {
         if let Some(why) = wait {
@@ -4341,7 +4323,7 @@ fn furnish(
         visit.parcel_wait = wait;
     }
     if let Some(item) = gift.take() {
-        shown = place_gift(home, item, note, buf, view, &shown, &blocked, rng);
+        shown = place_gift(home, item, note, drawn, view, &shown, &blocked, rng);
     }
     // The rules of her home, judged where her pieces are laid out (text
     // closeting one doesn't count), once the frame's home is final.
@@ -4367,10 +4349,10 @@ fn furnish(
             .osaka
             .feel(key, Some((Furniture::Sofa, room::Use::Lounge)));
     }
-    mend(home, buf, view, visit, &shown, &blocked, force, now);
+    mend(home, drawn, view, visit, &shown, &blocked, force, now);
     let keep = door::Keep::of(home, plan);
     let frame = rules::Frame {
-        buf,
+        drawn,
         nooks: &view.nooks,
         blocked: &blocked,
         shown: &shown,
@@ -4447,7 +4429,7 @@ fn arranging(visit: &Visit) -> (Vec<osaka::LiftAt>, Option<osaka::Judged>) {
             .find(|s| s.item == repair.piece && s.scrap.is_none())
             && let Some((spot, side)) = reach(at, &visit.terrain, near)
         {
-            lift_at.push((repair.piece, spot, side));
+            lift_at.push((repair.piece, spot, side, at.on_shelf()));
         }
     }
     let judged = visit.judging.map(|j| {
@@ -4459,6 +4441,7 @@ fn arranging(visit: &Visit) -> (Vec<osaka::LiftAt>, Option<osaka::Judged>) {
             holds: j.target.is_some(),
             spot: to.and_then(|at| reach(&at, &visit.terrain, near)),
             home: j.laid.as_ref().map(middle_of),
+            up: to.is_some_and(|at| at.on_shelf()),
         }
     });
     (lift_at, judged)
@@ -4472,14 +4455,14 @@ fn arranging(visit: &Visit) -> (Vec<osaka::LiftAt>, Option<osaka::Judged>) {
 /// showed still does). False when there's nowhere for them.
 fn stage_arrange(
     home: &mut room::Home,
-    buf: &Buffer,
+    drawn: Drawn,
     view: &IdleView,
     blocked: &dyn Fn(i32, i32) -> bool,
 ) -> bool {
     use room::{Anchor, Side};
     use sprite::Facing;
-    let plan = plan_of(view, buf);
-    let before = home.frame(buf, plan, blocked).0;
+    let plan = plan_of(view, drawn.buf());
+    let before = home.frame(drawn, plan, blocked).0;
     let tv_cols = Furniture::Tv.spec().footprint.0;
     for strip_plan in home.extents(&view.nooks) {
         let (strip, e) = (strip_plan.strip, strip_plan.floor);
@@ -4518,7 +4501,7 @@ fn stage_arrange(
             // A try, as a frame would lay it out (her door where it would
             // settle), logging nothing until it's kept.
             tried.door = tried.wall(plan);
-            let shown = tried.project_with(buf, plan, blocked).0;
+            let shown = tried.project_with(drawn, plan, blocked).0;
             let shows = |item: Furniture| shown.iter().any(|s| s.item == item);
             // Never set down in the chat pane or her door's space (D3),
             // nor pushing a piece that showed newly into either.
@@ -4561,7 +4544,7 @@ const MEND_MS: u64 = 1000;
 #[allow(clippy::too_many_arguments)]
 fn mend(
     home: &room::Home,
-    buf: &Buffer,
+    drawn: Drawn,
     view: &IdleView,
     visit: &mut Visit,
     shown: &[Shown],
@@ -4597,9 +4580,9 @@ fn mend(
         return;
     }
     let made: Vec<Rect> = visit.made.iter().map(|m| m.piece.cover()).collect();
-    let keep = door::Keep::of(home, plan_of(view, buf));
+    let keep = door::Keep::of(home, plan_of(view, drawn.buf()));
     let frame = rules::Frame {
-        buf,
+        drawn,
         nooks: &view.nooks,
         blocked,
         shown,
@@ -4643,7 +4626,7 @@ fn place_gift(
     home: &mut room::Home,
     item: Furniture,
     note: &mut Option<Result<String, String>>,
-    buf: &Buffer,
+    drawn: Drawn,
     view: &IdleView,
     shown: &[Shown],
     blocked: &dyn Fn(i32, i32) -> bool,
@@ -4652,7 +4635,7 @@ fn place_gift(
     let result = if home.owns(item) {
         Err(format!("she already has a {}", item.spec().name))
     } else {
-        match home.spot(buf, plan_of(view, buf), shown, blocked, item, rng) {
+        match home.spot(drawn, plan_of(view, drawn.buf()), shown, blocked, item, rng) {
             Some(prop) => {
                 let strip = prop.strip;
                 tracing::info!(?item, ?strip, at = prop.at, "houseguest: new furniture");
@@ -4666,7 +4649,7 @@ fn place_gift(
         }
     };
     *note = Some(result);
-    home.frame(buf, plan_of(view, buf), blocked).0
+    home.frame(drawn, plan_of(view, drawn.buf()), blocked).0
 }
 
 /// The kinds of her real pieces `shown` (boxed or not): what stands in
@@ -4801,7 +4784,7 @@ fn clear_of_real(shown: &[Shown], x: i32, y: i32) -> bool {
 /// does.
 fn tend_made(
     visit: &mut Visit,
-    buf: &Buffer,
+    drawn: Drawn,
     protected: &[Rect],
     keep: door::MadeKeep<'_>,
     size: (u16, u16),
@@ -4813,7 +4796,7 @@ fn tend_made(
     let mut gone = Vec::new();
     let layer = &visit.layer;
     visit.made.retain(|made| {
-        let stands = !resized && made_stands(made, layer, buf, &real, &moved, protected, keep);
+        let stands = !resized && made_stands(made, layer, drawn, &real, &moved, protected, keep);
         if !stands {
             gone.push((made.torn.clone(), made.used, made.mine(), made.piece.item));
         }
@@ -4857,7 +4840,7 @@ fn tend_made(
 fn made_stands(
     made: &Made,
     layer: &layer::TextLayer,
-    buf: &Buffer,
+    drawn: Drawn,
     real: &[Shown],
     moved: &std::collections::HashSet<(u16, u16)>,
     protected: &[Rect],
@@ -4874,7 +4857,7 @@ fn made_stands(
             && !protected.iter().any(|r| r.contains((ux, uy).into()))
             && clear_of_real(real, x, y)
     };
-    layer.torn_intact(&made.torn) && room::fits(buf, &made.piece, &clear)
+    layer.torn_intact(&made.torn) && room::fits(drawn, &made.piece, &clear)
 }
 
 /// Of what she made (`made`), the pieces that stand once a delivery is
@@ -4887,7 +4870,7 @@ fn made_stands(
 fn made_standing_then(
     made: &[Made],
     layer: &layer::TextLayer,
-    buf: &Buffer,
+    drawn: Drawn,
     after: &[Shown],
     moved: &std::collections::HashSet<(u16, u16)>,
     protected: &[Rect],
@@ -4896,7 +4879,7 @@ fn made_standing_then(
 ) -> Vec<Shown> {
     let keep = door::Keep::of(then, plan);
     made.iter()
-        .filter(|m| made_stands(m, layer, buf, after, moved, protected, keep.for_made()))
+        .filter(|m| made_stands(m, layer, drawn, after, moved, protected, keep.for_made()))
         .map(|m| m.piece)
         .collect()
 }
@@ -4968,7 +4951,7 @@ fn borrows(visit: &Visit, pulls: &[scenes::Pull]) -> Vec<scenes::Pull> {
 /// Makeshift pieces she could make this frame: of each kind she hasn't
 /// made yet this visit, while the text layer has room for the glyphs.
 fn builds(
-    buf: &Buffer,
+    drawn: Drawn,
     visit: &Visit,
     pulls: &[scenes::Pull],
     protected: &[Rect],
@@ -5010,7 +4993,7 @@ fn builds(
             .filter(|&what| what != room::Use::Crumple)
             .collect()
     };
-    scenes::builds(buf, pulls, &wanted, visit.next_made, &clear, &then)
+    scenes::builds(drawn, pulls, &wanted, visit.next_made, &clear, &then)
 }
 
 /// Her furniture's colour as text (the ASCII drawings).
@@ -5858,7 +5841,7 @@ fn paint_empty(
     };
     let before = ledger.clone();
     let plan = plan_of(view, buf);
-    let shown = ledger.home.frame(buf, plan, &blocked).0;
+    let shown = ledger.home.frame(written.over(buf), plan, &blocked).0;
     let changed = *ledger != before;
     let covers: Vec<Rect> = shown.iter().map(Shown::cover).collect();
     let line_art = graphics.is_some();

@@ -238,8 +238,7 @@ impl Ledger {
             // there).
             let held_up = |strip: Strip| {
                 home.shelf(strip.nook()).is_some_and(|s| s.finished())
-                    && strip.takes(prop.item)
-                    && !prop.boxed
+                    && strip.takes(prop.item, prop.boxed)
             };
             match anchored {
                 Some(a) if a.strip.is_floor() || held_up(a.strip) => {

@@ -1525,6 +1525,89 @@ fn a_resize_as_her_stage_school_door_stands_open_moves_her_with_it() {
     }
 }
 
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(dessplay_core::test_support::proptest_cases(16)))]
+
+    /// [`her_days_never_touch_what_is_protected`] with her shelf up (phase
+    /// 6a, step 3), small decor on it: through her week she goes out and
+    /// comes home, her home standing empty between, and every frame's
+    /// shelf checks hold, visiting and away (see `check_shelves`).
+    #[test]
+    fn her_days_with_a_shelf_never_touch_what_is_protected(
+        seed in any::<u64>(),
+        start in somewhen(),
+        graphics in any::<bool>(),
+        sizes in proptest::collection::vec((80u16..130, 26u16..45), 1..3),
+        text in proptest::collection::vec((0u16..130, 0u16..45, "[a-z漢─│ ]{1,6}"), 0..20),
+        chats in proptest::collection::vec(0u64..60_000, 0..3),
+        protect in (0u16..130, 0u16..45, 1u16..20, 1u16..6),
+        owned in proptest::collection::vec((0usize..2, 1usize..3, 0u16..=1000, any::<bool>()), 0..3),
+        shelf in (0usize..3, any::<bool>(), 8u16..30, 7u16..=10),
+        up in proptest::collection::vec((any::<bool>(), 0u16..8), 1..3),
+    ) {
+        const KINDS: [Furniture; 2] = [Furniture::Sofa, Furniture::Bed];
+        let owned: Vec<(Furniture, usize, u16, bool)> = owned
+            .into_iter()
+            .map(|(item, at, along, left)| (KINDS[item], at, along, left))
+            .collect();
+        let mut guest = Guest::restore(Ledger::new_at(seed, start));
+        guest.set_date(date(2026, 6, 17));
+        shelve(&mut guest, shelf, &up);
+        long_visit_of(
+            guest,
+            graphics,
+            rooms_frame,
+            &sizes,
+            &text,
+            &[],
+            &chats,
+            protect,
+            &owned,
+            Run {
+                out_every: Some(1000),
+                ..Run::default()
+            },
+            60_000,
+        )?;
+    }
+}
+
+/// [`her_days_with_a_shelf_never_touch_what_is_protected`]'s
+/// non-vacuity: out at school on a Tuesday morning, her home standing
+/// empty, her shelf shows on Users with her plant on it (counted on the
+/// frames she's out).
+#[test]
+fn her_days_with_a_shelf_see_it_while_she_is_out() {
+    for graphics in [false, true] {
+        let mut guest = Guest::restore(Ledger::new_at(2, tue(8, 12)));
+        guest.set_date(date(2026, 6, 17));
+        shelve(&mut guest, (1, false, 12, 7), &[(true, 3)]);
+        let visited = long_visit_of(
+            guest,
+            graphics,
+            rooms_frame,
+            &[(100, 30)],
+            &[],
+            &[],
+            &[],
+            (0, 0, 1, 1),
+            &[(Furniture::Sofa, 1, 700, false)],
+            Run {
+                out_every: Some(1000),
+                ..Run::default()
+            },
+            120_000,
+        )
+        .unwrap_or_else(|e| panic!("graphics={graphics}: {e}"));
+        assert!(
+            visited.away > 0
+                && visited.shelf_high > visited.visiting
+                && visited.shelf_pieces_away > 0,
+            "graphics={graphics}: {visited:?}"
+        );
+    }
+}
+
 /// One of her days' runs: from `start` by her clock, mid-June, 120 s
 /// over `sizes` of `frame`, run as `how` says.
 #[allow(clippy::too_many_arguments)]
@@ -2626,17 +2709,17 @@ fn a_scrap_in_her_door_space_makes_it_fall_back() {
             glyphs: "Tab Next pane | Enter Send".to_owned(),
             gap: 0,
         };
-        let middle = builds(&real, visit, &[pull(80)], &[], keep.for_made());
+        let middle = builds(Drawn::bare(&real), visit, &[pull(80)], &[], keep.for_made());
         assert!(!middle.is_empty(), "{at}: a piece mid-strip");
         let free = builds(
-            &real,
+            Drawn::bare(&real),
             visit,
             &[pull(95)],
             &[],
             door::Keep::default().for_made(),
         );
         assert!(!free.is_empty(), "{at}: one in the space, nothing kept");
-        let kept = builds(&real, visit, &[pull(95)], &[], keep.for_made());
+        let kept = builds(Drawn::bare(&real), visit, &[pull(95)], &[], keep.for_made());
         assert!(
             kept.is_empty(),
             "{at}: made in her door's space: {:?}",
@@ -2701,7 +2784,7 @@ fn she_never_makes_a_piece_in_her_door_space() {
         solid.extend(visit.shown.iter().map(Shown::cover));
         let pulls = scenes::pulls(&real, &visit.terrain, &solid);
         let offered = builds(
-            &real,
+            Drawn::bare(&real),
             visit,
             &pulls,
             &solid,
@@ -4220,7 +4303,7 @@ fn a_delivery_judges_what_she_made_on_its_new_door_space_not_the_chat() {
             made_standing_then(
                 &visit.made,
                 &visit.layer,
-                &real,
+                Drawn::bare(&real),
                 &visit.shown,
                 &moved,
                 &view.protected,
@@ -7194,13 +7277,18 @@ fn door_shots() {
 }
 
 /// A piece her record puts on a shelf (phase 6a step 2a: the reader
-/// keeps the plant on its finished List shelf) is never shown before
-/// shelves are strips (step 3): no plan holds it up, so it's hidden,
-/// and never moved, visiting and away, in both drawing modes; nothing
-/// in the paint trips over it.
+/// keeps the plant on its finished List shelf) stands on it (step 3:
+/// a finished shelf is a strip), where its record anchors it, standing
+/// on the run's written cells: every frame, visiting and away, in both
+/// drawing modes, never moved; with text over where it stands (a wordy
+/// frame), visiting (her own frame, closet and repairs in play) and
+/// away, it's hidden and the shelf still shows.
 #[test]
-fn a_restored_piece_on_a_shelf_is_never_shown() {
+fn a_restored_piece_on_a_shelf_is_shown_on_it() {
     let (w, h) = (100, 30);
+    // List `0, 0, 50, 27`: the shelf (`Left` 12, rise 7) runs `13..23`
+    // on row 19; the plant (`Left` 4 on it) stands at 17.
+    let (run, row, left) = (13..23u16, 19u16, 17);
     let on_its_shelf = |guest: &Guest, at: &str| {
         let plant = guest
             .ledger
@@ -7212,8 +7300,8 @@ fn a_restored_piece_on_a_shelf_is_never_shown() {
         assert_eq!(plant.strip, room::Strip::Shelf(Nook::List), "{at}: moved");
     };
     for graphics in [false, true] {
-        for away in [false, true] {
-            let at = format!("graphics={graphics} away={away}");
+        for (away, wordy) in [(false, false), (false, true), (true, false), (true, true)] {
+            let at = format!("graphics={graphics} away={away} wordy={wordy}");
             let mut ledger = Ledger::from_json(ledger::SHELF_RECORD).expect("it reads");
             ledger.clock_sent = true;
             if away {
@@ -7225,10 +7313,21 @@ fn a_restored_piece_on_a_shelf_is_never_shown() {
                 guest.set_picker(kitty());
             }
             on_its_shelf(&guest, &at);
-            let (real, view) = if away {
-                (wordy_rooms(w, h), resident_view(w, h, None))
+            let real = if wordy {
+                wordy_rooms(w, h)
             } else {
-                rooms_frame(w, h)
+                rooms(w, h)
+            };
+            // Out at school, a resident's view with List among her panes
+            // (the shelf's).
+            let view = if away {
+                IdleView {
+                    busy: Some(Busy::Playing),
+                    resident: true,
+                    ..rooms_frame(w, h).1
+                }
+            } else {
+                rooms_frame(w, h).1
             };
             let mut now = if away {
                 until_away(&mut guest, &real, &view, 0)
@@ -7238,17 +7337,37 @@ fn a_restored_piece_on_a_shelf_is_never_shown() {
             let (mut frames, mut sofa) = (0, 0);
             for _ in 0..300 {
                 shell_step(&mut guest, &real, &view, &mut now, true);
-                let shown = match &guest.state {
-                    State::Visiting(visit) => &visit.shown,
-                    State::Away(empty) => &empty.shown,
+                let (shown, painted) = match &guest.state {
+                    State::Visiting(visit) => (&visit.shown, &visit.painted),
+                    State::Away(empty) => (&empty.shown, &empty.painted),
                     _ => continue,
                 };
                 frames += 1;
                 sofa += usize::from(shown.iter().any(|s| s.item == Furniture::Sofa));
+                // Her shelf is written, whatever stands on it.
+                let written: Vec<u16> = painted
+                    .iter()
+                    .filter(|c| c.y == row && run.contains(&c.x) && !c.burst)
+                    .map(|c| c.x)
+                    .collect();
                 assert!(
-                    shown.iter().all(|s| s.item != Furniture::Plant),
-                    "{at}: shown at {now}"
+                    run.clone().all(|x| written.contains(&x)),
+                    "{at}: her shelf at {now}"
                 );
+                let plant = shown.iter().find(|s| s.item == Furniture::Plant);
+                if wordy {
+                    // "so what did you think of it" over its top row.
+                    assert!(plant.is_none(), "{at}: shown over text at {now}");
+                } else {
+                    let plant = plant.unwrap_or_else(|| panic!("{at}: hidden at {now}"));
+                    assert_eq!(
+                        (plant.strip, plant.left, plant.floor),
+                        (Some(room::Strip::Shelf(Nook::List)), left, i32::from(row)),
+                        "{at}: at {now}"
+                    );
+                    // Where she'd stand to reach it: the floor below.
+                    assert_eq!(plant.stood, 26, "{at}");
+                }
                 on_its_shelf(&guest, &at);
             }
             assert!(frames > 250, "{at}: {frames} frames in her home");

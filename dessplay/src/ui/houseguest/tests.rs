@@ -837,6 +837,259 @@ proptest! {
     }
 }
 
+/// Her shelf for a long visit (phase 6a, step 3): in pane `pane` (List,
+/// Users, the Playlist), against its `right` wall or left, `offset`
+/// along, `rise` up, finished; small decor up on it (her plant, or her
+/// clock, `Left` `along` its run).
+fn shelve(
+    guest: &mut Guest,
+    (pane, right, offset, rise): (usize, bool, u16, u16),
+    up: &[(bool, u16)],
+) -> Nook {
+    let nook = [Nook::List, Nook::Users, Nook::Playlist][pane];
+    let side = if right {
+        room::Side::Right
+    } else {
+        room::Side::Left
+    };
+    guest
+        .ledger
+        .home
+        .structures
+        .push(structures::Structure::Shelf(structures::Shelf {
+            nook,
+            anchor: room::Anchor { side, offset },
+            rise,
+            built: structures::SHELF_STAGES,
+        }));
+    for &(plant, along) in up {
+        let item = if plant {
+            Furniture::Plant
+        } else {
+            Furniture::Clock
+        };
+        let _ = guest.ledger.home.add(room::Prop {
+            strip: room::Strip::Shelf(nook),
+            anchor: Some(room::Anchor {
+                side: room::Side::Left,
+                offset: along,
+            }),
+            ..room::Prop::new(item, nook, 0, sprite::Facing::Right)
+        });
+    }
+    nook
+}
+
+/// The width a shelved long visit's sizes give to mean "the first size,
+/// with the shelf's pane dropped" (no size drawn is this narrow).
+const DROPPED: u16 = 79;
+
+/// `frame`, but at [`DROPPED`] wide, `first`'s frame without `nook`.
+fn dropping(
+    frame: fn(u16, u16) -> (Buffer, IdleView),
+    first: (u16, u16),
+    nook: Nook,
+) -> impl FnMut(u16, u16) -> (Buffer, IdleView) {
+    move |w, h| {
+        if w == DROPPED {
+            let (real, mut view) = frame(first.0, first.1);
+            view.nooks.retain(|&(n, _)| n != nook);
+            (real, view)
+        } else {
+            frame(w, h)
+        }
+    }
+}
+
+/// The body of the shelved long visits: `owned` furniture (of a list of
+/// its own: never appended to), her shelf `shelf` with `up` on it, and
+/// with `drop`, a step at the first size with the shelf's pane gone
+/// before the sizes go on.
+#[allow(clippy::too_many_arguments)]
+fn shelved_visit(
+    seed: u64,
+    graphics: bool,
+    frame: fn(u16, u16) -> (Buffer, IdleView),
+    sizes: &[(u16, u16)],
+    text: &[(u16, u16, String)],
+    chats: &[u64],
+    protect: (u16, u16, u16, u16),
+    owned: &[(usize, usize, u16, bool)],
+    shelf: (usize, bool, u16, u16),
+    up: &[(bool, u16)],
+    drop: bool,
+    how: Run,
+    span: u64,
+) -> Result<Visited, TestCaseError> {
+    const KINDS: [Furniture; 4] = [
+        Furniture::Sofa,
+        Furniture::Tv,
+        Furniture::Bed,
+        Furniture::Desk,
+    ];
+    let owned: Vec<(Furniture, usize, u16, bool)> = owned
+        .iter()
+        .map(|&(item, at, along, left)| (KINDS[item], at, along, left))
+        .collect();
+    let mut guest = Guest::new(seed);
+    let nook = shelve(&mut guest, shelf, up);
+    // Her shelf and what's up on it, as her record has them.
+    let up_there = |home: &room::Home| {
+        let on: Vec<(Furniture, room::Strip, Option<room::Anchor>)> = home
+            .props
+            .iter()
+            .filter(|p| !p.strip.is_floor())
+            .map(|p| (p.item, p.strip, p.anchor))
+            .collect();
+        (home.structures.clone(), on)
+    };
+    let start = up_there(&guest.ledger.home);
+    let mut sizes = sizes.to_vec();
+    if drop {
+        let first = sizes[0];
+        sizes.splice(1..1, [(DROPPED, first.1), first]);
+    }
+    let visited = long_visit_of(
+        guest,
+        graphics,
+        dropping(frame, sizes[0], nook),
+        &sizes,
+        text,
+        &[],
+        chats,
+        protect,
+        &owned,
+        how,
+        span,
+    )?;
+    // Never moved, through every size (its pane dropped and back too):
+    // nothing in 6a moves a piece off a shelf, nor the shelf.
+    prop_assert_eq!(up_there(&visited.home), start);
+    Ok(visited)
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(dessplay_core::test_support::proptest_cases(16)))]
+
+    /// [`long_visits_never_touch_what_is_protected`] with her shelf up
+    /// (phase 6a, step 3), high, small decor on it, text anywhere: every
+    /// frame's shelf checks hold ([`check_shelves`]: written whole or
+    /// not at all, never over what's protected or the chat, her layer,
+    /// what she made or another piece, off the sides; what stands on it
+    /// small decor on its written run; her feet never on it; her image's
+    /// cells over it recording the real frame), and a step with its pane
+    /// gone and back.
+    #[test]
+    fn long_visits_with_a_shelf_never_touch_what_is_protected(
+        seed in any::<u64>(),
+        graphics in any::<bool>(),
+        sizes in proptest::collection::vec((80u16..130, 26u16..45), 1..3),
+        text in proptest::collection::vec((0u16..130, 0u16..45, "[a-z漢─│ ]{1,6}"), 0..20),
+        chats in proptest::collection::vec(0u64..60_000, 0..3),
+        protect in (0u16..130, 0u16..45, 1u16..20, 1u16..6),
+        owned in proptest::collection::vec((0usize..4, 0usize..3, 0u16..=1000, any::<bool>()), 0..4),
+        shelf in (0usize..3, any::<bool>(), 8u16..30, 7u16..=10),
+        up in proptest::collection::vec((any::<bool>(), 0u16..8), 1..3),
+        drop in any::<bool>(),
+    ) {
+        shelved_visit(
+            seed, graphics, rooms_frame, &sizes, &text, &chats, protect, &owned, shelf, &up, drop,
+            Run::default(), 60_000,
+        )?;
+    }
+
+    /// [`long_visits_with_a_shelf_never_touch_what_is_protected`] on
+    /// [`chat_over`]: the chat pane reaching over part of Users, her
+    /// shelf on Users or the Playlist (the chat may come to meet it).
+    #[test]
+    fn long_visits_with_a_shelf_and_the_chat_over_a_nook_never_touch_what_is_protected(
+        seed in any::<u64>(),
+        graphics in any::<bool>(),
+        sizes in proptest::collection::vec((80u16..130, 26u16..45), 1..3),
+        text in proptest::collection::vec((0u16..130, 0u16..45, "[a-z漢─│ ]{1,6}"), 0..20),
+        chats in proptest::collection::vec(0u64..60_000, 0..3),
+        protect in (0u16..130, 0u16..45, 1u16..20, 1u16..6),
+        owned in proptest::collection::vec((0usize..4, 1usize..3, 0u16..=1000, any::<bool>()), 0..4),
+        shelf in (1usize..3, any::<bool>(), 8u16..30, 7u16..=10),
+        up in proptest::collection::vec((any::<bool>(), 0u16..8), 1..3),
+        drop in any::<bool>(),
+    ) {
+        shelved_visit(
+            seed, graphics, chat_over, &sizes, &text, &chats, protect, &owned, shelf, &up, drop,
+            Run { out_every: Some(1000), ..Run::default() }, 45_000,
+        )?;
+    }
+}
+
+/// The shelved long visits' non-vacuity companion (both modes): a high
+/// shelf on Users with her plant on it, through a step where a line of
+/// text lies across its row and back ([`rooms_frame`] at 100×34, then
+/// 100×30, where `x` sits on its margin, then 100×34 again), and its
+/// pane dropped and back; then a low one on the Playlist (no hung piece
+/// beside it). Frames with each written, her plant up, the shelf hidden,
+/// and it back.
+#[test]
+fn long_visits_with_a_shelf_see_it_shown_hidden_and_back() {
+    // Users at 100×30 is `50, 0, 50, 13`: rise 7 puts the run on row 5
+    // (`Left` 12: `63..73`); at 100×34 it's 15 tall, the run on row 7.
+    let text = [(74, 5, "x".to_owned())];
+    for graphics in [false, true] {
+        let high = shelved_visit(
+            3,
+            graphics,
+            rooms_frame,
+            &[(100, 34), (100, 30), (100, 34)],
+            &text,
+            &[],
+            (0, 0, 1, 1),
+            &[(0, 2, 300, false)],
+            (1, false, 12, 7),
+            &[(true, 3)],
+            true,
+            Run {
+                out_every: Some(1000),
+                ..Run::default()
+            },
+            250_000,
+        )
+        .unwrap_or_else(|e| panic!("graphics={graphics}: {e}"));
+        // Her plant up there again after its pane came back: the last
+        // size (100×34) comes after the step with the pane dropped.
+        assert!(
+            high.shelf_high > 0
+                && high.shelf_pieces > 0
+                && high.shelf_pieces_last > 0
+                && high.shelf_hidden > 0
+                && high.shelf_back > 0,
+            "graphics={graphics}: {high:?}"
+        );
+        // The Playlist at 100×30 is `50, 13, 50, 14`: 12 rows inside.
+        let low = shelved_visit(
+            3,
+            graphics,
+            rooms_frame,
+            &[(100, 30)],
+            &[],
+            &[],
+            (0, 0, 1, 1),
+            &[(0, 1, 300, false)],
+            (2, true, 10, 5),
+            &[(false, 2)],
+            false,
+            Run {
+                out_every: Some(1000),
+                ..Run::default()
+            },
+            100_000,
+        )
+        .unwrap_or_else(|e| panic!("graphics={graphics}: {e}"));
+        assert!(
+            low.shelf_low > 0 && low.shelf_pieces > 0,
+            "graphics={graphics}: {low:?}"
+        );
+    }
+}
+
 /// [`long_visits_with_the_chat_over_a_nook_never_touch_what_is_protected`]'s
 /// non-vacuity companion: on [`chat_over`] with whole lines of text
 /// across Users (from the chat's part of it into hers), cued to make a
@@ -1036,6 +1289,25 @@ struct Visited {
     space_doors: usize,
     /// Makeshift pieces standing, summed over visiting frames.
     made: usize,
+    /// Her shelves (phase 6a, step 3), over frames her home showed, a
+    /// shelf at a time: written high (rise 7 or more) and low, hidden
+    /// (its geometry holding), written again after being hidden, and a
+    /// piece standing on one.
+    shelf_high: usize,
+    shelf_low: usize,
+    shelf_hidden: usize,
+    shelf_back: usize,
+    shelf_pieces: usize,
+    /// Of `shelf_pieces`, those on frames her home stood empty (she was
+    /// out), and those on frames of the last size.
+    shelf_pieces_away: usize,
+    shelf_pieces_last: usize,
+    /// Whether each shelf (by pane) was hidden on its last frame.
+    shelf_was_hidden: Vec<Nook>,
+    /// Whether this frame is of the last size.
+    on_last: bool,
+    /// Her home as the visit left it.
+    home: room::Home,
     poses: std::collections::HashSet<std::mem::Discriminant<sprite::Pose>>,
 }
 
@@ -1185,6 +1457,7 @@ fn long_visit_of(
     let mut mark = ChatMark::default();
     for (i, &(w, h)) in sizes.iter().enumerate() {
         let last = i + 1 == sizes.len();
+        visited.on_last = last;
         let (mut real, base) = frame(w, h);
         scatter(&mut real, text, skips);
         let (px, py, pw, ph) = protect;
@@ -1362,10 +1635,41 @@ fn long_visit_of(
             // The flap a parcel is coming in by (swung in over her wall's
             // line a moment).
             let flap = open_flap(&guest, now);
+            // Her shelves (phase 6a, step 3), worked out from her record
+            // and the panes alone, and the cells of them this frame wrote.
+            let runs = shelf_runs(&guest.ledger.home, &view.nooks);
+            let written = match &guest.state {
+                State::Visiting(visit) => written_of(&visit.painted, &runs),
+                State::Away(empty) => written_of(&empty.painted, &runs),
+                _ => Vec::new(),
+            };
+            let on_written = |x: i32, y: i32| {
+                written
+                    .iter()
+                    .any(|c| (i32::from(c.x), i32::from(c.y)) == (x, y))
+            };
+            check_shelves(
+                &guest,
+                &real,
+                &view,
+                &protected,
+                &layer,
+                &shown,
+                &runs,
+                &written,
+                &mut visited,
+            )?;
             // Each real piece stands on the floor of a strip that's
-            // here this frame.
+            // here this frame: a pane's, or a shelf's run, written.
             let strips = room::pane_strips(&view.nooks);
             for prop in shown.iter().filter(|s| s.scrap.is_none()) {
+                if prop.on_shelf() {
+                    let run = runs
+                        .iter()
+                        .find(|r| Some(room::Strip::Shelf(r.shelf.nook)) == prop.strip);
+                    prop_assert!(run.is_some_and(|r| r.y == prop.floor), "{:?}", prop);
+                    continue;
+                }
                 let here = strips.iter().find(|p| Some(p.strip) == prop.strip);
                 prop_assert!(
                     here.is_some_and(|p| p.raw.floor == prop.floor),
@@ -1398,7 +1702,12 @@ fn long_visit_of(
                             at,
                             want.symbol()
                         );
+                    } else if prop.on_shelf() {
+                        // On her shelf: its written cells, over blank ones.
+                        prop_assert!(on_written(x, y), "{:?}: {:?} not on her shelf", prop, at);
+                        prop_assert!(want.symbol().trim().is_empty(), "{:?}", at);
                     } else {
+                        prop_assert!(!on_written(x, y), "{:?} on her shelf", prop);
                         prop_assert!(
                             want.symbol()
                                 .chars()
@@ -1484,7 +1793,12 @@ fn long_visit_of(
                 }
                 _ => (0, 0),
             };
-            let most = (sprite::WIDTH * (sprite::HEIGHT + 1)) as usize + 24 + furniture + spanned;
+            // Her shelves' cells are hers too.
+            let most = (sprite::WIDTH * (sprite::HEIGHT + 1)) as usize
+                + 24
+                + furniture
+                + spanned
+                + written.len();
             let debug = match &guest.state {
                 State::Visiting(visit) => format!(
                     "{:?} with {:?} at ({}, {})",
@@ -1524,7 +1838,248 @@ fn long_visit_of(
     guest.activity(now);
     let end = run(&mut guest, &real, &view, now, now + dissolve::DURATION_MS);
     prop_assert_eq!(end, real);
+    visited.home = guest.ledger.home.clone();
     Ok(visited)
+}
+
+/// A shelf of hers on the frame, worked out from her record and its
+/// pane's rect alone (phase 6a, step 3: an independent oracle, never
+/// `extents`, `Written` or the per-cell test): its run's columns `from`
+/// up to `to` on row `y`, the columns its stages so far take, in `pane`.
+#[derive(Clone, Debug)]
+pub(super) struct ShelfRun {
+    pub shelf: structures::Shelf,
+    pub from: i32,
+    pub to: i32,
+    pub y: i32,
+    pub built: std::ops::Range<i32>,
+    pub pane: Rect,
+}
+
+/// Her shelves whose geometry holds on `nooks` (see [`ShelfRun`]).
+pub(super) fn shelf_runs(home: &room::Home, nooks: &[(Nook, Rect)]) -> Vec<ShelfRun> {
+    home.structures
+        .iter()
+        .filter_map(|&structures::Structure::Shelf(shelf)| {
+            let pane = nooks.iter().find(|(n, _)| *n == shelf.nook)?.1;
+            let (left, right) = (i32::from(pane.x) + 1, i32::from(pane.right()) - 1);
+            let rows = i32::from(pane.height) - 2;
+            let offset = i32::from(shelf.anchor.offset);
+            let from = match shelf.anchor.side {
+                room::Side::Left => left + offset,
+                room::Side::Right => right - offset - 10,
+            };
+            let rise = i32::from(shelf.rise);
+            if from < left + 8 || from + 10 > right - 8 || rise < 5 || rows - rise < 2 {
+                return None;
+            }
+            let built = match (shelf.built, shelf.anchor.side) {
+                (0, _) => from..from,
+                (1, room::Side::Left) => from..from + 5,
+                (1, room::Side::Right) => from + 5..from + 10,
+                _ => from..from + 10,
+            };
+            Some(ShelfRun {
+                shelf,
+                from,
+                to: from + 10,
+                y: i32::from(pane.bottom()) - 1 - rise,
+                built,
+                pane,
+            })
+        })
+        .collect()
+}
+
+/// The cells of `runs` her home's painted list keeps first (its bottom
+/// layer: what her structures wrote this frame), each once.
+fn written_of(painted: &[dissolve::Frozen], runs: &[ShelfRun]) -> Vec<dissolve::Frozen> {
+    let mut out: Vec<dissolve::Frozen> = Vec::new();
+    for c in painted {
+        let (x, y) = (i32::from(c.x), i32::from(c.y));
+        let on = runs.iter().any(|r| r.y == y && (r.from..r.to).contains(&x));
+        if !on
+            || c.burst
+            || c.face.is_some()
+            || !matches!(c.glyph, '┬' | '─')
+            || out.iter().any(|o| (o.x, o.y) == (c.x, c.y))
+        {
+            break;
+        }
+        out.push(c.clone());
+    }
+    out
+}
+
+/// The shelf checks of a [`long_visit_of`] frame (phase 6a, step 3):
+/// each shelf written all of its stages or none; no cell of one
+/// protected, in the chat, a cell of her layer, in what she made or in
+/// another piece's cover, or within her door's space of either wall;
+/// each written over the real cell; every piece shown on one small
+/// decor out of its box, on a finished shelf, on its run's row and
+/// within it; her feet never on a shelf; and every cell of her image
+/// burst over a shelf records the real cell under it.
+#[allow(clippy::too_many_arguments)]
+fn check_shelves(
+    guest: &Guest,
+    real: &Buffer,
+    view: &IdleView,
+    protected: &[Rect],
+    layer: &[(u16, u16)],
+    shown: &[Shown],
+    runs: &[ShelfRun],
+    written: &[dissolve::Frozen],
+    visited: &mut Visited,
+) -> Result<(), TestCaseError> {
+    if runs.is_empty() {
+        return Ok(());
+    }
+    let (painted, made): (&[dissolve::Frozen], Vec<Rect>) = match &guest.state {
+        State::Visiting(visit) => (
+            &visit.painted,
+            visit.made.iter().map(|m| m.piece.cover()).collect(),
+        ),
+        State::Away(empty) => (&empty.painted, Vec::new()),
+        _ => return Ok(()),
+    };
+    for run in runs {
+        let mine: Vec<&dissolve::Frozen> = written
+            .iter()
+            .filter(|c| i32::from(c.y) == run.y && (run.from..run.to).contains(&i32::from(c.x)))
+            .collect();
+        let cols: Vec<i32> = mine.iter().map(|c| i32::from(c.x)).collect();
+        prop_assert!(
+            cols.is_empty() || cols == run.built.clone().collect::<Vec<_>>(),
+            "{:?}: written {:?}",
+            run,
+            cols
+        );
+        let nook = run.shelf.nook;
+        let was_hidden = visited.shelf_was_hidden.contains(&nook);
+        if cols.is_empty() {
+            if !run.built.is_empty() {
+                visited.shelf_hidden += 1;
+                if !was_hidden {
+                    visited.shelf_was_hidden.push(nook);
+                }
+            }
+        } else {
+            if run.shelf.rise >= 7 {
+                visited.shelf_high += 1;
+            } else {
+                visited.shelf_low += 1;
+            }
+            if was_hidden {
+                visited.shelf_back += 1;
+                visited.shelf_was_hidden.retain(|&n| n != nook);
+            }
+        }
+        // Its whole run and margin, written or not, kept from what she
+        // moves and makes (D4's keep-out).
+        for x in run.from - 2..run.to + 2 {
+            let (Ok(ux), Ok(uy)) = (u16::try_from(x), u16::try_from(run.y)) else {
+                continue;
+            };
+            prop_assert!(!layer.contains(&(ux, uy)), "{:?}: her layer at {}", run, x);
+            prop_assert!(
+                !made.iter().any(|r| r.contains((ux, uy).into())),
+                "{:?}: what she made at {}",
+                run,
+                x
+            );
+        }
+        // Off the sides: a body or her door's space from either wall.
+        for &x in &cols {
+            prop_assert!(
+                x - (i32::from(run.pane.x) + 1) >= room::SPACE
+                    && i32::from(run.pane.right()) - 1 - x > room::SPACE,
+                "{:?}: x {} by a wall",
+                run,
+                x
+            );
+        }
+    }
+    for c in written {
+        let at = (c.x, c.y);
+        let pos: tuirealm::ratatui::layout::Position = at.into();
+        prop_assert!(
+            !protected.iter().any(|r| r.contains(pos)),
+            "{:?}: protected",
+            at
+        );
+        prop_assert!(!view.chat.contains(pos), "{:?}: in the chat", at);
+        prop_assert!(!layer.contains(&at), "{:?}: a cell of her layer", at);
+        prop_assert!(
+            !made.iter().any(|r| r.contains(pos)),
+            "{:?}: in what she made",
+            at
+        );
+        let theirs = shown.iter().filter(|s| {
+            s.scrap.is_none()
+                && !runs
+                    .iter()
+                    .any(|r| s.strip == Some(room::Strip::Shelf(r.shelf.nook)))
+        });
+        for s in theirs {
+            prop_assert!(!s.cover().contains(pos), "{:?}: in her {:?}", at, s);
+        }
+        prop_assert_eq!(
+            Some(&c.under),
+            real.cell(at),
+            "{:?}: over the real cell",
+            at
+        );
+    }
+    // What stands on a shelf.
+    for s in shown.iter().filter(|s| s.on_shelf()) {
+        visited.shelf_pieces += 1;
+        visited.shelf_pieces_away += usize::from(matches!(guest.state, State::Away(_)));
+        visited.shelf_pieces_last += usize::from(visited.on_last);
+        prop_assert!(
+            s.item.spec().shelf && !s.boxed && s.scrap.is_none(),
+            "{:?}",
+            s
+        );
+        let run = runs
+            .iter()
+            .find(|r| Some(room::Strip::Shelf(r.shelf.nook)) == s.strip);
+        prop_assert!(
+            run.is_some_and(|r| r.shelf.built == structures::SHELF_STAGES
+                && r.y == s.floor
+                && s.left >= r.from
+                && s.left + i32::from(s.size().0) <= r.to),
+            "{:?} on {:?}",
+            s,
+            run
+        );
+    }
+    // Her feet, and every burst cell of hers over a shelf.
+    if let State::Visiting(visit) = &guest.state {
+        let feet = (visit.osaka.x, visit.osaka.y);
+        // Standing (falling or climbing, she passes in front of it, as
+        // of a border).
+        prop_assert!(
+            !visit.osaka.standing()
+                || !written
+                    .iter()
+                    .any(|c| (i32::from(c.x), i32::from(c.y)) == feet),
+            "her feet on her shelf at {:?} ({}, {:?})",
+            feet,
+            visit.osaka.act_name(),
+            visit.osaka.appearance(0).0
+        );
+    }
+    for f in painted.iter().filter(|f| f.burst) {
+        if written.iter().any(|c| (c.x, c.y) == (f.x, f.y)) {
+            prop_assert_eq!(
+                Some(&f.under),
+                real.cell((f.x, f.y)),
+                "burst at {:?}",
+                (f.x, f.y)
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Whether a cell is what she moved and made raining out as she went
@@ -7872,10 +8427,10 @@ fn migrates_without_closeting(
             screen: real.area,
         };
         let mut before = home.clone();
-        let (shown_before, _) = before.project_with(real, plan, &blocked);
+        let (shown_before, _) = before.project_with(Drawn::bare(real), plan, &blocked);
         let laid_before = before.layout(&view.nooks);
         let mut after = home.clone();
-        let (shown_after, _) = after.frame(real, plan, &blocked);
+        let (shown_after, _) = after.frame(Drawn::bare(real), plan, &blocked);
         let laid_after = after.layout(&view.nooks);
         for s in &laid_before {
             prop_assert!(
@@ -12979,6 +13534,7 @@ fn a_carry_she_cant_get_to_is_let_go_after_three_tries() {
                 x: 10,
                 y: 10,
                 side: scenes::Side::Right,
+                up: false,
             },
             0,
         );
@@ -12992,6 +13548,7 @@ fn a_carry_she_cant_get_to_is_let_go_after_three_tries() {
                 // Nowhere to stand: beside it or over it.
                 spot: (!ep.pocket).then_some(((10, 10), scenes::Side::Right)),
                 home: Some(home),
+                up: false,
             }),
             ..osaka::Chances::default()
         };
@@ -13051,6 +13608,7 @@ fn a_carry_whose_spot_is_gone_goes_elsewhere_or_is_let_go() {
                     x: 10,
                     y: 10,
                     side: scenes::Side::Right,
+                    up: false,
                 },
                 0,
             );
@@ -13066,6 +13624,7 @@ fn a_carry_whose_spot_is_gone_goes_elsewhere_or_is_let_go() {
                     holds: !ep.pocket || ep.repair.to != first,
                     spot: Some(((10, 10), scenes::Side::Right)),
                     home: Some(home),
+                    up: false,
                 }),
                 repairs: others.clone(),
                 ..osaka::Chances::default()
@@ -13123,6 +13682,7 @@ fn every_other_spot_gone_she_keeps_it_where_it_is() {
                 x: 10,
                 y: 10,
                 side: scenes::Side::Right,
+                up: false,
             },
             0,
         );
@@ -13137,6 +13697,7 @@ fn every_other_spot_gone_she_keeps_it_where_it_is() {
                 holds: ep.tried == 0,
                 spot: Some(((10, 10), scenes::Side::Right)),
                 home: Some((35, 10)),
+                up: false,
             }),
             ..osaka::Chances::default()
         };

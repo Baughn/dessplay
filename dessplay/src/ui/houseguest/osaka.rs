@@ -110,9 +110,10 @@ impl ClockOn {
     }
 }
 
-/// Where she'd stand to lift a piece (beside it, on its floor), and which
-/// way she'd face it.
-pub(super) type LiftAt = (Furniture, (i32, i32), Side);
+/// Where she'd stand to lift a piece (beside it, on its floor), which
+/// way she'd face it, and whether it stands on a shelf (she reaches up
+/// for it: [`super::scenes::Lift::up`]).
+pub(super) type LiftAt = (Furniture, (i32, i32), Side, bool);
 
 /// Moving a piece of her home to put a rule of it right: from the moment
 /// she sets off to lift it until it's set down where it's right, or she
@@ -156,6 +157,8 @@ pub(super) struct Judged {
     pub holds: bool,
     pub spot: Option<((i32, i32), Side)>,
     pub home: Option<(i32, i32)>,
+    /// Whether the piece, where `spot` reaches it, stands on a shelf.
+    pub up: bool,
 }
 
 impl Judged {
@@ -11243,6 +11246,11 @@ impl Osaka {
                     _ => self.stirring((pose, face, bubble), now),
                 }
             }
+            // Up to a shelf, arms up (phase 6a): it's over her head.
+            Act::Lift { lift, .. } if lift.up => (Pose::Stretch, Face::Curious, None),
+            Act::SetDown { set, .. } if !set.to.strip.is_floor() => {
+                (Pose::Stretch, Face::Curious, None)
+            }
             // Bent to the piece, bobbing.
             Act::Lift { since, .. } | Act::SetDown { since, .. } => {
                 let frame = (now.saturating_sub(since) / LIFT_FRAME_MS % 2) as u8;
@@ -11747,6 +11755,66 @@ mod tests {
             trials: Trials::default(),
             tried: 1,
             trying: true,
+        }
+    }
+
+    /// Reaching a shelf is arms up (phase 6a, decided): lifting a piece
+    /// off one, or setting one down onto one, she stretches up
+    /// (`Pose::Stretch`, curious), all the while; on a floor she bends
+    /// to it (`Pose::ToeTouch`), as ever. (The pose, not its drawing: no
+    /// drawing mode to loop over.)
+    #[test]
+    fn she_reaches_up_to_a_shelf() {
+        use super::super::room::{Nook, Strip};
+        let episode = trial_episode();
+        let shelf = Placement {
+            strip: Strip::Shelf(Nook::Users),
+            ..episode.repair.to
+        };
+        for up in [false, true] {
+            let lift = Act::Lift {
+                lift: Lift {
+                    repair: episode.repair,
+                    trials: Trials::default(),
+                    x: 20,
+                    y: 15,
+                    side: Side::Right,
+                    up,
+                },
+                since: 0,
+                until: 60_000,
+            };
+            let set = Act::SetDown {
+                set: SetDown {
+                    piece: Furniture::Sofa,
+                    to: if up { shelf } else { episode.repair.to },
+                    x: 20,
+                    y: 15,
+                    side: Side::Right,
+                },
+                since: 0,
+                until: 60_000,
+            };
+            for (name, act) in [("lift", lift), ("set down", set)] {
+                let mut rng = Rng(3);
+                let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+                osaka.set(act, 0);
+                for now in (0..2_000).step_by(100) {
+                    let (pose, face, _) = osaka.appearance(now);
+                    if up {
+                        assert_eq!(
+                            (pose, face),
+                            (Pose::Stretch, Face::Curious),
+                            "{name} at {now}"
+                        );
+                    } else {
+                        assert!(
+                            matches!(pose, Pose::ToeTouch(_)),
+                            "{name} at {now}: {pose:?}"
+                        );
+                    }
+                }
+            }
         }
     }
 
@@ -20614,6 +20682,7 @@ mod tests {
                         x: 20,
                         y: 15,
                         side: Side::Right,
+                        up: false,
                     },
                     since: 0,
                     until: 60_000,
