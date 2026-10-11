@@ -1395,6 +1395,8 @@ fn parts(prop: Furniture, layer: Layer) -> &'static [&'static str] {
         // Never out of its box (phase 6a D7b: a kit goes up as a
         // structure), so it's only ever drawn as its parcel.
         (Furniture::ShelfKit, _) => &[],
+        // A figurine on a plinth: mirrored when he faces left.
+        (Furniture::Gremlin, _) => &["gremlin"],
     }
 }
 
@@ -3363,7 +3365,12 @@ mod tests {
                 for open in [false, true] {
                     let image = render_parcel(item, open, facing, LINE, w, h).expect("renders");
                     let inked = image.pixels().filter(|p| p.0[3] > 0).count();
-                    assert!(inked > 400, "{item:?} open={open}: only {inked} pixels");
+                    // A box drawn smaller in a footprint two cells wide
+                    // (the gremlin's: phase 6a D9): its frame scales the
+                    // parcel to 0.4 (2026-10-12: 218 inked closed, 260
+                    // open; a shrink to 0.8 of that fails).
+                    let least = if cols >= 3 { 400 } else { 180 };
+                    assert!(inked > least, "{item:?} open={open}: only {inked} pixels");
                     // It stands on the floor, well below the box's top.
                     assert!(
                         (0..w).all(|x| image.get_pixel(x, 0).0[3] == 0),

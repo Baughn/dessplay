@@ -137,7 +137,8 @@ impl Made {
             | Furniture::Poster
             | Furniture::Clock
             | Furniture::Window
-            | Furniture::ShelfKit => Self::Sofa,
+            | Furniture::ShelfKit
+            | Furniture::Gremlin => Self::Sofa,
         }
     }
 }

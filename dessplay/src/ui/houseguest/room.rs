@@ -54,6 +54,9 @@ pub enum Furniture {
     /// piece; opened, it goes up on her wall as her shelf
     /// ([`Home::raise`]).
     ShelfKit,
+    /// A gremlin figurine (phase 6a D9): small decor, glazed, grinning;
+    /// he wants up high, on her shelf ([`Furniture::wants_up`]).
+    Gremlin,
 }
 
 impl Furniture {
@@ -61,7 +64,7 @@ impl Furniture {
     /// stable; the first eight are the oldest builds', see
     /// [`Furniture::legacy`]). What the channel sells, in order, is
     /// `CATALOGUE`.
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 14] = [
         Self::Sofa,
         Self::Tv,
         Self::Bed,
@@ -75,6 +78,7 @@ impl Furniture {
         Self::Clock,
         Self::Window,
         Self::ShelfKit,
+        Self::Gremlin,
     ];
 
     /// Every piece before her kits (phase 6a step 5b): today's `ALL` as
@@ -110,12 +114,12 @@ impl Furniture {
     }
 
     /// Whether she gazes up at it standing on her shelf (phase 6a D8):
-    /// her plant. Not her clock: a mantel clock is glanced up at for the
+    /// her plant, and her gremlin (D9). Not her clock: a mantel clock is glanced up at for the
     /// time, as on her wall (phase 5b), never gazed at; nor anything that
     /// never goes up there. Wildcard-free, so a new kind says.
     pub(super) fn gazed_up_at(self) -> bool {
         match self {
-            Self::Plant => true,
+            Self::Plant | Self::Gremlin => true,
             Self::Sofa
             | Self::Tv
             | Self::Bed
@@ -124,6 +128,29 @@ impl Furniture {
             | Self::Bookshelf
             | Self::Fridge
             | Self::CatBed
+            | Self::Poster
+            | Self::Clock
+            | Self::Window
+            | Self::ShelfKit => false,
+        }
+    }
+
+    /// Whether it wants up high, on a shelf (phase 6a D9: her gremlin):
+    /// the rule [`super::rules::Rule::High`] names it, it's sold only
+    /// where a shelf stands or could go up, and a shelf goes up by it.
+    /// Wildcard-free, so a new kind says.
+    pub(super) fn wants_up(self) -> bool {
+        match self {
+            Self::Gremlin => true,
+            Self::Sofa
+            | Self::Tv
+            | Self::Bed
+            | Self::Desk
+            | Self::Lamp
+            | Self::Bookshelf
+            | Self::Fridge
+            | Self::CatBed
+            | Self::Plant
             | Self::Poster
             | Self::Clock
             | Self::Window
@@ -144,7 +171,12 @@ impl Furniture {
             | Self::Bookshelf
             | Self::Fridge
             | Self::CatBed => true,
-            Self::Plant | Self::Poster | Self::Clock | Self::Window | Self::ShelfKit => false,
+            Self::Plant
+            | Self::Poster
+            | Self::Clock
+            | Self::Window
+            | Self::ShelfKit
+            | Self::Gremlin => false,
         }
     }
 
@@ -195,6 +227,7 @@ impl Furniture {
             Self::Clock => &CLOCK,
             Self::Window => &WINDOW,
             Self::ShelfKit => &SHELF_KIT,
+            Self::Gremlin => &GREMLIN,
         }
     }
 }
@@ -482,6 +515,27 @@ const SHELF_KIT: Spec = Spec {
     symmetric: false,
     shelf: false,
     kit: Some(Kit::Shelf),
+};
+const GREMLIN: Spec = Spec {
+    name: "gremlin",
+    pitch: line!("Aww, a little gremlin!"),
+    // A figurine on a plinth (art/props.svg, `gremlin`: variant A of its
+    // model sheet).
+    footprint: (2, 2),
+    // His eyes over his grin (mirror-safe).
+    ascii: &["oo", "ww"],
+    ink: (Color::Rgb(178, 154, 224), Color::LightMagenta),
+    // Gazed up at on her shelf (`Use::GazeUp`), which no kind's uses
+    // name: it's offered by where he stands.
+    uses: &[],
+    offers: &[Offer::Decor],
+    sit: None,
+    comfort: 1.0,
+    hang: None,
+    beauty: 1.0,
+    symmetric: false,
+    shelf: true,
+    kit: None,
 };
 
 /// The glyph at `(dx, dy)` of `item`'s ASCII drawing facing `facing`, if
@@ -2040,8 +2094,13 @@ impl Home {
 
     /// Her shelf in `nook`'s pane, if she has put one up there.
     pub fn shelf(&self, nook: Nook) -> Option<Shelf> {
-        self.structures.iter().find_map(|s| match *s {
-            Structure::Shelf(shelf) => (shelf.nook == nook).then_some(shelf),
+        self.shelves().find(|shelf| shelf.nook == nook)
+    }
+
+    /// Her shelves, put up or going up (phase 6a D2).
+    pub fn shelves(&self) -> impl Iterator<Item = Shelf> + '_ {
+        self.structures.iter().map(|s| match *s {
+            Structure::Shelf(shelf) => shelf,
         })
     }
 
@@ -2058,16 +2117,18 @@ impl Home {
     /// judge it, in the background of its pane's floor under the run's
     /// middle, with `keep_off` and her pieces' covers as laid out.
     ///
-    /// Within a height: the panes in order (`kit_at`, the pane she
-    /// unpacks in, then `plan`'s; never one meeting the chat pane; step
-    /// 7 puts the gremlin's first), the first that takes one; in that
-    /// pane, a row with **no text** anywhere in the pane's interior
-    /// before one with text (a shelf among a table's text reads as the
-    /// UI's own rule), then (high) a run **touching no hung piece** (no
-    /// hung piece's top row right under it, its columns meeting the
-    /// run's) before one that does, then the lowest rise, then the left
-    /// whose run's middle is nearest the pane's middle (the left first of
-    /// two as near). Saved with its anchor from the nearer wall and
+    /// Within a height: the panes in order (the pane of a piece that
+    /// wants up, her gremlin, standing on its floor out of its box
+    /// ([`Furniture::wants_up`], step 7); `kit_at`, the pane she unpacks
+    /// in; then `plan`'s; never one meeting the chat pane), the first
+    /// that takes one; in that pane, a row with **no text** anywhere in
+    /// the pane's interior before one with text (a shelf among a table's
+    /// text reads as the UI's own rule), then (high) a run **touching no
+    /// hung piece** (no hung piece's top row right under it, its columns
+    /// meeting the run's) before one that does, then the lowest rise,
+    /// then the left whose run's middle is nearest the gremlin's middle
+    /// in his pane, else the pane's middle (the left first of two as
+    /// near). Saved with its anchor from the nearer wall and
     /// `built: 0`. No RNG; each cell of a pane is read once (what's kept
     /// off mapped onto its wall once first, so a visit's layer costs its
     /// own cells, not a scan per cell: `her_shelf_is_quick`), and each
@@ -2099,13 +2160,27 @@ impl Home {
         }
         let laid = self.laid_and_shifted(plan.nooks).shown;
         let covers: Vec<Rect> = laid.iter().map(Shown::cover).collect();
+        // A piece that wants up, standing on a floor (step 7): its pane,
+        // and twice its middle's column.
+        let wanting = laid
+            .iter()
+            .filter(|s| s.item.wants_up() && !s.boxed() && s.scrap.is_none())
+            .find_map(|s| match s.strip? {
+                Strip::Bottom(nook) => Some((nook, 2 * s.left + i32::from(s.size().0))),
+                Strip::Shelf(_) => None,
+            });
         let mut panes: Vec<(Nook, Rect)> = plan
             .nooks
             .iter()
             .copied()
             .filter(|&(_, rect)| !rect.intersects(plan.chat))
             .collect();
-        panes.sort_by_key(|&(nook, _)| Some(nook) != kit_at);
+        panes.sort_by_key(|&(nook, _)| {
+            (
+                wanting.is_none_or(|(by, _)| by != nook),
+                Some(nook) != kit_at,
+            )
+        });
         // Each pane's wall, read once, when first asked (a high shelf in
         // the first pane reads no other).
         let mut walls: Vec<Option<Option<Wall>>> = panes.iter().map(|_| None).collect();
@@ -2121,7 +2196,11 @@ impl Home {
                     .filter(|s| s.strip == Some(Strip::Bottom(nook)) && s.lane() == Lane::Wall)
                     .map(Shown::rect)
                     .collect();
-                if let Some(shelf) = wall.best(buf, nook, host, high, &hung, visited) {
+                let middle = match wanting {
+                    Some((by, twice)) if by == nook => twice,
+                    _ => host.from + host.to,
+                };
+                if let Some(shelf) = wall.best(buf, nook, host, high, &hung, middle, visited) {
                     return Some(shelf);
                 }
             }
@@ -3697,7 +3776,9 @@ impl Wall {
 
     /// The best place on it for a shelf of `high`'s height (see
     /// [`Home::shelf_spot`] for the order), `hung` the hung pieces of its
-    /// pane as laid out.
+    /// pane as laid out, the run's middle nearest `middle` (twice the
+    /// column: the pane's, or her gremlin's in his pane).
+    #[allow(clippy::too_many_arguments)]
     fn best(
         &self,
         buf: &Buffer,
@@ -3705,6 +3786,7 @@ impl Wall {
         host: Extent,
         high: bool,
         hung: &[Rect],
+        middle: i32,
         visited: &mut usize,
     ) -> Option<Shelf> {
         let her = u16::try_from(sprite::HEIGHT).unwrap_or(u16::MAX);
@@ -3771,7 +3853,7 @@ impl Wall {
                             && i32::from(r.x) < to
                             && i32::from(r.right()) > from
                     });
-                let away = (2 * from + SHELF_WIDTH - (host.from + host.to)).abs();
+                let away = (2 * from + SHELF_WIDTH - middle).abs();
                 let key = (text, touches, rise, away, from);
                 if best.is_none_or(|(was, _)| key < was) {
                     best = Some((key, shelf));
@@ -4026,7 +4108,7 @@ mod tests {
     #[test]
     fn a_floor_takes_anything_and_a_shelf_small_decor_only() {
         use Furniture::*;
-        let small = [Plant, Clock];
+        let small = [Plant, Clock, Gremlin];
         for nook in [Nook::List, Nook::Users, Nook::Playlist] {
             for (strip, boxed, wants) in [
                 (Strip::Bottom(nook), false, Furniture::ALL.to_vec()),
@@ -7717,11 +7799,11 @@ pub(in crate::ui::houseguest) mod shelves {
     }
 
     /// What she does with small decor up on her shelf (phase 6a D8): she
-    /// gazes up at her plant there (from its room's floor: the seat is
-    /// the pane's floor, `stood`); at nothing else of hers up there (her
-    /// clock, a mantel clock, she glances up at for the time, as on her
-    /// wall), and at none of them on a floor; boxed, a parcel is to
-    /// unpack. Laid out as her home lays them, each small-decor kind on
+    /// gazes up at her plant and her gremlin there (D9; from its room's
+    /// floor: the seat is the pane's floor, `stood`); at nothing else of
+    /// hers up there (her clock, a mantel clock, she glances up at for
+    /// the time, as on her wall), and at none of them on a floor; boxed,
+    /// a parcel is to unpack. Laid out as her home lays them, each small-decor kind on
     /// her Users shelf and on Users' floor.
     #[test]
     fn she_gazes_up_at_her_plant_on_her_shelf() {
@@ -7742,7 +7824,7 @@ pub(in crate::ui::houseguest) mod shelves {
                     .find(|s| s.item == item)
                     .unwrap_or_else(|| panic!("{at}: laid out"));
                 assert_eq!(s.strip, Some(strip), "{at}");
-                let gazes = item == Furniture::Plant && strip == shelf;
+                let gazes = matches!(item, Furniture::Plant | Furniture::Gremlin) && strip == shelf;
                 let uses: &[Use] = if gazes {
                     &[Use::GazeUp]
                 } else {
@@ -9193,6 +9275,9 @@ mod spot {
         kit_at: Option<usize>,
         /// She has a shelf already.
         has: bool,
+        /// `(pane, at)`: her gremlin on that pane's floor (phase 6a step
+        /// 7: [`gremlin_spot_draw`] only; [`spot_draw`] draws none).
+        gremlin: Option<(usize, u16)>,
     }
 
     fn rect_draw() -> impl Strategy<Value = (u16, u16, u16, u16)> {
@@ -9255,8 +9340,19 @@ mod spot {
                     door,
                     kit_at,
                     has,
+                    gremlin: None,
                 },
             )
+    }
+
+    /// [`spot_draw`] with her gremlin on a floor most of the time (phase
+    /// 6a step 7: its own strategy; `spot_draw`'s draws are unchanged).
+    fn gremlin_spot_draw() -> impl Strategy<Value = SpotDraw> {
+        (
+            spot_draw(),
+            proptest::option::weighted(0.8, (0usize..3, 0u16..=1000)),
+        )
+            .prop_map(|(draw, gremlin)| SpotDraw { gremlin, ..draw })
     }
 
     /// A draw made a frame: the buffer, her panes, each pane's declared
@@ -9408,6 +9504,14 @@ mod spot {
                 home.add(Prop::new(KINDS[kind], NOOKS[pane], at, Facing::Right));
             }
         }
+        if let Some((pane, at)) = draw.gremlin.filter(|&(p, _)| p < rects.len()) {
+            home.add(Prop::new(
+                Furniture::Gremlin,
+                NOOKS[pane],
+                at,
+                Facing::Right,
+            ));
+        }
         if draw.has {
             home.structures.push(Structure::Shelf(Shelf {
                 nook: NOOKS[0],
@@ -9464,8 +9568,10 @@ mod spot {
 
     /// Every place a shelf could go on `spot`'s frame, worked out from
     /// D3's words and the panes' rects alone; and how many low places
-    /// were refused for their block alone.
-    fn places(spot: &Spot) -> (Vec<Place>, usize) {
+    /// were refused for their block alone. `by_gremlin`: her gremlin
+    /// standing on a floor puts his pane first, and in it the places
+    /// nearest his middle first (step 7); else he's only a piece.
+    fn places(spot: &Spot, by_gremlin: bool) -> (Vec<Place>, usize) {
         let mut blocked = 0;
         if !spot.home.structures.is_empty() {
             return (Vec::new(), blocked);
@@ -9473,13 +9579,27 @@ mod spot {
         let laid = spot.home.laid_and_shifted(&spot.nooks).shown;
         let covers: Vec<Rect> = laid.iter().map(Shown::cover).collect();
         let buf = &spot.buf;
-        let mut order: Vec<Nook> = spot.kit_at.into_iter().collect();
-        order.extend(
-            spot.nooks
-                .iter()
-                .map(|&(n, _)| n)
-                .filter(|&n| Some(n) != spot.kit_at),
-        );
+        // Her gremlin out of his box on a floor: his pane, and twice his
+        // middle's column.
+        let gremlin = laid
+            .iter()
+            .find(|s| s.item == Furniture::Gremlin && !s.boxed() && s.scrap.is_none())
+            .and_then(|s| match s.strip? {
+                Strip::Bottom(nook) => Some((nook, 2 * s.left + i32::from(s.size().0))),
+                Strip::Shelf(_) => None,
+            })
+            .filter(|_| by_gremlin);
+        let mut order: Vec<Nook> = gremlin.map(|(n, _)| n).into_iter().collect();
+        if let Some(kit) = spot.kit_at.filter(|k| !order.contains(k)) {
+            order.push(kit);
+        }
+        let rest: Vec<Nook> = spot
+            .nooks
+            .iter()
+            .map(|&(n, _)| n)
+            .filter(|n| !order.contains(n))
+            .collect();
+        order.extend(rest);
         let mut out = Vec::new();
         for (rank, nook) in order.into_iter().enumerate() {
             let pane = spot.nooks.iter().find(|(n, _)| *n == nook).unwrap().1;
@@ -9585,7 +9705,11 @@ mod spot {
                                 && i32::from(r.x) < to
                                 && from < i32::from(r.right())
                         });
-                    let away = (2 * from + 10 - (left + right)).abs();
+                    let middle = match gremlin {
+                        Some((n, twice)) if n == nook => twice,
+                        _ => left + right,
+                    };
+                    let away = (2 * from + 10 - middle).abs();
                     let key = (class, rank, text, touches, shelf.rise, away, from);
                     out.push((key, shelf));
                 }
@@ -9613,6 +9737,10 @@ mod spot {
         touching: usize,
         kit: usize,
         blocked: usize,
+        /// A choice her gremlin decided (step 7): his pane first, or the
+        /// place nearest him in it (the first place differs with him
+        /// only a piece).
+        gremlin: usize,
     }
 
     impl Seen {
@@ -9625,13 +9753,14 @@ mod spot {
             self.touching += one.touching;
             self.kit += one.kit;
             self.blocked += one.blocked;
+            self.gremlin += one.gremlin;
         }
     }
 
     fn hangs_as_high_as_fits(draw: &SpotDraw) -> Result<Seen, TestCaseError> {
         let spot = spot(draw);
         let chosen = spot.chosen();
-        let (all, blocked) = places(&spot);
+        let (all, blocked) = places(&spot, true);
         let first = all.iter().min_by_key(|&&(key, _)| key).copied();
         prop_assert_eq!(chosen.is_some(), first.is_some(), "{:?}", first);
         prop_assert_eq!(chosen, first.map(|(_, shelf)| shelf));
@@ -9661,7 +9790,12 @@ mod spot {
         };
         seen.texted += usize::from(without(|k| k.2 = false) != Some(shelf));
         seen.touching += usize::from(without(|k| k.3 = false) != Some(shelf));
-        if spot.kit_at.is_some() {
+        if draw.gremlin.is_some() {
+            let (plain, _) = places(&spot, false);
+            let first = plain.iter().min_by_key(|&&(key, _)| key).map(|&(_, s)| s);
+            seen.gremlin += usize::from(first != Some(shelf));
+        }
+        if spot.kit_at.is_some() && draw.gremlin.is_none() {
             // Its pane's rank as `plan`'s order has it.
             let plain: Vec<Nook> = spot.nooks.iter().map(|&(n, _)| n).collect();
             let unkitted = all
@@ -9688,6 +9822,15 @@ mod spot {
         /// margin and the rows over its run as D4 judges them.
         #[test]
         fn a_shelf_hangs_as_high_as_fits(draw in spot_draw()) {
+            hangs_as_high_as_fits(&draw)?;
+        }
+
+        /// [`a_shelf_hangs_as_high_as_fits`] with her gremlin on a floor
+        /// (phase 6a step 7, D3): his pane before every other (the pane
+        /// she unpacks in next), and in it the places nearest his middle
+        /// first.
+        #[test]
+        fn a_shelf_hangs_as_high_as_fits_by_her_gremlin(draw in gremlin_spot_draw()) {
             hangs_as_high_as_fits(&draw)?;
         }
     }
@@ -10012,5 +10155,106 @@ mod spot {
         );
         assert!(seen.texted >= 10 && seen.touching >= 7, "{seen:?}");
         assert!(seen.later >= 22 && seen.kit >= 4, "{seen:?}");
+    }
+
+    /// The deterministic companion of
+    /// [`a_shelf_hangs_as_high_as_fits_by_her_gremlin`]: over 256 fixed
+    /// draws, her gremlin decides where it goes often (his pane, or the
+    /// place nearest him), and every case still comes up.
+    #[test]
+    fn shelves_go_up_by_her_gremlin() {
+        let mut runner = TestRunner::new_with_rng(
+            Config::default(),
+            TestRng::deterministic_rng(proptest::test_runner::RngAlgorithm::ChaCha),
+        );
+        let mut seen = Seen::default();
+        for _ in 0..256 {
+            let draw = gremlin_spot_draw().new_tree(&mut runner).unwrap().current();
+            seen.add(&hangs_as_high_as_fits(&draw).unwrap());
+        }
+        eprintln!("{seen:?}");
+        assert!(
+            seen.high >= GREMLIN_SEEN.0
+                && seen.low >= GREMLIN_SEEN.1
+                && seen.none >= GREMLIN_SEEN.2,
+            "{seen:?}"
+        );
+        assert!(seen.gremlin >= GREMLIN_SEEN.3, "{seen:?}");
+    }
+
+    /// [`shelves_go_up_by_her_gremlin`]'s thresholds (high, low, none,
+    /// gremlin): about half of what it measured (2026-10-11: high 157,
+    /// low 45, none 54, by her gremlin 64; later 51, texted 27, touching
+    /// 16).
+    const GREMLIN_SEEN: (usize, usize, usize, usize) = (78, 22, 27, 32);
+
+    /// Her gremlin's pane first (D3, step 7): his pane before the one
+    /// she unpacks in and before the panes' order, and in it, the run
+    /// nearest his middle; a pane of his that takes none passes to the
+    /// next as ever; boxed, he decides nothing. (Up on her shelf there's
+    /// nothing to decide: with a shelf of hers, none is chosen at all.)
+    #[test]
+    fn a_shelf_goes_up_by_her_gremlin() {
+        // List 27 rows and Users 13 (a high shelf either), the Playlist 9
+        // (a low one at most), 50 wide: Users' inside is 51..99.
+        let nooks = [
+            (Nook::List, Rect::new(0, 0, 50, 27)),
+            (Nook::Users, Rect::new(50, 0, 50, 13)),
+            (Nook::Playlist, Rect::new(100, 0, 50, 9)),
+        ];
+        let buf = panes(&nooks, 150, 28);
+        let gremlin = |nook: Nook, offset: u16, boxed: bool| {
+            let mut home = Home::default();
+            assert!(home.add(Prop {
+                anchor: Some(Anchor {
+                    side: Side::Left,
+                    offset,
+                }),
+                boxed: boxed.into(),
+                ..Prop::new(Furniture::Gremlin, nook, 0, Facing::Right)
+            }));
+            home
+        };
+        // No gremlin: List, the first in order, mid-wall.
+        let list = spot_on(&Home::default(), &buf, &nooks, Rect::default(), None);
+        assert_eq!(list.map(|s| s.nook), Some(Nook::List));
+        // In Users, 30 along (columns 81..83, his middle 82): Users, the
+        // run nearest him (77..87; mid-wall would be 70..80), ahead of
+        // List and of the pane she unpacks in.
+        for kit in [None, Some(Nook::List)] {
+            let got = spot_on(
+                &gremlin(Nook::Users, 30, false),
+                &buf,
+                &nooks,
+                Rect::default(),
+                kit,
+            );
+            assert_eq!(
+                got,
+                Some(shelf(Nook::Users, Side::Right, 12, 7)),
+                "kit {kit:?}"
+            );
+        }
+        let mid = spot_on(&Home::default(), &buf, &[nooks[1]], Rect::default(), None);
+        assert_eq!(mid, Some(shelf(Nook::Users, Side::Left, 19, 7)), "mid-wall");
+        // In the Playlist, which takes no high shelf: List's high one, as
+        // with no gremlin (highest that fits first).
+        let got = spot_on(
+            &gremlin(Nook::Playlist, 10, false),
+            &buf,
+            &nooks,
+            Rect::default(),
+            None,
+        );
+        assert_eq!(got.map(|s| (s.nook, s.rise)), Some((Nook::List, 7)));
+        // Boxed, he's a parcel: List, as with none.
+        let got = spot_on(
+            &gremlin(Nook::Users, 30, true),
+            &buf,
+            &nooks,
+            Rect::default(),
+            None,
+        );
+        assert_eq!(got.map(|s| s.nook), Some(Nook::List));
     }
 }

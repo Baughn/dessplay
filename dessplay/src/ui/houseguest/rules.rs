@@ -45,6 +45,43 @@ pub(super) enum Rule {
     /// piece, any out of its box whose cover meets it, unless no room
     /// would take it (then it's in the closet: see [`room::stranded`]).
     InChat,
+    /// The piece stands up high, on a shelf (phase 6a D9: her gremlin;
+    /// [`Furniture::wants_up`]): broken while it's laid out, out of its
+    /// box, on a floor. Only a shelf mends it.
+    High(Furniture),
+}
+
+impl Rule {
+    /// The kit that would let her put it right, if it wants one (phase 6a
+    /// D9: what her wishlist reads; 6b and 6c add theirs).
+    pub fn wants(self) -> Option<Furniture> {
+        match self {
+            Self::High(_) => Some(Furniture::ShelfKit),
+            Self::Faces { .. }
+            | Self::Near { .. }
+            | Self::AgainstWall(_)
+            | Self::Apart { .. }
+            | Self::Belongs
+            | Self::DoorClear
+            | Self::InChat => None,
+        }
+    }
+
+    /// Whether she says so only in its piece's room, turned to face it
+    /// (phase 6a D9: a piece that wants up, where it stands), rather than
+    /// wherever she is once she's quiet.
+    pub fn said_in_its_room(self) -> bool {
+        match self {
+            Self::High(_) => true,
+            Self::Faces { .. }
+            | Self::Near { .. }
+            | Self::AgainstWall(_)
+            | Self::Apart { .. }
+            | Self::Belongs
+            | Self::DoorClear
+            | Self::InChat => false,
+        }
+    }
 }
 
 /// A rule, the uses of a piece it involves that she feels it on, and
@@ -71,7 +108,7 @@ pub(super) const ANY_USE: &[Use] = &[
 ];
 
 /// The rules, in the order they're judged.
-pub(super) const RULES: [RuleRow; 8] = [
+pub(super) const RULES: [RuleRow; 9] = [
     RuleRow {
         rule: Rule::Faces {
             seat: Furniture::Sofa,
@@ -121,6 +158,14 @@ pub(super) const RULES: [RuleRow; 8] = [
         rule: Rule::InChat,
         felt_on: ANY_USE,
         grievance: line!("People are talking here…"),
+    },
+    // Felt on sight only (phase 6a D9): in its room, where a shelf stands
+    // or could go up (`on_sight`, mod.rs). Using it (gazing up at it) is
+    // on a shelf, where it holds.
+    RuleRow {
+        rule: Rule::High(Furniture::Gremlin),
+        felt_on: &[],
+        grievance: line!("It wants a shelf..."),
     },
 ];
 
@@ -195,6 +240,7 @@ fn kind(row: usize) -> &'static str {
         Some(Rule::Belongs) => "belongs",
         Some(Rule::DoorClear) => "door",
         Some(Rule::InChat) => "chat",
+        Some(Rule::High(_)) => "high",
         None => "?",
     }
 }
@@ -367,6 +413,14 @@ fn judge_each(
                 if room::closetable(keep.chat(), s) && !closet.contains(&s.item) {
                     push(&[s.item], &[s.item]);
                 }
+            }
+        }
+        // Up on a shelf it holds: only a floor breaks it.
+        Rule::High(item) => {
+            if let Some(at) = here(item)
+                && at.strip.is_some_and(Strip::is_floor)
+            {
+                push(&[item], &[item]);
             }
         }
     }
@@ -979,10 +1033,17 @@ fn shelf_lefts(laid: &[Shown], strip: Strip, piece: Furniture, e: Extent) -> Vec
 /// one of the pieces it would move (or turns it) to a place on a strip
 /// that passes the geometry ([`evaluate`]) and fits there this frame.
 pub(super) fn search(home: &Home, frame: &Frame, target: &Broken) -> Search {
-    let before = Before::new(home, frame);
     let Some(rule) = target.rule().map(|r| r.rule) else {
         return Search::default();
     };
+    // Only a shelf mends a piece that wants up (phase 6a D9): with no
+    // finished one shown on this frame, there's nothing to weigh, and
+    // nothing to lay out (a shortcut: no place on a floor is weighed for
+    // it below, and a hidden shelf has no cells to stand on).
+    if matches!(rule, Rule::High(_)) && !frame.drawn.written().holds_up(home) {
+        return Search::default();
+    }
+    let before = Before::new(home, frame);
     // Each piece it would move, each strip it could mend it on, and the
     // places along that strip (with where it stands now, and the far
     // wall).
@@ -1008,8 +1069,12 @@ pub(super) fn search(home: &Home, frame: &Frame, target: &Broken) -> Search {
             let Some(plan) = plan_of(&before, strip) else {
                 continue;
             };
-            // Only where it may stand, laned as it would be there.
-            if !plan.takes(piece, old.boxed()) {
+            // Only where it may stand, laned as it would be there; for a
+            // piece that wants up, only up on a shelf (a floor can't mend
+            // it).
+            if !plan.takes(piece, old.boxed())
+                || (matches!(rule, Rule::High(_)) && strip.is_floor())
+            {
                 continue;
             }
             let e = plan.along(old.lane_on(strip));
@@ -1590,7 +1655,19 @@ mod tests {
     /// Some of her pieces, each anchored on one of the two strips, either
     /// way round, settled or not, boxed or not.
     fn pieces() -> impl Strategy<Value = Vec<Prop>> {
-        proptest::sample::subsequence(Furniture::PRE_SHELF.to_vec(), 1..=6).prop_flat_map(|items| {
+        pieces_of(&Furniture::PRE_SHELF)
+    }
+
+    /// The kinds [`rules_hold_across_a_resize_and_text_with_a_gremlin`]
+    /// draws from (its own list: phase 6a step 7): furniture and decor,
+    /// her gremlin among them, on her floors (no shelf fits those panes:
+    /// he's always wanting up there).
+    const GREMLIN_HOLD_KINDS: [Furniture; 8] =
+        [Sofa, Tv, Bed, Lamp, Fridge, Plant, Poster, Gremlin];
+
+    /// The body of [`pieces`] and its kin, of `kinds`.
+    fn pieces_of(kinds: &'static [Furniture]) -> impl Strategy<Value = Vec<Prop>> {
+        proptest::sample::subsequence(kinds.to_vec(), 1..=6).prop_flat_map(|items| {
             let n = items.len();
             (
                 Just(items),
@@ -1690,6 +1767,31 @@ mod tests {
                 side: if right { Side::Right } else { Side::Left },
             };
             rules_hold(props, wide, narrow, text, Some(door))?;
+        }
+
+        /// [`rules_hold_across_a_resize_and_text`] with her gremlin among
+        /// her pieces (phase 6a step 7), maybe her door in a wall of
+        /// either strip: his wanting up high breaks and mends nothing
+        /// across a resize and text either. These panes are too short for
+        /// any shelf (8 rows: a low one needs 9), so on a floor he's
+        /// wanting up throughout: this checks only that his rule stays
+        /// broken, and the others hold beside it. A shelf that shows on
+        /// one frame and not the next (resized, or text over it), with a
+        /// repair up onto it: the later frame of
+        /// `every_repair_mends_and_breaks_nothing_with_a_gremlin`.
+        #[test]
+        fn rules_hold_across_a_resize_and_text_with_a_gremlin(
+            props in pieces_of(&GREMLIN_HOLD_KINDS),
+            wide in 30u16..90,
+            narrow in 16u16..90,
+            text in proptest::collection::vec(1u16..90, 0..6),
+            door in proptest::option::of((any::<bool>(), any::<bool>())),
+        ) {
+            let door = door.map(|(on_users, right)| DoorWall {
+                strip: Strip::Bottom(if on_users { Nook::Users } else { Nook::Playlist }),
+                side: if right { Side::Right } else { Side::Left },
+            });
+            rules_hold(props, wide, narrow, text, door)?;
         }
     }
 
@@ -3443,6 +3545,7 @@ mod tests {
     }
 
     /// What [`every_repair_mends_and_breaks_nothing`] draws.
+    #[derive(Debug)]
     struct Draw {
         props: Vec<Prop>,
         width: u16,
@@ -3882,6 +3985,171 @@ mod tests {
             let structures = shelves_at(width, n, &offsets, &rises);
             let draw = Draw { props, width, n, text, makeshift, later_width, later_text, later_makeshift, blocked };
             repairs_mend_on(draw, door, chat, 14, structures)?;
+        }
+    }
+
+    /// The kinds [`gremlin_pieces`] draws from (its own list: phase 6a
+    /// step 7): [`SHELVED_KINDS`]' furniture and small decor, and her
+    /// gremlin, who wants up on a shelf.
+    const GREMLIN_KINDS: [Furniture; 7] = [Sofa, Tv, Bed, Lamp, Plant, Clock, Gremlin];
+
+    /// Her pieces for [`every_repair_mends_and_breaks_nothing_with_a_gremlin`]:
+    /// as [`shelved_pieces`], of [`GREMLIN_KINDS`].
+    fn gremlin_pieces() -> impl Strategy<Value = Vec<Prop>> {
+        shelved_pieces_of(&GREMLIN_KINDS)
+    }
+
+    /// A draw of [`every_repair_mends_and_breaks_nothing_with_a_gremlin`]:
+    /// her pieces and frames, her door's wall if any, a chat pane if any,
+    /// and 0 to 3 shelves (low, high, or higher).
+    #[allow(clippy::type_complexity)]
+    fn gremlin_draw() -> impl Strategy<
+        Value = (
+            Draw,
+            Option<DoorWall>,
+            Option<Rect>,
+            Vec<super::super::structures::Structure>,
+        ),
+    > {
+        (
+            (
+                gremlin_pieces(),
+                30u16..120,
+                2usize..=3,
+                proptest::collection::vec((1u16..120, 0u16..42), 0..40),
+                proptest::collection::vec((1u16..120, 0u16..42, 2u16..6, 1u16..3), 0..3),
+                30u16..120,
+                proptest::collection::vec((1u16..120, 0u16..42), 0..40),
+                proptest::collection::vec((1u16..120, 0u16..42, 2u16..6, 1u16..3), 0..3),
+                proptest::collection::vec((1u16..120, 0u16..42, 1u16..8, 1u16..4), 0..3),
+            ),
+            (
+                proptest::option::of((0usize..3, any::<bool>())),
+                proptest::option::of((0u16..120, 0u16..42, 1u16..40, 1u16..20)),
+                proptest::collection::vec(any::<u16>(), 3),
+                proptest::collection::vec(
+                    prop_oneof![1 => Just(5u16), 2 => Just(7u16), 1 => Just(8u16)],
+                    3,
+                ),
+                0usize..=3,
+            ),
+        )
+            .prop_map(
+                |(
+                    (
+                        props,
+                        width,
+                        n,
+                        text,
+                        makeshift,
+                        later_width,
+                        later_text,
+                        later_makeshift,
+                        blocked,
+                    ),
+                    (door, chat, offsets, rises, shelved),
+                )| {
+                    let door = door.map(|(strip, right)| DoorWall {
+                        strip: Strip::Bottom([Nook::Users, Nook::Playlist, Nook::List][strip % n]),
+                        side: if right { Side::Right } else { Side::Left },
+                    });
+                    let chat = chat.map(|c| Rect::new(c.0, c.1, c.2, c.3));
+                    let structures = shelves_at(width, shelved.min(n), &offsets, &rises);
+                    let draw = Draw {
+                        props,
+                        width,
+                        n,
+                        text,
+                        makeshift,
+                        later_width,
+                        later_text,
+                        later_makeshift,
+                        blocked,
+                    };
+                    (draw, door, chat, structures)
+                },
+            )
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(dessplay_core::test_support::proptest_cases(64)))]
+
+        /// [`every_repair_mends_and_breaks_nothing_with_a_shelf`] with her
+        /// gremlin among her pieces (phase 6a step 7), on a floor or up on
+        /// a shelf, on panes with a shelf or none: every repair, his up
+        /// onto a shelf included, mends its rule and breaks nothing. (How
+        /// often his rule is broken and repaired: its counting companion,
+        /// `a_gremlin_is_often_broken_and_repaired`.)
+        #[test]
+        fn every_repair_mends_and_breaks_nothing_with_a_gremlin(
+            (draw, door, chat, structures) in gremlin_draw(),
+        ) {
+            repairs_mend_on(draw, door, chat, 14, structures)?;
+        }
+    }
+
+    /// Non-vacuity for
+    /// [`every_repair_mends_and_breaks_nothing_with_a_gremlin`], on 256
+    /// fixed draws of its strategy: his rule comes up broken, and
+    /// repaired (up onto a shelf), often enough to be tested. Measured
+    /// (2026-10-12): broken 69, repaired 48; the thresholds are about
+    /// half.
+    #[test]
+    fn a_gremlin_is_often_broken_and_repaired() {
+        use proptest::strategy::ValueTree;
+        use proptest::test_runner::{Config, TestRng, TestRunner};
+        let high = row(Rule::High(Gremlin));
+        let mut runner = TestRunner::new_with_rng(
+            Config::default(),
+            TestRng::deterministic_rng(proptest::test_runner::RngAlgorithm::ChaCha),
+        );
+        let (mut broken, mut repaired) = (0, 0);
+        for _ in 0..256 {
+            let (draw, door, chat, structures) =
+                gremlin_draw().new_tree(&mut runner).unwrap().current();
+            let tally =
+                repairs_mend_on(draw, door, chat, 14, structures).unwrap_or_else(|e| panic!("{e}"));
+            let his = tally.iter().filter(|&&(r, _)| r == high);
+            broken += usize::from(his.clone().next().is_some());
+            repaired += usize::from(his.clone().any(|&(_, found)| found > 0));
+        }
+        assert!(
+            broken >= 34 && repaired >= 24,
+            "broken {broken}, repaired {repaired}"
+        );
+    }
+
+    /// The deterministic companion of
+    /// [`every_repair_mends_and_breaks_nothing_with_a_gremlin`]: her
+    /// gremlin on Users' floor, her shelf up in Users (rise 7) or not.
+    /// With it, his rule is broken and repaired, up onto the shelf, and
+    /// checked to mend it and break nothing; with none, it's broken and
+    /// no repair is found (no floor mends it).
+    #[test]
+    fn a_gremlin_is_repaired_up_onto_her_shelf_and_checked() {
+        let high = row(Rule::High(Gremlin));
+        for (shelved, found_some) in [(1, true), (0, false)] {
+            let draw = Draw {
+                props: vec![at(Gremlin, Nook::Users, Side::Left, 20, Facing::Right)],
+                width: 60,
+                n: 2,
+                text: Vec::new(),
+                makeshift: Vec::new(),
+                later_width: 60,
+                later_text: Vec::new(),
+                later_makeshift: Vec::new(),
+                blocked: Vec::new(),
+            };
+            let shelves = shelves_at(60, shelved, &[4], &[7]);
+            let tally =
+                repairs_mend_on(draw, None, None, 14, shelves).unwrap_or_else(|e| panic!("{e}"));
+            let his: Vec<usize> = tally
+                .iter()
+                .filter(|&&(r, _)| r == high)
+                .map(|&(_, found)| found)
+                .collect();
+            assert_eq!(his.len(), 1, "broken once: {tally:?}");
+            assert_eq!(his[0] > 0, found_some, "shelved {shelved}: {tally:?}");
         }
     }
 
@@ -4418,5 +4686,167 @@ mod shelves {
         assert!(up.0.iter().all(|(strip, _)| strip.is_floor()), "{up:?}");
         assert!(up.1.iter().all(|(strip, _)| strip.is_floor()), "{up:?}");
         assert_eq!(up.0.len(), 1, "{up:?}");
+    }
+}
+
+/// Her gremlin wants up high (phase 6a, step 7; design D9): `Rule::High`
+/// is broken while he stands on a floor, out of his box, and only a
+/// shelf mends it. (Judging and search: no drawing mode to loop over.)
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod high {
+    use super::super::room::Plan;
+    use super::super::room::shelves::{on, shelf_on, three_panes, written};
+    use super::*;
+
+    fn high_row() -> usize {
+        RULES
+            .iter()
+            .position(|r| r.rule == Rule::High(Furniture::Gremlin))
+            .expect("his row")
+    }
+
+    /// Her home of `pieces` (each `(item, strip, offset, boxed)`), her
+    /// Users shelf up (finished, rise 7: run `63..73` on row 5) if
+    /// `shelf`; what's broken, as [`three_panes`] lays it out.
+    fn judged(pieces: &[(Furniture, Strip, u16, bool)], shelf: bool) -> Vec<Broken> {
+        let (_, nooks) = three_panes();
+        let mut home = Home {
+            structures: if shelf {
+                vec![shelf_on(Nook::Users, 12, 7, 2)]
+            } else {
+                Vec::new()
+            },
+            ..Home::default()
+        };
+        for &(item, strip, offset, boxed) in pieces {
+            assert!(home.add(Prop {
+                boxed: boxed.into(),
+                ..on(item, strip, offset)
+            }));
+        }
+        let laid = home.laid_out(&nooks);
+        broken(&laid, &home, &Keep::default())
+    }
+
+    /// On a floor, out of his box, he wants up (whether or not a shelf
+    /// stands: the rule is the layout's; whether she feels it is the
+    /// frame's); up on her shelf, he doesn't; in his box, he's no piece
+    /// yet. The table, row by row: only her gremlin; his rule names him
+    /// alone, and wants her shelf kit.
+    #[test]
+    fn the_gremlin_wants_up_high() {
+        let users = Strip::Bottom(Nook::Users);
+        let shelf = Strip::Shelf(Nook::Users);
+        let his = |b: &Broken| b.row == high_row();
+        for (pieces, shelved, wants) in [
+            (vec![(Furniture::Gremlin, users, 20, false)], false, true),
+            (vec![(Furniture::Gremlin, users, 20, false)], true, true),
+            (vec![(Furniture::Gremlin, shelf, 4, false)], true, false),
+            (vec![(Furniture::Gremlin, users, 20, true)], false, false),
+            (vec![(Furniture::Plant, users, 20, false)], true, false),
+        ] {
+            let got: Vec<Broken> = judged(&pieces, shelved).into_iter().filter(his).collect();
+            if wants {
+                assert_eq!(got.len(), 1, "{pieces:?} shelf {shelved}: {got:?}");
+                assert_eq!(got[0].pieces, [Furniture::Gremlin]);
+                assert_eq!(got[0].involved, [Furniture::Gremlin]);
+                assert_eq!(
+                    got[0].key,
+                    Grievance {
+                        row: high_row(),
+                        piece: Furniture::Gremlin
+                    }
+                );
+            } else {
+                assert_eq!(got, [], "{pieces:?} shelf {shelved}");
+            }
+        }
+        // The kinds that want up are exactly the rows of the rule, each
+        // small decor (a shelf takes it), each wanting her shelf kit;
+        // and his rule is felt on no use (on sight only).
+        let rows: Vec<Furniture> = RULES
+            .iter()
+            .filter_map(|r| match r.rule {
+                Rule::High(item) => Some(item),
+                _ => None,
+            })
+            .collect();
+        let up: Vec<Furniture> = Furniture::ALL
+            .into_iter()
+            .filter(|f| f.wants_up())
+            .collect();
+        assert_eq!(rows, up);
+        assert_eq!(rows, [Furniture::Gremlin]);
+        for row in RULES.iter().filter(|r| matches!(r.rule, Rule::High(_))) {
+            assert!(row.felt_on.is_empty(), "{row:?}");
+            assert_eq!(row.rule.wants(), Some(Furniture::ShelfKit), "{row:?}");
+        }
+        for row in RULES.iter().filter(|r| !matches!(r.rule, Rule::High(_))) {
+            assert_eq!(row.rule.wants(), None, "{row:?}");
+        }
+        for item in up {
+            assert!(item.spec().shelf, "{item:?}");
+        }
+    }
+
+    /// Only a shelf mends him: with no shelf, the search for his rule
+    /// weighs nothing at all (it returns before laying anything out: a
+    /// shortcut only, as no floor is weighed for him anyway, below, and a
+    /// floor never mends him); with her Users shelf up, every repair
+    /// found sets him down on it, centred on the run (`63..73`, 2 wide:
+    /// 67), never on a floor, and only places along the run are weighed.
+    #[test]
+    fn his_rule_is_mended_only_onto_a_shelf() {
+        for shelved in [false, true] {
+            let (mut buf, nooks) = three_panes();
+            let plan = Plan {
+                nooks: &nooks,
+                chat: tuirealm::ratatui::layout::Rect::default(),
+                screen: buf.area,
+            };
+            let mut home = Home {
+                structures: if shelved {
+                    vec![shelf_on(Nook::Users, 12, 7, 2)]
+                } else {
+                    Vec::new()
+                },
+                ..Home::default()
+            };
+            assert!(home.add(on(Furniture::Gremlin, Strip::Bottom(Nook::Users), 20)));
+            let mine = written(&mut buf, &home, plan);
+            let keep = Keep::of(&home, plan);
+            let (shown, _) = home.frame(mine.over(&buf), plan, &|_, _| false);
+            let laid = home.laid_out(&nooks);
+            let target = broken(&laid, &home, &keep)
+                .into_iter()
+                .find(|b| b.row == high_row())
+                .expect("he wants up");
+            let frame = Frame {
+                drawn: mine.over(&buf),
+                nooks: &nooks,
+                blocked: &|_, _| false,
+                shown: &shown,
+                made: &[],
+                keep: &keep,
+            };
+            let found = search(&home, &frame, &target);
+            let mut kept = Vec::new();
+            mine.keep(&mut kept);
+            if shelved {
+                let places: Vec<(Strip, i32)> = found
+                    .repairs
+                    .iter()
+                    .map(|r| (r.to.strip, r.at.left))
+                    .collect();
+                assert_eq!(places, [(Strip::Shelf(Nook::Users), 67)], "{found:?}");
+                // Only places along her shelf's run are weighed (no
+                // floor's: 136 with them).
+                let along = usize::try_from(super::super::structures::SHELF_WIDTH).unwrap();
+                assert!(found.examined <= along, "{found:?}");
+            } else {
+                assert_eq!(found, Search::default(), "no shelf: nothing weighed");
+            }
+        }
     }
 }

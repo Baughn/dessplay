@@ -1,6 +1,6 @@
 # DessPlay Design Document
 
-Last updated: 2026-10-11
+Last updated: 2026-10-12
 
 A synchronized video player for watch parties. Terminal-first, built for
 reliability over flaky connections. Server-coordinated, including relayed
@@ -1791,13 +1791,22 @@ this section states what is built.
   after her last purchase, with nothing on order or still boxed, the
   shopping channel comes on (Chiyo-chichi) and she buys the next piece
   she lacks — sofa, bed, desk, lamp, bookshelf, fridge, cat bed, window,
-  in that order, then decor (a potted plant, a poster), but decor first while
+  in that order, then decor (a potted plant, a poster, a gremlin
+  figurine), but decor first while
   beauty is the most pressing of her needs (none higher), and last of
   all her shelf kit (phase 6a: kits after the furniture and the decor),
   sold only on a frame where a shelf could go up (*Strips and anchors*:
-  where her shelf goes is chosen on the frame), asked only once the
-  queue comes to it; one that can't be sold then holds up nothing after
-  it — the moment it comes on,
+  where her shelf goes is chosen on the frame), and her gremlin only
+  where a shelf of hers is up (or going up) or could go up on the frame
+  (he wants up there: *The rules of her home*), asked only once the
+  queue comes to one; one that can't be sold then holds up nothing after
+  it. **Her wishlist** (phase 6a): a rule she has felt this visit that
+  wants a kit she doesn't own (in its box or up), still broken, puts
+  that kit first, ahead of the furniture and decor she lacks, at the
+  same cadence (her gremlin wanting up: her shelf kit), if it can be
+  sold then (else the queue as ever); the first such rule in the order
+  she felt them; forgotten with the visit, as what she felt is, and
+  wished for again once she feels it again — the moment it comes on,
   whatever happens next. Her wall clock isn't sold: it's a gift (see
   *Her window and wall clock*). What she buys arrives on a later visit as a
   parcel ("A parcel!"), once she's up and in sight (not asleep or up in
@@ -1861,7 +1870,9 @@ this section states what is built.
   hung again elsewhere; a frame that can't hold it hides it, and what
   stands on it, whole, back when the frame holds it. She puts it up in
   two stages, the half nearer its wall (its bracket and half its run)
-  and then the rest: the first straight after she opens the kit, the
+  and then the rest: the first straight after she opens the kit (her
+  next decision that isn't a reflex, a line she owes waiting for it;
+  let go for the night or school, it's a want like any), the
   next on a later game day; at most one stage a game day (unfed, one a
   visit), counted in her record, so a restart doesn't reset it. A stage
   is a want of its own (nesting, for its own sake), not one of her home
@@ -1880,8 +1891,10 @@ this section states what is built.
 - **Furniture** (phase 3): a sofa (9×3 cells), TV (6×4), bed (10×3),
   desk (7×3), floor lamp (3×4), bookshelf (5×4), fridge (4×4), cat
   bed (4×2) and window (4×2, hung on the wall), and, just for looks, a
-  potted plant (3×3), a poster (4×2, hung) and a wall clock (3×2, hung),
-  and a shelf kit (5×2, only ever its box: *Getting furniture*),
+  potted plant (3×3), a poster (4×2, hung), a wall clock (3×2, hung) and
+  a gremlin figurine (2×2: a lavender-glazed imp on a wooden plinth,
+  grinning; mirrored as he faces), and a shelf kit (5×2, only ever its
+  box: *Getting furniture*),
   drawn in her style (outlined, soft fills) as line art, or as
   ASCII without graphics. She owns her furniture across visits; each
   kind is one row of a catalogue (name, footprint, drawing, ink, uses,
@@ -1891,8 +1904,8 @@ this section states what is built.
   bottom border between its walls (Users, Playlist, or The List, never
   the chat) — or a shelf she has finished putting up there (its run,
   after the panes' floors; one hidden this frame is still a strip).
-  Only small decor stands on a shelf (the plant and the clock, a clock
-  there standing as a mantel clock), never a parcel, and only on the
+  Only small decor stands on a shelf (the plant, the clock and the
+  gremlin, a clock there standing as a mantel clock), never a parcel, and only on the
   cells of it written this frame (the app's own `────` where a hidden
   shelf would be holds nothing up); she reaches it from the floor below,
   arms up. Only a repair puts a piece up there (centred on the run, or
@@ -2003,7 +2016,11 @@ this section states what is built.
   would meet a piece of hers
   (why: [decisions](decisions.md#her-window-hangs-low-for-her-to-lean-on-2026-10-06)).
   Her shelf hangs above every hung piece where its pane allows, else
-  low, just over her head; a low shelf blocks the wall lane under it
+  low, just over her head (every pane tried high before any low: her
+  gremlin's pane first, where he stands on its floor, then the pane she
+  opens the kit in, then the panes in order; in a pane, a row with no
+  text first, then a run touching no hung piece, the lowest rise, and
+  the run nearest her gremlin in his pane, else the pane's middle); a low shelf blocks the wall lane under it
   (its run's columns and its margin's, from the top of the lane down to
   its row, whatever of it is up), and a piece that hangs there hangs at
   the nearest place beside it by the same rule, keeping its order (in
@@ -2057,7 +2074,7 @@ this section states what is built.
   and names it, "Sata andagi.", four to six times, happier each time,
   then eats it), and on
   about half her visits Kamineko is asleep in the cat bed — she pets
-  him, and he bites ("Ow!"). Her plant up on her shelf (phase 6a) is for
+  him, and he bites ("Ow!"). Her plant, or her gremlin, up on her shelf (phase 6a) is for
   gazing up at: standing on the floor of its room (only from there, never
   a climb for it) just beside it, a column or two past it but still under
   the shelf's run, facing it,
@@ -2184,7 +2201,11 @@ this section states what is built.
   kept or yielding, wherever the space can exist at all: never on a
   room too short or narrow for it); and nothing stands in the chat pane
   (**InChat**, but a piece no room would take: it's in the closet).
-  Both are judged piece by piece, and felt on any use of the piece. A piece **spoils** a room when what
+  Both are judged piece by piece, and felt on any use of the piece.
+  And her gremlin stands up on a shelf (**High**, phase 6a: broken while
+  he stands on a floor, out of his box; only a shelf mends it, so a
+  repair of it is only ever a move up onto one, and with no finished
+  shelf shown on the frame there's none to weigh). A piece **spoils** a room when what
   the room is without it forbids something it brings, by the rooms
   table's "no" columns: a bed in a living room or a kitchen, a TV or a
   fridge in a bedroom (a desk spoils nothing: a study forbids nothing,
@@ -2210,14 +2231,26 @@ this section states what is built.
   stood aside for it (from school, a dash, work, the stage; never on
   the idle gate, and never for a fallback a short room, the chat, a
   focused pane or no wall forced), and InChat whenever she's in sight
-  while a piece of hers stands in the chat. Felt on sight, she says so
-  ("Can't get to the door!", "People are talking here…") only when her
+  while a piece of hers stands in the chat; and High while she stands on
+  the floor of her gremlin's room (his floor, her door's space in it
+  too), but only where it means something: where a finished shelf of
+  hers shows on the frame, or one could go up on it (not while one is
+  going up: she's at it; not where the frame hides hers, nor on a frame
+  no shelf could go up on, nor in another room), so what she feels is
+  what her wishlist reads (*Getting furniture*).
+  Felt on sight, she says so
+  ("Can't get to the door!", "People are talking here…", "It wants a
+  shelf...", the last only in his room as the frame has it then, turned
+  to face him where he stands then) only when her
   mood would have her put it right (judged when she'd say it, so one
   felt while she mends another is said after), at most once a game day
   per rule (once a visit while no routine reaches her), and only once
   she's quiet after her arrival line ("I'm home!", her hello): she
   stands until she is, then stands saying it for two frames, which a
-  look at the chat and a parcel's "A parcel!" wait for. **Each rule is felt once a visit**, the first broken
+  look at the chat and a parcel's "A parcel!" wait for; a line she owes
+  in turn waits while her shelf kit's first stage is next or she's on
+  her way to put a stage up
+  (High: why: [decisions](decisions.md#the-gremlin-wants-up-high-2026-10-11)). **Each rule is felt once a visit**, the first broken
   one of a use, and forgotten when she leaves (nothing is kept). It
   doesn't draw on her beat lines. Watching the TV with a grievance due,
   she has her home on her mind instead of the shopping channel's

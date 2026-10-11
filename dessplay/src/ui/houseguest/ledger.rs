@@ -726,7 +726,8 @@ impl RoomKind {
             | Furniture::Poster
             | Furniture::Clock
             | Furniture::Window
-            | Furniture::ShelfKit => Self::Living,
+            | Furniture::ShelfKit
+            | Furniture::Gremlin => Self::Living,
             Furniture::Bed | Furniture::Desk | Furniture::Lamp | Furniture::Bookshelf => {
                 Self::Bedroom
             }
@@ -1886,6 +1887,48 @@ mod tests {
         );
         assert!(text.contains("ShelfKit"), "{text}");
         assert_eq!(Ledger::from_json(&text), Ok(shelved()));
+    }
+
+    /// Her gremlin (phase 6a step 7) reads back where he stands, on her
+    /// shelf or on a floor, and is kept in the living room by kind; a
+    /// build from before shelves skips him (a kind it doesn't know) and
+    /// reads the rest as written.
+    #[test]
+    fn her_gremlin_reads_back_and_an_older_build_skips_him() {
+        assert_eq!(RoomKind::of(Furniture::Gremlin), RoomKind::Living);
+        assert!(!Furniture::Gremlin.legacy());
+        for shelves in [&[Nook::Users][..], &[]] {
+            let ledger = on_a_shelf(Furniture::Gremlin, Nook::Users, shelves);
+            let text = ledger.to_json();
+            assert!(text.contains("Gremlin"), "{text}");
+            let read = Ledger::from_json(&text).expect("it reads");
+            let strip = |l: &Ledger| {
+                l.home
+                    .props
+                    .iter()
+                    .find(|p| p.item == Furniture::Gremlin)
+                    .map(|p| p.strip)
+            };
+            let want = if shelves.is_empty() {
+                Strip::Bottom(Nook::Users)
+            } else {
+                Strip::Shelf(Nook::Users)
+            };
+            assert_eq!(strip(&read), Some(want), "{shelves:?}");
+            if !shelves.is_empty() {
+                assert_eq!(read, ledger);
+            }
+            let old = as_a_pre_shelf_build_reads(&text);
+            assert!(
+                !old.iter().any(|&(item, ..)| item == Furniture::Gremlin),
+                "{old:?}"
+            );
+            let known: Vec<Furniture> = furnished().home.props.iter().map(|p| p.item).collect();
+            assert_eq!(
+                old.iter().map(|&(item, ..)| item).collect::<Vec<_>>(),
+                known
+            );
+        }
     }
 
     /// The kinds of piece the builds before shelves know (phase 6a), as

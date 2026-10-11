@@ -2699,6 +2699,9 @@ fn visiting_at(guest: &mut Guest, real: &Buffer, view: &IdleView, (x, y): (i32, 
         looks: Looks::default(),
         raise: None,
         kit_room: None,
+        shelf_asked: None,
+        wished: None,
+        shelf_asks: 0,
         put_up: None,
         stage: None,
         stage_noted: None,
@@ -3157,20 +3160,21 @@ fn every_scene_has_a_spot_in_the_stage_room() {
                     assert!(guest.ledger.home.structures.is_empty(), "{at}");
                     continue;
                 }
-                // Gazing up at her plant on her shelf needs it to show
-                // there (phase 6a D8: her clock isn't gazed at, so the
-                // stage puts it up for no gaze): a shelf with 3 clear
-                // rows over its run, so a pane 10 rows tall (8 inside).
-                // None in the stage room (List is 9 rows tall, 7 inside:
-                // a shelf there is a low one, with 2 clear rows), and
-                // the stage says so and changes nothing of her home. It
-                // plays where her plant goes up:
-                // `tests::gaze_up::the_stage_gazes_up_where_her_plant_goes_up`.
-                let (_, plant_rows) = Furniture::Plant.spec().footprint;
-                let no_plant = room::pane_strips(&view.nooks)
+                // Gazing up at her plant or her gremlin on her shelf
+                // needs one to show there (phase 6a D8, D9: her clock
+                // isn't gazed at, so the stage puts it up for no gaze):
+                // a shelf with 2 clear rows over its run (her gremlin's
+                // height; her plant's 3 where a pane has them), so a pane
+                // 9 rows tall: none at 80×24, and the stage says so and
+                // changes nothing of her home. In the stage room at
+                // 100×30 her gremlin goes up on List's low shelf (step
+                // 7); her plant where it fits:
+                // `tests::gaze_up::the_stage_gazes_up_where_her_plant_or_gremlin_goes_up`.
+                let (_, gremlin_rows) = Furniture::Gremlin.spec().footprint;
+                let nothing_up = room::pane_strips(&view.nooks)
                     .iter()
-                    .all(|p| p.raw.rows < structures::LOW_RISE + plant_rows);
-                if scene == Scene::GazeUp && no_plant {
+                    .all(|p| p.raw.rows < structures::LOW_RISE + gremlin_rows);
+                if scene == Scene::GazeUp && nothing_up {
                     assert!(
                         matches!(&note, Some(Err(e)) if e.contains(super::stage::NOTHING_UP)),
                         "{at}: {note:?}"
@@ -3316,14 +3320,9 @@ fn every_scene_has_a_spot_in_the_stage_room() {
                         // At her shelf, putting its stage up (arms up:
                         // her Stretch idle draws the same pose).
                         Scene::PutUp => visit.osaka.act_name() == "PutUp",
-                        // Never reached: no stage room size takes her
-                        // plant up (the `no_plant` exception above). Its
-                        // observable (`Pose::Gaze` beside her plant) is
-                        // `tests::gaze_up::the_stage_gazes_up_where_her_plant_goes_up`'s.
-                        // Where a gazed-at piece comes to go up here (the
-                        // gremlin, 2 tall, from step 7), flip `no_plant`
-                        // and make this arm `posed(Pose::Gaze)`.
-                        Scene::GazeUp => panic!("{at}: gazing up in the stage room"),
+                        // Beside her gremlin on List's low shelf, gazing
+                        // up (after her pleased moment).
+                        Scene::GazeUp => posed(Pose::Gaze),
                         // Chosen as the use starts (the andagi plays
                         // after the snack, past the cap: see
                         // her_vignettes_play_at_her_things).
@@ -6171,7 +6170,10 @@ fn the_kit_is_sold_last_and_at_the_usual_cadence() {
     let piece = |item| room::Prop::new(item, Nook::Users, 0, sprite::Facing::Right);
     let mut ledger = Ledger::new(1);
     ledger.visits = 9;
-    let owned = std::iter::once(Tv).chain(PRE_SHELF_CATALOGUE);
+    // Her gremlin too (step 7: decor, sold before her kit).
+    let owned = std::iter::once(Tv)
+        .chain(PRE_SHELF_CATALOGUE)
+        .chain([Furniture::Gremlin]);
     for item in owned.filter(|&item| item != Bed && item != Poster) {
         assert!(ledger.home.add(piece(item)), "{item:?}");
     }
@@ -15846,6 +15848,7 @@ mod felt;
 mod film;
 mod gaze_up;
 mod golden;
+mod gremlin;
 mod kit;
 mod put_up;
 mod rain;

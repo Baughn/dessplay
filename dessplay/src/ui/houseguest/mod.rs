@@ -170,7 +170,7 @@ use terrain::Terrain;
 /// its own): furniture, then decor, then kits (phase 6a D7b; each tier
 /// in this order: see [`advert`]). Not her wall clock: that's a gift,
 /// once (see [`furnish`]).
-const CATALOGUE: [Furniture; 11] = [
+const CATALOGUE: [Furniture; 12] = [
     Furniture::Sofa,
     Furniture::Bed,
     Furniture::Desk,
@@ -181,6 +181,7 @@ const CATALOGUE: [Furniture; 11] = [
     Furniture::Window,
     Furniture::Plant,
     Furniture::Poster,
+    Furniture::Gremlin,
     Furniture::ShelfKit,
 ];
 /// She buys at most once every this many visits.
@@ -215,9 +216,11 @@ impl Tier {
 /// be sold now; else the next piece of furniture she lacks, or the next
 /// piece of decor when her room feeling bare is what she `needs` most
 /// (or there's no furniture left to sell), then her kits, last. A kit
-/// only while `shelf_room` says a shelf could go up on this frame (asked
-/// only once the queue comes to one); one that can't be sold now holds
-/// up nothing after it. At most once every [`SHOP_EVERY`] visits (any
+/// only while `shelf_room` says a shelf could go up on this frame, and a
+/// piece that wants up (her gremlin, [`Furniture::wants_up`]) only while
+/// a shelf of hers stands or could go up, so the story it starts can
+/// finish (asked only once the queue comes to one); one that can't be
+/// sold now holds up nothing after it. At most once every [`SHOP_EVERY`] visits (any
 /// time with the stage's `shop_now`), and never while something's on
 /// order or still boxed.
 fn advert(
@@ -235,7 +238,7 @@ fn advert(
     let sellable = |item: Furniture| {
         !ledger.home.owns(item)
             && match item.spec().kit {
-                None => true,
+                None => !item.wants_up() || ledger.home.shelves().next().is_some() || shelf_room(),
                 Some(room::Kit::Shelf) => shelf_room(),
             }
     };
@@ -251,6 +254,57 @@ fn advert(
             .filter(move |&item| Tier::of(item) == tier)
     });
     wished.chain(queue).find(|&item| sellable(item))
+}
+
+/// What she wishes the channel sold her first (phase 6a D9): the kit
+/// the first rule she has `felt` this visit (in the order she felt them)
+/// wants, while it's still `broken` and she doesn't own that kit (in its
+/// box, or up).
+fn wish(
+    felt: &[rules::Grievance],
+    broken: &[rules::Broken],
+    home: &room::Home,
+) -> Option<Furniture> {
+    felt.iter().find_map(|&key| {
+        let kit = broken.iter().find(|b| b.key == key)?.rule()?.rule.wants()?;
+        (!home.owns(kit)).then_some(kit)
+    })
+}
+
+/// The rules broken of a piece that wants up (phase 6a D9: her gremlin
+/// on a floor, [`rules::Rule::High`]), `shown` out of its box on a
+/// strip of `nooks`: each, and where she'd say so this frame (her in
+/// that room is on its raw pane strip's floor: standing in her door's
+/// space, she's in that room).
+fn wanting_up(
+    broken: &[rules::Broken],
+    shown: &[Shown],
+    nooks: &[(Nook, Rect)],
+) -> Vec<(rules::Grievance, osaka::AloudAt)> {
+    broken
+        .iter()
+        .filter(|b| matches!(b.rule().map(|r| r.rule), Some(rules::Rule::High(_))))
+        .filter_map(|b| {
+            let piece = shown.iter().find(|s| {
+                s.item == b.key.piece && !s.boxed() && s.scrap.is_none() && s.strip.is_some()
+            })?;
+            let room = piece.strip?.room();
+            let floor = room::pane_strips(nooks)
+                .into_iter()
+                .find(|p| p.strip == room)?
+                .raw;
+            let (cols, _) = piece.size();
+            Some((
+                b.key,
+                osaka::AloudAt {
+                    x: piece.left + i32::from(cols) / 2,
+                    floor: floor.floor,
+                    from: floor.from,
+                    to: floor.to,
+                },
+            ))
+        })
+        .collect()
 }
 
 /// Her wall clock as `shown` on the strips of `nooks`, if it's out of
@@ -1015,6 +1069,19 @@ struct Visit {
     /// Whether a shelf could go up on the last frame, while her kit
     /// showed in its box (none otherwise): logged once per change.
     kit_room: Option<bool>,
+    /// What `kit_room` last asked of [`room::Home::shelf_spot`]: what it
+    /// reads but the frame (hashed: her home, the panes, what's kept
+    /// off), the frame, and whether a shelf could go up. Asked again only
+    /// when one of them changes (phase 6a D9: she may stand in her
+    /// gremlin's room a long while, unfelt, where none could).
+    shelf_asked: Option<(u64, Buffer, bool)>,
+    /// What she wished the channel sold her first on the last frame
+    /// (phase 6a D9: [`wish`]): logged as it changes, and with what she
+    /// buys.
+    wished: Option<Furniture>,
+    /// How many times `kit_room` asked `shelf_spot` (tests).
+    #[cfg(test)]
+    shelf_asks: usize,
     /// The stage of her shelf she put up (phase 6a D7c), by its pane and
     /// what it brings it to: for the next paint to take, if its frame
     /// would show it up (else it isn't up, and she may put it up again).
@@ -3120,7 +3187,29 @@ impl Guest {
                     &mut self.rng,
                 );
                 visit.shown = shown;
-                let kit_room = kit_room(&self.ledger, self.shop_now, buf, view, visit);
+                // What she wishes the channel sold her (phase 6a D9), of
+                // what she has felt this visit (as the last frame left it:
+                // what she feels on this one, she wishes for on the next).
+                let wished = wish(&visit.osaka.felt(), &visit.broken, &self.ledger.home);
+                if wished != visit.wished {
+                    tracing::debug!(
+                        kit = ?wished,
+                        felt = ?visit.osaka.felt().iter().map(|k| k.label()).collect::<Vec<_>>(),
+                        "houseguest: what she wishes the channel sold her first"
+                    );
+                    visit.wished = wished;
+                }
+                // What wants up on a floor, and where she'd say so.
+                let wants_up = wanting_up(&visit.broken, &visit.shown, &view.nooks);
+                let kit_room = kit_room(
+                    &self.ledger,
+                    self.shop_now,
+                    wished,
+                    &wants_up,
+                    buf,
+                    view,
+                    visit,
+                );
                 // Her shelf going up (phase 6a D7c): the stage she put up
                 // taken where the frame shows it, and the next as it
                 // offers it, on the frame as `furnish` left her home.
@@ -3129,7 +3218,11 @@ impl Guest {
                 if self.ledger != before {
                     self.unsaved = true;
                 }
-                on_sight(visit, &self.said_aloud, today, now);
+                // A shelf could go up, or one is up and shown on this
+                // frame (half up, she's at it: nothing to feel; hidden,
+                // nothing could answer it: phase 6a D9).
+                let shelf_room = kit_room || written.holds_up(&self.ledger.home);
+                on_sight(visit, &wants_up, shelf_room, &self.said_aloud, today, now);
                 // The place of the piece in her pocket is kept for it.
                 let mut kept = view.protected.clone();
                 kept.extend(visit.ghost);
@@ -3339,7 +3432,7 @@ impl Guest {
                             &self.ledger,
                             self.shop_now,
                             visit.osaka.needs(),
-                            None,
+                            wished,
                             &|| kit_room,
                         ),
                         furnished: !self.ledger.home.props.is_empty(),
@@ -3350,6 +3443,7 @@ impl Guest {
                         judged,
                         put_up,
                         beauty_here,
+                        wants_up: wants_up.clone(),
                         clock,
                         door,
                         obstacles: obstacles.clone(),
@@ -3401,7 +3495,7 @@ impl Guest {
                         &self.ledger,
                         self.shop_now,
                         visit.osaka.needs(),
-                        None,
+                        wished,
                         &|| kit_room,
                     ),
                     furnished: !self.ledger.home.props.is_empty(),
@@ -3412,6 +3506,7 @@ impl Guest {
                     judged,
                     put_up,
                     beauty_here,
+                    wants_up,
                     clock,
                     door,
                     obstacles,
@@ -3764,6 +3859,10 @@ impl Guest {
             looks: Looks::default(),
             raise: None,
             kit_room: None,
+            shelf_asked: None,
+            wished: None,
+            #[cfg(test)]
+            shelf_asks: 0,
             put_up: None,
             stage: None,
             stage_noted: None,
@@ -4059,16 +4158,36 @@ fn note_closet(closet: &mut Vec<Furniture>, home: &room::Home, shown: &[Shown], 
 /// ([`osaka::Osaka`]'s `aloud_owed`: only while her mood would have her
 /// put it right, and it's still broken and not let go), so a rule felt
 /// while she's mending another is said once she's done.
-fn on_sight(visit: &mut Visit, said: &[(usize, Dated)], today: Dated, now: u64) {
+///
+/// A piece that wants up on a floor (phase 6a D9: her gremlin) she feels
+/// only standing in its room, and only where it means something: where
+/// a shelf of hers is up, or one could go up on this frame
+/// (`shelf_room`; not while one is going up: she's at it); she says so
+/// there, turned to face it.
+fn on_sight(
+    visit: &mut Visit,
+    wants_up: &[(rules::Grievance, osaka::AloudAt)],
+    shelf_room: bool,
+    said: &[(usize, Dated)],
+    today: Dated,
+    now: u64,
+) {
     if visit.osaka.hidden(now) {
         return;
     }
     let bumped = visit.osaka.bumped();
+    let here = (visit.osaka.x, visit.osaka.y);
     let mut rows: Vec<usize> = Vec::new();
     for b in &visit.broken {
         let seen = match b.rule().map(|r| r.rule) {
             Some(rules::Rule::DoorClear) => bumped,
             Some(rules::Rule::InChat) => true,
+            Some(rules::Rule::High(_)) => {
+                shelf_room
+                    && wants_up
+                        .iter()
+                        .any(|&(key, at)| key == b.key && at.holds(here))
+            }
             _ => false,
         };
         if seen && visit.osaka.feel(b.key, None) && !rows.contains(&b.row) {
@@ -4100,6 +4219,9 @@ fn record(
     for event in visit.osaka.take_events() {
         match event {
             osaka::HomeEvent::Bought(item) => {
+                if visit.wished == Some(item) {
+                    tracing::info!(?item, "houseguest: what she bought was what she wished for");
+                }
                 ledger.ordered = Some(item);
                 ledger.bought_on = ledger.visits;
                 *shop_now = false;
@@ -4553,12 +4675,17 @@ fn put_up_at(stage: structures::Stage, terrain: &Terrain, near: i32) -> Option<s
 /// Whether her shelf could go up on this frame (phase 6a D7b:
 /// [`room::Home::shelf_spot`], with what her visit keeps off it as the
 /// paint reads it), asked only while her kit shows in its box (its
-/// seat to open it from waits on it) or the channel's queue has come
-/// to it (it's sold only then): false otherwise. The box waits in
-/// sight while no shelf could go up; logged once per change.
+/// seat to open it from waits on it), the channel's queue (with what
+/// she `wished` for) has come to her kit or to a piece that wants up
+/// (each sold only then), or she stands in the room of a piece that
+/// wants up on a floor whose wanting she hasn't felt (she feels it only
+/// then: D9): false otherwise. The box waits in sight while no shelf
+/// could go up; logged once per change.
 fn kit_room(
     ledger: &Ledger,
     shop_now: bool,
+    wished: Option<Furniture>,
+    wants_up: &[(rules::Grievance, osaka::AloudAt)],
     buf: &Buffer,
     view: &IdleView,
     visit: &mut Visit,
@@ -4566,22 +4693,58 @@ fn kit_room(
     let shelf_kit = |item: Furniture| item.spec().kit == Some(room::Kit::Shelf);
     let kit_shown = visit.shown.iter().any(|s| shelf_kit(s.item));
     let needs = visit.osaka.needs();
-    let queued = advert(ledger, shop_now, needs, None, &|| true).is_some_and(shelf_kit);
-    let room = (kit_shown || queued) && {
+    // With a shelf up, nothing asks (`shelf_spot` finds none then: one in
+    // all, in 6a; what wants up is sold, and felt, for the shelf that
+    // stands).
+    let no_shelf = ledger.home.shelves().next().is_none();
+    let queued = advert(ledger, shop_now, needs, wished, &|| true)
+        .is_some_and(|item| shelf_kit(item) || (item.wants_up() && no_shelf));
+    let unfelt = no_shelf && {
+        let felt = visit.osaka.felt();
+        let here = (visit.osaka.x, visit.osaka.y);
+        wants_up
+            .iter()
+            .any(|(key, at)| at.holds(here) && !felt.contains(key))
+    };
+    let room = (kit_shown || queued || unfelt) && {
+        use std::hash::{Hash, Hasher};
         let (layer, made) = visit.shelf_keep_off();
-        let keep_off = structures::KeepOff {
-            protected: &view.protected,
-            layer: &layer,
-            made: &made,
-        };
         let home = &ledger.home;
         let kit_at = home
             .props
             .iter()
             .find(|p| shelf_kit(p.item))
             .map(|p| p.strip.nook());
-        home.shelf_spot(buf, plan_of(view, buf), &keep_off, kit_at)
-            .is_some()
+        let plan = plan_of(view, buf);
+        let mut hasher = std::hash::DefaultHasher::new();
+        (
+            home,
+            plan.nooks,
+            plan.chat,
+            &view.protected,
+            &layer,
+            &made,
+            kit_at,
+        )
+            .hash(&mut hasher);
+        let basis = hasher.finish();
+        match &visit.shelf_asked {
+            Some((was, frame, room)) if *was == basis && frame == buf => *room,
+            _ => {
+                let keep_off = structures::KeepOff {
+                    protected: &view.protected,
+                    layer: &layer,
+                    made: &made,
+                };
+                let room = home.shelf_spot(buf, plan, &keep_off, kit_at).is_some();
+                visit.shelf_asked = Some((basis, buf.clone(), room));
+                #[cfg(test)]
+                {
+                    visit.shelf_asks += 1;
+                }
+                room
+            }
+        }
     };
     let seen = kit_shown.then_some(room);
     if seen != visit.kit_room {

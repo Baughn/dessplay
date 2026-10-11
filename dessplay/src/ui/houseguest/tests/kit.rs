@@ -12,11 +12,13 @@ use crate::ui::houseguest::structures::{
 };
 
 /// Everything the channel sold before her kit (her TV out of its box
-/// among it) on [`rooms`]' floors, and the channel due: her kit is next.
+/// among it, and her gremlin, step 7) on [`rooms`]' floors, and the
+/// channel due: her kit is next.
 pub(super) fn all_but_the_kit(seed: u64, graphics: bool) -> Guest {
     use Furniture::*;
     let pieces = [
         (Tv, Nook::Users, 150),
+        (Gremlin, Nook::Users, 420),
         (Sofa, Nook::Users, 600),
         (Window, Nook::Users, 900),
         (Bed, Nook::Playlist, 100),
@@ -29,7 +31,7 @@ pub(super) fn all_but_the_kit(seed: u64, graphics: bool) -> Guest {
         (Poster, Nook::List, 950),
     ];
     let mut guest = home_at(seed, mon(16, 0), &pieces, graphics);
-    for item in PRE_SHELF_CATALOGUE {
+    for item in PRE_SHELF_CATALOGUE.into_iter().chain([Gremlin]) {
         assert!(guest.ledger.home.owns(item), "{item:?}");
     }
     guest.ledger.visits = 9;

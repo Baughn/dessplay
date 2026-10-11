@@ -912,6 +912,41 @@ stage.rs. **Exit.** Goldens unchanged. **CHANGELOG.** "Added: a gremlin figurine
 high, and she'll get a shelf for it." **Docs.** design.md *The rules of her home* (2101), *Getting furniture* (the
 wishlist, the gremlin's gate); decisions.md *The gremlin wants up high* (why a rule, why felt only in its room and only
 when a shelf can be, the wishlist as felt rules naming kits; rejected: a shelf-only gremlin).
+**As built.** `Furniture::Gremlin` (`ALL` 14; `Spec.shelf`, decor, `uses: &[]`: his gaze up comes from
+`Furniture::gazed_up_at`, now Plant and Gremlin, so every `ALL.find(uses.contains(..))` site is unchanged) and
+`Furniture::wants_up` (wildcard-free, the one list of kinds that want up: the sale gate, `shelf_spot`'s pane order, and a
+lint that it equals the `High` rows of `RULES`). `Rule::High(Furniture)` (row 8, `felt_on: &[]`) and `Rule::wants`.
+`rules::search` returns at once for `High` with no finished shelf (nothing laid out) and weighs only shelf strips for it.
+`CATALOGUE` `[.., Poster, Gremlin, ShelfKit]` (`CATALOGUE[..10]` unchanged). mod.rs `wish(felt, broken, home)` (pure);
+`wanting_up_here(broken, shown, nooks, her)` (each broken `High` whose piece's room floor she stands on, with an
+`osaka::AloudAt { x, floor, from, to }`), read by `on_sight` and by `kit_room`, which now also asks `shelf_spot` while
+she stands in such a room unfelt with no shelf, and while the queue (with the wish) comes to the gremlin.
+**Deviation:** "a shelf stands" is two things: the gremlin is **sold** while she has a shelf at all (up or going up) or
+one could go up; the rule is **felt** only while a shelf is finished or one could go up (not while one is going up: the
+step's own test found the line, said as she walked into his room to put up the first half, dropping the chain).
+`Osaka.owed_aloud: Vec<(usize, Option<AloudAt>)>`: a located line is said only while she stands on that floor, turned
+to face `x`. `shelf_spot`: the gremlin's pane first (unboxed on a floor), then `kit_at`, then `plan`'s; `Wall::best`
+takes the middle (twice the column) its `away` measures from. The stage room at 100×30 now plays `Scene::GazeUp`
+(`Shelving::Gazed` puts the gremlin on List's low shelf). The gremlin's parcel is the box scaled into 2 cells (0.4 in
+line art; ASCII ` _`/`|_`): flagged for step 9's review shots.
+**Review fixes (2026-10-12).** "Up" for feeling `High` is a finished shelf **shown on this frame**
+(`Written::holds_up`: its pane among what was written), not merely finished: a shelf the frame hides for good had her
+say the line every game day with no repair possible; `rules::search`'s early return reads the same. `Osaka.owed_aloud`
+is rows again (`owe_aloud(row)`): where a located line is said is the frame's when she says it (`Chances::wants_up`,
+each broken `High` with its room's floor and his middle column, read by `on_sight`, `kit_room` and `aloud_owed`), so a
+resize or his move since she felt it can't send her to a stale floor or column. Her kit's chain (`then_put_up`) is taken
+by the first decision that reaches it (a reflex before it leaves it set; `settle_for_night` lets it go), and `say_aloud`
+waits while it's set or her heading is `PutUp` (the test found a line said on landing from the hop to the stage cut the
+trip too). `kit_room` memoises `shelf_spot` on `Visit.shelf_asked` (a hash of what it reads, and the frame compared
+whole). The wish is logged as it changes (debug) and a purchase that was the wish at info. D9's census check that a felt
+`High` with no shelf costs no slot of `choose`'s four is **an argument plus a test** instead of a census room
+(`a_felt_high_with_no_shelf_takes_none_of_her_offers`: no repair, `Arrange` binds nothing, every want binds as with
+`may_arrange` false). `no_gremlin_grievance_where_no_shelf_can_go` runs a game **hour**, not a fed day (cost; never felt
+implies `may_arrange` is false for it, so `Arrange` is never offered for it), and now pins that `shelf_spot` is asked only
+as what it reads changes. The end-to-end is one test a mode. The gremlin census's home now lacks the bookshelf and the
+poster too, so "kit sold first" measures the wish. Once the kit is hers, the rule is felt and said with it on order
+or boxed (a shelf could go up), not while the shelf is going up; which of those three she says it in is an open
+question for the user (the chain-drop that first forced the third is fixed apart from it).
 
 ### Step 8. The four extras (~350 lines)
 

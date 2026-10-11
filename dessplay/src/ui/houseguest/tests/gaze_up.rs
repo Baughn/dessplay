@@ -249,24 +249,25 @@ fn she_gazes_up_only_from_her_shelf_s_room() {
 /// The stage's gaze up (phase 6a D11): on a frame where her shelf goes up
 /// with her plant on it ([`rooms_frame`] at 100×30: List takes a high
 /// shelf), she's set off to gaze up at it from beside it, and does; on
-/// one whose shelf has no room over it for her plant (the stage room at
-/// 100×30: a low shelf in a 9-row pane) or that takes none (80×24), the
-/// stage says nothing she gazes up at is up there, and changes nothing
-/// of her home (no shelf, nor her clock up for it); with her plant up
-/// but no spot beside it under its run restful, that there's no room
-/// beside it. Both modes.
+/// one whose shelf has no room over it for her plant but has for her
+/// gremlin (the stage room at 100×30: a low shelf in a 9-row pane, two
+/// rows over it; step 7), at her gremlin; on one that takes none
+/// (80×24), the stage says nothing she gazes up at is up there, and
+/// changes nothing of her home (no shelf, nor her clock up for it); with
+/// her plant up but no spot beside it under its run restful, that
+/// there's no room beside it. Both modes.
 #[test]
-fn the_stage_gazes_up_where_her_plant_goes_up() {
+fn the_stage_gazes_up_where_her_plant_or_gremlin_goes_up() {
     let stage_room = |w, h| {
         let mut ui = super::super::stage::stage_ui();
         real_frame(&mut ui, w, h)
     };
-    let frames: [(&str, (Buffer, IdleView)); 3] = [
-        ("rooms", rooms_frame(100, 30)),
-        ("stage", stage_room(100, 30)),
-        ("small", stage_room(80, 24)),
+    let frames: [(&str, (Buffer, IdleView), Option<Furniture>); 3] = [
+        ("rooms", rooms_frame(100, 30), Some(Furniture::Plant)),
+        ("stage", stage_room(100, 30), Some(Furniture::Gremlin)),
+        ("small", stage_room(80, 24), None),
     ];
-    for (name, (real, view)) in frames {
+    for (name, (real, view), up) in frames {
         for graphics in [false, true] {
             let at = format!("{name} graphics={graphics}");
             let mut guest = Guest::new(1);
@@ -276,7 +277,7 @@ fn the_stage_gazes_up_where_her_plant_goes_up() {
             guest.cue(Scene::GazeUp);
             paint(&mut guest, &real, &view, 0);
             let note = guest.cue_note().cloned();
-            if name != "rooms" {
+            let Some(up) = up else {
                 // Nothing she gazes up at goes up there (her clock
                 // isn't put up for it either).
                 assert!(
@@ -289,13 +290,10 @@ fn the_stage_gazes_up_where_her_plant_goes_up() {
                     guest.ledger.home.props
                 );
                 assert!(guest.ledger.home.structures.is_empty(), "{at}: a shelf up");
-                let plant_up = visit_of(&guest)
-                    .shown
-                    .iter()
-                    .any(|s| s.on_shelf() && s.item == Furniture::Plant);
-                assert!(!plant_up, "{at}");
+                let anything_up = visit_of(&guest).shown.iter().any(|s| s.on_shelf());
+                assert!(!anything_up, "{at}");
                 continue;
-            }
+            };
             assert!(matches!(note, Some(Ok(_))), "{at}: {note:?}");
             let mut now = 0;
             let gazed = loop {
@@ -313,15 +311,15 @@ fn the_stage_gazes_up_where_her_plant_goes_up() {
             };
             let (seat, ..) = gazed.unwrap_or_else(|| panic!("{at}: gazing, not at her shelf"));
             assert_eq!(seat.what, Use::GazeUp, "{at}");
-            assert_eq!(seat.piece, PieceRef::Real(Furniture::Plant), "{at}");
-            let plant = visit_of(&guest)
+            assert_eq!(seat.piece, PieceRef::Real(up), "{at}");
+            let piece = visit_of(&guest)
                 .shown
                 .iter()
-                .find(|s| s.item == Furniture::Plant)
+                .find(|s| s.item == up)
                 .cloned()
-                .unwrap_or_else(|| panic!("{at}: her plant"));
-            assert!(plant.on_shelf(), "{at}");
-            assert_eq!(seat.y, plant.stood, "{at}: from its room's floor");
+                .unwrap_or_else(|| panic!("{at}: her {up:?}"));
+            assert!(piece.on_shelf(), "{at}");
+            assert_eq!(seat.y, piece.stood, "{at}: from its room's floor");
         }
     }
     // Her plant up on her Users shelf (as `stage_shelf` keeps a shelf

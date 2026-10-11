@@ -3232,4 +3232,138 @@ fn shelf_census() {
         "  finished {} of {SEEDS}; game days from its coming to finished: mean {mean:.2}, sd {sd:.2}, max {max:.2}",
         days.len()
     );
+    gremlin_census(SEEDS);
+}
+
+/// [`shelf_census`]'s second half (phase 6a step 7): her gremlin on order
+/// on Monday at 16:00, just bought (everything else hers but her kit, her
+/// bookshelf and her poster, on [`rooms`] at 100×30: so the channel would
+/// sell a piece of furniture or decor before her kit, unless she wishes
+/// for it), run for up to twelve game days: when he came, when the
+/// channel sold her kit (and whether it was the next thing it sold: the
+/// wishlist's work), when her shelf was finished and when he went up on
+/// it, and her "It wants a shelf..." lines (each said once a game day at
+/// most).
+fn gremlin_census(seeds: u64) {
+    use crate::ui::houseguest::structures::Structure;
+    const DAYS: u64 = 12;
+    let started = std::time::Instant::now();
+    #[derive(Default, Debug)]
+    struct Run {
+        came: Option<u64>,
+        sold: Vec<Furniture>,
+        kit_sold: Option<u64>,
+        finished: Option<u64>,
+        up: Option<u64>,
+        lines: usize,
+    }
+    let run = |seed: u64| {
+        let (real, view) = rooms_frame(100, 30);
+        let mut guest = super::kit::all_but_the_kit(seed, false);
+        guest.ledger.home.props.retain(|p| {
+            !matches!(
+                p.item,
+                Furniture::Gremlin | Furniture::Bookshelf | Furniture::Poster
+            )
+        });
+        guest.ledger.ordered = Some(Furniture::Gremlin);
+        guest.ledger.bought_on = guest.ledger.visits;
+        let high = rules::RULES
+            .iter()
+            .position(|r| r.rule == rules::Rule::High(Furniture::Gremlin))
+            .expect("his row");
+        let until = guest.ledger.clock + DAYS * 24 * 60;
+        let mut out = Run::default();
+        let mut said: Vec<ledger::Dated> = Vec::new();
+        let mut now = 0;
+        paint(&mut guest, &real, &view, now);
+        while guest.ledger.clock < until && out.up.is_none() {
+            now += guest
+                .next_tick(now)
+                .map_or(1000, |d| d.as_millis() as u64)
+                .clamp(1, 1000);
+            if guest.advance(now) {
+                paint(&mut guest, &real, &view, now);
+            }
+            let clock = guest.ledger.clock;
+            for &(row, day) in &guest.said_aloud {
+                if row == high && !said.contains(&day) {
+                    said.push(day);
+                }
+            }
+            let home = &guest.ledger.home;
+            if out.came.is_none() && home.owns(Furniture::Gremlin) {
+                out.came = Some(clock);
+            }
+            if let Some(item) = guest.ledger.ordered
+                && out.came.is_some()
+                && out.sold.last() != Some(&item)
+            {
+                out.sold.push(item);
+                if item == Furniture::ShelfKit && out.kit_sold.is_none() {
+                    out.kit_sold = Some(clock);
+                }
+            }
+            let finished = home
+                .structures
+                .iter()
+                .any(|&Structure::Shelf(shelf)| shelf.finished());
+            if out.finished.is_none() && finished {
+                out.finished = Some(clock);
+            }
+            let up = home
+                .props
+                .iter()
+                .any(|p| p.item == Furniture::Gremlin && !p.strip.is_floor());
+            if up {
+                out.up = Some(clock);
+            }
+        }
+        out.lines = said.len();
+        out
+    };
+    let runs: Vec<(u64, Run)> = std::thread::scope(|scope| {
+        let runs: Vec<_> = (0..seeds)
+            .map(|seed| (seed, scope.spawn(move || run(seed))))
+            .collect();
+        runs.into_iter()
+            .map(|(seed, run)| (seed, run.join().expect("a run")))
+            .collect()
+    });
+    let when = |minutes: u64| {
+        let day = routine::day_time(minutes * 60_000, false);
+        when(&day)
+    };
+    let label = |at: Option<u64>| at.map_or_else(|| "-".to_owned(), when);
+    eprintln!(
+        "\n== gremlin census: {seeds} seeds, rooms 100x30, her gremlin on order Mon 16:00 (just bought; no bookshelf, no poster), up to {DAYS} game days ({:.0} s)",
+        started.elapsed().as_secs_f64()
+    );
+    let (mut days, mut kit_first, mut lines) = (Vec::new(), 0, Vec::new());
+    for (seed, run) in &runs {
+        let took = run
+            .came
+            .zip(run.up)
+            .map(|(came, up)| (up - came) as f64 / (24.0 * 60.0));
+        kit_first += usize::from(run.sold.first() == Some(&Furniture::ShelfKit));
+        eprintln!(
+            "  seed {seed:>2}: came {}, kit sold {}, shelf finished {}, he's up {}{}; sold {:?}; \"It wants a shelf...\" {} game days",
+            label(run.came),
+            label(run.kit_sold),
+            label(run.finished),
+            label(run.up),
+            took.map_or_else(String::new, |d| format!(" ({d:.2} game days)")),
+            run.sold,
+            run.lines,
+        );
+        days.extend(took);
+        lines.push(run.lines as f64);
+    }
+    let (mean, sd) = mean_sd(&days);
+    let max = days.iter().copied().fold(0.0, f64::max);
+    let (lines_mean, _) = mean_sd(&lines);
+    eprintln!(
+        "  up {} of {seeds}; the kit sold first (before her bookshelf and poster) in {kit_first}; game days from his coming to him up: mean {mean:.2}, sd {sd:.2}, max {max:.2}; his line on {lines_mean:.2} game days a run",
+        days.len()
+    );
 }

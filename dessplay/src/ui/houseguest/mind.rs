@@ -880,7 +880,8 @@ impl Furniture {
             | Self::Poster
             | Self::Window
             | Self::Clock
-            | Self::ShelfKit => None,
+            | Self::ShelfKit
+            | Self::Gremlin => None,
         }
     }
 }

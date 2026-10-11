@@ -70,6 +70,12 @@ pub(super) struct Chances {
     /// How pretty the room she's in is: what's pretty on the strip she
     /// stands on (0 off any strip).
     pub beauty_here: f64,
+    /// Each rule broken of a piece that wants up on a floor, shown out
+    /// of its box (phase 6a D9: her gremlin), and where she'd say so this
+    /// frame: its room's floor, and his middle column (see
+    /// [`Osaka::aloud_owed`]). Read each frame, so a resize or his move
+    /// since she felt it is where she says it.
+    pub wants_up: Vec<(super::rules::Grievance, AloudAt)>,
     /// Her wall clock, if it's shown out of its box on a strip: where it
     /// hangs, and the strip's floor and columns (what she glances at,
     /// on that strip: see [`ClockOn::seen_from`]).
@@ -90,6 +96,25 @@ pub(super) struct Chances {
     /// a reason to move it (door batch D6). `None` while she's through
     /// it: no door anywhere now.
     pub door_through: Option<super::door::DoorSpot>,
+}
+
+/// Where she says what's wrong of a piece in her room (phase 6a D9: her
+/// gremlin wanting up), as this frame shows it: on the floor of its room
+/// (row `floor`, columns `from..to`), turned to face its middle column
+/// `x`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct AloudAt {
+    pub x: i32,
+    pub floor: i32,
+    pub from: i32,
+    pub to: i32,
+}
+
+impl AloudAt {
+    /// Whether she stands in that room at `(x, y)`: on its floor.
+    pub fn holds(self, (x, y): (i32, i32)) -> bool {
+        self.floor == y && (self.from..self.to).contains(&x)
+    }
 }
 
 /// Her wall clock where it hangs (phase 5b D7): its middle column, and
@@ -2486,8 +2511,9 @@ pub(super) struct Osaka {
     /// it: she sits back down to it (once).
     just_set: Option<(Furniture, Use)>,
     /// She has just opened her shelf kit (phase 6a D7c): her next
-    /// decision puts its first stage up, if the frame offers it (else
-    /// it's let go).
+    /// decision that isn't a reflex puts its first stage up, if the frame
+    /// offers it (else it's let go); a line she owes waits for it. Let go
+    /// for the night, or school ([`Osaka::settle_for_night`]).
     then_put_up: bool,
     /// The stage of her shelf she put up, till the frame takes it
     /// ([`Osaka::put_up_done`]) or refuses it ([`Osaka::put_up_refused`])
@@ -2501,7 +2527,9 @@ pub(super) struct Osaka {
     /// ([`Osaka::hop_if`]).
     standing_back: bool,
     /// The rules (rows of the table) she felt broken on sight and owes
-    /// saying so, once she's quiet (door batch, D7), oldest first.
+    /// saying so, once she's quiet (door batch, D7), oldest first. Where,
+    /// for one said in its piece's room (phase 6a D9), is the frame's
+    /// when she says it ([`Chances::wants_up`]), never kept here.
     owed_aloud: Vec<usize>,
     /// What she's saying of what's wrong with her home, felt on sight,
     /// and since when: for [`GRIEVANCE_MS`], standing (the act it's said
@@ -5968,6 +5996,12 @@ impl Osaka {
             self.drop_episode(None, at);
         }
         self.just_set = None;
+        // Her kit opened, its first stage not yet up: it waits for a
+        // decision of hers like any (phase 6a D7c), not a chain kept
+        // overnight.
+        if std::mem::take(&mut self.then_put_up) {
+            tracing::debug!("houseguest: her kit's first stage let go for the night");
+        }
     }
 
     /// Her routine's glance up at her wall clock (D7), the first key of
@@ -8500,8 +8534,6 @@ impl Osaka {
         // What she just finished counts before she chooses anew.
         self.credit_done(at);
         self.got_what_she_came_for(at);
-        // Her kit just opened (phase 6a D7c): this decision only.
-        let put_up_next = std::mem::take(&mut self.then_put_up);
         self.catch_up_day(at);
         // Her set-off line is latched for this school time only: whatever
         // cut her way out short (a chat line, a startle, a focused pane),
@@ -8727,7 +8759,13 @@ impl Osaka {
         // What's wrong with her home that she felt on sight (door batch,
         // D7): said once she's quiet (after her "I'm home!"), standing
         // for it, while she has felt it broken still and not let it go.
-        if let Some(decision) = self.say_aloud(chances, at) {
+        // Not while her kit's first stage is next, nor on her way to put
+        // a stage up (landed from a hop of it: the line would cut the
+        // trip): it waits till she's at it, so the box never just
+        // vanishes (phase 6a D7c).
+        let putting_up =
+            self.then_put_up || self.heading.as_ref().is_some_and(|h| h.want == Want::PutUp);
+        if !putting_up && let Some(decision) = self.say_aloud(chances, at) {
             return Decision {
                 heading,
                 ..decision
@@ -8804,7 +8842,10 @@ impl Osaka {
         }
         // Her kit just opened: up goes its first stage, straight after
         // (phase 6a D7c), if the frame offers it; else it's let go, and
-        // it waits for a decision of hers like any.
+        // it waits for a decision of hers like any. Taken by the first
+        // decision that comes this far: a reflex before it (a chat line,
+        // her hello, a line she owes elsewhere) leaves it for the next.
+        let put_up_next = std::mem::take(&mut self.then_put_up);
         if put_up_next
             && self.put_up_waits.is_none()
             && let Some(put_up) = chances.put_up
@@ -9385,15 +9426,31 @@ impl Osaka {
     /// place that rule is held: she comes to owe a line whatever her mood
     /// (`on_sight`, mod.rs), so a rule felt mid-episode is said once that
     /// episode is done, if she'd still mend.
-    fn aloud_owed(&self, chances: &Chances) -> Option<usize> {
+    ///
+    /// One said in its piece's room (her gremlin wanting up: phase 6a
+    /// D9) is said only while she stands on that room's floor as this
+    /// frame has it ([`Chances::wants_up`]), with where she'd face: it
+    /// waits for her to come back to it, or for the frame to show him
+    /// again.
+    fn aloud_owed(&self, chances: &Chances) -> Option<(usize, Option<AloudAt>)> {
         if self.home_acts >= self.mood.home_acts() {
             return None;
         }
-        self.owed_aloud.iter().copied().find(|&row| {
+        let felt =
+            |b: &&super::rules::Broken| self.felt.iter().any(|f| f.key == b.key && !f.let_go);
+        self.owed_aloud.iter().find_map(|&row| {
             chances
                 .broken
                 .iter()
-                .any(|b| b.row == row && self.felt.iter().any(|f| f.key == b.key && !f.let_go))
+                .filter(|b| b.row == row)
+                .filter(felt)
+                .find_map(|b| {
+                    if !b.rule().is_some_and(|r| r.rule.said_in_its_room()) {
+                        return Some((row, None));
+                    }
+                    let &(_, place) = chances.wants_up.iter().find(|(key, _)| *key == b.key)?;
+                    place.holds((self.x, self.y)).then_some((row, Some(place)))
+                })
         })
     }
 
@@ -9406,7 +9463,7 @@ impl Osaka {
     /// off for long). Once a visit; owed but no longer broken (or let
     /// go), it goes unsaid.
     fn say_aloud(&mut self, chances: &Chances, at: u64) -> Option<Decision> {
-        let row = self.aloud_owed(chances)?;
+        let (row, place) = self.aloud_owed(chances)?;
         let quiet = self
             .speech
             .map_or(at, |(_, until)| until)
@@ -9417,6 +9474,12 @@ impl Osaka {
         }
         self.owed_aloud.retain(|&r| r != row);
         let line = super::rules::RULES.get(row)?.grievance;
+        // Said of a piece in her room: turned to face it.
+        if let Some(place) = place
+            && place.x != self.x
+        {
+            self.facing = toward(self.x, place.x);
+        }
         tracing::info!(line, "houseguest: says what's wrong with her home");
         self.hush(at);
         self.set(
@@ -9491,6 +9554,8 @@ impl Osaka {
     /// She'll say what's wrong with her home that she felt on sight, for
     /// the rule on `row` of the table, once she's quiet (door batch, D7:
     /// see [`Osaka::aloud`]): once a visit.
+    /// Where, for one said in its piece's room, is the frame's when she
+    /// says it (phase 6a D9).
     pub fn owe_aloud(&mut self, row: usize) {
         if !self.owed_aloud.contains(&row) {
             tracing::trace!(row, "houseguest: she'll say what's wrong once she's quiet");
@@ -23867,6 +23932,65 @@ mod tests {
         assert!(osaka.feel(key, None));
         osaka.owe_aloud(row);
         (chances, super::super::rules::RULES[row].grievance, quiet)
+    }
+
+    /// A line said in its piece's room (phase 6a D9: her gremlin wanting
+    /// up) waits for her to stand on that room's floor as the frame has
+    /// it now (`Chances::wants_up`, read when she says it): off that
+    /// floor's row, past its columns, or with him not shown, she says
+    /// nothing and it stays owed; on it, she says it, turned to face his
+    /// middle column as the frame has it then.
+    #[test]
+    fn a_line_said_in_its_room_waits_for_her_there() {
+        use super::super::rules::{Broken, RULES, Rule};
+        let terrain = floor_at(15);
+        let mut rng = Rng(5);
+        let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+        osaka.facing = Facing::Right;
+        let row = RULES
+            .iter()
+            .position(|r| r.rule == Rule::High(Furniture::Gremlin))
+            .unwrap();
+        let key = Grievance {
+            row,
+            piece: Furniture::Gremlin,
+        };
+        let chances = |wants_up: Vec<(Grievance, AloudAt)>| Chances {
+            broken: vec![Broken {
+                row,
+                pieces: vec![Furniture::Gremlin],
+                involved: vec![Furniture::Gremlin],
+                key,
+            }],
+            wants_up,
+            ..Chances::default()
+        };
+        osaka.set_mood(Mood::Industrious);
+        osaka.decide(0, &terrain, &Chances::default(), &mut rng);
+        let quiet = osaka
+            .speech
+            .map_or(0, |(_, until)| until)
+            .max(osaka.morning_until);
+        assert!(osaka.feel(key, None));
+        osaka.owe_aloud(row);
+        let room = |x, floor, from, to| AloudAt { x, floor, from, to };
+        for (why, away) in [
+            ("another floor", vec![(key, room(5, 10, 0, 40))]),
+            ("past its columns", vec![(key, room(32, 15, 30, 40))]),
+            ("him not shown", Vec::new()),
+        ] {
+            let away = chances(away);
+            assert_eq!(osaka.aloud_owed(&away), None, "{why}");
+            assert!(osaka.say_aloud(&away, quiet).is_none(), "{why}");
+            assert!(osaka.said_aloud().is_empty(), "{why}");
+        }
+        let here = room(5, 15, 0, 40);
+        let there = chances(vec![(key, here)]);
+        assert_eq!(osaka.aloud_owed(&there), Some((row, Some(here))));
+        assert!(osaka.say_aloud(&there, quiet).is_some());
+        assert_eq!(osaka.said_aloud(), [(RULES[row].grievance, quiet)]);
+        assert_eq!(osaka.facing, Facing::Left, "turned to face him");
+        assert_eq!(osaka.aloud_owed(&there), None, "said once");
     }
 
     /// What she felt on sight waits for her to be quiet (door batch, C4):

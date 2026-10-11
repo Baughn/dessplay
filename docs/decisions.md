@@ -1,6 +1,6 @@
 # DessPlay Decision Log
 
-Last updated: 2026-10-11
+Last updated: 2026-10-12
 
 The reasoning behind the rules in [design.md](design.md): the failure that
 motivated each one, the alternatives that were rejected, and the date it
@@ -6237,6 +6237,67 @@ that's judged too; the user's answer, 2026-10-11: she moves with the
 piece, a fix of its own after 6a). Unpacking is never
 judged: the piece is out of its box from her first moment at it, laid
 out where its kind goes, and her spot was the box's.
+
+## The gremlin wants up high (2026-10-11)
+
+**Rule:** Her gremlin, a figurine of small decor (decor on the channel,
+after the poster), wants up on a shelf: a rule of her home, `High`,
+broken while he stands on a floor out of his box, mended only by a move
+up onto a shelf. He's sold only where a shelf of hers is up (or going
+up) or could go up on the frame. She feels it on sight, needing no use
+of him, only while she stands on his room's floor, and only where a
+finished shelf of hers shows on the frame or one could go up (not while
+one is going up, nor where the frame hides hers); she says "It wants a
+shelf..." there, turned to face him where the frame has him when she
+says it, on InChat's terms (when her mood would put it right, once a
+game day). A rule she has felt
+this visit that wants a kit she doesn't own puts that kit first on the
+channel: her wishlist, read off what she felt, in the order she felt
+it. Where a shelf goes up, his pane comes first, and in it the run
+nearest him. See [design.md](design.md#houseguest).
+
+**Why:** The user's brief: a felt need puts the kit first, and the
+gremlin is the need. Made a rule rather than a whim because a rule is
+what she already feels, says, mends and lets go of, and what the repair
+search already moves pieces for: the gremlin going up on the shelf is a
+repair like the plant going up out of the chat, with nothing new to
+carry it. Felt only in his room, because a grievance about a figurine
+across the screen reads as nothing she can see; and only where a shelf
+is up or could go up, because a grievance nothing can answer would
+have her say it, every day, on frames that never take a shelf, wishing
+for a kit the channel won't sell (the critique's C2, C8): there, he's
+just decor on the floor. A finished shelf the frame hides (text over
+its row) is no answer either: nothing can stand on a shelf that isn't
+drawn, and her kit is hers, so nothing is wished; so "up" means up and
+shown on this frame (step 7's review: as first built, a shelf hidden
+for good had her say it every day), and the repair search reads the
+same, laying nothing out for his rule without one. Not while a shelf
+is going up: the kit is hers and she's at it. (With the kit on order or
+boxed she still feels and says it, a shelf being able to go up; which
+of these three she says it in is the user's open question.) Step 7's build found her saying it as she walked into
+his room to put up the first half, dropping that chain; its review
+found the same for any line owed as the kit opened, so a line she owes
+waits while her kit's first stage is next or she's on her way to put a
+stage up, and that chain is taken by her first decision that isn't a
+reflex (let go for the night or school), whatever she feels. Where she
+says it is the frame's when she says it (his room's floor and his
+middle column), never kept from when she felt it: a resize or a move
+since then would send her to say it on a floor that's gone. Sold only
+where a shelf stands or could go up, so the story he starts can always
+finish (C2). The wishlist is the felt rules naming kits, so it needs no
+state of its own: it's per visit as felt rules are, and a rule felt
+on one visit is felt again on sight early in the next if it's still
+broken. A rule no move mends costs nothing: the search weighs only a
+finished shelf for his rule (none: nothing laid out), and an `Arrange`
+that binds no move is never among the offers she chooses from, so a
+felt `High` with no shelf takes no slot of her four. His pane first
+for the shelf, so the shelf goes up where he can be put on it, and the
+run nearest him so the carry is short. Rejected: a gremlin that only
+ever stands on a shelf (he'd have nowhere to be until the kit came,
+and the kit would have no reason); a felt rule kept across visits (the
+wish would be state of its own, kept past what she has seen this
+visit); feeling it anywhere on screen; a shelf-only sale of the kit
+with no wish (the user's brief asks for the felt need to put it first).
 
 ## Houseguest chooses by needs among the top few (2026-09-28)
 

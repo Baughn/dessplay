@@ -493,6 +493,15 @@ impl Written {
         &self.shown_on
     }
 
+    /// Whether a finished shelf of `home` was written (shows on this
+    /// frame): the only place a piece could be set up high (phase 6a D9:
+    /// a shelf half up holds nothing, and one the frame hides has no
+    /// cells for anything to stand on).
+    pub fn holds_up(&self, home: &Home) -> bool {
+        home.shelves()
+            .any(|s| s.finished() && self.shown_on.contains(&s.nook))
+    }
+
     /// Keep the cells into `painted`, first: the bottom layer, whose
     /// `under` is the real frame's (a dissolve stacks what's over them).
     pub fn keep(mut self, painted: &mut Vec<Frozen>) {

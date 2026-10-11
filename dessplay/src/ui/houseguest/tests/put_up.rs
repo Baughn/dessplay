@@ -7,6 +7,7 @@
 
 use super::kit::{all_but_the_kit, arrived};
 use super::*;
+use crate::ui::houseguest::brain::Mood;
 use crate::ui::houseguest::ledger::{Dated, Paced};
 use crate::ui::houseguest::osaka::{Bucket, HomeEvent};
 use crate::ui::houseguest::structures::{Shelf, Structure};
@@ -579,5 +580,79 @@ fn she_hops_up_to_a_high_shelf() {
             }
             assert_eq!(built(&guest), Some(1), "{at}");
         }
+    }
+}
+
+/// A line she owes as her kit opens (door batch D7: felt on sight, said
+/// once she's quiet) waits for its first stage: the decision after the
+/// opening still puts it up, and she says the line after that. Her sofa
+/// turned from her TV, felt and owed as she opens the kit, industrious
+/// (she'd put it right, so she'd say it); the stage is on Users, a hop
+/// away. Red as built first: the line, a reflex before the chain, took
+/// that decision and the chain was dropped; and with only that fixed,
+/// said as she landed from the hop it cut her trip. Both modes.
+#[test]
+fn a_line_owed_as_her_kit_opens_waits_for_its_first_half() {
+    let (real, view) = rooms_frame(100, 30);
+    let faces = rules::Grievance {
+        row: rules::FACES_ROW,
+        piece: Furniture::Sofa,
+    };
+    let line = rules::RULES[rules::FACES_ROW].grievance;
+    for graphics in [false, true] {
+        let at = format!("graphics={graphics}");
+        let mut guest = all_but_the_kit(4, graphics);
+        guest.ledger.ordered = Some(Furniture::ShelfKit);
+        arrived(&mut guest, &real, &view);
+        let mut now = 0;
+        let mut owed = false;
+        // Delivered, and opened: owed while she opens it.
+        while built(&guest).is_none() {
+            assert!(now < 10 * 60_000, "{at}: never opened");
+            shell_step(&mut guest, &real, &view, &mut now, true);
+            let State::Visiting(visit) = &mut guest.state else {
+                panic!("visiting");
+            };
+            if !owed && visit.osaka.act_name() == "Use" {
+                assert!(
+                    visit.broken.iter().any(|b| b.key == faces),
+                    "{at}: her sofa turned from her TV"
+                );
+                visit.osaka.set_mood(Mood::Industrious);
+                assert!(visit.osaka.feel(faces, None), "{at}");
+                visit.osaka.owe_aloud(rules::FACES_ROW);
+                owed = true;
+            }
+        }
+        assert!(owed, "{at}: owed as she opened it");
+        let opened = now;
+        while built(&guest) != Some(1) {
+            assert!(now < opened + 60_000, "{at}: never put it up");
+            shell_step(&mut guest, &real, &view, &mut now, true);
+        }
+        let osaka = &visit_of(&guest).osaka;
+        let next = osaka
+            .decisions
+            .iter()
+            .find(|d| d.at >= opened)
+            .unwrap_or_else(|| panic!("{at}: no decision since {opened}"));
+        assert_eq!(
+            (next.bucket, next.method),
+            (Bucket::Continuation, "put-up/stage"),
+            "{at}: {next:?}"
+        );
+        assert!(
+            !osaka.said_aloud().iter().any(|&(l, _)| l == line),
+            "{at}: said before the stage was up"
+        );
+        let up = now;
+        let said = run_until(&mut guest, &real, &view, up, up + 60_000, |guest, _| {
+            visit_of(guest)
+                .osaka
+                .said_aloud()
+                .iter()
+                .any(|&(l, _)| l == line)
+        });
+        assert!(said.is_some(), "{at}: never said after it");
     }
 }
