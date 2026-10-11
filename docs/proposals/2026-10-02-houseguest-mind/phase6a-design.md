@@ -836,6 +836,15 @@ None open. Fourth round (2026-10-10, the user):
 - **Built as a workflow** per group of steps, as the door batch was (implement → correctness review → tests review with
   mutants → fixer; a 256-case deep run after each workflow).
 
+Fifth round (2026-10-11, during the build; the hand-off notes have the detail):
+- **A styled blank hides the shelf, as text does** (the user): a blank cell in reverse video, or with a background unlike
+  its pane's (a list's selection bar past its entry's text), counts as occupied, so the shelf and what stands on it are
+  hidden that frame. To be built in step 3 (`structures::free` and the step-2b oracle's `expected`).
+- **Decided by the coordinator** (build agents' open questions, reversible): a piece the record puts on an unfinished
+  shelf lands on that pane's floor at its share (2a's choice (a)); a half-built shelf is shown while its built half and 2
+  cells past each end of that half are blank and free; a makeshift piece a shelf's geometry comes to meet falls apart and
+  the shelf shows, as with her door's space; a shelf shown or hidden is logged at info, as the closet is.
+
 ## Critique dispositions
 
 M = mechanics, F = feasibility, T = tests, C = character (`phase6/critic-*.md`). A = accepted, D = amended differently,
