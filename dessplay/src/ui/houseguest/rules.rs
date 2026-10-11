@@ -9,8 +9,8 @@
 
 use super::door::Keep;
 use super::room::{
-    self, Anchor, Extent, Furniture, Home, LaidOut, Nook, Prop, Role, Shown, Side, Strip,
-    StripLaid, StripPlan, Use,
+    self, Anchor, Extent, Furniture, Home, LaidAgain, LaidOut, Nook, Prop, Role, Shown, Side,
+    Strip, StripLaid, StripPlan, Use,
 };
 use super::sprite::Facing;
 use super::structures::Drawn;
@@ -242,6 +242,46 @@ fn judge(
     closet: &[Furniture],
     out: &mut Vec<Broken>,
 ) {
+    judge_each(row, laid, home, keep, closet, &mut |pieces, involved| {
+        if let Some(&piece) = involved.first() {
+            out.push(Broken {
+                row,
+                pieces: pieces.to_vec(),
+                key: Grievance { row, piece },
+                involved: involved.to_vec(),
+            });
+        }
+    });
+}
+
+/// Each grievance of the rule on `row` (see [`judge`]), its key only:
+/// what a move weighed is judged by, nothing gathered.
+fn grievances(
+    row: usize,
+    laid: &LaidOut,
+    home: &Home,
+    keep: &Keep,
+    closet: &[Furniture],
+    each: &mut dyn FnMut(Grievance),
+) {
+    judge_each(row, laid, home, keep, closet, &mut |_, involved| {
+        if let Some(&piece) = involved.first() {
+            each(Grievance { row, piece });
+        }
+    });
+}
+
+/// How the rule on `row` is broken (see [`judge`]): `push` is handed
+/// each grievance's pieces and those involved (the piece it's judged on
+/// first).
+fn judge_each(
+    row: usize,
+    laid: &LaidOut,
+    home: &Home,
+    keep: &Keep,
+    closet: &[Furniture],
+    push: &mut dyn FnMut(&[Furniture], &[Furniture]),
+) {
     let layout = &laid.shown;
     let Some(line) = RULES.get(row) else { return };
     let here = |item: Furniture| {
@@ -255,23 +295,12 @@ fn judge(
             .find(|p| p.item == item)
             .is_none_or(|p| p.settled)
     };
-    // `involved` starts with the piece the rule is judged on.
-    let mut push = |pieces: Vec<Furniture>, involved: Vec<Furniture>| {
-        if let Some(&piece) = involved.first() {
-            out.push(Broken {
-                row,
-                pieces,
-                key: Grievance { row, piece },
-                involved,
-            });
-        }
-    };
     match line.rule {
         Rule::Faces { seat, screen } => {
             if let (Some(a), Some(b)) = (here(seat), here(screen))
                 && !room::faces(a, b)
             {
-                push(vec![seat, screen], vec![seat, screen]);
+                push(&[seat, screen], &[seat, screen]);
             }
         }
         Rule::Near { a, b, gap } => {
@@ -284,7 +313,7 @@ fn judge(
             {
                 let mut involved = vec![a];
                 involved.extend(partners.iter().map(|p| p.item));
-                push(vec![a], involved);
+                push(&[a], &involved);
             }
         }
         Rule::AgainstWall(item) => {
@@ -292,17 +321,17 @@ fn judge(
                 && let Some(plan) = at.strip.and_then(|s| laid.plan(s))
                 && !against_wall(at, plan.floor)
             {
-                push(vec![item], vec![item]);
+                push(&[item], &[item]);
             }
         }
         Rule::Apart { a, b } => {
             if let (Some(x), Some(y)) = (here(a), here(b))
                 && x.strip == y.strip
             {
-                let mut pieces = vec![a, b];
+                let mut pieces = [a, b];
                 // Unsettled first; otherwise in the rule's order.
                 pieces.sort_by_key(|&p| settled(p));
-                push(pieces, vec![a, b]);
+                push(&pieces, &[a, b]);
             }
         }
         Rule::Belongs => {
@@ -312,7 +341,7 @@ fn judge(
                     continue;
                 }
                 if spoils(layout, strip, s.item) {
-                    push(vec![s.item], vec![s.item]);
+                    push(&[s.item], &[s.item]);
                 }
             }
         }
@@ -327,7 +356,7 @@ fn judge(
                         && !s.boxed
                         && s.cover().intersects(space.rect)
                     {
-                        push(vec![s.item], vec![s.item]);
+                        push(&[s.item], &[s.item]);
                     }
                 }
             }
@@ -336,7 +365,7 @@ fn judge(
         Rule::InChat => {
             for s in layout {
                 if room::closetable(keep.chat(), s) && !closet.contains(&s.item) {
-                    push(vec![s.item], vec![s.item]);
+                    push(&[s.item], &[s.item]);
                 }
             }
         }
@@ -611,10 +640,14 @@ fn has_room(laid: &[Shown], strip: Strip) -> bool {
 /// didn't (nor the piece, one she hasn't settled, the room it's set
 /// down in), her door's space that was kept is kept, no rule that held
 /// is broken, and no piece that showed goes into the chat's closet.
-/// `scratch` is `before`'s home, and is left so.
+/// `scratch` is `before`'s home, and is left so; `kept`, the strips
+/// laid out again for moves weighed before from the same `before` (see
+/// [`Home::relaid_keeping`]).
+#[allow(clippy::too_many_arguments)]
 fn evaluate(
     before: &Before,
     scratch: &mut Home,
+    kept: &mut LaidAgain,
     key: Grievance,
     piece: Furniture,
     to: Placement,
@@ -649,7 +682,7 @@ fn evaluate(
     };
     let slot = scratch.props.get_mut(i)?;
     *slot = moved;
-    let out = scratch.relaid(&before.strips);
+    let out = scratch.relaid_keeping(&before.strips, kept);
     if let Some(slot) = scratch.props.get_mut(i) {
         *slot = old;
     }
@@ -677,16 +710,16 @@ fn evaluate(
     // pieces in the closet are judged as they were: a piece in the chat
     // that wasn't in the closet is in the chat still, wherever a room
     // would take it (an InChat repair moves it out, or mends nothing).
-    let mut target = Vec::new();
-    judge(
+    let mut mended = true;
+    grievances(
         key.row,
         &out,
         &before.home,
         &before.keep,
         &before.closet,
-        &mut target,
+        &mut |g| mended &= g != key,
     );
-    if target.iter().any(|b| b.key == key) {
+    if !mended {
         return None;
     }
     // No room is worse for it: none that was something becomes a den (a
@@ -726,11 +759,19 @@ fn evaluate(
     // a piece newly in the chat breaks InChat (none is put there: see
     // [`fits_now`]), and one that was in the closet isn't judged (a room
     // taking it now, it isn't newly in the chat: it was there).
-    if broken_with(&out, &before.home, &before.keep, &before.closet)
-        .iter()
-        .any(|b| !before.broken.iter().any(|w| w.key == b.key))
-    {
-        return None;
+    let mut breaks = false;
+    for row in 0..RULES.len() {
+        grievances(
+            row,
+            &out,
+            &before.home,
+            &before.keep,
+            &before.closet,
+            &mut |g| breaks |= !before.broken.iter().any(|w| w.key == g),
+        );
+        if breaks {
+            return None;
+        }
     }
     // No piece that showed in the chat goes into the closet for it (it
     // would vanish for her moving something else). Judged last, and only
@@ -1017,6 +1058,7 @@ pub(super) fn search(home: &Home, frame: &Frame, target: &Broken) -> Search {
         stride += 1;
     }
     let mut scratch = before.home.clone();
+    let mut again = LaidAgain::default();
     let mut examined = 0;
     let mut passed: Vec<(u8, u32, usize, usize, Repair, Vec<Shown>)> = Vec::new();
     for p in &places {
@@ -1057,6 +1099,7 @@ pub(super) fn search(home: &Home, frame: &Frame, target: &Broken) -> Search {
                 let Some((repair, laid)) = evaluate(
                     &before,
                     &mut scratch,
+                    &mut again,
                     target.key,
                     p.piece,
                     to,
@@ -1110,6 +1153,7 @@ fn judge_move(home: &Home, frame: &Frame, repair: &Repair, again: bool) -> Optio
     let (moved, laid) = evaluate(
         &before,
         &mut scratch,
+        &mut LaidAgain::default(),
         repair.key,
         repair.piece,
         repair.to,
@@ -2517,14 +2561,18 @@ mod tests {
                 .unwrap_or_default();
             eprintln!(
                 "repair search (dense {dense}, door {door:?}, chat {chat:?}, shelved {shelved:?}): \
-                 {per_search:?}, {} moves (release baseline 2026-10-08: 0.43-0.48 ms; bound 1 ms)",
+                 {per_search:?}, {} moves (release baseline 2026-10-11: no shelf 0.31-0.35 ms, \
+                 high 0.42-0.47, low 0.43-0.48; bound 1 ms)",
                 found.examined
             );
             // The bound stays loose (a deep pass's load has pushed a run
-            // past 1 ms), but alone in release a search took 0.43-0.48
-            // ms on 2026-10-08 (the door batch, step 3p), door or not:
-            // a step that adds work per move re-measures against that
-            // (`--release -E 'test(repair_search_is_cheap)' --no-capture`).
+            // past 1 ms), but alone in release a search took 0.31-0.35
+            // ms with no shelf, 0.42-0.47 with high shelves and 0.43-0.48
+            // with low ones on 2026-10-11 (phase 6a's perf fix after step
+            // 5a; 0.49-0.55, 0.62-0.69 and 0.63-0.71 before it), door or
+            // not, chat or not: a step that adds work per move
+            // re-measures against that (`--release -E
+            // 'test(repair_search_is_cheap)' --no-capture`).
             if !cfg!(debug_assertions) {
                 assert!(
                     per_search < std::time::Duration::from_millis(1),
@@ -2721,7 +2769,16 @@ mod tests {
         for (plan, what) in [(plan, "past the space"), (wide, "by the wall")] {
             let mut scratch = before.home.clone();
             assert_eq!(
-                evaluate(&before, &mut scratch, broken.key, Sofa, first, &plan, false),
+                evaluate(
+                    &before,
+                    &mut scratch,
+                    &mut LaidAgain::default(),
+                    broken.key,
+                    Sofa,
+                    first,
+                    &plan,
+                    false
+                ),
                 None,
                 "{what}: it would crowd her door's space"
             );
@@ -2813,7 +2870,17 @@ mod tests {
         let plan = before.strips[0].plan;
         let mut scratch = before.home.clone();
         assert_eq!(
-            evaluate(&before, &mut scratch, broken.key, Bed, to, &plan, false).map(|(r, _)| r),
+            evaluate(
+                &before,
+                &mut scratch,
+                &mut LaidAgain::default(),
+                broken.key,
+                Bed,
+                to,
+                &plan,
+                false
+            )
+            .map(|(r, _)| r),
             None
         );
         let found = search(&home, &frame, &broken);
@@ -2887,7 +2954,17 @@ mod tests {
         let plan = before.strips[0].plan;
         let mut scratch = before.home.clone();
         assert_eq!(
-            evaluate(&before, &mut scratch, broken.key, Window, to, &plan, false).map(|(r, _)| r),
+            evaluate(
+                &before,
+                &mut scratch,
+                &mut LaidAgain::default(),
+                broken.key,
+                Window,
+                to,
+                &plan,
+                false
+            )
+            .map(|(r, _)| r),
             None
         );
     }
@@ -2969,6 +3046,7 @@ mod tests {
         let repair = evaluate(
             &before,
             &mut scratch,
+            &mut LaidAgain::default(),
             broken.key,
             Bookshelf,
             to,
@@ -3014,7 +3092,17 @@ mod tests {
         let plan = before.strips[1].plan;
         let mut scratch = before.home.clone();
         assert_eq!(
-            evaluate(&before, &mut scratch, broken.key, Fridge, to, &plan, false).map(|(r, _)| r),
+            evaluate(
+                &before,
+                &mut scratch,
+                &mut LaidAgain::default(),
+                broken.key,
+                Fridge,
+                to,
+                &plan,
+                false
+            )
+            .map(|(r, _)| r),
             None
         );
     }
