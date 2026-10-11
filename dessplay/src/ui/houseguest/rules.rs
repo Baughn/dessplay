@@ -2535,6 +2535,133 @@ mod tests {
         }
     }
 
+    /// What her shelf costs a frame (phase 6a, step 5a), timed beside the
+    /// repair search on its worst frame, three panes 400 wide: writing a
+    /// finished high shelf with the plant on it (`read_ground`, once a
+    /// paint while a shelf is hers), and choosing where one goes
+    /// (`Home::shelf_spot`, only when asked: a kit or the gremlin coming
+    /// up in the channel's queue, a boxed kit shown, the stage), on a
+    /// blank frame (every place looked at whole, the first pane's high
+    /// one chosen), a dense one (every other cell of every row inside
+    /// text: none goes up, every wall read) and a crowded one (blank, with
+    /// a visit's worth kept off: a layer of 399 cells, a protected rect,
+    /// what she made, five pieces laid out). The fastest of 20, in a
+    /// release build. Ignored: a timing, by hand (`cargo nextest run
+    /// --release -p dessplay --run-ignored only --no-capture -E
+    /// 'test(/her_shelf_is_quick/)'`).
+    #[test]
+    #[ignore = "a timing: run by hand in a release build"]
+    fn her_shelf_is_quick() {
+        use super::super::structures::{KeepOff, Shelf, Structure, read_ground};
+        let (width, rows) = (400, 20);
+        let nooks = three(width, rows, 3);
+        let keep_off = KeepOff {
+            protected: &[],
+            layer: &[],
+            made: &[],
+        };
+        let fastest = |mut each: Box<dyn FnMut() + '_>| {
+            (0..20)
+                .map(|_| {
+                    let started = std::time::Instant::now();
+                    each();
+                    started.elapsed()
+                })
+                .min()
+                .unwrap_or_default()
+        };
+        // A visit's worth of what's kept off, for the crowded frame: her
+        // layer over a few hundred cells (the first row inside each pane,
+        // 133 of its columns), a protected rect, and her pieces laid out
+        // (three that stand, two that hang).
+        let layer: Vec<(u16, u16)> = nooks
+            .iter()
+            .flat_map(|&(_, r)| (r.x + 1..r.x + 134).map(move |x| (x, r.y + 1)))
+            .collect();
+        let protected = [Rect::new(150, 2, 20, 3)];
+        let made = [Rect::new(250, 30, 6, 3), Rect::new(20, 50, 4, 2)];
+        let crowd = KeepOff {
+            protected: &protected,
+            layer: &layer,
+            made: &made,
+        };
+        let mut furnished = Home::default();
+        for (item, nook, offset) in [
+            (Sofa, Nook::List, 20),
+            (Tv, Nook::List, 60),
+            (Furniture::Lamp, Nook::Users, 30),
+            (Poster, Nook::Users, 120),
+            (Clock, Nook::Playlist, 200),
+        ] {
+            assert!(furnished.add(at(item, nook, Side::Left, offset, Facing::Right)));
+        }
+        assert_eq!(furnished.layout(&nooks).len(), 5, "every piece laid out");
+        for (dense, crowded) in [(false, false), (true, false), (false, true)] {
+            let (home, keep_off) = if crowded {
+                (&furnished, &crowd)
+            } else {
+                (&Home::default(), &keep_off)
+            };
+            let text: Vec<(u16, u16)> = if dense {
+                nooks
+                    .iter()
+                    .flat_map(|&(_, r)| {
+                        (r.y + 1..r.bottom() - 1).flat_map(move |y| {
+                            (r.x + 1..r.right() - 1).step_by(2).map(move |x| (x, y))
+                        })
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            let buf = screen(&nooks, width, 3 * rows, &text);
+            let plan = room::Plan::bare(&nooks);
+            let spot = fastest(Box::new(|| {
+                std::hint::black_box(home.shelf_spot(&buf, plan, keep_off, None));
+            }));
+            let chosen = home.shelf_spot(&buf, plan, keep_off, None);
+            assert_eq!(chosen.is_some(), !dense);
+            // Her shelf where the blank frame puts it, finished, the
+            // plant on it; on the dense frame, hidden by the text (every
+            // cell still judged).
+            let shelf = Home::default()
+                .shelf_spot(&screen(&nooks, width, 3 * rows, &[]), plan, keep_off, None)
+                .expect("a spot on the blank frame");
+            let mut shelved = Home {
+                structures: vec![Structure::Shelf(Shelf { built: 2, ..shelf })],
+                ..Home::default()
+            };
+            assert!(shelved.add(Prop {
+                strip: Strip::Shelf(shelf.nook),
+                ..at(Plant, shelf.nook, Side::Left, 3, Facing::Right)
+            }));
+            // Written and undone on one frame (as a paint whose arm
+            // doesn't keep it does).
+            let mut frame = buf.clone();
+            let write = fastest(Box::new(|| {
+                let written = read_ground(&mut frame, &shelved, plan, keep_off);
+                std::hint::black_box(written.shown_on().len());
+                written.undo(&mut frame);
+            }));
+            assert_eq!(frame, buf);
+            eprintln!(
+                "dense {dense}, crowded {crowded}: shelf_spot {spot:?}, read_ground and undo \
+                 {write:?} (release, 2026-10-11: blank, dense, crowded 0.15/0.28/0.15 ms, crowded \
+                 0.63 ms before its keep-off was mapped once a wall; under 0.01 ms)"
+            );
+            if !cfg!(debug_assertions) {
+                assert!(
+                    spot < std::time::Duration::from_millis(1),
+                    "dense {dense}, crowded {crowded}: {spot:?}"
+                );
+                assert!(
+                    write < std::time::Duration::from_millis(1),
+                    "dense {dense}, crowded {crowded}: {write:?}"
+                );
+            }
+        }
+    }
+
     /// A move that crowds her door's kept space is refused (F7's case,
     /// the door batch): her sofa joining her TV on a 22-wide Users pane,
     /// her door in its left wall, crowds the floor (15 columns of 20, 14

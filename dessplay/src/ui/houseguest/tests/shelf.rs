@@ -7,7 +7,8 @@
 //! with her home standing empty.
 
 use super::*;
-use crate::ui::houseguest::structures::{Shelf, Structure, Written};
+use crate::ui::houseguest::sprite::Facing;
+use crate::ui::houseguest::structures::{SHELF_STAGES, Shelf, Structure, Written};
 
 /// Her shelf on [`rooms`] at 100×30, in Users (`50, 0, 50, 13`): `Left`
 /// 12, rise 7, so its run is columns `63..73` of row 5, its margin two
@@ -1584,5 +1585,370 @@ fn she_lifts_from_her_shelf_and_sets_down_on_it_arms_up() {
             );
             assert_eq!(judged.map(|j| j.up), Some(up), "{at}: set down");
         }
+    }
+}
+
+/// The stage's shelf (phase 6a D11, step 5a): cued, it's up finished on
+/// the very frame, where `Home::shelf_spot` puts one (as high as fits,
+/// mid-wall), with small decor on it, shown. On [`rooms`] at 100×30
+/// (List 25 rows inside, first in order) a high one, her plant on it; in
+/// the stage room at 100×30 (only its List takes one, 7 rows inside) a
+/// low one, with no third row over it for the plant: her clock, a mantel
+/// clock there. Both modes.
+#[test]
+fn the_stage_puts_her_shelf_up_where_one_fits() {
+    let stage_room = || {
+        let mut ui = super::super::stage::stage_ui();
+        real_frame(&mut ui, 100, 30)
+    };
+    let frames: [(&str, (Buffer, IdleView)); 2] =
+        [("rooms", rooms_frame(100, 30)), ("stage", stage_room())];
+    for (name, (real, view)) in frames {
+        for graphics in [false, true] {
+            let at = format!("{name} graphics={graphics}");
+            let mut guest = Guest::new(1);
+            if graphics {
+                guest.set_picker(kitty());
+            }
+            guest.cue(Scene::Shelf);
+            paint(&mut guest, &real, &view, 0);
+            let note = guest.cue_note().cloned();
+            assert!(matches!(note, Some(Ok(_))), "{at}: {note:?}");
+            let home = &guest.ledger.home;
+            let [Structure::Shelf(shelf)] = home.structures[..] else {
+                panic!("{at}: one shelf: {:?}", home.structures);
+            };
+            let list = view.nooks.iter().find(|(n, _)| *n == Nook::List).unwrap().1;
+            let (left, right) = (i32::from(list.x) + 1, i32::from(list.right()) - 1);
+            let floor = i32::from(list.bottom()) - 1;
+            // Mid-wall: of two lefts as near its middle, the left.
+            let from = (left + right - 10).div_euclid(2);
+            let (item, rise, cols) = match name {
+                "rooms" => (Furniture::Plant, 7, 3),
+                _ => (Furniture::Clock, 5, 3),
+            };
+            assert_eq!(shelf.nook, Nook::List, "{at}");
+            assert_eq!(shelf.rise, rise, "{at}");
+            assert_eq!(shelf.built, SHELF_STAGES, "{at}");
+            let run = match shelf.anchor.side {
+                room::Side::Left => left + i32::from(shelf.anchor.offset),
+                room::Side::Right => right - i32::from(shelf.anchor.offset) - 10,
+            };
+            assert_eq!(run, from, "{at}: {shelf:?}");
+            let y = floor - i32::from(rise);
+            // Written first, whole, kept as her home's bottom layer.
+            let kept: String = painted(&guest)
+                .iter()
+                .take(10)
+                .map(|c| {
+                    assert_eq!(i32::from(c.y), y, "{at}");
+                    c.glyph
+                })
+                .collect();
+            assert_eq!(kept, GLYPHS, "{at}");
+            assert_eq!(i32::from(painted(&guest)[0].x), from, "{at}");
+            // On it, centred, shown, reached from the floor below.
+            let State::Visiting(visit) = &guest.state else {
+                panic!("{at}: visiting");
+            };
+            let on = visit
+                .shown
+                .iter()
+                .find(|s| s.on_shelf())
+                .unwrap_or_else(|| panic!("{at}: something on it"));
+            assert_eq!(on.item, item, "{at}");
+            assert_eq!(on.strip, Some(room::Strip::Shelf(Nook::List)), "{at}");
+            assert_eq!(
+                (on.left, on.floor, on.stood),
+                (from + (10 - cols) / 2, y, floor),
+                "{at}"
+            );
+            assert!(!on.boxed, "{at}");
+        }
+    }
+}
+
+/// Cue the stage's shelf on `guest` and paint the frame it plays on: that
+/// frame, and the cue's note.
+fn stage_shelf(
+    guest: &mut Guest,
+    real: &Buffer,
+    view: &IdleView,
+) -> (Buffer, Option<Result<String, String>>) {
+    guest.cue(Scene::Shelf);
+    let frame = paint(guest, real, view, 0);
+    (frame, guest.cue_note().cloned())
+}
+
+/// What her visit shows on her shelf of `nook` (none if she isn't
+/// visiting).
+fn up_on(guest: &Guest, nook: Nook) -> Vec<room::Shown> {
+    match &guest.state {
+        State::Visiting(visit) => visit
+            .shown
+            .iter()
+            .filter(|s| s.strip == Some(room::Strip::Shelf(nook)))
+            .cloned()
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// With a shelf hers already (half built, or not begun), the stage
+/// finishes it where it hangs (Users, though a shelf of the stage's own
+/// would go up on List's wall) and stands her plant on it, centred.
+#[test]
+fn the_stage_finishes_the_shelf_she_has_where_it_hangs() {
+    let (real, view) = rooms_frame(100, 30);
+    let Structure::Shelf(users) = users_shelf();
+    let keep_off = structures::KeepOff {
+        protected: &view.protected,
+        layer: &[],
+        made: &[],
+    };
+    let fresh = room::Home::default().shelf_spot(&real, plan_of(&view, &real), &keep_off, None);
+    assert_eq!(fresh.map(|s| s.nook), Some(Nook::List), "{fresh:?}");
+    for graphics in [false, true] {
+        for built in [0, 1] {
+            let at = format!("graphics={graphics} built {built}");
+            let mut guest = Guest::new(1);
+            if graphics {
+                guest.set_picker(kitty());
+            }
+            let hers = Shelf { built, ..users };
+            guest.ledger.home.structures.push(Structure::Shelf(hers));
+            let (frame, note) = stage_shelf(&mut guest, &real, &view);
+            assert!(matches!(note, Some(Ok(_))), "{at}: {note:?}");
+            let finished = Shelf {
+                built: SHELF_STAGES,
+                ..hers
+            };
+            assert_eq!(
+                guest.ledger.home.structures,
+                [Structure::Shelf(finished)],
+                "{at}"
+            );
+            // Written first, whole, kept as her home's bottom layer (in
+            // graphics her plant's image is drawn over the frame's run).
+            let kept: Vec<_> = painted(&guest)
+                .iter()
+                .take(RUN.len())
+                .map(|c| (c.x, c.y, c.glyph))
+                .collect();
+            let want: Vec<_> = RUN.zip(GLYPHS.chars()).map(|(x, g)| (x, ROW, g)).collect();
+            assert_eq!(kept, want, "{at}");
+            if !graphics {
+                assert_eq!(run_of(&frame), GLYPHS, "{at}");
+            }
+            let on: Vec<_> = up_on(&guest, Nook::Users)
+                .iter()
+                .map(|s| (s.item, s.left, s.floor, s.stood))
+                .collect();
+            assert_eq!(on, [(Furniture::Plant, 66, 5, 12)], "{at}");
+            assert!(guest.unsaved, "{at}: saved");
+        }
+    }
+}
+
+/// Where her shelf can't show this frame (its anchor too near its wall
+/// now, or text over its run), the stage finishes it but stands nothing
+/// on it: her plant stays on the floor it shows on, nothing is given her,
+/// and the note says why.
+#[test]
+fn the_stage_moves_nothing_up_on_a_shelf_the_frame_hides() {
+    let (real, view) = rooms_frame(100, 30);
+    let Structure::Shelf(users) = users_shelf();
+    let near_wall = Shelf {
+        anchor: room::Anchor {
+            side: room::Side::Left,
+            offset: 2,
+        },
+        ..users
+    };
+    let mut texted = real.clone();
+    texted.set_string(66, ROW, "x", Style::new());
+    for graphics in [false, true] {
+        for (case, shelf, real) in [
+            ("near its wall", near_wall, &real),
+            ("texted", users, &texted),
+        ] {
+            let at = format!("graphics={graphics} {case}");
+            let mut guest = Guest::new(1);
+            if graphics {
+                guest.set_picker(kitty());
+            }
+            guest.ledger.home.structures.push(Structure::Shelf(shelf));
+            assert!(guest.ledger.home.add(room::Prop::new(
+                Furniture::Plant,
+                Nook::Playlist,
+                300,
+                Facing::Left
+            )));
+            let (_, note) = stage_shelf(&mut guest, real, &view);
+            assert!(matches!(note, Some(Err(_))), "{at}: {note:?}");
+            let home = &guest.ledger.home;
+            assert_eq!(
+                home.structures,
+                [Structure::Shelf(Shelf {
+                    built: SHELF_STAGES,
+                    ..shelf
+                })],
+                "{at}"
+            );
+            let plants: Vec<_> = home
+                .props
+                .iter()
+                .filter(|p| p.item == Furniture::Plant)
+                .map(|p| (p.strip, p.facing))
+                .collect();
+            assert_eq!(
+                plants,
+                [(room::Strip::Bottom(Nook::Playlist), Facing::Left)],
+                "{at}"
+            );
+            assert!(!home.owns(Furniture::Clock), "{at}: nothing given");
+            let State::Visiting(visit) = &guest.state else {
+                panic!("{at}: visiting");
+            };
+            assert!(
+                visit.shown.iter().any(|s| s.item == Furniture::Plant
+                    && s.strip == Some(room::Strip::Bottom(Nook::Playlist))),
+                "{at}: her plant still shows on its floor"
+            );
+        }
+    }
+}
+
+/// Three panes 10 rows tall (a low shelf at most, with three rows over
+/// its run: room for the plant by geometry), on a screen 100×30 with
+/// [`rooms`]' protected strip along the bottom.
+fn low_rooms() -> (Buffer, IdleView) {
+    let nooks = vec![
+        (Nook::List, Rect::new(0, 0, 50, 10)),
+        (Nook::Users, Rect::new(50, 0, 50, 10)),
+        (Nook::Playlist, Rect::new(0, 10, 100, 12)),
+    ];
+    let mut buf = Buffer::empty(Rect::new(0, 0, 100, 30));
+    for &(_, pane) in &nooks {
+        tuirealm::ratatui::widgets::Widget::render(
+            tuirealm::ratatui::widgets::Block::bordered(),
+            pane,
+            &mut buf,
+        );
+    }
+    buf.set_string(0, 28, "Tab Next pane | Enter Send", Style::new());
+    (
+        buf,
+        IdleView {
+            nooks,
+            ..view(bottom_strip(100, 30))
+        },
+    )
+}
+
+/// The stage stands on her shelf the first small decor the frame shows
+/// there: on a low shelf with three rows clear over its run by geometry,
+/// the plant; with a word on the third row where the plant's top would
+/// be, her clock (a mantel clock), and no plant given her.
+#[test]
+fn the_stage_puts_up_her_clock_where_the_frame_hides_her_plant() {
+    let (real, view) = low_rooms();
+    // List's low shelf: inside 1..49, its run 20..30 on row 4 (rise 5
+    // over the floor at 9); the plant would stand at 23..26, rows 1..=3.
+    let mut worded = real.clone();
+    worded.set_string(24, 1, "x", Style::new());
+    for graphics in [false, true] {
+        for (frame, item) in [(&real, Furniture::Plant), (&worded, Furniture::Clock)] {
+            let at = format!("graphics={graphics} {item:?}");
+            let mut guest = Guest::new(1);
+            if graphics {
+                guest.set_picker(kitty());
+            }
+            let (_, note) = stage_shelf(&mut guest, frame, &view);
+            assert!(matches!(note, Some(Ok(_))), "{at}: {note:?}");
+            let home = &guest.ledger.home;
+            let [Structure::Shelf(shelf)] = home.structures[..] else {
+                panic!("{at}: one shelf: {:?}", home.structures);
+            };
+            assert_eq!((shelf.nook, shelf.rise), (Nook::List, 5), "{at}");
+            let on: Vec<_> = up_on(&guest, Nook::List)
+                .iter()
+                .map(|s| (s.item, s.left, s.floor))
+                .collect();
+            assert_eq!(on, [(item, 23, 4)], "{at}");
+            assert_eq!(home.props.len(), 1, "{at}: only it given: {:?}", home.props);
+        }
+    }
+}
+
+/// The plant she has already, on a floor or still in its box, is what
+/// the stage puts up on her shelf: moved there, out of its box, facing as
+/// it faced, and no second plant.
+#[test]
+fn the_stage_puts_up_the_plant_she_has() {
+    let (real, view) = rooms_frame(100, 30);
+    for graphics in [false, true] {
+        for boxed in [false, true] {
+            let at = format!("graphics={graphics} boxed {boxed}");
+            let mut guest = Guest::new(1);
+            if graphics {
+                guest.set_picker(kitty());
+            }
+            assert!(guest.ledger.home.add(room::Prop {
+                boxed,
+                ..room::Prop::new(Furniture::Plant, Nook::Playlist, 300, Facing::Left)
+            }));
+            let (_, note) = stage_shelf(&mut guest, &real, &view);
+            assert!(matches!(note, Some(Ok(_))), "{at}: {note:?}");
+            let plants: Vec<_> = guest
+                .ledger
+                .home
+                .props
+                .iter()
+                .filter(|p| p.item == Furniture::Plant)
+                .map(|p| (p.strip, p.facing, p.boxed))
+                .collect();
+            assert_eq!(
+                plants,
+                [(room::Strip::Shelf(Nook::List), Facing::Left, false)],
+                "{at}"
+            );
+            let on: Vec<_> = up_on(&guest, Nook::List)
+                .iter()
+                .map(|s| (s.item, s.facing, s.boxed))
+                .collect();
+            assert_eq!(on, [(Furniture::Plant, Facing::Left, false)], "{at}");
+        }
+    }
+}
+
+/// Cued on a frame with no room for her, the stage's shelf waits with the
+/// cue for the first frame with room, and goes up there.
+#[test]
+fn the_stage_keeps_its_shelf_for_a_frame_with_room() {
+    let (small, small_view) = rooms_frame(50, 15);
+    let (real, view) = rooms_frame(100, 30);
+    for graphics in [false, true] {
+        let at = format!("graphics={graphics}");
+        let mut guest = Guest::new(1);
+        if graphics {
+            guest.set_picker(kitty());
+        }
+        guest.cue(Scene::Shelf);
+        paint(&mut guest, &small, &small_view, 0);
+        assert!(!guest.present(), "{at}: nowhere to stand");
+        assert!(guest.ledger.home.structures.is_empty(), "{at}: not yet");
+        // She comes in on the idle gate, at the full size.
+        let mut now = 0;
+        while !guest.present() && now < 60_000 {
+            now += 500;
+            guest.advance(now);
+            paint(&mut guest, &real, &view, now);
+        }
+        assert!(guest.present(), "{at}: she comes in");
+        let note = guest.cue_note().cloned();
+        assert!(matches!(note, Some(Ok(_))), "{at}: {note:?}");
+        assert_eq!(guest.ledger.home.structures.len(), 1, "{at}");
+        assert_eq!(up_on(&guest, Nook::List).len(), 1, "{at}");
     }
 }

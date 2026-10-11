@@ -162,7 +162,7 @@ use osaka::{Bubble, Osaka};
 use room::Shown;
 pub use room::{Furniture, Nook};
 use sprite::{Part, Pose};
-use structures::{Drawn, Written};
+use structures::{Drawn, Shelf, Structure, Written};
 use terrain::Terrain;
 
 /// What the shopping channel sells, in order (the TV comes first, on
@@ -1252,6 +1252,9 @@ pub struct Guest {
     /// The stage: at the next paint, a sofa turned away from her TV (see
     /// [`stage::Scene::Arrange`]).
     arranging: bool,
+    /// The stage: at the next paint, a finished shelf where one goes, with
+    /// small decor on it (see [`stage::Scene::Shelf`]).
+    shelving: bool,
     /// When to poke the scrollback accordion, and its shake.
     nudge: nudge::Nudge,
     /// What of hers is raining out: what stood in a pane just focused,
@@ -1400,6 +1403,7 @@ impl Guest {
             shelves_kept: Vec::new(),
             cat_now: false,
             arranging: false,
+            shelving: false,
             nudge: nudge::Nudge::default(),
             fades: Vec::new(),
             errand: None,
@@ -1476,8 +1480,13 @@ impl Guest {
         self.said_aloud.clear();
         self.unsaved = true;
         self.persist = true;
+        // What the stage cued was for her old home: none of it plays in
+        // the next (her cat with it).
         self.gift = None;
+        self.arranging = false;
+        self.shelving = false;
         self.shop_now = false;
+        self.cat_now = false;
         self.out = None;
         // Gone at once; a goodbye under way rains to its end.
         if !matches!(self.state, State::Leaving(_)) {
@@ -1553,6 +1562,9 @@ impl Guest {
             // A sofa and a TV, set up at the next paint (it needs the
             // frame).
             stage::Scene::Arrange => self.arranging = true,
+            // A shelf, put up at the next paint before her structures are
+            // written (it needs the frame, and shows on it).
+            stage::Scene::Shelf => self.shelving = true,
             _ => {
                 if let Some(what) = scene.furniture()
                     && let Some(&item) = Furniture::ALL
@@ -2547,15 +2559,7 @@ impl Guest {
         {
             Written::none()
         } else {
-            let (layer, made): (Vec<(u16, u16)>, Vec<Rect>) = match &self.state {
-                State::Visiting(visit) => (
-                    visit.layer.cells().collect(),
-                    visit.made.iter().map(|m| m.piece.cover()).collect(),
-                ),
-                State::Absent | State::Arriving(..) | State::Away(_) | State::Leaving(_) => {
-                    (Vec::new(), Vec::new())
-                }
-            };
+            let (layer, made) = self.kept_off();
             let keep_off = structures::KeepOff {
                 protected: &view.protected,
                 layer: &layer,
@@ -2573,6 +2577,62 @@ impl Guest {
             "a structure written on the accordion"
         );
         written
+    }
+
+    /// What of hers a structure keeps off this frame besides the view's
+    /// protected cells ([`structures::KeepOff`]): visiting, her layer's
+    /// cells before it's validated and the covers of what she made;
+    /// otherwise none.
+    fn kept_off(&self) -> (Vec<(u16, u16)>, Vec<Rect>) {
+        match &self.state {
+            State::Visiting(visit) => (
+                visit.layer.cells().collect(),
+                visit.made.iter().map(|m| m.piece.cover()).collect(),
+            ),
+            State::Absent | State::Arriving(..) | State::Away(_) | State::Leaving(_) => {
+                (Vec::new(), Vec::new())
+            }
+        }
+    }
+
+    /// The stage ([`stage::Scene::Shelf`]): her shelf finished where it
+    /// hangs, or, with none, put up finished where one goes on this frame
+    /// ([`room::Home::shelf_spot`], as her kit's will be), and on it the
+    /// first small decor that shows there this frame ([`shelf_decor`]:
+    /// the plant; where it doesn't, as on a low shelf with no third row
+    /// clear, her clock, a mantel clock there), given her if she hasn't
+    /// it, centred. Where none would show (her shelf can't hang on this
+    /// frame, or the frame hides it), her pieces stay where they are, and
+    /// [`stage::direct`] says so. Before her structures are written, so
+    /// this frame shows it.
+    fn stage_shelf(&mut self, buf: &Buffer, view: &IdleView) {
+        let plan = plan_of(view, buf);
+        let (layer, made) = self.kept_off();
+        let keep_off = structures::KeepOff {
+            protected: &view.protected,
+            layer: &layer,
+            made: &made,
+        };
+        let shelf = match self.ledger.home.structures.first() {
+            Some(&Structure::Shelf(shelf)) => Some(shelf),
+            None => self.ledger.home.shelf_spot(buf, plan, &keep_off, None),
+        };
+        let Some(shelf) = shelf else {
+            tracing::info!("houseguest: no shelf goes up on this frame (the stage)");
+            return;
+        };
+        let shelf = Shelf {
+            built: structures::SHELF_STAGES,
+            ..shelf
+        };
+        self.ledger.home.structures = vec![Structure::Shelf(shelf)];
+        self.unsaved = true;
+        let decor = shelf_decor(&self.ledger.home, shelf.nook, buf, view, &keep_off);
+        let item = decor.as_ref().map(|(item, _)| *item);
+        if let Some((_, staged)) = decor {
+            self.ledger.home = staged;
+        }
+        tracing::info!(?shelf, decor = ?item, "houseguest: her shelf up (the stage)");
     }
 
     /// Paint her state over the finished frame (see [`Guest::paint`]).
@@ -2595,6 +2655,13 @@ impl Guest {
         // decides: one showing her home keeps the cells, every other
         // undoes them before it reads the frame.
         self.shelves_kept.clear();
+        // The stage's shelf, on the first frame with room for her (the
+        // cue, waiting with it, plays on that frame too). Put up, and
+        // saved, even if the arrival it was cued with comes to nothing
+        // (the stage's doing, not hers: the cue's note then says why).
+        if size.0 >= MIN_WIDTH && size.1 >= MIN_HEIGHT && std::mem::take(&mut self.shelving) {
+            self.stage_shelf(buf, view);
+        }
         let written = self.read_ground(buf, view, size, now);
         self.errand_progress(view, now);
         self.nudge_due(buf, view, &written, now);
@@ -4445,6 +4512,69 @@ fn arranging(visit: &Visit) -> (Vec<osaka::LiftAt>, Option<osaka::Judged>) {
         }
     });
     (lift_at, judged)
+}
+
+/// The stage ([`Guest::stage_shelf`]): `home` (her shelf finished on
+/// `nook`'s wall) with the first small decor that shows on it this frame
+/// set down there, centred, unboxed, with its facing kept (given her if
+/// she hasn't it); and which it is. Each is tried as the frame will take
+/// it: the shelf written into a copy of `buf` as the paint will write it
+/// ([`structures::read_ground`]), then her pieces projected over it
+/// ([`room::Home::project_with`], as `furnish` projects them but for
+/// settling her door and the closet, which never takes a piece on a
+/// shelf) with what `furnish` keeps them off. `None` where none would
+/// show: her shelf can't hang here (too narrow a pane, too near a wall,
+/// gone), the frame hides it, or every piece's cells over it are taken.
+fn shelf_decor(
+    home: &room::Home,
+    nook: Nook,
+    buf: &Buffer,
+    view: &IdleView,
+    keep_off: &structures::KeepOff,
+) -> Option<(Furniture, room::Home)> {
+    use room::{Anchor, Side, Strip};
+    let plan = plan_of(view, buf);
+    let blocked = |cx: i32, cy: i32| {
+        let (Ok(ux), Ok(uy)) = (u16::try_from(cx), u16::try_from(cy)) else {
+            return true;
+        };
+        keep_off.layer.contains(&(ux, uy))
+            || view.protected.iter().any(|r| r.contains((ux, uy).into()))
+    };
+    let width = u16::try_from(structures::SHELF_WIDTH).unwrap_or(0);
+    Furniture::ALL
+        .into_iter()
+        .filter(|item| item.spec().shelf)
+        .find_map(|item| {
+            let mut staged = home.clone();
+            let facing = match staged.props.iter().find(|p| p.item == item) {
+                Some(prop) => prop.facing,
+                None => {
+                    staged.add(room::Prop::new(item, nook, 500, sprite::Facing::Right));
+                    sprite::Facing::Right
+                }
+            };
+            staged.unbox(item);
+            let to = rules::Placement {
+                strip: Strip::Shelf(nook),
+                anchor: Anchor {
+                    side: Side::Left,
+                    offset: width.saturating_sub(item.spec().footprint.0) / 2,
+                },
+                facing,
+            };
+            staged.set_down(item, to, &view.nooks);
+            let mut frame = buf.clone();
+            let written = structures::read_ground(&mut frame, &staged, plan, keep_off);
+            let shows = staged
+                .clone()
+                .project_with(written.over(&frame), plan, &blocked)
+                .0
+                .iter()
+                .any(|s| s.item == item && s.strip == Some(Strip::Shelf(nook)));
+            written.undo(&mut frame);
+            shows.then_some((item, staged))
+        })
 }
 
 /// The stage: her sofa turned away from her TV, both settled on one

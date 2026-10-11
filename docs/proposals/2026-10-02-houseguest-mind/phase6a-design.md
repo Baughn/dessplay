@@ -499,7 +499,8 @@ shelf's doesn't (it isn't shown).
 ### D11. The stage
 
 `Scene::PutUp` (stage.rs:28): gives her a shelf where `shelf_spot` puts it (`built: 0`), clears today's pacing, cues
-`PutUp`. `Scene::Shelf`: a finished shelf with the plant on it (the gremlin from step 7). `Scene::GazeUp`: its own shelf
+`PutUp`. `Scene::Shelf`: a finished shelf with the plant on it (the gremlin from step 7; as built in 5a, the clock where
+the frame hides the plant, as on a 9-row pane's low shelf: Step 5a, and the fifth round's open question). `Scene::GazeUp`: its own shelf
 and plant, then the use. `Scene::ALL` (stage.rs:170) grows from 58 to 61.
 
 `every_scene_has_a_spot_in_the_stage_room` (tests.rs:2355) loops `(100, 30)` and `(80, 24)`. At 100×30 two bundled
@@ -758,6 +759,36 @@ review: a delivery and a hung move judge what packing puts on the block where th
 **Goal.** D3's choice, pure, with its oracle and cost tests, and `Scene::Shelf` (D11), its first production reader
 (the stage gives her a finished shelf where `shelf_spot` puts it), so nothing is dead code before 5b. **Sites.**
 room.rs (`shelf_spot`, the free-upward pass); stage.rs, mod.rs:1517-1545 (the scene); the `every_scene_…` exception.
+**As built.** `Home::shelf_spot(buf, plan, keep_off, kit_at)` (and `shelf_spot_visiting`, which counts what it reads)
+returns `None` while she has a structure (one in all, in 6a). Each pane's wall is read once, lazily (a private `Wall`):
+for each cell where a run or its margin could lie, the cells upward from it that pass `structures::free` in one
+background (the test run in the cell's own background, the chain broken where the background changes), and for each
+row whether the pane's interior has text; a place then asks its run and margin's cells in its pane's background, read
+off the floor under the run's middle as `read_ground` reads it. The words, as built: a row **has text** if any cell of
+the pane's interior on it has a non-blank symbol; a high run **touches** a hung piece of its pane (as laid out) whose
+top row is the run's row + 1 and whose columns meet the run's (not its margin's); the distance is twice the run's
+middle's from the pane's (`|2·from + 10 − (host.from + host.to)|`, the pane's walls); the anchor is `Extent::pin`'s (from the nearer wall, the
+left of two as near). The gremlin's pane (first in order) is step 7's. The low block rule (`Shelf::block` against the
+pane's hung pieces) is redundant with the cells today: the poster and the clock fill both of the block's rows, so one
+meeting a block meets the run's row or its margin too, which the per-cell test refuses first (the property's
+companion counts no frame where the block alone refused; dropping either check alone survives every test, both
+together don't); it stands for a hung kind that doesn't. `Scene::Shelf`
+(`Scene::ALL` 59) is set up at the top of the paint, before `read_ground` writes (not in `furnish`, as `Arrange` is),
+so the cue's frame shows it and `stage::direct` reports what stands on it (the flag is taken only on a frame with room
+for her, so a cue painted too small waits with its arrival); with a shelf already hers, it's finished where it hangs.
+On it goes the first small decor that **shows there on this frame**, centred, tried as the frame will take it (mod.rs
+`shelf_decor`: the shelf written into a copy of the frame by `read_ground`, her pieces projected over it by
+`project_with` with what `furnish` keeps them off): the plant; where it doesn't show (on a low shelf with only
+`LOW_ABOVE` rows, every 9-row pane, the stage room's List at 100×30 among them, or a word where its top would be)
+the clock, a mantel clock there. Where none shows (her shelf can't hang this frame, or the frame hides it), nothing
+of hers moves and nothing is given her; the note says so. A piece she has is moved up, unboxed, its facing kept. The
+shelf is put up and saved even if the arrival it was cued with comes to nothing. At 80×24 no pane takes one (`Err`,
+the frame asserted to have no pane 9 rows tall). Cost: what's kept off (her layer, protected rects, what she made,
+her pieces' covers) is mapped onto each wall once, so the per-cell test asks only the frame and the chat pane. Timing
+(`her_shelf_is_quick`, ignored, release): `shelf_spot` 0.15 ms on a blank 400-wide three-pane frame, 0.28 ms on a
+dense one, 0.15 ms on a crowded one (a layer of 399 cells, a protected rect, what she made, five pieces; 0.63 ms
+before the keep-off was mapped); `read_ground` with a finished shelf and the plant, written and undone, under
+0.01 ms.
 
 ### Step 5b. The kit (~1200 lines)
 
@@ -825,6 +856,10 @@ at 191×46 from an ignored test on `Graphics::shot` (as the door batch's `door_s
 `phase6/shots/` with a README: the kit unpacked, each stage with the hop, the half shelf, the carry up, the gaze up, a
 high shelf in the user's layout and a low one, the gremlin turned; the frozen `hung_clear` copy deleted; design.md
 read through; CLAUDE.md's index line for this design; plan.md's record; `snippets.md`'s header marked wired.
+**Traps.** `shelf_spot`'s low block check and its laid-covers check each stand in for the other with today's hung kinds
+(the poster and the clock fill both block rows), so the block rule has no test of its own (the property's companion
+counts `blocked` 0): when a hung kind that doesn't fill both rows comes (or in a hung long visit of this step's), add a
+case where the block alone refuses, and assert `blocked > 0` in `shelves_hang_high_low_and_nowhere`.
 
 ## Census, band and stillness
 
@@ -870,7 +905,7 @@ under her hands (the hop marks the moment instead).
 
 ## Questions for the user
 
-One open (fifth round, below: the block spanning its margin). Fourth round (2026-10-10, the user):
+Two open (fifth round, below: the block spanning its margin; the stage's clock for the plant). Fourth round (2026-10-10, the user):
 - **High means standable**, as designed: a high shelf keeps `HEIGHT` clear rows over its run. Step 3 measures how often
   each height fits at 191×46 with real content; revisit only if the measurement surprises.
 - **The hop is for high shelves only** (D7c as designed): a low shelf is in her reach, so she stretches up.
@@ -890,6 +925,11 @@ Fifth round (2026-10-11, during the build; the hand-off notes have the detail):
   columns too** (the run ± 2), not only the run's as "Decided unless the user objects" and D3a first said. Why: D4
   shows a shelf only while its margin is clear of every other laid cover, so a poster hung flush against the run would
   hide the shelf every frame. The cost: a low shelf keeps 14 columns of the wall lane, not 10.
+- **Raised for the user, open** (step 5a's build call, 2026-10-11; reversible in `Guest::stage_shelf`/`shelf_decor`):
+  the stage's `Scene::Shelf` puts **her clock (a mantel clock) on the shelf where the frame hides the plant**, as on a
+  low shelf in a 9-row pane (`LOW_ABOVE` = 2 rows over the run; the plant is 3 tall): the stage room at 100×30 is that
+  case. D11 said "a finished shelf with the plant on it". Alternatives: leave the shelf bare there (the note then
+  `Err`), or require a third clear row for a low shelf (D3 would then refuse every 9-row pane).
 
 ## Critique dispositions
 

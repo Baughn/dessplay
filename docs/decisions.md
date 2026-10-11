@@ -6114,6 +6114,14 @@ over it, which every high shelf has going up, and a low one only in a
 pane 11 rows or taller); a low shelf is for decor, and the ladder's
 trigger must name a shelf she could stand on.
 
+*(2026-10-11, step 5a.)* The stage's shelf (`Scene::Shelf`) carries the
+first small decor that shows on it on that frame, tried as the paint
+will take it: the plant, else her clock as a mantel clock (a low shelf
+in a 9-row pane keeps two rows clear and the plant is three tall: the
+stage room at 100×30 is that case), else nothing, and then nothing of
+hers moves (a build call, put to the user: the alternatives are a bare
+shelf there, or a third clear row for every low shelf).
+
 ## Houseguest chooses by needs among the top few (2026-09-28)
 
 **Rule:** Her next act is a weighted-random pick among the four

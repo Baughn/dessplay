@@ -163,11 +163,15 @@ pub enum Scene {
     /// Spacing out, a glance up at her wall clock, saying the hour,
     /// roughly (three o'clock, without her clock to tell her).
     ClockGlance,
+    /// Her shelf up on a pane's back wall, finished, where one goes (as
+    /// high as fits), with small decor on it (her plant, or on a low
+    /// shelf with no room over it for the plant, her clock).
+    Shelf,
 }
 
 impl Scene {
     /// Every scene, in menu order.
-    pub const ALL: [Scene; 58] = [
+    pub const ALL: [Scene; 59] = [
         Self::Arrive,
         Self::Pull,
         Self::Swap,
@@ -226,6 +230,7 @@ impl Scene {
         Self::Scary,
         Self::LookOut,
         Self::ClockGlance,
+        Self::Shelf,
     ];
 
     /// A short menu label.
@@ -289,6 +294,7 @@ impl Scene {
             Self::Scary => "scary story time",
             Self::LookOut => "look out of the window",
             Self::ClockGlance => "glance at the clock",
+            Self::Shelf => "her shelf",
         }
     }
 
@@ -386,7 +392,8 @@ impl Scene {
             | Self::MakeDesk
             | Self::School
             | Self::Arrange
-            | Self::LookOut => None,
+            | Self::LookOut
+            | Self::Shelf => None,
         }
     }
 
@@ -463,6 +470,19 @@ pub(super) fn direct(
     osaka.cue(scene.cue());
     match scene {
         Scene::Arrive => Ok("arriving".into()),
+        // Put up before the frame was written (the guest's
+        // `stage_shelf`): what stands on it shows, or why not.
+        Scene::Shelf => visit
+            .shown
+            .iter()
+            .find(|s| s.on_shelf())
+            .map(|s| {
+                let over = s
+                    .strip
+                    .map_or_else(String::new, |strip| format!(", over {:?}", strip.nook()));
+                format!("{name}: her {} up on it{over}", s.item.spec().name)
+            })
+            .ok_or_else(|| format!("{name}: no shelf of hers, or nothing on it, shows here")),
         // In through her door (where her home and the frame stand it,
         // the door batch): what she forgot, she goes for as she first
         // decides (her routine sends her out after, at school time).

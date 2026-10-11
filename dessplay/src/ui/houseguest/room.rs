@@ -17,8 +17,11 @@ use super::Rng;
 use super::cells::{untouchable, width};
 use super::door::Keep;
 use super::graphics::strokes;
-use super::sprite::Facing;
-use super::structures::{Drawn, Shelf, Structure};
+use super::sprite::{self, Facing};
+use super::structures::{
+    self, Drawn, EDGE, HIGH_RISE, KeepOff, LOW_ABOVE, LOW_RISE, MARGIN, SHELF_WIDTH, Shelf,
+    Structure,
+};
 
 /// A piece of furniture.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -1846,6 +1849,90 @@ impl Home {
         })
     }
 
+    /// Where a shelf of hers would go up on this frame (phase 6a D3), if
+    /// she has none yet (one in all, in 6a): highest that fits (the
+    /// user's rule), so every pane is tried for a high shelf before any is
+    /// tried for a low one. A **high** shelf hangs from `HIGH_RISE` rows
+    /// up to her height under the pane's top, its run and margin
+    /// ([`structures::free`]) and the `HEIGHT` rows over its run free; a **low** one
+    /// at `LOW_RISE`, its run and margin and the `LOW_ABOVE` rows over its
+    /// run free, its block ([`Shelf::block`]) meeting no hung piece of
+    /// its pane as laid out (so going up it never pushes one aside).
+    /// Every cell is judged as [`super::structures::read_ground`] will
+    /// judge it, in the background of its pane's floor under the run's
+    /// middle, with `keep_off` and her pieces' covers as laid out.
+    ///
+    /// Within a height: the panes in order (`kit_at`, the pane she
+    /// unpacks in, then `plan`'s; never one meeting the chat pane; step
+    /// 7 puts the gremlin's first), the first that takes one; in that
+    /// pane, a row with **no text** anywhere in the pane's interior
+    /// before one with text (a shelf among a table's text reads as the
+    /// UI's own rule), then (high) a run **touching no hung piece** (no
+    /// hung piece's top row right under it, its columns meeting the
+    /// run's) before one that does, then the lowest rise, then the left
+    /// whose run's middle is nearest the pane's middle (the left first of
+    /// two as near). Saved with its anchor from the nearer wall and
+    /// `built: 0`. No RNG; each cell of a pane is read once (what's kept
+    /// off mapped onto its wall once first, so a visit's layer costs its
+    /// own cells, not a scan per cell: `her_shelf_is_quick`), and each
+    /// place looks up at most its run's and margin's columns of what was
+    /// read ([`Home::shelf_spot_visiting`] counts the frame's cells).
+    pub(super) fn shelf_spot(
+        &self,
+        buf: &Buffer,
+        plan: Plan,
+        keep_off: &KeepOff,
+        kit_at: Option<Nook>,
+    ) -> Option<Shelf> {
+        self.shelf_spot_visiting(buf, plan, keep_off, kit_at, &mut 0)
+    }
+
+    /// [`Home::shelf_spot`], counting into `visited` each cell of the
+    /// frame it reads and each entry of what it read that it looks up
+    /// (its cost: `shelf_spot_is_cheap`).
+    pub(super) fn shelf_spot_visiting(
+        &self,
+        buf: &Buffer,
+        plan: Plan,
+        keep_off: &KeepOff,
+        kit_at: Option<Nook>,
+        visited: &mut usize,
+    ) -> Option<Shelf> {
+        if !self.structures.is_empty() {
+            return None;
+        }
+        let laid = self.laid_and_shifted(plan.nooks).shown;
+        let covers: Vec<Rect> = laid.iter().map(Shown::cover).collect();
+        let mut panes: Vec<(Nook, Rect)> = plan
+            .nooks
+            .iter()
+            .copied()
+            .filter(|&(_, rect)| !rect.intersects(plan.chat))
+            .collect();
+        panes.sort_by_key(|&(nook, _)| Some(nook) != kit_at);
+        // Each pane's wall, read once, when first asked (a high shelf in
+        // the first pane reads no other).
+        let mut walls: Vec<Option<Option<Wall>>> = panes.iter().map(|_| None).collect();
+        for high in [true, false] {
+            for (&(nook, rect), wall) in panes.iter().zip(&mut walls) {
+                let host = pane_raw(rect);
+                let read = || Wall::read(buf, host, plan, keep_off, &covers, visited);
+                let Some(wall) = wall.get_or_insert_with(read) else {
+                    continue;
+                };
+                let hung: Vec<Rect> = laid
+                    .iter()
+                    .filter(|s| s.strip == Some(Strip::Bottom(nook)) && s.lane() == Lane::Wall)
+                    .map(Shown::rect)
+                    .collect();
+                if let Some(shelf) = wall.best(buf, nook, host, high, &hung, visited) {
+                    return Some(shelf);
+                }
+            }
+        }
+        None
+    }
+
     /// Unpack `item`: it's out of its box. False if it wasn't boxed.
     pub fn unbox(&mut self, item: Furniture) -> bool {
         match self.props.iter_mut().find(|p| p.item == item && p.boxed) {
@@ -3143,6 +3230,212 @@ impl Home {
 /// Her seats at a piece shown among the pieces shown, her home as it
 /// will be then (see [`Home::doorstep`]).
 pub(super) type Seats<'a> = dyn Fn(&Shown, &[Shown], &Home) -> Vec<Seat> + 'a;
+
+/// A pane's back wall as [`Home::shelf_spot`] reads it, in one pass over
+/// the pane's interior rows a shelf could hang in: for each cell where a
+/// run or its margin could lie, how many cells from it upward, itself
+/// first, pass D4's per-cell test ([`structures::free`]) in its background (0 where
+/// it fails); and for each row, whether the pane's interior has text on
+/// it.
+struct Wall {
+    /// Its first column (the margin's first of a run `EDGE` in from the
+    /// left wall), its columns and its first row (the pane's top inside).
+    x0: i32,
+    columns: usize,
+    top: i32,
+    /// By row from `top`, then column from `x0`.
+    up: Vec<u16>,
+    bg: Vec<Color>,
+    /// By row from `top`.
+    text: Vec<bool>,
+}
+
+impl Wall {
+    /// The wall of the pane whose floor is `host`, or `None` where no
+    /// shelf could hang by geometry (too narrow, or too short for a low
+    /// one).
+    fn read(
+        buf: &Buffer,
+        host: Extent,
+        plan: Plan,
+        keep_off: &KeepOff,
+        covers: &[Rect],
+        visited: &mut usize,
+    ) -> Option<Self> {
+        let x0 = host.from + EDGE - MARGIN;
+        let x1 = host.to - EDGE + MARGIN;
+        if x1 - x0 < SHELF_WIDTH + 2 * MARGIN || host.rows < LOW_RISE + LOW_ABOVE {
+            return None;
+        }
+        let top = host.floor - i32::from(host.rows);
+        let bottom = host.floor - i32::from(LOW_RISE);
+        let columns = usize::try_from(x1 - x0).ok()?;
+        // What `keep_off` and her pieces' covers take of the cells the
+        // per-cell test is asked of, mapped once: the test then asks the
+        // frame and the chat pane alone, so the wall costs its cells plus
+        // what's kept off (clipped to it), never their product (a visit's
+        // layer can hold hundreds of cells).
+        let rows = usize::try_from(bottom - top + 1).ok()?;
+        let mut kept = vec![false; rows * columns];
+        let mut keep = |x: i32, y: i32| {
+            if (x0..x1).contains(&x) && (top..=bottom).contains(&y) {
+                let (Ok(row), Ok(column)) = (usize::try_from(y - top), usize::try_from(x - x0))
+                else {
+                    return;
+                };
+                kept[row * columns + column] = true;
+            }
+        };
+        for &(x, y) in keep_off.layer {
+            keep(i32::from(x), i32::from(y));
+        }
+        for r in keep_off.protected.iter().chain(keep_off.made).chain(covers) {
+            let (from, to) = (i32::from(r.x).max(x0), i32::from(r.right()).min(x1));
+            let (up, down) = (
+                i32::from(r.y).max(top),
+                i32::from(r.bottom()).min(bottom + 1),
+            );
+            for y in up..down {
+                for x in from..to {
+                    keep(x, y);
+                }
+            }
+        }
+        let nothing = KeepOff {
+            protected: &[],
+            layer: &[],
+            made: &[],
+        };
+        let mut wall = Self {
+            x0,
+            columns,
+            top,
+            up: Vec::new(),
+            bg: Vec::new(),
+            text: Vec::new(),
+        };
+        for y in top..=bottom {
+            let mut text = false;
+            for x in host.from..host.to {
+                *visited += 1;
+                let cell = u16::try_from(x)
+                    .ok()
+                    .zip(u16::try_from(y).ok())
+                    .and_then(|at| buf.cell(at));
+                text |= cell.is_some_and(|c| !c.symbol().trim().is_empty());
+                if !(x0..x1).contains(&x) {
+                    continue;
+                }
+                // The per-cell test in the cell's own background; a place
+                // asks its pane's (`best`).
+                let bg = cell.map_or(Color::Reset, |c| c.bg);
+                let free =
+                    !kept[wall.up.len()] && structures::free(buf, (x, y), plan, &nothing, &[], bg);
+                let above = match wall.at(x, y - 1) {
+                    Some(i) if y > top && wall.bg[i] == bg => wall.up[i],
+                    _ => 0,
+                };
+                wall.up.push(if free { above + 1 } else { 0 });
+                wall.bg.push(bg);
+            }
+            wall.text.push(text);
+        }
+        Some(wall)
+    }
+
+    /// The index of `(x, y)` in what was read, if it was.
+    fn at(&self, x: i32, y: i32) -> Option<usize> {
+        let column = usize::try_from(x - self.x0).ok()?;
+        let row = usize::try_from(y - self.top).ok()?;
+        (column < self.columns).then_some(row * self.columns + column)
+    }
+
+    /// The best place on it for a shelf of `high`'s height (see
+    /// [`Home::shelf_spot`] for the order), `hung` the hung pieces of its
+    /// pane as laid out.
+    fn best(
+        &self,
+        buf: &Buffer,
+        nook: Nook,
+        host: Extent,
+        high: bool,
+        hung: &[Rect],
+        visited: &mut usize,
+    ) -> Option<Shelf> {
+        let her = u16::try_from(sprite::HEIGHT).unwrap_or(u16::MAX);
+        let (rises, over) = if high {
+            (HIGH_RISE..=host.rows.saturating_sub(her), her)
+        } else {
+            (LOW_RISE..=LOW_RISE, LOW_ABOVE)
+        };
+        let width = u16::try_from(SHELF_WIDTH).unwrap_or(u16::MAX);
+        // Text on its row, touching a hung piece, its rise, twice its
+        // middle's distance from the pane's, its left.
+        type Key = (bool, bool, u16, i32, i32);
+        let mut best: Option<(Key, Shelf)> = None;
+        for rise in rises {
+            if host.rows < rise.saturating_add(over) {
+                continue;
+            }
+            let y = host.floor - i32::from(rise);
+            let Some(text) = usize::try_from(y - self.top)
+                .ok()
+                .and_then(|row| self.text.get(row).copied())
+            else {
+                continue;
+            };
+            for from in host.from + EDGE..=host.to - EDGE - SHELF_WIDTH {
+                let to = from + SHELF_WIDTH;
+                // Its pane's background, as `read_ground` reads it.
+                *visited += 1;
+                let bg = u16::try_from(from + SHELF_WIDTH / 2)
+                    .ok()
+                    .zip(u16::try_from(host.floor).ok())
+                    .and_then(|at| buf.cell(at))
+                    .map_or(Color::Reset, |c| c.bg);
+                let clear = (from - MARGIN..to + MARGIN).all(|x| {
+                    *visited += 1;
+                    let need = if (from..to).contains(&x) { over } else { 0 };
+                    self.at(x, y)
+                        .is_some_and(|i| self.bg[i] == bg && self.up[i] > need)
+                });
+                if !clear {
+                    continue;
+                }
+                let (anchor, _) = host.pin(from, width);
+                let shelf = Shelf {
+                    nook,
+                    anchor,
+                    rise,
+                    built: 0,
+                };
+                // Its block clear of what hangs: with today's hung kinds
+                // (the poster and the clock fill both of its rows) the
+                // covers the cells were judged against refuse the same
+                // places, and each check alone stands in for the other;
+                // this one stands for a hung kind that doesn't.
+                if !high
+                    && let Some(block) = shelf.block(host)
+                    && hung.iter().any(|r| r.intersects(block))
+                {
+                    continue;
+                }
+                let touches = high
+                    && hung.iter().any(|r| {
+                        i32::from(r.y) == y + 1
+                            && i32::from(r.x) < to
+                            && i32::from(r.right()) > from
+                    });
+                let away = (2 * from + SHELF_WIDTH - (host.from + host.to)).abs();
+                let key = (text, touches, rise, away, from);
+                if best.is_none_or(|(was, _)| key < was) {
+                    best = Some((key, shelf));
+                }
+            }
+        }
+        best.map(|(_, shelf)| shelf)
+    }
+}
 
 /// `prop` as it stands at `left` on `strip` (between its ends
 /// `extent`), reached from `host`'s floor (its pane's: see
@@ -8325,5 +8618,912 @@ mod low_shelf {
             assert_eq!(runs.len(), 1, "rise {rise}");
             assert!(!runs[0].hangs_over(at.rect()), "rise {rise}");
         }
+    }
+}
+
+/// Where a shelf goes up (phase 6a D3, step 5a): [`Home::shelf_spot`]
+/// against a brute-force oracle that tries every pane, rise and left,
+/// judging each cell by D4's rules written out again (never
+/// [`structures::free`]), its pane's background as the draw declares it
+/// and a low shelf's block as [`super::tests::ShelfRun::hangs_over`]
+/// works it out from the record and the pane's rect; and its cost.
+/// Independent of the drawing mode: no loop over it (the frame's cells
+/// are the app's).
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod spot {
+    use super::super::cells::sanitize;
+    use super::super::cells::untouchable as image_cell;
+    use super::super::structures::{KeepOff, Shelf, Structure};
+    use super::super::tests::shelf_runs;
+    use super::*;
+    use proptest::prelude::*;
+    use proptest::strategy::ValueTree;
+    use proptest::test_runner::{Config, TestCaseError, TestRng, TestRunner};
+    use tuirealm::ratatui::style::{Modifier, Style};
+    use tuirealm::ratatui::widgets::{Block, Widget};
+
+    const NOOKS: [Nook; 3] = [Nook::List, Nook::Users, Nook::Playlist];
+    /// The kinds laid out under a shelf's place: what stands and what
+    /// hangs (this strategy's own list).
+    const KINDS: [Furniture; 7] = [
+        Furniture::Sofa,
+        Furniture::Tv,
+        Furniture::Lamp,
+        Furniture::Plant,
+        Furniture::Poster,
+        Furniture::Clock,
+        Furniture::Window,
+    ];
+    /// A theme's background for a whole pane (border and inside).
+    const THEME: Color = Color::Indexed(236);
+    /// The rises a tint is drawn near: a low shelf's, a high one's, a row
+    /// either side.
+    const RISES: [u16; 5] = [5, 6, 7, 8, 9];
+
+    /// A pane: `tall` 0, 9 rows (a low shelf at most); 1, 13 (a high one
+    /// at rise 7 exactly); else `height`; from `top`.
+    #[derive(Clone, Debug)]
+    struct PaneDraw {
+        tall: u8,
+        height: u16,
+        top: u16,
+        theme: bool,
+    }
+
+    #[derive(Clone, Debug)]
+    struct SpotDraw {
+        width: u16,
+        panes: Vec<PaneDraw>,
+        /// `(x, y, len, wide)`, anywhere.
+        text: Vec<(u16, u16, u16, bool)>,
+        /// `(pane, rise, right, short)`: a word against a wall inside a
+        /// pane, on the row of a low shelf (`rise` 0), or of a high one 7
+        /// or 8 rows up (1, 2): the row has text, but not where a run or
+        /// its margin could lie. `short`, one glyph (in the column right
+        /// against the wall); else two.
+        walls: Vec<(usize, u16, bool, bool)>,
+        images: Vec<(u16, u16)>,
+        /// `(pane, row)`: a selection bar across the row inside.
+        bars: Vec<(usize, u16)>,
+        /// `(pane, column, row)`: a blank tinted unlike its pane,
+        /// anywhere inside it (`column` and `row` wrap).
+        tints: Vec<(usize, u16, u16)>,
+        /// `(pane, rise, dx, over)`: a blank tinted unlike its pane near
+        /// where a shelf goes: `over` (0..4) rows above the row of the
+        /// rise [`RISES`]`[rise]`, `dx` columns from the pane's middle.
+        near: Vec<(usize, usize, i16, u16)>,
+        protected: Vec<(u16, u16, u16, u16)>,
+        focused: Option<usize>,
+        /// 0..=2, that pane is the chat; else a rect, or none.
+        chat: Option<(u8, (u16, u16, u16, u16))>,
+        layer: Vec<(u16, u16)>,
+        made: Vec<(u16, u16, u16, u16)>,
+        pieces: Vec<(usize, usize, u16)>,
+        /// `(pane, clock)`: her poster (or her clock) hung mid-wall in
+        /// that pane, before `pieces`: under the middle run of rise 7, so
+        /// the touching rule has a run beside it to choose.
+        centred: Option<(usize, bool)>,
+        door: Option<(usize, bool)>,
+        kit_at: Option<usize>,
+        /// She has a shelf already.
+        has: bool,
+    }
+
+    fn rect_draw() -> impl Strategy<Value = (u16, u16, u16, u16)> {
+        (0u16..170, 0u16..36, 1u16..30, 1u16..6)
+    }
+
+    fn spot_draw() -> impl Strategy<Value = SpotDraw> {
+        let pane = (0u8..4, 5u16..=30, 0u16..4, proptest::bool::weighted(0.15)).prop_map(
+            |(tall, height, top, theme)| PaneDraw {
+                tall,
+                height,
+                top,
+                theme,
+            },
+        );
+        (
+            (
+                60u16..=170,
+                proptest::collection::vec(pane, 1..=3),
+                proptest::collection::vec((0u16..170, 0u16..36, 1u16..40, any::<bool>()), 0..12),
+                proptest::collection::vec((0usize..3, 0u16..3, any::<bool>(), any::<bool>()), 0..6),
+                proptest::collection::vec((0u16..170, 0u16..36), 0..3),
+                proptest::collection::vec((0usize..3, 0u16..30), 0..2),
+                proptest::collection::vec((0usize..3, 0u16..170, 0u16..30), 0..3),
+                proptest::collection::vec((0usize..3, 0..RISES.len(), -10i16..10, 0u16..4), 0..4),
+            ),
+            (
+                proptest::collection::vec(rect_draw(), 0..3),
+                proptest::option::weighted(0.1, 0usize..3),
+                proptest::option::weighted(0.3, (0u8..6, rect_draw())),
+                proptest::collection::vec((0u16..170, 0u16..36), 0..12),
+                proptest::collection::vec(rect_draw(), 0..3),
+                proptest::collection::vec((0..KINDS.len(), 0usize..3, 0u16..=1000), 0..6),
+                proptest::option::weighted(0.25, (0usize..3, any::<bool>())),
+                proptest::option::weighted(0.4, (0usize..3, any::<bool>())),
+                proptest::option::weighted(0.4, 0usize..3),
+                proptest::bool::weighted(0.05),
+            ),
+        )
+            .prop_map(
+                |(
+                    (width, panes, text, walls, images, bars, tints, near),
+                    (protected, focused, chat, layer, made, pieces, centred, door, kit_at, has),
+                )| SpotDraw {
+                    width,
+                    panes,
+                    text,
+                    walls,
+                    images,
+                    bars,
+                    tints,
+                    near,
+                    protected,
+                    focused,
+                    chat,
+                    layer,
+                    made,
+                    pieces,
+                    centred,
+                    door,
+                    kit_at,
+                    has,
+                },
+            )
+    }
+
+    /// A draw made a frame: the buffer, her panes, each pane's declared
+    /// background, her home (its pieces anchored), what's kept off, and
+    /// the pane she unpacks in.
+    struct Spot {
+        buf: Buffer,
+        nooks: Vec<(Nook, Rect)>,
+        themes: Vec<(Nook, Color)>,
+        home: Home,
+        protected: Vec<Rect>,
+        chat: Rect,
+        layer: Vec<(u16, u16)>,
+        made: Vec<Rect>,
+        kit_at: Option<Nook>,
+    }
+
+    fn spot(draw: &SpotDraw) -> Spot {
+        let n = u16::try_from(draw.panes.len()).unwrap();
+        let rects: Vec<Rect> = draw
+            .panes
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                let i = u16::try_from(i).unwrap();
+                let x = i * draw.width / n;
+                let right = (i + 1) * draw.width / n;
+                let height = match p.tall {
+                    0 => 9,
+                    1 => 13,
+                    _ => p.height,
+                };
+                Rect::new(x, p.top, right - x, height)
+            })
+            .collect();
+        let height = rects.iter().map(|r| r.bottom()).max().unwrap_or(0) + 2;
+        let mut buf = Buffer::empty(Rect::new(0, 0, draw.width, height));
+        let nooks: Vec<(Nook, Rect)> = NOOKS.iter().copied().zip(rects.iter().copied()).collect();
+        for &(_, pane) in &nooks {
+            Block::bordered().render(pane, &mut buf);
+        }
+        let inside = |pane: usize, column: u16, row: u16| {
+            let rect = nooks.get(pane)?.1;
+            let rows = rect.height.checked_sub(2)?;
+            let width = rect.width.checked_sub(2)?;
+            (rows > 0 && width > 0).then(|| (rect.x + 1 + column % width, rect.y + 1 + row % rows))
+        };
+        for &(x, y, len, wide) in &draw.text {
+            if !buf.area.contains((x, y).into()) {
+                continue;
+            }
+            let text: String = if wide {
+                "漢字".repeat(usize::from(len / 2 + 1))
+            } else {
+                "so what did you think ".repeat(2)
+            };
+            buf.set_stringn(x, y, &text, usize::from(len), Style::new());
+        }
+        for &(pane, rise, right, short) in &draw.walls {
+            let Some(&(_, rect)) = nooks.get(pane) else {
+                continue;
+            };
+            let rise = [5, 7, 8][usize::from(rise)];
+            let Some(y) = (rect.bottom() - 1)
+                .checked_sub(rise)
+                .filter(|&y| y > rect.y)
+            else {
+                continue;
+            };
+            let word = if short { "o" } else { "ok" };
+            let len = u16::try_from(word.len()).unwrap();
+            let x = if right {
+                rect.right() - 1 - len
+            } else {
+                rect.x + 1
+            };
+            buf.set_string(x, y, word, Style::new());
+        }
+        sanitize(&mut buf);
+        for &(x, y) in &draw.images {
+            if let Some(cell) = buf.cell_mut((x, y)) {
+                cell.set_symbol(" ")
+                    .set_diff_option(tuirealm::ratatui::buffer::CellDiffOption::Skip);
+            }
+        }
+        let mut themes = Vec::new();
+        for (i, p) in draw.panes.iter().enumerate() {
+            if p.theme {
+                themes.push((NOOKS[i], THEME));
+                buf.set_style(rects[i], Style::new().bg(THEME));
+            }
+        }
+        for &(pane, row) in &draw.bars {
+            if let Some((x, y)) = inside(pane, 0, row) {
+                let width = rects[pane].width - 2;
+                buf.set_style(
+                    Rect::new(x, y, width, 1),
+                    Style::new().add_modifier(Modifier::REVERSED),
+                );
+            }
+        }
+        for &(pane, column, row) in &draw.tints {
+            if let Some((x, y)) = inside(pane, column, row) {
+                buf.set_style(Rect::new(x, y, 1, 1), Style::new().bg(Color::Blue));
+            }
+        }
+        for &(pane, rise, dx, over) in &draw.near {
+            let Some(&rect) = rects.get(pane) else {
+                continue;
+            };
+            let x = i32::from(rect.x) + i32::from(rect.width) / 2 + i32::from(dx);
+            let y = i32::from(rect.bottom()) - 1 - i32::from(RISES[rise]) - i32::from(over);
+            let inside_x = i32::from(rect.x) < x && x < i32::from(rect.right()) - 1;
+            if inside_x && i32::from(rect.y) < y {
+                let at = Rect::new(u16::try_from(x).unwrap(), u16::try_from(y).unwrap(), 1, 1);
+                buf.set_style(at, Style::new().bg(Color::Blue));
+            }
+        }
+        let rect = |(x, y, w, h): (u16, u16, u16, u16)| Rect::new(x, y, w, h);
+        let mut protected: Vec<Rect> = draw.protected.iter().copied().map(rect).collect();
+        if let Some(pane) = draw.focused.filter(|&p| p < rects.len()) {
+            protected.push(rects[pane]);
+        }
+        let chat = match draw.chat {
+            Some((pane @ 0..=2, _)) if usize::from(pane) < rects.len() => rects[usize::from(pane)],
+            Some((_, r)) => rect(r),
+            None => Rect::default(),
+        };
+        let mut home = Home {
+            door: draw
+                .door
+                .filter(|&(pane, _)| pane < rects.len())
+                .map(|(pane, right)| DoorWall {
+                    strip: Strip::Bottom(NOOKS[pane]),
+                    side: if right { Side::Right } else { Side::Left },
+                }),
+            ..Home::default()
+        };
+        if let Some((pane, clock)) = draw.centred.filter(|&(p, _)| p < rects.len()) {
+            let item = if clock {
+                Furniture::Clock
+            } else {
+                Furniture::Poster
+            };
+            home.add(Prop::new(item, NOOKS[pane], 500, Facing::Right));
+        }
+        for &(kind, pane, at) in &draw.pieces {
+            if pane < rects.len() {
+                home.add(Prop::new(KINDS[kind], NOOKS[pane], at, Facing::Right));
+            }
+        }
+        if draw.has {
+            home.structures.push(Structure::Shelf(Shelf {
+                nook: NOOKS[0],
+                anchor: Anchor {
+                    side: Side::Left,
+                    offset: 9,
+                },
+                rise: 30,
+                built: 0,
+            }));
+        }
+        // Anchored where their shares put them, as a frame's projection
+        // pins them before a spot is chosen.
+        home.layout(&nooks);
+        Spot {
+            buf,
+            kit_at: draw.kit_at.filter(|&p| p < rects.len()).map(|p| NOOKS[p]),
+            nooks,
+            themes,
+            home,
+            protected,
+            chat,
+            layer: draw.layer.clone(),
+            made: draw.made.iter().copied().map(rect).collect(),
+        }
+    }
+
+    impl Spot {
+        fn plan(&self) -> Plan<'_> {
+            Plan {
+                nooks: &self.nooks,
+                chat: self.chat,
+                screen: self.buf.area,
+            }
+        }
+
+        fn chosen(&self) -> Option<Shelf> {
+            let keep_off = KeepOff {
+                protected: &self.protected,
+                layer: &self.layer,
+                made: &self.made,
+            };
+            self.home
+                .shelf_spot(&self.buf, self.plan(), &keep_off, self.kit_at)
+        }
+    }
+
+    /// A place a shelf could go, as the oracle orders them: high (0)
+    /// before low (1), its pane's rank, text on its row, touching a hung
+    /// piece (high), its rise, twice its middle's distance from its
+    /// pane's, its left; and the shelf.
+    type Place = (Key, Shelf);
+    type Key = (u8, usize, bool, bool, u16, i32, i32);
+
+    /// Every place a shelf could go on `spot`'s frame, worked out from
+    /// D3's words and the panes' rects alone; and how many low places
+    /// were refused for their block alone.
+    fn places(spot: &Spot) -> (Vec<Place>, usize) {
+        let mut blocked = 0;
+        if !spot.home.structures.is_empty() {
+            return (Vec::new(), blocked);
+        }
+        let laid = spot.home.laid_and_shifted(&spot.nooks).shown;
+        let covers: Vec<Rect> = laid.iter().map(Shown::cover).collect();
+        let buf = &spot.buf;
+        let mut order: Vec<Nook> = spot.kit_at.into_iter().collect();
+        order.extend(
+            spot.nooks
+                .iter()
+                .map(|&(n, _)| n)
+                .filter(|&n| Some(n) != spot.kit_at),
+        );
+        let mut out = Vec::new();
+        for (rank, nook) in order.into_iter().enumerate() {
+            let pane = spot.nooks.iter().find(|(n, _)| *n == nook).unwrap().1;
+            let c = spot.chat;
+            let meets_chat = c.width > 0
+                && c.height > 0
+                && pane.x < c.x + c.width
+                && c.x < pane.x + pane.width
+                && pane.y < c.y + c.height
+                && c.y < pane.y + pane.height;
+            if meets_chat {
+                continue;
+            }
+            let (left, right) = (i32::from(pane.x) + 1, i32::from(pane.right()) - 1);
+            let floor = i32::from(pane.bottom()) - 1;
+            let rows = i32::from(pane.height) - 2;
+            let bg = spot
+                .themes
+                .iter()
+                .find(|(n, _)| *n == nook)
+                .map_or(Color::Reset, |&(_, bg)| bg);
+            let ok = |x: i32, y: i32| {
+                let (Ok(ux), Ok(uy)) = (u16::try_from(x), u16::try_from(y)) else {
+                    return false;
+                };
+                let Some(cell) = buf.cell((ux, uy)) else {
+                    return false;
+                };
+                let at = (ux, uy).into();
+                let trailer = ux > 0
+                    && buf
+                        .cell((ux - 1, uy))
+                        .is_some_and(|c| unicode_width::UnicodeWidthStr::width(c.symbol()) > 1);
+                cell.symbol().trim().is_empty()
+                    && !cell.modifier.contains(Modifier::REVERSED)
+                    && cell.bg == bg
+                    && !trailer
+                    && !image_cell(cell)
+                    && !spot.protected.iter().any(|r| r.contains(at))
+                    && !spot.chat.contains(at)
+                    && !spot.layer.contains(&(ux, uy))
+                    && !spot.made.iter().any(|r| r.contains(at))
+                    && !covers.iter().any(|r| r.contains(at))
+            };
+            // What hangs on this pane's wall, as laid out.
+            let hung: Vec<Rect> = laid
+                .iter()
+                .filter(|s| {
+                    s.strip == Some(Strip::Bottom(nook)) && !s.boxed && s.item.spec().hang.is_some()
+                })
+                .map(Shown::rect)
+                .collect();
+            for rise in 5..=rows {
+                let (class, over) = match rise {
+                    5 if rows - rise >= 2 => (1, 2),
+                    7.. if rows - rise >= 4 => (0, 4),
+                    _ => continue,
+                };
+                let y = floor - rise;
+                let text = (left..right).any(|x| {
+                    buf.cell((u16::try_from(x).unwrap(), u16::try_from(y).unwrap()))
+                        .is_some_and(|c| !c.symbol().trim().is_empty())
+                });
+                for from in left + 8..=right - 18 {
+                    let to = from + 10;
+                    if !(from - 2..to + 2).all(|x| ok(x, y))
+                        || !(1..=over).all(|k| (from..to).all(|x| ok(x, y - k)))
+                    {
+                        continue;
+                    }
+                    let anchor = if from - left <= right - to {
+                        Anchor {
+                            side: Side::Left,
+                            offset: u16::try_from(from - left).unwrap(),
+                        }
+                    } else {
+                        Anchor {
+                            side: Side::Right,
+                            offset: u16::try_from(right - to).unwrap(),
+                        }
+                    };
+                    let shelf = Shelf {
+                        nook,
+                        anchor,
+                        rise: u16::try_from(rise).unwrap(),
+                        built: 0,
+                    };
+                    let alone = Home {
+                        structures: vec![Structure::Shelf(shelf)],
+                        ..Home::default()
+                    };
+                    let runs = shelf_runs(&alone, &spot.nooks);
+                    assert_eq!(runs.len(), 1, "{shelf:?}: its geometry holds");
+                    if class == 1 && hung.iter().any(|&r| runs[0].hangs_over(r)) {
+                        blocked += 1;
+                        continue;
+                    }
+                    let touches = class == 0
+                        && hung.iter().any(|r| {
+                            i32::from(r.y) == y + 1
+                                && i32::from(r.x) < to
+                                && from < i32::from(r.right())
+                        });
+                    let away = (2 * from + 10 - (left + right)).abs();
+                    let key = (class, rank, text, touches, shelf.rise, away, from);
+                    out.push((key, shelf));
+                }
+            }
+        }
+        (out, blocked)
+    }
+
+    /// How often each case came up (non-vacuity): a high, low or no
+    /// place chosen; one in a pane after the first in order; a choice
+    /// the text rule, the touching rule or the kit's pane decided (the
+    /// first place differs with it left out of the order); frames where a
+    /// low place was refused for its block alone (printed, not asserted:
+    /// with today's hung kinds, the poster and the clock 2 rows tall from
+    /// the block's top row, a piece meeting a block always meets the run's
+    /// row or its margin too, which the cells refuse first; the block rule
+    /// stands for a hung kind that doesn't).
+    #[derive(Debug, Default)]
+    struct Seen {
+        high: usize,
+        low: usize,
+        none: usize,
+        later: usize,
+        texted: usize,
+        touching: usize,
+        kit: usize,
+        blocked: usize,
+    }
+
+    impl Seen {
+        fn add(&mut self, one: &Seen) {
+            self.high += one.high;
+            self.low += one.low;
+            self.none += one.none;
+            self.later += one.later;
+            self.texted += one.texted;
+            self.touching += one.touching;
+            self.kit += one.kit;
+            self.blocked += one.blocked;
+        }
+    }
+
+    fn hangs_as_high_as_fits(draw: &SpotDraw) -> Result<Seen, TestCaseError> {
+        let spot = spot(draw);
+        let chosen = spot.chosen();
+        let (all, blocked) = places(&spot);
+        let first = all.iter().min_by_key(|&&(key, _)| key).copied();
+        prop_assert_eq!(chosen.is_some(), first.is_some(), "{:?}", first);
+        prop_assert_eq!(chosen, first.map(|(_, shelf)| shelf));
+        let mut seen = Seen {
+            blocked: usize::from(blocked > 0),
+            ..Seen::default()
+        };
+        let Some(((class, rank, ..), shelf)) = first else {
+            seen.none += 1;
+            return Ok(seen);
+        };
+        if class == 0 {
+            seen.high += 1;
+        } else {
+            seen.low += 1;
+        }
+        seen.later += usize::from(rank > 0);
+        // The first place with a rule left out of the order.
+        let without = |blind: fn(&mut Key)| {
+            all.iter()
+                .map(|&(mut key, shelf)| {
+                    blind(&mut key);
+                    (key, shelf)
+                })
+                .min_by_key(|&(key, _)| key)
+                .map(|(_, s)| s)
+        };
+        seen.texted += usize::from(without(|k| k.2 = false) != Some(shelf));
+        seen.touching += usize::from(without(|k| k.3 = false) != Some(shelf));
+        if spot.kit_at.is_some() {
+            // Its pane's rank as `plan`'s order has it.
+            let plain: Vec<Nook> = spot.nooks.iter().map(|&(n, _)| n).collect();
+            let unkitted = all
+                .iter()
+                .map(|&((c, _, t, h, r, a, f), s)| {
+                    let rank = plain.iter().position(|&n| n == s.nook).unwrap();
+                    ((c, rank, t, h, r, a, f), s)
+                })
+                .min_by_key(|&(key, _)| key)
+                .map(|(_, s)| s);
+            seen.kit += usize::from(unkitted != Some(shelf));
+        }
+        Ok(seen)
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(dessplay_core::test_support::proptest_cases(256)))]
+
+        /// A shelf goes up exactly where D3 says: wherever any place
+        /// takes one, and then the first in D3's order (high before low
+        /// over every pane; the panes in order; a row with no text; a run
+        /// touching no hung piece; the lowest rise; nearest the pane's
+        /// middle; the left of two as near), every cell of its run, its
+        /// margin and the rows over its run as D4 judges them.
+        #[test]
+        fn a_shelf_hangs_as_high_as_fits(draw in spot_draw()) {
+            hangs_as_high_as_fits(&draw)?;
+        }
+    }
+
+    /// Bordered panes `nooks` on a blank screen `width` × `height`.
+    fn panes(nooks: &[(Nook, Rect)], width: u16, height: u16) -> Buffer {
+        let mut buf = Buffer::empty(Rect::new(0, 0, width, height));
+        for &(_, pane) in nooks {
+            Block::bordered().render(pane, &mut buf);
+        }
+        buf
+    }
+
+    /// Where `home` puts a shelf on `buf` with `nooks`, `chat` and
+    /// nothing else kept off.
+    fn spot_on(
+        home: &Home,
+        buf: &Buffer,
+        nooks: &[(Nook, Rect)],
+        chat: Rect,
+        kit_at: Option<Nook>,
+    ) -> Option<Shelf> {
+        let keep_off = KeepOff {
+            protected: &[],
+            layer: &[],
+            made: &[],
+        };
+        let plan = Plan {
+            nooks,
+            chat,
+            screen: buf.area,
+        };
+        home.shelf_spot(buf, plan, &keep_off, kit_at)
+    }
+
+    fn shelf(nook: Nook, side: Side, offset: u16, rise: u16) -> Shelf {
+        Shelf {
+            nook,
+            anchor: Anchor { side, offset },
+            rise,
+            built: 0,
+        }
+    }
+
+    /// D3's order, case by case: high in a later pane before low in the
+    /// first; the pane she unpacks in first; never the chat's pane; a row
+    /// with no text before one with text; a run touching no hung piece
+    /// before one that does; nearest the pane's middle, the left of two as
+    /// near; none where she has one already.
+    #[test]
+    fn a_shelf_goes_where_d3_orders_it() {
+        // List 9 rows (a low shelf at most), Users and the Playlist 13 (a
+        // high one at rise 7 exactly), 41 wide: inside, columns 1..40 of
+        // each, its middle between 20 and 21.
+        let nooks = [
+            (Nook::List, Rect::new(0, 0, 41, 9)),
+            (Nook::Users, Rect::new(41, 0, 41, 13)),
+            (Nook::Playlist, Rect::new(82, 0, 41, 13)),
+        ];
+        let buf = panes(&nooks, 123, 14);
+        let home = Home::default();
+        // High in Users before low in List; of 15 and 16, as near the
+        // middle, the left (Users' inside starts at 42: offset 14).
+        let users = shelf(Nook::Users, Side::Left, 14, 7);
+        assert_eq!(
+            spot_on(&home, &buf, &nooks, Rect::default(), None),
+            Some(users)
+        );
+        // The Playlist first, where she unpacks; Users, the chat's,
+        // never.
+        let playlist = Shelf {
+            nook: Nook::Playlist,
+            ..users
+        };
+        let kit = Some(Nook::Playlist);
+        assert_eq!(
+            spot_on(&home, &buf, &nooks, Rect::default(), kit),
+            Some(playlist)
+        );
+        assert_eq!(
+            spot_on(&home, &buf, &nooks, nooks[1].1, None),
+            Some(playlist)
+        );
+        // Every high place's pane the chat's: List's low one, in the
+        // middle of its wall.
+        let both = nooks[1].1.union(nooks[2].1);
+        let list = shelf(Nook::List, Side::Left, 14, 5);
+        assert_eq!(spot_on(&home, &buf, &nooks, both, None), Some(list));
+        // And every pane the chat's, or one shelf hers already: none.
+        let all = Rect::new(0, 0, 123, 14);
+        assert_eq!(spot_on(&home, &buf, &nooks, all, None), None);
+        let hers = Home {
+            structures: vec![Structure::Shelf(list)],
+            ..Home::default()
+        };
+        assert_eq!(spot_on(&hers, &buf, &nooks, Rect::default(), None), None);
+
+        // A pane 14 rows tall (rises 7 and 8): a glyph against either of
+        // its walls on rise 7's row (inside, columns 1..40) sends the
+        // shelf a row higher.
+        let tall = [(Nook::Users, Rect::new(0, 0, 41, 14))];
+        let blank = panes(&tall, 41, 15);
+        assert_eq!(
+            spot_on(&home, &blank, &tall, Rect::default(), None),
+            Some(shelf(Nook::Users, Side::Left, 14, 7))
+        );
+        for x in [1, 39] {
+            let mut worded = blank.clone();
+            worded.set_string(x, 13 - 7, "o", Style::new());
+            assert_eq!(
+                spot_on(&home, &worded, &tall, Rect::default(), None),
+                Some(shelf(Nook::Users, Side::Left, 14, 8)),
+                "a glyph at {x}"
+            );
+        }
+
+        // Her poster hung mid-wall, right under rise 7's row: the run
+        // nearest the middle that touches it not, beside it (a 13-row
+        // pane has rise 7 only).
+        let users_only = [nooks[1]];
+        let buf = panes(&users_only, 82, 14);
+        let mut postered = Home::default();
+        postered.add(Prop {
+            anchor: Some(Anchor {
+                side: Side::Left,
+                offset: 18,
+            }),
+            ..Prop::new(Furniture::Poster, Nook::Users, 500, Facing::Right)
+        });
+        let poster = postered.layout(&users_only)[0].rect();
+        assert_eq!((poster.x, poster.y, poster.width), (60, 6, 4), "{poster:?}");
+        let chosen = spot_on(&postered, &buf, &users_only, Rect::default(), None).unwrap();
+        let from = 42 + i32::from(chosen.anchor.offset);
+        assert_eq!(chosen.rise, 7);
+        // Clear of columns 60..64: ending at 60 (from 50) is two from the
+        // middle's 50.5, as near as starting at 64 is not.
+        assert_eq!(from, 50, "{chosen:?}");
+        // Touching a poster on a row with no text before clear of it on a
+        // row with text: a 14-row pane (rises 7 and 8), 30 wide (its lefts
+        // 9..=11 all over the poster's columns 13..17), a word against
+        // its wall on rise 8's row.
+        let short = [(Nook::Users, Rect::new(0, 0, 30, 14))];
+        let mut buf = panes(&short, 30, 15);
+        buf.set_string(1, 13 - 8, "ok", Style::new());
+        let mut touched = Home::default();
+        touched.add(Prop {
+            anchor: Some(Anchor {
+                side: Side::Left,
+                offset: 12,
+            }),
+            ..Prop::new(Furniture::Poster, Nook::Users, 500, Facing::Right)
+        });
+        let poster = touched.layout(&short)[0].rect();
+        assert_eq!((poster.x, poster.y), (13, 13 - 6), "{poster:?}");
+        let chosen = spot_on(&touched, &buf, &short, Rect::default(), None).unwrap();
+        assert_eq!(chosen.rise, 7, "{chosen:?}");
+        // With nowhere clear of it but beside the wall, it touches.
+        let narrow = [(Nook::Users, Rect::new(0, 0, 30, 13))];
+        let buf = panes(&narrow, 30, 14);
+        let mut squeezed = Home::default();
+        squeezed.add(Prop {
+            anchor: Some(Anchor {
+                side: Side::Left,
+                offset: 12,
+            }),
+            ..Prop::new(Furniture::Poster, Nook::Users, 500, Facing::Right)
+        });
+        squeezed.layout(&narrow);
+        // The only place (inside 1..29: from 9..=11) meets columns 13..17.
+        let chosen = spot_on(&squeezed, &buf, &narrow, Rect::default(), None).unwrap();
+        assert_eq!(chosen.rise, 7, "{chosen:?}");
+    }
+
+    /// A low shelf goes up only where its block meets no piece she has
+    /// hung (it never pushes one aside going up): beside her poster, or
+    /// nowhere where the wall has no room beside it.
+    #[test]
+    fn a_low_shelf_goes_up_beside_what_hangs() {
+        // 9 rows, 61 wide: inside 1..60, its middle between 30 and 31.
+        let nooks = [(Nook::List, Rect::new(0, 0, 61, 9))];
+        let buf = panes(&nooks, 61, 10);
+        let postered = |offset: u16| {
+            let mut home = Home::default();
+            home.add(Prop {
+                anchor: Some(Anchor {
+                    side: Side::Left,
+                    offset,
+                }),
+                ..Prop::new(Furniture::Poster, Nook::List, 500, Facing::Right)
+            });
+            let poster = home.layout(&nooks)[0].rect();
+            (home, poster)
+        };
+        // Without it, mid-wall (of 25 and 26, as near, the left).
+        assert_eq!(
+            spot_on(&Home::default(), &buf, &nooks, Rect::default(), None),
+            Some(shelf(Nook::List, Side::Left, 24, 5))
+        );
+        // Hung mid-wall (columns 26..30): the nearest place whose block
+        // (the run and its margin, its row and the one above) is clear of
+        // it starts at 32, from the right wall 18.
+        let (home, poster) = postered(25);
+        assert_eq!((poster.x, poster.y, poster.width), (26, 2, 4), "{poster:?}");
+        let chosen = spot_on(&home, &buf, &nooks, Rect::default(), None);
+        assert_eq!(chosen, Some(shelf(Nook::List, Side::Right, 18, 5)));
+        let block = chosen.unwrap().block(pane_raw(nooks[0].1)).unwrap();
+        assert!(!block.intersects(poster), "{block:?} {poster:?}");
+        // On a wall 41 wide, a poster mid-wall leaves no place.
+        let narrow = [(Nook::List, Rect::new(0, 0, 41, 9))];
+        let buf = panes(&narrow, 41, 10);
+        let mut home = Home::default();
+        home.add(Prop {
+            anchor: Some(Anchor {
+                side: Side::Left,
+                offset: 18,
+            }),
+            ..Prop::new(Furniture::Poster, Nook::List, 500, Facing::Right)
+        });
+        home.layout(&narrow);
+        assert_eq!(spot_on(&home, &buf, &narrow, Rect::default(), None), None);
+    }
+
+    /// Choosing a spot reads each cell of a pane's wall once, and looks
+    /// up at most a run's and its margin's columns of what it read (and
+    /// its pane's background) for each place by geometry: linear in the
+    /// pane's cells, whatever the frame holds (blank, so every place is
+    /// looked at whole; or dense, so most are refused at once), at the
+    /// stage's sizes and 400 wide.
+    #[test]
+    fn shelf_spot_is_cheap() {
+        use super::super::structures::{EDGE, HIGH_RISE, LOW_ABOVE, LOW_RISE, SHELF_WIDTH};
+        for (width, rows, dense, nine) in [
+            (100, 13, false, false),
+            (100, 13, true, false),
+            (400, 20, false, false),
+            (400, 20, true, false),
+            (400, 9, false, true),
+            (200, 9, false, true),
+        ] {
+            let nooks: Vec<(Nook, Rect)> = NOOKS
+                .iter()
+                .enumerate()
+                .map(|(i, &n)| (n, Rect::new(0, rows * i as u16, width, rows)))
+                .collect();
+            let mut buf = panes(&nooks, width, 3 * rows);
+            if dense {
+                // Every other cell of every row inside: no place passes.
+                for &(_, pane) in &nooks {
+                    for y in pane.y + 1..pane.bottom() - 1 {
+                        for x in (pane.x + 1..pane.right() - 1).step_by(2) {
+                            buf[(x, y)].set_symbol("x");
+                        }
+                    }
+                }
+            }
+            let plan = Plan::bare(&nooks);
+            let keep_off = KeepOff {
+                protected: &[],
+                layer: &[],
+                made: &[],
+            };
+            let mut visited = 0;
+            let chosen =
+                Home::default().shelf_spot_visiting(&buf, plan, &keep_off, None, &mut visited);
+            assert_eq!(chosen.is_some(), !dense, "{width}x{rows}");
+            // The bound: each pane's wall rows read whole, and 1 + the
+            // margined run's columns for each place.
+            let her = 4;
+            let (mut cells, mut places) = (0, 0);
+            for &(_, pane) in &nooks {
+                let inside = i32::from(pane.width) - 2;
+                let rows = i32::from(pane.height) - 2;
+                cells += inside * (rows - i32::from(LOW_RISE) + 1);
+                let lefts = inside - 2 * EDGE - SHELF_WIDTH + 1;
+                let rises = (rows - her - i32::from(HIGH_RISE) + 1).max(0)
+                    + i32::from(rows >= i32::from(LOW_RISE + LOW_ABOVE));
+                places += lefts * rises;
+            }
+            let bound = usize::try_from(cells + (SHELF_WIDTH + 5) * places).unwrap();
+            eprintln!("{width}x{rows} dense {dense}: visited {visited}, bound {bound}");
+            assert!(
+                visited <= bound,
+                "{width}x{rows} dense {dense}: {visited} > {bound}"
+            );
+            if nine {
+                // No pane takes a high one: every wall read once, and no
+                // more than the first pane's low places each looked at
+                // whole (the cost of the first pane taking one, not the
+                // bound's of every pane's places).
+                let lefts = i32::from(width) - 2 - 2 * EDGE - SHELF_WIDTH + 1;
+                let first = usize::try_from(cells + (SHELF_WIDTH + 5) * lefts).unwrap();
+                assert!(visited <= first, "{width}x{rows}: {visited} > {first}");
+            }
+        }
+    }
+
+    /// Non-vacuity for [`a_shelf_hangs_as_high_as_fits`], on 256 fixed
+    /// draws of its strategy: each case comes up. Measured (2026-10-11,
+    /// with `centred` and one-glyph wall words): high 145, low 55, none
+    /// 56, later 45, texted 20, touching 15, kit 9 (blocked 0, see
+    /// [`Seen`]); the thresholds are about half. Touching decides a
+    /// choice mostly through `centred` (a hung piece under the middle run
+    /// of rise 7); `a_shelf_goes_where_d3_orders_it` pins it by hand too,
+    /// and is the guard of record for its place in the order after the
+    /// text rule (a touching run first on a row with no text over a clear
+    /// one on a row with text: the strategy rarely draws it).
+    #[test]
+    fn shelves_hang_high_low_and_nowhere() {
+        let mut runner = TestRunner::new_with_rng(
+            Config::default(),
+            TestRng::deterministic_rng(proptest::test_runner::RngAlgorithm::ChaCha),
+        );
+        let mut seen = Seen::default();
+        for _ in 0..256 {
+            let draw = spot_draw().new_tree(&mut runner).unwrap().current();
+            seen.add(&hangs_as_high_as_fits(&draw).unwrap());
+        }
+        eprintln!("{seen:?}");
+        assert!(
+            seen.high >= 72 && seen.low >= 27 && seen.none >= 28,
+            "{seen:?}"
+        );
+        assert!(seen.texted >= 10 && seen.touching >= 7, "{seen:?}");
+        assert!(seen.later >= 22 && seen.kit >= 4, "{seen:?}");
     }
 }

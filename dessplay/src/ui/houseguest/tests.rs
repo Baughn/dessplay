@@ -2958,6 +2958,18 @@ fn every_scene_has_a_spot_in_the_stage_room() {
                     assert!(width < 100, "{at}: the stage room's panes hold it");
                     continue;
                 }
+                // A shelf needs a pane 9 rows tall at least (phase 6a D3,
+                // its run 5 rows up with 2 clear over it): none at 80×24,
+                // and the stage says so (the `LookOut` precedent, D11).
+                let no_shelf = room::pane_strips(&view.nooks)
+                    .iter()
+                    .all(|p| p.raw.rows < structures::LOW_RISE + structures::LOW_ABOVE);
+                if scene == Scene::Shelf && no_shelf {
+                    assert!(matches!(note, Some(Err(_))), "{at}: {note:?}");
+                    assert!(width < 100, "{at}: the stage room's List holds one");
+                    assert!(guest.ledger.home.structures.is_empty(), "{at}");
+                    continue;
+                }
                 assert!(matches!(note, Some(Ok(_))), "{at}: {note:?}");
                 let State::Visiting(visit) = &guest.state else {
                     panic!("{at}: visiting");
@@ -3087,6 +3099,8 @@ fn every_scene_has_a_spot_in_the_stage_room() {
                             .osaka
                             .plays()
                             .is_some_and(|p| p.own == script::ScriptId::LookOut),
+                        // Up, with something of hers shown on it.
+                        Scene::Shelf => visit.shown.iter().any(room::Shown::on_shelf),
                         // Chosen as the use starts (the andagi plays
                         // after the snack, past the cap: see
                         // her_vignettes_play_at_her_things).
@@ -3950,6 +3964,25 @@ fn moving_out_wipes_her_record_and_an_unreadable_one_is_kept() {
     guest.move_out(4);
     assert_eq!(guest.ledger_to_save(), Some(Ledger::new(4)));
     assert_eq!(guest.final_ledger(0), Some(Ledger::new(4)));
+}
+
+/// What the stage cued for her old home plays in none she moves into
+/// after: no sofa turned from a TV, no shelf, no gift, no cat home.
+#[test]
+fn moving_out_drops_what_the_stage_cued() {
+    let (real, view) = rooms_frame(100, 30);
+    for scene in [Scene::Arrange, Scene::Shelf, Scene::Pet] {
+        let mut guest = Guest::new(4);
+        guest.cue(scene);
+        guest.move_out(77);
+        assert!(!guest.cat_now, "{scene:?}: her cat");
+        guest.cue(Scene::Arrive);
+        paint(&mut guest, &real, &view, 0);
+        assert!(guest.present(), "{scene:?}: she comes in");
+        let home = &guest.ledger.home;
+        assert!(home.props.is_empty(), "{scene:?}: {:?}", home.props);
+        assert!(home.structures.is_empty(), "{scene:?}");
+    }
 }
 
 // ---- Her clock ----
