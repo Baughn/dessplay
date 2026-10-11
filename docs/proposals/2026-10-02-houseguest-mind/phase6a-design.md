@@ -905,7 +905,7 @@ under her hands (the hop marks the moment instead).
 
 ## Questions for the user
 
-Two open (fifth round, below: the block spanning its margin; the stage's clock for the plant). Fourth round (2026-10-10, the user):
+None open. Fourth round (2026-10-10, the user):
 - **High means standable**, as designed: a high shelf keeps `HEIGHT` clear rows over its run. Step 3 measures how often
   each height fits at 191×46 with real content; revisit only if the measurement surprises.
 - **The hop is for high shelves only** (D7c as designed): a low shelf is in her reach, so she stretches up.
@@ -921,11 +921,11 @@ Fifth round (2026-10-11, during the build; the hand-off notes have the detail):
   shelf lands on that pane's floor at its share (2a's choice (a)); a half-built shelf is shown while its built half and 2
   cells past each end of that half are blank and free; a makeshift piece a shelf's geometry comes to meet falls apart and
   the shelf shows, as with her door's space; a shelf shown or hidden is logged at info, as the closet is.
-- **Raised for the user, open** (step 4's build call, 2026-10-11; reversible): a low shelf's **block spans its margin's
+- **Kept by the user** (step 4's build call, 2026-10-11): a low shelf's **block spans its margin's
   columns too** (the run ± 2), not only the run's as "Decided unless the user objects" and D3a first said. Why: D4
   shows a shelf only while its margin is clear of every other laid cover, so a poster hung flush against the run would
   hide the shelf every frame. The cost: a low shelf keeps 14 columns of the wall lane, not 10.
-- **Raised for the user, open** (step 5a's build call, 2026-10-11; reversible in `Guest::stage_shelf`/`shelf_decor`):
+- **Kept by the user** (step 5a's build call, 2026-10-11; in `Guest::stage_shelf`/`shelf_decor`):
   the stage's `Scene::Shelf` puts **her clock (a mantel clock) on the shelf where the frame hides the plant**, as on a
   low shelf in a 9-row pane (`LOW_ABOVE` = 2 rows over the run; the plant is 3 tall): the stage room at 100×30 is that
   case. D11 said "a finished shelf with the plant on it". Alternatives: leave the shelf bare there (the note then

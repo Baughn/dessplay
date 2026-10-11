@@ -6105,7 +6105,7 @@ whole by text), and packing it among them would move it as they come and
 go, where a shelf, once up, never moves. It spans the margin too, because
 the shelf shows only with two blank cells past each end of its run: a
 poster hung flush against the run would hide it every frame (a build
-call, 2026-10-11, put to the user). Only the
+call, 2026-10-11, the user kept it). Only the
 window looks for a place to lean on its sill when it's moved aside; the
 rest go to the nearest place. It never pushes a hung piece going up so
 that putting up a shelf takes nothing down that she had hung. *6b
@@ -6119,8 +6119,8 @@ first small decor that shows on it on that frame, tried as the paint
 will take it: the plant, else her clock as a mantel clock (a low shelf
 in a 9-row pane keeps two rows clear and the plant is three tall: the
 stage room at 100×30 is that case), else nothing, and then nothing of
-hers moves (a build call, put to the user: the alternatives are a bare
-shelf there, or a third clear row for every low shelf).
+hers moves (a build call the user kept, 2026-10-11, over a bare shelf
+there or a third clear row for every low shelf).
 
 ## Houseguest chooses by needs among the top few (2026-09-28)
 
