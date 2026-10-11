@@ -15,6 +15,7 @@ Add new days at the top. Add new entries at the bottom of existing days.
 - Added: Osaka puts her shelf up on the wall, a bit a day, with a little hop.
 - Added: Osaka sometimes stands by her shelf and gazes up at what's on it.
 - Fixed: resizing the terminal no longer leaves Osaka sitting or standing where her furniture used to be.
+- Fixed: Osaka's window no longer goes missing from an older home whose furniture had to move to another pane.
 
 ## 2026-10-10
 

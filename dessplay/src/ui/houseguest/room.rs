@@ -2411,13 +2411,41 @@ impl Home {
         wall.is_some()
     }
 
-    /// Where her pieces show this frame, as production asks it: her
-    /// door's wall settled ([`Home::settle_door`]), her pieces projected
-    /// ([`Home::project_with`]: kept off the chat pane where they move,
-    /// her door's wall going with them if they move off its strip). Also
-    /// whether her home changed (anchors pinned, pieces moved, her door's
-    /// wall saved). The only call that logs a change of her door's wall
-    /// (a scratch home's is no change of hers).
+    /// Her pieces projected ([`Home::project_with`]: kept off the chat
+    /// pane where they move, her door's wall going with them if they
+    /// move off its strip) and her door's wall settled
+    /// ([`Home::settle_door`]) for her home as projected: with none saved
+    /// yet, her pieces are projected first (anchored, and moved off a
+    /// strip that's gone, each target judged with the wall the home
+    /// moved there would choose: [`Home::wall`]), the wall then chosen
+    /// for the home they make, and the pieces projected again with it,
+    /// so the frame lays them out as they'll stay. A wall chosen before
+    /// they moved would be chosen for a home that's never laid out, and
+    /// could send them on, or lose a hung piece, where with no door they
+    /// all stay. With each move made, from and to. Logs nothing:
+    /// [`Home::frame`] is this for her own home, and a scratch home a
+    /// placement tries is projected as a frame would have it by this too.
+    pub(super) fn settled(
+        &mut self,
+        drawn: Drawn,
+        plan: Plan,
+        blocked: &dyn Fn(i32, i32) -> bool,
+    ) -> (Vec<Shown>, Vec<(Strip, Strip)>) {
+        let (shown, mut moves) = self.project_with(drawn, plan, blocked);
+        if !self.settle_door(plan) {
+            return (shown, moves);
+        }
+        let (shown, more) = self.project_with(drawn, plan, blocked);
+        moves.extend(more);
+        (shown, moves)
+    }
+
+    /// Where her pieces show this frame, as production asks it
+    /// ([`Home::settled`]: her pieces projected, her door's wall settled
+    /// for them), the closet taking what no room would. Also whether her
+    /// home changed (anchors pinned, pieces moved, her door's wall
+    /// saved). The only call that logs a change of her door's wall (a
+    /// scratch home's is no change of hers).
     pub(super) fn frame(
         &mut self,
         drawn: Drawn,
@@ -2425,8 +2453,7 @@ impl Home {
         blocked: &dyn Fn(i32, i32) -> bool,
     ) -> (Vec<Shown>, bool) {
         let before = self.clone();
-        self.settle_door(plan);
-        let (mut shown, moves) = self.project_with(drawn, plan, blocked);
+        let (mut shown, moves) = self.settled(drawn, plan, blocked);
         // The closet (door batch, D7): a piece in the chat pane that no
         // room would take is hidden this frame (kept where it's laid, in
         // her record), back as soon as one would.

@@ -1955,6 +1955,10 @@ this section states what is built.
   strips, then one where the space would be kept (see below), then pane
   order, the right before the left. A home with no wall saved (none
   qualified yet) reads the same choice frame by frame, unsaved. It's
+  chosen for her home as the frame lays it out: her pieces moved off a
+  strip that's gone first, as with no door, then the wall chosen for
+  them, then laid out with it, so choosing it never loses a piece
+  (why: [decisions](decisions.md#her-door-has-its-own-space-at-the-screens-edge-2026-10-08)). It's
   chosen again only when her pieces move off its strip: her door goes
   with them, to the wall of the strip they move to (chosen as above
   among that strip's walls, else among all), and they're laid out the

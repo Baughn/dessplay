@@ -5079,10 +5079,9 @@ fn stage_arrange(
                     }
                 }
             }
-            // A try, as a frame would lay it out (her door where it would
-            // settle), logging nothing until it's kept.
-            tried.door = tried.wall(plan);
-            let shown = tried.project_with(drawn, plan, blocked).0;
+            // A try, as a frame would lay it out (her door settled for
+            // it: `Home::settled`), logging nothing until it's kept.
+            let shown = tried.settled(drawn, plan, blocked).0;
             let shows = |item: Furniture| shown.iter().any(|s| s.item == item);
             // Never set down in the chat pane or her door's space (D3),
             // nor pushing a piece that showed newly into either.

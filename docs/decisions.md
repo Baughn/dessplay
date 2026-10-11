@@ -5391,7 +5391,7 @@ pieces (and door) in place is an open question for the user.
 it, and her pieces with it, and each pane drag would too); moving the
 room off its strip to make way (a whole room moves for six columns);
 choosing the wall inside `project` (every test of the layout would get
-a door; `Home::frame` settles it before the layout instead, and
+a door; `Home::frame` settles it outside the layout instead, and
 `project` only reads it). A saved wall the chat pane comes to meet is
 not chosen again: it's refused frame by frame, so dragging the pane back
 restores it.
@@ -5466,6 +5466,36 @@ no error; recording the inputs makes that unrepresentable, and comparing
 a few pieces costs far less than laying a strip out. Laying out again
 after a resize (`move_off`) and per place of a stage gift (`spot`) still
 lays out the whole home: they're rare, not per move.
+
+**Her door's wall is chosen for her home as her pieces moved (2026-10-11,
+found by phase 6a's 256-case deep pass; in since the door batch's step 5,
+2026-10-09):** with no wall saved yet, `Home::frame` (through
+`Home::settled`) projects her pieces first (an older record's anchored,
+a gone strip's pieces moved, each target judged with the wall the home
+moved there would choose, as `move_off` always did), then chooses and
+saves the wall for the home they make, then projects again with it, so
+the frame they move in lays them out as they'll stay. The stage's try
+of her sofa and TV is projected the same way. **Post-mortem:** `frame`
+saved the wall before `project` moved anything, so it was chosen for a
+home that's never laid out. An older record with her bed on Users, her
+sofa on Playlist and the rest on List (gone): the wall chosen was
+Users' left (her bed stands at the right), and the List pieces moving
+to Users would hang her window by its share in that space where it
+yields; step 5's keep-out refuses that, so they went on to Playlist,
+where her window over her sofa had no place beside her clock and was
+left out of her home. With no door they'd all have gone to Users, her
+window shown (`an_older_record_migrates_without_closeting_anything`,
+T19, red at 256 cases; `an_older_records_pieces_move_where_they_would_with_no_door`).
+Now a frame with no wall saved moves her pieces exactly as one with no
+door, and a wall's space that would lose a piece yields, so choosing
+the wall loses none by construction. *Rejected:* letting a window move
+into a yielding space (step 5's keep-out stands: nothing new goes in
+her door's space); a target search that prefers a strip laying out
+every moved piece (none did here: it would still have lost the window);
+re-choosing a saved wall when her pieces move onto its strip (a saved
+wall is never chosen again but with the pieces of its own strip). A
+saved wall still sends a gone strip's pieces past a strip where only
+its space would take a hung piece, as the rules for a move say.
 
 ## She walks to her door; her line is latched apart from `leaving` (2026-10-08)
 

@@ -9390,6 +9390,69 @@ fn an_older_records_window_keeps_its_place_by_her_door() {
     }
 }
 
+/// [`an_older_record_migrates_without_closeting_anything`]'s find at 256
+/// cases (its regressions file has it): an older record's pieces on a
+/// pane that isn't here (List), her window by its share against the
+/// left wall with her clock just beside it, on [`home_screen`], where
+/// Users already has her bed and Playlist her sofa (Left 0). With no
+/// door they all move to Users, her window shown at its wall. Her door's
+/// wall used to be chosen for her home before they moved: Users' left
+/// (her bed stands at its right), where the moved window would then hang
+/// in a yielding space, so they went on to Playlist, where her window
+/// over her sofa had no place to hang beside her clock and was left out
+/// of her home. Now the wall is chosen for her home as they've moved
+/// ([`room::Home::settled`]), and they stay where they'd go with no door.
+#[test]
+fn an_older_records_pieces_move_where_they_would_with_no_door() {
+    use Furniture::*;
+    let pieces = [Sofa, Bed, Desk, Lamp, Poster, Clock, Window];
+    let places: [OldPlace; 7] = [
+        (2, 1000, Some((false, 0)), false),
+        (1, 1000, None, false),
+        (0, 1000, None, false),
+        (0, 1000, None, false),
+        (0, 1000, None, false),
+        (0, 45, None, false),
+        (0, 0, None, false),
+    ];
+    let (real, view) = home_screen();
+    let mut home = room::Home::default();
+    for (&item, &(pane, at, anchor, _)) in pieces.iter().zip(&places) {
+        let nook = [Nook::List, Nook::Users, Nook::Playlist][pane];
+        let mut prop = room::Prop::new(item, nook, at, sprite::Facing::Right);
+        prop.anchor = anchor.map(|(right, offset)| room::Anchor {
+            side: if right {
+                room::Side::Right
+            } else {
+                room::Side::Left
+            },
+            offset,
+        });
+        assert!(home.add(prop));
+    }
+    let plan = room::Plan {
+        nooks: &view.nooks,
+        chat: view.chat,
+        screen: real.area,
+    };
+    let mut doorless = home.clone();
+    doorless.project_with(Drawn::bare(&real), plan, &|_, _| false);
+    let (shown, changed) = home.frame(Drawn::bare(&real), plan, &|_, _| false);
+    assert!(changed);
+    assert!(home.door.is_some(), "her door's wall is saved");
+    for p in &doorless.props {
+        let now = home.props.iter().find(|q| q.item == p.item).expect("hers");
+        assert_eq!(now.strip, p.strip, "{:?} moves as with no door", p.item);
+    }
+    let window = shown.iter().find(|s| s.item == Window);
+    assert_eq!(
+        window.map(|s| s.strip),
+        Some(Some(room::Strip::Bottom(Nook::Users))),
+        "her window shows on Users: {shown:?}"
+    );
+    migrates_without_closeting(&pieces, &places).expect("nothing closeted");
+}
+
 /// A resident doesn't leave when someone's at the keys.
 #[test]
 fn a_resident_stays_through_local_input() {
