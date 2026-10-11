@@ -437,11 +437,15 @@ pub(super) enum ScriptId {
     ///
     /// [`Activity::FloorHomework`]: super::osaka::Activity::FloorHomework
     FloorHomework,
+    /// Gazing up at a piece on her shelf (phase 6a D8), from beside it on
+    /// its room's floor: pleased with it a moment ("hehe", as admiring
+    /// what she's made), then a long, curious look up at it.
+    GazeUp,
 }
 
 impl ScriptId {
     #[cfg(test)]
-    pub const ALL: [ScriptId; 27] = [
+    pub const ALL: [ScriptId; 28] = [
         Self::Lounge,
         Self::Nap,
         Self::Sleep,
@@ -469,6 +473,7 @@ impl ScriptId {
         Self::LookOut,
         Self::ClockGlance,
         Self::FloorHomework,
+        Self::GazeUp,
     ];
 
     /// How rare it is (phase 5b D6): only a Rare or Legendary script
@@ -499,7 +504,8 @@ impl ScriptId {
             | Self::DashForgot
             | Self::LookOut
             | Self::ClockGlance
-            | Self::FloorHomework => Rarity::Common,
+            | Self::FloorHomework
+            | Self::GazeUp => Rarity::Common,
         }
     }
 
@@ -539,6 +545,7 @@ impl ScriptId {
             Self::LookOut => LOOK_OUT,
             Self::ClockGlance => CLOCK_GLANCE,
             Self::FloorHomework => FLOOR_HOMEWORK,
+            Self::GazeUp => GAZE_UP,
         }
     }
 
@@ -583,7 +590,8 @@ impl ScriptId {
             | Self::Scary
             | Self::LookOut
             | Self::ClockGlance
-            | Self::FloorHomework => Chat::Look,
+            | Self::FloorHomework
+            | Self::GazeUp => Chat::Look,
         }
     }
 
@@ -618,7 +626,8 @@ impl ScriptId {
             | Self::Scary
             | Self::LookOut
             | Self::ClockGlance
-            | Self::FloorHomework => 0,
+            | Self::FloorHomework
+            | Self::GazeUp => 0,
         }
     }
 
@@ -641,6 +650,7 @@ impl ScriptId {
             Self::Crumple => Use::Crumple,
             Self::Unpack => Use::Unpack,
             Self::LookOut => Use::LookOut,
+            Self::GazeUp => Use::GazeUp,
             Self::Riddle
             | Self::Chopsticks
             | Self::Andagi
@@ -682,7 +692,8 @@ impl ScriptId {
             | Self::Surf
             | Self::DashLunch
             | Self::FirstSunrise
-            | Self::LookOut => Host::Use,
+            | Self::LookOut
+            | Self::GazeUp => Host::Use,
         }
     }
 
@@ -721,7 +732,8 @@ impl ScriptId {
             | Self::Crumple
             | Self::Unpack
             | Self::Night
-            | Self::LookOut => shortest_use_ms(),
+            | Self::LookOut
+            | Self::GazeUp => shortest_use_ms(),
         })
     }
 
@@ -758,6 +770,7 @@ impl ScriptId {
             Self::LookOut => Scene::LookOut,
             Self::ClockGlance => Scene::ClockGlance,
             Self::FloorHomework => Scene::FloorHomework,
+            Self::GazeUp => Scene::GazeUp,
         }
     }
 
@@ -842,7 +855,8 @@ impl Surface {
             | Use::Snack
             | Use::Pet
             | Use::Crumple
-            | Use::LookOut => None,
+            | Use::LookOut
+            | Use::GazeUp => None,
         }
     }
 
@@ -1456,6 +1470,7 @@ impl Use {
             Use::Pet => ScriptId::Pet,
             Use::Crumple => ScriptId::Crumple,
             Use::LookOut => ScriptId::LookOut,
+            Use::GazeUp => ScriptId::GazeUp,
         }
     }
 }
@@ -2106,6 +2121,24 @@ pub(super) fn look_out_branch(sky: Sky, pick: u64) -> u8 {
         .unwrap_or(0)
 }
 
+/// Gazing up at her shelf, pleased with what's up there for this long
+/// first (phase 6a D8: `Act::Admire`'s look, "hehe", 2-3 s; inside the
+/// shortest use there is).
+pub(super) const GAZE_UP_PLEASED_MS: u64 = 2500;
+
+/// Gazing up at a piece on her shelf (phase 6a D8): standing beside it,
+/// pleased ("hehe", as admiring what she's made), then gazing up at it,
+/// curious, in profile toward it (her seat faces it).
+const GAZE_UP: &[&[Key]] = &[&[
+    key(
+        Span::Ms(GAZE_UP_PLEASED_MS),
+        Posed::Still(Pose::Stand),
+        Face::Pleased,
+        bubble(Bubble::Hehe),
+    ),
+    key(Span::Rest, Posed::Still(Pose::Gaze), Face::Curious, None),
+]];
+
 /// Her glance up at the clock at bedtime...
 pub(super) const ITS_LATE: &str = line!("Oh! It's late!");
 /// ...and as she leaves for school.
@@ -2479,6 +2512,7 @@ mod tests {
             ScriptId::LookOut => 24,
             ScriptId::ClockGlance => 25,
             ScriptId::FloorHomework => 26,
+            ScriptId::GazeUp => 27,
         }
     }
 
@@ -2515,6 +2549,7 @@ mod tests {
             Use::Pet => 8,
             Use::Crumple => 9,
             Use::LookOut => 10,
+            Use::GazeUp => 11,
         };
         for (i, u) in Use::ALL.into_iter().enumerate() {
             assert_eq!(use_at(u), i, "{u:?}");
@@ -2558,6 +2593,7 @@ mod tests {
             ScriptId::LookOut => Play::of(Use::LookOut, None),
             ScriptId::ClockGlance => Play::plain(ScriptId::ClockGlance),
             ScriptId::FloorHomework => Play::plain(ScriptId::FloorHomework),
+            ScriptId::GazeUp => Play::of(Use::GazeUp, None),
         };
         for id in ScriptId::ALL {
             let play = player(id);

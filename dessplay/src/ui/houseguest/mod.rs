@@ -1655,6 +1655,11 @@ impl Guest {
             stage::Scene::Shelf => self.shelving = Some(Shelving::Decor),
             // Her shelf, with nothing up yet, likewise.
             stage::Scene::PutUp => self.shelving = Some(Shelving::PutUp),
+            // Her shelf with something she gazes up at on it (her
+            // plant), as `Scene::Shelf` puts it, but nothing else (no
+            // kind's uses name the gaze: it's offered by where the piece
+            // stands).
+            stage::Scene::GazeUp => self.shelving = Some(Shelving::Gazed),
             _ => {
                 if let Some(what) = scene.furniture()
                     && let Some(&item) = Furniture::ALL
@@ -2736,9 +2741,35 @@ impl Guest {
         }
         let built = match shelving {
             Shelving::PutUp => 0,
-            Shelving::Decor | Shelving::Bare => structures::SHELF_STAGES,
+            Shelving::Decor | Shelving::Bare | Shelving::Gazed => structures::SHELF_STAGES,
         };
         let shelf = Shelf { built, ..shelf };
+        // Something to gaze up at (`Scene::GazeUp`): her shelf up with
+        // the first piece she gazes up at that shows on it; where none
+        // would, her home is left as it was (the cue can't play: its
+        // note, `stage::direct`, says so), never her clock put up for it.
+        if shelving == Shelving::Gazed {
+            let mut home = self.ledger.home.clone();
+            home.structures = vec![Structure::Shelf(shelf)];
+            home.props.retain(|p| !p.item.is_kit());
+            let gazed = |item: Furniture| item.gazed_up_at();
+            let Some((item, staged)) = shelf_decor(&home, shelf.nook, buf, view, &keep_off, &gazed)
+            else {
+                tracing::info!(
+                    ?shelf,
+                    "houseguest: nothing she gazes up at would show up on her shelf here (the stage)"
+                );
+                return;
+            };
+            self.ledger.home = staged;
+            self.unsaved = true;
+            tracing::info!(
+                ?shelf,
+                ?item,
+                "houseguest: her shelf up to gaze up at (the stage)"
+            );
+            return;
+        }
         self.ledger.home.structures = vec![Structure::Shelf(shelf)];
         if shelving == Shelving::PutUp {
             self.ledger.paced = None;
@@ -2755,7 +2786,9 @@ impl Guest {
             tracing::info!(?shelf, "houseguest: her shelf to put up (the stage)");
             return;
         }
-        let decor = shelf_decor(&self.ledger.home, shelf.nook, buf, view, &keep_off);
+        let decor = shelf_decor(&self.ledger.home, shelf.nook, buf, view, &keep_off, &|_| {
+            true
+        });
         let item = decor.as_ref().map(|(item, _)| *item);
         if let Some((_, staged)) = decor {
             self.ledger.home = staged;
@@ -3107,10 +3140,27 @@ impl Guest {
                 let keep = keep.for_made();
                 tend_made(visit, written.over(buf), &kept, keep, size, now);
                 visit.shown.extend(visit.made.iter().map(|made| made.piece));
-                let gone = |piece: room::PieceRef| !visit.shown.iter().any(|s| s.piece() == piece);
-                let using = visit.osaka.use_span().map(|(seat, ..)| seat.piece);
-                let lifting = visit.osaka.lifting().map(room::PieceRef::Real);
-                if using.or(lifting).is_some_and(gone) {
+                // The piece she's using or lifting, gone from the frame,
+                // or, on a resize, moved from under her (its pane
+                // shifted): where she is seats her for nothing now, so
+                // she's off it, startled. Only a resize is judged for a
+                // move: a parcel coming in may nudge a piece she's on
+                // aside (`Home::doorstep`), and what she does then is as
+                // it was before her shelf (phase 6a keeps every home
+                // without a structure as it was).
+                let resized = visit.size != size;
+                let hung = structures::hung_runs(&self.ledger.home, &view.nooks);
+                let shown_as =
+                    |piece: room::PieceRef| visit.shown.iter().find(|s| s.piece() == piece);
+                let using = visit.osaka.use_span().map(|(seat, ..)| {
+                    shown_as(seat.piece)
+                        .is_some_and(|piece| !resized || seats_her(piece, &seat, &hung))
+                });
+                let lifting = visit.osaka.lifting_from().map(|(item, at)| {
+                    shown_as(room::PieceRef::Real(item))
+                        .is_some_and(|piece| !resized || lifts_from(piece, at))
+                });
+                if using.or(lifting) == Some(false) {
                     visit.osaka.lost_seat(now);
                 }
                 let mut base = view.protected.clone();
@@ -3279,6 +3329,7 @@ impl Guest {
                             &visit.terrain,
                             self.cat_now || cat_home(&self.ledger, visit.kind),
                             kit_room,
+                            &hung,
                         ),
                         real: real_kinds(&visit.shown),
                         builds: builds.clone(),
@@ -3340,6 +3391,7 @@ impl Guest {
                         &visit.terrain,
                         self.cat_now || cat_home(&self.ledger, visit.kind),
                         kit_room,
+                        &hung,
                     ),
                     real: real_kinds(&visit.shown),
                     builds,
@@ -3965,6 +4017,9 @@ enum Shelving {
     /// Her shelf, with no stage up yet, and today's stages forgotten
     /// ([`stage::Scene::PutUp`]): she puts its first stage up.
     PutUp,
+    /// Her shelf, finished, with something on it she gazes up at
+    /// ([`stage::Scene::GazeUp`]); nothing changed where none would show.
+    Gazed,
 }
 
 /// Note which of her pieces a frame showing `shown` of `home` on `view`
@@ -4709,7 +4764,8 @@ fn furnish(
             made_standing_then(makeshift, layer, drawn, after, &moved, &kept, then, plan);
         let room: Vec<Shown> = after.iter().copied().chain(standing).collect();
         terrain.furnish(room.iter().map(Shown::cover));
-        seats_of(piece, &room, terrain, true, true)
+        let hung = structures::hung_runs(then, &view.nooks);
+        seats_of(piece, &room, terrain, true, true, &hung)
     };
     // Each delivery due waits while one comes in (a flap open), while
     // she's not free for it, or while she'd be in its way, judged twice:
@@ -4909,9 +4965,9 @@ fn arranging(visit: &Visit) -> (Vec<osaka::LiftAt>, Option<osaka::Judged>) {
 }
 
 /// The stage ([`Guest::stage_shelf`]): `home` (her shelf finished on
-/// `nook`'s wall) with the first small decor that shows on it this frame
-/// set down there, centred, unboxed, with its facing kept (given her if
-/// she hasn't it); and which it is. Each is tried as the frame will take
+/// `nook`'s wall) with the first small decor of the `kinds` asked that
+/// shows on it this frame set down there, centred, unboxed, with its
+/// facing kept (given her if she hasn't it); and which it is. Each is tried as the frame will take
 /// it: the shelf written into a copy of `buf` as the paint will write it
 /// ([`structures::read_ground`]), then her pieces projected over it
 /// ([`room::Home::project_with`], as `furnish` projects them but for
@@ -4925,6 +4981,7 @@ fn shelf_decor(
     buf: &Buffer,
     view: &IdleView,
     keep_off: &structures::KeepOff,
+    kinds: &dyn Fn(Furniture) -> bool,
 ) -> Option<(Furniture, room::Home)> {
     use room::{Anchor, Side, Strip};
     let plan = plan_of(view, buf);
@@ -4938,7 +4995,7 @@ fn shelf_decor(
     let width = u16::try_from(structures::SHELF_WIDTH).unwrap_or(0);
     Furniture::ALL
         .into_iter()
-        .filter(|item| item.spec().shelf)
+        .filter(|&item| item.spec().shelf && kinds(item))
         .find_map(|item| {
             let mut staged = home.clone();
             let facing = match staged.props.iter().find(|p| p.item == item) {
@@ -5189,10 +5246,16 @@ fn real_kinds(shown: &[Shown]) -> Vec<Furniture> {
 /// Where she could go to use each piece shown: in front of it on its
 /// floor, or for the TV, beside it facing it — or from a sofa on the
 /// TV's floor.
-fn seats(shown: &[Shown], terrain: &Terrain, cat: bool, kit_room: bool) -> Vec<room::Seat> {
+fn seats(
+    shown: &[Shown],
+    terrain: &Terrain,
+    cat: bool,
+    kit_room: bool,
+    runs: &[(Nook, structures::Run)],
+) -> Vec<room::Seat> {
     shown
         .iter()
-        .flat_map(|piece| seats_of(piece, shown, terrain, cat, kit_room))
+        .flat_map(|piece| seats_of(piece, shown, terrain, cat, kit_room, runs))
         .collect()
 }
 
@@ -5205,8 +5268,9 @@ fn seats_of(
     terrain: &Terrain,
     cat: bool,
     kit_room: bool,
+    runs: &[(Nook, structures::Run)],
 ) -> Vec<room::Seat> {
-    let mut out = spots_for(piece, shown, terrain, cat, kit_room);
+    let mut out = spots_for(piece, shown, terrain, cat, kit_room, runs);
     out.retain(|seat| terrain.restful(seat.x, seat.y));
     out
 }
@@ -5232,12 +5296,70 @@ fn clear_of(shown: &[Shown], of: &Shown, x: i32, y: i32) -> bool {
     })
 }
 
+/// Where she'd be to use `piece` for `what` (the columns [`Shown::seat`]
+/// takes, in the order she tries them), as it stands on the frame, before
+/// anything in her way there: in it (or bending over it), else beside it,
+/// leaning on the sill at either end of her window, or (phase 6a D8)
+/// beside a piece up on her shelf, under its run (`runs`: the frame's,
+/// [`structures::hung_runs`]; none known, no spot). The one place a use's
+/// spots are listed: where she's offered a seat ([`spots_for`]) and
+/// whether the seat she's in is still one ([`seats_her`]).
+fn spots(piece: &Shown, what: room::Use, runs: &[(Nook, structures::Run)]) -> Vec<i32> {
+    match what {
+        room::Use::LookOut => piece.look_out_spots().to_vec(),
+        // Before the `inside()` arm: neither is a use from in it.
+        room::Use::GazeUp => {
+            let under = match piece.strip {
+                Some(room::Strip::Shelf(nook)) => runs
+                    .iter()
+                    .find(|(n, _)| *n == nook)
+                    .map(|(_, run)| run.from..run.to),
+                _ => None,
+            };
+            under.map_or_else(Vec::new, |under| piece.gaze_up_spots(under))
+        }
+        _ if what.inside() => vec![0],
+        _ => piece.beside().to_vec(),
+    }
+}
+
+/// Whether `piece`, as this frame shows it, still seats her where `seat`
+/// has her: at one of its [`spots`] for the use, or, watching TV from a
+/// sofa, in the sofa. Geometry only: what's in her way there is
+/// [`osaka::Osaka::recheck`]'s. A piece that moved under her (a resize
+/// shifting its pane, a hung piece shifted) doesn't. Unpacking, always:
+/// the piece is out of its box from the moment she starts (laid out as
+/// itself from then, wherever its kind goes: a clock on the wall), and
+/// she's at the box's place, which nothing on the frame says any more.
+fn seats_her(piece: &Shown, seat: &room::Seat, runs: &[(Nook, structures::Run)]) -> bool {
+    if seat.what == room::Use::Unpack {
+        return true;
+    }
+    let here = |at: room::Seat| (at.x, at.y) == (seat.x, seat.y);
+    spots(piece, seat.what, runs)
+        .into_iter()
+        .any(|beside| here(piece.seat(seat.what, beside)))
+        || seat.what == room::Use::Watch
+            && piece.uses().contains(&room::Use::Lounge)
+            && here(piece.seat(room::Use::Lounge, 0))
+}
+
+/// Whether `piece`, as this frame shows it, can still be lifted from
+/// `(x, y)`, where she stands to lift it: beside it, or at its middle,
+/// on the floor she reaches it from (as [`reach`] has it). Geometry only,
+/// as [`seats_her`].
+fn lifts_from(piece: &Shown, (x, y): (i32, i32)) -> bool {
+    let (middle, floor) = middle_of(piece);
+    y == floor && (piece.beside().contains(&x) || x == middle)
+}
+
 fn spots_for(
     piece: &Shown,
     shown: &[Shown],
     terrain: &Terrain,
     cat: bool,
     kit_room: bool,
+    runs: &[(Nook, structures::Run)],
 ) -> Vec<room::Seat> {
     let mut out = Vec::new();
     for &what in piece.uses() {
@@ -5255,15 +5377,9 @@ fn spots_for(
                 Some(room::Kit::Shelf) | None => {}
             }
         }
-        // Looking out of the window: leaning on its sill at either end.
-        let spots: &[i32] = match what {
-            room::Use::LookOut => &piece.look_out_spots(),
-            _ if what.inside() => &[0],
-            _ => &piece.beside(),
-        };
-        let seat = spots
-            .iter()
-            .map(|&beside| piece.seat(what, beside))
+        let seat = spots(piece, what, runs)
+            .into_iter()
+            .map(|beside| piece.seat(what, beside))
             .find(|seat| {
                 seat_spot(terrain, seat.x, seat.y)
                     && (what != room::Use::LookOut || clear_of(shown, piece, seat.x, seat.y))
@@ -5532,7 +5648,8 @@ fn builds(
         if !terrain.restful(crumple.x, crumple.y) {
             return Vec::new();
         }
-        seats_of(piece, &visit.shown, &terrain, false, false)
+        // A makeshift piece stands on no shelf: no run asked.
+        seats_of(piece, &visit.shown, &terrain, false, false, &[])
             .into_iter()
             .map(|seat| seat.what)
             .filter(|&what| what != room::Use::Crumple)

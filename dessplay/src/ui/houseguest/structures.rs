@@ -194,6 +194,16 @@ fn hung<'a>(
     })
 }
 
+/// The run of every shelf of `home`'s whose geometry holds on `nooks`
+/// this frame (D3), by its pane: what a piece up on it stands over, and
+/// what she stands under to gaze up at one (D8). Pure geometry, shown or
+/// not.
+pub(super) fn hung_runs(home: &Home, nooks: &[(Nook, Rect)]) -> Vec<(Nook, Run)> {
+    hung(home, nooks)
+        .map(|(shelf, _, run)| (shelf.nook, run))
+        .collect()
+}
+
 /// The whole placed run and margin of every shelf whose geometry holds
 /// on `nooks`, written this frame or not (an unbuilt half, a run hidden
 /// by text): no text she moves or swaps and no piece she makes goes

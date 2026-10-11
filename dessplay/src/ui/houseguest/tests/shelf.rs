@@ -17,7 +17,7 @@ const RUN: std::ops::Range<u16> = 63..73;
 const ROW: u16 = 5;
 const GLYPHS: &str = "┬────────┬";
 
-fn users_shelf() -> Structure {
+pub(super) fn users_shelf() -> Structure {
     Structure::Shelf(Shelf {
         nook: Nook::Users,
         anchor: room::Anchor {
@@ -30,7 +30,7 @@ fn users_shelf() -> Structure {
 }
 
 /// Her pieces, on the floors, well under her shelf.
-const PIECES: [(Furniture, Nook, u16); 2] = [
+pub(super) const PIECES: [(Furniture, Nook, u16); 2] = [
     (Furniture::Sofa, Nook::Users, 300),
     (Furniture::Bed, Nook::Playlist, 300),
 ];
@@ -1321,7 +1321,7 @@ fn a_plant_set_up_on_a_low_shelf_gets_no_hop() {
 
 /// Her clock up on her Users shelf (a mantel clock), standing at 66
 /// along its run.
-fn mantel_clock() -> room::Prop {
+pub(super) fn mantel_clock() -> room::Prop {
     room::Prop {
         strip: room::Strip::Shelf(Nook::Users),
         anchor: Some(room::Anchor {

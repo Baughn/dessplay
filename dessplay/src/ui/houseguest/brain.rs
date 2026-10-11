@@ -650,7 +650,7 @@ const fn in_chat(def: DesireDef) -> DesireDef {
 
 impl Want {
     /// Every want there is (the order she considers them in).
-    pub const ALL: [Want; 30] = [
+    pub const ALL: [Want; 31] = [
         Self::Stand,
         Self::SpaceOut,
         Self::Sneeze,
@@ -681,6 +681,7 @@ impl Want {
         Self::Use(Use::LookOut),
         Self::Arrange,
         Self::PutUp,
+        Self::Use(Use::GazeUp),
     ];
 
     /// Its row of the table.
@@ -802,6 +803,11 @@ impl Want {
                 row(5.0, &[(Need::Daydreams, 0.5), (Need::Fun, 0.3)]),
                 LOOK_OUT_FACTORS,
             ),
+            // Gazing up at what's on her shelf (phase 6a D8): a daydream,
+            // a little less than gazing at nothing in particular (6, 0.5)
+            // and no fun to wear thin. Only ever on offer with a piece on
+            // her shelf, from its room's floor.
+            Self::Use(Use::GazeUp) => row(5.0, &[(Need::Daydreams, 0.4)]),
             // Only on offer while a rule she has felt is broken and her
             // mood leaves her something to do about it: nesting is all
             // it answers.
@@ -1181,6 +1187,9 @@ mod tests {
             }
         }
         assert!(Want::ALL.contains(&Want::Use(Use::Crumple)));
+        // Offered by where a piece stands (on her shelf), not by its
+        // kind's uses: nothing above lists it.
+        assert!(Want::ALL.contains(&Want::Use(Use::GazeUp)));
         for (i, a) in Want::ALL.iter().enumerate() {
             assert!(!Want::ALL[..i].contains(a), "{a:?} twice");
         }

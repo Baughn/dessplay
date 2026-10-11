@@ -171,11 +171,25 @@ pub enum Scene {
     /// fits), and today's stages forgotten: she puts its first stage up,
     /// arms up ("Up it goes..."), with a hop if it hangs high.
     PutUp,
+    /// Her shelf up as [`Scene::Shelf`] puts it, and she gazes up at
+    /// her plant on it from beside it ("hehe", then a long look): only
+    /// where the frame shows her plant up there (a low shelf in a short
+    /// pane has room over it for her clock alone, which she doesn't gaze
+    /// at).
+    GazeUp,
 }
+
+/// [`Scene::GazeUp`]'s note where nothing she gazes up at shows up on a
+/// shelf on the frame (the cue then changes nothing of her home).
+pub(super) const NOTHING_UP: &str = "nothing of hers up on a shelf to gaze up at here";
+
+/// [`Scene::GazeUp`]'s note where something she gazes up at shows up on
+/// a shelf, but nowhere beside it on its room's floor is restful.
+pub(super) const NO_ROOM_BESIDE: &str = "no room to stand beside what's up on her shelf";
 
 impl Scene {
     /// Every scene, in menu order.
-    pub const ALL: [Scene; 60] = [
+    pub const ALL: [Scene; 61] = [
         Self::Arrive,
         Self::Pull,
         Self::Swap,
@@ -236,6 +250,7 @@ impl Scene {
         Self::ClockGlance,
         Self::Shelf,
         Self::PutUp,
+        Self::GazeUp,
     ];
 
     /// A short menu label.
@@ -301,6 +316,7 @@ impl Scene {
             Self::ClockGlance => "glance at the clock",
             Self::Shelf => "her shelf",
             Self::PutUp => "put her shelf up",
+            Self::GazeUp => "gaze up at her shelf",
         }
     }
 
@@ -317,6 +333,7 @@ impl Scene {
             Self::Snack | Self::Andagi | Self::DashIn | Self::NoMelon => Use::Snack,
             Self::Pet => Use::Pet,
             Self::LookOut => Use::LookOut,
+            Self::GazeUp => Use::GazeUp,
             _ => return None,
         })
     }
@@ -400,7 +417,8 @@ impl Scene {
             | Self::Arrange
             | Self::LookOut
             | Self::Shelf
-            | Self::PutUp => None,
+            | Self::PutUp
+            | Self::GazeUp => None,
         }
     }
 
@@ -615,8 +633,16 @@ pub(super) fn direct(
                 .filter(|s| Some(s.what) == what)
                 .copied()
                 .collect();
-            let seat = pick(&seats, rng)
-                .ok_or_else(|| format!("{name}: no room for her furniture here"))?;
+            let seat = pick(&seats, rng).ok_or_else(|| match scene {
+                // Offered only by what she gazes up at, up on a shelf the
+                // frame shows (the stage put nothing up where none would
+                // show), and only where she could stand beside it.
+                Scene::GazeUp if visit.shown.iter().any(|s| s.uses().contains(&Use::GazeUp)) => {
+                    format!("{name}: {NO_ROOM_BESIDE}")
+                }
+                Scene::GazeUp => format!("{name}: {NOTHING_UP}"),
+                _ => format!("{name}: no room for her furniture here"),
+            })?;
             let job = Job::Use(seat);
             let away = match job.side() {
                 Side::Left => 1,

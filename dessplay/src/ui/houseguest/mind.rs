@@ -619,7 +619,16 @@ fn place(c: &Ctx, w: Whims, want: Want) -> Option<(Use, Place)> {
     let Want::Use(what) = want else {
         return None;
     };
-    let places = places(what, c.chances, w);
+    let mut places = places(what, c.chances, w);
+    // Gazing up at her shelf is only from its room's floor, where she
+    // stands (phase 6a D8: no climb for it). Judged as she chooses, not
+    // as the frame offers it (the stage sets her there).
+    if what == Use::GazeUp {
+        places.retain(|place| match place {
+            Place::Seat(seat) => c.terrain.platform_at(seat.x, seat.y) == Some(c.here),
+            Place::Make(_) => false,
+        });
+    }
     let below = |n| w.below("place", n);
     let i = match Near::of(c) {
         None => below(places.len() as u64) as usize,

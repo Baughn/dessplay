@@ -2053,7 +2053,16 @@ this section states what is built.
   and names it, "Sata andagi.", four to six times, happier each time,
   then eats it), and on
   about half her visits Kamineko is asleep in the cat bed — she pets
-  him, and he bites ("Ow!"). Her lamp is lit, and dark while she sleeps
+  him, and he bites ("Ow!"). Her plant up on her shelf (phase 6a) is for
+  gazing up at: standing on the floor of its room (only from there, never
+  a climb for it) just beside it, a column or two past it but still under
+  the shelf's run, facing it,
+  she's pleased with it a moment ("hehe"), then gazes up at it, curious,
+  20–45 s (a still use, lingered over as her mood lingers). Not her clock
+  up there (a glance up tells her the time), and nothing on a floor. It's
+  offered by where the piece stands, not by its kind: it asks no room of
+  where a piece is set down, and no rule of her home is felt on it (why:
+  [decisions](decisions.md#she-puts-up-a-shelf-a-stage-a-game-day-2026-10-11)). Her lamp is lit, and dark while she sleeps
   in her bed, from 2 s in (she settles with it on, blinking; trying the
   bed, it's dark at once). Through her night it stays dark from then
   until she wakes, whatever gets her up meanwhile, and it's off in her
@@ -2633,7 +2642,11 @@ this section states what is built.
   those at once, and a visitor's playback lets her finish); switching
   the setting off removes her at once
   (why: [decisions](decisions.md#overlays-end-a-dash-and-an-errand-2026-10-04)).
-  A terminal resize re-anchors her (she falls if her floor went away); during a dissolve it
+  A terminal resize re-anchors her (she falls if her floor went away; a
+  piece she's using or lifting that the resize moved from where she is
+  startles her off it, as one gone from the frame does; a piece nudged
+  aside by a parcel coming in doesn't, as before)
+  (why: [decisions](decisions.md#she-puts-up-a-shelf-a-stage-a-game-day-2026-10-11)); during a dissolve it
   ends the dissolve immediately. Terminal focus changes (alt-tab) are not activity.
 - **Resident Osaka** (on by default): once she's arrived she stays —
   through playback, and through local input. She keeps out of the way

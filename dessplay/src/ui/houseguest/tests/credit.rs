@@ -123,8 +123,37 @@ fn pit_room(seed: u64) -> Room {
     }
 }
 
+/// [`rooms_frame`] at 100×30, her plant up on her Users shelf, on a
+/// Saturday at 10:00, she on Users' floor beside its room (phase 6a D8:
+/// she gazes up at it only from there).
+fn shelf_room(seed: u64) -> Room {
+    let (real, view) = rooms_frame(100, 30);
+    let mut guest = on_saturday(seed);
+    guest
+        .ledger
+        .home
+        .structures
+        .push(super::shelf::users_shelf());
+    assert!(guest.ledger.home.add(room::Prop {
+        item: Furniture::Plant,
+        ..super::shelf::mantel_clock()
+    }));
+    visiting_at(&mut guest, &real, &view, (56, 12));
+    paint(&mut guest, &real, &view, 0);
+    Room {
+        guest,
+        real,
+        view,
+        now: 0,
+        doored: false,
+        went_out: false,
+        by_her_door: false,
+    }
+}
+
 /// The piece whose real seat is for `what` (none for a parcel, which
-/// comes boxed).
+/// comes boxed; none for her gaze up at her shelf, offered by where a
+/// piece stands, not by its kind).
 fn piece_for(what: Use) -> Option<Furniture> {
     Furniture::ALL
         .into_iter()
@@ -335,7 +364,10 @@ fn what_she_chooses_eases_what_it_serves() {
             continue;
         }
         let piece = piece_for(what);
-        let mut room = stage_room(6, &Vec::from_iter(piece));
+        let mut room = match what {
+            Use::GazeUp => shelf_room(6),
+            _ => stage_room(6, &Vec::from_iter(piece)),
+        };
         match what {
             Use::Unpack => room.guest.send_parcel(),
             Use::Pet => room.guest.cat_now = true,
@@ -475,7 +507,7 @@ fn what_she_chooses_eases_what_it_serves() {
     // napping, and watching only where it would face her TV (none of the
     // stage room's text is on her TV's floor, so that is driven nowhere:
     // it's credited as any use of a made piece); a made bed, sleep; a
-    // paper desk, homework.
+    // paper desk, homework. Nothing she makes goes up on her shelf.
     assert_eq!(
         unmade,
         [
@@ -484,7 +516,8 @@ fn what_she_chooses_eases_what_it_serves() {
             Use::Read,
             Use::Snack,
             Use::Pet,
-            Use::LookOut
+            Use::LookOut,
+            Use::GazeUp
         ]
     );
     // Every want that serves, by every method, ran (or is one of the two

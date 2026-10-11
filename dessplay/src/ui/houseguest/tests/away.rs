@@ -1517,6 +1517,7 @@ fn a_resize_as_her_stage_school_door_stands_open_moves_her_with_it() {
                     cue: Some(Scene::School),
                     out_every: Some(1000),
                     next_size_when: Some(when),
+                    ..Run::default()
                 },
                 120_000,
             )

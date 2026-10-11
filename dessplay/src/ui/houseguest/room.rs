@@ -109,6 +109,28 @@ impl Furniture {
         self.spec().kit.is_some()
     }
 
+    /// Whether she gazes up at it standing on her shelf (phase 6a D8):
+    /// her plant. Not her clock: a mantel clock is glanced up at for the
+    /// time, as on her wall (phase 5b), never gazed at; nor anything that
+    /// never goes up there. Wildcard-free, so a new kind says.
+    pub(super) fn gazed_up_at(self) -> bool {
+        match self {
+            Self::Plant => true,
+            Self::Sofa
+            | Self::Tv
+            | Self::Bed
+            | Self::Desk
+            | Self::Lamp
+            | Self::Bookshelf
+            | Self::Fridge
+            | Self::CatBed
+            | Self::Poster
+            | Self::Clock
+            | Self::Window
+            | Self::ShelfKit => false,
+        }
+    }
+
     /// Whether the oldest builds that read her record know it (the first
     /// eight kinds): they skip every later one, so it claims no room's
     /// pane in what's written for them.
@@ -535,12 +557,16 @@ pub(super) enum Use {
     Crumple,
     /// Stand under the window (or beside it), gazing out at the sky.
     LookOut,
+    /// Stand on her shelf's floor beside a piece up on it, gazing up at
+    /// it (phase 6a D8): what [`Furniture::gazed_up_at`] says, on a
+    /// shelf.
+    GazeUp,
 }
 
 impl Use {
     /// Every use.
     #[cfg(test)]
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
         Self::Lounge,
         Self::Nap,
         Self::Sleep,
@@ -552,6 +578,7 @@ impl Use {
         Self::Pet,
         Self::Crumple,
         Self::LookOut,
+        Self::GazeUp,
     ];
 
     /// Whether she uses it from in it (sits on it, lies in it), rather
@@ -560,7 +587,7 @@ impl Use {
     pub fn inside(self) -> bool {
         !matches!(
             self,
-            Use::Watch | Use::Read | Use::Snack | Use::Pet | Use::LookOut
+            Use::Watch | Use::Read | Use::Snack | Use::Pet | Use::LookOut | Use::GazeUp
         )
     }
 
@@ -572,22 +599,32 @@ impl Use {
     /// window over a sofa in the closet (and refuse her any move that
     /// set a piece down beneath one). A new one comes in where she could
     /// look out of it first, if anywhere (see [`room_to_look`]).
+    ///
+    /// Nor to gaze up at a piece on her shelf (phase 6a D8): it stands
+    /// where her shelf is, over her floor, never in her way.
     pub fn asks_room(self) -> bool {
-        self != Use::LookOut
+        !matches!(self, Use::LookOut | Use::GazeUp)
     }
 
     /// Whether it's a still use, whose length her mood lingers over
     /// (phase 5c M8: see [`Stillness::linger`]): lounging, napping,
     /// sleeping (by day: her night has its own wake), reading, looking
-    /// out, and watching TV, now that it holds a picture after its
-    /// switch-on (phase 5c D7). Not chores (unpacking, crumpling, a
+    /// out, gazing up at her shelf (phase 6a D8), and watching TV, now
+    /// that it holds a picture after its switch-on (phase 5c D7). Not
+    /// chores (unpacking, crumpling, a
     /// snack, petting the cat), nor homework, whose nod-off her mood
     /// moves instead.
     ///
     /// [`Stillness::linger`]: super::stillness::Stillness::linger
     pub fn lingers(self) -> bool {
         match self {
-            Use::Lounge | Use::Nap | Use::Sleep | Use::Read | Use::LookOut | Use::Watch => true,
+            Use::Lounge
+            | Use::Nap
+            | Use::Sleep
+            | Use::Read
+            | Use::LookOut
+            | Use::GazeUp
+            | Use::Watch => true,
             Use::Homework | Use::Unpack | Use::Snack | Use::Pet | Use::Crumple => false,
         }
     }
@@ -1746,11 +1783,14 @@ impl Shown {
 
     /// What she can do with it: unpack it while it's boxed, crumple it
     /// into shape while it's makeshift and still a heap; once it's in
-    /// shape, a makeshift piece is for what the real one is.
+    /// shape, a makeshift piece is for what the real one is. Up on her
+    /// shelf, what she gazes up at is for that (phase 6a D8): offered by
+    /// where it stands, not by its kind (no [`Spec::uses`] names it).
     pub fn uses(&self) -> &'static [Use] {
         match (self.boxed(), self.scrap) {
             (true, _) => &[Use::Unpack],
             (false, Some(scrap)) if !scrap.done() => &[Use::Crumple],
+            (false, None) if self.on_shelf() && self.item.gazed_up_at() => &[Use::GazeUp],
             (false, _) => self.item.spec().uses,
         }
     }
@@ -1844,7 +1884,10 @@ impl Shown {
             },
             // In front of the box, bending over it.
             Use::Unpack | Use::Crumple => (self.left + cols / 2, self.facing),
-            Use::Watch | Use::Read | Use::Snack | Use::Pet => (
+            // Beside it, facing it (gazing up at it on her shelf: her
+            // gaze is in profile, so beside it is where she looks up at
+            // it from, phase 6a D8).
+            Use::Watch | Use::Read | Use::Snack | Use::Pet | Use::GazeUp => (
                 beside,
                 if beside < self.left {
                     Facing::Right
@@ -1877,6 +1920,22 @@ impl Shown {
         let half = super::sprite::WIDTH / 2;
         let rect = self.rect();
         [i32::from(rect.x) - half - 1, i32::from(rect.right()) + half]
+    }
+
+    /// Where she'd stand to gaze up at it on her shelf (phase 6a D8), in
+    /// the order she tries them: just beside it (her box a column past
+    /// its columns, as [`Shown::beside`]: left, then right), else a
+    /// column further out; only those under its shelf's run, `under`
+    /// (its columns: D8's "still under the run"; a piece at a run's end
+    /// has none past that end). Beside it rather than under it: her gaze
+    /// is in profile, so she looks up at it from there. On its room's
+    /// floor ([`Shown::stood`]).
+    pub fn gaze_up_spots(&self, under: std::ops::Range<i32>) -> Vec<i32> {
+        let [left, right] = self.beside();
+        [left, right, left - 1, right + 1]
+            .into_iter()
+            .filter(|x| under.contains(x))
+            .collect()
     }
 
     /// Whether it and `other` may share cells, one in front of the other
@@ -3797,6 +3856,12 @@ fn room_for(
     at.uses().iter().filter(|&&what| asks(what)).all(|&what| {
         let spots: &[i32] = match what {
             Use::LookOut => &at.look_out_spots(),
+            // Never asked (not `asks_room`, not a look out): a piece goes
+            // up on her shelf whether or not she could stand beside it,
+            // and its spots need its shelf's run, which the frame knows
+            // (`spots` in the paint), not this. Before the `inside()`
+            // arm, as everywhere a use's spots are matched.
+            Use::GazeUp => return true,
             _ if what.inside() => {
                 let seat = at.seat(what, 0);
                 return fits(seat.x, seat.y);
@@ -7621,6 +7686,49 @@ pub(in crate::ui::houseguest) mod shelves {
                 boxed,
                 "boxed={boxed}"
             );
+        }
+    }
+
+    /// What she does with small decor up on her shelf (phase 6a D8): she
+    /// gazes up at her plant there (from its room's floor: the seat is
+    /// the pane's floor, `stood`); at nothing else of hers up there (her
+    /// clock, a mantel clock, she glances up at for the time, as on her
+    /// wall), and at none of them on a floor; boxed, a parcel is to
+    /// unpack. Laid out as her home lays them, each small-decor kind on
+    /// her Users shelf and on Users' floor.
+    #[test]
+    fn she_gazes_up_at_her_plant_on_her_shelf() {
+        let (_, nooks) = three_panes();
+        let shelf = Strip::Shelf(Nook::Users);
+        for item in Furniture::ALL.into_iter().filter(|f| f.spec().shelf) {
+            for strip in [shelf, Strip::Bottom(Nook::Users)] {
+                let at = format!("{item:?} on {strip:?}");
+                let mut home = Home {
+                    structures: vec![shelf_on(Nook::Users, 12, 7, 2)],
+                    ..Home::default()
+                };
+                assert!(home.add(on(item, strip, 3)), "{at}");
+                let laid = home.laid_out(&nooks);
+                let s = *laid
+                    .shown
+                    .iter()
+                    .find(|s| s.item == item)
+                    .unwrap_or_else(|| panic!("{at}: laid out"));
+                assert_eq!(s.strip, Some(strip), "{at}");
+                let gazes = item == Furniture::Plant && strip == shelf;
+                let uses: &[Use] = if gazes {
+                    &[Use::GazeUp]
+                } else {
+                    item.spec().uses
+                };
+                assert_eq!(s.uses(), uses, "{at}");
+                assert_eq!(s.stood, 12, "{at}: reached from Users' floor");
+                let boxed = Shown {
+                    boxed: true.into(),
+                    ..s
+                };
+                assert_eq!(boxed.uses(), [Use::Unpack], "{at}: boxed");
+            }
         }
     }
 

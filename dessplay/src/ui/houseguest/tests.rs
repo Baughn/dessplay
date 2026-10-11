@@ -1090,6 +1090,116 @@ fn long_visits_with_a_shelf_see_it_shown_hidden_and_back() {
     }
 }
 
+/// The shelved long visits' gaze-up clause (phase 6a D8, in
+/// [`check_shelves`]) checked on frames she gazes up. The random
+/// properties (`long_visits_with_a_shelf_*`, `her_days_with_a_shelf_*`)
+/// all but never see her gaze up (none in 64 cases each at step 6's
+/// review: she'd have to choose it from her shelf's room's floor in a
+/// short visit), so this carries the clause: her plant up on her Users
+/// shelf at 100×30, in each of [`GAZES`]' ways, each seed, both modes,
+/// and she gazes up on some frame of each.
+#[test]
+fn long_visits_with_a_shelf_see_her_gaze_up() {
+    for (way, shelf, up, how) in GAZES {
+        for seed in [8, 21] {
+            for graphics in [false, true] {
+                let at = format!("{way} seed {seed} graphics={graphics}");
+                let visited = shelved_visit(
+                    seed,
+                    graphics,
+                    rooms_frame,
+                    &[(100, 30)],
+                    &[],
+                    &[],
+                    (0, 0, 1, 1),
+                    &[(0, 2, 300, false)],
+                    shelf,
+                    up,
+                    false,
+                    how,
+                    90_000,
+                )
+                .unwrap_or_else(|e| panic!("{at}: {e}"));
+                assert!(visited.gazed_up > 0, "{at}: never gazed up");
+            }
+        }
+    }
+}
+
+/// One of [`GAZES`]: its name, the shelf ([`shelve`]'s), what's up on
+/// it, and how the visit runs.
+type Gazing = (
+    &'static str,
+    (usize, bool, u16, u16),
+    &'static [(bool, u16)],
+    Run,
+);
+
+/// [`long_visits_with_a_shelf_see_her_gaze_up`]'s ways: the stage's gaze
+/// up (it sets her off from wherever she is: her plant centred on a high
+/// shelf, `3` along, her seat left of it); her own, on Users' floor and
+/// offered only it ([`gaze_from_users`]: she chooses it through
+/// `mind::place`), her plant at the run's left end on a high shelf,
+/// turned to face left (her seat right of it: left of it is past the
+/// run), and at its right end on a low one (rise 5: Users is 11 rows
+/// inside, room over it for the plant; her seat left of it).
+const GAZES: [Gazing; 3] = [
+    (
+        "the stage's",
+        (1, false, 12, 7),
+        &[(true, 3)],
+        Run {
+            cue: Some(Scene::GazeUp),
+            then: None,
+            out_every: Some(1000),
+            next_size_when: None,
+        },
+    ),
+    (
+        "hers, at a high run's left end",
+        (1, false, 12, 7),
+        &[(true, 0)],
+        Run {
+            cue: None,
+            then: Some(gaze_from_users_turned),
+            out_every: Some(1000),
+            next_size_when: None,
+        },
+    ),
+    (
+        "hers, at a low run's right end",
+        (1, false, 12, 5),
+        &[(true, 7)],
+        Run {
+            cue: None,
+            then: Some(gaze_from_users),
+            out_every: Some(1000),
+            next_size_when: None,
+        },
+    ),
+];
+
+/// For [`Run::then`]: put her on Users' floor at 100×30 (column 56, row
+/// 12), offered only her gaze up (by a real piece), to choose herself.
+fn gaze_from_users(guest: &mut Guest, now: u64) {
+    let State::Visiting(visit) = &mut guest.state else {
+        panic!("visiting");
+    };
+    visit.osaka.place(56, 12, now);
+    visit.osaka.offer_only = Some((brain::Want::Use(room::Use::GazeUp), "use/real"));
+}
+
+/// [`gaze_from_users`], her plant turned to face left first (from the
+/// next frame).
+fn gaze_from_users_turned(guest: &mut Guest, now: u64) {
+    for prop in &mut guest.ledger.home.props {
+        if prop.item == Furniture::Plant {
+            prop.facing = sprite::Facing::Left;
+        }
+    }
+    gaze_from_users(guest, now);
+}
+
 /// [`long_visits_with_the_chat_over_a_nook_never_touch_what_is_protected`]'s
 /// non-vacuity companion: on [`chat_over`] with whole lines of text
 /// across Users (from the chat's part of it into hers), cued to make a
@@ -1304,6 +1414,9 @@ struct Visited {
     shelf_pieces_last: usize,
     /// Whether each shelf (by pane) was hidden on its last frame.
     shelf_was_hidden: Vec<Nook>,
+    /// Visiting frames she gazed up at a piece on her shelf (phase 6a
+    /// D8).
+    gazed_up: usize,
     /// Whether this frame is of the last size.
     on_last: bool,
     /// Her home as the visit left it.
@@ -1323,6 +1436,10 @@ struct Run {
     /// Cued once, after the first frame she's seen visiting (all that
     /// frame's checks done): it takes effect at the next paint.
     cue: Option<Scene>,
+    /// Done to her once, as `cue` is (after the first frame she's seen
+    /// visiting): a test's own setup of her at that moment (where she
+    /// stands, what she's offered).
+    then: Option<fn(&mut Guest, u64)>,
     /// While she isn't here (out, or not yet come), a paint at least
     /// this often (ms), as the shell paints. Her own ticks then come only
     /// at boundaries, dashes and quarter hours (and before a first paint
@@ -1431,7 +1548,7 @@ fn long_visit_of(
     how: Run,
     span: u64,
 ) -> Result<Visited, TestCaseError> {
-    let mut cue = how.cue;
+    let (mut cue, mut then) = (how.cue, how.then);
     if graphics {
         guest.set_picker(kitty());
     }
@@ -1827,6 +1944,11 @@ fn long_visit_of(
             {
                 guest.cue(scene);
             }
+            if matches!(guest.state, State::Visiting(_))
+                && let Some(then) = then.take()
+            {
+                then(&mut guest, now);
+            }
             if !last && how.next_size_when.is_some_and(|when| when(&guest, now)) {
                 break;
             }
@@ -2073,6 +2195,66 @@ fn check_shelves(
             s,
             run
         );
+    }
+    // Gazing up at a piece on her shelf (phase 6a D8): it stands on a
+    // shelf, she's on the floor of the pane it hangs in (worked out from
+    // the pane's rect), under its run (worked out from the record), just
+    // beside it (her box one or two columns past its columns, clear of
+    // them), facing it.
+    if let State::Visiting(visit) = &guest.state
+        && let Some((seat, ..)) = visit.osaka.use_span()
+        && seat.what == room::Use::GazeUp
+    {
+        visited.gazed_up += 1;
+        let piece = shown.iter().find(|s| s.piece() == seat.piece);
+        prop_assert!(
+            piece.is_some_and(Shown::on_shelf),
+            "gazing up at {:?}: {:?}",
+            seat,
+            piece
+        );
+        let piece = piece.unwrap();
+        let run = runs
+            .iter()
+            .find(|r| Some(room::Strip::Shelf(r.shelf.nook)) == piece.strip);
+        prop_assert!(run.is_some(), "{:?}: no shelf", piece);
+        let run = run.unwrap();
+        let floor = i32::from(run.pane.bottom()) - 1;
+        prop_assert_eq!(
+            (visit.osaka.x, visit.osaka.y),
+            (seat.x, floor),
+            "gazing up at {:?} from off its room's floor",
+            piece
+        );
+        prop_assert!(
+            (run.from..run.to).contains(&seat.x),
+            "gazing up at {:?} from {}, off its run {}..{}",
+            piece,
+            seat.x,
+            run.from,
+            run.to
+        );
+        let half = sprite::WIDTH / 2;
+        let (cols, _) = piece.size();
+        let (from, to) = (piece.left, piece.left + i32::from(cols));
+        let gap = if seat.x < from {
+            from - (seat.x + half)
+        } else {
+            seat.x - half - to + 1
+        };
+        prop_assert!(
+            (1..=2).contains(&gap),
+            "gazing up at {:?} from {}: {} columns off",
+            piece,
+            seat.x,
+            gap
+        );
+        let toward = if seat.x < from {
+            sprite::Facing::Right
+        } else {
+            sprite::Facing::Left
+        };
+        prop_assert_eq!(seat.facing, toward, "gazing up at {:?}", piece);
     }
     // Her feet, and every burst cell of hers over a shelf.
     if let State::Visiting(visit) = &guest.state {
@@ -2975,6 +3157,31 @@ fn every_scene_has_a_spot_in_the_stage_room() {
                     assert!(guest.ledger.home.structures.is_empty(), "{at}");
                     continue;
                 }
+                // Gazing up at her plant on her shelf needs it to show
+                // there (phase 6a D8: her clock isn't gazed at, so the
+                // stage puts it up for no gaze): a shelf with 3 clear
+                // rows over its run, so a pane 10 rows tall (8 inside).
+                // None in the stage room (List is 9 rows tall, 7 inside:
+                // a shelf there is a low one, with 2 clear rows), and
+                // the stage says so and changes nothing of her home. It
+                // plays where her plant goes up:
+                // `tests::gaze_up::the_stage_gazes_up_where_her_plant_goes_up`.
+                let (_, plant_rows) = Furniture::Plant.spec().footprint;
+                let no_plant = room::pane_strips(&view.nooks)
+                    .iter()
+                    .all(|p| p.raw.rows < structures::LOW_RISE + plant_rows);
+                if scene == Scene::GazeUp && no_plant {
+                    assert!(
+                        matches!(&note, Some(Err(e)) if e.contains(super::stage::NOTHING_UP)),
+                        "{at}: {note:?}"
+                    );
+                    assert!(guest.ledger.home.structures.is_empty(), "{at}");
+                    assert!(
+                        guest.ledger.home.props.iter().all(|p| p.strip.is_floor()),
+                        "{at}"
+                    );
+                    continue;
+                }
                 assert!(matches!(note, Some(Ok(_))), "{at}: {note:?}");
                 let State::Visiting(visit) = &guest.state else {
                     panic!("{at}: visiting");
@@ -3109,6 +3316,14 @@ fn every_scene_has_a_spot_in_the_stage_room() {
                         // At her shelf, putting its stage up (arms up:
                         // her Stretch idle draws the same pose).
                         Scene::PutUp => visit.osaka.act_name() == "PutUp",
+                        // Never reached: no stage room size takes her
+                        // plant up (the `no_plant` exception above). Its
+                        // observable (`Pose::Gaze` beside her plant) is
+                        // `tests::gaze_up::the_stage_gazes_up_where_her_plant_goes_up`'s.
+                        // Where a gazed-at piece comes to go up here (the
+                        // gremlin, 2 tall, from step 7), flip `no_plant`
+                        // and make this arm `posed(Pose::Gaze)`.
+                        Scene::GazeUp => panic!("{at}: gazing up in the stage room"),
                         // Chosen as the use starts (the andagi plays
                         // after the snack, past the cap: see
                         // her_vignettes_play_at_her_things).
@@ -7010,7 +7225,7 @@ fn a_parcel_of(
                     room
                 }
             };
-            let open = seats_of(piece, &visit.shown, &visit.terrain, false, true)
+            let open = seats_of(piece, &visit.shown, &visit.terrain, false, true, &[])
                 .iter()
                 .any(|s| s.what == room::Use::Unpack);
             ungated |= open;
@@ -11785,6 +12000,7 @@ fn every_want_can_be_cued() {
             Want::Use(Use::Pet) => &[Scene::Pet],
             Want::Use(Use::Crumple) => &[Scene::MakeSofa, Scene::MakeBed, Scene::MakeDesk],
             Want::Use(Use::LookOut) => &[Scene::LookOut],
+            Want::Use(Use::GazeUp) => &[Scene::GazeUp],
             Want::Arrange => &[Scene::Arrange],
             Want::PutUp => &[Scene::PutUp],
         };
@@ -11798,7 +12014,7 @@ fn every_want_can_be_cued() {
     }
 }
 
-/// `scene` cued on a fresh guest in the stage room (graphics or not),
+/// `scene` cued on a fresh guest on `real` (graphics or not),
 /// run until `done` says what she plays is what was wanted, for at
 /// most 20 s: whether it did, and when it stopped.
 fn cue_until(
@@ -11830,7 +12046,8 @@ fn cue_until(
 }
 
 /// Lint: every script can be cued from the stage, and plays when it is
-/// (in the stage room, in both drawing modes): its scene is on the
+/// (in the stage room, or for her gaze up at her shelf a room her plant
+/// goes up in, in both drawing modes): its scene is on the
 /// stage's menu, and cueing it has her playing that very script (not
 /// another of the same piece's: a plain watch, not surfing) soon after.
 /// Every script that shares its piece with another is forced by its
@@ -11848,9 +12065,18 @@ fn every_script_can_be_cued() {
         }
     }
     let mut ui = stage_ui();
-    let (real, view) = real_frame(&mut ui, 100, 30);
+    let (stage_real, stage_view) = real_frame(&mut ui, 100, 30);
+    // Gazing up at her shelf plays only where her plant goes up on it
+    // (phase 6a D8): not in the stage room, whose one shelf is a low one
+    // with room over it for her clock alone; in `rooms` at 100×30 (List
+    // takes a high one).
+    let (shelf_real, shelf_view) = rooms_frame(100, 30);
     for graphics in [false, true] {
         for id in ScriptId::ALL {
+            let (real, view) = match id {
+                ScriptId::GazeUp => (&shelf_real, &shelf_view),
+                _ => (&stage_real, &stage_view),
+            };
             let scene = id.scene();
             assert!(Scene::ALL.contains(&scene), "{id:?}: {scene:?}");
             // A splice's script is never a use's own: see
@@ -11865,7 +12091,7 @@ fn every_script_can_be_cued() {
                 continue;
             }
             let at = format!("{id:?} ({scene:?}) graphics={graphics}");
-            let (played, now) = cue_until(scene, graphics, &real, &view, |plays| {
+            let (played, now) = cue_until(scene, graphics, real, view, |plays| {
                 let played = plays.is_some_and(|p| p.own == id);
                 // Another script of the piece she was cued to use: not
                 // the one cued.
@@ -13972,6 +14198,66 @@ fn a_piece_closeted_as_she_lifts_it_is_lifted_later() {
     }
 }
 
+/// A resize as she bends to lift her sofa moves it from beside her (the
+/// window wider: its pane, and the sofa with it, shift): she's startled
+/// off the lift (as when it's covered), never lifting it from where it
+/// was, and lifts it later from beside where it is. The lift's sibling of
+/// `tests::gaze_up::a_resize_that_moves_her_plant_moves_her_off_her_gaze`.
+#[test]
+fn a_resize_as_she_lifts_a_piece_moves_her_off_the_lift() {
+    for graphics in [false, true] {
+        let mut ui = stage_ui();
+        let (real, view) = real_frame(&mut ui, 100, 30);
+        let (wide, wide_view) = real_frame(&mut ui, 120, 30);
+        let mut guest = Guest::new(1);
+        if graphics {
+            guest.set_picker(kitty());
+        }
+        guest.cue(Scene::Arrange);
+        paint(&mut guest, &real, &view, 0);
+        let lifting = carry_until(&mut guest, &real, &view, 0, 30_000, |guest, _| {
+            visit_of(guest).osaka.lifting().is_some()
+        })
+        .unwrap_or_else(|| panic!("graphics {graphics}: never bent to it"));
+        let was = visit_of(&guest)
+            .shown
+            .iter()
+            .find(|s| s.item == Furniture::Sofa)
+            .copied()
+            .unwrap();
+        let _ = paint(&mut guest, &wide, &wide_view, lifting);
+        let visit = visit_of(&guest);
+        let sofa = visit
+            .shown
+            .iter()
+            .find(|s| s.item == Furniture::Sofa)
+            .copied()
+            .unwrap();
+        assert_ne!(sofa.left, was.left, "graphics {graphics}: the sofa moved");
+        let (middle, floor) = middle_of(&sofa);
+        if let Some((_, (x, y))) = visit.osaka.lifting_from() {
+            assert!(
+                y == floor && (sofa.beside().contains(&x) || x == middle),
+                "graphics {graphics}: lifting from {x} the sofa at {}",
+                sofa.left
+            );
+        }
+        let lifted = carry_until(
+            &mut guest,
+            &wide,
+            &wide_view,
+            lifting,
+            lifting + 30_000,
+            |guest, _| carried(guest).is_some(),
+        );
+        assert!(
+            lifted.is_some(),
+            "graphics {graphics}: {:?}",
+            methods(&guest)
+        );
+    }
+}
+
 /// The image budget with a carry: in line art, busy about her home (her
 /// sofa turned from the TV on a page of text; a TV she never settled in
 /// her bedroom, carried downstairs), she sets at least one piece down
@@ -15495,6 +15781,7 @@ mod credit;
 mod dash;
 mod felt;
 mod film;
+mod gaze_up;
 mod golden;
 mod kit;
 mod put_up;

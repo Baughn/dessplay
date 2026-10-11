@@ -411,7 +411,8 @@ fn an_old_window_loads_hung_low_drawn_and_in_reach() {
                         }
                     }
                     if screen == "quiet" {
-                        let seats = spots_for(&window, &visit.shown, &visit.terrain, false, false);
+                        let seats =
+                            spots_for(&window, &visit.shown, &visit.terrain, false, false, &[]);
                         assert!(
                             seats.iter().any(|s| s.what == room::Use::LookOut),
                             "{at}: in reach: {seats:?}"

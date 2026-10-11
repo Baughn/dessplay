@@ -1558,6 +1558,7 @@ mod tests {
             Use::Pet,
             Use::Crumple,
             Use::LookOut,
+            Use::GazeUp,
         ];
         for what in all {
             // Exhaustive: a new use is placed here, then in ANY_USE.
@@ -1571,7 +1572,9 @@ mod tests {
                 | Use::Snack
                 | Use::Pet
                 | Use::LookOut => true,
-                Use::Unpack | Use::Crumple => false,
+                // Up on her shelf (phase 6a D8), set there by her, in no
+                // chat and no door's space: no rule is felt on it.
+                Use::Unpack | Use::Crumple | Use::GazeUp => false,
             };
             assert_eq!(ANY_USE.contains(&what), real, "{what:?}");
         }

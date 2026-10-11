@@ -866,6 +866,44 @@ against the parent: identical but for wall time.
 **Goal.** D8, `Scene::GazeUp`. **Sites.** room.rs:410-500, 1437; mod.rs:4570; script.rs; osaka.rs:1787; brain.rs;
 rules.rs:61; stage.rs. **Exit.** Goldens unchanged; the band on the shelf rooms (Census). **CHANGELOG.** "Added: Osaka
 sometimes stands by her shelf and gazes up at what's on it." **Docs.** design.md *Using her furniture* (1969).
+**As built.** `Use::GazeUp` (`ALL` 12; not `inside`, not `asks_room`, `lingers`; out of `ANY_USE`, its lint saying
+why). Which kinds: `Furniture::gazed_up_at` (wildcard-free: the plant today; step 7 decides the gremlin's row).
+`Shown::uses()` gives `[GazeUp]` for a real, unboxed piece of such a kind `on_shelf()`, before its spec's uses, so no
+`Spec.uses` names it and every `Furniture::ALL.find(|f| f.spec().uses.contains(&what))` site finds nothing for it
+(`Guest::cue` has its own `Scene::GazeUp` arm; the test-only `unwrap_or(Sofa)` sites never draw it; tests/credit.rs
+runs it in its own `shelf_room`). Spots: `Shown::gaze_up_spots(under)` = `[left, right, left - 1, right + 1]` of
+`beside()` (her box one column past the piece's, then two), **kept only where under its run** (D8's "still under the
+run": review fix; the run from `structures::hung_runs(home, nooks)`, threaded through `seats`/`seats_of`/`spots_for`),
+at `stood`, facing it (the `Watch`/`Read` seat arm). With the plant centred on a 10-cell run, `left - 1` is the
+margin, never a spot. mod.rs `spots(piece, what, runs)` is the one list of a use's spots (`spots_for` offers seats
+from it; `seats_her` judges a seat against it). `room_for` never asks GazeUp (not `asks_room`): its arm returns
+`true`. **The floor gate is at choice time**, in `mind::place` (`platform_at(seat) == Some(c.here)`), not in
+the frame's seats: `stage::direct` picks the seat before it places her. `Want::Use(GazeUp)` appended last to
+`Want::ALL` (31), `row(5.0, [(Daydreams, 0.4)])`, no factors (not a fun source, not in the chat). `ScriptId::GazeUp`
+(`ALL` 28): `Still(Pose::Stand)`, `Face::Pleased`, `Bubble::Hehe` for `GAZE_UP_PLEASED_MS` (2500), then
+`Still(Pose::Gaze)`, `Face::Curious`, the rest; `Common`, `Chat::Look`, `OnChat::LooksUp`. `use_duration` 20–45 s.
+No settling arm (**provisional, an open question for the user**: D8's "5c's settling-in applies" was read as the
+linger alone; a GazeUp → Sit chain as Gaze's would grow `settle_chains_ms` and the band's guard).
+`census_group` "spacing out" (as `LookOut`); the census names it "gaze up". `Scene::GazeUp` (`ALL` 61) is
+`Shelving::Gazed` (review fix: `shelf_decor` takes a kind filter, `Furniture::gazed_up_at`; where none shows, her
+home is left unchanged, no shelf and no clock saved) with `furniture()` = `GazeUp` through `direct`'s seat arm (notes
+`stage::NOTHING_UP` when nothing she gazes up at shows on a shelf, `stage::NO_ROOM_BESIDE` when it does but no spot
+under its run is restful). **Deviation (D11):** the stage room at 100×30 is `Err` too: its one shelf is List's low
+one, with 2 clear rows (the plant needs 3), so nothing she gazes up at goes up; `every_scene_has_a_spot_in_the_stage_room` asserts `Err` where no pane has `LOW_RISE` + the plant's rows
+inside (both stage sizes), and the `Pose::Gaze` observable is in `tests::gaze_up::the_stage_gazes_up_where_her_plant_goes_up`
+on `rooms_frame` 100×30 (the `happened` arm for it panics, unreachable, until step 7 flips `no_plant`);
+`every_script_can_be_cued` cues `GazeUp` there too. Step 7's gremlin (2 tall) makes the stage room `Ok` with only its
+`gazed_up_at` row (`Shelving::Gazed` never tries the clock). **Census:** no band room has a shelf, so the band can't
+move; `visit_census` re-run both modes against 5c's. Review fix: tests/census.rs `Room.shelf` (her Users shelf and plant
+up after her pieces) and `shelf_room()` (the resident's screen at 100×30, a sofa, a TV and her window, her plant up
+high), printed beside the band (`printed_rooms`, `CENSUS_ROOMS=shelf`), in `visit_census` and `day_rooms` (printed; its look-outs not judged). Measured
+(line art, 17 min, 20×4 seeds): moving 6.4 % lazy, 11.1–12.3 % ordinary and dreamy, 14.3–15.7 % industrious, set-offs
+0.56–1.41 a minute: every mood inside its band. She gazes up rarely: 1 visit in 16 (`visit_census`), 0.05 a game day
+(`day_census`), against 7.76 look-outs a game day there with or without the shelf (that screen leaves her little else).
+GazeUp's weight is an open question for the user. Step 9's rooms (191×46, a low shelf, the gremlin) stay step 9's.
+**Resize (review fix, the class):** a resize that moves the piece she's using (any use but unpacking) or lifting
+from where she is startles her off it (`lost_seat`), as a piece gone does (mod.rs `seats_her`, `lifts_from`); judged
+only on a resized frame, so a parcel nudging a piece she's on stays as it was (goldens byte-identical).
 
 ### Step 7. The gremlin, `High`, the wishlist (~1050 lines)
 
@@ -956,7 +994,7 @@ under her hands (the hop marks the moment instead).
 
 ## Questions for the user
 
-None open. Fourth round (2026-10-10, the user):
+Three open from step 6's review (the last list below). Fourth round (2026-10-10, the user):
 - **High means standable**, as designed: a high shelf keeps `HEIGHT` clear rows over its run. Step 3 measures how often
   each height fits at 191×46 with real content; revisit only if the measurement surprises.
 - **The hop is for high shelves only** (D7c as designed): a low shelf is in her reach, so she stretches up.
@@ -981,6 +1019,14 @@ Fifth round (2026-10-11, during the build; the hand-off notes have the detail):
   low shelf in a 9-row pane (`LOW_ABOVE` = 2 rows over the run; the plant is 3 tall): the stage room at 100×30 is that
   case. D11 said "a finished shelf with the plant on it". Alternatives: leave the shelf bare there (the note then
   `Err`), or require a third clear row for a low shelf (D3 would then refuse every 9-row pane).
+
+Open (step 6's review, 2026-10-11; the hand-off notes have the detail):
+- **Settling-in after the gaze up**: D8's "so 5c's settling-in applies" built as the linger alone (no GazeUp → Sit
+  chain); provisional until the user says.
+- **GazeUp's weight**: with her plant up she gazes up rarely (1 visit in 16, 0.05 a game day in `shelf_room`); raise
+  it, or leave it rare?
+- **A parcel nudging a piece she's on** leaves her a column off it (since before 6a); judging it as a resize is now
+  judged would move the goldens of homes with no structure, so it waits for the user.
 
 ## Critique dispositions
 

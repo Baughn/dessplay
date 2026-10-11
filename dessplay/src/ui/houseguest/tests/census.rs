@@ -56,6 +56,10 @@ pub(super) struct Room {
     /// for the visit censuses, which run her unfed (5a's tables: her
     /// visit by its own hour, not her day's).
     pub start: Option<GameTime>,
+    /// Her Users shelf up, high (as `tests/shelf.rs`'s `users_shelf`:
+    /// the `rooms` frames' Users pane at 100×30), her plant on it, once
+    /// she's been given what she owns (phase 6a D8: so she gazes up).
+    pub shelf: bool,
 }
 
 impl Room {
@@ -89,6 +93,7 @@ pub(super) fn stage_room() -> Room {
         chat_every: Some(45_000),
         live: None,
         start: None,
+        shelf: false,
     }
 }
 
@@ -117,6 +122,7 @@ pub(super) fn furnished_room() -> Room {
         chat_every: Some(90_000),
         live: None,
         start: None,
+        shelf: false,
     }
 }
 
@@ -145,6 +151,29 @@ pub(super) fn resident_room() -> Room {
         chat_every: Some(60_000),
         live: None,
         start: None,
+        shelf: false,
+    }
+}
+
+/// What she owns in [`shelf_room`]: a sofa and a TV (the resident's),
+/// and her window, so her look out competes with her gaze up for her
+/// daydreams (phase 6a's Census section).
+const SHELF_HOME: [Furniture; 3] = [Furniture::Sofa, Furniture::Tv, Furniture::Window];
+
+/// The resident's room with her shelf (phase 6a D8, step 6's review): the
+/// resident's screen ([`resident_room`]: `rooms` at 100×30, its text above
+/// her reach), her Users shelf up high with her plant on it ([`Room::shelf`])
+/// and [`SHELF_HOME`] owned. Read beside the band, never judged by it
+/// (a reading of her gaze up's weight for the user, not a band retune):
+/// in [`printed_rooms`], [`visit_census`] and [`day_rooms`] (her look-outs
+/// a game day with a plant up to gaze at). Step 9's census rooms (the
+/// user's 191×46, a low shelf, the gremlin) are the design's own.
+pub(super) fn shelf_room() -> Room {
+    Room {
+        name: "resident+shelf",
+        owns: &SHELF_HOME,
+        shelf: true,
+        ..resident_room()
     }
 }
 
@@ -163,6 +192,7 @@ pub(super) fn live_room() -> Room {
         chat_every: Some(45_000),
         live: Some(live_frame),
         start: None,
+        shelf: false,
     }
 }
 
@@ -340,6 +370,7 @@ fn named(play: Play, lamp: bool) -> Vec<(bool, String)> {
         ScriptId::Escalator => Some("escalator".to_owned()),
         ScriptId::LookOut => Some("look out".to_owned()),
         ScriptId::ClockGlance => Some("clock glance".to_owned()),
+        ScriptId::GazeUp => Some("gaze up".to_owned()),
         ScriptId::Sleep if play.branch == 0 && lamp => Some("bedtime".to_owned()),
         ScriptId::Sleep
         | ScriptId::Lounge
@@ -421,6 +452,30 @@ fn arrive_drawn(
     for &item in room.owns {
         guest.give(item);
         paint(&mut guest, &room.real, &room.view, 0);
+    }
+    if room.shelf {
+        guest
+            .ledger
+            .home
+            .structures
+            .push(super::shelf::users_shelf());
+        assert!(guest.ledger.home.add(room::Prop {
+            item: Furniture::Plant,
+            ..super::shelf::mantel_clock()
+        }));
+        paint(&mut guest, &room.real, &room.view, 0);
+        let State::Visiting(visit) = &guest.state else {
+            panic!("{} seed {seed}: not visiting", room.name);
+        };
+        assert!(
+            visit
+                .shown
+                .iter()
+                .any(|s| s.item == Furniture::Plant && s.on_shelf()),
+            "{} seed {seed}: her plant isn't up: {:?}",
+            room.name,
+            visit.shown
+        );
     }
     guest
 }
@@ -1115,7 +1170,16 @@ fn visit_census() {
     let modes = census_modes();
     let chats = census_chats();
     let mut table = Vec::new();
-    let rooms = [stage_room(), furnished_room(), resident_room()];
+    // `CENSUS_ROOMS=shelf`: [`shelf_room`] alone.
+    let rooms: Vec<Room> = match std::env::var("CENSUS_ROOMS").as_deref() {
+        Ok("shelf") => vec![shelf_room()],
+        _ => vec![
+            stage_room(),
+            furnished_room(),
+            resident_room(),
+            shelf_room(),
+        ],
+    };
     let mut cells = Vec::new();
     for room in &rooms {
         for &mood in &moods {
@@ -1525,9 +1589,10 @@ pub(super) const DAY_HOME: [Furniture; 9] = [
 ];
 
 /// The day census's rooms: the stage (nothing owned), her home with a
-/// clock and a window, and the resident's (a sofa and a TV, her wall
-/// clock not yet sent: it comes in the week), each from [`MONDAY`].
-fn day_rooms() -> [Room; 3] {
+/// clock and a window, the resident's (a sofa and a TV, her wall clock
+/// not yet sent: it comes in the week), and the resident's with her
+/// shelf and window ([`shelf_room`]), each from [`MONDAY`].
+fn day_rooms() -> [Room; 4] {
     [
         Room {
             start: Some(MONDAY),
@@ -1541,6 +1606,10 @@ fn day_rooms() -> [Room; 3] {
         Room {
             start: Some(MONDAY),
             ..resident_room()
+        },
+        Room {
+            start: Some(MONDAY),
+            ..shelf_room()
         },
     ]
 }
@@ -1624,8 +1693,10 @@ pub(super) const WINDOWED_HOME: [Furniture; 8] = [
 /// resident has all its text above her reach, so she never pulls or
 /// swaps there); and the windowed home again of an evening (from 18:00,
 /// [`EVENING`]: her look-out likelier from dusk), so her daydream at the
-/// sill shows in a print while her afternoon has almost none of it.
-fn printed_rooms() -> [Room; 4] {
+/// sill shows in a print while her afternoon has almost none of it; and
+/// the resident's with her shelf ([`shelf_room`]: her gaze up at her
+/// plant against her look out).
+fn printed_rooms() -> [Room; 5] {
     let windowed = Room {
         name: "home+window",
         owns: &WINDOWED_HOME,
@@ -1656,8 +1727,9 @@ fn printed_rooms() -> [Room; 4] {
         owns: &WINDOWED_HOME,
         ..furnished_room()
     };
-    let [windowed, tv_only, low_text] = [windowed, tv_only, low_text].map(at_afternoon);
-    [windowed, tv_only, low_text, evening]
+    let [windowed, tv_only, low_text, shelf] =
+        [windowed, tv_only, low_text, shelf_room()].map(at_afternoon);
+    [windowed, tv_only, low_text, evening, shelf]
 }
 
 /// A Tuesday evening (from 18:00, after dusk): her window's evening.
@@ -1810,10 +1882,13 @@ fn fed_afternoon_census() {
     )
     .max(1) as usize;
     // `CENSUS_ROOMS`: "band" for the band's three, "printed" for the
-    // three printed beside them ([`printed_rooms`]), all six by default.
+    // ones printed beside them ([`printed_rooms`]), "shelf" for
+    // [`shelf_room`] alone; all of them by default.
     let rooms: Vec<Room> = match std::env::var("CENSUS_ROOMS").as_deref() {
         Ok("band") => afternoon_rooms().into(),
         Ok("printed") => printed_rooms().into(),
+        // Her shelf's room alone (phase 6a step 6's review).
+        Ok("shelf") => vec![at_afternoon(shelf_room())],
         _ => afternoon_rooms()
             .into_iter()
             .chain(printed_rooms())
@@ -2311,7 +2386,12 @@ fn day_census() {
     const DAY_SEEDS: [u64; 3] = [0, 1, 2];
     let dates = [date(2026, 10, 31), None];
     let mut looking_out = Vec::new();
+    // `CENSUS_ROOMS=shelf`: [`shelf_room`]'s day alone.
+    let shelf_only = std::env::var("CENSUS_ROOMS").as_deref() == Ok("shelf");
     for room in day_rooms() {
+        if shelf_only && room.name != shelf_room().name {
+            continue;
+        }
         let started = std::time::Instant::now();
         let room = &room;
         let runs: Vec<((u64, Option<chrono::NaiveDate>), Week)> = std::thread::scope(|scope| {
@@ -2417,11 +2497,26 @@ fn day_census() {
         let looks = whole.events.get("look out").copied().unwrap_or(0);
         let a_day = looks as f64 / days as f64;
         eprintln!("  looking out: {looks} in {days} game days, {a_day:.2} a day");
-        if room.owns.contains(&Furniture::Window) {
+        // Her gaze up at her plant on her shelf (phase 6a D8), which
+        // competes with her look out for her daydreams.
+        if room.shelf {
+            let gazes = whole.events.get("gaze up").copied().unwrap_or(0);
+            eprintln!(
+                "  gazing up: {gazes} in {days} game days, {:.2} a day",
+                gazes as f64 / days as f64
+            );
+        }
+        // Judged in the furnished home; [`shelf_room`]'s is printed (the
+        // resident's screen leaves her little else to do: 7.76 a day at
+        // step 6's review, the same with its shelf and plant as without).
+        if room.owns.contains(&Furniture::Window) && !room.shelf {
             looking_out.push((room.name, a_day));
         }
     }
-    assert!(!looking_out.is_empty(), "a day room has her window");
+    assert!(
+        shelf_only || !looking_out.is_empty(),
+        "a day room has her window"
+    );
     for (name, a_day) in looking_out {
         assert!(
             (2.0..=6.0).contains(&a_day),

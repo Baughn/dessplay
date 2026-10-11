@@ -1301,7 +1301,8 @@ impl Act {
                     | Use::Homework
                     | Use::Watch
                     | Use::Read
-                    | Use::LookOut => OnChat::LooksUp,
+                    | Use::LookOut
+                    | Use::GazeUp => OnChat::LooksUp,
                     // Chores: unpacking, crumpling text, a snack, petting
                     // the cat.
                     Use::Unpack | Use::Crumple | Use::Snack | Use::Pet => OnChat::Look,
@@ -1830,6 +1831,9 @@ fn use_duration(what: Use) -> (u64, u64) {
         Use::Crumple => (4_000, 6_000),
         // Her long daydream at the sill (phase 5c D6).
         Use::LookOut => (60_000, 180_000),
+        // Gazing up at her shelf (phase 6a D8): as long as her other
+        // still acts, so a walk there reads as worth it.
+        Use::GazeUp => (20_000, 45_000),
     }
 }
 
@@ -7824,7 +7828,8 @@ impl Osaka {
                 | Use::Read
                 | Use::Snack
                 | Use::Pet
-                | Use::LookOut,
+                | Use::LookOut
+                | Use::GazeUp,
             ) => match method {
                 // Making one first: the use of it is credited, as she
                 // gets to it (by the leftover reflex).
@@ -8046,9 +8051,15 @@ impl Osaka {
     }
 
     /// The piece she's lifting, while she is.
+    #[cfg(test)]
     pub fn lifting(&self) -> Option<Furniture> {
+        self.lifting_from().map(|(piece, _)| piece)
+    }
+
+    /// The piece she's lifting, while she is, and where she stands to.
+    pub fn lifting_from(&self) -> Option<(Furniture, (i32, i32))> {
         match self.act {
-            Act::Lift { lift, .. } => Some(lift.repair.piece),
+            Act::Lift { lift, .. } => Some((lift.repair.piece, (lift.x, lift.y))),
             _ => None,
         }
     }
@@ -8088,6 +8099,16 @@ impl Osaka {
             Act::Use {
                 seat, since, until, ..
             } => Some((seat, since, until)),
+            _ => None,
+        }
+    }
+
+    /// Using a piece: the body's length (`Act::Use`'s `whole`: as her
+    /// mood lingered over it, without a prelude or coda).
+    #[cfg(test)]
+    pub fn use_whole(&self) -> Option<u64> {
+        match self.act {
+            Act::Use { whole, .. } => Some(whole),
             _ => None,
         }
     }
@@ -8168,7 +8189,9 @@ impl Osaka {
     pub fn census_group(&self) -> &'static str {
         match self.act {
             // Gazing out of the window is spacing out, as gazing up is.
-            Act::Use { seat, .. } if seat.what == Use::LookOut => "spacing out",
+            Act::Use { seat, .. } if matches!(seat.what, Use::LookOut | Use::GazeUp) => {
+                "spacing out"
+            }
             Act::Use { .. } => "furniture",
             // Reading a strip she borrowed, sat on the floor; tearing it
             // off and sliding it back, at the text.
@@ -11890,19 +11913,8 @@ mod tests {
                 .any(|&(need, _)| need == Need::Restless);
             assert_eq!(eased, !exercise, "{what:?}");
         }
-        for what in [
-            Use::Lounge,
-            Use::Nap,
-            Use::Sleep,
-            Use::Homework,
-            Use::Watch,
-            Use::Unpack,
-            Use::Read,
-            Use::Snack,
-            Use::Pet,
-            Use::Crumple,
-            Use::LookOut,
-        ] {
+        // Every use (her gaze up at her shelf too: phase 6a D8).
+        for what in Use::ALL {
             let (mut osaka, _) = pressed(Need::Beauty);
             let before = osaka.needs.get(Need::Beauty);
             osaka.beauty_here = 1.0;
@@ -12280,6 +12292,19 @@ mod tests {
                         ),
                         (script::LOOK_OUT_LINE_MS, Face::Curious, None, |_, _| {
                             (Pose::SillLean, None)
+                        }),
+                    ],
+                ),
+                (
+                    Use::GazeUp,
+                    false,
+                    None,
+                    vec![
+                        (0, Face::Pleased, Some(Bubble::Hehe), |_, _| {
+                            (Pose::Stand, None)
+                        }),
+                        (script::GAZE_UP_PLEASED_MS, Face::Curious, None, |_, _| {
+                            (Pose::Gaze, None)
                         }),
                     ],
                 ),
@@ -22242,7 +22267,13 @@ mod tests {
         for what in Use::ALL {
             let lingers = matches!(
                 what,
-                Use::Lounge | Use::Nap | Use::Sleep | Use::Read | Use::LookOut | Use::Watch
+                Use::Lounge
+                    | Use::Nap
+                    | Use::Sleep
+                    | Use::Read
+                    | Use::LookOut
+                    | Use::GazeUp
+                    | Use::Watch
             );
             cases.push((format!("{what:?}"), Box::new(using(what, false)), lingers));
         }
