@@ -201,7 +201,9 @@ impl Key {
         };
         let bubble = self.say.and_then(|say| match say {
             Say::Bubble(bubble) => Some(bubble),
-            Say::Pitch => play.bought.map(|item| Bubble::Say(item.spec().pitch)),
+            Say::Pitch => play
+                .bought
+                .map(|item| Bubble::Say(pitch(item, play.wished))),
             Say::Riddle | Say::Answer => {
                 let (question, answer) = *RIDDLES.get(usize::from(play.drawn[0]))?;
                 Some(Bubble::Say(if say == Say::Riddle {
@@ -212,6 +214,16 @@ impl Key {
             }
         });
         (pose, self.face, bubble)
+    }
+}
+
+/// The shopping channel's pitch for `item`: its own, but for her shelf
+/// kit when it's what she `wished` for (phase 6a step 8: her gremlin
+/// wants up high, and it's for him).
+fn pitch(item: Furniture, wished: bool) -> &'static str {
+    match item.spec().kit {
+        Some(super::room::Kit::Shelf) if wished => SHELF_FOR_HIM,
+        Some(super::room::Kit::Shelf) | None => item.spec().pitch,
     }
 }
 
@@ -1270,6 +1282,9 @@ pub(super) struct Play {
     pub after: Option<Spliced>,
     pub drawn: [u8; 2],
     pub bought: Option<Furniture>,
+    /// What it sold her (`bought`) was what she wished for (phase 6a D9,
+    /// step 8): a wished kit's pitch says why ([`SHELF_FOR_HIM`]).
+    pub wished: bool,
     /// Drawn as every watch begins, from her decision's whims, whatever
     /// it plays (phase 5c D7: so what she does never hangs on whether a
     /// picture of the film came to show instead).
@@ -1286,6 +1301,7 @@ impl Play {
             after: None,
             drawn: [0; 2],
             bought: None,
+            wished: false,
             card: Programme::News,
         }
     }
@@ -2126,18 +2142,76 @@ pub(super) fn look_out_branch(sky: Sky, pick: u64) -> u8 {
 /// shortest use there is).
 pub(super) const GAZE_UP_PLEASED_MS: u64 = 2500;
 
+/// Gazing up at her gremlin turned round since she last saw him (phase
+/// 6a step 8, his tiny life): puzzled ("?") this long...
+pub(super) const GAZE_UP_PUZZLED_MS: u64 = 1000;
+/// ...then asking him, until this far in (inside the shortest use
+/// there is, as the pleased opening is)...
+pub(super) const GAZE_UP_NOTICED_MS: u64 = 3500;
+/// ...this.
+pub(super) const DID_YOU_MOVE: &str = line!("Did you move...?");
+
 /// Gazing up at a piece on her shelf (phase 6a D8): standing beside it,
 /// pleased ("hehe", as admiring what she's made), then gazing up at it,
-/// curious, in profile toward it (her seat faces it).
-const GAZE_UP: &[&[Key]] = &[&[
-    key(
-        Span::Ms(GAZE_UP_PLEASED_MS),
-        Posed::Still(Pose::Stand),
-        Face::Pleased,
-        bubble(Bubble::Hehe),
-    ),
-    key(Span::Rest, Posed::Still(Pose::Gaze), Face::Curious, None),
-]];
+/// curious, in profile toward it (her seat faces it). Branch 1, her
+/// gremlin turned round since she saw him (phase 6a step 8): puzzled
+/// ("?"), then "Did you move...?", before she gazes up at him.
+const GAZE_UP: &[&[Key]] = &[
+    &[
+        key(
+            Span::Ms(GAZE_UP_PLEASED_MS),
+            Posed::Still(Pose::Stand),
+            Face::Pleased,
+            bubble(Bubble::Hehe),
+        ),
+        key(Span::Rest, Posed::Still(Pose::Gaze), Face::Curious, None),
+    ],
+    &[
+        key(
+            Span::Ms(GAZE_UP_PUZZLED_MS),
+            Posed::Still(Pose::Stand),
+            Face::Curious,
+            bubble(Bubble::Huh),
+        ),
+        key(
+            Span::Ms(GAZE_UP_NOTICED_MS),
+            Posed::Still(Pose::Stand),
+            Face::Curious,
+            bubble(Bubble::Say(DID_YOU_MOVE)),
+        ),
+        key(Span::Rest, Posed::Still(Pose::Gaze), Face::Curious, None),
+    ],
+];
+
+/// The branch of [`GAZE_UP`] a gaze up plays: `noticed`, her gremlin
+/// turned round since she saw him (phase 6a step 8).
+pub(super) fn gaze_up_branch(noticed: bool) -> u8 {
+    u8::from(noticed)
+}
+
+/// How long the opening of [`GAZE_UP`]'s `branch` lasts, before she
+/// gazes up: what she says there (a line up at her gremlin) comes after
+/// it.
+pub(super) fn gaze_up_opening_ms(branch: u8) -> u64 {
+    ScriptId::GazeUp
+        .keys(branch)
+        .iter()
+        .filter_map(|key| match key.span {
+            Span::Ms(ms) => Some(ms),
+            Span::Upto(..) | Span::Rest => None,
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+/// The shopping channel's pitch for her shelf kit when it's what she
+/// wished for (phase 6a step 8: her gremlin wants up high), in place of
+/// the kit's own.
+pub(super) const SHELF_FOR_HIM: &str = line!("A shelf for the gremlin!");
+
+/// The flat-pack gag (phase 6a step 8): her shelf kit's unpack ends on
+/// this, where any other parcel's ends on "ooh".
+pub(super) const WHICH_WAY_UP: &str = line!("Which way's up?");
 
 /// Her glance up at the clock at bedtime...
 pub(super) const ITS_LATE: &str = line!("Oh! It's late!");
@@ -2255,20 +2329,46 @@ const CRUMPLE: &[&[Key]] = &[&[
     ),
 ]];
 
-const UNPACK: &[&[Key]] = &[&[
-    key(
-        Span::Upto(3, 5),
-        Posed::Bob(Pose::ToeTouch, USE_FRAME_MS),
-        Face::Happy,
-        None,
-    ),
-    key(
-        Span::Rest,
-        Posed::Bob(Pose::ToeTouch, USE_FRAME_MS),
-        Face::Happy,
-        bubble(Bubble::Ooh),
-    ),
-]];
+/// Opening a parcel, bent to it, happy: "ooh" at what's in it (branch
+/// 0); her shelf kit's flat pack, "Which way's up?" (branch 1: phase 6a
+/// step 8, the flat-pack gag; see [`unpack_branch`]).
+const UNPACK: &[&[Key]] = &[
+    &[
+        key(
+            Span::Upto(3, 5),
+            Posed::Bob(Pose::ToeTouch, USE_FRAME_MS),
+            Face::Happy,
+            None,
+        ),
+        key(
+            Span::Rest,
+            Posed::Bob(Pose::ToeTouch, USE_FRAME_MS),
+            Face::Happy,
+            bubble(Bubble::Ooh),
+        ),
+    ],
+    &[
+        key(
+            Span::Upto(3, 5),
+            Posed::Bob(Pose::ToeTouch, USE_FRAME_MS),
+            Face::Happy,
+            None,
+        ),
+        key(
+            Span::Rest,
+            Posed::Bob(Pose::ToeTouch, USE_FRAME_MS),
+            Face::Happy,
+            bubble(Bubble::Say(WHICH_WAY_UP)),
+        ),
+    ],
+];
+
+/// The branch of [`UNPACK`] opening a parcel of `item` plays: a kit's
+/// flat pack ends on "Which way's up?" (phase 6a step 8), anything else
+/// on "ooh".
+pub(super) fn unpack_branch(item: Furniture) -> u8 {
+    u8::from(item.is_kit())
+}
 
 /// The question (Curious), her answer at once (Happy), then pleased
 /// with it.

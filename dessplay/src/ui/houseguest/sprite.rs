@@ -17,6 +17,16 @@ pub(super) enum Facing {
     Right,
 }
 
+impl Facing {
+    /// The other way.
+    pub fn turned(self) -> Self {
+        match self {
+            Self::Left => Self::Right,
+            Self::Right => Self::Left,
+        }
+    }
+}
+
 /// A body pose.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) enum Pose {

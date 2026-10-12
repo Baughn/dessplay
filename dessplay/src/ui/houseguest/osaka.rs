@@ -10,7 +10,7 @@ use super::door::{DoorSpot, Set};
 use super::layer::Placed;
 use super::mind::{self, Beat, Bind, Ctx, Heading, Here, Lines, Loss, PoolId, RIDDLES, Whims};
 use super::rarity::{self, Pity, Rares};
-use super::room::{Furniture, MadeId, PieceRef, Seat, Use};
+use super::room::{Furniture, Height, MadeId, PieceRef, Seat, Use};
 use super::routine::{self, DayTime};
 use super::rules::{Grievance, Placement, Repair, TIE_CELLS, Trials};
 use super::scenes::{
@@ -48,6 +48,18 @@ pub(super) struct Chances {
     pub mine: Vec<Mine>,
     /// What the shopping channel would sell her, were she to watch now.
     pub advert: Option<Furniture>,
+    /// What she wishes the channel sold her first this frame (phase 6a
+    /// D9): the `advert` is it when it came from her wish, and its pitch
+    /// then says why she wants it (step 8: [`Play::wished`]).
+    pub wished: Option<Furniture>,
+    /// Her gremlin turned round on his shelf while she slept or was out
+    /// (phase 6a step 8, his tiny life), and she hasn't noticed yet: her
+    /// next gaze up at him opens on it ([`HomeEvent::Noticed`]).
+    pub turned: bool,
+    /// Something went up on her shelf today or yesterday (a stage, or a
+    /// piece set on it: phase 6a step 8): her gaze up there is likelier
+    /// ([`super::brain::Factor::Fresh`]).
+    pub fresh: bool,
     /// She has a home (to leave for work, and come back to).
     pub furnished: bool,
     /// The chat pane, when she's resident: people read there, so what
@@ -465,6 +477,9 @@ pub(super) enum HomeEvent {
     /// the rule on `row` of the table, on game day `day` (none: no
     /// routine reaches her): not again that day (door batch, D7).
     Grieved { row: usize, day: Option<u64> },
+    /// She noticed her gremlin turned round on his shelf, gazing up at
+    /// him (phase 6a step 8): it's noticed (see [`Chances::turned`]).
+    Noticed,
 }
 
 impl Chances {
@@ -571,6 +586,13 @@ pub(super) const PUT_UP_MS: u64 = 6000;
 /// The little hop as a stage of a high shelf goes up, or a piece onto
 /// one: one beat of her jumping jack's lifted frame.
 const HOP_MS: u64 = 400;
+/// Her line up at her gremlin comes this long after the gaze up's
+/// opening (phase 6a step 8), drawn from her decision's whims: within
+/// the shortest gaze up there is (20 s), as a rule.
+const GAZE_UP_LINE_GAP: (u64, u64) = (2_000, 8_000);
+/// A pleased beat ("hehe"): admiring what she made, or (phase 6a step
+/// 8) a stage of her shelf up, or a piece she set on it.
+const ADMIRE_MS: u64 = 1200;
 /// At a stage of her shelf, as she reaches up.
 const UP_IT_GOES: &str = line!("Up it goes...");
 /// Her homework on the floor over, the first time a visit (phase 5c D5).
@@ -730,9 +752,13 @@ enum Act {
         goal: u16,
         heaving: bool,
     },
-    /// Done pulling: a pleased moment.
+    /// Done pulling: a pleased moment. Also made into shape (a
+    /// makeshift piece), or (`home`) put up on her shelf: a stage of it,
+    /// or a piece set on it (phase 6a step 8), which the census counts
+    /// with her home's acts, not her mischief.
     Admire {
         until: u64,
+        home: bool,
     },
     /// A glance at something she lost (a beat she owes; see
     /// [`Osaka::owe`]).
@@ -2365,8 +2391,15 @@ pub(super) struct Osaka {
     looking_up: Option<LookUp>,
     /// The musings on the sky she has still to say leaning on her
     /// window's sill (phase 5c D6; see [`Osaka::sill_on`]): her look-out's
-    /// session, which goes with her act (see [`Osaka::set`]).
+    /// session, which goes with her act (see [`Osaka::set`]). Gazing up
+    /// at her gremlin, her one line up at him (phase 6a step 8).
     sill: Option<Session>,
+    /// When her gaze up at her gremlin turned round has shown her
+    /// noticing it ("?", then "Did you move...?"): noticed then
+    /// ([`HomeEvent::Noticed`]), not as it begins, so a gaze cut before
+    /// (a startle, a parcel, a resize) leaves his turning hers to notice.
+    /// Goes with her act (see [`Osaka::set`]). Phase 6a step 8.
+    notice_at: Option<u64>,
     /// What her act's script said under her look, still to say once
     /// what she's saying now is over, in turn (see
     /// [`Osaka::say_what_her_look_hid`]). Anything else she says, or
@@ -2523,8 +2556,8 @@ pub(super) struct Osaka {
     /// She stands back a moment from what she just put up or set down,
     /// for the frame to take it: set as that stand starts (the end of
     /// `Act::PutUp` and `Act::SetDown`), cleared as any act after it is
-    /// set ([`Osaka::set`]). Only then does she hop up to it
-    /// ([`Osaka::hop_if`]).
+    /// set ([`Osaka::set`]). Only then does she hop up to it, or admire
+    /// it ([`Osaka::pleased_with`]).
     standing_back: bool,
     /// The rules (rows of the table) she felt broken on sight and owes
     /// saying so, once she's quiet (door batch, D7), oldest first. Where,
@@ -2856,6 +2889,7 @@ impl Osaka {
             watch_until: 0,
             looking_up: None,
             sill: None,
+            notice_at: None,
             unsaid: Vec::new(),
             watch_x: x,
             heading: None,
@@ -3525,7 +3559,7 @@ impl Osaka {
             Act::Stand { until }
             | Act::Peer { until, .. }
             | Act::Dazed { until }
-            | Act::Admire { until }
+            | Act::Admire { until, .. }
             | Act::Glance { until }
             | Act::Swap { until, .. }
             | Act::Giggle { until, .. }
@@ -3598,7 +3632,13 @@ impl Osaka {
                     .unwrap_or(until);
                 // Her next musing at the sill.
                 let muse = self.sill.map_or(until, |s| s.next);
-                grid.min(key_end).min(grumble).min(muse).min(until)
+                // Her noticing her gremlin turned round, shown.
+                let notice = self.notice_at.unwrap_or(until);
+                grid.min(key_end)
+                    .min(grumble)
+                    .min(muse)
+                    .min(notice)
+                    .min(until)
             }
             Act::Poke { since, until } => {
                 (since + (now.saturating_sub(since) / POKE_FRAME_MS + 1) * POKE_FRAME_MS).min(until)
@@ -4366,6 +4406,36 @@ impl Osaka {
         self.night_play().is_some()
     }
 
+    /// Whether she can't see her home at `now`, and the game day that
+    /// spell of it began on (phase 6a step 8, her gremlin's tiny life:
+    /// [`super::Guest`] draws his turning for that day). Asleep for the
+    /// night with her lamp off (not while it's still on as she settles,
+    /// blinking): the day she first slept this night, so back in bed
+    /// after her midnight snack, a night errand or a new visit, it's the
+    /// same night's day, never the next one's as midnight passes. Or out
+    /// by a door of hers to school or to work, out of sight (whichever
+    /// door: her own, or one in space). Never the stage's way out (she's
+    /// back in a moment: `returning`, not `leaving`), an errand or a
+    /// goodbye (she waves, in sight: neither goes by `leave_by`). `None`
+    /// with no clock reaching her (unfed: a visit is no day).
+    pub(super) fn out_of_sight(&self, now: u64) -> Option<u64> {
+        let today = self.day(now)?.day;
+        if self.sleeping() {
+            if self.prop(now) != Some(Prop::LampOff) {
+                return None;
+            }
+            // Tonight's, armed as her first night act of it began; else
+            // (a night the stage gave her by day) today.
+            let night = self
+                .night
+                .filter(|night| night.morning >= today)
+                .map_or(today, |night| routine::split(night.first).0);
+            return Some(night);
+        }
+        let out = self.leaving.is_some() || self.shift == Some(Shift::Out);
+        (out && self.hidden(now)).then_some(today)
+    }
+
     /// Her next cutting boundary (tests).
     #[cfg(test)]
     pub(super) fn cut_at(&self) -> Option<u64> {
@@ -4669,6 +4739,7 @@ impl Osaka {
         self.standing_back = false;
         self.bob_held = None;
         self.sill = None;
+        self.notice_at = None;
         self.aloud = None;
         // Anything she's set at is chosen afresh, unless she's settling
         // into it (which counts itself, once set: see `settle_in`).
@@ -4902,6 +4973,13 @@ impl Osaka {
                         let_go: false,
                     });
                 }
+                // Her gremlin turned round, and her noticing it has shown
+                // (phase 6a step 8).
+                if self.notice_at.is_some_and(|due| due <= at) {
+                    self.notice_at = None;
+                    tracing::info!("houseguest: she notices her gremlin turned round");
+                    self.events.push(HomeEvent::Noticed);
+                }
                 if at < until
                     && let Some(session) = self.sill.filter(|s| s.next <= at)
                 {
@@ -4935,7 +5013,13 @@ impl Osaka {
                         // Progress: getting to use it starts afresh. She
                         // admires it, then goes to use it (see `decide`).
                         self.tries.retain(|&(made, _)| made != id);
-                        return self.set(Act::Admire { until: at + 1200 }, at);
+                        return self.set(
+                            Act::Admire {
+                                until: at + ADMIRE_MS,
+                                home: false,
+                            },
+                            at,
+                        );
                     }
                     self.decide(at, terrain, chances, rng);
                 } else {
@@ -5080,11 +5164,18 @@ impl Osaka {
                 }
                 self.act_due = self.first_due(at);
             }
-            Act::Stand { .. }
-            | Act::SpaceOut { .. }
-            | Act::Admire { .. }
-            | Act::Hop { .. }
-            | Act::PutBack { .. } => self.decide(at, terrain, chances, rng),
+            // Her little hop up to what she put up high: then pleased
+            // with it (phase 6a step 8).
+            Act::Hop { .. } => self.set(
+                Act::Admire {
+                    until: at + ADMIRE_MS,
+                    home: true,
+                },
+                at,
+            ),
+            Act::Stand { .. } | Act::SpaceOut { .. } | Act::Admire { .. } | Act::PutBack { .. } => {
+                self.decide(at, terrain, chances, rng)
+            }
             Act::Glance { .. } => {
                 // Paid (an interrupted glance stays owed).
                 if !self.owed.is_empty() {
@@ -5651,6 +5742,16 @@ impl Osaka {
                 } else if own == ScriptId::Homework {
                     // Where her homework nods off: her mood's (phase 5c M8).
                     self.stillness.nod_off.of(self.mood).branch()
+                } else if own == ScriptId::Unpack {
+                    // Her shelf kit's flat pack (phase 6a step 8).
+                    script::unpack_branch(seat.item)
+                } else if own == ScriptId::GazeUp {
+                    // Her gremlin turned round since she saw him (phase 6a
+                    // step 8): this opens on it, noticed once it has shown
+                    // (`notice_at`, set with the act below).
+                    let noticed =
+                        chances.turned && seat.piece == PieceRef::Real(Furniture::Gremlin);
+                    script::gaze_up_branch(noticed)
                 } else {
                     0
                 };
@@ -5662,12 +5763,22 @@ impl Osaka {
                 } else {
                     plain.card
                 };
+                // What she wished for (phase 6a step 8: its pitch says
+                // why she wants it).
+                let wished = bought.is_some() && bought == chances.wished;
+                if wished {
+                    tracing::debug!(
+                        ?bought,
+                        "houseguest: the channel sells her what she wished for"
+                    );
+                }
                 let play = Play {
                     own,
                     branch,
                     before,
                     after,
                     card,
+                    wished,
                     ..plain
                 };
                 Act::Use {
@@ -5798,7 +5909,9 @@ impl Osaka {
     /// the sky to come (as many as her decision's whim draws from her
     /// mood's [`Stillness::sill`]), the first a whim's gap after the line
     /// (see [`Osaka::sill_on`]). Not on a trial (a moment's look) or a
-    /// cued script other than her own.
+    /// cued script other than her own. Gazing up at her gremlin (phase 6a
+    /// step 8): her one line up at him, and, him turned round, when her
+    /// noticing it will have shown (`notice_at`).
     fn lean_on_the_sill(&mut self) {
         let Act::Use {
             seat, since, play, ..
@@ -5810,6 +5923,31 @@ impl Osaka {
         // (15 s in at the least), and `set` drops the session with its
         // act: this only says so.
         let trying = self.episode.is_some_and(|e| e.trying);
+        // Up at her gremlin on her shelf (phase 6a step 8): one line of
+        // [`mind::SHELF`] at most, a whim's gap after the opening.
+        if seat.what == Use::GazeUp
+            && play.own == ScriptId::GazeUp
+            && seat.piece == PieceRef::Real(Furniture::Gremlin)
+            && !trying
+        {
+            let opened = play.body_start(since) + script::gaze_up_opening_ms(play.branch);
+            // Him turned round: noticed once her "Did you move...?" has
+            // shown.
+            if play.branch == script::gaze_up_branch(true) {
+                self.notice_at = Some(opened);
+                self.act_due = self.act_due.min(opened);
+            }
+            let (lo, hi) = GAZE_UP_LINE_GAP;
+            let next = opened + lo + self.whims.below("shelf-gap", hi.saturating_sub(lo) + 1);
+            self.sill = Some(Session {
+                left: 1,
+                next,
+                said: 0,
+                whims: self.whims,
+            });
+            self.act_due = self.act_due.min(next);
+            return;
+        }
         if seat.what != Use::LookOut || play.own != ScriptId::LookOut || trying {
             return;
         }
@@ -5858,10 +5996,21 @@ impl Osaka {
                 ..session
             })
         } else {
-            let sky = self.sky_at(at);
             let whims = session.whims.series("sill", u64::from(session.said));
-            if let Some(line) = self.lines.pick(mind::sky_musings(sky), whims, at) {
-                tracing::debug!(said = session.said, line, "houseguest: muses at her sill");
+            // Up at her gremlin (phase 6a step 8), else at her sill.
+            let gazing_up = matches!(self.act, Act::Use { seat, .. } if seat.what == Use::GazeUp);
+            let pool = if gazing_up {
+                mind::SHELF
+            } else {
+                mind::sky_musings(self.sky_at(at))
+            };
+            if let Some(line) = self.lines.pick(pool, whims, at) {
+                tracing::debug!(
+                    said = session.said,
+                    line,
+                    gazing_up,
+                    "houseguest: muses at her sill, or up at her gremlin"
+                );
                 self.say(line, at);
             }
             (session.left > 1).then(|| Session {
@@ -7628,7 +7777,13 @@ impl Osaka {
 
     fn finish_pull(&mut self, at: u64) {
         self.credit_whole(Want::Pull, Via::Whole, at);
-        self.set(Act::Admire { until: at + 2000 }, at);
+        self.set(
+            Act::Admire {
+                until: at + 2000,
+                home: false,
+            },
+            at,
+        );
     }
 
     /// What she chose eases her needs by how much of it she did: settled
@@ -8265,8 +8420,14 @@ impl Osaka {
             | Act::Borrow { .. }
             | Act::Sneeze { .. }
             | Act::PutBack { .. }
-            | Act::Admire { .. } => "mischief",
-            Act::Lift { .. } | Act::SetDown { .. } | Act::PutUp { .. } | Act::Hop { .. } => "home",
+            | Act::Admire { home: false, .. } => "mischief",
+            // Pleased with what she put up (phase 6a step 8) is her
+            // home's, as putting it up is.
+            Act::Lift { .. }
+            | Act::SetDown { .. }
+            | Act::PutUp { .. }
+            | Act::Hop { .. }
+            | Act::Admire { home: true, .. } => "home",
             Act::Stand { .. }
             | Act::Look { .. }
             | Act::Glance { .. }
@@ -8927,7 +9088,8 @@ impl Osaka {
                     .iter()
                     .find(|(w, ..)| *w == want)
                     .map_or(1.0, |(_, _, bind)| making(bind, chances, ached));
-                let times = brain::factor(want, into_chat, day.as_ref(), date) * made;
+                let times =
+                    brain::factor(want, into_chat, day.as_ref(), date, chances.fresh) * made;
                 #[cfg(test)]
                 factored.borrow_mut().push((want, into_chat, times));
                 times * inertia
@@ -9637,7 +9799,7 @@ impl Osaka {
             self.credit = None;
         }
         self.serve(Want::PutUp, 1.0, Spot::Any, Via::PutUp, now);
-        self.hop_if(high, now);
+        self.pleased_with(if high { Height::High } else { Height::Low }, now);
     }
 
     /// The frame wouldn't take the stage of her shelf she put up (it
@@ -9665,19 +9827,40 @@ impl Osaka {
         self.owe(Loss::Heading, toward.unwrap_or((beside, put_up.y)));
     }
 
-    /// A little hop, arms up, if `high` (a stage of a high shelf up, or
-    /// a piece set up on one: phase 6a D7c), while she still stands back
-    /// from it (`standing_back`: whatever she has set about since is
-    /// hers to finish).
-    fn hop_if(&mut self, high: bool, now: u64) {
-        if high && self.standing_back {
-            tracing::debug!("houseguest: a little hop, up high");
-            self.set(
-                Act::Hop {
-                    until: now + HOP_MS,
-                },
-                now,
-            );
+    /// Pleased with what she just put up `height` high (a stage of her
+    /// shelf, or a piece set on one), while she still stands back from it
+    /// (`standing_back`: whatever she has set about since is hers to
+    /// finish): up high, a little hop, arms up (phase 6a D7c), and then
+    /// (its end: see `tick`) a pleased beat, "hehe" (step 8, the user's
+    /// extra 3); in her reach, the beat at once. Nothing for a piece set
+    /// on a floor. Whether a beat is hers.
+    fn pleased_with(&mut self, height: Height, now: u64) -> bool {
+        if !self.standing_back {
+            return false;
+        }
+        match height {
+            Height::Floor => false,
+            Height::Low => {
+                tracing::debug!("houseguest: pleased with what she put up");
+                self.set(
+                    Act::Admire {
+                        until: now + ADMIRE_MS,
+                        home: true,
+                    },
+                    now,
+                );
+                true
+            }
+            Height::High => {
+                tracing::debug!("houseguest: a little hop, up high");
+                self.set(
+                    Act::Hop {
+                        until: now + HOP_MS,
+                    },
+                    now,
+                );
+                true
+            }
         }
     }
 
@@ -9686,15 +9869,17 @@ impl Osaka {
     /// and nesting eases. Next she sits back down where she felt it was
     /// wrong: pleased ("There!"), or, with another spot she means to try
     /// it in, a moment's thought first (see [`Osaka::arrange_next`]).
-    /// Set up on a `high` shelf, she hops as it goes up (phase 6a D7c).
-    pub fn set_down_done(&mut self, piece: Furniture, high: bool, now: u64) {
+    /// Set up on a shelf (`height`), she's pleased with it: on a high
+    /// one after a little hop as it goes up (phase 6a D7c), on a low one
+    /// at once ("hehe": step 8), in place of her "There!".
+    pub fn set_down_done(&mut self, piece: Furniture, height: Height, now: u64) {
         let Some(mut ep) = self
             .episode
             .take_if(|e| e.pocket && e.repair.piece == piece)
         else {
             return;
         };
-        self.hop_if(high, now);
+        let pleased = self.pleased_with(height, now);
         tracing::info!(
             ?piece,
             repair = %ep.repair.label(),
@@ -9732,7 +9917,7 @@ impl Osaka {
                 trying: true,
                 ..ep
             });
-        } else {
+        } else if !pleased {
             self.say(THERE, now);
         }
     }
@@ -23188,7 +23373,7 @@ mod tests {
             },
             then: Use::Homework,
         };
-        let base = brain::factor(want, false, None, None);
+        let base = brain::factor(want, false, None, None, false);
         for (real, ached, times) in [
             (&[][..], false, MAKESHIFT_DRAW),
             (&[][..], true, MAKESHIFT_DRAW * MAKESHIFT_DRAW),
@@ -24077,5 +24262,362 @@ mod tests {
             Some(Bubble::Bang),
             "startled once it's said"
         );
+    }
+
+    /// Phase 6a step 8, the flat-pack gag (the user's extra 4): her shelf
+    /// kit's unpack ends on "Which way's up?" where any other parcel's
+    /// ends on "ooh"; the same up to its last key (bent to it, happy, no
+    /// bubble). Every kind of hers, the kit the only one.
+    #[test]
+    fn her_shelf_kit_unpacks_to_which_way_s_up() {
+        for item in Furniture::ALL {
+            let at = format!("{item:?}");
+            let seat = seat_for(Use::Unpack, item);
+            let (osaka, _) = started(seat, 1000, &Chances::default(), None, None, 3);
+            let (since, until, ..) = begun(&osaka);
+            // The shelf kit by name, not by the predicate the branch reads.
+            let want = if item == Furniture::ShelfKit {
+                Bubble::Say(script::WHICH_WAY_UP)
+            } else {
+                Bubble::Ooh
+            };
+            let (_, face, bubble) = osaka.appearance(until - 1);
+            assert_eq!(bubble, Some(want), "{at}: its last bubble");
+            assert_eq!(face, Face::Happy, "{at}");
+            assert_eq!(osaka.appearance(since).2, None, "{at}: none at first");
+        }
+    }
+
+    /// Something new up on her shelf draws her eye (phase 6a step 8, the
+    /// user's extra 2), where she weighs what to do: offered a gaze up
+    /// at her gremlin, its weight with her shelf fresh is
+    /// [`brain::BOOST`] times its weight without, and nothing else she
+    /// weighs moves (review of step 8: the factor was tested alone, and
+    /// `Chances.fresh` alone; nothing tested that one reaches the other).
+    #[test]
+    fn a_fresh_shelf_doubles_her_gaze_up_as_she_weighs_it() {
+        let terrain = floor_at(15);
+        let gaze_up = Want::Use(Use::GazeUp);
+        let weighed = |fresh: bool| {
+            let chances = Chances {
+                seats: vec![Seat {
+                    x: 20,
+                    y: 15,
+                    ..seat_for(Use::GazeUp, Furniture::Gremlin)
+                }],
+                fresh,
+                ..Chances::default()
+            };
+            let mut rng = Rng(5);
+            let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+            osaka.tick(100, None, &terrain, &chances, &mut rng);
+            let mut weights: Vec<(Want, bool, f64)> = osaka.factored.clone();
+            weights.sort_by(|a, b| format!("{a:?}").cmp(&format!("{b:?}")));
+            weights
+        };
+        let (stale, fresh) = (weighed(false), weighed(true));
+        assert_eq!(stale.len(), fresh.len());
+        let mut seen = false;
+        for (&(want, into_chat, was), &(now_want, now_chat, now)) in stale.iter().zip(&fresh) {
+            assert_eq!((want, into_chat), (now_want, now_chat));
+            if want == gaze_up {
+                seen = true;
+                assert_eq!(now, was * brain::BOOST, "{want:?}");
+            } else {
+                assert_eq!(now, was, "{want:?}");
+            }
+        }
+        assert!(seen, "never weighed: {stale:?}");
+        assert!(stale.len() > 1, "nothing else weighed: {stale:?}");
+    }
+
+    /// Phase 6a step 8, a pleased beat (the user's extra 3): the shopping
+    /// channel's pitch for her shelf kit when it's what she wished for
+    /// (her gremlin wants up high) is "A shelf for the gremlin!"; sold
+    /// unwished, the kit's own pitch; and a wish the channel didn't sell
+    /// (her bookshelf sold) leaves that piece's own.
+    #[test]
+    fn a_wished_kit_is_pitched_for_her_gremlin() {
+        use Furniture::{Bookshelf, ShelfKit};
+        let seat = seat_for(Use::Watch, Furniture::Tv);
+        for (advert, wished, line) in [
+            (ShelfKit, Some(ShelfKit), script::SHELF_FOR_HIM),
+            (ShelfKit, None, ShelfKit.spec().pitch),
+            (Bookshelf, Some(ShelfKit), Bookshelf.spec().pitch),
+            (Bookshelf, None, Bookshelf.spec().pitch),
+        ] {
+            let at = format!("{advert:?} wished {wished:?}");
+            let chances = Chances {
+                advert: Some(advert),
+                wished,
+                ..Chances::default()
+            };
+            let (osaka, _) = started(seat, 1000, &chances, None, None, 3);
+            let (since, until, _, play) = begun(&osaka);
+            assert_eq!(play.own, ScriptId::Shopping, "{at}");
+            assert_eq!(play.bought, Some(advert), "{at}");
+            // Its pitch plays from 2/5 to 3/5 of the body.
+            let (from, to) = (play.body_start(since), play.body_end(since, until));
+            let mid = from + (to - from) / 2;
+            assert_eq!(osaka.appearance(mid).2, Some(Bubble::Say(line)), "{at}");
+        }
+    }
+
+    /// Her at `item`'s gaze-up seat at `(20, 15)` from 0, `whims` drawn,
+    /// with `chances`: her, her stream, and the use's end.
+    fn gazing_up(item: Furniture, whims: u64, chances: &Chances) -> (Osaka, Rng, u64) {
+        let mut rng = Rng(3);
+        let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+        osaka.stillness = Stillness::NEUTRAL;
+        osaka.splice_rows = &[];
+        osaka.whims = Whims(whims);
+        osaka.credit = Some(Want::Use(Use::GazeUp));
+        let seat = Seat {
+            x: 20,
+            y: 15,
+            ..seat_for(Use::GazeUp, item)
+        };
+        osaka.start_job(Job::Use(seat), 0, chances, &mut rng);
+        let Act::Use { until, play, .. } = osaka.act else {
+            panic!("{item:?}: {:?}", osaka.act);
+        };
+        assert_eq!(play.own, ScriptId::GazeUp, "{item:?}");
+        (osaka, rng, until)
+    }
+
+    /// Phase 6a step 8, the gaze-up pool (the user's extra 2): gazing up
+    /// at her gremlin she says one of [`mind::SHELF`]'s lines at most,
+    /// after the opening ("hehe"; or, him turned round, "?" and "Did you
+    /// move...?"), still gazing up; over whims, a gaze with one and a
+    /// gaze with none both come. Her plant gets the opening alone.
+    #[test]
+    fn up_at_her_gremlin_she_says_a_line_at_most() {
+        let terrain = floor_at(15);
+        let mut counts = std::collections::BTreeSet::new();
+        for turned in [false, true] {
+            let chances = Chances {
+                turned,
+                ..Chances::default()
+            };
+            let opening = if turned {
+                script::GAZE_UP_NOTICED_MS
+            } else {
+                script::GAZE_UP_PLEASED_MS
+            };
+            for whims in 0..48u64 {
+                for item in [Furniture::Gremlin, Furniture::Plant] {
+                    let at = format!("{item:?} whims {whims} turned {turned}");
+                    let (mut osaka, mut rng, until) = gazing_up(item, whims, &chances);
+                    let mut now = 0;
+                    while now + 1 < until {
+                        now = osaka.due().min(until - 1);
+                        osaka.tick(now, None, &terrain, &chances, &mut rng);
+                        assert!(
+                            matches!(osaka.act, Act::Use { seat, .. } if seat.what == Use::GazeUp),
+                            "{at}: {now}: {:?}",
+                            osaka.act
+                        );
+                    }
+                    let lines: Vec<(&str, u64)> = osaka
+                        .said_lines()
+                        .iter()
+                        .filter(|(pool, ..)| *pool == mind::PoolId::Shelf)
+                        .map(|&(_, line, when)| (line, when))
+                        .collect();
+                    assert!(lines.len() <= 1, "{at}: {lines:?}");
+                    for &(line, when) in &lines {
+                        assert!(mind::SHELF.lines.contains(&line), "{at}: {line}");
+                        assert!(when >= opening, "{at}: {line} at {when}, in its opening");
+                        assert_eq!(osaka.appearance(when).0, Pose::Gaze, "{at}");
+                    }
+                    if item == Furniture::Plant {
+                        assert!(lines.is_empty(), "{at}: {lines:?}");
+                    } else {
+                        counts.insert(lines.len());
+                    }
+                }
+            }
+        }
+        assert_eq!(counts.into_iter().collect::<Vec<_>>(), [0, 1]);
+    }
+
+    /// Phase 6a step 8, his tiny life (the user's extra 1): her gremlin
+    /// turned round since she saw him, her gaze up at him opens puzzled
+    /// ("?"), then "Did you move...?", curious, standing, before she
+    /// gazes up; and she has noticed ([`HomeEvent::Noticed`], once) as
+    /// that has shown, not as it begins (review of step 8). Unturned, or
+    /// at her plant, the usual opening ("hehe"), nothing noticed.
+    #[test]
+    fn she_notices_her_gremlin_turned_round() {
+        let terrain = floor_at(15);
+        for (item, turned) in [
+            (Furniture::Gremlin, true),
+            (Furniture::Gremlin, false),
+            (Furniture::Plant, true),
+        ] {
+            let at = format!("{item:?} turned {turned}");
+            let chances = Chances {
+                turned,
+                ..Chances::default()
+            };
+            let (mut osaka, mut rng, until) = gazing_up(item, 5, &chances);
+            let noticed_at = |osaka: &mut Osaka| -> usize {
+                osaka
+                    .take_events()
+                    .into_iter()
+                    .filter(|e| matches!(e, HomeEvent::Noticed))
+                    .count()
+            };
+            assert_eq!(noticed_at(&mut osaka), 0, "{at}: as it begins");
+            let mut noticed = Vec::new();
+            let mut now = 0;
+            while now + 1 < until {
+                now = osaka.due().min(until - 1);
+                osaka.tick(now, None, &terrain, &chances, &mut rng);
+                noticed.extend(std::iter::repeat_n(now, noticed_at(&mut osaka)));
+            }
+            if item == Furniture::Gremlin && turned {
+                let puzzled = script::GAZE_UP_PUZZLED_MS;
+                let asked = script::GAZE_UP_NOTICED_MS;
+                for t in [0, puzzled - 1] {
+                    assert_eq!(
+                        osaka.appearance(t),
+                        (Pose::Stand, Face::Curious, Some(Bubble::Huh)),
+                        "{at}: {t}"
+                    );
+                }
+                for t in [puzzled, asked - 1] {
+                    assert_eq!(
+                        osaka.appearance(t),
+                        (
+                            Pose::Stand,
+                            Face::Curious,
+                            Some(Bubble::Say(script::DID_YOU_MOVE))
+                        ),
+                        "{at}: {t}"
+                    );
+                }
+                assert_eq!(osaka.appearance(asked).0, Pose::Gaze, "{at}");
+                assert_eq!(noticed, [asked], "{at}: noticed as it has shown");
+            } else {
+                assert!(noticed.is_empty(), "{at}: {noticed:?}");
+                assert_eq!(
+                    osaka.appearance(0),
+                    (Pose::Stand, Face::Pleased, Some(Bubble::Hehe)),
+                    "{at}"
+                );
+            }
+        }
+    }
+
+    /// Her gaze up at her gremlin turned round cut before her noticing it
+    /// has shown (a startle, a parcel, a resize: anything that sets her
+    /// act), his turning is still hers to notice: no
+    /// [`HomeEvent::Noticed`], then or after (review of step 8: it was
+    /// pushed as the gaze began). Cut while she's puzzled and while she
+    /// asks.
+    #[test]
+    fn a_gaze_up_cut_before_she_asks_notices_nothing() {
+        let terrain = floor_at(15);
+        let chances = Chances {
+            turned: true,
+            ..Chances::default()
+        };
+        for cut in [
+            script::GAZE_UP_PUZZLED_MS - 1,
+            script::GAZE_UP_NOTICED_MS - 1,
+        ] {
+            let (mut osaka, mut rng, _) = gazing_up(Furniture::Gremlin, 5, &chances);
+            let mut now = 0;
+            while osaka.due() < cut {
+                now = osaka.due();
+                osaka.tick(now, None, &terrain, &chances, &mut rng);
+            }
+            assert!(
+                matches!(osaka.act, Act::Use { seat, .. } if seat.what == Use::GazeUp),
+                "{cut}: {:?}",
+                osaka.act
+            );
+            osaka.set(Act::Stand { until: cut + 1_000 }, cut);
+            now = now.max(cut);
+            while now < cut + 10_000 {
+                now = osaka.due().max(now + 1);
+                osaka.tick(now, None, &terrain, &chances, &mut rng);
+            }
+            let noticed = osaka
+                .take_events()
+                .into_iter()
+                .filter(|e| matches!(e, HomeEvent::Noticed))
+                .count();
+            assert_eq!(noticed, 0, "cut at {cut}");
+        }
+    }
+
+    /// Phase 6a step 8, a pleased beat (the user's extra 3): a stage of
+    /// her shelf taken by the frame, she admires it ("hehe", 1.2 s):
+    /// on a low shelf at once, on a high one after her hop; then she
+    /// decides afresh. Not if she's set about something else since
+    /// (her post-act stand gone: no hop, no beat). The census counts the
+    /// beat with her home's acts; a pull's, as ever, with her mischief.
+    #[test]
+    fn she_is_pleased_with_each_stage_she_puts_up() {
+        let terrain = floor_at(15);
+        for high in [false, true] {
+            for moved_on in [false, true] {
+                let at = format!("high {high} moved on {moved_on}");
+                let mut rng = Rng(5);
+                let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+                let put_up = PutUp {
+                    nook: super::super::room::Nook::Users,
+                    to: 1,
+                    x: 20,
+                    y: 15,
+                    side: Side::Left,
+                };
+                let chances = Chances {
+                    put_up: Some(put_up),
+                    ..Chances::default()
+                };
+                osaka.credit = Some(Want::PutUp);
+                osaka.start_job(Job::PutUp(put_up), 0, &chances, &mut rng);
+                assert_eq!(osaka.act_name(), "PutUp", "{at}");
+                let end = PUT_UP_MS;
+                osaka.tick(end, None, &terrain, &chances, &mut rng);
+                assert_eq!(osaka.act_name(), "Stand", "{at}: standing back");
+                let now = end + 100;
+                if moved_on {
+                    osaka.place(20, 15, now);
+                }
+                osaka.put_up_done(high, now);
+                if moved_on {
+                    assert_ne!(osaka.act_name(), "Admire", "{at}");
+                    assert_ne!(osaka.act_name(), "Hop", "{at}");
+                    continue;
+                }
+                let admired = if high {
+                    assert_eq!(osaka.act_name(), "Hop", "{at}");
+                    let hop_end = now + HOP_MS;
+                    osaka.tick(hop_end, None, &terrain, &chances, &mut rng);
+                    hop_end
+                } else {
+                    now
+                };
+                assert_eq!(osaka.act_name(), "Admire", "{at}");
+                // Her home's, as the census counts it, not her mischief
+                // (review of step 8), after a hop too.
+                assert_eq!(osaka.census_group(), "home", "{at}");
+                assert_eq!(
+                    osaka.appearance(admired),
+                    (Pose::Stand, Face::Pleased, Some(Bubble::Hehe)),
+                    "{at}"
+                );
+                assert_eq!(osaka.due(), admired + ADMIRE_MS, "{at}: a beat");
+            }
+        }
+        let mut rng = Rng(5);
+        let mut osaka = Osaka::standing_at(20, 15, 0, &mut rng);
+        osaka.finish_pull(100);
+        assert_eq!(osaka.act_name(), "Admire");
+        assert_eq!(osaka.census_group(), "mischief", "a pull's");
     }
 }

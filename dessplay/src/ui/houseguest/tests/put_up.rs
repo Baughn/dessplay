@@ -10,7 +10,8 @@ use super::*;
 use crate::ui::houseguest::brain::Mood;
 use crate::ui::houseguest::ledger::{Dated, Paced};
 use crate::ui::houseguest::osaka::{Bucket, HomeEvent};
-use crate::ui::houseguest::structures::{Shelf, Structure};
+use crate::ui::houseguest::sprite::{Face, Pose};
+use crate::ui::houseguest::structures::{self, Shelf, Structure};
 
 /// The stage of her shelf she's offered to put up this frame (its pane
 /// and what it brings it to), if she is.
@@ -579,6 +580,93 @@ fn she_hops_up_to_a_high_shelf() {
                 assert!(hopped.is_empty(), "{at}: hopped {hopped:?}");
             }
             assert_eq!(built(&guest), Some(1), "{at}");
+        }
+    }
+}
+
+/// Pleased with each stage (phase 6a step 8, the user's extra 3): as the
+/// frame takes a stage of her shelf she admires it ("hehe", standing,
+/// pleased), on a high shelf after her hop, on a low one at once; both
+/// stages; and something new is up there today ([`Shelf::fresh`]: her
+/// gaze up likelier). The stage's shelf: high on [`rooms`] at 100×30, low
+/// on three panes 10 rows tall. Both modes.
+#[test]
+fn she_is_pleased_with_each_stage_of_her_shelf() {
+    let frames = [
+        ("high", rooms_frame(100, 30)),
+        ("low", super::shelf::low_rooms()),
+    ];
+    for (name, (real, view)) in frames {
+        for graphics in [false, true] {
+            let mut guest = Guest::new(7);
+            if graphics {
+                guest.set_picker(kitty());
+            }
+            guest.cue(Scene::PutUp);
+            paint(&mut guest, &real, &view, 0);
+            let mut now = 0;
+            for stage in 1..=structures::SHELF_STAGES {
+                let at = format!("{name} graphics={graphics} stage {stage}");
+                if stage > 1 {
+                    // The next game day's, as far as her pace goes.
+                    guest.ledger.paced = None;
+                    let State::Visiting(visit) = &mut guest.state else {
+                        panic!("{at}: visiting");
+                    };
+                    visit.osaka.offer_only = Some((brain::Want::PutUp, "put-up/stage"));
+                }
+                let from = now;
+                while built(&guest) != Some(stage) {
+                    assert!(now < from + 60_000, "{at}: never put it up");
+                    shell_step(&mut guest, &real, &view, &mut now, true);
+                }
+                let up = now;
+                let osaka = &visit_of(&guest).osaka;
+                let today = Dated::of(osaka.day(up).map(|d| d.day), guest.ledger.visits);
+                assert_eq!(
+                    shelf_of(&guest).and_then(|s| s.fresh),
+                    Some(today),
+                    "{at}: fresh"
+                );
+                // Each frame for 3 s: her hop, then her pleased beat.
+                let (mut hopped, mut admired) = (Vec::new(), Vec::new());
+                while now < up + 3_000 {
+                    let osaka = &visit_of(&guest).osaka;
+                    match osaka.act_name().as_str() {
+                        "Hop" => hopped.push(now),
+                        "Admire" => {
+                            assert_eq!(
+                                osaka.appearance(now),
+                                (Pose::Stand, Face::Pleased, Some(osaka::Bubble::Hehe)),
+                                "{at}: {now}"
+                            );
+                            admired.push(now);
+                        }
+                        _ => {}
+                    }
+                    shell_step(&mut guest, &real, &view, &mut now, true);
+                }
+                let first = admired
+                    .first()
+                    .copied()
+                    .unwrap_or_else(|| panic!("{at}: never admired it (hopped {hopped:?})"));
+                if name == "high" {
+                    let last = hopped
+                        .last()
+                        .copied()
+                        .unwrap_or_else(|| panic!("{at}: no hop"));
+                    assert!(
+                        last < first,
+                        "{at}: hop {hopped:?}, then admired {admired:?}"
+                    );
+                    assert!(first < up + 1_000, "{at}: {admired:?}");
+                } else {
+                    assert!(hopped.is_empty(), "{at}: hopped {hopped:?}");
+                    assert_eq!(first, up, "{at}: admired at once");
+                }
+                let last = admired.last().copied().unwrap_or(first);
+                assert!(last < first + 1_500, "{at}: a beat, not more: {admired:?}");
+            }
         }
     }
 }

@@ -861,6 +861,7 @@ fn shelve(
             anchor: room::Anchor { side, offset },
             rise,
             built: structures::SHELF_STAGES,
+            fresh: None,
         }));
     for &(plant, along) in up {
         let item = if plant {
@@ -6213,6 +6214,7 @@ fn the_kit_is_sold_last_and_at_the_usual_cadence() {
         },
         rise: 7,
         built: 0,
+        fresh: None,
     }));
     assert!(ledger.home.owns(ShelfKit));
     assert_eq!(advert(&ledger, false, &fun, None, &room), None, "up");
@@ -14663,7 +14665,7 @@ fn every_other_spot_gone_she_keeps_it_where_it_is() {
             osaka.tick(now, None, &terrain, &judged(&osaka), &mut rng);
             if !set && osaka.episode().is_some_and(|e| e.set_down) {
                 // The frame takes it.
-                osaka.set_down_done(Furniture::Sofa, false, now);
+                osaka.set_down_done(Furniture::Sofa, room::Height::Floor, now);
                 set = true;
             }
             if set && osaka.episode().is_none() {

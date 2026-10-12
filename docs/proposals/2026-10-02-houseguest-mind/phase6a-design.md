@@ -457,7 +457,8 @@ pub(super) fn read_ground(buf: &mut Buffer, home: &Home, plan: Plan, keep_off: &
   past the piece's, still under the run, facing it (`Pose::Gaze` is in profile); at `stood`; offered only while she
   stands on the shelf's room floor (no climb for it). `seats_of`'s `restful` check applies.
 - `Want::Use(Use::GazeUp)`: `row(5.0, [(Daydreams, 0.4)])` (under `Gaze`'s 6/0.5, brain.rs:716); step 8 adds the
-  freshness factor. Its script (script.rs; `LookOut`'s arms are at 469, 500, 539, 584, 619, 643, 685, 724, 758, 845,
+  freshness factor. **Amended by step 8's retune** (the user's sixth round): base 8, above `Gaze`'s 6, with
+  `Factor::Fresh(BOOST)`; measured, not argued (see Step 8, "As built": base 5 gave her 0.05 gazes up a game day). Its script (script.rs; `LookOut`'s arms are at 469, 500, 539, 584, 619, 643, 685, 724, 758, 845,
   1458, 2479, 2517, 2558, the or-pattern ones to read): a prelude of `Act::Admire`'s look (`Face::Pleased`, `"hehe"`,
   2–3 s), then `Posed::Still(Pose::Gaze)`, `Face::Curious`; 20–45 s (osaka.rs:1787 table), so 5c's settling-in applies.
   A use of her things, it eases *beauty* in a pretty room as every use does (osaka.rs:7475-7583).
@@ -879,7 +880,8 @@ margin, never a spot. mod.rs `spots(piece, what, runs)` is the one list of a use
 from it; `seats_her` judges a seat against it). `room_for` never asks GazeUp (not `asks_room`): its arm returns
 `true`. **The floor gate is at choice time**, in `mind::place` (`platform_at(seat) == Some(c.here)`), not in
 the frame's seats: `stage::direct` picks the seat before it places her. `Want::Use(GazeUp)` appended last to
-`Want::ALL` (31), `row(5.0, [(Daydreams, 0.4)])`, no factors (not a fun source, not in the chat). `ScriptId::GazeUp`
+`Want::ALL` (31), `row(5.0, [(Daydreams, 0.4)])`, no factors (not a fun source, not in the chat; step 8 retuned it
+to base 8 with `Factor::Fresh`: see Step 8). `ScriptId::GazeUp`
 (`ALL` 28): `Still(Pose::Stand)`, `Face::Pleased`, `Bubble::Hehe` for `GAZE_UP_PLEASED_MS` (2500), then
 `Still(Pose::Gaze)`, `Face::Curious`, the rest; `Common`, `Chat::Look`, `OnChat::LooksUp`. `use_duration` 20–45 s.
 No settling arm (**kept by the user, 2026-10-11**: D8's "5c's settling-in applies" is the linger alone; a GazeUp → Sit chain as Gaze's would grow `settle_chains_ms` and the band's guard).
@@ -971,6 +973,72 @@ Each reuses what's there; each has one test, red first.
 
 **CHANGELOG.** "Added: Osaka's gremlin has a life of his own." **Docs.** design.md *Using her furniture*, *Getting
 furniture* lines.
+**As built (2026-10-12).** (1) `brain::gremlin_turns(master, day)` (a pure hash, `TURN_SALT`, one day in
+`TURNS_ONE_IN` = 20, pinned) drawn by `Guest::gremlin_turns(now)` once a game day (`Guest.gremlin_drawn`, per process;
+fed only): from `Guest::advance` on the tick she falls asleep for the night (`Guest.asleep`, the last tick's: an
+edge, so midnight passing in her sleep draws nothing; review of the build, red as first built), and at the top of
+`out_by_door` (both of its callers). It turns an unboxed gremlin on a shelf strip (`Facing::turned`), marks the record unsaved and sets
+`Guest.turned`, which reaches her as `Chances.turned`; her gaze up at him (seat on `Real(Gremlin)`) then plays
+`GAZE_UP`'s branch 1 (`script::gaze_up_branch`: `"?"` to `GAZE_UP_PUZZLED_MS` 1000, `DID_YOU_MOVE` to
+`GAZE_UP_NOTICED_MS` 3500, inside the shortest use) and pushes `HomeEvent::Noticed`, which `record` (new `turned`
+argument) clears. A restart may draw the day again (a second turn, still hers to notice). Errands and goodbyes are
+not "out by her door" here: she waves, in sight. (2) `PoolId::Shelf` (id 10, unbudgeted; `ALL` 12) and
+`mind::SHELF` (n 1, d 2: one gaze in two), said through the sill's `Session` (`Osaka.sill`, `left: 1`) from
+`lean_on_the_sill` for a gaze up at the gremlin, `GAZE_UP_LINE_GAP` (2–8 s, whims) after its branch's opening
+(`script::gaze_up_opening_ms`); `sill_on` picks `SHELF` while the act is a gaze up. `Shelf.fresh: Option<Dated>`
+(serde default, skipped when `None`, read leniently by `fresh_or_none`: garbage keeps the shelf), set by
+`Home::put_up(nook, to, today)` (the stage's commit) and `Home::freshen(strip, today)` (`furnish`'s set-down onto a
+shelf; `furnish` takes `today`); `Shelf::fresh_on(today)` (`Dated::within_a_day_of`: the day or the next, a day and a
+visit never meet) → `Chances.fresh` → `brain::factor(.., fresh)`'s new `Factor::Fresh(BOOST)` on GazeUp's row.
+**Retune (the user's sixth round):** GazeUp base 5 → 8 (`day_census`'s shelf room: 1.19 a game day, 50 in 42; base
+5 0.05, base 10 2.83, base 15 5.48; look-outs 7.76 a day at 5 and 8); `day_census` now asserts 0.7–1.5 there. Fed
+afternoon (line art, 17 min, 20×4) on the shelf room: lazy 6.5 %, ordinary 11.6–12.3 %, dreamy 11.0–11.5 %,
+industrious 14.7–16.2 %, set-offs 0.57–1.41 a minute: every mood inside its band; `visit_census` there: 3 visits in 16
+gaze up (was 1). (3) `room::Height { Floor, Low, High }` and `Home::height(strip)` (replacing `up_high`);
+`Osaka::pleased_with(height, now)` (replacing `hop_if`): only while `standing_back`; low → `Act::Admire`
+(`ADMIRE_MS` 1200) at once, high → `Act::Hop`, whose end now sets `Act::Admire` (Hop is only ever this). Both
+`put_up_done` and `set_down_done(piece, height, now)` call it; a set-down's "There!" is said only when no beat is
+(on a floor, or moved on): both at once would hide the "hehe". `Chances.wished` (this frame's wish) → `Play.wished`
+(set at a use's start when `bought == wished`) → `script::pitch`: a wished shelf kit pitches `SHELF_FOR_HIM`.
+(4) `UNPACK` branch 1 (`script::unpack_branch(item)`: kits) ends on `WHICH_WAY_UP`.
+**Tests** (red first, each for its stated reason): osaka.rs `her_shelf_kit_unpacks_to_which_way_s_up`,
+`a_wished_kit_is_pitched_for_her_gremlin`, `up_at_her_gremlin_she_says_a_line_at_most`,
+`she_notices_her_gremlin_turned_round`, `she_is_pleased_with_each_stage_she_puts_up`; put_up.rs
+`she_is_pleased_with_each_stage_of_her_shelf` (both stages, high and low, fresh); shelf.rs's two set-down tests
+(the beat, fresh); gaze_up.rs `something_new_up_there_draws_her_eye_for_a_day_or_two`,
+`she_notices_her_gremlin_turned_round_on_her_shelf`; gremlin.rs `her_gremlin_turns_round_while_she_sleeps_or_is_out`
+(asleep on a school night, out to school; a turning and a still home each), `his_turning_is_drawn_as_she_goes_not_at_midnight`
+(asleep through midnight, turned only as she goes out to school), `a_rule_felt_last_visit_is_no_wish_this_one`
+(`Chances.wished`). Guards: brain.rs `the_gremlin_turns_by_the_home_and_day`, the fresh leg of
+`a_boost_raises_its_want_only_in_its_time`; room.rs `what_goes_up_on_her_shelf_is_fresh`; ledger.rs's fresh round
+trip and lenient read. Goldens and terrain snapshots byte-identical.
+**Review fixes (2026-10-12).** *When and for which day (the class):* the asleep edge and `out_by_door`'s call are
+replaced by one predicate, `Osaka::out_of_sight(now) -> Option<u64>`: asleep for the night **with her lamp off**
+(`prop == LampOff`: not during `LAMP_ON_MS`, blinking, in sight), for the day **her night began** (`Night.first`'s
+day; a stale or missing night: today), so back in bed after her midnight snack, a night errand or a new visit it's
+the same night's day; or out by a door of hers to **school or work** (`leaving` or `Shift::Out`, and `hidden`),
+today. Errands, goodbyes and the stage's way out are not it. `Guest::unseen_turns(now)` draws for that day each tick
+(a level check, safe now the day is the spell's), before `gone_out` in `advance` and at the top of `out_by_door`
+(the paint's caller); `Guest.asleep` is gone; `Guest::gremlin_turns(day)` never draws a day before one drawn
+(`gremlin_drawn >= day`) and turns him only on a **finished** shelf of hers (`home.shelf(nook)` finished), out of his
+box. *Noticed once shown:* `Osaka.notice_at` (the opening's end, set in `lean_on_the_sill` for the noticed branch,
+woken for, cleared by `set`) pushes `HomeEvent::Noticed`, not the gaze's start. *Handled:* `record` clears `turned` on
+a `SetDown` of the gremlin. *Census:* `Act::Admire { until, home }`; the shelf's beats (`pleased_with`, the hop's end)
+are `home: true` and count as "home"; a pull's and a made piece's stay "mischief" (goldens record `act_name`, so
+unchanged). *Accepted:* in ASCII his turn is invisible (`oo`/`ww` mirror to themselves; approved art, not changed;
+an open question for the user). CHANGELOG entry moved under a new `## 2026-10-12`. *Tests:* gremlin.rs rewritten
+around `Going` (Asleep, School, **Work**) and `Stands` (Up, Floor, HalfUp, Boxed), with an oracle for "gone" of the
+test's own: `her_gremlin_turns_round_while_she_sleeps_or_is_out` (work added; written at once checked through
+`ledger_to_save`, every earlier frame's taken), `he_turns_only_up_on_her_finished_shelf`,
+`his_turning_is_drawn_as_she_goes_not_at_midnight` (a fridge and a snack night, both modes),
+`he_turns_once_a_day_however_often_she_goes` (school, home, asleep), `he_never_turns_at_a_goodbye_or_unfed`;
+osaka.rs `a_gaze_up_cut_before_she_asks_notices_nothing`, `a_fresh_shelf_doubles_her_gaze_up_as_she_weighs_it`
+(the `factored` record), `she_notices_her_gremlin_turned_round` (noticed at the opening's end),
+`she_is_pleased_with_each_stage_she_puts_up` (census group), the kit test's oracle by name; gaze_up.rs's noticed test
+turns him through `Guest::gremlin_turns` (a round trip); shelf.rs's low-shelf test reuses `admires_within`; brain.rs
+`her_gaze_up_weighs_as_measured` (a pin; the ignored `day_census` is the measure); ledger.rs
+`a_day_of_hers_is_within_a_day_of_the_same_kind` and the new property `a_fresh_shelf_reads_back_as_written`
+(existing strategies untouched). Red: each against its mutant (scratchpad `s8fix/red.log`). Goldens byte-identical.
 
 ### Step 9. Census, deep runs, review shots, docs (~450 lines)
 

@@ -17,6 +17,7 @@ use super::Rng;
 use super::cells::{untouchable, width};
 use super::door::Keep;
 use super::graphics::strokes;
+use super::ledger::Dated;
 use super::sprite::{self, Facing};
 use super::structures::{
     self, Drawn, EDGE, HIGH_RISE, KeepOff, LOW_ABOVE, LOW_RISE, MARGIN, SHELF_STAGES, SHELF_WIDTH,
@@ -939,6 +940,16 @@ pub(super) struct Prop {
     /// She has set it where it stands (a delivery hasn't: it stands
     /// where it came in, until she moves it).
     pub settled: bool,
+}
+
+/// How high a piece of hers stands (phase 6a D7c, step 8): down on a
+/// floor; up on a low shelf, in her reach (she reaches up, arms up); or
+/// up on a high one (a little hop as it goes up).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Height {
+    Floor,
+    Low,
+    High,
 }
 
 /// Where along its strip a piece is: standing on the floor, or hung on
@@ -2242,24 +2253,46 @@ impl Home {
         true
     }
 
-    /// Whether what's set down on `strip` is up high: on a high shelf
-    /// of hers ([`Shelf::high`]), which she hops up to (phase 6a D7c).
-    /// Never a floor, nor a low shelf (in her reach).
-    pub fn up_high(&self, strip: Strip) -> bool {
+    /// How high what's set down on `strip` is: up on a high shelf of
+    /// hers ([`Shelf::high`]), which she hops up to (phase 6a D7c); on a
+    /// low one, in her reach; else down on a floor (a shelf strip with
+    /// no shelf of hers on it has nothing up there).
+    pub fn height(&self, strip: Strip) -> Height {
         match strip {
-            Strip::Shelf(nook) => self.shelf(nook).is_some_and(|shelf| shelf.high()),
-            Strip::Bottom(_) => false,
+            Strip::Shelf(nook) => match self.shelf(nook) {
+                Some(shelf) if shelf.high() => Height::High,
+                Some(_) => Height::Low,
+                None => Height::Floor,
+            },
+            Strip::Bottom(_) => Height::Floor,
+        }
+    }
+
+    /// Something new up on the shelf `strip` is, `today` (phase 6a step
+    /// 8: a piece she set on it; a stage up is [`Home::put_up`]'s): her
+    /// gaze up there likelier that day and the next. Nothing on a floor.
+    pub fn freshen(&mut self, strip: Strip, today: Dated) {
+        let Strip::Shelf(nook) = strip else {
+            return;
+        };
+        for structure in &mut self.structures {
+            let Structure::Shelf(shelf) = structure;
+            if shelf.nook == nook {
+                shelf.fresh = Some(today);
+            }
         }
     }
 
     /// Stage `to` of her shelf on `nook`'s wall up (phase 6a D7c): its
     /// next, and no further than finished. False, and nothing changes,
     /// unless she has a shelf there with just the stage before it up.
-    pub fn put_up(&mut self, nook: Nook, to: u8) -> bool {
+    pub fn put_up(&mut self, nook: Nook, to: u8, today: Dated) -> bool {
         for structure in &mut self.structures {
             let Structure::Shelf(shelf) = structure;
             if shelf.nook == nook && shelf.built.checked_add(1) == Some(to) && to <= SHELF_STAGES {
                 shelf.built = to;
+                // Something new up there (phase 6a step 8).
+                shelf.fresh = Some(today);
                 return true;
             }
         }
@@ -3835,6 +3868,7 @@ impl Wall {
                     anchor,
                     rise,
                     built: 0,
+                    fresh: None,
                 };
                 // Its block clear of what hangs: with today's hung kinds
                 // (the poster and the clock fill both of its rows) the
@@ -7554,6 +7588,7 @@ pub(in crate::ui::houseguest) mod shelves {
             },
             rise,
             built,
+            fresh: None,
         })
     }
 
@@ -7604,6 +7639,7 @@ pub(in crate::ui::houseguest) mod shelves {
                             anchor: Anchor { side, offset },
                             rise,
                             built,
+                            fresh: None,
                         };
                         let home = Home {
                             structures: vec![Structure::Shelf(shelf)],
@@ -8275,14 +8311,23 @@ pub(in crate::ui::houseguest) mod shelves {
         };
         let refused = |built: u8, nook: Nook, to: u8| {
             let mut at = home(built);
-            assert!(!at.put_up(nook, to), "{built} → {nook:?} {to}");
+            assert!(
+                !at.put_up(nook, to, Dated::Day(0)),
+                "{built} → {nook:?} {to}"
+            );
             assert_eq!(at, home(built), "{built} → {nook:?} {to}");
         };
         let mut building = home(0);
-        assert!(building.put_up(Nook::Users, 1));
-        assert_eq!(building, home(1));
-        assert!(building.put_up(Nook::Users, 2));
-        assert_eq!(building, home(2));
+        // Up, and fresh that day (phase 6a step 8).
+        let fresh = |built| {
+            let mut home = home(built);
+            home.freshen(Strip::Shelf(Nook::Users), Dated::Day(0));
+            home
+        };
+        assert!(building.put_up(Nook::Users, 1, Dated::Day(0)));
+        assert_eq!(building, fresh(1));
+        assert!(building.put_up(Nook::Users, 2, Dated::Day(0)));
+        assert_eq!(building, fresh(2));
         assert_eq!(SHELF_STAGES, 2);
         for (built, nook, to) in [
             (0, Nook::Users, 0),
@@ -8297,14 +8342,14 @@ pub(in crate::ui::houseguest) mod shelves {
             refused(built, nook, to);
         }
         let mut none = Home::default();
-        assert!(!none.put_up(Nook::Users, 1));
+        assert!(!none.put_up(Nook::Users, 1, Dated::Day(0)));
         assert_eq!(none, Home::default());
     }
 
     /// What's set down up on a high shelf of hers goes up high (she hops
     /// to it: phase 6a D7c); on a low one it's in her reach, and on a
     /// floor (a high shelf's pane's too) it's down low; a shelf strip
-    /// with no shelf of hers on it, none.
+    /// with no shelf of hers on it is no higher than a floor.
     #[test]
     fn only_a_high_shelf_is_up_high() {
         let home = |rise| Home {
@@ -8312,13 +8357,34 @@ pub(in crate::ui::houseguest) mod shelves {
             ..Home::default()
         };
         let high = home(7);
-        assert!(high.up_high(Strip::Shelf(Nook::Users)));
-        assert!(!high.up_high(Strip::Bottom(Nook::Users)));
-        assert!(!high.up_high(Strip::Shelf(Nook::List)));
-        assert!(!high.up_high(Strip::Bottom(Nook::List)));
+        assert_eq!(high.height(Strip::Shelf(Nook::Users)), Height::High);
+        assert_eq!(high.height(Strip::Bottom(Nook::Users)), Height::Floor);
+        assert_eq!(high.height(Strip::Shelf(Nook::List)), Height::Floor);
+        assert_eq!(high.height(Strip::Bottom(Nook::List)), Height::Floor);
         let low = home(5);
-        assert!(!low.up_high(Strip::Shelf(Nook::Users)));
-        assert!(!low.up_high(Strip::Bottom(Nook::Users)));
+        assert_eq!(low.height(Strip::Shelf(Nook::Users)), Height::Low);
+        assert_eq!(low.height(Strip::Bottom(Nook::Users)), Height::Floor);
+    }
+
+    /// Something new up on her shelf (phase 6a step 8): a stage up, or a
+    /// piece she set on it, makes it fresh that day of hers; a piece set
+    /// on a floor, or on a shelf strip with no shelf of hers, nothing.
+    #[test]
+    fn what_goes_up_on_her_shelf_is_fresh() {
+        let mut home = Home {
+            structures: vec![shelf_on(Nook::Users, 12, 7, 0)],
+            ..Home::default()
+        };
+        let fresh = |home: &Home| home.shelf(Nook::Users).and_then(|s| s.fresh);
+        home.freshen(Strip::Bottom(Nook::Users), Dated::Day(3));
+        home.freshen(Strip::Shelf(Nook::List), Dated::Day(3));
+        assert_eq!(fresh(&home), None);
+        assert!(home.put_up(Nook::Users, 1, Dated::Day(3)));
+        assert_eq!(fresh(&home), Some(Dated::Day(3)));
+        assert!(!home.put_up(Nook::Users, 1, Dated::Day(4)), "not again");
+        assert_eq!(fresh(&home), Some(Dated::Day(3)));
+        home.freshen(Strip::Shelf(Nook::Users), Dated::Visit(9));
+        assert_eq!(fresh(&home), Some(Dated::Visit(9)));
     }
 }
 
@@ -8418,6 +8484,7 @@ mod low_shelf {
             },
             rise,
             built,
+            fresh: None,
         })
     }
 
@@ -8798,6 +8865,7 @@ mod low_shelf {
                     },
                     rise: LOW_RISE,
                     built,
+                    fresh: None,
                 })],
                 ..Home::default()
             };
@@ -8843,6 +8911,7 @@ mod low_shelf {
                 },
                 rise: LOW_RISE,
                 built: 2,
+                fresh: None,
             })
         };
         let hung = |item, nook| Prop {
@@ -8904,6 +8973,7 @@ mod low_shelf {
                     },
                     rise: LOW_RISE,
                     built,
+                    fresh: None,
                 })],
                 ..Home::default()
             };
@@ -8977,6 +9047,7 @@ mod low_shelf {
             },
             rise: LOW_RISE,
             built,
+            fresh: None,
         })
     }
 
@@ -9521,6 +9592,7 @@ mod spot {
                 },
                 rise: 30,
                 built: 0,
+                fresh: None,
             }));
         }
         // Anchored where their shares put them, as a frame's projection
@@ -9688,6 +9760,7 @@ mod spot {
                         anchor,
                         rise: u16::try_from(rise).unwrap(),
                         built: 0,
+                        fresh: None,
                     };
                     let alone = Home {
                         structures: vec![Structure::Shelf(shelf)],
@@ -9872,6 +9945,7 @@ mod spot {
             anchor: Anchor { side, offset },
             rise,
             built: 0,
+            fresh: None,
         }
     }
 

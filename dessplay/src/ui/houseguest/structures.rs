@@ -13,6 +13,7 @@ use tuirealm::ratatui::style::{Color, Modifier};
 
 use super::cells::{Ink, put, untouchable, width};
 use super::dissolve::Frozen;
+use super::ledger::Dated;
 use super::room::{Anchor, Extent, Home, Nook, Plan, Shown, Side, Strip, pane_raw};
 
 /// A shelf's run: `┬────────┬`, its brackets at both ends.
@@ -57,13 +58,32 @@ pub(super) enum Structure {
 /// A shelf on `nook`'s back wall: `SHELF_WIDTH` cells from `anchor` (its
 /// near end, counted from that wall of the pane's raw strip), `rise`
 /// rows above the pane's floor (which says high or low for good);
-/// `built` of [`SHELF_STAGES`] stages up.
+/// `built` of [`SHELF_STAGES`] stages up; `fresh`, the day of hers
+/// something last went up on it (a stage, or a piece she set on it:
+/// phase 6a step 8), her gaze up there likelier that day and the next
+/// ([`Shelf::fresh_on`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub(super) struct Shelf {
     pub nook: Nook,
     pub anchor: Anchor,
     pub rise: u16,
     pub built: u8,
+    /// Left out of the record when `None`; read leniently (a value this
+    /// build can't read is `None`, the shelf kept), and an older build
+    /// ignores it.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "fresh_or_none"
+    )]
+    pub fresh: Option<Dated>,
+}
+
+/// A shelf's `fresh` as read: a day of hers, or `None` for anything
+/// else (garbage never costs her the shelf).
+fn fresh_or_none<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Dated>, D::Error> {
+    let value = serde_json::Value::deserialize(d)?;
+    Ok(serde_json::from_value(value).ok())
 }
 
 impl Shelf {
@@ -72,6 +92,14 @@ impl Shelf {
     /// meet her head, or what stands).
     pub fn sound(&self) -> bool {
         self.built <= SHELF_STAGES && self.rise >= LOW_RISE
+    }
+
+    /// Whether something went up on it `today` or the day before (the
+    /// day of hers it's [`Shelf::fresh`] on), so her gaze up there is
+    /// likelier (phase 6a step 8: for that game day and the next; unfed,
+    /// that visit and the next). A day and a visit never meet.
+    pub fn fresh_on(&self, today: Dated) -> bool {
+        self.fresh.is_some_and(|on| on.within_a_day_of(today))
     }
 
     /// Whether all its stages are up: only a finished shelf holds
@@ -858,6 +886,7 @@ mod ground {
                 anchor: Anchor { side, offset },
                 rise,
                 built: shelf.built,
+                fresh: None,
             }));
             // Its built run's columns, from its record and its pane's rect.
             let from = match side {
@@ -1173,6 +1202,7 @@ mod ground {
                 },
                 rise: 7,
                 built,
+                fresh: None,
             })],
             ..Home::default()
         }

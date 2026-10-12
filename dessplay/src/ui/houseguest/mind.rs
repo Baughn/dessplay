@@ -995,6 +995,22 @@ pub(super) const SKY_NIGHT: Pool = Pool {
     d: 1,
 };
 
+/// What she says up at her gremlin on her shelf, once at most a gaze
+/// up, after its opening (phase 6a step 8, the user's extra 2): one gaze
+/// in two, each line cooling as any does. Only his: her plant gets the
+/// opening alone.
+pub(super) const SHELF: Pool = Pool {
+    id: PoolId::Shelf,
+    lines: &[
+        line!("Hi, little guy."),
+        line!("You stay up there."),
+        line!("Behave, okay?"),
+        line!("He's watchin' me..."),
+    ],
+    n: 1,
+    d: 2,
+};
+
 /// Her sill's musings for `sky` (see [`SKY_DAY`]).
 pub(super) fn sky_musings(sky: super::art::Sky) -> Pool {
     use super::art::Sky;
@@ -1234,6 +1250,9 @@ pub(super) enum PoolId {
     /// What she muses on at her window's sill, by the sky ([`SKY_DAY`]
     /// and its siblings, [`sky_musings`]).
     Sky,
+    /// What she says gazing up at her gremlin on her shelf ([`SHELF`]:
+    /// phase 6a step 8).
+    Shelf,
     /// A test's pool, with no budget: not a pool she draws from.
     #[cfg(test)]
     Test,
@@ -1242,7 +1261,7 @@ pub(super) enum PoolId {
 impl PoolId {
     /// Every pool there is.
     #[cfg(test)]
-    pub const ALL: [PoolId; 11] = [
+    pub const ALL: [PoolId; 12] = [
         Self::Beat,
         Self::Door,
         Self::Musing,
@@ -1253,6 +1272,7 @@ impl PoolId {
         Self::December,
         Self::Panic,
         Self::Sky,
+        Self::Shelf,
         Self::Test,
     ];
 
@@ -1269,6 +1289,7 @@ impl PoolId {
             Self::December => 7,
             Self::Panic => 8,
             Self::Sky => 9,
+            Self::Shelf => 10,
             // Out of the way of every pool she draws from.
             #[cfg(test)]
             Self::Test => u64::MAX,
@@ -1288,7 +1309,8 @@ impl PoolId {
             | Self::Calendar
             | Self::December
             | Self::Panic
-            | Self::Sky => false,
+            | Self::Sky
+            | Self::Shelf => false,
             #[cfg(test)]
             Self::Test => false,
         }
@@ -1331,7 +1353,8 @@ impl PoolId {
             Self::December => (7, vec![DECEMBER]),
             Self::Panic => (8, vec![PANIC]),
             Self::Sky => (9, vec![SKY_DAY, SKY_DAWN, SKY_DUSK, SKY_EVENING, SKY_NIGHT]),
-            Self::Test => (10, Vec::new()),
+            Self::Shelf => (10, vec![SHELF]),
+            Self::Test => (11, Vec::new()),
         }
     }
 }

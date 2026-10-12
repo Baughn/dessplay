@@ -6299,6 +6299,46 @@ wish would be state of its own, kept past what she has seen this
 visit); feeling it anywhere on screen; a shelf-only sale of the kit
 with no wish (the user's brief asks for the felt need to put it first).
 
+Step 8 (2026-10-12, the user's four extras): **his tiny life** — one
+game day in twenty, a pure hash of her home's seed and the day (no
+random stream, so nothing else she does moves), drawn at the first
+moment that day she can't see him: asleep for the night with her lamp
+off, or out by her door to school or to work. Turns him round on a
+finished shelf, his facing written at once; her next gaze up at him
+opens "?" and "Did you move...?", and it's noticed once that has shown.
+Drawn only then because he must never move while she's awake and could
+see it: the joke is that it happened behind her back. Why the night's
+day is the day her night began (her first sleep of it), not the day it
+is: as first built the draw read "asleep" each tick, so the next day's
+came at midnight in her sleep and never as she went out; drawn then on
+her falling asleep, it came again as she got back into bed after her
+midnight snack in the small hours (review of the step), and while her
+lamp was still on as she settled, blinking, in sight. Why work counts:
+she's out by her door behind it, the visit going on, as out of sight as
+school leaves her (missed as first built); the stage's way out (back in
+a moment), an errand and a goodbye (she waves) don't. Why noticed only
+once shown: a gaze cut in its first moments (a startle, a parcel, a
+resize) would have cleared it unseen. Once a game day, held per process
+as the day's other carried state is (a restart may draw the day again:
+a second turn, still hers to notice; one mid-sleep draws that night's
+day then); unfed, never (a visit is no day of his). Setting him down
+herself clears it (nothing moves him off a shelf in 6a; 6b's moves
+would). **Her lines up at him** ("Hi, little guy." and three more): one at
+most a gaze, one gaze in two, after its opening, cooling as her lines
+do; only his (her plant gets the opening alone). **Freshness**: a stage
+up, or a piece she sets on her shelf, makes it fresh that day of hers
+(saved on the shelf, read leniently), and her gaze up there is twice as
+likely that game day and the next, so something new draws her eye. Her
+gaze up's base went from 5 to 8 (the user's sixth round: about once a
+game day with her plant up, measured at 1.19 a day in the day census's
+shelf room against base 5's 0.05; base 10 gave 2.83; the band and her
+look-outs unmoved). **Pleased beats**: a stage up, or a piece set on
+her shelf, ends on a moment's "hehe" (after the hop, up high), in place
+of her "There!" for a piece set up there (both at once would hide the
+beat), counted by the census with her home's acts, as putting it up is
+(a pull's or a made piece's "hehe" stays her mischief); a wished kit is pitched "A shelf for the gremlin!". **The
+flat-pack gag**: her kit's unpack ends on "Which way's up?".
+
 ## Houseguest chooses by needs among the top few (2026-09-28)
 
 **Rule:** Her next act is a weighted-random pick among the four

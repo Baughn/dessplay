@@ -134,6 +134,17 @@ impl Dated {
     pub(super) fn of(day: Option<u64>, visits: u64) -> Self {
         day.map_or(Self::Visit(visits), Self::Day)
     }
+
+    /// Whether `today` is this day of hers or the one after it (both
+    /// game days, or both visits: a day and a visit never meet).
+    pub(super) fn within_a_day_of(self, today: Dated) -> bool {
+        match (self, today) {
+            (Self::Day(on), Self::Day(today)) | (Self::Visit(on), Self::Visit(today)) => {
+                today == on || today == on.saturating_add(1)
+            }
+            (Self::Day(_), Self::Visit(_)) | (Self::Visit(_), Self::Day(_)) => false,
+        }
+    }
 }
 
 /// How many stages of her structures she puts up in a day of hers
@@ -1524,6 +1535,7 @@ mod tests {
             },
             rise: 7,
             built: 2,
+            fresh: None,
         })
     }
 
@@ -1687,6 +1699,19 @@ mod tests {
                 [format!("Users shelf, {built} of 2 up")]
             );
         }
+        // Something new up on it (phase 6a step 8), a game day's or a
+        // visit's: written after `built`, read back; none, not written.
+        assert!(!shelved().to_json().contains("fresh"));
+        for (on, json) in [
+            (Dated::Day(3), r#""built":2,"fresh":{"Day":3}}"#),
+            (Dated::Visit(7), r#""built":2,"fresh":{"Visit":7}}"#),
+        ] {
+            let mut ledger = shelved();
+            ledger.home.freshen(Strip::Shelf(Nook::Users), on);
+            let text = ledger.to_json();
+            assert!(text.contains(json), "{text}");
+            assert_eq!(Ledger::from_json(&text), Ok(ledger.clone()), "{text}");
+        }
         // A low shelf too, at the lowest a shelf hangs.
         let mut ledger = shelved();
         ledger.home.structures = vec![Structure::Shelf(Shelf {
@@ -1697,6 +1722,7 @@ mod tests {
             },
             rise: LOW_RISE,
             built: SHELF_STAGES,
+            fresh: None,
         })];
         plant_of(&mut ledger).strip = Strip::Shelf(Nook::List);
         let text = ledger.to_json();
@@ -1845,6 +1871,7 @@ mod tests {
                     },
                     rise,
                     built,
+                    fresh: None,
                 })],
                 "{good}"
             );
@@ -1857,19 +1884,33 @@ mod tests {
             assert_eq!(plant.strip, on, "{good}");
             assert_eq!(plant.at, 480, "{good}");
         }
-        // A field a later build adds to a shelf (step 8's `fresh`) is
-        // ignored: the shelf is kept as if it weren't there.
-        let fresh = format!(r#"{},"fresh":{{"Day":3}}}}}}"#, &kept[..kept.len() - 2]);
+        // A field on a shelf: step 8's `fresh` read when it's a day of
+        // hers, else (garbage) the shelf kept as if it weren't there; one
+        // a later build adds, ignored.
+        let with = |field: &str| format!(r#"{},{field}}}}}"#, &kept[..kept.len() - 2]);
         assert!(
-            fresh.ends_with(r#""built":2,"fresh":{"Day":3}}}"#),
-            "{fresh}"
+            with(r#""fresh":{"Day":3}"#).ends_with(r#""built":2,"fresh":{"Day":3}}}"#),
+            "{}",
+            with(r#""fresh":{"Day":3}"#)
         );
-        let text = written.replace(
-            &format!(r#""structures":[{kept}]"#),
-            &format!(r#""structures":[{fresh}]"#),
-        );
-        assert!(text.contains(&fresh), "{text}");
-        assert_eq!(Ledger::from_json(&text), Ok(shelved()), "{fresh}");
+        let mut fresh = shelved();
+        fresh.home.freshen(Strip::Shelf(Nook::Users), Dated::Day(3));
+        for (field, read) in [
+            (r#""fresh":{"Day":3}"#, fresh),
+            (r#""fresh":7"#, shelved()),
+            (r#""fresh":"Day""#, shelved()),
+            (r#""fresh":{"Week":3}"#, shelved()),
+            (r#""fresh":null"#, shelved()),
+            (r#""colour":"oak""#, shelved()),
+        ] {
+            let entry = with(field);
+            let text = written.replace(
+                &format!(r#""structures":[{kept}]"#),
+                &format!(r#""structures":[{entry}]"#),
+            );
+            assert!(text.contains(&entry), "{text}");
+            assert_eq!(Ledger::from_json(&text), Ok(read), "{entry}");
+        }
         // A whole field that isn't a list of them reads as none.
         for garbage in ["1", "null", "{}", r#""Shelf""#] {
             let text = written.replace(
@@ -2167,6 +2208,7 @@ mod tests {
                     anchor: Anchor { side, offset },
                     rise,
                     built,
+                    fresh: None,
                 })
             },
         );
@@ -2220,6 +2262,64 @@ mod tests {
             prop_assert_eq!(rest, furnished());
             // And what it kept, it writes back as it read it.
             prop_assert_eq!(Ledger::from_json(&read.to_json()), Ok(read));
+        }
+
+        /// Her shelf fresh on any day or visit of hers (phase 6a step 8)
+        /// reads back as written: a game day or a visit, to the ends of
+        /// either (`fresh` is never in [`entries`], whose shelves keep
+        /// the record's other strategies' as they were).
+        #[test]
+        fn a_fresh_shelf_reads_back_as_written(
+            day in any::<bool>(),
+            on in prop_oneof![3 => 0u64..100, 1 => any::<u64>()],
+        ) {
+            let on = if day { Dated::Day(on) } else { Dated::Visit(on) };
+            let mut ledger = shelved();
+            ledger.home.freshen(Strip::Shelf(Nook::Users), on);
+            prop_assert_eq!(
+                ledger.home.shelf(Nook::Users).and_then(|s| s.fresh),
+                Some(on)
+            );
+            let text = ledger.to_json();
+            prop_assert_eq!(Ledger::from_json(&text), Ok(ledger), "{}", text);
+        }
+    }
+
+    /// Whether a day of hers is today or the one before it (phase 6a step
+    /// 8, her shelf's freshness): game days with game days, visits with
+    /// visits (an unfed home's), never a day with a visit; the same or the
+    /// next, never the one before or two on; at the end of either, no
+    /// wrap.
+    #[test]
+    fn a_day_of_hers_is_within_a_day_of_the_same_kind() {
+        use Dated::{Day, Visit};
+        for (of, kind) in [(Day as fn(u64) -> Dated, "day"), (Visit, "visit")] {
+            for (on, today, within) in [
+                (5, 5, true),
+                (5, 6, true),
+                (5, 4, false),
+                (5, 7, false),
+                (0, 0, true),
+                (0, 1, true),
+                (u64::MAX, u64::MAX, true),
+                (u64::MAX - 1, u64::MAX, true),
+                (u64::MAX, 0, false),
+                (u64::MAX, u64::MAX - 1, false),
+            ] {
+                assert_eq!(
+                    of(on).within_a_day_of(of(today)),
+                    within,
+                    "{kind} {on}, today {today}"
+                );
+            }
+        }
+        for (on, today) in [
+            (Day(5), Visit(5)),
+            (Visit(5), Day(5)),
+            (Day(5), Visit(6)),
+            (Visit(5), Day(6)),
+        ] {
+            assert!(!on.within_a_day_of(today), "{on:?}, today {today:?}");
         }
     }
 

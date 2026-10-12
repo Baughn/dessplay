@@ -2588,6 +2588,7 @@ mod tests {
                         },
                         rise,
                         built: 2,
+                        fresh: None,
                     }));
                 }
                 for (item, nook) in [(Plant, Nook::Users), (Clock, Nook::Playlist)] {
@@ -3907,6 +3908,7 @@ mod tests {
                     },
                     rise: rises.get(i).copied().unwrap_or(7),
                     built: 2,
+                    fresh: None,
                 })
             })
             .collect()

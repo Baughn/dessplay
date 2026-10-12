@@ -1471,6 +1471,15 @@ pub struct Guest {
     /// Dream, her midnight snack) is once a night, not once a visit.
     /// Held per process.
     night_today: Option<osaka::Night>,
+    /// Her gremlin turned round on his shelf while she slept or was out
+    /// (phase 6a step 8, his tiny life), not yet noticed: her next gaze
+    /// up at him opens on it. Held per process, as the day's other
+    /// carried state is.
+    turned: bool,
+    /// The game day her gremlin's turning round was last drawn for
+    /// ([`Guest::gremlin_turns`]): once a game day. Held per process (a
+    /// restart may draw the day again: a second turn, his to notice).
+    gremlin_drawn: Option<u64>,
 }
 
 /// Her clock runs this many times faster than real time.
@@ -1568,6 +1577,8 @@ impl Guest {
             meal_today: None,
             rares_today: None,
             night_today: None,
+            turned: false,
+            gremlin_drawn: None,
         }
     }
 
@@ -2354,6 +2365,7 @@ impl Guest {
                     &mut self.ledger,
                     &mut self.shop_now,
                     &mut self.said_aloud,
+                    &mut self.turned,
                     visit,
                 );
                 // Dashed home and still here as school ends (in on an
@@ -2376,11 +2388,75 @@ impl Guest {
                 true
             }
         };
+        // His tiny life (phase 6a step 8): while she can't see him. Before
+        // her visit ends out by her door, which leaves her out of sight
+        // for good.
+        changed |= self.unseen_turns(now);
         if self.gone_out(now) {
             self.out_by_door(now);
             changed = true;
         }
         changed || fading || nudge
+    }
+
+    /// His tiny life (phase 6a step 8): while she's visiting and can't
+    /// see her home ([`Osaka::out_of_sight`]: asleep for the night, her
+    /// lamp off; or out by her door to school or work), his turning is
+    /// drawn for the game day that spell began on, once
+    /// ([`Guest::gremlin_turns`]). Returns whether he turned.
+    fn unseen_turns(&mut self, now: u64) -> bool {
+        let day = match &self.state {
+            State::Visiting(visit) => visit.osaka.out_of_sight(now),
+            _ => None,
+        };
+        day.is_some_and(|day| self.gremlin_turns(day))
+    }
+
+    /// Her gremlin's tiny life (phase 6a step 8, the user's extra 1): at
+    /// the first moment of game day `day` she can't see her home
+    /// ([`Guest::unseen_turns`]: so never while she's awake and could see
+    /// it), that day's draw ([`brain::gremlin_turns`], one day in
+    /// [`brain::TURNS_ONE_IN`]) turns him round, if he stands on a
+    /// finished shelf of hers (where he shows up there), out of his box:
+    /// his facing written at once, and his turning hers to notice (her
+    /// next gaze up at him). Once a game day, never a day before one
+    /// drawn (`gremlin_drawn`); unfed, never (a visit is no day of his).
+    /// Returns whether he turned.
+    fn gremlin_turns(&mut self, day: u64) -> bool {
+        if !self.feed_clock || self.gremlin_drawn.is_some_and(|drawn| drawn >= day) {
+            return false;
+        }
+        self.gremlin_drawn = Some(day);
+        if !brain::gremlin_turns(self.ledger.master_seed, day) {
+            tracing::trace!(day, "houseguest: her gremlin stays as he is today");
+            return false;
+        }
+        let home = &mut self.ledger.home;
+        let up = |strip: room::Strip| match strip {
+            room::Strip::Shelf(nook) => home.shelf(nook).is_some_and(|s| s.finished()),
+            room::Strip::Bottom(_) => false,
+        };
+        let Some(at) = home
+            .props
+            .iter()
+            .position(|p| p.item == Furniture::Gremlin && up(p.strip) && !p.boxed())
+        else {
+            tracing::trace!(
+                day,
+                "houseguest: no gremlin of hers up on a shelf to turn round"
+            );
+            return false;
+        };
+        let gremlin = &mut home.props[at];
+        gremlin.facing = gremlin.facing.turned();
+        self.unsaved = true;
+        self.turned = true;
+        tracing::info!(
+            day,
+            facing = ?gremlin.facing,
+            "houseguest: her gremlin turned round on his shelf while she wasn't looking"
+        );
+        true
     }
 
     /// Absent at `now` (`school`: it's school time by her routine): she
@@ -2522,6 +2598,9 @@ impl Guest {
     /// Nothing of hers just vanishes. Either way she's out until school
     /// ends.
     fn out_by_door(&mut self, now: u64) {
+        // His tiny life (phase 6a step 8): she's out of sight (drawn
+        // already if `advance` saw her go; not if a paint did first).
+        self.unseen_turns(now);
         let State::Visiting(visit) = std::mem::replace(&mut self.state, State::Absent) else {
             return;
         };
@@ -3170,6 +3249,7 @@ impl Guest {
                     &mut self.ledger,
                     &mut self.shop_now,
                     &mut self.said_aloud,
+                    &mut self.turned,
                     visit,
                 );
                 let today = Dated::of(visit.osaka.day(now).map(|d| d.day), self.ledger.visits);
@@ -3183,6 +3263,7 @@ impl Guest {
                     visit,
                     time.is_some(),
                     self.graphics.is_some(),
+                    today,
                     now,
                     &mut self.rng,
                 );
@@ -3214,6 +3295,13 @@ impl Guest {
                 // taken where the frame shows it, and the next as it
                 // offers it, on the frame as `furnish` left her home.
                 put_up_stage(&mut self.ledger, written.over(buf), view, visit, today, now);
+                // Something new up on her shelf today or yesterday (phase
+                // 6a step 8): her gaze up there likelier.
+                let fresh = self
+                    .ledger
+                    .home
+                    .shelves()
+                    .any(|shelf| shelf.fresh_on(today));
                 note_closet(&mut self.closet, &self.ledger.home, &visit.shown, view);
                 if self.ledger != before {
                     self.unsaved = true;
@@ -3435,6 +3523,9 @@ impl Guest {
                             wished,
                             &|| kit_room,
                         ),
+                        wished,
+                        turned: self.turned,
+                        fresh,
                         furnished: !self.ledger.home.props.is_empty(),
                         chat,
                         broken: visit.broken.clone(),
@@ -3498,6 +3589,9 @@ impl Guest {
                         wished,
                         &|| kit_room,
                     ),
+                    wished,
+                    turned: self.turned,
+                    fresh,
                     furnished: !self.ledger.home.props.is_empty(),
                     chat,
                     broken: visit.broken.clone(),
@@ -3696,6 +3790,7 @@ impl Guest {
                         &mut self.ledger,
                         &mut self.shop_now,
                         &mut self.said_aloud,
+                        &mut self.turned,
                         visit,
                     );
                 }
@@ -4213,6 +4308,7 @@ fn record(
     ledger: &mut Ledger,
     shop_now: &mut bool,
     said_aloud: &mut Vec<(usize, Dated)>,
+    turned: &mut bool,
     visit: &mut Visit,
 ) -> bool {
     let mut changed = false;
@@ -4256,8 +4352,16 @@ fn record(
                 }
             }
             // Hers once the frame takes it: at the paint (it must fit
-            // where it goes then).
-            osaka::HomeEvent::SetDown { piece, to } => visit.set_down = Some((piece, to)),
+            // where it goes then). Her gremlin in her hands (phase 6a
+            // step 8): however he faced, she has seen him, and set him
+            // facing as she likes (or he's back as he was), so a turn of
+            // his is no longer hers to notice.
+            osaka::HomeEvent::SetDown { piece, to } => {
+                if piece == Furniture::Gremlin && std::mem::take(turned) {
+                    tracing::debug!("houseguest: her gremlin handled, his turning seen to");
+                }
+                visit.set_down = Some((piece, to));
+            }
             // Up once the frame would show it up: at the paint.
             osaka::HomeEvent::PutUp { nook, to } => visit.put_up = Some((nook, to)),
             // Owed once a day: not again this date.
@@ -4274,6 +4378,9 @@ fn record(
                 said_aloud.retain(|&(r, _)| r != row);
                 said_aloud.push((row, Dated::of(day, ledger.visits)));
             }
+            // Her gremlin's turning round noticed (phase 6a step 8): his
+            // next turn is hers to notice anew.
+            osaka::HomeEvent::Noticed => *turned = false,
             // Seen from now on; something new, so her pity for its tier
             // starts again (not for one she'd seen already).
             osaka::HomeEvent::Seen(id) => {
@@ -4589,7 +4696,7 @@ fn put_up_stage(
         let stage = structures::next_stage(drawn, &ledger.home, plan, &keep_off)
             .filter(|stage| (stage.nook, stage.to) == (nook, to));
         match stage {
-            Some(stage) if ledger.home.put_up(nook, to) => {
+            Some(stage) if ledger.home.put_up(nook, to, today) => {
                 ledger.built_today(today);
                 tracing::info!(
                     ?nook,
@@ -4777,6 +4884,7 @@ fn furnish(
     visit: &mut Visit,
     fed: bool,
     graphics: bool,
+    today: Dated,
     now: u64,
     rng: &mut Rng,
 ) -> Vec<Shown> {
@@ -4861,10 +4969,11 @@ fn furnish(
         match episode.map(|ep| judge_move(home, &frame, &ep)) {
             Some(Some(_)) => {
                 home.set_down(piece, to, &view.nooks);
-                // Up on a high shelf, she hops (phase 6a D7c).
-                visit
-                    .osaka
-                    .set_down_done(piece, home.up_high(to.strip), now);
+                // Up on a shelf: something new up there today (phase 6a
+                // step 8), and she's pleased with it, after a hop up to a
+                // high one (D7c).
+                home.freshen(to.strip, today);
+                visit.osaka.set_down_done(piece, home.height(to.strip), now);
                 shown = home.frame(drawn, plan, &blocked).0;
             }
             Some(None) => {

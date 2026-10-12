@@ -2498,12 +2498,19 @@ fn day_census() {
         let a_day = looks as f64 / days as f64;
         eprintln!("  looking out: {looks} in {days} game days, {a_day:.2} a day");
         // Her gaze up at her plant on her shelf (phase 6a D8), which
-        // competes with her look out for her daydreams.
+        // competes with her look out for her daydreams. The user's
+        // outcome (phase 6a, sixth round): about once a game day, with
+        // nothing new up there (her shelf here is never fresh: step 8's
+        // boost is on top). 1.19 a day at base 8 as tuned in step 8
+        // (base 5's 0.05 sat far under it; base 10's 2.83 over).
         if room.shelf {
             let gazes = whole.events.get("gaze up").copied().unwrap_or(0);
-            eprintln!(
-                "  gazing up: {gazes} in {days} game days, {:.2} a day",
-                gazes as f64 / days as f64
+            let a_day = gazes as f64 / days as f64;
+            eprintln!("  gazing up: {gazes} in {days} game days, {a_day:.2} a day");
+            assert!(
+                (0.7..=1.5).contains(&a_day),
+                "{}: she gazes up {a_day:.2} times a game day (about once a day: 0.7 to 1.5)",
+                room.name
             );
         }
         // Judged in the furnished home; [`shelf_room`]'s is printed (the

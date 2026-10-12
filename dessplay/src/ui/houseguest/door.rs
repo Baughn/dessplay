@@ -564,6 +564,7 @@ mod tests {
                 },
                 rise: 7,
                 built: 1,
+                fresh: None,
             })],
             ..Home::default()
         };
@@ -690,6 +691,7 @@ mod tests {
                 },
                 rise: 7,
                 built: 2,
+                fresh: None,
             })],
             door: Some(room::DoorWall {
                 strip: room::Strip::Bottom(room::Nook::Users),

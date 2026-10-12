@@ -8,7 +8,7 @@
 //! him. Both modes.
 
 use super::*;
-use crate::ui::houseguest::brain::{Mood, Need, Needs};
+use crate::ui::houseguest::brain::{self, Mood, Need, Needs};
 use crate::ui::houseguest::sprite::Facing;
 use crate::ui::houseguest::structures::{LOW_ABOVE, LOW_RISE, Shelf, Structure};
 
@@ -219,6 +219,8 @@ fn a_rule_felt_last_visit_is_no_wish_this_one() {
             "{at}: felt in his room"
         );
         assert_eq!(visit.chances.advert, Some(Furniture::ShelfKit), "{at}");
+        // Wished, so the channel pitches it for him (phase 6a step 8).
+        assert_eq!(visit.chances.wished, Some(Furniture::ShelfKit), "{at}");
         // The next visit, on List's floor: nothing felt, nothing wished.
         begun_at(
             &mut guest,
@@ -240,6 +242,7 @@ fn a_rule_felt_last_visit_is_no_wish_this_one() {
             Some(Furniture::Bookshelf),
             "{at}: no wish this visit"
         );
+        assert_eq!(visit.chances.wished, None, "{at}");
         // And the one after, in his room again: felt anew, wished anew.
         begun_at(
             &mut guest,
@@ -253,6 +256,7 @@ fn a_rule_felt_last_visit_is_no_wish_this_one() {
         let visit = visit_of(&guest);
         assert!(visit.osaka.felt().contains(&high()), "{at}");
         assert_eq!(visit.chances.advert, Some(Furniture::ShelfKit), "{at}");
+        assert_eq!(visit.chances.wished, Some(Furniture::ShelfKit), "{at}");
     }
 }
 
@@ -858,6 +862,388 @@ fn a_felt_high_with_no_shelf_takes_none_of_her_offers() {
                     "{at}: {want:?}"
                 );
             }
+        }
+    }
+}
+
+/// How she goes out of her sight, for his tiny life (phase 6a step 8).
+#[derive(Clone, Copy, Debug)]
+enum Going {
+    /// To sleep for the night, her lamp going off: Monday's bedtime, a
+    /// school night (game day 0).
+    Asleep,
+    /// Out by her door to school: Tuesday morning (game day 1).
+    School,
+    /// Out by her door to her part-time job: Saturday (game day 5).
+    Work,
+}
+
+impl Going {
+    /// Whether she has gone so at `now`, as the test sees it (not as the
+    /// guest does: [`Osaka::out_of_sight`] is what's tested): asleep for
+    /// the night with her lamp off; or out of sight, her visit going on
+    /// behind her door (to work), or over (to school).
+    fn gone(self, guest: &Guest, now: u64) -> bool {
+        let State::Visiting(visit) = &guest.state else {
+            return matches!(self, Self::School);
+        };
+        let osaka = &visit.osaka;
+        match self {
+            Self::Asleep => {
+                osaka.sleeping()
+                    && osaka.prop(now) == Some(crate::ui::houseguest::script::Prop::LampOff)
+            }
+            Self::School | Self::Work => osaka.hidden(now),
+        }
+    }
+
+    /// When the home starts, and the game day she goes on.
+    fn start(self) -> (routine::GameTime, u64) {
+        match self {
+            Self::Asleep => (mon(22, 20), 0),
+            Self::School => (tue(8, 5), 1),
+            Self::Work => (sat(11, 0), 5),
+        }
+    }
+}
+
+/// Where her gremlin stands, for his tiny life.
+#[derive(Clone, Copy, Debug)]
+enum Stands {
+    /// On her finished shelf on Users' wall.
+    Up,
+    /// On Users' floor, under it.
+    Floor,
+    /// His record on her shelf's strip, her shelf only half up (shown on
+    /// his room's floor: a record could say so).
+    HalfUp,
+    /// His record on her shelf, in his box (none could be put there, as
+    /// her record is written; one read could say so).
+    Boxed,
+}
+
+/// Her bed, her sofa (and, `fridge`, her fridge, for a midnight snack),
+/// her shelf on Users' wall and her gremlin where `stands` says.
+fn turning_home(
+    seed: u64,
+    start: routine::GameTime,
+    stands: Stands,
+    fridge: bool,
+    graphics: bool,
+) -> Guest {
+    use Furniture::{Bed, Fridge, Gremlin, Sofa};
+    let mut pieces = vec![(Bed, Nook::Playlist, 500), (Sofa, Nook::Users, 200)];
+    if fridge {
+        pieces.push((Fridge, Nook::Playlist, 100));
+    }
+    let mut guest = home_at(seed, start, &pieces, graphics);
+    let shelf = match super::shelf::users_shelf() {
+        Structure::Shelf(shelf) if matches!(stands, Stands::HalfUp) => {
+            Structure::Shelf(Shelf { built: 1, ..shelf })
+        }
+        shelf => shelf,
+    };
+    guest.ledger.home.structures.push(shelf);
+    let up = room::Prop {
+        item: Gremlin,
+        ..super::shelf::mantel_clock()
+    };
+    let gremlin = match stands {
+        Stands::Up | Stands::HalfUp => up,
+        Stands::Boxed => room::Prop {
+            boxed: true.into(),
+            ..up
+        },
+        Stands::Floor => room::Prop::new(Gremlin, Nook::Users, 420, Facing::Right),
+    };
+    assert!(guest.ledger.home.add(gremlin));
+    assert_eq!(
+        guest
+            .ledger
+            .home
+            .props
+            .iter()
+            .any(|p| p.item == Gremlin && p.boxed()),
+        matches!(stands, Stands::Boxed),
+        "{stands:?}"
+    );
+    guest
+}
+
+/// Her gremlin's facing in `ledger`.
+fn his_facing(ledger: &Ledger) -> Facing {
+    ledger
+        .home
+        .props
+        .iter()
+        .find(|p| p.item == Furniture::Gremlin)
+        .expect("her gremlin")
+        .facing
+}
+
+/// Her gremlin's facing as her home shows him, while she's visiting.
+fn shown_facing(guest: &Guest) -> Option<Facing> {
+    match &guest.state {
+        State::Visiting(visit) => visit
+            .shown
+            .iter()
+            .find(|s| s.item == Furniture::Gremlin)
+            .map(|s| s.facing),
+        _ => None,
+    }
+}
+
+/// Whether she's visiting and can't see her home at `now`.
+fn out_of_sight(guest: &Guest, now: u64) -> bool {
+    matches!(&guest.state, State::Visiting(visit) if visit.osaka.out_of_sight(now).is_some())
+}
+
+/// Sends her off to work by her door at `now` (her shift's gap drawn).
+fn off_to_work(guest: &mut Guest, now: u64) {
+    let visit = visit_mut(guest);
+    let (terrain, chances) = (visit.terrain.clone(), visit.chances.clone());
+    visit.osaka.go_to_work(&terrain, &chances, now, &mut Rng(1));
+}
+
+/// His tiny life (phase 6a step 8, the user's extra 1): up on her shelf,
+/// her gremlin turns round now and then, never while she's awake and in
+/// sight: drawn once a game day (one in [`brain::TURNS_ONE_IN`]), at the
+/// first moment that day she can't see him: asleep for the night, her
+/// lamp off (not as she settles, the lamp still on); out by her door to
+/// school; out by her door to work, the visit going on behind it (a
+/// sibling of school's: missed as first built). On a day the draw turns
+/// him (the first home whose seed does), he's turned from that moment,
+/// his record's facing written at once (handed out for saving that very
+/// frame: nothing else of hers is unsaved then, every earlier frame's
+/// taken), and she has it to notice; on one it doesn't, never. Once that
+/// day: no more. Both modes.
+#[test]
+fn her_gremlin_turns_round_while_she_sleeps_or_is_out() {
+    let (real, view) = rooms_frame(100, 30);
+    for going in [Going::Asleep, Going::School, Going::Work] {
+        let (start, day) = going.start();
+        for turns in [true, false] {
+            let seed = (0u64..)
+                .find(|&s| brain::gremlin_turns(s, day) == turns)
+                .expect("a home");
+            for graphics in [false, true] {
+                let at = format!("{going:?} turns {turns} graphics={graphics}");
+                let mut guest = turning_home(seed, start, Stands::Up, false, graphics);
+                let before = his_facing(&guest.ledger);
+                let mut now = until_visiting(&mut guest, &real, &view, 0);
+                assert_eq!(shown_facing(&guest), Some(before), "{at}: up on her shelf");
+                if matches!(going, Going::Work) {
+                    off_to_work(&mut guest, now);
+                }
+                // Awake and in sight: as he was.
+                let mut awake = 0;
+                while !going.gone(&guest, now) {
+                    awake += 1;
+                    assert!(now < 400_000, "{at}: never asleep or out");
+                    assert!(!out_of_sight(&guest, now), "{at}: {now}: out of sight");
+                    assert_eq!(his_facing(&guest.ledger), before, "{at}: {now}");
+                    if let Some(shown) = shown_facing(&guest) {
+                        assert_eq!(shown, before, "{at}: shown at {now}");
+                    }
+                    assert!(!guest.turned, "{at}: {now}");
+                    // Taken for saving, as the shell takes it.
+                    guest.ledger_to_save();
+                    shell_step(&mut guest, &real, &view, &mut now, true);
+                }
+                // (To work by a door in space where she stands: soon.)
+                let least = if matches!(going, Going::Work) { 3 } else { 20 };
+                assert!(awake > least, "{at}: awake {awake} frames");
+                let was = his_facing(&guest.ledger);
+                assert_eq!(was != before, turns, "{at}: turned as she went");
+                assert_eq!(guest.turned, turns, "{at}: hers to notice");
+                assert_eq!(guest.gremlin_drawn, Some(day), "{at}");
+                let saved = guest.ledger_to_save();
+                if turns {
+                    assert_eq!(
+                        saved.as_ref().map(his_facing),
+                        Some(was),
+                        "{at}: written at once"
+                    );
+                }
+                // Once that day: no more.
+                for _ in 0..40 {
+                    shell_step(&mut guest, &real, &view, &mut now, true);
+                    assert_eq!(his_facing(&guest.ledger), was, "{at}: {now}");
+                    if !matches!(going, Going::School) {
+                        assert_eq!(shown_facing(&guest), Some(was), "{at}: shown at {now}");
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// He turns only standing up on her finished shelf, out of his box
+/// (phase 6a step 8: "a gremlin standing on a shelf"): on a day whose
+/// draw would turn him, drawn as she falls asleep, a gremlin on her
+/// floor, one whose record has him on her shelf while it's only half up
+/// (shown on his room's floor), and one in his box on it (a record could
+/// say so) stay as they were, nothing hers to notice. Both modes.
+#[test]
+fn he_turns_only_up_on_her_finished_shelf() {
+    let (real, view) = rooms_frame(100, 30);
+    let (start, day) = Going::Asleep.start();
+    let seed = (0u64..)
+        .find(|&s| brain::gremlin_turns(s, day))
+        .expect("a home");
+    for stands in [Stands::Floor, Stands::HalfUp, Stands::Boxed] {
+        for graphics in [false, true] {
+            let at = format!("{stands:?} graphics={graphics}");
+            let mut guest = turning_home(seed, start, stands, false, graphics);
+            let before = his_facing(&guest.ledger);
+            let mut now = until_visiting(&mut guest, &real, &view, 0);
+            while !out_of_sight(&guest, now) {
+                assert!(now < 400_000, "{at}: never asleep");
+                shell_step(&mut guest, &real, &view, &mut now, true);
+            }
+            for _ in 0..10 {
+                shell_step(&mut guest, &real, &view, &mut now, true);
+            }
+            assert_eq!(guest.gremlin_drawn, Some(day), "{at}: drawn");
+            assert_eq!(his_facing(&guest.ledger), before, "{at}: turned");
+            assert!(!guest.turned, "{at}: hers to notice");
+        }
+    }
+}
+
+/// His turning is drawn at the moments she goes, for the day that spell
+/// began on (phase 6a step 8), never as midnight passes while she sleeps,
+/// nor as she gets back into bed after her midnight snack. A home whose
+/// draw keeps him still on Monday (game day 0) and turns him on Tuesday,
+/// with a snack on Monday night: asleep from Monday's bedtime through
+/// midnight, up for her snack in the small hours of Tuesday and back to
+/// bed, he stays as he was (it's Monday's night; Tuesday's draw isn't
+/// hers to make yet), and he turns as she goes out by her door to school
+/// on Tuesday. Red as first built: the draw read "asleep" each tick, so
+/// Tuesday's came at midnight, in her sleep, and none as she went out;
+/// then, drawn on her falling asleep, Tuesday's came as she got back
+/// into bed after her snack. Both modes.
+#[test]
+fn his_turning_is_drawn_as_she_goes_not_at_midnight() {
+    let (real, view) = rooms_frame(100, 30);
+    let seed = (0u64..)
+        .find(|&s| {
+            !brain::gremlin_turns(s, 0)
+                && brain::gremlin_turns(s, 1)
+                && brain::night_snack(s, 1).is_some()
+        })
+        .expect("a home");
+    for graphics in [false, true] {
+        let at = format!("graphics={graphics}");
+        let mut guest = turning_home(seed, mon(22, 20), Stands::Up, true, graphics);
+        let before = his_facing(&guest.ledger);
+        let mut now = until_visiting(&mut guest, &real, &view, 0);
+        let midnight = real_of(&guest, now, tue(0, 0));
+        let (mut slept, mut past_midnight, mut snacked, mut back_to_bed) =
+            (false, false, false, false);
+        while !out_of_sight(&guest, now) || asleep(&guest) {
+            assert!(now < midnight + 3 * 3_600_000, "{at}: never out to school");
+            let up_tonight = slept && now > midnight && !asleep(&guest) && {
+                let day = guest.day(now).expect("fed");
+                day.slot == routine::Slot::Asleep
+            };
+            snacked |= up_tonight;
+            back_to_bed |= snacked && asleep(&guest);
+            slept |= asleep(&guest);
+            past_midnight |= asleep(&guest) && now > midnight;
+            assert_eq!(
+                his_facing(&guest.ledger),
+                before,
+                "{at}: {now}: turned while she's in"
+            );
+            assert!(!guest.turned, "{at}: {now}");
+            shell_step(&mut guest, &real, &view, &mut now, false);
+        }
+        assert!(slept && past_midnight, "{at}: asleep through midnight");
+        assert!(
+            snacked && back_to_bed,
+            "{at}: up for her snack and back to bed"
+        );
+        assert_ne!(
+            his_facing(&guest.ledger),
+            before,
+            "{at}: turned as she went out"
+        );
+        assert!(guest.turned, "{at}: hers to notice");
+        assert_eq!(guest.gremlin_drawn, Some(1), "{at}");
+    }
+}
+
+/// Once a game day, however often she goes (phase 6a step 8): a home
+/// whose draw turns him on Tuesday; he turns as she goes out to school,
+/// and coming home from school and asleep that night (her second going
+/// that day), he stays as he was turned.
+#[test]
+fn he_turns_once_a_day_however_often_she_goes() {
+    let (real, view) = rooms_frame(100, 30);
+    let (start, day) = Going::School.start();
+    let seed = (0u64..)
+        .find(|&s| brain::gremlin_turns(s, day))
+        .expect("a home");
+    for graphics in [false, true] {
+        let at = format!("graphics={graphics}");
+        let mut guest = turning_home(seed, start, Stands::Up, false, graphics);
+        let before = his_facing(&guest.ledger);
+        let mut now = until_visiting(&mut guest, &real, &view, 0);
+        while !out_of_sight(&guest, now) {
+            assert!(now < 400_000, "{at}: never out");
+            shell_step(&mut guest, &real, &view, &mut now, false);
+        }
+        let turned = his_facing(&guest.ledger);
+        assert_ne!(turned, before, "{at}: turned as she went to school");
+        let bedtime = real_of(&guest, now, tue(23, 30));
+        let (mut back, mut slept) = (false, false);
+        while !slept {
+            assert!(now < bedtime, "{at}: never home and asleep");
+            shell_step(&mut guest, &real, &view, &mut now, false);
+            back |= matches!(guest.state, State::Visiting(_)) && !out_of_sight(&guest, now);
+            slept |= back && asleep(&guest) && out_of_sight(&guest, now);
+            assert_eq!(his_facing(&guest.ledger), turned, "{at}: {now}");
+        }
+        for _ in 0..10 {
+            shell_step(&mut guest, &real, &view, &mut now, false);
+        }
+        assert_eq!(his_facing(&guest.ledger), turned, "{at}: turned back");
+        assert_eq!(guest.gremlin_drawn, Some(day), "{at}");
+    }
+}
+
+/// Never as she says goodbye (she waves, in sight), nor with no routine
+/// reaching her (unfed: a visit is no day of his), however a day's draw
+/// would go (phase 6a step 8). Both modes.
+#[test]
+fn he_never_turns_at_a_goodbye_or_unfed() {
+    let (real, view) = rooms_frame(100, 30);
+    // Saturday evening: her job closed, not yet bedtime.
+    let (start, day) = (sat(18, 0), 5);
+    let seed = (0u64..)
+        .find(|&s| brain::gremlin_turns(s, day))
+        .expect("a home");
+    for fed in [true, false] {
+        for graphics in [false, true] {
+            let at = format!("fed {fed} graphics={graphics}");
+            let mut guest = turning_home(seed, start, Stands::Up, false, graphics);
+            guest.set_feed_clock(fed);
+            let before = his_facing(&guest.ledger);
+            let mut now = until_visiting(&mut guest, &real, &view, 0);
+            for _ in 0..200 {
+                assert!(!out_of_sight(&guest, now), "{at}: {now}: out of sight");
+                shell_step(&mut guest, &real, &view, &mut now, true);
+            }
+            guest.activity(now);
+            let end = now + dissolve::DURATION_MS + 5_000;
+            while guest.present() {
+                assert!(now < end, "{at}: never gone");
+                shell_step(&mut guest, &real, &view, &mut now, true);
+            }
+            assert_eq!(his_facing(&guest.ledger), before, "{at}: turned");
+            assert!(!guest.turned, "{at}");
+            assert_eq!(guest.gremlin_drawn, None, "{at}: drawn");
         }
     }
 }

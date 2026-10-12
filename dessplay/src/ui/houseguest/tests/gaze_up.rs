@@ -6,11 +6,14 @@
 
 use super::shelf::{PIECES, mantel_clock, users_shelf};
 use super::*;
-use crate::ui::houseguest::brain::Want;
+use crate::ui::houseguest::brain::{self, Want};
+use crate::ui::houseguest::ledger::Dated;
 use crate::ui::houseguest::room::{PieceRef, Seat, Use};
+use crate::ui::houseguest::script;
 use crate::ui::houseguest::script::GAZE_UP_PLEASED_MS;
 use crate::ui::houseguest::sprite::{Face, Facing, Pose};
 use crate::ui::houseguest::stage::{NO_ROOM_BESIDE, NOTHING_UP};
+use crate::ui::houseguest::structures::Structure;
 
 /// Users' floor on [`rooms_frame`] at 100×30 (`50, 0, 50, 13`).
 const USERS_FLOOR: i32 = 12;
@@ -412,5 +415,139 @@ fn a_resize_that_moves_her_plant_moves_her_off_her_gaze() {
                 "{at} at {now}: off her seat"
             );
         }
+    }
+}
+
+/// Something new up on her shelf draws her eye (phase 6a step 8, the
+/// user's extra 2): her shelf fresh on a day of hers (a stage up, or a
+/// piece set on it), the frame says so that day and the next, not the
+/// day after that, nor a day before it, nor for a visit's count (fed,
+/// her days are game days); and fresh, her gaze up there is twice as
+/// likely, nothing else is. Saturday is game day 5. Both modes.
+#[test]
+fn something_new_up_there_draws_her_eye_for_a_day_or_two() {
+    let gaze = Want::Use(Use::GazeUp);
+    assert_eq!(
+        brain::factor(gaze, false, None, None, true),
+        2.0 * brain::factor(gaze, false, None, None, false)
+    );
+    for want in Want::ALL.into_iter().filter(|&w| w != gaze) {
+        assert_eq!(
+            brain::factor(want, false, None, None, true),
+            brain::factor(want, false, None, None, false),
+            "{want:?}"
+        );
+    }
+    let cases = [
+        (None, false),
+        (Some(Dated::Day(5)), true),
+        (Some(Dated::Day(4)), true),
+        (Some(Dated::Day(3)), false),
+        (Some(Dated::Day(6)), false),
+        (Some(Dated::Visit(1)), false),
+    ];
+    for graphics in [false, true] {
+        for (on, fresh) in cases {
+            let at = format!("graphics={graphics} fresh on {on:?}");
+            let (mut guest, real, view, mut now) =
+                plant_up(5, graphics, Facing::Right, &[], (56, USERS_FLOOR));
+            for structure in &mut guest.ledger.home.structures {
+                let Structure::Shelf(shelf) = structure;
+                shelf.fresh = on;
+            }
+            now += 250;
+            paint(&mut guest, &real, &view, now);
+            assert_eq!(visit_of(&guest).chances.fresh, fresh, "{at}");
+        }
+    }
+}
+
+/// Her gremlin up on her Users shelf (where [`plant_up`] puts her plant:
+/// columns `66..68`), turned `facing`, as [`plant_up`] has it.
+fn gremlin_up(seed: u64, graphics: bool, at: (i32, i32)) -> (Guest, Buffer, IdleView, u64) {
+    let (real, view) = rooms_frame(100, 30);
+    let mut guest = home_at(seed, sat(14, 0), &PIECES, graphics);
+    guest.ledger.home.structures.push(users_shelf());
+    assert!(guest.ledger.home.add(room::Prop {
+        item: Furniture::Gremlin,
+        ..mantel_clock()
+    }));
+    let mut now = until_visiting(&mut guest, &real, &view, 0);
+    now += 250;
+    guest.advance(now);
+    put(&mut guest, at, now);
+    paint(&mut guest, &real, &view, now);
+    (guest, real, view, now)
+}
+
+/// His tiny life, noticed (phase 6a step 8, the user's extra 1), the
+/// round trip: her gremlin turned round on his shelf by the day's draw
+/// (a home whose draw turns him today, drawn as the guest draws it when
+/// she can't see him), her next gaze up at him opens puzzled ("?") and
+/// then "Did you move...?"; once that has shown it's noticed (her
+/// guest's `turned` gone; not as the gaze begins: review of step 8), and
+/// her gaze up after that opens as ever ("hehe"). Both modes.
+#[test]
+fn she_notices_her_gremlin_turned_round_on_her_shelf() {
+    let seed = (0u64..)
+        .find(|&s| brain::gremlin_turns(s, 5))
+        .expect("a home");
+    for graphics in [false, true] {
+        let at = format!("graphics={graphics}");
+        let (mut guest, real, view, mut now) = gremlin_up(seed, graphics, (56, USERS_FLOOR));
+        let facing = |guest: &Guest| {
+            visit_of(guest)
+                .shown
+                .iter()
+                .find(|s| s.item == Furniture::Gremlin)
+                .expect("her gremlin shown")
+                .facing
+        };
+        let before = facing(&guest);
+        assert_eq!(guest.day(now).map(|d| d.day), Some(5), "{at}: Saturday");
+        assert!(guest.gremlin_turns(5), "{at}: turned by the day's draw");
+        assert!(guest.turned, "{at}: hers to notice");
+        paint(&mut guest, &real, &view, now);
+        assert_ne!(facing(&guest), before, "{at}: shown turned");
+        let mut opened = Vec::new();
+        let begun = now;
+        let mut gazing = None;
+        let mut cleared = false;
+        while opened.len() < 2 {
+            assert!(now < begun + 240_000, "{at}: gazed up {opened:?}");
+            shell_step(&mut guest, &real, &view, &mut now, true);
+            let osaka = &visit_of(&guest).osaka;
+            let span = osaka
+                .use_span()
+                .filter(|(seat, ..)| seat.what == Use::GazeUp);
+            match span {
+                Some((seat, since, _)) if gazing != Some(since) => {
+                    assert_eq!(seat.piece, PieceRef::Real(Furniture::Gremlin), "{at}");
+                    gazing = Some(since);
+                    opened.push((osaka.appearance(since), osaka.appearance(since + 1500)));
+                    // Noticed only once it has shown.
+                    assert_eq!(guest.turned, opened.len() == 1, "{at}: {now}");
+                }
+                Some((_, since, _)) if opened.len() == 1 => {
+                    let shown = now >= since + script::GAZE_UP_NOTICED_MS;
+                    assert_eq!(guest.turned, !shown, "{at}: {now}");
+                    cleared |= shown;
+                }
+                Some(_) => {}
+                None => gazing = None,
+            }
+        }
+        assert!(cleared, "{at}: noticed");
+        let curious = |bubble| (Pose::Stand, Face::Curious, Some(bubble));
+        assert_eq!(
+            opened[0],
+            (
+                curious(osaka::Bubble::Huh),
+                curious(osaka::Bubble::Say(script::DID_YOU_MOVE))
+            ),
+            "{at}: the first"
+        );
+        let pleased = (Pose::Stand, Face::Pleased, Some(osaka::Bubble::Hehe));
+        assert_eq!(opened[1], (pleased, pleased), "{at}: the next");
     }
 }

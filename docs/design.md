@@ -1807,7 +1807,8 @@ this section states what is built.
   sold then (else the queue as ever); the first such rule in the order
   she felt them; forgotten with the visit, as what she felt is, and
   wished for again once she feels it again — the moment it comes on,
-  whatever happens next. Her wall clock isn't sold: it's a gift (see
+  whatever happens next. The channel's pitch for a wished shelf kit is
+  "A shelf for the gremlin!". Her wall clock isn't sold: it's a gift (see
   *Her window and wall clock*). What she buys arrives on a later visit as a
   parcel ("A parcel!"), once she's up and in sight (not asleep or up in
   the night, not on a dash home, not between her doors, and after her
@@ -1853,7 +1854,8 @@ this section states what is built.
   [decisions](decisions.md#a-window-comes-in-where-she-can-look-out-of-it-2026-10-05)).
   She unpacks it (her strongest wish while it's there) and it
   becomes the piece. A parcel stays boxed, across visits, until she
-  finishes unpacking it. **Her shelf kit** is the one parcel not
+  finishes unpacking it. **Her shelf kit** (a flat pack: its unpack
+  ends on "Which way's up?", not "ooh") is the one parcel not
   unpacked at once: it comes in as any does (its box judged with a seat
   to open it from, whatever the frame), but its seat is offered only
   while a shelf could go up on the frame, and opened it's no piece: it
@@ -1887,7 +1889,9 @@ this section states what is built.
   have gone), and she may try again while it's due. As a stage of a
   high shelf goes up, and as she sets a piece up on one, she hops (a
   beat, arms up), if she still stands back from it (not once she has
-  set about something else); a low shelf is in her reach (why: [decisions](decisions.md#she-puts-up-a-shelf-a-stage-a-game-day-2026-10-11)).
+  set about something else); a low shelf is in her reach. After the hop
+  (on a low shelf, at once) she's pleased with it a moment ("hehe",
+  in place of her "There!" for a piece set up there) (why: [decisions](decisions.md#she-puts-up-a-shelf-a-stage-a-game-day-2026-10-11)).
 - **Furniture** (phase 3): a sofa (9×3 cells), TV (6×4), bed (10×3),
   desk (7×3), floor lamp (3×4), bookshelf (5×4), fridge (4×4), cat
   bed (4×2) and window (4×2, hung on the wall), and, just for looks, a
@@ -2079,7 +2083,22 @@ this section states what is built.
   a climb for it) just beside it, a column or two past it but still under
   the shelf's run, facing it,
   she's pleased with it a moment ("hehe"), then gazes up at it, curious,
-  20–45 s (a still use, lingered over as her mood lingers). Not her clock
+  20–45 s (a still use, lingered over as her mood lingers): about once a
+  game day where it's up, twice as likely the game day something new goes
+  up there (a stage of her shelf, or a piece she sets on it) and the next.
+  Up at her gremlin she may say one line after that moment ("Hi, little
+  guy.", "You stay up there.", "Behave, okay?", "He's watchin' me...",
+  one gaze in two, each cooling as her lines do); her plant gets the
+  moment alone. **His tiny life**: one game day in twenty, drawn at the
+  first moment that day she can't see him (never while she's awake and
+  could see it): asleep for the night with her lamp off (the day her
+  night began, so back in bed after her midnight snack it's the same
+  night's day), or out by her door to school or to work; never as she
+  says goodbye or on an errand (she's in sight). Her gremlin up on a
+  finished shelf of hers turns round (his facing written at once), and
+  her next gaze up at him opens puzzled ("?", then "Did you move...?")
+  instead, noticed once that has shown (a gaze cut before leaves it
+  hers to notice; setting him down herself sees to it too). Not her clock
   up there (a glance up tells her the time), and nothing on a floor. It's
   offered by where the piece stands, not by its kind: it asks no room of
   where a piece is set down, and no rule of her home is felt on it (why:

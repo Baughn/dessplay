@@ -7,6 +7,7 @@
 //! with her home standing empty.
 
 use super::*;
+use crate::ui::houseguest::ledger::Dated;
 use crate::ui::houseguest::sprite::Facing;
 use crate::ui::houseguest::structures::{SHELF_STAGES, Shelf, Structure, Written};
 
@@ -26,6 +27,7 @@ pub(super) fn users_shelf() -> Structure {
         },
         rise: 7,
         built: 2,
+        fresh: None,
     })
 }
 
@@ -1267,7 +1269,48 @@ fn a_plant_in_the_chat_goes_up_on_her_shelf() {
                 .any(|b| b.rule().map(|r| r.rule) == Some(rules::Rule::InChat)),
             "{at}: mended"
         );
+        // Something new up there today (phase 6a step 8), and pleased
+        // with it after her hop ("hehe").
+        assert_eq!(
+            guest.ledger.home.shelf(Nook::Users).and_then(|s| s.fresh),
+            Some(Dated::Day(1)),
+            "{at}: fresh"
+        );
+        assert!(
+            admires_within(&mut guest, &real, &view, &mut now, 2_000),
+            "{at}: never admired it"
+        );
     }
+}
+
+/// Whether she admires something ("hehe", pleased: `Act::Admire`) in the
+/// next `ms` of frames from `now`, after any hop (none once she admires).
+fn admires_within(
+    guest: &mut Guest,
+    real: &Buffer,
+    view: &IdleView,
+    now: &mut u64,
+    ms: u64,
+) -> bool {
+    let until = *now + ms;
+    let mut admired = false;
+    while *now < until {
+        let osaka = &visit_of(guest).osaka;
+        match osaka.act_name().as_str() {
+            "Admire" => {
+                assert_eq!(
+                    osaka.appearance(*now).2,
+                    Some(osaka::Bubble::Hehe),
+                    "{now}: admiring"
+                );
+                admired = true;
+            }
+            "Hop" => assert!(!admired, "{now}: a hop after admiring it"),
+            _ => {}
+        }
+        shell_step(guest, real, view, now, true);
+    }
+    admired
 }
 
 /// A piece set up on a low shelf is in her reach: arms up, and no hop
@@ -1310,12 +1353,18 @@ fn a_plant_set_up_on_a_low_shelf_gets_no_hop() {
                 .any(|p| p.item == Furniture::Plant && p.strip == shelf)
         });
         let mut now = up.unwrap_or_else(|| panic!("{at}: never put it up"));
-        let until = now + 1_000;
-        while now < until {
-            let osaka = &visit_of(&guest).osaka;
-            assert_ne!(osaka.act_name(), "Hop", "{at}: hopped at {now}");
-            shell_step(&mut guest, &real, &view, &mut now, true);
-        }
+        // Pleased with it at once, as the frame takes it (phase 6a step
+        // 8): no hop first, nor after; her "hehe" showing, not "There!"
+        // over it (the beat in its place).
+        assert_eq!(
+            visit_of(&guest).osaka.act_name(),
+            "Admire",
+            "{at}: admiring it"
+        );
+        assert!(
+            admires_within(&mut guest, &real, &view, &mut now, 1_000),
+            "{at}: never admired it"
+        );
     }
 }
 

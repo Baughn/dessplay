@@ -319,6 +319,29 @@ pub(super) fn dash(master: u64, day: u64) -> Option<u16> {
         .then(|| from + ((z >> 32) % span) as u16)
 }
 
+/// Salts the seed of her gremlin's turning round (see
+/// [`gremlin_turns`]): keeps its hash apart from every other use of the
+/// day's seed (her mood's, the midnight snack's, the dash's).
+const TURN_SALT: u64 = 0x7475_726e_5f72_6f21;
+
+/// One game day in this many, her gremlin turns round on his shelf
+/// (phase 6a step 8, the user's extra 1).
+pub(super) const TURNS_ONE_IN: u64 = 20;
+
+/// Whether her gremlin turns round on game `day`, of the home whose
+/// master seed is `master` (phase 6a step 8: his tiny life): one game
+/// day in [`TURNS_ONE_IN`], drawn at the first moment that day she falls
+/// asleep for the night or goes out by her door (her guest asks). A pure
+/// hash of the two, as [`dash`] is: neither random stream, so whether
+/// he turns never moves anything else she does.
+pub(super) fn gremlin_turns(master: u64, day: u64) -> bool {
+    let mut z = day_seed(master, day) ^ TURN_SALT;
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^= z >> 31;
+    z.is_multiple_of(TURNS_ONE_IN)
+}
+
 /// Where a want would have her, as far as her needs care.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Spot {
@@ -554,6 +577,10 @@ pub(super) enum Factor {
     Clock(When, f64),
     /// In this real-date window: this much as likely (above 1).
     Season(DateWindow, f64),
+    /// While something new is up on her shelf (phase 6a step 8: a stage,
+    /// or a piece she set on it, that game day and the next): this much
+    /// as likely (above 1).
+    Fresh(f64),
 }
 
 /// A want, as data: how much she likes it all else equal, the needs it
@@ -585,6 +612,9 @@ const AFTERNOON_FACTORS: &[Factor] = &[
     CHAT,
     Factor::Clock(When::In(SlotSet::of(&[Slot::Afternoon])), BOOST),
 ];
+/// Something new up on her shelf draws her eye that game day and the
+/// next (phase 6a step 8, the user's extra 2).
+const GAZE_UP_FACTORS: &[Factor] = &[Factor::Fresh(BOOST)];
 /// The evening is the TV's.
 const WATCH_FACTORS: &[Factor] = &[
     CHAT,
@@ -804,10 +834,13 @@ impl Want {
                 LOOK_OUT_FACTORS,
             ),
             // Gazing up at what's on her shelf (phase 6a D8): a daydream,
-            // a little less than gazing at nothing in particular (6, 0.5)
-            // and no fun to wear thin. Only ever on offer with a piece on
-            // her shelf, from its room's floor.
-            Self::Use(Use::GazeUp) => row(5.0, &[(Need::Daydreams, 0.4)]),
+            // no fun to wear thin. Only ever on offer with a piece on her
+            // shelf, from its room's floor, so it's rarely among her
+            // offers: base 8 has her gaze up about once a game day there
+            // (the user's sixth round; 1.19 in `day_census`'s shelf room,
+            // where base 5 gave 0.05 and base 10 2.83), and twice as
+            // likely with something new up there (step 8).
+            Self::Use(Use::GazeUp) => with(row(8.0, &[(Need::Daydreams, 0.4)]), GAZE_UP_FACTORS),
             // Only on offer while a rule she has felt is broken and her
             // mood leaves her something to do about it: nesting is all
             // it answers.
@@ -826,13 +859,15 @@ impl Want {
 
 /// How much likelier `want` is for its factors: `into_chat` (where it
 /// would take her is in the chat pane), at her routine's `day`, on the
-/// real `date`. Without a day or a date, exactly as likely as without
-/// her routine or the calendar: each such factor is 1.
+/// real `date`, with something new up on her shelf (`fresh`). Without a
+/// day or a date, exactly as likely as without her routine or the
+/// calendar: each such factor is 1.
 pub(super) fn factor(
     want: Want,
     into_chat: bool,
     day: Option<&DayTime>,
     date: Option<NaiveDate>,
+    fresh: bool,
 ) -> f64 {
     want.def()
         .factors
@@ -848,6 +883,8 @@ pub(super) fn factor(
                 times
             }
             Factor::Season(..) => 1.0,
+            Factor::Fresh(times) if fresh => times,
+            Factor::Fresh(_) => 1.0,
         })
         .product()
 }
@@ -986,6 +1023,58 @@ mod tests {
             .count();
         assert!((250..420).contains(&both), "{both}");
     }
+
+    /// Her gaze up's weight as measured (phase 6a step 8, the user's sixth
+    /// round): base 8, her daydreams 0.4, twice as likely fresh. A pin,
+    /// so a change is made on purpose: the census that set it,
+    /// `tests::census::day_census` (ignored; about 15 s in release),
+    /// asserts 0.7 to 1.5 gazes up a game day in its shelf room, and is
+    /// to be run again with any change here (base 5 gave 0.05).
+    #[test]
+    fn her_gaze_up_weighs_as_measured() {
+        let def = Want::Use(Use::GazeUp).def();
+        assert_eq!(def.base, 8.0);
+        assert_eq!(def.serves, &[(Need::Daydreams, 0.4)]);
+        assert_eq!(def.factors.len(), 1);
+        assert!(matches!(def.factors[0], Factor::Fresh(f) if f == BOOST));
+    }
+
+    /// Her gremlin's turning round is a pure function of the home and the
+    /// game day (phase 6a step 8): the same every time (pinned for a few
+    /// homes and days, so a change to its salt or mix is a change on
+    /// purpose), about one game day in twenty (a band over 8000 days),
+    /// and not the dash's or the midnight snack's draw over again.
+    #[test]
+    fn the_gremlin_turns_by_the_home_and_day() {
+        let pinned = TURNS_PINNED;
+        for (master, day, turns) in pinned {
+            assert_eq!(
+                gremlin_turns(master, day),
+                turns,
+                "home {master}, day {day}"
+            );
+        }
+        assert!(pinned.iter().any(|&(.., t)| t) && pinned.iter().any(|&(.., t)| !t));
+        let days = (0..800u64)
+            .flat_map(|master| (0..10).map(move |day| (master, day)))
+            .filter(|&(master, day)| gremlin_turns(master, day))
+            .count();
+        assert!((330..480).contains(&days), "{days} in 8000");
+        let with_dash = (0..20_000u64)
+            .filter(|&m| gremlin_turns(m, 3) && dash(m, 3).is_some())
+            .count();
+        assert!((250..420).contains(&with_dash), "{with_dash}");
+    }
+
+    /// [`the_gremlin_turns_by_the_home_and_day`]'s pins.
+    const TURNS_PINNED: [(u64, u64, bool); 6] = [
+        (0, 0, false),
+        (0, 1, false),
+        (1, 0, false),
+        (2, 0, true),
+        (3, 4, true),
+        (4, 2, true),
+    ];
 
     fn all() -> Vec<Want> {
         let mut offers = vec![
@@ -1202,7 +1291,9 @@ mod tests {
     fn sane_factor(factor: Factor) -> bool {
         match factor {
             Factor::InChat(times) => times > 0.0 && times < 1.0,
-            Factor::Clock(_, times) | Factor::Season(_, times) => times > 1.0 && times.is_finite(),
+            Factor::Clock(_, times) | Factor::Season(_, times) | Factor::Fresh(times) => {
+                times > 1.0 && times.is_finite()
+            }
         }
     }
 
@@ -1427,11 +1518,15 @@ mod tests {
         ];
         let dates = [None, ymd(2027, 3, 5)];
         for want in Want::ALL {
-            assert_eq!(factor(want, true, None, None), chat_of(want), "{want:?}");
+            assert_eq!(
+                factor(want, true, None, None, false),
+                chat_of(want),
+                "{want:?}"
+            );
             for day in &days {
                 for &date in &dates {
-                    let out = factor(want, false, day.as_ref(), date);
-                    let into = factor(want, true, day.as_ref(), date);
+                    let out = factor(want, false, day.as_ref(), date, false);
+                    let into = factor(want, true, day.as_ref(), date, false);
                     assert_eq!(into, out * chat_of(want), "{want:?} {day:?} {date:?}");
                 }
             }
@@ -1482,8 +1577,8 @@ mod tests {
                 for minute in (0..1440).step_by(15) {
                     let now = day_at(day, minute, vacation);
                     for want in Want::ALL {
-                        assert_eq!(factor(want, false, None, None), 1.0, "{want:?}");
-                        let times = factor(want, false, Some(&now), None);
+                        assert_eq!(factor(want, false, None, None, false), 1.0, "{want:?}");
+                        let times = factor(want, false, Some(&now), None, false);
                         if expected(want, &now) {
                             assert!(times > 1.0, "{want:?} at {now}");
                             seen.insert(want);
@@ -1492,18 +1587,29 @@ mod tests {
                         }
                         // In the chat, the boost is on top of the chat's
                         // (a row's own slice keeps it: see `chat_of`).
-                        let in_chat = factor(want, true, Some(&now), None);
+                        let in_chat = factor(want, true, Some(&now), None, false);
                         assert_eq!(in_chat, chat_of(want) * times, "{want:?} at {now}");
                     }
                 }
             }
         }
         assert_eq!(seen.len(), 10, "{seen:?}");
+        // Something new up on her shelf (phase 6a step 8): her gaze up
+        // there, and nothing else, whatever the time.
+        for want in Want::ALL {
+            let fresh = factor(want, false, None, None, true);
+            let up = if want == Want::Use(Use::GazeUp) {
+                BOOST
+            } else {
+                1.0
+            };
+            assert_eq!(fresh, up, "{want:?}");
+        }
         // Read's evening is before a day off: Friday's, not Thursday's.
         let thursday = day_at(10, 19 * 60, false);
         let friday = day_at(11, 19 * 60, false);
-        assert_eq!(factor(read, false, Some(&thursday), None), 1.0);
-        assert!(factor(read, false, Some(&friday), None) > 1.0);
+        assert_eq!(factor(read, false, Some(&thursday), None, false), 1.0);
+        assert!(factor(read, false, Some(&friday), None, false) > 1.0);
         // The seasons: exams and panic week for homework, hay fever for
         // sneezing; each only on its dates, and none without a date.
         let afternoon = day_at(8, 16 * 60, false);
@@ -1519,7 +1625,7 @@ mod tests {
             (ymd(2027, 8, 25), true, false),
             (ymd(2027, 8, 31), true, false),
         ] {
-            let up = |want: Want| factor(want, false, Some(&afternoon), date) > 1.0;
+            let up = |want: Want| factor(want, false, Some(&afternoon), date, false) > 1.0;
             assert_eq!(up(homework), homework_up, "{date:?}");
             assert_eq!(
                 up(Want::Idle(Activity::FloorHomework)),
@@ -1529,7 +1635,10 @@ mod tests {
             assert_eq!(up(Want::Sneeze), sneeze_up, "{date:?}");
             // The date's, whatever the time of day (her mind is given a
             // date only with her day: see `Osaka::choose_next`).
-            assert_eq!(factor(homework, false, None, date) > 1.0, homework_up);
+            assert_eq!(
+                factor(homework, false, None, date, false) > 1.0,
+                homework_up
+            );
         }
     }
 
