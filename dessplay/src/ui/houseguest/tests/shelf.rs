@@ -9,7 +9,8 @@
 use super::*;
 use crate::ui::houseguest::ledger::Dated;
 use crate::ui::houseguest::sprite::Facing;
-use crate::ui::houseguest::structures::{SHELF_STAGES, Shelf, Structure, Written};
+use crate::ui::houseguest::structures::{SHELF_STAGES, SHELF_WIDTH, Shelf, Structure, Written};
+use tuirealm::ratatui::style::Color;
 
 /// Her shelf on [`rooms`] at 100×30, in Users (`50, 0, 50, 13`): `Left`
 /// 12, rise 7, so its run is columns `63..73` of row 5, its margin two
@@ -1771,6 +1772,232 @@ fn the_stage_puts_her_shelf_up_where_one_fits() {
             assert!(!on.boxed(), "{at}");
         }
     }
+}
+
+/// The client's own layout at 191×46 (its pane borders in the theme's
+/// colours), the shelf the stage puts up there (`Scene::Shelf`, on a guest
+/// of its own), and the frame with its pane's bottom border under the
+/// run's middle (`from + 5`) recoloured [`TINT`]: unlike the theme's border
+/// ink (every unfocused pane's) and the border cells beside it, so a
+/// shelf drawn in its pane's border ink reads [`TINT`] only by reading
+/// that cell. The shelf, its run's first column, its row and floor, and
+/// the tinted frame.
+fn tinted_users_terminal() -> (Shelf, (u16, u16, u16), Buffer, IdleView) {
+    let (real, view) = real_frame(&mut real_ui(), 191, 46);
+    let mut staged = Guest::new(1);
+    staged.cue(Scene::Shelf);
+    paint(&mut staged, &real, &view, 0);
+    let note = staged.cue_note().cloned();
+    assert!(matches!(note, Some(Ok(_))), "{note:?}");
+    let [Structure::Shelf(shelf)] = staged.ledger.home.structures[..] else {
+        panic!("one shelf: {:?}", staged.ledger.home.structures);
+    };
+    let (from, y, floor) = run_from_record(shelf, &view);
+    for x in [from + 4, from + 5, from + 6] {
+        let fg = real[(x, floor)].fg;
+        assert!(
+            fg != Color::Reset && fg != TINT,
+            "the fixture's border at {x} has an ink of its own: {fg:?}"
+        );
+    }
+    let mut tinted = real;
+    tinted[(from + 5, floor)].set_fg(TINT);
+    (shelf, (from, y, floor), tinted, view)
+}
+
+/// [`tinted_users_terminal`]'s border ink under the run's middle.
+const TINT: Color = Color::Magenta;
+
+/// Her shelf as the user's terminal shows it (phase 6a step 9, the
+/// Tests' "Look"): on [`tinted_users_terminal`], the stage's shelf
+/// (`Scene::Shelf`), worked out from its record and its pane's rect
+/// alone: in ASCII, its row reads `┬────────┬` in its pane's border ink
+/// (the bottom border's fg under the run's middle: [`TINT`] there, not the
+/// theme's border colour nor a neighbour's), and her plant stands on it,
+/// centred, and her gremlin at its right end, each in its own drawing and
+/// ink, its bottom row on the row above the run.
+#[test]
+fn her_shelf_looks_as_drawn_in_ascii() {
+    let (staged, (from, y, _), tinted, view) = tinted_users_terminal();
+    let mut guest = Guest::new(1);
+    guest.cue(Scene::Shelf);
+    paint(&mut guest, &tinted, &view, 0);
+    let [Structure::Shelf(shelf)] = guest.ledger.home.structures[..] else {
+        panic!("one shelf: {:?}", guest.ledger.home.structures);
+    };
+    assert_eq!(shelf, staged, "the same spot on the tinted frame");
+    assert_eq!(shelf.built, SHELF_STAGES);
+    // Her gremlin at its right end, beside her plant.
+    assert!(guest.ledger.home.add(room::Prop {
+        strip: room::Strip::Shelf(shelf.nook),
+        anchor: Some(room::Anchor {
+            side: room::Side::Right,
+            offset: 0,
+        }),
+        ..room::Prop::new(Furniture::Gremlin, shelf.nook, 0, sprite::Facing::Left)
+    }));
+    let frame = paint(&mut guest, &tinted, &view, 50);
+    let row: String = (from..from + 10)
+        .map(|x| frame[(x, y)].symbol().to_owned())
+        .collect();
+    assert_eq!(row, GLYPHS, "{shelf:?}");
+    for x in from..from + 10 {
+        assert_eq!(frame[(x, y)].fg, TINT, "the shelf's ink at {x}");
+    }
+    // Each piece on it, as its ASCII drawing reads, in its ink.
+    let width = u16::try_from(SHELF_WIDTH).expect("a shelf's width");
+    for (item, facing, left) in [
+        (
+            Furniture::Plant,
+            sprite::Facing::Right,
+            from + (width - Furniture::Plant.spec().footprint.0) / 2,
+        ),
+        (
+            Furniture::Gremlin,
+            sprite::Facing::Left,
+            from + width - Furniture::Gremlin.spec().footprint.0,
+        ),
+    ] {
+        let (cols, rows) = item.spec().footprint;
+        let ink = super::super::prop_ink(item, view.truecolor);
+        let mut drawn = 0;
+        for dy in 0..rows {
+            for dx in 0..cols {
+                let Some(glyph) = room::glyph(item, facing, dx, dy) else {
+                    continue;
+                };
+                let cell = &frame[(left + dx, y - rows + dy)];
+                assert_eq!(
+                    (cell.symbol(), cell.fg),
+                    (glyph.to_string().as_str(), ink.fg),
+                    "her {item:?} at ({}, {})",
+                    left + dx,
+                    y - rows + dy
+                );
+                drawn += 1;
+            }
+        }
+        assert!(drawn >= 4, "her {item:?} drawn: {drawn} cells");
+    }
+}
+
+/// Her shelf in line art (phase 6a step 9, the Tests' "Look"): a piece
+/// standing on it is one image that redraws the run under it, so her
+/// gremlin at the run's left end and her plant at its right carry, between
+/// them, both brackets and the run, each keyed in the shelf's ink (its
+/// pane's border colour under the run's middle: [`TINT`] on
+/// [`tinted_users_terminal`], not the theme's border colour nor a
+/// neighbour's), and composed: each of those cells' pixels in its image
+/// carry that colour (the line drawn, not only keyed).
+#[test]
+fn her_shelf_reaches_her_images_in_its_pane_s_ink() {
+    let (shelf, (from, y, _), tinted, view) = tinted_users_terminal();
+    let ink = graphics::rgb(TINT);
+    let on_it = |item, side, offset| room::Prop {
+        strip: room::Strip::Shelf(shelf.nook),
+        anchor: Some(room::Anchor { side, offset }),
+        ..room::Prop::new(item, shelf.nook, 0, sprite::Facing::Right)
+    };
+    let mut guest = home_at(1, tue(15, 0), &[], true);
+    guest.ledger.home.structures.push(Structure::Shelf(shelf));
+    assert!(
+        guest
+            .ledger
+            .home
+            .add(on_it(Furniture::Gremlin, room::Side::Left, 0))
+    );
+    assert!(
+        guest
+            .ledger
+            .home
+            .add(on_it(Furniture::Plant, room::Side::Right, 0))
+    );
+    let now = until_visiting(&mut guest, &tinted, &view, 0);
+    let art = guest.graphics.as_mut().expect("line art");
+    art.take_lines();
+    art.take_shots();
+    paint(&mut guest, &tinted, &view, now + 50);
+    let State::Visiting(visit) = &guest.state else {
+        panic!("visiting");
+    };
+    let up: Vec<(Furniture, i32)> = visit
+        .shown
+        .iter()
+        .filter(|s| s.on_shelf())
+        .map(|s| (s.item, s.left))
+        .collect();
+    let (from_i, y_i) = (i32::from(from), i32::from(y));
+    assert!(
+        up.contains(&(Furniture::Gremlin, from_i)) && up.contains(&(Furniture::Plant, from_i + 7)),
+        "both up, at its ends: {up:?}"
+    );
+    let art = guest.graphics.as_mut().expect("line art");
+    let lines = art.take_lines();
+    let shots = art.take_shots();
+    let run: Vec<(i32, char, [u8; 3])> = lines
+        .iter()
+        .filter(|&&(x, ly, ..)| ly == y_i && (from_i..from_i + 10).contains(&x))
+        .map(|&(x, _, c, rgb)| (x, c, rgb))
+        .collect();
+    let want: Vec<(i32, char, [u8; 3])> = [0, 1, 7, 8, 9]
+        .into_iter()
+        .map(|dx| (from_i + dx, GLYPHS.chars().nth(dx as usize).unwrap(), ink))
+        .collect();
+    for cell in &want {
+        assert!(run.contains(cell), "{cell:?} in her images: {run:?}");
+    }
+    assert!(
+        run.iter().all(|&(.., rgb)| rgb == ink),
+        "every shelf cell keyed in its ink {ink:?}: {run:?}"
+    );
+    // Composed: the pixels of the run's cells in the images over them
+    // hold the line in its ink, both brackets' cells and each image's
+    // part of it (what stands on the run covers some of its pixels: the
+    // plant's pot all of one cell's).
+    let lit = |x: i32| -> usize {
+        let (ux, uy) = (u16::try_from(x).unwrap(), y);
+        let (image, rect) = shots
+            .iter()
+            .find(|(_, rect)| rect.contains((ux, uy).into()))
+            .unwrap_or_else(|| panic!("an image over {x}"));
+        let (cw, ch) = (
+            image.width() / u32::from(rect.width),
+            image.height() / u32::from(rect.height),
+        );
+        let (ox, oy) = (u32::from(ux - rect.x) * cw, u32::from(uy - rect.y) * ch);
+        (oy..oy + ch)
+            .flat_map(|py| (ox..ox + cw).map(move |px| (px, py)))
+            .filter(|&(px, py)| image.get_pixel(px, py).0 == [ink[0], ink[1], ink[2], 255])
+            .count()
+    };
+    for x in [from_i, from_i + 9] {
+        assert!(lit(x) > 0, "the bracket at {x} drawn in {ink:?}");
+    }
+    for image in [from_i..from_i + 2, from_i + 7..from_i + 10] {
+        let drawn: usize = image.clone().map(lit).sum();
+        assert!(drawn > 0, "the run under {image:?} drawn in {ink:?}");
+    }
+}
+
+/// Her shelf's run worked out from its record and its pane's rect alone
+/// (the tests' one oracle for it: the stage test, the look tests, the
+/// census rooms'): its first column, its row, and its pane's floor (the
+/// bottom border's row).
+pub(super) fn run_from_record(shelf: Shelf, view: &IdleView) -> (u16, u16, u16) {
+    let pane = view
+        .nooks
+        .iter()
+        .find(|(n, _)| *n == shelf.nook)
+        .unwrap_or_else(|| panic!("its pane: {shelf:?}"))
+        .1;
+    let (left, right) = (pane.x + 1, pane.right() - 1);
+    let floor = pane.bottom() - 1;
+    let width = u16::try_from(SHELF_WIDTH).expect("a shelf's width");
+    let from = match shelf.anchor.side {
+        room::Side::Left => left + shelf.anchor.offset,
+        room::Side::Right => right - shelf.anchor.offset - width,
+    };
+    (from, floor - shelf.rise, floor)
 }
 
 /// Cue the stage's shelf on `guest` and paint the frame it plays on: that

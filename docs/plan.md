@@ -1,6 +1,6 @@
 # DessPlay Implementation Plan
 
-Last updated: 2026-10-10
+Last updated: 2026-10-12
 
 The initial 10 phases are bottom-up; later numbered phases capture feature
 batches. Each phase produces testable artifacts. The first
@@ -3919,6 +3919,204 @@ with a piece's floor row, `fits` must ask for its own shelf's cells
 **Still open from the door batch** (above, *Open, for the user*): (a),
 (c), (d), (f), (g), (h) and the found-not-fixed list; parked, not part
 of phase 6 unless the user says so.
+
+### Phase 6a — shelves and the gremlin (done 2026-10-12)
+
+Built as the [working design](proposals/2026-10-02-houseguest-mind/phase6a-design.md)
+says, with its seven rounds of the user's answers, its amendments and
+each step's "As built" (the design's Steps); its code maps are
+[phase6/map-terrain.md](proposals/2026-10-02-houseguest-mind/phase6/map-terrain.md)
+and [phase6/map-life.md](proposals/2026-10-02-houseguest-mind/phase6/map-life.md),
+its four critiques sit in `phase6/`, the gremlin's approved art is in
+[phase6/art/](proposals/2026-10-02-houseguest-mind/phase6/art/) (its
+`snippets.md` now says what was wired), and real game frames for the
+user's eye are in [phase6/shots/](proposals/2026-10-02-houseguest-mind/phase6/shots/)
+(README lists them). The rules are in design.md (*Getting furniture*,
+*Structures*, *Furniture* and its strips, *Wall pieces*, *Rooms from
+contents*, *Using her furniture*, *The rules of her home*, the paint's
+order, *Her record*) and the reasons in decisions.md (*Her structures are
+the UI's own lines*, *A shelf hangs as high as fits*, *She puts up a
+shelf, a stage a game day*, *The gremlin wants up high*). Each step was
+implemented tests first, reviewed twice (correctness, and tests proven
+by mutants) and fixed; each commit carries its red-first evidence and
+its golden check. The golden traces and terrain snapshots are
+byte-identical across the whole phase (no golden scene has a structure,
+a kit or a gremlin). Nothing was pushed mid-phase; `stable` was not
+moved (no protocol change).
+
+**What was built, by step:**
+- **1.** Strips learn a shelf variant (`Strip::Shelf`), one admission
+  rule (`takes`: small decor only on a shelf), rooms are floors, and
+  the sites that zipped panes with strips by position read the strip.
+- **2a.** Her record keeps her structures (a shelf: pane, anchor, rise,
+  stages up), read before her pieces, entry by entry; older builds
+  ignore it (measured against the frozen pre-shelf reader).
+- **2b.** `read_ground`: her shelf written into the frame once a paint,
+  before anything reads it, all of it or none, on blank free cells, in
+  its pane's border ink; kept by the arm that shows her home, undone by
+  every other; it rains out with her goodbye; never floor nor pole of
+  hers; her door never on its run. The one departure from the brief's
+  wording is in the brief above (it runs before `layer.validate`).
+- **3.** Small decor stands on a finished shelf (only on its written
+  cells), a repair puts it up there, and it counts for the room below's
+  beauty; step 3's measurement of where shelves fit is above.
+- **4.** A low shelf keeps the wall lane beside it (its block, margin
+  included: the user's call), so her poster and clock hang clear of it.
+- **5a.** `shelf_spot`: as high as fits, mid-wall, on a row clear of
+  text, by a brute-force oracle; the stage can put one up.
+- **5b.** The shelf kit: sold last, only on a frame a shelf could go up
+  on; through her door's flap; never out of its box; opened only then.
+- **5c.** Putting it up: two stages, the first chained straight after
+  opening, at most one a game day (saved, so a restart doesn't reset
+  it), arms up ("Up it goes..."), a hop on a high shelf.
+- **6.** Her gaze up at her plant on her shelf (`Use::GazeUp`, from its
+  room's floor, under the run, 20–45 s; tuned in step 8 to about once a
+  game day).
+- **7.** The gremlin (variant A), his rule (`High`: he wants up on a
+  shelf, felt in his room on sight), and the wishlist (a felt rule's kit
+  first in the channel's queue; "A shelf for the gremlin!").
+- **8.** The four extras: his tiny life (he turns round while she can't
+  see him; "?", "Did you move...?"), her lines up at him, more gazing
+  for a day or two after something new goes up, her pleased beat after
+  each stage and set-down, and the flat-pack gag ("Which way's up?").
+  After it, the user's seventh round: his line stops once the kit is
+  ordered, till her shelf is up.
+- **9.** This record; the census rooms with her shelf; `shelf_shots`;
+  the look tests (her shelf's cells and ink in ASCII on the user's
+  terminal, and in line art the run and brackets keyed into the images
+  of what stands on it, in its pane's ink); the frozen pre-6a
+  `hung_clear` copy deleted; design.md read through; CLAUDE.md,
+  `snippets.md`.
+
+Two fixes outside the steps: after 5a, a repair search's cost (a perf
+fix; no behaviour change), and after 6, her door's wall chosen once her
+pieces have moved (a pre-6a bug the deep pass found: an older home's
+window could go missing).
+
+**The user's answers** (each in the design's *User decisions* and
+*Questions for the user*): the split in three; per game-day pacing;
+kits; off the sides; door rules hold; the gremlin and small decor on a
+shelf; the payoff (beauty, the gaze up). Second round: highest that
+fits; the plant and clock go up only by a repair; the four lines;
+variant A. Third: the user's 191×46; the little hop; the brackets; all
+four extras. Fourth: high means standable; the hop is for high shelves;
+built as workflows. Fifth: a styled blank hides the shelf; the low
+block spans its margin; the stage's mantel clock. Sixth: the put-up pace
+kept; a gaze up about once a game day; no settling chain; a nudged seat
+moves her (after 6a). Seventh: his line stops once the kit is ordered;
+"hehe" in place of "There!" on a shelf; one gaze in two; ASCII `oo`/`ww`.
+
+**Census, band and stillness** (step 9, at `01c7076c`'s behaviour; logs
+in the job's scratchpad `s9/`, the shelf rooms re-run after the review
+fixes in `s9fix/`). No threshold or weight was changed.
+- *The band* (`--profile band`, `CENSUS_BAND_SEEDS=64`, release): its
+  rooms have no shelf, and every cell reads as at the door batch's end
+  (home Ordinary chat 21.0%, quiet 20.8%; resident Industrious chat
+  14.4%, quiet 15.0%; spreads home 2.66, resident 2.43). The same two
+  lines fail as before 6a, identically: the stage's industrious chat
+  (9.0% at its floor of 9) and the stage's spread (1.50 under 1.60).
+- *The rooms with her shelf* (tests/census.rs; `CENSUS_ROOMS=shelf`):
+  step 6's `shelf_room` (the resident's 100×30, a high Users shelf, her
+  plant; `SHELF_HOME`: sofa, TV, window); `wide_room`/`wide_shelf_room`
+  (the user's 191×46 with an evening's content, the same three pieces,
+  without and with her shelf: high, her plant and gremlin on it); and
+  `low_shelf_room` (the census home's 9-row panes, its seven pieces
+  with her poster and window, a low shelf with her gremlin on it, her
+  poster beside its block). Each shelf is staged as in play: her
+  gremlin waits on her living room's floor (her sofa's pane) as it goes
+  up, so `shelf_spot` puts it in his pane (Users or the Playlist by the
+  seed at 191×46; Users or the Playlist in the low room). As first
+  built (before step 9's review) the 191×46 shelf was staged with no
+  gremlin waiting and went up in The List, the first pane in order,
+  away from her sofa and TV: a room that doesn't happen. The fed
+  afternoon (line art, 17 min, 20 × 4 seeds), moving % in sight /
+  set-offs a minute, quiet and with chat:
+
+  | room | lazy | ordinary | dreamy | industrious |
+  |---|---|---|---|---|
+  | resident+shelf | 6.5 / 0.57, 6.5 / 0.62 | 12.3 / 1.19, 11.6 / 1.23 | 11.5 / 1.22, 11.0 / 1.26 | 16.2 / 1.35, 14.7 / 1.41 |
+  | 191×46, no shelf | 23.7 / 1.29, 25.3 / 1.53 | 34.3 / 2.07, 35.8 / 2.30 | 36.4 / 2.18, 37.1 / 2.40 | 41.2 / 2.42, 39.7 / 2.71 |
+  | 191×46 + shelf | 23.6 / 1.30, 25.2 / 1.53 | 34.4 / 2.09, 36.0 / 2.32 | 35.9 / 2.20, 36.5 / 2.41 | 41.0 / 2.42, 39.7 / 2.72 |
+  | home + low shelf | 9.8 / 0.57, 10.4 / 0.65 | 20.7 / 1.22, 20.0 / 1.33 | 20.8 / 1.27, 19.7 / 1.34 | 29.7 / 1.67, 27.8 / 1.82 |
+
+  The resident's and the low shelf's rooms sit inside the band in every
+  cell (the low shelf's beside the census home's own: 11.3 / 21.8 /
+  29.9 at its tuning). **The user's 191×46 is out of the band whether
+  or not her shelf is up** (the shelf moves no cell by more than 0.5
+  points): its evening's text in her reach has her pulling and swapping
+  letters (a fifth to a quarter of her time moving), a finding about
+  that screen, not about the shelf; never measured before (the band's
+  rooms are 100 wide).
+- *Her days* (`day_census`, 6 runs a room, 42 game days): look-outs /
+  gazes up a game day: resident+shelf 7.76 / 1.19 (step 8's tuning);
+  191×46 no shelf 5.10 / -, with her shelf 5.12 / 0.76; home + low
+  shelf 5.55 / **1.93**. Look-outs stay in the user's 2–6 where they're
+  judged. The gaze up follows the time she spends on her shelf's floor:
+  at 191×46 inside step 8's 0.7–1.5 (only `shelf_room` is pinned to it;
+  step 9's rooms print); in the low room, whose two panes hold her
+  sofa, TV and desk, over it. (As first staged, the 191×46 shelf in The
+  List read 0.17.) The visit census (16 unfed visits, both modes): she
+  gazes up on 1 visit in 16 at 191×46, 6 in 16 in the low room, 3 in 16
+  in `shelf_room`.
+- *The shelf census* (`shelf_census`, 32 seeds, unchanged since step
+  8's fix): her shelf finished 0.63 game days from her kit's coming (sd
+  0.01, max 0.65; stage 2 the next morning, as the user kept); her
+  gremlin up 32 of 32, her kit sold first in 32, 3.97 game days from his
+  coming to him up (sd 0.82, max 7.64), his line on 3.16 game days a
+  run, none with her shelf coming.
+- *Deep runs*: `PROPTEST_CASES=256 --release --profile deep -p dessplay
+  houseguest` 1130/1130 at step 9; the perf tests (`--profile full
+  --release`) 4/4 (none has a shelf); the workspace gate green at every
+  step.
+- *The perf look* (step 9's review; the ignored
+  `gremlin::perf_look_at_his_room`, release, run alone): her gremlin on
+  Users' floor where no shelf fits, she industrious in his room ten
+  minutes, a status-line clock ticking each second: `kit_room` asks
+  `shelf_spot` 298 times (0.5 a second, while she stands in his room
+  unfelt; 6 with the clock still), each 23 µs on that 100×30 frame and
+  30 µs on the user's 191×46 crowded likewise: about 15 µs a second, no
+  change in the visit's wall time (217 µs a paint either way). Her
+  gremlin's tiny life asks `out_of_sight` each tick: 17 ns a call
+  asleep. `Visit.shelf_asked`'s frame at 191×46 is 411 KiB (8786 cells
+  of 48 bytes), held for the visit once `kit_room` has asked. Nothing to
+  fix for cost; the frame held is left to the user (below).
+
+**Open, for the user:**
+- **His parcel's look** (`phase6/shots/his-parcel.png`): the 5 × 2
+  parcel scaled into his 2 × 2 footprint, a tiny box. Fine, or a box of
+  its own for a 2-wide piece?
+- **Where a shelf goes with no gremlin waiting**: `shelf_spot` puts her
+  shelf in her gremlin's pane while he waits on a floor (the census
+  rooms now), else her kit's (where its parcel landed), else the first
+  pane in order, not her living room. With her gremlin it's where he is
+  (his pane, often her living room); without him it may go up in a room
+  she seldom stands in (at 191×46, The List: 0.17 gazes up a game day
+  as first staged). Should a shelf with no gremlin waiting prefer the
+  room she spends her time in (her sofa's or seat's pane)?
+- **Her gaze up over her living room runs high**: 1.93 a game day in
+  the low room (the census home: its two panes hold her sofa, TV and
+  desk, so she's mostly on its floor), over "about once a game day"
+  (your sixth round; step 8 tuned it to 1.19 in `shelf_room`, and the
+  user's 191×46 reads 0.76). Keep it (more where she lives under it),
+  or damp it by time on its floor?
+- **The user's 191×46 is out of the stillness band** (above), shelf or
+  none: a finding for a later look at text-rich screens.
+
+**Found, not fixed** (each in the design's as-built notes or the
+hand-off notes): `room::fits` stands a shelf piece on any written cell
+(right while she has one shelf; 6b/6c must key it by structure, above);
+`shelf_spot`'s low block check has no test of its own while the
+poster and the clock fill both its rows (`blocked` is 0 in its
+companion: add a case when a hung kind that doesn't fill both comes;
+the hung pieces' side of the block is held by the hung shelved long
+visit added in step 9's review); a shelf shown with no
+place for him on it (text in the rows over its run, or the run full)
+still has her feel and say his line once a game day; a resize mid-unpack leaves her at the box's old
+spot for its few seconds; a carried piece isn't drawn in her arms in
+line art (as before 6a); and `Visit.shelf_asked` holds a whole frame
+(411 KiB at 191×46: the perf look above) once `kit_room` has asked,
+for the visit; a hash of the frame, or the rows `shelf_spot` reads,
+would do (left to the user: cost, not a bug).
 
 ### Later (ideas, the user)
 

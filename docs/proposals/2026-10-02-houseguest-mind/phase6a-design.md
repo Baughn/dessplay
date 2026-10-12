@@ -1074,6 +1074,37 @@ read through; CLAUDE.md's index line for this design; plan.md's record; `snippet
 counts `blocked` 0): when a hung kind that doesn't fill both rows comes (or in a hung long visit of this step's), add a
 case where the block alone refuses, and assert `blocked > 0` in `shelves_hang_high_low_and_nowhere`.
 
+**As built (2026-10-12).** The look tests are guards (a mutant writing the shelf in `Color::Reset` turns both red):
+`tests/shelf.rs` `her_shelf_looks_as_drawn_in_ascii` (the stage's shelf on the client's own layout at 191×46, whose
+borders have the theme's ink: the run's ten cells and their fg, the plant's cells and ink, from the record and the
+pane's rect alone) and `her_shelf_reaches_her_images_in_its_pane_s_ink` (the gremlin at the run's left end and the
+plant at its right: both brackets and the run in the images' redrawn lines, in the border's rgb), read through a new
+`#[cfg(test)] Graphics::take_lines` (the line cells each painted image redraws, on screen). The census rooms (Census,
+below) are `wide_room`/`wide_shelf_room` (the design's "`shelf_room()` at 191×46": step 6 had taken the name for the
+resident's 100×30 room, kept) and `low_shelf_room`, through `Room.shelf: Shelved` (`No`, `Users`: step 6's, and
+`Staged(more)`: put up where the stage's `Scene::GazeUp` puts one on the room's frame, on a guest of its own, then
+`more` beside it); a gate test `the_shelf_rooms_put_her_shelf_up` holds them to their docs. The low room owns her
+window too, so her look-outs compete. The bare 191×46 twin was added when the shelf room read out of the band: it
+reads the same (plan.md's record). `shelf_shots` (tests/shelf_shots.rs) runs in release with `cargo test` (past
+nextest's 60 s kill); away.rs's `film`/`Shot` gained `her` and `contact_sheet_round` (a crop size and centre). The
+frozen `hung_clear_before_6a` and `hung_clear_is_as_it_was_with_no_shelf` are deleted. Not done: the block rule's own
+case (no hung kind leaves a block row free; the trap stands), and a hung long visit. Goldens byte-identical.
+
+**Review fixes (2026-10-12).** The census's staged shelves are staged as in play: `Shelved::Staged(more)` puts `more`
+(her gremlin) on her living room's floor (her sofa's pane) before the stage's `Scene::GazeUp` works the shelf out, so
+`shelf_spot` puts it in his pane, then moves him up; both step 9 rooms are staged so (as first built, the 191×46 shelf
+went up in The List, the first pane in order, with no gremlin waiting: a room that doesn't happen; its 0.17 gazes up a
+game day are now 0.76). The gate test pins the pane (her sofa's) and shares one oracle for the run
+(`tests/shelf.rs` `run_from_record`; structures.rs's own oracles stay its own, with the half-run cases). The look tests
+recolour the host border's cell under the run's middle (Magenta) so they pin "its pane's border ink" and not the theme's
+colour, pin the gremlin in ASCII beside the plant, and check the composed pixels in line art. `shelf_shots` shoots a
+stage's hop on the first frame its whole built run shows (stage 2's tile had shown the half shelf). Added a shelved long
+visit with hung pieces (`long_visits_with_a_shelf_and_hung_pieces_never_touch_what_is_protected`, poster and clock given
+after the shelf is up) and its companion: a low shelf with no block at all now turns it red (the earlier shelved visits
+stay green); `hung_clear`'s own read of the block alone does not (another site lays the block too), so the trap's
+`shelf_spot` half stands. The perf look (`gremlin::perf_look_at_his_room`, ignored) measured what the notes flagged:
+cheap (plan.md's record).
+
 ## Census, band and stillness
 
 - The band rooms (`furnished_room`, `resident_room`, the stage) have no shelf, so their numbers can't move; steps 5c and 6
@@ -1118,7 +1149,9 @@ under her hands (the hop marks the moment instead).
 
 ## Questions for the user
 
-None open. Fourth round (2026-10-10, the user):
+Open from step 9 (2026-10-12): plan.md's Phase 6a record, *Open, for the user*, lists them (his parcel's look; which
+pane a shelf goes up in with no gremlin waiting, and her gaze up's rate where she lives under it; the user's 191×46 out
+of the stillness band). Fourth round (2026-10-10, the user):
 - **High means standable**, as designed: a high shelf keeps `HEIGHT` clear rows over its run. Step 3 measures how often
   each height fits at 191×46 with real content; revisit only if the measurement surprises.
 - **The hop is for high shelves only** (D7c as designed): a low shelf is in her reach, so she stretches up.

@@ -1428,3 +1428,136 @@ fn he_never_turns_at_a_goodbye_or_unfed() {
         }
     }
 }
+
+/// The costs step 9's review asked to look at (the hand-off notes'
+/// "perf look", 2026-10-12), printed, not judged: her gremlin on Users'
+/// floor where no shelf could go up (every pane's rows above her head
+/// full of text: [`crowded`]), so `kit_room` asks `shelf_spot` while she
+/// stands in his room unfelt, for ten minutes of an industrious visit,
+/// on a frame whose status line carries a clock that ticks each second
+/// (its memo is keyed on the whole frame, so each tick is a miss) and on
+/// the same frame with the clock still (the control); what one
+/// `shelf_spot` on that frame costs; what one `Osaka::out_of_sight` costs
+/// through a fed night asleep (her gremlin's tiny life asks it each
+/// tick); and the bytes `Visit.shelf_asked`'s frame holds at the user's
+/// 191×46. Ignored; run alone (timings) in release:
+///
+/// ```text
+/// cargo test --release -p dessplay --lib perf_look_at_his_room -- --ignored --nocapture
+/// ```
+#[test]
+#[ignore = "timings for the review: run alone in release with --nocapture"]
+fn perf_look_at_his_room() {
+    use std::time::Instant;
+    let (real, view) = rooms_frame(100, 30);
+    let full = crowded(&real, &view.nooks);
+    let clocked = |ms: u64| {
+        let mut frame = full.clone();
+        let secs = ms / 1000;
+        frame.set_string(
+            90,
+            28,
+            format!(
+                "{:02}:{:02}:{:02}",
+                14 + secs / 3600,
+                secs / 60 % 60,
+                secs % 60
+            ),
+            Style::new(),
+        );
+        frame
+    };
+    for ticking in [false, true] {
+        let mut guest = wanting(3, tue(14, 0), false);
+        begun_at(
+            &mut guest,
+            &full,
+            &view,
+            (56, USERS_FLOOR),
+            Facing::Right,
+            Mood::Industrious,
+        );
+        let (mut now, mut paints, mut on_floor) = (0, 0, 0);
+        let start = Instant::now();
+        while now < 600_000 {
+            now += guest
+                .next_tick(now)
+                .map_or(100, |d| d.as_millis() as u64)
+                .clamp(1, 100);
+            guest.advance(now);
+            let frame = if ticking { clocked(now) } else { full.clone() };
+            paint(&mut guest, &frame, &view, now);
+            paints += 1;
+            let osaka = &visit_of(&guest).osaka;
+            on_floor += usize::from(on_users_floor((osaka.x, osaka.y)));
+        }
+        let wall = start.elapsed();
+        let asks = visit_of(&guest).shelf_asks;
+        eprintln!(
+            "his room, clock {}: {paints} paints ({on_floor} in his room), {asks} shelf_spot asks \
+             ({:.3} a paint, {:.2} a second), {:.1} ms wall, {:.1} µs a paint",
+            if ticking { "ticking" } else { "still" },
+            asks as f64 / paints as f64,
+            asks as f64 / 600.0,
+            wall.as_secs_f64() * 1e3,
+            wall.as_secs_f64() * 1e6 / paints as f64,
+        );
+    }
+    // One `shelf_spot` on a crowded frame (none fits: every pane read),
+    // this one and the user's 191×46 (`fuller_ui`) crowded likewise.
+    let guest = wanting(3, tue(14, 0), false);
+    let (wide, wide_view) = real_frame(&mut super::super::stage::fuller_ui(), 191, 46);
+    let wide = crowded(&wide, &wide_view.nooks);
+    for (what, frame, view) in [("100×30", &full, &view), ("191×46", &wide, &wide_view)] {
+        let keep_off = structures::KeepOff {
+            protected: &view.protected,
+            layer: &[],
+            made: &[],
+        };
+        let plan = plan_of(view, frame);
+        let n = 2000;
+        let start = Instant::now();
+        for _ in 0..n {
+            assert!(
+                guest
+                    .ledger
+                    .home
+                    .shelf_spot(frame, plan, &keep_off, None)
+                    .is_none(),
+                "{what}: none fits"
+            );
+        }
+        eprintln!(
+            "shelf_spot on the crowded {what} frame: {:.1} µs a call",
+            start.elapsed().as_secs_f64() * 1e6 / f64::from(n)
+        );
+    }
+    // `out_of_sight` through a fed night: asleep, her lamp off.
+    let (start_at, _) = Going::Asleep.start();
+    let mut guest = turning_home(1, start_at, Stands::Up, false, false);
+    let mut now = until_visiting(&mut guest, &real, &view, 0);
+    while !Going::Asleep.gone(&guest, now) {
+        assert!(now < 400_000, "never asleep");
+        shell_step(&mut guest, &real, &view, &mut now, true);
+    }
+    let osaka = &visit_of(&guest).osaka;
+    assert!(osaka.out_of_sight(now).is_some(), "out of sight asleep");
+    let n = 1_000_000u32;
+    let start = Instant::now();
+    let mut seen = 0u64;
+    for i in 0..n {
+        seen += osaka
+            .out_of_sight(std::hint::black_box(now + u64::from(i % 1000)))
+            .unwrap_or(0);
+    }
+    eprintln!(
+        "out_of_sight asleep: {:.1} ns a call (days summed, kept live: {seen})",
+        start.elapsed().as_secs_f64() * 1e9 / f64::from(n)
+    );
+    let cells = 191 * 46;
+    eprintln!(
+        "a frame held by Visit.shelf_asked at 191×46: {cells} cells × {} bytes = {} KiB",
+        std::mem::size_of::<tuirealm::ratatui::buffer::Cell>(),
+        cells * std::mem::size_of::<tuirealm::ratatui::buffer::Cell>() / 1024
+    );
+}

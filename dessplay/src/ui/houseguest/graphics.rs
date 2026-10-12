@@ -504,7 +504,17 @@ pub(super) struct Graphics {
     /// composed, and the cells it covers (see [`Graphics::take_shots`]).
     #[cfg(test)]
     shots: Option<Vec<(RgbaImage, Rect)>>,
+    /// While recording, the line glyphs every image painted since the
+    /// last take redraws, on screen, with their colours (see
+    /// [`Graphics::take_lines`]).
+    #[cfg(test)]
+    lines: Option<Vec<KeyLine>>,
 }
+
+/// A line glyph an image redraws: its cell on screen, the glyph, and the
+/// colour it's redrawn in ([`Graphics::take_lines`]).
+#[cfg(test)]
+pub(super) type KeyLine = (i32, i32, char, [u8; 3]);
 
 /// What her images have cost so far (tests measure the budget by it).
 #[cfg(test)]
@@ -543,6 +553,8 @@ impl Graphics {
             seen: std::collections::HashSet::new(),
             #[cfg(test)]
             looks: None,
+            #[cfg(test)]
+            lines: None,
             #[cfg(test)]
             shots: None,
         })
@@ -653,6 +665,17 @@ impl Graphics {
         #[cfg(test)]
         if let Some(looks) = self.looks.as_mut() {
             looks.extend(key.layers.iter().map(|layer| layer.0));
+        }
+        #[cfg(test)]
+        if let Some(lines) = self.lines.as_mut() {
+            // The key's cells are from its image's origin, which is the
+            // visible part's less its clip.
+            let (x0, y0) = (vx0 - i32::from(clip.0), vy0 - i32::from(clip.1));
+            lines.extend(
+                key.lines
+                    .iter()
+                    .map(|&(x, y, c, rgb)| (x0 + i32::from(x), y0 + i32::from(y), c, rgb)),
+            );
         }
         #[cfg(test)]
         if self.shots.is_some()
@@ -824,6 +847,14 @@ impl Graphics {
     #[cfg(test)]
     pub fn take_looks(&mut self) -> Vec<Look> {
         self.looks.replace(Vec::new()).unwrap_or_default()
+    }
+
+    /// The line glyphs every image painted since the last take redrew,
+    /// at their cells on screen, with the colour each is redrawn in
+    /// (recording from the first: as [`Graphics::take_looks`]).
+    #[cfg(test)]
+    pub fn take_lines(&mut self) -> Vec<KeyLine> {
+        self.lines.replace(Vec::new()).unwrap_or_default()
     }
 
     /// Every image painted since the last take, as composed, with the

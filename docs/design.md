@@ -2085,7 +2085,8 @@ this section states what is built.
   the shelf's run, facing it,
   she's pleased with it a moment ("hehe"), then gazes up at it, curious,
   20–45 s (a still use, lingered over as her mood lingers): about once a
-  game day where it's up, twice as likely the game day something new goes
+  game day where it's up (as tuned with it over her living room; more
+  where she spends more of her day on its floor), twice as likely the game day something new goes
   up there (a stage of her shelf, or a piece she sets on it) and the next.
   Up at her gremlin she may say one line after that moment ("Hi, little
   guy.", "You stay up there.", "Behave, okay?", "He's watchin' me...",
@@ -2245,7 +2246,7 @@ this section states what is built.
   Once its two frames have passed with her still on the piece she has
   felt it (said, whether or not the bubble found room to show; a chat
   line, which she looks up at from the piece, doesn't hide it); a use
-  cut short before then doesn't count. **She feels two on sight**,
+  cut short before then doesn't count. **She feels three on sight**,
   needing no use (a lamp, a plant): DoorClear once she has bumped into
   what fills her door's space, coming home out of her door where it
   stood aside for it (from school, a dash, work, the stage; never on
@@ -2794,8 +2795,9 @@ this section states what is built.
   last started, the rare things she has shown, the date her calendar was
   last delivered, and whether her wall clock was sent; each is left out
   while it's the default. With phase 6a it holds what she has put up
-  (her shelf: its pane, where along its back wall, its rise and the
-  stages up; and the stages put up on her last day of building, by game
+  (her shelf: its pane, where along its back wall, its rise, the
+  stages up, and the day something last went up there, left out when
+  none has, and read as none where it's garbled; and the stages put up on her last day of building, by game
   day or, unfed, by visit, left out until she has put one up, and read
   as none where it's garbled), left out until she has, read before her pieces and entry
   by entry (one this build can't take, or a shelf after the first, is

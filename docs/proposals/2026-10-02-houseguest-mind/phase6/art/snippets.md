@@ -1,6 +1,20 @@
-# Houseguest decor: the gremlin figurine (for review, not wired in)
+# Houseguest decor: the gremlin figurine (approved variant A; wired)
 
-Last updated: 2026-10-10 (round 1, for the user's review)
+Last updated: 2026-10-12 (wired by phase 6a, step 7; the sheet below is the round-1 review, kept as it was)
+
+> **As built (2026-10-11, phase 6a step 7, `1db6402c`).** Variant A was approved and is wired: its `gremlin` group
+> (the last section's, identical to `worktree.diff`'s) is in `art/props.svg` before the clock, and
+> `Furniture::Gremlin` draws it (`art.rs`: `(Furniture::Gremlin, _) => &["gremlin"]`). Variants B, C and D are never
+> wired, and of `worktree.diff` only the `gremlin` group was taken (never re-apply the diff: the `gremlin_sheet`
+> test and the stand-in font's glyphs stay in the throwaway worktree). Where this sheet and the code differ, the
+> code and design.md (*Furniture*, *Getting furniture*, *The rules of her home*) are the rule:
+> - **The `Spec`** (`room.rs` `GREMLIN`): footprint 2 × 2, ASCII `oo` / `ww` (kept by the user's seventh round:
+>   his turn doesn't show in ASCII), ink `Rgb(178, 154, 224)` / `LightMagenta`, beauty 1.0, small decor
+>   (`shelf: true`), no uses (her gaze up at him is offered by where he stands, `Use::GazeUp`). Its pitch is "Aww, a
+>   little gremlin!" (the user's second round), not the sheet's "Hehehe. He looks like trouble!".
+> - **Where he stands**: on any strip small decor stands on, a floor too; he wants up on a shelf (`Rule::High`).
+> - **In play**: real frames of him (his parcel, his carry up, turned round on his shelf) are in
+>   [../shots/](../shots/README.md) (phase 6a step 9).
 
 This is the model sheet for the decor piece the user asked for: "buying a potted plant, or a gremlin for the
 mantelpiece". The proposal (§ *Structures from the UI's own lines*) puts it on a shelf: "a run of `─` above a

@@ -4716,7 +4716,7 @@ mod tests {
     /// Some of her pieces that stand, and a poster hung among them
     /// (newer or older than any of them), and maybe her window hung low
     /// among them too, each placed as [`pieces`].
-    pub(super) fn decorated() -> impl Strategy<Value = Vec<Prop>> {
+    fn decorated() -> impl Strategy<Value = Vec<Prop>> {
         (
             proptest::sample::subsequence(standing(), 0..=4),
             any::<proptest::sample::Index>(),
@@ -8420,66 +8420,11 @@ mod low_shelf {
     use super::super::structures::{EDGE, HIGH_RISE, LOW_RISE, SHELF_WIDTH, Shelf, Structure};
     use super::super::tests::shelf_runs;
     use super::shelves::written;
-    use super::tests::{anywhere, decorated, door_on, placed, two_panes};
+    use super::tests::{anywhere, door_on, placed, two_panes};
     use super::*;
     use proptest::prelude::*;
     use proptest::strategy::ValueTree;
     use proptest::test_runner::{Config, TestCaseError, TestRng, TestRunner};
-
-    /// `Home::hung_clear` as it was before phase 6a's step 4, frozen
-    /// (deleted in step 9): with no shelf, today's is checked against it
-    /// ([`hung_clear_is_as_it_was_with_no_shelf`]).
-    fn hung_clear_before_6a(
-        home: &Home,
-        mut hung: Vec<(usize, i32)>,
-        RawStrip {
-            strip,
-            raw: e,
-            host,
-        }: RawStrip,
-        space: Option<Rect>,
-        standing: &[Shown],
-    ) -> Vec<(usize, i32)> {
-        hung.sort_by_key(|&(index, left)| (left, index));
-        let cols = |index: usize| {
-            home.props
-                .get(index)
-                .map_or(0, |p| i32::from(p.item.spec().footprint.0))
-        };
-        let mut out: Vec<(usize, i32)> = Vec::with_capacity(hung.len());
-        for (k, &(index, left)) in hung.iter().enumerate() {
-            let Some(prop) = home.props.get(index) else {
-                continue;
-            };
-            let meets = |left: i32| {
-                let at = stand(prop, strip, e, host, left);
-                space.is_some_and(|r| at.rect().intersects(r))
-                    || standing
-                        .iter()
-                        .any(|s| at.rect().intersects(s.cover()) && !at.may_overlap(s))
-            };
-            if !meets(left) {
-                out.push((index, left));
-                continue;
-            }
-            let leans = |left: i32| {
-                let at = stand(prop, strip, e, host, left);
-                at.look_out_spots().iter().any(|&x| {
-                    her_box(x, at.floor)
-                        .is_some_and(|b| !standing.iter().any(|s| b.intersects(s.cover())))
-                })
-            };
-            let from = out.last().map_or(e.from, |&(j, l)| l + cols(j));
-            let to = hung.get(k + 1).map_or(e.to, |&(_, l)| l) - cols(index);
-            if let Some(clear) = (from..=to)
-                .filter(|&l| !meets(l))
-                .min_by_key(|&l| (!leans(l), (l - left).abs(), l))
-            {
-                out.push((index, clear));
-            }
-        }
-        out
-    }
 
     /// Her shelf in `nooks`' pane `pane` (Users, the Playlist), against
     /// its `right` wall or left, `along` its room past `EDGE` (wrapped,
@@ -8646,55 +8591,6 @@ mod low_shelf {
 
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(dessplay_core::test_support::proptest_cases(256)))]
-
-        /// With no shelf, `hung_clear` hangs every piece just where it
-        /// did before phase 6a's step 4 (the frozen copy), on every
-        /// strip, its floor narrowed for her door's space or not, the
-        /// space refused or not; and only her window is ever moved.
-        #[test]
-        fn hung_clear_is_as_it_was_with_no_shelf(
-            props in decorated(),
-            wide in 14u16..60,
-            tall in 6u16..14,
-            door in proptest::option::of(any::<bool>()),
-        ) {
-            let (_, nooks) = two_panes(wide, tall, &[]);
-            let mut home = Home {
-                door: door.and_then(|right| {
-                    door_on(Nook::Users, if right { Side::Right } else { Side::Left })
-                }),
-                ..Home::default()
-            };
-            for p in props {
-                prop_assert!(home.add(p));
-            }
-            let laid = home.laid_out(&nooks);
-            for at in home.raw_extents(&nooks) {
-                let plan = *laid.plan(at.strip).unwrap();
-                let standing_on = home.on(at.strip, Lane::Floor);
-                let hung = pack_each(&home.on(at.strip, Lane::Wall), at.raw);
-                for floor in [plan.floor, at.raw] {
-                    let Some(packed) = pack(&standing_on, floor) else {
-                        continue;
-                    };
-                    let standing: Vec<Shown> = packed
-                        .iter()
-                        .map(|&(i, left)| stand(&home.props[i], at.strip, at.raw, at.host, left))
-                        .collect();
-                    for space in [None, plan.space.map(|s| s.rect)] {
-                        prop_assert_eq!(
-                            home.hung_clear(hung.clone(), at, space, &standing),
-                            hung_clear_before_6a(&home, hung.clone(), at, space, &standing)
-                        );
-                    }
-                }
-            }
-            prop_assert!(
-                laid.shifts.iter().all(|&(item, _)| item == Furniture::Window),
-                "{:?}",
-                laid.shifts
-            );
-        }
 
         /// No piece that hangs meets a low shelf (D3a): on a pane up to
         /// 20 rows inside, with her clock, poster and window hung among

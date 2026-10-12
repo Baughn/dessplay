@@ -902,10 +902,25 @@ fn dropping(
     }
 }
 
-/// The body of the shelved long visits: `owned` furniture (of a list of
-/// its own: never appended to), her shelf `shelf` with `up` on it, and
-/// with `drop`, a step at the first size with the shelf's pane gone
-/// before the sizes go on.
+/// What the shelved long visits' `owned` indexes name: pieces that stand.
+const STANDING: [Furniture; 4] = [
+    Furniture::Sofa,
+    Furniture::Tv,
+    Furniture::Bed,
+    Furniture::Desk,
+];
+
+/// What [`long_visits_with_a_shelf_and_hung_pieces_never_touch_what_is_protected`]'s
+/// `owned` indexes name: two that stand and two that hang (her poster,
+/// her clock: a low shelf's block keeps them clear of it).
+const HUNG: [Furniture; 4] = [
+    Furniture::Sofa,
+    Furniture::Poster,
+    Furniture::Clock,
+    Furniture::Desk,
+];
+
+/// [`shelved_visit_of`] with [`STANDING`] pieces.
 #[allow(clippy::too_many_arguments)]
 fn shelved_visit(
     seed: u64,
@@ -922,15 +937,36 @@ fn shelved_visit(
     how: Run,
     span: u64,
 ) -> Result<Visited, TestCaseError> {
-    const KINDS: [Furniture; 4] = [
-        Furniture::Sofa,
-        Furniture::Tv,
-        Furniture::Bed,
-        Furniture::Desk,
-    ];
+    shelved_visit_of(
+        &STANDING, seed, graphics, frame, sizes, text, chats, protect, owned, shelf, up, drop, how,
+        span,
+    )
+}
+
+/// The body of the shelved long visits: `owned` furniture (indexes into
+/// `kinds`, a list of its own: never appended to), her shelf `shelf`
+/// with `up` on it, and with `drop`, a step at the first size with the
+/// shelf's pane gone before the sizes go on.
+#[allow(clippy::too_many_arguments)]
+fn shelved_visit_of(
+    kinds: &[Furniture; 4],
+    seed: u64,
+    graphics: bool,
+    frame: fn(u16, u16) -> (Buffer, IdleView),
+    sizes: &[(u16, u16)],
+    text: &[(u16, u16, String)],
+    chats: &[u64],
+    protect: (u16, u16, u16, u16),
+    owned: &[(usize, usize, u16, bool)],
+    shelf: (usize, bool, u16, u16),
+    up: &[(bool, u16)],
+    drop: bool,
+    how: Run,
+    span: u64,
+) -> Result<Visited, TestCaseError> {
     let owned: Vec<(Furniture, usize, u16, bool)> = owned
         .iter()
-        .map(|&(item, at, along, left)| (KINDS[item], at, along, left))
+        .map(|&(item, at, along, left)| (kinds[item], at, along, left))
         .collect();
     let mut guest = Guest::new(seed);
     let nook = shelve(&mut guest, shelf, up);
@@ -1019,6 +1055,66 @@ proptest! {
             seed, graphics, chat_over, &sizes, &text, &chats, protect, &owned, shelf, &up, drop,
             Run { out_every: Some(1000), ..Run::default() }, 45_000,
         )?;
+    }
+
+    /// [`long_visits_with_a_shelf_never_touch_what_is_protected`] with
+    /// pieces that hang among hers ([`HUNG`]: her poster, her clock),
+    /// given after her shelf is up, so a low shelf's block decides where
+    /// they hang: every frame's shelf checks hold, the hung-piece one
+    /// among them (none meets a shelf's run or margin from its row up:
+    /// [`check_shelves`]); [`long_visits_with_a_shelf_see_pieces_hung_beside_it`]
+    /// is its companion.
+    #[test]
+    fn long_visits_with_a_shelf_and_hung_pieces_never_touch_what_is_protected(
+        seed in any::<u64>(),
+        graphics in any::<bool>(),
+        sizes in proptest::collection::vec((80u16..130, 26u16..45), 1..3),
+        text in proptest::collection::vec((0u16..130, 0u16..45, "[a-z漢─│ ]{1,6}"), 0..20),
+        chats in proptest::collection::vec(0u64..60_000, 0..3),
+        protect in (0u16..130, 0u16..45, 1u16..20, 1u16..6),
+        owned in proptest::collection::vec((0usize..4, 0usize..3, 0u16..=1000, any::<bool>()), 1..4),
+        shelf in (0usize..3, any::<bool>(), 8u16..30, 5u16..=10),
+        up in proptest::collection::vec((any::<bool>(), 0u16..8), 1..3),
+        drop in any::<bool>(),
+    ) {
+        shelved_visit_of(
+            &HUNG, seed, graphics, rooms_frame, &sizes, &text, &chats, protect, &owned, shelf,
+            &up, drop, Run::default(), 60_000,
+        )?;
+    }
+}
+
+/// [`long_visits_with_a_shelf_and_hung_pieces_never_touch_what_is_protected`]'s
+/// non-vacuity companion (both modes): a low shelf on the Playlist at
+/// 100×30 (12 rows inside), her poster and clock given there after it's
+/// up: frames show them hung on its pane beside it.
+#[test]
+fn long_visits_with_a_shelf_see_pieces_hung_beside_it() {
+    for graphics in [false, true] {
+        let visited = shelved_visit_of(
+            &HUNG,
+            3,
+            graphics,
+            rooms_frame,
+            &[(100, 30)],
+            &[],
+            &[],
+            (0, 0, 1, 1),
+            &[(1, 2, 200, false), (2, 2, 800, false)],
+            (2, true, 10, 5),
+            &[(false, 2)],
+            false,
+            Run {
+                out_every: Some(1000),
+                ..Run::default()
+            },
+            100_000,
+        )
+        .unwrap_or_else(|e| panic!("graphics={graphics}: {e}"));
+        assert!(
+            visited.shelf_low > 0 && visited.shelf_hung > 0,
+            "graphics={graphics}: {visited:?}"
+        );
     }
 }
 
@@ -1413,6 +1509,9 @@ struct Visited {
     /// out), and those on frames of the last size.
     shelf_pieces_away: usize,
     shelf_pieces_last: usize,
+    /// Pieces hung on a shelf's pane (a poster, a clock: its wall lane),
+    /// over frames her home showed, a shelf at a time.
+    shelf_hung: usize,
     /// Whether each shelf (by pane) was hidden on its last frame.
     shelf_was_hidden: Vec<Nook>,
     /// Visiting frames she gazed up at a piece on her shelf (phase 6a
@@ -2130,6 +2229,7 @@ fn check_shelves(
             .iter()
             .filter(|s| s.strip == Some(room::Strip::Bottom(nook)) && s.lane() == room::Lane::Wall)
         {
+            visited.shelf_hung += 1;
             prop_assert!(!run.hangs_over(s.rect()), "{:?} meets {:?}", s, run);
         }
         // Off the sides: a body or her door's space from either wall.
@@ -15856,5 +15956,6 @@ mod put_up;
 mod rain;
 mod rares;
 mod shelf;
+mod shelf_shots;
 mod stillness;
 mod window;

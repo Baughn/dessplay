@@ -6932,19 +6932,21 @@ fn a_parcel_by_a_yielding_space_comes_through_the_walls_flap() {
 
 /// A frame `film` shot: what it shows (a label), the frame as a
 /// terminal would show it, and where her door stood.
-struct Shot {
-    label: String,
-    image: image::RgbaImage,
-    door: Option<door::DoorSpot>,
+pub(super) struct Shot {
+    pub label: String,
+    pub image: image::RgbaImage,
+    pub door: Option<door::DoorSpot>,
+    /// Where she stood (visiting), for a sheet cropped round her.
+    pub her: Option<(i32, i32)>,
     /// How many of her images it carried (each shot shows her, her door
     /// or a piece of hers: none is the shooting broken).
-    images: usize,
+    pub images: usize,
 }
 
 /// Paints `guest` (line art) on `view` of `real` from `now`, at most
 /// 50 ms apart, until `done` (within `limit` ms), shooting the frame
 /// each time `label` names it something new. Returns when it stopped.
-fn film(
+pub(super) fn film(
     guest: &mut Guest,
     (real, view): (&Buffer, &IdleView),
     (mut now, limit): (u64, u64),
@@ -6977,10 +6979,15 @@ fn film(
                 .expect("line art")
                 .shot(&frame, &images);
             let images = images.len();
+            let her = match &guest.state {
+                State::Visiting(visit) => Some((visit.osaka.x, visit.osaka.y)),
+                _ => None,
+            };
             shots.push(Shot {
                 label,
                 image,
                 door,
+                her,
                 images,
             });
         }
@@ -7032,9 +7039,23 @@ fn door_label(walk_from: &std::cell::Cell<Option<u64>>, guest: &Guest, now: u64)
 /// `shots` cropped round their door (36 columns by 11 rows, the floor
 /// row second from the bottom; the screen's middle when none stands),
 /// labelled, in a sheet `across` wide; `cell` is the picker's.
-fn contact_sheet(shots: &[Shot], (cw, ch): (u32, u32), across: usize) -> image::RgbaImage {
+fn contact_sheet(shots: &[Shot], cell: (u32, u32), across: usize) -> image::RgbaImage {
+    contact_sheet_round(shots, cell, across, (36, 11), |shot| {
+        shot.door.map(|d| d.spot())
+    })
+}
+
+/// [`contact_sheet`] with each tile `cols × rows` cells, cropped round
+/// what `at` says of each shot (its floor row second from the bottom;
+/// the screen's middle where it says nothing).
+pub(super) fn contact_sheet_round(
+    shots: &[Shot],
+    (cw, ch): (u32, u32),
+    across: usize,
+    (cols, rows): (u32, u32),
+    at: impl Fn(&Shot) -> Option<(i32, i32)>,
+) -> image::RgbaImage {
     const BG: image::Rgba<u8> = image::Rgba([30, 33, 39, 255]);
-    let (cols, rows) = (36u32, 11u32);
     let (tw, th) = (cols * cw, rows * ch);
     let pad = 12;
     let label_h = ch + 4;
@@ -7046,8 +7067,7 @@ fn contact_sheet(shots: &[Shot], (cw, ch): (u32, u32), across: usize) -> image::
     );
     for (i, shot) in shots.iter().enumerate() {
         let (sw, sh) = (shot.image.width() / cw, shot.image.height() / ch);
-        let (x, y) = shot.door.map_or((sw / 2, sh / 2), |d| {
-            let (x, y) = d.spot();
+        let (x, y) = at(shot).map_or((sw / 2, sh / 2), |(x, y)| {
             (x.max(0) as u32, y.max(0) as u32)
         });
         let left = x.saturating_sub(cols / 2).min(sw.saturating_sub(cols));

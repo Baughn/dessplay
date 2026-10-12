@@ -56,10 +56,27 @@ pub(super) struct Room {
     /// for the visit censuses, which run her unfed (5a's tables: her
     /// visit by its own hour, not her day's).
     pub start: Option<GameTime>,
+    /// Her shelf, if she has one, put up once she's been given what she
+    /// owns (phase 6a D8: so she gazes up).
+    pub shelf: Shelved,
+}
+
+/// A census room's shelf of hers (phase 6a).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Shelved {
+    No,
     /// Her Users shelf up, high (as `tests/shelf.rs`'s `users_shelf`:
-    /// the `rooms` frames' Users pane at 100×30), her plant on it, once
-    /// she's been given what she owns (phase 6a D8: so she gazes up).
-    pub shelf: bool,
+    /// the `rooms` frames' Users pane at 100×30), her plant on it (step
+    /// 6's room, [`shelf_room`]).
+    Users,
+    /// Her shelf where the stage puts one up on the room's own frame
+    /// (`Scene::GazeUp`: as high as fits, finished, with the first piece
+    /// she gazes up at that shows there), with these on her living room's
+    /// floor (her sofa's pane) as it's worked out, as in play (her gremlin
+    /// waits on a floor till her kit goes up, in his pane:
+    /// `Home::shelf_spot`); then each of them on it that the stage didn't
+    /// put there, against the run's right end (step 9's rooms).
+    Staged(&'static [Furniture]),
 }
 
 impl Room {
@@ -93,7 +110,7 @@ pub(super) fn stage_room() -> Room {
         chat_every: Some(45_000),
         live: None,
         start: None,
-        shelf: false,
+        shelf: Shelved::No,
     }
 }
 
@@ -122,7 +139,7 @@ pub(super) fn furnished_room() -> Room {
         chat_every: Some(90_000),
         live: None,
         start: None,
-        shelf: false,
+        shelf: Shelved::No,
     }
 }
 
@@ -151,7 +168,7 @@ pub(super) fn resident_room() -> Room {
         chat_every: Some(60_000),
         live: None,
         start: None,
-        shelf: false,
+        shelf: Shelved::No,
     }
 }
 
@@ -172,9 +189,183 @@ pub(super) fn shelf_room() -> Room {
     Room {
         name: "resident+shelf",
         owns: &SHELF_HOME,
-        shelf: true,
+        shelf: Shelved::Users,
         ..resident_room()
     }
+}
+
+/// [`wide_room`]'s name.
+const WIDE: &str = "191x46";
+/// [`wide_shelf_room`]'s name.
+const WIDE_SHELF: &str = "191x46+shelf";
+
+/// The user's own terminal (phase 6a step 9): the client's layout at
+/// 191×46 with an evening's content (`fuller_ui`: every pane there takes
+/// a high shelf), [`SHELF_HOME`] owned, no shelf: [`wide_shelf_room`]'s
+/// twin, to read what the shelf changes there apart from what the
+/// screen does.
+pub(super) fn wide_room() -> Room {
+    let (real, view) = real_frame(&mut super::super::stage::fuller_ui(), 191, 46);
+    Room {
+        name: WIDE,
+        real,
+        view,
+        owns: &SHELF_HOME,
+        chat_every: Some(60_000),
+        live: None,
+        start: None,
+        shelf: Shelved::No,
+    }
+}
+
+/// The user's own terminal with her shelf (phase 6a step 9, the design's
+/// Census): [`wide_room`], her gremlin on her living room's floor (her
+/// sofa's pane: Users or the Playlist by the seed) as her shelf goes up
+/// where the stage puts one, so in his pane, high, as in play; her plant
+/// on it and her gremlin beside it. Read beside the band, never judged
+/// by it.
+pub(super) fn wide_shelf_room() -> Room {
+    Room {
+        name: WIDE_SHELF,
+        shelf: Shelved::Staged(&[Furniture::Gremlin]),
+        ..wide_room()
+    }
+}
+
+/// What she owns in [`low_shelf_room`]: the census home's pieces, her
+/// poster (hung beside her low shelf's block) and her window (her look
+/// out competes with her gaze up for her daydreams).
+const LOW_SHELF_HOME: [Furniture; 9] = [
+    Furniture::Sofa,
+    Furniture::Tv,
+    Furniture::Bed,
+    Furniture::Desk,
+    Furniture::Bookshelf,
+    Furniture::Fridge,
+    Furniture::Lamp,
+    Furniture::Poster,
+    Furniture::Window,
+];
+
+/// Her home with a low shelf (phase 6a step 9, the design's Census): the
+/// census home's screen (`home_screen`: two 9-row panes, so only a low
+/// shelf hangs there), [`LOW_SHELF_HOME`] owned, her gremlin on her
+/// living room's floor as her shelf goes up where the stage puts one (in
+/// his pane, as in play), her poster hung beside its block, and her
+/// gremlin on it (her plant, 3 tall, has no third row clear over a low
+/// run there). Read beside the band, never judged by it.
+pub(super) fn low_shelf_room() -> Room {
+    Room {
+        name: "home+low shelf",
+        owns: &LOW_SHELF_HOME,
+        shelf: Shelved::Staged(&[Furniture::Gremlin]),
+        ..furnished_room()
+    }
+}
+
+/// Every census room with a shelf of hers.
+pub(super) fn shelf_rooms() -> [Room; 3] {
+    [shelf_room(), wide_shelf_room(), low_shelf_room()]
+}
+
+/// What `CENSUS_ROOMS=shelf` runs: [`shelf_rooms`] and the user's
+/// terminal with no shelf ([`wide_room`]) to read them against.
+fn shelf_census_rooms() -> Vec<Room> {
+    let [resident, wide, low] = shelf_rooms();
+    vec![resident, wide_room(), wide, low]
+}
+
+/// Put up `guest`'s shelf in `room` as [`Shelved::Staged`] says: `more`
+/// on her living room's floor (her sofa's pane), then her shelf where the
+/// stage's `Scene::GazeUp` puts one on the room's frame (worked out on a
+/// guest of its own, so nothing is cued for her: in the pane of what
+/// wants up, as her kit's would go), with what it puts on it; then each
+/// of `more` it didn't put there on it too, against the run's right end
+/// (packed beside what's there); and checks it all shows up there.
+fn shelve_staged(guest: &mut Guest, room: &Room, seed: u64, more: &[Furniture]) {
+    use crate::ui::houseguest::structures::Structure;
+    let living = guest
+        .ledger
+        .home
+        .props
+        .iter()
+        .find(|p| p.item == Furniture::Sofa)
+        .map(|p| p.strip.nook())
+        .unwrap_or_else(|| panic!("{} seed {seed}: her sofa", room.name));
+    for &item in more {
+        assert!(
+            guest
+                .ledger
+                .home
+                .add(room::Prop::new(item, living, 500, sprite::Facing::Left)),
+            "{} seed {seed}: {item:?} on her floor",
+            room.name
+        );
+    }
+    // Shown there (the frame pins where each stands).
+    paint(guest, &room.real, &room.view, 0);
+    let State::Visiting(visit) = &guest.state else {
+        panic!("{} seed {seed}: not visiting", room.name);
+    };
+    for item in more {
+        assert!(
+            visit
+                .shown
+                .iter()
+                .any(|s| s.item == *item && s.strip == Some(room::Strip::Bottom(living))),
+            "{} seed {seed}: {item:?} on her floor: {:?}",
+            room.name,
+            visit.shown
+        );
+    }
+    let mut staged = Guest::new(seed).unfed();
+    staged.ledger.home = guest.ledger.home.clone();
+    staged.cue(Scene::GazeUp);
+    paint(&mut staged, &room.real, &room.view, 0);
+    let home = staged.ledger.home.clone();
+    let [Structure::Shelf(shelf)] = home.structures[..] else {
+        panic!(
+            "{} seed {seed}: no shelf up for her: {:?}",
+            room.name,
+            staged.cue_note()
+        );
+    };
+    guest.ledger.home = home;
+    let on_it = room::Strip::Shelf(shelf.nook);
+    for &item in more {
+        let home = &mut guest.ledger.home;
+        if home
+            .props
+            .iter()
+            .any(|p| p.item == item && p.strip == on_it)
+        {
+            continue;
+        }
+        let to = rules::Placement {
+            strip: on_it,
+            anchor: room::Anchor {
+                side: room::Side::Right,
+                offset: 0,
+            },
+            facing: sprite::Facing::Left,
+        };
+        home.set_down(item, to, &room.view.nooks);
+    }
+    paint(guest, &room.real, &room.view, 0);
+    let State::Visiting(visit) = &guest.state else {
+        panic!("{} seed {seed}: not visiting", room.name);
+    };
+    let up: Vec<Furniture> = visit
+        .shown
+        .iter()
+        .filter(|s| s.on_shelf() && !s.boxed())
+        .map(|s| s.item)
+        .collect();
+    assert!(
+        up.iter().any(|&item| item.gazed_up_at()) && more.iter().all(|item| up.contains(item)),
+        "{} seed {seed}: up on her shelf {shelf:?}: {up:?}",
+        room.name
+    );
 }
 
 /// A big live chat: the client's own layout at 200×50, its chat pane
@@ -192,7 +383,7 @@ pub(super) fn live_room() -> Room {
         chat_every: Some(45_000),
         live: Some(live_frame),
         start: None,
-        shelf: false,
+        shelf: Shelved::No,
     }
 }
 
@@ -413,7 +604,7 @@ fn named(play: Play, lamp: bool) -> Vec<(bool, String)> {
 /// Her arrival in `room` from `seed`, drawn in line art if `graphics`:
 /// in `mood` if given, and given what she owns there, each where it
 /// fits.
-fn arrive_in(room: &Room, seed: u64, graphics: bool, mood: Option<Mood>) -> Guest {
+pub(super) fn arrive_in(room: &Room, seed: u64, graphics: bool, mood: Option<Mood>) -> Guest {
     arrive_drawn(room, seed, mood, |guest| {
         if graphics {
             guest.set_picker(kitty());
@@ -453,7 +644,10 @@ fn arrive_drawn(
         guest.give(item);
         paint(&mut guest, &room.real, &room.view, 0);
     }
-    if room.shelf {
+    if let Shelved::Staged(more) = room.shelf {
+        shelve_staged(&mut guest, room, seed, more);
+    }
+    if room.shelf == Shelved::Users {
         guest
             .ledger
             .home
@@ -1170,15 +1364,14 @@ fn visit_census() {
     let modes = census_modes();
     let chats = census_chats();
     let mut table = Vec::new();
-    // `CENSUS_ROOMS=shelf`: [`shelf_room`] alone.
+    // `CENSUS_ROOMS=shelf`: the rooms with her shelf ([`shelf_rooms`])
+    // alone.
     let rooms: Vec<Room> = match std::env::var("CENSUS_ROOMS").as_deref() {
-        Ok("shelf") => vec![shelf_room()],
-        _ => vec![
-            stage_room(),
-            furnished_room(),
-            resident_room(),
-            shelf_room(),
-        ],
+        Ok("shelf") => shelf_census_rooms(),
+        _ => [stage_room(), furnished_room(), resident_room()]
+            .into_iter()
+            .chain(shelf_census_rooms())
+            .collect(),
     };
     let mut cells = Vec::new();
     for room in &rooms {
@@ -1591,8 +1784,10 @@ pub(super) const DAY_HOME: [Furniture; 9] = [
 /// The day census's rooms: the stage (nothing owned), her home with a
 /// clock and a window, the resident's (a sofa and a TV, her wall clock
 /// not yet sent: it comes in the week), and the resident's with her
-/// shelf and window ([`shelf_room`]), each from [`MONDAY`].
-fn day_rooms() -> [Room; 4] {
+/// shelf and window ([`shelf_room`]), and step 9's: the user's terminal
+/// without her shelf and with it ([`wide_room`], [`wide_shelf_room`]) and
+/// her home with a low one ([`low_shelf_room`]), each from [`MONDAY`].
+fn day_rooms() -> [Room; 7] {
     [
         Room {
             start: Some(MONDAY),
@@ -1610,6 +1805,18 @@ fn day_rooms() -> [Room; 4] {
         Room {
             start: Some(MONDAY),
             ..shelf_room()
+        },
+        Room {
+            start: Some(MONDAY),
+            ..wide_room()
+        },
+        Room {
+            start: Some(MONDAY),
+            ..wide_shelf_room()
+        },
+        Room {
+            start: Some(MONDAY),
+            ..low_shelf_room()
         },
     ]
 }
@@ -1695,8 +1902,10 @@ pub(super) const WINDOWED_HOME: [Furniture; 8] = [
 /// [`EVENING`]: her look-out likelier from dusk), so her daydream at the
 /// sill shows in a print while her afternoon has almost none of it; and
 /// the resident's with her shelf ([`shelf_room`]: her gaze up at her
-/// plant against her look out).
-fn printed_rooms() -> [Room; 5] {
+/// plant against her look out), and step 9's: the user's 191×46 without
+/// her shelf and with it ([`wide_room`], [`wide_shelf_room`]) and her
+/// home with a low one ([`low_shelf_room`]).
+fn printed_rooms() -> [Room; 8] {
     let windowed = Room {
         name: "home+window",
         owns: &WINDOWED_HOME,
@@ -1727,9 +1936,17 @@ fn printed_rooms() -> [Room; 5] {
         owns: &WINDOWED_HOME,
         ..furnished_room()
     };
-    let [windowed, tv_only, low_text, shelf] =
-        [windowed, tv_only, low_text, shelf_room()].map(at_afternoon);
-    [windowed, tv_only, low_text, evening, shelf]
+    let [windowed, tv_only, low_text, shelf, bare, wide, low] = [
+        windowed,
+        tv_only,
+        low_text,
+        shelf_room(),
+        wide_room(),
+        wide_shelf_room(),
+        low_shelf_room(),
+    ]
+    .map(at_afternoon);
+    [windowed, tv_only, low_text, evening, shelf, bare, wide, low]
 }
 
 /// A Tuesday evening (from 18:00, after dusk): her window's evening.
@@ -1882,13 +2099,15 @@ fn fed_afternoon_census() {
     )
     .max(1) as usize;
     // `CENSUS_ROOMS`: "band" for the band's three, "printed" for the
-    // ones printed beside them ([`printed_rooms`]), "shelf" for
-    // [`shelf_room`] alone; all of them by default.
+    // ones printed beside them ([`printed_rooms`]), "shelf" for the
+    // rooms with her shelf and the bare 191×46 twin
+    // ([`shelf_census_rooms`]); all of them by default.
     let rooms: Vec<Room> = match std::env::var("CENSUS_ROOMS").as_deref() {
         Ok("band") => afternoon_rooms().into(),
         Ok("printed") => printed_rooms().into(),
-        // Her shelf's room alone (phase 6a step 6's review).
-        Ok("shelf") => vec![at_afternoon(shelf_room())],
+        // The rooms with her shelf alone (phase 6a step 6's review, step
+        // 9's).
+        Ok("shelf") => shelf_census_rooms().into_iter().map(at_afternoon).collect(),
         _ => afternoon_rooms()
             .into_iter()
             .chain(printed_rooms())
@@ -2386,10 +2605,10 @@ fn day_census() {
     const DAY_SEEDS: [u64; 3] = [0, 1, 2];
     let dates = [date(2026, 10, 31), None];
     let mut looking_out = Vec::new();
-    // `CENSUS_ROOMS=shelf`: [`shelf_room`]'s day alone.
+    // `CENSUS_ROOMS=shelf`: the days of the rooms with her shelf alone.
     let shelf_only = std::env::var("CENSUS_ROOMS").as_deref() == Ok("shelf");
     for room in day_rooms() {
-        if shelf_only && room.name != shelf_room().name {
+        if shelf_only && room.shelf == Shelved::No && room.name != WIDE {
             continue;
         }
         let started = std::time::Instant::now();
@@ -2503,12 +2722,14 @@ fn day_census() {
         // nothing new up there (her shelf here is never fresh: step 8's
         // boost is on top). 1.19 a day at base 8 as tuned in step 8
         // (base 5's 0.05 sat far under it; base 10's 2.83 over).
-        if room.shelf {
+        if room.shelf != Shelved::No {
             let gazes = whole.events.get("gaze up").copied().unwrap_or(0);
             let a_day = gazes as f64 / days as f64;
             eprintln!("  gazing up: {gazes} in {days} game days, {a_day:.2} a day");
+            // Pinned where step 8 tuned it; step 9's rooms are read, a
+            // finding for the user if they stray (the design's Census).
             assert!(
-                (0.7..=1.5).contains(&a_day),
+                room.shelf != Shelved::Users || (0.7..=1.5).contains(&a_day),
                 "{}: she gazes up {a_day:.2} times a game day (about once a day: 0.7 to 1.5)",
                 room.name
             );
@@ -2516,7 +2737,9 @@ fn day_census() {
         // Judged in the furnished home; [`shelf_room`]'s is printed (the
         // resident's screen leaves her little else to do: 7.76 a day at
         // step 6's review, the same with its shelf and plant as without).
-        if room.owns.contains(&Furniture::Window) && !room.shelf {
+        // Step 9's rooms are read, never judged (the design's Census).
+        if room.owns.contains(&Furniture::Window) && room.shelf == Shelved::No && room.name != WIDE
+        {
             looking_out.push((room.name, a_day));
         }
     }
@@ -2725,6 +2948,94 @@ fn the_census_home_shows_every_piece() {
             }
         }
     }
+}
+
+/// The census rooms with her shelf are as their docs say (phase 6a step
+/// 9), both modes, a few seeds: every piece she owns shown; her shelf
+/// finished, in her living room (her sofa's pane: her gremlin waited on
+/// its floor as it went up, as in play; Users or the Playlist by the
+/// seed), high at 191×46 (the user's terminal) and low on the census
+/// home's 9-row panes; up on it, her plant and gremlin (191×46) or her
+/// gremlin (low). And her poster hung clear of the low shelf's block
+/// (its run's columns and its margin's), on its wall in some runs: a
+/// guard on the fixture, not a test of `hung_clear`'s block (her shelf
+/// goes up after her poster hangs, and `shelf_spot` keeps it off a hung
+/// piece, so this holds whatever the block rule says; the design's step
+/// 9 trap stands: the block rule's own case waits for a hung kind that
+/// leaves a block row free).
+#[test]
+fn the_shelf_rooms_put_her_shelf_up() {
+    use crate::ui::houseguest::structures::{HIGH_RISE, LOW_RISE, SHELF_WIDTH, Structure};
+    let mut beside = 0;
+    for room in [wide_shelf_room(), low_shelf_room()] {
+        for graphics in [false, true] {
+            for seed in 0..3 {
+                let at = format!("{} seed {seed} graphics={graphics}", room.name);
+                let guest = arrive_in(&room, seed, graphics, None);
+                let State::Visiting(visit) = &guest.state else {
+                    panic!("{at}: visiting");
+                };
+                for item in room.owns {
+                    assert!(
+                        visit.shown.iter().any(|s| s.item == *item && !s.boxed()),
+                        "{at}: {item:?} not shown: {:?}",
+                        visit.shown
+                    );
+                }
+                let [Structure::Shelf(shelf)] = guest.ledger.home.structures[..] else {
+                    panic!("{at}: one shelf: {:?}", guest.ledger.home.structures);
+                };
+                assert!(shelf.finished(), "{at}: {shelf:?}");
+                let sofa = guest
+                    .ledger
+                    .home
+                    .props
+                    .iter()
+                    .find(|p| p.item == Furniture::Sofa);
+                assert_eq!(
+                    sofa.map(|p| p.strip),
+                    Some(room::Strip::Bottom(shelf.nook)),
+                    "{at}: in her living room: {shelf:?}"
+                );
+                let mut up: Vec<Furniture> = visit
+                    .shown
+                    .iter()
+                    .filter(|s| s.on_shelf())
+                    .map(|s| s.item)
+                    .collect();
+                up.sort_by_key(|f| Furniture::ALL.iter().position(|x| x == f));
+                if room.name == WIDE_SHELF {
+                    assert!(shelf.rise >= HIGH_RISE, "{at}: high: {shelf:?}");
+                    assert_eq!(up, [Furniture::Plant, Furniture::Gremlin], "{at}");
+                    continue;
+                }
+                assert_eq!(shelf.rise, LOW_RISE, "{at}: low: {shelf:?}");
+                assert_eq!(up, [Furniture::Gremlin], "{at}");
+                // Its block, from the record and its pane's rect alone.
+                let (from, _, floor) = super::shelf::run_from_record(shelf, &room.view);
+                let (from, floor) = (i32::from(from), i32::from(floor));
+                // The wall lane's rows over it: `floor - 6 ..= floor - 5`.
+                let block = Rect::new(
+                    u16::try_from(from - 2).unwrap(),
+                    u16::try_from(floor - 6).unwrap(),
+                    u16::try_from(SHELF_WIDTH + 4).unwrap(),
+                    2,
+                );
+                let poster = visit
+                    .shown
+                    .iter()
+                    .find(|s| s.item == Furniture::Poster)
+                    .unwrap();
+                // Not vacuous: on the shelf's wall in some runs.
+                beside += usize::from(poster.strip == Some(room::Strip::Bottom(shelf.nook)));
+                assert!(
+                    !poster.rect().intersects(block),
+                    "{at}: her poster {poster:?} meets the block {block:?}"
+                );
+            }
+        }
+    }
+    assert!(beside > 0, "her poster never hung on her low shelf's wall");
 }
 
 /// Milliseconds of `visits` in each census group.
