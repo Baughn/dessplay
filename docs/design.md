@@ -3966,6 +3966,10 @@ connects over loopback. Responsibilities:
 
 **Authentication**: Password entered on first client launch, sent in plaintext
 over TLS-encrypted QUIC. Server configured via `--password-file` or env var.
+Failed passwords are throttled per source address (an IPv6 /64 counts as one
+address): five back to back, then one a minute. A throttled attempt is refused
+with `AuthFailed` without its password being checked. (why: decisions.md,
+"Failed passwords are throttled per address")
 
 **TLS**: TOFU (Trust On First Use) -- server generates a persistent self-signed
 cert; clients store and verify the fingerprint on subsequent connections.
@@ -4991,6 +4995,8 @@ Authentication uses a password entered on first launch and stored in the local
 database. The password is used to authenticate with the rendezvous server.
 Anyone with the password can connect. This is acceptable for the intended use
 case (small friend groups) but should be documented clearly.
+Password guessing is throttled per source address (see Authentication under
+the rendezvous server).
 
 - **Identity**: Users are identified by self-chosen nicknames. There is no
   cryptographic identity -- users trust each other not to impersonate.

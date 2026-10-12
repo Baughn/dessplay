@@ -224,6 +224,44 @@ async fn bad_password_is_rejected() {
     assert!(client.events.recv().await.is_none());
 }
 
+/// Failed passwords are throttled per source address: once an address
+/// has spent its burst, even the right password is refused (unjudged)
+/// until the budget refills — and the refusal is the terminal
+/// `AuthFailed`, so a throttled client stops instead of retrying.
+#[tokio::test(start_paused = true)]
+async fn failed_auths_throttle_the_address() {
+    let (net, server_id) = setup();
+    let limit = ServerConfig::new(PASSWORD).auth_limit;
+    // Every sim endpoint shares 127.0.0.1: one address, one budget.
+    for i in 0..limit.burst {
+        let name = format!("mallory{i}");
+        let mut guess = spawn_client(&net, &name, &server_id, "wrong", Role::Interactive, 0);
+        expect_event(&mut guess, Duration::from_secs(5), |e| {
+            matches!(e, NetworkEvent::Rejected { .. }).then_some(())
+        })
+        .await;
+    }
+
+    let mut throttled = spawn_client(&net, "kim", &server_id, PASSWORD, Role::Interactive, 0);
+    expect_event(&mut throttled, Duration::from_secs(5), |e| match e {
+        NetworkEvent::Rejected { .. } => Some(()),
+        NetworkEvent::Connected { .. } => panic!("a throttled address got in"),
+        _ => None,
+    })
+    .await;
+    assert!(throttled.events.recv().await.is_none());
+
+    // One failure's worth of refill lets one attempt through.
+    tokio::time::sleep(limit.refill).await;
+    let mut kim = spawn_client(&net, "kim", &server_id, PASSWORD, Role::Interactive, 0);
+    expect_event(&mut kim, Duration::from_secs(5), |e| match e {
+        NetworkEvent::Connected { .. } => Some(()),
+        NetworkEvent::Rejected { .. } => panic!("still throttled after a refill"),
+        _ => None,
+    })
+    .await;
+}
+
 /// A protocol mismatch is checked before the password: even a client whose
 /// stored password is also stale gets the actionable update refusal and does
 /// not retry (#23).

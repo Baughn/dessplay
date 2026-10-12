@@ -15,6 +15,8 @@ Add new days at the top. Add new entries at the bottom of existing days.
 - Changed: Osaka puts her shelf up in her living room, where her sofa
   is (unless her gremlin is waiting for it in another room), so she's
   under it more often.
+- Changed: After five wrong passwords from one address, the server
+  refuses further attempts from it for a while (one more a minute).
 
 ## 2026-10-11
 

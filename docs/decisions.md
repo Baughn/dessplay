@@ -16,6 +16,37 @@ remembering (a bug, a review finding, a user decision), the rule goes in
 design.md and the reason goes here, in the same commit. Entries are never
 deleted; a superseded decision gets a note saying what replaced it.
 
+## Failed passwords are throttled per address (2026-10-12)
+
+**Rule:** (design.md, Rendezvous Server, Authentication) each source
+address gets five failed passwords back to back, then one a minute; a
+throttled `Auth` is refused with `AuthFailed`, unjudged.
+
+**Why:** the room password is a five-word passphrase, out of reach of
+online guessing already; the throttle is defence in depth, at the user's
+request. Choices:
+
+- *Per address, failures only.* Successful logins never touch a budget,
+  so reconnect storms and many friends behind one NAT are unaffected. An
+  IPv6 /64 is one address, or rotating within a subscriber's allocation
+  would buy unlimited guesses.
+- *No global limit.* A global failure budget would let anyone lock the
+  whole room out by spending it. Against the distributed case (many
+  addresses) the passphrase's entropy is the defence; past 65,536
+  tracked addresses new ones go untracked rather than refused, for the
+  same reason.
+- *Unjudged while throttled.* Checking the password and only hiding the
+  answer would be the same; not checking it makes it plain that nothing
+  leaks.
+- *`AuthFailed`, not a bare close, and no new wire variant.* The client
+  treats `AuthFailed` as terminal; a bare close reads as a network blip
+  and it would redial into the throttle forever. A distinct "throttled"
+  reply would need a protocol bump for a case a human almost never hits.
+- *Transfer tokens are not throttled.* `TransferAuth`'s token is a random
+  `u64`, regenerated per `Auth` and valid for one live session; guessing
+  it at connection rates is hopeless, and counting stale-token races
+  against a legitimate client's budget would only hurt.
+
 ## UI delivery policy belongs to the mailbox (2026-09-16)
 
 **Rule:** [UI Principles](design.md#ui-principles) retain one-shot replies and

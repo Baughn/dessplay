@@ -1,6 +1,6 @@
 # Network Design
 
-Last updated: 2026-08-21
+Last updated: 2026-10-12
 
 This document covers connection establishment, wire protocols, relay, and file
 transfer. For the replicated data types built on top of this layer, see
@@ -425,6 +425,15 @@ connection loss and retry forever. On success, the server responds with
 address (informational -- it costs nothing to report and would be needed if
 direct peer connections ever return). On failure, the server sends
 `AuthFailed` and closes the connection.
+
+**Throttling.** Each source address has a budget of failed passwords: five
+back to back, refilling at one a minute (`ServerConfig::auth_limit`). An
+IPv6 address counts by its /64; an IPv4-mapped one as its IPv4 address. A
+right password spends nothing. Once the budget is spent, `Auth` is refused
+with `AuthFailed` — the same flush-then-close — without the password being
+checked, so a guess made while throttled learns nothing. The check comes
+after the protocol-version check. Transfer connections are not throttled:
+their `TransferAuth` token is a random `u64` that lives for one session.
 
 `Auth` also carries the client's username, role (seeders are excluded from
 gating and listed separately), and last known epoch. The epoch field is
