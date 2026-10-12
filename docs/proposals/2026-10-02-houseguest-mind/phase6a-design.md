@@ -1131,6 +1131,15 @@ Sixth round (2026-10-11, the user, on step 5c's and step 6's build calls):
 - **A parcel nudging a piece she's on** (since before 6a): she moves with the piece. A fix of its own after 6a, since
   it moves the goldens of homes with no structure.
 
+Seventh round (2026-10-12, the user, on step 7's and step 8's build calls):
+- **"It wants a shelf..." stops once the kit is ordered**: she feels and says it for the gremlin on a floor only while
+  no shelf kit of hers is on order, boxed or going up (a finished shelf shown, or room for one with no kit coming).
+  Built in a fix before step 9 (as built, she said it with the kit on order and boxed too).
+- **Kept as built**: a piece set on her shelf gets the pleased "hehe" in place of "There!"; her lines up at the
+  gremlin come one gaze in two.
+- **The ASCII gremlin stays `oo`/`ww`**: his turn doesn't show in ASCII (dev and tests only).
+- **His parcel's look** (the 5×2 box scaled into his 2×2): judged on step 9's review shots.
+
 ## Critique dispositions
 
 M = mechanics, F = feasibility, T = tests, C = character (`phase6/critic-*.md`). A = accepted, D = amended differently,
