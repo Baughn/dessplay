@@ -1095,14 +1095,6 @@ struct Visit {
     /// Whether a shelf could go up on the last frame, while her kit
     /// showed in its box (none otherwise): logged once per change.
     kit_room: Option<bool>,
-    /// What `kit_room` last asked of [`room::Home::shelf_spot`]: a hash
-    /// of all it reads ([`room::ShelfAsk::basis`]: her home, the frame,
-    /// its panes and chat, what's kept off, the pane she unpacks in), and
-    /// whether a shelf could go up. Asked again only when the hash
-    /// changes (phase 6a D9: she may stand in her gremlin's room a long
-    /// while, unfelt, where none could); a hash, not the frame (411 KiB
-    /// at 191×46: the user's eighth round).
-    shelf_asked: Option<(u64, bool)>,
     /// What she wished the channel sold her first on the last frame
     /// (phase 6a D9: [`wish`]): logged as it changes, and with what she
     /// buys.
@@ -3996,7 +3988,6 @@ impl Guest {
             looks: Looks::default(),
             raise: None,
             kit_room: None,
-            shelf_asked: None,
             wished: None,
             #[cfg(test)]
             shelf_asks: 0,
@@ -4870,30 +4861,17 @@ fn kit_room(
             layer: &layer,
             made: &made,
         };
-        let ask = room::ShelfAsk {
-            home,
-            buf,
-            plan: plan_of(view, buf),
-            keep_off: &keep_off,
-            kit_at: home
-                .props
-                .iter()
-                .find(|p| shelf_kit(p.item))
-                .map(|p| p.strip.nook()),
-        };
-        let basis = ask.basis();
-        match visit.shelf_asked {
-            Some((was, room)) if was == basis => room,
-            _ => {
-                let room = ask.spot().is_some();
-                visit.shelf_asked = Some((basis, room));
-                #[cfg(test)]
-                {
-                    visit.shelf_asks += 1;
-                }
-                room
-            }
+        let kit_at = home
+            .props
+            .iter()
+            .find(|p| shelf_kit(p.item))
+            .map(|p| p.strip.nook());
+        #[cfg(test)]
+        {
+            visit.shelf_asks += 1;
         }
+        home.shelf_spot(buf, plan_of(view, buf), &keep_off, kit_at)
+            .is_some()
     };
     let seen = kit_shown.then_some(room);
     if seen != visit.kit_room {

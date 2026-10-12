@@ -392,13 +392,16 @@ fn no_gremlin_grievance_where_no_shelf_can_go() {
             Facing::Right,
             Mood::Industrious,
         );
-        let mut on_floor = 0;
-        let mut paints = 0;
+        let (mut on_floor, mut asked, mut asked_away) = (0, 0, 0);
         let felt_or_said = run_until(&mut guest, &full, &view, 0, 600_000, |guest, _| {
             let visit = visit_of(guest);
             let osaka = &visit.osaka;
-            on_floor += usize::from(on_users_floor((osaka.x, osaka.y)));
-            paints += 1;
+            let in_his_room = on_users_floor((osaka.x, osaka.y));
+            on_floor += usize::from(in_his_room);
+            if !in_his_room && visit.shelf_asks > asked {
+                asked_away += 1;
+            }
+            asked = visit.shelf_asks;
             osaka.felt().contains(&high())
                 || osaka.said_aloud().iter().any(|&(line, _)| line == LINE)
                 || osaka.episode().is_some_and(|ep| ep.repair.key == high())
@@ -410,14 +413,12 @@ fn no_gremlin_grievance_where_no_shelf_can_go() {
             !visit_of(&guest).osaka.felt().contains(&high()),
             "{at}: never felt"
         );
-        // Unfelt in his room, whether a shelf could go up is asked again
-        // only as what it reads changes (the text she moves), not each
-        // paint she stands there.
-        let asks = visit_of(&guest).shelf_asks;
-        assert!(
-            asks * 10 < on_floor,
-            "{at}: asked {asks} times in {on_floor} paints in his room ({paints} in all)"
-        );
+        // Whether a shelf could go up is asked afresh each paint she
+        // stands in his room unfelt (her feeling it waits on the
+        // answer), and never on a paint out of it, where nothing wants
+        // the answer (no kit of hers, none on the channel).
+        assert!(asked > 0, "{at}: never asked in his room");
+        assert_eq!(asked_away, 0, "{at}: asked out of his room");
     }
 }
 
@@ -1432,17 +1433,14 @@ fn he_never_turns_at_a_goodbye_or_unfed() {
 /// The costs step 9's review asked to look at (the hand-off notes'
 /// "perf look", 2026-10-12), printed, not judged: her gremlin on Users'
 /// floor where no shelf could go up (every pane's rows above her head
-/// full of text: [`crowded`]), so `kit_room` asks `shelf_spot` while she
-/// stands in his room unfelt, for ten minutes of an industrious visit,
-/// on a frame whose status line carries a clock that ticks each second
-/// (its memo is keyed on the whole frame, so each tick is a miss) and on
-/// the same frame with the clock still (the control); what one
-/// `shelf_spot` on that frame costs; what one `Osaka::out_of_sight` costs
-/// through a fed night asleep (her gremlin's tiny life asks it each
-/// tick); and at the user's 191×46 what `kit_room`'s memo key costs a
-/// paint (a hash of all `shelf_spot` reads: the user's eighth round),
-/// beside the frame compare it replaced and the bytes that frame held.
-/// Ignored; run alone (timings) in release:
+/// full of text: [`crowded`]), so `kit_room` asks `shelf_spot` each
+/// paint she stands in his room unfelt (no memo: asking costs less
+/// than remembering, the user's eighth round), for ten minutes of an
+/// industrious visit; what one `shelf_spot` costs on that frame and at
+/// the user's 191×46, crowded and as it is; and what one
+/// `Osaka::out_of_sight` costs through a fed night asleep (her gremlin's
+/// tiny life asks it each tick). Ignored; run alone (timings) in
+/// release:
 ///
 /// ```text
 /// cargo test --release -p dessplay --lib perf_look_at_his_room -- --ignored --nocapture
@@ -1453,58 +1451,40 @@ fn perf_look_at_his_room() {
     use std::time::Instant;
     let (real, view) = rooms_frame(100, 30);
     let full = crowded(&real, &view.nooks);
-    let clocked = |ms: u64| {
-        let mut frame = full.clone();
-        let secs = ms / 1000;
-        frame.set_string(
-            90,
-            28,
-            format!(
-                "{:02}:{:02}:{:02}",
-                14 + secs / 3600,
-                secs / 60 % 60,
-                secs % 60
-            ),
-            Style::new(),
-        );
-        frame
-    };
-    for ticking in [false, true] {
-        let mut guest = wanting(3, tue(14, 0), false);
-        begun_at(
-            &mut guest,
-            &full,
-            &view,
-            (56, USERS_FLOOR),
-            Facing::Right,
-            Mood::Industrious,
-        );
-        let (mut now, mut paints, mut on_floor) = (0, 0, 0);
-        let start = Instant::now();
-        while now < 600_000 {
-            now += guest
-                .next_tick(now)
-                .map_or(100, |d| d.as_millis() as u64)
-                .clamp(1, 100);
-            guest.advance(now);
-            let frame = if ticking { clocked(now) } else { full.clone() };
-            paint(&mut guest, &frame, &view, now);
-            paints += 1;
-            let osaka = &visit_of(&guest).osaka;
-            on_floor += usize::from(on_users_floor((osaka.x, osaka.y)));
-        }
-        let wall = start.elapsed();
-        let asks = visit_of(&guest).shelf_asks;
-        eprintln!(
-            "his room, clock {}: {paints} paints ({on_floor} in his room), {asks} shelf_spot asks \
-             ({:.3} a paint, {:.2} a second), {:.1} ms wall, {:.1} µs a paint",
-            if ticking { "ticking" } else { "still" },
-            asks as f64 / paints as f64,
-            asks as f64 / 600.0,
-            wall.as_secs_f64() * 1e3,
-            wall.as_secs_f64() * 1e6 / paints as f64,
-        );
+    let mut guest = wanting(3, tue(14, 0), false);
+    begun_at(
+        &mut guest,
+        &full,
+        &view,
+        (56, USERS_FLOOR),
+        Facing::Right,
+        Mood::Industrious,
+    );
+    let (mut now, mut paints, mut on_floor) = (0, 0, 0);
+    let start = Instant::now();
+    while now < 600_000 {
+        now += guest
+            .next_tick(now)
+            .map_or(100, |d| d.as_millis() as u64)
+            .clamp(1, 100);
+        guest.advance(now);
+        // A frame each paint, as the client draws one (and as the loop
+        // timed before the memo went: 217-222 µs a paint).
+        paint(&mut guest, &full.clone(), &view, now);
+        paints += 1;
+        let osaka = &visit_of(&guest).osaka;
+        on_floor += usize::from(on_users_floor((osaka.x, osaka.y)));
     }
+    let wall = start.elapsed();
+    let asks = visit_of(&guest).shelf_asks;
+    eprintln!(
+        "his room: {paints} paints ({on_floor} in his room), {asks} shelf_spot asks \
+         ({:.3} a paint, {:.2} a second), {:.1} ms wall, {:.1} µs a paint",
+        asks as f64 / paints as f64,
+        asks as f64 / 600.0,
+        wall.as_secs_f64() * 1e3,
+        wall.as_secs_f64() * 1e6 / paints as f64,
+    );
     // One `shelf_spot` on a crowded frame (none fits: every pane read),
     // this one and the user's 191×46 (`fuller_ui`) crowded likewise; and
     // on the user's 191×46 as it is (one fits).
@@ -1562,43 +1542,5 @@ fn perf_look_at_his_room() {
     eprintln!(
         "out_of_sight asleep: {:.1} ns a call (days summed, kept live: {seen})",
         start.elapsed().as_secs_f64() * 1e9 / f64::from(n)
-    );
-    // `kit_room`'s memo key at 191×46 (the user's eighth round: a hash
-    // of all `shelf_spot` reads, the frame included, in place of a held
-    // frame compared whole), and the compare it replaced, each paint
-    // while it asks.
-    let keep_off = structures::KeepOff {
-        protected: &wide_view.protected,
-        layer: &[],
-        made: &[],
-    };
-    let ask = room::ShelfAsk {
-        home: &guest.ledger.home,
-        buf: &wide,
-        plan: plan_of(&wide_view, &wide),
-        keep_off: &keep_off,
-        kit_at: None,
-    };
-    let n = 2000u32;
-    let start = Instant::now();
-    let mut kept = 0u64;
-    for _ in 0..n {
-        kept ^= std::hint::black_box(&ask).basis();
-    }
-    let hashed = start.elapsed().as_secs_f64() * 1e6 / f64::from(n);
-    let held = wide.clone();
-    let start = Instant::now();
-    let mut same = 0u32;
-    for _ in 0..n {
-        same += u32::from(std::hint::black_box(&held) == std::hint::black_box(&wide));
-    }
-    let compared = start.elapsed().as_secs_f64() * 1e6 / f64::from(n);
-    let cells = 191 * 46;
-    eprintln!(
-        "kit_room's memo at 191×46: the hash {hashed:.1} µs a paint (kept live: {kept:x}); \
-         the frame compare it replaced {compared:.1} µs ({same} same), holding {cells} cells × \
-         {} bytes = {} KiB",
-        std::mem::size_of::<tuirealm::ratatui::buffer::Cell>(),
-        cells * std::mem::size_of::<tuirealm::ratatui::buffer::Cell>() / 1024
     );
 }

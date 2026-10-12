@@ -942,12 +942,12 @@ resize or his move since she felt it can't send her to a stale floor or column. 
 by the first decision that reaches it (a reflex before it leaves it set; `settle_for_night` lets it go), and `say_aloud`
 waits while it's set or her heading is `PutUp` (the test found a line said on landing from the hop to the stage cut the
 trip too). `kit_room` memoises `shelf_spot` on `Visit.shelf_asked` (a hash of what it reads, and the frame compared
-whole). The wish is logged as it changes (debug) and a purchase that was the wish at info. D9's census check that a felt
+whole; the memo was dropped after step 9, Eighth round below). The wish is logged as it changes (debug) and a purchase that was the wish at info. D9's census check that a felt
 `High` with no shelf costs no slot of `choose`'s four is **an argument plus a test** instead of a census room
 (`a_felt_high_with_no_shelf_takes_none_of_her_offers`: no repair, `Arrange` binds nothing, every want binds as with
 `may_arrange` false). `no_gremlin_grievance_where_no_shelf_can_go` runs a game **hour**, not a fed day (cost; never felt
 implies `may_arrange` is false for it, so `Arrange` is never offered for it), and now pins that `shelf_spot` is asked only
-as what it reads changes. The end-to-end is one test a mode. The gremlin census's home now lacks the bookshelf and the
+as what it reads changes (after step 9, with the memo gone: asked in his room, never on a paint out of it). The end-to-end is one test a mode. The gremlin census's home now lacks the bookshelf and the
 poster too, so "kit sold first" measures the wish. Once the kit is hers, the rule was felt and said with it on order
 or boxed (a shelf could go up), not while the shelf is going up; the user chose none of the three (seventh round:
 built in the fix after step 8, below; the chain-drop that first forced the third is fixed apart from it).
@@ -1207,9 +1207,14 @@ Eighth round (2026-10-12, the user, on step 9's findings; built after step 9, pl
   under it): more where she spends more of her day on its floor.
 - **The user's 191×46 out of the stillness band: left for now.** Not 6a's (the shelf moves no cell); the user has a fix
   in mind for a later session.
-- **`Visit.shelf_asked` holds a hash, not a frame** (the coordinator's call, no behaviour change): `kit_room`'s memo
-  keys on `room::ShelfAsk::basis`, a hash of everything `shelf_spot` reads (her home, the frame, its panes, chat and
-  screen, what's kept off, the pane she unpacks in), 8 bytes where a 411 KiB frame was held at 191×46.
+- **`Visit.shelf_asked` held a hash, not a frame, and then went** (the coordinator's calls, no behaviour change):
+  `kit_room`'s memo first keyed on `room::ShelfAsk::basis`, a hash of everything `shelf_spot` reads, 8 bytes where a
+  411 KiB frame was held at 191×46. Measured, the hash cost 56 µs a paint at 191×46 (the frame compare 36 µs) against
+  `shelf_spot`'s own 14 µs on that frame and 30 µs crowded: the memo cost more than the question it saved, and was a
+  stale-cache trap besides. So `kit_room` now asks `shelf_spot` afresh on each paint that wants the answer, gated as
+  before (her kit boxed and shown, the queue at a kit or a piece that wants up, an unfelt `High` where she stands);
+  `ShelfAsk` and `Visit.shelf_asked` are gone. Tests pin no ask where none is wanted (none with her kit on order; none
+  on a paint out of his room), not a fraction of paints. Goldens byte-identical.
 - (Review shots: her pleased beat after setting her gremlin on her shelf is the set-down's, not "stage 2"'s:
   `carry-up.png` relabelled; `gaze-up.png`'s shelf, with no gremlin waiting, now in her living room.)
 

@@ -4082,7 +4082,8 @@ fixes in `s9fix/`). No threshold or weight was changed.
   gremlin's tiny life asks `out_of_sight` each tick: 17 ns a call
   asleep. `Visit.shelf_asked`'s frame at 191×46 is 411 KiB (8786 cells
   of 48 bytes), held for the visit once `kit_room` has asked. Nothing to
-  fix for cost; the frame held is now a hash (the eighth round, below).
+  fix for cost; the frame held became a hash, and then the memo went
+  (the eighth round, below).
 
 **The user's eighth round** (2026-10-12, on step 9's findings; the
 design's *Questions for the user*), built after step 9:
@@ -4106,17 +4107,28 @@ design's *Questions for the user*), built after step 9:
   room): kept.
 - **The user's 191×46 out of the stillness band**: left; not 6a's, and
   the user has a fix in mind for a later session.
-- **`Visit.shelf_asked`** (the coordinator's call): a hash in place of
-  the frame (`room::ShelfAsk::basis`: her home, the frame, its panes,
-  chat and screen, what's kept off, the pane she unpacks in; each a
-  field `ShelfAsk::spot` passes and `basis` takes apart whole), 8 bytes
-  where 411 KiB was held at 191×46; `a_change_in_anything_it_reads_asks_again`
-  (each input changed alone hashes apart: red under each input dropped).
-  Behaviour unchanged (`Buffer`'s `Hash` agrees with its `==`). Its
+- **`Visit.shelf_asked`** (the coordinator's calls): first a hash in
+  place of the frame (`room::ShelfAsk::basis`, FxHash of all
+  `shelf_spot` reads), 8 bytes where 411 KiB was held at 191×46. Its
   cost, measured (`perf_look_at_his_room`, release): the hash 56 µs a
   paint at 191×46 against the held frame's compare 36 µs, while
   `shelf_spot` itself is 14 µs on that frame as it is and 30 µs
-  crowded: the memo saves no CPU there, only asks (see below).
+  crowded, so the memo cost more than the question it saved, and a
+  memo is a stale-cache trap besides. **The memo is gone** (after step
+  9): `kit_room` asks `shelf_spot` afresh on each paint that wants the
+  answer, gated as before (her kit boxed and shown, the channel's queue
+  at a kit or a piece that wants up, or an unfelt `High` where she
+  stands); `ShelfAsk`, `basis`, `Visit.shelf_asked` and
+  `a_change_in_anything_it_reads_asks_again` went with it.
+  `no_gremlin_grievance_where_no_shelf_can_go` now pins that it asks in
+  his room and never on a paint out of it (was: under a tenth of his
+  room's paints); `no_gremlin_grievance_with_her_kit_on_order` still
+  pins no ask at all (both red with the gate removed). The perf look's
+  ten minutes in his room, crowded 100×30, she unfelt there: 3080 asks
+  in 6554 paints (0.47 a paint, each 22 µs), 224 µs a paint (the
+  memo's 220–222 µs in the same session, still clock or ticking): a
+  wash there, and at 191×46 cheaper (14–30 µs asked against 56 µs
+  hashed). Goldens byte-identical (112 traces).
 - The review shots: the beat after she sets her gremlin up is labelled
   the set-down's, not "stage 2"'s (`carry-up.png`); `gaze-up.png`'s
   shelf (no gremlin waiting) now goes up in her living room, Users, by
@@ -4134,11 +4146,9 @@ visit added in step 9's review); a shelf shown with no
 place for him on it (text in the rows over its run, or the run full)
 still has her feel and say his line once a game day; a resize mid-unpack leaves her at the box's old
 spot for its few seconds; and a carried piece isn't drawn in her arms in
-line art (as before 6a). `kit_room`'s memo (now a hash, above) costs
-more a paint than the `shelf_spot` it saves at 191×46 (56 µs against
-14–30 µs; the frame compare before it, 36 µs): it bounds asks, not
-time; dropping it, or a cheaper digest, is a later call (cost, not a
-bug).
+line art (as before 6a). (`kit_room`'s memo, which cost more a paint
+than the `shelf_spot` it saved at 191×46, is resolved: dropped after
+step 9, the eighth round above has the numbers.)
 
 ### Later (ideas, the user)
 
