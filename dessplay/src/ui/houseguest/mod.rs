@@ -1095,12 +1095,14 @@ struct Visit {
     /// Whether a shelf could go up on the last frame, while her kit
     /// showed in its box (none otherwise): logged once per change.
     kit_room: Option<bool>,
-    /// What `kit_room` last asked of [`room::Home::shelf_spot`]: what it
-    /// reads but the frame (hashed: her home, the panes, what's kept
-    /// off), the frame, and whether a shelf could go up. Asked again only
-    /// when one of them changes (phase 6a D9: she may stand in her
-    /// gremlin's room a long while, unfelt, where none could).
-    shelf_asked: Option<(u64, Buffer, bool)>,
+    /// What `kit_room` last asked of [`room::Home::shelf_spot`]: a hash
+    /// of all it reads ([`room::ShelfAsk::basis`]: her home, the frame,
+    /// its panes and chat, what's kept off, the pane she unpacks in), and
+    /// whether a shelf could go up. Asked again only when the hash
+    /// changes (phase 6a D9: she may stand in her gremlin's room a long
+    /// while, unfelt, where none could); a hash, not the frame (411 KiB
+    /// at 191×46: the user's eighth round).
+    shelf_asked: Option<(u64, bool)>,
     /// What she wished the channel sold her first on the last frame
     /// (phase 6a D9: [`wish`]): logged as it changes, and with what she
     /// buys.
@@ -4861,37 +4863,30 @@ fn kit_room(
             .any(|&(key, at)| at.holds(here) && !felt.contains(&key) && !wants_coming(ledger, key))
     };
     let room = (kit_shown || queued || unfelt) && {
-        use std::hash::{Hash, Hasher};
         let (layer, made) = visit.shelf_keep_off();
         let home = &ledger.home;
-        let kit_at = home
-            .props
-            .iter()
-            .find(|p| shelf_kit(p.item))
-            .map(|p| p.strip.nook());
-        let plan = plan_of(view, buf);
-        let mut hasher = std::hash::DefaultHasher::new();
-        (
+        let keep_off = structures::KeepOff {
+            protected: &view.protected,
+            layer: &layer,
+            made: &made,
+        };
+        let ask = room::ShelfAsk {
             home,
-            plan.nooks,
-            plan.chat,
-            &view.protected,
-            &layer,
-            &made,
-            kit_at,
-        )
-            .hash(&mut hasher);
-        let basis = hasher.finish();
-        match &visit.shelf_asked {
-            Some((was, frame, room)) if *was == basis && frame == buf => *room,
+            buf,
+            plan: plan_of(view, buf),
+            keep_off: &keep_off,
+            kit_at: home
+                .props
+                .iter()
+                .find(|p| shelf_kit(p.item))
+                .map(|p| p.strip.nook()),
+        };
+        let basis = ask.basis();
+        match visit.shelf_asked {
+            Some((was, room)) if was == basis => room,
             _ => {
-                let keep_off = structures::KeepOff {
-                    protected: &view.protected,
-                    layer: &layer,
-                    made: &made,
-                };
-                let room = home.shelf_spot(buf, plan, &keep_off, kit_at).is_some();
-                visit.shelf_asked = Some((basis, buf.clone(), room));
+                let room = ask.spot().is_some();
+                visit.shelf_asked = Some((basis, room));
                 #[cfg(test)]
                 {
                     visit.shelf_asks += 1;

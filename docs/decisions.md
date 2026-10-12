@@ -6152,6 +6152,28 @@ stage room at 100×30 is that case), else nothing, and then nothing of
 hers moves (a build call the user kept, 2026-10-11, over a bare shelf
 there or a third clear row for every low shelf).
 
+*(2026-10-12, the user's eighth round.)* Within a height, her living
+room comes next after her gremlin's pane: with no gremlin waiting on a
+floor, her shelf goes up in the pane her sofa stands in (out of its
+box), before the pane she opens her kit in and before the panes' order.
+Why: what's up there is for her to gaze up at from its floor, and she
+does that as often as she's on that floor. As built before, with no
+gremlin it went up where its parcel landed or in the first pane in
+order, a room she may seldom stand in: on the user's 191×46 that is The
+List, where she gazed up 0.17 times a game day, against 0.81 with it
+in her living room (the day census's no-gremlin room, both measured).
+"Her living room" is her sofa's pane, where she sits, naps and watches,
+not the rooms-from-contents *living room* (a screen and a seat and no
+bed): that one is missing while a bed shares the room or before her TV
+comes, and would send her shelf back to the first pane for reasons she
+wouldn't see. High before low still comes first (the user's "highest
+that fits"): a living room that takes only a low shelf has a high one
+elsewhere first. The sofa picks the pane, not the run in it: mid-wall,
+as before (the gremlin's middle stays the one place a piece pulls the
+run). Her gaze up over her living room runs over "about once a game
+day" (1.93 in the low census room, under which she lives): kept, the
+user's answer (more where she spends more of her day on its floor).
+
 ## She puts up a shelf, a stage a game day (2026-10-11)
 
 **Rule:** Opened, her kit goes up on her wall as her shelf, nothing of it

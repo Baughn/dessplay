@@ -2146,8 +2146,11 @@ impl Home {
     ///
     /// Within a height: the panes in order (the pane of a piece that
     /// wants up, her gremlin, standing on its floor out of its box
-    /// ([`Furniture::wants_up`], step 7); `kit_at`, the pane she unpacks
-    /// in; then `plan`'s; never one meeting the chat pane), the first
+    /// ([`Furniture::wants_up`], step 7); her living room, her sofa's
+    /// pane, the sofa out of its box on its floor (the user's eighth
+    /// round: where she spends her time, so she sees what's up there);
+    /// `kit_at`, the pane she unpacks in; then `plan`'s; never one
+    /// meeting the chat pane), the first
     /// that takes one; in that pane, a row with **no text** anywhere in
     /// the pane's interior before one with text (a shelf among a table's
     /// text reads as the UI's own rule), then (high) a run **touching no
@@ -2196,15 +2199,26 @@ impl Home {
                 Strip::Bottom(nook) => Some((nook, 2 * s.left + i32::from(s.size().0))),
                 Strip::Shelf(_) => None,
             });
+        // Her living room (the user's eighth round): her sofa's pane,
+        // out of its box on its floor.
+        let living = laid
+            .iter()
+            .filter(|s| s.item == Furniture::Sofa && !s.boxed() && s.scrap.is_none())
+            .find_map(|s| match s.strip? {
+                Strip::Bottom(nook) => Some(nook),
+                Strip::Shelf(_) => None,
+            });
         let mut panes: Vec<(Nook, Rect)> = plan
             .nooks
             .iter()
             .copied()
             .filter(|&(_, rect)| !rect.intersects(plan.chat))
             .collect();
+        // Stable: `plan`'s order within each rank.
         panes.sort_by_key(|&(nook, _)| {
             (
                 wanting.is_none_or(|(by, _)| by != nook),
+                Some(nook) != living,
                 Some(nook) != kit_at,
             )
         });
@@ -3703,6 +3717,64 @@ impl Home {
 /// Her seats at a piece shown among the pieces shown, her home as it
 /// will be then (see [`Home::doorstep`]).
 pub(super) type Seats<'a> = dyn Fn(&Shown, &[Shown], &Home) -> Vec<Seat> + 'a;
+
+/// One question for [`Home::shelf_spot`], with everything it reads: her
+/// home, the frame, its plan, what's kept off and the pane she unpacks
+/// in. [`ShelfAsk::basis`] hashes all of it, so a memo keyed on it
+/// (`kit_room`'s: phase 6a D9, the user's eighth round) is asked again
+/// whenever any of it changes, and holds a `u64`, not the frame. A new
+/// argument of `shelf_spot` must come in here as a field for
+/// [`ShelfAsk::spot`] to pass it, and `basis` takes this, [`Plan`] and
+/// [`KeepOff`] apart whole, so a field added to any of them doesn't
+/// build until it's hashed too (the stale-memo trap `Home::lays_as`
+/// warns of for her layouts).
+pub(super) struct ShelfAsk<'a> {
+    pub home: &'a Home,
+    pub buf: &'a Buffer,
+    pub plan: Plan<'a>,
+    pub keep_off: &'a KeepOff<'a>,
+    pub kit_at: Option<Nook>,
+}
+
+impl ShelfAsk<'_> {
+    /// [`Home::shelf_spot`]'s answer.
+    pub fn spot(&self) -> Option<Shelf> {
+        self.home
+            .shelf_spot(self.buf, self.plan, self.keep_off, self.kit_at)
+    }
+
+    /// A hash of everything [`ShelfAsk::spot`] reads (the frame's every
+    /// cell as `Buffer`'s own `Hash` takes it, which agrees with its
+    /// `==`: what the memo compared whole before). FxHash, as the
+    /// client's other input fingerprints (`ListGroupsCache`): SipHash
+    /// over a frame each paint costs more than the question.
+    pub fn basis(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let Self {
+            home,
+            buf,
+            plan,
+            keep_off,
+            kit_at,
+        } = self;
+        let Plan {
+            nooks,
+            chat,
+            screen,
+        } = plan;
+        let KeepOff {
+            protected,
+            layer,
+            made,
+        } = keep_off;
+        let mut hasher = rustc_hash::FxHasher::default();
+        (
+            home, buf, nooks, chat, screen, protected, layer, made, kit_at,
+        )
+            .hash(&mut hasher);
+        hasher.finish()
+    }
+}
 
 /// A pane's back wall as [`Home::shelf_spot`] reads it, in one pass over
 /// the pane's interior rows a shelf could hang in: for each cell where a
@@ -9550,12 +9622,33 @@ mod spot {
     type Place = (Key, Shelf);
     type Key = (u8, usize, bool, bool, u16, i32, i32);
 
+    /// Which of D3's pane preferences [`places`] orders the panes by
+    /// (each left out in turn to see whether it decided a choice).
+    #[derive(Clone, Copy)]
+    struct Prefer {
+        /// Her gremlin standing on a floor puts his pane first, and in
+        /// it the places nearest his middle first (step 7); else he's
+        /// only a piece.
+        gremlin: bool,
+        /// Her living room (her sofa's pane, the sofa out of its box on
+        /// its floor) next (the user's eighth round); else it's only a
+        /// pane.
+        living: bool,
+        /// The pane she unpacks in next.
+        kit: bool,
+    }
+
+    const PREFER_ALL: Prefer = Prefer {
+        gremlin: true,
+        living: true,
+        kit: true,
+    };
+
     /// Every place a shelf could go on `spot`'s frame, worked out from
-    /// D3's words and the panes' rects alone; and how many low places
-    /// were refused for their block alone. `by_gremlin`: her gremlin
-    /// standing on a floor puts his pane first, and in it the places
-    /// nearest his middle first (step 7); else he's only a piece.
-    fn places(spot: &Spot, by_gremlin: bool) -> (Vec<Place>, usize) {
+    /// D3's words and the panes' rects alone, its panes ranked as
+    /// `prefer` says; and how many low places were refused for their
+    /// block alone.
+    fn places(spot: &Spot, prefer: Prefer) -> (Vec<Place>, usize) {
         let mut blocked = 0;
         if !spot.home.structures.is_empty() {
             return (Vec::new(), blocked);
@@ -9572,9 +9665,21 @@ mod spot {
                 Strip::Bottom(nook) => Some((nook, 2 * s.left + i32::from(s.size().0))),
                 Strip::Shelf(_) => None,
             })
-            .filter(|_| by_gremlin);
+            .filter(|_| prefer.gremlin);
+        // Her sofa out of its box on a floor: her living room's pane.
+        let living = laid
+            .iter()
+            .find(|s| s.item == Furniture::Sofa && !s.boxed() && s.scrap.is_none())
+            .and_then(|s| match s.strip? {
+                Strip::Bottom(nook) => Some(nook),
+                Strip::Shelf(_) => None,
+            })
+            .filter(|_| prefer.living);
         let mut order: Vec<Nook> = gremlin.map(|(n, _)| n).into_iter().collect();
-        if let Some(kit) = spot.kit_at.filter(|k| !order.contains(k)) {
+        if let Some(sofa) = living.filter(|n| !order.contains(n)) {
+            order.push(sofa);
+        }
+        if let Some(kit) = spot.kit_at.filter(|k| prefer.kit && !order.contains(k)) {
             order.push(kit);
         }
         let rest: Vec<Nook> = spot
@@ -9705,8 +9810,9 @@ mod spot {
 
     /// How often each case came up (non-vacuity): a high, low or no
     /// place chosen; one in a pane after the first in order; a choice
-    /// the text rule, the touching rule or the kit's pane decided (the
-    /// first place differs with it left out of the order); frames where a
+    /// the text rule, the touching rule, her living room or the kit's
+    /// pane decided (the first place differs with it left out of the
+    /// order); frames where a
     /// low place was refused for its block alone (printed, not asserted:
     /// with today's hung kinds, the poster and the clock 2 rows tall from
     /// the block's top row, a piece meeting a block always meets the run's
@@ -9726,6 +9832,9 @@ mod spot {
         /// place nearest him in it (the first place differs with him
         /// only a piece).
         gremlin: usize,
+        /// A choice her living room decided (the user's eighth round:
+        /// the first place differs with her sofa's pane only a pane).
+        living: usize,
     }
 
     impl Seen {
@@ -9739,13 +9848,14 @@ mod spot {
             self.kit += one.kit;
             self.blocked += one.blocked;
             self.gremlin += one.gremlin;
+            self.living += one.living;
         }
     }
 
     fn hangs_as_high_as_fits(draw: &SpotDraw) -> Result<Seen, TestCaseError> {
         let spot = spot(draw);
         let chosen = spot.chosen();
-        let (all, blocked) = places(&spot, true);
+        let (all, blocked) = places(&spot, PREFER_ALL);
         let first = all.iter().min_by_key(|&&(key, _)| key).copied();
         prop_assert_eq!(chosen.is_some(), first.is_some(), "{:?}", first);
         prop_assert_eq!(chosen, first.map(|(_, shelf)| shelf));
@@ -9775,24 +9885,24 @@ mod spot {
         };
         seen.texted += usize::from(without(|k| k.2 = false) != Some(shelf));
         seen.touching += usize::from(without(|k| k.3 = false) != Some(shelf));
-        if draw.gremlin.is_some() {
-            let (plain, _) = places(&spot, false);
+        // The first place with one pane preference left out.
+        let decided = |prefer: Prefer| {
+            let (plain, _) = places(&spot, prefer);
             let first = plain.iter().min_by_key(|&&(key, _)| key).map(|&(_, s)| s);
-            seen.gremlin += usize::from(first != Some(shelf));
-        }
-        if spot.kit_at.is_some() && draw.gremlin.is_none() {
-            // Its pane's rank as `plan`'s order has it.
-            let plain: Vec<Nook> = spot.nooks.iter().map(|&(n, _)| n).collect();
-            let unkitted = all
-                .iter()
-                .map(|&((c, _, t, h, r, a, f), s)| {
-                    let rank = plain.iter().position(|&n| n == s.nook).unwrap();
-                    ((c, rank, t, h, r, a, f), s)
-                })
-                .min_by_key(|&(key, _)| key)
-                .map(|(_, s)| s);
-            seen.kit += usize::from(unkitted != Some(shelf));
-        }
+            usize::from(first != Some(shelf))
+        };
+        seen.gremlin += decided(Prefer {
+            gremlin: false,
+            ..PREFER_ALL
+        });
+        seen.living += decided(Prefer {
+            living: false,
+            ..PREFER_ALL
+        });
+        seen.kit += decided(Prefer {
+            kit: false,
+            ..PREFER_ALL
+        });
         Ok(seen)
     }
 
@@ -9801,7 +9911,9 @@ mod spot {
 
         /// A shelf goes up exactly where D3 says: wherever any place
         /// takes one, and then the first in D3's order (high before low
-        /// over every pane; the panes in order; a row with no text; a run
+        /// over every pane; the panes in order, her living room (her
+        /// sofa's pane) first, then the pane she unpacks in; a row with
+        /// no text; a run
         /// touching no hung piece; the lowest rise; nearest the pane's
         /// middle; the left of two as near), every cell of its run, its
         /// margin and the rows over its run as D4 judges them.
@@ -9811,9 +9923,9 @@ mod spot {
         }
 
         /// [`a_shelf_hangs_as_high_as_fits`] with her gremlin on a floor
-        /// (phase 6a step 7, D3): his pane before every other (the pane
-        /// she unpacks in next), and in it the places nearest his middle
-        /// first.
+        /// (phase 6a step 7, D3): his pane before every other (her
+        /// living room next, then the pane she unpacks in), and in it the
+        /// places nearest his middle first.
         #[test]
         fn a_shelf_hangs_as_high_as_fits_by_her_gremlin(draw in gremlin_spot_draw()) {
             hangs_as_high_as_fits(&draw)?;
@@ -10117,7 +10229,10 @@ mod spot {
     /// draws of its strategy: each case comes up. Measured (2026-10-11,
     /// with `centred` and one-glyph wall words): high 145, low 55, none
     /// 56, later 45, texted 20, touching 15, kit 9 (blocked 0, see
-    /// [`Seen`]); the thresholds are about half. Touching decides a
+    /// [`Seen`]); the thresholds are about half. With her living room in
+    /// the order (2026-10-12, the user's eighth round): later 46, texted
+    /// 21, kit 7 (her sofa's pane decides some the kit's did), living 11,
+    /// the rest as before. Touching decides a
     /// choice mostly through `centred` (a hung piece under the middle run
     /// of rise 7); `a_shelf_goes_where_d3_orders_it` pins it by hand too,
     /// and is the guard of record for its place in the order after the
@@ -10141,6 +10256,7 @@ mod spot {
         );
         assert!(seen.texted >= 10 && seen.touching >= 7, "{seen:?}");
         assert!(seen.later >= 22 && seen.kit >= 4, "{seen:?}");
+        assert!(seen.living >= 5, "{seen:?}");
     }
 
     /// The deterministic companion of
@@ -10171,7 +10287,9 @@ mod spot {
     /// [`shelves_go_up_by_her_gremlin`]'s thresholds (high, low, none,
     /// gremlin): about half of what it measured (2026-10-11: high 157,
     /// low 45, none 54, by her gremlin 64; later 51, texted 27, touching
-    /// 16).
+    /// 16; with her living room in the order, 2026-10-12: the same, later
+    /// 54, by her living room 1, by the kit's pane 1: his pane decides
+    /// first).
     const GREMLIN_SEEN: (usize, usize, usize, usize) = (78, 22, 27, 32);
 
     /// Her gremlin's pane first (D3, step 7): his pane before the one
@@ -10242,5 +10360,287 @@ mod spot {
             None,
         );
         assert_eq!(got.map(|s| s.nook), Some(Nook::List));
+    }
+
+    /// `kit_room`'s memo asks [`Home::shelf_spot`] again whenever
+    /// anything it reads changes (the user's eighth round: a hash, not
+    /// the frame): [`ShelfAsk::basis`] differs with each of its inputs
+    /// changed alone (her home: a piece moved, unpacked, a shelf hers,
+    /// her door; the frame: a glyph, its ink, its background, its
+    /// modifier, a skipped cell, its size; the panes, the chat, the
+    /// screen, what's protected, moved text, a made piece, the pane she
+    /// unpacks in), and is the same for the same question.
+    #[test]
+    fn a_change_in_anything_it_reads_asks_again() {
+        use tuirealm::ratatui::buffer::CellDiffOption;
+        let nooks = [
+            (Nook::List, Rect::new(0, 0, 50, 27)),
+            (Nook::Users, Rect::new(50, 0, 50, 13)),
+        ];
+        let buf = panes(&nooks, 100, 28);
+        let mut home = Home::default();
+        assert!(home.add(Prop::new(Furniture::Sofa, Nook::Users, 300, Facing::Right)));
+        assert!(home.add(Prop {
+            boxed: true.into(),
+            ..Prop::new(Furniture::Gremlin, Nook::List, 600, Facing::Right)
+        }));
+        let protected = [Rect::new(1, 1, 3, 1)];
+        let layer = [(2, 2)];
+        let made = [Rect::new(5, 5, 2, 2)];
+        let keep_off = KeepOff {
+            protected: &protected,
+            layer: &layer,
+            made: &made,
+        };
+        let plan = Plan {
+            nooks: &nooks,
+            chat: Rect::new(0, 20, 10, 5),
+            screen: buf.area,
+        };
+        let ask = ShelfAsk {
+            home: &home,
+            buf: &buf,
+            plan,
+            keep_off: &keep_off,
+            kit_at: None,
+        };
+        let basis = ask.basis();
+        // The same question, built afresh: the same hash.
+        let (home2, buf2) = (home.clone(), buf.clone());
+        let same = ShelfAsk {
+            home: &home2,
+            buf: &buf2,
+            ..ask
+        };
+        assert_eq!(same.basis(), basis, "the same question");
+        let mut changed: Vec<(&str, u64)> = Vec::new();
+        // Her home.
+        let homes: [(&str, Home); 4] = [
+            ("a piece moved", {
+                let mut h = home.clone();
+                h.props[0].at = 700;
+                h
+            }),
+            ("a piece unpacked", {
+                let mut h = home.clone();
+                assert!(h.unbox(Furniture::Gremlin));
+                h
+            }),
+            (
+                "a shelf hers",
+                Home {
+                    structures: vec![Structure::Shelf(shelf(Nook::List, Side::Left, 9, 7))],
+                    ..home.clone()
+                },
+            ),
+            (
+                "her door",
+                Home {
+                    door: Some(DoorWall {
+                        strip: Strip::Bottom(Nook::List),
+                        side: Side::Left,
+                    }),
+                    ..home.clone()
+                },
+            ),
+        ];
+        for (what, h) in &homes {
+            changed.push((what, ShelfAsk { home: h, ..ask }.basis()));
+        }
+        // The frame.
+        let cell = (60, 3);
+        let frames: [(&str, Buffer); 6] = [
+            ("a glyph", {
+                let mut b = buf.clone();
+                b[cell].set_symbol("x");
+                b
+            }),
+            ("its ink", {
+                let mut b = buf.clone();
+                b[cell].fg = Color::Red;
+                b
+            }),
+            ("its background", {
+                let mut b = buf.clone();
+                b[cell].bg = Color::Blue;
+                b
+            }),
+            ("its modifier", {
+                let mut b = buf.clone();
+                b[cell].modifier = Modifier::REVERSED;
+                b
+            }),
+            ("a skipped cell", {
+                let mut b = buf.clone();
+                b[cell].set_diff_option(CellDiffOption::Skip);
+                b
+            }),
+            ("its size", panes(&nooks, 100, 29)),
+        ];
+        for (what, b) in &frames {
+            changed.push((what, ShelfAsk { buf: b, ..ask }.basis()));
+        }
+        // The plan.
+        let fewer = [nooks[0]];
+        let moved = [nooks[0], (Nook::Users, Rect::new(50, 1, 50, 13))];
+        for (what, plan) in [
+            (
+                "the panes",
+                Plan {
+                    nooks: &fewer,
+                    ..plan
+                },
+            ),
+            (
+                "a pane moved",
+                Plan {
+                    nooks: &moved,
+                    ..plan
+                },
+            ),
+            (
+                "the chat",
+                Plan {
+                    chat: Rect::new(0, 20, 11, 5),
+                    ..plan
+                },
+            ),
+            (
+                "the screen",
+                Plan {
+                    screen: Rect::new(0, 0, 100, 29),
+                    ..plan
+                },
+            ),
+        ] {
+            changed.push((what, ShelfAsk { plan, ..ask }.basis()));
+        }
+        // What's kept off.
+        let other_rect = [Rect::new(1, 1, 4, 1)];
+        let other_cell = [(2, 3)];
+        for (what, keep_off) in [
+            (
+                "what's protected",
+                KeepOff {
+                    protected: &other_rect,
+                    ..keep_off
+                },
+            ),
+            (
+                "moved text",
+                KeepOff {
+                    layer: &other_cell,
+                    ..keep_off
+                },
+            ),
+            (
+                "a made piece",
+                KeepOff {
+                    made: &other_rect,
+                    ..keep_off
+                },
+            ),
+        ] {
+            changed.push((
+                what,
+                ShelfAsk {
+                    keep_off: &keep_off,
+                    ..ask
+                }
+                .basis(),
+            ));
+        }
+        // The pane she unpacks in.
+        for kit_at in [Some(Nook::List), Some(Nook::Users)] {
+            changed.push((
+                "the pane she unpacks in",
+                ShelfAsk { kit_at, ..ask }.basis(),
+            ));
+        }
+        for (what, other) in changed {
+            assert_ne!(other, basis, "{what}: asked again");
+        }
+    }
+
+    /// Her living room next (the user's eighth round, D3): with no
+    /// gremlin waiting on a floor, her sofa's pane before the one she
+    /// unpacks in and before the panes' order, mid-wall (the sofa
+    /// decides the pane, not the place in it); after her gremlin's;
+    /// never over "high before low" (a living room that takes only a
+    /// low shelf has a high one elsewhere first); the chat's pane never;
+    /// boxed, her sofa decides nothing.
+    #[test]
+    fn a_shelf_goes_up_in_her_living_room() {
+        // As `a_shelf_goes_up_by_her_gremlin`'s: List 27 rows and Users
+        // 13 (a high shelf either), the Playlist 9 (a low one at most),
+        // 50 wide.
+        let nooks = [
+            (Nook::List, Rect::new(0, 0, 50, 27)),
+            (Nook::Users, Rect::new(50, 0, 50, 13)),
+            (Nook::Playlist, Rect::new(100, 0, 50, 9)),
+        ];
+        let buf = panes(&nooks, 150, 28);
+        let home = |pieces: &[(Furniture, Nook, bool)]| {
+            let mut home = Home::default();
+            for &(item, nook, boxed) in pieces {
+                assert!(home.add(Prop {
+                    anchor: Some(Anchor {
+                        side: Side::Left,
+                        offset: 2,
+                    }),
+                    boxed: boxed.into(),
+                    ..Prop::new(item, nook, 0, Facing::Right)
+                }));
+            }
+            home
+        };
+        let sofa = |nook| (Furniture::Sofa, nook, false);
+        // Mid-wall in Users (as its own pane alone puts one), not List,
+        // the first in order; and before the pane she unpacks in.
+        let mid = spot_on(&Home::default(), &buf, &[nooks[1]], Rect::default(), None);
+        assert_eq!(mid, Some(shelf(Nook::Users, Side::Left, 19, 7)), "mid-wall");
+        for kit in [None, Some(Nook::List)] {
+            let got = spot_on(
+                &home(&[sofa(Nook::Users)]),
+                &buf,
+                &nooks,
+                Rect::default(),
+                kit,
+            );
+            assert_eq!(got, mid, "kit {kit:?}");
+        }
+        // Her gremlin's pane first: List, though her sofa's in Users.
+        let got = spot_on(
+            &home(&[sofa(Nook::Users), (Furniture::Gremlin, Nook::List, false)]),
+            &buf,
+            &nooks,
+            Rect::default(),
+            None,
+        );
+        assert_eq!(got.map(|s| s.nook), Some(Nook::List), "by her gremlin");
+        // In the Playlist, which takes no high shelf: List's high one,
+        // as with no sofa (highest that fits first); the Playlist's low
+        // one only where no pane takes a high one (List and Users the
+        // chat's).
+        let living = home(&[sofa(Nook::Playlist)]);
+        let got = spot_on(&living, &buf, &nooks, Rect::default(), None);
+        assert_eq!(got.map(|s| (s.nook, s.rise)), Some((Nook::List, 7)));
+        let chat = nooks[0].1.union(nooks[1].1);
+        let got = spot_on(&living, &buf, &nooks, chat, None);
+        assert_eq!(got.map(|s| (s.nook, s.rise)), Some((Nook::Playlist, 5)));
+        // Her living room the chat's pane: as with no sofa (List).
+        let got = spot_on(&home(&[sofa(Nook::Users)]), &buf, &nooks, nooks[1].1, None);
+        assert_eq!(got.map(|s| s.nook), Some(Nook::List), "the chat's");
+        // Boxed, her sofa's a parcel: List, as with none; and the pane
+        // she unpacks in comes next as ever.
+        let boxed = home(&[(Furniture::Sofa, Nook::Users, true)]);
+        let got = spot_on(&boxed, &buf, &nooks, Rect::default(), None);
+        assert_eq!(got.map(|s| s.nook), Some(Nook::List), "boxed");
+        let got = spot_on(&boxed, &buf, &nooks, Rect::default(), Some(Nook::Users));
+        assert_eq!(
+            got.map(|s| s.nook),
+            Some(Nook::Users),
+            "boxed, kit in Users"
+        );
     }
 }

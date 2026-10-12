@@ -198,6 +198,8 @@ pub(super) fn shelf_room() -> Room {
 const WIDE: &str = "191x46";
 /// [`wide_shelf_room`]'s name.
 const WIDE_SHELF: &str = "191x46+shelf";
+/// [`wide_plant_shelf_room`]'s name.
+const WIDE_PLANT_SHELF: &str = "191x46+shelf, no gremlin";
 
 /// The user's own terminal (phase 6a step 9): the client's layout at
 /// 191×46 with an evening's content (`fuller_ui`: every pane there takes
@@ -228,6 +230,18 @@ pub(super) fn wide_shelf_room() -> Room {
     Room {
         name: WIDE_SHELF,
         shelf: Shelved::Staged(&[Furniture::Gremlin]),
+        ..wide_room()
+    }
+}
+
+/// [`wide_shelf_room`] with no gremlin waiting as her shelf goes up (the
+/// user's eighth round): it goes up in her living room (her sofa's pane:
+/// Users or the Playlist by the seed), where the stage puts one, high,
+/// her plant on it. Read beside the band, never judged by it.
+pub(super) fn wide_plant_shelf_room() -> Room {
+    Room {
+        name: WIDE_PLANT_SHELF,
+        shelf: Shelved::Staged(&[]),
         ..wide_room()
     }
 }
@@ -264,15 +278,20 @@ pub(super) fn low_shelf_room() -> Room {
 }
 
 /// Every census room with a shelf of hers.
-pub(super) fn shelf_rooms() -> [Room; 3] {
-    [shelf_room(), wide_shelf_room(), low_shelf_room()]
+pub(super) fn shelf_rooms() -> [Room; 4] {
+    [
+        shelf_room(),
+        wide_shelf_room(),
+        wide_plant_shelf_room(),
+        low_shelf_room(),
+    ]
 }
 
 /// What `CENSUS_ROOMS=shelf` runs: [`shelf_rooms`] and the user's
 /// terminal with no shelf ([`wide_room`]) to read them against.
 fn shelf_census_rooms() -> Vec<Room> {
-    let [resident, wide, low] = shelf_rooms();
-    vec![resident, wide_room(), wide, low]
+    let [resident, wide, plant, low] = shelf_rooms();
+    vec![resident, wide_room(), wide, plant, low]
 }
 
 /// Put up `guest`'s shelf in `room` as [`Shelved::Staged`] says: `more`
@@ -1785,9 +1804,11 @@ pub(super) const DAY_HOME: [Furniture; 9] = [
 /// clock and a window, the resident's (a sofa and a TV, her wall clock
 /// not yet sent: it comes in the week), and the resident's with her
 /// shelf and window ([`shelf_room`]), and step 9's: the user's terminal
-/// without her shelf and with it ([`wide_room`], [`wide_shelf_room`]) and
-/// her home with a low one ([`low_shelf_room`]), each from [`MONDAY`].
-fn day_rooms() -> [Room; 7] {
+/// without her shelf and with it ([`wide_room`], [`wide_shelf_room`];
+/// with it but no gremlin waiting as it went up,
+/// [`wide_plant_shelf_room`]) and her home with a low one
+/// ([`low_shelf_room`]), each from [`MONDAY`].
+fn day_rooms() -> [Room; 8] {
     [
         Room {
             start: Some(MONDAY),
@@ -1813,6 +1834,10 @@ fn day_rooms() -> [Room; 7] {
         Room {
             start: Some(MONDAY),
             ..wide_shelf_room()
+        },
+        Room {
+            start: Some(MONDAY),
+            ..wide_plant_shelf_room()
         },
         Room {
             start: Some(MONDAY),
@@ -2953,10 +2978,11 @@ fn the_census_home_shows_every_piece() {
 /// The census rooms with her shelf are as their docs say (phase 6a step
 /// 9), both modes, a few seeds: every piece she owns shown; her shelf
 /// finished, in her living room (her sofa's pane: her gremlin waited on
-/// its floor as it went up, as in play; Users or the Playlist by the
-/// seed), high at 191×46 (the user's terminal) and low on the census
-/// home's 9-row panes; up on it, her plant and gremlin (191×46) or her
-/// gremlin (low). And her poster hung clear of the low shelf's block
+/// its floor as it went up, as in play, or with none waiting it goes up
+/// there all the same, the user's eighth round; Users or the Playlist by
+/// the seed), high at 191×46 (the user's terminal) and low on the census
+/// home's 9-row panes; up on it, her plant and gremlin (191×46), her
+/// plant (191×46, no gremlin) or her gremlin (low). And her poster hung clear of the low shelf's block
 /// (its run's columns and its margin's), on its wall in some runs: a
 /// guard on the fixture, not a test of `hung_clear`'s block (her shelf
 /// goes up after her poster hangs, and `shelf_spot` keeps it off a hung
@@ -2967,7 +2993,7 @@ fn the_census_home_shows_every_piece() {
 fn the_shelf_rooms_put_her_shelf_up() {
     use crate::ui::houseguest::structures::{HIGH_RISE, LOW_RISE, SHELF_WIDTH, Structure};
     let mut beside = 0;
-    for room in [wide_shelf_room(), low_shelf_room()] {
+    for room in [wide_shelf_room(), wide_plant_shelf_room(), low_shelf_room()] {
         for graphics in [false, true] {
             for seed in 0..3 {
                 let at = format!("{} seed {seed} graphics={graphics}", room.name);
@@ -3004,9 +3030,14 @@ fn the_shelf_rooms_put_her_shelf_up() {
                     .map(|s| s.item)
                     .collect();
                 up.sort_by_key(|f| Furniture::ALL.iter().position(|x| x == f));
-                if room.name == WIDE_SHELF {
+                if room.name == WIDE_SHELF || room.name == WIDE_PLANT_SHELF {
                     assert!(shelf.rise >= HIGH_RISE, "{at}: high: {shelf:?}");
-                    assert_eq!(up, [Furniture::Plant, Furniture::Gremlin], "{at}");
+                    let theirs: &[Furniture] = if room.name == WIDE_SHELF {
+                        &[Furniture::Plant, Furniture::Gremlin]
+                    } else {
+                        &[Furniture::Plant]
+                    };
+                    assert_eq!(up, theirs, "{at}");
                     continue;
                 }
                 assert_eq!(shelf.rise, LOW_RISE, "{at}: low: {shelf:?}");

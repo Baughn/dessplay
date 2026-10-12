@@ -2022,7 +2022,8 @@ this section states what is built.
   (why: [decisions](decisions.md#her-window-hangs-low-for-her-to-lean-on-2026-10-06)).
   Her shelf hangs above every hung piece where its pane allows, else
   low, just over her head (every pane tried high before any low: her
-  gremlin's pane first, where he stands on its floor, then the pane she
+  gremlin's pane first, where he stands on its floor, then her living
+  room, the pane her sofa stands in out of its box, then the pane she
   opens the kit in, then the panes in order; in a pane, a row with no
   text first, then a run touching no hung piece, the lowest rise, and
   the run nearest her gremlin in his pane, else the pane's middle); a low shelf blocks the wall lane under it

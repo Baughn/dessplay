@@ -92,6 +92,11 @@ fn shelf_label(view: &IdleView, guest: &Guest, now: u64) -> Option<String> {
         // From the first frame that shows the stage up (the frame that
         // takes it was written before it was up).
         "Hop" if shows_built(view, guest, visit) => Some(format!("the hop (stage {built} up)")),
+        // After setting a piece up there, the set-down's beat (as the
+        // hop's above), not a stage's.
+        "Admire" if under && !guest.shelves_shown.is_empty() && up_there => {
+            Some(format!("pleased{said} (a piece set up there)"))
+        }
         "Admire" if built > 0 && under => Some(format!("pleased{said} (stage {built})")),
         "SetDown" if decor.is_some() => Some(format!("setting {:?} down{said}", decor?)),
         _ if decor.is_some() => Some(format!("carrying {:?}{said}", decor?)),
@@ -301,6 +306,15 @@ fn shelf_shots() {
     );
     all_drawn(&shots, "his carry up");
     assert!(up_at.is_some(), "never up: {:?}", labels(&shots));
+    // Her beat after setting him up there is the set-down's, never
+    // labelled a stage's (the user's eighth round).
+    let seen = labels(&shots);
+    assert!(
+        seen.iter()
+            .any(|l| l.starts_with("pleased") && l.ends_with("(a piece set up there)"))
+            && !seen.iter().any(|l| l.contains("(stage")),
+        "his carry up: {seen:?}"
+    );
     save(&sheet(&shots, 4), "carry-up.png");
 
     // His tiny life: her gremlin up on her shelf, on a Saturday whose
@@ -343,6 +357,13 @@ fn shelf_shots() {
     visit_mut(&mut guest)
         .osaka
         .place(run.from + SHELF_WIDTH / 2 - 6, floor, now);
+    // Every need of hers met, so no chain of her own starts in her
+    // hello's seconds and runs past the offer below (with her shelf in
+    // her living room, the user's eighth round, this seed's restless
+    // 0.7 had her off to The List to make a paper bed and sleep in it).
+    for need in brain::Need::ALL {
+        visit_mut(&mut guest).osaka.needs_mut().serve(need, 1.0);
+    }
     let mut shots = Vec::new();
     now = film(
         &mut guest,

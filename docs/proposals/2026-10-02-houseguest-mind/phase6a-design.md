@@ -234,8 +234,9 @@ wall; built 0 draws nothing (D3a still blocks for it).
 - **High**: rise from `HIGH_RISE` up to `host.rows - HEIGHT`, the run, its margin and the `HEIGHT` rows over the run free.
   **Low**: rise `LOW_RISE` only, the run, its margin and the `LOW_ABOVE` rows over it free, and its block meeting no hung
   piece of the host as laid out (`laid_and_shifted(plan.nooks)`, the host's `Lane::Wall` pieces).
-- Within a height, candidates in this order: panes (the gremlin's pane if it stands on a floor, the pane she unpacks in
-  (`kit_at`), then `plan.nooks` order; never a pane meeting `plan.chat`); then **rows with no text** before rows with
+- Within a height, candidates in this order: panes (the gremlin's pane if it stands on a floor, her living room (her
+  sofa's pane, out of its box: the user's eighth round, 2026-10-12), the pane she unpacks in (`kit_at`), then
+  `plan.nooks` order; never a pane meeting `plan.chat`); then **rows with no text** before rows with
   text elsewhere in the pane's interior (the user's preference: a shelf among a table's text reads as the UI's own
   rule); then a high run that **touches no hung piece** (columns meeting a poster or clock right below it, at rise 7)
   before one that does; then the lowest rise; then lefts ordered by the distance of the run's middle from the gremlin's
@@ -1149,9 +1150,7 @@ under her hands (the hop marks the moment instead).
 
 ## Questions for the user
 
-Open from step 9 (2026-10-12): plan.md's Phase 6a record, *Open, for the user*, lists them (his parcel's look; which
-pane a shelf goes up in with no gremlin waiting, and her gaze up's rate where she lives under it; the user's 191×46 out
-of the stillness band). Fourth round (2026-10-10, the user):
+Step 9's open questions (2026-10-12) are answered: the eighth round, below. Fourth round (2026-10-10, the user):
 - **High means standable**, as designed: a high shelf keeps `HEIGHT` clear rows over its run. Step 3 measures how often
   each height fits at 191×46 with real content; revisit only if the measurement surprises.
 - **The hop is for high shelves only** (D7c as designed): a low shelf is in her reach, so she stretches up.
@@ -1194,6 +1193,25 @@ Seventh round (2026-10-12, the user, on step 7's and step 8's build calls):
   gremlin come one gaze in two.
 - **The ASCII gremlin stays `oo`/`ww`**: his turn doesn't show in ASCII (dev and tests only).
 - **His parcel's look** (the 5×2 box scaled into his 2×2): judged on step 9's review shots.
+
+Eighth round (2026-10-12, the user, on step 9's findings; built after step 9, plan.md's record has the numbers):
+- **His parcel stays the tiny box** (the 5×2 parcel scaled into his 2×2 footprint): no change.
+- **A shelf with no gremlin waiting prefers her living room**: D3's pane order within a height is now her gremlin's
+  pane while he waits on a floor, then her living room (the pane her sofa stands in, out of its box), then the pane she
+  opens the kit in, then the panes in order; high before low over every pane still comes first. "Her living room" is
+  her sofa's pane, not the rooms-from-contents `Role::Living` (screen and seat, no bed: missing while a bed shares the
+  room or before her TV comes) nor the record's `RoomKind::Living` (an older build's shim); the sofa picks the pane,
+  the run stays mid-wall. At the user's 191×46 with no gremlin waiting she now gazes up 0.81 times a game day (was 0.17,
+  her shelf in The List).
+- **Her gaze up over her living room is kept** at its rate (1.93 a game day in the low census room, where she lives
+  under it): more where she spends more of her day on its floor.
+- **The user's 191×46 out of the stillness band: left for now.** Not 6a's (the shelf moves no cell); the user has a fix
+  in mind for a later session.
+- **`Visit.shelf_asked` holds a hash, not a frame** (the coordinator's call, no behaviour change): `kit_room`'s memo
+  keys on `room::ShelfAsk::basis`, a hash of everything `shelf_spot` reads (her home, the frame, its panes, chat and
+  screen, what's kept off, the pane she unpacks in), 8 bytes where a 411 KiB frame was held at 191×46.
+- (Review shots: her pleased beat after setting her gremlin on her shelf is the set-down's, not "stage 2"'s:
+  `carry-up.png` relabelled; `gaze-up.png`'s shelf, with no gremlin waiting, now in her living room.)
 
 ## Critique dispositions
 

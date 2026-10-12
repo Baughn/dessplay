@@ -3923,7 +3923,7 @@ of phase 6 unless the user says so.
 ### Phase 6a — shelves and the gremlin (done 2026-10-12)
 
 Built as the [working design](proposals/2026-10-02-houseguest-mind/phase6a-design.md)
-says, with its seven rounds of the user's answers, its amendments and
+says, with its eight rounds of the user's answers, its amendments and
 each step's "As built" (the design's Steps); its code maps are
 [phase6/map-terrain.md](proposals/2026-10-02-houseguest-mind/phase6/map-terrain.md)
 and [phase6/map-life.md](proposals/2026-10-02-houseguest-mind/phase6/map-life.md),
@@ -4005,6 +4005,9 @@ block spans its margin; the stage's mantel clock. Sixth: the put-up pace
 kept; a gaze up about once a game day; no settling chain; a nudged seat
 moves her (after 6a). Seventh: his line stops once the kit is ordered;
 "hehe" in place of "There!" on a shelf; one gaze in two; ASCII `oo`/`ww`.
+Eighth (below, after the census): his parcel kept; a shelf with no
+gremlin waiting goes up in her living room; her gaze up there kept;
+the 191×46 stillness left for a later session.
 
 **Census, band and stillness** (step 9, at `01c7076c`'s behaviour; logs
 in the job's scratchpad `s9/`, the shelf rooms re-run after the review
@@ -4079,28 +4082,46 @@ fixes in `s9fix/`). No threshold or weight was changed.
   gremlin's tiny life asks `out_of_sight` each tick: 17 ns a call
   asleep. `Visit.shelf_asked`'s frame at 191×46 is 411 KiB (8786 cells
   of 48 bytes), held for the visit once `kit_room` has asked. Nothing to
-  fix for cost; the frame held is left to the user (below).
+  fix for cost; the frame held is now a hash (the eighth round, below).
 
-**Open, for the user:**
-- **His parcel's look** (`phase6/shots/his-parcel.png`): the 5 × 2
-  parcel scaled into his 2 × 2 footprint, a tiny box. Fine, or a box of
-  its own for a 2-wide piece?
-- **Where a shelf goes with no gremlin waiting**: `shelf_spot` puts her
-  shelf in her gremlin's pane while he waits on a floor (the census
-  rooms now), else her kit's (where its parcel landed), else the first
-  pane in order, not her living room. With her gremlin it's where he is
-  (his pane, often her living room); without him it may go up in a room
-  she seldom stands in (at 191×46, The List: 0.17 gazes up a game day
-  as first staged). Should a shelf with no gremlin waiting prefer the
-  room she spends her time in (her sofa's or seat's pane)?
-- **Her gaze up over her living room runs high**: 1.93 a game day in
-  the low room (the census home: its two panes hold her sofa, TV and
-  desk, so she's mostly on its floor), over "about once a game day"
-  (your sixth round; step 8 tuned it to 1.19 in `shelf_room`, and the
-  user's 191×46 reads 0.76). Keep it (more where she lives under it),
-  or damp it by time on its floor?
-- **The user's 191×46 is out of the stillness band** (above), shelf or
-  none: a finding for a later look at text-rich screens.
+**The user's eighth round** (2026-10-12, on step 9's findings; the
+design's *Questions for the user*), built after step 9:
+- **His parcel's look**: kept, the tiny box (the 5 × 2 parcel scaled
+  into his 2 × 2).
+- **A shelf with no gremlin waiting goes up in her living room**:
+  within a height, her gremlin's pane while he waits on a floor, then
+  her living room (her sofa's pane, out of its box), then the pane she
+  opens the kit in, then the panes in order; high before low over every
+  pane first, as ever (`Home::shelf_spot`, the oracle `room::spot::places`
+  with `Prefer`, `a_shelf_goes_up_in_her_living_room`, the census's
+  `wide_plant_shelf_room`). "Her living room" is her sofa's pane, not
+  `Role::Living` (screen and seat, no bed) nor `RoomKind::Living` (an
+  older build's shim). The day census's 191×46 with her shelf and no
+  gremlin waiting (staged as `Shelved::Staged(&[])`: her plant up): her
+  shelf in The List before, 7 gazes up in 42 game days (0.17 a day,
+  look-outs 4.71); in her living room after, 34 in 42 (0.81 a day, look-outs 4.90). The other shelf
+  rooms read as before (his pane decides there): resident+shelf 1.19,
+  191×46+shelf 0.76, low room 1.93.
+- **Her gaze up over her living room** (1.93 a game day in the low
+  room): kept.
+- **The user's 191×46 out of the stillness band**: left; not 6a's, and
+  the user has a fix in mind for a later session.
+- **`Visit.shelf_asked`** (the coordinator's call): a hash in place of
+  the frame (`room::ShelfAsk::basis`: her home, the frame, its panes,
+  chat and screen, what's kept off, the pane she unpacks in; each a
+  field `ShelfAsk::spot` passes and `basis` takes apart whole), 8 bytes
+  where 411 KiB was held at 191×46; `a_change_in_anything_it_reads_asks_again`
+  (each input changed alone hashes apart: red under each input dropped).
+  Behaviour unchanged (`Buffer`'s `Hash` agrees with its `==`). Its
+  cost, measured (`perf_look_at_his_room`, release): the hash 56 µs a
+  paint at 191×46 against the held frame's compare 36 µs, while
+  `shelf_spot` itself is 14 µs on that frame as it is and 30 µs
+  crowded: the memo saves no CPU there, only asks (see below).
+- The review shots: the beat after she sets her gremlin up is labelled
+  the set-down's, not "stage 2"'s (`carry-up.png`); `gaze-up.png`'s
+  shelf (no gremlin waiting) now goes up in her living room, Users, by
+  her sofa (was The List), its scene meeting her needs first so no chain
+  of hers outlasts the offer; the other five shots are byte-identical.
 
 **Found, not fixed** (each in the design's as-built notes or the
 hand-off notes): `room::fits` stands a shelf piece on any written cell
@@ -4112,11 +4133,12 @@ the hung pieces' side of the block is held by the hung shelved long
 visit added in step 9's review); a shelf shown with no
 place for him on it (text in the rows over its run, or the run full)
 still has her feel and say his line once a game day; a resize mid-unpack leaves her at the box's old
-spot for its few seconds; a carried piece isn't drawn in her arms in
-line art (as before 6a); and `Visit.shelf_asked` holds a whole frame
-(411 KiB at 191×46: the perf look above) once `kit_room` has asked,
-for the visit; a hash of the frame, or the rows `shelf_spot` reads,
-would do (left to the user: cost, not a bug).
+spot for its few seconds; and a carried piece isn't drawn in her arms in
+line art (as before 6a). `kit_room`'s memo (now a hash, above) costs
+more a paint than the `shelf_spot` it saves at 191×46 (56 µs against
+14–30 µs; the frame compare before it, 36 µs): it bounds asks, not
+time; dropping it, or a cheaper digest, is a later call (cost, not a
+bug).
 
 ### Later (ideas, the user)
 

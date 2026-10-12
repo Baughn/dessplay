@@ -1439,8 +1439,10 @@ fn he_never_turns_at_a_goodbye_or_unfed() {
 /// the same frame with the clock still (the control); what one
 /// `shelf_spot` on that frame costs; what one `Osaka::out_of_sight` costs
 /// through a fed night asleep (her gremlin's tiny life asks it each
-/// tick); and the bytes `Visit.shelf_asked`'s frame holds at the user's
-/// 191×46. Ignored; run alone (timings) in release:
+/// tick); and at the user's 191×46 what `kit_room`'s memo key costs a
+/// paint (a hash of all `shelf_spot` reads: the user's eighth round),
+/// beside the frame compare it replaced and the bytes that frame held.
+/// Ignored; run alone (timings) in release:
 ///
 /// ```text
 /// cargo test --release -p dessplay --lib perf_look_at_his_room -- --ignored --nocapture
@@ -1504,11 +1506,17 @@ fn perf_look_at_his_room() {
         );
     }
     // One `shelf_spot` on a crowded frame (none fits: every pane read),
-    // this one and the user's 191×46 (`fuller_ui`) crowded likewise.
+    // this one and the user's 191×46 (`fuller_ui`) crowded likewise; and
+    // on the user's 191×46 as it is (one fits).
     let guest = wanting(3, tue(14, 0), false);
-    let (wide, wide_view) = real_frame(&mut super::super::stage::fuller_ui(), 191, 46);
-    let wide = crowded(&wide, &wide_view.nooks);
-    for (what, frame, view) in [("100×30", &full, &view), ("191×46", &wide, &wide_view)] {
+    let (own, wide_view) = real_frame(&mut super::super::stage::fuller_ui(), 191, 46);
+    let wide = crowded(&own, &wide_view.nooks);
+    for (what, frame, view, fits) in [
+        ("crowded 100×30", &full, &view, false),
+        ("crowded 191×46", &wide, &wide_view, false),
+        // Its own evening's text (every pane takes a high shelf).
+        ("191×46", &own, &wide_view, true),
+    ] {
         let keep_off = structures::KeepOff {
             protected: &view.protected,
             layer: &[],
@@ -1518,17 +1526,18 @@ fn perf_look_at_his_room() {
         let n = 2000;
         let start = Instant::now();
         for _ in 0..n {
-            assert!(
+            assert_eq!(
                 guest
                     .ledger
                     .home
                     .shelf_spot(frame, plan, &keep_off, None)
-                    .is_none(),
-                "{what}: none fits"
+                    .is_some(),
+                fits,
+                "{what}"
             );
         }
         eprintln!(
-            "shelf_spot on the crowded {what} frame: {:.1} µs a call",
+            "shelf_spot on the {what} frame: {:.1} µs a call",
             start.elapsed().as_secs_f64() * 1e6 / f64::from(n)
         );
     }
@@ -1554,9 +1563,41 @@ fn perf_look_at_his_room() {
         "out_of_sight asleep: {:.1} ns a call (days summed, kept live: {seen})",
         start.elapsed().as_secs_f64() * 1e9 / f64::from(n)
     );
+    // `kit_room`'s memo key at 191×46 (the user's eighth round: a hash
+    // of all `shelf_spot` reads, the frame included, in place of a held
+    // frame compared whole), and the compare it replaced, each paint
+    // while it asks.
+    let keep_off = structures::KeepOff {
+        protected: &wide_view.protected,
+        layer: &[],
+        made: &[],
+    };
+    let ask = room::ShelfAsk {
+        home: &guest.ledger.home,
+        buf: &wide,
+        plan: plan_of(&wide_view, &wide),
+        keep_off: &keep_off,
+        kit_at: None,
+    };
+    let n = 2000u32;
+    let start = Instant::now();
+    let mut kept = 0u64;
+    for _ in 0..n {
+        kept ^= std::hint::black_box(&ask).basis();
+    }
+    let hashed = start.elapsed().as_secs_f64() * 1e6 / f64::from(n);
+    let held = wide.clone();
+    let start = Instant::now();
+    let mut same = 0u32;
+    for _ in 0..n {
+        same += u32::from(std::hint::black_box(&held) == std::hint::black_box(&wide));
+    }
+    let compared = start.elapsed().as_secs_f64() * 1e6 / f64::from(n);
     let cells = 191 * 46;
     eprintln!(
-        "a frame held by Visit.shelf_asked at 191×46: {cells} cells × {} bytes = {} KiB",
+        "kit_room's memo at 191×46: the hash {hashed:.1} µs a paint (kept live: {kept:x}); \
+         the frame compare it replaced {compared:.1} µs ({same} same), holding {cells} cells × \
+         {} bytes = {} KiB",
         std::mem::size_of::<tuirealm::ratatui::buffer::Cell>(),
         cells * std::mem::size_of::<tuirealm::ratatui::buffer::Cell>() / 1024
     );

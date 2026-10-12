@@ -12,6 +12,9 @@ Add new days at the top. Add new entries at the bottom of existing days.
 ## 2026-10-12
 
 - Added: Osaka's gremlin has a life of his own.
+- Changed: Osaka puts her shelf up in her living room, where her sofa
+  is (unless her gremlin is waiting for it in another room), so she's
+  under it more often.
 
 ## 2026-10-11
 
