@@ -6246,8 +6246,10 @@ broken while he stands on a floor out of his box, mended only by a move
 up onto a shelf. He's sold only where a shelf of hers is up (or going
 up) or could go up on the frame. She feels it on sight, needing no use
 of him, only while she stands on his room's floor, and only where a
-finished shelf of hers shows on the frame or one could go up (not while
-one is going up, nor where the frame hides hers); she says "It wants a
+finished shelf of hers shows on the frame or one could go up, and only
+while no shelf kit of hers is coming (not on order, in its box or going
+up; nor where the frame hides hers); one she felt before the kit was
+ordered she lets be, its line unsaid; she says "It wants a
 shelf..." there, turned to face him where the frame has him when she
 says it, on InChat's terms (when her mood would put it right, once a
 game day). A rule she has felt
@@ -6271,10 +6273,25 @@ its row) is no answer either: nothing can stand on a shelf that isn't
 drawn, and her kit is hers, so nothing is wished; so "up" means up and
 shown on this frame (step 7's review: as first built, a shelf hidden
 for good had her say it every day), and the repair search reads the
-same, laying nothing out for his rule without one. Not while a shelf
-is going up: the kit is hers and she's at it. (With the kit on order or
-boxed she still feels and says it, a shelf being able to go up; which
-of these three she says it in is the user's open question.) Step 7's build found her saying it as she walked into
+same, laying nothing out for his rule without one. **Not once her
+shelf kit is ordered, till her shelf is up** (on order, in its box, or
+going up: the user's seventh round, 2026-10-12): it's coming, she has
+it in hand, so there's nothing to wish for and nothing to say. One test
+holds it (a rule's wanted kit coming: `wants_coming`), read where she
+feels (on sight, the only way a rule that wants a kit is felt) and
+where a shelf's room is asked for her to feel it (not at all while the
+kit is on order). One she felt before the kit came she lets be,
+forgotten with any line she owed for it, by a level check after each
+record of what she did and each paint's deliveries, so however it
+comes (bought, delivered, the stage's gift) it's neither said nor left
+rising her Nesting meanwhile; with her shelf finished and shown she
+feels it afresh, says it, and the repair puts him up. The sale never
+waited on it (the channel sells nothing while anything's on order or
+boxed), nor her opening of the kit (its seat asks whether a shelf could
+go up whether or not she feels him). As first built she said it with
+the kit on order and boxed (only "going up" was excluded, for the
+chain below); rejected: saying it in all three (impatient), and as
+first built. Step 7's build found her saying it as she walked into
 his room to put up the first half, dropping that chain; its review
 found the same for any line owed as the kit opened, so a line she owes
 waits while her kit's first stage is next or she's on her way to put a

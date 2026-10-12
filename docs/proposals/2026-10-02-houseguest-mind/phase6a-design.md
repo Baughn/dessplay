@@ -479,7 +479,8 @@ pub(super) fn read_ground(buf: &mut Buffer, home: &Home, plan: Plan, keep_off: &
   `"It wants a shelf..."`; `kind(row)` (rules.rs:191) gains its label. `search` gives `High` only shelf strips as places
   (a floor can't mend it), so an unmendable `High` costs no search.
 - **Felt only where it means something**: `on_sight` (mod.rs:3642) feels `High` only while she stands on the gremlin's
-  room's floor and a shelf stands or `shelf_room` holds; she says it turned to face it, on the InChat terms (her mood
+  room's floor and a shelf stands or `shelf_room` holds, and (the user's seventh round) never while her shelf kit is on
+  order, boxed or going up; she says it turned to face it, on the InChat terms (her mood
   would mend, once a game day). With a shelf up it's said only on a visit she'll mend (`to_mend`'s cap, osaka.rs:9639),
   so the carry follows the line.
 - With no shelf, no move mends it: `Arrange` is offered (`may_arrange`, osaka.rs:8444) and its `lift` finds none
@@ -946,9 +947,9 @@ whole). The wish is logged as it changes (debug) and a purchase that was the wis
 `may_arrange` false). `no_gremlin_grievance_where_no_shelf_can_go` runs a game **hour**, not a fed day (cost; never felt
 implies `may_arrange` is false for it, so `Arrange` is never offered for it), and now pins that `shelf_spot` is asked only
 as what it reads changes. The end-to-end is one test a mode. The gremlin census's home now lacks the bookshelf and the
-poster too, so "kit sold first" measures the wish. Once the kit is hers, the rule is felt and said with it on order
-or boxed (a shelf could go up), not while the shelf is going up; which of those three she says it in is an open
-question for the user (the chain-drop that first forced the third is fixed apart from it).
+poster too, so "kit sold first" measures the wish. Once the kit is hers, the rule was felt and said with it on order
+or boxed (a shelf could go up), not while the shelf is going up; the user chose none of the three (seventh round:
+built in the fix after step 8, below; the chain-drop that first forced the third is fixed apart from it).
 
 ### Step 8. The four extras (~350 lines)
 
@@ -1039,6 +1040,27 @@ turns him through `Guest::gremlin_turns` (a round trip); shelf.rs's low-shelf te
 `her_gaze_up_weighs_as_measured` (a pin; the ignored `day_census` is the measure); ledger.rs
 `a_day_of_hers_is_within_a_day_of_the_same_kind` and the new property `a_fresh_shelf_reads_back_as_written`
 (existing strategies untouched). Red: each against its mutant (scratchpad `s8fix/red.log`). Goldens byte-identical.
+
+**Fix after step 8 (2026-10-12, the user's seventh round): "It wants a shelf..." stops once the kit is ordered.** One
+test, mod.rs `wants_coming(ledger, key)`: the kit the rule wants (`Rule::wants`) is coming, by
+`Ledger::kit_coming(item)` (on order, or `Home::kit_coming`: in its box, or what it puts up going up). Read in three
+places: `on_sight` feels no rule whose kit is coming (for `High`, on top of `shelf_room`); `kit_room`'s `unfelt` (the
+ask of `shelf_spot` for her to feel it) skips one, so nothing asks while the kit is on order; and
+`let_be_what_is_coming(ledger, osaka)`, a level check at the end of every `record` and after `furnish` each paint,
+`Osaka::forget`s each felt rule whose kit is coming (the `Felt` and its owed row), so a line felt before the order is
+never said, `to_mend`/`grieved` drop it (her Nesting no longer rises for it meanwhile), and `wish` reads nothing; however
+the kit comes (bought, delivered, the stage's gift). Unchanged, and why: the sale (`advert` sells nothing while
+anything is on order or boxed) and the kit's Unpack seat (`kit_room`'s `kit_shown` asks whatever she feels) never
+depended on `High` being felt; `rules::search` keys on a shown finished shelf already; `aloud_owed` needs no gate (a
+forgotten rule isn't felt). A lint in `rules::high::the_gremlin_wants_up_high`: every rule that wants a kit has
+`felt_on` empty, so `on_sight` is the one way it's felt. Tests (gremlin.rs, both modes): `no_gremlin_grievance_with_her_kit_on_order`
+(an hour in his room: never felt, said or set about; `shelf_asks == 0`), `no_gremlin_grievance_with_her_kit_boxed`
+(never, and she opens the kit and puts its first half up), `a_line_owed_as_she_buys_her_kit_goes_unsaid` (felt and
+owed, then `Bought(ShelfKit)`: forgotten, `to_mend` empty, no wish, unsaid; the same visit unbought says it); the
+end-to-end now asserts, every step from the order till the shelf is finished, no new line and nothing felt. All red
+before the fix. Census (`shelf_census`, its gremlin half): his line on 3.34 game days a run before, 31 of them in all
+said with her shelf coming; after, 3.16 a run and none (the census now asserts none); up 32/32, kit first 32/32, mean
+3.95 → 3.97 game days to him up (sd 0.82, max 7.64). Goldens byte-identical.
 
 ### Step 9. Census, deep runs, review shots, docs (~450 lines)
 

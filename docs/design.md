@@ -1801,7 +1801,8 @@ this section states what is built.
   (he wants up there: *The rules of her home*), asked only once the
   queue comes to one; one that can't be sold then holds up nothing after
   it. **Her wishlist** (phase 6a): a rule she has felt this visit that
-  wants a kit she doesn't own (in its box or up), still broken, puts
+  wants a kit she doesn't own (in its box or up) and hasn't ordered (she
+  lets it be once she has: *The rules of her home*), still broken, puts
   that kit first, ahead of the furniture and decor she lacks, at the
   same cadence (her gremlin wanting up: her shelf kit), if it can be
   sold then (else the queue as ever); the first such rule in the order
@@ -2253,10 +2254,14 @@ this section states what is built.
   while a piece of hers stands in the chat; and High while she stands on
   the floor of her gremlin's room (his floor, her door's space in it
   too), but only where it means something: where a finished shelf of
-  hers shows on the frame, or one could go up on it (not while one is
-  going up: she's at it; not where the frame hides hers, nor on a frame
-  no shelf could go up on, nor in another room), so what she feels is
-  what her wishlist reads (*Getting furniture*).
+  hers shows on the frame, or one could go up on it (not where the frame
+  hides hers, nor on a frame no shelf could go up on, nor in another
+  room), so what she feels is what her wishlist reads (*Getting
+  furniture*); and **never once her shelf kit is ordered, till her shelf
+  is up** (on order, in its box, or going up: it's coming, she has it in
+  hand). Felt before the kit was ordered, she lets it be as it's
+  ordered (or comes any other way): forgotten, its line unsaid, felt
+  afresh once her shelf is finished and shown.
   Felt on sight, she says so
   ("Can't get to the door!", "People are talking here…", "It wants a
   shelf...", the last only in his room as the frame has it then, turned

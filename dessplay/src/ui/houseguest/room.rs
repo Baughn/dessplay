@@ -2103,6 +2103,22 @@ impl Home {
                 .is_some_and(|kit| self.structures.iter().any(|&s| kit.puts_up(s)))
     }
 
+    /// Whether her kit `item` is hers but not yet up (phase 6a, the
+    /// user's seventh round): still in its box, or what it puts up going
+    /// up. With her order, [`super::ledger::Ledger::kit_coming`].
+    pub fn kit_coming(&self, item: Furniture) -> bool {
+        let Some(kit) = item.spec().kit else {
+            return false;
+        };
+        self.props.iter().any(|p| p.item == item)
+            || self.structures.iter().any(|&s| {
+                kit.puts_up(s)
+                    && match s {
+                        Structure::Shelf(shelf) => !shelf.finished(),
+                    }
+            })
+    }
+
     /// Her shelf in `nook`'s pane, if she has put one up there.
     pub fn shelf(&self, nook: Nook) -> Option<Shelf> {
         self.shelves().find(|shelf| shelf.nook == nook)

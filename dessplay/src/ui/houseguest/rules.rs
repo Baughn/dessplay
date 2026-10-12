@@ -4787,6 +4787,12 @@ mod high {
         for row in RULES.iter().filter(|r| !matches!(r.rule, Rule::High(_))) {
             assert_eq!(row.rule.wants(), None, "{row:?}");
         }
+        // A rule that wants a kit is felt on sight only, so mod.rs's
+        // `on_sight`, which feels none whose kit is coming (the user's
+        // seventh round), is the one way she comes to feel it.
+        for row in RULES.iter().filter(|r| r.rule.wants().is_some()) {
+            assert!(row.felt_on.is_empty(), "{row:?}");
+        }
         for item in up {
             assert!(item.spec().shelf, "{item:?}");
         }

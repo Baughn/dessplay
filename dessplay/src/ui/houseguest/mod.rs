@@ -271,6 +271,32 @@ fn wish(
     })
 }
 
+/// Whether the kit the rule `key` wants ([`rules::Rule::wants`]) is
+/// coming (phase 6a, the user's seventh round: her shelf kit on order,
+/// in its box, or her shelf going up): then she neither feels the rule
+/// nor says so (it's coming, she has it in hand). The one test of it,
+/// read by what she feels (`on_sight`), what she lets be
+/// (`let_be_what_is_coming`) and whether a shelf's room is asked for her
+/// to feel it (`kit_room`).
+fn wants_coming(ledger: &Ledger, key: rules::Grievance) -> bool {
+    key.rule()
+        .and_then(|row| row.rule.wants())
+        .is_some_and(|kit| ledger.kit_coming(kit))
+}
+
+/// What she has felt whose kit is coming ([`wants_coming`]) she lets be
+/// ([`Osaka::forget`]): a level check after whatever changes what she
+/// has or has on order (each `record`, her purchase among it; each paint
+/// once `furnish` has delivered and the stage given), so however the kit
+/// comes, a rule felt before it neither weighs on her nor is said.
+fn let_be_what_is_coming(ledger: &Ledger, osaka: &mut Osaka) {
+    for key in osaka.felt() {
+        if wants_coming(ledger, key) {
+            osaka.forget(key);
+        }
+    }
+}
+
 /// The rules broken of a piece that wants up (phase 6a D9: her gremlin
 /// on a floor, [`rules::Rule::High`]), `shown` out of its box on a
 /// strip of `nooks`: each, and where she'd say so this frame (her in
@@ -3268,6 +3294,10 @@ impl Guest {
                     &mut self.rng,
                 );
                 visit.shown = shown;
+                // A kit the stage gave her, or one delivered: what she
+                // felt that wants it, she lets be (the user's seventh
+                // round).
+                let_be_what_is_coming(&self.ledger, &mut visit.osaka);
                 // What she wishes the channel sold her (phase 6a D9), of
                 // what she has felt this visit (as the last frame left it:
                 // what she feels on this one, she wishes for on the next).
@@ -3307,10 +3337,20 @@ impl Guest {
                     self.unsaved = true;
                 }
                 // A shelf could go up, or one is up and shown on this
-                // frame (half up, she's at it: nothing to feel; hidden,
-                // nothing could answer it: phase 6a D9).
+                // frame (hidden, nothing could answer it: phase 6a D9);
+                // and, for a rule that wants a kit, none is coming
+                // (`wants_coming`: on order, boxed, or half up).
                 let shelf_room = kit_room || written.holds_up(&self.ledger.home);
-                on_sight(visit, &wants_up, shelf_room, &self.said_aloud, today, now);
+                let coming = |key| wants_coming(&self.ledger, key);
+                on_sight(
+                    visit,
+                    &wants_up,
+                    shelf_room,
+                    &coming,
+                    &self.said_aloud,
+                    today,
+                    now,
+                );
                 // The place of the piece in her pocket is kept for it.
                 let mut kept = view.protected.clone();
                 kept.extend(visit.ghost);
@@ -4256,13 +4296,17 @@ fn note_closet(closet: &mut Vec<Furniture>, home: &room::Home, shown: &[Shown], 
 ///
 /// A piece that wants up on a floor (phase 6a D9: her gremlin) she feels
 /// only standing in its room, and only where it means something: where
-/// a shelf of hers is up, or one could go up on this frame
-/// (`shelf_room`; not while one is going up: she's at it); she says so
-/// there, turned to face it.
+/// a shelf of hers is up and shown, or one could go up on this frame
+/// (`shelf_room`), and no shelf kit of hers is `coming` (on order, in
+/// its box, or going up: the user's seventh round; it's coming, she has
+/// it in hand); she says so there, turned to face it. A rule whose kit
+/// is `coming` is never felt (and one felt before it was ordered she has
+/// let be: [`let_be_what_is_coming`]).
 fn on_sight(
     visit: &mut Visit,
     wants_up: &[(rules::Grievance, osaka::AloudAt)],
     shelf_room: bool,
+    coming: &dyn Fn(rules::Grievance) -> bool,
     said: &[(usize, Dated)],
     today: Dated,
     now: u64,
@@ -4285,7 +4329,7 @@ fn on_sight(
             }
             _ => false,
         };
-        if seen && visit.osaka.feel(b.key, None) && !rows.contains(&b.row) {
+        if seen && !coming(b.key) && visit.osaka.feel(b.key, None) && !rows.contains(&b.row) {
             rows.push(b.row);
         }
     }
@@ -4393,6 +4437,8 @@ fn record(
             }
         }
     }
+    // Bought her kit: what she felt that wants it, she lets be.
+    let_be_what_is_coming(ledger, &mut visit.osaka);
     changed
 }
 
@@ -4785,8 +4831,9 @@ fn put_up_at(stage: structures::Stage, terrain: &Terrain, near: i32) -> Option<s
 /// seat to open it from waits on it), the channel's queue (with what
 /// she `wished` for) has come to her kit or to a piece that wants up
 /// (each sold only then), or she stands in the room of a piece that
-/// wants up on a floor whose wanting she hasn't felt (she feels it only
-/// then: D9): false otherwise. The box waits in sight while no shelf
+/// wants up on a floor whose wanting she hasn't felt, with no shelf kit
+/// of hers coming (she feels it only then: D9, and the user's seventh
+/// round): false otherwise. The box waits in sight while no shelf
 /// could go up; logged once per change.
 fn kit_room(
     ledger: &Ledger,
@@ -4811,7 +4858,7 @@ fn kit_room(
         let here = (visit.osaka.x, visit.osaka.y);
         wants_up
             .iter()
-            .any(|(key, at)| at.holds(here) && !felt.contains(key))
+            .any(|&(key, at)| at.holds(here) && !felt.contains(&key) && !wants_coming(ledger, key))
     };
     let room = (kit_shown || queued || unfelt) && {
         use std::hash::{Hash, Hasher};

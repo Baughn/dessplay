@@ -166,6 +166,14 @@ impl Ledger {
             .is_none_or(|p| p.on != today || p.stages < STAGES_A_DAY)
     }
 
+    /// Whether her kit `item` is coming (phase 6a, the user's seventh
+    /// round): on order, in its box, or what it puts up going up. A rule
+    /// that wants it ([`super::rules::Rule::wants`]) she lets be
+    /// meanwhile: it's coming, she has it in hand.
+    pub(super) fn kit_coming(&self, item: Furniture) -> bool {
+        item.is_kit() && (self.ordered == Some(item) || self.home.kit_coming(item))
+    }
+
     /// She put a stage up `today`: counted, for the day.
     pub(super) fn built_today(&mut self, today: Dated) {
         self.paced = Some(match self.paced {

@@ -9713,6 +9713,24 @@ impl Osaka {
         true
     }
 
+    /// She lets `key` be (phase 6a, the user's seventh round: the kit it
+    /// wants is coming; mod.rs's `let_be_what_is_coming`): no longer felt
+    /// this visit, and the line she owed for it goes unsaid, so she
+    /// neither says it nor would mend it, and it wishes for nothing. Felt
+    /// again on sight, as ever, once nothing's coming and it's broken
+    /// still.
+    pub fn forget(&mut self, key: Grievance) {
+        let before = self.felt.len();
+        self.felt.retain(|f| f.key != key);
+        if self.felt.len() == before {
+            return;
+        }
+        if !self.felt.iter().any(|f| f.key.row == key.row) {
+            self.owed_aloud.retain(|&r| r != key.row);
+        }
+        tracing::debug!(rule = %key.label(), "houseguest: she lets {} be (what it wants is coming)", key.label());
+    }
+
     /// She'll say what's wrong with her home that she felt on sight, for
     /// the rule on `row` of the table, once she's quiet (door batch, D7:
     /// see [`Osaka::aloud`]): once a visit.

@@ -3250,7 +3250,7 @@ fn shelf_census() {
 /// channel sold her kit (and whether it was the next thing it sold: the
 /// wishlist's work), when her shelf was finished and when he went up on
 /// it, and her "It wants a shelf..." lines (each said once a game day at
-/// most).
+/// most; none while her shelf is coming: on order, boxed or going up).
 fn gremlin_census(seeds: u64) {
     use crate::ui::houseguest::structures::Structure;
     const DAYS: u64 = 12;
@@ -3263,6 +3263,9 @@ fn gremlin_census(seeds: u64) {
         finished: Option<u64>,
         up: Option<u64>,
         lines: usize,
+        /// Of `lines`, those said while her shelf was coming (the
+        /// user's seventh round: never).
+        coming: usize,
     }
     let run = |seed: u64| {
         let (real, view) = rooms_frame(100, 30);
@@ -3293,12 +3296,19 @@ fn gremlin_census(seeds: u64) {
                 paint(&mut guest, &real, &view, now);
             }
             let clock = guest.ledger.clock;
+            let home = &guest.ledger.home;
+            let coming = guest.ledger.ordered == Some(Furniture::ShelfKit)
+                || home.props.iter().any(|p| p.item == Furniture::ShelfKit)
+                || home
+                    .structures
+                    .iter()
+                    .any(|&Structure::Shelf(shelf)| !shelf.finished());
             for &(row, day) in &guest.said_aloud {
                 if row == high && !said.contains(&day) {
                     said.push(day);
+                    out.coming += usize::from(coming);
                 }
             }
-            let home = &guest.ledger.home;
             if out.came.is_none() && home.owns(Furniture::Gremlin) {
                 out.came = Some(clock);
             }
@@ -3347,6 +3357,7 @@ fn gremlin_census(seeds: u64) {
         started.elapsed().as_secs_f64()
     );
     let (mut days, mut kit_first, mut lines) = (Vec::new(), 0, Vec::new());
+    let mut coming = 0;
     for (seed, run) in &runs {
         let took = run
             .came
@@ -3354,7 +3365,7 @@ fn gremlin_census(seeds: u64) {
             .map(|(came, up)| (up - came) as f64 / (24.0 * 60.0));
         kit_first += usize::from(run.sold.first() == Some(&Furniture::ShelfKit));
         eprintln!(
-            "  seed {seed:>2}: came {}, kit sold {}, shelf finished {}, he's up {}{}; sold {:?}; \"It wants a shelf...\" {} game days",
+            "  seed {seed:>2}: came {}, kit sold {}, shelf finished {}, he's up {}{}; sold {:?}; \"It wants a shelf...\" {} game days ({} with her shelf coming)",
             label(run.came),
             label(run.kit_sold),
             label(run.finished),
@@ -3362,15 +3373,20 @@ fn gremlin_census(seeds: u64) {
             took.map_or_else(String::new, |d| format!(" ({d:.2} game days)")),
             run.sold,
             run.lines,
+            run.coming,
         );
         days.extend(took);
         lines.push(run.lines as f64);
+        coming += run.coming;
     }
     let (mean, sd) = mean_sd(&days);
     let max = days.iter().copied().fold(0.0, f64::max);
     let (lines_mean, _) = mean_sd(&lines);
     eprintln!(
-        "  up {} of {seeds}; the kit sold first (before her bookshelf and poster) in {kit_first}; game days from his coming to him up: mean {mean:.2}, sd {sd:.2}, max {max:.2}; his line on {lines_mean:.2} game days a run",
+        "  up {} of {seeds}; the kit sold first (before her bookshelf and poster) in {kit_first}; game days from his coming to him up: mean {mean:.2}, sd {sd:.2}, max {max:.2}; his line on {lines_mean:.2} game days a run, {coming} in all with her shelf coming",
         days.len()
     );
+    // Not a word of it once her kit is ordered, till her shelf is up
+    // (the user's seventh round).
+    assert_eq!(coming, 0, "his line said with her shelf coming");
 }

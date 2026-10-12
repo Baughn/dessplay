@@ -1,7 +1,9 @@
 //! Her gremlin (phase 6a, step 7; design D9): a figurine of small decor
 //! who wants up high. On a floor he breaks `Rule::High`, which she feels
 //! on sight only in his room, and only where a shelf stands or could go
-//! up; she says "It wants a shelf..." turned to face him; a felt rule
+//! up, and never while her shelf kit is coming (on order, boxed or going
+//! up: the user's seventh round; one felt before, she lets be); she says
+//! "It wants a shelf..." turned to face him; a felt rule
 //! that wants a kit she doesn't own puts that kit first on the channel
 //! (her wishlist, felt anew each visit); he's sold only where a shelf
 //! stands or could go up; and a shelf, once up, is where a repair puts
@@ -504,7 +506,8 @@ fn the_grievance_is_said_in_its_room_facing_it() {
 /// the channel would sell them first), she feels he wants up, says so,
 /// and the channel sells her shelf kit before anything else; it comes,
 /// she opens it, puts it up a stage a game day, and a repair puts him up
-/// on it, where he wants for nothing. Seeded (seed 3: bought Monday,
+/// on it, where he wants for nothing. From her order till her shelf is
+/// finished she neither feels nor says it (the user's seventh round). Seeded (seed 3: bought Monday,
 /// the first half up Tuesday, finished and him up on it first thing on
 /// Wednesday, 1.6 game days; most seeds go so, some a day later, as her
 /// mood has her mend). One test a mode, so they run side by side.
@@ -518,6 +521,8 @@ fn wants_a_shelf_and_gets_one(graphics: bool) {
     let mut bought = Vec::new();
     let mut said = false;
     let mut built = 0;
+    // His lines this visit, as last seen.
+    let mut lines = 0;
     paint(&mut guest, &real, &view, now);
     let up = loop {
         assert!(
@@ -531,11 +536,29 @@ fn wants_a_shelf_and_gets_one(graphics: bool) {
             bought.push(item);
         }
         if let State::Visiting(visit) = &guest.state {
-            said |= visit
-                .osaka
+            let osaka = &visit.osaka;
+            let now_lines = osaka
                 .said_aloud()
                 .iter()
-                .any(|&(line, _)| line == LINE);
+                .filter(|&&(line, _)| line == LINE)
+                .count();
+            // Not a word of it, nor a thought, while her shelf is coming
+            // (the user's seventh round).
+            if her_shelf_coming(&guest.ledger) {
+                let clock = guest.ledger.clock;
+                assert!(
+                    now_lines <= lines,
+                    "{at}: said it with her shelf coming, at {clock} (bought {bought:?})"
+                );
+                assert!(
+                    !osaka.felt().contains(&high()),
+                    "{at}: felt it with her shelf coming, at {clock} (bought {bought:?})"
+                );
+            }
+            said |= now_lines > 0;
+            lines = now_lines;
+        } else {
+            lines = 0;
         }
         let home = &guest.ledger.home;
         built = home
@@ -862,6 +885,164 @@ fn a_felt_high_with_no_shelf_takes_none_of_her_offers() {
                     "{at}: {want:?}"
                 );
             }
+        }
+    }
+}
+
+/// Whether a shelf of hers is coming (the user's seventh round, after
+/// step 8: "It wants a shelf..." stops once the kit is ordered): her
+/// shelf kit on order, in its box, or her shelf going up. The tests'
+/// own reading of the rule.
+fn her_shelf_coming(ledger: &Ledger) -> bool {
+    ledger.ordered == Some(Furniture::ShelfKit)
+        || ledger
+            .home
+            .props
+            .iter()
+            .any(|p| p.item == Furniture::ShelfKit)
+        || ledger
+            .home
+            .structures
+            .iter()
+            .any(|&Structure::Shelf(shelf)| !shelf.finished())
+}
+
+/// In his room for an hour of a fed afternoon, from `(56, USERS_FLOOR)`,
+/// industrious: whether she ever felt his wanting up, said so, or set
+/// about moving him (`None`: never), how many paints she stood on his
+/// floor, and when she first had a shelf going up, if she did.
+fn an_hour_in_his_room(
+    guest: &mut Guest,
+    real: &Buffer,
+    view: &IdleView,
+) -> (Option<u64>, usize, Option<u64>) {
+    begun_at(
+        guest,
+        real,
+        view,
+        (56, USERS_FLOOR),
+        Facing::Right,
+        Mood::Industrious,
+    );
+    let mut on_floor = 0;
+    let mut going_up = None;
+    let felt_or_said = run_until(guest, real, view, 0, 600_000, |guest, now| {
+        let visit = visit_of(guest);
+        let osaka = &visit.osaka;
+        on_floor += usize::from(on_users_floor((osaka.x, osaka.y)));
+        if going_up.is_none() && !guest.ledger.home.structures.is_empty() {
+            going_up = Some(now);
+        }
+        osaka.felt().contains(&high())
+            || osaka.said_aloud().iter().any(|&(line, _)| line == LINE)
+            || osaka.episode().is_some_and(|ep| ep.repair.key == high())
+            || visit.repairs.iter().any(|r| r.key == high())
+    });
+    (felt_or_said, on_floor, going_up)
+}
+
+/// Her shelf kit on order (the user's seventh round: "It wants a
+/// shelf..." stops once the kit is ordered), her gremlin on her floor is
+/// no grievance, though a shelf could go up on the frame (the same home
+/// and frame with no kit coming says it at once:
+/// `no_gremlin_grievance_where_no_shelf_can_go`'s control): an hour in
+/// his room, industrious, she never feels it, never says so and never
+/// sets about moving him, and nothing asks whether a shelf could go up
+/// (it's coming). Both modes.
+#[test]
+fn no_gremlin_grievance_with_her_kit_on_order() {
+    let (real, view) = rooms_frame(100, 30);
+    for graphics in [false, true] {
+        let at = format!("graphics={graphics}");
+        let mut guest = wanting(3, tue(14, 0), graphics);
+        guest.ledger.ordered = Some(Furniture::ShelfKit);
+        // Bought this visit: it comes on her next.
+        guest.ledger.bought_on = guest.ledger.visits;
+        let (felt_or_said, on_floor, _) = an_hour_in_his_room(&mut guest, &real, &view);
+        assert_eq!(felt_or_said, None, "{at}: felt, said or set about");
+        assert!(on_floor > 0, "{at}: she was in his room");
+        assert_eq!(
+            guest.ledger.ordered,
+            Some(Furniture::ShelfKit),
+            "{at}: still on order"
+        );
+        assert_eq!(
+            visit_of(&guest).shelf_asks,
+            0,
+            "{at}: asked whether a shelf could go up"
+        );
+    }
+}
+
+/// Her shelf kit in its box (delivered, unopened: the user's seventh
+/// round), her gremlin on her floor is no grievance: an hour in his
+/// room, industrious, she never feels it, never says so and never sets
+/// about moving him; and she opens the kit and puts its first half up as
+/// ever (its seat never waited on his wanting). Both modes.
+#[test]
+fn no_gremlin_grievance_with_her_kit_boxed() {
+    let (real, view) = rooms_frame(100, 30);
+    for graphics in [false, true] {
+        let at = format!("graphics={graphics}");
+        let mut guest = wanting(3, tue(14, 0), graphics);
+        assert!(guest.ledger.home.add(room::Prop::new(
+            Furniture::ShelfKit,
+            Nook::List,
+            900,
+            Facing::Right
+        )));
+        let (felt_or_said, on_floor, going_up) = an_hour_in_his_room(&mut guest, &real, &view);
+        assert_eq!(felt_or_said, None, "{at}: felt, said or set about");
+        assert!(on_floor > 0, "{at}: she was in his room");
+        assert!(going_up.is_some(), "{at}: she never opened her kit");
+    }
+}
+
+/// Felt and owed in his room with no kit coming (her hello still
+/// showing, so not yet said), she buys her shelf kit (the user's seventh
+/// round): the line goes unsaid, and she lets his wanting be: she no
+/// longer feels it, would mend nothing for it, and wishes for nothing,
+/// so nothing about him weighs on her while her shelf is coming. The
+/// same visit with no purchase says it. Both modes.
+#[test]
+fn a_line_owed_as_she_buys_her_kit_goes_unsaid() {
+    let (real, view) = rooms_frame(100, 30);
+    for graphics in [false, true] {
+        for buy in [false, true] {
+            let at = format!("graphics={graphics}, buy={buy}");
+            let mut guest = wanting(4, tue(14, 0), graphics);
+            begun_at(
+                &mut guest,
+                &real,
+                &view,
+                (90, USERS_FLOOR),
+                Facing::Right,
+                Mood::Industrious,
+            );
+            assert!(
+                visit_of(&guest).osaka.felt().contains(&high()),
+                "{at}: felt"
+            );
+            assert!(!said_it(&guest), "{at}: not said yet");
+            if buy {
+                visit_mut(&mut guest)
+                    .osaka
+                    .did(osaka::HomeEvent::Bought(Furniture::ShelfKit));
+                paint(&mut guest, &real, &view, 100);
+                assert_eq!(guest.ledger.ordered, Some(Furniture::ShelfKit), "{at}");
+                let visit = visit_of(&guest);
+                assert!(
+                    !visit.osaka.felt().contains(&high()),
+                    "{at}: still felt: {:?}",
+                    visit.osaka.felt()
+                );
+                assert_eq!(visit.osaka.to_mend(&visit.broken), [], "{at}");
+                assert_eq!(visit.wished, None, "{at}: still wished");
+            }
+            let said = run_until(&mut guest, &real, &view, 100, 60_000, |guest, _| {
+                said_it(guest)
+            });
+            assert_eq!(said.is_some(), !buy, "{at}: said at {said:?}");
         }
     }
 }
