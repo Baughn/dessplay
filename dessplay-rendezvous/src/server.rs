@@ -923,11 +923,10 @@ async fn serve_connection<T: Transport>(
     // address still hears "update". A throttled refusal is the same
     // terminal AuthFailed: a bare close would read as a network blip,
     // and the client would keep redialing into the throttle.
-    let verdict = lock(&shared.auth_limiter).judge(
-        remote.ip(),
-        tokio::time::Instant::now(),
-        password == config.password,
-    );
+    let verdict =
+        lock(&shared.auth_limiter).judge(remote.ip(), tokio::time::Instant::now(), || {
+            password == config.password
+        });
     match verdict {
         Verdict::Accept => {}
         Verdict::Reject => {

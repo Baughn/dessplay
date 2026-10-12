@@ -77,11 +77,12 @@ impl AuthLimiter {
         }
     }
 
-    /// Judge an attempt from `ip` at `now` whose password was `correct`.
+    /// Judge an attempt from `ip` at `now`; `correct` checks its
+    /// password, and is not called while the address is throttled.
     /// Atomic: the throttle check and the spend happen in one call, so
     /// concurrent attempts from one address cannot all slip past a
     /// nearly-spent budget.
-    pub fn judge(&mut self, ip: IpAddr, now: Instant, correct: bool) -> Verdict {
+    pub fn judge(&mut self, ip: IpAddr, now: Instant, correct: impl FnOnce() -> bool) -> Verdict {
         let key = address_key(ip);
         let full_at = self.full_at.get(&key).copied();
         let debt = full_at.map_or(Duration::ZERO, |at| at.saturating_duration_since(now));
@@ -89,7 +90,7 @@ impl AuthLimiter {
         if debt + self.limit.refill > capacity {
             return Verdict::Throttled;
         }
-        if correct {
+        if correct() {
             return Verdict::Accept;
         }
         let new_full_at = now + debt + self.limit.refill;
@@ -150,16 +151,16 @@ mod tests {
         let mut limiter = AuthLimiter::new(LIMIT);
         let t0 = Instant::now();
         for _ in 0..LIMIT.burst {
-            assert_eq!(limiter.judge(v4(1), t0, false), Verdict::Reject);
+            assert_eq!(limiter.judge(v4(1), t0, || false), Verdict::Reject);
         }
-        assert_eq!(limiter.judge(v4(1), t0, true), Verdict::Throttled);
+        assert_eq!(limiter.judge(v4(1), t0, || true), Verdict::Throttled);
         // Another address is untouched.
-        assert_eq!(limiter.judge(v4(2), t0, true), Verdict::Accept);
+        assert_eq!(limiter.judge(v4(2), t0, || true), Verdict::Accept);
         // One refill later, one attempt is allowed again.
         let t1 = t0 + LIMIT.refill;
-        assert_eq!(limiter.judge(v4(1), t1, true), Verdict::Accept);
-        assert_eq!(limiter.judge(v4(1), t1, false), Verdict::Reject);
-        assert_eq!(limiter.judge(v4(1), t1, true), Verdict::Throttled);
+        assert_eq!(limiter.judge(v4(1), t1, || true), Verdict::Accept);
+        assert_eq!(limiter.judge(v4(1), t1, || false), Verdict::Reject);
+        assert_eq!(limiter.judge(v4(1), t1, || true), Verdict::Throttled);
     }
 
     #[test]
@@ -179,12 +180,12 @@ mod tests {
         let t0 = Instant::now();
         for i in 0..SWEEP_AT as u32 {
             let ip = IpAddr::V4(Ipv4Addr::from(0x0a00_0000 + i));
-            limiter.judge(ip, t0, false);
+            limiter.judge(ip, t0, || false);
         }
         assert_eq!(limiter.tracked(), SWEEP_AT);
         // Once their budgets are full again, the next new address
         // sweeps them all out.
-        limiter.judge(v4(1), t0 + LIMIT.refill, false);
+        limiter.judge(v4(1), t0 + LIMIT.refill, || false);
         assert_eq!(limiter.tracked(), 1);
     }
 
@@ -199,7 +200,8 @@ mod tests {
 
         /// Over any window, an address has at most `burst` failures plus
         /// one per whole `refill` judged; a right password is accepted
-        /// whenever the address isn't throttled; and an address is
+        /// whenever the address isn't throttled; a throttled password is
+        /// never checked; and an address is
         /// throttled only when it has failed `burst` times within the
         /// last `burst × refill`.
         #[test]
@@ -211,7 +213,11 @@ mod tests {
             let mut failures: [Vec<Instant>; 3] = Default::default();
             for (gap_ms, who, correct) in attempts {
                 now += Duration::from_millis(gap_ms);
-                let verdict = limiter.judge(v4(who), now, correct);
+                let mut asked = false;
+                let verdict = limiter.judge(v4(who), now, || {
+                    asked = true;
+                    correct
+                });
                 let mine = &mut failures[who as usize];
                 match verdict {
                     Verdict::Accept => prop_assert!(correct),
@@ -220,6 +226,7 @@ mod tests {
                         mine.push(now);
                     }
                     Verdict::Throttled => {
+                        prop_assert!(!asked, "a throttled password was checked");
                         let horizon = LIMIT.refill * LIMIT.burst;
                         let recent = mine
                             .iter()
@@ -252,7 +259,7 @@ mod tests {
             let mut limiter = AuthLimiter::new(LIMIT);
             let t0 = Instant::now();
             let verdicts: Vec<_> = (0..LIMIT.burst + extra)
-                .map(|_| limiter.judge(v4(1), t0, false))
+                .map(|_| limiter.judge(v4(1), t0, || false))
                 .collect();
             let judged = verdicts.iter().filter(|v| **v == Verdict::Reject).count();
             prop_assert_eq!(judged, LIMIT.burst as usize);
