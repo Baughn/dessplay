@@ -3,19 +3,26 @@
 //! Datagrams are not framed (QUIC datagrams are self-delimiting). The
 //! length cap protects against memory exhaustion from corrupt or
 //! malicious prefixes — a full state snapshot is the largest legitimate
-//! frame and stays far below it.
+//! frame and stays far below it. Before a peer authenticates, the
+//! smaller [`HANDSHAKE_FRAME_LEN`] applies instead (see
+//! [`super::transport::Transport::admit`]).
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 /// Maximum accepted frame payload. Anything larger is a protocol error.
 pub const MAX_FRAME_LEN: usize = 64 * 1024 * 1024;
 
+/// Maximum accepted frame before the peer is admitted: its `Auth` or
+/// `TransferAuth`, a few strings and integers. A peer that has proved
+/// nothing gets no more than this out of the reader.
+pub const HANDSHAKE_FRAME_LEN: usize = 4 * 1024;
+
 /// Framing errors.
 #[derive(Debug)]
 pub enum FrameError {
     /// Underlying I/O failed (includes clean EOF mid-frame).
     Io(std::io::Error),
-    /// Peer announced a frame larger than [`MAX_FRAME_LEN`].
+    /// Peer announced a frame larger than the reader's cap.
     TooLarge(usize),
     /// Clean EOF on a frame boundary — the stream ended.
     Closed,
@@ -39,11 +46,11 @@ impl From<std::io::Error> for FrameError {
     }
 }
 
-/// Validate a length prefix. Pure, so the fuzz target can hit it
-/// directly.
-pub fn validate_len(len: u32) -> Result<usize, FrameError> {
+/// Validate a length prefix against `max`. Pure, so the fuzz target can
+/// hit it directly.
+pub fn validate_len(len: u32, max: usize) -> Result<usize, FrameError> {
     let len = len as usize;
-    if len > MAX_FRAME_LEN {
+    if len > max {
         return Err(FrameError::TooLarge(len));
     }
     Ok(len)
@@ -55,16 +62,26 @@ pub async fn write_frame<W: AsyncWrite + Unpin>(
     payload: &[u8],
 ) -> Result<(), FrameError> {
     let len = u32::try_from(payload.len()).map_err(|_| FrameError::TooLarge(payload.len()))?;
-    validate_len(len)?;
+    validate_len(len, MAX_FRAME_LEN)?;
     writer.write_all(&len.to_le_bytes()).await?;
     writer.write_all(payload).await?;
     writer.flush().await?;
     Ok(())
 }
 
-/// Read one frame. Returns [`FrameError::Closed`] on clean EOF at a
-/// frame boundary.
+/// Read one frame of at most [`MAX_FRAME_LEN`]. Returns
+/// [`FrameError::Closed`] on clean EOF at a frame boundary.
 pub async fn read_frame<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Vec<u8>, FrameError> {
+    read_frame_capped(reader, MAX_FRAME_LEN).await
+}
+
+/// Read one frame of at most `max` bytes, refusing a larger prefix
+/// before allocating anything for it. Returns [`FrameError::Closed`]
+/// on clean EOF at a frame boundary.
+pub async fn read_frame_capped<R: AsyncRead + Unpin>(
+    reader: &mut R,
+    max: usize,
+) -> Result<Vec<u8>, FrameError> {
     let mut len_bytes = [0u8; 4];
     let mut filled = 0;
     while filled < 4 {
@@ -77,7 +94,7 @@ pub async fn read_frame<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Vec<u8>,
         }
         filled += n;
     }
-    let len = validate_len(u32::from_le_bytes(len_bytes))?;
+    let len = validate_len(u32::from_le_bytes(len_bytes), max)?;
     let mut payload = vec![0u8; len];
     reader.read_exact(&mut payload).await?;
     Ok(payload)
@@ -128,6 +145,28 @@ mod tests {
         assert!(matches!(
             read_frame(&mut server).await,
             Err(FrameError::TooLarge(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn the_cap_is_the_callers() {
+        let (mut client, mut server) = tokio::io::duplex(64 * 1024);
+        write_frame(&mut client, &[1u8; HANDSHAKE_FRAME_LEN])
+            .await
+            .unwrap();
+        write_frame(&mut client, &[2u8; HANDSHAKE_FRAME_LEN + 1])
+            .await
+            .unwrap();
+        assert_eq!(
+            read_frame_capped(&mut server, HANDSHAKE_FRAME_LEN)
+                .await
+                .unwrap()
+                .len(),
+            HANDSHAKE_FRAME_LEN
+        );
+        assert!(matches!(
+            read_frame_capped(&mut server, HANDSHAKE_FRAME_LEN).await,
+            Err(FrameError::TooLarge(len)) if len == HANDSHAKE_FRAME_LEN + 1
         ));
     }
 }

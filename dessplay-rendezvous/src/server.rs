@@ -949,6 +949,9 @@ async fn serve_connection<T: Transport>(
             return;
         }
     }
+    // Authenticated: only now may the peer send more than its
+    // handshake-sized `Auth` (Transport::admit).
+    conn.admit();
 
     // ---- Register, superseding any existing entry for this user (a
     // reconnecting client — possibly one whose old connection hasn't
@@ -1157,6 +1160,11 @@ async fn serve_transfer_connection<T: Transport>(
     if let Some(old) = superseded {
         old.close("superseded by a new transfer connection").await;
     }
+    // Bound: the token proved the session. Nothing further is expected
+    // on this control stream, but an unadmitted connection also keeps
+    // its pre-admission receive window, which would throttle every
+    // relayed upload through it.
+    conn.admit();
     tracing::debug!(user = %username.0, %remote, "transfer connection bound");
 
     // Streams that raced ahead of the TransferAuth frame classify now,

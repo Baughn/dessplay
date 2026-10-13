@@ -1376,10 +1376,13 @@ mod tests {
                 continue;
             };
             let reply = match msg {
-                ServerControl::Auth { .. } => ServerControl::AuthOk {
-                    observed_addr: addr,
-                    transfer_token: 42,
-                },
+                ServerControl::Auth { .. } => {
+                    conn.admit();
+                    ServerControl::AuthOk {
+                        observed_addr: addr,
+                        transfer_token: 42,
+                    }
+                }
                 ServerControl::TimeSyncRequest { client_send } if answer_probes => {
                     let now = (clock)();
                     ServerControl::TimeSyncResponse {
@@ -1396,7 +1399,7 @@ mod tests {
     }
 
     /// A minimal transfer-side server: accepts any number of transfer
-    /// connections, ignores their `TransferAuth`, drains relay streams
+    /// connections, admits on any `TransferAuth`, drains relay streams
     /// (`Hello` first frame), and **echoes** every frame of any other
     /// stream — a data stream's bytes come straight back, so tests can
     /// drive both counter directions without a real peer.
@@ -1435,8 +1438,10 @@ mod tests {
                                 }
                             });
                         }
+                        // TransferAuth: bind (the token goes unchecked).
+                        Ok(TransportEvent::Control(_)) => conn.admit(),
                         Ok(TransportEvent::Closed { .. }) | Err(_) => return,
-                        Ok(_) => continue, // TransferAuth, datagrams
+                        Ok(_) => continue, // datagrams
                     }
                 }
             });
@@ -1699,6 +1704,10 @@ mod tests {
             self.inner.recv().await
         }
 
+        fn admit(&self) {
+            self.inner.admit();
+        }
+
         async fn close(&self, reason: &str) {
             self.inner.close(reason).await
         }
@@ -1768,6 +1777,7 @@ mod tests {
                 let reply = match msg {
                     ServerControl::Auth { .. } => {
                         tokio::time::sleep(Duration::from_millis(500)).await;
+                        conn.admit();
                         ServerControl::AuthOk {
                             observed_addr: addr,
                             transfer_token: 42,

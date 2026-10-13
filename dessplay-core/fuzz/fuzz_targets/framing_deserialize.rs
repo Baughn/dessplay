@@ -6,7 +6,7 @@
 use std::sync::OnceLock;
 
 use dessplay_core::net::WireMessage;
-use dessplay_core::net::framing::read_frame;
+use dessplay_core::net::framing::{HANDSHAKE_FRAME_LEN, read_frame, read_frame_capped};
 use libfuzzer_sys::fuzz_target;
 
 fn runtime() -> &'static tokio::runtime::Runtime {
@@ -27,6 +27,16 @@ fuzz_target!(|data: &[u8]| {
     runtime().block_on(async {
         let mut cursor = data;
         while let Ok(frame) = read_frame(&mut cursor).await {
+            let _ = dessplay_core::wire::decode::<WireMessage>(&frame);
+        }
+    });
+
+    // Handshake path: the one pre-admission frame an accepted
+    // connection reads, under its smaller cap.
+    runtime().block_on(async {
+        let mut cursor = data;
+        if let Ok(frame) = read_frame_capped(&mut cursor, HANDSHAKE_FRAME_LEN).await {
+            assert!(frame.len() <= HANDSHAKE_FRAME_LEN);
             let _ = dessplay_core::wire::decode::<WireMessage>(&frame);
         }
     });

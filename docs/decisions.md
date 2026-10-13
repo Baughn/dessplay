@@ -1,6 +1,6 @@
 # DessPlay Decision Log
 
-Last updated: 2026-10-12
+Last updated: 2026-10-13
 
 The reasoning behind the rules in [design.md](design.md): the failure that
 motivated each one, the alternatives that were rejected, and the date it
@@ -15,6 +15,52 @@ and links back to the section that states it; design.md links here with
 remembering (a bug, a review finding, a user decision), the rule goes in
 design.md and the reason goes here, in the same commit. Entries are never
 deleted; a superseded decision gets a note saying what replaced it.
+
+## An unauthenticated peer gets a handshake's worth (2026-10-13)
+
+**Rule:** (design.md, Rendezvous Server, Authentication; network-design.md,
+Serialization, "Admission") before a connection authenticates, the server
+reads one control frame of at most 4 KiB from it, nothing after it, and
+lets it have at most 64 KiB in flight; authentication lifts both limits.
+
+**Why:** the frame cap was a single 64 MiB for everyone, sized for the
+state snapshot. Before authentication the server had to read only `Auth`
+or `TransferAuth`, a few hundred bytes, yet a peer that had proved nothing
+could announce 64 MiB and have the server allocate it, on every connection
+and for the length of the auth timeout. The room is a handful of friends,
+so the risk was small, but nothing was gained by taking it. Choices:
+
+- *Stop reading, not just cap the first frame.* The control stream is
+  read by its own task, which reads ahead of the server's auth loop. A
+  cap on the first frame alone leaves a hole: a tiny bogus `Auth`
+  followed at once by a 64 MiB frame, read while the password is still
+  being judged. So the reader takes the handshake frame and then waits
+  for `admit`, before even the next length prefix.
+- *The receive window shrinks too.* A parked reader alone would still let
+  quinn buffer a whole stream window (16 MiB) per connection for the
+  peer. A 64 KiB connection window before admission bounds that; it is
+  raised on `admit`. Raising it matters for more than tidiness: a 64 KiB
+  window caps a relayed upload at about 64 KiB per round trip, so the
+  transfer connection admits on binding even though nothing further is
+  read off its control stream.
+- *A seam method, not a wrapper type.* An `Unadmitted<T>` type that only
+  `admit` turns into a transport would make forgetting unrepresentable,
+  but it reshapes the server's and every test server's accept path. The
+  sim models the gate instead: a server that never admits wedges every
+  sim test at its first post-auth message, which makes the omission
+  impossible to miss.
+- *The client's side is not gated.* The server is TOFU-pinned and holds
+  the room's whole state anyway. Gating the client would also be wrong
+  today: the server registers a session before sending `AuthOk`, so a
+  concurrent broadcast can reach the client ahead of it.
+- *4 KiB.* `Auth` is two short strings and a few integers; 4 KiB leaves
+  an order of magnitude for long usernames and passphrases. No protocol
+  version bump: no message changed shape, and a real client's `Auth`
+  never came near the cap.
+
+Not addressed here: the number of unauthenticated connections at once is
+still unbounded, so the total is the per-connection bound times however
+many connections an attacker opens within the auth timeout.
 
 ## Failed passwords are throttled per address (2026-10-12)
 

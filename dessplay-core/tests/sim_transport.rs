@@ -1,9 +1,11 @@
 //! SimulatedTransport behavior: ordering, latency, loss, partitions,
-//! bandwidth, jitter-reordering, and close semantics. All under paused
-//! time — simulated seconds are free.
+//! bandwidth, jitter-reordering, close semantics, and the handshake gate
+//! on accepted connections. All under paused time — simulated seconds
+//! are free.
 
 use std::time::Duration;
 
+use dessplay_core::net::framing::{FrameError, HANDSHAKE_FRAME_LEN};
 use dessplay_core::net::sim::{EndpointId, LinkConfig, SimNetwork};
 use dessplay_core::net::{Connector, Listener, Transport, TransportError, TransportEvent};
 
@@ -11,7 +13,15 @@ fn ids() -> (EndpointId, EndpointId) {
     (EndpointId::new("client"), EndpointId::new("server"))
 }
 
+/// A connected pair whose accepted end is already admitted — these
+/// tests are about the link, not the handshake.
 async fn connected(net: &SimNetwork) -> (impl Transport, impl Transport) {
+    let (client, server) = connected_unadmitted(net).await;
+    server.admit();
+    (client, server)
+}
+
+async fn connected_unadmitted(net: &SimNetwork) -> (impl Transport, impl Transport) {
     let (client_id, server_id) = ids();
     let listener = net.listener(&server_id);
     let connector = net.connector(&client_id, &server_id);
@@ -351,4 +361,72 @@ async fn connection_teardown_releases_the_delivery_pumps() {
         "a killed connection must release both directions' pumps"
     );
     drop((client, server));
+}
+
+/// An unadmitted accepted connection yields its first control frame,
+/// then holds the rest — datagrams still flow — until `admit`, which
+/// releases them in order. Mirrors QUIC (Transport::admit).
+#[tokio::test(start_paused = true)]
+async fn control_frames_wait_for_admission() {
+    let net = SimNetwork::new(1);
+    let (client, server) = connected_unadmitted(&net).await;
+
+    for i in 0..3u8 {
+        client.send_control(&[i]).await.unwrap();
+    }
+    client.send_datagram(b"dg").await.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    assert!(matches!(try_recv(&server).await, Some(TransportEvent::Control(f)) if f == [0]));
+    assert!(matches!(try_recv(&server).await, Some(TransportEvent::Datagram(d)) if d == b"dg"));
+    assert!(
+        try_recv(&server).await.is_none(),
+        "read past the handshake frame"
+    );
+
+    // The dialing side was never gated.
+    server.send_control(b"ok").await.unwrap();
+    server
+        .send_control(&[5u8; HANDSHAKE_FRAME_LEN + 1])
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(matches!(try_recv(&client).await, Some(TransportEvent::Control(f)) if f == b"ok"));
+    assert!(matches!(
+        try_recv(&client).await,
+        Some(TransportEvent::Control(_))
+    ));
+
+    // A recv already parked on the inbox wakes for the released frames.
+    let parked = async {
+        let mut got = Vec::new();
+        for _ in 0..2 {
+            match server.recv().await.unwrap() {
+                TransportEvent::Control(f) => got.push(f[0]),
+                other => panic!("expected a held control frame, got {other:?}"),
+            }
+        }
+        got
+    };
+    let admit = async {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        server.admit();
+    };
+    let (got, ()) = tokio::join!(parked, admit);
+    assert_eq!(got, [1, 2]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_oversized_handshake_frame_is_refused() {
+    let net = SimNetwork::new(1);
+    let (client, server) = connected_unadmitted(&net).await;
+    client
+        .send_control(&[1u8; HANDSHAKE_FRAME_LEN + 1])
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(matches!(
+        server.recv().await,
+        Err(TransportError::Frame(FrameError::TooLarge(_)))
+    ));
 }

@@ -15,9 +15,9 @@ use std::time::Duration;
 
 use quinn::crypto::rustls::{QuicClientConfig, QuicServerConfig};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{Mutex, mpsc, oneshot};
 
-use super::framing::{FrameError, read_frame, write_frame};
+use super::framing::{FrameError, HANDSHAKE_FRAME_LEN, read_frame, read_frame_capped, write_frame};
 use super::tofu::TofuVerifier;
 use super::transport::{
     BiStream, Connector, LinkStats, Listener, Transport, TransportError, TransportEvent,
@@ -85,6 +85,13 @@ pub const STREAM_RECEIVE_WINDOW: u64 = 16 * 1024 * 1024;
 
 /// Connection-level flow control window (multiple transfer streams).
 pub const CONNECTION_RECEIVE_WINDOW: u64 = 64 * 1024 * 1024;
+
+/// Connection-level receive window an accepted connection starts with,
+/// raised to [`CONNECTION_RECEIVE_WINDOW`] on [`Transport::admit`]. The
+/// reader stops after the handshake frame until then, so this bounds
+/// what quinn buffers for an unauthenticated peer: room for `Auth` and
+/// a transfer connection's early stream headers, not for bulk data.
+pub const PRE_ADMISSION_RECEIVE_WINDOW: u64 = 64 * 1024;
 
 /// Concurrent bidirectional streams the peer may have open. quinn's
 /// default is 100, and `open_bi()` at the cap does not fail — it
@@ -183,6 +190,19 @@ pub struct QuicTransport {
     /// `read_frame` is not cancel-safe, so it must not race in a
     /// `select!`.
     control_frames: Mutex<mpsc::Receiver<Result<Vec<u8>, FrameError>>>,
+    /// Releases the reader past the handshake frame ([`Transport::admit`]);
+    /// `None` once admitted, or from the start on the dialing side.
+    /// Dropping it unadmitted ends the reader.
+    admission: std::sync::Mutex<Option<oneshot::Sender<()>>>,
+}
+
+/// Which side of the handshake a new connection starts on.
+#[derive(Clone, Copy)]
+enum Admission {
+    /// Dialed: the server is TOFU-pinned, nothing to wait for.
+    Admitted,
+    /// Accepted: one handshake-sized frame, then wait for `admit`.
+    Pending,
 }
 
 impl QuicTransport {
@@ -190,6 +210,7 @@ impl QuicTransport {
         conn: quinn::Connection,
         control_send: quinn::SendStream,
         mut control_recv: quinn::RecvStream,
+        admission: Admission,
     ) -> Self {
         // Elevate the control stream above bulk transfer/relay streams on
         // *both* endpoints. The server is the relay hub, so server->client
@@ -200,7 +221,28 @@ impl QuicTransport {
         // ClosedStream, which is harmless.
         let _ = control_send.set_priority(CONTROL_PRIORITY);
         let (frame_tx, frame_rx) = mpsc::channel(64);
+        let (admit_tx, gate) = match admission {
+            Admission::Admitted => (None, None),
+            Admission::Pending => {
+                let (tx, rx) = oneshot::channel();
+                (Some(tx), Some(rx))
+            }
+        };
         tokio::spawn(async move {
+            if let Some(gate) = gate {
+                // Not even the next length prefix is read before
+                // admission: capping only the first frame would let a
+                // tiny bogus `Auth` be followed at once by a huge frame,
+                // read while the password is still being judged.
+                let first = read_frame_capped(&mut control_recv, HANDSHAKE_FRAME_LEN).await;
+                let terminal = first.is_err();
+                if frame_tx.send(first).await.is_err() || terminal {
+                    return;
+                }
+                if gate.await.is_err() {
+                    return; // dropped unadmitted
+                }
+            }
             loop {
                 let frame = read_frame(&mut control_recv).await;
                 let terminal = frame.is_err();
@@ -213,6 +255,7 @@ impl QuicTransport {
             conn,
             control_send: Mutex::new(control_send),
             control_frames: Mutex::new(frame_rx),
+            admission: std::sync::Mutex::new(admit_tx),
         }
     }
 
@@ -288,6 +331,20 @@ impl Transport for QuicTransport {
                 })),
                 Err(_) => Ok(TransportEvent::Closed { reason: self.closed_reason() }),
             },
+        }
+    }
+
+    fn admit(&self) {
+        let admit = self
+            .admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(admit) = admit {
+            self.conn.set_receive_window(
+                quinn::VarInt::from_u64(CONNECTION_RECEIVE_WINDOW).unwrap_or(quinn::VarInt::MAX),
+            );
+            let _ = admit.send(());
         }
     }
 
@@ -487,7 +544,7 @@ impl QuicConnector {
                 elapsed_ms = started.elapsed().as_millis() as u64,
                 "control stream open"
             );
-            Ok(QuicTransport::new(conn, send, recv))
+            Ok(QuicTransport::new(conn, send, recv, Admission::Admitted))
         };
         match tokio::time::timeout(self.per_address_timeout, dial).await {
             Ok(result) => result,
@@ -602,7 +659,11 @@ impl QuicListener {
 
         let quic_crypto = QuicServerConfig::try_from(crypto).map_err(setup("quic tls"))?;
         let mut server_config = quinn::ServerConfig::with_crypto(Arc::new(quic_crypto));
-        server_config.transport_config(Arc::new(shared_transport_config()));
+        let mut transport = shared_transport_config();
+        transport.receive_window(
+            quinn::VarInt::from_u64(PRE_ADMISSION_RECEIVE_WINDOW).unwrap_or(quinn::VarInt::MAX),
+        );
+        server_config.transport_config(Arc::new(transport));
 
         let endpoint = tagged_endpoint(addr, dscp, Some(server_config))?;
         let (acceptor, ready) = spawn_acceptor(endpoint.clone());
@@ -664,7 +725,10 @@ fn spawn_acceptor(
                         // A send error means the listener was dropped; let
                         // the connection drop with it.
                         let _ = tx
-                            .send((QuicTransport::new(conn, send, recv), remote))
+                            .send((
+                                QuicTransport::new(conn, send, recv, Admission::Pending),
+                                remote,
+                            ))
                             .await;
                     }
                     Ok(Err(e)) => {
@@ -795,6 +859,126 @@ mod socket_tests {
             TransportEvent::Control(payload) => assert_eq!(payload, b"hello"),
             other => panic!("expected the normal client's control frame, got {other:?}"),
         }
+    }
+
+    /// Connect a client and accept it, the client's first control frame
+    /// being `first` — the control stream opens lazily, so the accept
+    /// only fires once that frame is written.
+    async fn accepted_pair(first: &[u8]) -> (QuicListener, QuicTransport, QuicTransport) {
+        let cert_dir = tempfile::tempdir().unwrap();
+        let (cert, key) = load_or_generate_cert(cert_dir.path()).unwrap();
+        let listener = QuicListener::bind("127.0.0.1:0".parse().unwrap(), cert, key).unwrap();
+        let server_addr = listener.local_addr().unwrap();
+        let connector = QuicConnector::new(vec![server_addr], "dessplay", None).unwrap();
+        let client_fut = async {
+            let client = connector.connect().await.unwrap();
+            client.send_control(first).await.unwrap();
+            client
+        };
+        let (client, accepted) = tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::join!(client_fut, listener.accept())
+        })
+        .await
+        .expect("connect/accept budget exhausted");
+        let (server, _addr) = accepted.unwrap();
+        (listener, client, server)
+    }
+
+    /// Before admission an accepted connection reads one control frame
+    /// of at most [`HANDSHAKE_FRAME_LEN`]: a peer that has proved
+    /// nothing must not make the server allocate the full
+    /// [`MAX_FRAME_LEN`] (2026-10-13).
+    #[tokio::test]
+    #[ignore = "Requires sandbox escalation"]
+    async fn an_oversized_first_frame_is_refused() {
+        let (_listener, _client, server) = accepted_pair(&vec![7u8; HANDSHAKE_FRAME_LEN + 1]).await;
+        let event = tokio::time::timeout(Duration::from_secs(5), server.recv())
+            .await
+            .expect("recv timed out");
+        assert!(
+            matches!(event, Err(TransportError::Frame(FrameError::TooLarge(_)))),
+            "expected TooLarge, got {event:?}"
+        );
+    }
+
+    /// The reader takes no second frame until the server admits the
+    /// peer — capping only the first frame would leave a read-ahead
+    /// hole, a tiny bogus `Auth` followed at once by a huge frame read
+    /// while the password is still being judged. After `admit`, frames
+    /// up to [`MAX_FRAME_LEN`] flow again, past the pre-admission
+    /// receive window too.
+    #[tokio::test]
+    #[ignore = "Requires sandbox escalation"]
+    async fn nothing_past_the_first_frame_is_read_before_admission() {
+        let (_listener, client, server) = accepted_pair(b"auth").await;
+        let big = vec![9u8; 1024 * 1024];
+        let send = async { client.send_control(&big).await.unwrap() };
+        let recv = async {
+            match tokio::time::timeout(Duration::from_secs(5), server.recv()).await {
+                Ok(Ok(TransportEvent::Control(frame))) => assert_eq!(frame, b"auth"),
+                other => panic!("expected the first frame, got {other:?}"),
+            }
+            let early = tokio::time::timeout(Duration::from_millis(300), server.recv()).await;
+            assert!(
+                early.is_err(),
+                "read past the first frame before admission: {early:?}"
+            );
+            server.admit();
+            match tokio::time::timeout(Duration::from_secs(5), server.recv()).await {
+                Ok(Ok(TransportEvent::Control(frame))) => assert_eq!(frame.len(), big.len()),
+                other => panic!("expected the big frame after admission, got {other:?}"),
+            }
+        };
+        tokio::join!(send, recv);
+    }
+
+    /// An unadmitted peer may have at most [`PRE_ADMISSION_RECEIVE_WINDOW`]
+    /// in flight, so quinn buffers no more than that for it; admission
+    /// raises the window to [`CONNECTION_RECEIVE_WINDOW`]. The reader's
+    /// draining slides even the small window along, so liveness alone
+    /// cannot tell; the bytes that reach the server while nothing is
+    /// read can.
+    #[tokio::test]
+    #[ignore = "Requires sandbox escalation"]
+    async fn admission_lifts_the_receive_window() {
+        let (_listener, client, server) = accepted_pair(b"auth").await;
+        assert!(matches!(
+            server.recv().await,
+            Ok(TransportEvent::Control(_))
+        ));
+        let received = || server.conn.stats().udp_rx.bytes;
+
+        // Unadmitted, the reader is parked: a MiB sent now mostly waits
+        // on the client for credit — until admission lets it through.
+        let held = vec![1u8; 1024 * 1024];
+        let send = async { client.send_control(&held).await.unwrap() };
+        let judge = async {
+            let before = received();
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            let unadmitted = received() - before;
+            assert!(
+                unadmitted < 256 * 1024,
+                "an unadmitted peer got {unadmitted} bytes buffered"
+            );
+            server.admit();
+        };
+        tokio::join!(send, judge);
+
+        // Admitted, with the reader stalled on its full channel (nobody
+        // calls recv), the client may still run megabytes ahead.
+        for _ in 0..80 {
+            client.send_control(b"x").await.unwrap();
+        }
+        let before = received();
+        let bulk = vec![2u8; 8 * 1024 * 1024];
+        tokio::time::timeout(Duration::from_secs(2), async {
+            client.send_control(&bulk).await.unwrap();
+            while received() - before < 4 * 1024 * 1024 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("admission left the window small: the bulk send stalled");
     }
 
     /// Regression (2026-07-06): a black-holed first address must not sink

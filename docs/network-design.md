@@ -1,6 +1,6 @@
 # Network Design
 
-Last updated: 2026-10-12
+Last updated: 2026-10-13
 
 This document covers connection establishment, wire protocols, relay, and file
 transfer. For the replicated data types built on top of this layer, see
@@ -221,6 +221,21 @@ identity is the username the server authenticated.
 All structured messages use **postcard** (serde, compact binary). Messages on
 streams are length-prefixed with a `u32` (little-endian) byte count. Datagrams
 are self-contained (no length prefix needed since QUIC datagrams are framed).
+A frame is at most `MAX_FRAME_LEN` (64 MiB; the largest legitimate one, a
+state snapshot, measured 8.15 MiB in 2026-09); a longer prefix is a protocol
+error, refused before anything is allocated for it.
+
+**Admission.** A connection the server accepts starts *unadmitted*: its
+control stream yields one frame of at most `HANDSHAKE_FRAME_LEN` (4 KiB,
+room for `Auth` or `TransferAuth`) and then is not read again, not even the
+next length prefix, and its connection-level receive window is 64 KiB
+(`PRE_ADMISSION_RECEIVE_WINDOW`) instead of 64 MiB. `Transport::admit`
+releases the reader and raises the window; the server calls it once the
+password checks out (before `AuthOk`) or the transfer token binds, and never
+otherwise. A larger first frame fails the read and the connection is closed
+unanswered. The client's side of a connection is admitted from the start
+(the server is TOFU-pinned). The sim enforces the same gate, so a server
+that forgot to admit would wedge its own tests.
 
 Every message starts with a `u8` message type tag, followed by the
 postcard-encoded body.

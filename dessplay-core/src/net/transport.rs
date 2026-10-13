@@ -130,6 +130,21 @@ pub trait Transport: Send + Sync + 'static {
     /// Receive the next event. Cancel-safe; intended for one reader task.
     fn recv(&self) -> impl Future<Output = Result<TransportEvent, TransportError>> + Send;
 
+    /// The peer has authenticated: lift the handshake limits.
+    ///
+    /// A connection from a [`Listener`] starts *unadmitted*: its control
+    /// stream yields one frame of at most
+    /// [`super::framing::HANDSHAKE_FRAME_LEN`] (larger is a
+    /// [`TransportError::Frame`]) and then nothing more until this is
+    /// called, so a peer that has proved nothing cannot make the server
+    /// buffer or allocate more than a handshake's worth. The server
+    /// calls it once the `Auth`/`TransferAuth` checks out, *before*
+    /// answering, and never otherwise. Later frames that arrived
+    /// meanwhile are delivered in order. A [`Connector`]'s connection is
+    /// admitted from the start (the server is TOFU-pinned), so this is a
+    /// no-op there; repeated calls are no-ops too.
+    fn admit(&self);
+
     /// Current connection statistics, when the transport tracks them.
     /// The default (and the sim) answers `None`.
     fn link_stats(&self) -> Option<LinkStats> {

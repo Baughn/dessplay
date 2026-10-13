@@ -17,13 +17,19 @@
 //!   one latency); **dropping** a transport without closing is silent
 //!   death — the peer sees nothing, which is exactly what presence
 //!   timeouts exist to catch.
+//! - **Admission** is enforced as QUIC enforces it
+//!   ([`Transport::admit`]): the accepting side yields one control frame
+//!   of at most [`HANDSHAKE_FRAME_LEN`], then holds later control frames
+//!   (datagrams and streams still flow) until `admit`. A server that
+//!   forgets to admit wedges its sim tests just as it would wedge real
+//!   clients.
 //!
 //! Known limitation: bytes inside an open [`BiStream`] bypass the link
 //! simulation (they ride a `tokio::io::duplex`). Stream *establishment*
 //! respects partitions and latency. Revisit when Phase 9 needs
 //! bandwidth-accurate transfer tests.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -34,6 +40,7 @@ use rand::{Rng, SeedableRng};
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 
+use super::framing::{FrameError, HANDSHAKE_FRAME_LEN};
 use super::transport::{BiStream, Connector, Listener, Transport, TransportError, TransportEvent};
 
 /// A named endpoint in the simulated network.
@@ -400,14 +407,106 @@ pub struct SimTransport {
     peer: EndpointId,
     inbound: tokio::sync::Mutex<mpsc::UnboundedReceiver<TransportEvent>>,
     closed: Arc<AtomicBool>,
+    admission: Mutex<SimAdmission>,
+    /// Wakes a `recv` parked on the inbox when `admit` releases held
+    /// frames.
+    admitted: tokio::sync::Notify,
+}
+
+/// Where a connection stands in the handshake ([`Transport::admit`]).
+enum SimAdmission {
+    /// Accepted; its first control frame has not arrived.
+    AwaitingFirst,
+    /// The first frame is out; later control frames wait here.
+    Pending(VecDeque<Vec<u8>>),
+    /// Admitted (or dialed). Frames held while pending drain first.
+    Admitted(VecDeque<Vec<u8>>),
 }
 
 impl SimTransport {
+    fn new(
+        net: SimNetwork,
+        conn: ConnId,
+        local: EndpointId,
+        peer: EndpointId,
+        inbound: mpsc::UnboundedReceiver<TransportEvent>,
+        admission: SimAdmission,
+    ) -> Self {
+        Self {
+            net,
+            conn,
+            local,
+            peer,
+            inbound: tokio::sync::Mutex::new(inbound),
+            closed: Arc::new(AtomicBool::new(false)),
+            admission: Mutex::new(admission),
+            admitted: tokio::sync::Notify::new(),
+        }
+    }
+
     fn check_open(&self) -> Result<(), TransportError> {
         if self.closed.load(Ordering::SeqCst) {
             return Err(TransportError::ConnectionLost("closed".into()));
         }
         Ok(())
+    }
+
+    fn admission(&self) -> std::sync::MutexGuard<'_, SimAdmission> {
+        self.admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Account for an event leaving the inbox.
+    fn observe(&self, event: Option<TransportEvent>) -> Result<TransportEvent, TransportError> {
+        match event {
+            Some(event) => {
+                if matches!(event, TransportEvent::Closed { .. }) {
+                    self.closed.store(true, Ordering::SeqCst);
+                    // The connection is over: release this direction's
+                    // bookkeeping. The closing (or killing) side prunes
+                    // its own; without this, the side that merely
+                    // *observes* the `Closed` would leak its pump and
+                    // sender forever.
+                    self.net.lock().prune_direction(self.conn, &self.local);
+                }
+                Ok(event)
+            }
+            None => Err(TransportError::ConnectionLost("simulated peer gone".into())),
+        }
+    }
+
+    /// The next held frame admission has released, if any.
+    fn released(&self) -> Option<Vec<u8>> {
+        match &mut *self.admission() {
+            SimAdmission::Admitted(held) => held.pop_front(),
+            _ => None,
+        }
+    }
+
+    /// Pass an arriving control frame through the handshake gate:
+    /// `Ok(None)` holds it for after admission.
+    fn gate(&self, frame: Vec<u8>) -> Result<Option<Vec<u8>>, TransportError> {
+        let mut admission = self.admission();
+        match &mut *admission {
+            SimAdmission::AwaitingFirst => {
+                // Refused or not, the first frame is the last one read
+                // before admission (QUIC's reader stops either way).
+                *admission = SimAdmission::Pending(VecDeque::new());
+                if frame.len() > HANDSHAKE_FRAME_LEN {
+                    return Err(TransportError::Frame(FrameError::TooLarge(frame.len())));
+                }
+                Ok(Some(frame))
+            }
+            SimAdmission::Pending(held) => {
+                held.push_back(frame);
+                Ok(None)
+            }
+            SimAdmission::Admitted(held) => {
+                held.push_back(frame);
+                Ok(held.pop_front())
+            }
+        }
     }
 }
 
@@ -465,21 +564,35 @@ impl Transport for SimTransport {
 
     async fn recv(&self) -> Result<TransportEvent, TransportError> {
         let mut inbound = self.inbound.lock().await;
-        match inbound.recv().await {
-            Some(event) => {
-                if matches!(event, TransportEvent::Closed { .. }) {
-                    self.closed.store(true, Ordering::SeqCst);
-                    // The connection is over: release this direction's
-                    // bookkeeping. The closing (or killing) side prunes
-                    // its own; without this, the side that merely
-                    // *observes* the `Closed` would leak its pump and
-                    // sender forever.
-                    self.net.lock().prune_direction(self.conn, &self.local);
-                }
-                Ok(event)
+        loop {
+            if let Some(frame) = self.released() {
+                return Ok(TransportEvent::Control(frame));
             }
-            None => Err(TransportError::ConnectionLost("simulated peer gone".into())),
+            let event = tokio::select! {
+                event = inbound.recv() => event,
+                () = self.admitted.notified() => continue,
+            };
+            let event = match event {
+                Some(TransportEvent::Control(frame)) => match self.gate(frame)? {
+                    Some(frame) => Some(TransportEvent::Control(frame)),
+                    None => continue,
+                },
+                other => other,
+            };
+            return self.observe(event);
         }
+    }
+
+    fn admit(&self) {
+        let mut admission = self.admission();
+        let held = match &mut *admission {
+            SimAdmission::Admitted(_) => return,
+            SimAdmission::AwaitingFirst => VecDeque::new(),
+            SimAdmission::Pending(held) => std::mem::take(held),
+        };
+        *admission = SimAdmission::Admitted(held);
+        drop(admission);
+        self.admitted.notify_one();
     }
 
     async fn close(&self, reason: &str) {
@@ -556,22 +669,22 @@ impl Connector for SimConnector {
             state.senders.insert((conn, self.to.clone()), server_tx);
             let client_addr = SimNetwork::addr_of(&mut state, &self.from);
 
-            let client = SimTransport {
-                net: self.net.clone(),
+            let client = SimTransport::new(
+                self.net.clone(),
                 conn,
-                local: self.from.clone(),
-                peer: self.to.clone(),
-                inbound: tokio::sync::Mutex::new(client_rx),
-                closed: Arc::new(AtomicBool::new(false)),
-            };
-            let server = SimTransport {
-                net: self.net.clone(),
+                self.from.clone(),
+                self.to.clone(),
+                client_rx,
+                SimAdmission::Admitted(VecDeque::new()),
+            );
+            let server = SimTransport::new(
+                self.net.clone(),
                 conn,
-                local: self.to.clone(),
-                peer: self.from.clone(),
-                inbound: tokio::sync::Mutex::new(server_rx),
-                closed: Arc::new(AtomicBool::new(false)),
-            };
+                self.to.clone(),
+                self.from.clone(),
+                server_rx,
+                SimAdmission::AwaitingFirst,
+            );
             (client, server, client_addr, listener)
         };
 

@@ -1,6 +1,6 @@
 # DessPlay Design Document
 
-Last updated: 2026-10-12
+Last updated: 2026-10-13
 
 A synchronized video player for watch parties. Terminal-first, built for
 reliability over flaky connections. Server-coordinated, including relayed
@@ -3970,6 +3970,10 @@ Failed passwords are throttled per source address (an IPv6 /64 counts as one
 address): five back to back, then one a minute. A throttled attempt is refused
 with `AuthFailed` without its password being checked. (why: decisions.md,
 "Failed passwords are throttled per address")
+Until a connection authenticates, the server reads one control frame of at
+most 4 KiB from it and nothing more, and lets it have at most 64 KiB in
+flight; authentication lifts both limits. (why: decisions.md, "An
+unauthenticated peer gets a handshake's worth")
 
 **TLS**: TOFU (Trust On First Use) -- server generates a persistent self-signed
 cert; clients store and verify the fingerprint on subsequent connections.
