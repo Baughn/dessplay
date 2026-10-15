@@ -431,16 +431,26 @@ async fn a_download_that_leaves_the_want_set_is_cancelled() {
         })
         .await
         .unwrap();
-    // Drain cancel-time traffic.
-    while tokio::time::timeout(Duration::from_millis(100), leecher.outputs.recv())
-        .await
-        .ok()
-        .flatten()
-        .is_some()
-    {}
+    // Drain cancel-time traffic. The synced availability must stop
+    // claiming a download in progress — a stale `Downloading` row
+    // would read as "still fetching" to the group.
+    let mut retracted = false;
+    while let Ok(Some(output)) =
+        tokio::time::timeout(Duration::from_millis(100), leecher.outputs.recv()).await
+    {
+        if let FileOutput::Availability { file, availability } = output
+            && file == hash.root
+        {
+            retracted = availability == dessplay_core::types::FileAvailability::Missing;
+        }
+    }
     assert!(
         !partial.exists(),
         "an unwanted download must be cancelled and its partial deleted"
+    );
+    assert!(
+        retracted,
+        "a cancelled download must retract its availability to Missing"
     );
     // The source answering late must not revive it: a block-hash reply
     // to a cancelled download is ignored, so no chunk is ever asked for.

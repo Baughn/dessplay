@@ -318,7 +318,7 @@ async fn optimist_is_repaused_while_a_peer_blocks() {
 
 /// A peer without the file downloads it from a peer who has it, through
 /// the real relay, and ends up Ready — the full Phase 9B path wired
-/// through the session (resolve Missing -> StartDownload -> relayed
+/// through the session (resolve Missing -> SetDownloads -> relayed
 /// chunk transfer -> verified -> Ready).
 #[tokio::test(start_paused = true)]
 async fn a_missing_file_is_downloaded_from_a_peer() {

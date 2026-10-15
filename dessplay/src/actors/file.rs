@@ -2021,6 +2021,17 @@ impl Actor {
             if !wanted_files.contains(&file) {
                 tracing::info!(%file, "no longer wanted; cancelling the peer download");
                 self.cancel_peer_download(file).await;
+                // Retract the synced `Downloading` claim, as an abandoned
+                // download does (the adoption seam writes Ready instead).
+                if !self.local_files.contains_key(&file) {
+                    let _ = self
+                        .out
+                        .send(FileOutput::Availability {
+                            file,
+                            availability: FileAvailability::Missing,
+                        })
+                        .await;
+                }
             }
         }
         self.downloads
