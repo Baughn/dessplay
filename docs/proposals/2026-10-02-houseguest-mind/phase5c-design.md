@@ -416,6 +416,8 @@ the user's redraws:
   paints them. Rule: a rain is cut short only when she's sent away (off, moved out) or her room goes;
   every other exit lets it fall. A goodbye overlapping a rain wakes about twice the paint rate. Still
   open: a busy client's `school_out` makes the empty home vanish with no rain (other class).
+  **Resolved (5c tail T3, 2026-10-07):** an arrival carries her empty home until she's in, and one
+  that comes to nothing rains it out (plan.md; decisions.md).
 - **Step 2** credits SpaceOut and Work, and `cut_shift` settles a cut shift by the share worked (the
   errand, `place`/`dash_through`, school, her next decision on the way out). **Deferred to step 8:**
   needs should rise to the credit's moment before it lands (`rise_to` at the top of `serve`); landing
@@ -489,3 +491,245 @@ across the runs (the band's own edges: 31 ÷ 12 = 2.58), so holding the home und
 stage at or within about a point of its floor. Every lever that moved the stage moved the home with
 it (the one stage-only lever tried, Tidy 90 s, moved the stage only within noise), so the next move
 (a room-selective lever, a stage rule, or shipping the home and resident alone) is the user's.
+
+## Round-4 amendments (2026-10-06): D7 after its critique, and steps 8b–11
+
+### D7, amended
+
+D7 had its own two-lens critique ([phase5c/d7/](phase5c/d7/): mechanics, character, synthesis; the
+mock script is there too, while the true-size mock itself stays out of the repo because it was made
+from real episodes). **The synthesis's amended D7 (in `d7/critique.md`, "The amended D7") replaces
+Round-1's D7 in full**, with its blockers, majors and minors, except where the user's answers below
+differ.
+
+The user's answers:
+- **Q1 → the film, no sheen.** The look is the mock's column 7: centre crop, 1.3× zoom, one levels
+  stretch, saturation ×1.25. No glass sheen. Drawn cards when there's no film, the frame is black or
+  flat, or this client doesn't hold the file.
+- **Q2 → refresh about once a minute during a long watch** (this overrides the synthesis's "never
+  swapped mid-watch"). While a Watch or Surf act runs, once 60 s have passed since the picture's
+  request (failures count), the shell asks again. A good new frame cuts straight in at its next
+  paint, with no static. A failed or black refresh keeps the picture. The purity rule still holds:
+  her trace and ASCII frames are byte-identical with and without pictures, because only
+  presentation changes. D7's "no act longer than 30 s flips cells faster than `USE_FRAME_MS` after
+  its first 10 s" test exempts a once-a-minute picture swap, as it already exempts the blink.
+- **Q3 → no reaction now.** Later: the user is considering replacing the marquee commentary with
+  Osaka's own comments on the actual episode (plan.md's idea list).
+
+Step 12 is two steps, as the synthesis says: **12a**, the drawn held pictures (static only at
+switch-on and between channels, Chiyo-chichi's bob ending after the hook; Watch rejoins lingering
+here; golden re-record); **12b**, the film feed (shell-side, private screenshot slot, a property
+that her trace is unchanged).
+
+### Steps 8b–11 as built, and the user's call on the stage
+
+- **8b** shipped the per-mood rule (ignored), the census and band harnesses delivering chat lines at
+  their own time, and Watch out of lingering. Its retune stopped: on the bare stage a set-off moves
+  her only 2–3.5 s, so the per-mood caps hold the stage near its floors, and bringing the
+  industrious home under 31 put the stage's industrious cell within a point of its floor. **The
+  user's call: ship it, with lower floors on the bare stage** (lazy 4 / ordinary and dreamy 6 /
+  industrious 9, for a room that keeps her things close). The home and resident keep 5 / 8 / 12.
+  That is step 8c: switch the levers on with 8b's best run (c3, `scratchpad/8b-c3.diff`),
+  re-measured with 10a–11 in.
+- **10a** (floor homework, `LieRead`, the paper desk, more makeshift, cross-legged TV), **10b** (a
+  borrowed line, with grip as one class for held text and pulls), and **11** (the window hung low,
+  allowed behind a sofa, the sill lean and its session, cloud-watching under it only) are built,
+  each with its CHANGELOG entry. Their records are in their commit messages and baseline.md.
+
+## Round-5 amendments (2026-10-07): step 8c as built
+
+- **The golden driver** cuts a step at each event's own time, as the census drivers do (one
+  deliberate re-record, its own commit before the shipping one).
+- **The levers ship** (`Stillness::TUNED`): 8b's c3 (step 8's move 7 values, watching unlingered,
+  Tidy 90 s, industrious linger 0.85, spacing out 10–28 s) with settling on (`STARTING`'s odds), so
+  sitting under the window, dozing sitting up and watching the clouds come alive; and **dreamy
+  linger 0.85** (not in the brief: at 1.0 the resident's dreamy afternoon with chat fell under its
+  floor once 10a–11 were in). Sitting in front of the window lasts as sitting does, watching the
+  clouds and the doze under a book as lying back does. `BAND_MINUTES` 17 (the guard: the sill's
+  chain, lazy, is 7 minutes).
+- **The user's answers of 2026-10-06:** LookOut base 6; the afternoon hour glance has no roll (its
+  other gates stay); a borrowed strip doesn't turn her at a chat line.
+- **The bare stage's floors** (lazy 4 / ordinary and dreamy 6 / industrious 9) are `Band::of`'s
+  for the stage room.
+- **Shipped short, by the user's word:** the stage's industrious afternoon with chat (8.4% at full
+  strength against 9) and the stage's spread (1.39 against 1.6), both ignored with their numbers
+  (`tests/band.rs`, `SHORT`). Every other cell is in, at full strength (N = 525).
+- **The facing-right lean** stands a column further in (her box centred on the window's first
+  column), as the approved sheet has her: at a column outside, her hands met the frame.
+- Records: [phase5c/baseline.md](phase5c/baseline.md), "Shipped (step 8c)", and decisions.md, "Her
+  stillness ships".
+
+## Round-6 amendments (2026-10-07): step 12a as built
+
+- **The held picture** (D7's drawn half): `WATCH` is static for `STATIC_MS` (1.2 s), then the
+  act's programme; `SURF`'s rest key is the programme; `SHOPPING` bobs through its hook only.
+  A script key names what it shows as `script::Shows` (held as it is, static, the hook, or the
+  act's programme): the synthesis's `Channel::Held` placeholder is a key-level variant instead,
+  resolved by `Osaka::prop` to `Prop::Tv(Channel::Programme(card))`, so `Channel` (the image's
+  cache key) only names what can be drawn and 12b's stable key is `Channel::Programme(card)`.
+  The card is `Play::card`, drawn on every watch from the decision's whims
+  (`Whims::below("programme", 4)`), which draws nothing from her generator.
+- **Watching lingers** (`Use::lingers`); `BAND_MINUTES` stays 17 (the sill's chain is still her
+  longest still act; a lazy watch is at most 123 s).
+- **The stillness test** samples every 100 ms (a client paints for other reasons too) and leaves
+  out acts that take her somewhere (a walk the screen's width is 31 s) and chat (quiet rooms). It
+  runs every mood, in the TV rooms, the windowed home and a home with the shopping channel on, and
+  compares her model's state, not drawn cells (12b's picture swap needs a drawn-cells variant).
+- **Static wakes her** on its 400 ms frames (`Key::frame_ms`), so all three switch-on frames are
+  painted in a client that paints only on her wakes; Chiyo-chichi's hook still bobs at paint time
+  (review fix; decisions.md, "Her TV holds a picture").
+- **Open, for the user:** the home's industrious quiet afternoon at 31.4 against 31, and a lazy
+  shopping act's hook at up to 49 s (two fifths of a lingered body).
+- Measured: [phase5c/baseline.md](phase5c/baseline.md), "Step 12a: the held TV picture".
+
+## Round-7 amendments (2026-10-07): step 12b as built
+
+- **The film on her TV** (D7's film half). `Guest::tv_wants_picture` (output only: in line art, a
+  real TV, `Osaka::tv_bound`: heading or walking to a watch, or in a Watch or Surf act) drives the
+  shell's `TvFeed` (`ui/tv_feed.rs`, pure): ask while she wants one and this client holds the
+  now-playing file (`derive::held_now_playing`, shared with commentary's gate), then again once
+  60 s have passed since the last question (failures count), one at a time, given up after 3 s; a
+  change of film (or the file no longer held) clears her stills and asks afresh. The session answers
+  `UiInput::TvPicture { ask, answer }` (latest wins) from the TV's own private slot
+  (`screenshot::Slot`, `dessplay-tv-*`; commentary keeps its own, `dessplay-commentary-*`).
+- **Review fixes (folded into the step).** *The real video:* `Ready` comes on prefetch and while
+  the placeholder (same hash) still shows, so the player is asked only through
+  `SessionShell::request_screenshot(path, file, view)`: `PlayerWiring::may_screenshot` (held, and
+  the `loaded` real video, the gate that speaks for the group), then the player actor's
+  `PlayerCommand::Screenshot { path, file, taken }`, taken only of the file last loaded once the
+  player's path echo confirms it (`player_on_current_file`), answering at once. Commentary's request
+  goes through the same gate. *Answers:* `TvAnswer::{Still, Failed, NotAsked}`; `NotAsked` (no
+  player or slot, not held, not showing it yet, the slot busy) costs no minute and is asked again
+  after 5 s (`NOT_ASKED_MS`); `Failed` keeps the minute. *Numbered questions:* `TvAsk { seq, file }`;
+  only the answer to the question out counts. *One frame at a time:* `Slot::claim` (a `Claim`
+  frees the slot on drop), so polls never race on the one path. *The shell's wiring* is
+  `TvFeed::turn` / `TvFeed::deliver`, which the film tests drive too; a closed session queue ends
+  the UI loop (it spun).
+- **The two slots are a latch at paint**, Q2 having replaced "never swapped mid-act": `Graphics`
+  holds the still on show and the one delivered since; each paint latches the delivered one, so a
+  fresh still cuts in at the paint its arrival triggers. `Look::Film(id, programme)` carries the
+  act's card, so a key whose still is gone draws the card (the synthesis's canvas test).
+  `Guest::set_tv_picture(None)` is the file change (both slots go); a failed answer never calls it.
+- **Treatment** (`film.rs`, off the UI thread): decode within the chat images' caps, centre crop at
+  58:46 zoomed 1.3×, box-scaled to 128×102, then black (mean luma < 20) and flat (p98 − p2 < 24)
+  rejected, one luma levels stretch (gain ≤ 3), saturation ×1.25; the pixel hash is the id. The
+  stretch's statistics are taken on the 128×102 still, as the mock took them on its scaled one.
+  At paint: box-scaled once to the glass's whole-pixel rectangle (27×22 at 9×19 cells, 29×23 at
+  10×20), laid in through the rounded mask unmirrored, the outline over it.
+- **mpv**, measured with `--vo=null`: a `video` grab answers in 73–128 ms at 3840×2160 and
+  41–63 ms at 1080p HEVC, and a command queued behind it waited as long; with `"async": true` the
+  queued command answers at once, so every `screenshot-to-file` (commentary's too) goes out async.
+- **Tests through the real loop:** `loop_rig_with_player` (the auto-acking mock and a media root)
+  runs `a_tv_still_is_asked_only_of_the_held_file_into_its_own_slot`: not asked before anything
+  plays or of another file, asked into the `dessplay-tv-*` slot once held and shown, the frame read
+  and deleted.
+- **Saturation** (closed in Round 8): the Q1 answer, the synthesis and the code said ×1.25; the
+  mock's column 7 (`lifted()` in `d7/mock.py`), which the user picked by eye, applies ×1.3. The
+  user chose the column's ×1.3 (step 12c).
+- Records: decisions.md, "The film on her TV"; baseline.md, "Step 12b".
+
+## Round-8 amendments (2026-10-07): the user's answers after 8c, 12a and 12b (step 12c)
+
+- **The drivers paint her at every input** (its own commit, before the answers): the golden driver at
+  every event (a chat line, text arriving, a key press, a focus change) and every cue, the census
+  drivers and the film tests' at every chat line, as the client draws after every input. One golden
+  re-record; every chat cell re-measured.
+- **Industrious watching isn't shortened** (the user: "Don't shorten industrious watching"): a watch
+  (watching TV, flicking through the channels, the shopping channel) lingers as the mood's linger
+  but where `Stillness::watch` overrides it, which ships ×1 industrious and nothing else (so a lever
+  that changes the linger changes watching too); every other mood and every other still act as
+  before. The home's industrious quiet afternoon is back to 30.6% at full strength
+  (31.4 at step 12a, ceiling 31).
+- **The film's saturation is ×1.3**, the mock's column 7 that the user picked by eye (Round 7's open
+  point, closed).
+- **Looking out's base is 4.** The user asked for about two long window daydreams a game day in a
+  furnished home with a window, and chose the outcome, not the number: the day census read 36
+  look-outs in its 42 game days at base 3, 82 at 4 (1.95 a day), 140 at 5 and 175 at 6, with the
+  levers on. The day census now holds the outcome (1.5 to 2.5 a game day in a room with her window),
+  not only the pinned base. *(Since T1, 2026-10-07: base 5, 3.3 a day, mid-way in the 2 to 6 the
+  user accepts, and the day census holds 2 to 6.)*
+- **Left as they are, by the user's word:**
+  - The shopping channel's hook bobs through its whole span, up to about 49 s on a lazy watch. The
+    user: "Continuous cyclical movement gets filtered out by the human optical system almost as
+    quickly as static scenes." Steady periodic motion is not what draws the eye; a change is
+    (design.md's stillness rule says so; decisions.md, "Her TV holds a picture").
+  - A resident staying in the chat pane is not weighted: only going in is a tenth.
+- **The TV's `NotAsked` retry after 5 s stands** (the orchestrator's call, unless the user objects).
+- **The stillness test, drawn** (12a's hand-off): `no_long_act_flips_drawn_cells_faster_than_a_frame`
+  paints every 100 ms, with chat and the film fed, in the TV-only home, the shopping home, the home
+  with her window and the resident, and compares drawn cells and images; its exemptions are
+  design.md's four (five since T1, 2026-10-07: the world's clock), each only its own change with
+  nothing else drawn alongside (a chat line's stir, dozing, counts as the look up at it: it comes
+  when the line does; since T2 it lasts a frame, checked).
+- **Open, for the user** (each found by the stillness tests; each fix would change how she looks, a
+  golden re-record; until then the test allows exactly the case, provisionally, or keeps it ignored):
+  - *A bob's key ending off its frame grid.* A key that bobs (her writing, her breathing asleep)
+    ending at a share of the use (her homework nodding off) always comes less than a frame after the
+    bob's last flip. The test allows exactly that: the change that ends a bobbing key, within a
+    frame of that same key's last flip; any other change near a bob's flip counts (design.md says
+    "for now"). The fix in what she does: hold a bob's last frame through the partial period before
+    its key ends (and its first flip until a frame after its key starts).
+    **Resolved (T2, 2026-10-07):** the user: fix it. A bob keeps a frame clear of its key's start
+    and end (`script::bob_frame`), on its part's grid as before, for every bobbing key and the
+    idle bobs on the frame (lying back, reading on her back, reading a borrowed strip); the
+    allowance is gone from both stillness tests. Short bobbing keys lose flips: the lamp-on moment
+    and the andagi's chewing are still poses now; the Dream's last two lines hold (open in
+    plan.md, with in-place retiming of an act's end). **Both resolved (T4, 2026-10-08):** the
+    user chose 4.2 s Dream lines (each flips twice), and a bob holds where her act's end moves in
+    place, from the moment it moves.
+  - *A stir is shorter than a frame by day.* A chat line stirring her dozing by day ("Mm?") lasts
+    `speech_ms("Mm?")` = 1380 ms, under the 1400 ms frame, so it comes and goes inside one (a
+    night's "mm..." lasts 1500 ms). The test exempts a stir as the dozing form of a look up. The
+    fix: `stir_until = now + speech_ms(line).max(USE_FRAME_MS)`.
+    **Resolved (T2, 2026-10-07):** the user: fix it. Whatever she says lasts a frame at least
+    (`speech_ms` floors at `USE_FRAME_MS`; only "Mm?" was under one), so the stir's turn and its
+    murmur end together a frame on; the stir keeps the look up's exemption (it comes when the
+    line does), and the drawn test checks it holds a frame. Her look up's `!` (1.2 s) is under a
+    frame too, left (inside the look up's exemption; plan.md). **Resolved (T4, 2026-10-08):**
+    each of her look up's marks shows a frame at least (`!` a frame, `?` to 4 s, her plain watch
+    a frame past it, 5.4 s for one line).
+  - *The world's clock.* In the home with her wall clock, the dial (each game quarter-hour, about
+    150 s at 6×) stepped 656 ms after her breathing's flip asleep ("home, clock and window Lazy
+    seed 0", both modes); the window's sky would do the same at dawn and dusk. It's no act of
+    hers, and steady and slow (this round's principle may cover it), so whether the rule holds it
+    is the user's call: that room's run is
+    `no_long_act_flips_drawn_cells_faster_than_a_frame_by_her_clock`, ignored with those numbers.
+    **Resolved (T1, 2026-10-07):** the user exempts it (not her doing, slow and steady, the
+    periodic-motion principle); the exemption is scoped to the dial's and the sky's own change
+    (only at a paint where her clock's reading changed; her model, key and other looks the same,
+    the changed cells in the footprint of the clock or window that stepped and none in her box),
+    and the run, with one across the sky's day to dusk, is in the gate.
+  - *The golden driver's order within a moment.* It tells her of a key press and cues the stage
+    before it advances her, where the shell advances her first; it paints at no ~10 Hz snapshot
+    redraw during playback. **Resolved (T1, 2026-10-07):** the driver advances her first, as the
+    shell does (`the_golden_driver_advances_her_before_input_like_the_shell`); no golden moved.
+    The snapshot redraws stay unmodelled.
+  - *The drawn exemptions don't combine* (new in T1's review). A dial or sky step on the same
+    100 ms paint as another exempt change (a blink, a look up at the chat) is exempt by neither arm
+    and fails as a flip; in ASCII the sky's cells inside her box (her leaning at the sill) count as
+    hers. Neither comes up today; the door batch moving pieces could. Open (plan.md).
+    **Resolved (T4, 2026-10-08):** the world's clock's own step is taken back first and the rest
+    judged by the other exemptions (and her blink with the hook's bob combines too); in ASCII the
+    sky's cells in her box off her glyphs are the sky's while her model and key hold. And an
+    exempt change no longer hides a flip after it: a look up's or a stir's changes count on (her
+    bob now holds a frame from them and from what she says); her blink, the hook, the film's still
+    and the world's clock don't. Each clause has a mutant over the real paints. T4's review
+    narrowed the look up's exemption to the look's own change (face, bubble, facing; her pose only
+    into or out of a stir's turn), so her bob flipping under a look is judged, and a hold never
+    moves back. Left for the user (plan.md): her act's own keys within a frame of a look's change
+    or a line she says; her night's stillness; the 5.4 s look-up watch.
+  - *Her lines, plain ASCII only* (12d). **Resolved (T3, 2026-10-07):** the user allows a few
+    narrow marks ("Realistically none of us use a CJK locale; wide-character support is useful
+    mostly for rare subtitles and filenames"). The allowlist is `NARROW`, … ♪ — – ’ ‘ “ ” ·, one
+    cell each under the renderer's non-CJK width, and `line!` refuses any other at compile time.
+  - *A busy client's `school_out`* (step 1's hand-off; the user left it to the orchestrator).
+    **Resolved (T3, 2026-10-07):** her empty home rains out whenever she doesn't come in after all.
+- Measured: [phase5c/baseline.md](phase5c/baseline.md), "Step 12c".
+
+## Implemented (2026-10-07)
+
+**Phase 5c is implemented** (steps 1–13, 2026-10-05 to 2026-10-07). Its record (what each step built, the
+shipped numbers and band, the deviations, the user's decisions and what is left open) is in
+[docs/plan.md](../../plan.md), Phase 38, "Phase 5c — stillness (done 2026-10-07)"; the closing numbers are
+[phase5c/baseline.md](phase5c/baseline.md), "Census pass (step 13)". The door batch comes next
+(plan.md Phase 38, "The door batch (brief, 2026-10-07)"; built: "The door batch (done 2026-10-10)").

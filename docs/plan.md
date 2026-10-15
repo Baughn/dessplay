@@ -1,6 +1,6 @@
 # DessPlay Implementation Plan
 
-Last updated: 2026-10-03
+Last updated: 2026-10-12
 
 The initial 10 phases are bottom-up; later numbered phases capture feature
 batches. Each phase produces testable artifacts. The first
@@ -2105,7 +2105,7 @@ welcome; the only goal is "watching her is kind of fun".
 
 ## Phase 38: Houseguest mind and home
 
-**Status: phases 0–4 done (2026-10-02 and 2026-10-03); phase 5 split into 5a (vignettes, done 2026-10-03) and 5b (the clock, done 2026-10-05; record below). master was pushed by the user at 5b step 5c (2026-10-04) to test it; the rest of 5b is unpushed. Next: phase 5c, stillness (brief below), then phase 6.** Design: [the mind
+**Status: phases 0–4 done (2026-10-02 and 2026-10-03); phase 5 split into 5a (vignettes, done 2026-10-03) and 5b (the clock, done 2026-10-05; record below). Phase 5c, stillness, done 2026-10-07 (record below). The door batch (her door's reserved space, the side-on door, parcels through its flap, no furniture in the chat pane) done 2026-10-10 (record below). master was pushed by the user at 5b step 5c (2026-10-04) to test it, and again at 5c step 11's record (2026-10-06), and at 5c's tail T2 (A) (2026-10-07); everything after that is unpushed (T2's review fixes, T3 and T4, the whole door batch and phase 6a). Phase 6, structures, is split into 6a (shelves and the gremlin), 6b (the stepladder) and 6c (partitions); brief below. Phase 6a done 2026-10-12 (record below). Next: the user's ideas for the houseguest tests (to be talked over before 6b is briefed), the nudged-seat fix (a parcel nudging the piece she's on: she moves with it), then 6b.** Design: [the mind
 and home proposal](proposals/2026-10-02-houseguest-mind.md) (direction
 agreed with the user; their answers are its *Decisions*). Its migration
 plan numbers its own phases 0–8; this section records them.
@@ -2983,14 +2983,21 @@ midnight snack) cost her what she came for; fixed with a property each.
 **Open, for the user.**
 - **Restlessness** (the user, testing on 2026-10-04): she spends too much
   time walking about (35–45% of awake time; Restless fills in 90 s). To be
-  discussed before phase 6.
+  discussed before phase 6. *(Fixed: phase 5c, stillness, below. She
+  moves 5–31% of her time in sight by mood, a band the tuning holds.)*
 - **Should a dash look at chat lines at all?** Today she's startled and
-  looks, then carries on; the tests pin that.
+  looks, then carries on; the tests pin that. *(Decided: the user, in
+  5c's brief: a dash keeps looking at chat lines, as built.)*
 - **Look-outs vs. the afternoon clock glance:** in a full home look-outs
   (about 19 a game day) crowd out spacing out, so the afternoon glance
   came once in six home-weeks (nine each in the stage and resident). The
   glance is also once per visit, not per game day, and D4's "Gaze ×more
-  with a window" isn't built.
+  with a window" isn't built. *(Fixed in 5c: looking out is a long
+  daydream, about three a game day (base 5); the afternoon glance lost its
+  one-in-three roll, and comes 20 times in the census home's six weeks,
+  14 on the stage and 14 in the resident's; D4 was dropped, the window
+  being the daydream itself. The glance stays once a visit, by decision:
+  that never binds (decisions.md, "Her window is a long daydream").)*
 - **Rares a home can't show:** pity can pick NoMelon in a fridgeless room
   (a wasted day's draw; nothing is lost). Scary is first seen in about one
   week in six (its window is 30 minutes on school nights).
@@ -2998,6 +3005,8 @@ midnight snack) cost her what she came for; fixed with a property each.
   ends in a tick where nothing else changes (Visiting's `fading` is
   computed after `retain`). The fix moves 24 golden traces, unfed tables
   included, so it waits for a decision. Away's arm has the fix.
+  *(Fixed in 5c step 1: the fades live on the guest and every arm drops
+  them through one helper, so a fade's last frame is always drawn.)*
 - **Her pane-corner column** belongs to no strip, so from there she sees no
   clock (as `beauty_at` already sees no decor).
 
@@ -3062,3 +3071,1095 @@ Daydreams 10 min, Comfort 8 min); and stillness is brief (spacing out
 Steps 1–3 should be re-measured before step 4. Step 4 may be smaller if
 the band is met, but floor homework and the desk are wanted for their
 own charm.
+
+### Phase 5c — stillness (done 2026-10-07)
+
+Built as the [working design](proposals/2026-10-02-houseguest-mind/phase5c-design.md)
+and its Round-1 to Round-8 amendments say (code map, four critiques and
+their synthesis, D7's own critique and mock script, and the approved art
+in its `phase5c/` dir; every number in
+[phase5c/baseline.md](proposals/2026-10-02-houseguest-mind/phase5c/baseline.md),
+whose last section, "Census pass (step 13)", has the closing runs). The
+rules are in design.md (Houseguest) and the reasons in decisions.md.
+Each step was implemented, reviewed twice (correctness, and tests proven
+by mutants) and fixed, minors included; the commit messages carry each
+step's golden trace check.
+
+**The aim.** She moved 35–45% of her awake time (5b's week census), and
+moving draws the eye far more than sitting still. 5c is attention
+control: a band per mood for her moving *in sight* (walking to a job
+counts), reached through stiller habits rather than slower walking, and
+the things on screen that changed for no reason (the TV's static, a
+lingering rain frame) held still.
+
+**What was built, by step:**
+- **0.** The design, the code map, four critics and their synthesis (the
+  user chose B1: in a still act she looks up where she is, no resume
+  mechanism); the art agent's sheet.
+- **1.** A rain-out's last frame is always drawn: the fades live on the
+  guest, and every arm drops them through one helper (5b's "Open" item).
+  A rain is cut short only when she's sent away or her room goes.
+- **2.** The credit class: spacing out eases her daydreams and work her
+  restlessness, as designed; a cut work shift is credited by the share
+  worked; a class test runs every want by each of its methods.
+- **3.** The census measures moving in sight by purpose (wandering, to a
+  seat, to text, climbs and doors) and set-offs a minute; the fed
+  afternoon census (each room fed at Tuesday 13:00 in a forced mood);
+  `phase5c/baseline.md`.
+- **4.** The band tests (`tests/band.rs`), ignored until the tuning.
+- **5.** The watch after a chat line is 5 s, not 15 ("the act of looking
+  is there solely to draw attention, which only happens during change").
+- **6.** In a still act on restful terrain she looks up where she is
+  (`!` then `?`, turned to the chat where the pose has a facing); dozes
+  stir ("Mm?"). Walking, pulling, chores, making, exercise and anything
+  on text are still cut.
+- **7.** The levers, landed neutral: settling in (a still act that runs
+  its course settles further where she is, skipping the roll), lingering
+  by mood at the call sites, a daydream as one act of several musings,
+  nearer spots (text on her own floor first, nearer seats likelier).
+- **8.** A slow blink on held poses (150 ms every 6–12 s, from her
+  whims); an easing lands on her needs as they are (`rise_to` before a
+  credit). The tuning stopped: the design's per-room set-off cap held the
+  furnished home near one set-off a minute while the stage needed three.
+  The user's call: **per-mood caps**, the same in every room (Round 3).
+- **8b.** The census and band drivers deliver each chat line at its own
+  time; the per-mood rule in the band; watching out of lingering until
+  the TV held a picture. The retune stopped again: under a per-mood cap
+  the bare stage (2–3.5 s a set-off) sits a point or two over its floor.
+  The user: "ship it, lower stage floors".
+- **9.** Wiring the approved art folded into the steps that use each
+  pose (Round 3); the sheet itself landed unwired after step 4.
+- **10a.** Homework on the floor (on her front, or on her back with the
+  book), reading on her back where no bookshelf stands (settling into a
+  doze under the book), "My back..." after the first floor homework a
+  visit, the paper desk (a 4×2 cube of torn text she kneels at), making
+  three times as likely while she owns no real piece of the kind,
+  cross-legged before the TV away from a sofa.
+- **10b.** A borrowed line (HG #72): she reels a strip off a line beside
+  her, reads it sat by the tear and slides it back; she never leaves it
+  torn (grip is one class for held text and pulls).
+- **11.** The window hangs low enough to lean on (and may stand behind a
+  sofa, unlike any other piece); a look-out is a long daydream at the
+  sill (one to three minutes, musing on the sky), settling to sitting
+  under it, then a doze or watching the clouds (only ever under her
+  window).
+- **8c.** The golden driver cuts at each event's own time (its own
+  re-record); **the levers ship** (`Stillness::TUNED`: lingering lazy
+  ×1.5, ordinary ×1, dreamy and industrious ×0.85; settling lazy 0.6,
+  ordinary and dreamy 0.35, industrious 0.15; restless over 5 minutes,
+  tidy 90 s, mischief 6; Walk base 9, Travel 7; spacing out 10–28 s and
+  worth doing for its own sake); the stage's floors lowered;
+  `BAND_MINUTES` 17; the two short items in `SHORT`.
+- **12a.** Her TV holds a drawn programme (news, weather, penguins, a
+  cooking show) after 1.2 s of switch-on static; Chiyo-chichi bobs only
+  through his hook; watching lingers.
+- **12b.** In line art her TV shows a still of the held now-playing film,
+  asked for as she heads to watch and once a minute while she does, into
+  the TV's own private screenshot slot (never commentary's, whose frames
+  go to Anthropic), read, treated and deleted in process; her trace and
+  ASCII frames are identical with and without it. Every
+  `screenshot-to-file` goes out async, and commentary shares the gate
+  that the player shows the real video, not the placeholder.
+- **12c.** The drivers paint her at every input, as the client does;
+  the user's answers (an industrious watch isn't shortened, the film's
+  saturation ×1.3, looking out at base 4, base 5 since T1); the stillness rule tested on
+  drawn cells.
+- **12d.** Two failures older than 5c that 5c's property runs surfaced, each
+  fixed as a class: a moved wide glyph rains out whole, never half of one
+  (as old as the text layer); a parcel comes in only where she can unpack
+  it, and use it, with it there (as old as 5b's rule). Their pinned cases
+  are regression tests now: `a_sofa_she_could_not_unpack` folded into
+  `parcels_she_could_not_unpack`, and the away "half a wide glyph" line
+  a saved regression of the day-long property, with the deterministic
+  `a_wide_glyph_she_moved_rains_out_whole` cases.
+- **13.** The census pass and these docs; the deep pass got its own
+  nextest profile, `--profile deep` (flag at 90 s, kill at 180 s), so its
+  256-case properties don't raise the gate's limits.
+
+**Shipped numbers** (the band at full strength, N = 525 visits a cell of
+17 minutes, line art, fed afternoons; moving % in sight / set-offs a
+minute in sight):
+
+| Room | Mood | Quiet | Chat | Band | Cap |
+|---|---|---|---|---|---|
+| stage | Lazy | 6.6 / 1.17 | 6.2 / 1.22 | 4–17 | 1.5 |
+| stage | Ordinary | 7.1 / 1.62 | 7.3 / 1.69 | 6–26 | 2.25 |
+| stage | Dreamy | 6.9 / 1.64 | 6.7 / 1.67 | 6–26 | 2.25 |
+| stage | Industrious | 9.1 / 2.11 | **8.6** / 2.10 | 9–31 | 3.0 |
+| home | Lazy | 12.0 / 0.62 | 11.9 / 0.68 | 5–17 | 1.5 |
+| home | Ordinary | 22.5 / 1.24 | 21.5 / 1.32 | 8–26 | 2.25 |
+| home | Dreamy | 22.1 / 1.25 | 21.7 / 1.36 | 8–26 | 2.25 |
+| home | Industrious | 30.6 / 1.72 | 29.1 / 1.86 | 12–31 | 3.0 |
+| resident | Lazy | 6.2 / 0.54 | 6.0 / 0.56 | 5–17 | 1.5 |
+| resident | Ordinary | 11.0 / 1.10 | 10.7 / 1.16 | 8–26 | 2.25 |
+| resident | Dreamy | 9.7 / 1.08 | 9.1 / 1.12 | 8–26 | 2.25 |
+| resident | Industrious | 16.3 / 1.35 | 15.1 / 1.40 | 12–31 | 3.0 |
+
+Every cell is in its band but the bare stage's industrious afternoon with
+chat (8.6% against its floor of 9), and every set-off rate is under its
+cap. The spreads (industrious ÷ lazy, N = 200): home 2.60, resident
+2.68, the stage 1.38 against 1.6. The home's industrious quiet
+afternoon (30.6 against 31) is in by noise only: the next change to what an
+industrious Osaka does re-measures it at N = 525 first. The resident's
+dreamy afternoon with chat measures 9.1, but is aimed at 8.3, just over
+its floor of 8: the test at N = 525 holds it to 7.7, and enforcing the
+floor itself takes N = 2266, so its value is read against the band by eye. Looking out: 3.3
+a game day in the census home (140 in 42 game days, base 5 since T1; base 4 read 1.95). The unfed visit census
+(5a-comparable, ASCII, with chat) reads 5–12% moving on the stage by
+mood (22–30% before 5c, at 4–6 set-offs a minute), 11–26% in the home and
+8–16% in the resident.
+
+**Deviations from the design** (each in decisions.md):
+- **B1, not D3's resume:** the user chose looking up in place; D3's
+  `Resume` and its guards were never built.
+- **Per-mood caps replaced M3's per-room cap** (Round 3), and the bare
+  stage has lower floors (lazy 4, ordinary and dreamy 6, industrious 9).
+- **Dreamy lingers ×0.85** (not in the brief): at ×1 the resident's dreamy
+  afternoon with chat fell under its floor once 10a–11 were in.
+- **The floor wants are base 6**, not the desk's 8 (at 8 a sleepy doze
+  dropped out of a bare room's best four), and drop the chat factor;
+  reading on her back is an activity, not a `Use(Read)` method.
+- **D4 of 5b ("Gaze ×more with a window") was dropped**: the window is the
+  daydream place itself.
+- **The film refreshes about once a minute** (the user's Q2), overriding
+  D7's critique's "never swapped mid-watch"; a picture swap cuts straight
+  in with no static.
+- **The golden driver's order within a moment** now keeps the shell's
+  (T1, test-only: it advances her before it tells her of a key press,
+  and cues the stage in that order by convention; no golden moved); the ~10 Hz snapshot redraws during
+  playback stay unmodelled (testing-strategy.md).
+
+**The user's decisions this phase** (beyond the brief's):
+- **Art** (two review rounds, 2026-10-05): approved the paper desk
+  kneeling, the torn strip, cross-legged TV, the sitting doze, looking up
+  in place and the programme cards; floor homework with the paper in
+  front of her, not under her head; reading on her back with the book
+  over her face, and dozing with it turned side-on over her eyes; the
+  window hung lower to lean on, allowed behind a sofa; cloud-watching only
+  under a window (or a solarium, later).
+- **The band:** per-mood caps in every room (lazy 1.5, ordinary and
+  dreamy 2.25, industrious 3 a minute), share ceilings 17 / 26 / 31,
+  floors 5 / 8 / 12, and 4 / 6 / 9 on the bare stage ("ship it, lower
+  stage floors"). The gate runs the band at two seeds, full strength at
+  step boundaries: "Seems fine. I'll know to check them if something
+  feels off." Two items shipped short by the user's word (`SHORT`): the
+  stage's industrious afternoon with chat and the stage's spread.
+- **Looking out:** base 6 first, then the outcome over the number: about
+  two long daydreams a game day (base 4, 1.95). "4.5 times a game day is
+  fine. I'd accept anything in the 2-6 range": base 5 (3.3, mid-range)
+  ships since T1, and the day census holds the 2 to 6 itself. The afternoon hour glance lost its roll; a borrowed strip
+  doesn't turn her at a chat line.
+- **The TV (D7):** the film, the mock's column 7 (centre crop, 1.3× zoom,
+  a levels lift, saturation ×1.3, no sheen), drawn cards otherwise; a
+  refresh about once a minute; no reaction from her (an idea for later,
+  below). "Don't shorten industrious watching" (×1). The shopping hook's
+  bob is left whole (up to 49 s lazy): "Continuous cyclical movement gets
+  filtered out by the human optical system almost as quickly as static
+  scenes."
+- **A resident staying in the chat pane** isn't weighted (only going in
+  is a tenth). The TV's retry 5 s after a question the player couldn't
+  be asked stands (the orchestrator's call, unless the user objects).
+
+**Measured at step 13** (phase5c/baseline.md, "Census pass (step 13)"):
+the 256-case houseguest pass (731 tests, release) passed under its own
+`--profile deep`, a 180 s kill (`her_film_never_moves_her` takes 72 s
+alone and was killed at the default profile's 60 s); the slowest are
+that one (81–85 s in the pass), `a_trial_keeps_every_promise` 52–62 s,
+`every_made_piece_is_used_or_let_go` 48–51 s, and four or five at 30–42 s. No
+product bug. The censuses read exactly step 12c's numbers (12d moved none of them).
+
+**Phase 5c's tail, T1 (2026-10-07),** three commits: the golden driver
+advances her before it tells her of a key press, as the shell does, and
+cues the stage in that order by convention (test-only, no golden moved;
+the two property drivers that press keys too; the ~10 Hz snapshot
+redraws stay unmodelled); looking out's base 4 → 5 (3.3 a game day in the day
+census, which now holds the user's 2 to 6; no band room has a window,
+so the band is unmoved; baseline.md, "Phase 5c's tail, T1"); the
+world's clock (her wall clock's dial, her window's sky) exempt from the
+drawn stillness rule, only at a paint where her clock's reading
+changed and scoped to its own change (the run checks, at each paint it
+exempts, that one thing more changed is not), and its run
+(`no_long_act_flips_drawn_cells_faster_than_a_frame_by_her_clock`, with
+a run across the sky's day to dusk) in the gate.
+
+**Phase 5c's tail, T2 (2026-10-07),** the two flickers the drawn
+stillness test found, fixed by the user's word ("fix both"), a commit
+each. (B) Whatever she says shows for a frame at least (`speech_ms`
+floors at `USE_FRAME_MS`), so a stir by day ("Mm?", 1380 ms before)
+lasts a frame and its turn ends with its murmur; only "Mm?" was under a
+frame. A stir keeps the look up's exemption (it comes when the line
+does, off her breathing's frames; without it the drawn test fails in
+every room), and the drawn test checks each stir starts with a line,
+lasts a frame, and shows as it began at every paint of it. 42 golden traces moved, each only its daytime stirs'
+ends, 20 ms later. (A) A bob keeps a frame clear of its key's start and
+end (`script::bob_frame`; `Key::look` takes the key's `KeyTime`): its
+first frame held until a frame after its key starts, its last through
+the part of a frame before it ends, on its part's grid as before (so
+her wakeups, and all she does, are unchanged). Every bobbing key (asleep,
+napping, the Dream, homework at her desk and on the floor, reading,
+eating, crumpling, unpacking) and, outside scripts, lying back, reading
+on her back and reading a borrowed strip, which hold their last frame
+before the act ends. Short bobbing keys lose flips (a key can flip only
+on grid points a frame clear of both ends): crumpling and unpacking bob
+once or twice; the bobs that then could never flip are drawn as still
+poses (her lamp-on moment settling into bed, 2 s; the andagi's chewing,
+two frames off the grid, now two keys, chewing then biting again, a
+frame each); the Dream's last two lines hold (open, below). 75 golden
+traces moved, only pose frames, each first at a bob held within a frame
+of its key's or act's end; the review's fixes moved none (no golden
+scene reaches the andagi; the lamp keys look the same). The stillness tests' allowance is gone;
+the model's test adds an industrious afternoon at her desk (seed 0),
+where the writing ended 800 ms after its last flip. Sub-second, so no
+band cell moves (not re-measured). New tests:
+`whatever_she_says_shows_for_a_frame`,
+`a_bob_flips_a_frame_clear_of_its_keys_start_and_end`,
+`an_idle_bob_holds_its_last_frame_before_her_act_ends`, `bob_frame`'s own
+edge table and property (`a_bob_frame_flips_on_the_grid_clear_of_its_ends`,
+`any_bob_frame_flips_on_the_grid_clear_of_its_ends`), and the lint
+`every_bob_at_a_set_time_flips`.
+
+**Phase 5c's tail, T3 (2026-10-07),** two commits. (A) Her lines may
+use a few narrow marks beyond ASCII, the user's call ("Realistically
+none of us use a CJK locale; wide-character support is useful mostly for
+rare subtitles and filenames"). The allowlist is `NARROW`: … ♪ — – ’ ‘ “ ” ·,
+each one cell wide under the renderer's non-CJK width. `line!` refuses
+any other character beyond ASCII at compile time, the fixed bubbles
+("...", "zzz") included. `her_narrow_marks_are_one_cell_wide` pins each
+mark's width and that `cells::put`, `cells::width` and the rain never
+take one for wide. 12d had swapped no mark for an ASCII stand-in, so no
+line changed and there's no CHANGELOG entry. (B) Her empty home never
+just vanishes when she doesn't come in. `State::Arriving` carries the
+home she's coming in from until the next paint, and `call_off` rains it
+out when the arrival comes to nothing: the client busy as school ends,
+the gate shutting between the tick and the paint, an idle arrival
+called off, or no spot for her door. An errand sent from that state
+rains her door out of the carried home. The widened property
+`a_live_rain_always_gets_its_frame` (new scene: an overlay up as school
+ends; new check: a shown empty home never goes `Absent` in one step)
+failed on seed 0 before the fix. The siblings, and why they're immune,
+are in decisions.md ("Her empty home rains out whenever she doesn't
+come in"). The review fixes, folded into (B): a stage-cued arrival
+called off by a key or a chat line puts her back with her home standing
+(`back_out`), and the cause takes it as over her home itself (a
+visitor's key rains it, a resident's key or a chat line leaves it); at
+another size than it was drawn at, a home with nowhere to come in goes
+at once ("(no room)"), as a standing one does; each path has its own
+test in both drawing modes, confirmed against the code broken (the
+busy `school_out`, an overlay on her dash, an errand as she comes in,
+nowhere for her door, the cued call-offs), and the property's scene a
+fixed-draw test. The stage's cue over a goodbye still cuts its rain
+short (stage-only, predates T3; decisions.md says why it's left).
+Goldens: all 112 traces byte-identical after each commit and after the
+fixes (no golden scene reaches either change). The band is unmoved and
+was not re-measured: its afternoons assert she stays visiting at every
+step, so it never reaches an arrival, and the one changed path the
+census could reach without a key or an overlay (nowhere for her door
+with her home carried) never fired in the day census (a probe, 18 game
+weeks, release).
+
+**Phase 5c's tail, T4 (2026-10-08),** four commits and a docs commit.
+(1) **The Dream's lines are 4.2 s** (the user's choice of the two
+lengths offered: three frames a line), each starting on its breathing's
+grid and flipping twice (six in 12.6 s, as before the T2 hold); the
+lint's exception by name is gone, and it found no other set-time bob the
+hold leaves without a flip (the Dream's were the only bobbing keys set
+in ms). CHANGELOG: the Dream said more slowly. (2) **A bob holds where
+her act's end moves in place** (`sleep_on` at bedtime, `refresh_night`
+as her clock is read, which now takes the moment): the frame shown then
+holds until the first flip on its grid a frame on (`script::bob_frame`
+takes the hold through `KeyTime`; `Osaka::hold_bob`). (3) **Each of her
+look up's marks shows a frame at least:** `!` a frame (1.4 s), `?` to
+4 s, her plain watch a frame past it at least (5.4 s for one line,
+400 ms past the 5 s watch; a musing waiting for the look comes as much
+later); her standing look (a short act on her feet) is left, and the
+other sub-frame marks are each outside the rule (decisions.md lists
+them). 69 golden traces moved, each only a look up's `?` 200 ms later
+and its end 400 ms later (and one, the stage's unfed trace, now ends
+before her turn back to the TV). (4) **The stillness tests made precise, and
+her bob holds from her look up and what she says:** the exemptions
+combine (the world's clock's step taken back first; her blink with the
+hook's bob), the sky's cells round her glyphs in her box are the sky's
+in ASCII, and a look up's or a stir's changes count on (the next change
+waits a frame); blinks, the hook, the film's still and the world's clock
+don't. The count failed on what she did (48 stirs and 2 look ups in the
+drawn runs, her breathing flipping 444 ms after a stir's end), so her
+bob now holds from each change of a look up and from what she says
+coming, going or cut short. 67 golden traces moved, only her bob's
+frames. Every new test clause has a mutant over the real paints, and
+each mutant was shown to fail with its clause broken. The gate's wall
+went from about 35 s to about 40 s (the drawn tests under load; alone,
+under a second more). No band cell was re-measured: every change is
+under a second and the band counts movement.
+
+**T4's review fixes** (folded into its commits; goldens: none moved).
+The drawn test's look-up exemption took any change of hers under a look
+or a stir, her bob's flip included, so the holds at a look's start and
+steps were pinned only by golden hashes: it now takes only the look's
+own change (face, bubble, facing; her pose only into or out of a stir's
+turn), with a mutant (her pose changed under the look), and two unit
+tests sample her whole look through a look up and through a line she
+says at each 100 ms of the frame, each failing with any of those holds
+dropped. The holds in `end_look` and `hush` were redundant (each caller
+holds or starts afresh at the same moment) and went. A hold never moves
+back (a late tick held at its moment as her wake moved, then a line's
+end due before it replaced that hold), and `refresh_night` holds only
+when the end moves. A stir's turn ends with its murmur cut short (it
+ran on unwoken). The model's test requires samples its combined clause
+alone exempted; the tests' docs state the combination limit and why
+the film's still counts nothing.
+
+**Open, for the user:**
+- **The two `SHORT` items** above; the lead for the stage's spread is a
+  mood factor on spacing out for its own sake, which weighs the same in
+  every mood and fills an industrious stage afternoon most (14%).
+- **From the drawn stillness test** (Round 8): all three resolved. The
+  world's clock in T1 (exempt, scoped to its own change); a bob's key
+  ending off its frame grid and a stir by day shorter than a frame in T2
+  (both fixed, the allowance gone).
+- ~~**The Dream's breathing**~~ (T2's review): **resolved in T4** by
+  the user's choice, 4.2 s lines (two flips each).
+- ~~**A bob's end retimed in place**~~ (T2): **resolved in T4**; the
+  bob holds from the moment the end moves.
+- ~~**Her look up's `!`**~~ (found in T2): **resolved in T4**; each of
+  the look up's marks shows a frame at least (its plain watch was under
+  one too).
+- ~~**The drawn exemptions don't combine**~~ (T1's review), and an
+  exempt change never setting the flip clock (T2's review): **resolved
+  in T4**, in both stillness tests, with her bob holding from a look
+  up's and a stir's changes so what she does fits the counting.
+- **Her look up's watch is 5.4 s, not 5 s** (T4): a single line's
+  watch now runs a frame past her `?` (the "second of plain watching"
+  became a frame, 400 ms more). And whether her standing look (on her
+  feet, a short act outside the stillness rule) should match: its `!`
+  is 1.2 s, and its `?` 0.8 s after a restless start.
+- **Her act's keys under a look or a line** (T4's review): a key of
+  her still act may start within a frame of a look's change or of a line
+  she says (her homework nodding off ends the look, so a `!` just before
+  it shows under a frame), which design.md's rule counts; nothing holds
+  a key off. Keeping them apart means putting off one (nodding off till
+  the look is over, or the look's next mark to the key). No stillness
+  run meets one.
+- **Her night's stillness** (found in T4): the stillness tests run
+  afternoons. The night's sleep is a long still act whose sleep-talk
+  and the Dream come at moments off her breathing's grid, so each
+  begins less than a frame after her breathing's last flip; the hold
+  covers only what follows. Aligning them to her breathing's grid, or
+  exempting sleep-talk as a stir is, and a night run of the tests, are
+  the user's call.
+- **A change of hers less than a frame after a look's** (the door
+  batch's step 2, provisional): a musing due less than a frame after
+  her look up ends now waits a frame (`Osaka::free_to_muse`, both
+  musing sites); and (step 2's review) a line still showing as her look
+  ends shows on until a frame past it (`Osaka::end_look`; the shopping
+  room's Dreamy seed 2 case, once thought a key boundary, was this).
+  The class's other sources stay open: a scripted key boundary a moment
+  after a look's step, and a line said just after one of hers ends
+  (speech end isn't timestamped). The stillness tests are seed-lucky
+  against them; step 10's deep runs should target the class, and
+  whether the holds stay is the user's call.
+- **The stage's cue over a goodbye** cuts its rain short (T3's review):
+  left as documented, by the orchestrator's call: a stage-only dev
+  scene, predating T3 (decisions.md, "Her empty home rains out whenever
+  she doesn't come in").
+- **The by-her-clock drawn test's gate cost** (T1): about 10 s CPU,
+  31.6 → 33.8 s wall for the stop hook's gate; it could run under
+  `--profile deep` instead.
+- **Commentary's frames in the real app:** screenshots are now async and
+  gated on the real video being shown; the user should check commentary
+  still attaches frames. A real `--vo=gpu` grab's time is unmeasured
+  (the session logs each frame's at trace).
+- **Desk before back:** where she can build at all, a desk she makes
+  outweighs homework on the floor 4–5×, so she usually makes the desk
+  before her back aches; gating the desk on the ache would make "a sore
+  back, then the desk" the order (a design change, 10a).
+- **A busy client's `school_out`** (step 1's hand-off): **resolved in
+  T3.** Every arrival from her empty home now carries it until she's
+  in, and one that comes to nothing rains it out.
+- ~~**Her door overlapping her furniture**~~ (the user's report):
+  **resolved by the door batch** (2026-10-10, record below).
+- 5b's still-open items: rares a home can't show, her pane-corner column.
+- In ASCII the bare stage's industrious afternoon sets off 3.05–3.26
+  times a minute (fed, 15 minutes), over the line-art cap of 3; the band
+  is pinned in line art (the user's client), and ASCII is dev and test
+  only.
+
+### The door batch (brief, 2026-10-07)
+
+The user's report (2026-10-06): *"she just left for school directly from
+bed, from a door that's now stuck visible overlapping said bed."* The
+closed door standing while she's out is by design ("there's really no
+other way to know she *is* out"); the bug is where it stands. The ask:
+*"make sure her external door has a reserved empty space next to the edge
+of the screen."* The investigation is
+[door/brief.md](proposals/2026-10-02-houseguest-mind/door/brief.md)
+(sibling sites, geometry, regression tests; where it differs from this
+section, this section wins), and the approved art is in
+[door/art/](proposals/2026-10-02-houseguest-mind/door/art/) (committed,
+not wired).
+
+**Root cause.** The 08:15 school cut interrupts any use where she stands,
+which for a bed, sofa or desk is *inside* the piece; `go_out` then opens
+her door where she stands, the guest records that spot, and the only
+check, `door_fits`, is `platform_at && restful`, and `restful` deliberately
+accepts the cells of a piece her image takes in (that's how she lies in
+her bed). The arrival reads an unfurnished terrain, so she comes home out
+of the door inside the bed too. The class: her external door's spot comes
+from her feet, and nothing asks that her door's box meet no piece. Work
+by door, going out again after a dash, and the cold start in school hours
+share it.
+
+**The user's decisions:**
+- **A reserved space** for her door at the screen's edge: floor against a
+  wall, never over furniture; no piece stands in it, and no piece hangs
+  low enough to meet it (the window included). **Poster and clock may hang
+  above it.** The door's spot is computed from her home and the frame
+  (one constructor, never her feet), so the overlap can't be represented
+  inside the space; outside it (the space yielding, no home) a strict
+  check that her box meets no piece's cover, the same in both modes.
+- **The door is the approved sheet's B:** side-on, two columns, turned
+  slightly toward the viewer, set in the wall line, with **the parcel flap
+  in the door** (its lower half). Parcels come through it and rest just
+  past the door's space.
+- **While she's out:** her slippers on the floor before it and a card on
+  the knob. The doorway's glimpse follows the window's sky. She visibly
+  walks through, clipped at the wall line.
+- **Work leaves through the same door** (screen edge first when her floor
+  reaches one); every routine exit and return is through it.
+- **Older homes** whose furniture fills the space: she clears it herself,
+  through a felt rule ("Can't get to the door!") that phase 4's arranging
+  answers by moving the piece. Until then the space yields for that frame
+  and the door stands at the nearest spot meeting no piece.
+- **No furniture in the chat pane** (the user, 2026-10-07): *"Furniture
+  cannot be placed in the chat pane, since the chat pane is what is
+  focused 95% of the time."* Every piece: bought, makeshift, parcels on
+  the doorstep, and hung decor (poster, clock, window). Props she
+  carries in an act (a book, her homework, a borrowed strip) are exempt.
+  Older homes with a piece in the chat pane: she moves it out herself,
+  through the same felt rule as for her door's space; a piece that fits
+  nowhere else goes to the closet.
+- **Her door is never in the chat pane either.** The user noticed the
+  rule because her door was there (*"Should note I noticed this because
+  the* door *is there."*): the reserved space at a screen edge is chosen
+  outside the chat pane, and the no-home door's edge chooser skips it
+  too. **Answered 2026-10-08 (below):** a layout whose only reachable
+  screen edge is in the chat pane; and what the frame shows of an older
+  home's piece in the chat pane until she has moved it out (where it
+  stands, so she has it to notice, or held out of the pane as her door's
+  space yields, which would leave her nothing to see).
+- **Built with the door batch,** on one shared placement check (the
+  door's space and the chat pane both refused to every piece, in both
+  modes), the felt rule for both, and tests first: the layout property
+  extended so no piece and no door meets the chat pane, an older record
+  with a piece there moved out (or closeted when nothing else fits),
+  and a parcel never left on a doorstep in it.
+- **The user's answers (2026-10-08),** after the code map
+  ([door/map.md](proposals/2026-10-02-houseguest-mind/door/map.md); in
+  the bundled layout every nook's right wall is a screen edge outside the
+  chat, so the first two arise only in custom layouts):
+  - **No edge wall outside the chat:** an inner wall of one of her nooks
+    (outside the chat), then the nearest floor spot outside the chat
+    whose box meets no piece (face-on); with none, she goes out by a door
+    in space where she stands and no door is drawn while she's out.
+  - **An older anchored piece in the chat:** shown where it stands until
+    she moves it out through the felt rule; if no strip takes it, it's
+    closeted (hidden) for as long as nothing fits, never deleted.
+    Makeshift pieces are never built in the chat at all.
+  - **Work: always her door.** Every work exit and return is through her
+    door's space, like school; work's screen-edge walk-out goes.
+  - **Only her external door** is kept out of the chat; doors in space
+    (about 1.5 s, in her own box; the errand's arrival at the accordion)
+    are unchanged.
+- **Second round (2026-10-08):** her door **stands over pane text** while
+  she's out (only a protected pane hides it); she steps through the doorway
+  at **walking pace**; the chat-pane line is *"People are talking here..."*.
+  **Third round (2026-10-08/09):** her fallback door never straddles a
+  pane's border; **makeshift pieces are exempt from the chat rule** (they
+  last one visit, like carried props; in the bundled layout nearly all the
+  text she crumples is chat text) but never stand in her door's space;
+  the chat line is *"People are talking here…"* (one ellipsis glyph, to fit
+  the 24-character bubble).
+  The working design is
+  [door/design.md](proposals/2026-10-02-houseguest-mind/door/design.md)
+  (steps 1–10; it records the rest as decided unless the user objects).
+- **Decided unless the user objects:** the no-home door uses the same edge
+  chooser, unsaved; door-position logging (the spot at info as she goes
+  out, a fallback or yield at debug with its reason).
+- **Tests first:** the day-long property extended so a closed or open
+  external door never meets a shown piece (both modes, with a bed, sofa
+  or desk owned and school mornings); a bed, sofa and desk unit
+  regression at 08:14; layout properties that no floor piece or window
+  meets the space and that a home packing both ways keeps its anchors and
+  order; an older record migrating without closeting anything.
+
+### The door batch (done 2026-10-10)
+
+Built as the [working design](proposals/2026-10-02-houseguest-mind/door/design.md)
+says, with its amendments and the hand-off notes' coordinator steps (3p,
+6d, 6m, 10a); its code map is [door/map.md](proposals/2026-10-02-houseguest-mind/door/map.md),
+its four critiques sit beside it, the art is in
+[door/art/](proposals/2026-10-02-houseguest-mind/door/art/) (its
+`snippets.md` now says what was wired), and real game frames for the
+user's eye are in [door/shots/](proposals/2026-10-02-houseguest-mind/door/shots/)
+(README lists them). The rules are in design.md (*Strips and anchors*,
+*Away at school*, the part-time job, *Getting furniture*, the phase-4
+rules) and the reasons in decisions.md (the 2026-10-08 to 2026-10-10
+door entries). Each step was implemented tests first, reviewed twice
+(correctness, and tests proven by mutants) and fixed; each commit
+carries its red-first evidence and its golden trace check (where each
+moved trace first differs and why). Nothing was pushed mid-batch;
+`stable` was not moved (no protocol change).
+
+**The bug and the aim.** *"She just left for school directly from bed,
+from a door that's now stuck visible overlapping said bed."* Her
+external door's spot came from her feet. Now it comes from her home and
+the frame alone: a reserved space at the screen's edge that no piece
+stands in, a strict fallback that meets no piece when the space yields,
+and every routine exit and return (school, dashes, work) through it.
+
+**What was built, by step:**
+- **1.** Honest fixtures: the tests' chat pane laid where a screen
+  would put it (the old `view()` put it over the List box), chat cases
+  built on purpose (a space yielding to the chat's floor, every edge
+  space under the chat, no wall or no floor outside it), `long_visit_of`
+  taking a frame and counting what it saw (non-vacuity).
+- **2.** The space: `Home.door` (a saved `DoorWall`, chosen once from
+  the panes: an edge wall first, then her pieces' strips, then where the
+  space is kept), `Home::extents`/`StripPlan`, pieces packing beside six
+  columns at that wall. The space yields (the strip laid out as if
+  doorless) when keeping it would cost the strip a piece. Her door moves
+  only with her pieces. Ledger `door`, `--dump` shows it.
+- **3.** `door.rs`: `door_place` (the one constructor of `DoorSpot`), the
+  strict fallback (nearest floor spot meeting no piece, the chat or a
+  protected cell), `Keep` (the space and the chat refused to new
+  placements). While she's at school her door stands at its space, never
+  on her bed, sofa or desk or in the chat. **3p:** the repair search
+  lays out again only the strips a move touches (back under 0.5 ms).
+- **4a.** First the user's border answer: a fallback door never
+  straddles a pane's border. Then she gets up and walks to her door to
+  leave for school (`Job::Leave`, the `set_off` latch apart from
+  `leaving`, `Through::{Home, Space}`); her walk follows the frame's door.
+- **4b.** Work goes out and comes home through her door too, never off a
+  screen edge (`Leave::Work`, `Shift::{Going, Out}`, `let_work_go`).
+- **5.** Nothing new of hers is put in the chat pane (deliveries, gifts,
+  repairs, moves off a pane: `Keep::takes_in` the one "pushed newly in"
+  test).
+- **6.** Felt rules `DoorClear` ("Can't get to the door!") and `InChat`
+  ("People are talking here…"), felt on sight, said once quiet and at
+  most once a game day; the per-frame closet for a piece in the chat no
+  room takes. **6d:** a resize while her door stands open moves it (and
+  her) in the frame it's drawn in. **6m:** makeshift pieces may stand in
+  the chat (the user's third-round answer), never in her door's space
+  (`Keep::for_made`).
+- **7.** The side-on door's art made production: `Look::WallDoor` under
+  any sky, `graphics::Cut` (offset by half columns, cut at the wall's
+  line), the hedge tinted per sky, `art::lean`.
+- **8.** The side-on door wired: her beats (`wall_beat`), walking pace
+  through the doorway, the front post over her, the Away cue (slippers
+  and a card) while she's out and in every gap, the doorway's sky, the
+  door over text while she's out (only a pane in use hides it), in
+  passing otherwise.
+- **9.** Parcels through her door's flap, sliding out past its space in
+  four beats; a delivery waits for her door's act, her box or her walk
+  in the space; another wall's `draw_flap` only when her door's strip
+  can't take it.
+- **10a.** The deep run after step 9: a goodbye's rain over her door's
+  wall column was the oracle's, not the code's (`Showed`); a way out in
+  space with no clear column on her floor opened on her TV, now
+  unrepresentable (`osaka::Clear`, `Job::Out`, `open_out`/`redirect_out`).
+- **10.** This record, the census reading below, the docs (CLAUDE.md,
+  snippets.md), and `door_shots` (an ignored test that renders real
+  frames to PNG: `Graphics::take_shots`/`shot`).
+
+**The user's answers** (each in door/design.md's *User decisions*):
+first round (2026-10-07/08): the reserved space; sheet B; slippers and a
+card while she's out; the doorway follows the window's sky; work always
+through her door; older homes cleared through a felt rule; no furniture
+and no door of hers in the chat; with no edge wall outside the chat an
+inner wall, then the nearest clear floor, else no door while she's out.
+Second round (2026-10-08): her door stands over text; walking pace
+through the doorway; the chat line. Third round (2026-10-08/09): the
+fallback never straddles a pane's border; makeshift pieces may stand in
+the chat; the line keeps the one-glyph ellipsis (it fits the 24-character
+bubble).
+
+**Deviations from the design** (each in its step's commit and in
+door/design.md's as-built notes): the space's yield rule is "keeping it
+costs the strip no piece" (step 2; D1 would have lost an older record's
+window); a hidden pane moves her pieces and door like any move (step 2);
+`DoorSpot`'s ground is a `Ground` trait over flags `Terrain` already
+reads (step 3); her door follows a resize in the frame it's drawn in,
+through its far beats too, she with it (6d); the walking-pace stretch
+applies to a face-on fallback door too (step 8); a delivery waits for her
+walk into the space, not only her box (step 9); a way out in space is
+`Clear` by type (10a). Not done, recorded instead: the slipper columns'
+rain (decisions.md, *Her door is drawn side-on*, last paragraph).
+
+**Census, band and stillness** (step 10; measured at the batch's end,
+`7aaf24de`, against the tree before it, `057311b1`, run fresh; logs in
+the job's `tmp/step10/`). No threshold or cap was changed.
+- *Visit census* (`visit_census`, unfed, 16 visits × 30 min; moving %
+  in sight / set-offs a minute):
+
+  | room | before the batch | after 4b | after 5 | final |
+  |---|---|---|---|---|
+  | stage, ASCII | 8.0 / 2.00 | 8.0 / 2.00 | 5.6 / 1.98 | 8.0 / 2.00 |
+  | stage, line art | 6.1 / 1.55 | 6.1 / 1.55 | 4.0 / 1.23 | 6.1 / 1.55 |
+  | home (both modes) | 17.2 / 1.03 | 18.4 / 1.07 | 18.4 / 1.07 | 18.0 / 1.07 |
+  | resident (both modes) | 10.7 / 0.98 | 9.6 / 0.99 | 9.6 / 0.99 | 10.3 / 1.00 |
+
+  Step 5 cut the stage's makes from chat text (time on made pieces
+  43 → 24% ASCII); 6m restored them exactly (the stage's traces are
+  step 4b's again). Home and resident move by the space's 6-column
+  push, which shifts her pieces and so her trips.
+- *Band* (`--profile band`, `CENSUS_BAND_SEEDS=64`, release): the stage
+  is identical in every cell before and after. Home within 1.2 points
+  of before in every cell (Ordinary chat 22.0 → 21.0%, quiet 22.0 →
+  20.8%); resident Industrious chat 15.8 → 14.4%, quiet 16.2 → 15.0%,
+  Ordinary quiet 9.4 → 11.1%; spreads home 2.62 → 2.66, resident
+  2.61 → 2.43. Two lines fail, both identically before the batch: the
+  stage's industrious chat (9.0% at a floor of 9, just under it) and
+  the stage's spread (1.50 under 1.60, whose aim is 1.43). At the gate's
+  strength (2 seeds) 17 of 18 pass before and after; the one failure is
+  that same stage line (8.8%).
+- *Day census* (`day_census`, 6 runs a room; stage / home / resident):
+  school days at 08:00 she's here 24.8 / 25.7 / 25.4% before and
+  26.2 / 28.2 / 29.4% after (the walk to her door), moving 8 / 15 / 7%
+  of that hour before and 15 / 21 / 18% after; in the Away slot (a
+  dash in sight) moving 52 / 62 / 64% before and 80 / 89 / 90% after,
+  of which by her routine (to and from her door) 36.5 / 20.8 / 45.8%
+  before and 74.8 / 74.1 / 88.1% after. Across the week she's here
+  48.4 / 49.8 / 49.8% before and 48.3 / 49.9 / 49.9% after. The home's
+  window looking out rose from 140 to 247 in 42 game days (her pieces
+  stand elsewhere beside the space). The band and stillness gates run
+  afternoons and never see a school morning: nothing gated moved.
+- *Three census tests pass only by re-sampling* (step 4b; the design
+  calls such changes findings, not retunes). Measured on the final tree
+  with their original samples:
+
+  | test | original sample, final tree | as gated now |
+  |---|---|---|
+  | `an_uninterrupted_trip_runs_its_course` | 6 seeds: 5 set-offs, under its 8 (**fails**); no trip let go | 9 seeds: 10 set-offs |
+  | `her_mood_shows` | 4 visits a mood: lazy over industrious on furniture and under it on exercise hold; dreamy spaces out **14% less** than ordinary (**fails**) | 8 visits: dreamy 9% more |
+  | `the_census_counts_her_vignettes` | the shopping channel on every visit: seed 1 never sits down to the TV in either mode (**fails**) | only on visits she watched, 3 of 4 watched |
+
+  Work leaving by her door no longer leaves her on another floor to set
+  off from (the trips), and the moods' margins are thin at these sample
+  sizes: dreamy against ordinary flips sign between 4 and 8 visits.
+  Re-run the original samples with the ignored
+  `census::census_on_original_samples` (`cargo nextest run -p dessplay
+  --run-ignored only --no-capture -E 'test(census_on_original_samples)'`;
+  it prints, asserts nothing; seeds and visit lengths as the tests').
+- *Deep runs*: `PROPTEST_CASES=256 --release --profile deep -p dessplay
+  houseguest` 952/952 after 10a's review (the production code since is
+  unchanged); the perf tests (`--profile full --release`) 4/4 at the
+  end; the workspace gate green at every step.
+
+**Open, for the user:**
+- **(a) The space's yield rule.** Kept only when keeping it costs the
+  strip no piece; otherwise the strip is laid out exactly as with no
+  door, and a window may hang in the space. The alternative (D1 as
+  written) loses an older record's window on load.
+- **(c) Hung deliveries through her door's wall**: a poster or clock
+  comes in boxed past the space and, unpacked, hangs against the wall
+  itself (above the space), six columns from where its box stood.
+- **(d) A hidden pane moves her pieces and her door for good**, as a
+  pane that's gone does; both stay when it shows again. Should a hidden
+  pane hold them instead?
+- **(f) No floor outside the chat at all** (a custom layout): no door is
+  drawn while she's out, and her 12:45 homecoming is called off (she
+  comes in on the idle gate later, wherever she lands). Should she come
+  home by a door in space inside the chat instead?
+- **(g) Her door's pane focused at 12:45**: she comes home out of the
+  fallback beside the pane rather than waiting for it. Fine?
+- **(h) The stage's DashIn** now goes by her door, so the scene walks
+  about 30 s before "Forgot my lunch!".
+- **(b)/(e) The stillness holds** (`free_to_muse`, `end_look`) are
+  provisional (listed above under 5c's open items).
+- ~~**The three re-sampled census tests**~~ (table above): **resolved
+  2026-10-10**, the user: "Seems fine"; the re-sampled tests stand.
+- **Coming home while her door's pane is focused through a shift**, she
+  comes home where she went (a door in space), not at her door (step
+  4b's fixer's choice).
+- **A door pool line on her way out**: a door in space taken on her way
+  to her door says a door line ("Huh? How'd I get here?") as any door in
+  space does.
+- **The slippers don't rain** in line art when her door rains out; they
+  go with the image (decisions.md). The fix is small if wanted.
+- ~~**The short terminal's face-on door derezzes the pane title**~~
+  (`door/shots/short-terminal.png`): **resolved 2026-10-10**, the user:
+  "We'll let it stand." It stands clear of every piece and never across
+  a pane's side wall; its top row may cover a pane's top border and title.
+- **Found, not fixed:** a floor delivery can strand a hung piece (a
+  sofa parcel making her space kept, so her window hung at the wall no
+  longer shows; step 9); a walk to a piece that goes into the closet
+  mid-walk isn't cut short (`lost_seat`'s sibling); the stage's school
+  scene may be lost after a hop across floors to a way out in space
+  (10a); cued as she drops in, the stage's school scene sets her down
+  on the platform whose middle is nearest her door, not on her door's
+  floor as its comment says (`door/shots/school-scene-dusk.png`: on the
+  ledge below, she walks away to climb up first; stage-only); with her floors full for good in school time she re-tries
+  going out every 3 s (`OUT_AGAIN_MS`, logged at debug after the first);
+  `Fallback::Blocked` is unreachable through the guest today (tested on
+  `door_place` directly, M18); a parcel can be unseen for up to 650 ms
+  if her door's image can't be placed, and a rain mid-slide bursts no
+  parcel glyphs (step 9); a goodbye mid-doorway rains her letters from
+  her doorway offset, `d` columns from where she waved (step 8).
+
+### Phase 6 — structures (brief, 2026-10-10)
+
+The proposal's row 6 (*Structures from the UI's own lines*): a shelf, a
+stepladder and a partition, drawn with the UI's own line glyphs in blank
+cells. Code maps at `60727649`:
+[phase6/map-terrain.md](proposals/2026-10-02-houseguest-mind/phase6/map-terrain.md)
+(strips, rooms, terrain, climbing, line art, read sites, tests) and
+[phase6/map-life.md](proposals/2026-10-02-houseguest-mind/phase6/map-life.md)
+(the channel, decor, organising, the ledger, methods, the docs' rules).
+
+**What the maps changed.** The proposal predates the clock and the door
+batch:
+- A *visit* is no longer a short stay: a resident's runs from 12:45 to
+  08:15. `felt` and `home_acts` live on the per-visit `Osaka`.
+- In the bundled layout every floor is already climb-linked, so
+  `Connected` (three door trips between two rooms) would never prompt a
+  ladder there.
+- A room is a strip at about fifteen sites (`role_of`, `Apart`, `Faces`,
+  `Near`, `beauty_at`, `clock_on`, the repair search, …); a repair is a
+  piece move (`Repair { piece, to }`); `pack` knows only a floor's two
+  ends.
+- The channel sells one `Furniture` at a time in `CATALOGUE` order
+  every third visit; there's no wishlist (`Guest::wishlist` is a stage
+  helper) and no gremlin.
+- `Strip` has one variant, matched irrefutably at seven sites;
+  `raw_strips` builds strips from panes alone, and two loops zip panes
+  with strips by position.
+- A structure must be in the buffer before `fits` (a shelf's `─` to
+  stand on), so `read_ground` goes right after `layer.validate`, not just
+  before `Terrain::read`. The proposal's read sites miss three: her empty
+  home while she's out (`paint_empty`), the delivery's lazy read in
+  `furnish`, and the errand read. *As built (6a step 2b, the one
+  departure from this wording):* it runs once at the top of the paint,
+  before `layer.validate` too, which reads only her layer's own cells
+  (a structure never takes one), so the arrival's and the errand's
+  reads see it as well. The goodbye's `Dissolve::unchanged`
+  compares her image's recorded under-cells with the live frame, so a
+  goodbye frame without structures would lose her wave.
+- `settle`'s Climb arm checks no pole, and the terrain keeps no pole
+  grid.
+
+**The user's decisions (2026-10-10):**
+- **Split in three**, each with its own brief and record: **6a** shelves
+  and the gremlin, **6b** the stepladder, **6c** partitions.
+- **The ladder is for reaching her shelf.** A shelf hangs where no climb
+  reaches it; she wants up there (the gremlin, a nap, the view) and the
+  ladder is how she gets there. That replaces `Connected` as the ladder's
+  trigger (it may return with 6c, if partitions cut a floor's way
+  through).
+- **Pacing is per game day**, not per visit: one build stage a game day
+  (a three-stage ladder takes about three days), counts reset at the
+  day's start and saved in the ledger, so a restart doesn't reset them.
+- **Structures are bought kits**: the channel sells a shelf kit, the
+  ladder and a folding partition like any piece; they come boxed through
+  her door's flap, and she unpacks and puts them up in stages. A
+  **wishlist** puts the kit a felt need wants first in the queue, at the
+  channel's usual cadence.
+- **A shelf hangs on the back wall, off the sides**: a `─` run at least a
+  body-width from either side wall, so nothing reaches it until 6b's
+  ladder.
+- **Door-batch rules hold for structures**: none in the chat pane or in
+  her door's space, and no shelf above her door's space.
+- **On a shelf**: a new **gremlin** figurine (the user's "gremlin for the
+  mantelpiece"; model sheet first), and small decor (the plant, the
+  clock) may go up there too; never furniture.
+- **6a's payoff** before any ladder: decor on a shelf counts toward the
+  room's beauty, and she sometimes stands under it and gazes up (a still
+  act, inside 5c's band).
+
+**6a working design** (next):
+[phase6a-design.md](proposals/2026-10-02-houseguest-mind/phase6a-design.md),
+critiques in `phase6/`, then the gremlin's model sheet for the user. Not
+in 6a: partitions, rooms as regions, the pole check (6b, with the
+ladder), `Connected`. Every 6a step keeps the golden hashes and terrain
+snapshots unchanged in a home with no structure (`read_ground` writes
+nothing; the ledger's `structures` field is skipped when empty).
+
+**6a step 3's measurement** (2026-10-11, the ignored
+`where_a_shelf_could_go` in `tests/shelf.rs`: the bundled layout, D4's
+per-cell test, nothing of hers on the frame; "typical content" is an
+evening's chat, ten playlist rows, four known users and twenty
+franchises in The List, five of them in a user's Watching group,
+`fuller_ui`; re-measured with the franchises in step 3's review fixes).
+Places a high shelf (rise ≥ 7, her height clear over it) / a low one
+(rise 5, two rows clear) has, per pane:
+- 100×30 (chat 50×25): List 50×9 — high 0, low 9 (23 empty); Users
+  50×8 and the Playlist 50×8 — none. The stage room (`stage_ui`: no
+  franchises) has List's 23 low places: only List takes a shelf (low),
+  so D11's scenes that need one run on another frame (the `LookOut`
+  precedent).
+- 80×24: no pane takes one (panes 6–7 rows tall).
+- 100×32 and 100×35: every pane 9–10 rows, low only (with content:
+  List 9 and 7, Users 5, Playlist 11).
+- 100×40: low only (panes 11–12 rows, 9–10 inside: high needs 11).
+- 100×50: all three take a high one (List 29, Users 21, Playlist 33
+  with content) and a low one.
+- 191×46 (the user's terminal): all three take a high one (List 108,
+  Users 52, Playlist 112 with content; Users has 11 rows inside, rise
+  7 exactly) and a low one.
+
+So at the user's size every pane takes a high shelf; at the common
+100-wide sizes below 50 tall only low ones fit, and at 80×24 none.
+
+**A trap 6a leaves for 6b and 6c** (step 3's review): `room::fits`
+stands a piece on `Strip::Shelf(n)` on any written cell
+(`Written::contains` scans every structure's cells), not only shelf
+`n`'s run. Right while there is one shelf in all (6a); once a second
+shelf, 6b's ladder or 6c's partitions write cells that could line up
+with a piece's floor row, `fits` must ask for its own shelf's cells
+(e.g. `Written::contains_on(nook, x, y)`, the cells keyed by structure).
+
+**Still open from the door batch** (above, *Open, for the user*): (a),
+(c), (d), (f), (g), (h) and the found-not-fixed list; parked, not part
+of phase 6 unless the user says so.
+
+### Phase 6a — shelves and the gremlin (done 2026-10-12)
+
+Built as the [working design](proposals/2026-10-02-houseguest-mind/phase6a-design.md)
+says, with its eight rounds of the user's answers, its amendments and
+each step's "As built" (the design's Steps); its code maps are
+[phase6/map-terrain.md](proposals/2026-10-02-houseguest-mind/phase6/map-terrain.md)
+and [phase6/map-life.md](proposals/2026-10-02-houseguest-mind/phase6/map-life.md),
+its four critiques sit in `phase6/`, the gremlin's approved art is in
+[phase6/art/](proposals/2026-10-02-houseguest-mind/phase6/art/) (its
+`snippets.md` now says what was wired), and real game frames for the
+user's eye are in [phase6/shots/](proposals/2026-10-02-houseguest-mind/phase6/shots/)
+(README lists them). The rules are in design.md (*Getting furniture*,
+*Structures*, *Furniture* and its strips, *Wall pieces*, *Rooms from
+contents*, *Using her furniture*, *The rules of her home*, the paint's
+order, *Her record*) and the reasons in decisions.md (*Her structures are
+the UI's own lines*, *A shelf hangs as high as fits*, *She puts up a
+shelf, a stage a game day*, *The gremlin wants up high*). Each step was
+implemented tests first, reviewed twice (correctness, and tests proven
+by mutants) and fixed; each commit carries its red-first evidence and
+its golden check. The golden traces and terrain snapshots are
+byte-identical across the whole phase (no golden scene has a structure,
+a kit or a gremlin). Nothing was pushed mid-phase; `stable` was not
+moved (no protocol change).
+
+**What was built, by step:**
+- **1.** Strips learn a shelf variant (`Strip::Shelf`), one admission
+  rule (`takes`: small decor only on a shelf), rooms are floors, and
+  the sites that zipped panes with strips by position read the strip.
+- **2a.** Her record keeps her structures (a shelf: pane, anchor, rise,
+  stages up), read before her pieces, entry by entry; older builds
+  ignore it (measured against the frozen pre-shelf reader).
+- **2b.** `read_ground`: her shelf written into the frame once a paint,
+  before anything reads it, all of it or none, on blank free cells, in
+  its pane's border ink; kept by the arm that shows her home, undone by
+  every other; it rains out with her goodbye; never floor nor pole of
+  hers; her door never on its run. The one departure from the brief's
+  wording is in the brief above (it runs before `layer.validate`).
+- **3.** Small decor stands on a finished shelf (only on its written
+  cells), a repair puts it up there, and it counts for the room below's
+  beauty; step 3's measurement of where shelves fit is above.
+- **4.** A low shelf keeps the wall lane beside it (its block, margin
+  included: the user's call), so her poster and clock hang clear of it.
+- **5a.** `shelf_spot`: as high as fits, mid-wall, on a row clear of
+  text, by a brute-force oracle; the stage can put one up.
+- **5b.** The shelf kit: sold last, only on a frame a shelf could go up
+  on; through her door's flap; never out of its box; opened only then.
+- **5c.** Putting it up: two stages, the first chained straight after
+  opening, at most one a game day (saved, so a restart doesn't reset
+  it), arms up ("Up it goes..."), a hop on a high shelf.
+- **6.** Her gaze up at her plant on her shelf (`Use::GazeUp`, from its
+  room's floor, under the run, 20–45 s; tuned in step 8 to about once a
+  game day).
+- **7.** The gremlin (variant A), his rule (`High`: he wants up on a
+  shelf, felt in his room on sight), and the wishlist (a felt rule's kit
+  first in the channel's queue; "A shelf for the gremlin!").
+- **8.** The four extras: his tiny life (he turns round while she can't
+  see him; "?", "Did you move...?"), her lines up at him, more gazing
+  for a day or two after something new goes up, her pleased beat after
+  each stage and set-down, and the flat-pack gag ("Which way's up?").
+  After it, the user's seventh round: his line stops once the kit is
+  ordered, till her shelf is up.
+- **9.** This record; the census rooms with her shelf; `shelf_shots`;
+  the look tests (her shelf's cells and ink in ASCII on the user's
+  terminal, and in line art the run and brackets keyed into the images
+  of what stands on it, in its pane's ink); the frozen pre-6a
+  `hung_clear` copy deleted; design.md read through; CLAUDE.md,
+  `snippets.md`.
+
+Two fixes outside the steps: after 5a, a repair search's cost (a perf
+fix; no behaviour change), and after 6, her door's wall chosen once her
+pieces have moved (a pre-6a bug the deep pass found: an older home's
+window could go missing).
+
+**The user's answers** (each in the design's *User decisions* and
+*Questions for the user*): the split in three; per game-day pacing;
+kits; off the sides; door rules hold; the gremlin and small decor on a
+shelf; the payoff (beauty, the gaze up). Second round: highest that
+fits; the plant and clock go up only by a repair; the four lines;
+variant A. Third: the user's 191×46; the little hop; the brackets; all
+four extras. Fourth: high means standable; the hop is for high shelves;
+built as workflows. Fifth: a styled blank hides the shelf; the low
+block spans its margin; the stage's mantel clock. Sixth: the put-up pace
+kept; a gaze up about once a game day; no settling chain; a nudged seat
+moves her (after 6a). Seventh: his line stops once the kit is ordered;
+"hehe" in place of "There!" on a shelf; one gaze in two; ASCII `oo`/`ww`.
+Eighth (below, after the census): his parcel kept; a shelf with no
+gremlin waiting goes up in her living room; her gaze up there kept;
+the 191×46 stillness left for a later session.
+
+**Census, band and stillness** (step 9, at `01c7076c`'s behaviour; logs
+in the job's scratchpad `s9/`, the shelf rooms re-run after the review
+fixes in `s9fix/`). No threshold or weight was changed.
+- *The band* (`--profile band`, `CENSUS_BAND_SEEDS=64`, release): its
+  rooms have no shelf, and every cell reads as at the door batch's end
+  (home Ordinary chat 21.0%, quiet 20.8%; resident Industrious chat
+  14.4%, quiet 15.0%; spreads home 2.66, resident 2.43). The same two
+  lines fail as before 6a, identically: the stage's industrious chat
+  (9.0% at its floor of 9) and the stage's spread (1.50 under 1.60).
+- *The rooms with her shelf* (tests/census.rs; `CENSUS_ROOMS=shelf`):
+  step 6's `shelf_room` (the resident's 100×30, a high Users shelf, her
+  plant; `SHELF_HOME`: sofa, TV, window); `wide_room`/`wide_shelf_room`
+  (the user's 191×46 with an evening's content, the same three pieces,
+  without and with her shelf: high, her plant and gremlin on it); and
+  `low_shelf_room` (the census home's 9-row panes, its seven pieces
+  with her poster and window, a low shelf with her gremlin on it, her
+  poster beside its block). Each shelf is staged as in play: her
+  gremlin waits on her living room's floor (her sofa's pane) as it goes
+  up, so `shelf_spot` puts it in his pane (Users or the Playlist by the
+  seed at 191×46; Users or the Playlist in the low room). As first
+  built (before step 9's review) the 191×46 shelf was staged with no
+  gremlin waiting and went up in The List, the first pane in order,
+  away from her sofa and TV: a room that doesn't happen. The fed
+  afternoon (line art, 17 min, 20 × 4 seeds), moving % in sight /
+  set-offs a minute, quiet and with chat:
+
+  | room | lazy | ordinary | dreamy | industrious |
+  |---|---|---|---|---|
+  | resident+shelf | 6.5 / 0.57, 6.5 / 0.62 | 12.3 / 1.19, 11.6 / 1.23 | 11.5 / 1.22, 11.0 / 1.26 | 16.2 / 1.35, 14.7 / 1.41 |
+  | 191×46, no shelf | 23.7 / 1.29, 25.3 / 1.53 | 34.3 / 2.07, 35.8 / 2.30 | 36.4 / 2.18, 37.1 / 2.40 | 41.2 / 2.42, 39.7 / 2.71 |
+  | 191×46 + shelf | 23.6 / 1.30, 25.2 / 1.53 | 34.4 / 2.09, 36.0 / 2.32 | 35.9 / 2.20, 36.5 / 2.41 | 41.0 / 2.42, 39.7 / 2.72 |
+  | home + low shelf | 9.8 / 0.57, 10.4 / 0.65 | 20.7 / 1.22, 20.0 / 1.33 | 20.8 / 1.27, 19.7 / 1.34 | 29.7 / 1.67, 27.8 / 1.82 |
+
+  The resident's and the low shelf's rooms sit inside the band in every
+  cell (the low shelf's beside the census home's own: 11.3 / 21.8 /
+  29.9 at its tuning). **The user's 191×46 is out of the band whether
+  or not her shelf is up** (the shelf moves no cell by more than 0.5
+  points): its evening's text in her reach has her pulling and swapping
+  letters (a fifth to a quarter of her time moving), a finding about
+  that screen, not about the shelf; never measured before (the band's
+  rooms are 100 wide).
+- *Her days* (`day_census`, 6 runs a room, 42 game days): look-outs /
+  gazes up a game day: resident+shelf 7.76 / 1.19 (step 8's tuning);
+  191×46 no shelf 5.10 / -, with her shelf 5.12 / 0.76; home + low
+  shelf 5.55 / **1.93**. Look-outs stay in the user's 2–6 where they're
+  judged. The gaze up follows the time she spends on her shelf's floor:
+  at 191×46 inside step 8's 0.7–1.5 (only `shelf_room` is pinned to it;
+  step 9's rooms print); in the low room, whose two panes hold her
+  sofa, TV and desk, over it. (As first staged, the 191×46 shelf in The
+  List read 0.17.) The visit census (16 unfed visits, both modes): she
+  gazes up on 1 visit in 16 at 191×46, 6 in 16 in the low room, 3 in 16
+  in `shelf_room`.
+- *The shelf census* (`shelf_census`, 32 seeds, unchanged since step
+  8's fix): her shelf finished 0.63 game days from her kit's coming (sd
+  0.01, max 0.65; stage 2 the next morning, as the user kept); her
+  gremlin up 32 of 32, her kit sold first in 32, 3.97 game days from his
+  coming to him up (sd 0.82, max 7.64), his line on 3.16 game days a
+  run, none with her shelf coming.
+- *Deep runs*: `PROPTEST_CASES=256 --release --profile deep -p dessplay
+  houseguest` 1130/1130 at step 9; the perf tests (`--profile full
+  --release`) 4/4 (none has a shelf); the workspace gate green at every
+  step.
+- *The perf look* (step 9's review; the ignored
+  `gremlin::perf_look_at_his_room`, release, run alone): her gremlin on
+  Users' floor where no shelf fits, she industrious in his room ten
+  minutes, a status-line clock ticking each second: `kit_room` asks
+  `shelf_spot` 298 times (0.5 a second, while she stands in his room
+  unfelt; 6 with the clock still), each 23 µs on that 100×30 frame and
+  30 µs on the user's 191×46 crowded likewise: about 15 µs a second, no
+  change in the visit's wall time (217 µs a paint either way). Her
+  gremlin's tiny life asks `out_of_sight` each tick: 17 ns a call
+  asleep. `Visit.shelf_asked`'s frame at 191×46 is 411 KiB (8786 cells
+  of 48 bytes), held for the visit once `kit_room` has asked. Nothing to
+  fix for cost; the frame held became a hash, and then the memo went
+  (the eighth round, below).
+
+**The user's eighth round** (2026-10-12, on step 9's findings; the
+design's *Questions for the user*), built after step 9:
+- **His parcel's look**: kept, the tiny box (the 5 × 2 parcel scaled
+  into his 2 × 2).
+- **A shelf with no gremlin waiting goes up in her living room**:
+  within a height, her gremlin's pane while he waits on a floor, then
+  her living room (her sofa's pane, out of its box), then the pane she
+  opens the kit in, then the panes in order; high before low over every
+  pane first, as ever (`Home::shelf_spot`, the oracle `room::spot::places`
+  with `Prefer`, `a_shelf_goes_up_in_her_living_room`, the census's
+  `wide_plant_shelf_room`). "Her living room" is her sofa's pane, not
+  `Role::Living` (screen and seat, no bed) nor `RoomKind::Living` (an
+  older build's shim). The day census's 191×46 with her shelf and no
+  gremlin waiting (staged as `Shelved::Staged(&[])`: her plant up): her
+  shelf in The List before, 7 gazes up in 42 game days (0.17 a day,
+  look-outs 4.71); in her living room after, 34 in 42 (0.81 a day, look-outs 4.90). The other shelf
+  rooms read as before (his pane decides there): resident+shelf 1.19,
+  191×46+shelf 0.76, low room 1.93.
+- **Her gaze up over her living room** (1.93 a game day in the low
+  room): kept.
+- **The user's 191×46 out of the stillness band**: left; not 6a's, and
+  the user has a fix in mind for a later session.
+- **`Visit.shelf_asked`** (the coordinator's calls): first a hash in
+  place of the frame (`room::ShelfAsk::basis`, FxHash of all
+  `shelf_spot` reads), 8 bytes where 411 KiB was held at 191×46. Its
+  cost, measured (`perf_look_at_his_room`, release): the hash 56 µs a
+  paint at 191×46 against the held frame's compare 36 µs, while
+  `shelf_spot` itself is 14 µs on that frame as it is and 30 µs
+  crowded, so the memo cost more than the question it saved, and a
+  memo is a stale-cache trap besides. **The memo is gone** (after step
+  9): `kit_room` asks `shelf_spot` afresh on each paint that wants the
+  answer, gated as before (her kit boxed and shown, the channel's queue
+  at a kit or a piece that wants up, or an unfelt `High` where she
+  stands); `ShelfAsk`, `basis`, `Visit.shelf_asked` and
+  `a_change_in_anything_it_reads_asks_again` went with it.
+  `no_gremlin_grievance_where_no_shelf_can_go` now pins that it asks in
+  his room and never on a paint out of it (was: under a tenth of his
+  room's paints); `no_gremlin_grievance_with_her_kit_on_order` still
+  pins no ask at all (both red with the gate removed). The perf look's
+  ten minutes in his room, crowded 100×30, she unfelt there: 3080 asks
+  in 6554 paints (0.47 a paint, each 22 µs), 224 µs a paint (the
+  memo's 220–222 µs in the same session, still clock or ticking): a
+  wash there, and at 191×46 cheaper (14–30 µs asked against 56 µs
+  hashed). Goldens byte-identical (112 traces).
+- The review shots: the beat after she sets her gremlin up is labelled
+  the set-down's, not "stage 2"'s (`carry-up.png`); `gaze-up.png`'s
+  shelf (no gremlin waiting) now goes up in her living room, Users, by
+  her sofa (was The List), its scene meeting her needs first so no chain
+  of hers outlasts the offer; the other five shots are byte-identical.
+
+**Found, not fixed** (each in the design's as-built notes or the
+hand-off notes): `room::fits` stands a shelf piece on any written cell
+(right while she has one shelf; 6b/6c must key it by structure, above);
+`shelf_spot`'s low block check has no test of its own while the
+poster and the clock fill both its rows (`blocked` is 0 in its
+companion: add a case when a hung kind that doesn't fill both comes;
+the hung pieces' side of the block is held by the hung shelved long
+visit added in step 9's review); a shelf shown with no
+place for him on it (text in the rows over its run, or the run full)
+still has her feel and say his line once a game day; a resize mid-unpack leaves her at the box's old
+spot for its few seconds; and a carried piece isn't drawn in her arms in
+line art (as before 6a). (`kit_room`'s memo, which cost more a paint
+than the `shelf_spot` it saved at 191×46, is resolved: dropped after
+step 9, the eighth round above has the numbers.)
+
+### Later (ideas, the user)
+
+Not planned yet; each wants its own brief:
+- **A kitchen and a bathroom**, with their contents, for a **morning
+  routine** (a bathroom-then-breakfast chain that ends with her walk to
+  her door).
+- **Osaka's comments on the actual onscreen episode**, replacing the
+  marquee commentary (the user, after D7: she doesn't react to the film
+  on her TV for now).
+- From phase 4 (2026-10-03): posters delivered in cardboard tubes; more
+  posters, paintings and plant varieties; a greenhouse or solarium she
+  builds (cloud-watching under its glass too). From 5a/5b: maybe a cat
+  who ignores the clock.

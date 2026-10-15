@@ -67,9 +67,9 @@ impl Need {
     fn rise_ms(self) -> f64 {
         match self {
             Self::Sleepy => 15.0 * 60_000.0,
-            Self::Restless => 90_000.0,
-            Self::Tidy => 60_000.0,
-            Self::Mischief => 4.0 * 60_000.0,
+            Self::Restless => 300_000.0,
+            Self::Tidy => 90_000.0,
+            Self::Mischief => 6.0 * 60_000.0,
             Self::Hungry => 20.0 * 60_000.0,
             Self::Comfort => 8.0 * 60_000.0,
             Self::Fun => 6.0 * 60_000.0,
@@ -319,6 +319,29 @@ pub(super) fn dash(master: u64, day: u64) -> Option<u16> {
         .then(|| from + ((z >> 32) % span) as u16)
 }
 
+/// Salts the seed of her gremlin's turning round (see
+/// [`gremlin_turns`]): keeps its hash apart from every other use of the
+/// day's seed (her mood's, the midnight snack's, the dash's).
+const TURN_SALT: u64 = 0x7475_726e_5f72_6f21;
+
+/// One game day in this many, her gremlin turns round on his shelf
+/// (phase 6a step 8, the user's extra 1).
+pub(super) const TURNS_ONE_IN: u64 = 20;
+
+/// Whether her gremlin turns round on game `day`, of the home whose
+/// master seed is `master` (phase 6a step 8: his tiny life): one game
+/// day in [`TURNS_ONE_IN`], drawn at the first moment that day she falls
+/// asleep for the night or goes out by her door (her guest asks). A pure
+/// hash of the two, as [`dash`] is: neither random stream, so whether
+/// he turns never moves anything else she does.
+pub(super) fn gremlin_turns(master: u64, day: u64) -> bool {
+    let mut z = day_seed(master, day) ^ TURN_SALT;
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^= z >> 31;
+    z.is_multiple_of(TURNS_ONE_IN)
+}
+
 /// Where a want would have her, as far as her needs care.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Spot {
@@ -537,6 +560,9 @@ pub(super) enum Want {
     /// Put right a rule of her home she has felt broken: lift a piece,
     /// carry it, and set it down where it's right.
     Arrange,
+    /// Put the next stage of her shelf up (phase 6a D7c): a stage a game
+    /// day, offered only while one is due and the frame would hold it.
+    PutUp,
 }
 
 /// Something that makes a want more or less likely, beyond her needs.
@@ -551,6 +577,10 @@ pub(super) enum Factor {
     Clock(When, f64),
     /// In this real-date window: this much as likely (above 1).
     Season(DateWindow, f64),
+    /// While something new is up on her shelf (phase 6a step 8: a stage,
+    /// or a piece she set on it, that game day and the next): this much
+    /// as likely (above 1).
+    Fresh(f64),
 }
 
 /// A want, as data: how much she likes it all else equal, the needs it
@@ -582,6 +612,9 @@ const AFTERNOON_FACTORS: &[Factor] = &[
     CHAT,
     Factor::Clock(When::In(SlotSet::of(&[Slot::Afternoon])), BOOST),
 ];
+/// Something new up on her shelf draws her eye that game day and the
+/// next (phase 6a step 8, the user's extra 2).
+const GAZE_UP_FACTORS: &[Factor] = &[Factor::Fresh(BOOST)];
 /// The evening is the TV's.
 const WATCH_FACTORS: &[Factor] = &[
     CHAT,
@@ -647,7 +680,7 @@ const fn in_chat(def: DesireDef) -> DesireDef {
 
 impl Want {
     /// Every want there is (the order she considers them in).
-    pub const ALL: [Want; 29] = [
+    pub const ALL: [Want; 31] = [
         Self::Stand,
         Self::SpaceOut,
         Self::Sneeze,
@@ -677,6 +710,8 @@ impl Want {
         Self::Use(Use::Crumple),
         Self::Use(Use::LookOut),
         Self::Arrange,
+        Self::PutUp,
+        Self::Use(Use::GazeUp),
     ];
 
     /// Its row of the table.
@@ -684,7 +719,12 @@ impl Want {
         match self {
             // The one filler: what she does when nothing else binds.
             Self::Stand => row(4.0, &[]),
-            Self::SpaceOut => row(6.0, &[(Need::Daydreams, 0.6)]),
+            // Spacing out is worth doing for its own sake, whatever her
+            // daydreams: the still thing to do when nothing calls.
+            Self::SpaceOut => DesireDef {
+                own_sake: true,
+                ..row(6.0, &[(Need::Daydreams, 0.6)])
+            },
             // An accident, not a want of anything (mischief would pin it
             // where there's nothing to swap).
             Self::Sneeze => with(row(2.0, &[]), SNEEZE_FACTORS),
@@ -738,8 +778,8 @@ impl Want {
             Self::Idle(Activity::CloudWatch) => {
                 row(4.0, &[(Need::Daydreams, 0.3), (Need::Comfort, 0.3)])
             }
-            Self::Walk => row(14.0, &[(Need::Restless, 0.4)]),
-            Self::Travel => in_chat(row(10.0, &[(Need::Restless, 0.4)])),
+            Self::Walk => row(9.0, &[(Need::Restless, 0.4)]),
+            Self::Travel => in_chat(row(7.0, &[(Need::Restless, 0.4)])),
             Self::Pull => in_chat(row(16.0, &[(Need::Tidy, 0.6)])),
             Self::Swap => in_chat(row(8.0, &[(Need::Mischief, 0.8), (Need::Fun, 0.3)])),
             // Once a visit at most (osaka.rs), so it can afford to compete;
@@ -784,28 +824,50 @@ impl Want {
             Self::Use(Use::Pet) => in_chat(row(8.0, &[(Need::Fun, 0.6)])),
             // Gazing out of the window: a daydream, as gazing up is, and
             // a little fun (what's out there?). Rarer than it was, and far
-            // longer (phase 5c D6: her long daydream at the sill).
+            // longer (phase 5c D6: her long daydream at the sill). 2 to 6
+            // a game day in a furnished home with a window, the range the
+            // user accepts (step 12c): the day census measured 140 in its
+            // 42 game days (3.3 a day) at base 5 with the stillness levers
+            // on, mid-range (base 4's 82, 1.95, sat under it).
             Self::Use(Use::LookOut) => with(
-                row(3.0, &[(Need::Daydreams, 0.5), (Need::Fun, 0.3)]),
+                row(5.0, &[(Need::Daydreams, 0.5), (Need::Fun, 0.3)]),
                 LOOK_OUT_FACTORS,
             ),
+            // Gazing up at what's on her shelf (phase 6a D8): a daydream,
+            // no fun to wear thin. Only ever on offer with a piece on her
+            // shelf, from its room's floor, so it's rarely among her
+            // offers: base 8 has her gaze up about once a game day there
+            // (the user's sixth round; 1.19 in `day_census`'s shelf room,
+            // where base 5 gave 0.05 and base 10 2.83), and twice as
+            // likely with something new up there (step 8).
+            Self::Use(Use::GazeUp) => with(row(8.0, &[(Need::Daydreams, 0.4)]), GAZE_UP_FACTORS),
             // Only on offer while a rule she has felt is broken and her
             // mood leaves her something to do about it: nesting is all
             // it answers.
             Self::Arrange => row(6.0, &[(Need::Nesting, 1.0)]),
+            // Her shelf, going up (phase 6a D7c): nesting, and worth doing
+            // for its own sake whatever her mood (its pace is a stage a
+            // game day, not her mood's to set: not a home act), between
+            // arranging her home and a parcel.
+            Self::PutUp => DesireDef {
+                own_sake: true,
+                ..row(12.0, &[(Need::Nesting, 1.0)])
+            },
         }
     }
 }
 
 /// How much likelier `want` is for its factors: `into_chat` (where it
 /// would take her is in the chat pane), at her routine's `day`, on the
-/// real `date`. Without a day or a date, exactly as likely as without
-/// her routine or the calendar: each such factor is 1.
+/// real `date`, with something new up on her shelf (`fresh`). Without a
+/// day or a date, exactly as likely as without her routine or the
+/// calendar: each such factor is 1.
 pub(super) fn factor(
     want: Want,
     into_chat: bool,
     day: Option<&DayTime>,
     date: Option<NaiveDate>,
+    fresh: bool,
 ) -> f64 {
     want.def()
         .factors
@@ -821,6 +883,8 @@ pub(super) fn factor(
                 times
             }
             Factor::Season(..) => 1.0,
+            Factor::Fresh(times) if fresh => times,
+            Factor::Fresh(_) => 1.0,
         })
         .product()
 }
@@ -960,6 +1024,58 @@ mod tests {
         assert!((250..420).contains(&both), "{both}");
     }
 
+    /// Her gaze up's weight as measured (phase 6a step 8, the user's sixth
+    /// round): base 8, her daydreams 0.4, twice as likely fresh. A pin,
+    /// so a change is made on purpose: the census that set it,
+    /// `tests::census::day_census` (ignored; about 15 s in release),
+    /// asserts 0.7 to 1.5 gazes up a game day in its shelf room, and is
+    /// to be run again with any change here (base 5 gave 0.05).
+    #[test]
+    fn her_gaze_up_weighs_as_measured() {
+        let def = Want::Use(Use::GazeUp).def();
+        assert_eq!(def.base, 8.0);
+        assert_eq!(def.serves, &[(Need::Daydreams, 0.4)]);
+        assert_eq!(def.factors.len(), 1);
+        assert!(matches!(def.factors[0], Factor::Fresh(f) if f == BOOST));
+    }
+
+    /// Her gremlin's turning round is a pure function of the home and the
+    /// game day (phase 6a step 8): the same every time (pinned for a few
+    /// homes and days, so a change to its salt or mix is a change on
+    /// purpose), about one game day in twenty (a band over 8000 days),
+    /// and not the dash's or the midnight snack's draw over again.
+    #[test]
+    fn the_gremlin_turns_by_the_home_and_day() {
+        let pinned = TURNS_PINNED;
+        for (master, day, turns) in pinned {
+            assert_eq!(
+                gremlin_turns(master, day),
+                turns,
+                "home {master}, day {day}"
+            );
+        }
+        assert!(pinned.iter().any(|&(.., t)| t) && pinned.iter().any(|&(.., t)| !t));
+        let days = (0..800u64)
+            .flat_map(|master| (0..10).map(move |day| (master, day)))
+            .filter(|&(master, day)| gremlin_turns(master, day))
+            .count();
+        assert!((330..480).contains(&days), "{days} in 8000");
+        let with_dash = (0..20_000u64)
+            .filter(|&m| gremlin_turns(m, 3) && dash(m, 3).is_some())
+            .count();
+        assert!((250..420).contains(&with_dash), "{with_dash}");
+    }
+
+    /// [`the_gremlin_turns_by_the_home_and_day`]'s pins.
+    const TURNS_PINNED: [(u64, u64, bool); 6] = [
+        (0, 0, false),
+        (0, 1, false),
+        (1, 0, false),
+        (2, 0, true),
+        (3, 4, true),
+        (4, 2, true),
+    ];
+
     fn all() -> Vec<Want> {
         let mut offers = vec![
             Want::Stand,
@@ -1035,14 +1151,19 @@ mod tests {
     }
 
     /// Over a visit she gets sleepier and lies down more: with the same
-    /// offers, a settled Osaka at a visit's end (sleepy 0.9) lies down at
-    /// least twice as often as ten minutes in (sleepy 0.3), choosing as she
-    /// does — her last few choices cooling repeats.
+    /// offers and her comfort wanting as much (0.7), a settled Osaka at a
+    /// visit's end (sleepy 0.9) lies down at least twice as often as ten
+    /// minutes in (sleepy 0.3), choosing as she does — her last few
+    /// choices cooling repeats. It reads the table's bases: since phase 5c
+    /// (step 8c) spacing out is worth doing for its own sake, so the
+    /// floor's doze, a poor answer to sleep, is her pick only while her
+    /// comfort wants too (with none, she never lies down here).
     #[test]
     fn sleepiness_draws_her_to_lie_down() {
         let share = |sleepy: f64| {
             let needs = Needs::with(&[
                 (Need::Sleepy, sleepy),
+                (Need::Comfort, 0.7),
                 (Need::Restless, 0.1),
                 (Need::Mischief, 0.2),
             ]);
@@ -1071,7 +1192,7 @@ mod tests {
         };
         let (awake, sleepy) = (share(0.3), share(0.9));
         assert!(
-            sleepy > 2 * awake,
+            sleepy > 0 && sleepy > 2 * awake,
             "lay down {awake} times awake, {sleepy} sleepy"
         );
     }
@@ -1141,8 +1262,9 @@ mod tests {
             Want::Use(_) => 8,
             Want::Work => 9,
             Want::Arrange => 10,
+            Want::PutUp => 11,
         };
-        for k in 0..11 {
+        for k in 0..12 {
             assert!(Want::ALL.iter().any(|&w| kind(w) == k), "kind {k} missing");
         }
         for a in Activity::ALL {
@@ -1154,6 +1276,9 @@ mod tests {
             }
         }
         assert!(Want::ALL.contains(&Want::Use(Use::Crumple)));
+        // Offered by where a piece stands (on her shelf), not by its
+        // kind's uses: nothing above lists it.
+        assert!(Want::ALL.contains(&Want::Use(Use::GazeUp)));
         for (i, a) in Want::ALL.iter().enumerate() {
             assert!(!Want::ALL[..i].contains(a), "{a:?} twice");
         }
@@ -1166,7 +1291,9 @@ mod tests {
     fn sane_factor(factor: Factor) -> bool {
         match factor {
             Factor::InChat(times) => times > 0.0 && times < 1.0,
-            Factor::Clock(_, times) | Factor::Season(_, times) => times > 1.0 && times.is_finite(),
+            Factor::Clock(_, times) | Factor::Season(_, times) | Factor::Fresh(times) => {
+                times > 1.0 && times.is_finite()
+            }
         }
     }
 
@@ -1253,8 +1380,14 @@ mod tests {
     fn looking_out_is_a_daydream_and_some_fun() {
         let def = Want::Use(Use::LookOut).def();
         assert_eq!(def.serves, &[(Need::Daydreams, 0.5), (Need::Fun, 0.3)]);
-        // Rarer and far longer than it was (phase 5c D6: 8, 15-30 s).
-        assert_eq!(def.base, 3.0);
+        // Rarer and far longer than it was (phase 5c D6: 8, 15-30 s). The
+        // user accepts 2 to 6 a game day in a furnished home with a
+        // window (step 12c, the outcome, not the number; the day census
+        // holds that range): with the stillness levers on, the day census
+        // read 36 look-outs in its 42 game days at base 3, 82 at 4 (1.95
+        // a day, under the range), 140 at 5 (3.3, mid-range, as shipped
+        // in phase 5c's tail, T1) and 175 at 6.
+        assert_eq!(def.base, 5.0);
         assert!(!def.own_sake);
         assert_eq!(def.factors, LOOK_OUT_FACTORS);
     }
@@ -1385,11 +1518,15 @@ mod tests {
         ];
         let dates = [None, ymd(2027, 3, 5)];
         for want in Want::ALL {
-            assert_eq!(factor(want, true, None, None), chat_of(want), "{want:?}");
+            assert_eq!(
+                factor(want, true, None, None, false),
+                chat_of(want),
+                "{want:?}"
+            );
             for day in &days {
                 for &date in &dates {
-                    let out = factor(want, false, day.as_ref(), date);
-                    let into = factor(want, true, day.as_ref(), date);
+                    let out = factor(want, false, day.as_ref(), date, false);
+                    let into = factor(want, true, day.as_ref(), date, false);
                     assert_eq!(into, out * chat_of(want), "{want:?} {day:?} {date:?}");
                 }
             }
@@ -1440,8 +1577,8 @@ mod tests {
                 for minute in (0..1440).step_by(15) {
                     let now = day_at(day, minute, vacation);
                     for want in Want::ALL {
-                        assert_eq!(factor(want, false, None, None), 1.0, "{want:?}");
-                        let times = factor(want, false, Some(&now), None);
+                        assert_eq!(factor(want, false, None, None, false), 1.0, "{want:?}");
+                        let times = factor(want, false, Some(&now), None, false);
                         if expected(want, &now) {
                             assert!(times > 1.0, "{want:?} at {now}");
                             seen.insert(want);
@@ -1450,18 +1587,29 @@ mod tests {
                         }
                         // In the chat, the boost is on top of the chat's
                         // (a row's own slice keeps it: see `chat_of`).
-                        let in_chat = factor(want, true, Some(&now), None);
+                        let in_chat = factor(want, true, Some(&now), None, false);
                         assert_eq!(in_chat, chat_of(want) * times, "{want:?} at {now}");
                     }
                 }
             }
         }
         assert_eq!(seen.len(), 10, "{seen:?}");
+        // Something new up on her shelf (phase 6a step 8): her gaze up
+        // there, and nothing else, whatever the time.
+        for want in Want::ALL {
+            let fresh = factor(want, false, None, None, true);
+            let up = if want == Want::Use(Use::GazeUp) {
+                BOOST
+            } else {
+                1.0
+            };
+            assert_eq!(fresh, up, "{want:?}");
+        }
         // Read's evening is before a day off: Friday's, not Thursday's.
         let thursday = day_at(10, 19 * 60, false);
         let friday = day_at(11, 19 * 60, false);
-        assert_eq!(factor(read, false, Some(&thursday), None), 1.0);
-        assert!(factor(read, false, Some(&friday), None) > 1.0);
+        assert_eq!(factor(read, false, Some(&thursday), None, false), 1.0);
+        assert!(factor(read, false, Some(&friday), None, false) > 1.0);
         // The seasons: exams and panic week for homework, hay fever for
         // sneezing; each only on its dates, and none without a date.
         let afternoon = day_at(8, 16 * 60, false);
@@ -1477,7 +1625,7 @@ mod tests {
             (ymd(2027, 8, 25), true, false),
             (ymd(2027, 8, 31), true, false),
         ] {
-            let up = |want: Want| factor(want, false, Some(&afternoon), date) > 1.0;
+            let up = |want: Want| factor(want, false, Some(&afternoon), date, false) > 1.0;
             assert_eq!(up(homework), homework_up, "{date:?}");
             assert_eq!(
                 up(Want::Idle(Activity::FloorHomework)),
@@ -1487,7 +1635,10 @@ mod tests {
             assert_eq!(up(Want::Sneeze), sneeze_up, "{date:?}");
             // The date's, whatever the time of day (her mind is given a
             // date only with her day: see `Osaka::choose_next`).
-            assert_eq!(factor(homework, false, None, date) > 1.0, homework_up);
+            assert_eq!(
+                factor(homework, false, None, date, false) > 1.0,
+                homework_up
+            );
         }
     }
 
@@ -1557,7 +1708,7 @@ mod tests {
             needs.pass(ms, rising, Mood::Ordinary, |_| 1.0);
             needs
         };
-        // Short enough that nothing reaches 1 (tidiness rises in 60 s).
+        // Short enough that nothing reaches 1 (tidiness, the fastest, rises in 90 s).
         let awake = pass(6_000, 0);
         let asleep = pass(24_000, 24_000);
         let half = pass(12_000, 6_000);

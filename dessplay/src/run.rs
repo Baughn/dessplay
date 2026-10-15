@@ -1139,6 +1139,9 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
         suggestion: None,
         advisor: crate::advisor::Advisor::with_rules(),
         commentary,
+        tv_screenshots: crate::screenshot::Slot::create("dessplay-tv-")
+            .inspect_err(|e| tracing::warn!("no private screenshot dir for the TV ({e})"))
+            .ok(),
         clipboard: None,
     };
     let end = session.run().await;
@@ -1471,6 +1474,10 @@ pub struct SessionLoop<F: crate::player::PlayerFactory> {
     /// The advisor seam behind the suggestion slot (rule-based today;
     /// a future LLM commentary provider plugs in here).
     pub advisor: crate::advisor::Advisor,
+    /// The houseguest's TV's own private screenshot slot (phase 5c D7):
+    /// never commentary's, whose frames go to the API. `None` when its
+    /// directory couldn't be made (her TV then shows its programmes).
+    pub tv_screenshots: Option<crate::screenshot::Slot>,
     /// The AI commentary engine (design.md, AI Commentary): interval
     /// ticks, the persistent commentator, and the Anthropic calls whose
     /// results become marquee writes.
@@ -1678,6 +1685,9 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                                     });
                                 }).await;
                             });
+                        }
+                        Some(UserAction::TvPicture { ask }) => {
+                            self.tv_picture(ask, &last_view).await;
                         }
                         Some(UserAction::StartNyaaImport { id, result, after }) => {
                             self.shell.start_nyaa_import(id, result, after).await;
@@ -2128,10 +2138,8 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                         false,
                         self.transfer_link_down,
                     );
-                    let holds_file = last_view.now_playing.is_some_and(|file| {
-                        last_view.file_availability.get(&(self.me.clone(), file))
-                            == Some(&dessplay_core::types::FileAvailability::Ready)
-                    });
+                    let holds_file =
+                        dessplay_core::derive::held_now_playing(&last_view, &self.me).is_some();
                     let gates = crate::commentary::TickGates {
                         connected: self.link == crate::ui::props::LinkStatus::Connected,
                         playing: dessplay_core::derive::playback_active(&last_view, &peers),
@@ -2145,16 +2153,21 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                         // deleted before the command goes out, and the
                         // request instant rides along so a write predating
                         // it is rejected (commentary::poll_screenshot).
-                        let shot = match self.commentary.screenshot_path() {
-                            Some(path) => {
+                        // Only of the real now-playing video, as the
+                        // player shows it (`request_screenshot`): never
+                        // the "you don't have this file" placeholder, nor
+                        // the episode before (a refusal in the player
+                        // just leaves the poll to miss).
+                        let shot = match (self.commentary.screenshot_path(), last_view.now_playing) {
+                            (Some(path), Some(file)) => {
                                 let requested_at = std::time::SystemTime::now();
                                 let _ = std::fs::remove_file(&path);
                                 self.shell
-                                    .request_screenshot(path.clone())
+                                    .request_screenshot(path.clone(), file, &last_view)
                                     .await
-                                    .then_some((path, requested_at))
+                                    .map(|_taken| (path, requested_at))
                             }
-                            None => None,
+                            _ => None,
                         };
                         self.commentary.spawn_job(plan, &ctx, shot);
                     }
@@ -2517,6 +2530,66 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
         }
     }
 
+    /// Answer the UI's [`UserAction::TvPicture`] (phase 5c D7): a still
+    /// of the question's file for the houseguest's TV, from the TV's own
+    /// private screenshot slot. [`TvAnswer::NotAsked`] at once unless the
+    /// slot is free (its last frame read) and the player may be asked
+    /// ([`SessionShell::request_screenshot`]: this client holds the file
+    /// as the now-playing file, its real video loaded, never mpv's "you
+    /// don't have this file" placeholder) and takes it (it shows that
+    /// video now). Else the frame is polled for and treated on the
+    /// blocking pool ([`tv_still`]), off this loop. The frame never
+    /// leaves the process.
+    ///
+    /// [`TvAnswer::NotAsked`]: crate::ui::tv_feed::TvAnswer::NotAsked
+    /// [`SessionShell::request_screenshot`]: crate::session::SessionShell::request_screenshot
+    async fn tv_picture(
+        &mut self,
+        ask: crate::ui::tv_feed::TvAsk,
+        view: &dessplay_core::StateView,
+    ) {
+        use crate::ui::shell::UiInput;
+        use crate::ui::tv_feed::TvAnswer;
+        let claim = self
+            .tv_screenshots
+            .as_ref()
+            .and_then(crate::screenshot::Slot::claim);
+        let asked = match claim {
+            Some(claim) => self
+                .shell
+                .request_screenshot(claim.path().to_path_buf(), ask.file, view)
+                .await
+                .map(|taken| (claim, taken)),
+            None => None,
+        };
+        let ui = self.ui.clone();
+        let Some((claim, taken)) = asked else {
+            tracing::trace!(seq = ask.seq, "tv still: not asked of the player");
+            let _ = ui.send(UiInput::TvPicture {
+                ask,
+                answer: TvAnswer::NotAsked,
+            });
+            return;
+        };
+        tokio::spawn(async move {
+            // The player actor answers on its command queue's turn.
+            let taken = tokio::time::timeout(std::time::Duration::from_secs(2), taken)
+                .await
+                .is_ok_and(|taken| taken == Ok(true));
+            let answer = if taken {
+                tokio::task::spawn_blocking(move || tv_still(claim, ask.file))
+                    .await
+                    .ok()
+                    .flatten()
+                    .map_or(TvAnswer::Failed, TvAnswer::Still)
+            } else {
+                tracing::trace!(seq = ask.seq, "tv still: the player isn't showing the file");
+                TvAnswer::NotAsked
+            };
+            let _ = ui.send(UiInput::TvPicture { ask, answer });
+        });
+    }
+
     async fn snapshot(&mut self) -> Option<crate::ui::app::UiSnapshot> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.handle.sync.send(SyncCommand::GetView(tx)).await.ok()?;
@@ -2782,11 +2855,111 @@ pub fn load_dotenv() {
     }
 }
 
+/// The blocking half of a TV still (phase 5c D7): wait for the player's
+/// frame of `file` in the claimed slot, and make the still of it (the
+/// slot is freed once read). Logs how long the frame took, and why there's none (at
+/// debug); never pixels.
+fn tv_still(
+    claim: crate::screenshot::Claim,
+    file: dessplay_core::types::Ed2kHash,
+) -> Option<crate::ui::houseguest::TvPicture> {
+    tv_still_with(claim, file, crate::screenshot::Claim::poll)
+}
+
+/// [`tv_still`], its frame waited for by `poll` (tests wait less).
+fn tv_still_with(
+    claim: crate::screenshot::Claim,
+    file: dessplay_core::types::Ed2kHash,
+    poll: impl FnOnce(crate::screenshot::Claim) -> Option<Vec<u8>>,
+) -> Option<crate::ui::houseguest::TvPicture> {
+    let started = std::time::Instant::now();
+    let Some(bytes) = poll(claim) else {
+        tracing::debug!("tv still: no frame from the player within 2 s");
+        return None;
+    };
+    tracing::trace!(
+        ms = started.elapsed().as_millis() as u64,
+        bytes = bytes.len(),
+        "tv still: frame written"
+    );
+    match crate::ui::houseguest::TvPicture::from_frame(file, &bytes) {
+        Ok(picture) => {
+            tracing::trace!(ms = started.elapsed().as_millis() as u64, "tv still: made");
+            Some(picture)
+        }
+        Err(why) => {
+            tracing::debug!(?why, "tv still: frame rejected");
+            None
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
+
+    /// A JPEG of a generated frame (never a real film's).
+    fn jpeg(image: &image::RgbaImage) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        image::DynamicImage::ImageRgba8(image.clone())
+            .into_rgb8()
+            .write_to(
+                &mut std::io::Cursor::new(&mut bytes),
+                image::ImageFormat::Jpeg,
+            )
+            .unwrap();
+        bytes
+    }
+
+    /// The TV's still (phase 5c D7): a frame the player writes to the
+    /// TV's slot some time after the request makes a still of the file
+    /// asked for; a black or flat frame, or none within the poll, makes
+    /// none.
+    #[test]
+    fn a_tv_still_is_made_of_the_players_frame() {
+        let file = dessplay_core::types::Ed2kHash([5; 16]);
+        let film = jpeg(&crate::ui::houseguest::film::test_frame(640, 360, 3));
+        let flat = jpeg(&image::RgbaImage::from_pixel(
+            640,
+            360,
+            image::Rgba([90, 90, 90, 255]),
+        ));
+        let black = jpeg(&image::RgbaImage::from_pixel(
+            640,
+            360,
+            image::Rgba([2, 2, 3, 255]),
+        ));
+        for (name, frame, made) in [
+            ("film", Some(film), true),
+            ("flat", Some(flat), false),
+            ("black", Some(black), false),
+            ("none", None, false),
+        ] {
+            let slot = crate::screenshot::Slot::create("dessplay-tv-test-").unwrap();
+            let claim = slot.claim().unwrap();
+            let path = claim.path().to_path_buf();
+            let writer = frame.map(|bytes| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    std::fs::write(path, bytes).unwrap();
+                })
+            });
+            let still = tv_still_with(claim, file, |claim| {
+                claim.poll_for(15, std::time::Duration::from_millis(40))
+            });
+            if let Some(writer) = writer {
+                writer.join().unwrap();
+            }
+            assert_eq!(still.is_some(), made, "{name}");
+            if let Some(still) = still {
+                assert_eq!(still.file(), file, "{name}");
+            }
+            assert!(!path.exists(), "{name}: the frame is deleted once read");
+        }
+    }
 
     /// `--reset-sync` clears only the sync database: everything in the
     /// main `dessplay.db` — settings, the hash cache — survives. This is

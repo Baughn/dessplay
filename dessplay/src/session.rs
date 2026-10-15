@@ -35,7 +35,8 @@ use dessplay_core::types::{
 };
 
 use crate::actors::file::{
-    FileCommand, FileConfig, FileOutput, HashEvent, HashedAdd, IndexedFile, Resolution,
+    DownloadFetch, FileCommand, FileConfig, FileOutput, HashEvent, HashedAdd, IndexedFile,
+    Resolution, WantedDownload,
 };
 use crate::actors::player::{DRIFT_HARD_SEEK_MILLIS, PlayerCommand, PlayerOutput};
 use crate::actors::sync::Mutation;
@@ -176,25 +177,15 @@ pub enum Directive {
         /// Lines to draw (filename, explanation, session status).
         lines: Vec<String>,
     },
-    /// Begin/refresh downloading a missing file from peers that have it.
-    StartDownload {
-        /// The file.
-        file: Ed2kHash,
-        /// File size, for chunk geometry.
-        size_bytes: u64,
-        /// Present peers advertising the file (Ready).
-        sources: Vec<dessplay_core::net::PeerId>,
-        /// Playback chunk anchor for the sequential window.
-        play_chunk: u32,
-    },
-    /// Cross-file download fill order: the anchored playlist ranking
-    /// (`derive::anchored_download_order` filtered to the want-set),
-    /// highest priority first. The scheduler's shared per-source chunk
-    /// budget fills in this order. Emitted before the `StartDownload`
-    /// batch whenever the order changes.
-    SetDownloadPriority {
+    /// The whole download want-set ([`FileCommand::SetDownloads`]):
+    /// the anchored playlist ranking (`derive::anchored_download_order`
+    /// filtered to the want-set), highest priority first, each missing
+    /// file carrying its fetch (sources, anchor). Emitted on every
+    /// plan; a file absent from it is not downloaded — an active
+    /// download of it is cancelled.
+    SetDownloads {
         /// Wanted files, highest priority first.
-        order: Vec<Ed2kHash>,
+        wanted: Vec<WantedDownload>,
         /// The now-playing file the ranking is anchored at — the one
         /// file with a playback deadline, so the only one the
         /// scheduler grants window-age urgency (`None` while nothing
@@ -317,7 +308,7 @@ pub struct PlayerWiring {
     /// EOF-advance (or manual-jump) signal to run another.
     last_now_playing: Option<Ed2kHash>,
     /// Wanted missing files we've logged a prefetch download start for.
-    /// `plan_download` re-emits `StartDownload` every snapshot (idempotent
+    /// `plan_download` re-emits the want-set every snapshot (idempotent
     /// in the file actor), so this collapses the log to one line per
     /// download rather than one per second. Pruned to the current
     /// want-set.
@@ -326,12 +317,6 @@ pub struct PlayerWiring {
     /// "why isn't this downloading?" diagnostics are emitted on change,
     /// not every snapshot. Pruned to the current want-set.
     awaiting_source: HashSet<Ed2kHash>,
-    /// The download fill order (and the now-playing anchor riding
-    /// with it) last sent to the file actor, so
-    /// `Directive::SetDownloadPriority` goes out only when either
-    /// actually changes (now-playing moved, playlist edited, playback
-    /// stopped), not on every snapshot.
-    last_priority_sent: (Vec<Ed2kHash>, Option<Ed2kHash>),
     /// The chat narrator's previous snapshot slice. `None` until the
     /// first state arrives (the initial view is a baseline, not news).
     narrator: Option<NarratorState>,
@@ -763,7 +748,6 @@ impl PlayerWiring {
             last_now_playing: None,
             prefetching: HashSet::new(),
             awaiting_source: HashSet::new(),
-            last_priority_sent: (Vec::new(), None),
             narrator: None,
             auto_download: true,
             drift_high_snapshots: 0,
@@ -1170,10 +1154,15 @@ impl PlayerWiring {
         // missing now-playing file. The client relies on its own library;
         // a missing unknown-series file resolves to NotWatching in
         // `on_series_known` rather than waiting on a download.
+        // The empty want-set still goes out: it is what cancels any
+        // download in flight when the setting is switched off.
         if !self.auto_download {
             self.prefetching.clear();
             self.awaiting_source.clear();
-            return vec![];
+            return vec![Directive::SetDownloads {
+                wanted: vec![],
+                now_playing: view.now_playing,
+            }];
         }
         // Collect the want-set up front so the `view` borrow is released
         // before we touch the per-file log-tracking sets (`&mut self`).
@@ -1191,27 +1180,15 @@ impl PlayerWiring {
         self.prefetching.retain(|f| wanted_set.contains(f));
         self.awaiting_source.retain(|f| wanted_set.contains(f));
 
-        let mut out = Vec::new();
-        // The scheduler's cross-file fill order — the whole ranking,
-        // including entries that are local or still resolving (the
-        // scheduler ranks only files it actually holds, so extras are
-        // harmless). Sent ahead of the StartDownload batch, and only
-        // when it changes.
-        let order: Vec<Ed2kHash> = wanted.iter().map(|(h, _)| *h).collect();
-        let now_playing = view.now_playing;
-        if (order.as_slice(), now_playing)
-            != (
-                self.last_priority_sent.0.as_slice(),
-                self.last_priority_sent.1,
-            )
-        {
-            self.last_priority_sent = (order.clone(), now_playing);
-            out.push(Directive::SetDownloadPriority { order, now_playing });
-        }
+        // The whole ranking goes out, including entries that are local
+        // or still resolving (`fetch: None`): they are ranked and, while
+        // wanted, never cancelled — a pending resolution must not kill
+        // a download in flight.
+        let mut out = Vec::with_capacity(wanted.len());
         let awaiting_before = self.awaiting_source.len();
         for (file, size_bytes) in wanted {
-            // Have it, or not resolved yet: skip. The watched flag does
-            // *not* gate this — a wanted entry is one we intend to
+            // Have it, or not resolved yet: no fetch. The watched flag
+            // does *not* gate this — a wanted entry is one we intend to
             // watch, redownload included (design.md, Pre-fetching).
             if matches!(
                 self.resolved.get(&file),
@@ -1219,6 +1196,7 @@ impl PlayerWiring {
             ) {
                 self.prefetching.remove(&file);
                 self.awaiting_source.remove(&file);
+                out.push(WantedDownload { file, fetch: None });
                 continue;
             }
             let sources = self.download_sources(view, peers, file);
@@ -1247,11 +1225,13 @@ impl PlayerWiring {
                     tracing::info!(%file, sources = sources.len(), "prefetch: starting download");
                 }
             }
-            out.push(Directive::StartDownload {
+            out.push(WantedDownload {
                 file,
-                size_bytes,
-                sources,
-                play_chunk: self.play_anchor_chunk(view, file, size_bytes),
+                fetch: Some(DownloadFetch {
+                    size_bytes,
+                    sources,
+                    play_chunk: self.play_anchor_chunk(view, file, size_bytes),
+                }),
             });
         }
         if self.awaiting_source.len() != awaiting_before && !self.awaiting_source.is_empty() {
@@ -1260,7 +1240,10 @@ impl PlayerWiring {
                 "prefetch: wanted files awaiting a source"
             );
         }
-        out
+        vec![Directive::SetDownloads {
+            wanted: out,
+            now_playing: view.now_playing,
+        }]
     }
 
     /// The chunk our playback is at within `file`, anchoring the download
@@ -1579,6 +1562,19 @@ impl PlayerWiring {
     /// `holds_now_playing`.) See `holds_now_playing`.
     fn speaks_for_now_playing(&self, view: &StateView, file: Ed2kHash) -> bool {
         view.now_playing == Some(file) && self.holds_now_playing(view)
+    }
+
+    /// Whether the player may be asked for a frame of `file` (AI
+    /// commentary's, and the houseguest's TV's, phase 5c D7): it's the
+    /// now-playing file, this client holds it whole (`Ready`,
+    /// [`derive::held_now_playing`]), and the player was told to load
+    /// its *real* video ([`Self::holds_now_playing`]: not the "you don't
+    /// have this file" placeholder, which reuses the hash, and not the
+    /// episode before while a prefetched next one is `Ready`). The
+    /// player actor checks the rest: that it shows that video now.
+    pub fn may_screenshot(&self, view: &StateView, file: Ed2kHash) -> bool {
+        dessplay_core::derive::held_now_playing(view, &self.me) == Some(file)
+            && self.speaks_for_now_playing(view, file)
     }
 
     /// The file actor's availability advert, corrected for what the
@@ -2792,15 +2788,30 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
         self.wiring.auto_download = enabled;
     }
 
-    /// Ask the running player for a screenshot written to `path`
-    /// (commentary context). Best-effort and fire-and-forget: returns
-    /// false when no player has been spawned yet, so the caller can skip
-    /// polling for a file that will never appear.
-    pub async fn request_screenshot(&self, path: PathBuf) -> bool {
-        match &self.player {
-            Some(player) => player.send(PlayerCommand::Screenshot(path)).await.is_ok(),
-            None => false,
+    /// Ask the running player for a screenshot of `file` written to
+    /// `path` (AI commentary's frame, the houseguest's TV's still).
+    /// Best-effort: `None` when it may not be asked
+    /// ([`PlayerWiring::may_screenshot`]) or no player has been spawned,
+    /// so the caller can skip polling for a frame that will never come;
+    /// else the player actor's answer to come, whether it took it (it
+    /// refuses while it isn't showing `file`'s video).
+    pub async fn request_screenshot(
+        &self,
+        path: PathBuf,
+        file: Ed2kHash,
+        view: &StateView,
+    ) -> Option<tokio::sync::oneshot::Receiver<bool>> {
+        if !self.wiring.may_screenshot(view, file) {
+            tracing::trace!(%file, "screenshot: not the real now-playing video; not asked");
+            return None;
         }
+        let player = self.player.as_ref()?;
+        let (taken, answer) = tokio::sync::oneshot::channel();
+        player
+            .send(PlayerCommand::Screenshot { path, file, taken })
+            .await
+            .ok()?;
+        Some(answer)
     }
 
     /// Persist a manual mapping (and resolve it Verified at once).
@@ -3057,26 +3068,16 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
                         .send(FileCommand::SetManualMapping { file, path, series })
                         .await;
                 }
-                Directive::StartDownload {
-                    file,
-                    size_bytes,
-                    sources,
-                    play_chunk,
+                Directive::SetDownloads {
+                    wanted,
+                    now_playing,
                 } => {
                     let _ = self
                         .file
-                        .send(FileCommand::StartDownload {
-                            file,
-                            size_bytes,
-                            sources,
-                            play_chunk,
+                        .send(FileCommand::SetDownloads {
+                            wanted,
+                            now_playing,
                         })
-                        .await;
-                }
-                Directive::SetDownloadPriority { order, now_playing } => {
-                    let _ = self
-                        .file
-                        .send(FileCommand::SetDownloadPriority { order, now_playing })
                         .await;
                 }
                 Directive::RunEviction {
@@ -3647,14 +3648,21 @@ mod tests {
             .collect()
     }
 
-    fn start_download_files(directives: &[Directive]) -> Vec<Ed2kHash> {
+    /// Every file `directives` asks to fetch, with its fetch.
+    fn fetches(directives: &[Directive]) -> Vec<(Ed2kHash, DownloadFetch)> {
         directives
             .iter()
             .filter_map(|d| match d {
-                Directive::StartDownload { file, .. } => Some(*file),
+                Directive::SetDownloads { wanted, .. } => Some(wanted),
                 _ => None,
             })
+            .flatten()
+            .filter_map(|w| w.fetch.clone().map(|f| (w.file, f)))
             .collect()
+    }
+
+    fn start_download_files(directives: &[Directive]) -> Vec<Ed2kHash> {
+        fetches(directives).into_iter().map(|(f, _)| f).collect()
     }
 
     fn resolve_files(directives: &[Directive]) -> Vec<Ed2kHash> {
@@ -5345,13 +5353,9 @@ mod tests {
             },
             &view,
         );
-        let anchor = wiring
-            .on_state(&view, &[peer("kim")])
-            .iter()
-            .find_map(|d| match d {
-                Directive::StartDownload { play_chunk, .. } => Some(*play_chunk),
-                _ => None,
-            });
+        let anchor = fetches(&wiring.on_state(&view, &[peer("kim")]))
+            .first()
+            .map(|(_, f)| f.play_chunk);
         assert_eq!(
             anchor,
             Some(500),
@@ -5382,12 +5386,9 @@ mod tests {
         wiring.on_resolved(hash(1), Resolution::NotFound, &view, &[peer("kim")]);
 
         let anchor = |directives: &[Directive]| {
-            directives.iter().find_map(|d| match d {
-                Directive::StartDownload {
-                    file, play_chunk, ..
-                } if *file == hash(1) => Some(*play_chunk),
-                _ => None,
-            })
+            fetches(directives)
+                .into_iter()
+                .find_map(|(file, f)| (file == hash(1)).then_some(f.play_chunk))
         };
         // No position yet: anchored at the start.
         assert_eq!(anchor(&wiring.on_state(&view, &[peer("kim")])), Some(0));
@@ -6960,12 +6961,14 @@ mod tests {
         assert!(has_placeholder(&directives));
     }
 
-    /// Every `SetDownloadPriority` order in `directives`.
+    /// Every want-set order in `directives`.
     fn priority_orders(directives: &[Directive]) -> Vec<Vec<Ed2kHash>> {
         directives
             .iter()
             .filter_map(|d| match d {
-                Directive::SetDownloadPriority { order, .. } => Some(order.clone()),
+                Directive::SetDownloads { wanted, .. } => {
+                    Some(wanted.iter().map(|w| w.file).collect())
+                }
                 _ => None,
             })
             .collect()
@@ -6976,8 +6979,7 @@ mod tests {
     /// downloads too (it's unseen), a watched entry ahead does not (its
     /// rewatch fetch starts when it becomes now-playing), and a watched
     /// now-playing still downloads (a rewatch is a watch). The
-    /// `SetDownloadPriority` order is the anchored ranking, re-sent only
-    /// when it changes.
+    /// want-set's order is the anchored ranking.
     #[test]
     fn want_set_is_all_unwatched_plus_now_playing_in_anchored_order() {
         let mut state = CrdtState::new();
@@ -7047,9 +7049,10 @@ mod tests {
                 "watched history must not download: {downloads:?}"
             );
         }
-        assert!(
-            priority_orders(&second).is_empty(),
-            "an unchanged order is not re-sent"
+        assert_eq!(
+            priority_orders(&second),
+            vec![vec![hash(3), hash(4), hash(1)]],
+            "the want-set is declarative: re-sent whole on every plan"
         );
 
         // Now-playing advances: the ranking re-anchors and goes out once.
@@ -7086,10 +7089,8 @@ mod tests {
             downloads.contains(&hash(1)) && downloads.contains(&hash(2)),
             "windowed missing files must emit even without a source: {downloads:?}"
         );
-        for directive in &directives {
-            if let Directive::StartDownload { sources, .. } = directive {
-                assert!(sources.is_empty(), "no present peer advertises these");
-            }
+        for (_, fetch) in fetches(&directives) {
+            assert!(fetch.sources.is_empty(), "no present peer advertises these");
         }
 
         // A peer now advertises the ahead entry Ready: its emission
@@ -7103,13 +7104,9 @@ mod tests {
         );
         let view = state.view();
         let peers = [peer("kim"), peer("nas")];
-        let sources_for_2 = wiring
-            .on_state(&view, &peers)
+        let sources_for_2 = fetches(&wiring.on_state(&view, &peers))
             .into_iter()
-            .find_map(|d| match d {
-                Directive::StartDownload { file, sources, .. } if file == hash(2) => Some(sources),
-                _ => None,
-            })
+            .find_map(|(file, f)| (file == hash(2)).then_some(f.sources))
             .expect("the windowed file must still emit");
         assert_eq!(sources_for_2, vec![dessplay_core::net::PeerId::new("nas")]);
     }
@@ -7189,6 +7186,16 @@ mod tests {
         assert!(
             downloads.contains(&hash(1)) && downloads.contains(&hash(2)),
             "auto_download on must prefetch the window: {downloads:?}"
+        );
+
+        // Off again, mid-transfer: the plan must *say* so — an empty
+        // want-set, which cancels the downloads now in flight. Saying
+        // nothing left them running (the 2026-10-14 class).
+        wiring.auto_download = false;
+        assert_eq!(
+            priority_orders(&wiring.on_state(&view, &peers)),
+            vec![Vec::<Ed2kHash>::new()],
+            "switching auto_download off must emit an empty want-set"
         );
     }
 
@@ -7441,6 +7448,47 @@ mod tests {
                 .iter()
                 .any(|c| matches!(c, PlayerCommand::SetPlaying(true))),
             "must not resume stale ep1 while ep2 is now-playing: {cmds:?}"
+        );
+    }
+
+    /// A frame of the now-playing file may be asked of the player only
+    /// when this client holds it `Ready` *and* told the player to load
+    /// its real video: not while the placeholder (which reuses the hash)
+    /// or the episode before is up, though the file is `Ready` (phase 5c
+    /// D7 review: a prefetched next episode is `Ready` before it loads,
+    /// and a finished download is `Ready` while the placeholder shows).
+    #[test]
+    fn a_screenshot_is_asked_only_of_the_real_now_playing_video() {
+        let mut wiring = PlayerWiring::new(me());
+        let mut state = playing_state();
+        assert!(
+            !wiring.may_screenshot(&state.view(), hash(1)),
+            "not reported held"
+        );
+        state.set_file_availability(A, ts(4), me(), hash(1), FileAvailability::Ready);
+        let view = state.view();
+        assert!(
+            !wiring.may_screenshot(&view, hash(1)),
+            "Ready, but only the placeholder (or nothing) loaded"
+        );
+        wiring.loaded = loaded(2);
+        assert!(
+            !wiring.may_screenshot(&view, hash(1)),
+            "Ready, but the episode before loaded"
+        );
+        wiring.loaded = loaded(1);
+        assert!(wiring.may_screenshot(&view, hash(1)), "the real video");
+        assert!(!wiring.may_screenshot(&view, hash(2)), "another file");
+        state.set_file_availability(
+            A,
+            ts(5),
+            me(),
+            hash(1),
+            FileAvailability::Downloading { progress_bps: 5000 },
+        );
+        assert!(
+            !wiring.may_screenshot(&state.view(), hash(1)),
+            "a partial is not held"
         );
     }
 

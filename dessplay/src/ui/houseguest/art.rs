@@ -13,6 +13,7 @@ const PARTS: &str = include_str!("art/osaka.svg");
 const PROPS: &str = include_str!("art/props.svg");
 const DOOR: &str = include_str!("art/door.svg");
 const DELIVERY: &str = include_str!("art/delivery.svg");
+const WALL_DOOR: &str = include_str!("art/wall-door.svg");
 /// A sata andagi in her hand, whole and bitten (see [`Rig::eating_food`]).
 const ANDAGI: [&str; 2] = ["andagi", "andagi-bitten"];
 /// Prop units per cell (her scale at a 9 × 19 px cell), so her
@@ -1113,6 +1114,250 @@ pub(super) fn render_door(
     )
 }
 
+/// Her front door, seen side-on in the wall at the screen's edge
+/// (`art/wall-door.svg`; drawn by `graphics::Look::WallDoor`, which
+/// `placement::Front` lays: in her empty home and apart from her by
+/// `paint_empty`/`draw_front`, in her image by `draw_art`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(super) enum WallDoor {
+    /// Shut. `flap`: its parcel flap swung up into the room by that
+    /// many degrees (0, shut); `away`: her slippers left before it and
+    /// a card on its knob, while she's out.
+    Shut { flap: u8, away: bool },
+    /// Part-way open, turning into the room on its back hinge.
+    Ajar,
+    /// Wide open, the leaf flat against the back, face-on, the doorway
+    /// showing daylight.
+    Open,
+    /// The front post and the threshold alone: drawn over her while she
+    /// stands in the doorway, so the wall's edge stays in front of her.
+    Post,
+    /// The parcel flap's plate alone, swung up into the room by that
+    /// many degrees: drawn over a parcel coming through, so the flap
+    /// rides on it (the door itself, `Shut { flap }`, is drawn behind).
+    /// Its angle is [`lean`]'s, 1 ..= 90: `Plate(0)` (a shut plate,
+    /// already drawn by the shut door) is unused, and past 90 (swung
+    /// back past level) is never drawn (`flap_plate` asserts it). The
+    /// same bound holds for `Shut { flap }`.
+    Plate(u8),
+}
+
+impl WallDoor {
+    /// The columns of its 6 × 4 frame it inks, counted from the wall's
+    /// own (snippets.md, Geometry): shut, the wall's column and the one
+    /// beside it; ajar, open or with her slippers out, four; the flap
+    /// swung up, anywhere in her door's space (all six, whatever the
+    /// angle: a small one inks fewer). A look may crop it narrower (the
+    /// slippers left out over text).
+    pub(super) fn cols(self) -> u8 {
+        match self {
+            Self::Shut {
+                flap: 0,
+                away: false,
+            }
+            | Self::Post
+            | Self::Plate(0) => 2,
+            Self::Shut {
+                flap: 0,
+                away: true,
+            }
+            | Self::Ajar
+            | Self::Open => 4,
+            Self::Shut { .. } | Self::Plate(_) => 6,
+        }
+    }
+
+    /// Whether it shows what's outside (the doorway, or the flap's
+    /// hole), and so draws differently under each [`Sky`].
+    pub(super) fn shows_sky(self) -> bool {
+        match self {
+            Self::Ajar | Self::Open => true,
+            Self::Shut { flap, .. } => flap > 0,
+            Self::Post | Self::Plate(_) => false,
+        }
+    }
+}
+
+/// Her front door's frame: 6 × 4 cells (to-5 ..= to, the wall's column
+/// last), at a piece's scale. The parts are authored with the wall's
+/// line at x = 70; [`wall_door_scene`] shifts them by
+/// [`WALL_DOOR_SHIFT`].
+const WALL_DOOR_FRAME: (f32, f32) = (6.0 * CELL_UNITS.0, 4.0 * CELL_UNITS.1);
+const WALL_DOOR_SHIFT: f32 = 40.0;
+
+/// The parcel flap's plate, swung up into the room by `degrees` on its
+/// top hinge: the flap's face turning in the picture's plane, its pull
+/// near the free edge.
+fn flap_plate(degrees: u8) -> String {
+    debug_assert!(degrees <= 90, "the flap swung past level: {degrees}");
+    const HINGE: [(f32, f32); 2] = [(49.0, 83.0), (66.0, 81.0)];
+    const LONG: f32 = 78.0;
+    const THICK: f32 = 5.0;
+    let a = f32::from(degrees).to_radians();
+    let (dx, dy) = (-LONG * a.sin(), LONG * a.cos());
+    let [(x1, y1), (x2, y2)] = HINGE;
+    let at = |t: f32, s: f32| (x1 + (x2 - x1) * s + dx * t, y1 + (y2 - y1) * s + dy * t);
+    let pull = [at(0.84, 0.3), at(0.84, 0.75), at(0.9, 0.75), at(0.9, 0.3)];
+    let pull: Vec<String> = pull.iter().map(|(x, y)| format!("{x:.1} {y:.1}")).collect();
+    // Its edge, the plate's thickness, along the front of it.
+    let (tx, ty) = (THICK * a.cos(), THICK * a.sin());
+    format!(
+        r##"<path d="M {x2} {y2} L {:.1} {:.1} L {:.1} {:.1} L {:.1} {:.1} Z" fill="#b25c84" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M {x1} {y1} L {x2} {y2} L {:.1} {:.1} L {:.1} {:.1} Z" fill="#d77aa2" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M {} Z" fill="#e8c34a" stroke="currentColor" stroke-width="1.1"/>"##,
+        x2 + tx,
+        y2 + ty,
+        x2 + dx + tx,
+        y2 + dy + ty,
+        x2 + dx,
+        y2 + dy,
+        x2 + dx,
+        y2 + dy,
+        x1 + dx,
+        y1 + dy,
+        pull.join(" L "),
+    )
+}
+
+/// The doorway's sky gradient in `art/wall-door.svg` under `sky`, top to
+/// the horizon: derived from the window's (props.svg, `window-sky-*`;
+/// the svg says what each adds).
+fn doorway_sky(sky: Sky) -> &'static str {
+    match sky {
+        Sky::Night => "wd-sky-night",
+        Sky::Dawn => "wd-sky-dawn",
+        Sky::Day => "wd-sky-day",
+        Sky::Dusk => "wd-sky-dusk",
+        Sky::Evening => "wd-sky-evening",
+    }
+}
+
+/// The hedge outside her door by day (the approved sheet's green).
+const HEDGE_DAY: [u8; 3] = [0x7f, 0xb0, 0x7a];
+
+/// The hedge outside her door under `sky`: the day's green, mixed toward
+/// the skyline the window shows then (props.svg, the town's silhouette
+/// in each `window-sky-*`), the more the darker the hour.
+pub(super) fn hedge(sky: Sky) -> [u8; 3] {
+    let (skyline, k): ([u8; 3], f32) = match sky {
+        Sky::Day => return HEDGE_DAY,
+        Sky::Dawn => ([0x9a, 0x88, 0xb0], 0.45),
+        Sky::Dusk => ([0x4a, 0x2c, 0x52], 0.5),
+        Sky::Evening => ([0x23, 0x2a, 0x52], 0.6),
+        Sky::Night => ([0x18, 0x22, 0x3f], 0.7),
+    };
+    std::array::from_fn(|i| {
+        let mix = f32::from(HEDGE_DAY[i]) * (1.0 - k) + f32::from(skyline[i]) * k;
+        mix.round() as u8
+    })
+}
+
+/// `door`'s SVG body under `sky`: its parts, back to front.
+fn wall_door_body(door: WallDoor, sky: Sky) -> String {
+    let uses = |ids: &[&str]| -> String {
+        ids.iter()
+            .map(|id| format!(r##"<use href="#{id}"/>"##))
+            .collect()
+    };
+    let outside = doorway_sky(sky);
+    let beyond = || {
+        let [r, g, b] = hedge(sky);
+        format!(
+            r##"<use href="#wd-doorway" fill="url(#{outside})"/><use href="#wd-hedge" fill="#{r:02x}{g:02x}{b:02x}"/>"##
+        )
+    };
+    match door {
+        WallDoor::Shut { flap, away } => {
+            let mut body = uses(&["wd-shut"]);
+            if flap == 0 {
+                body.push_str(&uses(&["wd-flap-shut"]));
+            } else {
+                body.push_str(&format!(
+                    r##"<use href="#wd-flap-hole" fill="url(#{outside})"/>"##
+                ));
+            }
+            body.push_str(&uses(&["wd-frame"]));
+            if flap > 0 {
+                body.push_str(&flap_plate(flap));
+            }
+            if away {
+                body.push_str(&uses(&["wd-slippers", "wd-tag"]));
+            }
+            body
+        }
+        WallDoor::Ajar => beyond() + &uses(&["wd-ajar", "wd-frame"]),
+        WallDoor::Open => beyond() + &uses(&["wd-open", "wd-frame"]),
+        WallDoor::Post => uses(&["wd-post"]),
+        WallDoor::Plate(degrees) => flap_plate(degrees),
+    }
+}
+
+/// An SVG document of `body` (parts authored with the wall's line at
+/// x = 70) in the door's frame, set in a right wall (facing Right), or
+/// mirrored for a left wall (facing Left).
+fn wall_door_scene(body: &str, facing: Facing, line: &str) -> String {
+    let (w, h) = WALL_DOOR_FRAME;
+    let mirror = match facing {
+        Facing::Right => String::new(),
+        Facing::Left => format!(r#" transform="translate({w} 0) scale(-1 1)""#),
+    };
+    format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w} {h}" color="{line}">{WALL_DOOR}<g{mirror}><g transform="translate({WALL_DOOR_SHIFT} 0)">{body}</g></g></svg>"##
+    )
+}
+
+/// Render her front door under `sky`, cropped to the `cols` columns of
+/// its frame nearest the wall (1 ..= 6; [`WallDoor::cols`] keeps all its
+/// ink), into a `width × height` image (`cols` × 4.5 cells, `width`
+/// whole columns: asserted) like a standing piece: the floor along its
+/// bottom edge, the wall's column last facing Right (first, facing
+/// Left). The whole 6 × 4 frame is
+/// drawn at `width / cols` a column and cut, so a crop is a plain part
+/// of the whole.
+pub(super) fn render_wall_door(
+    door: WallDoor,
+    sky: Sky,
+    cols: u8,
+    facing: Facing,
+    line: &str,
+    width: u32,
+    height: u32,
+) -> Option<image::RgbaImage> {
+    let cols = u32::from(cols.clamp(1, 6));
+    debug_assert_eq!(width % cols, 0, "{width} pixels in {cols} whole columns");
+    let cell = width / cols;
+    let whole = rasterize(
+        &wall_door_scene(&wall_door_body(door, sky), facing, line),
+        WALL_DOOR_FRAME,
+        cell * 6,
+        height,
+    )?;
+    let x = match facing {
+        Facing::Right => cell * (6 - cols),
+        Facing::Left => 0,
+    };
+    Some(image::imageops::crop_imm(&whole, x, 0, cell * cols, height).to_image())
+}
+
+/// The angle (degrees) the parcel flap rests at on a parcel holding
+/// `item` coming through, its leading edge `lead` half columns from the
+/// wall's line (negative into the room): on the parcel's leading top
+/// corner while that's within the flap's reach (78 units from its hinge
+/// at (57.5, 82), the frame's units with the wall's line at 70), then
+/// with its free edge on the lid (`168 - 64·scale`, the parcel drawn at
+/// `scale = min(cols·20/100, 1)`). It rises as the parcel comes out.
+pub(super) fn lean(item: Furniture, lead: i32) -> u8 {
+    let scale = (f32::from(item.spec().footprint.0) * CELL_UNITS.0 / PARCEL.0).min(1.0);
+    let top = WALL_DOOR_FRAME.1 - 64.0 * scale;
+    let (hx, hy, long) = (57.5f32, 82.0f32, 78.0f32);
+    let corner = 70.0 + 10.0 * lead as f32;
+    let (dx, dy) = (hx - corner, top - hy);
+    let a = if dx.hypot(dy) < long {
+        dx.atan2(dy)
+    } else {
+        ((top - hy) / long).acos()
+    };
+    a.to_degrees().max(0.0) as u8
+}
+
 /// Which parts of a piece to draw, for compositing her into it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) enum Layer {
@@ -1147,6 +1392,11 @@ fn parts(prop: Furniture, layer: Layer) -> &'static [&'static str] {
         // Plain, the hands both point at 12.
         (Furniture::Clock, _) => &["clock", "clock-hand-hour", "clock-hand-minute", "clock-pin"],
         (Furniture::Window, _) => &["window-sky-day", "window"],
+        // Never out of its box (phase 6a D7b: a kit goes up as a
+        // structure), so it's only ever drawn as its parcel.
+        (Furniture::ShelfKit, _) => &[],
+        // A figurine on a plinth: mirrored when he faces left.
+        (Furniture::Gremlin, _) => &["gremlin"],
     }
 }
 
@@ -1380,22 +1630,20 @@ pub(super) fn render_parcel(
 
 /// What's on her TV: static, or Chiyo-chichi's shopping channel, each
 /// with animation frames 0–1; or, flicking through the channels, colour
-/// bars and a sunrise (both still).
+/// bars and a sunrise; or a programme she watches (all three still).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) enum Channel {
     Snow(u8),
     Shopping(u8),
     ColourBars,
     Sunrise,
-    /// A held programme picture (phase 5c art, not yet wired): drawn
-    /// when there's no film to show.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// A programme, held while she watches (phase 5c D7).
     Programme(Programme),
 }
 
-/// The drawn programmes the TV can hold (phase 5c art, not yet wired).
+/// The drawn programmes the TV can hold (phase 5c D7): one drawn as each
+/// watch begins.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[cfg_attr(not(test), allow(dead_code))]
 pub(super) enum Programme {
     /// The news: an anchor at the desk, a red ticker.
     News,
@@ -1408,8 +1656,7 @@ pub(super) enum Programme {
 }
 
 impl Programme {
-    #[cfg(test)]
-    const ALL: [Self; 4] = [Self::News, Self::Weather, Self::Penguins, Self::Cooking];
+    pub const ALL: [Self; 4] = [Self::News, Self::Weather, Self::Penguins, Self::Cooking];
 
     /// Its picture's part in `art/props.svg`.
     fn id(self) -> &'static str {
@@ -1560,6 +1807,102 @@ pub(super) fn render_tv(
     )
 }
 
+/// The TV's glass's whole-pixel rectangle in a `width × height` image of
+/// the TV facing `facing`, as [`rasterize`] places the frame: left, top,
+/// width, height, snapped outward (its half-pixel edges covered; the
+/// glass's mask trims them).
+pub(super) fn glass_rect(facing: Facing, width: u32, height: u32) -> (u32, u32, u32, u32) {
+    let (fw, fh) = prop_frame(Furniture::Tv);
+    let (x0, y0, gw, gh) = GLASS;
+    let scale = (width as f32 / fw).min(height as f32 / fh);
+    let dx = (width as f32 - fw * scale) / 2.0;
+    let dy = height as f32 - fh * scale;
+    let gx = match facing {
+        Facing::Right => x0,
+        Facing::Left => fw - x0 - gw,
+    };
+    let left = (gx * scale + dx).floor().max(0.0) as u32;
+    let top = (y0 * scale + dy).floor().max(0.0) as u32;
+    let right = (((gx + gw) * scale + dx).ceil() as u32).min(width);
+    let bottom = (((y0 + gh) * scale + dy).ceil() as u32).min(height);
+    (
+        left,
+        top,
+        right.saturating_sub(left),
+        bottom.saturating_sub(top),
+    )
+}
+
+/// The whole TV with a still of the film on its glass (phase 5c D7),
+/// rendered like [`render_tv`]: the set with nothing on its glass, then
+/// `film` box-scaled once to the glass's whole-pixel rectangle at this
+/// size and laid in through the glass's rounded mask, **unmirrored** (a
+/// film reads one way, whichever way the set faces), then the glass's
+/// outline over it. In pixel space, not SVG: resvg here has no raster
+/// images, and an `<image>` would be mirrored with the set. No sheen
+/// (the user's call).
+pub(super) fn render_film(
+    film: &image::RgbaImage,
+    facing: Facing,
+    line: &str,
+    width: u32,
+    height: u32,
+) -> Option<image::RgbaImage> {
+    let frame = prop_frame(Furniture::Tv);
+    let (w, h) = frame;
+    let mirror = match facing {
+        Facing::Right => String::new(),
+        Facing::Left => format!(r#" transform="translate({w} 0) scale(-1 1)""#),
+    };
+    let (x0, y0, gw, gh) = GLASS;
+    let svg = |defs: &str, inner: &str| {
+        format!(
+            r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w} {h}" color="{line}">{defs}<g{mirror}>{inner}</g></svg>"##
+        )
+    };
+    let glass = format!(r#"x="{x0}" y="{y0}" width="{gw}" height="{gh}" rx="8""#);
+    let mut out = rasterize(
+        &svg(&format!("{PROPS}{DELIVERY}"), r##"<use href="#tv"/>"##),
+        frame,
+        width,
+        height,
+    )?;
+    let mask = rasterize(
+        &svg("", &format!(r##"<rect {glass} fill="#ffffff"/>"##)),
+        frame,
+        width,
+        height,
+    )?;
+    let outline = rasterize(
+        &svg(
+            "",
+            &format!(r#"<rect {glass} fill="none" stroke="currentColor" stroke-width="1.6"/>"#),
+        ),
+        frame,
+        width,
+        height,
+    )?;
+    let (left, top, pw, ph) = glass_rect(facing, width, height);
+    if pw > 0 && ph > 0 {
+        let picture = super::film::box_scale(film, pw, ph);
+        for (x, y, p) in picture.enumerate_pixels() {
+            let (ox, oy) = (left + x, top + y);
+            let cover = f32::from(mask.get_pixel(ox, oy)[3]) / 255.0;
+            if cover <= 0.0 {
+                continue;
+            }
+            let under = out.get_pixel_mut(ox, oy);
+            for c in 0..3 {
+                under[c] =
+                    (f32::from(under[c]) * (1.0 - cover) + f32::from(p[c]) * cover).round() as u8;
+            }
+            under[3] = (f32::from(under[3]) + (255.0 - f32::from(under[3])) * cover).round() as u8;
+        }
+    }
+    image::imageops::overlay(&mut out, &outline, 0, 0);
+    Some(out)
+}
+
 /// A prop's frame in SVG units.
 fn prop_frame(prop: Furniture) -> (f32, f32) {
     let (cols, rows) = prop.spec().footprint;
@@ -1707,7 +2050,7 @@ mod tests {
     /// side-on (vacant, blink, droop); her eating at the open fridge
     /// (melon bread for reference, then the andagi whole and bitten).
     #[test]
-    #[ignore = "writes PNGs for review"]
+    #[ignore = "writes PNGs for review: set HOUSEGUEST_VIGNETTES"]
     fn vignette_sheet() {
         enum Shot {
             /// A held part alone, at 4× her scale.
@@ -1722,7 +2065,10 @@ mod tests {
         const BG: image::Rgba<u8> = image::Rgba([30, 33, 39, 255]);
         const GRID: image::Rgba<u8> = image::Rgba([44, 49, 58, 255]);
         const FLOOR: image::Rgba<u8> = image::Rgba([139, 148, 158, 255]);
-        let dir = std::env::var("HOUSEGUEST_VIGNETTES").expect("HOUSEGUEST_VIGNETTES");
+        let Ok(dir) = std::env::var("HOUSEGUEST_VIGNETTES") else {
+            eprintln!("HOUSEGUEST_VIGNETTES unset; nothing written");
+            return;
+        };
         let her = |face| Rig::for_pose(Pose::Stand, face);
         let side = |face| Rig::for_pose(Pose::Side, face);
         let rows: Vec<Vec<Shot>> = vec![
@@ -1939,13 +2285,17 @@ mod tests {
         }
     }
 
-    const CHANNELS: [Channel; 6] = [
+    const CHANNELS: [Channel; 10] = [
         Channel::Snow(0),
         Channel::Snow(1),
         Channel::Shopping(0),
         Channel::Shopping(1),
         Channel::ColourBars,
         Channel::Sunrise,
+        Channel::Programme(Programme::News),
+        Channel::Programme(Programme::Weather),
+        Channel::Programme(Programme::Penguins),
+        Channel::Programme(Programme::Cooking),
     ];
 
     /// Every state that applies to each of the second half of the
@@ -2104,7 +2454,7 @@ mod tests {
     ///    her in `Gaze` under the window, at 16:00 (day) and 23:00
     ///    (night).
     #[test]
-    #[ignore = "writes PNGs for review"]
+    #[ignore = "writes PNGs for review: set HOUSEGUEST_CLOCK"]
     fn clock_sheet() {
         enum Draw {
             /// A piece in a state at (x, y), its top row (standing: its
@@ -2122,7 +2472,10 @@ mod tests {
         const BG: image::Rgba<u8> = image::Rgba([30, 33, 39, 255]);
         const FLOOR: image::Rgba<u8> = image::Rgba([139, 148, 158, 255]);
         const RED: image::Rgba<u8> = image::Rgba([224, 82, 82, 255]);
-        let dir = std::env::var("HOUSEGUEST_CLOCK").expect("HOUSEGUEST_CLOCK");
+        let Ok(dir) = std::env::var("HOUSEGUEST_CLOCK") else {
+            eprintln!("HOUSEGUEST_CLOCK unset; nothing written");
+            return;
+        };
         let hung = |item, state, facing, at| Draw::Piece(item, state, facing, at, false);
         let mut draws = Vec::new();
         // 1. The window.
@@ -2308,6 +2661,8 @@ mod tests {
             '.' => [0, 0, 0, 0, 0, 0, 4],
             '\'' => [4, 4, 8, 0, 0, 0, 0],
             '~' => [0, 0, 8, 21, 2, 0, 0],
+            'A' => [14, 17, 17, 31, 17, 17, 17],
+            'B' => [30, 17, 17, 30, 17, 17, 30],
             'M' => [17, 27, 21, 21, 17, 17, 17],
             'T' => [31, 4, 4, 4, 4, 4, 4],
             'a' => [0, 0, 14, 1, 15, 17, 15],
@@ -2372,7 +2727,7 @@ mod tests {
     /// 10. the programme cards, then the colour bars and the sunrise
     ///     for reference.
     #[test]
-    #[ignore = "writes PNGs for review"]
+    #[ignore = "writes PNGs for review: set HOUSEGUEST_STILLNESS"]
     fn stillness_sheet() {
         use super::super::room::MadeId;
         use super::super::scrap::{self, Scrap};
@@ -2402,7 +2757,10 @@ mod tests {
         const FLOOR: image::Rgba<u8> = image::Rgba([139, 148, 158, 255]);
         const TEXT: image::Rgba<u8> = image::Rgba([201, 209, 217, 255]);
         const DIM: image::Rgba<u8> = image::Rgba([110, 118, 129, 255]);
-        let dir = std::env::var("HOUSEGUEST_STILLNESS").expect("HOUSEGUEST_STILLNESS");
+        let Ok(dir) = std::env::var("HOUSEGUEST_STILLNESS") else {
+            eprintln!("HOUSEGUEST_STILLNESS unset; nothing written");
+            return;
+        };
         let glyphs: Vec<(char, Color)> = "Frieren 12"
             .chars()
             .zip(
@@ -2780,6 +3138,98 @@ mod tests {
             .unwrap();
     }
 
+    /// The film on her TV for review (phase 5c D7), through the real
+    /// path (a JPEG as mpv writes it, decoded and treated, then laid on
+    /// the glass): `HOUSEGUEST_FILM_SHEET=/dir cargo test -p dessplay
+    /// --lib film_sheet -- --ignored` writes `film-1x.png` and the same
+    /// pixels at 3× nearest-neighbour (`film-1x-nn3x.png`), over a dark
+    /// terminal. Generated frames (never a real film's), or the frames
+    /// named in `HOUSEGUEST_FILM` (comma-separated paths: CC-BY stills,
+    /// Sintel or Big Buck Bunny), one row each. Columns: the News card
+    /// for reference, the film at 9×19-pixel cells facing right and
+    /// left, at 10×20 facing right, and the treated still itself.
+    #[test]
+    #[ignore = "writes a review sheet: set HOUSEGUEST_FILM_SHEET"]
+    fn film_sheet() {
+        use super::super::film::{TvPicture, test_frame};
+        let Ok(dir) = std::env::var("HOUSEGUEST_FILM_SHEET") else {
+            return;
+        };
+        let file = dessplay_core::types::Ed2kHash([1; 16]);
+        let frames: Vec<Vec<u8>> = match std::env::var("HOUSEGUEST_FILM") {
+            Ok(paths) => paths
+                .split(',')
+                .map(|path| std::fs::read(path.trim()).unwrap())
+                .collect(),
+            Err(_) => (0..4)
+                .map(|n| {
+                    let mut bytes = Vec::new();
+                    image::DynamicImage::ImageRgba8(test_frame(1920, 1080, n * 7))
+                        .into_rgb8()
+                        .write_to(
+                            &mut std::io::Cursor::new(&mut bytes),
+                            image::ImageFormat::Jpeg,
+                        )
+                        .unwrap();
+                    bytes
+                })
+                .collect(),
+        };
+        const GAP: u32 = 10;
+        let (cw, ch) = (6 * 10 + GAP, 4 * 20 + GAP);
+        let mut sheet = image::RgbaImage::from_pixel(
+            GAP + 5 * cw + 128,
+            GAP + frames.len() as u32 * ch.max(102 + GAP),
+            image::Rgba([30, 33, 39, 255]),
+        );
+        for (row, bytes) in frames.iter().enumerate() {
+            let y = GAP + row as u32 * ch.max(102 + GAP);
+            let picture = match TvPicture::from_frame(file, bytes) {
+                Ok(picture) => picture,
+                Err(why) => {
+                    eprintln!("row {row}: {why:?}");
+                    continue;
+                }
+            };
+            let tiles = [
+                render_tv(
+                    Channel::Programme(Programme::News),
+                    Facing::Right,
+                    LINE,
+                    54,
+                    76,
+                ),
+                render_film(picture.image(), Facing::Right, LINE, 54, 76),
+                render_film(picture.image(), Facing::Left, LINE, 54, 76),
+                render_film(picture.image(), Facing::Right, LINE, 60, 80),
+            ];
+            for (col, tile) in tiles.into_iter().enumerate() {
+                let tile = tile.unwrap();
+                image::imageops::overlay(
+                    &mut sheet,
+                    &tile,
+                    i64::from(GAP + col as u32 * cw),
+                    i64::from(y),
+                );
+            }
+            image::imageops::overlay(
+                &mut sheet,
+                picture.image(),
+                i64::from(GAP + 4 * cw),
+                i64::from(y),
+            );
+        }
+        sheet.save(format!("{dir}/film-1x.png")).unwrap();
+        image::imageops::resize(
+            &sheet,
+            sheet.width() * 3,
+            sheet.height() * 3,
+            image::imageops::FilterType::Nearest,
+        )
+        .save(format!("{dir}/film-1x-nn3x.png"))
+        .unwrap();
+    }
+
     #[test]
     fn every_new_piece_renders_inside_its_footprint_in_every_state() {
         for (item, state) in STATES {
@@ -2810,9 +3260,12 @@ mod tests {
     /// then her using each (beside it, facing it, her box a cell clear),
     /// at 1×, 2× and 4× with the cell grid and the floor line.
     #[test]
-    #[ignore = "writes a PNG for review"]
+    #[ignore = "writes a PNG for review: set HOUSEGUEST_CATALOGUE"]
     fn catalogue_sheet() {
-        let path = std::env::var("HOUSEGUEST_CATALOGUE").expect("HOUSEGUEST_CATALOGUE");
+        let Ok(path) = std::env::var("HOUSEGUEST_CATALOGUE") else {
+            eprintln!("HOUSEGUEST_CATALOGUE unset; nothing written");
+            return;
+        };
         let (cw, ch) = (9u32, 19u32);
         let scales = [1u32, 2, 4];
         let span = |s: u32| cw * s * 13;
@@ -2912,7 +3365,12 @@ mod tests {
                 for open in [false, true] {
                     let image = render_parcel(item, open, facing, LINE, w, h).expect("renders");
                     let inked = image.pixels().filter(|p| p.0[3] > 0).count();
-                    assert!(inked > 400, "{item:?} open={open}: only {inked} pixels");
+                    // A box drawn smaller in a footprint two cells wide
+                    // (the gremlin's: phase 6a D9): its frame scales the
+                    // parcel to 0.4 (2026-10-12: 218 inked closed, 260
+                    // open; a shrink to 0.8 of that fails).
+                    let least = if cols >= 3 { 400 } else { 180 };
+                    assert!(inked > least, "{item:?} open={open}: only {inked} pixels");
                     // It stands on the floor, well below the box's top.
                     assert!(
                         (0..w).all(|x| image.get_pixel(x, 0).0[3] == 0),
@@ -2939,14 +3397,17 @@ mod tests {
     /// TV on each channel frame; her sitting beside it watching the
     /// shopping channel. 1×, 2× and 4×, with the cell grid and floor line.
     #[test]
-    #[ignore = "writes a PNG for review"]
+    #[ignore = "writes a PNG for review: set HOUSEGUEST_DELIVERY"]
     fn delivery_sheet() {
         enum Item {
             Parcel(Furniture, bool),
             Tv(Channel),
             Watching(Channel),
         }
-        let path = std::env::var("HOUSEGUEST_DELIVERY").expect("HOUSEGUEST_DELIVERY");
+        let Ok(path) = std::env::var("HOUSEGUEST_DELIVERY") else {
+            eprintln!("HOUSEGUEST_DELIVERY unset; nothing written");
+            return;
+        };
         let (cw, ch) = (9u32, 19u32);
         let scales = [1u32, 2, 4];
         let span = |s: u32| cw * s * 16;
@@ -3029,9 +3490,12 @@ mod tests {
     /// mirrored on the right; 1×, 2× and 4×, with the cell grid and the
     /// floor line.
     #[test]
-    #[ignore = "writes a PNG for review"]
+    #[ignore = "writes a PNG for review: set HOUSEGUEST_DOOR"]
     fn door_sheet() {
-        let path = std::env::var("HOUSEGUEST_DOOR").expect("HOUSEGUEST_DOOR");
+        let Ok(path) = std::env::var("HOUSEGUEST_DOOR") else {
+            eprintln!("HOUSEGUEST_DOOR unset; nothing written");
+            return;
+        };
         let (cw, ch) = (9u32, 19u32);
         let scales = [1u32, 2, 4];
         let span = |s: u32| cw * s * 7;
@@ -3092,14 +3556,739 @@ mod tests {
         sheet.save(path).unwrap();
     }
 
+    /// Her front door, side-on in the wall at the screen's edge, for
+    /// review: `HOUSEGUEST_WALL_DOOR=/dir cargo test -p dessplay --lib
+    /// wall_door_sheet -- --ignored` writes `wall-door-1x.png`, the same
+    /// pixels at 3× nearest-neighbour (`wall-door-1x-nn3x.png`) and a
+    /// native 3× render (`wall-door-3x.png`), over a dark terminal, each
+    /// door at a screen edge with the wall's line and a strip of floor.
+    /// Bands, top to bottom (numbered on the sheet):
+    /// 1. shut: the rejected edge-on door (A) at a right and a left wall,
+    ///    then the chosen turned door (B) at a right and a left wall;
+    /// 2. going out (right wall): walking up, at her spot facing the
+    ///    shut door, ajar, open, half through the doorway, nearly gone;
+    /// 3. the door closing behind her (open, ajar, shut), then her door
+    ///    while she's out: at a right and a left wall, and plain;
+    /// 4. coming home (left wall): ajar, open, nearly in, half in, at her
+    ///    spot facing the room, the door ajar and shut behind her;
+    /// 5. a small parcel (her clock's) through the flap (right wall):
+    ///    shut, nosing out, half out, out, the flap falling back, shut
+    ///    with the parcel at rest at the space's inner edge;
+    /// 6. a large parcel (a bookshelf's) at a left wall, likewise;
+    /// 7. clearance: a bed at the space's inner edge with the door open
+    ///    and her at her spot, and a sofa there with her door while
+    ///    she's out; the space is bracketed under the floor;
+    /// 8. the doorway under each sky (night, dawn, day, dusk, evening),
+    ///    its hedge darkening with it;
+    /// 9. the flap's hole under each sky, at a left wall.
+    #[test]
+    #[ignore = "writes PNGs for review: set HOUSEGUEST_WALL_DOOR"]
+    fn wall_door_sheet() {
+        #[derive(Clone, Copy, PartialEq)]
+        enum Wall {
+            Left,
+            Right,
+        }
+        enum Door {
+            Is(WallDoor),
+            /// Under a sky other than the day's.
+            Under(WallDoor, Sky),
+            /// The rejected edge-on candidate.
+            EdgeOn,
+        }
+        enum Draw {
+            /// A floor `len` columns long meeting a wall in column
+            /// `at`, on floor row `f`.
+            Room(Wall, u32, u32, u32),
+            /// The door in the wall in column `at`, on floor row `f`.
+            Door(Door, Wall, u32, u32),
+            /// Her box (5 × 4) at left column `x` on floor row `f`,
+            /// clipped at a wall's line if one is given.
+            Her(Rig, Facing, (i32, u32), Option<(Wall, u32)>),
+            /// A parcel holding `item`, its frame's left edge `xh` half
+            /// columns in, on floor row `f`, clipped at a wall's line if
+            /// one is given.
+            Parcel(Furniture, (i32, u32), Option<(Wall, u32)>),
+            /// A piece standing on floor row `f` (left column `x`).
+            Piece(Furniture, Facing, (u32, u32)),
+            /// A dim bracket under the floor row `f`, columns `x0..=x1`
+            /// (her door's space).
+            Span(u32, u32, u32),
+            /// A dim label.
+            Label(&'static str, (u32, u32)),
+        }
+        const BG: image::Rgba<u8> = image::Rgba([30, 33, 39, 255]);
+        const FLOOR: image::Rgba<u8> = image::Rgba([139, 148, 158, 255]);
+        const DIM: image::Rgba<u8> = image::Rgba([110, 118, 129, 255]);
+        let Ok(dir) = std::env::var("HOUSEGUEST_WALL_DOOR") else {
+            eprintln!("HOUSEGUEST_WALL_DOOR unset; nothing written");
+            return;
+        };
+        let rig = Rig::for_pose;
+        let band = |k: u32| 7 + 8 * k;
+        let mut draws: Vec<Draw> = Vec::new();
+        let label = |draws: &mut Vec<Draw>, text, k: u32| {
+            draws.push(Draw::Label(text, (0, band(k) - 6)));
+        };
+        // Scene `i` of a band, `span` columns each: the wall's column at
+        // its right (a right wall) or its left (a left wall).
+        let right = |i: u32, span: u32| span * (i + 1);
+        let left = |i: u32, span: u32| 3 + span * i;
+        let shut = |away| Door::Is(WallDoor::Shut { flap: 0, away });
+        let wall_at = |wall: Wall, i: u32, span: u32| match wall {
+            Wall::Right => right(i, span),
+            Wall::Left => left(i, span),
+        };
+        // Her box's left column at `d` columns from her spot (a right
+        // wall: her spot's box is to-5 ..= to-1; a left wall: to+1 ..=
+        // to+5), `d` positive toward the wall.
+        let box_at = |wall: Wall, at: u32, d: i32| match wall {
+            Wall::Right => at as i32 - 5 + d,
+            Wall::Left => at as i32 + 1 - d,
+        };
+        let toward = |wall: Wall| match wall {
+            Wall::Right => Facing::Right,
+            Wall::Left => Facing::Left,
+        };
+        let away_from = |wall: Wall| match wall {
+            Wall::Right => Facing::Left,
+            Wall::Left => Facing::Right,
+        };
+        // 1. Shut: A (edge-on) right and left; B (turned) right and left.
+        let f = band(0);
+        label(&mut draws, "1", 0);
+        for (i, wall, door, name) in [
+            (0, Wall::Right, Door::EdgeOn, "A"),
+            (1, Wall::Left, Door::EdgeOn, "A"),
+            (2, Wall::Right, shut(false), "B"),
+            (3, Wall::Left, shut(false), "B"),
+        ] {
+            let at = wall_at(wall, i, 12);
+            draws.push(Draw::Room(wall, at, f, 10));
+            draws.push(Draw::Door(door, wall, at, f));
+            let lx = match wall {
+                Wall::Right => at - 2,
+                Wall::Left => at + 2,
+            };
+            draws.push(Draw::Label(name, (lx, f - 6)));
+        }
+        // A frame of her going through: the door, her at `d` from her
+        // spot facing `facing` (clipped at the wall's line, with the post
+        // over her, once she's in the doorway).
+        let scene = |draws: &mut Vec<Draw>,
+                     wall: Wall,
+                     at: u32,
+                     f: u32,
+                     door: WallDoor,
+                     her: Option<(Pose, i32, Facing)>| {
+            draws.push(Draw::Room(wall, at, f, 10));
+            draws.push(Draw::Door(Door::Is(door), wall, at, f));
+            if let Some((pose, d, facing)) = her {
+                let x = box_at(wall, at, d);
+                let clip = (d > 0).then_some((wall, at));
+                draws.push(Draw::Her(rig(pose, Face::Happy), facing, (x, f), clip));
+                if d > 0 {
+                    draws.push(Draw::Door(Door::Is(WallDoor::Post), wall, at, f));
+                }
+            }
+        };
+        // 2. Going out, at a right wall.
+        let f = band(1);
+        label(&mut draws, "2", 1);
+        let wall = Wall::Right;
+        for (i, (door, her)) in [
+            (
+                WallDoor::Shut {
+                    flap: 0,
+                    away: false,
+                },
+                (Pose::Walk(1), -3),
+            ),
+            (
+                WallDoor::Shut {
+                    flap: 0,
+                    away: false,
+                },
+                (Pose::Side, 0),
+            ),
+            (WallDoor::Ajar, (Pose::Side, 0)),
+            (WallDoor::Open, (Pose::Side, 0)),
+            (WallDoor::Open, (Pose::Walk(2), 2)),
+            (WallDoor::Open, (Pose::Walk(0), 4)),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let at = right(i as u32, 12);
+            scene(
+                &mut draws,
+                wall,
+                at,
+                f,
+                door,
+                Some((her.0, her.1, toward(wall))),
+            );
+        }
+        // 3. Closing behind her; then out: right, left, and plain.
+        let f = band(2);
+        label(&mut draws, "3", 2);
+        for (i, door) in [WallDoor::Open, WallDoor::Ajar].into_iter().enumerate() {
+            scene(&mut draws, wall, right(i as u32, 12), f, door, None);
+        }
+        for (i, wall, away) in [
+            (2u32, Wall::Right, false),
+            (3, Wall::Right, true),
+            (4, Wall::Left, true),
+        ] {
+            let at = wall_at(wall, i, 12);
+            draws.push(Draw::Room(wall, at, f, 10));
+            draws.push(Draw::Door(shut(away), wall, at, f));
+        }
+        // 4. Coming home, at a left wall.
+        let f = band(3);
+        label(&mut draws, "4", 3);
+        let wall = Wall::Left;
+        let back: [(WallDoor, Option<(Pose, i32)>); 7] = [
+            (WallDoor::Ajar, None),
+            (WallDoor::Open, None),
+            (WallDoor::Open, Some((Pose::Walk(0), 4))),
+            (WallDoor::Open, Some((Pose::Walk(2), 2))),
+            (WallDoor::Open, Some((Pose::Stand, 0))),
+            (WallDoor::Ajar, Some((Pose::Side, 0))),
+            (
+                WallDoor::Shut {
+                    flap: 0,
+                    away: false,
+                },
+                Some((Pose::Walk(1), -2)),
+            ),
+        ];
+        for (i, (door, her)) in back.into_iter().enumerate() {
+            let at = left(i as u32, 12);
+            let her = her.map(|(pose, d)| (pose, d, away_from(wall)));
+            scene(&mut draws, wall, at, f, door, her);
+        }
+        // 5–6. A parcel through the flap. The flap rests on the parcel
+        // as it passes ([`lean`]).
+        for (k, item, wall, span) in [
+            (4u32, Furniture::Clock, Wall::Right, 12u32),
+            (5, Furniture::Bookshelf, Wall::Left, 14),
+        ] {
+            let f = band(k);
+            label(&mut draws, if k == 4 { "5" } else { "6" }, k);
+            let pc = i32::from(item.spec().footprint.0);
+            // The parcel's leading edge, in half columns from the wall's
+            // line into the room (the doorway is the first 3): nosing out
+            // a column past the back post, half out, out, settling, at
+            // rest (its trailing edge at the space's inner edge, to-7).
+            // Once it's out the flap falls back, clear of it.
+            let (half, out, rest) = (-3 - pc, -4 - 2 * pc, -13 - 2 * pc);
+            for (i, (flap, lead)) in [
+                (0u8, None),
+                (lean(item, -5), Some(-5)),
+                (lean(item, half), Some(half)),
+                (10, Some(out)),
+                (4, Some((out + rest) / 2)),
+                (0, Some(rest)),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let at = wall_at(wall, i as u32, span);
+                draws.push(Draw::Room(wall, at, f, span - 2));
+                draws.push(Draw::Door(
+                    Door::Is(WallDoor::Shut { flap, away: false }),
+                    wall,
+                    at,
+                    f,
+                ));
+                if let Some(lead) = lead {
+                    // The wall's line is at half column 2·at + 1.
+                    let line = 2 * at as i32 + 1;
+                    let xh = match wall {
+                        Wall::Right => line + lead,
+                        Wall::Left => line - lead - 2 * pc,
+                    };
+                    let clip = (i < 3).then_some((wall, at));
+                    draws.push(Draw::Parcel(item, (xh, f), clip));
+                    if flap > 0 {
+                        // The flap rides on top of the parcel.
+                        draws.push(Draw::Door(Door::Is(WallDoor::Plate(flap)), wall, at, f));
+                    }
+                }
+            }
+        }
+        // 7. Clearance: a bed whose near end is at to-7 (to-6 is air),
+        // the door open and her at her spot; a sofa likewise at a left
+        // wall, her door while she's out.
+        let f = band(6);
+        label(&mut draws, "7", 6);
+        let at = 30;
+        draws.push(Draw::Room(Wall::Right, at, f, 28));
+        draws.push(Draw::Piece(Furniture::Bed, Facing::Right, (at - 16, f)));
+        draws.push(Draw::Door(Door::Is(WallDoor::Open), Wall::Right, at, f));
+        draws.push(Draw::Her(
+            rig(Pose::Side, Face::Happy),
+            Facing::Right,
+            (at as i32 - 5, f),
+            None,
+        ));
+        draws.push(Draw::Span(at - 6, at - 1, f));
+        let at = 36;
+        draws.push(Draw::Room(Wall::Left, at, f, 26));
+        draws.push(Draw::Piece(Furniture::Sofa, Facing::Left, (at + 7, f)));
+        draws.push(Draw::Door(shut(true), Wall::Left, at, f));
+        draws.push(Draw::Span(at + 1, at + 6, f));
+        // 8. The doorway under each sky (right wall): night, dawn, day,
+        // dusk, evening.
+        let f = band(7);
+        label(&mut draws, "8", 7);
+        for (i, sky) in Sky::ALL.into_iter().enumerate() {
+            let at = right(i as u32, 12);
+            draws.push(Draw::Room(Wall::Right, at, f, 10));
+            draws.push(Draw::Door(
+                Door::Under(WallDoor::Open, sky),
+                Wall::Right,
+                at,
+                f,
+            ));
+        }
+        // 9. The flap's hole under each sky (left wall), likewise.
+        let f = band(8);
+        label(&mut draws, "9", 8);
+        for (i, sky) in Sky::ALL.into_iter().enumerate() {
+            let at = left(i as u32, 12);
+            draws.push(Draw::Room(Wall::Left, at, f, 10));
+            let door = WallDoor::Shut {
+                flap: 45,
+                away: false,
+            };
+            draws.push(Draw::Door(Door::Under(door, sky), Wall::Left, at, f));
+        }
+
+        let (cols, rows) = (88u32, band(8) + 2);
+        let render_sheet = |s: u32| {
+            let (w, h) = (9 * s, 19 * s);
+            let mut sheet = image::RgbaImage::from_pixel(w * cols, h * rows, BG);
+            let line_x = |at: u32| w * at + w / 2 - s / 2;
+            let put = |sheet: &mut image::RgbaImage,
+                       image: &image::RgbaImage,
+                       x: i64,
+                       y: i64,
+                       clip: Option<(Wall, u32)>| {
+                let mut image = image.clone();
+                if let Some((wall, at)) = clip {
+                    let lx = i64::from(line_x(at));
+                    for (px, _, p) in image.enumerate_pixels_mut() {
+                        let sx = x + i64::from(px);
+                        let out = match wall {
+                            Wall::Right => sx >= lx,
+                            Wall::Left => sx < lx + i64::from(s),
+                        };
+                        if out {
+                            p.0[3] = 0;
+                        }
+                    }
+                }
+                image::imageops::overlay(sheet, &image, x, y);
+            };
+            for draw in &draws {
+                match draw {
+                    Draw::Room(wall, at, f, len) => {
+                        let lx = line_x(*at);
+                        let fy = h * f + h / 2 - s / 2;
+                        let (x0, x1) = match wall {
+                            Wall::Right => (w * (at - len), lx + s),
+                            Wall::Left => (lx, w * (at + 1 + len)),
+                        };
+                        for gx in x0..x1 {
+                            for t in 0..s {
+                                sheet.put_pixel(gx, fy + t, FLOOR);
+                            }
+                        }
+                        for gy in h * (f - 6)..fy + s {
+                            for t in 0..s {
+                                sheet.put_pixel(lx + t, gy, FLOOR);
+                            }
+                        }
+                    }
+                    Draw::Door(door, wall, at, f) => {
+                        let (facing, x) = match wall {
+                            Wall::Right => (Facing::Right, at - 5),
+                            Wall::Left => (Facing::Left, *at),
+                        };
+                        let (pw, ph) = (w * 6, h * 4 + h / 2);
+                        let image = match door {
+                            Door::Is(door) => {
+                                render_wall_door(*door, Sky::Day, 6, facing, LINE, pw, ph)
+                            }
+                            Door::Under(door, sky) => {
+                                render_wall_door(*door, *sky, 6, facing, LINE, pw, ph)
+                            }
+                            Door::EdgeOn => rasterize(
+                                &wall_door_scene(r##"<use href="#wd-a-shut"/>"##, facing, LINE),
+                                WALL_DOOR_FRAME,
+                                pw,
+                                ph,
+                            ),
+                        }
+                        .unwrap();
+                        put(
+                            &mut sheet,
+                            &image,
+                            i64::from(w * x),
+                            i64::from(h * (f - 4)),
+                            None,
+                        );
+                    }
+                    Draw::Her(rig, facing, (x, f), clip) => {
+                        let osaka = render(rig, *facing, LINE, w * 5, h * 4 + h / 2).unwrap();
+                        put(
+                            &mut sheet,
+                            &osaka,
+                            i64::from(w as i32 * x),
+                            i64::from(h * (f - 4)),
+                            *clip,
+                        );
+                    }
+                    Draw::Parcel(item, (xh, f), clip) => {
+                        let (pc, pr) = item.spec().footprint;
+                        let (pw, ph) = (w * u32::from(pc), h * u32::from(pr) + h / 2);
+                        let image =
+                            render_parcel(*item, false, Facing::Right, LINE, pw, ph).unwrap();
+                        put(
+                            &mut sheet,
+                            &image,
+                            i64::from(xh * w as i32 / 2),
+                            i64::from(h * (f - u32::from(pr))),
+                            *clip,
+                        );
+                    }
+                    Draw::Piece(item, facing, (x, f)) => {
+                        let (pc, pr) = item.spec().footprint;
+                        let (pw, ph) = (w * u32::from(pc), h * u32::from(pr) + h / 2);
+                        let image =
+                            render_piece(*item, PieceState::Plain, *facing, LINE, pw, ph).unwrap();
+                        put(
+                            &mut sheet,
+                            &image,
+                            i64::from(w * x),
+                            i64::from(h * (f - u32::from(pr))),
+                            None,
+                        );
+                    }
+                    Draw::Span(x0, x1, f) => {
+                        let y = h * (f + 1) - 2 * s;
+                        for gx in w * x0 + s..w * (x1 + 1) - s {
+                            for t in 0..s {
+                                sheet.put_pixel(gx, y + t, DIM);
+                            }
+                        }
+                        for gx in [w * x0 + s, w * (x1 + 1) - 2 * s] {
+                            for gy in y - 3 * s..y {
+                                for t in 0..s {
+                                    sheet.put_pixel(gx + t, gy, DIM);
+                                }
+                            }
+                        }
+                    }
+                    Draw::Label(text, (x, y)) => {
+                        for (i, c) in text.chars().enumerate() {
+                            let (cx, cy) = (w * (x + i as u32) + 2 * s, h * y + 6 * s);
+                            for (row, bits) in glyph(c).into_iter().enumerate() {
+                                for col in 0..5u32 {
+                                    if bits >> (4 - col) & 1 == 1 {
+                                        for dy in 0..s {
+                                            for dx in 0..s {
+                                                sheet.put_pixel(
+                                                    cx + col * s + dx,
+                                                    cy + row as u32 * s + dy,
+                                                    DIM,
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            sheet
+        };
+        let one = render_sheet(1);
+        one.save(format!("{dir}/wall-door-1x.png")).unwrap();
+        image::imageops::resize(
+            &one,
+            one.width() * 3,
+            one.height() * 3,
+            image::imageops::FilterType::Nearest,
+        )
+        .save(format!("{dir}/wall-door-1x-nn3x.png"))
+        .unwrap();
+        render_sheet(3)
+            .save(format!("{dir}/wall-door-3x.png"))
+            .unwrap();
+    }
+
+    /// Her front door draws in every state, in both walls, and keeps to
+    /// the columns snippets.md promises: shut, the wall's column and the
+    /// one beside it (to-1 ..= to); ajar, open or with her slippers out,
+    /// to-3 ..= to; the flap swung up, anywhere in her door's space.
+    #[test]
+    fn the_wall_door_keeps_to_its_columns() {
+        let (w, h) = (9u32, 19u32);
+        let states = [
+            (
+                WallDoor::Shut {
+                    flap: 0,
+                    away: false,
+                },
+                4,
+            ),
+            (
+                WallDoor::Shut {
+                    flap: 0,
+                    away: true,
+                },
+                2,
+            ),
+            (
+                WallDoor::Shut {
+                    flap: 90,
+                    away: false,
+                },
+                0,
+            ),
+            (WallDoor::Ajar, 2),
+            (WallDoor::Open, 2),
+            (WallDoor::Post, 4),
+            (WallDoor::Plate(0), 4),
+            (WallDoor::Plate(90), 0),
+        ];
+        for (door, first) in states {
+            for facing in [Facing::Right, Facing::Left] {
+                let image = render_wall_door(door, Sky::Day, 6, facing, LINE, w * 6, h * 4 + h / 2)
+                    .unwrap();
+                let inked: Vec<u32> = image
+                    .enumerate_pixels()
+                    .filter(|(_, _, p)| p.0[3] > 64)
+                    .map(|(x, _, _)| x / w)
+                    .collect();
+                assert!(inked.len() > 100, "{door:?} {facing:?}");
+                assert_eq!(u32::from(door.cols()), 6 - first, "{door:?}: its crop");
+                let (lo, hi) = (*inked.iter().min().unwrap(), *inked.iter().max().unwrap());
+                let want = match facing {
+                    Facing::Right => (first, 5),
+                    Facing::Left => (0, 5 - first),
+                };
+                assert_eq!((lo, hi), want, "{door:?} {facing:?}");
+            }
+        }
+    }
+
+    /// Every state of her front door, under every sky, at both walls:
+    /// cropped to any width, it is the whole frame's columns nearest the
+    /// wall, pixel for pixel; cropped to its own ([`WallDoor::cols`],
+    /// the_wall_door_keeps_to_its_columns' table), what it leaves out
+    /// has no ink. A door showing nothing of outside draws the same
+    /// under every sky; one that does, differently under each.
+    #[test]
+    fn the_wall_door_crops_to_its_inked_columns() {
+        let (w, h) = (9u32, 19u32);
+        let height = h * 4 + h / 2;
+        let mut states = vec![
+            WallDoor::Shut {
+                flap: 0,
+                away: false,
+            },
+            WallDoor::Shut {
+                flap: 0,
+                away: true,
+            },
+            WallDoor::Ajar,
+            WallDoor::Open,
+            WallDoor::Post,
+            WallDoor::Plate(0),
+        ];
+        for flap in [4, 10, 45, 90] {
+            for away in [false, true] {
+                states.push(WallDoor::Shut { flap, away });
+            }
+            states.push(WallDoor::Plate(flap));
+        }
+        // Each state's own columns are pinned to its ink by
+        // the_wall_door_keeps_to_its_columns (`6 - first`); a swung flap
+        // keeps all six, the widest a crop can be.
+        for flap in [4, 10, 45, 90] {
+            for away in [false, true] {
+                assert_eq!(WallDoor::Shut { flap, away }.cols(), 6);
+            }
+            assert_eq!(WallDoor::Plate(flap).cols(), 6);
+        }
+        for door in states {
+            let own = door.cols();
+            for facing in [Facing::Right, Facing::Left] {
+                let whole = |sky| render_wall_door(door, sky, 6, facing, LINE, w * 6, height);
+                let day = whole(Sky::Day).unwrap();
+                assert_eq!(day.dimensions(), (w * 6, height), "{door:?} {facing:?}");
+                for sky in Sky::ALL {
+                    let at = format!("{door:?} {facing:?} {sky:?}");
+                    let full = whole(sky).unwrap();
+                    assert_eq!(
+                        full == day,
+                        !door.shows_sky() || sky == Sky::Day,
+                        "{at}: drawn under its sky"
+                    );
+                    for cols in 1..=6u32 {
+                        let crop =
+                            render_wall_door(door, sky, cols as u8, facing, LINE, w * cols, height)
+                                .unwrap();
+                        assert_eq!(crop.dimensions(), (w * cols, height), "{at} {cols}");
+                        let x0 = match facing {
+                            Facing::Right => w * (6 - cols),
+                            Facing::Left => 0,
+                        };
+                        for (x, y, p) in crop.enumerate_pixels() {
+                            assert_eq!(p, full.get_pixel(x0 + x, y), "{at} {cols}: ({x}, {y})");
+                        }
+                    }
+                    let own = u32::from(own);
+                    let kept = match facing {
+                        Facing::Right => w * (6 - own)..w * 6,
+                        Facing::Left => 0..w * own,
+                    };
+                    for (x, y, p) in full.enumerate_pixels() {
+                        assert!(
+                            kept.contains(&x) || p.0[3] <= 64,
+                            "{at}: ink at ({x}, {y}) outside its {own} columns"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Outside her open door, under each sky: the doorway's colour is
+    /// the sky's own (all five differ, the flap's hole likewise), and
+    /// the hedge is [`hedge`]'s, darker the later or earlier the hour:
+    /// day, dawn, dusk, evening, night. Sampled from the drawn door at
+    /// both walls.
+    #[test]
+    fn the_hedge_darkens_with_the_sky() {
+        let lum = |[r, g, b]: [u8; 3]| {
+            0.2126 * f32::from(r) + 0.7152 * f32::from(g) + 0.0722 * f32::from(b)
+        };
+        let order = [Sky::Day, Sky::Dawn, Sky::Dusk, Sky::Evening, Sky::Night];
+        for pair in order.windows(2) {
+            assert!(
+                lum(hedge(pair[0])) > lum(hedge(pair[1])),
+                "{:?} {:?} over {:?} {:?}",
+                pair[0],
+                hedge(pair[0]),
+                pair[1],
+                hedge(pair[1])
+            );
+        }
+        assert_eq!(hedge(Sky::Day), HEDGE_DAY, "the approved green by day");
+        // At 3×, a column is 27 pixels and the frame 1.35 pixels a unit,
+        // standing 29.2 pixels down: (frame units, the wall's line at
+        // 110) to pixels.
+        let (w, h) = (27u32, 57u32);
+        let height = h * 4 + h / 2;
+        let scale = (w * 6) as f32 / WALL_DOOR_FRAME.0;
+        let top = height as f32 - WALL_DOOR_FRAME.1 * scale;
+        for facing in [Facing::Right, Facing::Left] {
+            let pixel = |image: &image::RgbaImage, (ux, uy): (f32, f32)| {
+                let ux = match facing {
+                    Facing::Right => ux,
+                    Facing::Left => WALL_DOOR_FRAME.0 - ux,
+                };
+                let p = image.get_pixel((ux * scale) as u32, (top + uy * scale) as u32);
+                assert_eq!(p.0[3], 255, "{facing:?} at ({ux}, {uy})");
+                [p.0[0], p.0[1], p.0[2]]
+            };
+            let mut doorways = Vec::new();
+            let mut holes = Vec::new();
+            for sky in Sky::ALL {
+                let at = format!("{facing:?} {sky:?}");
+                let open = |door| render_wall_door(door, sky, 6, facing, LINE, w * 6, height);
+                let image = open(WallDoor::Open).unwrap();
+                // The hedge, low in the doorway (x 46..70, y 148..162 as
+                // authored, shifted 40).
+                let got = pixel(&image, (100.0, 156.0));
+                let want = hedge(sky);
+                assert!(
+                    got.iter().zip(want).all(|(a, b)| a.abs_diff(b) <= 2),
+                    "{at}: hedge {got:?}, want {want:?}"
+                );
+                doorways.push(pixel(&image, (100.0, 60.0)));
+                let flap = open(WallDoor::Shut {
+                    flap: 90,
+                    away: false,
+                })
+                .unwrap();
+                holes.push(pixel(&flap, (98.0, 120.0)));
+            }
+            for samples in [&doorways, &holes] {
+                let distinct: std::collections::HashSet<_> = samples.iter().collect();
+                assert_eq!(distinct.len(), 5, "{facing:?}: {samples:?}");
+            }
+        }
+    }
+
+    /// The parcel flap rides up as a parcel comes out, never falling
+    /// back while it does, from shut (the parcel not yet at the line)
+    /// to at most level; at the sheet's frames (snippets.md, the flap's
+    /// beats) it rests at the angles the approved sheet drew.
+    #[test]
+    fn lean_rests_the_flap_on_the_parcel() {
+        for item in Furniture::ALL {
+            assert_eq!(lean(item, 0), 0, "{item:?}");
+            for lead in -40..0 {
+                assert!(
+                    lean(item, lead) >= lean(item, lead + 1),
+                    "{item:?} at {lead}: {} under {}",
+                    lean(item, lead),
+                    lean(item, lead + 1)
+                );
+                assert!(lean(item, lead) <= 90, "{item:?} at {lead}");
+            }
+            assert!(lean(item, -5) > 0, "{item:?}: nosing out lifts it");
+        }
+        // A clock's parcel (3 columns): nosing out, half out (-3 - 3).
+        assert_eq!(
+            [lean(Furniture::Clock, -5), lean(Furniture::Clock, -6)],
+            [38, 44]
+        );
+        // A bookshelf's (5 columns, the parcel full size): -5, -3 - 5.
+        assert_eq!(
+            [
+                lean(Furniture::Bookshelf, -5),
+                lean(Furniture::Bookshelf, -8)
+            ],
+            [59, 71]
+        );
+        // Far out, the parcel's corner past the flap's reach: its free
+        // edge rests on the lid, lifted higher by a full-size parcel's
+        // taller one (acos(47.6 / 78), acos(22 / 78)).
+        assert_eq!(
+            [lean(Furniture::Clock, -20), lean(Furniture::Bookshelf, -20)],
+            [52, 73]
+        );
+    }
+
     /// A character sheet for eyeballing the art:
     /// `HOUSEGUEST_SHEET=/tmp/sheet.png cargo test model_sheet -- --ignored`.
     /// Each pose at 1× (9×19 px cells) and 2×, over the dark theme, with
     /// the cell grid and the floor line.
     #[test]
-    #[ignore = "writes a PNG for review"]
+    #[ignore = "writes a PNG for review: set HOUSEGUEST_SHEET"]
     fn model_sheet() {
-        let path = std::env::var("HOUSEGUEST_SHEET").expect("HOUSEGUEST_SHEET");
+        let Ok(path) = std::env::var("HOUSEGUEST_SHEET") else {
+            eprintln!("HOUSEGUEST_SHEET unset; nothing written");
+            return;
+        };
         let poses = poses();
         let (cw, ch) = (9u32, 19u32);
         let scales = [1u32, 2, 4];
@@ -3143,9 +4332,15 @@ mod tests {
         sheet.save(path).unwrap();
     }
 
+    /// Every kind she has out of its box: not a kit, only ever drawn as
+    /// its parcel (phase 6a D7b), so it has no art of its own to render.
+    fn unboxed_kinds() -> impl Iterator<Item = Furniture> {
+        Furniture::ALL.into_iter().filter(|f| !f.is_kit())
+    }
+
     #[test]
     fn every_prop_renders_inside_its_footprint() {
-        for prop in Furniture::ALL {
+        for prop in unboxed_kinds() {
             let (cols, rows) = prop.spec().footprint;
             for facing in [Facing::Left, Facing::Right] {
                 let (w, h) = (u32::from(cols) * 9, u32::from(rows) * 19);
@@ -3191,22 +4386,25 @@ mod tests {
     /// 2× and 4×, over the dark theme, with the cell grid and the floor
     /// line both stand on.
     #[test]
-    #[ignore = "writes a PNG for review"]
+    #[ignore = "writes a PNG for review: set HOUSEGUEST_PROPS"]
     fn props_sheet() {
-        let path = std::env::var("HOUSEGUEST_PROPS").expect("HOUSEGUEST_PROPS");
+        let Ok(path) = std::env::var("HOUSEGUEST_PROPS") else {
+            eprintln!("HOUSEGUEST_PROPS unset; nothing written");
+            return;
+        };
         let (cw, ch) = (9u32, 19u32);
         let scales = [1u32, 2, 4];
         // Prop, a cell's gap, her, a cell's gap.
         let span = |s: u32| cw * s * 18;
         let row_h = ch * 4 * 6;
-        let rows = Furniture::ALL.len() as u32 * 2;
+        let rows = unboxed_kinds().count() as u32 * 2;
         let mut sheet = image::RgbaImage::from_pixel(
             scales.iter().map(|&s| span(s)).sum(),
             row_h * rows,
             image::Rgba([13, 17, 23, 255]),
         );
         let her = Rig::for_pose(Pose::Stand, Face::Vacant);
-        for (index, prop) in Furniture::ALL.into_iter().enumerate() {
+        for (index, prop) in unboxed_kinds().enumerate() {
             for (variant, outline) in [false, true].into_iter().enumerate() {
                 let row = index as u32 * 2 + variant as u32;
                 let mut x0 = 0;
@@ -3304,9 +4502,12 @@ mod tests {
     /// Each use facing right (left half) and mirrored (right half), at
     /// 1×, 2× and 4×, with the cell grid and the floor line.
     #[test]
-    #[ignore = "writes a PNG for review"]
+    #[ignore = "writes a PNG for review: set HOUSEGUEST_USE"]
     fn use_sheet() {
-        let path = std::env::var("HOUSEGUEST_USE").expect("HOUSEGUEST_USE");
+        let Ok(path) = std::env::var("HOUSEGUEST_USE") else {
+            eprintln!("HOUSEGUEST_USE unset; nothing written");
+            return;
+        };
         let (cw, ch) = (9u32, 19u32);
         let scales = [1u32, 2, 4];
         // Up to 12 cells of scene plus a cell either side.

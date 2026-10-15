@@ -116,6 +116,16 @@ pub enum UiInput {
         /// Decoded pixels, or a debug-level error string.
         result: Result<Box<image::DynamicImage>, String>,
     },
+    /// The answer to a [`UserAction::TvPicture`]'s question: a still of
+    /// the film for the houseguest's TV, or why there's none
+    /// ([`super::tv_feed::TvAnswer`]). Latest wins: one question is out
+    /// at a time, and an answer to any other is ignored (`TvFeed`).
+    TvPicture {
+        /// The question answered.
+        ask: super::tv_feed::TvAsk,
+        /// The answer.
+        answer: super::tv_feed::TvAnswer,
+    },
     /// A local-only chat line from an external IRC user (the IRC bridge).
     /// Not synced — each client runs its own bridge.
     Irc {
@@ -273,7 +283,7 @@ pub fn run_ui_thread(
         std::io::stdout(),
         crossterm::style::Print(TERMINAL_STATE_PROLOGUE)
     ) {
-        tracing::warn!("cannot reset terminal margins: {e}");
+        tracing::warn!("cannot reset terminal state: {e}");
     }
     // Bracketed paste (design.md #33): without it, a terminal delivers
     // pasted text as a stream of individual key-press events instead of
@@ -353,7 +363,14 @@ pub struct UiExit {
 /// cursor", which is the sequence ratatui-image embeds in every Kitty
 /// image row, so each row of a picture printed at the screen's
 /// top-left instead of under its message.
-pub const TERMINAL_STATE_PROLOGUE: &str = "\x1b[?69l\x1b[r\x1b[?6l";
+///
+/// Then the keyboard: xterm modifyOtherKeys off (`CSI >4;0m`) and the
+/// Kitty keyboard flags of the current (alternate) screen cleared
+/// (`CSI =0u`). crossterm decodes neither modifyOtherKeys sequences nor
+/// keys we never asked to be enhanced; a leftover modifyOtherKeys level 2
+/// sent Shift+A as `CSI 27;2;65~`, which crossterm discards, so capital
+/// letters could not be typed at all.
+pub const TERMINAL_STATE_PROLOGUE: &str = "\x1b[?69l\x1b[r\x1b[?6l\x1b[>4;0m\x1b[=0u";
 
 /// Pick the image-rendering protocol for inline chat images.
 ///
@@ -482,6 +499,8 @@ where
     // may not count a suspend (std leaves it unspecified).
     guest.cap_steps(Some(HOUSEGUEST_CLOCK_CAP_MS));
     let mut ledger_unsent: Option<super::houseguest::Ledger> = None;
+    // Stills of the film for her TV (phase 5c D7).
+    let mut tv = super::tv_feed::TvFeed::default();
     let layout_loaded = ui.layout_settings.clone();
     if let Some(picker) = ui.image_picker() {
         guest.set_picker(picker);
@@ -524,9 +543,14 @@ where
             // Adaptive cadence: ~100ms while a marquee pass animates, the
             // lazy 1s otherwise. Idle cost is unchanged — the timeout arm
             // only repaints when advance_clock reports a visible change.
-            let timeout = guest
-                .next_tick(now_millis())
-                .map_or(ui.next_tick_hint(), |due| due.min(ui.next_tick_hint()));
+            let now = now_millis();
+            let timeout = [
+                guest.next_tick(now),
+                tv.wake_in(now, guest.tv_wants_picture()),
+            ]
+            .into_iter()
+            .flatten()
+            .fold(ui.next_tick_hint(), std::time::Duration::min);
             let input = match inputs.recv_timeout(timeout) {
                 Ok(input) => input,
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
@@ -536,6 +560,9 @@ where
                     redraw |= poll_layout(&mut ui, &mut renderer, watcher.as_ref(), custom_enabled);
                     redraw |= dispatch_due_recovery(&mut ui, &actions);
                     dispatch_image_fetches(&mut ui, &actions);
+                    if dispatch_tv_picture(&mut tv, &ui, &mut guest, &actions, now) {
+                        break 'ui;
+                    }
                     if redraw && draw(adapter, &mut ui, &mut renderer, &mut guest).is_err() {
                         break 'ui;
                     }
@@ -572,6 +599,10 @@ where
                 UiInput::System { timestamp, text } => ui.push_system(timestamp, text),
                 UiInput::ChatImage { url, result } => {
                     ui.set_chat_image(&url, result.map(|img| *img))
+                }
+                UiInput::TvPicture { ask, answer } => {
+                    tracing::trace!(seq = ask.seq, "tv feed: answered");
+                    tv.deliver(&mut guest, ask, answer, now_millis());
                 }
                 UiInput::Irc {
                     timestamp,
@@ -649,6 +680,9 @@ where
             }
             dispatch_due_recovery(&mut ui, &actions);
             dispatch_image_fetches(&mut ui, &actions);
+            if dispatch_tv_picture(&mut tv, &ui, &mut guest, &actions, now_millis()) {
+                break 'ui;
+            }
             match ui.layout_request.take() {
                 Some('r') => {
                     custom_enabled = true;
@@ -784,6 +818,30 @@ fn dispatch_image_fetches(ui: &mut Ui, actions: &mpsc::Sender<UserAction>) {
             }
         }
     }
+}
+
+/// Ask the session for a still of the film for the houseguest's TV when
+/// one is due, after following the file this client holds (a change
+/// clears her stills): [`super::tv_feed::TvFeed::turn`]. On a full queue
+/// the question stays due and goes on a later turn, after a short wait
+/// (the [`dispatch_image_fetches`] shape, without spinning the loop).
+/// Returns whether the session is gone (the loop ends, as for the other
+/// handouts).
+fn dispatch_tv_picture(
+    feed: &mut super::tv_feed::TvFeed,
+    ui: &Ui,
+    guest: &mut super::houseguest::Guest,
+    actions: &mpsc::Sender<UserAction>,
+    now: u64,
+) -> bool {
+    use super::tv_feed::Sent;
+    feed.turn(guest, ui.held_now_playing(), now, |ask| {
+        match actions.try_send(UserAction::TvPicture { ask }) {
+            Ok(()) => Sent::Gone,
+            Err(mpsc::error::TrySendError::Full(_)) => Sent::Full,
+            Err(mpsc::error::TrySendError::Closed(_)) => Sent::Closed,
+        }
+    })
 }
 
 /// Avoid blocking the terminal on automated work. A full or closed queue
@@ -1009,12 +1067,17 @@ mod prologue_tests {
     use super::TERMINAL_STATE_PROLOGUE;
 
     /// The prologue resets exactly the three modes that remap absolute
-    /// cursor moves or repurpose `CSI s`: left/right margin mode, the
-    /// scroll region, and origin mode. Anything else here would be a
-    /// silent change to what every frame assumes.
+    /// cursor moves or repurpose `CSI s` (left/right margin mode, the
+    /// scroll region, origin mode) and the two that change key encoding
+    /// away from what crossterm decodes (modifyOtherKeys, Kitty keyboard
+    /// flags). Anything else here would be a silent change to what every
+    /// frame or keypress assumes.
     #[test]
-    fn prologue_resets_margin_region_and_origin() {
-        assert_eq!(TERMINAL_STATE_PROLOGUE, "\x1b[?69l\x1b[r\x1b[?6l");
+    fn prologue_resets_cursor_and_keyboard_modes() {
+        assert_eq!(
+            TERMINAL_STATE_PROLOGUE,
+            "\x1b[?69l\x1b[r\x1b[?6l\x1b[>4;0m\x1b[=0u"
+        );
     }
 }
 

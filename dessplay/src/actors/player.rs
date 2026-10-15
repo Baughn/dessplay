@@ -170,10 +170,21 @@ pub enum PlayerCommand {
     /// Plain text; the actor owns the ASS formatting and re-applies the
     /// overlay across player relaunches.
     SetBlockerOverlay(Option<String>),
-    /// Write a screenshot of the current frame to this path
-    /// (best-effort: dropped silently when no player is running — the
-    /// requester polls for the file and proceeds without it).
-    Screenshot(PathBuf),
+    /// Write a screenshot of the current frame of `file` to `path`
+    /// (best-effort: the requester polls for the file and proceeds
+    /// without it). Taken only while the player shows `file`'s video:
+    /// not between a `Load` and the player's path echo (it's still on
+    /// the file before), nor while the user's own file is up
+    /// ([`Actor::player_on_current_file`]). `taken` says at once whether
+    /// the player was asked, so a requester needn't wait out its poll.
+    Screenshot {
+        /// Where the player writes the frame.
+        path: PathBuf,
+        /// The file the frame must be of.
+        file: Ed2kHash,
+        /// Whether the player was asked for it.
+        taken: tokio::sync::oneshot::Sender<bool>,
+    },
     /// Quit the player and exit the actor.
     Shutdown,
 }
@@ -631,11 +642,20 @@ impl<F: PlayerFactory> Actor<F> {
                 self.blocker_overlay = text;
                 self.render_blocker_overlay().await;
             }
-            PlayerCommand::Screenshot(path) => {
-                if let Some(player) = &self.player
-                    && let Err(e) = player.screenshot_to_file(&path).await
-                {
-                    tracing::debug!(path = %path.display(), "screenshot failed: {e}");
+            PlayerCommand::Screenshot { path, file, taken } => {
+                let shown = self.current.as_ref().is_some_and(|(f, ..)| *f == file)
+                    && self.player_on_current_file();
+                match &self.player {
+                    Some(player) if shown => {
+                        let _ = taken.send(true);
+                        if let Err(e) = player.screenshot_to_file(&path).await {
+                            tracing::debug!(path = %path.display(), "screenshot failed: {e}");
+                        }
+                    }
+                    _ => {
+                        tracing::trace!(%file, shown, "screenshot: not of the file shown; refused");
+                        let _ = taken.send(false);
+                    }
                 }
             }
             PlayerCommand::Shutdown => {}
@@ -2825,17 +2845,100 @@ mod tests {
         );
     }
 
+    /// Ask the actor for a screenshot of `file`; whether it was taken.
+    async fn screenshot(
+        commands: &mpsc::Sender<PlayerCommand>,
+        path: &std::path::Path,
+        file: Ed2kHash,
+    ) -> bool {
+        let (taken, answer) = tokio::sync::oneshot::channel();
+        commands
+            .send(PlayerCommand::Screenshot {
+                path: path.to_path_buf(),
+                file,
+                taken,
+            })
+            .await
+            .unwrap();
+        tokio::time::timeout(BUDGET, answer)
+            .await
+            .expect("screenshot answer budget exhausted")
+            .unwrap_or(false)
+    }
+
     #[tokio::test(start_paused = true)]
     async fn screenshot_command_reaches_the_player_with_its_path() {
         let (commands, _outputs, mut control) = loaded_rig().await;
         let path = PathBuf::from("/tmp/marquee-test.png");
+        assert!(screenshot(&commands, &path, FILE).await);
+        assert_eq!(
+            expect_command(&mut control).await,
+            MockCommand::Screenshot(path)
+        );
+    }
+
+    /// A screenshot is taken only of the file the player shows (phase 5c
+    /// D7: her TV, and commentary's frame): not of another file, not
+    /// between a `Load` and the player's path echo (it's still showing
+    /// the file before), and not while the user's own file is up.
+    /// Refused at once, the player never asked.
+    #[tokio::test(start_paused = true)]
+    async fn a_screenshot_is_only_of_the_file_shown() {
+        let (commands, _outputs, mut control) = loaded_rig().await;
+        let path = PathBuf::from("/tmp/tv-test.jpg");
+        let other = Ed2kHash([0xEE; 16]);
+        assert!(!screenshot(&commands, &path, other).await, "another file");
+        // The next episode is loaded, its path echo not yet in.
         commands
-            .send(PlayerCommand::Screenshot(path.clone()))
+            .send(PlayerCommand::Load {
+                file: other,
+                path: "/media/ep2.mkv".into(),
+                title: None,
+                resume_millis: None,
+            })
             .await
             .unwrap();
         assert_eq!(
             expect_command(&mut control).await,
-            MockCommand::Screenshot(path)
+            MockCommand::Load("/media/ep2.mkv".into(), None)
+        );
+        assert!(
+            !screenshot(&commands, &path, other).await,
+            "still on the file before"
+        );
+        assert!(
+            !screenshot(&commands, &path, FILE).await,
+            "the file before is no longer the one commanded"
+        );
+        control
+            .events
+            .send(PlayerEvent::PathChanged {
+                path: "/media/ep2.mkv".into(),
+            })
+            .unwrap();
+        settle().await;
+        assert!(screenshot(&commands, &path, other).await, "now shown");
+        assert_eq!(
+            expect_command(&mut control).await,
+            MockCommand::Screenshot(path.clone())
+        );
+        // The user drops their own file into the player.
+        control
+            .events
+            .send(PlayerEvent::PathChanged {
+                path: "/home/kim/own.mkv".into(),
+            })
+            .unwrap();
+        settle().await;
+        assert!(
+            !screenshot(&commands, &path, other).await,
+            "the user's own file is up"
+        );
+        settle().await;
+        assert!(
+            std::iter::from_fn(|| control.try_command())
+                .all(|cmd| !matches!(cmd, MockCommand::Screenshot(_))),
+            "a refused screenshot never reaches the player"
         );
     }
 

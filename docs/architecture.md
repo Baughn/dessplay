@@ -1,6 +1,6 @@
 # Architecture
 
-Last updated: 2026-09-23
+Last updated: 2026-10-15
 
 This document describes DessPlay's internal structure: actor boundaries,
 message flow, and concurrency model. For the external protocol, see
@@ -527,7 +527,7 @@ resolve or an eviction pass (the bridge loop's liveness rule again).
   local-only UI/session events; only successful completion produces the
   ordinary shared playlist mutation.
 
-Phase 9B added the transfer side: `StartDownload` / `PeerMessage` /
+Phase 9B added the transfer side: `SetDownloads` / `PeerMessage` /
 `TransferStream` commands and `SendPeer` / `OpenTransfer` /
 `Availability` / `DownloadComplete` outputs. The scheduling brain is
 `download.rs` (`Downloads` — request window, rarest-first + sequential
@@ -541,12 +541,14 @@ each incoming stream with a dedicated task — reading
 `ChunkData` back under a shared upload-rate token bucket, paced by the
 stream write itself, so one slow downloader backpressures only its own
 task. `BlockHashRequest` and availability stay on the relay stream via
-`SendPeer`. The session (`PlayerWiring::plan_download`) drives downloads
-for the now-playing file plus a prefetch window — emitted even with no
-peer source (the actor treats an empty source set as the ordinary
-awaiting-source state and picks sources up from a later refresh).
-Seeder auto-fetch (headless, fetch everything) is the remaining 9B
-piece.
+`SendPeer`. The session (`PlayerWiring::plan_download`) and the seeder
+drive downloads with a **declarative want-set**: every plan sends the
+whole ranked set (`SetDownloads`), each missing file with its sources —
+emitted even with no peer source (the actor treats an empty source set
+as the ordinary awaiting-source state and picks sources up from a later
+refresh). The actor reconciles against it: an active download whose
+file is absent is cancelled, so no "stop" message exists to be
+forgotten (2026-10-15).
 
 Two contracts keep the stream bookkeeping honest (2026-08-12 review):
 
@@ -572,16 +574,17 @@ Two contracts keep the stream bookkeeping honest (2026-08-12 review):
   closed/reset download stream is also the immediate snub signal: the
   `DownloadClosed` arm requeues that source's in-flight chunks and
   re-plans at once (`Downloads::on_source_stream_lost`) instead of
-  waiting out the 30s timeout.
+  waiting out the 30s timeout — once; a source whose streams keep
+  dying before delivering is backed off (1s doubling to 30s), so a
+  stream the server closes on arrival is not re-asked in a hot loop.
 
 **The Nyaa browse import** (design.md, BitTorrent Downloads) is the one
 torrent feature: an explicit, user-driven search-and-download,
-completely separate from `StartDownload` (missing playlist files are
+completely separate from `SetDownloads` (missing playlist files are
 fetched from peers only). **Interactive clients only**: `run.rs` wires
 the engine + nyaa source for them and leaves both `None` for seeders —
 a file nyaa can supply makes the seeder redundant, so the seeder
-downloads only from peers and skips `StartDownload` entirely when no
-peer source exists. Two seams, both inside the file actor:
+downloads only from peers. Two seams, both inside the file actor:
 
 - `torrent/nyaa.rs` — the browse search: a blocking `NyaaSource` trait
   (`HttpNyaaSource` in production, canned RSS in tests) plus pure

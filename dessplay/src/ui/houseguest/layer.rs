@@ -512,7 +512,9 @@ impl TextLayer {
     /// Drop every entry the real frame no longer supports — a source that
     /// changed, or a target that stopped fitting — repeating until stable,
     /// since a dropped entry's hole fills with real text again. Reads only
-    /// the real frame; call before anything of hers is painted.
+    /// the real frame; call before anything of hers is painted (bar her
+    /// structures, written first in a paint: they're never on a cell of
+    /// the layer, the only cells this reads, phase 6a D4).
     pub fn validate(&mut self, buf: &Buffer, protected: &[Rect]) -> usize {
         let before = self.count();
         self.torn.retain(|t| {

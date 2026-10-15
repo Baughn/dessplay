@@ -149,13 +149,20 @@ enum Where {
     LeavingVisit,
     /// Her empty home's goodbye (an overlay came up), mid-rain.
     LeavingAway,
+    /// Out at school, her home standing empty, as school ends; an
+    /// overlay comes up as it does (the frame after her coming home was
+    /// decided), so she doesn't come in after all.
+    SchoolEndsCovered,
 }
 
 /// One run of the property: a rain begins `wait` ms after she's settled
 /// (`Where` says how), then a shell that may be late (each of `jumps`
 /// not 0 is a jump of that many ms; 0 a step on her next tick) paints
 /// only when a tick says the screen could change. Every tick taken
-/// while a rain was live must say so.
+/// while a rain was live must say so. And her empty home, shown, never
+/// just vanishes: a frame after one that showed it shows it still, her
+/// home with her in it, or its rain (nothing here sends her away or
+/// takes her room).
 fn live_rains_redraw(
     seed: u64,
     graphics: bool,
@@ -183,6 +190,19 @@ fn live_rains_redraw(
             let now = until_away(&mut guest, &real, &quiet, 0);
             (guest, now)
         }
+        Where::SchoolEndsCovered => {
+            let mut guest = resident_home(seed, tue(12, 44), graphics, true);
+            let now = until_away(&mut guest, &real, &quiet, 0);
+            (guest, now)
+        }
+    };
+    // As school ends (only `SchoolEndsCovered` sees it: the others end
+    // long before).
+    let home = real_of(&guest, now, tue(12, 45));
+    let wait = match at {
+        // The rain begins before school ends.
+        Where::SchoolEndsCovered => wait.min(home.saturating_sub(now + 2_000)),
+        _ => wait,
     };
     let end = now + wait;
     while now < end {
@@ -191,7 +211,7 @@ fn live_rains_redraw(
     now += 1;
     let rain_end = focus_rain(&mut guest, &real, now);
     let view = match at {
-        Where::Visiting | Where::Away => focused,
+        Where::Visiting | Where::Away | Where::SchoolEndsCovered => focused,
         Where::LeavingVisit | Where::LeavingAway => {
             now += 1 + wait % 1500;
             let live = fading(&guest);
@@ -205,11 +225,15 @@ fn live_rains_redraw(
                 matches!(guest.state, State::Leaving(_)),
                 "her goodbye under the overlay"
             );
-            covered
+            covered.clone()
         }
     };
     let mut jumps = jumps.iter().copied();
-    while now < rain_end + 2_000 {
+    let until = match at {
+        Where::SchoolEndsCovered => rain_end.max(home),
+        _ => rain_end,
+    };
+    while now < until + 2_000 {
         let step = match jumps.next() {
             Some(jump) if jump > 0 => jump,
             _ => guest
@@ -219,15 +243,30 @@ fn live_rains_redraw(
         };
         now += step;
         let live = fading(&guest);
+        // Her empty home on screen: standing, or carried by her coming in
+        // (it stands till she's in).
+        let shown = matches!(&guest.state,
+            State::Away(empty) | State::Arriving(_, Some(empty)) if !empty.painted.is_empty());
         let redraw = guest.advance(now);
         prop_assert!(
             !live || redraw,
             "{at:?} graphics={graphics} texty={texty}: a rain was live, \
              yet the tick at {now} (the rain ends at {rain_end}) said nothing changed"
         );
+        // Covered from the paint of the tick school ends on (her coming
+        // home already decided at that tick).
+        let view = match at {
+            Where::SchoolEndsCovered if now >= home => &covered,
+            _ => &view,
+        };
         if redraw {
-            paint(&mut guest, &real, &view, now);
+            paint(&mut guest, &real, view, now);
         }
+        prop_assert!(
+            !shown || !matches!(guest.state, State::Absent),
+            "{at:?} graphics={graphics} texty={texty}: her home, shown, \
+             vanished at {now} (school ends at {home}) without a rain"
+        );
     }
     Ok(())
 }
@@ -249,12 +288,26 @@ proptest! {
             Just(Where::Away),
             Just(Where::LeavingVisit),
             Just(Where::LeavingAway),
+            Just(Where::SchoolEndsCovered),
         ],
         wait in 0u64..6_000,
         jumps in proptest::collection::vec(prop_oneof![Just(0u64), 1u64..1_500], 0..40),
     ) {
         for graphics in [false, true] {
             live_rains_redraw(seed, graphics, texty, at, wait, &jumps)?;
+        }
+    }
+}
+
+/// The property's school-end scene on a fixed draw (the one that found
+/// her home vanishing), so no run's random draw carries it: her home,
+/// shown as school ends under an overlay, rains out.
+#[test]
+fn covered_as_school_ends_her_home_rains_out() {
+    for graphics in [false, true] {
+        for texty in [false, true] {
+            live_rains_redraw(0, graphics, texty, Where::SchoolEndsCovered, 0, &[])
+                .unwrap_or_else(|e| panic!("{e}"));
         }
     }
 }

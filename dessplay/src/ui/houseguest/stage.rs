@@ -137,6 +137,10 @@ pub enum Scene {
     /// She dashes home from school, and can't think what for: in through
     /// her door, a moment wondering, and (at school time) out again.
     DashForgot,
+    /// Off to school as at 08:15, at any hour (door batch D10): she
+    /// walks to her door and out through it, and after a short while
+    /// comes back in with "I'm home!" (the visit never ends).
+    School,
     /// Setsubun's beans, thrown on the spot (her calendar's on Feb 3).
     Setsubun,
     /// The first sunrise of the year on her TV (her calendar's on Jan 1;
@@ -159,11 +163,33 @@ pub enum Scene {
     /// Spacing out, a glance up at her wall clock, saying the hour,
     /// roughly (three o'clock, without her clock to tell her).
     ClockGlance,
+    /// Her shelf up on a pane's back wall, finished, where one goes (as
+    /// high as fits), with small decor on it (her plant, or on a low
+    /// shelf with no room over it for the plant, her clock).
+    Shelf,
+    /// Her shelf, nothing of it up yet, where one goes (as high as
+    /// fits), and today's stages forgotten: she puts its first stage up,
+    /// arms up ("Up it goes..."), with a hop if it hangs high.
+    PutUp,
+    /// Her shelf up as [`Scene::Shelf`] puts it, and she gazes up at
+    /// her plant on it from beside it ("hehe", then a long look): only
+    /// where the frame shows her plant up there (a low shelf in a short
+    /// pane has room over it for her clock alone, which she doesn't gaze
+    /// at).
+    GazeUp,
 }
+
+/// [`Scene::GazeUp`]'s note where nothing she gazes up at shows up on a
+/// shelf on the frame (the cue then changes nothing of her home).
+pub(super) const NOTHING_UP: &str = "nothing of hers up on a shelf to gaze up at here";
+
+/// [`Scene::GazeUp`]'s note where something she gazes up at shows up on
+/// a shelf, but nowhere beside it on its room's floor is restful.
+pub(super) const NO_ROOM_BESIDE: &str = "no room to stand beside what's up on her shelf";
 
 impl Scene {
     /// Every scene, in menu order.
-    pub const ALL: [Scene; 57] = [
+    pub const ALL: [Scene; 61] = [
         Self::Arrive,
         Self::Pull,
         Self::Swap,
@@ -213,6 +239,7 @@ impl Scene {
         Self::Arrange,
         Self::DashIn,
         Self::DashForgot,
+        Self::School,
         Self::Setsubun,
         Self::FirstSunrise,
         Self::Dream,
@@ -221,6 +248,9 @@ impl Scene {
         Self::Scary,
         Self::LookOut,
         Self::ClockGlance,
+        Self::Shelf,
+        Self::PutUp,
+        Self::GazeUp,
     ];
 
     /// A short menu label.
@@ -275,6 +305,7 @@ impl Scene {
             Self::Arrange => "turn the sofa round",
             Self::DashIn => "dash home for lunch",
             Self::DashForgot => "dash home, forgetful",
+            Self::School => "off to school",
             Self::Setsubun => "Setsubun's beans",
             Self::FirstSunrise => "first sunrise",
             Self::Dream => "the Dream",
@@ -283,6 +314,9 @@ impl Scene {
             Self::Scary => "scary story time",
             Self::LookOut => "look out of the window",
             Self::ClockGlance => "glance at the clock",
+            Self::Shelf => "her shelf",
+            Self::PutUp => "put her shelf up",
+            Self::GazeUp => "gaze up at her shelf",
         }
     }
 
@@ -299,6 +333,7 @@ impl Scene {
             Self::Snack | Self::Andagi | Self::DashIn | Self::NoMelon => Use::Snack,
             Self::Pet => Use::Pet,
             Self::LookOut => Use::LookOut,
+            Self::GazeUp => Use::GazeUp,
             _ => return None,
         })
     }
@@ -378,8 +413,12 @@ impl Scene {
             | Self::MakeSofa
             | Self::MakeBed
             | Self::MakeDesk
+            | Self::School
             | Self::Arrange
-            | Self::LookOut => None,
+            | Self::LookOut
+            | Self::Shelf
+            | Self::PutUp
+            | Self::GazeUp => None,
         }
     }
 
@@ -451,49 +490,89 @@ pub(super) fn direct(
     let (terrain, osaka) = (&visit.terrain, &mut visit.osaka);
     // The frame as it is (her tick may not have seen it yet): where her
     // clock hangs, for a glance up at it.
-    osaka.take_in(chances);
+    osaka.take_in(chances, terrain, now);
     let name = scene.name();
     osaka.cue(scene.cue());
     match scene {
         Scene::Arrive => Ok("arriving".into()),
-        // In through a door: what she forgot, she goes for as she first
+        // Put up before the frame was written (the guest's
+        // `stage_shelf`): what stands on it shows, or why not.
+        Scene::Shelf => visit
+            .shown
+            .iter()
+            .find(|s| s.on_shelf())
+            .map(|s| {
+                let over = s
+                    .strip
+                    .map_or_else(String::new, |strip| format!(", over {:?}", strip.nook()));
+                format!("{name}: her {} up on it{over}", s.item.spec().name)
+            })
+            .ok_or_else(|| format!("{name}: no shelf of hers, or nothing on it, shows here")),
+        // Her shelf was put up with nothing up yet before the frame was
+        // written (the guest's `stage_shelf`): she sets off to put its
+        // first stage up, where the frame offers it.
+        Scene::PutUp => {
+            let put_up = chances
+                .put_up
+                .ok_or_else(|| format!("{name}: no shelf of hers to put up shows here"))?;
+            let job = Job::PutUp(put_up);
+            let away = match job.side() {
+                Side::Left => 1,
+                Side::Right => -1,
+            };
+            let start = approach(terrain, put_up.x, put_up.y, away);
+            osaka.place(start, put_up.y, now);
+            osaka.pursue(job, now);
+            Ok(format!(
+                "{name}: stage {} over {:?}, at ({}, {})",
+                put_up.to, put_up.nook, put_up.x, put_up.y
+            ))
+        }
+        // In through her door (where her home and the frame stand it,
+        // the door batch): what she forgot, she goes for as she first
         // decides (her routine sends her out after, at school time).
-        // Dashing home for her lunch, the door is beside her fridge, so
-        // the scene shows soon; else it's her own (just dashed in), or
-        // one where she stood (a visit under way). Wherever her door may
-        // stand: never over text.
+        // Just dashed in, she's through it already.
         Scene::DashIn | Scene::DashForgot => {
-            let fridge = chances
-                .seats
-                .iter()
-                .find(|s| s.what == Use::Snack && !s.makeshift())
-                .filter(|_| scene == Scene::DashIn);
-            let near = match fridge {
-                Some(seat) => {
-                    let away = match Job::Use(*seat).side() {
-                        Side::Left => 1,
-                        Side::Right => -1,
-                    };
-                    Some((approach(terrain, seat.x, seat.y, away), seat.y))
-                }
-                None if osaka.dashing() => None,
-                None => Some((osaka.x, osaka.y)),
-            };
-            let Some(near) = near else {
+            if osaka.dashing() {
                 return Ok(format!("{name}: in through her door"));
-            };
-            let Some((x, y)) = super::door_spot(terrain, near) else {
+            }
+            let Some(door) = chances.door else {
                 // Not left to wait for a later snack.
                 osaka.cue(None);
                 return Err(format!("{name}: nowhere for her door to stand"));
             };
-            osaka.dash_through((x, y), now);
-            let by = if fridge.is_some() {
-                "by her fridge"
-            } else {
-                "through a door"
+            let (x, y) = door.spot();
+            osaka.dash_through(door, now);
+            Ok(format!("{name}: in through her door at ({x}, {y})"))
+        }
+        // Off to school by her door, from where she stands (door batch
+        // D10): back in after a short gap.
+        Scene::School => {
+            let Some(door) = chances.door else {
+                return Err(format!("{name}: nowhere for her door to stand"));
             };
-            Ok(format!("{name}: in {by} at ({x}, {y})"))
+            // Checked before she's moved: an error leaves her be.
+            let (dx, dy) = door.spot();
+            if terrain.platform_at(dx, dy).is_none() {
+                return Err(format!("{name}: no way to her door"));
+            }
+            // Off any floor (dropping in, say): set down somewhere calm
+            // first, on her door's floor if she can be.
+            if terrain.platform_at(osaka.x, osaka.y).is_none() {
+                let (x, y) = terrain
+                    .platforms
+                    .iter()
+                    .map(|p| ((p.x0 + p.x1) / 2, p.y))
+                    .filter(|&(x, y)| terrain.restful(x, y))
+                    .min_by_key(|&(x, y)| ((x - dx).abs() + (y - dy).abs(), y, x))
+                    .ok_or_else(|| format!("{name}: nowhere to stand"))?;
+                osaka.place(x, y, now);
+            }
+            if !osaka.off_to_school_on_stage(door, terrain, chances, now, rng) {
+                return Err(format!("{name}: no way to her door"));
+            }
+            let (x, y) = door.spot();
+            Ok(format!("{name}: to her door at ({x}, {y})"))
         }
         // The sofa was set up turned from the TV as the frame was read,
         // and she's felt it: she sets off to lift it.
@@ -522,6 +601,7 @@ pub(super) fn direct(
                     x,
                     y,
                     side,
+                    up: at.on_shelf(),
                 },
                 now,
             );
@@ -553,8 +633,16 @@ pub(super) fn direct(
                 .filter(|s| Some(s.what) == what)
                 .copied()
                 .collect();
-            let seat = pick(&seats, rng)
-                .ok_or_else(|| format!("{name}: no room for her furniture here"))?;
+            let seat = pick(&seats, rng).ok_or_else(|| match scene {
+                // Offered only by what she gazes up at, up on a shelf the
+                // frame shows (the stage put nothing up where none would
+                // show), and only where she could stand beside it.
+                Scene::GazeUp if visit.shown.iter().any(|s| s.uses().contains(&Use::GazeUp)) => {
+                    format!("{name}: {NO_ROOM_BESIDE}")
+                }
+                Scene::GazeUp => format!("{name}: {NOTHING_UP}"),
+                _ => format!("{name}: no room for her furniture here"),
+            })?;
             let job = Job::Use(seat);
             let away = match job.side() {
                 Side::Left => 1,
@@ -605,35 +693,22 @@ pub(super) fn direct(
             Ok(format!("{name} at ({x}, {y}), {n} glyphs in reach"))
         }
         Scene::Work => {
-            // From a floor reaching a screen edge if there is one (she
-            // walks out), else anywhere (she takes the door).
-            let out = terrain
-                .links
+            // Anywhere restful (she walks to her door from there).
+            let (x, y) = terrain
+                .platforms
                 .iter()
-                .find(|l| matches!(l.route, Route::Around { .. }))
-                .copied();
-            let (x, y) = match out {
-                Some(link) => {
-                    let y = terrain.platforms.get(link.from).map_or(0, |p| p.y);
-                    let middle = terrain
-                        .platforms
-                        .get(link.from)
-                        .map_or(link.x, |p| (p.x0 + p.x1) / 2);
-                    (
-                        approach(terrain, link.x, y, if middle < link.x { -1 } else { 1 }),
-                        y,
-                    )
-                }
-                None => terrain
-                    .platforms
-                    .iter()
-                    .map(|p| ((p.x0 + p.x1) / 2, p.y))
-                    .find(|&(x, y)| terrain.restful(x, y))
-                    .ok_or_else(|| format!("{name}: nowhere to stand"))?,
-            };
+                .map(|p| ((p.x0 + p.x1) / 2, p.y))
+                .find(|&(x, y)| terrain.restful(x, y))
+                .ok_or_else(|| format!("{name}: nowhere to stand"))?;
             osaka.place(x, y, now);
-            let how = if out.is_some() { "walking" } else { "by door" };
-            osaka.go_to_work(out, now, rng);
+            let how = match chances.door {
+                Some(door) => {
+                    let (dx, dy) = door.spot();
+                    format!("to her door at ({dx}, {dy})")
+                }
+                None => "by a door in space".to_owned(),
+            };
+            osaka.go_to_work(terrain, chances, now, rng);
             Ok(format!("{name}, {how}"))
         }
         Scene::Door => {
@@ -783,6 +858,43 @@ pub fn stage_ui() -> Ui {
     )
 }
 
+/// The real UI as it typically stands (phase 6a, step 3's measurement):
+/// an evening's chat, ten playlist rows, four known users, and twenty
+/// franchises in The List.
+#[cfg(test)]
+pub(super) fn fuller_ui() -> Ui {
+    const SERIES: [&str; 20] = [
+        "Frieren",
+        "Azumanga Daioh",
+        "Haibane Renmei",
+        "Mushishi",
+        "Yotsuba to!",
+        "Yuru Yuri",
+        "K-On!",
+        "Non Non Biyori",
+        "Natsume Yuujinchou",
+        "Hyouka",
+        "Aria the Animation",
+        "Shirobako",
+        "Barakamon",
+        "Flying Witch",
+        "Laid-Back Camp",
+        "Girls' Last Tour",
+        "Mob Psycho 100",
+        "Spy x Family",
+        "Bocchi the Rock!",
+        "Dungeon Meshi",
+    ];
+    let files: Vec<String> = (1..=10).map(|i| format!("Frieren - {i:02}.mkv")).collect();
+    let files: Vec<&str> = files.iter().map(String::as_str).collect();
+    room_ui_full(
+        (0..40).map(|i| format!("line {i} of the evening")),
+        &files,
+        &["ana", "bob", "cho", "dee"],
+        &SERIES,
+    )
+}
+
 /// The stage's playlist: the text she tears off for furniture.
 const PLAYLIST: [&str; 6] = [
     "Azumanga Daioh - 01.mkv",
@@ -799,11 +911,74 @@ pub(super) fn chat_ui(lines: impl Iterator<Item = String>) -> Ui {
 
 /// The real UI with chat `lines` and a playlist of `files`.
 fn room_ui(lines: impl Iterator<Item = String>, files: &[&str]) -> Ui {
+    room_ui_with(lines, files, &[])
+}
+
+/// [`room_ui`], with `known` users (offline) in the Users pane.
+fn room_ui_with(lines: impl Iterator<Item = String>, files: &[&str], known: &[&str]) -> Ui {
+    room_ui_full(lines, files, known, &[])
+}
+
+/// [`room_ui_with`], with an entry of The List for each of `series`
+/// (a franchise each, in turn Active, Planned, on the Short List,
+/// Finished and Waiting; the first five committed to by `known`'s first
+/// user, so they're in her Watching group).
+fn room_ui_full(
+    lines: impl Iterator<Item = String>,
+    files: &[&str],
+    known: &[&str],
+    series: &[&str],
+) -> Ui {
     use dessplay_core::playlist::NewPlaylistEntry;
     use dessplay_core::state::CrdtState;
-    use dessplay_core::types::{ActorId, Ed2kHash, SharedTimestamp};
+    use dessplay_core::types::{
+        ActorId, Ed2kHash, ListEntryId, ListStatus, SeriesListEntry, SeriesWatchState,
+        SharedTimestamp,
+    };
     let mut ui = real_ui();
     let mut state = CrdtState::new();
+    const STATUSES: [ListStatus; 5] = [
+        ListStatus::Active,
+        ListStatus::Planned,
+        ListStatus::ShortList,
+        ListStatus::Finished,
+        ListStatus::Waiting,
+    ];
+    for (i, &name) in series.iter().enumerate() {
+        let id = ListEntryId(100 + i as u128);
+        state.put_list_entry(
+            ActorId::SERVER,
+            SharedTimestamp(1),
+            id,
+            SeriesListEntry {
+                name: name.into(),
+                nero_name: None,
+                genre: None,
+                notes: Vec::new(),
+                recommender: None,
+                status: STATUSES[i % STATUSES.len()],
+                status_note: None,
+                source: None,
+                watchers: Default::default(),
+                anidb_series_id: None,
+                local_aliases: Default::default(),
+                manual_files: Default::default(),
+                anidb_unavailable: false,
+            },
+        );
+        if let Some(&user) = known.first()
+            && i < 5
+        {
+            state.set_series_preference(
+                ActorId::SERVER,
+                SharedTimestamp(2),
+                UserId::new(user),
+                id,
+                SeriesWatchState::Watching,
+                None,
+            );
+        }
+    }
     for (i, &file) in files.iter().enumerate() {
         state.push_playlist_entry(
             ActorId::SERVER,
@@ -820,6 +995,8 @@ fn room_ui(lines: impl Iterator<Item = String>, files: &[&str]) -> Ui {
     let senders = ["kim", "bob", "ana"];
     let view = dessplay_core::state::StateView {
         playlist: state.view().playlist,
+        list_entries: state.view().list_entries,
+        series_preference: state.view().series_preference,
         chat: lines
             .enumerate()
             .map(|(i, text)| dessplay_core::types::ChatMessage {
@@ -832,6 +1009,13 @@ fn room_ui(lines: impl Iterator<Item = String>, files: &[&str]) -> Ui {
     };
     ui.apply_snapshot(UiSnapshot {
         view: std::sync::Arc::new(view),
+        known_offline: known
+            .iter()
+            .map(|&name| dessplay_core::net::KnownUser {
+                username: UserId::new(name),
+                last_seen: 1,
+            })
+            .collect(),
         ..UiSnapshot::default()
     });
     ui

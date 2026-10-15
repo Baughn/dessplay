@@ -10,6 +10,13 @@ cargo-fuzz = true
 # Excluded from the root workspace (fuzz builds use their own profile).
 [workspace]
 
+# The root workspace's [patch.crates-io] does not reach this one; mirror
+# it (see the root Cargo.toml for why each patch exists). Kept in step by
+# dessplay-core/tests/fuzz_manifests.rs.
+[patch.crates-io]
+quinn-udp = { path = "../../vendor/quinn-udp" }
+crdts = { path = "../../vendor/crdts" }
+
 [dependencies]
 libfuzzer-sys = "0.4"
 arbitrary = { version = "1", features = ["derive"] }

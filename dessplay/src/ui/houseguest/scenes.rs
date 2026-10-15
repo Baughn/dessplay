@@ -10,6 +10,7 @@ use tuirealm::ratatui::buffer::Buffer;
 use tuirealm::ratatui::layout::{Position, Rect};
 
 use super::cells::{untouchable, width};
+use super::door::DoorSpot;
 use super::graphics::strokes;
 use super::layer::{Placed, TextLayer, takeable};
 use super::sprite::{HEIGHT, WIDTH};
@@ -246,6 +247,36 @@ pub(super) enum Job {
     /// Borrow a strip of a line to read beside where she tore it, and
     /// slide it back (phase 5c D5, HG #72).
     Borrow(Pull),
+    /// Put the next stage of her shelf up (phase 6a D7c).
+    PutUp(PutUp),
+    /// Go out by her external door, standing at its spot (door batch
+    /// D6): `why` says which gap its door opens on.
+    Leave {
+        spot: DoorSpot,
+        why: Leave,
+    },
+    /// Go out by a door in space at `at`, clear of her pieces, for `why`
+    /// (door batch M25, step 10a): no door of hers to go to, or no way to
+    /// its spot.
+    Out {
+        at: super::osaka::Clear,
+        why: Leave,
+    },
+}
+
+/// Why she goes out by her door (door batch D6), so which gap it opens
+/// on is never derived from mixed state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Leave {
+    /// Her routine: school (the door's gap never ends; the visit ends
+    /// once it has closed behind her).
+    School,
+    /// The stage's school scene (door batch D10): out and back in after
+    /// a short gap, the visit never ending.
+    Stage,
+    /// Her part-time job (door batch, step 4b): out for her shift (the
+    /// door's gap is the shift's) and home again with her shopping.
+    Work,
 }
 
 /// Lifting `repair.piece`, standing at `(x, y)` (beside it on its
@@ -258,6 +289,8 @@ pub(super) struct Lift {
     pub x: i32,
     pub y: i32,
     pub side: Side,
+    /// Whether it stands on a shelf: she reaches up for it, arms up.
+    pub up: bool,
 }
 
 /// Setting `piece` down at `to`, standing at `(x, y)` (beside where it
@@ -266,6 +299,19 @@ pub(super) struct Lift {
 pub(super) struct SetDown {
     pub piece: super::room::Furniture,
     pub to: super::rules::Placement,
+    pub x: i32,
+    pub y: i32,
+    pub side: Side,
+}
+
+/// Putting stage `to` of her shelf on `nook`'s wall up (phase 6a D7c),
+/// standing at `(x, y)` (on its room's floor, beside the half it puts
+/// up) facing `side`. Whether she hops as it goes up is the commit's
+/// (`structures::Stage::high`, on the frame that takes it).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct PutUp {
+    pub nook: super::room::Nook,
+    pub to: u8,
     pub x: i32,
     pub y: i32,
     pub side: Side,
@@ -282,6 +328,9 @@ impl Job {
             Self::Lift(lift) => JobRef::Lift(lift),
             Self::SetDown(set) => JobRef::SetDown(set),
             Self::Borrow(p) => JobRef::Borrow(p),
+            Self::PutUp(p) => JobRef::PutUp(p),
+            Self::Leave { spot, why } => JobRef::Leave(*spot, *why),
+            Self::Out { at, why } => JobRef::Out(*at, *why),
         }
     }
 
@@ -298,6 +347,15 @@ impl Job {
 
     pub fn side(&self) -> Side {
         self.by_ref().side()
+    }
+
+    /// Why she's going out, if it's her way out: by her door, or by a
+    /// door in space where it's clear.
+    pub fn leave(&self) -> Option<Leave> {
+        match self {
+            Self::Leave { why, .. } | Self::Out { why, .. } => Some(*why),
+            _ => None,
+        }
     }
 }
 
@@ -320,6 +378,9 @@ pub(super) enum JobRef<'a> {
     Lift(&'a Lift),
     SetDown(&'a SetDown),
     Borrow(&'a Pull),
+    PutUp(&'a PutUp),
+    Leave(DoorSpot, Leave),
+    Out(super::osaka::Clear, Leave),
 }
 
 impl JobRef<'_> {
@@ -332,6 +393,9 @@ impl JobRef<'_> {
             Self::Use(seat) => (seat.x, seat.y),
             Self::Lift(l) => (l.x, l.y),
             Self::SetDown(s) => (s.x, s.y),
+            Self::PutUp(p) => (p.x, p.y),
+            Self::Leave(door, _) => door.spot(),
+            Self::Out(clear, _) => clear.spot(),
         }
     }
 
@@ -346,7 +410,10 @@ impl JobRef<'_> {
             Self::Borrow(p) => on(p.row, p.strip()),
             Self::Build(b) => on(b.row, b.cells.clone()),
             Self::Swap(s) => vec![s.a.source, s.a.at, s.b.source, s.b.at],
-            Self::Use(_) | Self::Lift(_) | Self::SetDown(_) => Vec::new(),
+            Self::Use(_) | Self::Lift(_) | Self::SetDown(_) | Self::PutUp(_) => Vec::new(),
+            // Never asked: `Act::at_job` yields no Leave or Out (at her
+            // door she's at an `Act::Door`), and a door is about no text.
+            Self::Leave(..) | Self::Out(..) => Vec::new(),
         }
     }
 
@@ -361,6 +428,15 @@ impl JobRef<'_> {
             },
             Self::Lift(l) => l.side,
             Self::SetDown(s) => s.side,
+            Self::PutUp(p) => p.side,
+            // Facing out, toward her door's wall.
+            Self::Leave(door, _) => match door.out() {
+                super::sprite::Facing::Left => Side::Left,
+                super::sprite::Facing::Right => Side::Right,
+            },
+            // A door in space opens before her as she faces it, to the
+            // right (as one lets her in: `Through::into_room`).
+            Self::Out(..) => Side::Right,
         }
     }
 
@@ -371,8 +447,13 @@ impl JobRef<'_> {
             Self::Swap(s) => (s.row, s.y),
             Self::Build(b) => (b.row, b.y),
             Self::Use(_) => return 1,
+            // Never asked: `Act::at_job` yields no Leave or Out (at her
+            // door she's at an `Act::Door`). It would be the knob.
+            Self::Leave(..) | Self::Out(..) => return 1,
             // Bent down to the piece at her feet.
             Self::Lift(_) | Self::SetDown(_) => return (HEIGHT - 1) as u8,
+            // Arms up, over her head.
+            Self::PutUp(_) => return 0,
         };
         (i32::from(row) - (y - HEIGHT)).clamp(0, HEIGHT - 1) as u8
     }
@@ -835,7 +916,7 @@ fn segment(buf: &Buffer, protected: &[Rect], start: u16, row: u16, dir: i32) -> 
 /// tears from — so she stands over it as she crumples. `then` says what
 /// she could use the finished piece for there (a sofa may face a TV).
 pub(super) fn builds(
-    buf: &Buffer,
+    drawn: super::structures::Drawn,
     pulls: &[Pull],
     items: &[super::room::Furniture],
     id: super::room::MadeId,
@@ -858,13 +939,14 @@ pub(super) fn builds(
                 let piece = Shown {
                     item,
                     facing,
-                    boxed: false,
+                    boxed: false.into(),
                     strip: None,
                     left: pull.x - i32::from(cols) / 2,
                     floor: pull.y,
+                    stood: pull.y,
                     scrap: Some(done),
                 };
-                if !fits(buf, &piece, clear) || !roomy(buf, &piece, clear) {
+                if !fits(drawn, &piece, clear) || !roomy(drawn.buf(), &piece, clear) {
                     continue;
                 }
                 let count = (pull.cells.len() - 2).min(scrap::GLYPHS);
@@ -873,7 +955,7 @@ pub(super) fn builds(
                     Side::Right => pull.cells.iter().take(count).copied().collect(),
                     Side::Left => pull.cells.iter().rev().take(count).copied().collect(),
                 };
-                let glyphs = glyphs_at(buf, pull.row, &cells);
+                let glyphs = glyphs_at(drawn.buf(), pull.row, &cells);
                 for what in then(&piece) {
                     out.push(Build {
                         x: pull.x,

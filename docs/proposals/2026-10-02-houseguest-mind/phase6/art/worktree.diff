@@ -1,0 +1,389 @@
+diff --git a/dessplay/src/ui/houseguest/art.rs b/dessplay/src/ui/houseguest/art.rs
+index 9158fda7..6d1876a3 100644
+--- a/dessplay/src/ui/houseguest/art.rs
++++ b/dessplay/src/ui/houseguest/art.rs
+@@ -2646,6 +2646,206 @@ mod tests {
+             .unwrap();
+     }
+ 
++    /// The gremlin figurine for review (phase 6, not wired in):
++    /// `HOUSEGUEST_GREMLIN=/dir cargo test -p dessplay --lib gremlin_sheet
++    /// -- --ignored` writes `gremlin-1x.png`, the same pixels at 3×
++    /// nearest-neighbour (`gremlin-1x-nn3x.png`) and a native 3× render
++    /// (`gremlin-3x.png`). The figurine stands on a shelf, a run of `─`
++    /// drawn as a floor line: rendered as a standing piece, its plinth on
++    /// the line. Bands, top to bottom, each on a dark terminal (#1e2127)
++    /// and then a light one (the outline stays #1d1714 on both):
++    /// 1. on a shelf run: the gremlin facing right, facing left
++    ///    (mirrored), the tall-pedestal variant, the jade variant, the
++    ///    3-wide long-eared variant; then the ASCII candidates (`oo`/`ww`
++    ///    and `/\`/`oo`) in its ink, in the stand-in bitmap font;
++    /// 2. a pane's back wall: the plant on the floor, her standing under
++    ///    a shelf hung just over her head (the floor − 5) with the
++    ///    gremlin on it, the clock and the poster hung beside it (hang 4).
++    #[test]
++    #[ignore = "writes PNGs for review: set HOUSEGUEST_GREMLIN"]
++    fn gremlin_sheet() {
++        type Rgba = image::Rgba<u8>;
++        enum Draw {
++            /// A background from row `y0` to `y1`.
++            Bg(u32, u32, Rgba),
++            /// A piece in a state at (x, y): its top row (hung) or its
++            /// floor row (standing).
++            Piece(Furniture, PieceState, Facing, (u32, u32), bool),
++            /// A `props.svg` group `cols` × 2 cells wide, standing on the
++            /// shelf row `y` at column `x`.
++            Figure(&'static str, u32, Facing, (u32, u32)),
++            /// Her box (5 × 4) at column `x`, on floor row `y`.
++            Her(Rig, Facing, (u32, u32)),
++            /// A floor (or shelf) line on row `y` from column `x0` to `x1`.
++            Line(u32, u32, u32, Rgba),
++            /// ASCII rows from cell (x, y), in a stand-in font.
++            Ascii(&'static [&'static str], (u32, u32), Rgba),
++            /// A dim label.
++            Label(&'static str, (u32, u32), Rgba),
++        }
++        const DARK: Rgba = image::Rgba([30, 33, 39, 255]);
++        const LIGHT: Rgba = image::Rgba([244, 241, 234, 255]);
++        const DARK_LINE: Rgba = image::Rgba([139, 148, 158, 255]);
++        const LIGHT_LINE: Rgba = image::Rgba([110, 118, 129, 255]);
++        const INK: Rgba = image::Rgba([178, 154, 224, 255]);
++        let Ok(dir) = std::env::var("HOUSEGUEST_GREMLIN") else {
++            eprintln!("HOUSEGUEST_GREMLIN unset; nothing written");
++            return;
++        };
++        let cols = 32u32;
++        let mut draws = Vec::new();
++        let mut y0 = 0u32;
++        let stand = Rig::for_pose(Pose::Stand, Face::Vacant);
++        for (band, height) in [("1", 6u32), ("2", 10)] {
++            for (bg, line) in [(DARK, DARK_LINE), (LIGHT, LIGHT_LINE)] {
++                draws.push(Draw::Bg(y0, y0 + height, bg));
++                draws.push(Draw::Label(band, (0, y0), LIGHT_LINE));
++                if band == "1" {
++                    let shelf = y0 + 4;
++                    draws.push(Draw::Line(shelf, 1, 20, line));
++                    for (x, id, wide, facing) in [
++                        (2, "gremlin", 2, Facing::Right),
++                        (5, "gremlin", 2, Facing::Left),
++                        (8, "gremlin-tall", 2, Facing::Right),
++                        (11, "gremlin-jade", 2, Facing::Right),
++                        (14, "gremlin-wide", 3, Facing::Right),
++                    ] {
++                        draws.push(Draw::Figure(id, wide, facing, (x, shelf)));
++                    }
++                    draws.push(Draw::Line(shelf, 22, 30, line));
++                    draws.push(Draw::Ascii(&["oo", "ww"], (23, shelf - 2), INK));
++                    draws.push(Draw::Ascii(&["/\\", "oo"], (27, shelf - 2), INK));
++                } else {
++                    let floor = y0 + height - 1;
++                    let shelf = floor - 5;
++                    draws.push(Draw::Line(floor, 1, 30, line));
++                    draws.push(Draw::Piece(
++                        Furniture::Plant,
++                        PieceState::Plain,
++                        Facing::Right,
++                        (2, floor),
++                        true,
++                    ));
++                    draws.push(Draw::Her(stand, Facing::Right, (7, floor)));
++                    draws.push(Draw::Line(shelf, 7, 12, line));
++                    draws.push(Draw::Figure("gremlin", 2, Facing::Right, (9, shelf)));
++                    draws.push(Draw::Piece(
++                        Furniture::Clock,
++                        PieceState::Dial(Dial::at(16 * 60)),
++                        Facing::Right,
++                        (13, floor - 6),
++                        false,
++                    ));
++                    draws.push(Draw::Piece(
++                        Furniture::Poster,
++                        PieceState::Plain,
++                        Facing::Right,
++                        (17, floor - 6),
++                        false,
++                    ));
++                }
++                y0 += height;
++            }
++        }
++        let rows = y0;
++        let render_sheet = |s: u32| {
++            let (w, h) = (9 * s, 19 * s);
++            let mut sheet = image::RgbaImage::from_pixel(w * cols, h * rows, DARK);
++            let put = |sheet: &mut image::RgbaImage, image: &image::RgbaImage, x: u32, y: u32| {
++                image::imageops::overlay(sheet, image, i64::from(x), i64::from(y));
++            };
++            let text = |sheet: &mut image::RgbaImage, row: &str, (x, y): (u32, u32), ink| {
++                for (i, c) in row.chars().enumerate() {
++                    let (cx, cy) = (w * (x + i as u32) + 2 * s, h * y + 6 * s);
++                    for (r, bits) in glyph(c).into_iter().enumerate() {
++                        for col in 0..5u32 {
++                            if bits >> (4 - col) & 1 == 1 {
++                                for dy in 0..s {
++                                    for dx in 0..s {
++                                        sheet.put_pixel(
++                                            cx + col * s + dx,
++                                            cy + r as u32 * s + dy,
++                                            ink,
++                                        );
++                                    }
++                                }
++                            }
++                        }
++                    }
++                }
++            };
++            for draw in &draws {
++                match draw {
++                    Draw::Bg(a, b, colour) => {
++                        for py in h * a..h * b {
++                            for px in 0..w * cols {
++                                sheet.put_pixel(px, py, *colour);
++                            }
++                        }
++                    }
++                    Draw::Piece(item, state, facing, at, standing) => {
++                        let (pc, pr) = item.spec().footprint;
++                        let (pw, mut ph) = (w * u32::from(pc), h * u32::from(pr));
++                        let mut top = h * at.1;
++                        if *standing {
++                            ph += h / 2;
++                            top = h * (at.1 - u32::from(pr));
++                        }
++                        let image =
++                            render_piece(*item, *state, *facing, LINE, pw, ph).expect("renders");
++                        put(&mut sheet, &image, w * at.0, top);
++                    }
++                    Draw::Figure(id, wide, facing, (x, y)) => {
++                        let (fw, fh) = (*wide as f32 * CELL_UNITS.0, 2.0 * CELL_UNITS.1);
++                        let mirror = match facing {
++                            Facing::Right => String::new(),
++                            Facing::Left => {
++                                format!(r#" transform="translate({fw} 0) scale(-1 1)""#)
++                            }
++                        };
++                        let svg = format!(
++                            r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {fw} {fh}" color="{LINE}">{PROPS}<g{mirror}><use href="#{id}"/></g></svg>"##
++                        );
++                        let image =
++                            rasterize(&svg, (fw, fh), w * wide, 2 * h + h / 2).expect("renders");
++                        put(&mut sheet, &image, w * x, h * (y - 2));
++                    }
++                    Draw::Her(rig, facing, (x, y)) => {
++                        let osaka = render(rig, *facing, LINE, w * 5, h * 4 + h / 2).unwrap();
++                        put(&mut sheet, &osaka, w * x, h * (y - 4));
++                    }
++                    Draw::Line(y, x0, x1, colour) => {
++                        for gx in w * x0..w * x1 {
++                            for t in 0..s {
++                                sheet.put_pixel(gx, h * y + h / 2 + t, *colour);
++                            }
++                        }
++                    }
++                    Draw::Ascii(lines, (x, y), ink) => {
++                        for (i, row) in lines.iter().enumerate() {
++                            text(&mut sheet, row, (*x, y + i as u32), *ink);
++                        }
++                    }
++                    Draw::Label(label, at, ink) => text(&mut sheet, label, *at, *ink),
++                }
++            }
++            sheet
++        };
++        let one = render_sheet(1);
++        one.save(format!("{dir}/gremlin-1x.png")).unwrap();
++        image::imageops::resize(
++            &one,
++            one.width() * 3,
++            one.height() * 3,
++            image::imageops::FilterType::Nearest,
++        )
++        .save(format!("{dir}/gremlin-1x-nn3x.png"))
++        .unwrap();
++        render_sheet(3)
++            .save(format!("{dir}/gremlin-3x.png"))
++            .unwrap();
++    }
++
+     /// A 5 × 7 bitmap of `c` (bit 4 is the left column), for the bubbles
+     /// and labels on the stillness sheet: bubbles are terminal text, and
+     /// the renderer has no fonts. Only the glyphs the sheet uses.
+@@ -2660,6 +2860,8 @@ mod tests {
+             'B' => [30, 17, 17, 30, 17, 17, 30],
+             'M' => [17, 27, 21, 21, 17, 17, 17],
+             'T' => [31, 4, 4, 4, 4, 4, 4],
++            '/' => [1, 1, 2, 4, 8, 16, 16],
++            '\\' => [16, 16, 8, 4, 2, 1, 1],
+             'a' => [0, 0, 14, 1, 15, 17, 15],
+             'b' => [16, 16, 22, 25, 17, 17, 30],
+             'c' => [0, 0, 14, 16, 16, 17, 14],
+diff --git a/dessplay/src/ui/houseguest/art/props.svg b/dessplay/src/ui/houseguest/art/props.svg
+index d172b576..7971e2c9 100644
+--- a/dessplay/src/ui/houseguest/art/props.svg
++++ b/dessplay/src/ui/houseguest/art/props.svg
+@@ -8,7 +8,8 @@
+      (6 × 4), bed 200 × 126 (10 × 3), desk 140 × 126 (7 × 3), plant
+      60 × 126 (3 × 3), poster 80 × 84 (4 × 2; it hangs on the wall),
+      clock 60 × 84 (3 × 2), window 80 × 84 (4 × 2); both hang on the wall
+-     and are never mirrored. Pieces with a front and a back (bed, desk)
++     and are never mirrored. gremlin 40 × 84 (2 × 2; it stands on a
++     shelf, its plinth on the frame's bottom edge). Pieces with a front and a back (bed, desk)
+      face right, and are mirrored when placed facing left. -->
+ <defs>
+   <!-- A two-seat sofa, seen from the front; its yellow throw cushion
+@@ -392,6 +393,154 @@
+     <rect x="6.22" y="7.06" width="12" height="5" fill="#f3e7b0" fill-opacity="0.85" stroke="currentColor" stroke-width="0.9" transform="rotate(-30 12.22 9.56)"/>
+     <rect x="61.78" y="7.06" width="12" height="5" fill="#f3e7b0" fill-opacity="0.85" stroke="currentColor" stroke-width="0.9" transform="rotate(30 67.78 9.56)"/>
+   </g>
++  <!-- A gremlin figurine for the shelf, 2 x 2 cells (40 x 84): a
++       lavender-glazed imp on a wooden plinth, ears out wide, yellow
++       eyes slid sideways, brows pinched, grinning ear to ear and
++       rubbing his hands; a pointed tail off his hip. The plinth's
++       edges sit on whole pixels at a 9 x 19 cell standing on its line
++       (x in 20/9 steps, y in 20/9 steps up from 84). -->
++  <g id="gremlin">
++    <rect x="4.44" y="75.11" width="31.11" height="8.89" rx="1.2" fill="currentColor"/>
++    <rect x="6.67" y="77.33" width="26.67" height="4.44" fill="#8a5f3c"/>
++    <rect x="6.67" y="77.33" width="26.67" height="2.22" fill="#b07f52"/>
++    <path d="M 26 72 C 31.5 73.4 35.6 70.6 35.4 65.6" fill="none" stroke="currentColor" stroke-width="4.2" stroke-linecap="round" stroke-linejoin="round"/>
++    <path d="M 26 72 C 31.5 73.4 35.6 70.6 35.4 65.6" fill="none" stroke="#9179c4" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
++    <path d="M 35.4 61.4 L 38.2 66.6 L 32.8 66.4 Z" fill="#9179c4" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
++    <ellipse cx="14.6" cy="73.51" rx="4.2" ry="2.5" fill="#9179c4" stroke="currentColor" stroke-width="1.6"/>
++    <ellipse cx="25.4" cy="73.51" rx="4.2" ry="2.5" fill="#9179c4" stroke="currentColor" stroke-width="1.6"/>
++    <path d="M 12.6 74.6 C 10.4 66 12.4 54 20 53.6 C 27.6 54 29.6 66 27.4 74.6 Z" fill="#b29ae0" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
++    <ellipse cx="20" cy="69.8" rx="4.4" ry="4.2" fill="#d8cbf0"/>
++    <path d="M 13.4 61.2 C 12.4 64.4 14.6 66 17.8 65" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/>
++    <path d="M 13.4 61.2 C 12.4 64.4 14.6 66 17.8 65" fill="none" stroke="#b29ae0" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
++    <path d="M 26.6 61.2 C 27.6 64.4 25.4 66 22.2 65" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/>
++    <path d="M 26.6 61.2 C 27.6 64.4 25.4 66 22.2 65" fill="none" stroke="#b29ae0" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
++    <circle cx="18.4" cy="64.4" r="2.3" fill="#b29ae0" stroke="currentColor" stroke-width="0.9"/>
++    <circle cx="21.6" cy="64.4" r="2.3" fill="#b29ae0" stroke="currentColor" stroke-width="0.9"/>
++    <path d="M 10.6 50 C 6.2 49.4 2.4 45 1 37.6 C 4.8 38.2 9 40 12 42.6 Z" fill="#b29ae0" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
++    <path d="M 29.4 50 C 33.8 49.4 37.6 45 39 37.6 C 35.2 38.2 31 40 28 42.6 Z" fill="#b29ae0" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
++    <path d="M 9.8 47.6 C 6.6 47 4 44 2.9 40.2 C 5.8 41 8.4 42.4 10.6 44.4 Z" fill="#e7a6a6"/>
++    <path d="M 30.2 47.6 C 33.4 47 36 44 37.1 40.2 C 34.2 41 31.6 42.4 29.4 44.4 Z" fill="#e7a6a6"/>
++    <path d="M 18 37 C 17.4 32.6 20 29.6 24 30 C 21.6 31.6 21.2 34 22.2 37 Z" fill="#b29ae0" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
++    <path d="M 20 35.6 C 27.2 35.6 31.2 40.2 31.2 46.6 C 31.2 52.8 26.6 57.4 20 57.4 C 13.4 57.4 8.8 52.8 8.8 46.6 C 8.8 40.2 12.8 35.6 20 35.6 Z" fill="#b29ae0" stroke="currentColor" stroke-width="2"/>
++    <ellipse cx="15.0" cy="45.2" rx="3.8" ry="3.6" fill="#f5d04a" stroke="currentColor" stroke-width="1"/>
++    <circle cx="16.3" cy="45.8" r="1.7" fill="currentColor"/>
++    <ellipse cx="25.0" cy="45.2" rx="3.8" ry="3.6" fill="#f5d04a" stroke="currentColor" stroke-width="1"/>
++    <circle cx="26.3" cy="45.8" r="1.7" fill="currentColor"/>
++    <path d="M 11.8 40.6 L 18.8 42.8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
++    <path d="M 28.2 40.6 L 21.2 42.8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
++    <path d="M 11.6 49.4 Q 20 51.8 28.4 49.4 C 27.4 54.4 24 56 20 56 C 16 56 12.6 54.4 11.6 49.4 Z" fill="#7a1f24" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
++    <path d="M 12.6 50.2 Q 20 52.4 27.4 50.2 L 26.4 52.8 Q 20 54.4 13.6 52.8 Z" fill="#ffffff"/>
++    <path d="M 16.6 51.4 L 16.8 53.6 M 23.4 51.4 L 23.2 53.6" fill="none" stroke="#7a1f24" stroke-width="0.9"/>
++  </g>
++  <!-- Variant: the same imp on a two-step pedestal, lifted 2 px. -->
++  <g id="gremlin-tall">
++    <rect x="4.44" y="77.33" width="31.11" height="6.67" rx="1.2" fill="currentColor"/>
++    <rect x="6.67" y="79.56" width="26.67" height="2.22" fill="#8a5f3c"/>
++    <rect x="6.67" y="70.67" width="26.67" height="8.89" rx="1" fill="currentColor"/>
++    <rect x="8.89" y="72.89" width="22.22" height="4.44" fill="#8a5f3c"/>
++    <rect x="8.89" y="72.89" width="22.22" height="2.22" fill="#b07f52"/>
++    <g transform="translate(0 -4.44)">
++    <path d="M 26 72 C 31.5 73.4 35.6 70.6 35.4 65.6" fill="none" stroke="currentColor" stroke-width="4.2" stroke-linecap="round" stroke-linejoin="round"/>
++    <path d="M 26 72 C 31.5 73.4 35.6 70.6 35.4 65.6" fill="none" stroke="#9179c4" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
++    <path d="M 35.4 61.4 L 38.2 66.6 L 32.8 66.4 Z" fill="#9179c4" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
++    <ellipse cx="14.6" cy="73.51" rx="4.2" ry="2.5" fill="#9179c4" stroke="currentColor" stroke-width="1.6"/>
++    <ellipse cx="25.4" cy="73.51" rx="4.2" ry="2.5" fill="#9179c4" stroke="currentColor" stroke-width="1.6"/>
++    <path d="M 12.6 74.6 C 10.4 66 12.4 54 20 53.6 C 27.6 54 29.6 66 27.4 74.6 Z" fill="#b29ae0" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
++    <ellipse cx="20" cy="69.8" rx="4.4" ry="4.2" fill="#d8cbf0"/>
++    <path d="M 13.4 61.2 C 12.4 64.4 14.6 66 17.8 65" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/>
++    <path d="M 13.4 61.2 C 12.4 64.4 14.6 66 17.8 65" fill="none" stroke="#b29ae0" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
++    <path d="M 26.6 61.2 C 27.6 64.4 25.4 66 22.2 65" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/>
++    <path d="M 26.6 61.2 C 27.6 64.4 25.4 66 22.2 65" fill="none" stroke="#b29ae0" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
++    <circle cx="18.4" cy="64.4" r="2.3" fill="#b29ae0" stroke="currentColor" stroke-width="0.9"/>
++    <circle cx="21.6" cy="64.4" r="2.3" fill="#b29ae0" stroke="currentColor" stroke-width="0.9"/>
++    <path d="M 10.6 50 C 6.2 49.4 2.4 45 1 37.6 C 4.8 38.2 9 40 12 42.6 Z" fill="#b29ae0" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
++    <path d="M 29.4 50 C 33.8 49.4 37.6 45 39 37.6 C 35.2 38.2 31 40 28 42.6 Z" fill="#b29ae0" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
++    <path d="M 9.8 47.6 C 6.6 47 4 44 2.9 40.2 C 5.8 41 8.4 42.4 10.6 44.4 Z" fill="#e7a6a6"/>
++    <path d="M 30.2 47.6 C 33.4 47 36 44 37.1 40.2 C 34.2 41 31.6 42.4 29.4 44.4 Z" fill="#e7a6a6"/>
++    <path d="M 18 37 C 17.4 32.6 20 29.6 24 30 C 21.6 31.6 21.2 34 22.2 37 Z" fill="#b29ae0" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
++    <path d="M 20 35.6 C 27.2 35.6 31.2 40.2 31.2 46.6 C 31.2 52.8 26.6 57.4 20 57.4 C 13.4 57.4 8.8 52.8 8.8 46.6 C 8.8 40.2 12.8 35.6 20 35.6 Z" fill="#b29ae0" stroke="currentColor" stroke-width="2"/>
++    <ellipse cx="15.0" cy="45.2" rx="3.8" ry="3.6" fill="#f5d04a" stroke="currentColor" stroke-width="1"/>
++    <circle cx="16.3" cy="45.8" r="1.7" fill="currentColor"/>
++    <ellipse cx="25.0" cy="45.2" rx="3.8" ry="3.6" fill="#f5d04a" stroke="currentColor" stroke-width="1"/>
++    <circle cx="26.3" cy="45.8" r="1.7" fill="currentColor"/>
++    <path d="M 11.8 40.6 L 18.8 42.8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
++    <path d="M 28.2 40.6 L 21.2 42.8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
++    <path d="M 11.6 49.4 Q 20 51.8 28.4 49.4 C 27.4 54.4 24 56 20 56 C 16 56 12.6 54.4 11.6 49.4 Z" fill="#7a1f24" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
++    <path d="M 12.6 50.2 Q 20 52.4 27.4 50.2 L 26.4 52.8 Q 20 54.4 13.6 52.8 Z" fill="#ffffff"/>
++    <path d="M 16.6 51.4 L 16.8 53.6 M 23.4 51.4 L 23.2 53.6" fill="none" stroke="#7a1f24" stroke-width="0.9"/>
++    </g>
++  </g>
++  <!-- Variant: the same imp in a jade glaze. -->
++  <g id="gremlin-jade">
++    <rect x="4.44" y="75.11" width="31.11" height="8.89" rx="1.2" fill="currentColor"/>
++    <rect x="6.67" y="77.33" width="26.67" height="4.44" fill="#8a5f3c"/>
++    <rect x="6.67" y="77.33" width="26.67" height="2.22" fill="#b07f52"/>
++    <path d="M 26 72 C 31.5 73.4 35.6 70.6 35.4 65.6" fill="none" stroke="currentColor" stroke-width="4.2" stroke-linecap="round" stroke-linejoin="round"/>
++    <path d="M 26 72 C 31.5 73.4 35.6 70.6 35.4 65.6" fill="none" stroke="#5e9e86" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
++    <path d="M 35.4 61.4 L 38.2 66.6 L 32.8 66.4 Z" fill="#5e9e86" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
++    <ellipse cx="14.6" cy="73.51" rx="4.2" ry="2.5" fill="#5e9e86" stroke="currentColor" stroke-width="1.6"/>
++    <ellipse cx="25.4" cy="73.51" rx="4.2" ry="2.5" fill="#5e9e86" stroke="currentColor" stroke-width="1.6"/>
++    <path d="M 12.6 74.6 C 10.4 66 12.4 54 20 53.6 C 27.6 54 29.6 66 27.4 74.6 Z" fill="#7fc2a8" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
++    <ellipse cx="20" cy="69.8" rx="4.4" ry="4.2" fill="#bfe3d4"/>
++    <path d="M 13.4 61.2 C 12.4 64.4 14.6 66 17.8 65" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/>
++    <path d="M 13.4 61.2 C 12.4 64.4 14.6 66 17.8 65" fill="none" stroke="#7fc2a8" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
++    <path d="M 26.6 61.2 C 27.6 64.4 25.4 66 22.2 65" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/>
++    <path d="M 26.6 61.2 C 27.6 64.4 25.4 66 22.2 65" fill="none" stroke="#7fc2a8" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
++    <circle cx="18.4" cy="64.4" r="2.3" fill="#7fc2a8" stroke="currentColor" stroke-width="0.9"/>
++    <circle cx="21.6" cy="64.4" r="2.3" fill="#7fc2a8" stroke="currentColor" stroke-width="0.9"/>
++    <path d="M 10.6 50 C 6.2 49.4 2.4 45 1 37.6 C 4.8 38.2 9 40 12 42.6 Z" fill="#7fc2a8" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
++    <path d="M 29.4 50 C 33.8 49.4 37.6 45 39 37.6 C 35.2 38.2 31 40 28 42.6 Z" fill="#7fc2a8" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
++    <path d="M 9.8 47.6 C 6.6 47 4 44 2.9 40.2 C 5.8 41 8.4 42.4 10.6 44.4 Z" fill="#e7a6a6"/>
++    <path d="M 30.2 47.6 C 33.4 47 36 44 37.1 40.2 C 34.2 41 31.6 42.4 29.4 44.4 Z" fill="#e7a6a6"/>
++    <path d="M 18 37 C 17.4 32.6 20 29.6 24 30 C 21.6 31.6 21.2 34 22.2 37 Z" fill="#7fc2a8" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
++    <path d="M 20 35.6 C 27.2 35.6 31.2 40.2 31.2 46.6 C 31.2 52.8 26.6 57.4 20 57.4 C 13.4 57.4 8.8 52.8 8.8 46.6 C 8.8 40.2 12.8 35.6 20 35.6 Z" fill="#7fc2a8" stroke="currentColor" stroke-width="2"/>
++    <ellipse cx="15.0" cy="45.2" rx="3.8" ry="3.6" fill="#f5d04a" stroke="currentColor" stroke-width="1"/>
++    <circle cx="16.3" cy="45.8" r="1.7" fill="currentColor"/>
++    <ellipse cx="25.0" cy="45.2" rx="3.8" ry="3.6" fill="#f5d04a" stroke="currentColor" stroke-width="1"/>
++    <circle cx="26.3" cy="45.8" r="1.7" fill="currentColor"/>
++    <path d="M 11.8 40.6 L 18.8 42.8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
++    <path d="M 28.2 40.6 L 21.2 42.8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
++    <path d="M 11.6 49.4 Q 20 51.8 28.4 49.4 C 27.4 54.4 24 56 20 56 C 16 56 12.6 54.4 11.6 49.4 Z" fill="#7a1f24" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
++    <path d="M 12.6 50.2 Q 20 52.4 27.4 50.2 L 26.4 52.8 Q 20 54.4 13.6 52.8 Z" fill="#ffffff"/>
++    <path d="M 16.6 51.4 L 16.8 53.6 M 23.4 51.4 L 23.2 53.6" fill="none" stroke="#7a1f24" stroke-width="0.9"/>
++  </g>
++  <!-- Variant, 3 x 2 cells (60 x 84): long goblin ears out to
++       the frame's edges; the figure is shifted 4 px right. -->
++  <g id="gremlin-wide">
++    <g transform="translate(8.89 0)">
++    <rect x="4.44" y="75.11" width="31.11" height="8.89" rx="1.2" fill="currentColor"/>
++    <rect x="6.67" y="77.33" width="26.67" height="4.44" fill="#8a5f3c"/>
++    <rect x="6.67" y="77.33" width="26.67" height="2.22" fill="#b07f52"/>
++    <path d="M 26 72 C 31.5 73.4 35.6 70.6 35.4 65.6" fill="none" stroke="currentColor" stroke-width="4.2" stroke-linecap="round" stroke-linejoin="round"/>
++    <path d="M 26 72 C 31.5 73.4 35.6 70.6 35.4 65.6" fill="none" stroke="#9179c4" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
++    <path d="M 35.4 61.4 L 38.2 66.6 L 32.8 66.4 Z" fill="#9179c4" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
++    <ellipse cx="14.6" cy="73.51" rx="4.2" ry="2.5" fill="#9179c4" stroke="currentColor" stroke-width="1.6"/>
++    <ellipse cx="25.4" cy="73.51" rx="4.2" ry="2.5" fill="#9179c4" stroke="currentColor" stroke-width="1.6"/>
++    <path d="M 12.6 74.6 C 10.4 66 12.4 54 20 53.6 C 27.6 54 29.6 66 27.4 74.6 Z" fill="#b29ae0" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
++    <ellipse cx="20" cy="69.8" rx="4.4" ry="4.2" fill="#d8cbf0"/>
++    <path d="M 13.4 61.2 C 12.4 64.4 14.6 66 17.8 65" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/>
++    <path d="M 13.4 61.2 C 12.4 64.4 14.6 66 17.8 65" fill="none" stroke="#b29ae0" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
++    <path d="M 26.6 61.2 C 27.6 64.4 25.4 66 22.2 65" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/>
++    <path d="M 26.6 61.2 C 27.6 64.4 25.4 66 22.2 65" fill="none" stroke="#b29ae0" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
++    <circle cx="18.4" cy="64.4" r="2.3" fill="#b29ae0" stroke="currentColor" stroke-width="0.9"/>
++    <circle cx="21.6" cy="64.4" r="2.3" fill="#b29ae0" stroke="currentColor" stroke-width="0.9"/>
++    <path d="M 10.6 50.4 C 3 50.2 -4 46 -7.8 38.4 C -1.6 38.2 5 40 12 42.6 Z" fill="#b29ae0" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
++    <path d="M 29.4 50.4 C 37 50.2 44 46 47.8 38.4 C 41.6 38.2 35 40 28 42.6 Z" fill="#b29ae0" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
++    <path d="M 9.8 48 C 3.6 47.8 -1.8 45 -5.2 40.4 C 0 40.6 5 42 10.6 44.4 Z" fill="#e7a6a6"/>
++    <path d="M 30.2 48 C 36.4 47.8 41.8 45 45.2 40.4 C 40 40.6 35 42 29.4 44.4 Z" fill="#e7a6a6"/>
++    <path d="M 18 37 C 17.4 32.6 20 29.6 24 30 C 21.6 31.6 21.2 34 22.2 37 Z" fill="#b29ae0" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
++    <path d="M 20 35.6 C 27.2 35.6 31.2 40.2 31.2 46.6 C 31.2 52.8 26.6 57.4 20 57.4 C 13.4 57.4 8.8 52.8 8.8 46.6 C 8.8 40.2 12.8 35.6 20 35.6 Z" fill="#b29ae0" stroke="currentColor" stroke-width="2"/>
++    <ellipse cx="15.0" cy="45.2" rx="3.8" ry="3.6" fill="#f5d04a" stroke="currentColor" stroke-width="1"/>
++    <circle cx="16.3" cy="45.8" r="1.7" fill="currentColor"/>
++    <ellipse cx="25.0" cy="45.2" rx="3.8" ry="3.6" fill="#f5d04a" stroke="currentColor" stroke-width="1"/>
++    <circle cx="26.3" cy="45.8" r="1.7" fill="currentColor"/>
++    <path d="M 11.8 40.6 L 18.8 42.8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
++    <path d="M 28.2 40.6 L 21.2 42.8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
++    <path d="M 11.6 49.4 Q 20 51.8 28.4 49.4 C 27.4 54.4 24 56 20 56 C 16 56 12.6 54.4 11.6 49.4 Z" fill="#7a1f24" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
++    <path d="M 12.6 50.2 Q 20 52.4 27.4 50.2 L 26.4 52.8 Q 20 54.4 13.6 52.8 Z" fill="#ffffff"/>
++    <path d="M 16.6 51.4 L 16.8 53.6 M 23.4 51.4 L 23.2 53.6" fill="none" stroke="#7a1f24" stroke-width="0.9"/>
++    </g>
++  </g>
+   <!-- A round wall clock, 3 x 2 cells (60 x 84). The dial rotates
+        clock-hand-hour and clock-hand-minute about the face centre
+        (30, 42.89); it is never mirrored. -->

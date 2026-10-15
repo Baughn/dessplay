@@ -228,6 +228,12 @@ Remove the `allow(dead_code)` attributes as each variant gets constructed.
 - **Settling in** from the lean: sitting in front of it (`UnderSill`), then dozing there (`SitDoze`). At hang 1
   she sits *in front of* the lower window (her head over the sill), not under it. Cloud-watching lies under
   it, her head well below the sill.
+- **As built (step 8c's review, rendered at the code's spots in both facings):** the lean matches the sheet
+  either way. The settle-ins keep the lean's spot (settling in is in place, no step), so `UnderSill` and
+  `SitDoze` sit a column further out than panel 5 facing right (her face at the window's first column, not
+  its second) and, facing left, beside its end rather than under its last columns. Cloud-watching, turned
+  end to end, has her head under the glass in both. Accepted (decisions.md, "Her stillness ships"); an
+  offset of their own would need a clearance check against a sofa covering the window's other corner.
 
 ## Open choices for the user
 

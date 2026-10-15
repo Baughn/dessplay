@@ -1,6 +1,6 @@
 # DessPlay Decision Log
 
-Last updated: 2026-10-06
+Last updated: 2026-10-15
 
 The reasoning behind the rules in [design.md](design.md): the failure that
 motivated each one, the alternatives that were rejected, and the date it
@@ -15,6 +15,120 @@ and links back to the section that states it; design.md links here with
 remembering (a bug, a review finding, a user decision), the rule goes in
 design.md and the reason goes here, in the same commit. Entries are never
 deleted; a superseded decision gets a note saying what replaced it.
+
+## A download exists only while its file is wanted (2026-10-15)
+
+**Rule:** (design.md, Pre-fetching; network-design.md, Scheduling) the
+session and the seeder send the file actor their whole download
+want-set on every plan (`FileCommand::SetDownloads`, ranked, each missing
+file with its sources), and the file actor cancels any active download
+whose file is absent from it, deleting the partial. A source whose data
+streams keep dying before delivering is backed off, 1s doubling to 30s.
+
+**Why:** the 2026-10-14 session. The group has two encodes of a
+Higurashi episode with the same filename and different hashes, and only
+Dagger holds the second. Picking the wrong one, noticing, removing it
+and adding the right one is routine — but the downloads were started by
+an imperative `StartDownload` and nothing ever stopped them. Four peers
+(the seeder among them) kept pulling the removed file from Dagger for
+half an hour: ~1200 kB/s up from him, ~300 kB/s into each of them, and
+his RTT at 1200ms from a saturated uplink. The same gap covered every
+other way out of the want-set (watched, NotWatching, auto-download off
+— whose plan returned *nothing* rather than an empty set).
+
+The same night showed the second defect: when Dagger dropped, and again
+when Quickshot left, the seeder kept the departed peer as a source
+(its plan skipped files with no source at all, so the shrinking refresh
+was never sent), and every stream to it the server closed on arrival
+("transfer target has no transfer connection") re-planned toward it in
+the same breath — ~10k round trips a second through the server for over
+an hour. journald rate-limited both services to near silence, which
+blinded the server log for most of the incident window.
+
+**Rejected:** cancelling from a playlist-removal event — one door of
+several, and the next way out of the want-set would have the same bug;
+the declarative set covers them all, and a file absent from it cannot
+have a download. Keeping partials of unwanted files for a later resume:
+nothing sweeps a partial without a cache row, and the case that matters
+(a wrong encode) is never wanted back. Backing off on the *first* loss:
+a single reset of a working stream should re-plan at once, as before.
+
+## An unauthenticated peer gets a handshake's worth (2026-10-13)
+
+**Rule:** (design.md, Rendezvous Server, Authentication; network-design.md,
+Serialization, "Admission") before a connection authenticates, the server
+reads one control frame of at most 4 KiB from it, nothing after it, and
+lets it have at most 64 KiB in flight; authentication lifts both limits.
+
+**Why:** the frame cap was a single 64 MiB for everyone, sized for the
+state snapshot. Before authentication the server had to read only `Auth`
+or `TransferAuth`, a few hundred bytes, yet a peer that had proved nothing
+could announce 64 MiB and have the server allocate it, on every connection
+and for the length of the auth timeout. The room is a handful of friends,
+so the risk was small, but nothing was gained by taking it. Choices:
+
+- *Stop reading, not just cap the first frame.* The control stream is
+  read by its own task, which reads ahead of the server's auth loop. A
+  cap on the first frame alone leaves a hole: a tiny bogus `Auth`
+  followed at once by a 64 MiB frame, read while the password is still
+  being judged. So the reader takes the handshake frame and then waits
+  for `admit`, before even the next length prefix.
+- *The receive window shrinks too.* A parked reader alone would still let
+  quinn buffer a whole stream window (16 MiB) per connection for the
+  peer. A 64 KiB connection window before admission bounds that; it is
+  raised on `admit`. Raising it matters for more than tidiness: a 64 KiB
+  window caps a relayed upload at about 64 KiB per round trip, so the
+  transfer connection admits on binding even though nothing further is
+  read off its control stream.
+- *A seam method, not a wrapper type.* An `Unadmitted<T>` type that only
+  `admit` turns into a transport would make forgetting unrepresentable,
+  but it reshapes the server's and every test server's accept path. The
+  sim models the gate instead: a server that never admits wedges every
+  sim test at its first post-auth message, which makes the omission
+  impossible to miss.
+- *The client's side is not gated.* The server is TOFU-pinned and holds
+  the room's whole state anyway. Gating the client would also be wrong
+  today: the server registers a session before sending `AuthOk`, so a
+  concurrent broadcast can reach the client ahead of it.
+- *4 KiB.* `Auth` is two short strings and a few integers; 4 KiB leaves
+  an order of magnitude for long usernames and passphrases. No protocol
+  version bump: no message changed shape, and a real client's `Auth`
+  never came near the cap.
+
+Not addressed here: the number of unauthenticated connections at once is
+still unbounded, so the total is the per-connection bound times however
+many connections an attacker opens within the auth timeout.
+
+## Failed passwords are throttled per address (2026-10-12)
+
+**Rule:** (design.md, Rendezvous Server, Authentication) each source
+address gets five failed passwords back to back, then one a minute; a
+throttled `Auth` is refused with `AuthFailed`, unjudged.
+
+**Why:** the room password is a five-word passphrase, out of reach of
+online guessing already; the throttle is defence in depth, at the user's
+request. Choices:
+
+- *Per address, failures only.* Successful logins never touch a budget,
+  so reconnect storms and many friends behind one NAT are unaffected. An
+  IPv6 /64 is one address, or rotating within a subscriber's allocation
+  would buy unlimited guesses.
+- *No global limit.* A global failure budget would let anyone lock the
+  whole room out by spending it. Against the distributed case (many
+  addresses) the passphrase's entropy is the defence; past 65,536
+  tracked addresses new ones go untracked rather than refused, for the
+  same reason.
+- *Unjudged while throttled.* Checking the password and only hiding the
+  answer would be the same; not checking it makes it plain that nothing
+  leaks.
+- *`AuthFailed`, not a bare close, and no new wire variant.* The client
+  treats `AuthFailed` as terminal; a bare close reads as a network blip
+  and it would redial into the throttle forever. A distinct "throttled"
+  reply would need a protocol bump for a case a human almost never hits.
+- *Transfer tokens are not throttled.* `TransferAuth`'s token is a random
+  `u64`, regenerated per `Auth` and valid for one live session; guessing
+  it at connection rates is hopeless, and counting stale-token races
+  against a legitimate client's budget would only hurt.
 
 ## UI delivery policy belongs to the mailbox (2026-09-16)
 
@@ -741,6 +855,8 @@ Scoping watch-preference lines to the now-playing series keeps The List's bulk a
 **Rule:** right after entering the alternate screen, the client writes `CSI ?69l` (left/right margin mode off), `CSI r` (scroll region = full screen) and `CSI ?6l` (origin mode off); see [design.md](design.md#inline-chat-images).
 
 **Why:** the client's frames assume absolute cursor addressing (`CSI row;col H` lands where it says) and that `CSI s`/`CSI u` save and restore the cursor. Both are only true in the terminal's default state, and that state is *terminal-wide*, not per screen — Ghostty keeps margins and modes across the `?1049h` switch — so a program that ran earlier in the same terminal and left margin mode on (a suspended TUI with a split-pane renderer is the likely culprit here) silently changes what our bytes mean. The symptom was Kitty inline images rendering at the top-left of the screen while identical bytes rendered correctly in a fresh tab; a DECRQM probe of both tabs found mode 69 as the only difference, and resetting it alone fixed the replay. Establishing the state we depend on, rather than inheriting it, fixes the class: any mode that remaps cursor moves, not just the one that bit. The prologue is not undone at exit — the previous state is unknowable without a query round-trip on stdin (the `Terminal::clear` hazard), and the reset state is every terminal's default.
+
+**Extension (2026-10-05): keyboard modes.** The prologue also writes `CSI >4;0m` (xterm modifyOtherKeys off) and `CSI =0u` (Kitty keyboard flags of the current screen cleared). A tab where some earlier program had left modifyOtherKeys at level 2 sent Shift+A as `CSI 27;2;65~`; crossterm's `CSI … ~` parser knows only Home/End/F-key codes, so it discarded the key and capital letters could not be typed (a stdin probe found the Kitty flags at 0 and the modifyOtherKeys encoding on the keypress). Input decoding depends on terminal-wide state exactly as rendering does, so the same rule covers it: establish legacy key encoding rather than inherit it. The Kitty reset is the sibling of the same class — the flags are a per-screen stack, which is why it runs after the alternate-screen switch. Handling the enhanced encodings in our input layer was rejected: crossterm drops modifyOtherKeys sequences before we see them, and we never request either mode.
 
 **Upstream note:** ratatui-image's Kitty renderer uses the ambiguous `CSI s`/`CSI u` pair; the DEC forms `ESC 7`/`ESC 8` are unambiguous and also save/restore the attributes its comment says it wants. Worth reporting; the prologue makes us robust either way.
 
@@ -2302,6 +2418,16 @@ takes in any piece its rectangle meets, not only those meeting her box
 piece she plans is judged with its own cover in her image, at the spot
 she'll crumple it as well as where she'll use it.
 
+**Amendment (2026-10-10, phase 6a):** her structures are the one thing
+of hers written into the frame before the reads, because they're
+terrain (her pieces stand on a shelf's `─`). They're written once a
+paint, before anything reads the frame, and every frame that doesn't
+show her home undoes them before it reads; every `under` a cell of hers
+records is the real frame's. So the rule's point holds: every read in a
+paint is of one picture, and the goodbye compares her image's cells
+with the frame the app drew. See
+[Her structures are the UI's own lines](#her-structures-are-the-uis-own-lines-2026-10-10).
+
 ## Houseguest rechecks where she rests (2026-10-01)
 
 **Rule:** While she rests where she settled calm, uses a piece, or
@@ -3357,7 +3483,11 @@ visits off); then she arrives later through the idle gate.
 *A short school day* (08:30 to 12:30, home at 12:45): the user's call.
 The proposal's 08:30 to 15:30 would leave every other two-hour session
 mostly empty or dark. Rejected: a hidden act (above); leaving by an
-edge (no cue in the empty room).
+edge (no cue in the empty room). *Superseded in where, not whether
+(2026-10-08):* her closed door no longer stands where she went out; it
+stands at her door's space by the screen's edge, or the strict fallback
+(see [Her door has its own space at the screen's edge](#her-door-has-its-own-space-at-the-screens-edge-2026-10-08),
+*Where her door stands*).
 
 ## At school or asleep, she still comes, by her door (2026-10-04)
 
@@ -3626,7 +3756,8 @@ or gazing on the floor, spacing out, or a piece she rests at: lounging,
 napping, a day's sleep, homework, watching TV, reading, looking out of
 the window) doesn't stop it: she looks up where she is, in its pose,
 turned to the chat unless she's lying down or at her desk or a sill
-(`!`, `?`, then watching plain-faced until her watch ends), and the act
+(`!`, `?`, then watching plain-faced until her watch ends, each a
+frame at least: below), and the act
 runs on with its own time and what it eases her by; at a piece she
 turns back to it after. Dozing, she only stirs ("Mm?", as at night),
 with no watch after. Walking, pulling, chores, mischief, making, moving
@@ -3690,6 +3821,51 @@ replayed from its start and credit scaled by what was left. The census
 counts an in-place look as a look that cut nothing (no restart after
 it); a stir isn't counted as a look, as at night.
 
+**Each of her look up's marks shows a frame at least (phase 5c's tail,
+T4, 2026-10-08):** her `!` showed 1.2 s and, once her `?` was over at
+4 s, her plain-faced watch to the line's 5 s watch 1 s, each under the
+1.4 s frame, so each came and went inside one, the flicker T2 ended for
+whatever she says (a stir's "Mm?"). Now her look up is startled a frame
+(`LOOK_UP_SURPRISED_MS`), puzzled to 4 s as before (2.6 s), and
+watches plain-faced until her watch is over and a frame past her `?` at
+least (`LOOK_UP_MS`, 5.4 s from the line): 400 ms more than the 5 s
+watch of a single line, the "second of plain watching past the look"
+(above) now a frame. Rejected: ending her `?` a frame before the 5 s
+watch (it keeps the 5 s, but where her look waits for her grievance
+the watch can be as short as her `?`, and then one of the two would
+still be under a frame). Only the look up changed: her standing look
+(`!` 1.2 s, `?` to 4 s, or 0.8 s after something got her up restless,
+her seat gone or shaken, then watching on her feet) is a short act that
+moves, as her walk is, and the stillness rule is for still acts over
+30 s. A line in a lively chat restarts the look (its `!` cuts the mark
+it shows short): that is the user's line, which the look exists to
+answer. Other marks and keys under a frame, and why they're left:
+her slow blink (an exemption, steady and periodic); the switch-on's
+static (three 400 ms frames in a watch's first 10 s, and channel
+flicking, held by the stillness tests); the vignettes' quick keys
+(chopsticks before homework, the andagi and the last melon bread after
+a snack, Setsubun's beans, a clock glance), each in an act under 30 s
+or in its first 10 s; peering over an edge, a glance at something
+lost, mischief's recoil and oops, all on her feet. Not left by choice,
+but open (T4's review; plan.md): her act's own keys under a look. A
+key of her still act may start within a frame of a look's change, and
+nothing holds it off: her homework nodding off ends the look (a doze
+wears none), so a line a moment before it shows its `!` under a frame,
+and a key's pose changing under the `?` or the watch comes less than a
+frame after it. design.md's rule (whatever of hers changes next waits a
+frame) counts it; a key is her act's scheduled change, so keeping the
+two apart means putting off one of them (nodding off till the look is
+over, or the look's next mark to the key), the user's call. The drawn
+stillness test judges it (her pose changing under a look is no
+exemption) and no run of it meets one. The look up waiting
+for a musing moves it 400 ms later (`a_daydream_session_says_its_musings_in_turn`).
+Test: `her_look_up_shows_each_of_its_marks_for_a_frame` (every still
+act, a line, her face and bubble every 10 ms to a frame past the look),
+red at the `!` (sitting: 1200 ms) and, the `!` fixed alone, at the plain
+watch (lying on her front: 1000 ms). Golden traces: 69 moved, every one
+first at a look up's `?` starting 200 ms later (since + 1.4 s) and its
+end 400 ms later, the sequence of her acts and places unchanged in all.
+
 ## Her stillness levers: settling in, lingering, daydreams, nearer spots (2026-10-06)
 
 **Rule:** A still act she chose that runs its course may settle
@@ -3700,7 +3876,8 @@ and moves where her homework nods off; a musing daydream holds several
 musings; a line to pull, letters to swap and text to make a piece of
 are on her own floor first, and nearer spots are likelier. Each lever's
 values come with the stillness band's tuning (phase 5c step 8); they
-land neutral. See [design.md](design.md#houseguest).
+landed neutral, and shipped in step 8c ("Her stillness ships", below).
+See [design.md](design.md#houseguest).
 
 **Why:** phase 5c's band asks for less moving in sight, and lazy moods
 noticeably stiller than industrious ones, without a mood factor on
@@ -3880,7 +4057,21 @@ the runs, against the band's own 31 ÷ 12 = 2.58: holding the home under
 31 leaves the stage at 10–13, at or within about a point of its floor
 of 12, and the tuning may not aim a cell at its floor. A room-selective
 lever, or a different rule for the stage, is the user's choice
-(phase5c/baseline.md, "Step 8b").
+(phase5c/baseline.md, "Step 8b"). The user chose lower floors on the bare
+stage and to ship ("Her stillness ships", below).
+
+**The band in the gate (the user, 2026-10-06):** the band tests run in
+the gate at two seeds a cell, where 3σ about each aim is 13 to 34 points
+wide: they catch a gross excess of moving and the set-off cap, and
+almost nothing else. The real check is full strength
+(`CENSUS_BAND_SEEDS`, release, `--profile band`, N up to 525: minutes a
+test), run at step boundaries and in a phase's census pass; the mood
+spreads run only there. The user: "Seems fine. I'll know to check them
+if something feels off." What the user signed off as short is named in
+`tests/band.rs`'s `SHORT`, each ignored with its numbers, so the gate
+stays green without hiding a new shortfall (testing-strategy.md, "The
+stillness band"). Rejected: full strength in the gate (a quarter of an
+hour a test) and a band of 3σ at two seeds read as passing evidence.
 
 **Watching out of lingering:** her TV shows animated static until phase
 5c's held picture (D7); lingered, a lazy day would watch the busiest
@@ -4096,9 +4287,12 @@ borrow would have joined it; both are now caught out.
 ## Her window hangs low for her to lean on (2026-10-06)
 
 **Rule:** The window's bottom row is 2 rows above the floor (it was 4),
-its sill at her chest. It may share cells with a sofa (drawn behind it)
-and with nothing else that stands: one predicate,
-`Furniture::may_overlap`, says so of that pair, and every placement
+its sill at her chest. It may share cells with a sofa (drawn behind it),
+only while she could still lean on its sill from an end clear of the
+sofa (the sofa covers a corner of it, never its middle), and with
+nothing else that stands, nor with a sofa still in its box: one
+predicate, `Shown::may_overlap` (on the pieces as they stand, through
+`Furniture::may_overlap` for the pair), says so, and every placement
 reads it both ways round. See [design.md](design.md#houseguest).
 
 **Why:** the user's call on the art (phase 5c, round 2): "I think it has
@@ -4106,6 +4300,18 @@ to be lower. The window being drawn behind the sofa would look fine from
 a design perspective, unlike other furniture." Leaning on the sill, chin
 in her hands (`SillLean`), is the daydream the user asked the window to
 be; at 4 rows up she could only gaze up at it.
+
+**Why only its corner** (review of step 11): a first cut let the window
+share any cells with a sofa, so a 4-wide window could hang wholly inside
+the 9-wide sofa's top two rows: hidden, and out of her reach, as any
+older home whose window hung over its sofa (natural at the old height)
+loaded. The user's words were for the sofa covering the window's
+corner ("as on the sheet": two of its columns), so the predicate asks
+what makes the corner a corner: an end of the window she can lean at
+clear of the sofa. That ties the overlap to its one purpose, so no
+placement can make a window she can't see or reach for the sofa's sake.
+A parcel is a box, not a sofa: the window shares nothing with it, so a
+sofa never comes in under her window (she can move it there).
 
 **Why one predicate, read everywhere a piece goes** (the class, not the
 report): the wall lane used to be packed on its own, which was safe
@@ -4117,14 +4323,24 @@ only while every hung piece cleared the tallest standing one. Now:
   (`None`), never the piece's;
 - the layout (`Home::laid_on`) hangs a hung piece that meets a standing
   one it may not overlap at the nearest place between its neighbours on
-  the wall that meets none, in order, else in the closet alone. So no
-  frame can show the window over her TV, however the home came to be:
-  an older home's window, saved at the old height over a piece that
-  stands, loads unchanged and shows beside it (nothing is rewritten: the
-  record has no hang);
+  the wall that meets none, in order, preferring a place she could lean
+  at it from an end clear of what stands (nearest first, so a window
+  shifted off her TV doesn't land squeezed between the TV and her lamp
+  when the wall has room past the lamp), else in the closet alone. So
+  no frame can show the window over her TV, or hidden behind her sofa,
+  however the home came to be: an older home's window, saved at the
+  old height over a piece that stands, loads unchanged and shows beside
+  it, or with only its corner behind the sofa (nothing is rewritten:
+  the record has no hang);
 - putting her home right (`rules::evaluate`) refuses a move that would
-  shift a hung piece (a piece set down under the window), and its frame
-  test reads the same predicate for the piece and none for her box;
+  push a hung piece further from where its wall alone would hang it
+  (`Home::hung_shifts`: a piece set down under the window), or that
+  sets the moved piece itself where it can't hang; a move that lets a
+  pushed window back (her TV moved off its place) is a repair like any
+  other (a first cut refused any move after which a hung piece lay
+  elsewhere, so she'd move her bed rather than the TV under her
+  window). Its frame test reads the same predicate for the piece and
+  none for her box;
 - a delivery is refused at a wall where the parcel's piece would meet
   the window, or the window would meet a standing piece (the sofa
   aside), through the same cell test.
@@ -4132,16 +4348,29 @@ only while every hung piece cleared the tallest standing one. Now:
 **Why drawn as one image with the sofa:** in line art two images over
 the same cells each hide the other's cells behind their placeholders, so
 pieces whose footprints meet are painted as one image (back to front:
-anything hung behind a standing piece first), as her box already takes
-in what it overlaps. In ASCII the sofa's glyphs are drawn after the
-window's. Nothing else ever overlapped, so both orders are unchanged
-for every other home (every golden trace byte-identical).
+each hung piece behind a standing one first), as her box and her door
+already take in what they overlap, in the same order. The one image's
+box takes in cells that are neither's (under the window's free end,
+beside the sofa's): if text is there, it isn't the image's to derez, and
+the two are drawn each alone. In ASCII the sofa's glyphs are drawn after
+the window's, and what she painted over what (the dissolve's cells) is
+read off the screen before either is drawn, one cell each, the front
+piece's: otherwise the sofa's cells over the window would "rain back"
+to the window's glyph. Nothing else ever overlapped, so both orders are
+unchanged for every other home (every golden trace byte-identical).
 
-**Why she leans from just outside an end:** her face over the glass,
+**Why she leans from just outside an end** (amended in step 8c: facing
+right she now stands a column further in, as the sheet has her; see "Her
+stillness ships", below): her face over the glass,
 her box takes in the window's end columns (her own window's cells are
 exempt from the room she needs, `clear_of`'s `of`), and a sofa the
 window hangs behind blocks that end, so she leans from the free one
-(none, with the window wholly behind a sofa: she can't reach it).
+(the overlap rule keeps one free). The two ends mirror each other (her
+box centred a column outside either end): the approved sheet's facing-
+left lean is exactly that, and her box mirrors about its middle column,
+so facing right is its mirror image (the sheet's facing-right figure
+stood a column further in, which would put her box over a sofa covering
+the window's other corner).
 
 **Sibling, made pieces:** a makeshift piece must stay clear of her real
 pieces (`tend_made`) but was offered wherever the text and her room
@@ -4153,7 +4382,7 @@ than tested.)
 
 ## Her window is a long daydream (2026-10-06)
 
-**Rule:** Looking out is rarer (base 8 → 3) and much longer (60–180 s,
+**Rule:** Looking out is rarer (base 8 → 3; 6 in step 8c, 4 in step 12c) and much longer (60–180 s,
 lingered by mood). It's a session: the sky's line, then leaning on the
 sill with up to three musings on the sky (a whim's count), a whim's gap
 apart, each from the sky as it is when she says it, waiting while she
@@ -4176,11 +4405,21 @@ and the session lives on `Osaka::sill` beside her act, cleared with it
 in `set` (no new field on every `Act::Use`). The pools are one per sky
 (at least four lines each, all five skies), cooling as any line does.
 
-**Why up to three by whim, not by mood:** the levers that separate moods
-(lingering, settling) are the stillness band's tuning; the sill's count
-isn't one of them. Its length lingers through the length she draws, so
-the band's guard sees it (`longest_still_ms`: 180 s, within the band's
-9 minutes).
+**Why up to three by her mood's lever:** how many musings she has is
+the stillness band's to tune, as a daydream's are, so it's a lever of
+its own (`Stillness::sill`, from–to by mood, three at most), not B6's
+daydream count (which ships at one: the sill would always say one).
+`NEUTRAL` ships it as built, none to three by whim in every mood;
+`STARTING` follows the daydreams' spread. Its length lingers through the
+length she draws, so the band's guard sees it (`longest_still_ms`:
+180 s, within the band's 9 minutes; with lingering and settling on, the
+sill's chain sets the visit length, see baseline.md).
+
+**Why sitting in front of it doesn't turn her:** her face is up at its
+sky, chin in her hands, as aimed at the window as the lean is, so a
+chat line has her look up in place (`Pose::turns`). Lying back to watch
+the clouds takes its facing from the look-out seat she sits at, not
+from however she was last turned, so her head is under the glass.
 
 **Why cloud-watching is a pose of its own** (`Pose::CloudWatch`): a doze
 is read from the pose drawn (`Pose::dozes`: a chat line stirs a doze,
@@ -4196,25 +4435,2064 @@ still where she sits; else she dozes. A sit on a bare floor still lies
 back to doze. Lying down she turns end to end from how she sat, so her
 head is under the glass.
 
-**Ships inert, as every settle-in does:** settling's odds are the band's
-tuning, all 0 until it (`Stillness::NEUTRAL`). The sill's session, its
-length and rarity ship now; sitting in front of the window and watching
-the clouds come with settling on, so the changelog doesn't claim them.
+**Shipped inert, as every settle-in did:** settling's odds were the
+band's tuning, all 0 until it (`Stillness::NEUTRAL`). The sill's session,
+its length and rarity shipped then; sitting in front of the window and
+watching the clouds came with settling on (step 8c, "Her stillness
+ships", below), with base 6 and the glance's roll gone.
 
 **Measured (the day census, 6 runs a room, a game week each):** in the
 census home with a window, 14 look-outs in the 42 game days (683 before:
 about 16 a day, now one in three days); at base 6 it would be 82 (about
-two a day, the "few a game day" the design aimed at). Base 3 is the
-design's number, kept: the rest is the user's call. Her afternoon glance
-at her clock is still starved: 2 "Three-ish." in the home's 42 days (4
-before), 2 on the stage, 9 in the resident's; at base 6, 4. The design's
-fallback (the hour glance rolling once per daydream session) is how it
-already rolls (a daydream's first musing only, B6); rolling it at the
-sill too would feed it nothing at a look-out every third day, and a
-glance is its own act, so it would end her lean. Not built: the
-starving is in the glance's own gates (her clock on the strip she
-stands on, of an afternoon, once a visit, a musing in three of a
-spacing-out bound to muse one in three).
+two a day, the "few a game day" the design aimed at). With the corner
+rule (review) the census home's window, given wherever a gift lands, is
+never hidden behind its sofa: 35 look-outs in 42 days (0.8 a day). Her
+window is offered (in reach) at about 4200 of her decisions' steps, in
+her top four at 172, chosen at 35: it's rare by its score (base 3), not
+by reach. Base 3 is the design's number, kept: the rest is the user's
+call. Her afternoon glance at her clock is still starved: 1–2
+"Three-ish." in the home's 42 days (4 before), 2 on the stage, 9 in the
+resident's. The design's fallback, read as lifting the glance's once a
+visit so it rolls once per daydream session (it rolls only on a
+session's first musing, B6), was measured: the same 1 / 2 / 9, since
+the once a visit never binds (she glances far less than once a visit).
+So it's not built: the starving is in the glance's other gates (her
+clock on the strip she stands on, of an afternoon, quiet, a musing in
+three, on a daydream's start), and which to ease is the user's call.
+
+**Why base 4 (the user, step 12c: "about two long window daydreams a
+game day"):** the user chose the outcome, not the number. Base 6, the
+user's number in step 8c, came to about two a day with the levers
+neutral, but with them on (lingering, settling in) the day census read
+4.5 a day. The mapping is steep, since a look-out has to make her top
+four against her other daydreams: in the census home's 42 game days
+(the driver painting at each chat line, an industrious watch whole),
+base 3 gave 36 look-outs, 4 gave 82, 5 gave 140, 6 gave 175. Base 4 is
+the nearest two a day (1.95).
+
+**The tolerance (the user, after base 4 had been measured):** "4.5 times
+a game day is fine. I'd accept anything in the 2-6 range." Base 4 stayed
+(1.95, two to the user's rounding) until phase 5c's tail, below. A
+deliberate retune within two to six a day needs no new sign-off.
+
+**Why base 5 (phase 5c's tail, T1, 2026-10-07):** base 4's 1.95 a game
+day sits just under the 2 to 6 the user accepts; base 5 measured 140
+look-outs in the day census's 42 game days (3.3 a day), mid-range, so
+neither noise nor a neighbouring change pushes it out. The day census
+now holds the user's range itself, 2 to 6 a game day in a room with her
+window, not a band around what ships: it fails only outside that range,
+so drift inside it shows only in the number the census prints. No band
+room has a window, so no band cell moved; in the fed afternoon's
+windowed home (printed, judged by nothing, 15 minutes against the
+band's 17) her time leaning at the sill rose from at most 3% of an
+afternoon visit to 1.5–12% by mood (of an evening, 6–17% to 13–23%),
+moving in sight moved by at most 1.2 points, mostly down, and every
+cell stays inside its mood's band by eye. Base 4 never
+reached players (all of 5c was unpushed), so the changelog's "she looks
+out of her window more often" (against the pushed base 3, 0.33 a day)
+stays true and needs no new entry.
+
+## Her stillness ships (2026-10-07)
+
+**Rule:** The stillness levers ship (`Stillness::TUNED`): lingering
+(lazy ×1.5, ordinary ×1, dreamy and industrious ×0.85; an industrious
+watch ×1, since step 12c), settling in
+(lazy 0.6, ordinary and dreamy 0.35, industrious 0.15; from sitting,
+dozing where she sits half the time), daydream musings by mood, homework's
+nod-off by mood, nearer spots; with step 8's lengths and needs (8b's run
+c3): restless rises over 5 minutes, tidy over 90 s, mischief over 6; Walk
+base 9, Travel 7; spacing out is worth doing for its own sake, 10–28 s; a
+chosen stand 3–8 s; sitting 15–40 s, lying back and dozing (sitting up
+or under a book) 20–60, gazing 6–14, lounging 27–60, napping 45–105,
+watching 32–82, reading 30–65, homework 37–75. Sitting in front of her
+window lasts as sitting does, watching the clouds as lying back does.
+Looking out's base is 6 (4 since step 12c). Of an afternoon, the first daydream she starts
+quiet with her clock in view glances at the hour (once a visit). Reading
+a borrowed strip she looks up at chat without turning. The band's floors
+on the bare stage are lower (lazy 4, ordinary and dreamy 6, industrious
+9). See [design.md](design.md#houseguest).
+
+**Why lower floors on the stage (the user's call, 2026-10-06: "ship it,
+lower stage floors"):** a room that keeps her things close (the pieces
+she made, the lines on her own floor) moves her in shorter trips, two to
+four seconds a set-off against eight to eleven in a furnished home. At
+the same set-off rate its share runs lower, and under a per-mood cap on
+set-offs it can't reach the furnished floors without her setting off
+more often, which is what draws the eye. So the stage's floor says what
+"not dead" means there; its ceilings and caps are the same.
+
+**Why dreamy lingers less than ordinary (0.85):** with settling on, the
+reading on her back of 10a and the sill chain of 11, a dreamy afternoon
+where her text is above her (the band's resident) fell under its floor
+(8.6 / 7.0 at linger 1). A dreamy Osaka is still by her daydreams (two to
+four musings a session, sessions as long as they last), so lingering a
+little less over her other still acts keeps her moods' ordering and
+brings her in (9.2 / 8.6); the home's dreamy afternoon moves from 20 to
+21. Lazy lingering more (2.0) would have taken the resident's lazy cell
+under its floor; it stays 1.5.
+
+**What shipped short, by the user's word ("if one cell can't be brought
+in, ship the closest"):** the bare stage's industrious afternoon with chat
+(8.4% at full strength, its floor 9; quiet 9.1, in) and the stage's
+spread (industrious ÷ lazy 1.39 against 1.6): step 8c's numbers. What
+shipped is step 12c's, 8.6% and 1.38 (phase5c/baseline.md, "Census pass
+(step 13)"). An industrious linger of
+0.7 (the design's start) brings the stage's chat cell to 9.2, but the
+furnished home's industrious afternoon to 32.4 against its ceiling of 31,
+the old conflict between the two rooms; Tidy back to 60 s moved the stage
+within noise again. On the stage her moods read alike: every mood reads on
+her back about a sixth of the visit there, and an industrious Osaka,
+whose needs fill slowest, spaces out most (14% of the visit, ordinary
+7.5%): spacing out for its own sake weighs the same in every mood, so
+where little else calls her it fills an industrious afternoon most, the
+lead for the stage's spread (a mood factor on it). The chat cell's test
+stays ignored with its numbers (`tests/band.rs`, `SHORT`; its quiet cell
+is in the gate), and the spread's, for the user to weigh.
+
+**Why base 6 for looking out (the user's answer):** measured with the
+levers neutral, about two long daydreams at the window a game day in a
+furnished home, the design's "a few a game day"; base 3 gave one in
+three days. With the levers on, the day census's home looks out about
+4.5 times a game day (191 in 42), each look lingered by her mood: more
+than the user expected, left to the user (phase5c/baseline.md, "Shipped
+(step 8c)").
+
+**Why the hour glance lost its roll (the user's answer):** her daydreams
+are long and few now, so one in three of their starts almost never came
+(1–2 a week in the census home; now 19). Every other gate stays: an
+afternoon, her clock on the strip she stands on, quiet, a daydream's
+start, once a visit.
+
+**Why a borrowed strip doesn't turn her:** she reads it beside its tear,
+facing the line; turned, she'd hold the strip out over the air, away
+from where it came from, as at her desk or the sill (`Pose::turns`).
+
+**Why the facing-right lean moved a column in:** rendered at the spot
+the code used, her hands met the window's frame where the facing-left
+lean has them on the sill: the lean's figure sits a column toward her
+back in its box, so the two ends aren't mirror images in cells. The
+approved sheet stands her facing right with her box centred on the
+window's first column, and the code now does too (`look_out_spots`).
+The overlap rule with a sofa reads the same spots, so a sofa hiding the
+window's right corner now blocks a column more of its left end.
+
+**Why `BAND_MINUTES` is 17:** the band's guard asks for the warm-up and
+twice her longest still act; with lingering and settling on, the sill's
+chain is longest (a lazy lean of 270 s, 60 s sitting in front, 90 s
+watching the clouds: 7 minutes).
+
+**Why the golden driver cuts at its events (landed alone, before):** a
+golden step's length is set by her wakes, so with delivery at the first
+step past an event a wake that only changes how she looks moved what she
+did, and a trace diff read further than the change. The census drivers
+already cut there (step 8b). A key press or a cue painted at its time;
+a chat line or a focus change came into her view then but she saw it at
+her next paint, which her wakes time.
+
+**Why the drivers paint at every event (phase 5c step 12c, landed alone,
+before the user's answers):** the client draws after every input
+(`ui::shell`'s loop: a chat line, text arriving, a key press, a focus
+change), so she sees a chat line the moment it comes; the drivers showed
+it her at her next wake, up to 10 s later for the resident, so the
+censuses measured a slower Osaka than the client runs. The golden driver
+now paints at every event, the census drivers (visits, fed afternoons,
+the band, the day census) and the film tests' at every line. One
+re-record, and every chat cell re-measured (phase5c/baseline.md, "Step
+12c").
+
+**Why the golden driver advances her before it tells her of input (phase
+5c's tail, T1, 2026-10-07; test-only):** the shell advances her as it
+takes each input, then handles it, then draws, so whatever fell due by
+a moment has happened when a key press comes then. The driver had told
+her of a key press first, so a key press the moment school ends found
+the client busy (her coming home is asked once, as it's due, A6). Its
+cues follow the same order by convention, not to match a client: the
+shell has no cues, and the stage cues on a key while her clock stands
+at its last draw, so a cue on the very moment something falls due (she
+goes out by her door) is a tie there; advanced first, it finds her gone
+and brings her in. The two property drivers that press keys
+(`a_resident_keeps_out_of_the_focused_pane`,
+`errands_end_and_touch_only_the_accordion`) took the same order. Neither
+moment comes up in a golden scene, so no hash moved;
+the ~10 Hz snapshot redraws during playback stay unmodelled (a cadence
+the session sets, not hers; modelling it would multiply the errand
+scenes' paints tenfold and move them for the harness alone).
+
+**Why watching is longer though it doesn't linger (32–82 s, was 20–45):**
+step 8's lengths, which 8b's run c3 carried and the user shipped,
+lengthen every still use alike, watching with them, so a visit's share
+of watching keeps its place among her uses. Lingering is another thing:
+it would stretch only a lazy watch, half as long again, and watching
+stays out of it until her TV holds a picture (phase 5c D7, step 12a)
+rather than animated static.
+
+**Sleepiness alone no longer lays her on the floor:** spacing out, worth
+doing for its own sake now, outweighs a floor doze that only her
+sleepiness asks for; with comfort wanting too, the doze is still her pick
+there (`sleepiness_draws_her_to_lie_down`). Over a visit she still dozes
+more as she tires: she gets uncomfortable as well as sleepy.
+
+**The chat's tenth governs going in, not staying:** a resident's offers
+that would take her into the chat are a tenth as likely, but what she
+does where she stands (spacing out, an on-the-spot act, settling in from
+it) has no chat weight. With the levers on, once in the chat she stays
+longer, as she does anywhere: a resident's share of her time there rose
+from about 5% to 9–13% (a visitor's 16–21%, from 25%;
+`a_resident_mostly_keeps_out_of_the_chat` pins it under 0.7 of a
+visitor's). Weighing her staying too (the on-the-spot wants and settling
+paying the tenth while she stands in the chat) is the user's call: it
+would have her walk out of the chat more, so it moves every resident
+cell of the band and asks for a re-measure.
+
+**The settle-ins under the window sit where she leaned:** sitting in front
+of the window and dozing there keep her lean's spot, so on the approved
+sheet's terms they sit a column further out facing right (her face at
+the window's first column, not its second) and, facing left, beside its
+end rather than under its last columns; watching the clouds, turned end
+to end, has her head under the glass either way. Settling in is in
+place, with no step, and a spot further in would need its own clearance
+(a sofa covers the window's other corner); the difference is accepted
+(phase5c/art/snippets.md).
+
+## Her TV holds a picture (2026-10-07)
+
+**Rule:** Her TV shows static only as she switches it on (`STATIC_MS`,
+1.2 s: three of its 400 ms frames) and between channels as she flicks;
+then a drawn programme (the news, the weather, penguins, a cooking show)
+holds still to the end of the act. The programme is drawn from her
+decision's whims as every watch begins, whatever it plays (a plain watch,
+the shopping channel, a surf, a watch with her home on her mind) and the
+act carries it (`Play::card`). Chiyo-chichi bobs only through his hook
+(the shopping channel's first two fifths), then holds still. Watching
+lingers by her mood as her other still uses do, but an industrious watch
+isn't shortened (`Stillness::watch`, step 12c). A script key names what
+it shows as `Shows`: held as it is, static, the hook, or the act's
+programme; only static and the hook move. See
+[design.md](design.md#houseguest).
+
+**Why:** the TV is the one thing in a TV home that moved all the time:
+static for the whole of a 32–82 s watch, reshuffled on every paint, and
+on the shopping channel Chiyo-chichi bobbing for its whole length. In a
+phase about her being still, the brightest flicker on the screen was her
+TV. A held picture after a short switch-on reads as "she put something
+on", and the change she causes (switching on, flicking) explains itself.
+
+**Why the card is drawn on every watch, from the whims:** step 12b will
+show a frame of the film instead of the card when this client holds it.
+Whether that frame arrived depends on mpv's timing, so nothing she does
+may depend on it: the card is drawn whether or not a film will cover it,
+from a labelled whim (`Whims::below("programme", 4)`), which draws
+nothing from her generator. What she does is then the same with or
+without the card, and the same with or without a film
+(`every_watch_draws_its_programme`).
+
+**Why a fixed `STATIC_MS`, not "static until the picture":** waiting on
+the picture would put mpv's latency into her trace. 1.2 s is three of
+the static's frames and ends on a frame's edge.
+
+**Why `Shows` rather than a held `Channel`:** a script is a `const` table
+and can't carry the act's drawn card, and a `Channel` is the TV image's
+cache key, which should only ever name something drawable. So a key says
+what it shows (`Shows::Programme`, as `Say::Pitch` says what she pitches)
+and `Osaka::prop` resolves it with the act's card to a plain
+`Prop::Tv(Channel::Programme(card))`; what moves (static, the hook) is a
+property of the key, so Chiyo-chichi after his hook is the same image as
+his first frame, held.
+
+**Why watching lingers now:** it was held out of lingering only because a
+lazy day would have watched animated static half as long again (step 8b).
+With the picture held, a long watch is a still one. Measured
+(phase5c/baseline.md, "Step 12a"), it moves only the lazy, dreamy and
+industrious cells of the rooms with a TV. The furnished home's industrious
+afternoon, quiet, now reads 31.4% at full strength against its ceiling of
+31 (step 8c: 30.6). Its test passes within its 3σ, but the cell is over.
+Its shorter watches (×0.85) get her up more often.
+
+**Why an industrious watch isn't shortened (the user, step 12c: "Don't
+shorten industrious watching"):** an industrious Osaka shortened at the
+TV got up from it sooner and so moved more, pushing the home's
+industrious quiet afternoon to 31.4% against its 31% ceiling. Her other
+still uses keep the industrious ×0.85 (it's what keeps her busy), and
+every other mood's watch lingers as that mood does. The watch's table
+(`Stillness::watch`) overrides the linger only where it says (×1
+industrious), not a second whole table: so nothing else she does moves,
+and a later change to the linger still reaches her watching unless
+the user said otherwise (step 12c's review: two whole tables would let a
+lever over "linger" silently miss the TV).
+Measured in phase5c/baseline.md, "Step 12c".
+
+**The stillness test** (`no_long_act_flips_faster_than_a_frame`,
+`a_long_tv_act_holds_still_after_its_first_ten_seconds`): sampled every
+100 ms, as a client painting for any reason shows her, no act that holds
+her place for over 30 s changes how she or her furniture looks twice
+within a frame (1.4 s) after its first 10 s; her slow blink, the
+hook's bob and a look up at the chat are exempt. A walk the screen's
+width is over 30 s and changes every step, so an act that moves her is
+outside it: what moves her is the band's to count (a turn where she
+stands is checked). A chat line's look up (`!`, then `?`) is checked
+elsewhere, so the test runs quiet. It runs every mood, in the three TV
+rooms, the home with her window (its sill session is her longest still
+act) and the furnished home with the shopping channel on (so the hook's
+exemption is tried, not only the script's own test). It compares her
+model's state (how she looks, where, what her script shows, the lamp),
+not drawn cells: a proxy for what's drawn of her and what her script
+shows, which map from that state (`each_prop_looks_distinct_in_each_mode`,
+`every_piece_shows_what_her_script_shows_on_it`). Some of what's drawn
+isn't in her model: step 12b's film, her wall clock's dial (each game
+quarter-hour) and her window's sky. So the rule has a drawn variant
+(step 12c, `no_long_act_flips_drawn_cells_faster_than_a_frame`): painted
+every 100 ms as a client would paint (advanced first, as the shell
+does), with chat, in the TV-only home, the home with the shopping
+channel on, the home with her window and the resident, every mood, both
+modes, the film's stills fed through `TvFeed` as the shell feeds them,
+it compares the cells and images painted. Its exemptions are design.md's
+five (the world's clock since phase 5c's tail, T1, below), each only
+that change with nothing else drawn changing alongside
+(step 12c's review: a looser check let any drawn change ride along a
+look up): a blink changes cells only in her box and no look but hers;
+the hook's bob only the TV's cells and look; a look up (or a stir)
+changes her pose, face, bubble or facing in her model, no look but hers
+and no piece's cells outside her box; the film's fresh still, at a paint
+a still was delivered at, takes the TV from a still (or the programme
+it stands in for) to another still of the same programme, and nothing
+else (that it comes once a minute is
+`a_long_watch_takes_a_fresh_still_once_a_minute`'s to hold); the
+world's clock, at a paint where a reading of her clock changed (the
+dial's quarter-hour, the sky) and, in line art, that piece's look with
+it, her model, her key and every look but the dial's and the sky's the
+same, every changed cell in the footprint of a clock or window whose
+reading changed and none in her box. Mutants
+it fails: one that swaps back to the still before at every paint (the
+TV's image flipping 100 ms apart, no still delivered; the model's test
+can't see it), and one that flickers a cell above her every 200 ms while
+she looks up at the chat (the looser check passed it).
+
+**Open from the drawn variant (step 12c, the user's call):** with chat
+on, a chat line stirring her asleep by day ("Mm?") showed up as a
+change just after her breathing's flip. A stir is the dozing form of a
+look up at the chat, so the test exempts it with the look up; but by
+day it lasts `speech_ms("Mm?")` = 1380 ms, under a frame, so it comes
+and goes inside one (a night's "mm..." lasts 1500 ms). Making it last at
+least a frame (`speech_ms(line).max(USE_FRAME_MS)`) would change how
+she looks (a golden re-record; since T2 it lasts a frame: below). And in the home with her wall clock its
+dial steps within a frame of her own changes (her breathing asleep:
+656 ms apart), as the window's sky would at dawn and dusk: the world's
+clock is no act of hers, and steady and slow, so whether the rule holds
+it is the user's call; its run is kept, ignored, with those numbers
+(`no_long_act_flips_drawn_cells_faster_than_a_frame_by_her_clock`;
+since T1 exempt, and in the gate: below).
+
+**Why a stir lasts a frame, and stays exempt (the user, phase 5c's
+tail, T2, 2026-10-07: "fix both"):** the stir's turn lasts as long as
+its murmur, and the murmur as long as anything she says, so the floor
+is on how long she says a line (`speech_ms`: 1.2 s + 60 ms a
+character, a frame at least), not on the stir alone: stretching only
+`stir_until` would have left "Mm?" vanishing at 1380 ms and her turning
+back 20 ms later, two changes in place of one. The floor reaches every
+line, so none can come and go inside a frame; today only "Mm?" (three
+characters) was under one (`whatever_she_says_shows_for_a_frame`). A
+stir stays exempt as the dozing form of a look up: it comes when the
+line comes, off her breathing's frames (without the exemption the drawn
+test fails at once, a stir 956 ms after her breathing's flip, every
+room), as a look up does; what the drawn test now checks is that it
+starts with a line and, at every paint of the frame from its start,
+shows as it began (her blink, its murmur, her turn; what she's turned
+over from may change under it, as her key does). Her look up's `!` (1.2 s,
+`SURPRISED_MS`) is under a frame too; it is left: it is inside the
+look up's own exemption, a reaction to the user's line, and the same
+startle she gives on her feet, so changing it is a design call of its
+own (open, plan.md). The other things of hers under a frame are not
+lines and are out of the rule's reach: the andagi's quiet beat (0.6 s)
+and the no-melon look back in the fridge (1.2 s) are in codas to a
+snack of 6–9 s, the whole under 30 s; the chopsticks' split (0.8 s) is a
+prelude, inside a use's first 10 s; Setsubun's throws (0.7 s each) are
+an act of 5.6 s; a glance at something lost (0.9 s) and peering over an
+edge (1.2 s) are short acts of their own. Golden traces: only each
+daytime stir's end moved, from 1380 to 1400 ms after it began.
+
+**Why the world's clock is exempt (the user, phase 5c's tail, T1,
+2026-10-07: "exempt it"):** her wall clock's dial and her window's sky
+are not her doing, and they step slow and steady (each game
+quarter-hour, about 150 s at 6×; the sky five times a game day), the
+periodic motion the eye filters out (the principle the hook's bob
+rests on); a change the eye catches is hers. The exemption has a
+trigger, as each of the others has (a blink a face change, the bob his
+hook, a look up the chat, a swap a delivered still): a reading of her
+clock changed between the two paints (the dial's quarter-hour, or the
+sky), and in line art the look of a piece whose reading changed went
+with it; without one, a cell flickering in the clock's footprint at any
+speed would pass. And it is scoped to that change alone, so it can't
+carry hers: at that paint her model and her script's key are the same,
+no look changes but the dial's and the sky's (each only if its reading
+did), and every changed cell is in the footprint of a clock or window
+whose reading changed and none in her box. The by-her-clock run is in
+the gate now, of an afternoon (four dial steps) and from 16:30 across
+the sky's day to dusk; each run sees a dial step in a long act, the
+dusk run a sky step, and at every paint the exemption holds at, the run
+checks that the same paint with one thing more changed is not exempt
+(no reading changed; a cell of her box; a cell outside every footprint;
+her model; another look). Mutants it fails, both modes: a cell of hers
+changing with the dial (her model the same) and a cell outside the
+clock and the window changing with it, each in both rooms (the
+afternoon's at the dial step 656 ms after her breathing's flip, the
+dusk room's at one 38 ms after it); and a cell of the clock's, or of
+the window's, footprint flickering every 200 ms, off the quarter, at
+its first flicker in a long act. Before the trigger the flicker passed
+as the clock's for over a minute and was caught only where it spoiled
+an exemption of hers.
+
+**Why a bob keeps a frame clear of its key's start and end (the user,
+phase 5c's tail, T2, 2026-10-07: "fix both"; step 12c had allowed it
+provisionally):** a key that bobs (her writing, her breathing asleep)
+flips on the 1.4 s frame grid of its part, and a key ending at a share
+of the use (her homework nodding off) lands off that grid, so it came
+less than a frame after the bob's last flip: two changes within a
+frame. Step 12c's test allowed exactly that case; the user chose to fix
+what she does instead. So a bob holds its last frame through the part
+of a period before its key ends, and its first until the first flip on
+the grid a whole period after its key starts (`script::bob_frame`): its
+flips and the changes as its key starts and ends are always at least a
+frame apart, wherever a share puts them. It stays on its part's grid
+(not restarted at each key) because her wakeups are on that grid
+(`every_bob_moves_on_the_frame_grid`, the wakeup tests): a held flip is
+a wake with nothing new to paint, so nothing she does moves, only how
+she looks. It starts on the grid's frame at its key's start, so a key
+starting on the grid (every part's first) is the plain beat but at its
+end; after a held first flip its beat runs the other way, which nobody
+can see. One mechanism covers every bobbing key, all on the frame
+(`Key::look` takes the key's `KeyTime`, so no bob is timed without its
+key's edges): napping and asleep (by day, the night's bed and sofa
+branches, the Dream's), her homework writing at her desk and on the
+floor (and reading there), reading at her bookshelf, eating the melon
+bread, and crumpling and unpacking (bent to it). Its siblings outside
+scripts hold their last frame before the act ends the same way: lying
+back and reading on her back (idle acts bobbing on the frame, which
+start on their grid) and reading a borrowed strip. The hold is chosen
+by period, not by the act's length: the user asked for every bobbing
+key, so it reaches bobs on the frame in short acts too (crumpling and
+unpacking, the melon bread), where the stillness rule itself doesn't.
+Faster alternation (exercise, kicking her feet, lifting and setting
+down a piece, poking, carrying a parcel home, static and Chiyo-chichi's
+hook, all quicker than a frame) is motion, not a still act's change,
+and is left to run to its end: holding a frame at each end of a key of
+700 ms flips would stop most of them, and none is in a long act the
+rule reaches (each is in an act under 30 s, or exempt).
+
+The cost is flips in short bobbing keys: a key can only flip on the
+grid points a frame clear of both its ends, so one under two frames
+never flips, and one of two frames flips once only if its middle is on
+the grid. Crumpling and unpacking (keys a share of a 4–6 s use) bob
+once or twice where they bobbed three or four times; her breathing as
+the lamp goes off was a 2 s bob and is now drawn still (`LAMP_ON_MS`,
+it could never flip); the andagi's chewing, two frames off the grid,
+never flipped at all (T2's review), so it is two keys now, chewing
+then biting again, a frame each, as the vignette was approved ("two
+frames"); and the Dream's second and third lines (3 s each, starting
+off the grid) hold her breathing still, one flip in its 9 s where there
+were six. The Dream is left for the user (two frames a line, 2.8 s,
+would give each line a flip; plan.md; resolved in T4: below). `every_bob_at_a_set_time_flips`
+holds every bobbing key that plays at set moments to at least one flip,
+the Dream's two lines excepted by name (no longer: below). And where her act's end is
+retimed in place within its last frame, the hold was timed from the old
+end, so her breathing can flip then, off the grid, and its next flip
+come within a frame: a night whose wake time moves (`refresh_night`),
+and a day's sleep or a night's idle act becoming her night at bedtime
+(`sleep_on`, which also drops any coda). Both need the retiming inside
+a frame of the old end; left, and open (plan.md; resolved in T4:
+below). Golden traces: 75
+moved, each first at a bob's frame held within a frame of its key's or
+act's end (crumpling or unpacking 42, asleep 14, reading on her back 9,
+homework 6, lying back 2, napping 2), every differing line only a pose
+frame, no time or act changed. The stillness tests hold the rule
+plainly now (no allowance), and the model's test adds an industrious
+afternoon at her desk (seed 0), where the writing's end comes 800 ms
+after its last flip without the hold.
+
+**The Dream's lines are three frames each (the user, 2026-10-08):** of
+the two lengths that give each line flips (two frames, 2.8 s, a flip at
+its middle; three, 4.2 s, two), the user chose 4.2 s. Each line starts
+on her breathing's frame grid (the Dream's part starts its own grid),
+so each flips twice, six flips in its 12.6 s, as many as the 3 s lines
+had before the hold; the Dream asks for 12.6 s of her night left, not
+9 s. `every_bob_at_a_set_time_flips` checks the Dream's lines with every
+other bob at a set time, no exception by name; it found no other set-time
+bob that the hold leaves without a flip (the Dream's are the only
+bobbing keys set in ms; the share-timed ones, crumpling and unpacking,
+are above).
+
+**A bob holds where her act's end moves in place (phase 5c's tail, T4,
+2026-10-08; T2 left it open):** a bob's hold before its end is timed
+from the end known then, so an end moved within its last frame released
+(moved later) or took back (moved earlier) a flip at that moment, off
+the grid, with the next flip or the act's end less than a frame on.
+Two places move an end in place: `sleep_on` (a day's sleep, or a
+night's idle act, becoming her night at bedtime; it also drops any
+coda) and `refresh_night` (her wake time found afresh at each reading
+of her clock, which now gives the moment it's read at). Both now hold
+her bob (`Osaka::hold_bob`, before the end moves): the frame it shows
+then holds until the first flip on its grid a frame on
+(`script::bob_frame`, the hold carried in `KeyTime` to every bob
+on the frame: a key's, lying back and reading on her back, reading a
+borrowed strip). The rejected alternative, restarting the bob at the
+moment as at a key's start, would show the grid's frame there, not the
+one shown, and change it off the grid itself. A hold belongs to its
+act (cleared as an act is set) and to its part: the Dream, which
+restarts her night's part in place, carries none, and keeps clear of
+its own start as any key does. Where the end moves earlier to less than
+a frame on, the act's end itself can still come within a frame of the
+last flip, which no hold can take back; it is her waking (a new act),
+and only a date crossing into a vacation (or back) in the night moves
+the wake at all. A hold never moves back (T4's review): a tick that
+comes late reads her clock at its own moment first and holds there as
+her wake moves, then handles what fell due before it, and a line's end
+held at its earlier moment replaced the later hold, so her breathing
+could flip less than a frame after the moment the client painted from.
+The latest hold now stays (`Osaka::hold_frame`); and `refresh_night`
+reads the frame before the end moves but holds only if it moved (it
+held and put the old hold back at every reading, logging a hold that
+never was each tick). Test: `a_late_tick_holds_her_bob_from_her_wake_moving`
+(lines ending in each 100 ms of the frame before a late tick, three
+phases of the grid), red before ("held from her wake moving": 899900,
+not 900000; her pose "changed at 900000 and 900600");
+`any_held_bob_frame_holds_from_its_moment` also tries a hold from
+before the bob's start, which holds nothing.
+Test: `a_bob_holds_a_frame_when_her_acts_end_moves_in_place`
+(every 50 ms of the old end's last frame, three phases of the grid, both
+places, both ways), red before the fix at `sleep_on` ("changed at
+300000 and 300800") and, the hold dropped from `refresh_night` alone,
+at either way the wake moves. Golden traces: none moved (no golden
+scene moves an end in place).
+
+**An exempt change of hers still counts, and her bob holds from it
+(phase 5c's tail, T4, 2026-10-08):** the stillness rule exempts some
+changes, "each only its own change", and the drawn test had read that
+as "never counted": an exempt change never set the frame clock, so a
+look up at the chat or a stir ending off the grid was followed by her
+breathing's next flip less than a frame later unnoticed (T2's review).
+The rule is now precise: an exempt change is never a flip itself, but a
+look up's or a stir's changes are her reaction, a change the eye
+catches, and whatever of hers changes next waits a frame from them, as
+from any change of hers. Her slow blink and the hook's bob are steady
+periodic motion (the user's principle, Round 8), and the film's still
+and the world's clock aren't hers and come on their own time; none of
+those counts. Counting blinks was tried and rejected: her blinks come
+off her bob's grid by design, so her reading or writing flipped within
+a frame of a blink's end 120 times in the drawn test's runs; holding
+her bob for each blink would all but stop it. The world's clock counted
+would undo T1's exemption (the dial stepping 656 ms after her breathing's
+flip is the same pair the other way round).
+
+What she does now fits it: her bob holds the frame it shows from each
+change of a look up (its beginning, its `?`, its plain watch, its end)
+and from what she says coming, going or being cut short (a stir's
+murmur is said, so its turn's end is held from too), until the first
+flip on its grid a frame on (`Osaka::hold_bob`, the hold her act's end
+moving in place already used). Before it the drawn test, counting on
+from those, failed on a stir by day (the stir over at 181400 and her
+breathing's next flip at 181844) and a look up over reading on her
+back (its end at 94000, her page at 95267); 48 stirs and 2 look ups
+in its runs. A hold skips a flip at most, so after one her bob's beat
+runs the other way, which nobody can see. Golden traces: 67 moved,
+each only her bob's frames (asleep, reading on her back, homework, a
+nap, a borrowed strip, the paper desk), her acts, places, faces and
+bubbles the same in every one.
+
+T4's review tightened both. The drawn test's look-up exemption took
+any change of hers while she looked up or stirred, her bob's flip and
+her act's key included, so the holds at a look's start and steps were
+pinned only by golden hashes: it now takes only the look's own change
+(her face, bubble and facing; her pose only into or out of a stir's
+turn, with its murmur), and anything else of hers under it is judged
+as any change, so dropping either hold fails it, and so does its
+mutant (her pose changed a paint after a look's change, the look still
+on). Two unit tests sample her whole look every 10 ms through a look
+up and through a line she says, in every still act and reading on her
+back, at each 100 ms of her bob's frame: each fails with the hold at
+the look's start, its steps, a line's start or a line's end dropped.
+Two holds were reached by nothing and were redundant, so they went:
+her look's end (each caller holds at the same moment, or a new key or
+act starts its own grid) and a line cut short (every caller of `hush`
+says, which holds, sets a new act, or begins the Dream's part). A
+stir's turn now ends with its murmur when another line cuts it short
+(her sleep-talk, the Dream, a line by day): it was woken for and held
+at only through the murmur's end, so cut short it ran on to its old end
+unwoken (`a_stirs_turn_ends_with_its_murmur_cut_short`, red before). The
+same open class as her look's (above): a line she says a moment before
+her act's key comes less than a frame before it (plan.md).
+
+**A musing waits a frame from her look's end (the door batch, step 2,
+2026-10-08):** her sky musings at the sill and her daydream's musings
+waited for her look up at the chat to be over, but one due a moment
+after it came less than a frame after its end: the door batch's push of
+her pieces moved her afternoon enough for the drawn test to find one
+("home, clock and window, to dusk Dreamy seed 2, an act from 503085
+flipped at 545400 and 546718", her watch's end and "Orange, then
+purple..."). Both now wait until a frame after a look's end, or say it
+at the end itself, with the look's own change (`Osaka::free_to_muse`,
+red first: `her_musing_at_the_sill_waits_a_frame_from_her_look_ending`
+and the daydream test's case). *(Step 2's review, 2026-10-08: the case
+seen once before that push, put down then to the shopping channel's
+key boundary, came back when the review's gift fix moved her afternoon
+("home, shopping Dreamy seed 2, an act from 50088 flipped at 95400 and
+96460"), and it was a line: what her look hid, her pitch, said on at
+94000 for 2460 ms, her look over at 95400, the line gone 1060 ms on. A
+line still showing as her look ends now shows on until a frame past it
+(`Osaka::end_look`; red first:
+`a_line_never_ends_within_a_frame_of_her_look_ending`). Provisional, as
+the musing's hold is.)* The class stays open where it hasn't been seen:
+a scripted key boundary less than a frame after a look's step, and what
+she says a moment after a line of hers ends (plan.md).
+
+**The drawn exemptions combine, and the sky shows round her in ASCII
+(phase 5c's tail, T4, 2026-10-08; T1's review left it):** the world's
+clock's own step (its footprint's changed cells and its dial or sky
+looks) is taken back first and whatever else changed at that paint is
+judged by the other exemptions, so her blink as the dial steps is
+exempt and her breathing's flip with it is not. In ASCII the sky's (or
+the dial's) cells in her box, off her glyphs, are the piece's at a
+paint where her model and key didn't change (her leaning at the sill
+as the sky turns to dusk); her glyphs are known there (her sprite's
+cells), and a change at one of them is hers. In line art she is one
+image over the window, so her box is hers. The test's own mutants, at
+every paint the world's clock exempts, show both: a blink with it is
+exempt, and with a cell elsewhere as well is not; with her box put
+over the stepped window, the sky's cells off her glyphs are the sky's
+and one of her glyphs changing with it is hers. Each new clause was
+shown to matter by breaking it in the test (the stripping, the glyph
+check, the count from a look, the count from a flip), each failing its
+mutant. Her blink and the hook's bob at one paint combine the same way
+(her face, cells and looks taken as the blink, the rest as the hook's
+bob), in both tests: in the model's test (her state, not cells) a blink
+beginning on the sample the hook's bob flipped counted as a flip (T2's
+probe: lazy seed 2, ordinary seed 5, which its shopping room now also
+runs; with the combining broken it fails there, "flipped at 91900 and
+92200"), and the drawn test's mutant (a blink with each real hook's bob
+is exempt, with a cell elsewhere as well is not) fails with it broken.
+The model's test counts the samples only the combined clause exempted
+and requires some in the shopping room (11 in each mode), so a change
+moving the coincidence away can't leave it untried unseen. Its limit,
+documented in the test: those are the only pairs that combine (the
+world's clock with any one); a look's change or the film's still on
+the paint of a blink or the hook's bob is judged as hers, failing only
+if something counted came in the frame before, which no run does. A
+key boundary that shows nothing new is no change at a step of the
+world's clock either, as at any paint. The film's still counts nothing
+as design.md says, though counting it fails no run today: nothing keeps
+her bob off the moment the player answers, so it would fail by chance,
+on a principle that isn't hers to keep.
+
+Left, and open: her night. The stillness tests run afternoons, and the
+night's sleep is a long still act whose sleep-talk and the Dream come
+at moments her breathing's grid doesn't know: each begins less than a
+frame after her breathing's last flip, which no hold after it can take
+back (the hold covers only what follows). Aligning them to her
+breathing's grid, or exempting sleep-talk as a stir is, is the user's
+call (plan.md).
+
+**Static wakes her on its frames; the hook doesn't:** a use wakes her on
+its 1.4 s frame grid and as each key ends, and a client that paints only
+when she says something changed would show the 1.2 s of switch-on static
+as one frozen frame, which reads as a broken picture. So while a key
+shows static she also wakes on its 400 ms frames (`Key::frame_ms`, the
+same rule that wakes her on a bob's frames), and all three switch-on
+frames are painted (`the_tv_screen_holds_its_programme_through_a_plain_watch`).
+Chiyo-chichi's hook still bobs at paint time, sampled on the 1.4 s grid:
+waking her every 400 ms through two fifths of a shopping act would make
+him bob more visibly, and his bob is talk, not a picture to see whole.
+
+**The hook's length is the lingered body's:** the hook is two fifths of
+the shopping act's body (`Span::Upto(2, 5)`), and the body lingers by
+mood, so a lazy shopping act (up to 82 s × 1.5 = 123 s) bobs for up to
+49 s, against 33 s before watching lingered. **The user left it (step
+12c):** "Continuous cyclical movement gets filtered out by the human
+optical system almost as quickly as static scenes." Steady periodic
+motion is not what draws the eye; a change is (design.md's stillness
+rule says so). So the hook isn't capped in ms.
+
+## The film on her TV (2026-10-07)
+
+**Rule:** In line art, with a film loaded that this client holds, her
+TV shows a still of it in place of her drawn programme: asked of the
+player as she heads to watch, then once a minute (since the last
+question, failures counted) while she watches; a good still cuts in at
+the next paint; a failure keeps the still; a change of film clears it.
+The frame goes through the TV's own private screenshot slot and never
+leaves the process. See [design.md](design.md#houseguest).
+
+**Why:** the user's idea ("could it use screenshots from the running mpv
+player, if any (changing infrequently)?"): her TV showing what the room
+is watching. It is a **held picture, not animation**: step 12a made the
+TV hold still because a moving screen in a TV home outshone her, and a
+still a minute keeps that. The user chose the mock's column 7 (zoom 1.3,
+one luma levels stretch, saturation ×1.3, no sheen) over plain crops
+(night and interior scenes went to mud at 27×22 pixels), posterizing,
+scanlines, a CRT tint and letterboxing (each worse in the mock), and a
+refresh about once a minute during a long watch over the synthesis's
+"one still per switch-on, never swapped" (Q2). The saturation is the
+column's own ×1.3 (step 12c): the Q1 answer and step 12b wrote ×1.25,
+but the user chose the column by eye, and the column applies ×1.3.
+
+**Why its own screenshot slot:** AI commentary deletes its `frame.jpg`
+before each request and sends what it reads to the Anthropic API.
+Sharing that path would let commentary delete the TV's frame mid-poll,
+or attach a frame the TV asked for to an API request. So the slot and
+its poll are a module of their own (`screenshot::Slot`), each user with
+a private 0700 directory; the TV's frame is decoded, treated and deleted
+in the process, `TvPicture` and `UiInput` have no `Debug`, and the logs
+say how long a frame took or why it was rejected, never its pixels
+(`slots_are_private_and_apart`).
+
+**Why only a held file, its real video showing:** without the file mpv
+shows dessplay's "You don't have this file" placeholder, which at 27
+pixels is a smudge. So the UI asks only while this client holds the
+now-playing file ready (`held_now_playing`). That alone wasn't enough
+(step 12b review): `Ready` comes on prefetch, before the player loads the
+file, and when a download finishes while the placeholder (a `Load` that
+reuses the file's hash) still shows; and the UI asks at once on a change
+of film, right inside that gap, so the placeholder or the last frame of
+the episode before would have been shown under the new film's name for
+a minute. So the gate is at both ends, for the TV and commentary alike:
+the session asks the player only when it told it to load the file's
+*real* video (`PlayerWiring::may_screenshot`: held, and the
+`holds_now_playing` that gates speaking for the group), and the player
+actor takes a screenshot only of the file it was last told to load,
+once the player's own path echo confirms it shows it (not in the gap
+after a `Load`, nor while the user's own dropped-in file is up),
+answering at once whether it took it. A question the player wasn't
+asked costs no minute ("failures count" is about frames that failed):
+it's asked again 5 s on, so an episode's first still comes within
+seconds of its video showing, not a minute later.
+
+**Why numbered questions and one frame at a time:** a question given up
+after 3 s can still be answered later, and every request clears the
+slot's one path: two polls could race on it, one deleting or reading the
+other's frame. So each question carries a number and only the answer to
+the one out counts, and the slot is claimed for one frame at a time
+(`screenshot::Slot::claim`; a request while a poll still runs is "not
+asked").
+
+**Why invalidation by file, not clock:** a nine-minute-old frame of the
+episode still playing is right; a thirty-second-old frame of last
+night's is wrong. Each still carries the file it's of; a change of film
+(or the file no longer held) clears both slots, and an answer for a file
+since changed is dropped. A failed or black refresh on the same file
+keeps the still.
+
+**Why two slots and a latch at paint:** the guest's `Graphics` keeps the
+still on show and the one delivered since; at each paint the delivered
+one takes over (so it cuts in at the paint its arrival triggers). An
+image is keyed by `Look::Film(id, programme)` (a pixel hash, so a paused
+film's same frame is one image), and composing it needs the still's
+pixels: a key is only made while its still is in a slot, and one whose
+still is gone draws its programme (the card the act drew in 12a, which is
+why the key carries it).
+
+**Why the guest stays pure:** whether a still arrived, and when, depends
+on mpv's timing. So nothing she does reads it: the want
+(`Guest::tv_wants_picture`) is output only, the still goes into her
+drawing alone (`Guest::set_tv_picture`, never `IdleView`), her card is
+drawn on every watch whether or not a film covers it (12a), and there is
+no reaction line (Q3: the user is thinking about Osaka commenting on the
+episode itself later). `her_film_never_moves_her` checks it: for random
+schedules of answers (good, failed or not asked, up to 4 s late, past
+the 3 s give-up), stray stills,
+clears and changes of film, her trace and every ASCII frame are
+byte-identical with and without the stills reaching her, in both modes
+(a leak of the latch into her generator fails it at once).
+
+**Why the screenshot goes out async:** measured on this machine with
+`--vo=null`: mpv answers a `video` grab in 73–128 ms at 3840×2160 (h264)
+and 41–63 ms at 1080p (HEVC), and a command sent behind it waits as
+long, since a screenshot holds mpv's command queue. With `"async": true`
+the queued command is answered at once and the screenshot's own reply
+still comes when the file is written, so every `screenshot-to-file`
+(commentary's too) goes out async. A real `--vo=gpu` with hardware
+decoding may differ; the session logs each frame's time at trace.
+
+## Where she unpacks a parcel is judged with it there (2026-10-07)
+
+**Rule:** A delivery comes in only where her seats' own test
+(`seats_of`) offers an `Unpack` seat at the box, on the room as it will
+show with the box in it, and a seat for every use of the piece that
+asks room (and to look out of a window, where it first tries that), on
+the room as it will show with the piece out of its box: in each, the
+pieces that made way where they'd be, and what she made that it leaves
+standing (judged as `tend_made` will judge it: one predicate,
+`made_stands`). It's asked of this frame's terrain, read once when a
+delivery first asks. The wall clock's gift goes through the same door.
+See [design.md](design.md#houseguest).
+
+**Why:** a random case of the parcel property
+(`every_parcel_on_her_doorstep_gets_unpacked`, seed 0, found in 5c
+step 8c, kept ignored since): in line art a sofa came in beside her TV
+on The List's floor and was never unpacked. The doorstep asked "can
+she stay at its unpack spot?" of the terrain as it stood *before* the
+box: but in line art the image she's drawn in takes in every piece it
+meets, so once the box stood there her image at that spot took in the
+box, then through it the TV, then the letter above the TV, and she
+couldn't stay; the visit offered no `Unpack` seat. The same judgement
+of a room without the piece in it had been fixed for makeshift pieces
+already (`builds` judges where she'd crumple and use one with it in
+her image). It was there from the rule's start (78c53d98, 5b: the case
+fails there, the first commit with the rule and its test), not a 5c
+regression. ASCII is immune (pieces are no part of where she may stay
+there); the TV's parcel, every piece sold and her clock all come by
+the doorstep, the stage's `give` places a piece out of its box (no
+unpacking, stage-only), and later changes of the frame (text she
+moves, a resize) can still take the seat away after it's delivered, as
+for any seat, which the rule doesn't promise against.
+
+The review of that fix found its sibling: room *to use* the piece was
+still asked of the frame's cells alone (`roomy`), not as her seats are
+(in either mode, a floor under her; in line art, her image clear of
+text). The widened property (out of its box, nothing moved since it
+came, a seat for every use that asks room) found a desk at The List's
+wall with a letter in the floor at its stool, in ASCII: she could
+unpack it, never sit at it. Both are now asked of `seats_of` (`roomy`
+still holds too: the piece fits with her clear of the other pieces).
+The unpack check now accepts any of her `Unpack` spots, as the visit
+does (it had asked only spot 0). The doorstep had also judged on the
+visit's terrain, which is last frame's (read after `furnish`), on a
+resize a grid of another size; it reads this frame's now. And what she
+made that a delivery leaves standing was approximated by "its cover
+meets no piece"; it's now `tend_made`'s own test. The property's owned
+pieces now range over every kind (hung decor too), and the cases it
+found are named in `parcels_she_could_not_unpack`.
+
+The review also turned up a wall clock delivered beside her sofa, in
+ASCII, with a seat to unpack it from all along, still boxed ten minutes
+on: not this class. Unpacking it was the top of her offers at every
+choice (61.7, 65.3, 20.0, 46.7) and she rolled something else four
+times, phase 5c's lingering leaving few choices in ten minutes. Her
+strongest wish is not a certain one (she rolls among the top few:
+brain.rs), so the property's ten-minute deadline was a deadline over a
+roll. It now checks what is promised: while it's boxed and nothing has
+moved, every choice she makes has unpacking on offer (bound), and
+chosen, she finds a way there; once she sets about it, it's out of its
+box within two minutes; and she hasn't passed it over 14 choices
+running (the case runs on to 50 minutes for that; over 2000 cases the
+count fell off by about 0.35 a choice, none past six, so by luck alone
+one case in some hundred thousand). The case is named,
+`a_clock_she_passed_over`.
+
+## A moved wide glyph rains whole (2026-10-07)
+
+**Rule:** In the goodbye rain (and a focused pane's), a wide glyph she
+moved is one brick with the cell after it: while it holds it is drawn
+whole, and that cell's own frozen cell (the hole another moved glyph
+left there, say) shows nothing of its own; a drop reaching it rains
+both as two narrow cells, and they settle together; a change of the
+real UI under either half settles it at once. Only a cell painted
+before the glyph (under its second half) is that brick's; one of hers
+painted after it knocked it out, as in the frame she painted, and the
+glyph settles when that cell does. Every cell her figure, pieces,
+bubbles, door and rain write goes through one writer (`cells::put`),
+which takes a wide glyph's second cell with it (or refuses it), so no
+frame of those can hold half of one; the text layer, the parcel flap
+and the accordion shake write their cells directly, and are immune for
+the reasons below. In ASCII a makeshift piece draws a wide letter as a
+narrow stand-in (the rain's scramble of it): one glyph a cell. Every
+line she says is plain ASCII, a compile error otherwise (`line!`;
+since widened to a few narrow marks:
+[below](#her-lines-may-use-a-few-narrow-marks-2026-10-07)). See
+[design.md](design.md#houseguest).
+
+**Why:** a random case of the day-long property test
+(`her_days_never_touch_what_is_protected`, phase 5c step 12b) found
+half a wide glyph in the rain after she slid a line with wide glyphs
+left and went off to school: the moved 漢's second half sat on the hole
+`w` left, and that hole, frozen as a cell of its own, rained noise
+beside the still-frozen 漢 (painted after it, so neither knocked the
+other out). Two faults met: `put` was written for narrow glyphs and
+never cleared a wide glyph's second cell, and the rain froze that cell
+as the hole's, not the glyph's. Both are as old as the text layer
+(2026-09-28: the new dissolve tests fail there); 5c step 8c's tuning
+only led this seed into that slide before a leaving. The dissolve's own
+property test froze only `/` and `V`, so it never reached a wide frozen
+glyph; it now freezes wide ones too, and a second property drives the
+real text layer (slides and carries over rows of wide and narrow
+glyphs, someone typing after the freeze). With more cases the two found two more orderings
+in the same class, now settled: a cell beside a live wide glyph judged
+"still animating" by a partner settling later in the same frame (so it
+blanked a glyph already shown real), and a cell judged on the frame as
+painted so far, after its neighbour's write had blanked the wide glyph
+it was frozen over. A cell is now judged on the live frame as it was
+before the rain wrote anything, unless another of her cells was painted
+in that same cell this frame (one frozen over the other: then the later
+shows while the earlier shows what it showed then, as before); and
+"settling" counts this frame's settling, whatever order they're painted
+in.
+
+The review of that fix found three more in the class, each with a
+deterministic test that failed first: a glyph and its own second half
+were judged each other's "partner" beside a live wide glyph (moving
+`漢語` two cells left puts 語 on the real 漢), so the half settling by
+its own column's clock popped the moved glyph back without rain (a half
+now settles only with its glyph, and the two are never partners); what
+shows at a partner's cell was read off the cell of hers on top there,
+whose `under` is her own lower cell, not the real UI, so a neighbour
+settled early (it's now read off the first cell she painted there); and
+any cell of hers on top after a moved wide glyph was taken for its
+second half, hiding a later bubble or sprite cell the frame showed (now
+paint order decides, as above).
+
+The siblings: the layer's own paint writes a wide glyph only on cells
+it validated free (both halves), so it never writes half of one;
+the flap swings in on a `│` cell (never a second half) with a narrow
+glyph; her bubbles say fixed lines, every one written with `line!`,
+whose compile-time check now refuses any but plain ASCII (a lint over
+the pools alone would have missed some fifty other lines: greetings,
+pitches, constants); her sprite, door and furniture art are narrow; the accordion shake rotates an all-narrow row. The one
+other writer of torn text, a makeshift piece's ASCII drawing, could
+draw a torn 漢 in one cell of its own; with `put` taking second cells,
+one at the piece's last column would have blanked a cell outside it,
+so it draws a narrow stand-in instead.
+
+## Her lines may use a few narrow marks (2026-10-07)
+
+**Rule:** A line she says is ASCII plus a short allowlist of narrow
+marks (`NARROW`: `… ♪ — – ’ ‘ “ ” ·`), each one cell wide under the
+width the renderer uses (unicode-width's `width`, not its CJK variant);
+`line!` refuses any other character at compile time. See
+[design.md](design.md#houseguest).
+
+**Why:** 12d made every line plain ASCII so that no wide glyph could
+leave half of itself in a bubble (drawn a character a cell). That threw
+out marks that are as narrow as ASCII in every terminal the users run.
+The user: *"Realistically none of us use a CJK locale; wide-character
+support is useful mostly for rare subtitles and filenames."* These marks
+are East Asian Ambiguous, two cells only in a CJK locale, which the
+renderer never assumes (it measures every cell with the non-CJK width).
+So the rule is an allowlist checked against that width function, not a
+general "narrow" test: a test (`her_narrow_marks_are_one_cell_wide`)
+pins each mark at one cell under `width` and checks that the code that
+keeps wide glyphs whole (`cells::put`, `cells::width`, the rain's
+pairing) never treats one as wide. Rejected: allowing any character
+the width function calls narrow. That would let in combining marks,
+zero-width and control characters, and anything a future
+unicode-width revision re-measures, all unchecked. 12d had swapped no
+line's mark for an ASCII stand-in (her `...` lines were always ASCII),
+so no line changed.
+
+## Her empty home rains out whenever she doesn't come in (2026-10-07)
+
+**Rule:** Her coming in from her empty home (home from school, a dash,
+a stage cue) carries the home in her arriving state until the next
+paint. If she comes in, the visit shows her pieces from that frame on.
+If she doesn't (the client busy as school ends, the arrival called off
+by the gate shutting, or nowhere for her door), it rains out
+(`Guest::call_off`, through `rain_home`, the one place an empty home
+rains out whole; an errand breaking in rains only her door,
+`door_rain`, and a focused pane only what stood in it). At another size than it was drawn at, it goes at once,
+as a standing home does on a resize. A stage-cued arrival called off by
+her not being idle after all (a key, a chat line) puts her back as she
+was, her home standing (`Guest::back_out`), and the cause then takes it
+as it would with no arrival under way: a visitor's key rains it out, a
+resident's key or a chat line leaves it standing. See
+[design.md](design.md#houseguest).
+
+**Why:** phase 5c step 1 made the rule that a rain is cut short only
+when she's sent away (switched off, moved out) or her room goes, and
+handed off one case it didn't reach: with the client busy, `school_out`
+set her state to `Absent`, and her empty home vanished with no rain.
+The cause was wider than that branch. Every arrival from her empty home
+replaced `State::Away` with `State::Arriving`, dropping the home, and
+counted on the next paint's visit to show the pieces again. Any way the
+arrival came to nothing dropped the home: `school_out` with the client
+busy, the gate shutting between the tick and the paint (`observe`'s
+`Arriving → Absent`), or no spot for her door at the paint. The
+property `a_live_rain_always_gets_its_frame` was widened with that
+scene (an overlay up as school ends, a resident, both drawing modes,
+any shell lateness) and a check that a shown empty home never goes
+`Absent` in one step. It failed on seed 0: the tick at 12:45 decided
+her return, the overlay's paint called it off, and the home was gone.
+Carrying the home in `Arriving` makes "called off" mean "rain it out"
+in every path, and an errand sent from that state rains her door out of
+the carried home as it does from `Away`.
+
+The review (T3) found the first cut too harsh in one case and
+under-tested in the rest. A key or a chat line over a stage-cued
+arrival rained the home out, though the same key or line over the home
+itself leaves it standing; calling off an arrival is no reason to treat
+the home worse than its cause would, so `back_out` restores it. The
+other paths, each pinned in both drawing modes and each confirmed by
+breaking the code it covers: `school_ending_on_a_busy_client_rains_her_empty_home_out`
+(the reported branch; in the app only a visitor's key on her errand's
+last frames reaches it, so the test sets the idle timer as that key
+does), `an_overlay_as_she_dashes_home_rains_her_empty_home_out`,
+`an_errand_as_she_comes_in_from_her_empty_home_rains_her_door_out`,
+`home_from_school_with_nowhere_to_come_in_her_empty_home_rains_out`
+(and at another size, at once), and
+`a_cued_arrival_called_off_leaves_her_empty_home_as_the_cause_would`.
+
+The siblings, immune: going out by her door (to school, a dash's end,
+the no-home leave, a visitor's errand at school) goes through
+`out_by_door`, which either leaves her home standing (`Away`) or sends
+the visit through `leave()`, raining. Vacations and weekends never make
+school time, so no empty home stands then, and the day's latch holds a
+vacation flag through the day (A12). `absent()`'s own school's end has
+nothing on screen. An overlay, a busy visitor or a visitor's key over
+`Away` already went through `leave()`; a resident's key and a chat line
+leave it standing. Switched off, moved out, too small a terminal or a
+resize still remove it at once, as the rule says.
+
+One exception, known and left: the stage's cue over a goodbye under way
+(`Guest::cue` over `State::Leaving`) replaces it with the arrival and
+cuts its rain short. It predates T3 and only the stage reaches it.
+Pushing the goodbye's dissolve into her rains (`fades`) would keep the
+rain but not the goodbye's image and pieces, which it paints over the
+dissolve until the rain starts, so in line art it would show a
+different frame; and she would arrive under her own goodbye. No golden
+scene covers any of these paths, so all 112 traces are unchanged.
+
+## Her door has its own space at the screen's edge (2026-10-08)
+
+**Rule:** one wall of her strips is her external door's (`Home.door`,
+saved in her record), chosen by the panes' geometry alone: walls at the
+screen's edge first, then her pieces' strips, then where the space
+would be kept, then pane order, right before left; never a wall whose
+space meets the chat pane. Six columns against it, her height
+and the floor row, are kept: the floor lane of that strip packs beside
+them, the hung lane keeps out of them but for the poster and the clock.
+The space yields (the strip lays out as with no door) when keeping it
+would cost the strip a piece. See
+[design.md](design.md#houseguest), *Her door's space*.
+
+**Why:** the user's plan for her door (plan.md, Phase 38, "Next: the
+door batch"): a reserved space at the screen's edge, floor against a
+wall, never over furniture. **Post-mortem:** her school-morning door
+stood at her feet, found by `restful`, the test for where she may stay,
+which knows nothing of her pieces' covers: on a school morning she
+could go out by a door standing in her sofa or her bed. The door's
+place is now computed from her home and the frame, never her feet; this
+step keeps its space (the door itself moves there in the next step).
+
+**Kept by narrowing, never by `blocked`:** `project` closets a piece
+whose cells meet `blocked`, so a space kept that way would send every
+older home's piece by the screen's edge to the closet. Narrowing the
+floor lane moves them along instead, in order, their anchors unchanged.
+
+**When it yields (the door batch's step 2, found by its proptest):** the
+design first had the space kept whenever what stands packed beside it,
+and a window hung into it go to the closet. An older record showed what
+that costs: the floor six columns narrower pushed her desk into her bed
+and her bed a column along, under her window hung at the far wall beside
+her poster, with nowhere left for the window to hang, so loading the
+record lost the window (`an_older_record_migrates_without_closeting_anything`,
+pinned by `an_older_records_window_keeps_its_place_by_her_door`). The
+space is now kept only when keeping it costs the strip nothing (what
+stands packs beside it, and every hung piece the doorless layout lays
+out is still laid out); else the strip lays out byte for byte as with no
+door, its window free to hang in the space (her door stands elsewhere).
+So whether it's kept depends on where a hung piece is anchored, not
+only on what stands: a repair is still judged on the strip as it would
+be laid out, so this costs a search candidates, never a wrong move.
+
+**Review of step 2 (2026-10-08):** the door was first re-chosen after
+the frame's layout, so the frame her pieces moved laid them out with no
+space, and the next frame hopped them six columns; and a moved piece
+could land in the new door's space. `move_off` now judges each target
+strip with her door already moved there, and the layout follows it. The
+tie-break "where what stands packs beside the space" now asks what
+`kept` asks (no hung piece lost either), so the chooser never prefers a
+wall whose space would yield at once. The design first said the wall
+is never chosen again for "a pane hidden a while": that only holds
+while no other strip can take her pieces. A hidden pane fails the
+layout like a pane that's gone, so her pieces move (as before this
+batch) and her door with them, and showing the pane again keeps both
+where they went. Left as built; whether a hidden pane should hold her
+pieces (and door) in place is an open question for the user.
+
+**Rejected:** a wall derived each frame (the first delivery would move
+it, and her pieces with it, and each pane drag would too); moving the
+room off its strip to make way (a whole room moves for six columns);
+choosing the wall inside `project` (every test of the layout would get
+a door; `Home::frame` settles it outside the layout instead, and
+`project` only reads it). A saved wall the chat pane comes to meet is
+not chosen again: it's refused frame by frame, so dragging the pane back
+restores it.
+
+**Where her door stands (the door batch's step 3, 2026-10-08):** her
+closed door (while she's out) and the door she comes home and dashes in
+through are placed by one function, `door::door_place`, from her home,
+the frame's panes and lines, and her pieces' covers as laid out (and,
+on a visit, what she made and the place of the piece in her pocket):
+in its space when kept and free; else at the nearest floor spot where
+her box meets no piece, clear of the chat and protected cells; else
+nowhere. Nothing records her feet any more (`DoorAt` and `Out`'s spot
+are gone; the last spot placed lives on her empty home, derived by each
+frame), and only `door_place` makes a `DoorSpot` (its fields are
+private). The acts that open her door (`back_through_door`, `dash_in`,
+`dash_through`) still take a bare spot and facing until step 4a
+(`Through::Home(DoorSpot)` / `Through::Space`): coming home with no door
+anywhere opens that act at a spot in space. With no door anywhere she
+comes in somewhere calm outside the chat if there's such a spot, else
+anywhere clear of it and her pieces. Her door reads text she moved
+during a visit as text, never as a protected pane, and an empty chat
+rect (a collapsed slot) is no chat (`room::in_chat`). **Post-mortem:** the old door stood where she went out, and
+`door_fits` judged it by `restful`, the test of where she may stay,
+which knows nothing of her pieces: out of her bed, sofa or desk at
+08:15 she went out by a door standing in it, and on the chat pane's
+floor by one in the chat (`her_school_mornings_never_put_her_door_on_a_piece`
+and the step's `out_of_her_*` tests were red on it). The fallback is
+blind to text and sticky (`prev`): a door that moved as text scrolled
+would draw the eye. *It stands over text* (the user's answer): text in
+its space neither moves nor hides it; only a protected pane does, and
+then only while that pane is in use (the drawn door reads the frame as
+drawn; arrivals and the visit's door read it as she keeps to it, so she
+never comes out inside a focused pane). The image of the door takes in
+no piece: it meets none by construction. What she makes is kept out of
+the space too (`door::Keep`: `builds` refuses it, a piece she set out
+to make there after the space came is refused as it's made, and a made
+piece the space comes to meet falls apart), the chat half following in
+step 5.
+*Rejected:* hiding the door while text is in its space (the user chose
+the door over the text: it's how you know she's out); keeping the old
+spot while it still fits (that's the bug).
+*A face-on door never straddles a pane's border* (the user's answer,
+2026-10-08, step 4a): D4's strict fallback read no line above the floor
+row, so a fallback door (and her coming home out of it) could stand
+across a pane's `│`, half in each pane. `on_floor` now refuses a plain
+wall (`│`/`┃`) on any of her box's rows above the floor; the floor
+row's own stroke is floor. *Rejected:* letting it straddle (it read as
+the door being in neither room).
+
+**Older builds:** the record keeps `door` after what she has seen and
+before her clock sent; an older build drops it when it saves the record
+again and lays the door strip's pieces against the raw wall, those
+anchored from the door's wall up to six columns nearer it, until a newer
+build chooses the wall again. Shares (`at`) are always of the raw strip,
+so nothing is lost; the version stays 1.
+
+**Her repair search lays out only the strips a move changes (the door
+batch's step 3p, 2026-10-08):** each strip is laid out alone and
+recorded with what it was laid out from (her pieces on it, by index, and
+her door's wall if it's there: all its layout reads). A move's layout
+reuses a recorded strip only when those are identical, and lays out the
+rest again. *Why:* the search weighs ~1170 moves, and laying out her
+whole home for each (her door's strip twice, to judge its space) made a
+search 0.60-0.76 ms, past its 1 ms bound under a deep pass's load; now
+0.43-0.48 ms. Her door's space is kept without laying the strip out a
+second time when, laid out beside it, the strip leaves none of her
+pieces out (`lay_strip` counts them, whatever leaves them out): without
+the space it could show no more. *Rejected:* the caller naming the
+strips a move touches (the first cut): a wrong list, or a new input to a
+strip's layout (the chat, made pieces), would reuse a stale strip with
+no error; recording the inputs makes that unrepresentable, and comparing
+a few pieces costs far less than laying a strip out. Laying out again
+after a resize (`move_off`) and per place of a stage gift (`spot`) still
+lays out the whole home: they're rare, not per move.
+
+**Her door's wall is chosen for her home as her pieces moved (2026-10-11,
+found by phase 6a's 256-case deep pass; in since the door batch's step 5,
+2026-10-09):** with no wall saved yet, `Home::frame` (through
+`Home::settled`) projects her pieces first (an older record's anchored,
+a gone strip's pieces moved, each target judged with the wall the home
+moved there would choose, as `move_off` always did), then chooses and
+saves the wall for the home they make, then projects again with it, so
+the frame they move in lays them out as they'll stay. The stage's try
+of her sofa and TV is projected the same way. **Post-mortem:** `frame`
+saved the wall before `project` moved anything, so it was chosen for a
+home that's never laid out. An older record with her bed on Users, her
+sofa on Playlist and the rest on List (gone): the wall chosen was
+Users' left (her bed stands at the right), and the List pieces moving
+to Users would hang her window by its share in that space where it
+yields; step 5's keep-out refuses that, so they went on to Playlist,
+where her window over her sofa had no place beside her clock and was
+left out of her home. With no door they'd all have gone to Users, her
+window shown (`an_older_record_migrates_without_closeting_anything`,
+T19, red at 256 cases; `an_older_records_pieces_move_where_they_would_with_no_door`).
+Now a frame with no wall saved moves her pieces exactly as one with no
+door, and a wall's space that would lose a piece yields, so choosing
+the wall loses none by construction. *Rejected:* letting a window move
+into a yielding space (step 5's keep-out stands: nothing new goes in
+her door's space); a target search that prefers a strip laying out
+every moved piece (none did here: it would still have lost the window);
+re-choosing a saved wall when her pieces move onto its strip (a saved
+wall is never chosen again but with the pieces of its own strip). A
+saved wall still sends a gone strip's pieces past a strip where only
+its space would take a hung piece, as the rules for a move say.
+
+## She walks to her door; her line is latched apart from `leaving` (2026-10-08)
+
+**Rule:** at school time she sets off for her door where the frame
+stands it (`chances.door`) as a job (`Job::Leave { spot, why }`), says
+her set-off line once (`set_off`, the latch), and opens her external
+door only at its spot (`Act::Door { to: Through::Home(spot), .. }`).
+`leaving` is set only then, never as she sets off. A boundary never
+cuts a Leave walk (`cut`'s `to_job` leaves it out); each step of it she
+re-reads the frame's door (`door_moved`), and at the spot her routine
+(`at_door`). The latch is let go on any decision outside school time
+(`choose_next`), by an errand and by being placed. An opened door not
+yet let her out follows the frame's door read without the focused pane
+(`Chances::door_through`, `door::Ungated`), so a focus never moves it.
+Every door in space she goes out by for good goes through
+`out_where_clear` (her box out of every piece first, a `Then::Out`
+step-off walk), and while she's on her way out (`on_her_way_out`) no
+parcel or gift is delivered. The stage's school scene goes out the same way
+for a short gap (`Leave::Stage`), with "I'm home!" coming back.
+
+**Why:** `leaving` is what ends the visit (`gone_out`: leaving, hidden,
+no door showing). Set at set-off, any door in space on her way between
+floors, or a trip round the screen's edge, would end the visit there,
+out of sight and nowhere near her door (M1;
+`a_leave_walk_across_floors_never_ends_the_visit_before_her_door` was
+red on that build). So the line needs its own latch: re-entering her
+way out (a landing, a walk come to nothing, a focused pane moving her)
+must say nothing, and an errand or being placed resets it. *Which gap*
+her door opens on is in the job (`why`), never derived from `leaving`,
+`returning` or a shift (M9). Letting a later boundary cut her walk
+would have her decide afresh mid-way and, at 12:45 on a dash's way out,
+leave with school over; instead she reaches her door and stays in,
+silently (Open choice 5). Her door at a stale spot can't be
+represented: with no door anywhere mid-gap the act becomes a door in
+space at her feet (C5, M8). With no way to her door's spot (no floor
+she can stand on there) she goes out by a door in space where she
+stands, but only once her box is out of every piece (M25: she steps
+along her floor first), so a door never opens in her bed. *Step 4a
+review (2026-10-08):* the latch was cleared only at her door's spot,
+so a way out cut after 12:45 (a chat line) kept it for the rest of the
+visit: the next school morning said no line, and `awake` would have
+held parcels back all afternoon; clearing it in `choose_next` outside
+school time makes that leak impossible. A door that was read only at
+her arrival could be stale for the whole walk (a resize, a focused
+pane over it); reading it each step leaves one place that handles a
+moved or vanished door (`at_door`'s own moved/none arms went). Three
+of the four "out at her feet" sites skipped the out-of-piece step;
+they now share `out_where_clear`, and its step-off walk ends in the
+door (`Then::Out`) rather than a decision, so `find_rest` can't send
+her back into the piece. A face-on fallback door covered by a focused
+pane moved with the focus (its fallback reason isn't `Protected`), so
+the door she's through now follows the door as read without the focus
+instead of special-casing `Fallback::Protected`. Which gap and which
+of `leaving`/`returning` a door sets is one helper (`leave_by`) for
+every door, so the stage scene comes back with "I'm home!" by a door
+in space too.
+*Rejected:* setting `leaving` at set-off (the M1 bug above); a `beside`
+step to get up from a piece (she gets up by the ordinary end of a use,
+as after any nap, C16); reading `returning` in `start_job` for the
+stage scene (mixed state; a third `Leave` variant instead).
+
+## Work goes out by her door (2026-10-08)
+
+**Rule:** her part-time job goes out and comes home through her door,
+as school does, never off a screen edge (`Job::Leave { why: Work }`,
+`Osaka::go_to_work`). The shift's length is drawn as she sets off
+(`Shift::Going { gap }`) and is the gap of whichever door she goes out
+by: her door at its spot, a door in space where she stands when there's
+no door of hers or no way to it, or a door in space where a focused
+pane moved her on her way (C4). Going through it, the shift is `Out`;
+coming back out of that door, and only that one, she's home from work
+(`back_home`), facing the room with her leeks in her arms through its
+last beats (C13). A landing on her way (a hop, a door in space between
+floors) goes on to her door (`choose_next`, `work/on`); a startle, a
+chat line or an errand on her way ends the shift with no homecoming,
+and her way to her door for it goes with it (`Osaka::let_work_go`:
+walking, heading there across floors, round the screen's edge, up a
+pole). With no door or no way to it, the door in space opens only once
+her box meets none of her pieces (`out_where_clear`, as school's).
+Out at work by a door in space, she comes home by her door if the
+frame stands it anywhere then and no focused pane is over it (M10;
+while one is, she comes home where she went); her door's pane focused while
+she's out doesn't move the door she's through. School beginning on her
+way rewrites her way out to school's (`school_from_work`); `leaving`
+is still set only as the door opens. Coming in through her door where
+her pieces pushed it out of its space (`Fallback::Yield`) is noted
+(`Osaka::bumped`) for her DoorClear rule (M13).
+
+**Why:** one external door reads clearly; the edge exit looked like
+leaving through the wall beside it, and two ways out for the same
+routine-like trip made her door's cue ("her door shut with slippers
+before it": she's out) a half-truth. Which door brings her home is in
+the shift (`Going`/`Out`), never in the door: with the old shift
+taken by any door's end, a door in space between floors on her way
+brought her "home from work" before she had gone (found while building
+this; `a_shift_through_her_door_ends_at_home`'s door-in-space case).
+The gap is drawn once, as she sets off, so every door of the shift
+opens on the same length and none can open on a moment's gap (C4).
+Only a door in space that is the shift's (its gap above zero) is
+re-pointed at her door while she's out of sight, so a hop between
+floors or an errand's door can never be. The focused pane doesn't move
+her door during her gap because nothing of hers is drawn then, and
+moving it would have it hop to the fallback and back with focus; if
+the pane is still focused as she comes back out, she's moved on as
+anyone in a focused pane is. (Review of step 4b, 2026-10-09:) An
+errand used to cut only a shift on her walk, leaving her heading for
+her door across floors: she'd land, walk on to her door and step out
+of it at once with no shift behind it; cutting a shift and letting go
+of her way to it are now one call, so a way to work never outlives its
+shift. A door in space re-pointed at her door while its pane is still
+focused undid eviction (she came back out inside the focus for a
+frame), so the re-point waits until the frame's door and the door she'd
+come through agree. Work's no-door arm opened a door in space at her
+feet even in her sofa; every door in space she goes out by now follows
+one rule (`out_where_clear`).
+*Rejected:* keeping the edge exit where her floor reaches one (the
+user: one door; settled fact 3); deriving "home from work" from a
+door's gap (a door in space has gap 0 on her way and gap 0 when a
+focused pane moves her out of her door's far side, so the gap can't
+tell them apart); drawing the shift at the door (an eviction mid-walk
+had no gap to give, C4).
+
+## No furniture in the chat pane (2026-10-08)
+
+**Rule:** no new piece of hers is ever put in the chat pane or her
+door's space (kept or not), in either drawing mode: not a delivery (the
+parcel, or the piece out of it, as laid out there; nor one that pushes
+a piece that shows into either, nor one whose coming makes her door's
+kept space yield), a stage gift, a repair (nor a piece it pushes along
+newly into either; a piece turned where it stands is no placement), her
+pieces moved off a strip (where they stand and where they're laid out),
+nor a makeshift piece (its chat half undone on 2026-10-09: see [Makeshift
+pieces may stand in the chat pane](#makeshift-pieces-may-stand-in-the-chat-pane-2026-10-09));
+and no placement pushes a piece that shows (or hangs one clear of it)
+newly into either. A makeshift piece the chat pane or her door's space
+comes to meet falls apart (the chat half undone likewise). One predicate
+(`door::Keep`, built from the frame's `Plan` with its chat) is asked
+once per candidate placement at every site: `refuses` of the piece
+where it's laid out, and `takes_in` of every piece that showed (outside
+before, inside where the placement lays it out, moved): `Home::admits`
+(via `doorstep`), `Home::spot`, `Home::move_off` (the pieces that move
+and those already on the strip they go to), `rules::fits_now` (search,
+check and check again, the rules' `Frame` carrying the keep),
+`stage_arrange`, and the makeshift sites (`builds`, the frame's refusal
+of a `Make`, `made_stands` at both callers; the delivery's on the home
+as it will be with the delivery in). Pieces already standing in the
+chat (an older home, panes overlapping in a custom layout) are shown
+where they stand. Unpacking is no placement: a delivery is judged both
+boxed and out of its box where it comes in, so only a layout that
+changes before she unpacks it (a resize, the chat moved, her door's wall
+newly saved) can leave the piece out of its box in the chat or her
+door's space; it's then an older piece there, like any other (step 6's
+felt rules and the per-frame closet deal with it).
+
+**Why:** the user (2026-10-07): *"Furniture cannot be placed in the chat
+pane, since the chat pane is what is focused 95% of the time."* A keep-out
+on new placements, not a change to what `project` shows: widening
+`blocked` (the projection's closure) would closet every older piece in
+the chat, deleting it from sight with nothing for her to notice and move
+(the felt rule that moves it out comes with step 6), and would change
+what the frame shows rather than where she may put things. The check sits
+after the layout (`fits_now`, `admits` on the laid piece), never inside a
+strip's layout, so a strip's layout still reads only her pieces on it and
+her door (`Home::relaid`'s cache stays sound). The parcel and the piece
+are judged where they'll be laid out, since a window is laid clear of a
+kept space beside where it was packed. Found while building: a window
+moved with her pieces off a hidden pane hung by its share of the way
+into her door's space where that space yields (no hung piece is shifted
+out of a yielding space); `move_off` now judges where the moved pieces
+are laid out, not only where they pack. Found in review: the pieces a
+placement pushes along were judged only where they pack, and only in
+its own lane; a stage gift hanging her window clear of it went newly
+into the chat; pieces on the strip her pieces moved onto weren't
+judged at all. Each is now judged where the layout puts it, in either
+lane, by the one `takes_in`. Unpacking isn't held back until it would
+be clear (a wait could leave a parcel boxed for good). In the bundled
+layout all text is in the chat pane, so she no longer made furniture
+of chat text there (the user then exempted makeshift pieces: below).
+*Rejected:* widening `blocked` (above); a keep-out read inside
+`lay_strip` (it would make a strip's layout depend on the chat and stale
+`relaid`); refusing a delivery whenever her door's space yields (an
+older crowded home would never get another parcel), rather than only
+when the delivery makes it yield.
+
+## She feels her door blocked and a piece in the chat on sight (2026-10-09)
+
+**Rule:** two rows at the end of the rules table. **DoorClear**: no
+piece out of its box stands in her door's space, judged piece by piece
+on the space her door's wall would have, kept or yielding, wherever a
+space can exist at all. **InChat**: no piece out of its box stands in
+the chat pane, piece by piece, but one no room would take (it's in the
+closet). Both are felt on any use of the piece, like any rule, and on
+sight: DoorClear once she has bumped into what fills the space (coming
+home out of her door where it stood aside for her pieces,
+`Fallback::Yield`), InChat whenever she's in sight while it's broken.
+Felt on sight she says so only if her mood would mend it, at most once
+a game day per rule (in memory on the guest: a restart may repeat it
+once; with no routine reaching her, no game day, so once a visit), and
+only once she's quiet after her arrival line, standing until she is,
+then standing for two frames under `grumbling()`. Lines: "Can't get to
+the door!" (the user's) and "People are talking here…": the user asked
+for "People are talking here..."; written with three dots it is 26
+characters, past a bubble's 24 (`BUBBLE_CHARS`), so it has the one-glyph
+narrow ellipsis: the user's choice (2026-10-09), over raising the bubble
+limit. **The closet
+for the chat**: a piece in the chat that no room takes is hidden per
+frame in `Home::frame` (Visiting and Away alike), never moved and never
+saved; `room::placements` assigns the pieces in the chat jointly, in
+layout order: own strip at any left clear of the chat and the space,
+else another strip's lane where it packs (`pack`, anchored anywhere
+along it) with that strip's pieces and those already assigned there,
+clear of both, pushing none of them newly into either, and never wider
+than a kept door space leaves room for. A box is never weighed.
+
+**Why:** the user's door batch decisions: older homes whose furniture
+fills the space are cleared by her, through a felt rule that phase 4's
+arranging answers; an older piece in the chat is shown where it stands
+until she moves it, and closeted per frame only when nowhere else would
+take it. *On sight*, because a lamp or a plant has no use to feel it on,
+and felt rules die with the visit, so feeling a blocked door going out
+would be forgotten before it could be mended: she feels it coming home,
+when she has just bumped into it; a fallback forced by a short room, the
+chat, a focused pane or no wall is never blamed on her furniture.
+DoorClear judges the would-be space, kept or not, since it's only ever
+broken while the space yields (a kept space is clear by construction); a
+space that yields for a hung piece with nothing standing in it blames
+nothing (there's nothing in her way), and a window hung low in a yielded
+space is blamed like any piece. *Said only when she'd mend*, so a lazy
+visit lives with it quietly (the documented gap: a piece some room would
+take shows in the chat until a mood that mends moves it), and an
+on-sight line is never a complaint she won't act on. *Once a game day
+per rule*, so a home that can't be put right (no repair exists) doesn't
+nag every visit, while she still feels it (and nests over it) each
+visit. *After her arrival line*, standing until she's quiet: said at a
+later decision she might be off on something long, and over her hello
+it would cut "I'm home!" short (C4). *The closet per frame, not
+persisted*: it's a fact about this frame's panes (a pane coming back, a
+chat moved, a resize), so a saved flag would go stale and could hide a
+piece for good; recomputing it costs only when a piece meets the chat.
+It lives in `Home::frame`, not `project`, so the rules, the repair
+search and every layout read stay on pure geometry (`Home::relaid`'s
+cache stays sound). An existing test moved with the rule: a move that
+set her sofa against her door's wall, inside the space that yields for
+it (F7's case), is now refused as breaking DoorClear.
+
+*From the step's review* (same day). *The closet packs*, as D7 says ("where
+it packs"), rather than wanting a free gap: a gap is stricter (free
+columns split 7 and 8 hold no 10-wide bed, though the room's pieces
+would slide aside for it), and a piece hidden for want of a gap is
+never moved, since a hidden piece isn't judged. *A box is never
+closeted*: nothing unpacks a hidden box (her seats are the pieces
+shown), and while a piece is boxed the shopping channel sells nothing,
+so a closeted box (a layout change can put an older one in the chat)
+would stop both for as long as the layout stood; shown, she unpacks it,
+and then it's a piece like any other. *A repair keeps her door's kept
+space kept*: the space exists only with room beside it for the widest
+piece standing, and is kept only if the strip packs beside it, so a
+move can make it yield or vanish without breaking a rule (DoorClear
+judges only a space, and only what stands in it); `evaluate` refuses
+that transition as `admits` does for a delivery. That leaves no move
+whose destination strip's plan differs from the plan before it (a
+yielding space or none lays the strip out raw either way), so F7's
+per-candidate "plan with the piece there" is gone: the grid is the plan
+before the move (it was only ever wrong where a hung piece's place
+decides the keep, and there the plan before is the right one). *The
+closet and a repair*: a repair may not put a piece that showed into the
+closet (it would vanish as she moved something else); a piece leaving
+the closet for a repair (a room now takes it) is no rule newly broken
+(it was in the chat all along). Judged with the closet as it was, so
+the closet is weighed for a move only after everything else passes, and
+only while a piece shows in the chat: the repair search stays under its
+millisecond with five pieces in the chat. *Where her mood is judged*:
+only when she'd say it (`aloud_owed`), so a rule felt while she's mending
+another is said once she's done, if she'd still mend. *Her door's spot*
+still keeps off a piece in the closet: it may be back any frame. *What
+the closet hides* is logged when it changes, since a piece vanishing is
+something the user sees.
+*Rejected:* feeling DoorClear only on the first frame she's in sight
+(she's in sight in the doorway before she's through it and has bumped
+into anything); judging InChat on stranded pieces (she'd grieve over
+what she can't see); the `"..."` spelling past the bubble limit (pending
+the user, above); a free gap for the closet (above); weighing the
+closet afresh on every move a repair search weighs (17 ms a search with
+five pieces in the chat, against a 1 ms bound).
+
+## Makeshift pieces may stand in the chat pane (2026-10-09)
+
+**Rule:** a makeshift piece (one she makes of torn text) may be made in,
+and may stand in, the chat pane; the chat coming to meet one doesn't
+take it apart. It's still never made in her door's space (kept or not),
+and her door's space coming to meet one still takes it apart. Bought
+pieces, hung decor, parcels, stage gifts, repairs and pieces moved off a
+strip still keep out of the chat. The made-piece sites (`builds`, the
+visiting frame's refusal of a `Make`, `made_stands` at both its callers,
+`tend_made` and the delivery's `seats`) take `door::MadeKeep`, a view of
+the frame's `Keep` (`Keep::for_made`) that refuses her door's space
+only: its own type, so a whole `Keep` can't be handed to them, and no
+call site passes a flag. A made piece stands on no strip, so InChat and
+the per-frame closet never judge or hide it.
+
+**Why:** the user (2026-10-09): *"Allow makeshift in chat."* A made
+piece lasts one visit, like a prop she carries, and in the bundled
+layout all the text she could tear is chat text: step 5's rule (no
+furniture in the chat pane) meant she made nothing there at all (time on
+made pieces on the stage 43% → 24%, its moving 8.0% → 5.6%). The chat
+rule is for what stays (*"the chat pane is what is focused 95% of the
+time"*); a heap of the chat's own shreds that goes with the visit isn't
+that. Her door's space stays refused: she goes out and comes in there.
+*Rejected:* a `Kind` argument or bool on `Keep::refuses` (every call
+site could pass the wrong one); building a `Keep` with an empty chat for
+the made sites (the same bool, hidden in a value).
+
+## Her open door follows a resize in the frame it's drawn in (2026-10-09)
+
+**Rule:** the door she's going through or coming in by (`Act::Door`
+with `Through::Home`) is moved to where the frame stands her door by the
+frame itself, as it reads her door (`Osaka::door_follows` from the
+Visiting paint, before anything is judged or drawn), not only by her
+next tick. It is drawn at her feet, so in every beat it's shown she
+moves with it: on its near side (going out) standing at it facing out,
+as she opened it; at its far side (its `there` beats, coming in, the
+door closing behind her) out of it into the room (`out_of`: facing in,
+bumped if its space is filled). In the gap (nothing drawn) her feet go
+with it too, so a door gone then is a door in space where it last
+stood. The door the frame reads it from is the act's own in every beat
+(`opened_door`), never the frame's last door.
+
+**Why:** found by two proptests (door batch, step 6d): a resize while
+her door stood open drew it, for the first frame of the new size, at the
+old frame's wall spot, on a sofa or bed laid at the wider frame's wall.
+Her tick reads the chances the previous paint built, and the paint
+builds the new ones after; so a door act's spot was always a frame
+behind the frame. The class is every act whose spot is read from the
+frame's door (school, work's gap, a dash, the stage's school scene): the
+paint-time follow covers all of them, including a door she opened at
+her tick from last frame's chances. The first fix moved only the act's
+door (`to`) in the beats before the gap, but the door is drawn at her
+feet, so it was still drawn at the old spot on her bed (the review of
+step 6d; the tests had checked `to`, not what is drawn, and now check
+both). The `there` beats were left alone before (D6 followed only until
+she was let out); a resize there left the door and her on whatever the
+new frame laid there. She stands in its doorway, so moving her with it
+is the honest reading. A door that
+stands where the frame stands it now, focus and all, is never moved:
+read without the focus (`door_through`) a door she opened beside a
+focused pane would stand in its space under the pane, and following
+that hopped it into the pane a frame after it opened (evicted at once
+to a door in space); a focused pane is never a reason to move it,
+either way. *Rejected:*
+excusing the first frame after a resize in the tests (it is drawn);
+building the chances before her tick (her tick decides what the frame
+draws, so the frame has to come after it).
+
+## Her door is drawn side-on (2026-10-08)
+
+**Rule:** her own door in its space is drawn side-on in the wall
+(`Look::WallDoor`, the approved sheet B), not face-on in her box. Its
+beats keep the face-on table's timing and meaning (`DOOR`, `door()`,
+`hidden`, `gone_out` unchanged: beat 6 is still the gap that ends a
+school visit); a draw-only `wall_beat` maps each beat to the door's
+state and her pose and step. Her own door stretches the two beats in
+which she steps through it (2 and 10) to her walking pace, a column a
+`WALK_MS` (`beat_ms`; every door's timing goes through it, and a
+begun door's far side or gap changes only through `redirect_door`,
+which retimes it, so a door that turns from her own to one in space
+mid-way, by whatever turns it (her door moving or going, an errand, a
+focused pane), keeps its beat: `retimed`). Her image is cut at the wall's line (a `graphics::Cut`
+with the wall's column and her offset), and the door's front post is
+drawn after her while she's in the doorway; ASCII drops her cells at
+the wall's column and hides her once she's four columns in. The
+doorway shows the window's sky. While she's out through it, her
+slippers stand before it with a card on its knob. It shows from her
+set-off (her line, or any walk or heading to it to go out) until her
+box leaves its space; over text, apart from her beats, for 4 s at a
+time, beside her or not (the frame wakes when that runs out). Any
+cell of it in a pane in use hides it whole; she still steps through
+its doorway, cut short of the wall. A goodbye mid-doorway has her jump
+out of it to wave. A face-on fallback door faces its spot's way out
+throughout. Anything of hers in a wall's
+own column goes through one rule (`wall_glyph`: only over a plain
+vertical line, never protected, the line kept for the rain), the
+flap's and the door's alike.
+
+**Why:** the user approved sheet B over A (the one-column edge-on door
+read as a pink post): two columns turned toward the room read as a
+door, with room for the parcel flap in its lower half. The cut is what
+makes "going through the door" read: half-through frames, the wall in
+front of her. Walking pace (the user's answer): the sheet's thirds were
+about three times her walking speed, a lurch after a calm walk, and a
+change of pace draws the eye (her stillness rules). Showing it from her
+set-off ties its one appearance to her line or her turn toward it, so
+it never pops in or out beside her (C3). The cue, always while she's
+out (a dash's or work's short gap too), means one thing: "shut with
+slippers before it" is her out. Its own two columns stand over text
+for as long as she's out (the user's answer), but her slippers never
+do, and before and after her beats it stands over text only in passing
+(4 s), as her own image does, so a long walk to it never hides text for
+long. A door that stands where the timing of its beats depends on what
+it is had to carry that in every reader, so `door_beat` takes the
+door's `to`: no reader can time her own door as a door in space.
+The text exception to "never beside her" (step 8 review): the
+user's two rules meet when she stands beside her door over text after
+her beats (her arrival line, `Act::Home`), and "text is never hidden
+for long" wins over "never pops beside her", as it does for her own
+image; keeping the door over text for as long as she stood there would
+let her hide text indefinitely by standing still. A pane in use hiding
+the door must not hide her too (she'd walk in place, then vanish), so
+her doorway is the door as it stands, drawn or not. A goodbye's wave
+cut half into the wall reads as nothing; "she jumps up out of anything
+she was in" covers the doorway too. The face-on door's facing came
+from hers in its beats and from its spot otherwise, so it turned
+beside her as the latch took over; its spot alone decides it now.
+Coming in, she holds side-on through beat 12 and turns to you only for
+her line (C12); with her shopping (a shift), she carries it from her
+first step in (C13 over C12 for those beats). *Rejected:* A (a post);
+the sheet's thirds (a lurch); her pose and step in `Placement` (the
+goldens hash it; her doorway rides in `Figure` beside it); a door shown
+only in its beats (it would pop in beside her).
+
+*Accepted at the batch's end (step 10, 2026-10-10), open to the user:*
+in line art, when her door rains out (an errand's `door_rain`, her
+empty home raining out, a goodbye), only its ASCII glyph cells burst into the
+rain: the shut door's two columns. The two slipper columns of the
+four-column Away cue aren't frozen cells, so they go with the image at
+the rain's start instead of raining. It was left so (rather than adding
+the image's covered cells as blank burst cells in `draw_front` and
+`draw_art`'s doorway) because the change would move the line-art
+goodbye and errand traces and the rain oracles were tightened in the
+same week; the slippers are two small columns of floor, gone a moment
+before the door beside them rains. If the user wants them to rain too,
+that is the fix.
+
+## Parcels come in through her door's flap (2026-10-10)
+
+The door batch's step 9 (working design D9, C10, T12, Open choice 3).
+The user asked for the door's lower half to be a parcel flap ("parcels
+[come] through a flap in the door", sheet B), so a delivery tries her
+door's wall first whenever her door's space is kept there, and rests
+just past the space (where pieces stand, never in it). The old wall
+flap (`╱`/`╲`) survives as the fallback: her door's strip may have no
+room (the space yielding to her pieces, a full strip), and a frame
+whose door stands elsewhere (a makeshift piece or a pane in use over
+the space, the chat over it) has no door at that wall to slide through,
+so the wall's own flap shows there as before rather than a door
+appearing where her door isn't. The slide is the approved sheet's four
+beats (the flap riding on the parcel, falling back once it's out),
+drawn as one image with the door and the flap's plate (two images over
+the same cells cut each other out); in ASCII the door's open-flap rows
+and the parcel at its spot at once (ASCII has no review and no offset
+drawing).
+
+It waits while she's going through a door of hers or out (her slippers
+stand in the space), and while her box meets her door's space: a
+parcel never slides through her (C10). It also waits while an act of
+hers holds her still, coming as she walks or as an act has just begun
+(2 s): five changes in 650 ms mid-act would break the drawn stillness
+rule, and a parcel isn't urgent, so the wait was chosen over a sixth
+exemption (Open choice 3's recommendation). The stage's parcel scene
+skips that last wait: its cue sends her to unpack it at once. Text
+under her door never hides the door during the slide (in passing, as
+in her beats through it). *Rejected:* a sixth stillness exemption; a
+letterbox flap (the sheet's alternative); the parcel stopping in the
+space beside the door (it would block her going-out spot until
+unpacked).
+
+The step's review (2026-10-10) closed three ways a parcel could still
+slide through her: judged on where she stood as it came, a walk (or a
+climb down a pole by the wall) took her into the space mid-slide, so
+the wait now reads where her way takes her within the flap's 800 ms
+(a walk's next columns, a climb's or clamber's end: conservative, as
+both are rare); her first parcel was judged on the space of the wall
+her empty home would choose, not the one it came in by (it chooses her
+door's wall), so it is judged again on the home with it in; and the
+door's look matched the flap by its column only, though two strips'
+walls can share a column, so it matches the floor row too. A delivery
+still waits rather than going to another wall: the door is the
+parcel's way in. The stage's exemption from the act wait now lasts
+from its cue till its parcel comes (it held only on the cue's paint,
+so a parcel that waited for her to leave the space came minutes
+later, after the cue's unpack scene). In ASCII the slide's first three
+beats draw nothing new, so the tick wakes only as the flap shuts.
+
+## A way out in space is clear of her pieces (2026-10-10)
+
+**Rule:** every door in space she goes out by (school, work, the
+stage's) opens where her box meets none of `chances.obstacles` (her
+pieces as laid, what she made, the place kept for the piece in her
+pocket). `osaka::Clear` is that spot, made only by `Clear::of`. Every
+way a door of hers that's a way out (a gap) comes to stand in space
+goes through two functions that take a `Clear`: `Osaka::open_out` (her
+way out where she stands, `out_at`, and `evict`'s door out of a focused
+pane on her way to work) and `Osaka::redirect_out` (`evict` moving one,
+`door_follows` re-judging one). That holds by type only that far:
+`Through::Space` itself still holds a raw spot, shared with doors
+between floors and the errand's, which aren't ways out; the sites that
+pick the `Clear` (`nearest_clear`, `evict`'s clear-of-all pick) do so
+by judgement. Where they find nowhere clear, no way out opens on a
+piece: going out, she isn't out after all (what going out set is
+undone, work let go, and she stands, `nowhere_clear`); out of sight or
+coming in, the door stays where it stood (she must come in somewhere),
+judged again each frame it's drawn in until there's room. A way out's
+spot is judged again against each frame it's drawn in (going out, and
+coming in, where she comes home), never only as it opened: a resize or
+a delivery can lay a piece over it. `out_where_clear` finds the nearest clear place
+(`nearest_clear`: her floor, then floors she can reach, then any; calm
+first; then nearest) and makes for it as a job (`Job::Out`, which
+replaced `Then::Out`), so a hop between floors keeps where she's going
+and why (a heading, re-found while still clear); with no clear place
+anywhere she stands a moment (`OUT_AGAIN_MS`) and her routine sends her
+again (work is let go). The sibling places a door of hers becomes one
+in space follow the same rule: her door gone while she's through it
+(`door_follows`) opens at the nearest clear place, she with it in its
+beats; a focused pane moving a door that's a way out (`evict`, a gap)
+picks only a place clear of her pieces too (a door between floors, as
+any, only clear of the pane), and with none she isn't out after all:
+her door out of the pane is then a door between floors, her shift let
+go, and the visit goes on. On no floor of hers, she goes to the
+nearest clear place by a door in space, as any walk with no way there.
+Standing in for want of room is said at info the first time since she
+last went out, at debug as her routine tries again (every
+`OUT_AGAIN_MS`, unchanged: the design's "standing a moment").
+**Why:** a deep run (step 10a) had her dash home with her TV, fridge
+and sofa filling her floor and her door on no floor of hers: with no
+clear column on her floor, `out_where_clear` fell back to her feet and
+the school door opened on her TV. The other doors in space (between
+floors, the accordion errand's, the arrival with no door, already
+judged against her pieces) aren't ways out.
+*Also step 10a:* a goodbye mid-way out with her side-on door in its
+wall rains the wall column as her empty home's rain does (step 8: "the
+wall glyph is restored by the rain"); the test oracle had exempted only
+the empty home's rain, so it now counts a goodbye's rain as hers over
+exactly what the visit's last frame showed of hers.
+*Rejected:* falling back to her feet when nothing is clear (the bug);
+re-judging a way out only as it opened (the step 10a review: a resize
+during its near beats left it on her TV, and a shift's door came home
+where it was judged at departure); re-judging it in its gap too (nothing
+of it is drawn then: it's judged as its far door first shows); a new `Through` variant for ways out (the
+rule holds at the two constructors; doors between floors would split
+from ways out in every beat's arithmetic for no gain);
+leaving the wall column out of her door's frozen cells (it's what
+`door_rain` and a focused pane over the wall read, step 8); a travel
+hop without a job (work's way on and the stage's would be lost on
+landing).
+
+## Her structures are the UI's own lines (2026-10-10)
+
+**Rule:** What she puts up (phase 6a: a shelf on a pane's back wall) is
+drawn in the UI's own line glyphs, `┬────────┬`, in the ink of its
+pane's border, only on blank cells nothing else holds (no text, no
+protected or focused pane, not the chat, not her moved text, what she
+made or a piece's cover), with two blank cells past each end; all of it
+or none, each frame, never moved. It's written into the frame once a
+paint, before anything reads it; a frame that shows her home (visiting,
+or standing empty) keeps it as the bottom layer of what it painted, and
+every other frame (her goodbye, her coming in called off, a frame too
+small) undoes it before it reads. It's a line she walks in front of,
+but neither ledge nor pole of hers in 6a; her door never stands on its
+run or its margin, and nothing she moves, swaps or makes lands there,
+shown or not. See [design.md](design.md#houseguest).
+
+**Why:** The proposal's *structures from the UI's own lines*: a shelf
+should look like part of the interface, so it takes the line glyphs and
+the border colour, and stays out of the UI's way like everything of
+hers. It's terrain (in step 3 small decor stands on its `─`, which
+`fits` reads), so it's in the frame before the first read, not just
+before the terrain read, which the layout's text checks would miss.
+Which arm undoes it is decided where the frame ends, not by the state
+at the top of the paint, because the state changes within a paint (an
+errand done, out by her door with no home to show, an arrival coming to
+nothing): a write kept by the state at the top left the shelf in the
+frame her goodbye froze against, so its cells settled at once instead
+of raining. A goodbye never writes it again (it would show over the
+real frame once the rain settled). Her image's cells over a shelf
+record the real frame, so the goodbye's frame, with no shelf, still
+matches them and she waves. What of hers keeps off it keeps off its
+geometry, the whole placed run and margin, not this frame's cells: a
+shelf hidden a while (text on its row, its pane focused) shows again
+where her door or her text already stands otherwise, and her door would
+hop for it (step 2b's review). Brackets at both ends, so it reads as a
+shelf and not the UI's rule running on, and no pole: 6b's ladder is how
+she gets up there, and only to a shelf with room over it. *Rejected:*
+writing it just before the terrain read (the layout would miss it);
+re-writing it in the goodbye; a write keyed on the state at the top of
+the paint.
+
+*(2026-10-11, step 3: a finished shelf is a strip, after the panes'
+floors.)* **Small decor only**, never furniture or a parcel: one admission
+rule (`Strip::takes`: its kind, never a box) read by the layout itself,
+so every search that judges a place by its layout refuses the rest
+without a filter of its own. **Written-only floors**: what's on a shelf
+stands only on its cells written this frame, because the app's own
+`────` where a hidden shelf would be is the same glyph and must hold
+nothing up; and nothing else stands on a written cell. **Rooms are
+floors**: a shelf is part of the room below (its decor counts for that
+room's role and beauty while it shows), never a room of its own, since
+a decor-only shelf would read as a den. **Only a repair puts a piece up
+there** (centred on the run, as a lone ornament stands mid-shelf, or
+packed beside what's there): deliveries, stage gifts, her door's wall
+and pieces moving off a gone pane take a pane's floor by type, and a
+shelf whose pane is gone hides its pieces, never moves them. **The chat
+never weighs what's on a shelf**: a shelf the chat meets is hidden with
+its pieces, so neither the closet nor InChat judges them, and no repair
+carries one down for the chat. She reaches one from the floor below,
+arms up (`Pose::Stretch`), never bending. **A styled blank is as good as
+text** (the user's fifth round): a blank in reverse video (a list's
+selection bar past its entry's text) or in a colour unlike its pane's
+hides the shelf, as the UI's own highlight shouldn't be cut by it.
+
+## A shelf hangs as high as fits (2026-10-10)
+
+**Rule:** Her shelf hangs **high**, above every piece that hangs (7 rows
+up or more, with her height clear over it for 6b), where its pane allows;
+otherwise **low**, just over her head (5 rows up, two rows clear over it
+for small decor), and the pane is chosen high before low. Chosen once,
+when it goes up, and kept: its rise says high or low for good. A low
+shelf blocks the wall lane under it: its run's columns and its margin's,
+from the top of the lane down to its own row, whatever of it is up. No
+piece that hangs hangs there: one whose anchor puts it there hangs at the
+nearest place beside it, keeping its order on the wall (in the closet
+alone on a wall too crowded for that), as her window keeps clear of what
+stands. A high shelf changes no hung place. A low shelf goes up only
+where its block meets no piece hung there as laid out, so it never
+pushes one going up; later deliveries and moves hang beside it, judged
+where the layout hangs what they push along. See
+[design.md](design.md#houseguest).
+
+**Why:** The user's rule ("highest that fits"): a shelf up high reads as
+a shelf, above the poster and the clock, and leaves room to stand on it
+once she has a ladder (6b). But the bundled layout's panes are short at
+common sizes (at 100×30 only The List takes a shelf, and only low: step
+3's measurement), so a shelf only ever hung high would rarely go up at
+all; two heights, high first, keep the rule and still let her have one.
+The block is geometry, a rule of the pane's layout like her door's
+space, not shelves packed into the wall lane as pieces: a shelf isn't a
+hung piece (it's drawn in the UI's lines, written each frame, hidden
+whole by text), and packing it among them would move it as they come and
+go, where a shelf, once up, never moves. It spans the margin too, because
+the shelf shows only with two blank cells past each end of its run: a
+poster hung flush against the run would hide it every frame (a build
+call, 2026-10-11, the user kept it). Only the
+window looks for a place to lean on its sill when it's moved aside; the
+rest go to the nearest place. It never pushes a hung piece going up so
+that putting up a shelf takes nothing down that she had hung. *6b
+inherits*: a high shelf is the one she can stand on (her height clear
+over it, which every high shelf has going up, and a low one only in a
+pane 11 rows or taller); a low shelf is for decor, and the ladder's
+trigger must name a shelf she could stand on.
+
+*(2026-10-11, step 5a.)* The stage's shelf (`Scene::Shelf`) carries the
+first small decor that shows on it on that frame, tried as the paint
+will take it: the plant, else her clock as a mantel clock (a low shelf
+in a 9-row pane keeps two rows clear and the plant is three tall: the
+stage room at 100×30 is that case), else nothing, and then nothing of
+hers moves (a build call the user kept, 2026-10-11, over a bare shelf
+there or a third clear row for every low shelf).
+
+*(2026-10-12, the user's eighth round.)* Within a height, her living
+room comes next after her gremlin's pane: with no gremlin waiting on a
+floor, her shelf goes up in the pane her sofa stands in (out of its
+box), before the pane she opens her kit in and before the panes' order.
+Why: what's up there is for her to gaze up at from its floor, and she
+does that as often as she's on that floor. As built before, with no
+gremlin it went up where its parcel landed or in the first pane in
+order, a room she may seldom stand in: on the user's 191×46 that is The
+List, where she gazed up 0.17 times a game day, against 0.81 with it
+in her living room (the day census's no-gremlin room, both measured).
+"Her living room" is her sofa's pane, where she sits, naps and watches,
+not the rooms-from-contents *living room* (a screen and a seat and no
+bed): that one is missing while a bed shares the room or before her TV
+comes, and would send her shelf back to the first pane for reasons she
+wouldn't see. High before low still comes first (the user's "highest
+that fits"): a living room that takes only a low shelf has a high one
+elsewhere first. The sofa picks the pane, not the run in it: mid-wall,
+as before (the gremlin's middle stays the one place a piece pulls the
+run). Her gaze up over her living room runs over "about once a game
+day" (1.93 in the low census room, under which she lives): kept, the
+user's answer (more where she spends more of her day on its floor).
+
+## She puts up a shelf, a stage a game day (2026-10-11)
+
+**Rule:** Opened, her kit goes up on her wall as her shelf, nothing of it
+up yet, where one goes on that frame (chosen there once, saved, and
+never chosen again: a frame that can't hold it hides it). She puts it up
+in two stages, the half nearer its wall and then the rest: the first
+straight after she opens the kit (a moment, then to it, before anything
+she'd choose), the next on a later game day. At most one stage a game
+day (unfed, a visit), counted in her record. A stage is a want of its
+own, nesting, worth doing for its own sake, offered only while one is
+due today and the frame would show the shelf with it up; not one of her
+home acts, so her mood's limit on those doesn't bound it. She stands on
+its room's floor beside the half, reaches up for 6 s ("Up it goes..."),
+and it's up once the paint takes it, judged by the same test as the
+offer (the shelf, its next stage up, all of it and its margin free but
+what she has up already and shows): cut short, or with text come over
+it, nothing goes up. On a high shelf she hops as it goes up, and as she
+sets a piece up on one. See [design.md](design.md#houseguest).
+
+**Why:** The user's pacing is per game day, not per visit: a resident's
+visit runs from 12:45 to 08:15, so per visit would put a shelf up in one
+evening; saved so a restart can't reset it (a restart is a new visit,
+and her days are her clock's). Her mood bounds what she does to put her
+home right (0 to 3 home acts a visit), and a lazy streak would stall a
+shelf for days; the day's pace bounds it instead. Chained after the
+unpacking, so the box never just vanishes into a bare `built: 0` shelf
+with nothing to show for it (the critique's C6: she opens it and sets to
+it at once). Chosen on the frame she opens it on, with the frame's text
+in view, because a text-blind choice (as her door's) would mostly be
+hidden under text; and never re-hung, because a shelf that moved as the
+frame changed would carry what stands on it about, and the UI's lines
+don't move under a user's eye either. The offer and the commit read one
+predicate, which is what the next paint's write reads, so what she puts
+up is never hidden the moment it's up and never over text (the step-2b
+review's open wording, "the next half's cells and margin", settled as
+that). The hop is the user's ("a little hop"): a high shelf is over her
+reach, a low one isn't. What she put up isn't hers to choose again
+until a paint has judged it: her mind runs between paints, and a frame
+that came late would still offer the stage she had just finished,
+sending her back to it only to lose her way when it went up. The day is
+`Dated` (the door batch's `Said`, saved): the game day, or unfed the
+visit. Its kind could only switch mid-day if her clock stopped reaching
+her, and in a running client it reaches her from her first meeting on
+(unfed is a test mode, as for `Said`); a build older than this drops the
+count with every field it doesn't know, at worst one more stage that
+day. Accepted, not keyed on the visit too. Rejected: a stage per visit
+(an evening's shelf); building as a home act (stalled by her mood); the
+cells of a stage growing under her hands (the hop marks the moment
+instead).
+
+*(2026-10-11, step 6: what goes up is for gazing up at.)* Her plant on
+her shelf is a use of its own, `GazeUp`, offered by where it stands (no
+kind lists it, so no repair, closet or delivery asks room for it: a
+piece goes up whether or not she could stand beside it), only from its
+room's floor (a climb to gaze, with climbs the movement that draws the
+eye most, would cost stillness), and judged as she chooses rather than
+as the frame offers it, so the stage can set her off from anywhere.
+Beside the piece, not under it: her gaze is in profile, so from under it
+she'd look at the wall (the character critique's C5). "hehe" first, so
+the look reads as hers and pleased, not the idle gaze at nothing. Her
+clock is left out (gazing at a mantel clock reads as clock-watching).
+20–45 s, as long as her other still acts (C9). *Kept by the user
+(2026-10-11):* no settling chain from it (D8 says "5c's settling-in
+applies"; read as the linger alone, since a GazeUp → Sit chain,
+as Gaze → Sit, would grow `settle_chains_ms` and the band's guard; a gaze
+up that ran its course just ends). Rejected: a use in the plant's
+catalogue row (it would be offered on a floor too, and every kind lookup
+would find it).
+
+*(Step 6's review.)* Her spots are only those still under the shelf's
+run (D8): a piece at a run's end has none past it, as the frame knows
+the run and her seat is judged against it. The stage's gaze up puts up
+only what she gazes up at, and where nothing would show (the stage room's
+low shelf has no room over it for the plant) it changes nothing of her
+home: a cue that can't play mustn't put her clock up and save it.
+**A resize that moves the piece she's using or lifting from where she
+is startles her off it**, as a piece gone from the frame does: before,
+she went on gazing up at air (or sitting beside a sofa that had moved,
+or lifting at a spot it had left). Judged only on a resize: a parcel
+coming in may nudge a piece she's on aside (`Home::doorstep`), and every
+6a step keeps a home without a structure as it was (the goldens move if
+that's judged too; the user's answer, 2026-10-11: she moves with the
+piece, a fix of its own after 6a). Unpacking is never
+judged: the piece is out of its box from her first moment at it, laid
+out where its kind goes, and her spot was the box's.
+
+## The gremlin wants up high (2026-10-11)
+
+**Rule:** Her gremlin, a figurine of small decor (decor on the channel,
+after the poster), wants up on a shelf: a rule of her home, `High`,
+broken while he stands on a floor out of his box, mended only by a move
+up onto a shelf. He's sold only where a shelf of hers is up (or going
+up) or could go up on the frame. She feels it on sight, needing no use
+of him, only while she stands on his room's floor, and only where a
+finished shelf of hers shows on the frame or one could go up, and only
+while no shelf kit of hers is coming (not on order, in its box or going
+up; nor where the frame hides hers); one she felt before the kit was
+ordered she lets be, its line unsaid; she says "It wants a
+shelf..." there, turned to face him where the frame has him when she
+says it, on InChat's terms (when her mood would put it right, once a
+game day). A rule she has felt
+this visit that wants a kit she doesn't own puts that kit first on the
+channel: her wishlist, read off what she felt, in the order she felt
+it. Where a shelf goes up, his pane comes first, and in it the run
+nearest him. See [design.md](design.md#houseguest).
+
+**Why:** The user's brief: a felt need puts the kit first, and the
+gremlin is the need. Made a rule rather than a whim because a rule is
+what she already feels, says, mends and lets go of, and what the repair
+search already moves pieces for: the gremlin going up on the shelf is a
+repair like the plant going up out of the chat, with nothing new to
+carry it. Felt only in his room, because a grievance about a figurine
+across the screen reads as nothing she can see; and only where a shelf
+is up or could go up, because a grievance nothing can answer would
+have her say it, every day, on frames that never take a shelf, wishing
+for a kit the channel won't sell (the critique's C2, C8): there, he's
+just decor on the floor. A finished shelf the frame hides (text over
+its row) is no answer either: nothing can stand on a shelf that isn't
+drawn, and her kit is hers, so nothing is wished; so "up" means up and
+shown on this frame (step 7's review: as first built, a shelf hidden
+for good had her say it every day), and the repair search reads the
+same, laying nothing out for his rule without one. **Not once her
+shelf kit is ordered, till her shelf is up** (on order, in its box, or
+going up: the user's seventh round, 2026-10-12): it's coming, she has
+it in hand, so there's nothing to wish for and nothing to say. One test
+holds it (a rule's wanted kit coming: `wants_coming`), read where she
+feels (on sight, the only way a rule that wants a kit is felt) and
+where a shelf's room is asked for her to feel it (not at all while the
+kit is on order). One she felt before the kit came she lets be,
+forgotten with any line she owed for it, by a level check after each
+record of what she did and each paint's deliveries, so however it
+comes (bought, delivered, the stage's gift) it's neither said nor left
+rising her Nesting meanwhile; with her shelf finished and shown she
+feels it afresh, says it, and the repair puts him up. The sale never
+waited on it (the channel sells nothing while anything's on order or
+boxed), nor her opening of the kit (its seat asks whether a shelf could
+go up whether or not she feels him). As first built she said it with
+the kit on order and boxed (only "going up" was excluded, for the
+chain below); rejected: saying it in all three (impatient), and as
+first built. Step 7's build found her saying it as she walked into
+his room to put up the first half, dropping that chain; its review
+found the same for any line owed as the kit opened, so a line she owes
+waits while her kit's first stage is next or she's on her way to put a
+stage up, and that chain is taken by her first decision that isn't a
+reflex (let go for the night or school), whatever she feels. Where she
+says it is the frame's when she says it (his room's floor and his
+middle column), never kept from when she felt it: a resize or a move
+since then would send her to say it on a floor that's gone. Sold only
+where a shelf stands or could go up, so the story he starts can always
+finish (C2). The wishlist is the felt rules naming kits, so it needs no
+state of its own: it's per visit as felt rules are, and a rule felt
+on one visit is felt again on sight early in the next if it's still
+broken. A rule no move mends costs nothing: the search weighs only a
+finished shelf for his rule (none: nothing laid out), and an `Arrange`
+that binds no move is never among the offers she chooses from, so a
+felt `High` with no shelf takes no slot of her four. His pane first
+for the shelf, so the shelf goes up where he can be put on it, and the
+run nearest him so the carry is short. Rejected: a gremlin that only
+ever stands on a shelf (he'd have nowhere to be until the kit came,
+and the kit would have no reason); a felt rule kept across visits (the
+wish would be state of its own, kept past what she has seen this
+visit); feeling it anywhere on screen; a shelf-only sale of the kit
+with no wish (the user's brief asks for the felt need to put it first).
+
+Step 8 (2026-10-12, the user's four extras): **his tiny life** — one
+game day in twenty, a pure hash of her home's seed and the day (no
+random stream, so nothing else she does moves), drawn at the first
+moment that day she can't see him: asleep for the night with her lamp
+off, or out by her door to school or to work. Turns him round on a
+finished shelf, his facing written at once; her next gaze up at him
+opens "?" and "Did you move...?", and it's noticed once that has shown.
+Drawn only then because he must never move while she's awake and could
+see it: the joke is that it happened behind her back. Why the night's
+day is the day her night began (her first sleep of it), not the day it
+is: as first built the draw read "asleep" each tick, so the next day's
+came at midnight in her sleep and never as she went out; drawn then on
+her falling asleep, it came again as she got back into bed after her
+midnight snack in the small hours (review of the step), and while her
+lamp was still on as she settled, blinking, in sight. Why work counts:
+she's out by her door behind it, the visit going on, as out of sight as
+school leaves her (missed as first built); the stage's way out (back in
+a moment), an errand and a goodbye (she waves) don't. Why noticed only
+once shown: a gaze cut in its first moments (a startle, a parcel, a
+resize) would have cleared it unseen. Once a game day, held per process
+as the day's other carried state is (a restart may draw the day again:
+a second turn, still hers to notice; one mid-sleep draws that night's
+day then); unfed, never (a visit is no day of his). Setting him down
+herself clears it (nothing moves him off a shelf in 6a; 6b's moves
+would). **Her lines up at him** ("Hi, little guy." and three more): one at
+most a gaze, one gaze in two, after its opening, cooling as her lines
+do; only his (her plant gets the opening alone). **Freshness**: a stage
+up, or a piece she sets on her shelf, makes it fresh that day of hers
+(saved on the shelf, read leniently), and her gaze up there is twice as
+likely that game day and the next, so something new draws her eye. Her
+gaze up's base went from 5 to 8 (the user's sixth round: about once a
+game day with her plant up, measured at 1.19 a day in the day census's
+shelf room against base 5's 0.05; base 10 gave 2.83; the band and her
+look-outs unmoved). **Pleased beats**: a stage up, or a piece set on
+her shelf, ends on a moment's "hehe" (after the hop, up high), in place
+of her "There!" for a piece set up there (both at once would hide the
+beat), counted by the census with her home's acts, as putting it up is
+(a pull's or a made piece's "hehe" stays her mischief); a wished kit is pitched "A shelf for the gremlin!". **The
+flat-pack gag**: her kit's unpack ends on "Which way's up?".
 
 ## Houseguest chooses by needs among the top few (2026-09-28)
 

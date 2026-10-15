@@ -13,4 +13,5 @@ pub mod props;
 pub mod shell;
 mod speaker_colors;
 pub mod theme;
+pub mod tv_feed;
 pub mod widgets;

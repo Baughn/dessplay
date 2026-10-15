@@ -6,7 +6,7 @@
 //! that was chosen for it when it began, so how she looks at any instant
 //! is a pure function of the act.
 
-use super::art::{Channel, Sky};
+use super::art::{Channel, Programme, Sky};
 use super::calendar::Tints;
 use super::mind::{Lines, RIDDLES, Whims};
 use super::osaka::{Bubble, SCRUNCH, THERE, USE_FRAME_MS};
@@ -52,9 +52,11 @@ pub(super) enum Posed {
     /// Bobbing between frames 0 and 1 of a pose every so many ms,
     /// counted from the start of the part it plays in (the prelude, the
     /// body or the coda; not of the key), so a bob running across keys
-    /// keeps its beat. The period is a whole number of frames
-    /// ([`USE_FRAME_MS`]), so her wakeups on the frame grid catch every
-    /// bob.
+    /// keeps its beat; but a period clear of its key's start and end
+    /// ([`bob_frame`]), so its flips never come within a frame of the
+    /// changes as its key starts and ends. The period is a whole number
+    /// of frames ([`USE_FRAME_MS`]), so her wakeups on the frame grid
+    /// catch every bob.
     Bob(fn(u8) -> Pose, u64),
 }
 
@@ -72,12 +74,11 @@ pub(super) enum Say {
     Answer,
 }
 
-/// What a key shows on her furniture: on every shown piece of its kind
-/// ([`Prop::item`]).
+/// What her script shows on her furniture at a moment: on every shown
+/// piece of its kind ([`Prop::item`]). A key names it as [`Shows`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) enum Prop {
-    /// The TV on, showing a channel (each key names it on frame 0; see
-    /// [`Prop::framed`]).
+    /// The TV on, showing a channel (on its frame, if it moves).
     Tv(Channel),
     /// The lamp switched off.
     LampOff,
@@ -87,8 +88,47 @@ pub(super) enum Prop {
     CatBiting,
 }
 
-/// How long each frame of what's on TV lasts.
+/// How long each frame of what's on TV lasts, while it moves (static,
+/// Chiyo-chichi's hook).
 pub(super) const CHANNEL_FRAME_MS: u64 = 400;
+
+/// How long the static lasts as she switches the TV on to watch (phase
+/// 5c D7): three of its frames, ending on a frame's edge, then the
+/// programme she drew holds.
+pub(super) const STATIC_MS: u64 = 3 * CHANNEL_FRAME_MS;
+
+/// What a key shows on her furniture, as its script has it: a prop held
+/// as it is, or her TV on static or Chiyo-chichi's hook (each moving
+/// every [`CHANNEL_FRAME_MS`]), or holding the programme drawn for the
+/// act ([`Play::card`]). Only static and the hook move: whatever else
+/// is on holds still for as long as its key plays (phase 5c D7).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Shows {
+    /// Held as it is: the lamp off, the fridge open, the cat biting; the
+    /// TV on a still channel (colour bars, the sunrise, Chiyo-chichi
+    /// after his hook).
+    Still(Prop),
+    /// The TV on static, as she switches it on and between channels.
+    Static,
+    /// The shopping channel's hook: Chiyo-chichi bobbing as he talks.
+    Hook,
+    /// The TV holding the programme she drew for the act.
+    Programme,
+}
+
+impl Shows {
+    /// What it shows `elapsed` ms into the part its key plays in, on an
+    /// act that drew `card`.
+    pub fn at(self, elapsed: u64, card: Programme) -> Prop {
+        let frame = (elapsed / CHANNEL_FRAME_MS % 2) as u8;
+        match self {
+            Self::Still(prop) => prop,
+            Self::Static => Prop::Tv(Channel::Snow(frame)),
+            Self::Hook => Prop::Tv(Channel::Shopping(frame)),
+            Self::Programme => Prop::Tv(Channel::Programme(card)),
+        }
+    }
+}
 
 impl Prop {
     /// The kind of piece it shows on.
@@ -108,18 +148,6 @@ impl Prop {
             Self::LampOff | Self::FridgeOpen | Self::CatBiting => None,
         }
     }
-
-    /// On animation frame `frame` (what's on TV moves; the rest hold).
-    pub fn framed(self, frame: u8) -> Self {
-        match self {
-            Self::Tv(Channel::Snow(_)) => Self::Tv(Channel::Snow(frame)),
-            Self::Tv(Channel::Shopping(_)) => Self::Tv(Channel::Shopping(frame)),
-            Self::Tv(Channel::ColourBars | Channel::Sunrise | Channel::Programme(_))
-            | Self::LampOff
-            | Self::FridgeOpen
-            | Self::CatBiting => self,
-        }
-    }
 }
 
 /// One key of a script.
@@ -129,24 +157,53 @@ pub(super) struct Key {
     pub pose: Posed,
     pub face: Face,
     pub say: Option<Say>,
-    pub prop: Option<Prop>,
+    pub prop: Option<Shows>,
 }
 
 impl Key {
-    /// How she looks `elapsed` ms into the body this key plays in: in
+    /// How often what this key shows moves (ms), if she's to wake for
+    /// each move: a bob's period, or static's frame
+    /// ([`CHANNEL_FRAME_MS`], so all three of the switch-on's frames are
+    /// painted). Counted from the start of the part it plays in, as
+    /// [`Play::next_frame`] counts. Chiyo-chichi's hook moves at paint
+    /// time instead: his bob is talk, not a picture to see whole.
+    pub fn frame_ms(&self) -> Option<u64> {
+        let bob = match self.pose {
+            Posed::Bob(_, period) => Some(period),
+            Posed::Host | Posed::Still(_) => None,
+        };
+        let shows = match self.prop {
+            Some(Shows::Static) => Some(CHANNEL_FRAME_MS),
+            Some(Shows::Still(_) | Shows::Hook | Shows::Programme) | None => None,
+        };
+        match (bob, shows) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
+    }
+
+    /// Its bob's frame at `time`, if it bobs.
+    pub fn bob(&self, time: KeyTime) -> Option<u8> {
+        match self.pose {
+            Posed::Bob(_, period) => Some(time.bob(period)),
+            Posed::Host | Posed::Still(_) => None,
+        }
+    }
+
+    /// How she looks at `time` in the part this key plays in: in
     /// `host`'s pose where the key leaves it to the host, saying what
     /// `play` drew for her or pitching what it sold her.
-    pub fn look(&self, elapsed: u64, host: Pose, play: &Play) -> Look {
+    pub fn look(&self, time: KeyTime, host: Pose, play: &Play) -> Look {
         let pose = match self.pose {
             Posed::Host => host,
             Posed::Still(pose) => pose,
-            Posed::Bob(pose, period) => {
-                pose(elapsed.checked_div(period).map_or(0, |n| (n % 2) as u8))
-            }
+            Posed::Bob(pose, period) => pose(time.bob(period)),
         };
         let bubble = self.say.and_then(|say| match say {
             Say::Bubble(bubble) => Some(bubble),
-            Say::Pitch => play.bought.map(|item| Bubble::Say(item.spec().pitch)),
+            Say::Pitch => play
+                .bought
+                .map(|item| Bubble::Say(pitch(item, play.wished))),
             Say::Riddle | Say::Answer => {
                 let (question, answer) = *RIDDLES.get(usize::from(play.drawn[0]))?;
                 Some(Bubble::Say(if say == Say::Riddle {
@@ -158,6 +215,98 @@ impl Key {
         });
         (pose, self.face, bubble)
     }
+}
+
+/// The shopping channel's pitch for `item`: its own, but for her shelf
+/// kit when it's what she `wished` for (phase 6a step 8: her gremlin
+/// wants up high, and it's for him).
+fn pitch(item: Furniture, wished: bool) -> &'static str {
+    match item.spec().kit {
+        Some(super::room::Kit::Shelf) if wished => SHELF_FOR_HIM,
+        Some(super::room::Kit::Shelf) | None => item.spec().pitch,
+    }
+}
+
+/// When a key plays in its part (the prelude, the body or the coda), in
+/// ms from the part's start: how far into the part it is (`elapsed`),
+/// and the key's own `start` and `end` there (the last key's end the
+/// part's, or `u64::MAX` in a part with no set length). What it shows is
+/// timed by `elapsed`, as everything in a part is; a bob also keeps clear
+/// of `start` and `end` ([`bob_frame`]), and of `held`: a moment in the
+/// part (ms) where something else of hers changed in place, and the
+/// bob's frame then ([`bob_frame`]; her player sets it, the script
+/// never does).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct KeyTime {
+    pub elapsed: u64,
+    pub start: u64,
+    pub end: u64,
+    pub held: Option<(u64, u8)>,
+}
+
+impl KeyTime {
+    /// The frame of a bob flipping every `period` ms, at this time.
+    pub fn bob(self, period: u64) -> u8 {
+        bob_frame(self.elapsed, self.start, self.end, period, self.held)
+    }
+}
+
+/// A bob's frame (0 or 1) `elapsed` ms into its part, flipping every
+/// `period` ms on the part's grid, but only a whole period clear of what
+/// bobs' `start` and `end` (ms into the part: a key's, or an idle act's
+/// own): its first frame held until the first flip on the grid a period
+/// or more after its start, its last held through the part of a period
+/// before its end (Round 8, the user). So its flips and the changes as
+/// it starts and ends (another key's look, her getting up) are never
+/// within a period of each other, wherever a share of the use puts them.
+/// It starts on the grid's frame at `start`, so a bob starting on the
+/// grid (every part's first key; every idle act) is the plain beat but
+/// at its end, and one running on across keys keeps its beat as near as
+/// it can. A period of 0 holds frame 0.
+///
+/// And it's held where something of hers changed in place off its grid
+/// (`held`: the moment, ms into the part, and the frame shown then): her
+/// act's end moved, her look up at the chat, what she says (phase 5c's
+/// tail, T4: `Osaka::hold_bob`). From that moment the frame it
+/// showed holds until the first flip on the grid a whole period on, as
+/// from a start, so the bob neither changes as the moment comes (an end
+/// moved within its last period would release or take back a flip
+/// there, off the grid) nor flips within a period after it; its end
+/// holds as ever. A moment before `start` (a key that started since) or
+/// after `elapsed` holds nothing.
+pub(super) fn bob_frame(
+    elapsed: u64,
+    start: u64,
+    end: u64,
+    period: u64,
+    held: Option<(u64, u8)>,
+) -> u8 {
+    if period == 0 {
+        return 0;
+    }
+    // Where its beat runs from, and its frame there: its start, on the
+    // grid's frame, or the moment held, on the frame shown then.
+    let (from, frame) = match held {
+        Some((at, frame)) if (start..=elapsed).contains(&at) => (at, u64::from(frame)),
+        _ => (start, start / period),
+    };
+    // The grid's flips it makes: from the first a period after that to
+    // the last a period before its end, none past `elapsed`.
+    let first = from.saturating_add(period).div_ceil(period);
+    let last = end.saturating_sub(period).min(elapsed) / period;
+    let flips = (last + 1).saturating_sub(first);
+    ((frame + flips) % 2) as u8
+}
+
+/// Where a key plays in a use (for tests telling keys apart): when
+/// its part (the prelude, the body or the coda) starts, its index in
+/// that part's keys, and whether it bobs ([`Posed::Bob`]).
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct KeyPlace {
+    pub part: u64,
+    pub index: usize,
+    pub bobs: bool,
 }
 
 /// Her pose, face and bubble.
@@ -178,14 +327,37 @@ pub(super) fn at<T>(
 }
 
 /// The key of `keys` playing `elapsed` ms into a body `body` ms long
-/// (`None`: no set length), its index, and when it ends. Past the end
-/// of the body, its last moment's key holds.
-pub(super) fn key_at(keys: &[Key], elapsed: u64, body: Option<u64>) -> Option<(usize, &Key, u64)> {
-    let elapsed = body.map_or(elapsed, |body| elapsed.min(body.saturating_sub(1)));
-    at(keys, elapsed, |key| key.span.end(body)).or_else(|| {
+/// (`None`: no set length), its index, and when it plays ([`KeyTime`]:
+/// `elapsed`, and when it starts and ends). Past the end of the body,
+/// its last moment's key holds.
+pub(super) fn key_at(
+    keys: &[Key],
+    elapsed: u64,
+    body: Option<u64>,
+) -> Option<(usize, &Key, KeyTime)> {
+    let held = body.map_or(elapsed, |body| elapsed.min(body.saturating_sub(1)));
+    let (index, key, end) = at(keys, held, |key| key.span.end(body)).or_else(|| {
         let last = keys.len().checked_sub(1)?;
         Some((last, keys.get(last)?, body.unwrap_or(u64::MAX)))
-    })
+    })?;
+    // It starts as the last of those before it ends (ends are where in
+    // the body each key ends, so a key that ends no later than one
+    // before it never plays).
+    let start = keys[..index]
+        .iter()
+        .map(|key| key.span.end(body))
+        .max()
+        .unwrap_or(0);
+    Some((
+        index,
+        key,
+        KeyTime {
+            elapsed,
+            start,
+            end,
+            held: None,
+        },
+    ))
 }
 
 /// A riddle's question shows this long, from the start of her spacing
@@ -202,7 +374,7 @@ pub(super) enum ScriptId {
     Sleep,
     /// Writing, then nodding off onto the paper.
     Homework,
-    /// Watching static.
+    /// Static as she switches it on, then the programme she drew, held.
     Watch,
     /// Watching the shopping channel: hooked, then sold.
     Shopping,
@@ -277,11 +449,15 @@ pub(super) enum ScriptId {
     ///
     /// [`Activity::FloorHomework`]: super::osaka::Activity::FloorHomework
     FloorHomework,
+    /// Gazing up at a piece on her shelf (phase 6a D8), from beside it on
+    /// its room's floor: pleased with it a moment ("hehe", as admiring
+    /// what she's made), then a long, curious look up at it.
+    GazeUp,
 }
 
 impl ScriptId {
     #[cfg(test)]
-    pub const ALL: [ScriptId; 27] = [
+    pub const ALL: [ScriptId; 28] = [
         Self::Lounge,
         Self::Nap,
         Self::Sleep,
@@ -309,6 +485,7 @@ impl ScriptId {
         Self::LookOut,
         Self::ClockGlance,
         Self::FloorHomework,
+        Self::GazeUp,
     ];
 
     /// How rare it is (phase 5b D6): only a Rare or Legendary script
@@ -339,7 +516,8 @@ impl ScriptId {
             | Self::DashForgot
             | Self::LookOut
             | Self::ClockGlance
-            | Self::FloorHomework => Rarity::Common,
+            | Self::FloorHomework
+            | Self::GazeUp => Rarity::Common,
         }
     }
 
@@ -379,6 +557,7 @@ impl ScriptId {
             Self::LookOut => LOOK_OUT,
             Self::ClockGlance => CLOCK_GLANCE,
             Self::FloorHomework => FLOOR_HOMEWORK,
+            Self::GazeUp => GAZE_UP,
         }
     }
 
@@ -423,7 +602,8 @@ impl ScriptId {
             | Self::Scary
             | Self::LookOut
             | Self::ClockGlance
-            | Self::FloorHomework => Chat::Look,
+            | Self::FloorHomework
+            | Self::GazeUp => Chat::Look,
         }
     }
 
@@ -458,7 +638,8 @@ impl ScriptId {
             | Self::Scary
             | Self::LookOut
             | Self::ClockGlance
-            | Self::FloorHomework => 0,
+            | Self::FloorHomework
+            | Self::GazeUp => 0,
         }
     }
 
@@ -481,6 +662,7 @@ impl ScriptId {
             Self::Crumple => Use::Crumple,
             Self::Unpack => Use::Unpack,
             Self::LookOut => Use::LookOut,
+            Self::GazeUp => Use::GazeUp,
             Self::Riddle
             | Self::Chopsticks
             | Self::Andagi
@@ -522,7 +704,8 @@ impl ScriptId {
             | Self::Surf
             | Self::DashLunch
             | Self::FirstSunrise
-            | Self::LookOut => Host::Use,
+            | Self::LookOut
+            | Self::GazeUp => Host::Use,
         }
     }
 
@@ -561,7 +744,8 @@ impl ScriptId {
             | Self::Crumple
             | Self::Unpack
             | Self::Night
-            | Self::LookOut => shortest_use_ms(),
+            | Self::LookOut
+            | Self::GazeUp => shortest_use_ms(),
         })
     }
 
@@ -598,6 +782,7 @@ impl ScriptId {
             Self::LookOut => Scene::LookOut,
             Self::ClockGlance => Scene::ClockGlance,
             Self::FloorHomework => Scene::FloorHomework,
+            Self::GazeUp => Scene::GazeUp,
         }
     }
 
@@ -682,7 +867,8 @@ impl Surface {
             | Use::Snack
             | Use::Pet
             | Use::Crumple
-            | Use::LookOut => None,
+            | Use::LookOut
+            | Use::GazeUp => None,
         }
     }
 
@@ -1086,7 +1272,8 @@ impl Spliced {
 
 /// What a use plays, all chosen when it began: its own script and
 /// branch, any prelude (`before`) and coda (`after`), the lines drawn
-/// for it, and what the shopping channel sold her (on a watch).
+/// for it, what the shopping channel sold her (on a watch), and the
+/// programme her TV holds (on a watch: [`Shows::Programme`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Play {
     pub own: ScriptId,
@@ -1095,6 +1282,13 @@ pub(super) struct Play {
     pub after: Option<Spliced>,
     pub drawn: [u8; 2],
     pub bought: Option<Furniture>,
+    /// What it sold her (`bought`) was what she wished for (phase 6a D9,
+    /// step 8): a wished kit's pitch says why ([`SHELF_FOR_HIM`]).
+    pub wished: bool,
+    /// Drawn as every watch begins, from her decision's whims, whatever
+    /// it plays (phase 5c D7: so what she does never hangs on whether a
+    /// picture of the film came to show instead).
+    pub card: Programme,
 }
 
 impl Play {
@@ -1107,6 +1301,8 @@ impl Play {
             after: None,
             drawn: [0; 2],
             bought: None,
+            wished: false,
+            card: Programme::News,
         }
     }
 
@@ -1197,13 +1393,24 @@ impl Play {
         }
     }
 
-    /// The key playing at `now` in a use from `since` to `until`, and
-    /// how far `now` is into the part it plays in (the prelude, the
-    /// body or the coda).
-    pub fn key(&self, since: u64, until: u64, now: u64) -> Option<(&'static Key, u64)> {
+    /// Where the key playing at `now` in a use from `since` to `until`
+    /// is: its part's start, its index there, and whether it bobs.
+    #[cfg(test)]
+    pub fn key_place(&self, since: u64, until: u64, now: u64) -> Option<KeyPlace> {
         let (keys, from, body) = self.part(since, until, now);
-        let elapsed = now.saturating_sub(from);
-        key_at(keys, elapsed, body).map(|(_, key, _)| (key, elapsed))
+        key_at(keys, now.saturating_sub(from), body).map(|(index, key, _)| KeyPlace {
+            part: from,
+            index,
+            bobs: matches!(key.pose, Posed::Bob(..)),
+        })
+    }
+
+    /// The key playing at `now` in a use from `since` to `until`, and
+    /// when it plays in its part (the prelude, the body or the coda):
+    /// how far `now` is into the part, and the key's start and end there.
+    pub fn key(&self, since: u64, until: u64, now: u64) -> Option<(&'static Key, KeyTime)> {
+        let (keys, from, body) = self.part(since, until, now);
+        key_at(keys, now.saturating_sub(from), body).map(|(_, key, time)| (key, time))
     }
 
     /// What it plays at `now` in a use (or musing) from `since` to
@@ -1251,6 +1458,17 @@ impl Play {
         let period = period.max(1);
         from + (now.saturating_sub(from) / period + 1) * period
     }
+
+    /// The next time after `now` that what the key playing at `now`
+    /// shows moves ([`Key::frame_ms`]), in a use from `since` to
+    /// `until`; `u64::MAX` if it holds.
+    pub fn next_move(&self, since: u64, until: u64, now: u64) -> u64 {
+        self.key(since, until, now)
+            .and_then(|(key, _)| key.frame_ms())
+            .map_or(u64::MAX, |period| {
+                self.next_frame(since, until, now, period)
+            })
+    }
 }
 
 impl Use {
@@ -1268,6 +1486,7 @@ impl Use {
             Use::Pet => ScriptId::Pet,
             Use::Crumple => ScriptId::Crumple,
             Use::LookOut => ScriptId::LookOut,
+            Use::GazeUp => ScriptId::GazeUp,
         }
     }
 }
@@ -1283,14 +1502,19 @@ const fn key(span: Span, pose: Posed, face: Face, say: Option<Say>) -> Key {
     }
 }
 
-/// A key with `prop` on her furniture.
+/// A key with `prop` held on her furniture.
 const fn shows(span: Span, pose: Posed, face: Face, say: Option<Say>, prop: Prop) -> Key {
+    on(span, pose, face, say, Shows::Still(prop))
+}
+
+/// A key with `shows` on her furniture.
+const fn on(span: Span, pose: Posed, face: Face, say: Option<Say>, shows: Shows) -> Key {
     Key {
         span,
         pose,
         face,
         say,
-        prop: Some(prop),
+        prop: Some(shows),
     }
 }
 
@@ -1312,7 +1536,9 @@ const NAP: &[&[Key]] = &[&[key(
     bubble(Bubble::Zzz),
 )]];
 
-/// How long the lamp stays on as she settles into bed.
+/// How long the lamp stays on as she settles into bed: lying still
+/// (under two frames, so a bob there could never flip clear of its
+/// key's start and end: Round 8), breathing once it's off.
 pub(super) const LAMP_ON_MS: u64 = 2000;
 
 /// The lamp on a moment as she settles (blinking, thoughtful), then off
@@ -1321,7 +1547,7 @@ const SLEEP: &[&[Key]] = &[
     &[
         key(
             Span::Ms(LAMP_ON_MS),
-            Posed::Bob(Pose::Sleep, USE_FRAME_MS),
+            Posed::Still(Pose::Sleep(0)),
             Face::Blink,
             bubble(Bubble::Dots),
         ),
@@ -1351,7 +1577,7 @@ const NIGHT: &[&[Key]] = &[
     &[
         key(
             Span::Ms(LAMP_ON_MS),
-            Posed::Bob(Pose::Sleep, USE_FRAME_MS),
+            Posed::Still(Pose::Sleep(0)),
             Face::Blink,
             bubble(Bubble::Dots),
         ),
@@ -1361,7 +1587,7 @@ const NIGHT: &[&[Key]] = &[
     &[
         key(
             Span::Ms(LAMP_ON_MS),
-            Posed::Bob(Pose::Nap, USE_FRAME_MS),
+            Posed::Still(Pose::Nap(0)),
             Face::Blink,
             bubble(Bubble::Dots),
         ),
@@ -1485,26 +1711,36 @@ pub(super) fn floor_homework_branch(nod: super::stillness::NodOff, book: bool) -
     nod.branch() + if book { 3 } else { 0 }
 }
 
-const WATCH: &[&[Key]] = &[&[shows(
-    Span::Rest,
-    Posed::Host,
-    Face::Curious,
-    None,
-    Prop::Tv(Channel::Snow(0)),
-)]];
+/// Static as she switches it on, then the programme she drew, held.
+const WATCH: &[&[Key]] = &[&[
+    on(
+        Span::Ms(STATIC_MS),
+        Posed::Host,
+        Face::Curious,
+        None,
+        Shows::Static,
+    ),
+    on(
+        Span::Rest,
+        Posed::Host,
+        Face::Curious,
+        None,
+        Shows::Programme,
+    ),
+]];
 
 /// How long each channel she flicks to before the sunrise stays on.
 pub(super) const SURF_MS: u64 = 2 * USE_FRAME_MS;
 
-/// Snow, colour bars, snow, a sunrise (ooh!), then back on snow,
-/// humming, pleased with herself.
+/// Snow, colour bars, snow, a sunrise (ooh!), then the programme she
+/// drew, held, humming, pleased with herself.
 const SURF: &[&[Key]] = &[&[
-    shows(
+    on(
         Span::Ms(SURF_MS),
         Posed::Host,
         Face::Curious,
         None,
-        Prop::Tv(Channel::Snow(0)),
+        Shows::Static,
     ),
     shows(
         Span::Ms(2 * SURF_MS),
@@ -1513,12 +1749,12 @@ const SURF: &[&[Key]] = &[&[
         None,
         Prop::Tv(Channel::ColourBars),
     ),
-    shows(
+    on(
         Span::Ms(3 * SURF_MS),
         Posed::Host,
         Face::Curious,
         None,
-        Prop::Tv(Channel::Snow(0)),
+        Shows::Static,
     ),
     shows(
         Span::Ms(4 * SURF_MS),
@@ -1527,23 +1763,24 @@ const SURF: &[&[Key]] = &[&[
         bubble(Bubble::Ooh),
         Prop::Tv(Channel::Sunrise),
     ),
-    shows(
+    on(
         Span::Rest,
         Posed::Host,
         Face::Happy,
         bubble(Bubble::Hum),
-        Prop::Tv(Channel::Snow(0)),
+        Shows::Programme,
     ),
 ]];
 
-/// Hooked, then sold, then watching on.
+/// Hooked (Chiyo-chichi bobbing as he talks), then sold, then watching
+/// on, he holding still.
 const SHOPPING: &[&[Key]] = &[&[
-    shows(
+    on(
         Span::Upto(2, 5),
         Posed::Host,
         Face::Curious,
         bubble(Bubble::Ooh),
-        Prop::Tv(Channel::Shopping(0)),
+        Shows::Hook,
     ),
     shows(
         Span::Upto(3, 5),
@@ -1705,8 +1942,12 @@ pub(super) const SANKYU: &str = line!("Fine sankyu...");
 pub(super) const OH_MY_GAH: &str = line!("Oh my gah!");
 
 /// Each of the Dream's lines shows this long, the last ending at
-/// [`DREAM_MS`]; then she sleeps on.
-pub(super) const DREAM_LINE_MS: u64 = 3000;
+/// [`DREAM_MS`]; then she sleeps on. Three frames (the user, phase 5c's
+/// tail): each line starts on her breathing's frame grid, and, holding a
+/// frame clear of each end ([`bob_frame`]), her breathing flips twice
+/// under it (at 3 s, off the grid, the second and third lines held her
+/// still).
+pub(super) const DREAM_LINE_MS: u64 = 3 * USE_FRAME_MS;
 /// The Dream's lines, all said.
 pub(super) const DREAM_MS: u64 = 3 * DREAM_LINE_MS;
 
@@ -1896,6 +2137,82 @@ pub(super) fn look_out_branch(sky: Sky, pick: u64) -> u8 {
         .unwrap_or(0)
 }
 
+/// Gazing up at her shelf, pleased with what's up there for this long
+/// first (phase 6a D8: `Act::Admire`'s look, "hehe", 2-3 s; inside the
+/// shortest use there is).
+pub(super) const GAZE_UP_PLEASED_MS: u64 = 2500;
+
+/// Gazing up at her gremlin turned round since she last saw him (phase
+/// 6a step 8, his tiny life): puzzled ("?") this long...
+pub(super) const GAZE_UP_PUZZLED_MS: u64 = 1000;
+/// ...then asking him, until this far in (inside the shortest use
+/// there is, as the pleased opening is)...
+pub(super) const GAZE_UP_NOTICED_MS: u64 = 3500;
+/// ...this.
+pub(super) const DID_YOU_MOVE: &str = line!("Did you move...?");
+
+/// Gazing up at a piece on her shelf (phase 6a D8): standing beside it,
+/// pleased ("hehe", as admiring what she's made), then gazing up at it,
+/// curious, in profile toward it (her seat faces it). Branch 1, her
+/// gremlin turned round since she saw him (phase 6a step 8): puzzled
+/// ("?"), then "Did you move...?", before she gazes up at him.
+const GAZE_UP: &[&[Key]] = &[
+    &[
+        key(
+            Span::Ms(GAZE_UP_PLEASED_MS),
+            Posed::Still(Pose::Stand),
+            Face::Pleased,
+            bubble(Bubble::Hehe),
+        ),
+        key(Span::Rest, Posed::Still(Pose::Gaze), Face::Curious, None),
+    ],
+    &[
+        key(
+            Span::Ms(GAZE_UP_PUZZLED_MS),
+            Posed::Still(Pose::Stand),
+            Face::Curious,
+            bubble(Bubble::Huh),
+        ),
+        key(
+            Span::Ms(GAZE_UP_NOTICED_MS),
+            Posed::Still(Pose::Stand),
+            Face::Curious,
+            bubble(Bubble::Say(DID_YOU_MOVE)),
+        ),
+        key(Span::Rest, Posed::Still(Pose::Gaze), Face::Curious, None),
+    ],
+];
+
+/// The branch of [`GAZE_UP`] a gaze up plays: `noticed`, her gremlin
+/// turned round since she saw him (phase 6a step 8).
+pub(super) fn gaze_up_branch(noticed: bool) -> u8 {
+    u8::from(noticed)
+}
+
+/// How long the opening of [`GAZE_UP`]'s `branch` lasts, before she
+/// gazes up: what she says there (a line up at her gremlin) comes after
+/// it.
+pub(super) fn gaze_up_opening_ms(branch: u8) -> u64 {
+    ScriptId::GazeUp
+        .keys(branch)
+        .iter()
+        .filter_map(|key| match key.span {
+            Span::Ms(ms) => Some(ms),
+            Span::Upto(..) | Span::Rest => None,
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+/// The shopping channel's pitch for her shelf kit when it's what she
+/// wished for (phase 6a step 8: her gremlin wants up high), in place of
+/// the kit's own.
+pub(super) const SHELF_FOR_HIM: &str = line!("A shelf for the gremlin!");
+
+/// The flat-pack gag (phase 6a step 8): her shelf kit's unpack ends on
+/// this, where any other parcel's ends on "ooh".
+pub(super) const WHICH_WAY_UP: &str = line!("Which way's up?");
+
 /// Her glance up at the clock at bedtime...
 pub(super) const ITS_LATE: &str = line!("Oh! It's late!");
 /// ...and as she leaves for school.
@@ -2012,20 +2329,46 @@ const CRUMPLE: &[&[Key]] = &[&[
     ),
 ]];
 
-const UNPACK: &[&[Key]] = &[&[
-    key(
-        Span::Upto(3, 5),
-        Posed::Bob(Pose::ToeTouch, USE_FRAME_MS),
-        Face::Happy,
-        None,
-    ),
-    key(
-        Span::Rest,
-        Posed::Bob(Pose::ToeTouch, USE_FRAME_MS),
-        Face::Happy,
-        bubble(Bubble::Ooh),
-    ),
-]];
+/// Opening a parcel, bent to it, happy: "ooh" at what's in it (branch
+/// 0); her shelf kit's flat pack, "Which way's up?" (branch 1: phase 6a
+/// step 8, the flat-pack gag; see [`unpack_branch`]).
+const UNPACK: &[&[Key]] = &[
+    &[
+        key(
+            Span::Upto(3, 5),
+            Posed::Bob(Pose::ToeTouch, USE_FRAME_MS),
+            Face::Happy,
+            None,
+        ),
+        key(
+            Span::Rest,
+            Posed::Bob(Pose::ToeTouch, USE_FRAME_MS),
+            Face::Happy,
+            bubble(Bubble::Ooh),
+        ),
+    ],
+    &[
+        key(
+            Span::Upto(3, 5),
+            Posed::Bob(Pose::ToeTouch, USE_FRAME_MS),
+            Face::Happy,
+            None,
+        ),
+        key(
+            Span::Rest,
+            Posed::Bob(Pose::ToeTouch, USE_FRAME_MS),
+            Face::Happy,
+            bubble(Bubble::Say(WHICH_WAY_UP)),
+        ),
+    ],
+];
+
+/// The branch of [`UNPACK`] opening a parcel of `item` plays: a kit's
+/// flat pack ends on "Which way's up?" (phase 6a step 8), anything else
+/// on "ooh".
+pub(super) fn unpack_branch(item: Furniture) -> u8 {
+    u8::from(item.is_kit())
+}
 
 /// The question (Curious), her answer at once (Happy), then pleased
 /// with it.
@@ -2134,7 +2477,10 @@ pub(super) const ANDAGI_SAID_MS: u64 = 1900;
 pub(super) const ANDAGI_BEAT_MS: u64 = 600;
 /// The first bite.
 pub(super) const ANDAGI_BITE_MS: u64 = USE_FRAME_MS;
-/// Then eating it, two frames.
+/// Then eating it, two frames: chewing, then biting again, a frame each
+/// (two keys, not a bob: a bob's first and last frames are held a frame
+/// clear of its key's ends, so off the grid as this is, a bob two frames
+/// long would never flip).
 pub(super) const ANDAGI_EAT_MS: u64 = 2 * USE_FRAME_MS;
 
 /// How long the andagi plays, said `count` times.
@@ -2142,11 +2488,12 @@ pub(super) const fn andagi_ms(count: u64) -> u64 {
     ANDAGI_FOUND_MS + count * (ANDAGI_SAID_MS + ANDAGI_BEAT_MS) + ANDAGI_BITE_MS + ANDAGI_EAT_MS
 }
 
-/// The andagi said `(N - 3) / 2` times: the fridge open as she finds
+/// The andagi said `(N - 4) / 2` times: the fridge open as she finds
 /// it, then holding it up, "Sata andagi." and a quiet beat each time,
-/// blank, then pleased, then happy; then a bite, and she eats it.
+/// blank, then pleased, then happy; then a bite, and she eats it,
+/// chewing what's left of it in her hand, then biting again.
 const fn andagi<const N: usize>() -> [Key; N] {
-    let count = (N - 3) / 2;
+    let count = (N - 4) / 2;
     let held = Posed::Still(Pose::EatAndagi(0));
     let mut keys = [key(Span::Rest, held, Face::Happy, None); N];
     keys[0] = shows(
@@ -2178,26 +2525,25 @@ const fn andagi<const N: usize>() -> [Key; N] {
         );
         i += 1;
     }
-    keys[N - 2] = key(
+    keys[N - 3] = key(
         Span::Ms(andagi_ms(count as u64) - ANDAGI_EAT_MS),
         Posed::Still(Pose::EatAndagi(1)),
         Face::Happy,
         None,
     );
+    keys[N - 2] = key(
+        Span::Ms(andagi_ms(count as u64) - ANDAGI_EAT_MS + USE_FRAME_MS),
+        Posed::Still(Pose::EatAndagi(2)),
+        Face::Happy,
+        None,
+    );
     keys[N - 1] = key(
         Span::Rest,
-        Posed::Bob(chewing, USE_FRAME_MS),
+        Posed::Still(Pose::EatAndagi(1)),
         Face::Happy,
         None,
     );
     keys
-}
-
-/// Eating the andagi once she's bitten it: biting again (frame 1 of the
-/// bob), and chewing, what's left of it in her hand (frame 0), never
-/// whole again whichever frame the bob is on as the bite ends.
-fn chewing(frame: u8) -> Pose {
-    Pose::EatAndagi(if frame % 2 == 1 { 1 } else { 2 })
 }
 
 /// How many times she names it, by branch: four, five or six.
@@ -2210,11 +2556,11 @@ const ANDAGI_LENS: &[u64] = &[
     andagi_ms(ANDAGI_COUNTS[2]),
 ];
 
-/// Its keys, by branch (two a naming, and three more).
+/// Its keys, by branch (two a naming, and four more).
 const ANDAGI: &[&[Key]] = &[
-    &andagi::<{ 2 * ANDAGI_COUNTS[0] as usize + 3 }>(),
-    &andagi::<{ 2 * ANDAGI_COUNTS[1] as usize + 3 }>(),
-    &andagi::<{ 2 * ANDAGI_COUNTS[2] as usize + 3 }>(),
+    &andagi::<{ 2 * ANDAGI_COUNTS[0] as usize + 4 }>(),
+    &andagi::<{ 2 * ANDAGI_COUNTS[1] as usize + 4 }>(),
+    &andagi::<{ 2 * ANDAGI_COUNTS[2] as usize + 4 }>(),
 ];
 
 #[cfg(test)]
@@ -2266,6 +2612,7 @@ mod tests {
             ScriptId::LookOut => 24,
             ScriptId::ClockGlance => 25,
             ScriptId::FloorHomework => 26,
+            ScriptId::GazeUp => 27,
         }
     }
 
@@ -2302,6 +2649,7 @@ mod tests {
             Use::Pet => 8,
             Use::Crumple => 9,
             Use::LookOut => 10,
+            Use::GazeUp => 11,
         };
         for (i, u) in Use::ALL.into_iter().enumerate() {
             assert_eq!(use_at(u), i, "{u:?}");
@@ -2345,6 +2693,7 @@ mod tests {
             ScriptId::LookOut => Play::of(Use::LookOut, None),
             ScriptId::ClockGlance => Play::plain(ScriptId::ClockGlance),
             ScriptId::FloorHomework => Play::plain(ScriptId::FloorHomework),
+            ScriptId::GazeUp => Play::of(Use::GazeUp, None),
         };
         for id in ScriptId::ALL {
             let play = player(id);
@@ -2404,6 +2753,29 @@ mod tests {
         }
     }
 
+    /// Only static and the hook move, and a programme is the act's
+    /// (phase 5c D7): no key holds a frame of static still, or names a
+    /// programme of its own instead of the one the act drew. (Wildcard-
+    /// free, so a new channel says which it is.)
+    #[test]
+    fn no_key_holds_static_or_a_programme_of_its_own() {
+        use crate::ui::houseguest::art::Channel;
+        for id in ScriptId::ALL {
+            for (branch, keys) in id.branches().iter().enumerate() {
+                for key in *keys {
+                    let Some(Shows::Still(Prop::Tv(channel))) = key.prop else {
+                        continue;
+                    };
+                    let held = match channel {
+                        Channel::ColourBars | Channel::Sunrise | Channel::Shopping(_) => true,
+                        Channel::Snow(_) | Channel::Programme(_) => false,
+                    };
+                    assert!(held, "{id:?}/{branch}: holds {channel:?} still");
+                }
+            }
+        }
+    }
+
     /// Spacing out, she wakes only as a key ends (no frame grid, as a
     /// use has), and nothing shows on her furniture: so a script played
     /// spacing out neither bobs (it would freeze) nor shows a prop.
@@ -2429,8 +2801,8 @@ mod tests {
             let play = Play::riddle(u8::try_from(i).unwrap());
             let (since, until) = (1000, 1000 + super::super::osaka::SPACE_OUT_MS.0);
             let look = |now| {
-                let (key, elapsed) = play.key(since, until, now).unwrap();
-                key.look(elapsed, Pose::Stand, &play)
+                let (key, time) = play.key(since, until, now).unwrap();
+                key.look(time, Pose::Stand, &play)
             };
             let said = |now| look(now).2;
             // Standing throughout.
@@ -2501,6 +2873,267 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Her pose `t` ms into a part playing `keys` over a body `body` ms
+    /// long, and the key playing then (its index; whether it bobs).
+    fn pose_in(keys: &[Key], body: u64, t: u64) -> Option<(Pose, usize, bool)> {
+        let play = Play::plain(ScriptId::Lounge);
+        let (index, key, time) = key_at(keys, t, Some(body))?;
+        let (pose, ..) = key.look(time, Pose::Stand, &play);
+        Some((pose, index, matches!(key.pose, Posed::Bob(..))))
+    }
+
+    /// A bob's flips keep a frame ([`USE_FRAME_MS`]) clear of its key's
+    /// start and its end (Round 8, the user: hold a bob's last frame
+    /// through the part of a period before its key ends, and its first
+    /// flip until a frame after its key starts), so a bobbing key's
+    /// flips and the changes as it starts and ends are never within a
+    /// frame of each other: for every bobbing key of every script's every
+    /// branch and every splice, over bodies of every length from 2 s to
+    /// 200 s (in steps of 997 ms, so its ends at a share of the body fall
+    /// all about the frame grid) and each splice's own. Her pose can only
+    /// change on the grid or as a key ends, so those moments are all it
+    /// looks at.
+    #[test]
+    fn a_bob_flips_a_frame_clear_of_its_keys_start_and_end() {
+        let mut parts: Vec<(String, &'static [Key], u64)> = Vec::new();
+        for id in ScriptId::ALL {
+            for (branch, keys) in id.branches().iter().enumerate() {
+                for body in (2_000..200_000).step_by(997) {
+                    parts.push((format!("{id:?} branch {branch}"), keys, body));
+                }
+            }
+        }
+        for splice in SpliceId::ALL {
+            for (branch, &len) in splice.row().lens.iter().enumerate() {
+                let keys = splice.script().keys(branch as u8);
+                parts.push((format!("{splice:?} branch {branch}"), keys, len));
+            }
+        }
+        let mut flips = 0u32;
+        for (at, keys, body) in parts {
+            let ends: Vec<u64> = keys.iter().map(|k| k.span.end(Some(body))).collect();
+            // Each key's start and end, in the body.
+            let bounds = |index: usize| {
+                let start = ends[..index].iter().copied().max().unwrap_or(0);
+                (start, ends[index])
+            };
+            let mut moments: Vec<u64> = (1..)
+                .map(|k| k * USE_FRAME_MS)
+                .take_while(|&t| t < body)
+                .chain(ends.iter().copied().filter(|&t| t > 0 && t < body))
+                .collect();
+            moments.sort_unstable();
+            moments.dedup();
+            for t in moments {
+                let (Some(was), Some(now)) = (pose_in(keys, body, t - 1), pose_in(keys, body, t))
+                else {
+                    continue;
+                };
+                let ((pose, index, bobs), (pose2, index2, _)) = (was, now);
+                if index != index2 || !bobs || pose == pose2 {
+                    continue;
+                }
+                flips += 1;
+                let (start, end) = bounds(index);
+                assert!(
+                    t >= start + USE_FRAME_MS && t + USE_FRAME_MS <= end.min(body),
+                    "{at}, body {body}: key {index} ({start} to {end}) flips at {t}"
+                );
+            }
+        }
+        assert!(flips > 1000, "{flips} flips tried");
+    }
+
+    /// [`bob_frame`] against its rule, at every ms from a bob's start to
+    /// a period past its end: it starts on the grid's frame at its start
+    /// (`start / period`, odd or even), flips on the grid and only there,
+    /// never less than a period after its start nor less than a period
+    /// before its end (nor after it), and on every grid point between:
+    /// so its flips are exactly the grid's in `[start + period, end -
+    /// period]`.
+    fn check_bob_frame(start: u64, end: u64, period: u64) {
+        let case = format!("{start} to {end}, every {period}");
+        let frame = |t| bob_frame(t, start, end, period, None);
+        assert_eq!(u64::from(frame(start)), start / period % 2, "{case}");
+        let mut flips = 0;
+        for t in start + 1..end + period {
+            if frame(t) == frame(t - 1) {
+                continue;
+            }
+            flips += 1;
+            assert!(
+                t.is_multiple_of(period) && t >= start + period && t + period <= end,
+                "{case}: flips at {t}"
+            );
+        }
+        let allowed = (start + period..=end.saturating_sub(period))
+            .filter(|t| t.is_multiple_of(period))
+            .count();
+        assert_eq!(
+            flips, allowed,
+            "{case}: flips on every grid point clear of its ends"
+        );
+    }
+
+    /// [`bob_frame`] at the edges: bobs starting and ending a ms either
+    /// side of the grid, on it, and half a period off, for bobs a period
+    /// long (or a ms less or more) to several, so a flip a ms within a
+    /// period of either end shows (Round 8: holding the first and last
+    /// frame). Then any bob ([`check_bob_frame`]).
+    #[test]
+    fn a_bob_frame_flips_on_the_grid_clear_of_its_ends() {
+        for period in [3, USE_FRAME_MS, 2 * USE_FRAME_MS] {
+            for g in 0..4 {
+                for start in [g * period, g * period + 1, g * period + period / 2]
+                    .into_iter()
+                    .chain((g * period).checked_sub(1))
+                {
+                    for len in [1, 2, 3, 5]
+                        .into_iter()
+                        .flat_map(|k| [k * period - 1, k * period, k * period + 1])
+                        .chain([period / 2, 5 * period + 7])
+                    {
+                        check_bob_frame(start, start + len, period);
+                    }
+                }
+            }
+        }
+        // A key from a ms past the grid holds its first frame through the
+        // grid point a ms under a period on, flipping at the next.
+        let frame = |t| bob_frame(t, 1401, 100_000, USE_FRAME_MS, None);
+        assert_eq!((frame(1401), frame(2799), frame(2800)), (1, 1, 1));
+        assert_eq!((frame(4199), frame(4200)), (1, 0));
+        // One ending a ms short of a period past the grid holds its last
+        // through it.
+        let frame = |t| bob_frame(t, 0, 86_799, USE_FRAME_MS, None);
+        assert_eq!(
+            (frame(84_000), frame(85_399), frame(85_400), frame(86_798)),
+            (0, 0, 0, 0)
+        );
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(
+            dessplay_core::test_support::proptest_cases(64)
+        ))]
+
+        /// Any bob, at any start and length, keeps [`check_bob_frame`]'s
+        /// rule.
+        #[test]
+        fn any_bob_frame_flips_on_the_grid_clear_of_its_ends(
+            start in 0u64..20_000,
+            len in 1u64..12_000,
+            period in proptest::sample::select(vec![700u64, USE_FRAME_MS, 2 * USE_FRAME_MS]),
+        ) {
+            check_bob_frame(start, start + len, period);
+        }
+
+        /// Any bob held at any moment of it, on either frame (phase 5c's
+        /// tail, T4): it shows that frame at the moment, and from there
+        /// flips on the grid and only there, never less than a period
+        /// after the moment nor less than a period before its end, and on
+        /// every grid point between. Before the moment it's the bob
+        /// unheld. A hold from before its start (a part or key begun
+        /// since) holds nothing: it's the bob unheld throughout.
+        #[test]
+        fn any_held_bob_frame_holds_from_its_moment(
+            start in 0u64..20_000,
+            len in 1u64..12_000,
+            at in 0u64..12_000,
+            shown in 0u8..2,
+            early in 1u64..20_000,
+            period in proptest::sample::select(vec![700u64, USE_FRAME_MS, 2 * USE_FRAME_MS]),
+        ) {
+            let (end, at) = (start + len, start + at % len);
+            if let Some(before) = start.checked_sub(early) {
+                for t in start..end + period {
+                    proptest::prop_assert_eq!(
+                        bob_frame(t, start, end, period, Some((before, shown))),
+                        bob_frame(t, start, end, period, None),
+                        "{} to {}, held at {} before it, every {}, at {}", start, end, before, period, t
+                    );
+                }
+            }
+            let case = format!("{start} to {end}, held at {at} on {shown}, every {period}");
+            let held = |t| bob_frame(t, start, end, period, Some((at, shown)));
+            for t in start..at {
+                proptest::prop_assert_eq!(held(t), bob_frame(t, start, end, period, None), "{} at {}", case, t);
+            }
+            proptest::prop_assert_eq!(held(at), shown, "{}", case);
+            let mut flips = 0;
+            for t in at + 1..end + period {
+                if held(t) == held(t - 1) {
+                    continue;
+                }
+                flips += 1;
+                proptest::prop_assert!(
+                    t.is_multiple_of(period) && t >= at + period && t + period <= end,
+                    "{}: flips at {}", case, t
+                );
+            }
+            let allowed = (at + period..=end.saturating_sub(period))
+                .filter(|t| t.is_multiple_of(period))
+                .count();
+            proptest::prop_assert_eq!(flips, allowed, "{}", case);
+        }
+    }
+
+    /// Every bobbing key that always plays at the same moments (each of a
+    /// splice's at its branches' lengths; a script's keys set in ms from
+    /// its body's start, played over its shortest body) flips at least
+    /// once: holding a bob's first and last frame a frame clear of its
+    /// key's start and end (Round 8) leaves a key of two frames off the
+    /// grid none, a still pose drawn as a bob (the andagi's chewing, T2's
+    /// review). The Dream's lines are three frames each so that each
+    /// flips (twice; at 3 s, off the grid, its second and third never
+    /// did: phase 5c's tail).
+    #[test]
+    fn every_bob_at_a_set_time_flips() {
+        let mut parts: Vec<(String, &'static [Key], u64, usize)> = Vec::new();
+        for splice in SpliceId::ALL {
+            for (branch, &len) in splice.row().lens.iter().enumerate() {
+                let keys = splice.script().keys(branch as u8);
+                parts.push((format!("{splice:?} branch {branch}"), keys, len, keys.len()));
+            }
+        }
+        for id in ScriptId::ALL {
+            let Some(shortest) = id.shortest_body() else {
+                continue;
+            };
+            for (branch, keys) in id.branches().iter().enumerate() {
+                // Its keys set in ms, from the first.
+                let set = keys
+                    .iter()
+                    .take_while(|k| matches!(k.span, Span::Ms(ms) if ms <= shortest))
+                    .count();
+                parts.push((format!("{id:?} branch {branch}"), keys, shortest, set));
+            }
+        }
+        let mut checked = 0;
+        for (at, keys, body, set) in parts {
+            let ends: Vec<u64> = keys.iter().map(|k| k.span.end(Some(body))).collect();
+            for index in 0..set {
+                if !matches!(keys[index].pose, Posed::Bob(..)) {
+                    continue;
+                }
+                let start = ends[..index].iter().copied().max().unwrap_or(0);
+                let end = ends[index].min(body);
+                if end <= start {
+                    continue;
+                }
+                checked += 1;
+                let flips = (start + 1..end)
+                    .filter(|&t| pose_in(keys, body, t) != pose_in(keys, body, t - 1))
+                    .count();
+                assert!(
+                    flips > 0,
+                    "{at}: key {index} ({start} to {end}) never flips"
+                );
+            }
+        }
+        assert!(checked >= 2, "{checked} keys checked");
     }
 
     /// The player: half-open keys, cumulative ends clamped to the body,
@@ -2916,7 +3549,7 @@ mod tests {
                 Posed::Host => panic!("{surface:?}: posed by its host"),
             };
             for key in keys {
-                assert_eq!(key.prop, Some(Prop::LampOff), "{surface:?}");
+                assert_eq!(key.prop, Some(Shows::Still(Prop::LampOff)), "{surface:?}");
                 assert_eq!(key.face, Face::Blink, "{surface:?}");
                 assert_eq!(
                     posed(key.pose),
@@ -2950,7 +3583,7 @@ mod tests {
             for at_once in [false, true] {
                 let keys = night.keys(surface.branch(at_once));
                 assert_eq!(keys.len(), if at_once { 1 } else { 2 }, "{surface:?}");
-                assert_eq!(keys.last().unwrap().prop, Some(Prop::LampOff));
+                assert_eq!(keys.last().unwrap().prop, Some(Shows::Still(Prop::LampOff)));
                 assert_eq!(keys[0].prop.is_some(), at_once, "{surface:?}");
                 for key in keys {
                     let pose = match key.pose {
@@ -2996,11 +3629,11 @@ mod tests {
         for (branch, &len) in lens.iter().enumerate() {
             let count = ANDAGI_COUNTS[branch] as usize;
             let keys = ScriptId::Andagi.keys(branch as u8);
-            assert_eq!(keys.len(), 2 * count + 3, "{count}");
+            assert_eq!(keys.len(), 2 * count + 4, "{count}");
             assert_eq!(len, andagi_ms(count as u64));
             let found = &keys[0];
             assert_eq!(found.span, Span::Ms(ANDAGI_FOUND_MS));
-            assert_eq!(found.prop, Some(Prop::FridgeOpen));
+            assert_eq!(found.prop, Some(Shows::Still(Prop::FridgeOpen)));
             let rank = |face| match face {
                 Face::Vacant => 0,
                 Face::Pleased => 1,
@@ -3026,15 +3659,8 @@ mod tests {
             assert!(faces.windows(2).all(|w| w[0] <= w[1]), "{faces:?}");
             assert_eq!((faces[0], faces[count - 1]), (0, 2), "{faces:?}");
             assert!(faces.contains(&1), "{faces:?}");
-            let (bite, eat) = (&keys[2 * count + 1], &keys[2 * count + 2]);
+            let (bite, eat) = (&keys[2 * count + 1], &keys[2 * count + 3]);
             assert!(matches!(bite.pose, Posed::Still(Pose::EatAndagi(1))));
-            let Posed::Bob(eating, _) = eat.pose else {
-                panic!("{:?}", eat.pose);
-            };
-            assert_eq!(
-                (eating(0), eating(1)),
-                (Pose::EatAndagi(2), Pose::EatAndagi(1))
-            );
             // Bitten, it stays bitten.
             let poses = |key: &Key| match key.pose {
                 Posed::Still(pose) => vec![pose],
@@ -3053,6 +3679,24 @@ mod tests {
             }
             assert_eq!(eat.span, Span::Rest);
             assert_eq!(bite.span, Span::Ms(len - ANDAGI_EAT_MS));
+            // Bitten, she eats it over its last two frames: chewing,
+            // then biting again, a frame each.
+            let mut eaten: Vec<(Pose, u64)> = Vec::new();
+            for t in len - ANDAGI_EAT_MS..len {
+                let (pose, ..) = pose_in(keys, len, t).unwrap();
+                match eaten.last_mut() {
+                    Some((was, ms)) if *was == pose => *ms += 1,
+                    _ => eaten.push((pose, 1)),
+                }
+            }
+            assert_eq!(
+                eaten,
+                [
+                    (Pose::EatAndagi(2), USE_FRAME_MS),
+                    (Pose::EatAndagi(1), USE_FRAME_MS)
+                ],
+                "{count}: eating it"
+            );
         }
     }
 
@@ -3158,7 +3802,7 @@ mod tests {
     }
 
     /// Which key it is, as far as the tests can tell them apart.
-    fn which(key: &Key) -> (Span, Face, Option<Say>, Option<Prop>) {
+    fn which(key: &Key) -> (Span, Face, Option<Say>, Option<Shows>) {
         (key.span, key.face, key.say, key.prop)
     }
 
@@ -3199,8 +3843,8 @@ mod tests {
             assert_eq!(end, UNTIL - after.map_or(0, |s| s.len));
             let body = end - start;
             let at = |now| {
-                let (key, elapsed) = play.key(SINCE, UNTIL, now).unwrap();
-                (which(key), elapsed)
+                let (key, time) = play.key(SINCE, UNTIL, now).unwrap();
+                (which(key), time.elapsed)
             };
             let case = format!("before {before:?} after {after:?}");
             if before.is_some() {
@@ -3238,10 +3882,10 @@ mod tests {
         };
         let start = crowded.body_start(SINCE);
         assert_eq!(crowded.body_end(SINCE, UNTIL), start);
-        let (key, elapsed) = crowded.key(SINCE, UNTIL, start - 1).unwrap();
-        assert_eq!((which(key), elapsed), (which(&snack[1]), 5999));
-        let (key, elapsed) = crowded.key(SINCE, UNTIL, start).unwrap();
-        assert_eq!((which(key), elapsed), (which(&sleep[0]), 0));
+        let (key, time) = crowded.key(SINCE, UNTIL, start - 1).unwrap();
+        assert_eq!((which(key), time.elapsed), (which(&snack[1]), 5999));
+        let (key, time) = crowded.key(SINCE, UNTIL, start).unwrap();
+        assert_eq!((which(key), time.elapsed), (which(&sleep[0]), 0));
     }
 
     /// The stage's note names each part in turn, the one playing with

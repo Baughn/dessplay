@@ -20,7 +20,8 @@ use dessplay_core::types::{Ed2kHash, FileAvailability, UserId};
 use tokio::sync::mpsc;
 
 use crate::actors::file::{
-    FileCommand, FileConfig, FileOutput, Resolution, SCAN_TRANSFER_QUIET_DEFAULT, run,
+    DownloadFetch, FileCommand, FileConfig, FileOutput, Resolution, SCAN_TRANSFER_QUIET_DEFAULT,
+    WantedDownload, run,
 };
 use crate::actors::network::NetworkCommand;
 use crate::actors::sync::{Mutation, SyncCommand};
@@ -39,9 +40,6 @@ pub struct SeederTransfer {
     /// seeder contributes its library to the group's catalog; dedup so
     /// each hash is requested once per session).
     lookups_requested: HashSet<Ed2kHash>,
-    /// The download fill order last sent to the file actor, so
-    /// `SetDownloadPriority` goes out only when the ranking changes.
-    last_priority: Vec<Ed2kHash>,
 }
 
 impl SeederTransfer {
@@ -66,7 +64,6 @@ impl SeederTransfer {
             resolve_kicked: HashSet::new(),
             have: HashMap::new(),
             lookups_requested: HashSet::new(),
-            last_priority: Vec::new(),
         };
         (transfer, file_outputs)
     }
@@ -89,50 +86,41 @@ impl SeederTransfer {
                     .await;
             }
         }
-        // Start downloads for everything still missing that a peer has,
-        // in [`download_order`] (unwatched first, anchored at
-        // now-playing): under bandwidth saturation the seeder must
-        // finish the next episode the group needs before its watched
-        // back-catalog. `StartDownload` is idempotent (refreshes sources).
-        let ordered = download_order(view);
-        // The same ranking is the chunk scheduler's cross-file fill
-        // order (shared per-source budget); sent only when it changes.
-        let order: Vec<Ed2kHash> = ordered.iter().map(|e| e.hash).collect();
-        if order != self.last_priority {
-            self.last_priority = order.clone();
-            // `now_playing: None`: the seeder plays nothing, so none of
-            // its downloads has a playback deadline — endgame urgency
-            // still applies, window-age urgency never does.
-            let _ = self
-                .file
-                .send(FileCommand::SetDownloadPriority {
-                    order,
-                    now_playing: None,
-                })
-                .await;
-        }
-        for entry in ordered {
-            let file = entry.hash;
-            if self.have.get(&file) == Some(&false) {
+        // The want-set is every playlist entry, in [`download_order`]
+        // (unwatched first, anchored at now-playing): under bandwidth
+        // saturation the seeder must finish the next episode the group
+        // needs before its watched back-catalog. The same ranking is the
+        // chunk scheduler's cross-file fill order (shared per-source
+        // budget). Declarative and re-sent every plan: an entry removed
+        // from the playlist cancels its download, and a refresh with a
+        // smaller (even empty) source set drops departed peers — the
+        // 2026-10-14 hot loop was a departed sole source kept because an
+        // empty refresh was skipped.
+        let wanted = download_order(view)
+            .into_iter()
+            .map(|entry| {
+                let file = entry.hash;
                 // Peer sources only: the seeder deliberately runs no
                 // torrent path (a torrentable file makes the seeder
-                // redundant — design.md, BitTorrent Downloads), so a
-                // sourceless emission would just park an empty download.
-                let sources = self.sources(view, peers, file);
-                if sources.is_empty() {
-                    continue;
-                }
-                let _ = self
-                    .file
-                    .send(FileCommand::StartDownload {
-                        file,
-                        size_bytes: entry.state.size_bytes,
-                        sources,
-                        play_chunk: 0,
-                    })
-                    .await;
-            }
-        }
+                // redundant — design.md, BitTorrent Downloads).
+                let fetch = (self.have.get(&file) == Some(&false)).then(|| DownloadFetch {
+                    size_bytes: entry.state.size_bytes,
+                    sources: self.sources(view, peers, file),
+                    play_chunk: 0,
+                });
+                WantedDownload { file, fetch }
+            })
+            .collect();
+        // `now_playing: None`: the seeder plays nothing, so none of its
+        // downloads has a playback deadline — endgame urgency still
+        // applies, window-age urgency never does.
+        let _ = self
+            .file
+            .send(FileCommand::SetDownloads {
+                wanted,
+                now_playing: None,
+            })
+            .await;
     }
 
     /// Route a file-actor output: relay messages, availability writes,

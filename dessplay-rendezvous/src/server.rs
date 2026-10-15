@@ -32,6 +32,7 @@ use crate::anidb::client::AniDbApi;
 use crate::anidb::curator::ShortTitleCurator;
 use crate::anidb::titles::TitlesSource;
 use crate::anidb::worker::{self, AniDbHost};
+use crate::auth_limit::{AuthLimit, AuthLimiter, Verdict};
 use crate::storage::ServerStorage;
 
 /// How the server reads its clock (unix millis — this *is* the shared
@@ -88,6 +89,8 @@ pub struct ServerConfig {
     pub password: String,
     /// How long a connection may sit unauthenticated before being cut.
     pub auth_timeout: Duration,
+    /// Failed-password budget per source address.
+    pub auth_limit: AuthLimit,
     /// Compaction schedule.
     pub compaction: CompactionSchedule,
     /// How many chat messages survive compaction (the rest are archived
@@ -104,6 +107,7 @@ impl ServerConfig {
         Self {
             password: password.into(),
             auth_timeout: Duration::from_secs(10),
+            auth_limit: AuthLimit::default(),
             compaction: CompactionSchedule::DailyUtc {
                 hour: 12,
                 minute: 0,
@@ -198,6 +202,8 @@ struct Shared<T> {
     dirty: AtomicBool,
     storage: Mutex<Option<ServerStorage>>,
     clock: Clock,
+    /// Failed-password budgets per source address.
+    auth_limiter: Mutex<AuthLimiter>,
 }
 
 impl<T: Transport> Shared<T> {
@@ -518,6 +524,7 @@ where
         dirty: AtomicBool::new(false),
         storage: Mutex::new(storage),
         clock: Arc::clone(&clock),
+        auth_limiter: Mutex::new(AuthLimiter::new(config.auth_limit)),
     });
     let mut next_conn_id: u64 = 0;
 
@@ -912,11 +919,39 @@ async fn serve_connection<T: Transport>(
             (username, password, role, epoch)
         }
     };
-    if password != config.password {
-        tracing::warn!(user = %username.0, %remote, "auth failed: bad password");
-        reject_and_close(&*conn, &ServerControl::AuthFailed, "bad password").await;
-        return;
+    // After the version check, so a stale client behind a throttled
+    // address still hears "update". A throttled refusal is the same
+    // terminal AuthFailed: a bare close would read as a network blip,
+    // and the client would keep redialing into the throttle.
+    let verdict =
+        lock(&shared.auth_limiter).judge(remote.ip(), tokio::time::Instant::now(), || {
+            password == config.password
+        });
+    match verdict {
+        Verdict::Accept => {}
+        Verdict::Reject => {
+            tracing::warn!(user = %username.0, %remote, "auth failed: bad password");
+            reject_and_close(&*conn, &ServerControl::AuthFailed, "bad password").await;
+            return;
+        }
+        Verdict::Throttled => {
+            tracing::warn!(
+                user = %username.0,
+                %remote,
+                "auth refused: too many failed attempts from this address"
+            );
+            reject_and_close(
+                &*conn,
+                &ServerControl::AuthFailed,
+                "too many failed attempts",
+            )
+            .await;
+            return;
+        }
     }
+    // Authenticated: only now may the peer send more than its
+    // handshake-sized `Auth` (Transport::admit).
+    conn.admit();
 
     // ---- Register, superseding any existing entry for this user (a
     // reconnecting client — possibly one whose old connection hasn't
@@ -1125,6 +1160,11 @@ async fn serve_transfer_connection<T: Transport>(
     if let Some(old) = superseded {
         old.close("superseded by a new transfer connection").await;
     }
+    // Bound: the token proved the session. Nothing further is expected
+    // on this control stream, but an unadmitted connection also keeps
+    // its pre-admission receive window, which would throttle every
+    // relayed upload through it.
+    conn.admit();
     tracing::debug!(user = %username.0, %remote, "transfer connection bound");
 
     // Streams that raced ahead of the TransferAuth frame classify now,

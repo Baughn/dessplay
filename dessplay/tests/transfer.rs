@@ -295,7 +295,7 @@ fn data(len: usize) -> Vec<u8> {
 /// another channel mid-transfer, the download is cancelled and its
 /// partial deleted — but the session's `resolved` map lags the file
 /// actor's, so a snapshot processed in that window re-emits
-/// `StartDownload`. That stale re-emit must be a no-op: without the
+/// a fetch of the file. That stale re-emit must be a no-op: without the
 /// local-files guard it re-created the just-deleted partial and
 /// re-downloaded the entire file from the relay.
 #[tokio::test]
@@ -308,12 +308,8 @@ async fn a_cancelled_redundant_download_is_not_resurrected_by_a_stale_start() {
 
     // A download starts and solicits its source (no replies needed —
     // the point is what the *leecher* sends, not a full transfer).
-    let start = || FileCommand::StartDownload {
-        file: hash.root,
-        size_bytes: hash.size_bytes,
-        sources: vec![PeerId::new("seed")],
-        play_chunk: 0,
-    };
+    let start =
+        || FileCommand::fetch_only(hash.root, hash.size_bytes, vec![PeerId::new("seed")], 0);
     leecher.commands.send(start()).await.unwrap();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     loop {
@@ -376,13 +372,101 @@ async fn a_cancelled_redundant_download_is_not_resurrected_by_a_stale_start() {
         if let Ok(Some(FileOutput::SendPeer { message, .. })) =
             tokio::time::timeout(Duration::from_millis(50), leecher.outputs.recv()).await
         {
-            panic!("stale StartDownload resurrected the download: sent {message:?}");
+            panic!("a stale fetch resurrected the download: sent {message:?}");
         }
     }
     assert!(
         !partial.exists(),
-        "stale StartDownload re-created the deleted partial"
+        "a stale fetch re-created the deleted partial"
     );
+}
+
+/// Regression (2026-10-14): a file that leaves the want-set — removed
+/// from the playlist (the wrong one of two same-named encodes, removed
+/// and replaced), marked watched, its series NotWatching, auto-download
+/// switched off — must stop downloading. Pre-fix nothing ever told the
+/// file actor: four peers kept pulling the removed file from its only
+/// holder for half an hour, saturating his uplink (1200 kB/s up, RTT
+/// 1200ms).
+#[tokio::test]
+async fn a_download_that_leaves_the_want_set_is_cancelled() {
+    let bytes = data(64 * 1024);
+    let hash = ed2k_hash_bytes(&bytes);
+    let mut leecher = spawn_actor("leech", &[]);
+    let partial = leecher._cache.path().join(hash.root.to_string());
+
+    leecher
+        .commands
+        .send(FileCommand::fetch_only(
+            hash.root,
+            hash.size_bytes,
+            vec![PeerId::new("seed")],
+            0,
+        ))
+        .await
+        .unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "download never solicited its source"
+        );
+        match tokio::time::timeout(Duration::from_millis(50), leecher.outputs.recv()).await {
+            Ok(Some(FileOutput::SendPeer { message, .. }))
+                if matches!(&*message, PeerMessage::BlockHashRequest { .. }) =>
+            {
+                break;
+            }
+            _ => continue,
+        }
+    }
+    assert!(partial.exists(), "an active download holds a partial");
+
+    // The entry is removed: the want-set no longer holds the file.
+    leecher
+        .commands
+        .send(FileCommand::SetDownloads {
+            wanted: vec![],
+            now_playing: None,
+        })
+        .await
+        .unwrap();
+    // Drain cancel-time traffic.
+    while tokio::time::timeout(Duration::from_millis(100), leecher.outputs.recv())
+        .await
+        .ok()
+        .flatten()
+        .is_some()
+    {}
+    assert!(
+        !partial.exists(),
+        "an unwanted download must be cancelled and its partial deleted"
+    );
+    // The source answering late must not revive it: a block-hash reply
+    // to a cancelled download is ignored, so no chunk is ever asked for.
+    leecher
+        .commands
+        .send(FileCommand::PeerMessage {
+            from: PeerId::new("seed"),
+            message: Box::new(PeerMessage::BlockHashes {
+                file: hash.root,
+                hashes: hash.blocks.clone(),
+            }),
+        })
+        .await
+        .unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(500);
+    while tokio::time::Instant::now() < deadline {
+        match tokio::time::timeout(Duration::from_millis(50), leecher.outputs.recv()).await {
+            Ok(Some(FileOutput::SendPeer { message, .. })) => {
+                panic!("a cancelled download kept talking to its source: {message:?}");
+            }
+            Ok(Some(FileOutput::OpenTransfer { .. })) => {
+                panic!("a cancelled download opened a data stream");
+            }
+            _ => {}
+        }
+    }
 }
 
 #[tokio::test]
@@ -398,12 +482,12 @@ async fn single_seed_transfer_completes_with_full_goodput() {
     // The leecher learns "seed" has the file and starts downloading.
     leecher
         .commands
-        .send(FileCommand::StartDownload {
-            file: hash.root,
-            size_bytes: hash.size_bytes,
-            sources: vec![PeerId::new("seed")],
-            play_chunk: 0,
-        })
+        .send(FileCommand::fetch_only(
+            hash.root,
+            hash.size_bytes,
+            vec![PeerId::new("seed")],
+            0,
+        ))
         .await
         .unwrap();
 
@@ -463,12 +547,12 @@ async fn two_seed_transfer_completes_and_stays_efficient() {
 
     leecher
         .commands
-        .send(FileCommand::StartDownload {
-            file: hash.root,
-            size_bytes: hash.size_bytes,
-            sources: vec![PeerId::new("seedA"), PeerId::new("seedB")],
-            play_chunk: 0,
-        })
+        .send(FileCommand::fetch_only(
+            hash.root,
+            hash.size_bytes,
+            vec![PeerId::new("seedA"), PeerId::new("seedB")],
+            0,
+        ))
         .await
         .unwrap();
 
@@ -662,12 +746,12 @@ async fn a_failed_stream_open_is_retried_and_the_transfer_completes() {
 
     leecher
         .commands
-        .send(FileCommand::StartDownload {
-            file: hash.root,
-            size_bytes: hash.size_bytes,
-            sources: vec![PeerId::new("seed")],
-            play_chunk: 0,
-        })
+        .send(FileCommand::fetch_only(
+            hash.root,
+            hash.size_bytes,
+            vec![PeerId::new("seed")],
+            0,
+        ))
         .await
         .unwrap();
 
@@ -746,12 +830,12 @@ async fn a_stalled_downloader_does_not_starve_another() {
     // Meanwhile a healthy leecher downloads the same file.
     leecher
         .commands
-        .send(FileCommand::StartDownload {
-            file: hash.root,
-            size_bytes: hash.size_bytes,
-            sources: vec![PeerId::new("seed")],
-            play_chunk: 0,
-        })
+        .send(FileCommand::fetch_only(
+            hash.root,
+            hash.size_bytes,
+            vec![PeerId::new("seed")],
+            0,
+        ))
         .await
         .unwrap();
 

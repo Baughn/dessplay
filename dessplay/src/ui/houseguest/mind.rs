@@ -12,7 +12,7 @@ use super::room::{Furniture, PieceRef, Seat, Use};
 use super::rules::Trials;
 use super::scenes::{Build, Job, Lift, SetDown};
 use super::script::ScriptId;
-use super::terrain::{Link, Route, Terrain};
+use super::terrain::{Link, Terrain};
 
 /// Her mind's stream is seeded from the body's first draw, salted.
 pub(super) const MIND_SALT: u64 = 0x6d69_6e64_5f6f_6661;
@@ -111,6 +111,10 @@ pub(super) struct Ctx<'a> {
     /// She'd put a rule of her home right: one she felt is broken
     /// still, and her mood leaves her something to do about her home.
     pub may_arrange: bool,
+    /// She has put a stage of her shelf up that the frame has yet to
+    /// take or refuse (phase 6a D7c): it isn't hers to choose again
+    /// meanwhile, whatever the last frame offered.
+    pub put_up_waits: bool,
     /// Nearer spots draw her (phase 5c M6; [`Stillness::near`]): see
     /// [`Near`].
     ///
@@ -205,8 +209,9 @@ pub(super) enum Bind {
     Take(Link),
     /// A door in space to this spot.
     Door((i32, i32)),
-    /// Off to work, out by this link if her floor reaches a screen edge.
-    Work(Option<Link>),
+    /// Off to work, through her door where the frame stands it (door
+    /// batch, step 4b), or, with none, a door in space where she stands.
+    Work,
     /// A job: on her floor she walks to it, elsewhere she heads for it.
     Job(Job),
 }
@@ -218,7 +223,7 @@ impl Bind {
             Self::Take(link) => landing(link, terrain),
             Self::Door(spot) => Some(*spot),
             Self::Job(job) => Some(job.spot()),
-            Self::Here(_) | Self::WalkTo(_) | Self::Work(_) => None,
+            Self::Here(_) | Self::WalkTo(_) | Self::Work => None,
         }
     }
 
@@ -268,6 +273,8 @@ const TRAVEL: &[Method] = &[m("travel/link", take_link), m("travel/door", door_a
 const WORK: &[Method] = &[m("work", work)];
 const PULL: &[Method] = &[m("pull", pull)];
 const SWAP: &[Method] = &[m("swap", swap)];
+/// Her shelf's next stage, where the frame offers it (phase 6a D7c).
+const PUT_UP: &[Method] = &[m("put-up/stage", put_up)];
 /// The most progressed step first: what she's carrying comes before
 /// lifting anything.
 const ARRANGE: &[Method] = &[
@@ -312,7 +319,19 @@ pub(super) fn methods(want: Want) -> &'static [Method] {
         Want::Use(Use::Read) => READ,
         Want::Use(_) => USE,
         Want::Arrange => ARRANGE,
+        Want::PutUp => PUT_UP,
     }
+}
+
+/// The next stage of her shelf, beside where it goes: offered by the
+/// frame only while one is due today and the frame would show it up
+/// (`Chances::put_up`), and not while the frame has yet to take the
+/// one she put up.
+fn put_up(c: &Ctx, _: Whims, _: Want) -> Option<Bind> {
+    c.chances
+        .put_up
+        .filter(|_| !c.put_up_waits)
+        .map(|p| Bind::Job(Job::PutUp(p)))
 }
 
 /// Space out musing (saying a musing, or now and then telling a
@@ -459,22 +478,11 @@ fn door_away(c: &Ctx, w: Whims, _: Want) -> Option<Bind> {
     Some(Bind::Door((x, p.y)))
 }
 
-/// Off to work, home by a way that doesn't come in through the chat when
-/// there is one.
+/// Off to work, through her door (door batch, step 4b): wherever the
+/// frame stands it then (`Chances::door`), or, with none, a door in
+/// space where she stands.
 fn work(c: &Ctx, _: Whims, _: Want) -> Option<Bind> {
-    if !c.may_work {
-        return None;
-    }
-    let around = || {
-        c.links
-            .iter()
-            .filter(|l| matches!(l.route, Route::Around { .. }))
-    };
-    let out = around()
-        .find(|l| !landing(l, c.terrain).is_some_and(|s| c.chances.in_chat(s)))
-        .or_else(|| around().next())
-        .copied();
-    Some(Bind::Work(out))
+    c.may_work.then_some(Bind::Work)
 }
 
 /// A line to pull: those into the chat a tenth as likely, and nearer
@@ -611,7 +619,16 @@ fn place(c: &Ctx, w: Whims, want: Want) -> Option<(Use, Place)> {
     let Want::Use(what) = want else {
         return None;
     };
-    let places = places(what, c.chances, w);
+    let mut places = places(what, c.chances, w);
+    // Gazing up at her shelf is only from its room's floor, where she
+    // stands (phase 6a D8: no climb for it). Judged as she chooses, not
+    // as the frame offers it (the stage sets her there).
+    if what == Use::GazeUp {
+        places.retain(|place| match place {
+            Place::Seat(seat) => c.terrain.platform_at(seat.x, seat.y) == Some(c.here),
+            Place::Make(_) => false,
+        });
+    }
     let below = |n| w.below("place", n);
     let i = match Near::of(c) {
         None => below(places.len() as u64) as usize,
@@ -697,11 +714,11 @@ fn carry(c: &Ctx, _: Whims, _: Want) -> Option<Bind> {
 /// whim among its places as good as the cheapest, the others kept to
 /// try it in after: [`Trials`]).
 fn lift(c: &Ctx, w: Whims, _: Want) -> Option<Bind> {
-    let (repair, trials, (x, y), side) = match c.episode {
+    let (repair, trials, (x, y), side, up) = match c.episode {
         Some(ep) if !ep.pocket && !ep.trying => {
             let judged = c.chances.judged.filter(|j| j.of(&ep) && j.holds)?;
             let (spot, side) = judged.spot?;
-            (ep.repair, ep.trials, spot, side)
+            (ep.repair, ep.trials, spot, side, judged.up)
         }
         Some(_) => return None,
         None => {
@@ -715,12 +732,12 @@ fn lift(c: &Ctx, w: Whims, _: Want) -> Option<Bind> {
                 ties.swap(i, j);
             }
             let repair = *ties.first()?;
-            let &(_, spot, side) = c
+            let &(_, spot, side, up) = c
                 .chances
                 .lift_at
                 .iter()
                 .find(|(p, ..)| *p == repair.piece)?;
-            (repair, Trials::of(&ties), spot, side)
+            (repair, Trials::of(&ties), spot, side, up)
         }
     };
     Some(Bind::Job(Job::Lift(Lift {
@@ -729,6 +746,7 @@ fn lift(c: &Ctx, w: Whims, _: Want) -> Option<Bind> {
         x,
         y,
         side,
+        up,
     })))
 }
 
@@ -861,7 +879,9 @@ impl Furniture {
             | Self::Plant
             | Self::Poster
             | Self::Window
-            | Self::Clock => None,
+            | Self::Clock
+            | Self::ShelfKit
+            | Self::Gremlin => None,
         }
     }
 }
@@ -973,6 +993,22 @@ pub(super) const SKY_NIGHT: Pool = Pool {
     ],
     n: 1,
     d: 1,
+};
+
+/// What she says up at her gremlin on her shelf, once at most a gaze
+/// up, after its opening (phase 6a step 8, the user's extra 2): one gaze
+/// in two, each line cooling as any does. Only his: her plant gets the
+/// opening alone.
+pub(super) const SHELF: Pool = Pool {
+    id: PoolId::Shelf,
+    lines: &[
+        line!("Hi, little guy."),
+        line!("You stay up there."),
+        line!("Behave, okay?"),
+        line!("He's watchin' me..."),
+    ],
+    n: 1,
+    d: 2,
 };
 
 /// Her sill's musings for `sky` (see [`SKY_DAY`]).
@@ -1214,6 +1250,9 @@ pub(super) enum PoolId {
     /// What she muses on at her window's sill, by the sky ([`SKY_DAY`]
     /// and its siblings, [`sky_musings`]).
     Sky,
+    /// What she says gazing up at her gremlin on her shelf ([`SHELF`]:
+    /// phase 6a step 8).
+    Shelf,
     /// A test's pool, with no budget: not a pool she draws from.
     #[cfg(test)]
     Test,
@@ -1222,7 +1261,7 @@ pub(super) enum PoolId {
 impl PoolId {
     /// Every pool there is.
     #[cfg(test)]
-    pub const ALL: [PoolId; 11] = [
+    pub const ALL: [PoolId; 12] = [
         Self::Beat,
         Self::Door,
         Self::Musing,
@@ -1233,6 +1272,7 @@ impl PoolId {
         Self::December,
         Self::Panic,
         Self::Sky,
+        Self::Shelf,
         Self::Test,
     ];
 
@@ -1249,6 +1289,7 @@ impl PoolId {
             Self::December => 7,
             Self::Panic => 8,
             Self::Sky => 9,
+            Self::Shelf => 10,
             // Out of the way of every pool she draws from.
             #[cfg(test)]
             Self::Test => u64::MAX,
@@ -1268,7 +1309,8 @@ impl PoolId {
             | Self::Calendar
             | Self::December
             | Self::Panic
-            | Self::Sky => false,
+            | Self::Sky
+            | Self::Shelf => false,
             #[cfg(test)]
             Self::Test => false,
         }
@@ -1311,7 +1353,8 @@ impl PoolId {
             Self::December => (7, vec![DECEMBER]),
             Self::Panic => (8, vec![PANIC]),
             Self::Sky => (9, vec![SKY_DAY, SKY_DAWN, SKY_DUSK, SKY_EVENING, SKY_NIGHT]),
-            Self::Test => (10, Vec::new()),
+            Self::Shelf => (10, vec![SHELF]),
+            Self::Test => (11, Vec::new()),
         }
     }
 }
@@ -1531,6 +1574,19 @@ impl Heading {
                 let ((x, y), side) = judged.spot?;
                 Some(Job::SetDown(SetDown { x, y, side, ..*was }))
             }
+            // The same stage of her shelf, wherever the frame has her
+            // stand for it now.
+            Job::PutUp(was) => chances
+                .put_up
+                .filter(|p| (p.nook, p.to) == (was.nook, was.to))
+                .map(Job::PutUp),
+            // Her door, wherever the frame stands it now.
+            Job::Leave { why, .. } => chances.door.map(|spot| Job::Leave { spot, why: *why }),
+            // The place she was making for to go out, while it's still
+            // clear of her pieces as this frame lays them (door batch,
+            // step 10a).
+            Job::Out { at, why } => super::osaka::Clear::of(at.spot(), &chances.obstacles)
+                .map(|at| Job::Out { at, why: *why }),
         }
     }
 
@@ -1540,7 +1596,12 @@ impl Heading {
             Job::Pull(p) | Job::Borrow(p) => p.row,
             Job::Swap(s) => s.row,
             Job::Build(b) => b.row,
-            Job::Use(_) | Job::Lift(_) | Job::SetDown(_) => 0,
+            Job::Use(_)
+            | Job::Lift(_)
+            | Job::SetDown(_)
+            | Job::PutUp(_)
+            | Job::Leave { .. }
+            | Job::Out { .. } => 0,
         }
     }
 }
@@ -1580,13 +1641,18 @@ mod tests {
 
     /// Lint: every pooled line fits a bubble (`line!` already makes an
     /// over-long one a compile error), and so does every line a script
-    /// says; and every pool has a line to say.
+    /// says; and every pool has a line to say. A bubble is drawn a
+    /// character a cell, so every line is ASCII and the few narrow marks
+    /// (`NARROW`; `line!` makes any other a compile error too; a wide
+    /// glyph would leave half of itself under the next).
     /// Every pool lists its own lines, all of them: the beat pool's six.
     #[test]
     fn every_pooled_line_fits_a_bubble() {
+        let narrow = super::super::narrow;
         for (pool, line) in all_lines() {
             assert!(super::super::fits_a_bubble(line), "{pool:?}: {line:?}");
             assert!(!line.is_empty(), "{pool:?}");
+            assert!(narrow(line), "{pool:?}: {line:?}");
         }
         // And every line her scripts' keys say, pooled or not.
         use super::super::script::{self, ScriptId};
@@ -1594,6 +1660,7 @@ mod tests {
         for &(id, line) in &scripted {
             assert!(super::super::fits_a_bubble(line), "{id:?}: {line:?}");
             assert!(!line.is_empty(), "{id:?}");
+            assert!(narrow(line), "{id:?}: {line:?}");
         }
         for (id, line) in [
             (ScriptId::Setsubun, script::ONI_WA_SOTO),
@@ -1685,9 +1752,12 @@ mod tests {
                 assert_eq!(other, pool, "{line:?} in two pools");
             }
         }
-        // Characters, not bytes.
+        // Characters, not bytes; and ASCII and the narrow marks only.
         assert!(super::super::fits_a_bubble(&"…".repeat(24)));
         assert!(!super::super::fits_a_bubble(&"a".repeat(25)));
+        assert!(super::super::narrow("Hm? ~(^_^)/ 1, 2!"));
+        assert!(super::super::narrow("…"));
+        assert!(!super::super::narrow("漢"));
     }
 
     /// [`Loss::all`] lists every kind of loss (see [`Loss::kind`]), each
@@ -1988,6 +2058,7 @@ mod tests {
             episode: None,
             just_set: None,
             may_arrange: false,
+            put_up_waits: false,
             near,
         }
     }
@@ -2127,10 +2198,11 @@ mod tests {
             piece: Shown {
                 item: Furniture::Sofa,
                 facing: Facing::Right,
-                boxed: false,
+                boxed: false.into(),
                 strip: None,
                 left: x - 3,
                 floor: y,
+                stood: y,
                 scrap: Some(super::super::scrap::Scrap::new(MadeId(0), &[], 0)),
             },
             then: Use::Lounge,
@@ -2183,10 +2255,11 @@ mod tests {
             piece: Shown {
                 item: Furniture::Sofa,
                 facing: Facing::Right,
-                boxed: false,
+                boxed: false.into(),
                 strip: None,
                 left: x - 3,
                 floor: 10,
+                stood: 10,
                 scrap: Some(super::super::scrap::Scrap::new(MadeId(0), &[], 0)),
             },
             then: Use::Nap,

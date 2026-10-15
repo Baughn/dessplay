@@ -1,6 +1,6 @@
 # DessPlay Design Document
 
-Last updated: 2026-10-06
+Last updated: 2026-10-15
 
 A synchronized video player for watch parties. Terminal-first, built for
 reliability over flaky connections. Server-coordinated, including relayed
@@ -1014,11 +1014,13 @@ failure, the link stays plain text with no error chrome.
   do not open the viewer. There is no keyboard command to open it.
 - **Terminal state.** Right after entering the alternate screen the
   client resets left/right margin mode, the scroll region, and origin
-  mode (`CSI ?69l`, `CSI r`, `CSI ?6l`). Every frame assumes absolute
-  cursor addressing and that `CSI s`/`CSI u` save and restore the
-  cursor; those hold only in that state, and a terminal keeps it across
-  the alternate-screen switch, so whatever the previous program left
-  set would otherwise leak into ours (why:
+  mode (`CSI ?69l`, `CSI r`, `CSI ?6l`), and turns off xterm
+  modifyOtherKeys and the Kitty keyboard flags (`CSI >4;0m`,
+  `CSI =0u`). Every frame assumes absolute cursor addressing and that
+  `CSI s`/`CSI u` save and restore the cursor, and input decoding
+  assumes legacy key encoding; those hold only in that state, and a
+  terminal keeps it across the alternate-screen switch, so whatever the
+  previous program left set would otherwise leak into ours (why:
   [decisions](decisions.md#the-terminal-state-prologue)).
 
 ### System Messages
@@ -1377,9 +1379,10 @@ this section states what is built.
   again wherever she's going (a floor where she fits) and she steps out,
   one time in three saying a door line ("Where was I?", "Huh? How'd I
   get here?", "...What was I doin'?", "I forgot what I forgot.",
-  "Handy, these doors."; the rest she comes through quietly). The door
-  stays within her box, so it never covers
-  anything; what it ignores is the terrain in between
+  "Handy, these doors."; the rest she comes through quietly). A door in
+  space stays within her box, so it covers nothing of the terrain;
+  what it ignores is the terrain in between (her external door, which
+  she goes out by to school, is placed apart: see *Away at school*)
   (why: [decisions](decisions.md#houseguest-has-a-door-in-space-2026-09-28)).
 - **Local key, mouse, or paste input** ends a visit (unless she's
   resident) with a ~3.75 s dissolve: a startled face, a goodbye smile,
@@ -1402,9 +1405,12 @@ this section states what is built.
   (lounging, napping, a day's sleep, homework, watching TV, reading,
   looking out of the window). Her act runs on, its time and what it
   eases her by unchanged: in its own pose she turns to the chat (lying
-  down she doesn't turn over, and at her desk or a sill she keeps
-  facing it), `!` then `?`, then watches plain-faced until her watch is
-  over, her act's own bubble hidden meanwhile (what she's saying shows
+  down she doesn't turn over, and at her desk, a sill or a strip she
+  borrowed she keeps facing it), `!` (a frame, 1.4 s) then `?` (to
+  4 s), then watches plain-faced until her watch is over and a frame
+  past her `?` at least, so none of them comes and goes inside a frame
+  (why: [decisions](decisions.md#in-a-still-act-she-looks-up-where-she-is-2026-10-06)),
+  her act's own bubble hidden meanwhile (what she's saying shows
   over it, as over any look), and is at it as before (at a piece,
   turned back to it). What her act's script said under the look (a
   riddle's question and answer) she says once the look is over, line
@@ -1454,7 +1460,10 @@ this section states what is built.
   another moved glyph left); dropping repeats until stable. Wide glyphs
   move whole. At most 60 glyphs. Her body never stands over moved text or
   holes. The goodbye rain re-knits holes and moved glyphs back to the
-  real text.
+  real text; a moved wide glyph rains as one brick with the cell after
+  it (whatever it covered there, a hole included), shows whole or not
+  at all, and settles at once if the real UI changes under either half
+  (why: [decisions](decisions.md#a-moved-wide-glyph-rains-whole-2026-10-07)).
 - **Activities** keep her busy on the spot: sitting hugging her knees,
   lying on her back (dozing, "zzz") or stomach (feet kicking, "~"),
   jumping jacks ("1, 2!"), toe touches, a big stretch ("nnn~"), gazing up
@@ -1496,7 +1505,8 @@ this section states what is built.
   lingered as one), then slides it back the way it came, a cell a step,
   and the line is whole. She stays put from taking hold to letting go:
   the walk is her one set-off. Reading it she looks up at a chat line
-  where she is; tearing it off or sliding it back, a line stops her.
+  where she is, without turning from the tear; tearing it off or
+  sliding it back, a line stops her.
   **She never leaves it torn:** text is out of its line only while she
   holds it; the moment she doesn't (cut short, her grip lost, someone at
   the keys while it's in the chat, moved on, the stage placing her),
@@ -1542,36 +1552,46 @@ this section states what is built.
 - **Choosing what to do**: each decision scores what's on offer where she
   stands (stand, space out, sneeze, walk, travel, each activity, a pull or
   swap in reach) as base × fit × cooldown and picks at random, weighted,
-  among the top four. Ten needs (0–1) set the fit: *sleepy* rises over a
-  visit, and a bed answers it best, a nap on a sofa well and a doze on the
-  floor a little, so she dozes more as a visit goes on; *restless* starts
-  high, rises steadily, and moving answers it; *tidy* rises while a line is
-  on offer and a pull answers it; *mischief* rises slowly and a swap
-  answers it; *hungry* rises over twenty minutes and a snack from her
-  fridge answers it; *comfort* rises steadily and sitting or lying on
-  furniture answers it (a real piece fully, one she made 0.6 as well, the
-  floor 0.1); *fun* rises steadily and the TV, a book, the cat, a parcel,
-  a snack and a swap answer it, each wearing thin with use (its tolerance
-  rises by 0.6 a whole use and wears off over ten minutes), so she varies
-  what she enjoys; *daydreams* rise slowly and spacing out, gazing, lying
-  on her front and drifting off at her desk answer them; *nesting*
-  rises only while a rule of her home she has felt is broken (see *The
-  rules of her home*); *beauty* rises (over twenty minutes) only while
-  she's in a plain room, on a strip where nothing pretty shows (or on
-  none), and no want answers it: resting (sitting, lying, gazing; not
-  exercise) or using her things (not the chores of unpacking a parcel
-  or crumpling text) in a
-  pretty room eases it as she does them (by the share done, times the
-  room's beauty up to 1; the plant and the poster are 1 each), and it
-  turns the shopping channel to decor (below). Every want
-  answers at least one need but standing (the filler) and sneezing (an
-  accident). An offer's fit is 0.1 + Σ need² × amount × 2 × how well its
-  spot answers that need (and how fresh, for fun) — 0.5 for an offer no
-  need wants, and never below 0.5 for a parcel or her part-time job, which
-  she takes whatever she feels. She arrives wide awake (sleepy 0), keen to
-  move (restless 0.7), mischief and hunger at 0.2, nesting at 0, beauty
-  at 0.3, the rest at 0.5: that's her afternoon. Her routine changes
-  some of it (see *Her routine*).
+  among the top four. Ten needs (0–1) set the fit, each rising from empty
+  to full over its own time (before her mood scales it, below): *sleepy*
+  rises over a visit (fifteen minutes), and a bed answers it best, a nap
+  on a sofa well and a doze on the floor a little, so she dozes more as a
+  visit goes on (on the floor only while comfort asks too: sleepiness
+  alone loses there to spacing out); *restless* starts high, rises over
+  five minutes, and moving answers it (wandering on her floor is base 9,
+  travelling to another 7); *tidy* rises over 90 s while a line is on
+  offer and a pull answers it; *mischief* rises over six minutes and a
+  swap answers it; *hungry* rises over twenty minutes and a snack from her
+  fridge answers it; *comfort* rises over eight minutes and sitting or
+  lying on furniture answers it (a real piece fully, one she made 0.6 as
+  well, the floor 0.1); *fun* rises over six minutes and the TV, a book,
+  the cat, a parcel, a snack and a swap answer it, each wearing thin with
+  use (its tolerance rises by 0.6 a whole use and wears off over ten
+  minutes), so she varies what she enjoys; *daydreams* rise over ten
+  minutes and spacing out, gazing, lying on her front and drifting off at
+  her desk answer them; *nesting* rises only while a rule of her home she
+  has felt is broken (see *The rules of her home*); *beauty* rises (over
+  twenty minutes) only while she's in a plain room, on a strip where
+  nothing pretty shows (decor on its shelf counts for the room below,
+  while it shows: a shelf hidden by text is no prettier than none) (or
+  on none), and no want answers it: resting
+  (sitting, lying, gazing; not exercise) or using her things (not the
+  chores of unpacking a parcel or crumpling text) in a pretty room eases
+  it as she does them (by the share done, times the room's beauty up to 1;
+  the plant and the poster are 1 each), and it turns the shopping channel
+  to decor (below). Every want answers at least one need but standing (the
+  filler) and sneezing (an accident). An offer's fit is 0.1 + Σ need² ×
+  amount × 2 × how well its spot answers that need (and how fresh, for
+  fun) — 0.5 for an offer no need wants, and never below 0.5 for a parcel
+  or her part-time job, which she takes whatever she feels, or for spacing
+  out, worth doing for its own sake. She arrives wide awake (sleepy 0),
+  keen to move (restless 0.7), mischief and hunger at 0.2, nesting at 0,
+  beauty at 0.3, the rest at 0.5: that's her afternoon. Her routine
+  changes some of it (see *Her routine*). Restlessness, tidiness and
+  mischief rise as slowly as they do, and wandering's and travelling's
+  bases are 9 and 7, for her stillness (phase 5c; they were 90 s, 60 s and
+  four minutes, 14 and 10) (why:
+  [decisions](decisions.md#her-stillness-ships-2026-10-07)).
   **Her mood for the day** is drawn from her master seed and the game
   day (each visit's, without her clock): ordinary half the time, lazy
   and industrious a fifth each, dreamy a tenth. A second visit the same
@@ -1604,7 +1624,9 @@ this section states what is built.
   sinking onto her knees); lounging, to a nap from the same seat of the
   same sofa (when napping there is on offer); leaning on her window's
   sill, to sitting in front of it, then to dozing there or watching the
-  clouds under it (see *Her window and wall clock*). Lying back, a doze,
+  clouds under it (see *Her window and wall clock*). Its odds: lazy 0.6,
+  ordinary and dreamy 0.35, industrious 0.15; from sitting she dozes
+  where she sits half the time. Lying back, a doze,
   watching the clouds and a nap are as far as it goes. Like a leftover or a heading it's a
   continuation of what she chose, not a new choice: it skips the roll,
   isn't one of her recent choices, and eases her as its own want
@@ -1621,16 +1643,20 @@ this section states what is built.
   the length she draws for a still act she chose (sitting, lying back,
   gazing, dozing where she sits, spacing out (her rare musing too),
   lounging, napping, a day's sleep, reading (on her back too, and the
-  doze under the book, and a borrowed strip), looking out); not
+  doze under the book, and a borrowed strip), looking out, watching TV (it holds a picture)); not
   exercise, lying on her front, chores, a snack, the cat, homework (on
   the floor too; her
-  mood moves where it nods off instead), her night or a trial sit, nor
-  watching until her TV holds a picture (its static is animated). **A
+  mood moves where it nods off instead), her night or a trial sit:
+  lazy ×1.5, ordinary ×1, dreamy and industrious ×0.85, but an
+  industrious watch (watching TV, flicking through the channels, the
+  shopping channel) isn't shortened (×1). **A
   daydream** (a musing spacing-out) holds as many musings as her mood's
   whim says, the first as ever (or a riddle, which holds no more), each
   next a gap on while it lasts, waiting while she speaks or looks up at
   the chat; those that don't fit before it ends go unsaid; with none she
-  only spaces out. Her rare musing and a glance at her clock aren't
+  only spaces out (lazy none to two, ordinary one to three, dreamy two
+  to four, industrious none or one; spacing out lasts 10–28 s before
+  her mood lingers over it). Her rare musing and a glance at her clock aren't
   musings of hers: they take a daydream's place at their own odds in
   every mood, a daydream of none included, and hold no more. Her
   musings cool as any line does (ten minutes each, eight of them), so
@@ -1638,20 +1664,25 @@ this section states what is built.
   a piece of are on her own floor whenever it has any, the nearer
   likelier; a seat is likelier the nearer it is (another floor counts as
   40 columns more), and none is ruled out; where she wanders has no
-  weight. The values (odds, stretch, musings, nod-off, nearness on or
-  off) are the stillness band's tuning; until it, each lever is neutral
+  weight. Her homework nods off a third of the way in lazy, five sixths
+  industrious, halfway otherwise. These values are the stillness band's
+  tuning (phase 5c step 8c)
   (why: [decisions](decisions.md#her-stillness-levers-settling-in-lingering-daydreams-nearer-spots-2026-10-06)).
   **The stillness band** is an aim the tuning holds her to (phase 5c),
   read on a fed afternoon: her moving in sight as a share of her time in
   sight, and her set-offs (each start of a walk, a hop or a door) a
   minute in sight, by her mood, the same in every room, quiet or with
   chat: lazy 5–17% and at most 1.5 set-offs a minute, ordinary and
-  dreamy 8–26% and 2.25, industrious 12–31% and 3; and in each room,
-  industrious moves at least 1.6× as much as lazy. Walking to a job
+  dreamy 8–26% and 2.25, industrious 12–31% and 3, but for the floors of
+  a bare room that keeps her things close (her made pieces, the lines on
+  her own floor), lazy 4, ordinary and dreamy 6, industrious 9; and in
+  each room, industrious moves at least 1.6× as much as lazy. Walking to a job
   counts as moving; exercise in place and kicking her feet count as
   still; time out of sight (away, a door's hidden beats, her shift)
-  counts as neither. Not met yet: under these caps the stage's short
-  trips hold it at about its floor
+  counts as neither. Met in every room and mood but two, shipped short
+  by the user's word: the bare stage's industrious afternoon with chat
+  (8.6% at full strength against its floor of 9) and its spread (1.38),
+  her moods reading alike there
   (why: [decisions](decisions.md#her-stillness-band-per-mood-caps-2026-10-06)).
   Something is on offer only when there's a way to do it from where she
   stands (a method that binds: a spot on her floor, a way off it, a
@@ -1699,7 +1730,13 @@ this section states what is built.
   faces when centred), the other side, centred above, beside her head,
   two rows up — never inside her box, and whose cells are all blank and
   open; with no such spot the bubble isn't shown. Things she *says*
-  (≤ 24 characters) show for 1.2 s + 60 ms per character over her act's
+  (≤ 24 characters, ASCII and a few narrow marks, `… ♪ — – ’ ‘ “ ” ·`,
+  each one cell wide under the renderer's width, its non-CJK one: a
+  bubble is drawn a character a cell; any other character is a compile
+  error; why: [decisions](decisions.md#her-lines-may-use-a-few-narrow-marks-2026-10-07))
+  show for 1.2 s + 60 ms per character, a frame (1.4 s) at least so a
+  line never comes and goes inside one (a stir's turn lasts as long as
+  its murmur, and ends with it if another line cuts it short), over her act's
   own bubble: a greeting on first finding her feet ("Nice to meet you.",
   the date's, or her mood's), "...I'm OK."
   after a hard landing (always on her entrance, else half the time), and
@@ -1729,46 +1766,142 @@ this section states what is built.
     re-knits anything left.
 - **Her part-time job**: once she has a home, on a day off (a weekend or
   a school holiday) from 10:00 to 17:00 of her clock, at most once a
-  visit, she may go to work: out at a screen
-  edge if her floor reaches one, else through her door. Her room stands
-  furnished while she's gone (one to three minutes); a chat or IRC line
-  meanwhile doesn't fetch her (mischief is still undone at once). She
-  comes back the same way with a bundle of leeks cradled in her arms
-  ("I'm home!"). Once she's back in sight her shift is over, however her
-  walk in ends (a fall, a daze); a trip to work that never got out of
-  sight brings no homecoming.
+  visit, she may go to work: through her door, as school is, never off
+  a screen edge. She walks to where it stands (a hop or a door in space
+  between floors on the way, as any walk; landing, she goes on to it),
+  and with no door of hers anywhere, or no way to it, goes by a door in
+  space where she stands, once she's out of any piece of hers (never in
+  her bed or sofa; with nowhere clear of them, work can wait). Moved
+  out of a focused pane on her way, the door in space she takes for it
+  opens clear of her pieces too; with nowhere clear of them and the
+  pane both, work can wait, and she's moved out of the pane by a door
+  between floors (the visit goes on). Her room stands furnished while she's gone
+  (one to three minutes, the door's gap); a chat or IRC line meanwhile
+  doesn't fetch her (mischief is still undone at once). Her door's
+  pane focused while she's out doesn't move it. She comes back out of
+  it facing the room with a bundle of leeks cradled in her arms ("I'm
+  home!"); moved out of a focused pane on her way, she goes to work by
+  a door in space there and comes home by her door, or, while its pane
+  is still focused, where she went. A trip to work that never got
+  through her door (a startle, a chat line or the accordion on her way,
+  however far she got) brings no homecoming, and she doesn't go on to
+  it after; school beginning on her way sends her on
+  out through it to school
+  (why: [decisions](decisions.md#work-goes-out-by-her-door-2026-10-08)).
 - **Getting furniture**: her TV is ordered for her and arrives on her
   second visit. After that, when she watches TV at least three visits
   after her last purchase, with nothing on order or still boxed, the
   shopping channel comes on (Chiyo-chichi) and she buys the next piece
   she lacks — sofa, bed, desk, lamp, bookshelf, fridge, cat bed, window,
-  in that order, then decor (a potted plant, a poster), but decor first while
-  beauty is the most pressing of her needs (none higher) — the moment
-  it comes on,
-  whatever happens next. Her wall clock isn't sold: it's a gift (see
+  in that order, then decor (a potted plant, a poster, a gremlin
+  figurine), but decor first while
+  beauty is the most pressing of her needs (none higher), and last of
+  all her shelf kit (phase 6a: kits after the furniture and the decor),
+  sold only on a frame where a shelf could go up (*Strips and anchors*:
+  where her shelf goes is chosen on the frame), and her gremlin only
+  where a shelf of hers is up (or going up) or could go up on the frame
+  (he wants up there: *The rules of her home*), asked only once the
+  queue comes to one; one that can't be sold then holds up nothing after
+  it. **Her wishlist** (phase 6a): a rule she has felt this visit that
+  wants a kit she doesn't own (in its box or up) and hasn't ordered (she
+  lets it be once she has: *The rules of her home*), still broken, puts
+  that kit first, ahead of the furniture and decor she lacks, at the
+  same cadence (her gremlin wanting up: her shelf kit), if it can be
+  sold then (else the queue as ever); the first such rule in the order
+  she felt them; forgotten with the visit, as what she felt is, and
+  wished for again once she feels it again — the moment it comes on,
+  whatever happens next. The channel's pitch for a wished shelf kit is
+  "A shelf for the gremlin!". Her wall clock isn't sold: it's a gift (see
   *Her window and wall clock*). What she buys arrives on a later visit as a
   parcel ("A parcel!"), once she's up and in sight (not asleep or up in
   the night, not on a dash home, not between her doors, and after her
-  "I'm home!"), pushed in through a **flap** in a wall of one of
-  her strips (below), a wall at the screen's edge first: the wall's
-  line cells just above the floor show the flap swung in (`╱`/`╲`) for
-  800 ms, and the parcel stands against that wall, facing into the
-  room, where the piece will stand. The pieces already on that strip
+  "I'm home!"), pushed in through the **flap in her front door** when
+  her door's space is kept (the flap, its lower half, rides up on the
+  parcel as it slides out across the space, 650 ms in four beats, then
+  shuts; the door stands shut for the flap's 800 ms, drawn over text as
+  in her beats through it; in ASCII the door's open-flap rows, the
+  parcel at its spot at once), to rest just past the space; only when
+  her door's strip can't take it (the space yielding, no room) through
+  a **flap** in a wall of one of her strips (below), a wall at the
+  screen's edge first: the wall's line cells just above the floor show
+  the flap swung in (`╱`/`╲`) for 800 ms (so too her door's wall while
+  her door doesn't stand at it that frame). The parcel stands against
+  that wall (through her door: just past its space), facing into the
+  room, where the piece will stand. It waits while she goes through a
+  door of hers or is out, while her box meets her door's space or the
+  room her door stands in, or would within the flap's 800 ms on her way
+  (a walk's next columns, a climb's or a clamber's end), judged on the
+  space of the wall the parcel comes in by (her first parcel's chooses
+  her door's wall) as well as where her door stands (it never slides
+  through her or her slippers), and while she's held in an act (it
+  comes as she walks, or as an act begins: its slide never breaks her
+  stillness; the stage's parcel scene excepted, from its cue till its
+  parcel has come)
+  (why: [decisions](decisions.md#parcels-come-in-through-her-doors-flap-2026-10-10)).
+  The pieces already on that strip
   make way (packed in order, the newcomer nearest the wall), but only
   where every one that shows still fits, the parcel's cells are blank
-  and free, she can stand to unpack it (judged as any seat of hers: a
-  floor under her, lines allowed) and she'd fit to use it; a window comes
+  and free, she can stand to unpack it and she'd fit to use it, each
+  judged as any seat of hers (a floor under her, lines allowed), on the
+  room as it would show with the box there, then with the piece out of
+  it (the pieces that made way, and what she made that it leaves
+  standing, where they'd be: in line art the image she'd be drawn in
+  takes them in, as once it's there), never with the parcel or the
+  piece in the chat pane or her door's space (as laid out there),
+  pushing a piece that shows into either, nor where its coming would
+  make her door's kept space yield; a window comes
   in first where she could look out of it. With no such wall it
   waits
   (why: [decisions](decisions.md#a-parcel-comes-only-when-shes-up-and-can-stand-to-unpack-it-2026-10-05),
+  [decisions](decisions.md#where-she-unpacks-a-parcel-is-judged-with-it-there-2026-10-07),
   [decisions](decisions.md#a-window-comes-in-where-she-can-look-out-of-it-2026-10-05)).
   She unpacks it (her strongest wish while it's there) and it
   becomes the piece. A parcel stays boxed, across visits, until she
-  finishes unpacking it.
+  finishes unpacking it. **Her shelf kit** (a flat pack: its unpack
+  ends on "Which way's up?", not "ooh") is the one parcel not
+  unpacked at once: it comes in as any does (its box judged with a seat
+  to open it from, whatever the frame), but its seat is offered only
+  while a shelf could go up on the frame, and opened it's no piece: it
+  goes up on her wall as her shelf where one goes on the next frame (the
+  pane she opened it in first), nothing of it up yet (she puts it up in
+  stages: *Structures*), the kit gone; with nowhere for it by then the box stays
+  shut, to be opened again once one could. While no shelf could go up
+  the box waits in sight (and, boxed, keeps the channel off). A kit is
+  never out of its box any other way: as read from her record, or given
+  by the stage (her shelf instead, finished where one goes).
+- **Structures** (phase 6a): what she puts up with the UI's own lines.
+  Her shelf, opened from its kit, hangs where one goes on that frame
+  (as high as fits: *Furniture*, below), chosen once and saved, never
+  hung again elsewhere; a frame that can't hold it hides it, and what
+  stands on it, whole, back when the frame holds it. She puts it up in
+  two stages, the half nearer its wall (its bracket and half its run)
+  and then the rest: the first straight after she opens the kit (her
+  next decision that isn't a reflex, a line she owes waiting for it;
+  let go for the night or school, it's a want like any), the
+  next on a later game day; at most one stage a game day (unfed, one a
+  visit), counted in her record, so a restart doesn't reset it. A stage
+  is a want of its own (nesting, for its own sake), not one of her home
+  acts (her mood doesn't bound it: the day's pace does), offered only
+  while one is due and the frame would show the shelf with it up. She
+  stands on its room's floor beside the half it puts up and reaches up
+  for 6 s ("Up it goes..."); it's up once the paint takes it, by the
+  same test (the shelf with it up written whole: its cells and margin
+  blank and free, but what of it she has up already); till that paint,
+  it isn't hers to choose again. Cut short, or with text come over it,
+  nothing goes up (refused at the paint, she glances at where it would
+  have gone), and she may try again while it's due. As a stage of a
+  high shelf goes up, and as she sets a piece up on one, she hops (a
+  beat, arms up), if she still stands back from it (not once she has
+  set about something else); a low shelf is in her reach. After the hop
+  (on a low shelf, at once) she's pleased with it a moment ("hehe",
+  in place of her "There!" for a piece set up there) (why: [decisions](decisions.md#she-puts-up-a-shelf-a-stage-a-game-day-2026-10-11)).
 - **Furniture** (phase 3): a sofa (9×3 cells), TV (6×4), bed (10×3),
   desk (7×3), floor lamp (3×4), bookshelf (5×4), fridge (4×4), cat
   bed (4×2) and window (4×2, hung on the wall), and, just for looks, a
-  potted plant (3×3), a poster (4×2, hung) and a wall clock (3×2, hung),
+  potted plant (3×3), a poster (4×2, hung), a wall clock (3×2, hung) and
+  a gremlin figurine (2×2: a lavender-glazed imp on a wooden plinth,
+  grinning; mirrored as he faces), and a shelf kit (5×2, only ever its
+  box: *Getting furniture*),
   drawn in her style (outlined, soft fills) as line art, or as
   ASCII without graphics. She owns her furniture across visits; each
   kind is one row of a catalogue (name, footprint, drawing, ink, uses,
@@ -1776,7 +1909,17 @@ this section states what is built.
   high it hangs if it does). **Strips and
   anchors**: a strip is a floor her home stands on — a quiet pane's
   bottom border between its walls (Users, Playlist, or The List, never
-  the chat). Each piece stands on a strip at an anchor: a wall side and
+  the chat) — or a shelf she has finished putting up there (its run,
+  after the panes' floors; one hidden this frame is still a strip).
+  Only small decor stands on a shelf (the plant, the clock and the
+  gremlin, a clock there standing as a mantel clock), never a parcel, and only on the
+  cells of it written this frame (the app's own `────` where a hidden
+  shelf would be holds nothing up); she reaches it from the floor below,
+  arms up. Only a repair puts a piece up there (centred on the run, or
+  packed beside what's on it already); a delivery, a stage gift, her
+  door's wall and pieces moving off a gone strip only ever take a pane's
+  floor, and a shelf whose pane is gone hides what's on it, never moves
+  it. Each piece stands on a strip at an anchor: a wall side and
   an offset of its near edge from that wall, which a resize keeps. A
   strip's pieces stand in anchor order (those from the left wall,
   nearest first, then those from the right, farthest first; of two
@@ -1789,24 +1932,110 @@ this section states what is built.
   (hidden, still owned), and text never moves one. When a strip is
   gone or too small to hold its pieces, they move, together and in
   order, to the first other strip that holds them with its own pieces,
-  every moved piece on free cells, and stay there; with none, they're
-  all in the closet. **Wall pieces**: a piece that hangs (the poster,
+  every moved piece on free cells, none in the chat pane or another
+  strip's door space (where they stand nor where they're laid out:
+  a window hung by its share where a space yields counts), and stay
+  there; with none, they're all in the closet. **No new piece in the
+  chat pane**: nothing of hers is put there — no delivery, stage gift,
+  repair, or piece moved off a strip, nor a piece any of them pushes
+  along or hangs clear of it — nor in her door's space (kept or not).
+  One check serves every placement, in both modes; unpacking is no
+  placement. Her makeshift pieces are exempt from the chat half (they
+  last one visit, like a carried prop, and in the bundled layout all
+  text she could tear is chat text), never from her door's space
+  (why: [decisions](decisions.md#makeshift-pieces-may-stand-in-the-chat-pane-2026-10-09)). A piece already standing in
+  the chat (an older home, a layout whose panes overlap) is shown where
+  it stands, until she moves it out (the felt rule below); turned where
+  it stands is no new placement
+  (why: [decisions](decisions.md#no-furniture-in-the-chat-pane-2026-10-08)).
+  **The closet for the chat**: a piece standing in the chat pane that no
+  room would take is hidden that frame (still in her home and her
+  record, never moved; nothing about it is saved), and shows again, where
+  it stands, as soon as a room would. A room takes it when its own strip
+  has a place along it clear of the chat and her door's space, or it
+  packs with another strip's pieces in its lane (anchored anywhere along
+  it, the others sliding aside as they do for any piece), clear of both,
+  pushing none of them newly into either, and leaving a kept door space
+  room to be; the pieces in the chat are placed so in layout order, each
+  with the places of those before it taken. A box is never hidden (it
+  shows where it stands, for her to unpack). The same in a visit and
+  while she's out, recomputed every frame; a change of what's hidden is
+  logged. A hidden piece isn't judged in the chat (she can't see it),
+  nor is a piece on a shelf (a shelf the chat comes to meet is hidden,
+  with what's on it: neither the closet nor InChat weighs it, so no
+  repair carries one down for the chat), and a hidden piece still keeps
+  her door's spot off it (it may be back any frame)
+  (why: [decisions](decisions.md#she-feels-her-door-blocked-and-a-piece-in-the-chat-on-sight-2026-10-09)).
+  **Her door's space**: one wall of her strips is her external
+  door's, saved with her home once she has a piece. It's chosen from the
+  panes alone, among walls whose strip has her height clear over its
+  floor and room for the space beside her (or beside the widest piece
+  that stands there) and whose space misses the chat pane: a wall at
+  the screen's edge first (the nook's own edge), then one of her pieces'
+  strips, then one where the space would be kept (see below), then pane
+  order, the right before the left. A home with no wall saved (none
+  qualified yet) reads the same choice frame by frame, unsaved. It's
+  chosen for her home as the frame lays it out: her pieces moved off a
+  strip that's gone first, as with no door, then the wall chosen for
+  them, then laid out with it, so choosing it never loses a piece
+  (why: [decisions](decisions.md#her-door-has-its-own-space-at-the-screens-edge-2026-10-08)). It's
+  chosen again only when her pieces move off its strip: her door goes
+  with them, to the wall of the strip they move to (chosen as above
+  among that strip's walls, else among all), and they're laid out the
+  frame they move as they'll stay. Never for a resize, a frame too
+  short, or the chat pane coming to meet it. A pane hidden while
+  another strip can take her pieces is a move like any other: her
+  pieces and her door go there, and stay when the pane shows again.
+  Against that wall six
+  columns by her height and the floor row are her door's: what stands
+  on that strip packs beside them (an anchor from that wall counts from
+  the space's inner edge), and what hangs keeps out of them, but the
+  poster and the wall clock, which hang above; her window never hangs
+  into them. A piece's share of the way along is always of the whole
+  strip, between its walls. When keeping the space would cost the strip
+  a piece (what stands there doesn't pack beside it, or a piece pushed
+  along would leave a hung one nowhere to hang), it yields for that
+  frame: the strip lays out as with no door. A delivery through her door's wall rests just past the
+  space; its flap is in the wall itself
+  (why: [decisions](decisions.md#her-door-has-its-own-space-at-the-screens-edge-2026-10-08)).
+  **Wall pieces**: a piece that hangs (the poster,
   the window, the wall clock) hangs on its strip's wall, its bottom
   row 4 rows above the floor
   (above the tallest piece that stands, and her head), in a lane of its
   own: hung pieces stand in anchor order among themselves, by the same
   rules, and may hang over pieces that stand. The window hangs lower,
   its bottom row 2 rows above the floor (its sill at her chest, so she
-  can lean on it), among the pieces that stand: it may hang behind a
-  sofa (the sofa drawn in front of it, in line art one image with it),
-  and over nothing else that stands. One rule says which pieces may
-  share cells (her window and a sofa), both ways round: hung where
-  something else stands, the window hangs at the nearest stretch of its
-  wall clear of it, keeping its order (else it's in the closet alone, as
-  an older home's window, hung higher, over her TV, shows beside it);
-  a piece that stands, delivered or moved, never comes under it, nor
-  does a window come in over one, but for a sofa
-  (why: [decisions](decisions.md#her-window-hangs-low-for-her-to-lean-on-2026-10-06)). It needs no floor beneath
+  can lean on it), among the pieces that stand: it may hang with its
+  corner behind a sofa (the sofa drawn in front of it, in line art one
+  image with it, if nothing but blank cells or lines lies between
+  them), so long as she could still lean on its sill from an end clear
+  of the sofa, and over nothing else that stands (nor a sofa still in
+  its box). One rule says which pieces may share cells (her window and
+  a sofa covering its corner), both ways round: hung where something
+  else stands, or wholly behind a sofa, the window hangs at the nearest
+  place on its wall where it may, keeping its order, where she could
+  lean on it from an end if there's any such place (else it's in the
+  closet alone, as an older home's window, hung higher, over her TV,
+  shows beside it, and one over her sofa with only its corner behind
+  it); a piece that stands, delivered or moved, never comes under it,
+  nor does a window come in over one, but for a sofa covering its
+  corner, and no move of hers pushes it aside. Nothing is made where it
+  would meet a piece of hers
+  (why: [decisions](decisions.md#her-window-hangs-low-for-her-to-lean-on-2026-10-06)).
+  Her shelf hangs above every hung piece where its pane allows, else
+  low, just over her head (every pane tried high before any low: her
+  gremlin's pane first, where he stands on its floor, then her living
+  room, the pane her sofa stands in out of its box, then the pane she
+  opens the kit in, then the panes in order; in a pane, a row with no
+  text first, then a run touching no hung piece, the lowest rise, and
+  the run nearest her gremlin in his pane, else the pane's middle); a low shelf blocks the wall lane under it
+  (its run's columns and its margin's, from the top of the lane down to
+  its row, whatever of it is up), and a piece that hangs there hangs at
+  the nearest place beside it by the same rule, keeping its order (in
+  the closet alone on a wall too crowded), so none meets or hides it; a
+  delivery or a move is judged where the layout hangs what it pushes
+  along beside the block; a high one changes no hung place
+  (why: [decisions](decisions.md#a-shelf-hangs-as-high-as-fits-2026-10-10)). It needs no floor beneath
   it, and the wall never moves a room: a hung piece its wall doesn't
   hold (too low, or crowded: in anchor order, each that fits beside
   those before it hangs) is in the closet alone, while a strip too
@@ -1815,8 +2044,10 @@ this section states what is built.
   with only hung pieces moves them to the first other wall that holds
   them all on free cells, else they're in the closet. Boxed, it's a parcel
   on the floor; a delivery comes in only where both the parcel and the
-  hung piece fit. **Rooms from contents**: her rooms are her strips,
-  and what each is comes from what's out of its box there, by the
+  hung piece fit. **Rooms from contents**: her rooms are her panes'
+  floors (a shelf is part of the room below, never a room of its own),
+  and what each is comes from what's out of its box there (on its
+  floor or its shelf), by the
   first row of a table it meets: a living room needs a screen and a
   seat and no bed; a bedroom a bed, and no screen or fridge; a study a
   desk; a kitchen a fridge, and no bed; anything else is a den. Pieces
@@ -1844,14 +2075,39 @@ this section states what is built.
   floor), turned towards it (one plain watch in five, with no shopping
   channel on, nothing about her home on her mind and not just trying
   the spot, she flicks through the channels: static, colour bars,
-  static, a sunrise, "ooh", then back to static, pleased with herself);
+  static, a sunrise, "ooh", then her programme, pleased with herself);
   she reads beside her bookshelf, gets a snack from her fridge (it
   stands open as she looks in, then she eats a melon bread; one snack in
   four ends in a sata andagi: the fridge open a moment, she holds it up
   and names it, "Sata andagi.", four to six times, happier each time,
   then eats it), and on
   about half her visits Kamineko is asleep in the cat bed — she pets
-  him, and he bites ("Ow!"). Her lamp is lit, and dark while she sleeps
+  him, and he bites ("Ow!"). Her plant, or her gremlin, up on her shelf (phase 6a) is for
+  gazing up at: standing on the floor of its room (only from there, never
+  a climb for it) just beside it, a column or two past it but still under
+  the shelf's run, facing it,
+  she's pleased with it a moment ("hehe"), then gazes up at it, curious,
+  20–45 s (a still use, lingered over as her mood lingers): about once a
+  game day where it's up (as tuned with it over her living room; more
+  where she spends more of her day on its floor), twice as likely the game day something new goes
+  up there (a stage of her shelf, or a piece she sets on it) and the next.
+  Up at her gremlin she may say one line after that moment ("Hi, little
+  guy.", "You stay up there.", "Behave, okay?", "He's watchin' me...",
+  one gaze in two, each cooling as her lines do); her plant gets the
+  moment alone. **His tiny life**: one game day in twenty, drawn at the
+  first moment that day she can't see him (never while she's awake and
+  could see it): asleep for the night with her lamp off (the day her
+  night began, so back in bed after her midnight snack it's the same
+  night's day), or out by her door to school or to work; never as she
+  says goodbye or on an errand (she's in sight). Her gremlin up on a
+  finished shelf of hers turns round (his facing written at once), and
+  her next gaze up at him opens puzzled ("?", then "Did you move...?")
+  instead, noticed once that has shown (a gaze cut before leaves it
+  hers to notice; setting him down herself sees to it too). Not her clock
+  up there (a glance up tells her the time), and nothing on a floor. It's
+  offered by where the piece stands, not by its kind: it asks no room of
+  where a piece is set down, and no rule of her home is felt on it (why:
+  [decisions](decisions.md#she-puts-up-a-shelf-a-stage-a-game-day-2026-10-11)). Her lamp is lit, and dark while she sleeps
   in her bed, from 2 s in (she settles with it on, blinking; trying the
   bed, it's dark at once). Through her night it stays dark from then
   until she wakes, whatever gets her up meanwhile, and it's off in her
@@ -1864,6 +2120,77 @@ this section states what is built.
   she's left blinking where it was. Her furniture shows only while she
   does, and the goodbye rain takes it along with her
   (why: [decisions](decisions.md#houseguest-furniture-is-pane-relative-and-leaves-with-her-2026-09-28)).
+  **The TV holds a picture** (phase 5c D7): it's on only while she
+  watches; static shows only as she switches it on (1.2 s, three of
+  its 400 ms frames) and between channels as she flicks; then a drawn
+  programme holds still to the end (the news, the weather, penguins, a
+  cooking show), one drawn from her decision's whims as every watch
+  begins, whatever it plays (so what she does never hangs on what the
+  screen shows). On the shopping channel Chiyo-chichi bobs as he talks
+  through his hook (its first two fifths), then holds still. In ASCII
+  each programme is its own pair of screen glyphs. No act of hers that
+  holds her place for over 30 s changes how she or her furniture looks
+  faster than once a frame (1.4 s) after its first 10 s, but for five
+  exemptions, each only its own change: her slow blink, the hook's bob,
+  a look up at the chat (dozing, a stir at it: it comes when the line
+  does, but holds a frame at least, as all she says does), the film's
+  fresh still once a minute (below),
+  and the world's clock (her wall clock's dial stepping each game
+  quarter-hour and her window's sky at each change of the sky, dawn,
+  day, dusk, evening and night, five a game day: not her doing, and
+  slow and steady; only at a paint where her clock's reading changed,
+  and only the dial's and the sky's own cells, which in ASCII include
+  those round her glyphs in her box while she holds still). Exemptions
+  combine: whatever else changes with the world's clock is judged by
+  the others. An exempt change of hers that isn't periodic (a look up
+  at the chat, a stir) still counts: whatever of hers changes next
+  waits a frame from it; her blink, the hook's bob, the film's still
+  and the world's clock count nothing. Steady periodic motion is not what draws the
+  eye; a change is: so the hook bobs through the whole of its span,
+  however long her mood lingers over the act (a lazy one's up to
+  49 s). A bob of hers on the frame (her writing, her breathing asleep,
+  a page turning) flips on its frame grid but a frame clear of the
+  start and end of what bobs (its script's key, the idle act, or
+  reading a borrowed strip): its first frame held until a frame after
+  it starts, its last through the part of a frame before it ends, so a
+  key ending at a share of the use (her homework nodding off) never
+  comes within a frame of a flip. Where anything else of hers changes
+  in place, off its grid (her look up at the chat beginning, moving on
+  or ending; what she says, a stir's murmur too, coming, going or cut
+  short; her act's end moving: a day's sleep become her night at
+  bedtime, her wake time found afresh as her clock is read), the frame
+  it shows then holds until the first flip on its grid a frame on, as
+  from a start. A bob that could never flip so (under
+  two frames, or two off the grid) is drawn as still poses instead:
+  the lamp going off as she settles, the andagi's chewing then biting
+  again, a frame each (why:
+  [decisions](decisions.md#her-tv-holds-a-picture-2026-10-07)).
+  **The film on her TV** (phase 5c D7): in line art, with a film loaded
+  that this client holds (on disk and ready) and whose real video the
+  player shows (never mpv's "you don't have this file" placeholder,
+  which reuses the file's hash, nor the episode before while the next
+  loads), her TV shows a still of it in place of her programme. The UI
+  asks for one as she heads to watch (or to flick through the
+  channels), and while she watches, again once a minute has passed
+  since it last asked (a frame that failed counts; a question the
+  player couldn't be asked, as it isn't showing that video yet, is
+  asked again 5 s on); one question at a time, numbered, given up
+  after 3 s, an answer to any other ignored, and one frame in the TV's
+  slot at a time. A good still cuts in at the
+  next paint, straight from the one before, with no static; a failed,
+  black or flat frame keeps what she shows; a change of film, or the
+  file no longer held, puts her programme back. Not the shopping
+  channel or her first sunrise, which show their own. The still is the
+  frame's centre at the glass's aspect, zoomed 1.3×, one levels stretch
+  from its brightness (gain at most 3×), saturation ×1.3, no sheen,
+  laid in the glass unmirrored whichever way the set faces. **The frame
+  stays on this machine**: the player writes it to the TV's own private
+  screenshot slot (never commentary's, whose frames go to Anthropic),
+  it is read, treated and deleted in the process (the player writes it
+  to a private 0700 temporary file, deleted once read), and never kept,
+  logged or sent. She doesn't react to it, and nothing she does depends
+  on it: her trace and her ASCII frames are the same with or without it
+  (why: [decisions](decisions.md#the-film-on-her-tv-2026-10-07)).
 - **Scripts and splices** (phase 5a): how a use looks (her pose and
   face, what she says, and what shows on her furniture: the TV's
   channel, the lamp, the fridge door, the cat biting) is its own
@@ -1871,7 +2198,8 @@ this section states what is built.
   the use's drawn length, so nothing new is drawn; a spacing-out may
   play one too (a riddle). She wakes as each key ends, so the next
   key's look, line and prop come on on time, as well as on the use's
-  frame grid (what bobs and what's on TV moves on it). A use may be
+  frame grid (what bobs moves on it), and on each of static's 400 ms
+  frames while it shows (Chiyo-chichi's hook bobs at paint time). A use may be
   wrapped in a **splice**: a prelude before it (the chopsticks) or a
   coda after it (the sata andagi), a script of its own length rolled as
   the use starts: never round a trial, a prelude only while she isn't
@@ -1891,8 +2219,17 @@ this section states what is built.
   to stand. Her sofa faces her TV (as above); her lamp stands on one
   strip with her bed or her desk, at most 3 cells between them; her
   fridge, and her bookshelf, stand within a cell of a wall of their
-  strip; her bed and her TV aren't in one room; and a piece she hasn't
-  settled doesn't spoil its room. A piece **spoils** a room when what
+  strip; her bed and her TV aren't in one room; a piece she hasn't
+  settled doesn't spoil its room; nothing stands in her door's space
+  (**DoorClear**, judged on the space her door's wall would have,
+  kept or yielding, wherever the space can exist at all: never on a
+  room too short or narrow for it); and nothing stands in the chat pane
+  (**InChat**, but a piece no room would take: it's in the closet).
+  Both are judged piece by piece, and felt on any use of the piece.
+  And her gremlin stands up on a shelf (**High**, phase 6a: broken while
+  he stands on a floor, out of his box; only a shelf mends it, so a
+  repair of it is only ever a move up onto one, and with no finished
+  shelf shown on the frame there's none to weigh). A piece **spoils** a room when what
   the room is without it forbids something it brings, by the rooms
   table's "no" columns: a bed in a living room or a kitchen, a TV or a
   fridge in a bedroom (a desk spoils nothing: a study forbids nothing,
@@ -1912,7 +2249,36 @@ this section states what is built.
   Once its two frames have passed with her still on the piece she has
   felt it (said, whether or not the bubble found room to show; a chat
   line, which she looks up at from the piece, doesn't hide it); a use
-  cut short before then doesn't count. **Each rule is felt once a visit**, the first broken
+  cut short before then doesn't count. **She feels three on sight**,
+  needing no use (a lamp, a plant): DoorClear once she has bumped into
+  what fills her door's space, coming home out of her door where it
+  stood aside for it (from school, a dash, work, the stage; never on
+  the idle gate, and never for a fallback a short room, the chat, a
+  focused pane or no wall forced), and InChat whenever she's in sight
+  while a piece of hers stands in the chat; and High while she stands on
+  the floor of her gremlin's room (his floor, her door's space in it
+  too), but only where it means something: where a finished shelf of
+  hers shows on the frame, or one could go up on it (not where the frame
+  hides hers, nor on a frame no shelf could go up on, nor in another
+  room), so what she feels is what her wishlist reads (*Getting
+  furniture*); and **never once her shelf kit is ordered, till her shelf
+  is up** (on order, in its box, or going up: it's coming, she has it in
+  hand). Felt before the kit was ordered, she lets it be as it's
+  ordered (or comes any other way): forgotten, its line unsaid, felt
+  afresh once her shelf is finished and shown.
+  Felt on sight, she says so
+  ("Can't get to the door!", "People are talking here…", "It wants a
+  shelf...", the last only in his room as the frame has it then, turned
+  to face him where he stands then) only when her
+  mood would have her put it right (judged when she'd say it, so one
+  felt while she mends another is said after), at most once a game day
+  per rule (once a visit while no routine reaches her), and only once
+  she's quiet after her arrival line ("I'm home!", her hello): she
+  stands until she is, then stands saying it for two frames, which a
+  look at the chat and a parcel's "A parcel!" wait for; a line she owes
+  in turn waits while her shelf kit's first stage is next or she's on
+  her way to put a stage up
+  (High: why: [decisions](decisions.md#the-gremlin-wants-up-high-2026-10-11)). **Each rule is felt once a visit**, the first broken
   one of a use, and forgotten when she leaves (nothing is kept). It
   doesn't draw on her beat lines. Watching the TV with a grievance due,
   she has her home on her mind instead of the shopping channel's
@@ -1939,8 +2305,11 @@ this section states what is built.
   when the sofa joins the TV that stands with a desk), no piece spoils
   a room it didn't (the moved piece the room it comes into, nor any
   other its own room as the moved piece comes or goes; and the moved
-  piece, one she hasn't settled, not the room it's set down in), every
-  strip that held its pieces still
+  piece, one she hasn't settled, not the room it's set down in), her
+  door's space that was kept is kept (it neither yields nor goes for
+  a piece too wide beside it), no piece that showed goes into the
+  chat's closet (a piece leaving the closet for it is no rule newly
+  broken), every strip that held its pieces still
   does, and it fits this frame (on blank free cells where she'd fit to
   use it; every other piece that showed still showing, clear of
   makeshift pieces). Cheapest first: a piece she hasn't settled goes to
@@ -2030,13 +2399,20 @@ this section states what is built.
   end, facing it; she bends over its middle to crumple it); each stands on a floor over blank cells
   like her real pieces (and is solid to text the same way), and is
   drawn as shreds of the alien glyphs her image derezzes text into, in
-  the torn text's own colours (in ASCII, its own letters, jumbled). Once
+  the torn text's own colours (in ASCII, its own letters, jumbled, a
+  wide letter as a narrow stand-in, one glyph a cell). Once
   in shape it's for whatever the real piece is: the sofa for sitting
   on, napping on and watching TV from; the bed, for sleeping in, under
   a blanket of shreds. A heap she let be is offered for finishing.
+  It's never made in her door's space; it may be made in the chat
+  pane, of the chat's text or any other
+  (why: [decisions](decisions.md#makeshift-pieces-may-stand-in-the-chat-pane-2026-10-09)).
   It lasts for the visit, while every glyph torn
   for it is still torn off (its line unchanged, its pane not protected)
-  and it still fits where she made it, clear of her real furniture; a
+  and it still fits where she made it, clear of her real furniture and
+  her door's space (one coming to meet it takes it; the chat pane
+  coming to meet it doesn't, and neither InChat nor the closet ever
+  judges it: it stands on no strip); a
   resize, or its pane gaining focus, takes it, and its text goes back
   (raining out of a focused pane). She makes at most one of each a
   visit and doesn't make a second while the first stands. **A real
@@ -2080,7 +2456,7 @@ this section states what is built.
   the evening the TV, the evening before a day off a book, the morning a
   stretch, and gazing doubles from 17:00 to 05:00; homework is three
   times as likely in its own slot, where it lasts 2–4 min instead of
-  30–60 s. Sleepy rises at 0.3× by day, 1× in the evening and 3× at
+  37–75 s. Sleepy rises at 0.3× by day, 1× in the evening and 3× at
   homework and at night; hungry 2× at breakfast and dinner (her mood's
   rate and her day's together never above 4×). She arrives in the
   evening a little sleepy (0.3; 0.5 at homework time, 0.8 at night) and
@@ -2090,25 +2466,103 @@ this section states what is built.
   a fall, a door or a poke finishes first); then she goes, whatever
   else she wanted. Every other change waits for her next choice.
 - **Away at school**: at 08:15 on a school day she says "I'm off!" or
-  "Off to school!" ("Late, late, late!" if it cut her breakfast short)
-  and goes out through her pink door, which stays standing, closed,
-  where she left, until she comes back out of it. The visit ends there.
+  "Off to school!" ("Late, late, late!" if it cut her breakfast short),
+  once, as she sets off, and walks to her door where it stands this
+  frame (getting up as after any use; climbing, hopping, or taking a
+  door in space between floors as any walk does), and goes out through
+  her pink door there; it then stands closed at her door's space (see
+  *Her door's space*), until she comes back out of it. A boundary never
+  cuts her walk to her door. Each step she follows where the frame
+  stands it: her door moved (a resize, a focused pane over its spot),
+  she walks on to where it stands now; at it, school over on her way (a
+  dash's way out crossing 12:45), she stays in, silently. Her set-off
+  line is said once per school time: once school's over, whatever cut
+  her way short, the next school morning says it again. With no door
+  anywhere, or no way to its spot, she goes out by a door in space
+  where she stands, but only out of every piece of hers (she steps
+  along her floor out of it first, and goes out there; with no room on
+  her floor, she goes to the nearest floor that has some, a hop or a
+  door in space between floors on the way, and goes out there; standing
+  on no floor, she takes a door in space to the nearest room; with no
+  room on any floor, she stays in for now, standing a moment, and her
+  routine sends her again). Where she made for is judged again as she
+  gets there. Her door gone while she's through it
+  becomes a door in space where it stood, or, a piece of hers laid
+  there, at the nearest place clear of her pieces (she with it). A door
+  in space she goes out by is judged again each frame it's drawn in
+  (going out, and coming in), and moves the same way if a piece of hers
+  has been laid over it. With no room on any floor, going out she isn't
+  out after all (she stays in, as above); out of sight or coming in, it
+  stays where it stood. Any door of
+  hers she's going through or coming in by follows the frame's door (a
+  resize), in the very frame it's drawn in, but a focused pane never
+  moves it; it stands where she does, so in every beat it's shown she
+  moves with it (facing out going out, into the room coming in).
+  Nothing is delivered on her way out (a parcel waits for her). The visit ends only once her door has closed
+  behind her.
+  In its space her door is drawn side-on in the wall: shut, it is two
+  columns (the wall's own and one before it), turned toward the room,
+  its parcel flap in its lower half. She goes through it at her walking
+  pace, a column a step, cut at the wall's line with the door's front
+  post in front of her; coming in, she holds side-on facing the room
+  until it has shut, and turns to you only as she says she's home. The
+  doorway shows the window's sky at her time of day (a day sky when her
+  clock isn't fed to her). It shows, shut, from the moment she sets off
+  for it (her line, or any walk or heading to it to go out) and, once
+  shown, stays while she's in its space: it never appears or goes beside
+  her, but for text: over pane text, apart from her beats through it,
+  it goes once it has stood there 4 s, even beside her (below). While
+  she's out through it (school, a dash's or work's gap), her slippers
+  stand before it and a card hangs on its knob; they go as it opens. Its
+  own two columns stand over pane text for as long as she's out; her
+  slippers stand only on blank cells and lines (else they aren't drawn).
+  In line art, when her door rains out (an errand, her empty home, a
+  goodbye), the slippers go with its image as the rain begins; only the
+  door's own columns rain (why: [decisions](decisions.md#her-door-is-drawn-side-on-2026-10-08),
+  accepted at the batch's end, open to the user).
+  Walking to it or away from it, it stands over text only in passing
+  (4 s), then hides there until her beats through it begin. Any cell of
+  it in a pane in use hides all of it (she still steps through its
+  doorway, cut short of the wall). A goodbye as she steps through it has
+  her jump out of the doorway to wave at her spot, the door behind her
+  as it stood. At a fallback spot (face-on) there's no cue: the shut
+  door stands while she's out, through a work gap too, facing out the
+  one way its spot does throughout (it never turns with her)
+  (why: [decisions](decisions.md#her-door-is-drawn-side-on-2026-10-08)).
   Her home stands empty meanwhile: her pieces, the lamp and TV off, the
   cat as he'll be when she's back, her door. It shows when a visit would
   (the idle gate open, or a resident) and goes as one does: a visitor's
   input or an overlay rains it out (nobody in it to wave), switching
   visits off or too small a terminal removes it at once, and a chat line
-  changes nothing. With no furniture there's nothing to show. If a
-  resize leaves her door's spot unfit, it moves to the nearest floor
-  spot where she'd fit. At 12:45 she comes home out of that door ("I'm
+  changes nothing. With no furniture there's nothing to show. Where
+  her door stands is worked out each frame from her home and the
+  frame, never from where she went out: in its space (side-on, in its
+  wall) when the space is kept and free (nothing she made in it,
+  clear of the chat pane, its wall and floor drawn as lines, nothing in
+  it protected); else at the nearest floor spot where her box meets
+  none of her pieces, clear of the chat pane and of protected cells,
+  never straddling a pane's border (a
+  spot it stood at stays while it still fits, so it never hops); else
+  nowhere. Text never moves it nor hides it: it stands over pane text;
+  only a protected pane (one in use) hides it, and it's back when the
+  pane's left alone. At 12:45 she comes home out of that door ("I'm
   home!" or "Tadaima!"), counted as a visit but in the morning's mood,
   with no hello, if the client is open to her then (a resident, or the
   idle gate open). A key or a chat line doesn't call her return off;
   the gate closing (playback, an overlay, visits off) does, and then she
-  arrives later through the idle gate as usual. With no home she still
-  comes home by a door. Started in school hours, the client shows her
+  arrives later through the idle gate as usual. Her empty home stands
+  until she's in; if she doesn't come in after all (the client busy as
+  school ends, her return or a dash called off, nowhere for her door),
+  it rains out like a visitor's key would rain it, and only visits
+  switched off, her moving out or her room gone remove it at once
+  (why: [decisions](decisions.md#her-empty-home-rains-out-whenever-she-doesnt-come-in-2026-10-07)).
+  With no home she still
+  comes home by a door, at the wall the same choice picks, unsaved; with
+  no door anywhere, by a door in space outside the chat pane and clear
+  of her pieces: somewhere calm if there's such a spot, else anywhere
+  clear. Started in school hours, the client shows her
   empty home once the gate opens. Everything of hers that comes and goes
-  by her routine uses her door, never a screen edge
+  by her routine or work uses her door, never a screen edge
   (why: [decisions](decisions.md#away-at-school-ends-the-visit-at-her-door-2026-10-04)).
 - **Dashes home**: one school day in three, at a minute between 08:25
   and 12:35 fixed by her home and the day, she dashes home through her
@@ -2198,7 +2652,9 @@ this section states what is built.
   kept in memory, so a restart the same game day draws it again. The
   rare things: the Dream (asleep, 30 game minutes after she first lies
   down for the night: "Hello everynyan...", "Fine sankyu...", "Oh my
-  gah!"), the last melon bread after a snack ("That was the last
+  gah!", each 4.2 s, three of her breathing's frames, so she breathes
+  twice under each; why:
+  [decisions](decisions.md#her-tv-holds-a-picture-2026-10-07)), the last melon bread after a snack ("That was the last
   one."), the escalator ("The box one's the...", "...escalator? No?")
   as she spaces out, and a scary story on her sofa or over a book from
   22:00 to bedtime ("Scary story time...", "A fart. Not mine.")
@@ -2214,26 +2670,35 @@ this section states what is built.
   flap, as any parcel) the first time her clock is running, her TV is
   out of its box, and she's up, in sight, greeted, quiet and done with
   the day's calendar, with no other parcel's flap open. The window is sold after the cat bed. She
-  looks out of it leaning on its sill, chin in her hands, just outside
-  either end (her face over the glass; first at the end it was hung to
-  face from, and never in front of a sofa it hangs behind), for her long
+  looks out of it leaning on its sill, chin in her hands, at either end
+  (her face over the glass: facing right, her box centred on its first
+  column, facing left a column outside its last, as the approved sheet
+  stands her; first at the end it was hung to face from, and never in
+  front of a sofa it hangs behind), for her long
   daydream: one to three minutes (as long again as her mood lingers),
   curious, first saying what the sky shows ("Sunny!", "Pretty...",
-  "Stars!"), then musing on it up to three times as her whim says ("That
+  "Stars!"), then musing on it up to three times, as many as her mood's
+  share says (lazy none to two, ordinary one to three, dreamy two or
+  three, industrious none or one) ("That
   one's a cat.", "The moon's followin' me."), each a gap on, from the sky
   as it is as she says it, waiting while she speaks or looks up at the
-  chat. It's rarer than her other daydreams (its base 3), answers
-  daydreams and fun, twice as likely from 17:00 to 05:00. Settling in
-  from the sill, she sits down in front of it (chin in her hands, looking
-  up), then dozes off there or, on the doze's other side, lies back under
-  it watching the clouds (eyes open, held, one line of the sky at most;
-  turned so her head's under the glass): watching the clouds is only
-  ever under her window, and is no doze (a chat line has her look up)
+  chat. Its base is 5; it's on offer
+  only with her window in reach, answers daydreams and fun, and is
+  twice as likely from 17:00 to 05:00 (in a furnished home with the
+  window, about three a game day, mid-way in the two to six the user
+  accepts; the day census holds that range). Settling in
+  from the sill, she sits down in front of it where she leaned (chin in her hands, looking
+  up; a chat line has her look up without turning from it), then dozes
+  off there or, on the doze's other side, lies back under it watching the
+  clouds (eyes open, held, one line of the sky at most; turned so her
+  head's under the glass, however she was turned): watching the clouds
+  is only ever under her window, and is no doze (a chat line has her
+  look up)
   (why: [decisions](decisions.md#her-window-is-a-long-daydream-2026-10-06)).
   With her wall clock on the strip she stands on, she glances up
   at it before going to bed ("Oh! It's late!") and as she leaves for
-  school ("Time for school!"), once each, and now and then of an
-  afternoon (a musing in three, once a visit) says the hour, roughly
+  school ("Time for school!"), once each, and of an afternoon, the
+  first daydream she starts quiet (once a visit), says the hour, roughly
   ("Three-ish.")
   (why: [decisions](decisions.md#her-window-and-her-wall-clock-2026-10-04)).
 
@@ -2242,7 +2707,11 @@ this section states what is built.
   those at once, and a visitor's playback lets her finish); switching
   the setting off removes her at once
   (why: [decisions](decisions.md#overlays-end-a-dash-and-an-errand-2026-10-04)).
-  A terminal resize re-anchors her (she falls if her floor went away); during a dissolve it
+  A terminal resize re-anchors her (she falls if her floor went away; a
+  piece she's using or lifting that the resize moved from where she is
+  startles her off it, as one gone from the frame does; a piece nudged
+  aside by a parcel coming in doesn't, as before)
+  (why: [decisions](decisions.md#she-puts-up-a-shelf-a-stage-a-game-day-2026-10-11)); during a dissolve it
   ends the dissolve immediately. Terminal focus changes (alt-tab) are not activity.
 - **Resident Osaka** (on by default): once she's arrived she stays —
   through playback, and through local input. She keeps out of the way
@@ -2266,6 +2735,8 @@ this section states what is built.
   - **The chat** is where people read: whatever would take her into the
     chat pane — a pull or swap there, a climb or hop or door that lands
     her there, a walk along a floor into it — is a tenth as likely.
+    What she does where she already stands in it (spacing out, an act on
+    the spot, settling in) isn't weighed.
   - **Local input** puts back at once everything she moved in the chat
     (swapped letters, a sneeze's scatter, pulled lines, text she's
     tearing off or a strip she borrowed); nothing scheduled for them is
@@ -2289,7 +2760,17 @@ this section states what is built.
   she comes straight back through a door). She stands on the accordion —
   its diagonals are a floor, and it's protected like the input: she
   never moves or covers it; its shake is hers, painted after anything
-  of hers reads the frame, so it never moves her floor — where her box covers the least of the log's
+  of hers reads the frame, so it never moves her floor (her structures,
+  a shelf she has put up, are the one thing of hers written before the
+  reads, because they're terrain: once a paint, before anything reads
+  the frame, each all of it or none, only on blank cells nothing else
+  holds (a blank in reverse video, as a list's selection bar, or in a
+  colour unlike its pane's, is as good as text); a frame that doesn't show her home has them undone before it
+  reads, so her goodbye's frame shows none; every cell of hers drawn
+  over one records the real frame under it; they're lines she walks in
+  front of, but neither floor nor pole of hers, and her door never
+  stands on one's run or margin, shown or not
+  (why: [decisions](decisions.md#her-structures-are-the-uis-own-lines-2026-10-10))) — where her box covers the least of the log's
   text (rightmost on a tie), and pokes it for 2 s ("Somebody said
   something."); it shakes as she starts. She walks there only from a
   couple of body-widths away; otherwise she comes by door, and if she's
@@ -2316,10 +2797,24 @@ this section states what is built.
   (game minutes since Monday 16:00), her idle minutes and where her pity
   last started, the rare things she has shown, the date her calendar was
   last delivered, and whether her wall clock was sent; each is left out
-  while it's the default. What happens to her is saved at once; time
-  alone is saved every 30 game minutes (5 real) and at each change of
-  her routine's part of the day. Every way out of the UI loop hands back
-  her record, its clock brought up to that moment, and the pane sizes,
+  while it's the default. With phase 6a it holds what she has put up
+  (her shelf: its pane, where along its back wall, its rise, the
+  stages up, and the day something last went up there, left out when
+  none has, and read as none where it's garbled; and the stages put up on her last day of building, by game
+  day or, unfed, by visit, left out until she has put one up, and read
+  as none where it's garbled), left out until she has, read before her pieces and entry
+  by entry (one this build can't take, or a shelf after the first, is
+  skipped); a piece anchored on a shelf the record has finished, that
+  takes its kind, stands on it out of its box, and any other piece
+  anchored on a shelf (one the record lacks or hasn't finished, one
+  that doesn't take it, or a parcel) lands on that pane's floor at its
+  share. Builds from before shelves ignore them and drop them when
+  they save; there a piece on a shelf goes to its room's pane at its
+  share, unanchored, or is dropped where its room has no pane on
+  record. What happens to her is saved at once; time alone is saved
+  every 30 game minutes (5 real) and at each change of her routine's
+  part of the day. Every way out of the UI loop hands back her record,
+  its clock brought up to that moment, and the pane sizes,
   saved once the UI thread has ended; a SIGHUP, a panicked UI thread,
   and a failure while the session starts up are not saved (a crash loses
   at most the last batch of her time). One client process holds a
@@ -3108,8 +3603,11 @@ reply scrolls across the bottom line's middle slot on **every** client.
   **speaker-attributed** — a cue with an ASS Name field goes out as
   `Name: line`, the same field the separate subtitle pane colors by; a
   nameless cue stays bare — plus an mpv screenshot when one can be
-  captured in time (`screenshot-to-file`, raw frame, no OSD/subs;
-  best-effort — its absence never blocks the tick). The model's replies
+  captured in time (`screenshot-to-file`, raw frame, no OSD/subs, sent
+  async; written to commentary's own private screenshot slot, which no
+  other feature shares; only of the now-playing file this client holds
+  with its real video showing, never the placeholder; best-effort — its
+  absence never blocks the tick). The model's replies
   ride along as assistant turns, so the commentator remembers what it
   already said. An episode — or series — change stays in-thread: the
   next turn opens with a "Now playing" header. Episode identity is
@@ -3470,6 +3968,14 @@ connects over loopback. Responsibilities:
 
 **Authentication**: Password entered on first client launch, sent in plaintext
 over TLS-encrypted QUIC. Server configured via `--password-file` or env var.
+Failed passwords are throttled per source address (an IPv6 /64 counts as one
+address): five back to back, then one a minute. A throttled attempt is refused
+with `AuthFailed` without its password being checked. (why: decisions.md,
+"Failed passwords are throttled per address")
+Until a connection authenticates, the server reads one control frame of at
+most 4 KiB from it and nothing more, and lets it have at most 64 KiB in
+flight; authentication lifts both limits. (why: decisions.md, "An
+unauthenticated peer gets a handshake's worth")
 
 **TLS**: TOFU (Trust On First Use) -- server generates a persistent self-signed
 cert; clients store and verify the fingerprint on subsequent connections.
@@ -3794,7 +4300,12 @@ entries after it in playlist order, nearest first, then entries behind it
 (network-design.md, Scheduling): the per-source request window is one
 shared budget filled in this order, so a now-playing advance or a playlist
 edit re-targets the running transfers within a tick -- no cancels, no
-restarts. A **watched** entry queued ahead of now-playing does not
+restarts. **A download exists only while its file is wanted**: an entry
+that leaves the want-set -- removed from the playlist, marked watched
+(and not now-playing), its series set NotWatching, or auto-download
+switched off -- has its download cancelled (sources told to drop our
+requests, data streams closed, the partial deleted); a client that
+stops wanting a file stops pulling it from whoever holds it. A **watched** entry queued ahead of now-playing does not
 prefetch; its rewatch fetch starts when it becomes now-playing. An
 interactive client **skips auto-download** for entries whose series it has
 marked **NotWatching**. **Maybe** (the default) and **Watching** entries
@@ -3802,7 +4313,8 @@ are fetched normally; a NotWatching file that is already local still loads
 (you can mute), it is just never fetched. Seeders fetch everything, in the
 same anchored order with watched back-catalog last (see
 [Client Roles](#client-roles)).
-(why: [decisions](decisions.md#prefetch-anchored-at-now-playing))
+(why: [decisions](decisions.md#prefetch-anchored-at-now-playing),
+[decisions](decisions.md#a-download-exists-only-while-its-file-is-wanted-2026-10-15))
 
 ### BitTorrent Downloads
 
@@ -4495,6 +5007,8 @@ Authentication uses a password entered on first launch and stored in the local
 database. The password is used to authenticate with the rendezvous server.
 Anyone with the password can connect. This is acceptable for the intended use
 case (small friend groups) but should be documented clearly.
+Password guessing is throttled per source address (see Authentication under
+the rendezvous server).
 
 - **Identity**: Users are identified by self-chosen nicknames. There is no
   cryptographic identity -- users trust each other not to impersonate.

@@ -199,24 +199,19 @@ pub enum FileCommand {
     RescanLibrary,
 
     // ---- File transfer (Phase 9B).
-    /// Begin (or refresh) downloading `file` from `sources`. Idempotent;
-    /// the session re-issues it as peers/availability/playback change.
-    StartDownload {
-        /// The file (its root is the playlist key / id).
-        file: Ed2kHash,
-        /// File size, for chunk/block geometry.
-        size_bytes: u64,
-        /// Candidate source peers (present peers that have it).
-        sources: Vec<dessplay_core::net::PeerId>,
-        /// Playback chunk anchor for the sequential window.
-        play_chunk: u32,
-    },
-    /// Cross-file download fill order (the session's anchored playlist
-    /// ranking, highest priority first); the scheduler's shared
-    /// per-source budget follows it (`Downloads::set_priority`).
-    SetDownloadPriority {
+    /// The client's whole download want-set, highest priority first —
+    /// declarative, re-sent on every plan (the session/seeder re-plan
+    /// as peers, availability and playback change). The actor
+    /// reconciles: every [`WantedDownload::fetch`] starts or refreshes
+    /// a download, the order is the scheduler's cross-file fill order
+    /// (`Downloads::set_priority`), and an active download whose file
+    /// is **absent** is cancelled — removed from the playlist, watched,
+    /// NotWatching, auto-download off (design.md, Pre-fetching). There
+    /// is no separate "start" or "stop": a download exists exactly
+    /// while its file is wanted.
+    SetDownloads {
         /// Wanted files, highest priority first.
-        order: Vec<Ed2kHash>,
+        wanted: Vec<WantedDownload>,
         /// The file the ranking is anchored at — the one with a
         /// playback deadline, so the only one eligible for the
         /// scheduler's window-age urgency. `None` when nothing is
@@ -626,6 +621,55 @@ pub struct ScanItem {
     series_hint: Option<String>,
     /// Media root that owns this indexed path.
     media_root: PathBuf,
+}
+
+impl FileCommand {
+    /// A want-set of exactly one file, fetched from `sources` — any
+    /// other active download is cancelled (see
+    /// [`FileCommand::SetDownloads`]).
+    pub fn fetch_only(
+        file: Ed2kHash,
+        size_bytes: u64,
+        sources: Vec<dessplay_core::net::PeerId>,
+        play_chunk: u32,
+    ) -> Self {
+        FileCommand::SetDownloads {
+            wanted: vec![WantedDownload {
+                file,
+                fetch: Some(DownloadFetch {
+                    size_bytes,
+                    sources,
+                    play_chunk,
+                }),
+            }],
+            now_playing: None,
+        }
+    }
+}
+
+/// One entry of [`FileCommand::SetDownloads`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WantedDownload {
+    /// The file (its root is the playlist key / id).
+    pub file: Ed2kHash,
+    /// Fetch it from peers: `Some` for a file known to be missing
+    /// locally, `None` for one that is wanted but held or still
+    /// resolving — ranked and kept (an active download is not
+    /// cancelled), but not started.
+    pub fetch: Option<DownloadFetch>,
+}
+
+/// How to fetch a [`WantedDownload`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DownloadFetch {
+    /// File size, for chunk/block geometry.
+    pub size_bytes: u64,
+    /// Candidate source peers (present peers that have it). Empty is
+    /// the ordinary awaiting-source state; a refresh with fewer peers
+    /// drops the departed ones.
+    pub sources: Vec<dessplay_core::net::PeerId>,
+    /// Playback chunk anchor for the sequential window.
+    pub play_chunk: u32,
 }
 
 /// Run the actor until the command channel closes.
@@ -1241,49 +1285,10 @@ impl Actor {
             FileCommand::SetRetention(retention) => self.retention = retention,
             FileCommand::SetTorrentEnabled(enabled) => self.set_torrent_enabled(enabled).await,
             FileCommand::RescanLibrary => self.start_library_scan("rescan_requested"),
-            FileCommand::StartDownload {
-                file,
-                size_bytes,
-                sources,
-                play_chunk,
-            } => {
-                // A file we already hold never (re)starts a download. The
-                // session emits StartDownload from its *own* resolution
-                // map, which lags this actor's — the FileOutput::Resolved
-                // recording a freshly-landed local copy may still be in
-                // flight — so a snapshot processed in that window re-emits
-                // for a file whose redundant download was just cancelled.
-                // Without this guard that re-emit re-created the deleted
-                // partial and re-downloaded the whole file.
-                if self.local_files.contains_key(&file) {
-                    tracing::debug!(%file, "ignoring StartDownload for a file we already hold");
-                    return;
-                }
-                // An already-playable active download re-offers its
-                // partial on every refresh: the playable *edge* may have
-                // fired while the file wasn't now-playing yet (a
-                // prefetch), and the session only loads the partial for
-                // the current now-playing file. Re-emitting at the
-                // session's own refresh cadence (~1/s) makes the load
-                // catch up when now-playing advances onto the file; the
-                // session's handler is idempotent.
-                if self.downloads.is_active(&file)
-                    && self.last_playable_written.get(&file) == Some(&true)
-                {
-                    let _ = self
-                        .out
-                        .send(FileOutput::DownloadPlayable {
-                            file,
-                            path: self.download_path(file),
-                        })
-                        .await;
-                }
-                self.start_peer_download(file, size_bytes, sources, play_chunk)
-                    .await;
-            }
-            FileCommand::SetDownloadPriority { order, now_playing } => {
-                self.downloads.set_priority(order, now_playing)
-            }
+            FileCommand::SetDownloads {
+                wanted,
+                now_playing,
+            } => self.set_downloads(wanted, now_playing).await,
             FileCommand::PeerMessage { from, message } => {
                 self.on_peer_message(from, *message).await;
             }
@@ -1985,6 +1990,15 @@ impl Actor {
         if self.downloads.is_active(&file) {
             tracing::info!(%file, "local copy appeared; cancelling the peer download");
         }
+        self.cancel_peer_download(file).await;
+    }
+
+    /// Stop the peer download of `file`, whoever decided it is over (a
+    /// local copy turned up, or the file left the want-set): sources
+    /// are told to drop our in-flight requests, the data streams close
+    /// (which ends the uploaders' serve tasks), and the partial is
+    /// deleted.
+    async fn cancel_peer_download(&mut self, file: Ed2kHash) {
         let actions = self.downloads.cancel(&file);
         self.run_download_actions(actions).await;
         self.drop_download_streams(file);
@@ -1998,6 +2012,63 @@ impl Actor {
         }
     }
 
+    /// Reconcile the downloads against the want-set (see
+    /// [`FileCommand::SetDownloads`]): cancel what is no longer wanted,
+    /// rank the rest, start/refresh what is to be fetched.
+    async fn set_downloads(&mut self, wanted: Vec<WantedDownload>, now_playing: Option<Ed2kHash>) {
+        let wanted_files: HashSet<Ed2kHash> = wanted.iter().map(|w| w.file).collect();
+        for file in self.downloads.active_files() {
+            if !wanted_files.contains(&file) {
+                tracing::info!(%file, "no longer wanted; cancelling the peer download");
+                self.cancel_peer_download(file).await;
+            }
+        }
+        self.downloads
+            .set_priority(wanted.iter().map(|w| w.file).collect(), now_playing);
+        for WantedDownload { file, fetch } in wanted {
+            let Some(DownloadFetch {
+                size_bytes,
+                sources,
+                play_chunk,
+            }) = fetch
+            else {
+                continue;
+            };
+            // A file we already hold never (re)starts a download. The
+            // session plans from its *own* resolution map, which lags
+            // this actor's — the FileOutput::Resolved recording a
+            // freshly-landed local copy may still be in flight — so a
+            // plan made in that window re-asks to fetch a file whose
+            // redundant download was just cancelled. Without this guard
+            // that re-emit re-created the deleted partial and
+            // re-downloaded the whole file.
+            if self.local_files.contains_key(&file) {
+                tracing::debug!(%file, "ignoring a fetch for a file we already hold");
+                continue;
+            }
+            // An already-playable active download re-offers its partial
+            // on every refresh: the playable *edge* may have fired while
+            // the file wasn't now-playing yet (a prefetch), and the
+            // session only loads the partial for the current now-playing
+            // file. Re-emitting at the session's own refresh cadence
+            // (~1/s) makes the load catch up when now-playing advances
+            // onto the file; the session's handler is idempotent.
+            if self.downloads.is_active(&file)
+                && self.last_playable_written.get(&file) == Some(&true)
+            {
+                let _ = self
+                    .out
+                    .send(FileOutput::DownloadPlayable {
+                        file,
+                        path: self.download_path(file),
+                    })
+                    .await;
+            }
+            self.start_peer_download(file, size_bytes, sources, play_chunk)
+                .await;
+        }
+    }
+
     /// Begin (or refresh) the peer-transfer download (Phase 9B).
     async fn start_peer_download(
         &mut self,
@@ -2007,7 +2078,7 @@ impl Actor {
         play_chunk: u32,
     ) {
         let path = self.download_path(file);
-        // The session re-emits StartDownload every snapshot to
+        // The session re-plans every snapshot to
         // refresh sources (idempotent); log only the actor-side
         // birth of a download. This should mirror the session's
         // "prefetch: starting download" transition one-for-one —
@@ -6521,12 +6592,12 @@ mod tests {
         // An active peer download of the same file, far enough along to
         // have chunk requests in flight.
         rig.commands
-            .send(FileCommand::StartDownload {
+            .send(FileCommand::fetch_only(
                 file,
-                size_bytes: contents.len() as u64,
-                sources: vec![peer.clone()],
-                play_chunk: 0,
-            })
+                contents.len() as u64,
+                vec![peer.clone()],
+                0,
+            ))
             .await
             .unwrap();
         match next_output(&mut rig).await {
@@ -8400,12 +8471,12 @@ mod tests {
         // A peer download starts — transfer traffic from here on.
         let peer = dessplay_core::net::PeerId::from(dessplay_core::types::UserId::new("kim"));
         rig.commands
-            .send(FileCommand::StartDownload {
+            .send(FileCommand::fetch_only(
                 file,
-                size_bytes: contents.len() as u64,
-                sources: vec![peer],
-                play_chunk: 0,
-            })
+                contents.len() as u64,
+                vec![peer],
+                0,
+            ))
             .await
             .unwrap();
         match next_output(&mut rig).await {
@@ -8520,12 +8591,12 @@ mod tests {
 
         // An active download for the file (one silent source).
         rig.commands
-            .send(FileCommand::StartDownload {
+            .send(FileCommand::fetch_only(
                 file,
-                size_bytes: contents.len() as u64,
-                sources: vec![PeerId::new("src")],
-                play_chunk: 0,
-            })
+                contents.len() as u64,
+                vec![PeerId::new("src")],
+                0,
+            ))
             .await
             .unwrap();
         match next_output(&mut rig).await {
@@ -8798,12 +8869,12 @@ mod tests {
         // An active peer download for the same file, far enough along
         // to have chunk requests in flight.
         rig.commands
-            .send(FileCommand::StartDownload {
+            .send(FileCommand::fetch_only(
                 file,
-                size_bytes: contents.len() as u64,
-                sources: vec![peer.clone()],
-                play_chunk: 0,
-            })
+                contents.len() as u64,
+                vec![peer.clone()],
+                0,
+            ))
             .await
             .unwrap();
         match next_output(&mut rig).await {

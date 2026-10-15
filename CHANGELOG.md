@@ -9,6 +9,92 @@ append-only; you cannot reword or remove existing entries.
 
 Add new days at the top. Add new entries at the bottom of existing days.
 
+## 2026-10-15
+
+- Fixed: Removing a file from the playlist (or marking it watched,
+  setting its series to not watching, or turning auto-download off) now
+  stops downloading it. Before, everyone kept pulling it from whoever
+  had it, which could swamp their upload.
+- Fixed: When the person you're downloading from loses their connection,
+  your client no longer retries thousands of times a second.
+
+## 2026-10-12
+
+- Added: Osaka's gremlin has a life of his own.
+- Changed: Osaka puts her shelf up in her living room, where her sofa
+  is (unless her gremlin is waiting for it in another room), so she's
+  under it more often.
+- Changed: After five wrong passwords from one address, the server
+  refuses further attempts from it for a while (one more a minute).
+
+## 2026-10-11
+
+- Added: the shopping channel sells Osaka a shelf kit for her wall.
+- Added: Osaka puts her shelf up on the wall, a bit a day, with a little hop.
+- Added: Osaka sometimes stands by her shelf and gazes up at what's on it.
+- Added: a gremlin figurine for Osaka's shelf; it wants to be up high, and she'll get a shelf for it.
+- Fixed: resizing the terminal no longer leaves Osaka sitting or standing where her furniture used to be.
+- Fixed: Osaka's window no longer goes missing from an older home whose furniture had to move to another pane.
+
+## 2026-10-10
+
+- Added: parcels come in through the flap in Osaka's front door.
+- Fixed: with her floor full of furniture and no way to her door, Osaka
+  no longer opens a door to go out right on her TV or sofa; she goes
+  where there's room first. A resize while she's going out or coming
+  home moves that door off her furniture too, and with no room at all
+  she stays in rather than leaving.
+
+## 2026-10-09
+
+- Changed: Osaka leaves for work through her door too; she no longer
+  walks off the screen's edge.
+- Changed: new furniture of Osaka's is never put in the chat pane (what
+  she builds out of text may still stand there, but never in her door's
+  way).
+- Added: Osaka moves furniture out of her door's way, or out of the chat
+  pane, herself ("Can't get to the door!").
+- Fixed: resizing the terminal while Osaka's door stands open no longer
+  shows the door, or her going out or coming in by it, over her
+  furniture: she and her door move together to where it now stands.
+- Added: Osaka's front door is drawn side-on in the wall at the screen's
+  edge where there's room; she walks through it, and while she's out her
+  slippers wait before it with a card on the knob.
+
+## 2026-10-08
+
+- Changed: Osaka's once-a-night Dream is said more slowly, each line
+  held a little longer as she breathes in her sleep.
+- Changed: furniture by the screen's edge stands a little further
+  along, leaving room for Osaka's door.
+- Fixed: while Osaka is at school her door no longer stands over her
+  bed, sofa or desk, or in the chat pane; it stands by the screen's
+  edge where there's room, and never across a pane's border.
+- Changed: Osaka gets up and walks to her door to leave for school.
+
+## 2026-10-07
+
+- Changed: Osaka is calmer: she lingers, settles in, daydreams and
+  wanders less, and a lazy day looks lazy.
+- Added: she sits under the window, dozes off sitting up, and lies under
+  it watching the clouds.
+- Changed: she looks out of her window more often, and of an afternoon
+  her first daydream with her clock in view tells you the hour.
+- Changed: reading a borrowed strip of text, she looks up at a chat line
+  without turning away from it.
+- Changed: Osaka's TV shows a programme instead of endless static.
+- Added: with a film loaded, Osaka's TV shows a still from it, refreshed
+  about once a minute while she watches.
+- Fixed: when Osaka leaves, wide characters (Japanese, Chinese) she had
+  moved no longer show garbled or half-drawn as they rain back into place.
+- Fixed: a parcel no longer arrives where Osaka can't get at it to
+  unpack it, sitting boxed by her TV, or where she could unpack it but
+  never use it (a desk she can't sit at).
+- Fixed: if a menu or a dialog comes up (or, when she isn't resident, a
+  video starts or you select text) just as Osaka comes home from school
+  or dashes home, her empty home now rains away as it does at any other
+  time instead of vanishing at once.
+
 ## 2026-10-06
 
 - Changed: after glancing at a chat line, Osaka gets back to what she was
@@ -37,6 +123,8 @@ Add new days at the top. Add new entries at the bottom of existing days.
 - Changed: Osaka's window hangs lower; she leans on the sill and
   daydreams there for a long while, musing on the sky. It can hang
   behind her sofa.
+- Fixed: Osaka's window no longer hides wholly behind her sofa; only its
+  corner tucks behind it, so she can still lean on the sill.
 
 ## 2026-10-05
 
@@ -45,6 +133,8 @@ Add new days at the top. Add new entries at the bottom of existing days.
   work, and still reach rows you would have to scroll to.
 - Added: In settings, you can drag media roots with the mouse to reorder
   them (the top one is where downloads go), and clicking a row selects it.
+- Fixed: Capital letters (and other shifted keys) can be typed again in
+  terminals where a previous program left an enhanced keyboard mode on.
 
 ## 2026-10-04
 

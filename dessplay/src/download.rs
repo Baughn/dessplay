@@ -221,7 +221,7 @@ struct Source {
     /// on a later external `set_sources`/`start` call to "re-add it
     /// fresh"; nothing in this module guarantees such a call ever
     /// happens again (the file actor never calls `set_sources` directly,
-    /// only `start` via a `StartDownload` the session re-emits whenever
+    /// only `start` via a `SetDownloads` the session re-emits whenever
     /// its synced state view changes -- reliably frequent in an active
     /// session via e.g. playback-position churn, but never for a
     /// seeder-only download nobody is watching). A solitary or
@@ -229,6 +229,34 @@ struct Source {
     /// recovery path and no visible signal. Backing off in place removes
     /// that external dependency.
     solicit_attempts: u32,
+    /// Data streams to this source lost in a row with no chunk landing
+    /// in between. The first loss re-plans at once (a reset of a
+    /// working stream); each further data-less loss pushes
+    /// [`Self::retry_at`] out exponentially — see [`stream_backoff`].
+    /// Reset by any `ChunkData` from the source.
+    dead_streams: u32,
+    /// Shared-clock millis before which no chunk may be requested from
+    /// this source (bulk *or* urgent): a source whose streams keep
+    /// dying at once — no transfer connection on the uploader's side,
+    /// a blocked transfer port — would otherwise be re-asked in the
+    /// same breath as each close, a hot loop through the server
+    /// (2026-10-14: ~10k round trips a second, for an hour).
+    retry_at: u64,
+}
+
+/// Retry delay after the `losses`-th data-less stream loss in a row:
+/// none for the first (one reset of a working stream re-plans at once),
+/// then 1s doubling, capped at 30s — a source that can never open a
+/// stream settles at one attempt per 30s.
+fn stream_backoff(losses: u32) -> u64 {
+    const BASE_MILLIS: u64 = 1_000;
+    const CAP_MILLIS: u64 = 30_000;
+    match losses {
+        0 | 1 => 0,
+        n => BASE_MILLIS
+            .saturating_mul(1u64 << (n - 2).min(16))
+            .min(CAP_MILLIS),
+    }
 }
 
 /// How many silent `BlockHashRequest` re-solicitations a source gets before
@@ -348,6 +376,11 @@ impl Downloads {
     /// Whether a download for `file` is active.
     pub fn is_active(&self, file: &Ed2kHash) -> bool {
         self.files.contains_key(file)
+    }
+
+    /// Every active download's file.
+    pub fn active_files(&self) -> Vec<Ed2kHash> {
+        self.files.keys().copied().collect()
     }
 
     /// Transfer counters for `file` (tests / progress display).
@@ -474,6 +507,8 @@ impl Downloads {
                 solicited: false,
                 hashes_replied: false,
                 solicit_attempts: 0,
+                dead_streams: 0,
+                retry_at: 0,
             });
         }
         self.progress_and_refill(file, now)
@@ -598,6 +633,20 @@ impl Downloads {
         // re-asked) and re-arm its snub clock like a fresh request.
         src.solicited = false;
         src.last_progress = now;
+        // A stream that keeps dying before anything lands backs off
+        // (see `Source::retry_at`); the requeued chunks go to other
+        // sources meanwhile.
+        src.dead_streams = src.dead_streams.saturating_add(1);
+        let backoff = stream_backoff(src.dead_streams);
+        src.retry_at = now.saturating_add(backoff);
+        if backoff > 0 {
+            tracing::debug!(
+                %peer,
+                losses = src.dead_streams,
+                backoff_ms = backoff,
+                "data streams keep dying before delivering; backing off the source"
+            );
+        }
     }
 
     /// Periodic tick: snub silent sources, re-ask for block hashes if
@@ -673,6 +722,7 @@ impl Downloads {
         if let Some(src) = d.sources.get_mut(&from) {
             src.last_progress = now;
             src.in_flight.remove(&index);
+            src.dead_streams = 0;
         }
         // Already have it (an endgame duplicate, or a late arrival):
         // discard, and Cancel it at any other source we asked.
@@ -1103,6 +1153,11 @@ fn plan_requests(
         let Some(src) = d.sources.get(&peer) else {
             continue;
         };
+        // Backing off a source whose streams keep dying: nothing for it,
+        // not even urgent work (`Source::retry_at`).
+        if now < src.retry_at {
+            continue;
+        }
         // Bulk slots come from the *shared* budget (this source's
         // in-flight across every file), so a source saturated by a
         // higher-priority file serves this one urgent chunks only.
@@ -3012,5 +3067,84 @@ mod tests {
             r.bytes,
             "assembled file matches"
         );
+    }
+
+    /// One step of [`a_dying_stream_is_not_retried_in_a_hot_loop`]: the
+    /// source's data stream dies (the server dropped it at once — the
+    /// uploader has no transfer connection), or the actor ticks.
+    #[derive(Clone, Debug)]
+    enum StreamStep {
+        Lost,
+        Tick,
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(
+            dessplay_core::test_support::proptest_cases(64)
+        ))]
+
+        /// A source whose data stream dies before delivering anything
+        /// must not be re-asked in the same breath forever. The
+        /// 2026-10-14 incident: tsugumi's seeder asked a departed peer
+        /// for chunks, the server closed each stream at once ("transfer
+        /// target has no transfer connection"), and the immediate
+        /// re-plan on the close re-opened it — ~10k round trips a
+        /// second, for an hour. Over any interleaving of losses and
+        /// ticks, the requests toward a never-delivering source are
+        /// bounded by a constant plus one per second elapsed.
+        #[test]
+        fn a_dying_stream_is_not_retried_in_a_hot_loop(
+            steps in proptest::collection::vec(
+                (proptest::prop_oneof![
+                    3 => proptest::strategy::Just(StreamStep::Lost),
+                    1 => proptest::strategy::Just(StreamStep::Tick),
+                ], 0u64..400),
+                1..200,
+            )
+        ) {
+            let config = DownloadConfig {
+                // Keep the snub out of the way: the stream dies, the
+                // peer is (as far as the scheduler knows) still there.
+                snub_timeout_millis: 600_000,
+                ..DownloadConfig::default()
+            };
+            let mut r = rig(2 * ED2K_BLOCK_SIZE as usize, config);
+            let a = peer("a");
+            let mut t = 1000;
+            let _ = r.downloads.start(
+                r.file, r.hash.size_bytes, r.hash.root, r.path.clone(),
+                vec![a.clone()], 0, t,
+            );
+            let _ = r.downloads.on_peer_message(
+                a.clone(),
+                PeerMessage::BlockHashes { file: r.file, hashes: r.hash.blocks.clone() },
+                t,
+            );
+            let first = r.downloads.on_peer_message(
+                a.clone(),
+                PeerMessage::FileAvailability { file: r.file, bitfield: r.full_bitfield() },
+                t,
+            );
+            proptest::prop_assert!(!requests(&first).is_empty(), "the source is asked at all");
+            let start = t;
+            let mut asked = 0u64;
+            for (step, dt) in steps {
+                t += dt;
+                let actions = match step {
+                    StreamStep::Lost => r.downloads.on_source_stream_lost(r.file, &a, t),
+                    StreamStep::Tick => r.downloads.tick(t),
+                };
+                if !requests(&actions).is_empty() {
+                    asked += 1;
+                }
+            }
+            let bound = 2 + (t - start) / 1000;
+            proptest::prop_assert!(
+                asked <= bound,
+                "{asked} request rounds toward a source whose stream keeps dying, \
+                 over {}ms (bound {bound})",
+                t - start
+            );
+        }
     }
 }

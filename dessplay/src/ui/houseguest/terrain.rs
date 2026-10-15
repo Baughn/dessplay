@@ -8,6 +8,7 @@ use tuirealm::ratatui::buffer::Buffer;
 use tuirealm::ratatui::layout::{Position, Rect};
 
 use super::sprite::{HEIGHT, WIDTH};
+use super::structures::Written;
 
 const HALF: i32 = WIDTH / 2;
 /// Platforms narrower than this many standing positions are ignored.
@@ -127,6 +128,20 @@ fn pole(symbol: &str) -> bool {
     box_drawing(symbol).is_some_and(|c| !horizontal_only(c))
 }
 
+/// A cell of a floor she can stand on (a [`ledge`], one her image can
+/// redraw in line art).
+const LEDGE: u8 = 1;
+/// A cell she may not paint over: protected, or untouchable.
+const GUARDED: u8 = 2;
+/// A plain wall: `│` or `┃`.
+const WALL: u8 = 4;
+/// Any box-drawing glyph.
+const STROKE: u8 = 8;
+/// A cell her structures wrote this frame (phase 6a D5): a line (it's
+/// [`STROKE`], and her image redraws it), but neither ledge nor pole of
+/// hers.
+const STRUCTURE: u8 = 16;
+
 /// A walkable stretch: she can stand centred on any `x` in `x0..=x1`
 /// with her feet on row `y`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -191,6 +206,10 @@ pub(super) struct Terrain {
     graphics: bool,
     /// Her furniture's covers, in line art (see [`Image`]).
     covers: Vec<Rect>,
+    /// Per cell, what her external door reads of it (see
+    /// [`super::door::Ground`]): [`LEDGE`], [`GUARDED`], [`WALL`],
+    /// [`STROKE`]. Text-blind.
+    lines: Vec<u8>,
     pub platforms: Vec<Platform>,
     pub links: Vec<Link>,
 }
@@ -205,13 +224,42 @@ impl Terrain {
     /// she passes over single-width text but only stays where her box is
     /// blank or lines ([`Terrain::restful`]); she only stands on lines it
     /// can redraw. Wide glyphs stay solid.
+    ///
+    /// `written` is what her structures wrote into the frame this paint
+    /// (phase 6a D4): every terrain read in a paint takes it, as every
+    /// `under` a cell of hers records does (the layout's text checks
+    /// take it from step 3, D6; bubbles read the written frame on
+    /// purpose). What's written is a line, but neither ledge nor pole of
+    /// hers (phase 6a D5: she can't stand on a shelf in 6a).
+    pub fn read_with(buf: &Buffer, protected: &[Rect], graphics: bool, written: &Written) -> Self {
+        Self::read_guarded(buf, protected, protected, graphics, written)
+    }
+
+    /// [`Terrain::read_with`] a frame nothing of hers was written into
+    /// (tests).
+    #[cfg(test)]
     pub fn read(buf: &Buffer, protected: &[Rect], graphics: bool) -> Self {
+        Self::read_with(buf, protected, graphics, &Written::none())
+    }
+
+    /// [`Terrain::read_with`], her body kept out of `solid`, her external
+    /// door ([`super::door::Ground::protected`]) out of `guarded` only: a
+    /// visit's terrain is solid where she moved text too, which is text
+    /// to her door, never a protected pane (text never moves it).
+    pub fn read_guarded(
+        buf: &Buffer,
+        solid: &[Rect],
+        guarded: &[Rect],
+        graphics: bool,
+        written: &Written,
+    ) -> Self {
         let area = buf.area;
         let (width, height) = (i32::from(area.width), i32::from(area.height));
         let mut open = Vec::with_capacity((width * height).max(0) as usize);
         let mut calm = Vec::with_capacity(open.capacity());
         let mut ledges = Vec::with_capacity(open.capacity());
         let mut poles = Vec::with_capacity(open.capacity());
+        let mut lines = Vec::with_capacity(open.capacity());
         for y in 0..area.height {
             // The cell after a wide glyph looks blank but is half of it.
             let mut after_wide = false;
@@ -232,12 +280,30 @@ impl Terrain {
                 };
                 let quiet = (blank(symbol) && !trailing) || redrawable();
                 let narrow = !trailing && cell.is_none_or(|c| super::cells::width(c) <= 1);
-                let free = !skip && !protected.iter().any(|r| r.contains(position));
+                let free = !skip && !solid.iter().any(|r| r.contains(position));
+                let guarded = guarded.iter().any(|r| r.contains(position));
                 open.push(free && (!graphics || quiet || narrow));
                 calm.push(free && (!graphics || quiet));
-                let floor = ledge(symbol) && (!graphics || redrawable());
+                // Her structures' cells: lines, but neither ledge nor
+                // pole of hers (phase 6a D5).
+                let structure = written.contains(i32::from(position.x), i32::from(position.y));
+                let floor = ledge(symbol) && (!graphics || redrawable()) && !structure;
                 ledges.push(!skip && floor);
-                poles.push(!skip && pole(symbol));
+                poles.push(!skip && pole(symbol) && !structure);
+                let stroke = (!skip).then(|| box_drawing(symbol)).flatten();
+                let mut flags = 0;
+                for (on, flag) in [
+                    (!skip && floor, LEDGE),
+                    (guarded || skip, GUARDED),
+                    (matches!(stroke, Some('│' | '┃')), WALL),
+                    (stroke.is_some(), STROKE),
+                    (structure, STRUCTURE),
+                ] {
+                    if on {
+                        flags |= flag;
+                    }
+                }
+                lines.push(flags);
             }
         }
         let mut terrain = Self {
@@ -247,6 +313,7 @@ impl Terrain {
             calm,
             graphics,
             covers: Vec::new(),
+            lines,
             platforms: Vec::new(),
             links: Vec::new(),
         };
@@ -551,6 +618,42 @@ impl Terrain {
             }
         }
         links
+    }
+
+    /// Cell `(x, y)`'s door flags (none off the screen, where it's
+    /// [`GUARDED`]).
+    fn line_flags(&self, x: i32, y: i32) -> u8 {
+        if !(0..self.width).contains(&x) || !(0..self.height).contains(&y) {
+            return GUARDED;
+        }
+        self.lines
+            .get((y * self.width + x) as usize)
+            .copied()
+            .unwrap_or(GUARDED)
+    }
+}
+
+/// What her external door reads of a frame: lines and protected cells
+/// only, never text (see [`super::door::Ground`]).
+impl super::door::Ground for Terrain {
+    fn ledge(&self, x: i32, y: i32) -> bool {
+        self.line_flags(x, y) & LEDGE != 0
+    }
+
+    fn wall(&self, x: i32, y: i32) -> bool {
+        self.line_flags(x, y) & WALL != 0
+    }
+
+    fn stroke(&self, x: i32, y: i32) -> bool {
+        self.line_flags(x, y) & STROKE != 0
+    }
+
+    fn protected(&self, x: i32, y: i32) -> bool {
+        self.line_flags(x, y) & GUARDED != 0
+    }
+
+    fn structure(&self, x: i32, y: i32) -> bool {
+        self.line_flags(x, y) & STRUCTURE != 0
     }
 }
 

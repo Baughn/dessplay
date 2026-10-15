@@ -10,6 +10,7 @@
 #![deny(clippy::dbg_macro)]
 
 pub mod anidb;
+pub mod auth_limit;
 pub mod server;
 pub mod storage;
 

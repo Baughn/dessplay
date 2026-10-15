@@ -6,3 +6,6 @@
 # everyone who runs the test benefits from these saved cases.
 cc d6e1d13b825b87e47e4caae80540790d63313ad872e846d8ee0765159e3dea3f # shrinks to (w, h, positions, text, t0, origin) = (10, 6, [(8, 4), (0, 5), (5, 2), (8, 4), (0, 4), (2, 3), (3, 0), (2, 5), (5, 1), (4, 0), (0, 3), (6, 3), (8, 4), (7, 5), (3, 3), (1, 4), (9, 2), (2, 4), (4, 0)], [(1, 4, "─"), (6, 4, "h│"), (0, 0, "│─vn"), (6, 4, "of漢─"), (5, 0, " 漢漢h"), (9, 5, "   漢"), (9, 4, "││ 漢"), (4, 1, "漢─"), (4, 4, "│"), (3, 1, "u")], 394072, 7)
 cc 8e72900f3e09a26a4c3e53579b521a78e826d5ee2b694529c5407cc1469ba93f # shrinks to (w, h, positions, text, t0, origin) = (8, 6, [(5, 4), (5, 0), (4, 4)], [(4, 4, "漢")], 0, 0)
+cc df7566585fe5580634fab6852055cfbd4a2053d4d0e24daa3e8d069890fbb0ea # shrinks to rows = [(1, "漢")], moves = [(0, 1, 0, 0, false)], typed = [], t0 = 29778, origin = 0
+cc 04c5c6051162a3093f11b76fa9bb749c866ba504942c94d10eaa1275c813cf91 # shrinks to rows = [(0, "漢a")], moves = [(0, 0, 0, 1, false), (2, 0, -2, 0, false)], typed = [], t0 = 0, origin = 0
+cc 20d154cf8cbcba42147bb542a13ed711692e93d8ae26927e84292112c8761e68 # shrinks to (w, h, positions, text, t0, origin) = (8, 6, [(5, 0), (0, 0), (1, 0), (2, 0), (0, 1), (1, 5), (4, 2), (1, 1), (2, 1), (2, 2), (0, 2), (7, 0), (3, 0), (0, 3), (3, 1), (1, 2), (6, 4), (2, 5), (0, 4), (1, 3), (7, 1), (2, 3), (4, 0), (7, 4)], [(4, 4, "─ ──")], 0, 0)

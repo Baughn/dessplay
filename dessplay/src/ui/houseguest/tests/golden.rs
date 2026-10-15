@@ -57,7 +57,7 @@ impl Trace {
                 )
             }
             State::Leaving(_) => "leaving".to_owned(),
-            State::Arriving(_) => "arriving".to_owned(),
+            State::Arriving(..) => "arriving".to_owned(),
             State::Absent => "absent".to_owned(),
             State::Away(_) => "away".to_owned(),
         };
@@ -116,11 +116,39 @@ fn times(seed: u64, n: u64, from: u64, (lo, hi): (u64, u64)) -> Vec<u64> {
 /// says the screen could change, with `world(now, step)` the frame, its
 /// view, and whether local input arrives on this step; the stage cues
 /// each of `cues` when its time comes.
+///
+/// `events` are the times at which `world` changes (a chat line, a key
+/// press, a focus change, text arriving): a step that would cross one
+/// (or a cue's time) is cut at it, so each comes into the world at its
+/// own moment, not at the first step past it, whose length her wakes
+/// set (a wake that changes only how she looks would move what she
+/// does). Each event, and each cue, paints her there, as the client
+/// draws after every input (`ui::shell`'s loop), so she sees it then,
+/// not at her next wake. The census drivers do the same
+/// (`census::Room::step_from`).
+///
+/// Within a moment it keeps the shell's order (`ui::shell`'s loop):
+/// [`Guest::advance`] to the moment first, then [`Guest::activity`] for
+/// a key press there, then the paint, so what fell due by that moment
+/// happened before the input came
+/// (`the_golden_driver_advances_her_before_input_like_the_shell`). A
+/// [`Guest::cue`] keeps the same order by convention, not to match a
+/// client: the shell has no cues, and the stage (`examples/houseguest.rs`)
+/// cues on a key while her clock still stands at its last draw, so a cue
+/// on the very moment something falls due is a tie there, either order.
+///
+/// It isn't the client in one way (docs/testing-strategy.md, the golden
+/// driver): it doesn't paint at the shell's ~10 Hz snapshot redraws
+/// during playback (the errand scenes play), a cadence the session sets,
+/// not she; so what a paint does to her ([`Guest::paint`]: observing, a
+/// nudge falling due, an errand's progress) comes only at the paints it
+/// makes.
 fn drive(
     guest: &mut Guest,
     trace: &mut Trace,
     until: u64,
     cues: &[(u64, Scene)],
+    events: &[&[u64]],
     mut world: impl FnMut(u64, u64) -> (Buffer, IdleView, bool),
 ) {
     let mut now = 0;
@@ -128,12 +156,14 @@ fn drive(
     let frame = paint(guest, &real, &view, now);
     trace.frame(guest, &frame, &real, now);
     while now < until {
-        let step = guest
+        let tick = guest
             .next_tick(now)
             .map_or(1000, |d| d.as_millis() as u64)
             .clamp(1, 1000);
+        let step = step_to(now, tick, cues, events);
         now += step;
         let (real, view, input) = world(now, step);
+        let advanced = guest.advance(now);
         if input {
             guest.activity(now);
         }
@@ -141,11 +171,26 @@ fn drive(
         if let Some(&(_, scene)) = cue {
             guest.cue(scene);
         }
-        if guest.advance(now) || input || cue.is_some() {
+        // The client draws after every input: each event is one (a chat
+        // line, text arriving, a key press, a focus change).
+        let event = events.iter().any(|times| times.contains(&now));
+        if advanced || input || event || cue.is_some() {
             let frame = paint(guest, &real, &view, now);
             trace.frame(guest, &frame, &real, now);
         }
     }
+}
+
+/// The step from `now`: `tick` long, but cut at the next of `cues`' or
+/// `events`' times if it would cross one.
+fn step_to(now: u64, tick: u64, cues: &[(u64, Scene)], events: &[&[u64]]) -> u64 {
+    let next = cues
+        .iter()
+        .map(|&(t, _)| t)
+        .chain(events.iter().flat_map(|times| times.iter().copied()))
+        .filter(|&t| t > now)
+        .min();
+    next.map_or(tick, |t| tick.min(t - now))
 }
 
 fn arrived_within(times: &[u64], now: u64, step: u64) -> bool {
@@ -173,16 +218,23 @@ fn stage_room(seed: u64, graphics: bool, fed: bool) -> u64 {
         (215_000, Scene::MakeBed),
         (255_000, Scene::Parcel),
     ];
-    drive(&mut guest, &mut trace, 300_000, &cues, |now, step| {
-        if arrived_within(&chats, now, step) {
-            mark.synced += 1;
-        }
-        let view = IdleView {
-            chat_mark: mark,
-            ..view.clone()
-        };
-        (real.clone(), view, false)
-    });
+    drive(
+        &mut guest,
+        &mut trace,
+        300_000,
+        &cues,
+        &[&chats],
+        |now, step| {
+            if arrived_within(&chats, now, step) {
+                mark.synced += 1;
+            }
+            let view = IdleView {
+                chat_mark: mark,
+                ..view.clone()
+            };
+            (real.clone(), view, false)
+        },
+    );
     trace.finish(
         &guest,
         &format!("stage-{seed}-{graphics}{}", unfed_tag(fed)),
@@ -234,25 +286,32 @@ fn resident(seed: u64, graphics: bool, fed: bool) -> u64 {
     let chats = times(seed ^ 2, 6, 0, (15_000, 40_000));
     let mut mark = ChatMark::default();
     let mut trace = Trace::new();
-    drive(&mut guest, &mut trace, 180_000, &cues, |now, step| {
-        if arrived_within(&chats, now, step) {
-            mark.synced += 1;
-        }
-        // Each focus change cycles: none, the Users pane, the chat, the
-        // Playlist pane.
-        let changes = focus_at.iter().filter(|&&t| t <= now).count();
-        let focus = match changes % 4 {
-            0 => None,
-            1 => Some(panes[1].1),
-            2 => Some(panes[0].1),
-            _ => Some(panes[2].1),
-        };
-        let view = IdleView {
-            chat_mark: mark,
-            ..resident_view(w, h, focus)
-        };
-        (real.clone(), view, arrived_within(&presses, now, step))
-    });
+    drive(
+        &mut guest,
+        &mut trace,
+        180_000,
+        &cues,
+        &[&chats, &focus_at, &presses],
+        |now, step| {
+            if arrived_within(&chats, now, step) {
+                mark.synced += 1;
+            }
+            // Each focus change cycles: none, the Users pane, the chat, the
+            // Playlist pane.
+            let changes = focus_at.iter().filter(|&&t| t <= now).count();
+            let focus = match changes % 4 {
+                0 => None,
+                1 => Some(panes[1].1),
+                2 => Some(panes[0].1),
+                _ => Some(panes[2].1),
+            };
+            let view = IdleView {
+                chat_mark: mark,
+                ..resident_view(w, h, focus)
+            };
+            (real.clone(), view, arrived_within(&presses, now, step))
+        },
+    );
     trace.finish(
         &guest,
         &format!("resident-{seed}-{graphics}{}", unfed_tag(fed)),
@@ -282,16 +341,23 @@ fn furnished(seed: u64, graphics: bool, fed: bool) -> u64 {
     let chats = times(seed, 10, 0, (30_000, 90_000));
     let mut mark = ChatMark::default();
     let mut trace = Trace::new();
-    drive(&mut guest, &mut trace, 600_000, &[], |now, step| {
-        if arrived_within(&chats, now, step) {
-            mark.synced += 1;
-        }
-        let view = IdleView {
-            chat_mark: mark,
-            ..view.clone()
-        };
-        (real.clone(), view, false)
-    });
+    drive(
+        &mut guest,
+        &mut trace,
+        600_000,
+        &[],
+        &[&chats],
+        |now, step| {
+            if arrived_within(&chats, now, step) {
+                mark.synced += 1;
+            }
+            let view = IdleView {
+                chat_mark: mark,
+                ..view.clone()
+            };
+            (real.clone(), view, false)
+        },
+    );
     trace.finish(
         &guest,
         &format!("furnished-{seed}-{graphics}{}", unfed_tag(fed)),
@@ -311,20 +377,27 @@ fn errand(seed: u64, graphics: bool, fed: bool) -> u64 {
     let arrivals = times(seed, 4, 0, (5_000, 20_000));
     let presses = times(seed ^ 1, 3, 70_000, (5_000, 20_000));
     let mut trace = Trace::new();
-    drive(&mut guest, &mut trace, 150_000, &[], |now, step| {
-        let unseen = arrivals.iter().filter(|&&a| a <= now).count();
-        let (real, accordion) = accordion_room(w, h, unseen);
-        let base = IdleView {
-            busy: Some(Busy::Playing),
-            resident,
-            focus: resident.then_some(chat),
-            chat,
-            nooks: nooks(w, h)[1..].to_vec(),
-            ..view(bottom_strip(w, h))
-        };
-        let view = scrolled_back(base, accordion, unseen);
-        (real, view, arrived_within(&presses, now, step))
-    });
+    drive(
+        &mut guest,
+        &mut trace,
+        150_000,
+        &[],
+        &[&arrivals, &presses],
+        |now, step| {
+            let unseen = arrivals.iter().filter(|&&a| a <= now).count();
+            let (real, accordion) = accordion_room(w, h, unseen);
+            let base = IdleView {
+                busy: Some(Busy::Playing),
+                resident,
+                focus: resident.then_some(chat),
+                chat,
+                nooks: nooks(w, h)[1..].to_vec(),
+                ..view(bottom_strip(w, h))
+            };
+            let view = scrolled_back(base, accordion, unseen);
+            (real, view, arrived_within(&presses, now, step))
+        },
+    );
     trace.finish(
         &guest,
         &format!("errand-{seed}-{graphics}{}", unfed_tag(fed)),
@@ -384,16 +457,23 @@ fn homework_evening(seed: u64, graphics: bool, _: bool) -> u64 {
     let chats = times(seed, 6, 0, (40_000, 120_000));
     let mut mark = ChatMark::default();
     let mut trace = Trace::new();
-    drive(&mut guest, &mut trace, 600_000, &[], |now, step| {
-        if arrived_within(&chats, now, step) {
-            mark.synced += 1;
-        }
-        let view = IdleView {
-            chat_mark: mark,
-            ..view.clone()
-        };
-        (real.clone(), view, false)
-    });
+    drive(
+        &mut guest,
+        &mut trace,
+        600_000,
+        &[],
+        &[&chats],
+        |now, step| {
+            if arrived_within(&chats, now, step) {
+                mark.synced += 1;
+            }
+            let view = IdleView {
+                chat_mark: mark,
+                ..view.clone()
+            };
+            (real.clone(), view, false)
+        },
+    );
     trace.finish(&guest, &format!("evening-{seed}-{graphics}"))
 }
 
@@ -410,16 +490,23 @@ fn tucked_in(seed: u64, graphics: bool, _: bool) -> u64 {
     let chats = times(seed, 2, 30_000, (40_000, 100_000));
     let mut mark = ChatMark::default();
     let mut trace = Trace::new();
-    drive(&mut guest, &mut trace, 300_000, &[], |now, step| {
-        if arrived_within(&chats, now, step) {
-            mark.synced += 1;
-        }
-        let view = IdleView {
-            chat_mark: mark,
-            ..view.clone()
-        };
-        (real.clone(), view, false)
-    });
+    drive(
+        &mut guest,
+        &mut trace,
+        300_000,
+        &[],
+        &[&chats],
+        |now, step| {
+            if arrived_within(&chats, now, step) {
+                mark.synced += 1;
+            }
+            let view = IdleView {
+                chat_mark: mark,
+                ..view.clone()
+            };
+            (real.clone(), view, false)
+        },
+    );
     trace.finish(&guest, &format!("tucked-{seed}-{graphics}"))
 }
 
@@ -436,16 +523,23 @@ fn weekend(seed: u64, graphics: bool, _: bool) -> u64 {
     let chats = times(seed, 6, 0, (40_000, 120_000));
     let mut mark = ChatMark::default();
     let mut trace = Trace::new();
-    drive(&mut guest, &mut trace, 600_000, &[], |now, step| {
-        if arrived_within(&chats, now, step) {
-            mark.synced += 1;
-        }
-        let view = IdleView {
-            chat_mark: mark,
-            ..view.clone()
-        };
-        (real.clone(), view, false)
-    });
+    drive(
+        &mut guest,
+        &mut trace,
+        600_000,
+        &[],
+        &[&chats],
+        |now, step| {
+            if arrived_within(&chats, now, step) {
+                mark.synced += 1;
+            }
+            let view = IdleView {
+                chat_mark: mark,
+                ..view.clone()
+            };
+            (real.clone(), view, false)
+        },
+    );
     trace.finish(&guest, &format!("weekend-{seed}-{graphics}"))
 }
 
@@ -457,16 +551,23 @@ fn three_minutes_from(seed: u64, graphics: bool, at: routine::GameTime) -> (Gues
     let chats = times(seed, 3, 20_000, (30_000, 60_000));
     let mut mark = ChatMark::default();
     let mut trace = Trace::new();
-    drive(&mut guest, &mut trace, 180_000, &[], |now, step| {
-        if arrived_within(&chats, now, step) {
-            mark.synced += 1;
-        }
-        let view = IdleView {
-            chat_mark: mark,
-            ..view.clone()
-        };
-        (real.clone(), view, false)
-    });
+    drive(
+        &mut guest,
+        &mut trace,
+        180_000,
+        &[],
+        &[&chats],
+        |now, step| {
+            if arrived_within(&chats, now, step) {
+                mark.synced += 1;
+            }
+            let view = IdleView {
+                chat_mark: mark,
+                ..view.clone()
+            };
+            (real.clone(), view, false)
+        },
+    );
     (guest, trace)
 }
 
@@ -522,7 +623,7 @@ fn dash_home(seed: u64, graphics: bool, _: bool) -> u64 {
         sprite::Facing::Right
     )));
     let mut trace = Trace::new();
-    drive(&mut guest, &mut trace, 180_000, &[], |_, _| {
+    drive(&mut guest, &mut trace, 180_000, &[], &[], |_, _| {
         (real.clone(), view.clone(), false)
     });
     trace.finish(&guest, &format!("dash-{seed}-{graphics}"))
@@ -559,44 +660,277 @@ fn check_fed(name: &str, scene: SceneFn, fed: bool, want: &[(u64, u64, u64)]) {
     );
 }
 
+/// The golden driver lands a step on every event's own time and every
+/// cue's (as the census drivers do), however her wakes fall, in both
+/// modes: on the stage room, where her wakes are densest, with events at
+/// odd moments no wake of hers would hit, a few at once and one past the
+/// end.
+#[test]
+fn the_golden_driver_steps_to_every_event() {
+    for graphics in [false, true] {
+        for seed in 0..2u64 {
+            let at = format!("graphics={graphics} seed={seed}");
+            let mut ui = stage_ui();
+            let (real, view) = real_frame(&mut ui, 100, 30);
+            let mut guest = guest_of(seed, true);
+            if graphics {
+                guest.set_picker(kitty());
+            }
+            let chats = times(seed, 8, 0, (3_001, 9_007));
+            let presses = [7_777, 7_777, 12_345, 33_333];
+            let cues = [(20_011, Scene::Sneeze), (41_003, Scene::Swap)];
+            let until = 60_000;
+            let mut stepped = Vec::new();
+            let mut trace = Trace::new();
+            drive(
+                &mut guest,
+                &mut trace,
+                until,
+                &cues,
+                &[&chats, &presses, &[until + 1]],
+                |now, step| {
+                    stepped.push((now, step));
+                    (real.clone(), view.clone(), false)
+                },
+            );
+            let landed: Vec<u64> = stepped.iter().map(|&(now, _)| now).collect();
+            let due = chats
+                .iter()
+                .chain(&presses)
+                .chain(cues.iter().map(|(t, _)| t))
+                .filter(|&&t| t <= until);
+            for &t in due {
+                assert!(landed.contains(&t), "{at}: no step lands on {t} ms");
+            }
+            assert!(
+                stepped.windows(2).all(|w| w[1].0 == w[0].0 + w[1].1),
+                "{at}: steps add up"
+            );
+        }
+    }
+}
+
+/// The golden driver paints her at every event's own time, as the client
+/// draws after every input (`ui::shell`'s loop: a chat line, text
+/// arriving, a key press or a focus change is a `UiInput`, and a draw
+/// follows each), not at her next wake: in both modes, on the stage room
+/// with chat lines, presses and a focus change at odd moments no wake of
+/// hers would hit, and a cue.
+#[test]
+fn the_golden_driver_paints_at_every_event() {
+    for graphics in [false, true] {
+        for seed in 0..2u64 {
+            let at = format!("graphics={graphics} seed={seed}");
+            let mut ui = stage_ui();
+            let (real, view) = real_frame(&mut ui, 100, 30);
+            let mut guest = guest_of(seed, true);
+            if graphics {
+                guest.set_picker(kitty());
+            }
+            let chats = times(seed, 8, 0, (3_001, 9_007));
+            let presses = [7_777, 12_345];
+            let focus = [23_456, 47_111];
+            let cues = [(20_011, Scene::Sneeze)];
+            let until = 60_000;
+            let mut trace = Trace {
+                hash: Fnv::new(),
+                lines: Some(Vec::new()),
+            };
+            drive(
+                &mut guest,
+                &mut trace,
+                until,
+                &cues,
+                &[&chats, &presses, &focus],
+                |now, step| {
+                    let mark = ChatMark {
+                        synced: chats.iter().filter(|&&t| t <= now).count(),
+                        ..ChatMark::default()
+                    };
+                    let view = IdleView {
+                        chat_mark: mark,
+                        ..view.clone()
+                    };
+                    (real.clone(), view, arrived_within(&presses, now, step))
+                },
+            );
+            let painted: Vec<u64> = trace
+                .lines
+                .as_ref()
+                .expect("traced")
+                .iter()
+                .map(|line| line.split(' ').next().unwrap().parse().unwrap())
+                .collect();
+            for &t in chats.iter().chain(&presses).chain(&focus) {
+                assert!(
+                    painted.contains(&t),
+                    "{at}: no paint at the event at {t} ms"
+                );
+            }
+        }
+    }
+}
+
+/// A traced run of `drive` on Tuesday from `h:m`, a visitor on
+/// [`home_screen`] with [`home_at`]'s home, the client idle but for a key
+/// press at each of `presses`, and the stage's `cues`, to `until`.
+/// Returns her, and her painted frames as `(ms, what she is)`.
+fn tuesday_run(
+    seed: u64,
+    graphics: bool,
+    (h, m): (u16, u16),
+    until: u64,
+    presses: &[u64],
+    cues: &[(u64, Scene)],
+) -> (Guest, Vec<(u64, String)>) {
+    let (real, view) = home_screen();
+    let mut guest = home_at(seed, routine::GameTime { day: 1, h, m }, graphics);
+    let mut trace = Trace {
+        hash: Fnv::new(),
+        lines: Some(Vec::new()),
+    };
+    drive(
+        &mut guest,
+        &mut trace,
+        until,
+        cues,
+        &[presses],
+        |now, step| {
+            (
+                real.clone(),
+                view.clone(),
+                arrived_within(presses, now, step),
+            )
+        },
+    );
+    let frames = trace
+        .lines
+        .expect("traced")
+        .iter()
+        .map(|line| {
+            let mut words = line.split(' ');
+            let at = words.next().unwrap().parse().unwrap();
+            (at, words.next().unwrap().to_owned())
+        })
+        .collect();
+    (guest, frames)
+}
+
+/// Whether a traced frame shows her not here: her empty home, nothing, or
+/// her rain.
+fn not_here(what: &str) -> bool {
+    matches!(what, "away" | "absent" | "leaving")
+}
+
+/// The golden driver advances her to a moment before it tells her of a
+/// key press there, as the shell does (`ui::shell`'s loop advances her
+/// as it takes each input, then handles it, then draws): what fell due
+/// by that moment happened before the input came. It cues the stage in
+/// the same order, by convention (the stage cues on a key while her
+/// clock stands at its last draw, a tie at the very moment; see
+/// [`drive`]). In both modes, a visitor:
+/// - at the very moment school ends (12:45), out and the client idle
+///   until then: her coming home is asked as it falls due, so a key
+///   press at that moment finds her on her way and doesn't call it off
+///   (A6: input since doesn't), where told first she'd have found the
+///   client busy and her empty home rained out;
+/// - at the very moment she goes out through her door for school
+///   (08:15): a cue there, advanced first, finds her gone and brings her
+///   in; cued first, it went to the visit ending under it.
+#[test]
+fn the_golden_driver_advances_her_before_input_like_the_shell() {
+    for graphics in [false, true] {
+        for seed in 0..2u64 {
+            let at = format!("graphics={graphics} seed={seed}");
+            // As school ends, from a run with no input: her first frame
+            // here after her empty home.
+            let (_, frames) = tuesday_run(seed, graphics, (12, 40), 120_000, &[], &[]);
+            assert!(
+                frames.iter().any(|(_, what)| what == "away"),
+                "{at}: her home stood empty at school"
+            );
+            let home = frames
+                .iter()
+                .skip_while(|(_, what)| what != "away")
+                .find(|(_, what)| !not_here(what))
+                .unwrap_or_else(|| panic!("{at}: she came home from school"))
+                .0;
+            let (_, pressed) = tuesday_run(seed, graphics, (12, 40), home, &[home], &[]);
+            let last = pressed.last().expect("painted");
+            assert!(
+                last.0 == home && !not_here(&last.1),
+                "{at}: a key press as school ends at {home} ms calls off her coming home: {last:?}"
+            );
+            // As she goes out for school, from a run with no input: her
+            // first frame not here after one of her here.
+            let (_, frames) = tuesday_run(seed, graphics, (8, 10), 120_000, &[], &[]);
+            let gone = frames
+                .iter()
+                .skip_while(|(_, what)| not_here(what))
+                .find(|(_, what)| not_here(what))
+                .unwrap_or_else(|| panic!("{at}: she went out for school"))
+                .0;
+            let cue = [(gone, Scene::Sneeze)];
+            let (_, cued) = tuesday_run(seed, graphics, (8, 10), gone, &[], &cue);
+            let last = cued.last().expect("painted");
+            assert!(
+                last.0 == gone && !not_here(&last.1),
+                "{at}: a cue as she goes out at {gone} ms, advanced first, doesn't find her gone: {last:?}"
+            );
+        }
+    }
+}
+
+/// Re-recorded in the review of the door batch's step 9: in ASCII her tick no longer wakes for the first three beats of a
+/// parcel's slide through her door's flap (they draw nothing new there):
+/// the frames 150, 350 and 500 ms after each door flap are gone, nothing
+/// else moves.
 #[test]
 fn golden_stage_room() {
     check(
         "stage",
         stage_room,
         &[
-            (0, 0x0270e14af0e05dd9, 0x0ad0c12ab61fb43d),
-            (1, 0xa8ba9b504386b251, 0x1006227d18f977ca),
-            (2, 0xdc519850c477a992, 0xc21ef860dfc4acc5),
-            (3, 0x441bc7fa33ec5451, 0xbff58f68a71b1495),
+            (0, 0xe2fec148ec12b270, 0xc107b09752d4a612),
+            (1, 0x1d400ea199081f2b, 0x2dffbc80fe0fecf2),
+            (2, 0x010496b3fe12985a, 0x15dbbec735eeb3bf),
+            (3, 0x3f4472f83d2bb369, 0xba6e88c91e93ef28),
         ],
     );
 }
 
+/// Re-recorded in the review of the door batch's step 9: in ASCII her tick no longer wakes for the first three beats of a
+/// parcel's slide through her door's flap (they draw nothing new there):
+/// the frames 150, 350 and 500 ms after each door flap are gone, nothing
+/// else moves.
 #[test]
 fn golden_resident() {
     check(
         "resident",
         resident,
         &[
-            (0, 0xef8108a59efdd093, 0x760719e750d89d80),
-            (1, 0x3946eb0ced311d88, 0x3ccff99ad147d042),
-            (2, 0x3fd02d8e1b229eb1, 0x9751ae0c41204850),
-            (3, 0xd0c768a569f578fc, 0x7f76d6fd6389bbe4),
+            (0, 0xd17f3822383bc800, 0x3dec675fd66c56b7),
+            (1, 0x247158bda3a15a76, 0x65d5666d03586ddc),
+            (2, 0x1425bb1fc1c38afa, 0x3e43ad9d35ec9c9e),
+            (3, 0xb533eb93b5c4b281, 0x58fd78f65e923aa2),
         ],
     );
 }
 
+/// Re-recorded in the review of the door batch's step 9: in ASCII her tick no longer wakes for the first three beats of a
+/// parcel's slide through her door's flap (they draw nothing new there):
+/// the frames 150, 350 and 500 ms after each door flap are gone, nothing
+/// else moves.
 #[test]
 fn golden_furnished_home() {
     check(
         "furnished",
         furnished,
         &[
-            (0, 0x6c50fe5e6d16644c, 0x9ee80e5ca6e4d562),
-            (1, 0x5a02bce3d4bc859d, 0x1927e2c80d7c9b35),
-            (2, 0x5ae2d35ed27fdd26, 0xe072a8ed29476dfb),
-            (3, 0x08955dbc788f88dd, 0x8fc74ed7012dd701),
+            (0, 0xa0aa04a0267121ec, 0x1d4c424eeaa52914),
+            (1, 0x9515b5809b428592, 0xbdedca4c30a55f53),
+            (2, 0x38fece8d7cf58537, 0xa948c39b5c4accec),
+            (3, 0x2283392a1434d72b, 0x7093c78cae7ac7eb),
         ],
     );
 }
@@ -607,24 +941,31 @@ fn golden_errand() {
         "errand",
         errand,
         &[
-            (0, 0xa115268dd34741af, 0x84a48e0354dec3ca),
-            (1, 0xc7fad0f2931b48d7, 0x4fe518d36acfeb16),
-            (2, 0x1e3dd842f4ca4668, 0x20d410417a6fc48e),
-            (3, 0x5e2869bb1b21785a, 0xa97e809ef43467fa),
+            (0, 0x2ea7fca9dab09e54, 0x62569ff3c4e80001),
+            (1, 0x0189aaa246e31f89, 0x8837834bca303667),
+            (2, 0x4ce68ad344556355, 0xa1b27ef17e3b691b),
+            (3, 0x11862e9fc4708882, 0x4a1f23cf13c1aa17),
         ],
     );
 }
 
+/// Re-recorded in the review of the door batch's step 9: in ASCII her tick no longer wakes for the first three beats of a
+/// parcel's slide through her door's flap (they draw nothing new there):
+/// the frames 150, 350 and 500 ms after each door flap are gone, nothing
+/// else moves; seed 2, both modes, her parcel waits till she
+/// has climbed down the pole at column 2 and walked clear of her door's
+/// space (her landing meets it; first differs at 40 853 ms, the "A
+/// parcel!" mid-climb), and comes as she walks off (x 9).
 #[test]
 fn golden_homework_evening() {
     check(
         "evening",
         homework_evening,
         &[
-            (0, 0x876ea56886723d82, 0xa5cab324d4c159c6),
-            (1, 0x2b7d28f3784a5dc7, 0x2cb59310a593e59c),
-            (2, 0x774073234f16be7e, 0xce0d3b4cbec3c985),
-            (3, 0x0e940ff5e6294baa, 0x256afa3dcadf273e),
+            (0, 0xbd5abaf23ceeec91, 0xaf6fbfde973eefd8),
+            (1, 0x01eed595e5a630da, 0x6109531dae2d4923),
+            (2, 0x3852420169fcb0b7, 0xec69b3b873a05eff),
+            (3, 0xe047f2fc5e30ae19, 0xea537d52101b88c7),
         ],
     );
 }
@@ -635,66 +976,108 @@ fn golden_tucked_in() {
         "tucked",
         tucked_in,
         &[
-            (0, 0xba09db43923a93ae, 0x30c0edb9d18e94bb),
-            (1, 0x3cb861c6934daed1, 0x43718fdc5d1aa0f2),
-            (2, 0xdfc846fd62ec9a27, 0xe2c5ec2d0bc9326e),
-            (3, 0x23829cc8c48b959f, 0x69b70050d8b5df9a),
+            (0, 0x8dcfa40b486b2ec1, 0xcbdf4149316b216b),
+            (1, 0xb5e3cbaf805c521f, 0x09c0227001b2c019),
+            (2, 0x6ea0823da6e1fd6d, 0xf5e87665c6e1836f),
+            (3, 0x639b7670f76146e2, 0xccff93e05fcbef5e),
         ],
     );
 }
 
+/// Re-recorded in the door batch's step 4b: work goes out by her door
+/// (every seed, both modes, first differs as she stops at her door's
+/// spot (3, 16) on her way to work and opens it, where she walked on off
+/// the screen's edge). Again in step 8: her door side-on in its wall
+/// (every seed, both modes, first differs in the cells as she sets off
+/// for work, her door shown shut from then).
+/// Again in the review of step 9: in ASCII her tick no longer wakes for the first three beats of a
+/// parcel's slide through her door's flap (they draw nothing new there):
+/// the frames 150, 350 and 500 ms after each door flap are gone, nothing
+/// else moves.
 #[test]
 fn golden_weekend() {
     check(
         "weekend",
         weekend,
         &[
-            (0, 0x062d1f46d304d236, 0x94e178905ebd63cc),
-            (1, 0xe6f13b1ffa672c63, 0x861f622b965f241f),
-            (2, 0x1e7439fc48d10fd7, 0x86f1bfc6825e3d71),
-            (3, 0xdb5b9f3401a29980, 0x87f27acc92d9fab0),
+            (0, 0x145efd3b5d280b34, 0x8c73e81a771feaa7),
+            (1, 0xf846436161e8df8a, 0xb107026470b677c1),
+            (2, 0x73fd4f01b9ca4476, 0xa89b331defd8c45c),
+            (3, 0x12a83cab457520cd, 0x460afe69923e84e8),
         ],
     );
 }
 
+/// Re-recorded in the door batch's step 3: her Away door stands at its
+/// space by her door's wall, not where she went out (the traces first
+/// differ at the first `away` frame, in its cells only). Again in step
+/// 4a: she walks to her door to go out (the traces first differ at her
+/// set-off, a `Walk` where her door used to open at her feet). Again in
+/// step 8: her door side-on in its wall (every seed, both modes, first
+/// differs in the cells at her set-off line, her door shown shut from
+/// then; then her steps through it at her walking pace, and the Away
+/// cue).
+/// Again in the review of step 9: in ASCII her tick no longer wakes for the first three beats of a
+/// parcel's slide through her door's flap (they draw nothing new there):
+/// the frames 150, 350 and 500 ms after each door flap are gone, nothing
+/// else moves; seed 2, both modes, her parcel waits till she
+/// has climbed down the pole at column 2 and walked clear of her door's
+/// space (her landing meets it; first differs at 40 853 ms, the "A
+/// parcel!" mid-climb), and comes as she walks off (x 9).
 #[test]
 fn golden_school_morning() {
     check(
         "school",
         school_morning,
         &[
-            (0, 0x78ccce965e42be1f, 0x343dd7e1638e6f82),
-            (1, 0x3f90b25eba234732, 0x1ff902c5b3cc9894),
-            (2, 0x12714caaef695715, 0x17e75178cc58e115),
-            (3, 0x457e0f12b590c556, 0xe54342c5fcee6435),
+            (0, 0x9b62fcb1d0ea37b0, 0x152c7c9e0c1b0f30),
+            (1, 0xacd4efbe43ef588b, 0xac724a85325f52ce),
+            (2, 0x7b5b47179af87e31, 0x59d49253bfb32f4f),
+            (3, 0xd79a05e230b0b2bb, 0xd5869a8f3e95d974),
         ],
     );
 }
 
+/// Re-recorded in the door batch's step 3: her Away door, and her
+/// coming home, at its space (Users' left on `home_screen`, spot (3, 16)),
+/// not the middle (the traces differ from the first frame). Again in
+/// step 8: her door side-on in its wall, her slippers before it (every
+/// seed, both modes, first differs at the first `away` frame, in its
+/// cells; then her steps in at her walking pace, side-on).
+/// Again in the review of step 9: in ASCII her tick no longer wakes for the first three beats of a
+/// parcel's slide through her door's flap (they draw nothing new there):
+/// the frames 150, 350 and 500 ms after each door flap are gone, nothing
+/// else moves.
 #[test]
 fn golden_home_from_school() {
     check(
         "home",
         home_from_school,
         &[
-            (0, 0x000795126138beb6, 0xb650bf0ab5ebd845),
-            (1, 0xfb969477fbc30e9e, 0x13c4cfd8af0b944d),
-            (2, 0xd3e4723f6d9b2432, 0x626f4248bb4b294b),
-            (3, 0xcdd830678a84442f, 0x684bcfe2aaf4e49b),
+            (0, 0xa0a708d7406f753f, 0xd4fdd0273348ad68),
+            (1, 0x6b6b3bc03e7f1748, 0x137f2923e077f8fa),
+            (2, 0x36dc3d904af2bad7, 0xc2cf1ee6f6309a9f),
+            (3, 0xa634a31220ea6323, 0x44bf871e06367000),
         ],
     );
 }
 
+/// Re-recorded in the door batch's step 3: she dashes in out of her door
+/// at its space (3, 16), not the middle (the traces differ from the first
+/// frame). Again in step 4a: out again, she walks back to her door (the
+/// traces first differ at her set-off, after "Forgot my lunch!"). Again
+/// in step 8: her door side-on in its wall (every seed, both modes,
+/// first differs at the first `away` frame, in its cells).
 #[test]
 fn golden_dash_home() {
     check(
         "dash",
         dash_home,
         &[
-            (0, 0x146fdfcb4445418c, 0xa31153cf283a6bbd),
-            (1, 0x973488674fe497a8, 0x629d2676800bfd3d),
-            (2, 0x6cf8b1ebaaf4ec62, 0x07cf674663a0282f),
-            (3, 0xc14b4e9f2925d69d, 0xd66b50ed236a52dc),
+            (0, 0x61dd50dbc2f20bca, 0x744a8eed8f766bf5),
+            (1, 0xc3596699cdec09f6, 0x69068221698c51e9),
+            (2, 0x635a659bd36a9ac1, 0xdf301af3a68a3d55),
+            (3, 0x3bbc22b1cf6d21c7, 0x2850c209247b4b38),
         ],
     );
 }
@@ -731,12 +1114,55 @@ fn golden_dash_home() {
 /// otherwise; the trace diff is in that commit), with its review's fixes
 /// (seed 1 in ASCII: the stage placing her mid-read, the strip is back in
 /// its line the frame she's placed, not the next; one frame, nothing else
-/// changed; the trace diff is in that commit).
+/// changed; the trace diff is in that commit), and phase 5c step 8c's
+/// driver, which cuts a step at each event's own time (each seed and
+/// mode first differs at the swap cued at 45 s, where it was painted at
+/// the first step past it; the trace diff is in that commit), and step
+/// 8c's stillness levers shipped (each seed and mode first differs as
+/// her lounge on the sofa she made runs on, longer, where it ended and
+/// she walked; the trace diff is in that commit), and step 12c's driver,
+/// which paints her at every event (each seed and mode first differs by a
+/// frame inserted at a chat line's own time, her look up at it shown then,
+/// not at her next wake; the trace diff is in that commit), and the door
+/// batch's step 2, her door's space (each seed and mode the same until
+/// her first parcel comes in, about 170 s in: its box stands six columns
+/// along, past her door's space, so she walks to it there, and what
+/// follows shifts; her record saves her door's wall; the trace diff is in
+/// that commit), with its review's fixes (seeds 0 and 1 in ASCII and 1
+/// and 2 in line art: one frame each, at a line she says on after her
+/// look up, which now shows on a frame past her look's end; nothing
+/// else changed; the trace diff is in that commit), and the door batch's
+/// step 4b, work through her door (seed 0, line art: walking to work she
+/// opens her door at (96, 8) where she walked on off the screen's edge;
+/// seeds 1 and 3, ASCII: her way to her door on another floor is a door
+/// in space, and she comes out of it there and goes on through her door,
+/// where before she went to work through a door where she stood (the run
+/// ended in its gap); seed 1, line art: her way to work cut short, the
+/// shift's length drawn as she set off moved a later beat's timing; the
+/// rest unchanged; the trace diff is in that commit). (The door batch's
+/// step 5 moved them, nothing made in the chat pane; step 6m, makeshift
+/// pieces allowed there again, moved them back: every trace
+/// byte-identical to step 4b's.) Again in the door batch's step 8, her
+/// door side-on in its wall (seeds 0 and 1 in line art, 1 and 3 in
+/// ASCII: each first differs on her way out to work, in the cells as she
+/// walks to her door (it shows shut from her setting off) or in her
+/// beats through it, now at her walking pace; the rest unchanged). Again
+/// in the door batch's step 9, parcels through her door's flap: every
+/// seed first differs at 255 s, the stage's parcel cue (the parcel comes
+/// through her door's flap and slides out, with a wake at each beat of
+/// its slide; seed 1 in line art, she's going through a door at the cue,
+/// so it waits until she's through it; seed 3 in line art, it comes in
+/// by her door's wall, so she walks to another floor to unpack it); the
+/// rest unchanged.
+/// Again in the review of step 9: in ASCII her tick no longer wakes for the first three beats of a
+/// parcel's slide through her door's flap (they draw nothing new there):
+/// the frames 150, 350 and 500 ms after each door flap are gone, nothing
+/// else moves.
 const UNFED_STAGE: [(u64, u64, u64); 4] = [
-    (0, 0x0ed7f241b31e0bc5, 0x49cd447ae4b57fa3),
-    (1, 0x155e9624d07ffd0f, 0xe957f13f5c8fdeca),
-    (2, 0xc865bf7573027792, 0x5af8a5b46c717c63),
-    (3, 0x56e2c7425230f57d, 0xe48e490acf4ea8ba),
+    (0, 0xb076e03e81fb3122, 0xacf7e4caa6d60954),
+    (1, 0xeedb10c3828732e3, 0xedade970efd8b9f3),
+    (2, 0x5c8c5cba45faf6fa, 0x0752ed35c0db5ddc),
+    (3, 0x4049a9418989f82e, 0x6ffddade2117b258),
 ];
 
 /// The resident's tables at the end of phase 5b step 3, but for step 5a's
@@ -768,12 +1194,29 @@ const UNFED_STAGE: [(u64, u64, u64); 4] = [
 /// is in that commit), with its review's fixes (seed 1 in both modes and
 /// 3 in line art: a key press mid-pull in the chat, her line is put back
 /// and the same frame's heave no longer pulls it out again from home; one
-/// frame, nothing else changed; the trace diff is in that commit).
+/// frame, nothing else changed; the trace diff is in that commit), and
+/// step 8c's driver, which cuts a step at each event's own time (each
+/// seed and mode first differs at a key press or a cue, at its own time
+/// where it was the first step past it; the trace diff is in that
+/// commit), and step 8c's stillness levers shipped (each seed and mode
+/// first differs at a decision, choosing otherwise; the trace diff is in
+/// that commit), and step 12c's driver, which paints her at every event
+/// (seeds 0 to 2 in both modes first differ by a frame inserted at a chat
+/// line's or text's own time, her look up at it shown then, not at her
+/// next wake; seed 3 in both modes by one at a focus change, 33915 ms;
+/// the trace diff is in that commit), and the door batch's step 2, her
+/// door's space (each seed and mode first differs at its first painted
+/// frame, her sofa or TV standing six columns along from her door's
+/// space; what she does follows from there; her record saves her door's
+/// wall; the trace diff is in that commit). (The door batch's step 5
+/// moved them, nothing made in the chat pane; step 6m, makeshift pieces
+/// allowed there again, moved them back: every trace byte-identical to
+/// step 4b's.)
 const UNFED_RESIDENT: [(u64, u64, u64); 4] = [
-    (0, 0x7462942ea4af180c, 0xd3539fd66e15e165),
-    (1, 0x3a8f910536e41b12, 0xff9187e108c2753d),
-    (2, 0x8834bc0ba115685f, 0x04d953d6fde79d57),
-    (3, 0xa674079e1183817d, 0x35f822892851a36b),
+    (0, 0xae83572b8f74f265, 0x85d8066280988717),
+    (1, 0xa27439f50cffa068, 0x4434802f6b7eaeeb),
+    (2, 0xec6ab8140f10edef, 0xa35e3e8936345270),
+    (3, 0xee91647cff7780b8, 0x409e2de896d6fed3),
 ];
 
 /// The furnished home's tables at the end of phase 5b step 3, but for step
@@ -798,12 +1241,39 @@ const UNFED_RESIDENT: [(u64, u64, u64); 4] = [
 /// (seeds 1-3 in both modes first differ at a watch from beside the TV,
 /// cross-legged where she sat hugging her knees; seed 0 at her first
 /// decision with reading on her back on offer, choosing otherwise; the
-/// trace diff is in that commit).
+/// trace diff is in that commit), and step 8c's driver, which cuts a
+/// step at each event's own time (seed 1 in both modes: every frame the
+/// same, her empty home's once-a-second steps re-phased at a chat line,
+/// so the run's last step ends at another moment and her ledger's clock
+/// reads a minute on; the trace diff is in that commit), and step 8c's
+/// stillness levers shipped (each seed and mode first differs at a
+/// decision, choosing otherwise; the trace diff is in that commit), and
+/// step 12c's driver, which paints her at every event (each seed and mode
+/// first differs by a frame inserted at a chat line's own time, her look
+/// up at it shown then, not at her next wake; the trace diff is in that
+/// commit), and the door batch's step 2, her door's space (each seed and
+/// mode first differs at its first frame, the pieces by her door's wall
+/// standing six columns along; what she does follows from there; her
+/// record saves her door's wall; the trace diff is in that commit), with
+/// its review's fixes (each seed and mode first differs at its first
+/// frame, in the cells only: a stage gift is judged where it's laid, so
+/// her pieces stand elsewhere; the trace diff is in that commit), and the
+/// door batch's step 4b, work through her door (seed 0, both modes: on
+/// her way to work she stops at her door's spot (3, 16) and goes through
+/// it, where she walked on to the screen's edge; seed 1, both modes:
+/// her way to work cut by a chat line, the shift's length is now drawn
+/// as she sets off, so the stream that times her standing blinks moved,
+/// first showing on the frame after the look (a blink no longer shown);
+/// seeds 2 and 3 unchanged; the trace diff is in that commit), and the
+/// door batch's step 8, her door side-on in its wall (seeds 0 and 1,
+/// both modes: each first differs on her way out to work, in the cells as
+/// she walks to her door (it shows shut from her setting off) or in her
+/// beats through it, now at her walking pace; seeds 2 and 3 unchanged).
 const UNFED_FURNISHED: [(u64, u64, u64); 4] = [
-    (0, 0x1b81660042281504, 0x7986a02014324ead),
-    (1, 0x085356f9b25a7b2f, 0x5b2b9aebee56902c),
-    (2, 0xec8ceebb5a3e8cf3, 0x418da866aa0e1677),
-    (3, 0xa01ef62ff7dd7b46, 0x6305a1da02e0eaeb),
+    (0, 0x30aad98405a282a0, 0xa638f7d4dd53d616),
+    (1, 0x39a3e52edb493e9c, 0xd510ee464bfdd762),
+    (2, 0x926059ace43e7151, 0x9d52a9c8d4e177e1),
+    (3, 0x79407de0d1328d6f, 0xcc2d79b8d69e779b),
 ];
 
 /// The errand's tables at the end of phase 5b step 3, but for step 5a's
@@ -816,12 +1286,22 @@ const UNFED_FURNISHED: [(u64, u64, u64); 4] = [
 /// 3 s, seeds 1 and 3 in both modes, nothing else changed; the trace
 /// diff is in that commit), and step 10a's floor acts (seeds 1 and 3 in
 /// both modes first differ at her first decision with reading on her back
-/// on offer, choosing otherwise; the trace diff is in that commit).
+/// on offer, choosing otherwise; the trace diff is in that commit), and
+/// step 8c's driver, which cuts a step at each event's own time (each
+/// seed and mode first differs at a key press, at its own time where it
+/// was the first step past it; the trace diff is in that commit), and
+/// step 8c's stillness levers shipped (seeds 1 and 3, the residents, in
+/// both modes first differ at a decision, choosing otherwise; the trace
+/// diff is in that commit), and step 12c's driver, which paints her at
+/// every event (each seed and mode first differs by a frame inserted at an
+/// event's own time: seeds 0 and 2 while she's still away, seeds 1 and 3
+/// with her in the room, her answer or her step shown then, not at her
+/// next wake; the trace diff is in that commit).
 const UNFED_ERRAND: [(u64, u64, u64); 4] = [
-    (0, 0xa115268dd34741af, 0x84a48e0354dec3ca),
-    (1, 0xc7fad0f2931b48d7, 0x4fe518d36acfeb16),
-    (2, 0x1e3dd842f4ca4668, 0x20d410417a6fc48e),
-    (3, 0xfa3f832018263a3f, 0x7d1bed98f79968c3),
+    (0, 0x2ea7fca9dab09e54, 0x62569ff3c4e80001),
+    (1, 0x0189aaa246e31f89, 0x8837834bca303667),
+    (2, 0x4ce68ad344556355, 0xa1b27ef17e3b691b),
+    (3, 0x464bd292b9257dd1, 0xbd9bbe268ca64baf),
 ];
 
 #[test]

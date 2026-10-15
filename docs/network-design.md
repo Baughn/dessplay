@@ -1,6 +1,6 @@
 # Network Design
 
-Last updated: 2026-08-21
+Last updated: 2026-10-15
 
 This document covers connection establishment, wire protocols, relay, and file
 transfer. For the replicated data types built on top of this layer, see
@@ -221,6 +221,21 @@ identity is the username the server authenticated.
 All structured messages use **postcard** (serde, compact binary). Messages on
 streams are length-prefixed with a `u32` (little-endian) byte count. Datagrams
 are self-contained (no length prefix needed since QUIC datagrams are framed).
+A frame is at most `MAX_FRAME_LEN` (64 MiB; the largest legitimate one, a
+state snapshot, measured 8.15 MiB in 2026-09); a longer prefix is a protocol
+error, refused before anything is allocated for it.
+
+**Admission.** A connection the server accepts starts *unadmitted*: its
+control stream yields one frame of at most `HANDSHAKE_FRAME_LEN` (4 KiB,
+room for `Auth` or `TransferAuth`) and then is not read again, not even the
+next length prefix, and its connection-level receive window is 64 KiB
+(`PRE_ADMISSION_RECEIVE_WINDOW`) instead of 64 MiB. `Transport::admit`
+releases the reader and raises the window; the server calls it once the
+password checks out (before `AuthOk`) or the transfer token binds, and never
+otherwise. A larger first frame fails the read and the connection is closed
+unanswered. The client's side of a connection is admitted from the start
+(the server is TOFU-pinned). The sim enforces the same gate, so a server
+that forgot to admit would wedge its own tests.
 
 Every message starts with a `u8` message type tag, followed by the
 postcard-encoded body.
@@ -425,6 +440,15 @@ connection loss and retry forever. On success, the server responds with
 address (informational -- it costs nothing to report and would be needed if
 direct peer connections ever return). On failure, the server sends
 `AuthFailed` and closes the connection.
+
+**Throttling.** Each source address has a budget of failed passwords: five
+back to back, refilling at one a minute (`ServerConfig::auth_limit`). An
+IPv6 address counts by its /64; an IPv4-mapped one as its IPv4 address. A
+right password spends nothing. Once the budget is spent, `Auth` is refused
+with `AuthFailed` — the same flush-then-close — without the password being
+checked, so a guess made while throttled learns nothing. The check comes
+after the protocol-version check. Transfer connections are not throttled:
+their `TransferAuth` token is a random `u64` that lives for one session.
 
 `Auth` also carries the client's username, role (seeders are excluded from
 gating and listed separately), and last known epoch. The epoch field is
@@ -727,9 +751,10 @@ chunks whose absence gates a deadline:
   queue as *indices* at the uploader — not as bytes in network buffers.
   The old `--pipeline-depth` flag is gone with the old role.
 - **The window is a shared per-source budget across files.** Every
-  refill walks the active downloads in the priority order the session
-  sets (`Downloads::set_priority` — the anchored playlist ranking,
-  design.md Pre-fetching) and fills each source's pipeline
+  refill walks the active downloads in the priority order of the
+  client's want-set (the file actor's `SetDownloads` — the anchored
+  playlist ranking, design.md Pre-fetching; a download whose file
+  leaves the want-set is cancelled) and fills each source's pipeline
   front-to-back: the file the group needs next takes the whole window;
   the rest of the want-set advances on leftovers. Refills are always
   global — budget freed by any file's event flows to the
@@ -751,6 +776,16 @@ chunks whose absence gates a deadline:
   sitting dead until the 30s timeout — the source itself is kept (the
   stream, not the peer, died; the next request toward it opens a fresh
   one, see [Transfer Resumption](#transfer-resumption)).
+- **Back off a source whose streams keep dying.** Only the *first*
+  data-less loss re-plans toward the same source at once. Each further
+  loss with no chunk landing in between bars the source from new
+  requests (bulk and urgent alike) for 1s, doubling to a 30s cap; its
+  requeued chunks go to other sources meanwhile, and any chunk landing
+  from it clears the backoff. A stream the server closes on arrival
+  (the uploader has no transfer connection, or a blocked transfer
+  port) therefore settles at one attempt per 30s instead of looping
+  through the server.
+  (why: [decisions](decisions.md#a-download-exists-only-while-its-file-is-wanted-2026-10-15))
 - **Urgency for stalls.** The snub alone cannot protect the playable
   window: a slow-but-delivering source never trips it, and a source
   whose stream keeps dying re-arms its snub clock on every requeue

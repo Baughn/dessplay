@@ -1,6 +1,6 @@
 # Testing Strategy
 
-Last updated: 2026-10-06
+Last updated: 2026-10-07
 
 ## Table of Contents
 
@@ -296,19 +296,31 @@ on PATH). Nextest runs tests from all ~50 test binaries in parallel —
 plain `cargo test` runs the binaries serially, which cost ~24s wall on a
 warm cache vs ~4s under nextest (measured 2026-08-31, 32 cores).
 
-`.config/nextest.toml` defines two profiles:
+`.config/nextest.toml` defines four profiles:
 
 - **default** (the gate): excludes the `perf.rs` wall-clock regression
   tests via `default-filter` (they only assert in release builds — in a
   debug gate they cost ~4s and verify nothing) and flags any test slower
   than 30s as SLOW, killing it at 60s. A SLOW flag usually means an
-  accidental real (non-paused) sleep. A test that legitimately takes
-  longer at a deep pass's case count gets a named `overrides` entry
-  with its reason (today `every_made_piece_is_used_or_let_go`: ~50 s
-  at 256 cases in release, killed at 120 s).
+  accidental real (non-paused) sleep. A property test whose cost grows
+  with its case count is not an exception here: a deep pass runs under
+  **deep** instead. Any other test that legitimately takes longer gets a
+  named `overrides` entry with its reason (none today).
+- **deep**: a deep property pass, `PROPTEST_CASES=256 cargo nextest run
+  --release --profile deep -p dessplay houseguest`, flagging at 90s and
+  killing at 180s. At 256 cases the houseguest's whole-visit properties
+  outrun the gate's limits (phase 5c's step 13: `her_film_never_moves_her`
+  ~72 s alone and 81 s in the pass, killed at 60 s under the default
+  profile; `a_trial_keeps_every_promise` ~52 s;
+  `every_made_piece_is_used_or_let_go` ~48 s; four more at 30–37 s),
+  while at the gate's 32 they take ~21–28 s, so the gate keeps its
+  30/60s sensitivity.
 - **full**: includes release perf tests:
   `cargo nextest run --profile full --release`. Ignored tests still require
   explicit `--run-ignored` selection.
+- **band**: the houseguest's stillness band at full strength, minutes a
+  test, killed at 20 minutes (the **stillness band**, under "Golden
+  Trajectories (houseguest)" below).
 
 Nextest does not run doctests; the workspace has none — add a
 `cargo test --doc` step to the hook if that changes.
@@ -805,17 +817,41 @@ byte-identical. The seed-7 snapshot (`osaka_at_home_seed_7`, an insta
 snapshot) has no trace: re-accept it with `cargo insta review` only
 once the commit explains why it moved.
 
-The golden driver delivers a chat line, key press, focus change or cue
-at the first step past its time, and a step's length is set by her
-wakes. The censuses don't (below): their cells are measurements, and a
-wake that changes only how she looks would move when a line lands, and
-so the cell. A golden hash is meant to move on any change to what she
-does, and moves the same way at every run of a seed, so the goldens
-keep the crossing. Its cost is diagnostic: a change that only adds a
-wake (a blink) can move a trace past the frames it draws differently,
-so its diff reads further than the change. Cutting the golden driver
-at those times would be one deliberate re-record (not made yet). The
-property tests' drivers (`tests.rs`) deliver the same way; they check
+The golden driver (`drive`) cuts a step at each chat line's, key
+press's, focus change's, text arrival's and cue's own time (each scene
+hands it its times), as the census drivers do (below): a step's length
+is otherwise set by her wakes, so a wake that changes only how she
+looks (a blink) would move when an event lands, and with it what she
+does, and a trace diff would read further than the change. Every event
+and every cue paints a frame at its moment, as the client draws after
+every input (`ui::shell`'s loop), so she sees a chat line or a focus
+change then, not at her next wake.
+`the_golden_driver_steps_to_every_event` and
+`the_golden_driver_paints_at_every_event` hold it to that. (The cut
+landed as one deliberate re-record in phase 5c step 8c, alone; the paint
+as another in step 12c.) Within a moment it keeps the shell's order: it
+advances her to the moment first, then tells her of a key press
+(`activity`), then paints, so what fell due by then happened before
+the input came; the drawn stillness test's driver, and the property
+drivers that press keys (`a_resident_keeps_out_of_the_focused_pane`,
+`errands_end_and_touch_only_the_accordion`), keep the same order. It
+cues the stage (`cue`) in that order too, by convention rather than to
+match a client: the shell has no cues, and the stage cues on a key
+while her clock still stands at its last draw, so a cue on the very
+moment something falls due is a tie there.
+`the_golden_driver_advances_her_before_input_like_the_shell` holds it
+to that, at the two moments where the order shows (a key press as
+school ends: her coming home was already asked, A6; a cue as she goes
+out by her door: advanced first, it finds her gone). (Changed in phase 5c's tail, T1,
+test-only: no golden moved, since no scene has a press or a cue on
+such a moment.) It is not the client in one way, left so the goldens
+don't move for the harness alone: it doesn't paint at the shell's
+~10 Hz snapshot redraws during playback (the errand scenes play), only
+at events, cues and her wakes (a cadence the session sets while mpv
+reports, not one of hers); so the effects a paint has on her
+(`Guest::paint`: she observes the view, a nudge falls due, an errand's
+progress is read) come at those paints alone. The property tests' drivers (`tests.rs`)
+still deliver at the first step past a time (not cut at it); they check
 invariants on every frame at drawn times and measure nothing across
 builds.
 
@@ -825,9 +861,13 @@ piece she made over 100 seeds, with and without chat every 37 s. The
 visit censuses run unfed (`Room.start: None`), so they compare with
 earlier phases. Every census driver (the visits, the fed afternoon,
 the band, the day census) steps to each chat line's own moment and
-delivers it there (`Room::step_from`), as the client does, not at the
-first step past it; `chat_lines_come_at_their_own_time` holds both
-drivers to the room's cadence, line for line. The **day census** (`day_census`, ignored, about a
+puts it in her view there (`Room::step_from`), not at the first step
+past it; `chat_lines_come_at_their_own_time` holds both drivers to the
+room's cadence, line for line, and to painting her at each line's
+moment, as the client draws on every input (phase 5c step 12c: before,
+she saw a line at her next paint, which her wakes time, up to 10 s later
+for the resident). The film tests' driver (`fed_films`) paints on a line
+too. The **day census** (`day_census`, ignored, about a
 minute in release: `cargo test --release -p dessplay --lib day_census
 -- --ignored --nocapture`) runs a game week from Monday 00:00, fed, in
 each room at three seeds, on Oct 31 (a date that owes her calendar's
@@ -844,20 +884,35 @@ moves on a fed afternoon to a band per mood, the same in every room,
 quiet and at the room's chat cadence: moving in sight after the warm-up
 as a pooled share of her time in sight, between a floor and a ceiling,
 and a cap on her set-offs a minute (the user's: a set-off draws the eye
-the same in any room). Every threshold stands at least 3σ (of the mean of
+the same in any room; the bare stage has lower floors). Every threshold stands at least 3σ (of the mean of
 the visits run) from the cell's aim. At the gate's two seeds that makes
 3σ on the share about 13 to 34 points (a single stage visit reads from
 a few % to about 80% moving), so the gate checks little: "too still" all
 but never fails, and what's left is a gross excess of moving or of
-set-offs. Passing at the gate is not evidence the band is met (the user:
-"I'll know to check them if something feels off"). The band tests are
-ignored until a tuning meets the band (phase 5c's step 8b stopped on
-the stage).
+set-offs. Passing at the gate is not evidence the band is met (the user,
+accepting the gate's two seeds on 2026-10-06: "Seems fine. I'll know to
+check them if something feels off."; decisions.md, "Her stillness band:
+per-mood caps"). The band tests run
+in the gate since phase 5c's step 8c tuned the levers (`TUNED`, read at
+the band's 17-minute visits, about 4 s a stage test), but for what the
+user shipped short (`SHORT`: the stage's industrious afternoon and its
+spread), ignored with their numbers.
 `CENSUS_BAND_SEEDS=<n>` (`test_support::census_band_seeds`, like
 `proptest_cases`) runs the full-strength check at step boundaries, in
 release under `--profile band` (minutes a test), where the thresholds
-narrow to the band itself: each line prints the N that takes, and the
-run uses the largest. The per-room spread runs only then.
+narrow toward the band itself: each line prints the N at which its
+thresholds become the band. A cell aimed close to its edge needs more
+visits than a run can give (at 5c's step 13 the resident's dreamy
+afternoon with chat, aimed at 8.3 against its floor of 8, from N = 2266;
+the `SHORT` cell never), so full strength is N = 525 (chosen at step 8c;
+4.5–10.5 minutes a test at step 13, 16 threads), run at step boundaries
+and in a phase's census pass. At 525 such a cell is held to a wider
+threshold (the resident's dreamy chat floor reads 7.7), so the census
+pass also reads each measured value against the band itself. Nextest
+hides a passing test's lines: pass `--success-output final` to read
+every cell. The per-room spread runs only then, at its own line's N (its
+four conditions at N = 525 outrun the profile's 20 minutes in the home;
+at N = 200 they take about 8 minutes).
 The band tests run in **line art only**, an exemption from looping both
 drawing modes: the band is pinned in what the user's client draws, and
 the home and resident run identically in either mode.
