@@ -1982,6 +1982,22 @@ fn long_visit_of(
                     );
                     let with = visit.image.iter().flat_map(|i| &i.with);
                     let union = with.fold(her, |r, p| r.union(p.cover()));
+                    // Her own door drawn in her image (graphics) widens
+                    // it the same way: the image spans the blank cells
+                    // between her and it.
+                    let union = visit.image.iter().filter_map(|i| i.figure.front()).fold(
+                        union,
+                        |r, front| {
+                            let (left, top, right, bottom) = front.bounds();
+                            let clamp = |v: i32| v.max(0) as u16;
+                            r.union(Rect::new(
+                                clamp(left),
+                                clamp(top),
+                                clamp(right) - clamp(left),
+                                clamp(bottom) - clamp(top),
+                            ))
+                        },
+                    );
                     // Her own door, apart from her image: only what of
                     // it was drawn (none while it's hidden, and nothing
                     // her image's rect has counted already).
