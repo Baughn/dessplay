@@ -108,6 +108,12 @@ pub fn rebuild(
     for (user, position) in &view.playback_position {
         fresh.set_playback_position(actor, stamp(), user.clone(), *position);
     }
+    // A saved position of 0 resumes exactly like no saved position.
+    for (file, millis) in &view.saved_position {
+        if *millis > 0 {
+            fresh.set_saved_position(actor, stamp(), *file, *millis);
+        }
+    }
 
     fresh
 }

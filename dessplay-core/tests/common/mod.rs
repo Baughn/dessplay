@@ -70,6 +70,8 @@ pub fn arb_script_op() -> impl Strategy<Value = ScriptOp> {
         any::<u8>().prop_map(|text| ScriptOp::Chat { text }),
         (any::<u8>(), any::<u32>())
             .prop_map(|(user, millis)| ScriptOp::SetPosition { user, millis }),
+        (any::<u8>(), 0u32..4)
+            .prop_map(|(file, millis)| ScriptOp::SetSavedPosition { file, millis }),
     ]
 }
 

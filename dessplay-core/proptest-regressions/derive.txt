@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 76d9834ca87d55ff93d43cd4239ec9a23d49f1a6a6d83a907c3b253475a4c830 # shrinks to candidates = [Candidate { seeder: false, presence: Present, availability: Some(Ready), tagged: true, millis: 0 }, Candidate { seeder: false, presence: Present, availability: Some(Ready), tagged: true, millis: 0 }, Candidate { seeder: false, presence: Present, availability: Some(Ready), tagged: true, millis: 1 }], duration = None
+cc d583d4e8a9df9851875eaf0ea8a78b40f64de5aecd07f7de161e1957f7790c8a # shrinks to candidates = [Candidate { seeder: false, presence: Present, availability: Some(Ready), tagged: true, millis: 1148016 }], duration = Some(675304)
+cc 01384cfd0343d4fc46964b9f25b35efa3203fc5c506742e88775b1f8e2b4586a # shrinks to candidates = [Candidate { seeder: false, presence: Lost, availability: Some(Ready), tagged: true, millis: 0 }], duration = None

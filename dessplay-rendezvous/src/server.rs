@@ -383,6 +383,37 @@ impl<T: Transport> Shared<T> {
         .await;
     }
 
+    /// The saved-position write for `file` as the group stops watching it
+    /// (design.md, Playback Rules: Saved position), against `peers` as
+    /// they were just before the change. Call under the `state` lock and
+    /// before the change reaches any client, so no client's position tick
+    /// for the next file can have replaced its sample for this one yet.
+    /// (A switching client's first tick for the new file can still
+    /// overtake its `NowPlaying` op by datagram; that only drops it from
+    /// the median, and mpv's load-confirm delay before tagging makes it
+    /// rare.) `None` when nobody had `file` loaded.
+    fn saved_position_op(
+        &self,
+        state: &mut CrdtState,
+        peers: &[PeerInfo],
+        file: Ed2kHash,
+    ) -> Option<CrdtOp> {
+        let millis = derive::saved_position(&state.view(), peers, file)?;
+        tracing::info!(%file, millis, "saving the group position");
+        Some(state.set_saved_position(ActorId::SERVER, self.stamp(), file, millis))
+    }
+
+    /// Broadcast a server-originated op computed under the `state` lock.
+    async fn broadcast_server_op(&self, epoch: Epoch, op: CrdtOp) {
+        self.dirty.store(true, Ordering::SeqCst);
+        self.broadcast_op(
+            ServerControl::StateOp { epoch, op },
+            None,
+            RelayTransport::Eager,
+        )
+        .await;
+    }
+
     /// If `user` holds seek authority, the server takes it (so nobody
     /// syncs to a ghost).
     async fn take_authority_from(&self, user: &UserId) {
@@ -1023,9 +1054,12 @@ async fn serve_connection<T: Transport>(
 
     // A newer connection may have superseded us while we were closing;
     // in that case the registry entry is no longer ours to touch.
-    let (still_ours, dead_transfer) = {
+    let (still_ours, dead_transfer, last_viewer_left) = {
         let mut registry = lock(&shared.registry);
-        match registry.peers.get_mut(&username) {
+        // The peers as they were before this leave, for the last-viewer
+        // saved position (the leaver counts).
+        let before_leave = registry.peer_infos();
+        let (still_ours, dead_transfer) = match registry.peers.get_mut(&username) {
             Some(entry) if entry.conn_id == conn_id => {
                 // The transfer connection dies with the session that
                 // authorized it (closed outside the lock, below).
@@ -1055,7 +1089,14 @@ async fn serve_connection<T: Transport>(
                 (true, dead_transfer)
             }
             _ => (false, None),
-        }
+        };
+        let nobody_watching = !registry
+            .peers
+            .values()
+            .any(|p| p.info.presence == Presence::Present && p.info.role == Role::Interactive);
+        let last_viewer_left =
+            (still_ours && role == Role::Interactive && nobody_watching).then_some(before_leave);
+        (still_ours, dead_transfer, last_viewer_left)
     };
     if let Some(transfer) = dead_transfer {
         transfer.close("session ended").await;
@@ -1066,6 +1107,22 @@ async fn serve_connection<T: Transport>(
 
     if role == Role::Interactive {
         record_seen(&shared, &username, clock());
+    }
+    // The last present viewer leaving mid-file saves where they were
+    // (design.md, Playback Rules: Saved position). Lost counts as leaving
+    // here; the later Lost -> Departed promotion (`sweep_departed`) is not
+    // a second leave, and their samples are unchanged by then anyway.
+    if let Some(peers) = last_viewer_left {
+        let saved = {
+            let mut state = lock(&shared.state);
+            dessplay_core::resolve_value(&state.now_playing)
+                .flatten()
+                .and_then(|file| shared.saved_position_op(&mut state, &peers, file))
+                .map(|op| (Epoch(shared.epoch.load(Ordering::SeqCst)), op))
+        };
+        if let Some((epoch, op)) = saved {
+            shared.broadcast_server_op(epoch, op).await;
+        }
     }
     match end {
         AuthedEnd::Goodbye => {
@@ -1428,6 +1485,12 @@ async fn serve_authed<T: Transport>(
             }
             ServerControl::StateOp { epoch, op } => {
                 shared.observe(op.lww_timestamp());
+                // A now-playing write may end the outgoing file's
+                // viewing; its saved position needs the peers as they
+                // were. Only fetched for that op (positions are 10Hz).
+                let peers = matches!(op, CrdtOp::NowPlaying(_))
+                    .then(|| lock(&shared.registry).peer_infos());
+                let mut saved = None;
                 let applied = {
                     let mut state = lock(&shared.state);
                     if epoch != Epoch(shared.epoch.load(Ordering::SeqCst)) {
@@ -1444,7 +1507,18 @@ async fn serve_authed<T: Transport>(
                         // rebroadcast, so we don't broadcast each op twice.
                         // The datagram path also drops out-of-sequence map
                         // ops (its reliable copy fills the gap).
-                        state.apply_for_broadcast(op.clone(), via_datagram)
+                        let before = dessplay_core::resolve_value(&state.now_playing).flatten();
+                        let applied = state.apply_for_broadcast(op.clone(), via_datagram);
+                        if applied
+                            && let (Some(peers), Some(before)) = (&peers, before)
+                            && dessplay_core::resolve_value(&state.now_playing).flatten()
+                                != Some(before)
+                        {
+                            saved = shared
+                                .saved_position_op(&mut state, peers, before)
+                                .map(|op| (Epoch(shared.epoch.load(Ordering::SeqCst)), op));
+                        }
+                        applied
                     }
                 };
                 if !applied {
@@ -1470,6 +1544,9 @@ async fn serve_authed<T: Transport>(
                 // transition has one position source (everyone resets
                 // to 0; a real user seek will take it right back).
                 if now_playing_changed {
+                    if let Some((epoch, op)) = saved {
+                        shared.broadcast_server_op(epoch, op).await;
+                    }
                     shared
                         .server_write(|state, actor, ts| {
                             state.set_seek_authority(actor, ts, SeekAuthority::Server)
@@ -1576,7 +1653,8 @@ async fn serve_authed<T: Transport>(
                 // pushes its full state so ops that died with its old
                 // connection still land. If it taught us anything,
                 // everyone gets a merge broadcast.
-                let now_playing_changed = {
+                let peers = lock(&shared.registry).peer_infos();
+                let (now_playing_changed, saved) = {
                     let mut state = lock(&shared.state);
                     let server_epoch = Epoch(shared.epoch.load(Ordering::SeqCst));
                     if client_state.epoch != server_epoch {
@@ -1589,7 +1667,14 @@ async fn serve_authed<T: Transport>(
                     let before = dessplay_core::resolve_value(&state.now_playing).flatten();
                     state.merge(client_state.state);
                     shared.observe(Some(state.max_lww_timestamp()));
-                    before != dessplay_core::resolve_value(&state.now_playing).flatten()
+                    let changed =
+                        before != dessplay_core::resolve_value(&state.now_playing).flatten();
+                    // The merge may carry the client's positions too; they
+                    // are the freshest we have for the outgoing file.
+                    let saved = before
+                        .filter(|_| changed)
+                        .and_then(|file| shared.saved_position_op(&mut state, &peers, file));
+                    (changed, saved.map(|op| (server_epoch, op)))
                 };
                 shared.dirty.store(true, Ordering::SeqCst);
                 tracing::debug!(user = %username.0, "client merge applied; rebroadcasting");
@@ -1600,6 +1685,9 @@ async fn serve_authed<T: Transport>(
                 let merge = ServerControl::StateMerge(shared.snapshot());
                 shared.broadcast_control(&merge, None).await;
                 if now_playing_changed {
+                    if let Some((epoch, op)) = saved {
+                        shared.broadcast_server_op(epoch, op).await;
+                    }
                     shared
                         .server_write(|state, actor, ts| {
                             state.set_seek_authority(actor, ts, SeekAuthority::Server)
@@ -1627,6 +1715,7 @@ async fn handle_eof<T: Transport>(
     if role != Role::Interactive {
         return; // seeders don't watch
     }
+    let peers = lock(&shared.registry).peer_infos();
     let ops = {
         let mut state = lock(&shared.state);
         let view = state.view();
@@ -1651,6 +1740,9 @@ async fn handle_eof<T: Transport>(
             .nth(1)
             .map(|entry| entry.hash);
         let epoch = Epoch(shared.epoch.load(Ordering::SeqCst));
+        // Through the median like any switch; at EOF it is past the
+        // watched fraction, so this saves 0 when the duration is known.
+        let saved = shared.saved_position_op(&mut state, &peers, file);
         let mut ops = vec![
             state.set_watched(ActorId::SERVER, shared.stamp(), file, true),
             state.set_now_playing(ActorId::SERVER, shared.stamp(), next),
@@ -1658,6 +1750,7 @@ async fn handle_eof<T: Transport>(
             state.set_playback_intent(ActorId::SERVER, shared.stamp(), PlaybackIntent::Paused),
             state.set_seek_authority(ActorId::SERVER, shared.stamp(), SeekAuthority::Server),
         ];
+        ops.extend(saved);
         // The List: auto-advance next_ep for linked entries whose
         // numeric next_ep matches the episode that just finished
         // (docs/design.md, The List). `available` resets — the new

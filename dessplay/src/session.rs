@@ -376,10 +376,6 @@ pub struct PlayerWiring {
     state_adopted: bool,
 }
 
-/// Fraction of a file's duration that counts as "watched" (design.md,
-/// Watch Tracking).
-const WATCHED_FRACTION: f64 = 0.85;
-
 /// Snapshots (~1/s) an entry may sit in `pending_resolve` unanswered
 /// before its resolve is re-requested. Belt-and-braces against a lost
 /// `Resolved` answer wedging the entry for the process lifetime
@@ -628,24 +624,18 @@ fn same_file_positions(
         .collect()
 }
 
-/// Where a `Load` of now-playing should resume: the furthest persisted
-/// position any user — present or not — reported *on this file*, or
-/// `None` to start at zero. This is what makes a session survive everyone
-/// quitting mid-episode: positions are replicated CRDT state (they outlive
-/// the users who wrote them), but drift correction follows only *present*
-/// peers, so a fresh client with the Server holding authority would
-/// otherwise sit at zero with no one to chase. The file tag is the same
-/// clock-free guard `same_file_positions` uses: a stale sample from the
-/// previous episode never resumes the next one mid-way. Furthest-ahead
-/// matches the leader rule (laggards catch up forward, no group rewind), so
-/// whoever loads later converges on the same point.
+/// Where a `Load` of now-playing should resume: the file's group saved
+/// position, or `None` to start at zero (design.md, Playback Rules: Saved
+/// position). The server writes it whenever the group stops watching a
+/// file, so this covers both an abandoned file and a session that ended
+/// mid-episode. Raw position samples are deliberately not consulted: each
+/// user's register holds only their latest file, so an absent user's
+/// sample for this one is arbitrarily stale.
 fn resume_point(view: &StateView) -> Option<u64> {
     let now_playing = view.now_playing?;
-    view.playback_position
-        .values()
-        .filter(|p| p.file == now_playing)
-        .map(|p| p.position_millis)
-        .max()
+    view.saved_position
+        .get(&now_playing)
+        .copied()
         .filter(|&millis| millis > 0)
 }
 
@@ -1423,7 +1413,7 @@ impl PlayerWiring {
         let Some(duration) = entry.state.duration_millis else {
             return vec![]; // can't judge the threshold without a duration
         };
-        if (position_millis as f64) < WATCHED_FRACTION * duration.get() as f64 {
+        if (position_millis as f64) < derive::WATCHED_FRACTION * duration.get() as f64 {
             return vec![];
         }
         self.watched_recorded.insert(file);
@@ -5619,17 +5609,53 @@ mod tests {
         );
     }
 
-    /// Resumption: a fresh client (Server authority, nobody else present)
-    /// must load now-playing at the group's persisted position, not zero.
-    /// The regression: every session that ended mid-file restarted from
-    /// the top, because drift correction only follows *present* peers and
-    /// the persisted `PlaybackPosition` samples were never consulted.
+    /// The first resolved `Load` of now-playing, as its `resume_millis`.
+    fn first_load_resume(view: &StateView) -> Option<Option<u64>> {
+        let mut wiring = PlayerWiring::new(me());
+        wiring.on_state(view, &[]);
+        let out = wiring.on_resolved(
+            hash(1),
+            Resolution::Verified("/media/ep1.mkv".into()),
+            view,
+            &[],
+        );
+        player_cmds(&out).into_iter().find_map(|cmd| match cmd {
+            PlayerCommand::Load { resume_millis, .. } => Some(*resume_millis),
+            _ => None,
+        })
+    }
+
+    /// Resumption (design.md, Playback Rules: Saved position): a load of
+    /// now-playing resumes at the file's group saved position. Raw
+    /// position samples never override it — not even a same-file one
+    /// further ahead, which is an absent user's arbitrarily stale latest.
     #[test]
-    fn a_load_resumes_from_the_furthest_persisted_same_file_position() {
+    fn a_load_resumes_from_the_saved_position_not_raw_samples() {
         let mut state = playing_state();
         state.set_seek_authority(A, ts(4), dessplay_core::types::SeekAuthority::Server);
-        // Yesterday's samples, from users who have since departed (nobody
-        // is present now): me at 50min, baughn slightly behind.
+        state.set_saved_position(ActorId::SERVER, ts(5), hash(1), 1_200_000);
+        state.set_playback_position(
+            A,
+            ts(6),
+            UserId::new("zombie"),
+            PlaybackPosition {
+                position_millis: 3_000_000,
+                timestamp: ts(6),
+                file: hash(1),
+            },
+        );
+        assert_eq!(
+            first_load_resume(&state.view()),
+            Some(Some(1_200_000)),
+            "a load must resume at the saved position"
+        );
+    }
+
+    /// No saved position (or a saved 0) starts at zero, whatever the
+    /// samples say.
+    #[test]
+    fn a_load_without_a_saved_position_starts_at_zero() {
+        let mut state = playing_state();
         state.set_playback_position(
             A,
             ts(5),
@@ -5640,74 +5666,17 @@ mod tests {
                 file: hash(1),
             },
         );
-        state.set_playback_position(
-            A,
-            ts(6),
-            UserId::new("baughn"),
-            PlaybackPosition {
-                position_millis: 2_990_000,
-                timestamp: ts(6),
-                file: hash(1),
-            },
-        );
-        // A stale sample from a *previous* file, far "ahead": ignored.
-        state.set_playback_position(
-            A,
-            ts(7),
-            UserId::new("zombie"),
-            PlaybackPosition {
-                position_millis: 9_000_000,
-                timestamp: ts(7),
-                file: hash(2),
-            },
-        );
-        let view = state.view();
-        let mut wiring = PlayerWiring::new(me());
-        wiring.on_state(&view, &[]);
-        let out = wiring.on_resolved(
-            hash(1),
-            Resolution::Verified("/media/ep1.mkv".into()),
-            &view,
-            &[],
-        );
-        let resume = player_cmds(&out).into_iter().find_map(|cmd| match cmd {
-            PlayerCommand::Load { resume_millis, .. } => Some(*resume_millis),
-            _ => None,
-        });
         assert_eq!(
-            resume,
-            Some(Some(3_000_000)),
-            "a load must resume from the furthest same-file position"
+            first_load_resume(&state.view()),
+            Some(None),
+            "no saved position: load at zero"
         );
-    }
-
-    #[test]
-    fn a_load_with_no_same_file_position_starts_at_zero() {
-        let mut state = playing_state();
-        state.set_playback_position(
-            A,
-            ts(5),
-            me(),
-            PlaybackPosition {
-                position_millis: 9_000_000,
-                timestamp: ts(5),
-                file: hash(2),
-            },
+        state.set_saved_position(ActorId::SERVER, ts(6), hash(1), 0);
+        assert_eq!(
+            first_load_resume(&state.view()),
+            Some(None),
+            "a saved 0 (finished file): load at zero"
         );
-        let view = state.view();
-        let mut wiring = PlayerWiring::new(me());
-        wiring.on_state(&view, &[]);
-        let out = wiring.on_resolved(
-            hash(1),
-            Resolution::Verified("/media/ep1.mkv".into()),
-            &view,
-            &[],
-        );
-        let resume = player_cmds(&out).into_iter().find_map(|cmd| match cmd {
-            PlayerCommand::Load { resume_millis, .. } => Some(*resume_millis),
-            _ => None,
-        });
-        assert_eq!(resume, Some(None), "no same-file sample: load at zero");
     }
 
     #[test]

@@ -66,6 +66,7 @@ names:
 | `chat` | array of `{timestamp, sender, text}` | |
 | `playback_position` | `{user: {position_millis, timestamp}}` | |
 | `acknowledged_absent` | array of `{hash, user}` | per-file committed-absent acks |
+| `saved_position` | `{hex_hash: millis}` | where a load of the file resumes (server-written when the group leaves it) |
 
 Hashes are hex strings everywhere (keys and values), so you can grep/match
 them directly.

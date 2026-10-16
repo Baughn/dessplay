@@ -385,11 +385,13 @@ fn layout_compatible_fixture_blobs_decode_to_the_expected_view() {
 
 /// Every version in `FROZEN_LAYOUT_SNAPSHOT_VERSIONS` decodes from its
 /// checked-in fixture blob — that version's **real frozen bytes** —
-/// through the frozen `CrdtStateV10` arm to the expected resolved view,
-/// with `short_titles` (which those bodies predate) upgraded to empty.
-/// The v7–v9 blobs were captured while those versions sat in
-/// `LAYOUT_COMPATIBLE_SNAPSHOT_VERSIONS`; v10's was captured at the v11
-/// bump, the last moment the current encoder still produced its bytes.
+/// through its frozen arm (`CrdtStateV10` for v7–v10, `CrdtStateV13`
+/// for v11–v13) to the expected resolved view, with the fields those
+/// bodies predate (`short_titles`, `saved_position`) upgraded to empty.
+/// The v7–v9, v11 and v12 blobs were captured while those versions sat
+/// in `LAYOUT_COMPATIBLE_SNAPSHOT_VERSIONS`; v10's and v13's were
+/// captured at the bump that froze them, the last moment the current
+/// encoder still produced their bytes.
 /// If the frozen structs ever drift against these bytes, this fails —
 /// the fixtures are the contract, never regenerate them.
 #[test]
@@ -407,7 +409,7 @@ fn frozen_layout_fixture_blobs_decode_to_the_expected_view() {
         let (decoded, migrated) = CrdtState::decode_snapshot_flagged(&blob).unwrap_or_else(|e| {
             panic!(
                 "the checked-in v{version} fixture no longer decodes ({e}): the \
-                 frozen v7–v10 layout structs have drifted from v{version}'s real \
+                 frozen layout structs have drifted from v{version}'s real \
                  bytes (do NOT regenerate the fixture; its bytes are the contract)"
             )
         });
@@ -529,7 +531,10 @@ fn every_tagged_snapshot_version_is_deliberately_handled() {
 
 #[test]
 fn tagged_snapshot_round_trips() {
-    let state = sample_state();
+    // The current layout's newest field rides along (the untagged-v6
+    // round trip below shares `sample_state` and predates it).
+    let mut state = sample_state();
+    state.set_saved_position(A, ts(7), hash(1), 600_000);
     let blob = state.encode_snapshot().unwrap();
 
     // The envelope: magic, then the protocol version as u32 LE, then the

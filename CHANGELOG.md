@@ -9,6 +9,14 @@ append-only; you cannot reword or remove existing entries.
 
 Add new days at the top. Add new entries at the bottom of existing days.
 
+## 2026-10-16
+
+- Changed: Switching to another video now remembers where the group was
+  in the one you left (the middle of everyone's positions), and going
+  back picks up from there. A video you leave in the last 15% starts
+  from the beginning next time. The same applies when the last person
+  watching leaves.
+
 ## 2026-10-15
 
 - Fixed: Removing a file from the playlist (or marking it watched,

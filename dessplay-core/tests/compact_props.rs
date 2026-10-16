@@ -40,6 +40,8 @@ fn expected_view(mut view: StateView) -> StateView {
     // 2026-08-17). `false` flags drop: an absent entry already resolves
     // as unwatched everywhere.
     view.watched.retain(|_, watched| *watched);
+    // A saved position of 0 resumes like none at all, so it drops.
+    view.saved_position.retain(|_, millis| *millis > 0);
     view
 }
 

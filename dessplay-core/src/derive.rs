@@ -321,6 +321,58 @@ pub fn merge_known_offline(
     merged
 }
 
+/// Fraction of a file's duration past which it counts as watched
+/// (design.md, Watch Tracking): the personal watch record and
+/// auto-archive fire here, and a saved position at or past it is stored
+/// as 0 ([`saved_position`]).
+pub const WATCHED_FRACTION: f64 = 0.85;
+
+/// The group saved position to store for `file` when the group stops
+/// watching it (design.md, Playback Rules: Saved position): the median
+/// position of every user who has the file **loaded**, as `peers` saw
+/// them just before the change, or 0 when that median is at or past
+/// [`WATCHED_FRACTION`] of the file's playlist duration. `None` when
+/// nobody had it loaded, so the caller leaves any earlier value alone.
+///
+/// "Loaded" is the leader-eligibility test: a present interactive peer
+/// who advertises `file` `Ready` or `DownloadingPlayable` and whose
+/// position carries `file`'s tag. With an even count the median is the
+/// mean of the two middle values.
+pub fn saved_position(view: &StateView, peers: &[PeerInfo], file: Ed2kHash) -> Option<u64> {
+    let mut positions: Vec<u64> = peers
+        .iter()
+        .filter(|p| p.presence == Presence::Present && p.role == Role::Interactive)
+        .filter(|p| {
+            matches!(
+                view.file_availability.get(&(p.username.clone(), file)),
+                Some(FileAvailability::Ready) | Some(FileAvailability::DownloadingPlayable { .. })
+            )
+        })
+        .filter_map(|p| view.playback_position.get(&p.username))
+        .filter(|pos| pos.file == file)
+        .map(|pos| pos.position_millis)
+        .collect();
+    if positions.is_empty() {
+        return None;
+    }
+    positions.sort_unstable();
+    let mid = positions.len() / 2;
+    let median = if positions.len() % 2 == 1 {
+        positions[mid]
+    } else {
+        ((positions[mid - 1] as u128 + positions[mid] as u128) / 2) as u64
+    };
+    let duration = view
+        .playlist
+        .iter()
+        .find(|e| e.hash == file)
+        .and_then(|e| e.state.duration_millis);
+    match duration {
+        Some(d) if median as f64 >= WATCHED_FRACTION * d.get() as f64 => Some(0),
+        _ => Some(median),
+    }
+}
+
 /// The derived playback state: video plays iff the intent latch is
 /// `Playing`, something is queued as now-playing, and nobody blocks.
 pub fn playback_active(view: &StateView, peers: &[PeerInfo]) -> bool {
@@ -1201,5 +1253,165 @@ mod tests {
                 .any(|p| p.username == UserId::new("baughn") && p.presence == Presence::Departed)
         );
         assert!(playback_active(&state.view(), &peers));
+    }
+
+    mod saved_position_props {
+        use super::*;
+        use crate::playlist::NewPlaylistEntry;
+        use crate::types::PlaybackPosition;
+        use proptest::prelude::*;
+        use std::num::NonZeroU64;
+
+        /// One candidate user: role, presence, availability for the file,
+        /// whether their sample is tagged with the file, and its position.
+        #[derive(Clone, Debug)]
+        struct Candidate {
+            seeder: bool,
+            presence: Presence,
+            availability: Option<FileAvailability>,
+            tagged: bool,
+            millis: u64,
+        }
+
+        /// Half the candidates are loaded outright, so samples of several
+        /// loaded users (where the median differs from the max) are common.
+        fn arb_candidate() -> impl Strategy<Value = Candidate> {
+            prop_oneof![
+                (0u64..2_000_000).prop_map(|millis| Candidate {
+                    seeder: false,
+                    presence: Presence::Present,
+                    availability: Some(FileAvailability::Ready),
+                    tagged: true,
+                    millis,
+                }),
+                arb_any_candidate(),
+            ]
+        }
+
+        fn arb_any_candidate() -> impl Strategy<Value = Candidate> {
+            (
+                any::<bool>(),
+                prop_oneof![
+                    Just(Presence::Present),
+                    Just(Presence::Lost),
+                    Just(Presence::Departed)
+                ],
+                prop_oneof![
+                    Just(None),
+                    Just(Some(FileAvailability::Ready)),
+                    Just(Some(FileAvailability::Missing)),
+                    Just(Some(FileAvailability::DownloadingPlayable {
+                        progress_bps: 5000
+                    })),
+                ],
+                any::<bool>(),
+                0u64..2_000_000,
+            )
+                .prop_map(|(seeder, presence, availability, tagged, millis)| {
+                    Candidate {
+                        seeder,
+                        presence,
+                        availability,
+                        tagged,
+                        millis,
+                    }
+                })
+        }
+
+        fn build(
+            candidates: &[Candidate],
+            duration: Option<u64>,
+        ) -> (StateView, Vec<PeerInfo>, Ed2kHash) {
+            let file = hash(1);
+            let mut state = CrdtState::new();
+            state.push_playlist_entry(
+                SERVER,
+                ts(1),
+                NewPlaylistEntry {
+                    hash: file,
+                    added_by: UserId::new("adder"),
+                    filename: "ep.mkv".into(),
+                    size_bytes: 1,
+                    duration_millis: duration.and_then(NonZeroU64::new),
+                },
+            );
+            let mut peers = Vec::new();
+            for (i, c) in candidates.iter().enumerate() {
+                let name = format!("u{i}");
+                let user = UserId::new(&name);
+                let role = if c.seeder {
+                    Role::Seeder
+                } else {
+                    Role::Interactive
+                };
+                peers.push(peer(&name, role, c.presence));
+                if let Some(a) = c.availability {
+                    state.set_file_availability(
+                        ActorId(i as u128 + 10),
+                        ts(2),
+                        user.clone(),
+                        file,
+                        a,
+                    );
+                }
+                state.set_playback_position(
+                    ActorId(i as u128 + 10),
+                    ts(3),
+                    user,
+                    PlaybackPosition {
+                        position_millis: c.millis,
+                        timestamp: ts(3),
+                        file: if c.tagged { file } else { hash(2) },
+                    },
+                );
+            }
+            (state.view(), peers, file)
+        }
+
+        fn loaded(c: &Candidate) -> bool {
+            !c.seeder
+                && c.presence == Presence::Present
+                && c.tagged
+                && matches!(
+                    c.availability,
+                    Some(FileAvailability::Ready | FileAvailability::DownloadingPlayable { .. })
+                )
+        }
+
+        /// The textbook median of a non-empty sample.
+        fn reference_median(mut xs: Vec<u64>) -> u64 {
+            xs.sort();
+            let n = xs.len();
+            if n % 2 == 1 {
+                xs[n / 2]
+            } else {
+                (xs[n / 2 - 1] + xs[n / 2]) / 2
+            }
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(crate::test_support::proptest_cases(256)))]
+
+            /// Only loaded users count; the result is their median, or 0
+            /// at or past the watched fraction; nobody loaded is `None`.
+            #[test]
+            fn saved_position_is_the_loaded_median_or_zero_when_watched(
+                candidates in proptest::collection::vec(arb_candidate(), 0..9),
+                duration in proptest::option::of(1u64..2_000_000),
+            ) {
+                let (view, peers, file) = build(&candidates, duration);
+                let got = saved_position(&view, &peers, file);
+                let sample: Vec<u64> =
+                    candidates.iter().filter(|c| loaded(c)).map(|c| c.millis).collect();
+                if sample.is_empty() {
+                    prop_assert_eq!(got, None);
+                } else {
+                    let median = reference_median(sample);
+                    let watched = duration
+                        .is_some_and(|d| median as f64 >= WATCHED_FRACTION * d as f64);
+                    prop_assert_eq!(got, Some(if watched { 0 } else { median }));
+                }
+            }
+        }
     }
 }

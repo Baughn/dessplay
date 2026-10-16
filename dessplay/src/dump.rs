@@ -60,6 +60,7 @@ pub const SECTIONS: &[&str] = &[
     "playback_position",
     "acknowledged_absent",
     "marquee",
+    "saved_position",
 ];
 
 /// The sections that live under the `state` object (everything except the
@@ -83,6 +84,7 @@ const STATE_SECTIONS: &[&str] = &[
     "playback_position",
     "acknowledged_absent",
     "marquee",
+    "saved_position",
 ];
 
 /// Which sections to emit. `all` (the default, no `--section` given)
@@ -355,6 +357,9 @@ fn state_json(view: &StateView, sel: &Selection) -> Result<Value, serde_json::Er
             None => Value::Null,
         };
         m.insert("marquee".into(), value);
+    }
+    if sel.wants("saved_position") {
+        m.insert("saved_position".into(), hash_keyed(&view.saved_position)?);
     }
     Ok(Value::Object(m))
 }

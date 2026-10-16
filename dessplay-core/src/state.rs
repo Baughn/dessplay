@@ -82,6 +82,10 @@ pub struct CrdtState {
     /// A transient marquee line every client scrolls on update (today:
     /// AI commentary — design.md, AI Commentary). Cleared at compaction.
     pub marquee: LwwCell<Option<MarqueeMessage>>,
+    /// Per-file group saved position, in milliseconds: where a `Load` of
+    /// the file resumes. Server-only writes, when the group stops watching
+    /// the file (design.md, Playback Rules: Saved position).
+    pub saved_position: LwwMap<Ed2kHash, u64>,
     /// The [`PROTOCOL_VERSION`](crate::net::message::PROTOCOL_VERSION) this
     /// struct's shape matches. Storage snapshots carry an explicit version
     /// tag (the [`SNAPSHOT_MAGIC`] envelope — see
@@ -144,6 +148,8 @@ pub enum CrdtOp {
     AcknowledgeAbsent((Ed2kHash, UserId)),
     /// Marquee register write (`None` clears).
     Marquee(LwwRegOp<Option<MarqueeMessage>>),
+    /// Saved-position write (server).
+    SavedPosition(LwwMapOp<Ed2kHash, u64>),
 }
 
 impl CrdtOp {
@@ -175,6 +181,7 @@ impl CrdtOp {
             CrdtOp::ListEntry(op) => map_ts(op),
             CrdtOp::ListNextEp(op) => map_ts(op),
             CrdtOp::PlaybackPosition(op) => map_ts(op),
+            CrdtOp::SavedPosition(op) => map_ts(op),
             CrdtOp::NowPlaying(op) => Some(op.timestamp),
             CrdtOp::SeekAuthority(op) => Some(op.timestamp),
             CrdtOp::PlaybackIntent(op) => Some(op.timestamp),
@@ -205,6 +212,7 @@ impl CrdtOp {
             CrdtOp::PlaybackPosition(_) => "PlaybackPosition",
             CrdtOp::AcknowledgeAbsent(_) => "AcknowledgeAbsent",
             CrdtOp::Marquee(_) => "Marquee",
+            CrdtOp::SavedPosition(_) => "SavedPosition",
         }
     }
 }
@@ -394,6 +402,63 @@ impl From<CrdtStateV10> for CrdtState {
             playback_position: v10.playback_position,
             acknowledged_absent: v10.acknowledged_absent,
             marquee: v10.marquee,
+            saved_position: LwwMap::default(),
+            protocol_version: crate::net::message::PROTOCOL_VERSION,
+        }
+    }
+}
+
+/// The persisted [`CrdtState`] layout shared by protocol v11–v13:
+/// identical to the live struct minus `saved_position`, which v14
+/// inserted before `protocol_version`. Nested value types are the live
+/// shapes (unchanged since v11), so the upgrade is a field-by-field move.
+/// Pinned by the checked-in v11–v13 fixture blobs (tests/fixtures/).
+#[derive(Deserialize)]
+struct CrdtStateV13 {
+    playlist: LwwMap<Ed2kHash, Option<PlaylistFileState>>,
+    watched: LwwMap<Ed2kHash, bool>,
+    now_playing: LwwCell<Option<Ed2kHash>>,
+    seek_authority: LwwCell<SeekAuthority>,
+    playback_intent: LwwCell<PlaybackIntent>,
+    series_preference: LwwMap<(UserId, ListEntryId), SeriesPreference>,
+    manual_override: LwwMap<UserId, Option<ManualState>>,
+    file_availability: LwwMap<(UserId, Ed2kHash), FileAvailability>,
+    anidb_metadata: LwwMap<Ed2kHash, Option<AniDbMetadata>>,
+    series_relations: LwwMap<AniDbSeriesId, SeriesRelations>,
+    file_catalog: LwwMap<Ed2kHash, FileCatalogEntry>,
+    list_entries: LwwMap<ListEntryId, SeriesListEntry>,
+    list_next_ep: LwwMap<ListEntryId, NextEpState>,
+    lookup_requests: GSet<FileHashInfo>,
+    chat: GList<ChatMessage>,
+    playback_position: LwwMap<UserId, PlaybackPosition>,
+    acknowledged_absent: GSet<(Ed2kHash, UserId)>,
+    marquee: LwwCell<Option<MarqueeMessage>>,
+    /// Read for layout only; the stored value is discarded on upgrade.
+    _protocol_version: u32,
+}
+
+impl From<CrdtStateV13> for CrdtState {
+    fn from(v13: CrdtStateV13) -> Self {
+        CrdtState {
+            playlist: v13.playlist,
+            watched: v13.watched,
+            now_playing: v13.now_playing,
+            seek_authority: v13.seek_authority,
+            playback_intent: v13.playback_intent,
+            series_preference: v13.series_preference,
+            manual_override: v13.manual_override,
+            file_availability: v13.file_availability,
+            anidb_metadata: v13.anidb_metadata,
+            series_relations: v13.series_relations,
+            file_catalog: v13.file_catalog,
+            list_entries: v13.list_entries,
+            list_next_ep: v13.list_next_ep,
+            lookup_requests: v13.lookup_requests,
+            chat: v13.chat,
+            playback_position: v13.playback_position,
+            acknowledged_absent: v13.acknowledged_absent,
+            marquee: v13.marquee,
+            saved_position: LwwMap::default(),
             protocol_version: crate::net::message::PROTOCOL_VERSION,
         }
     }
@@ -478,6 +543,7 @@ impl From<CrdtStateUntaggedV6> for CrdtState {
             playback_position: v6.playback_position,
             acknowledged_absent: v6.acknowledged_absent,
             marquee: LwwCell::default(),
+            saved_position: LwwMap::default(),
             protocol_version: crate::net::message::PROTOCOL_VERSION,
         }
     }
@@ -568,10 +634,11 @@ impl CrdtState {
     /// and never regenerated; see tests/fixtures/README.md). v7–v10
     /// left this list when v11 appended `SeriesRelations::short_titles`
     /// (they decode through the frozen [`CrdtStateV10`] arm instead);
-    /// v11 → v12 appended only the `SetAnthropicToken` wire message, and
-    /// v12 → v13 only the `SyncStatus` wire message, so v11 and v12
-    /// bodies decode as the current layout.
-    pub const LAYOUT_COMPATIBLE_SNAPSHOT_VERSIONS: [u32; 2] = [11, 12];
+    /// v11 and v12 sat here until v14 inserted `saved_position`; with
+    /// v13 they now decode through the frozen [`CrdtStateV13`] arm. The
+    /// list is empty until a later bump leaves the persisted layout
+    /// unchanged.
+    pub const LAYOUT_COMPATIBLE_SNAPSHOT_VERSIONS: [u32; 0] = [];
 
     /// Older tagged versions decoded by an explicit **frozen-layout**
     /// decode arm in [`decode_snapshot_flagged`](Self::decode_snapshot_flagged)
@@ -586,8 +653,10 @@ impl CrdtState {
     /// appends its version here so the exhaustiveness test knows it is
     /// handled. A frozen version's fixture blob must be captured **at the
     /// moment of the bump** (the current encoder stops producing its
-    /// bytes) — see tests/fixtures/README.md.
-    pub const FROZEN_LAYOUT_SNAPSHOT_VERSIONS: [u32; 4] = [7, 8, 9, 10];
+    /// bytes) — see tests/fixtures/README.md. v11–v13 share a second
+    /// frozen layout, [`CrdtStateV13`], frozen when v14 inserted
+    /// `saved_position`.
+    pub const FROZEN_LAYOUT_SNAPSHOT_VERSIONS: [u32; 7] = [7, 8, 9, 10, 11, 12, 13];
 
     /// [`decode_snapshot`](Self::decode_snapshot), also reporting whether
     /// a **migration** was used (`true` = the blob was written by an
@@ -621,10 +690,14 @@ impl CrdtState {
                 tracing::info!(
                     stored = version,
                     current = crate::net::message::PROTOCOL_VERSION,
-                    "snapshot from a frozen older layout (v7–v10); migrating"
+                    "snapshot from a frozen older layout; migrating"
                 );
-                let state = crate::wire::decode::<CrdtStateV10>(body)?;
-                return Ok((CrdtState::from(state), true));
+                let state = if version <= 10 {
+                    CrdtState::from(crate::wire::decode::<CrdtStateV10>(body)?)
+                } else {
+                    CrdtState::from(crate::wire::decode::<CrdtStateV13>(body)?)
+                };
+                return Ok((state, true));
             }
             tracing::error!(
                 stored = version,
@@ -711,6 +784,7 @@ impl CrdtState {
             CrdtOp::PlaybackPosition(op) => self.playback_position.apply(op),
             CrdtOp::AcknowledgeAbsent(key) => self.acknowledged_absent.apply(key),
             CrdtOp::Marquee(op) => self.marquee.apply(op),
+            CrdtOp::SavedPosition(op) => self.saved_position.apply(op),
         }
     }
 
@@ -735,6 +809,7 @@ impl CrdtState {
         self.playback_position.merge(other.playback_position);
         self.acknowledged_absent.merge(other.acknowledged_absent);
         self.marquee.merge(other.marquee);
+        self.saved_position.merge(other.saved_position);
         // Not a CRDT type -- both sides are always the current binary's
         // PROTOCOL_VERSION in practice (the connect-time gate refuses a
         // mismatched peer), so which side wins is moot; `max` is a
@@ -985,6 +1060,24 @@ impl CrdtState {
         ))
     }
 
+    /// Set a file's group saved position (millis). Server-only by
+    /// convention.
+    pub fn set_saved_position(
+        &mut self,
+        actor: ActorId,
+        ts: SharedTimestamp,
+        file: Ed2kHash,
+        position_millis: u64,
+    ) -> CrdtOp {
+        CrdtOp::SavedPosition(map_put(
+            &mut self.saved_position,
+            actor,
+            ts,
+            file,
+            position_millis,
+        ))
+    }
+
     // ---- Resolved views.
 
     /// Resolve the whole state to plain values (LWW winners, sorted
@@ -1019,6 +1112,7 @@ impl CrdtState {
                 .marquee
                 .read()
                 .and_then(|lww| lww.value.clone().map(|m| (lww.timestamp, m))),
+            saved_position: map_view(&self.saved_position),
         }
     }
 }
@@ -1055,6 +1149,7 @@ impl CrdtState {
             map_max(&self.list_entries),
             map_max(&self.list_next_ep),
             map_max(&self.playback_position),
+            map_max(&self.saved_position),
         ]
         .into_iter()
         .max()
@@ -1122,6 +1217,7 @@ impl CrdtState {
             CrdtOp::ListEntry(op) => guarded!(list_entries, op),
             CrdtOp::ListNextEp(op) => guarded!(list_next_ep, op),
             CrdtOp::PlaybackPosition(op) => guarded!(playback_position, op),
+            CrdtOp::SavedPosition(op) => guarded!(saved_position, op),
             // Order-free types.
             op @ (CrdtOp::NowPlaying(_)
             | CrdtOp::SeekAuthority(_)
@@ -1181,6 +1277,7 @@ impl CrdtState {
             CrdtOp::ListEntry(op) => reliable!(list_entries, op),
             CrdtOp::ListNextEp(op) => reliable!(list_next_ep, op),
             CrdtOp::PlaybackPosition(op) => reliable!(playback_position, op),
+            CrdtOp::SavedPosition(op) => reliable!(saved_position, op),
             // Order-free types are handled by the caller before the map arm;
             // reached only defensively, they apply and rebroadcast.
             other => {
@@ -1303,6 +1400,8 @@ pub struct StateView {
     /// The marquee line with its LWW stamp — the stamp keys the UI's
     /// scroll animation (a rewrite of the same text still replays).
     pub marquee: Option<(SharedTimestamp, MarqueeMessage)>,
+    /// Per-file group saved positions (millis).
+    pub saved_position: BTreeMap<Ed2kHash, u64>,
 }
 
 #[cfg(test)]

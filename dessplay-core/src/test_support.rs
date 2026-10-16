@@ -239,6 +239,14 @@ pub enum ScriptOp {
         /// Position in millis.
         millis: u32,
     },
+    /// Write a file's saved position (the server's write; any lane may
+    /// issue it in a script).
+    SetSavedPosition {
+        /// File index.
+        file: u8,
+        /// Position in millis.
+        millis: u32,
+    },
 }
 
 /// A scripted step: who does what, when.
@@ -488,6 +496,9 @@ pub fn apply_step(state: &mut CrdtState, step: &ScriptStep) -> (u8, CrdtOp) {
                 file: file(0),
             },
         ),
+        ScriptOp::SetSavedPosition { file: f, millis } => {
+            state.set_saved_position(a, ts, file(*f), *millis as u64)
+        }
     };
     (actor_index, op)
 }

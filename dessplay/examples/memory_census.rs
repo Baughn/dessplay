@@ -84,6 +84,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         state.acknowledged_absent.clone()
     });
     let _ = measure("CRDT marquee", || state.marquee.clone());
+    let _ = measure("CRDT saved_position", || state.saved_position.clone());
     // Upstream's context-bearing iterator clones clocks; use it only here,
     // outside the measured operation. Exclude the temporary Vec's storage.
     for (name, clocks) in [
@@ -135,6 +136,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         view.acknowledged_absent.clone()
     });
     let _ = measure("view marquee", || view.marquee.clone());
+    let _ = measure("view saved_position", || view.saved_position.clone());
     println!("count playlist: {}", view.playlist.len());
     println!("count watched: {}", view.watched.len());
     println!("count file_availability: {}", view.file_availability.len());

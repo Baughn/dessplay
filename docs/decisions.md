@@ -697,7 +697,7 @@ their authored chrome when the form is rearranged.
 
 ### Manual select does not mark watched
 
-**Rule:** Manually selecting a different playlist entry loads it paused at the start and resets seek authority, but does not mark the abandoned file watched or advance The List. See [design.md](design.md#playback-rules).
+**Rule:** Manually selecting a different playlist entry loads it paused at the start (since 2026-10-16: at its saved position, see [Saved position per file](#saved-position-per-file)) and resets seek authority, but does not mark the abandoned file watched or advance The List. See [design.md](design.md#playback-rules).
 
 **Why:** Selecting a different file abandons the current one rather than finishing it. The pause-at-start half mirrors the EOF transition so the group presses play when ready either way.
 

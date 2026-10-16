@@ -1075,12 +1075,11 @@ for storage because *blobs outlive deployments*; connections don't.
   `layout_compatible_fixture_blobs_decode_to_the_expected_view` instead
   of decoding misaligned (postcard is positional; a wrong compat entry
   can otherwise succeed with silently wrong values). Today the list is
-  **[11]**: v7–v10 left it for the frozen arm below when v11 reshaped
-  `SeriesRelations`, and v11 → v12 appended only a wire message
-  (`SetAnthropicToken`), leaving v11 bodies current-layout. Policy
-  details in tests/fixtures/README.md.
+  **empty**: v7–v10 left it for the frozen arm below when v11 reshaped
+  `SeriesRelations`, and v11–v12 (with v13) left it when v14 inserted
+  `saved_position`. Policy details in tests/fixtures/README.md.
 - **Tagged, frozen older layout**
-  (`FROZEN_LAYOUT_SNAPSHOT_VERSIONS`, today v7–v10): decode through a
+  (`FROZEN_LAYOUT_SNAPSHOT_VERSIONS`, today v7–v13): decode through a
   frozen copy of that layout plus an upgrade, flagged. v11 (2026-08-17)
   appended `short_titles` **inside** `SeriesRelations` — postcard is
   positional, so an old body simply ends where the new field would
@@ -1118,6 +1117,13 @@ for storage because *blobs outlive deployments*; connections don't.
   v11 bump** — the last moment the current encoder still produced its
   bytes — which is the standing rule for any future frozen version:
   capture the fixture at the bump, or its real bytes are gone.
+  A second frozen layout, `CrdtStateV13`, covers v11–v13: v14
+  (2026-10-16) inserted the top-level `saved_position` map before
+  `protocol_version`. Nested shapes are unchanged since v11, so its
+  upgrade is a plain field move with `saved_position` empty: no map is
+  rebuilt and no dots are minted, so independently migrated replicas
+  merge exactly as their originals would. `snapshot-v13.bin` was
+  captured before the shape change.
 - **Tagged, any other version**: hard error naming both versions -- the
   refuse-to-start posture. A deliberate migration adds an explicit
   decode arm for that version; nothing is ever guessed from bytes.

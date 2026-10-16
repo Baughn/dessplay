@@ -26,7 +26,10 @@ use crate::types::{AniDbSeriesId, Ed2kHash, Epoch, UserId};
 /// v13 (2026-08-21): appended `ServerControl::SyncStatus` — the client
 /// half of the connect handshake (wire-only; the persisted layout is
 /// unchanged from v11).
-pub const PROTOCOL_VERSION: u32 = 13;
+/// v14 (2026-10-16): inserted `CrdtState::saved_position` and appended
+/// `CrdtOp::SavedPosition` (reshapes the persisted layout; v11–v13 decode
+/// through the frozen `CrdtStateV13` arm).
+pub const PROTOCOL_VERSION: u32 = 14;
 
 /// Top-level wire message: only control traffic. File-transfer relay
 /// envelopes are **not** a `WireMessage` variant -- they are framed as
