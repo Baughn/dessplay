@@ -1,6 +1,6 @@
 # Sync State Design
 
-Last updated: 2026-09-12
+Last updated: 2026-10-16
 
 DessPlay uses the **`crdts`** crate for state synchronization. All shared state
 is expressed as CRDT types from this library, synced through the server as
@@ -215,6 +215,7 @@ and the wire protocol uniform.
 | Chat | `GList<ChatMessage>` | Any peer appends; trimmed on compaction |
 | Marquee | `LwwCell<Option<MarqueeMessage>>` | The commentary-running client (design.md, AI Commentary); cleared on compaction |
 | Playback position | `Map<UserId, LwwCell<PlaybackPosition>, ActorId>` | Each user writes own |
+| Saved position | `Map<Ed2kHash, LwwCell<u64>, ActorId>` (millis) | Server only: when the group switches away from a file or its last viewer leaves (design.md, Playback Rules) |
 
 ### Playlist
 
@@ -319,15 +320,15 @@ never produce `UserSeek`.
 **Echo suppression:** When you receive a seek authority change naming *you*,
 ignore it -- you already performed the seek.
 
-**File change:** When now-playing changes, the server becomes seek authority.
-Everyone resets to position 0. The server's authority prevents spurious seeks
+**File change:** When now-playing changes, the server becomes seek authority
+and writes the outgoing file's saved position. Everyone loads the new file at
+*its* saved position, or 0. The server's authority prevents spurious seeks
 during the transition.
 
-**Resumption:** a `Load` of the now-playing file seeks to the furthest
-`PlaybackPosition` any user (present or not) holds *tagged with that file*, so
-a session that ended mid-episode resumes where it stopped instead of at zero
-(the file tag keeps a previous episode's sample from resuming the next one).
-This is an automatic seek — no `UserSeek`. See design.md, Playback Rules.
+**Resumption:** a `Load` of the now-playing file seeks to that file's
+**saved position**, or 0 if it has none. This is an automatic seek, so it
+produces no `UserSeek`. Raw `PlaybackPosition` samples are not a resume
+source. See design.md, Playback Rules (Saved position).
 
 **Authority departure:** if the current seek authority becomes Departed
 (see presence in [network-design.md](network-design.md)), the server takes

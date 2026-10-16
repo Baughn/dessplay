@@ -1,6 +1,6 @@
 # DessPlay Design Document
 
-Last updated: 2026-10-15
+Last updated: 2026-10-16
 
 A synchronized video player for watch parties. Terminal-first, built for
 reliability over flaky connections. Server-coordinated, including relayed
@@ -731,16 +731,39 @@ chat OSD, and survives player relaunches
    is loaded -- see [Events from Player](#events-from-player)
    (why: [decisions](decisions.md#position-file-tag-gates-leader-eligibility)).
 
-   **Resumption.** Every `Load` of the real now-playing video carries a
-   **resume point**: the furthest position any user -- present or not --
-   has persisted *for this file* (the same file-tag guard as above, so the
-   previous episode's samples never resume the next one mid-way). The
-   actor seeks there on load through the crash-restore path (programmatic,
-   echo-suppressed, never a `UserSeek`). Furthest-ahead matches the leader
-   rule, so whoever loads later converges on the same point; anyone
-   loading while peers are present is then pulled the rest of the way by
-   ordinary drift correction
-   (why: [decisions](decisions.md#resume-point-on-load)).
+   **Saved position.** Each file has at most one group **saved
+   position**, synced state written only by the server. The server
+   writes it for a file whenever the group stops watching that file:
+   - **Switching away**: any change of now-playing away from the file
+     (a manual select, an EOF advance, or a merge that changes
+     now-playing). The value is computed from positions *before* the
+     change takes effect.
+   - **The last viewer leaving**: the last present interactive user
+     leaves (graceful quit, or Lost) while the file is now-playing.
+
+   The value is the **median** position of every user who has the file
+   *loaded*: an interactive user (not a seeder) who advertises the file
+   `Ready` or `DownloadingPlayable` and whose `PlaybackPosition` carries
+   that file's tag. These are the two leader-eligibility gates above. A
+   user counts if they were present just before the change, and in the
+   last-viewer case that includes the user who is leaving. With an even
+   count, the median is the mean of the two middle values. If the median
+   is at or past **85%** of the playlist entry's duration (the same
+   threshold as personal watched, see [Watch Tracking](#watch-tracking)),
+   the saved position is **0**, so a finished or nearly finished file
+   starts from the top next time. With no known duration, the median is
+   stored as is. With no loaded users, the existing saved position is
+   left unchanged.
+
+   **Resumption.** Every `Load` of the real now-playing video resumes
+   at the file's saved position, or at 0 if it has none. The actor seeks
+   there on load through the crash-restore path (programmatic,
+   echo-suppressed, never a `UserSeek`). Anyone who loads while peers
+   are present is then pulled to the live group by ordinary drift
+   correction. Raw `PlaybackPosition` samples are never a resume source.
+   One register per user holds only that user's latest file, so an
+   absent user's sample is arbitrarily stale
+   (why: [decisions](decisions.md#saved-position-per-file)).
 6. Seeks are debounced (1500ms) -- only broadcast after the user stops scrubbing
 7. **EOF** advances the synced now-playing pointer to the next playlist entry.
    The server initiates this (it is the authoritative entity for "file ended"):
@@ -757,7 +780,8 @@ chat OSD, and survives player relaunches
    in muted colors as play history. Users can select any entry with Enter to
    set it as now-playing. A manual selection of a **different** file mirrors
    the playback-state half of the EOF transition: it loads the new file
-   **paused at the start** -- the client writes playback intent Paused
+   **paused at its saved position** (0 if it has none; see Saved
+   position above) -- the client writes playback intent Paused
    alongside the now-playing change, and the server resets seek authority to
    Server on the now-playing op -- so the group presses play when ready, just
    like an EOF advance. It does **not** mark the abandoned file watched or

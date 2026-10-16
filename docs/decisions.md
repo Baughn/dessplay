@@ -1,6 +1,6 @@
 # DessPlay Decision Log
 
-Last updated: 2026-10-15
+Last updated: 2026-10-16
 
 The reasoning behind the rules in [design.md](design.md): the failure that
 motivated each one, the alternatives that were rejected, and the date it
@@ -684,6 +684,16 @@ their authored chrome when the form is rearranged.
 **Rule:** Every `Load` of the real now-playing video seeks to the furthest position any user, present or not, has persisted for this file. See [design.md](design.md#playback-rules).
 
 **Why:** Drift correction follows only *present* peers, so it cannot restart a session that ended mid-episode: with everyone gone there is no leader, and a fresh client would sit at zero under Server authority. Positions are replicated CRDT state that outlives the users who wrote them, so the furthest one is available. Furthest-ahead matches the leader rule, so whoever loads later converges on the same point. The seek goes through the crash-restore path so it is programmatic, echo-suppressed, and never a `UserSeek`.
+
+**Superseded (2026-10-16)** by [Saved position per file](#saved-position-per-file). The mid-episode-quit case is now covered by the last-viewer write.
+
+### Saved position per file
+
+**Rule (2026-10-16):** When the group stops watching a file, by switching away or by the last viewer leaving, the server stores the median position of the users who had it loaded. It stores 0 instead when that median is at or past 85% of the duration. Every `Load` resumes at the file's saved position, or 0. See [design.md](design.md#playback-rules).
+
+**Why:** The user asked for it after finding that abandoning a file for another lost its position. The previous rule used the furthest file-tagged `PlaybackPosition` sample, and those live in one register per user. Within a second of a switch, every present user's register holds the new file, so the abandoned file's position survived only by accident: in the register of someone absent at the time. That sample could be arbitrarily old, and furthest-ahead let it win. The server writes the value because it sees every user's position before the now-playing change reaches anyone. A client-side write would race the other clients' position ticks for the new file. The median, rather than furthest-ahead, keeps one user who skipped ahead from dragging everyone forward on return. The 85% reset reuses the personal-watched threshold (the user's original "80%" was a misremembering of it), so "starts from the top" and "counts as watched" agree. Without that reset, a file abandoned during the credits would reopen in the credits. The last-viewer write replaces the old rule's one real job, resuming a session that ended mid-episode.
+
+**Rejected:** saved position with a fallback to the furthest sample. A stale saved position could still override fresher samples, and stale samples would still win when a file has no saved position. Per-(user, file) position registers would be unbounded state to answer a group question.
 
 ### Manual select does not mark watched
 
