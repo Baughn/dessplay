@@ -564,6 +564,8 @@ enum CrdtOp {
     Chat(glist::Op<ChatMessage>),
     PlaybackPosition(LwwMapOp<UserId, PlaybackPosition>),
     AcknowledgeAbsent((Ed2kHash, UserId)),
+    Marquee(LwwRegOp<Option<MarqueeMessage>>),
+    SavedPosition(LwwMapOp<Ed2kHash, u64>),   // server-only (v14)
 }
 ```
 
