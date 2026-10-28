@@ -1005,45 +1005,51 @@ async fn serve_connection<T: Transport>(
     conn.admit();
 
     // From here on every reliable send to this peer is queued on its
-    // own writer (see `outbox`): no broadcast ever waits on it. AuthOk is
-    // queued before the peer is registered, so it precedes anything a
-    // concurrent broadcast queues for the new connection.
+    // own writer (see `outbox`): no broadcast ever waits on it.
     let peer = Arc::new(PeerConn::new(
         Arc::clone(&conn),
         username.0.clone(),
         config.peer_outbox_limit,
     ));
     let transfer_token: u64 = rand::random();
-    send_to(
-        &peer,
-        &ServerControl::AuthOk {
-            observed_addr: remote,
-            transfer_token,
-        },
-    );
 
     // ---- Register, superseding any existing entry for this user (a
     // reconnecting client — possibly one whose old connection hasn't
-    // died yet, possibly one currently Lost or Departed).
-    let superseded = lock(&shared.registry).peers.insert(
-        username.clone(),
-        PeerEntry {
-            conn_id,
-            conn: Some(Arc::clone(&peer)),
-            transfer_token,
-            transfer_conn: None,
-            transfer_conn_id: None,
-            relay_tx: None,
-            info: PeerInfo {
-                username: username.clone(),
-                role,
-                presence: Presence::Present,
-                addresses: vec![remote],
-                connected_since: clock(),
+    // died yet, possibly one currently Lost or Departed). AuthOk is
+    // queued under the registry lock, just before the insert: it
+    // precedes anything a broadcast can queue for this connection (a
+    // broadcast finds it only through the registry), and a client
+    // quick to present its token in `TransferAuth` finds the session
+    // already registered.
+    let superseded = {
+        let mut registry = lock(&shared.registry);
+        send_to(
+            &peer,
+            &ServerControl::AuthOk {
+                observed_addr: remote,
+                transfer_token,
             },
-            lost_at: None,
-        },
-    );
+        );
+        registry.peers.insert(
+            username.clone(),
+            PeerEntry {
+                conn_id,
+                conn: Some(Arc::clone(&peer)),
+                transfer_token,
+                transfer_conn: None,
+                transfer_conn_id: None,
+                relay_tx: None,
+                info: PeerInfo {
+                    username: username.clone(),
+                    role,
+                    presence: Presence::Present,
+                    addresses: vec![remote],
+                    connected_since: clock(),
+                },
+                lost_at: None,
+            },
+        )
+    };
     if let Some(old) = superseded {
         tracing::debug!(user = %username.0, "superseding the user's old connection");
         if let Some(conn) = old.conn {
