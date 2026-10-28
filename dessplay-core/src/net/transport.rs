@@ -109,7 +109,10 @@ pub enum TransportEvent {
 /// One established connection.
 pub trait Transport: Send + Sync + 'static {
     /// Send a frame on the control stream: reliable, ordered, prioritized
-    /// above transfer streams.
+    /// above transfer streams. Waits on the peer's flow control, so a
+    /// peer that stops reading stalls it for as long as the connection
+    /// lives; the server never awaits it where other peers share the
+    /// wait (`dessplay-rendezvous`'s outbox).
     fn send_control(&self, frame: &[u8])
     -> impl Future<Output = Result<(), TransportError>> + Send;
 

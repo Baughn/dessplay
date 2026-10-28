@@ -1,6 +1,6 @@
 # DessPlay Design Document
 
-Last updated: 2026-10-16
+Last updated: 2026-10-28
 
 A synchronized video player for watch parties. Terminal-first, built for
 reliability over flaky connections. Server-coordinated, including relayed
@@ -4000,6 +4000,15 @@ Until a connection authenticates, the server reads one control frame of at
 most 4 KiB from it and nothing more, and lets it have at most 64 KiB in
 flight; authentication lifts both limits. (why: decisions.md, "An
 unauthenticated peer gets a handshake's worth")
+
+**One peer never holds up another**: everything the server sends a
+connection goes into that connection's own queue, written out by its own
+writer, so a client that reads slowly or not at all delays only itself.
+Datagrams skip the queue. A control connection whose queue passes 64 MiB
+(a relay stream's, 4 MiB) is closed as not reading; a real client
+reconnects and resyncs from a snapshot. A frame always goes into an empty
+queue, however large. (why: decisions.md, "One peer never holds up
+another")
 
 **TLS**: TOFU (Trust On First Use) -- server generates a persistent self-signed
 cert; clients store and verify the fingerprint on subsequent connections.

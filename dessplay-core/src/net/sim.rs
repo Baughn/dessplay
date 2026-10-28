@@ -17,6 +17,15 @@
 //!   one latency); **dropping** a transport without closing is silent
 //!   death — the peer sees nothing, which is exactly what presence
 //!   timeouts exist to catch.
+//! - **Flow control**: each direction of the control stream has a
+//!   receive window ([`SimNetwork::set_control_window`], default
+//!   [`SIM_CONTROL_WINDOW`]) counting bytes sent but not yet taken by
+//!   the receiver's `recv()` — held by a partition, in flight, or
+//!   sitting unread in its inbox. `send_control` waits while a frame
+//!   would overflow it (a frame into an empty window always goes, as
+//!   QUIC eventually moves any frame), so a peer that stops reading
+//!   stalls its sender exactly as a full QUIC stream window does. A
+//!   close, kill, or dropped receiver fails the waiting send.
 //! - **Admission** is enforced as QUIC enforces it
 //!   ([`Transport::admit`]): the accepting side yields one control frame
 //!   of at most [`HANDSHAKE_FRAME_LEN`], then holds later control frames
@@ -84,6 +93,77 @@ impl Default for LinkConfig {
 /// Default simulated datagram payload limit, mirroring typical QUIC.
 pub const SIM_MAX_DATAGRAM: usize = 1200;
 
+/// Default control-stream receive window, mirroring the production QUIC
+/// per-stream window (16 MiB).
+pub const SIM_CONTROL_WINDOW: usize = 16 * 1024 * 1024;
+
+/// One direction's control-stream flow-control window: bytes sent but
+/// not yet taken by the receiver's `recv()`.
+struct Window {
+    limit: usize,
+    unread: Mutex<usize>,
+    /// Wakes senders parked on a full window (a read freed room, or the
+    /// connection died).
+    room: tokio::sync::Notify,
+    /// The direction is over (closed, killed, receiver dropped): a
+    /// waiting or later send fails instead of waiting forever.
+    dead: AtomicBool,
+}
+
+impl Window {
+    fn new(limit: usize) -> Arc<Self> {
+        Arc::new(Self {
+            limit,
+            unread: Mutex::new(0),
+            room: tokio::sync::Notify::new(),
+            dead: AtomicBool::new(false),
+        })
+    }
+
+    fn unread(&self) -> std::sync::MutexGuard<'_, usize> {
+        self.unread
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Reserve room for a `len`-byte frame, waiting while it would
+    /// overflow a non-empty window.
+    async fn reserve(&self, len: usize) -> Result<(), TransportError> {
+        loop {
+            let room = self.room.notified();
+            tokio::pin!(room);
+            room.as_mut().enable();
+            {
+                let mut unread = self.unread();
+                if *unread == 0 || *unread + len <= self.limit {
+                    *unread += len;
+                    return Ok(());
+                }
+            }
+            // Only a send that must wait learns of the death; one that
+            // fits goes out silently, as before windows existed.
+            if self.dead.load(Ordering::SeqCst) {
+                return Err(TransportError::ConnectionLost("closed".into()));
+            }
+            room.await;
+        }
+    }
+
+    /// The receiver took a `len`-byte frame.
+    fn release(&self, len: usize) {
+        {
+            let mut unread = self.unread();
+            *unread = unread.saturating_sub(len);
+        }
+        self.room.notify_waiters();
+    }
+
+    fn kill(&self) {
+        self.dead.store(true, Ordering::SeqCst);
+        self.room.notify_waiters();
+    }
+}
+
 type ConnId = u64;
 type Pending = Vec<(TransportEvent, usize)>;
 /// One reliable event scheduled for ordered delivery: its due time, the
@@ -111,6 +191,11 @@ struct NetState {
     /// task race once broke it under a busy multi-thread scheduler
     /// (see `control_order_survives_scheduler_churn`).
     pumps: HashMap<(ConnId, EndpointId), mpsc::UnboundedSender<ReliableItem>>,
+    /// Control-stream receive window per (connection, receiving
+    /// endpoint), so a kill can fail senders parked on it.
+    windows: HashMap<(ConnId, EndpointId), Arc<Window>>,
+    /// Receive window for connections created from now on.
+    control_window: usize,
     addrs: HashMap<EndpointId, SocketAddr>,
     next_conn: ConnId,
     max_datagram: usize,
@@ -130,6 +215,9 @@ impl NetState {
     ) -> Option<mpsc::UnboundedSender<TransportEvent>> {
         self.pumps.remove(&(conn, endpoint.clone()));
         self.clear_at.remove(&(conn, endpoint.clone()));
+        if let Some(window) = self.windows.remove(&(conn, endpoint.clone())) {
+            window.kill();
+        }
         self.senders.remove(&(conn, endpoint.clone()))
     }
 }
@@ -161,6 +249,8 @@ impl SimNetwork {
                 clear_at: HashMap::new(),
                 pending: HashMap::new(),
                 pumps: HashMap::new(),
+                windows: HashMap::new(),
+                control_window: SIM_CONTROL_WINDOW,
                 addrs: HashMap::new(),
                 next_conn: 0,
                 max_datagram: SIM_MAX_DATAGRAM,
@@ -210,6 +300,13 @@ impl SimNetwork {
     /// Override the simulated datagram size limit.
     pub fn set_max_datagram(&self, max: usize) {
         self.lock().max_datagram = max;
+    }
+
+    /// Set the control-stream receive window (bytes) for connections
+    /// created from now on. Tests shrink it so a stalled reader fills
+    /// it with a few frames instead of 16 MiB.
+    pub fn set_control_window(&self, bytes: usize) {
+        self.lock().control_window = bytes;
     }
 
     /// Live reliable-delivery pump entries (one per connection direction
@@ -406,6 +503,10 @@ pub struct SimTransport {
     local: EndpointId,
     peer: EndpointId,
     inbound: tokio::sync::Mutex<mpsc::UnboundedReceiver<TransportEvent>>,
+    /// The peer's receive window: what our control sends fill.
+    send_window: Arc<Window>,
+    /// Our receive window: what our `recv()` drains.
+    recv_window: Arc<Window>,
     closed: Arc<AtomicBool>,
     admission: Mutex<SimAdmission>,
     /// Wakes a `recv` parked on the inbox when `admit` releases held
@@ -430,14 +531,18 @@ impl SimTransport {
         local: EndpointId,
         peer: EndpointId,
         inbound: mpsc::UnboundedReceiver<TransportEvent>,
+        windows: (Arc<Window>, Arc<Window>),
         admission: SimAdmission,
     ) -> Self {
+        let (send_window, recv_window) = windows;
         Self {
             net,
             conn,
             local,
             peer,
             inbound: tokio::sync::Mutex::new(inbound),
+            send_window,
+            recv_window,
             closed: Arc::new(AtomicBool::new(false)),
             admission: Mutex::new(admission),
             admitted: tokio::sync::Notify::new(),
@@ -513,6 +618,9 @@ impl SimTransport {
 impl Transport for SimTransport {
     async fn send_control(&self, frame: &[u8]) -> Result<(), TransportError> {
         self.check_open()?;
+        self.send_window.reserve(frame.len()).await?;
+        // A close may have landed while we waited for room.
+        self.check_open()?;
         self.net.deliver(
             self.conn,
             &self.local,
@@ -566,6 +674,7 @@ impl Transport for SimTransport {
         let mut inbound = self.inbound.lock().await;
         loop {
             if let Some(frame) = self.released() {
+                self.recv_window.release(frame.len());
                 return Ok(TransportEvent::Control(frame));
             }
             let event = tokio::select! {
@@ -574,7 +683,10 @@ impl Transport for SimTransport {
             };
             let event = match event {
                 Some(TransportEvent::Control(frame)) => match self.gate(frame)? {
-                    Some(frame) => Some(TransportEvent::Control(frame)),
+                    Some(frame) => {
+                        self.recv_window.release(frame.len());
+                        Some(TransportEvent::Control(frame))
+                    }
                     None => continue,
                 },
                 other => other,
@@ -599,6 +711,9 @@ impl Transport for SimTransport {
         if self.closed.swap(true, Ordering::SeqCst) {
             return;
         }
+        // A send of ours parked on a full window fails now, as a QUIC
+        // write does when its connection closes under it.
+        self.send_window.kill();
         // Tell the peer (subject to latency/partition), then tear down
         // our own inbox so a local recv() unblocks.
         self.net.deliver(
@@ -624,6 +739,16 @@ impl Transport for SimTransport {
                 reason: format!("locally closed: {reason}"),
             });
         }
+    }
+}
+
+impl Drop for SimTransport {
+    /// A dropped transport reads nothing ever again: fail any peer send
+    /// parked on our window rather than strand it (QUIC's idle timeout
+    /// would eventually do the same). Sends that fit still "succeed"
+    /// silently — the peer learns nothing, per silent-death semantics.
+    fn drop(&mut self) {
+        self.recv_window.kill();
     }
 }
 
@@ -667,6 +792,16 @@ impl Connector for SimConnector {
             let (server_tx, server_rx) = mpsc::unbounded_channel();
             state.senders.insert((conn, self.from.clone()), client_tx);
             state.senders.insert((conn, self.to.clone()), server_tx);
+            // Named by receiver: `to_client` is the client's receive
+            // window, which the server's sends fill.
+            let to_client = Window::new(state.control_window);
+            let to_server = Window::new(state.control_window);
+            state
+                .windows
+                .insert((conn, self.from.clone()), Arc::clone(&to_client));
+            state
+                .windows
+                .insert((conn, self.to.clone()), Arc::clone(&to_server));
             let client_addr = SimNetwork::addr_of(&mut state, &self.from);
 
             let client = SimTransport::new(
@@ -675,6 +810,7 @@ impl Connector for SimConnector {
                 self.from.clone(),
                 self.to.clone(),
                 client_rx,
+                (Arc::clone(&to_server), Arc::clone(&to_client)),
                 SimAdmission::Admitted(VecDeque::new()),
             );
             let server = SimTransport::new(
@@ -683,6 +819,7 @@ impl Connector for SimConnector {
                 self.to.clone(),
                 self.from.clone(),
                 server_rx,
+                (to_client, to_server),
                 SimAdmission::AwaitingFirst,
             );
             (client, server, client_addr, listener)

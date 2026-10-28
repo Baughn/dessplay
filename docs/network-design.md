@@ -1,6 +1,6 @@
 # Network Design
 
-Last updated: 2026-10-15
+Last updated: 2026-10-28
 
 This document covers connection establishment, wire protocols, relay, and file
 transfer. For the replicated data types built on top of this layer, see
@@ -463,6 +463,40 @@ connection ("superseded by a new connection") and registers the new one.
 This is the reconnect-before-timeout path: a client that crashes and
 restarts must not be locked out by its own zombie connection. With five
 trusted friends, impersonation is out of scope (see the threat model).
+
+### Outbound Queues
+
+Every reliable frame the server sends an authenticated connection goes
+into that connection's own **outbox**, a queue drained by a writer task
+of its own. This covers the control stream and the relay stream on the
+transfer connection. A sender only queues (`Outbox::push` never waits),
+so neither a broadcast nor a serve loop nor a relay reader ever waits on
+another peer's flow control. A client that reads slowly or not at all
+delays only itself. Before 2026-10-28 the server awaited each peer's
+write in turn, and one non-reading client froze the whole server until a
+restart (decisions.md, "One peer never holds up another").
+
+- **Order** is per connection: one queue, one writer. `AuthOk` is queued
+  before the session is registered, so it precedes anything a concurrent
+  broadcast queues for the new connection.
+- **Broadcast frames are encoded once and shared** (`Arc<[u8]>`) across
+  every recipient's queue.
+- **Bounded in bytes.** A control queue holding more than
+  `ServerConfig::peer_outbox_limit` (64 MiB) bytes not yet written
+  closes: the server closes the connection ("not reading its control
+  stream"), the peer goes Lost like any dead connection, and a real client
+  reconnects and resyncs from a snapshot. A relay queue past 4 MiB closes
+  the peer's transfer connection ("not reading its relay stream"); the
+  client redials it and re-exchanges availability. A frame always goes
+  into an *empty* queue, however large.
+- **Datagrams skip the queue.** They are unordered and best-effort, and
+  quinn's `send_datagram` discards its oldest unsent datagram rather than
+  block.
+- **Exempt:** the pre-auth rejections (`AuthFailed`, `ProtocolMismatch`)
+  are written directly, since only that connection's own task waits on
+  them. Data-stream pumps are exempt too: each pairs one downloader with
+  one uploader, and end-to-end backpressure is their purpose (see
+  [Flow Control](#flow-control)).
 
 ### Protocol Versioning
 
@@ -932,7 +966,9 @@ Peer A <-- QUIC --> Server <-- QUIC --> Peer B
 ```
 
 - Relay-stream messages from A addressed to B are forwarded on B's
-  relay stream (`Forward` -> `Forwarded`)
+  relay stream (`Forward` -> `Forwarded`), queued on B's relay outbox
+  so a B that stops reading never stalls A's relays to anyone else
+  (see [Outbound Queues](#outbound-queues))
 - A data stream A opens with `OpenTransfer { to: B, file }` gets a
   matching stream opened on B's transfer connection (headed
   `TransferFrom { from: A, file }`); the server then **pumps bytes

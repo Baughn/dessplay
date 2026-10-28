@@ -1,6 +1,6 @@
 # Testing Strategy
 
-Last updated: 2026-10-07
+Last updated: 2026-10-28
 
 ## Table of Contents
 
@@ -451,6 +451,7 @@ An in-process transport that simulates network conditions between actors.
 | **Partition** | Completely block traffic between specific endpoints |
 | **Reordering** | Shuffle datagram delivery order (configurable window) |
 | **Bandwidth limit** | Throttle throughput on specific links |
+| **Flow control** | Control-stream receive window: a peer that stops reading stalls its sender |
 
 ### Design
 
@@ -476,6 +477,13 @@ shapes. Semantics worth knowing:
   window — natural in a latency-scheduled system.
 - `close()` notifies the peer; *dropping* a transport is silent death,
   which is exactly what presence timeouts must catch.
+- Each control-stream direction has a receive window counting bytes
+  sent but not yet `recv()`ed (default 16 MiB, QUIC's per-stream
+  window; `SimNetwork::set_control_window` shrinks it for connections
+  made afterward). A send that would overflow a non-empty window waits.
+  A close, kill or dropped receiver fails a waiting send. A test client
+  that authenticates and then never reads is therefore an honest model
+  of a stalled peer (`dessplay-rendezvous/tests/stalled_peer.rs`).
 - Limitation: bytes inside an open `BiStream` bypass the link simulation
   (establishment respects it). Revisit for Phase 9 transfer tests.
 

@@ -11,6 +11,7 @@
 
 pub mod anidb;
 pub mod auth_limit;
+mod outbox;
 pub mod server;
 pub mod storage;
 

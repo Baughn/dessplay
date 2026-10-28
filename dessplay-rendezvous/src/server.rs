@@ -33,6 +33,7 @@ use crate::anidb::curator::ShortTitleCurator;
 use crate::anidb::titles::TitlesSource;
 use crate::anidb::worker::{self, AniDbHost};
 use crate::auth_limit::{AuthLimit, AuthLimiter, Verdict};
+use crate::outbox::{Frame, Outbox, PeerConn};
 use crate::storage::ServerStorage;
 
 /// How the server reads its clock (unix millis — this *is* the shared
@@ -98,6 +99,9 @@ pub struct ServerConfig {
     pub chat_keep: usize,
     /// AniDB integration; `None` disables it (no credentials).
     pub anidb: Option<AniDbConfig>,
+    /// Bytes one connection's outbound queue may hold before the server
+    /// gives up on it as not reading and closes it (see [`Outbox`]).
+    pub peer_outbox_limit: usize,
 }
 
 impl ServerConfig {
@@ -114,14 +118,16 @@ impl ServerConfig {
             },
             chat_keep: 10_000,
             anidb: None,
+            peer_outbox_limit: PEER_OUTBOX_LIMIT,
         }
     }
 }
 
-/// The write half of a peer's relay stream, shared so any forwarder can
-/// deliver to it. A `tokio::sync::Mutex` because writes are `.await`ed
-/// (a frame can span several poll-writes) and held across them.
-type RelayTx = Arc<tokio::sync::Mutex<Box<dyn tokio::io::AsyncWrite + Send + Unpin>>>;
+/// Bytes a peer's relay-stream queue may hold before the server closes
+/// its transfer connection as not reading (it redials and re-exchanges
+/// availability). Relay messages are small — bitfields, block hashes —
+/// so this is generous.
+const RELAY_OUTBOX_LIMIT: usize = 4 * 1024 * 1024;
 
 /// Which channel a relayed op leaves the server on.
 #[derive(Clone, Copy, Debug)]
@@ -156,7 +162,7 @@ struct PeerEntry<T> {
     /// Id of the connection backing this entry (live or last).
     conn_id: u64,
     /// The live connection; `None` once Lost or Departed.
-    conn: Option<Arc<T>>,
+    conn: Option<Arc<PeerConn<T>>>,
     /// The token this session's `AuthOk` issued; the transfer
     /// connection must present it in `TransferAuth` to bind.
     transfer_token: u64,
@@ -168,10 +174,10 @@ struct PeerEntry<T> {
     /// Id of the bound transfer connection (its accept loop's own
     /// counter domain, distinct from `conn_id`'s).
     transfer_conn_id: Option<u64>,
-    /// Write half of the peer's relay stream (file transfer), if it has
+    /// Queue onto the peer's relay stream (file transfer), if it has
     /// opened one on its transfer connection. Cleared with the transfer
     /// connection.
-    relay_tx: Option<RelayTx>,
+    relay_tx: Option<Outbox>,
     info: PeerInfo,
     /// Shared-clock millis when the connection died (drives the
     /// Lost -> Departed promotion).
@@ -254,7 +260,7 @@ impl<T: Transport> Shared<T> {
     }
 
     /// All live connections, optionally excluding one.
-    fn live_conns(&self, skip: Option<u64>) -> Vec<Arc<T>> {
+    fn live_conns(&self, skip: Option<u64>) -> Vec<Arc<PeerConn<T>>> {
         lock(&self.registry)
             .peers
             .values()
@@ -277,6 +283,7 @@ impl<T: Transport> Shared<T> {
         let Ok(frame) = wire::encode(&WireMessage::Control(msg)) else {
             return;
         };
+        let frame: Frame = frame.into();
         let conns = self.live_conns(skip);
         tracing::trace!(
             msg = name,
@@ -290,7 +297,7 @@ impl<T: Transport> Shared<T> {
                 .max_datagram_size()
                 .is_some_and(|max| frame.len() <= max);
             if matches!(transport, RelayTransport::Eager) {
-                let _ = conn.send_control(&frame).await;
+                conn.send(Arc::clone(&frame));
             }
             // Eager: an extra datagram copy (pure latency win, receivers
             // dedup). DatagramOnly: the *only* copy — and if it won't fit
@@ -314,20 +321,23 @@ impl<T: Transport> Shared<T> {
     /// the entire CRDT state for N live peers (2026-07-03: the resulting
     /// allocation burst fragmented the allocator badly enough that
     /// `malloc_trim` recovered ~360MB RSS on the rendezvous server).
-    async fn broadcast_control(&self, msg: &ServerControl, skip: Option<u64>) {
+    fn broadcast_control(&self, msg: &ServerControl, skip: Option<u64>) {
         let Ok(frame) = wire::encode(&WireMessage::Control(msg.clone())) else {
             return;
         };
+        let frame: Frame = frame.into();
         for conn in self.live_conns(skip) {
-            let _ = conn.send_control(&frame).await;
+            conn.send(Arc::clone(&frame));
         }
     }
 
     /// Forward a peer message to `to`, wrapped as `Forwarded { from }`.
     /// Dropped silently if the target has no live relay stream (absent
     /// or not yet opened) — the design's "drop envelopes addressed to
-    /// non-Present peers". Returns whether it was delivered.
-    async fn forward(&self, from: &UserId, to: &UserId, message: Vec<u8>) -> bool {
+    /// non-Present peers". Queued, never awaited: a target that stops
+    /// reading must not stall the sender's relays to anyone else.
+    /// Returns whether it was queued.
+    fn forward(&self, from: &UserId, to: &UserId, message: Vec<u8>) -> bool {
         let relay_tx = {
             let registry = lock(&self.registry);
             registry.peers.get(to).and_then(|p| p.relay_tx.clone())
@@ -343,14 +353,11 @@ impl<T: Transport> Shared<T> {
         let Ok(frame) = wire::encode(&envelope) else {
             return false;
         };
-        let mut guard = relay_tx.lock().await;
-        match write_frame(&mut *guard, &frame).await {
-            Ok(()) => true,
-            Err(e) => {
-                tracing::debug!(%to, "relay write failed: {e}");
-                false
-            }
+        let queued = relay_tx.push(frame.into());
+        if !queued {
+            tracing::debug!(%to, "relay queue closed; dropping");
         }
+        queued
     }
 
     /// Apply a server-authored mutation and broadcast it to everyone.
@@ -474,6 +481,11 @@ impl<T: Transport> AniDbHost for SharedHost<T> {
     }
 }
 
+/// Default [`ServerConfig::peer_outbox_limit`]: 64 MiB, room for several
+/// full-state frames (a snapshot measured ~9 MiB in 2026-10) queued
+/// behind a slow but honest reader before it is written off.
+pub const PEER_OUTBOX_LIMIT: usize = 64 * 1024 * 1024;
+
 /// Cadence of StateHash broadcasts and storage flushes.
 const HASH_INTERVAL: Duration = Duration::from_secs(30);
 const FLUSH_INTERVAL: Duration = Duration::from_secs(30);
@@ -575,7 +587,7 @@ where
                         hash: state.view_hash(),
                     }
                 };
-                shared.broadcast_control(&msg, None).await;
+                shared.broadcast_control(&msg, None);
             }
         });
     }
@@ -711,6 +723,14 @@ async fn send_control<T: Transport>(conn: &T, msg: &ServerControl) -> bool {
     conn.send_control(&frame).await.is_ok()
 }
 
+/// Queue a message on an authenticated peer's control stream.
+fn send_to<T: Transport>(peer: &PeerConn<T>, msg: &ServerControl) -> bool {
+    let Ok(frame) = wire::encode(&WireMessage::Control(msg.clone())) else {
+        return false;
+    };
+    peer.send(frame.into())
+}
+
 /// Send a terminal rejection, then wait (bounded) for the client to act
 /// on it before closing: closing immediately can discard the unflushed
 /// frame, leaving the client with a generic connection loss it would
@@ -783,14 +803,14 @@ fn record_seen<T>(shared: &Shared<T>, username: &UserId, at: u64) {
 
 /// Push the current peer list (all presence stages) to every live
 /// connection.
-async fn broadcast_peer_list<T: Transport>(shared: &Shared<T>) {
+fn broadcast_peer_list<T: Transport>(shared: &Shared<T>) {
     let peers = lock(&shared.registry).peer_infos();
     let known_offline = known_offline(shared, &peers);
     let msg = ServerControl::PeerList {
         peers,
         known_offline,
     };
-    shared.broadcast_control(&msg, None).await;
+    shared.broadcast_control(&msg, None);
 }
 
 /// Promote Lost peers past the departure threshold, then apply the
@@ -818,7 +838,7 @@ async fn sweep_departed<T: Transport>(shared: &Shared<T>) {
     if promoted.is_empty() {
         return;
     }
-    broadcast_peer_list(shared).await;
+    broadcast_peer_list(shared);
     for (user, role) in promoted {
         tracing::info!("{user:?} departed");
         if role == Role::Interactive {
@@ -984,15 +1004,32 @@ async fn serve_connection<T: Transport>(
     // handshake-sized `Auth` (Transport::admit).
     conn.admit();
 
+    // From here on every reliable send to this peer is queued on its
+    // own writer (see `outbox`): no broadcast ever waits on it. AuthOk is
+    // queued before the peer is registered, so it precedes anything a
+    // concurrent broadcast queues for the new connection.
+    let peer = Arc::new(PeerConn::new(
+        Arc::clone(&conn),
+        username.0.clone(),
+        config.peer_outbox_limit,
+    ));
+    let transfer_token: u64 = rand::random();
+    send_to(
+        &peer,
+        &ServerControl::AuthOk {
+            observed_addr: remote,
+            transfer_token,
+        },
+    );
+
     // ---- Register, superseding any existing entry for this user (a
     // reconnecting client — possibly one whose old connection hasn't
     // died yet, possibly one currently Lost or Departed).
-    let transfer_token: u64 = rand::random();
     let superseded = lock(&shared.registry).peers.insert(
         username.clone(),
         PeerEntry {
             conn_id,
-            conn: Some(Arc::clone(&conn)),
+            conn: Some(Arc::clone(&peer)),
             transfer_token,
             transfer_conn: None,
             transfer_conn_id: None,
@@ -1024,16 +1061,7 @@ async fn serve_connection<T: Transport>(
     if role == Role::Interactive {
         record_seen(&shared, &username, clock());
     }
-
-    send_control(
-        &*conn,
-        &ServerControl::AuthOk {
-            observed_addr: remote,
-            transfer_token,
-        },
-    )
-    .await;
-    broadcast_peer_list(&shared).await;
+    broadcast_peer_list(&shared);
 
     // ---- Initial state sync: since protocol v13 the server does NOT
     // volunteer one here. It waits for the client's post-auth
@@ -1050,7 +1078,7 @@ async fn serve_connection<T: Transport>(
     tracing::info!("{username:?} connected from {remote} as {role:?}");
 
     // ---- Serve until the connection ends.
-    let end = serve_authed(&*conn, conn_id, &username, role, &shared).await;
+    let end = serve_authed(&peer, conn_id, &username, role, &shared).await;
 
     // A newer connection may have superseded us while we were closing;
     // in that case the registry entry is no longer ours to touch.
@@ -1127,8 +1155,8 @@ async fn serve_connection<T: Transport>(
     match end {
         AuthedEnd::Goodbye => {
             tracing::info!("{username:?} quit");
-            conn.close("goodbye").await;
-            broadcast_peer_list(&shared).await;
+            peer.close("goodbye").await;
+            broadcast_peer_list(&shared);
             if role == Role::Interactive {
                 shared.force_pause().await;
                 shared.take_authority_from(&username).await;
@@ -1136,7 +1164,7 @@ async fn serve_connection<T: Transport>(
         }
         AuthedEnd::Lost(reason) => {
             tracing::info!("{username:?} lost: {reason}");
-            broadcast_peer_list(&shared).await;
+            broadcast_peer_list(&shared);
             if role == Role::Interactive {
                 shared.force_pause().await;
             }
@@ -1230,6 +1258,7 @@ async fn serve_transfer_connection<T: Transport>(
         tokio::spawn(classify_stream(
             stream,
             username.clone(),
+            Arc::clone(&conn),
             transfer_id,
             Arc::clone(&shared),
         ));
@@ -1248,6 +1277,7 @@ async fn serve_transfer_connection<T: Transport>(
                 tokio::spawn(classify_stream(
                     stream,
                     username.clone(),
+                    Arc::clone(&conn),
                     transfer_id,
                     Arc::clone(&shared),
                 ));
@@ -1281,6 +1311,7 @@ const STREAM_HEADER_TIMEOUT: Duration = Duration::from_secs(10);
 async fn classify_stream<T: Transport>(
     stream: BiStream,
     from: UserId,
+    transfer_conn: Arc<T>,
     transfer_id: u64,
     shared: Arc<Shared<T>>,
 ) {
@@ -1292,15 +1323,27 @@ async fn classify_stream<T: Transport>(
     };
     match wire::decode::<RelayEnvelope>(&frame) {
         Ok(RelayEnvelope::Hello) => {
-            // The peer's relay stream: register the write half so other
-            // peers can forward to it, then read its envelopes here.
-            let relay_tx: RelayTx = Arc::new(tokio::sync::Mutex::new(send));
+            // The peer's relay stream: register a queue onto its write
+            // half so other peers can forward to it, then read its
+            // envelopes here. A peer that stops reading it loses its
+            // transfer connection, never anyone else's relays.
+            let on_overflow = move || {
+                tokio::spawn(async move {
+                    transfer_conn.close("not reading its relay stream").await;
+                });
+            };
+            let relay_tx = Outbox::spawn(
+                format!("{} relay", from.0),
+                RELAY_OUTBOX_LIMIT,
+                send,
+                on_overflow,
+            );
             {
                 let mut registry = lock(&shared.registry);
                 if let Some(entry) = registry.peers.get_mut(&from)
                     && entry.transfer_conn_id == Some(transfer_id)
                 {
-                    entry.relay_tx = Some(Arc::clone(&relay_tx));
+                    entry.relay_tx = Some(relay_tx);
                 }
             }
             tracing::debug!(user = %from.0, "relay stream opened");
@@ -1402,7 +1445,7 @@ async fn relay_reader<T: Transport>(
             // Hello only classifies the stream; a repeat is harmless.
             Ok(RelayEnvelope::Hello) => {}
             Ok(RelayEnvelope::Forward { to, message }) => {
-                shared.forward(&from, &to, message).await;
+                shared.forward(&from, &to, message);
             }
             Ok(other) => {
                 tracing::warn!(%from, envelope = ?other, "unexpected relay envelope; ignoring");
@@ -1415,7 +1458,7 @@ async fn relay_reader<T: Transport>(
 
 /// The post-auth message loop.
 async fn serve_authed<T: Transport>(
-    conn: &T,
+    conn: &PeerConn<T>,
     conn_id: u64,
     username: &UserId,
     role: Role,
@@ -1474,12 +1517,8 @@ async fn serve_authed<T: Transport>(
                 let Ok(frame) = wire::encode(&WireMessage::Control(response)) else {
                     continue;
                 };
-                let sent = if via_datagram {
-                    conn.send_datagram(&frame).await.is_ok()
-                } else {
-                    conn.send_control(&frame).await.is_ok()
-                };
-                if !sent && conn.send_control(&frame).await.is_err() {
+                let sent = via_datagram && conn.send_datagram(&frame).await.is_ok();
+                if !sent && !conn.send(frame.into()) {
                     return AuthedEnd::Lost("send failed".into());
                 }
             }
@@ -1581,7 +1620,7 @@ async fn serve_authed<T: Transport>(
                     })
                 };
                 tracing::debug!(user = %username.0, %query, hits = results.len(), "anidb search");
-                send_control(conn, &ServerControl::AniDbSearchResults { query, results }).await;
+                send_to(conn, &ServerControl::AniDbSearchResults { query, results });
             }
             ServerControl::SetAnthropicToken { token } => {
                 // Client-provisioned curator credential (design.md, The
@@ -1637,7 +1676,7 @@ async fn serve_authed<T: Transport>(
                     decision = initial.variant_name(),
                     "initial sync"
                 );
-                send_control(conn, &initial).await;
+                send_to(conn, &initial);
             }
             ServerControl::RequestMerge => {
                 // Curative by design: the requester's view hash
@@ -1646,7 +1685,7 @@ async fn serve_authed<T: Transport>(
                 // client-local garbage; a merge would union it back in
                 // and re-spread it.
                 tracing::warn!("client requested a divergence heal; sending a snapshot");
-                send_control(conn, &ServerControl::StateSnapshot(shared.snapshot())).await;
+                send_to(conn, &ServerControl::StateSnapshot(shared.snapshot()));
             }
             ServerControl::StateMerge(client_state) => {
                 // The reconnect handshake's upward half: the client
@@ -1683,7 +1722,7 @@ async fn serve_authed<T: Transport>(
                 // (as view_hash must) would fail to propagate a
                 // recovered position.
                 let merge = ServerControl::StateMerge(shared.snapshot());
-                shared.broadcast_control(&merge, None).await;
+                shared.broadcast_control(&merge, None);
                 if now_playing_changed {
                     if let Some((epoch, op)) = saved {
                         shared.broadcast_server_op(epoch, op).await;
@@ -1879,9 +1918,7 @@ async fn run_compaction<T: Transport>(shared: &Shared<T>, chat_keep: usize) {
         elapsed_ms = started.elapsed().as_millis() as u64,
         "compacted state"
     );
-    shared
-        .broadcast_control(&ServerControl::StateSnapshot(snapshot), None)
-        .await;
+    shared.broadcast_control(&ServerControl::StateSnapshot(snapshot), None);
     shared.flush();
 }
 

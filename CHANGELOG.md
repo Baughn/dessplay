@@ -9,6 +9,13 @@ append-only; you cannot reword or remove existing entries.
 
 Add new days at the top. Add new entries at the bottom of existing days.
 
+## 2026-10-28
+
+- Fixed: One client that stops keeping up can no longer freeze the session
+  for everyone else (lost probes, changes that never arrive, reconnects
+  that hang until the server is restarted). The server now disconnects
+  that client instead.
+
 ## 2026-10-16
 
 - Changed: Switching to another video now remembers where the group was

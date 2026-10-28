@@ -1,6 +1,6 @@
 # DessPlay Decision Log
 
-Last updated: 2026-10-16
+Last updated: 2026-10-28
 
 The reasoning behind the rules in [design.md](design.md): the failure that
 motivated each one, the alternatives that were rejected, and the date it
@@ -15,6 +15,92 @@ and links back to the section that states it; design.md links here with
 remembering (a bug, a review finding, a user decision), the rule goes in
 design.md and the reason goes here, in the same commit. Entries are never
 deleted; a superseded decision gets a note saying what replaced it.
+
+## One peer never holds up another (2026-10-28)
+
+**Rule:** (design.md, Rendezvous Server; network-design.md, Outbound
+Queues) every reliable frame the server sends a connection — its control
+stream, or the relay stream on its transfer connection — goes into that
+connection's own queue, drained by its own writer task; the code that
+sends never waits on the peer. A queue holding more than 64 MiB (a relay
+stream's, 4 MiB) closes, and the connection with it. A frame always goes
+into an empty queue. Datagrams are sent directly.
+
+**Why:** the 2026-10-28 session started late: for everyone, probes were
+lost and edits never arrived, local wifi included, until the rendezvous
+server was restarted. Its log showed the shape. From 23:11:33 it applied
+no client edit and saved no state. Reconnects at 23:15, 23:16 and 23:17
+logged "superseding the user's old connection" and then nothing: no
+"authenticated", no "connected". The oracle received those reconnects'
+peer lists; the seeder, also on localhost, received nothing after
+23:11:28.
+
+The server sent every broadcast to each live connection in turn and
+awaited each write. A peer that stops reading its control stream lets
+QUIC's 16 MiB stream window fill, after which a write to it waits for as
+long as the connection lives, and keep-alives keep it alive. So the first
+broadcast to reach that peer never finished, and nor did anything queued
+behind it: the serve loop of whichever client sent the op (which stopped
+reading that client's time-sync probes, hence "probes lost"), the 30s
+StateHash ticker, and every login, stuck in its peer-list broadcast. Each
+broadcast reached the peers ahead of the stalled one in the registry's
+order and none after it, which is why the oracle heard and the seeder
+didn't.
+
+The likely culprit is "Dagger1", a third-party client (an IRC-bridge-style
+"seeder" outside this codebase). Since the restart it has kept redialing
+its transfer connection every 2s without a control session, which the
+server refuses ("transfer bind refused: no such session"), so its control
+side is evidently dead. The stall began at the fifth full-state
+`StateMerge` rebroadcast in four minutes (each client reconnect
+rebroadcasts the whole state, ~9 MiB, to everyone), enough to fill the
+window of a peer that reads slowly or not at all. The server cannot make
+other people's clients behave; it has to stop depending on them.
+
+Choices:
+
+- *A queue per connection, not a timeout per write.* A timeout keeps
+  sends serial: every broadcast would wait out the timeout once per
+  stalled peer, and a timeout short enough to hide that would cut off an
+  honest client reading a 9 MiB snapshot over a slow link. Spawning a task
+  per send loses the stream's order. Dropping frames for a slow peer
+  silently diverges its replica, since the control stream is the
+  reliable, ordered channel.
+- *Bounded in bytes, closed on overflow.* Without a bound a peer that
+  never reads is a memory leak. Closing beats dropping frames: the peer,
+  if it is a real client, reconnects and gets one snapshot, which is
+  cheaper than the backlog anyway. 64 MiB fits the initial snapshot plus
+  several reconnect merges queued behind a slow reader, beyond what QUIC
+  already buffers. Broadcast frames are shared, not copied, so the bytes
+  counted per peer are mostly the same allocation.
+- *An empty queue takes any frame.* Otherwise a state larger than the
+  limit would disconnect every client on every snapshot.
+- *Datagrams skip the queue.* They are unordered and best-effort, and
+  quinn's `send_datagram` discards its oldest unsent datagram rather than
+  block; queueing them behind control frames would only add latency.
+- *The relay stream too.* `forward` wrote into the target's relay stream
+  under its lock, so a peer not reading its relay stream stalled the
+  sender's relay reader, and with it the sender's peer messages to
+  everyone else. Overflow there closes only the target's transfer
+  connection; it redials and re-exchanges availability. Data-stream pumps
+  are left as they are: each pairs one downloader with one uploader, and
+  backpressure between those two is their purpose.
+- *AuthOk is queued before the session is registered.* Before, a
+  broadcast racing a login could reach the new client ahead of its
+  `AuthOk` (noted in "An unauthenticated peer gets a handshake's
+  worth"). With one ordered queue per connection that is now impossible.
+- *No stall timeout.* A stalled peer under the limit holds a little
+  memory and harms nobody. A peer stalled through a quiet session is
+  only disconnected once traffic fills its queue.
+- *The sim models flow control.* Each direction of a sim control stream
+  now has a receive window (default 16 MiB, like QUIC). A sim test can
+  shrink it, so a test client that authenticates and then never reads
+  reproduces the incident through the honest interface. The regression
+  tests are in `dessplay-rendezvous/tests/stalled_peer.rs`.
+
+Open: rebroadcasting a full-state `StateMerge` to every peer on every
+reconnect is a lot of traffic for one reconnect; it is what filled the
+window here.
 
 ## A download exists only while its file is wanted (2026-10-15)
 
@@ -89,7 +175,9 @@ so the risk was small, but nothing was gained by taking it. Choices:
 - *The client's side is not gated.* The server is TOFU-pinned and holds
   the room's whole state anyway. Gating the client would also be wrong
   today: the server registers a session before sending `AuthOk`, so a
-  concurrent broadcast can reach the client ahead of it.
+  concurrent broadcast can reach the client ahead of it. (Note,
+  2026-10-28: no longer true. `AuthOk` is now queued before registration;
+  see "One peer never holds up another".)
 - *4 KiB.* `Auth` is two short strings and a few integers; 4 KiB leaves
   an order of magnitude for long usernames and passphrases. No protocol
   version bump: no message changed shape, and a real client's `Auth`

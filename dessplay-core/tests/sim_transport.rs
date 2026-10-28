@@ -430,3 +430,93 @@ async fn an_oversized_handshake_frame_is_refused() {
         Err(TransportError::Frame(FrameError::TooLarge(_)))
     ));
 }
+
+/// Flow control: a receiver that stops reading stalls its sender once
+/// the control window is full — a QUIC stream's behaviour, and the
+/// condition behind the 2026-10-28 server-wide stall (one non-reading
+/// client froze every broadcast). Reading frees room and the parked
+/// send completes.
+#[tokio::test(start_paused = true)]
+async fn a_full_control_window_stalls_the_sender_until_read() {
+    let net = SimNetwork::new(1);
+    net.set_control_window(1000);
+    let (client, server) = connected(&net).await;
+
+    server.send_control(&[1; 600]).await.unwrap();
+    // 600 + 600 > 1000 with nothing read: the second send parks.
+    let parked = tokio::time::timeout(Duration::from_secs(60), server.send_control(&[2; 600]));
+    assert!(parked.await.is_err(), "a send into a full window must wait");
+
+    // The client reads the first frame; the window has room again.
+    assert!(matches!(client.recv().await.unwrap(), TransportEvent::Control(f) if f[0] == 1));
+    tokio::time::timeout(Duration::from_secs(1), server.send_control(&[3; 600]))
+        .await
+        .expect("room after a read")
+        .unwrap();
+    assert!(matches!(client.recv().await.unwrap(), TransportEvent::Control(f) if f[0] == 3));
+}
+
+/// A frame larger than the whole window still goes when the window is
+/// empty (QUIC moves any frame eventually), so a big snapshot never
+/// wedges a reading peer.
+#[tokio::test(start_paused = true)]
+async fn an_oversized_frame_goes_into_an_empty_window() {
+    let net = SimNetwork::new(1);
+    net.set_control_window(100);
+    let (client, server) = connected(&net).await;
+
+    tokio::time::timeout(Duration::from_secs(1), server.send_control(&[7; 5000]))
+        .await
+        .expect("an empty window admits any frame")
+        .unwrap();
+    assert!(matches!(client.recv().await.unwrap(), TransportEvent::Control(f) if f.len() == 5000));
+}
+
+/// Closing a connection fails a send parked on its full window, as a
+/// QUIC write fails when its connection closes under it — the escape
+/// hatch a server uses on a peer that never reads.
+#[tokio::test(start_paused = true)]
+async fn closing_fails_a_send_parked_on_a_full_window() {
+    let net = SimNetwork::new(1);
+    net.set_control_window(1000);
+    let (_client, server) = connected(&net).await;
+    let server = std::sync::Arc::new(server);
+
+    server.send_control(&[1; 800]).await.unwrap();
+    let parked = tokio::spawn({
+        let server = std::sync::Arc::clone(&server);
+        async move { server.send_control(&[2; 800]).await }
+    });
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    assert!(!parked.is_finished(), "the send must be parked");
+
+    server.close("not reading").await;
+    let result = tokio::time::timeout(Duration::from_secs(1), parked)
+        .await
+        .expect("close must wake the parked send")
+        .unwrap();
+    assert!(result.is_err());
+}
+
+/// A receiver that dies (killed link or dropped transport) also frees
+/// a parked sender instead of stranding it forever.
+#[tokio::test(start_paused = true)]
+async fn a_dead_receiver_fails_a_parked_send() {
+    let net = SimNetwork::new(1);
+    net.set_control_window(1000);
+    let (client, server) = connected(&net).await;
+    let server = std::sync::Arc::new(server);
+
+    server.send_control(&[1; 800]).await.unwrap();
+    let parked = tokio::spawn({
+        let server = std::sync::Arc::clone(&server);
+        async move { server.send_control(&[2; 800]).await }
+    });
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    drop(client);
+    let result = tokio::time::timeout(Duration::from_secs(1), parked)
+        .await
+        .expect("a dropped receiver must wake the parked send")
+        .unwrap();
+    assert!(result.is_err());
+}
