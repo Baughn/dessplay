@@ -1,6 +1,6 @@
 # DessPlay Design Document
 
-Last updated: 2026-10-28
+Last updated: 2026-10-30
 
 A synchronized video player for watch parties. Terminal-first, built for
 reliability over flaky connections. Server-coordinated, including relayed
@@ -4111,6 +4111,27 @@ of it -- not just files already in the playlist. The index reuses the
 - **Periodically** the client re-walks the roots and re-hashes only changed
   files. Interactive clients rescan about once a minute; a seeder rescans
   once a day.
+- **Between walks, the client watches the media roots** (inotify, FSEvents;
+  seeders too). Each directory a walk reads gets its own non-recursive
+  watch, refreshed after every walk. An event that may mean a new file
+  (a video or directory created or renamed in, a video finished writing or
+  re-stamped, or the backend reporting dropped events) triggers a walk once
+  events have been quiet for ~1s, or ~5s into a steady trickle. A walk
+  requested while one runs follows it rather than being dropped. Watching
+  is best-effort: a directory it can't register (watch limit, permissions)
+  or a filesystem that delivers no events (network mounts) waits for the
+  periodic walk, which stays the authority
+  (why: [decisions](decisions.md#media-roots-are-watched-as-well-as-walked)).
+- **A new or changed file is hashed only once it has settled**: its
+  `(mtime, size)` has held still for 10s. An mtime already 10s in the past
+  counts as settled at once; an mtime in the future (another machine's
+  clock) counts only once the client has itself seen the stamp hold for
+  10s. The hash records the stamp it was taken under only if that stamp
+  held from the walk through the end of the read; a file that changed in
+  between goes back to settling and is neither cached nor announced.
+  Every hash that reaches the hash cache follows the same rule, and a
+  playlist add of a file that changes while it is hashed fails with "add
+  it again once it has finished copying".
 - **Hashing yields to transfers.** While transfer traffic (serving or
   downloading) is active, scan hashing defers, resuming ~10s after the
   traffic goes quiet. The walk itself (stat-only) still runs. One

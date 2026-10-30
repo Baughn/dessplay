@@ -1,6 +1,6 @@
 # Testing Strategy
 
-Last updated: 2026-10-28
+Last updated: 2026-10-30
 
 ## Table of Contents
 
@@ -1025,7 +1025,17 @@ async fn sync_actor_applies_local_op() {
 - SyncActor: op application, CvRDT merge, snapshot generation
 - NetworkActor: connection state machine, message routing
 - PlayerActor: echo suppression, position broadcasting, crash handling
-- FileActor: hash caching, file matching, download state machine
+- FileActor: hash caching, file matching, download state machine, and the
+  media-library scan. Settling, walk scheduling and stamped hashing are
+  pure pieces with property tests (a file settles exactly when its writes
+  stop; no walk request is lost to a running walk). The fresh-file settle
+  test drives the actor with an injected clock. One real-watcher test
+  (`watched_roots_index_new_files_without_a_rescan`) walks only at startup
+  and then expects new files, including in a directory created later and
+  beside an unreadable `lost+found`, to be indexed through the watch.
+  inotify-only failures (watch limit, a registration error on one
+  directory) can't be reproduced on macOS, so registration is per directory
+  and every failure is non-fatal by construction.
 - UI dispatcher: message -> action mapping, state -> props mapping
 
 ---

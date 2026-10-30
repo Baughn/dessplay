@@ -289,6 +289,8 @@ async fn perf_rig(harness: &Harness, name: &str, nonce: u128, series_count: u32)
             upload_limit: None,
             scan_interval: None,
             scan_transfer_quiet: dessplay::actors::file::SCAN_TRANSFER_QUIET_DEFAULT,
+            scan_settle: std::time::Duration::ZERO,
+            watch_media_roots: false,
             torrent: None,
             nyaa: None,
         },

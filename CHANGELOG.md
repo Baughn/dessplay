@@ -9,6 +9,20 @@ append-only; you cannot reword or remove existing entries.
 
 Add new days at the top. Add new entries at the bottom of existing days.
 
+## 2026-10-30
+
+- Fixed: With auto-download off, a video you drop into a media folder (or
+  that another downloader finishes there) now shows up within seconds
+  instead of after up to a minute, and a missing playlist entry picks it
+  up right away. Seeders notice new files the same way instead of once a
+  day.
+- Changed: A file that is still being written is no longer read again
+  and again while it grows. It is indexed once it has stopped changing
+  for ten seconds, which spares slow disks.
+- Changed: Adding a file to the playlist while it is still being copied
+  now fails with "add it again once it has finished copying". It used to
+  add an entry nobody else could match.
+
 ## 2026-10-28
 
 - Fixed: One client that stops keeping up can no longer freeze the session

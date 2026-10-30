@@ -1,6 +1,6 @@
 # DessPlay Decision Log
 
-Last updated: 2026-10-28
+Last updated: 2026-10-30
 
 The reasoning behind the rules in [design.md](design.md): the failure that
 motivated each one, the alternatives that were rejected, and the date it
@@ -1410,6 +1410,16 @@ the UI queue or tracing its own delivery indefinitely.
 **Rule:** while transfer traffic is active, library-scan hashing defers and resumes ~10s after the traffic goes quiet; the stat-only walk continues; a walked file whose name matches an unmet playlist entry is hashed immediately regardless; see [design.md](design.md#media-library-scanning).
 
 **Why:** scan hashing is bulk disk work with no deadline, while transfers are latency-sensitive — a source that serves nothing for 30s is snubbed by the requester (network-design.md). Letting a rescan compete for disk bandwidth mid-transfer risked exactly that snub. The exemption exists because without it an active download would defer the discovery of the very local file that makes the download redundant ("a local copy trumps the download"): the file would sit on disk, unhashed, while the client kept fetching it from a peer.
+
+### Media roots are watched as well as walked
+
+**Rule (2026-10-30):** the client keeps a non-recursive directory watch on every directory the walk reads and walks again shortly after an event that may mean a new file; the periodic walk stays the authority; a new or changed file is hashed only after its `(mtime, size)` has held still for 10s, and a hash is cached and announced only under a stamp that held across the whole read; see [design.md](design.md#media-library-scanning).
+
+**Why:** the user asked for it for clients with auto-download off (Dagger). Auto-download normally fetches the next episode before anyone needs it, so the minute between rescans never shows. With it off, a file an external downloader drops into a media root sits unseen for up to a minute while the group waits. A seeder is watched too, since its daily walk otherwise hides a new arrival for up to a day. The poll stays because it works where watching does not, and that is the reason watching is an accelerator rather than a replacement: network filesystems (NFS, SMB, most FUSE) deliver no events for writes made elsewhere, the inotify watch limit can run out, and a remount drops inotify watches.
+
+Watches are per directory, driven by the walk, rather than one recursive watch per root. notify's recursive inotify registration stops at the first directory it cannot watch, and an HDD mount root always holds an unreadable `lost+found` (the same failure as [the layout watcher's](#layout-watches-exclude-unrelated-directory-trees-2026-09-15)). Driving the watches from the walk also means they follow symlinked season folders exactly as the walk does, cost no second traversal of the disk, and re-register a directory deleted and re-created or re-mounted in place (on Linux a changed device/inode/ctime triggers the re-add). An event only schedules a full walk instead of indexing the path it names, so pruning, vanished-root handling and the playlist-name fast path all apply unchanged. Requests made during a walk queue one more walk, because the running walk may already have passed the directory that changed. Before this, `start_library_scan` dropped such requests, including a media-root change made mid-walk. notify's debouncer crates were considered and not used: the walk queueing and settling state live in the actor anyway, and its tick loop already exists.
+
+Settling exists because Dagger runs dessplay off an HDD. Hashing a file while an external downloader is still writing it reads the whole file once per scan until the download ends, and the result describes no file anyone will have. Worse, the old scan committed that hash under the stamp from the walk and announced it, so a prefix hash entered the grow-only `lookup_requests` set and cost an AniDB lookup that could never hit. Ten seconds outlasts the write gaps of most downloaders while keeping a finished copy quick to appear. An mtime in the past counts as evidence, so a library of old files never waits; observation alone counts for future mtimes because skewed clocks would otherwise block a file forever or settle it at once. Stamping before and after every read, at every hashing site, makes "cached under a stamp its contents don't match" impossible rather than merely rare. The [mismatch re-check watcher](#mismatch-re-check-watcher) keeps its own shorter quiescence rule: it answers "did a name-matched file finish?" for a playlist entry that is waiting, and changing it was out of scope.
 
 ### Vanished roots and the removed-root grace period
 

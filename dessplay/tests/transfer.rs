@@ -59,6 +59,8 @@ fn spawn_actor(name: &str, media_files: &[(&str, &[u8])]) -> Actor {
             upload_limit: None,
             scan_interval: None,
             scan_transfer_quiet: dessplay::actors::file::SCAN_TRANSFER_QUIET_DEFAULT,
+            scan_settle: std::time::Duration::ZERO,
+            watch_media_roots: false,
             torrent: None,
             nyaa: None,
         },

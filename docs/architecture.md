@@ -1,6 +1,6 @@
 # Architecture
 
-Last updated: 2026-10-15
+Last updated: 2026-10-30
 
 This document describes DessPlay's internal structure: actor boundaries,
 message flow, and concurrency model. For the external protocol, see
@@ -465,7 +465,14 @@ lack metadata (see "Media Library Scanning" in design.md). The hash cache
 doubles as the library index, so this also pre-warms playlist-add resolves.
 Scan *hashing* defers while transfer traffic (serving or downloading) is
 recent and resumes when it goes quiet (design.md, Media Library Scanning
-— #21). The actor also watches **mismatched resolutions** for quiescence
+— #21). Between walks the actor keeps a non-recursive notify watch on every
+directory the last walk read (`actors/file/watch.rs`). The watcher thread only
+signals a capacity-1 channel, and the actor's tick starts a walk once events go
+quiet (`WalkSchedule`, which also queues a walk requested during another).
+Files the walk finds new or changed wait in `scan_settling`, re-stamped each
+tick, until their `(mtime, size)` has held still for the settle window. Every
+hash is stamped before and after its read (`hash_stamped`) and cached only
+under a stamp that held. The actor also watches **mismatched resolutions** for quiescence
 (design.md, Content Hash — #26): a 1s `stat` poll per watched file,
 re-resolving once a changed file holds still.
 

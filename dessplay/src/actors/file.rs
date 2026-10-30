@@ -35,6 +35,8 @@ use crate::storage::{CacheEntry, SeriesKey, Storage, WatchRecord};
 use crate::torrent::engine::{TorrentEngine, TorrentImportId};
 use crate::torrent::nyaa::{self, NyaaBrowseResult, NyaaSource};
 
+mod watch;
+
 /// What resolving a playlist entry against the media roots found.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Resolution {
@@ -513,6 +515,16 @@ pub struct FileConfig {
     /// source is snubbed at 30s), so hashing yields and resumes once
     /// transfers go quiet. Use [`SCAN_TRANSFER_QUIET_DEFAULT`].
     pub scan_transfer_quiet: std::time::Duration,
+    /// How long a new or changed library file's `(mtime, size)` must hold
+    /// still before the scan hashes it, so a file still being written is
+    /// not read (and re-read) while it grows. Use [`SCAN_SETTLE_DEFAULT`];
+    /// tests use zero.
+    pub scan_settle: std::time::Duration,
+    /// Whether to watch the media roots' directories for new files
+    /// (inotify/FSEvents), walking again within seconds of one arriving.
+    /// The periodic walk stays the authority; watching only shortens the
+    /// wait. Off in tests that don't exercise it.
+    pub watch_media_roots: bool,
     /// The BitTorrent engine for the explicit Nyaa browse import;
     /// `None` disables the torrent path entirely.
     pub torrent: Option<Arc<dyn TorrentEngine>>,
@@ -522,6 +534,9 @@ pub struct FileConfig {
 
 /// Production default for [`FileConfig::scan_transfer_quiet`].
 pub const SCAN_TRANSFER_QUIET_DEFAULT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Production default for [`FileConfig::scan_settle`].
+pub const SCAN_SETTLE_DEFAULT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// What [`Actor::archive_start`] did with the file.
 enum ArchiveStep {
@@ -560,28 +575,14 @@ enum Done {
         file: Ed2kHash,
         result: std::io::Result<PathBuf>,
     },
-    /// A media-library walk finished: files already in the hash cache
-    /// (known hashes) plus a worklist of files needing a hash.
-    LibraryWalk {
-        /// Cache hits — known immediately.
-        hits: Vec<IndexedFile>,
-        /// Files to hash (new or changed since last scan).
-        worklist: std::collections::VecDeque<ScanItem>,
-        /// Index rows whose files vanished from under the roots (moved
-        /// or deleted behind the app's back) — to be pruned.
-        stale: Vec<PathBuf>,
-        /// Active roots for which none of the previously recorded files
-        /// remains reachable.
-        vanished_roots: Vec<PathBuf>,
-        /// Active roots proven online by at least one recorded file.
-        online_roots: Vec<PathBuf>,
-    },
+    /// A media-library walk finished.
+    LibraryWalk(LibraryScan),
     /// One library-scan file finished hashing.
     LibraryHashed {
         /// The file that was hashed.
         item: ScanItem,
-        /// Its hash, or why not.
-        result: std::io::Result<Ed2kFileHash>,
+        /// Its hash, or why there is none to keep.
+        outcome: ScanHashed,
     },
     /// User-initiated browse search completed.
     NyaaBrowseSearched {
@@ -615,12 +616,134 @@ pub struct ScanItem {
     path: PathBuf,
     /// Modification time in unix millis (hash-cache validity key).
     mtime: i64,
+    /// Size in bytes when the walk (or a settle poll) last stamped it.
+    size: u64,
     /// Display/match filename (the path's final component).
     filename: String,
     /// A title-like containing-directory name (see [`dir_series_hint`]).
     series_hint: Option<String>,
     /// Media root that owns this indexed path.
     media_root: PathBuf,
+}
+
+impl ScanItem {
+    fn stamp(&self) -> FileStamp {
+        (self.mtime, self.size)
+    }
+}
+
+/// What hashing one library-scan file came to.
+#[derive(Debug)]
+enum ScanHashed {
+    /// The file's stamp held from the walk through the end of the read,
+    /// so the hash describes the contents that stamp names.
+    Hashed(Ed2kFileHash),
+    /// The file changed after the walk stamped it (or during the read):
+    /// it is still being written. Carries the stamp it has now, `None`
+    /// if it is gone.
+    Unsettled(Option<FileStamp>),
+    /// The read failed; a later walk retries.
+    Failed(std::io::Error),
+}
+
+/// A new or changed library file waiting for its stamp to hold still
+/// before it is hashed (design.md, Media Library Scanning).
+#[derive(Debug)]
+struct Settling {
+    /// The file, carrying the stamp it was last seen with.
+    item: ScanItem,
+    /// When (clock millis) that stamp was first seen.
+    observed_at: i64,
+}
+
+impl Settling {
+    /// Record the stamp the file carries now; a change restarts the wait.
+    fn observe(&mut self, stamp: FileStamp, now: i64) {
+        if stamp != self.item.stamp() {
+            (self.item.mtime, self.item.size) = stamp;
+            self.observed_at = now;
+        }
+    }
+
+    fn settled(&self, now: i64, settle: i64) -> bool {
+        stamp_settled(now, self.item.mtime, self.observed_at, settle)
+    }
+}
+
+/// Whether a file stamped with `mtime`, a stamp first seen at
+/// `observed_at`, has held still for `settle` by `now` (all unix millis).
+/// An mtime in the past is itself evidence: nothing wrote the file after
+/// it. An mtime in the future (clock skew between machines) is not, and
+/// only our own observation counts.
+fn stamp_settled(now: i64, mtime: i64, observed_at: i64, settle: i64) -> bool {
+    let quiet_since = if mtime <= now {
+        mtime.min(observed_at)
+    } else {
+        observed_at
+    };
+    now.saturating_sub(quiet_since) >= settle
+}
+
+/// How long directory-watch events must go quiet before they trigger a
+/// walk: a copy of a season lands as a burst, and one walk covers it.
+const WATCH_QUIET: std::time::Duration = std::time::Duration::from_secs(1);
+/// The longest a steady trickle of watch events can put off its walk.
+const WATCH_MAX_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// When to walk the media roots. Never two walks at once, never a
+/// request dropped because one was already running (a walk that had
+/// already passed a new file's directory would miss it), and watch
+/// events coalesced into one walk once they go quiet.
+#[derive(Debug, Default)]
+struct WalkSchedule {
+    walking: bool,
+    /// A walk asked for while one ran; it starts when that one ends.
+    queued: Option<&'static str>,
+    /// Watch events not yet walked: when the first and latest arrived.
+    events: Option<(tokio::time::Instant, tokio::time::Instant)>,
+}
+
+impl WalkSchedule {
+    /// Ask for a walk. `Some(trigger)` means start one now; otherwise
+    /// one is running and another follows it.
+    fn request(&mut self, trigger: &'static str) -> Option<&'static str> {
+        if self.walking {
+            self.queued.get_or_insert(trigger);
+            None
+        } else {
+            self.walking = true;
+            Some(trigger)
+        }
+    }
+
+    /// The running walk finished. `Some(trigger)` means start the walk
+    /// that was asked for meanwhile.
+    fn finished(&mut self) -> Option<&'static str> {
+        self.walking = false;
+        let trigger = self.queued.take()?;
+        self.walking = true;
+        Some(trigger)
+    }
+
+    fn note_event(&mut self, now: tokio::time::Instant) {
+        match &mut self.events {
+            Some((_, latest)) => *latest = now,
+            None => self.events = Some((now, now)),
+        }
+    }
+
+    /// Whether noted watch events are due their walk (and forget them).
+    fn events_due(&mut self, now: tokio::time::Instant) -> bool {
+        let Some((first, latest)) = self.events else {
+            return false;
+        };
+        let due = now.duration_since(latest) >= WATCH_QUIET
+            || now.duration_since(first) >= WATCH_MAX_DELAY;
+        if due {
+            self.events = None;
+        }
+        due
+    }
 }
 
 impl FileCommand {
@@ -687,6 +810,7 @@ pub async fn run(
     // Captured before `config` moves into the actor.
     let scan_interval = config.scan_interval;
     let scan_enabled = scan_interval.is_some();
+    let watch_media_roots = config.watch_media_roots;
     let mut actor = match Actor::new(config, out, done_tx, stream_tx) {
         Ok(actor) => actor,
         Err(e) => {
@@ -694,6 +818,13 @@ pub async fn run(
             return;
         }
     };
+    // Directory-watch wakeups, coalesced by the capacity-1 channel. We
+    // hold `watch_tx` until the loop ends, so `watch_rx` never closes
+    // (with watching off, nothing else ever sends).
+    let (watch_tx, mut watch_rx) = mpsc::channel::<()>(1);
+    if watch_media_roots {
+        actor.library_watch = watch::LibraryWatch::start(watch_tx.clone());
+    }
     // Torrents never survive a restart: the previous run's leftover
     // payload dirs are garbage by construction. Swept before any
     // commands land.
@@ -732,8 +863,13 @@ pub async fn run(
                 actor.start_library_scan(if first_scan { "startup" } else { "periodic" });
                 first_scan = false;
             }
+            Some(()) = watch_rx.recv() => {
+                tracing::trace!("media-root directory changed; walking once it goes quiet");
+                actor.walks.note_event(tokio::time::Instant::now());
+            }
         }
     }
+    drop(watch_tx);
     tracing::debug!("file actor exiting");
 }
 
@@ -815,12 +951,19 @@ struct Actor {
     last_playable_written: HashMap<Ed2kHash, bool>,
     /// Library-scan files still awaiting a hash (FIFO, one at a time).
     scan_worklist: std::collections::VecDeque<ScanItem>,
-    /// Whether a scan-hash is currently running (caps scan hashing at one
+    /// New or changed library files whose stamp has not yet held still
+    /// for `scan_settle`, by path; polled each tick.
+    scan_settling: HashMap<PathBuf, Settling>,
+    /// How long (millis) a file's stamp must hold still before hashing.
+    scan_settle: i64,
+    /// The scan-hash currently running, if any (caps scan hashing at one
     /// at a time so the initial whole-library hash is a background trickle
     /// that never starves interactive resolves/adds on the blocking pool).
-    scan_hashing: bool,
-    /// Whether a library walk is queued/running (avoids overlapping walks).
-    scan_walking: bool,
+    scan_in_flight: Option<PathBuf>,
+    /// When to walk the media roots.
+    walks: WalkSchedule,
+    /// Directory watches over the media roots, refreshed after each walk.
+    library_watch: watch::LibraryWatch,
     /// Files hashed / total this scan, for `ScanProgress`.
     scan_done: usize,
     scan_total: usize,
@@ -828,6 +971,8 @@ struct Actor {
     scan_started: Option<std::time::Instant>,
     /// Hash failures seen this scan, reported in the completion summary.
     scan_failed: usize,
+    /// Files this scan found still changing and sent back to settle.
+    scan_unsettled: usize,
     /// Files between info-level progress checkpoints (~20 over the scan).
     scan_log_step: usize,
     /// Files the session asked us to resolve that we could not verify
@@ -1026,6 +1171,71 @@ fn mtime_millis(metadata: &std::fs::Metadata) -> Option<i64> {
     }
 }
 
+/// A file's hash-cache validity key: `(mtime millis, size)`.
+type FileStamp = (i64, u64);
+
+/// The stamp `path` carries now (following symlinks); `None` if it can't
+/// be read or has no usable mtime.
+fn file_stamp(path: &Path) -> Option<FileStamp> {
+    let metadata = std::fs::metadata(path).ok()?;
+    Some((mtime_millis(&metadata)?, metadata.len()))
+}
+
+/// A hash with the file's stamp from just before and just after the read.
+struct StampedHash {
+    hash: Ed2kFileHash,
+    before: Option<FileStamp>,
+    after: Option<FileStamp>,
+}
+
+impl StampedHash {
+    /// The stamp the hash may be cached under: present only when it held
+    /// across the whole read (and agrees with the bytes read), since only
+    /// then does the hash describe the contents that stamp names.
+    fn held(&self) -> Option<FileStamp> {
+        self.before
+            .filter(|stamp| self.after == Some(*stamp) && stamp.1 == self.hash.size_bytes)
+    }
+
+    /// Whether the file visibly changed while it was read: it is still
+    /// being written, and the hash describes no file anyone will have.
+    fn changed(&self) -> bool {
+        self.before.is_some() && self.held().is_none()
+    }
+}
+
+/// Hash `path` with `read`, stamping it before and after: every hash that
+/// reaches the hash cache goes through here, so a file written to during
+/// its read is never cached under a stamp its contents don't match.
+fn hash_stamped(
+    path: &Path,
+    read: impl FnOnce(std::fs::File) -> std::io::Result<Ed2kFileHash>,
+) -> std::io::Result<StampedHash> {
+    let before = file_stamp(path);
+    let hash = read(std::fs::File::open(path)?)?;
+    let after = file_stamp(path);
+    Ok(StampedHash {
+        hash,
+        before,
+        after,
+    })
+}
+
+/// Hash one library-scan file, refusing a file whose stamp moved since
+/// the walk (or the settle poll) judged it settled: it may have waited
+/// behind transfers for a long time.
+fn hash_scan_item(item: &ScanItem) -> ScanHashed {
+    let current = file_stamp(&item.path);
+    if current != Some(item.stamp()) {
+        return ScanHashed::Unsettled(current);
+    }
+    match hash_stamped(&item.path, ed2k_hash_reader) {
+        Ok(stamped) if stamped.held() == Some(item.stamp()) => ScanHashed::Hashed(stamped.hash),
+        Ok(stamped) => ScanHashed::Unsettled(stamped.after),
+        Err(e) => ScanHashed::Failed(e),
+    }
+}
+
 impl Actor {
     fn new(
         config: FileConfig,
@@ -1194,12 +1404,16 @@ impl Actor {
             last_playable_written: HashMap::new(),
             scan_pending_commits: Vec::new(),
             scan_worklist: std::collections::VecDeque::new(),
-            scan_hashing: false,
-            scan_walking: false,
+            scan_settling: HashMap::new(),
+            scan_settle: config.scan_settle.as_millis() as i64,
+            scan_in_flight: None,
+            library_watch: watch::LibraryWatch::disabled(),
+            walks: WalkSchedule::default(),
             scan_done: 0,
             scan_total: 0,
             scan_started: None,
             scan_failed: 0,
+            scan_unsettled: 0,
             scan_log_step: 1,
             wanted: HashMap::new(),
             rechecks: HashMap::new(),
@@ -1361,6 +1575,10 @@ impl Actor {
         self.run_download_actions(actions).await;
         self.poll_nyaa_imports().await;
         self.poll_rechecks().await;
+        if self.walks.events_due(tokio::time::Instant::now()) {
+            self.start_library_scan("watched_directory_changed");
+        }
+        self.poll_scan_settling().await;
         // Resume deferred scan hashing once transfers go quiet (#21).
         self.pump_library_scan();
     }
@@ -1648,45 +1866,95 @@ impl Actor {
     }
 
     /// Kick off a media-library scan: walk the roots in the background,
-    /// turning up new/changed video files to hash. Skips if a walk is
-    /// already queued/running (overlapping walks would duplicate work).
+    /// turning up new/changed video files to hash. A request made while
+    /// a walk runs queues one more walk after it, since the running walk
+    /// may already have passed the directory that changed.
     fn start_library_scan(&mut self, trigger: &'static str) {
-        if self.scan_walking {
-            return;
+        if let Some(trigger) = self.walks.request(trigger) {
+            self.spawn_library_walk(trigger);
         }
+    }
+
+    fn spawn_library_walk(&mut self, trigger: &'static str) {
         self.expire_removed_roots();
-        self.scan_walking = true;
         let roots = self.media_roots.clone();
         let cache = Arc::clone(&self.hash_cache);
         let done_tx = self.done_tx.clone();
         tokio::task::spawn_blocking(move || {
             let started = std::time::Instant::now();
-            let (hits, worklist, stale, vanished_roots, online_roots) =
-                scan_library(&roots, &cache);
-            if !worklist.is_empty() {
+            let scan = scan_library(&roots, &cache);
+            if !scan.worklist.is_empty() {
                 tracing::info!(
                     trigger,
-                    to_hash = worklist.len(),
+                    to_hash = scan.worklist.len(),
                     "library scan found files requiring indexing"
                 );
             }
             tracing::debug!(
                 trigger,
-                hits = hits.len(),
-                to_hash = worklist.len(),
-                stale = stale.len(),
-                vanished = vanished_roots.len(),
+                hits = scan.hits.len(),
+                to_hash = scan.worklist.len(),
+                stale = scan.stale.len(),
+                vanished = scan.vanished_roots.len(),
+                dirs = scan.dirs.len(),
                 elapsed_ms = started.elapsed().as_millis() as u64,
                 "library walk finished"
             );
-            let _ = done_tx.blocking_send(Done::LibraryWalk {
-                hits,
-                worklist,
-                stale,
-                vanished_roots,
-                online_roots,
-            });
+            let _ = done_tx.blocking_send(Done::LibraryWalk(scan));
         });
+    }
+
+    /// Re-stamp the files waiting to settle; queue for hashing those
+    /// whose stamp has held still for the settle window.
+    async fn poll_scan_settling(&mut self) {
+        if self.scan_settling.is_empty() {
+            return;
+        }
+        let now = (self.clock)() as i64;
+        let paths: Vec<PathBuf> = self.scan_settling.keys().cloned().collect();
+        let mut ready = Vec::new();
+        for path in paths {
+            let Some(stamp) = file_stamp(&path) else {
+                // Gone (or unreadable); the next walk decides.
+                self.scan_settling.remove(&path);
+                continue;
+            };
+            let Some(settling) = self.scan_settling.get_mut(&path) else {
+                continue;
+            };
+            settling.observe(stamp, now);
+            if settling.settled(now, self.scan_settle)
+                && let Some(settling) = self.scan_settling.remove(&path)
+            {
+                ready.push(settling.item);
+            }
+        }
+        if ready.is_empty() {
+            return;
+        }
+        tracing::info!(
+            count = ready.len(),
+            "library files settled; queueing for hashing"
+        );
+        if self.scan_worklist.is_empty() && self.scan_in_flight.is_none() {
+            // A fresh pass, not the tail of one.
+            self.scan_done = 0;
+            self.scan_total = 0;
+            self.scan_failed = 0;
+            self.scan_unsettled = 0;
+            self.scan_started = Some(std::time::Instant::now());
+        }
+        self.scan_total += ready.len();
+        self.scan_log_step = (self.scan_total / 20).max(1);
+        self.scan_worklist.extend(ready);
+        let _ = self
+            .out
+            .send(FileOutput::ScanProgress {
+                done: self.scan_done,
+                total: self.scan_total,
+            })
+            .await;
+        self.pump_library_scan();
     }
 
     /// Hash the next worklist file, if any and none is already in flight.
@@ -1697,7 +1965,7 @@ impl Actor {
     /// 30s and the download stalls. `on_tick` re-pumps, so a deferred
     /// worklist resumes once transfers go quiet.
     fn pump_library_scan(&mut self) {
-        if self.scan_hashing {
+        if self.scan_in_flight.is_some() {
             return;
         }
         if !self.scan_worklist.is_empty() && self.transfer_recent() {
@@ -1714,12 +1982,12 @@ impl Actor {
             return;
         };
         self.scan_defer_logged = false;
-        self.scan_hashing = true;
+        self.scan_in_flight = Some(item.path.clone());
         tracing::info!(path = %item.path.display(), scanned_mtime = item.mtime, "hashing library file");
         let done_tx = self.done_tx.clone();
         tokio::task::spawn_blocking(move || {
-            let result = std::fs::File::open(&item.path).and_then(ed2k_hash_reader);
-            let _ = done_tx.blocking_send(Done::LibraryHashed { item, result });
+            let outcome = hash_scan_item(&item);
+            let _ = done_tx.blocking_send(Done::LibraryHashed { item, outcome });
         });
     }
 
@@ -2897,14 +3165,17 @@ impl Actor {
                 }
                 Err(e) => tracing::error!("placeholder render failed: {e}"),
             },
-            Done::LibraryWalk {
+            Done::LibraryWalk(LibraryScan {
                 hits,
                 worklist,
                 stale,
                 vanished_roots,
                 online_roots,
-            } => {
-                self.scan_walking = false;
+                dirs,
+            }) => {
+                // Watch what this walk saw: new directories (a season
+                // folder just copied in), re-created or re-mounted ones.
+                self.library_watch.sync(&dirs);
                 self.reconcile_scan_roots(vanished_roots, online_roots, stale)
                     .await;
                 // A cache hit bearing an unmet resolve's *hash* re-resolves
@@ -2928,18 +3199,15 @@ impl Actor {
                         .send(FileOutput::LibraryIndexed { files: hits })
                         .await;
                 }
-                self.scan_worklist = worklist;
-                self.scan_total = self.scan_worklist.len();
-                self.scan_done = 0;
                 // A new/changed file bearing the name of an unmet resolve
-                // is worth verifying right now: resolve hashes it outside
-                // the scan deferral (#21), so a copy that landed through
-                // another channel is adopted even while its own peer
-                // download keeps hashing deferred (2026-07-03). A copy
-                // still being written resolves HashMismatch and the
+                // is worth verifying right now, settled or not: resolve
+                // hashes it outside the scan deferral (#21), so a copy that
+                // landed through another channel is adopted even while its
+                // own peer download keeps hashing deferred (2026-07-03). A
+                // copy still being written resolves HashMismatch and the
                 // quiescence watch (#26) picks it up from there — so skip
                 // files already under watch.
-                arrived.extend(self.scan_worklist.iter().filter_map(|item| {
+                arrived.extend(worklist.iter().filter_map(|item| {
                     self.wanted
                         .iter()
                         .find(|(hash, name)| {
@@ -2955,10 +3223,12 @@ impl Actor {
                     );
                     self.resolve(hash, filename).await;
                 }
-                if self.scan_total > 0 {
+                self.queue_walked_files(worklist);
+                if !self.scan_worklist.is_empty() {
                     tracing::info!(to_hash = self.scan_total, "indexing media library");
                     self.scan_started = Some(std::time::Instant::now());
                     self.scan_failed = 0;
+                    self.scan_unsettled = 0;
                     // ~20 info-level checkpoints regardless of library size;
                     // small libraries log every file.
                     self.scan_log_step = (self.scan_total / 20).max(1);
@@ -2971,12 +3241,15 @@ impl Actor {
                         .await;
                     self.pump_library_scan();
                 }
+                if let Some(trigger) = self.walks.finished() {
+                    self.spawn_library_walk(trigger);
+                }
             }
-            Done::LibraryHashed { item, result } => {
-                self.scan_hashing = false;
+            Done::LibraryHashed { item, outcome } => {
+                self.scan_in_flight = None;
                 self.scan_done += 1;
-                match result {
-                    Ok(hashed) => {
+                match outcome {
+                    ScanHashed::Hashed(hashed) => {
                         let root = hashed.root;
                         let size = hashed.size_bytes;
                         self.queue_scan_hash_commit(
@@ -3027,7 +3300,26 @@ impl Actor {
                             })
                             .await;
                     }
-                    Err(e) => {
+                    ScanHashed::Unsettled(stamp) => {
+                        self.scan_unsettled += 1;
+                        tracing::debug!(
+                            path = %item.path.display(),
+                            scanned = ?item.stamp(),
+                            now = ?stamp,
+                            "library file changed before its hash finished; waiting for it to settle"
+                        );
+                        if let Some(stamp) = stamp {
+                            let now = (self.clock)() as i64;
+                            let mut settling = Settling {
+                                item,
+                                observed_at: now,
+                            };
+                            settling.observe(stamp, now);
+                            self.scan_settling
+                                .insert(settling.item.path.clone(), settling);
+                        }
+                    }
+                    ScanHashed::Failed(e) => {
                         self.scan_failed += 1;
                         tracing::warn!(path = %item.path.display(), "library scan hash failed; a later scan will retry: {e}");
                     }
@@ -3041,8 +3333,9 @@ impl Actor {
                     // of waiting on a stray partial batch.
                     self.flush_scan_hash_commits();
                     tracing::info!(
-                        hashed = self.scan_done - self.scan_failed,
+                        hashed = self.scan_done - self.scan_failed - self.scan_unsettled,
                         failed = self.scan_failed,
+                        still_changing = self.scan_unsettled,
                         elapsed_ms = self
                             .scan_started
                             .map(|t| t.elapsed().as_millis() as u64)
@@ -3050,7 +3343,7 @@ impl Actor {
                         "media library scan complete"
                     );
                     self.scan_started = None;
-                } else if self.scan_done.is_multiple_of(self.scan_log_step) {
+                } else if self.scan_total > 0 && self.scan_done.is_multiple_of(self.scan_log_step) {
                     tracing::info!(
                         done = self.scan_done,
                         total = self.scan_total,
@@ -3068,6 +3361,57 @@ impl Actor {
                 self.pump_library_scan();
             }
         }
+    }
+
+    /// Take a walk's new/changed files: those whose stamp has settled
+    /// replace the hash worklist (the walk re-derives every file still
+    /// unhashed), the rest wait in `scan_settling`, keeping how long they
+    /// have already held still. The walk is authoritative for both, so a
+    /// waiting file it no longer reports (deleted, or hashed meanwhile)
+    /// is dropped.
+    fn queue_walked_files(&mut self, worklist: std::collections::VecDeque<ScanItem>) {
+        let now = (self.clock)() as i64;
+        let previous = std::mem::take(&mut self.scan_settling);
+        // Files already judged settled and still waiting for their hash
+        // keep that verdict while their stamp is unchanged; re-judging a
+        // future-stamped one would restart its wait on every walk.
+        let queued: HashMap<PathBuf, FileStamp> = self
+            .scan_worklist
+            .drain(..)
+            .map(|item| (item.path.clone(), item.stamp()))
+            .collect();
+        let mut ready = std::collections::VecDeque::new();
+        for item in worklist {
+            // Already being hashed; its completion decides.
+            if self.scan_in_flight.as_ref() == Some(&item.path) {
+                continue;
+            }
+            if queued.get(&item.path) == Some(&item.stamp()) {
+                ready.push_back(item);
+                continue;
+            }
+            let observed_at = previous
+                .get(&item.path)
+                .filter(|waiting| waiting.item.stamp() == item.stamp())
+                .map_or(now, |waiting| waiting.observed_at);
+            let settling = Settling { item, observed_at };
+            if settling.settled(now, self.scan_settle) {
+                ready.push_back(settling.item);
+            } else {
+                self.scan_settling
+                    .insert(settling.item.path.clone(), settling);
+            }
+        }
+        if !self.scan_settling.is_empty() {
+            tracing::debug!(
+                waiting = self.scan_settling.len(),
+                "library files still changing; hashing once they settle"
+            );
+        }
+        self.scan_worklist = ready;
+        self.scan_done = 0;
+        // The in-flight hash completes into this pass's count.
+        self.scan_total = self.scan_worklist.len() + usize::from(self.scan_in_flight.is_some());
     }
 
     /// Drop index rows whose files vanished from under the media roots —
@@ -3362,9 +3706,7 @@ impl Actor {
         let done_tx = self.done_tx.clone();
         tokio::task::spawn_blocking(move || {
             let started = std::time::Instant::now();
-            let metadata = std::fs::metadata(&path).ok();
-            let total_bytes = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
-            let mtime = metadata.as_ref().and_then(mtime_millis);
+            let total_bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
             // The opening progress event puts the file on screen
             // immediately (the no-silent-work rule).
             let _ = out.try_send(FileOutput::Hash(HashEvent::Progress {
@@ -3372,7 +3714,7 @@ impl Actor {
                 done_bytes: 0,
                 total_bytes,
             }));
-            let result = std::fs::File::open(&path).and_then(|f| {
+            let stamped = hash_stamped(&path, |f| {
                 ed2k_hash_reader(ProgressReader {
                     inner: f,
                     path: path.clone(),
@@ -3381,6 +3723,22 @@ impl Actor {
                     last_reported: 0,
                     events: out.clone(),
                 })
+            });
+            let mtime = stamped
+                .as_ref()
+                .ok()
+                .and_then(StampedHash::held)
+                .map(|s| s.0);
+            // A file still being written would enter the playlist under
+            // the hash of a prefix nobody else will ever have.
+            let result = stamped.and_then(|stamped| {
+                if stamped.changed() {
+                    Err(std::io::Error::other(
+                        "the file changed while it was being hashed; add it again once it has finished copying",
+                    ))
+                } else {
+                    Ok(stamped.hash)
+                }
             });
             tracing::info!(
                 path = %path.display(),
@@ -3465,11 +3823,13 @@ impl Actor {
         }
         let done_tx = self.done_tx.clone();
         tokio::task::spawn_blocking(move || {
-            let mtime = std::fs::metadata(&path)
-                .ok()
+            let stamped = hash_stamped(&path, ed2k_hash_reader);
+            let mtime = stamped
                 .as_ref()
-                .and_then(mtime_millis);
-            let result = std::fs::File::open(&path).and_then(ed2k_hash_reader);
+                .ok()
+                .and_then(StampedHash::held)
+                .map(|s| s.0);
+            let result = stamped.map(|stamped| stamped.hash);
             let _ = done_tx.blocking_send(Done::ManualHashed {
                 file,
                 path,
@@ -4171,11 +4531,14 @@ fn candidate_root(
                 Some(&metadata),
                 cache.get(candidate),
             );
-            match std::fs::File::open(candidate).and_then(ed2k_hash_reader) {
-                Ok(hashed) => {
-                    let root = hashed.root;
-                    if let Some(mtime) = mtime {
-                        fresh.push((candidate.to_path_buf(), mtime, hashed));
+            match hash_stamped(candidate, ed2k_hash_reader) {
+                Ok(stamped) => {
+                    let root = stamped.hash.root;
+                    // A candidate still being written hashes to a prefix:
+                    // it mismatches (and the re-check watch takes over),
+                    // but its hash must not be cached.
+                    if let Some((mtime, _)) = stamped.held() {
+                        fresh.push((candidate.to_path_buf(), mtime, stamped.hash));
                     }
                     Some(root)
                 }
@@ -4299,27 +4662,33 @@ fn dir_series_hint(path: &Path, root: &Path) -> Option<String> {
 /// it is read, so a symlink pointing back into the tree (or two roots that
 /// overlap) is walked at most once. The callback receives each file's path
 /// (as reached, i.e. through the symlink, not its canonical target) and the
-/// media root it was found under; root order is preserved. Unreadable or
-/// uncanonicalizable directories are skipped with a debug log, and dangling
-/// symlinks are skipped silently.
-fn walk_files(roots: &[PathBuf], mut on_file: impl FnMut(PathBuf, &Path)) {
+/// media root it was found under; root order is preserved. `on_dir`
+/// receives each directory read, canonicalized, with its metadata.
+/// Unreadable or uncanonicalizable directories are skipped with a debug
+/// log, and dangling symlinks are skipped silently.
+fn walk_files(
+    roots: &[PathBuf],
+    mut on_dir: impl FnMut(&Path, &std::fs::Metadata),
+    mut on_file: impl FnMut(PathBuf, &Path),
+) {
     let mut visited: HashSet<PathBuf> = HashSet::new();
     for root in roots {
         let mut queue = std::collections::VecDeque::from([root.clone()]);
         while let Some(dir) = queue.pop_front() {
             // Cycle guard: canonicalize (resolving symlinks in the path) and
             // skip a real directory we've already walked.
-            match std::fs::canonicalize(&dir) {
+            let canon = match std::fs::canonicalize(&dir) {
                 Ok(canon) => {
-                    if !visited.insert(canon) {
+                    if !visited.insert(canon.clone()) {
                         continue;
                     }
+                    canon
                 }
                 Err(e) => {
                     tracing::debug!(dir = %dir.display(), "uncanonicalizable directory: {e}");
                     continue;
                 }
-            }
+            };
             let entries = match std::fs::read_dir(&dir) {
                 Ok(entries) => entries,
                 Err(e) => {
@@ -4327,6 +4696,9 @@ fn walk_files(roots: &[PathBuf], mut on_file: impl FnMut(PathBuf, &Path)) {
                     continue;
                 }
             };
+            if let Ok(metadata) = std::fs::metadata(&canon) {
+                on_dir(&canon, &metadata);
+            }
             for entry in entries.flatten() {
                 let path = entry.path();
                 let Ok(file_type) = entry.file_type() else {
@@ -4352,23 +4724,38 @@ fn walk_files(roots: &[PathBuf], mut on_file: impl FnMut(PathBuf, &Path)) {
     }
 }
 
+/// What one walk of the media roots found.
+#[derive(Debug)]
+pub struct LibraryScan {
+    /// Cache hits — known immediately.
+    hits: Vec<IndexedFile>,
+    /// Files to hash (new or changed since last scan).
+    worklist: std::collections::VecDeque<ScanItem>,
+    /// Index rows whose files vanished from under the roots (moved
+    /// or deleted behind the app's back) — to be pruned.
+    stale: Vec<PathBuf>,
+    /// Active roots for which none of the previously recorded files
+    /// remains reachable.
+    vanished_roots: Vec<PathBuf>,
+    /// Active roots proven online by at least one recorded file.
+    online_roots: Vec<PathBuf>,
+    /// Every directory read (canonical), for the directory watch.
+    dirs: Vec<(PathBuf, watch::DirId)>,
+}
+
 /// Walk every media root, classifying each video file as a hash-cache hit
 /// (a known root, returned immediately) or a worklist item (new or
 /// changed since the last scan, needing a hash). Uses the shared
 /// symlink-following [`walk_files`] traversal, visiting every video file.
-type LibraryScan = (
-    Vec<IndexedFile>,
-    std::collections::VecDeque<ScanItem>,
-    Vec<PathBuf>,
-    Vec<PathBuf>,
-    Vec<PathBuf>,
-);
-
 fn scan_library(roots: &[PathBuf], cache: &HashMap<PathBuf, (i64, Ed2kFileHash)>) -> LibraryScan {
     let mut hits = Vec::new();
     let mut worklist = std::collections::VecDeque::new();
     let mut seen: HashSet<PathBuf> = HashSet::new();
-    walk_files(roots, |path, root| {
+    let mut dirs = Vec::new();
+    let on_dir = |dir: &Path, metadata: &std::fs::Metadata| {
+        dirs.push((dir.to_path_buf(), watch::dir_id(metadata)));
+    };
+    walk_files(roots, on_dir, |path, root| {
         if !is_video_file(&path) {
             return;
         }
@@ -4406,6 +4793,7 @@ fn scan_library(roots: &[PathBuf], cache: &HashMap<PathBuf, (i64, Ed2kFileHash)>
                 worklist.push_back(ScanItem {
                     path,
                     mtime,
+                    size: metadata.len(),
                     filename,
                     series_hint,
                     media_root: root.to_path_buf(),
@@ -4439,7 +4827,14 @@ fn scan_library(roots: &[PathBuf], cache: &HashMap<PathBuf, (i64, Ed2kFileHash)>
             vanished_roots.push(root.clone());
         }
     }
-    (hits, worklist, stale, vanished_roots, online_roots)
+    LibraryScan {
+        hits,
+        worklist,
+        stale,
+        vanished_roots,
+        online_roots,
+        dirs,
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -4467,14 +4862,18 @@ fn root_disposition(recorded_file_exists: &[bool]) -> RootDisposition {
 /// so it stays consistent with [`scan_library`]'s indexing.
 fn find_by_name(filename: &str, roots: &[PathBuf]) -> Vec<PathBuf> {
     let mut found = Vec::new();
-    walk_files(roots, |path, _root| {
-        if path
-            .file_name()
-            .is_some_and(|n| n.to_string_lossy() == filename)
-        {
-            found.push(path);
-        }
-    });
+    walk_files(
+        roots,
+        |_, _| {},
+        |path, _root| {
+            if path
+                .file_name()
+                .is_some_and(|n| n.to_string_lossy() == filename)
+            {
+                found.push(path);
+            }
+        },
+    );
     found
 }
 
@@ -5003,28 +5402,41 @@ mod tests {
         cache_dir: PathBuf,
         clock: Clock,
     ) -> Rig {
+        spawn_rig_configured(storage, roots, retention, cache_dir, clock, |_| {})
+    }
+
+    /// As [`spawn_rig_clocked`], with a hook to adjust the test config
+    /// (settle window, directory watching, scan interval).
+    fn spawn_rig_configured(
+        storage: Storage,
+        roots: Vec<PathBuf>,
+        retention: CacheRetention,
+        cache_dir: PathBuf,
+        clock: Clock,
+        configure: impl FnOnce(&mut FileConfig),
+    ) -> Rig {
         let (cmd_tx, cmd_rx) = mpsc::channel(16);
         let (out_tx, out_rx) = mpsc::channel(64);
-        tokio::spawn(run(
-            FileConfig {
-                storage,
-                media_roots: roots,
-                retention,
-                archive: ArchivePolicy::default(),
-                cache_dir,
-                clock,
-                download: DownloadConfig::default(),
-                upload_limit: None,
-                // No timer-driven scan in tests; drive via RescanLibrary.
-                scan_interval: None,
-                // Short deferral window so recheck/deferral tests run fast.
-                scan_transfer_quiet: Duration::from_secs(2),
-                torrent: None,
-                nyaa: None,
-            },
-            cmd_rx,
-            out_tx,
-        ));
+        let mut config = FileConfig {
+            storage,
+            media_roots: roots,
+            retention,
+            archive: ArchivePolicy::default(),
+            cache_dir,
+            clock,
+            download: DownloadConfig::default(),
+            upload_limit: None,
+            // No timer-driven scan in tests; drive via RescanLibrary.
+            scan_interval: None,
+            // Short deferral window so recheck/deferral tests run fast.
+            scan_transfer_quiet: Duration::from_secs(2),
+            scan_settle: Duration::ZERO,
+            watch_media_roots: false,
+            torrent: None,
+            nyaa: None,
+        };
+        configure(&mut config);
+        tokio::spawn(run(config, cmd_rx, out_tx));
         Rig {
             commands: cmd_tx,
             outputs: out_rx,
@@ -5084,6 +5496,8 @@ mod tests {
                 upload_limit: None,
                 scan_interval: None,
                 scan_transfer_quiet: Duration::from_secs(2),
+                scan_settle: Duration::ZERO,
+                watch_media_roots: false,
                 torrent: None,
                 nyaa: None,
             },
@@ -5278,6 +5692,8 @@ mod tests {
                 upload_limit: None,
                 scan_interval: None,
                 scan_transfer_quiet: Duration::from_secs(2),
+                scan_settle: Duration::ZERO,
+                watch_media_roots: false,
                 torrent: None,
                 nyaa: None,
             },
@@ -5352,6 +5768,8 @@ mod tests {
                 upload_limit: None,
                 scan_interval: None,
                 scan_transfer_quiet: Duration::from_secs(2),
+                scan_settle: Duration::ZERO,
+                watch_media_roots: false,
                 torrent: None,
                 nyaa: None,
             },
@@ -5445,6 +5863,8 @@ mod tests {
                 upload_limit: None,
                 scan_interval: None,
                 scan_transfer_quiet: Duration::from_secs(2),
+                scan_settle: Duration::ZERO,
+                watch_media_roots: false,
                 torrent: None,
                 nyaa: None,
             },
@@ -5538,6 +5958,8 @@ mod tests {
                 upload_limit: None,
                 scan_interval: None,
                 scan_transfer_quiet: Duration::from_secs(2),
+                scan_settle: Duration::ZERO,
+                watch_media_roots: false,
                 torrent: None,
                 nyaa: None,
             },
@@ -6754,6 +7176,8 @@ mod tests {
                 upload_limit: None,
                 scan_interval: None,
                 scan_transfer_quiet: Duration::from_secs(2),
+                scan_settle: Duration::ZERO,
+                watch_media_roots: false,
                 torrent: None,
                 nyaa: None,
             },
@@ -7030,6 +7454,8 @@ mod tests {
                 upload_limit: None,
                 scan_interval: None,
                 scan_transfer_quiet: Duration::from_secs(2),
+                scan_settle: Duration::ZERO,
+                watch_media_roots: false,
                 torrent: None,
                 nyaa: None,
             },
@@ -8028,7 +8454,8 @@ mod tests {
                 None,
             );
             tracing::subscriber::with_default(subscriber, || {
-                let (_, work, ..) = scan_library(&[root.path().to_path_buf()], &cache);
+                let LibraryScan { worklist: work, .. } =
+                    scan_library(&[root.path().to_path_buf()], &cache);
                 assert_eq!(work.len(), 1);
             });
             let text = logs
@@ -8052,7 +8479,7 @@ mod tests {
         write(root.path(), "Frieren/ep1.nfo", b"<nfo/>");
 
         // Empty cache: the video needs hashing, the junk is ignored.
-        let (hits, worklist, _stale, _, _) =
+        let LibraryScan { hits, worklist, .. } =
             scan_library(&[root.path().to_path_buf()], &HashMap::new());
         assert!(hits.is_empty());
         assert_eq!(worklist.len(), 1);
@@ -8062,7 +8489,7 @@ mod tests {
         // With the video already cached (matching mtime/size) it's a hit,
         // not re-hashed.
         let cache = cache_of(&video, b"episode one");
-        let (hits, worklist, _stale, _, _) = scan_library(&[root.path().to_path_buf()], &cache);
+        let LibraryScan { hits, worklist, .. } = scan_library(&[root.path().to_path_buf()], &cache);
         assert!(worklist.is_empty());
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].hash, ed2k_hash_bytes(b"episode one").root);
@@ -8079,7 +8506,7 @@ mod tests {
             video.clone(),
             (stale_mtime, ed2k_hash_bytes(b"episode one")),
         )]);
-        let (hits, worklist, _stale, _, _) = scan_library(&[root.path().to_path_buf()], &cache);
+        let LibraryScan { hits, worklist, .. } = scan_library(&[root.path().to_path_buf()], &cache);
         assert!(hits.is_empty(), "stale mtime must not count as a hit");
         assert_eq!(worklist.len(), 1);
         assert_eq!(worklist[0].path, video);
@@ -8100,7 +8527,7 @@ mod tests {
         std::os::unix::fs::symlink(base.path().join("store/Frieren"), root.join("Frieren"))
             .unwrap();
 
-        let (hits, worklist, _stale, _, _) =
+        let LibraryScan { hits, worklist, .. } =
             scan_library(std::slice::from_ref(&root), &HashMap::new());
         assert!(hits.is_empty());
         assert_eq!(
@@ -8123,7 +8550,7 @@ mod tests {
         let link = root.join("ep1.mkv");
         std::os::unix::fs::symlink(&target, &link).unwrap();
 
-        let (hits, worklist, _stale, _, _) =
+        let LibraryScan { hits, worklist, .. } =
             scan_library(std::slice::from_ref(&root), &HashMap::new());
         assert!(hits.is_empty());
         assert_eq!(worklist.len(), 1, "symlinked video file must be seen");
@@ -8142,7 +8569,7 @@ mod tests {
         write(root.path(), "Frieren/ep1.mkv", b"episode one");
         std::os::unix::fs::symlink(root.path(), root.path().join("Frieren/loop")).unwrap();
 
-        let (_hits, worklist, _stale, _, _) =
+        let LibraryScan { worklist, .. } =
             scan_library(&[root.path().to_path_buf()], &HashMap::new());
         assert_eq!(worklist.len(), 1, "cycle must not duplicate or hang");
         assert_eq!(worklist[0].filename, "ep1.mkv");
@@ -8346,6 +8773,57 @@ mod tests {
             extra.is_err(),
             "a quiet, unchanged mismatch produced {extra:?}"
         );
+    }
+
+    /// A file still being written must not be hashed while it grows: on
+    /// an HDD every premature hash is a full re-read, and the result
+    /// describes no file anyone will have. The walk sees a file stamped
+    /// "just now"; it hashes only once the stamp has held still for the
+    /// settle window (2026-10-30).
+    #[tokio::test]
+    async fn library_scan_waits_for_a_fresh_file_to_settle() {
+        let root = tempfile::tempdir().unwrap();
+        let contents = b"an episode that just finished copying".as_slice();
+        let path = write(root.path(), "Show/ep1.mkv", contents);
+        let mtime = mtime_millis(&std::fs::metadata(&path).unwrap()).unwrap();
+        // "Now" is the file's own mtime: it was written a moment ago.
+        let now = Arc::new(AtomicU64::new(mtime as u64));
+        let clock: Clock = {
+            let now = Arc::clone(&now);
+            Arc::new(move || now.load(Ordering::SeqCst))
+        };
+        let cache_dir = tempfile::tempdir().unwrap();
+        let mut rig = spawn_rig_configured(
+            Storage::open_in_memory().unwrap(),
+            vec![root.path().to_path_buf()],
+            CacheRetention::default(),
+            cache_dir.path().to_path_buf(),
+            clock,
+            |config| config.scan_settle = Duration::from_secs(10),
+        );
+        rig.commands.send(FileCommand::RescanLibrary).await.unwrap();
+        // Several settle polls pass without the stamp being old enough.
+        let quiet_until = std::time::Instant::now() + Duration::from_millis(1200);
+        while std::time::Instant::now() < quiet_until {
+            let Ok(Some(output)) =
+                tokio::time::timeout(Duration::from_millis(100), rig.outputs.recv()).await
+            else {
+                continue;
+            };
+            assert!(
+                !matches!(output, FileOutput::LibraryIndexed { .. }),
+                "hashed a file whose stamp had not settled: {output:?}"
+            );
+        }
+        // Ten quiet seconds later it is hashed without another walk.
+        now.fetch_add(10_000, Ordering::SeqCst);
+        loop {
+            if let FileOutput::LibraryIndexed { files } = next_output(&mut rig).await {
+                assert_eq!(files.len(), 1);
+                assert_eq!(files[0].hash, ed2k_hash_bytes(contents).root);
+                break;
+            }
+        }
     }
 
     /// #21: scan *hashing* defers while transfer traffic is active —
@@ -8692,6 +9170,8 @@ mod tests {
                 upload_limit: None,
                 scan_interval: None,
                 scan_transfer_quiet: Duration::from_secs(2),
+                scan_settle: Duration::ZERO,
+                watch_media_roots: false,
                 torrent: Some(engine.clone() as Arc<dyn TorrentEngine>),
                 nyaa: Some(Arc::new(NoNyaa)),
             },
@@ -9278,5 +9758,334 @@ mod tests {
             kept_path.exists(),
             "a dir hosting a registered cache file must be spared"
         );
+    }
+
+    // ---- Settling, stamped hashes, and walk scheduling (2026-10-30).
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(
+            dessplay_core::test_support::proptest_cases(64)
+        ))]
+
+        /// A file being written carries its last write as its mtime. Over
+        /// any interleaving of writes and settle polls, it is judged
+        /// settled exactly when `settle` has passed since its last write:
+        /// never mid-write, never later than that.
+        #[test]
+        fn a_file_settles_exactly_when_its_writes_stop(
+            steps in proptest::collection::vec((0i64..4_000, proptest::bool::ANY), 1..60),
+            settle in 0i64..12_000,
+        ) {
+            let mut now = 1_000_000i64;
+            let mut stamp = (now, 0u64);
+            let mut last_write = now;
+            let mut settling = Settling {
+                item: scan_item(stamp),
+                observed_at: now,
+            };
+            for (dt, writes) in steps {
+                if writes {
+                    // The write lands somewhere in the gap since the last poll.
+                    last_write = now + dt / 2;
+                    stamp = (last_write, stamp.1 + 1);
+                }
+                now += dt;
+                settling.observe(stamp, now);
+                proptest::prop_assert_eq!(
+                    settling.settled(now, settle),
+                    now - last_write >= settle,
+                    "now {} last write {} settle {}", now, last_write, settle
+                );
+            }
+        }
+
+        /// A file stamped in the future (another machine's clock) proves
+        /// nothing by its mtime: it settles once *we* have seen its stamp
+        /// hold still for `settle`, and every change restarts the wait.
+        #[test]
+        fn a_future_stamp_settles_on_observation_alone(
+            steps in proptest::collection::vec((0i64..4_000, proptest::bool::ANY), 1..60),
+            settle in 0i64..12_000,
+        ) {
+            let mut now = 1_000_000i64;
+            let future = i64::MAX / 2;
+            let mut stamp = (future, 0u64);
+            let mut changed_at = now;
+            let mut settling = Settling {
+                item: scan_item(stamp),
+                observed_at: now,
+            };
+            for (dt, changes) in steps {
+                now += dt;
+                if changes {
+                    stamp = (future, stamp.1 + 1);
+                    changed_at = now;
+                }
+                settling.observe(stamp, now);
+                proptest::prop_assert_eq!(settling.settled(now, settle), now - changed_at >= settle);
+            }
+        }
+
+        /// No walk request is ever lost to a walk already running: over any
+        /// interleaving of requests and walk completions, every request is
+        /// followed by a walk that starts at or after it, and walks never
+        /// overlap.
+        #[test]
+        fn every_walk_request_is_followed_by_a_walk(
+            ops in proptest::collection::vec(proptest::bool::ANY, 0..80),
+        ) {
+            let mut schedule = WalkSchedule::default();
+            let mut walking = false;
+            // The earliest request no walk has started after yet.
+            let mut uncovered: Option<usize> = None;
+            for (step, request) in ops.into_iter().enumerate() {
+                let started = if request {
+                    uncovered.get_or_insert(step);
+                    let started = schedule.request("test").is_some();
+                    proptest::prop_assert!(!(started && walking), "overlapping walks");
+                    started
+                } else if walking {
+                    walking = false;
+                    schedule.finished().is_some()
+                } else {
+                    false
+                };
+                if started {
+                    walking = true;
+                    uncovered = None;
+                }
+            }
+            while walking {
+                walking = schedule.finished().is_some();
+                if walking {
+                    uncovered = None;
+                }
+            }
+            proptest::prop_assert_eq!(uncovered, None);
+        }
+    }
+
+    fn scan_item((mtime, size): FileStamp) -> ScanItem {
+        ScanItem {
+            path: PathBuf::from("/media/Show/ep1.mkv"),
+            mtime,
+            size,
+            filename: "ep1.mkv".into(),
+            series_hint: Some("Show".into()),
+            media_root: PathBuf::from("/media"),
+        }
+    }
+
+    #[test]
+    fn watch_events_walk_once_quiet_or_after_the_longest_delay() {
+        let start = tokio::time::Instant::now();
+        let at = |ms: u64| start + Duration::from_millis(ms);
+        let mut schedule = WalkSchedule::default();
+        assert!(!schedule.events_due(at(0)), "nothing noted, nothing due");
+
+        // A lone event walks once things have been quiet for WATCH_QUIET.
+        schedule.note_event(at(0));
+        assert!(!schedule.events_due(at(900)));
+        assert!(schedule.events_due(at(1_000)));
+        assert!(!schedule.events_due(at(1_100)), "a due burst is forgotten");
+
+        // A steady trickle can't put its walk off past WATCH_MAX_DELAY.
+        let mut due = Vec::new();
+        for ms in (10_000..21_000).step_by(250) {
+            schedule.note_event(at(ms));
+            if schedule.events_due(at(ms)) {
+                due.push(ms);
+            }
+        }
+        assert_eq!(due, vec![15_000, 20_250]);
+    }
+
+    #[test]
+    fn a_stable_file_hashes_under_the_stamp_it_held() {
+        let dir = tempfile::tempdir().unwrap();
+        let contents = b"a finished episode".as_slice();
+        let path = write(dir.path(), "ep1.mkv", contents);
+        let stamp = file_stamp(&path).unwrap();
+        let stamped = hash_stamped(&path, ed2k_hash_reader).unwrap();
+        assert_eq!(stamped.hash.root, ed2k_hash_bytes(contents).root);
+        assert_eq!(stamped.held(), Some(stamp));
+        assert!(!stamped.changed());
+    }
+
+    /// A file written to while it is read yields the hash of no file
+    /// anyone will have: it must not be cacheable, and must say it changed.
+    #[test]
+    fn a_file_written_during_its_read_has_no_cacheable_stamp() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(dir.path(), "ep1.mkv", b"the first half");
+        let stamped = hash_stamped(&path, |file| {
+            let hash = ed2k_hash_reader(file);
+            let mut appender = std::fs::OpenOptions::new().append(true).open(&path)?;
+            std::io::Write::write_all(&mut appender, b" and the second half")?;
+            hash
+        })
+        .unwrap();
+        assert_eq!(stamped.held(), None);
+        assert!(stamped.changed());
+    }
+
+    /// A queued file that changed since the walk judged it settled is not
+    /// read at all; it goes back to settle under the stamp it has now.
+    #[test]
+    fn a_queued_file_that_changed_is_sent_back_unread() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(dir.path(), "ep1.mkv", b"grown since the walk");
+        let current = file_stamp(&path).unwrap();
+        let mut item = scan_item((current.0, current.1 - 5));
+        item.path = path;
+        match hash_scan_item(&item) {
+            ScanHashed::Unsettled(stamp) => assert_eq!(stamp, Some(current)),
+            other => panic!("hashed a file that changed since its walk: {other:?}"),
+        }
+    }
+
+    /// A file judged settled keeps that verdict while it waits for its
+    /// hash. Hashing defers behind transfers, and event-driven walks come
+    /// often: re-judging a future-stamped file (a NAS clock ahead of ours)
+    /// on every walk would restart its wait each time.
+    #[tokio::test]
+    async fn a_settled_file_waiting_behind_transfers_stays_settled_across_walks() {
+        let root = tempfile::tempdir().unwrap();
+        let served = b"an episode being served to a peer".as_slice();
+        let served_hash = ed2k_hash_bytes(served);
+        let served_path = write(root.path(), "ep1.mkv", served);
+        let fresh = b"a file stamped by a clock ahead of ours".as_slice();
+        let fresh_path = write(root.path(), "ep2.mkv", fresh);
+        let storage = Storage::open_in_memory().unwrap();
+        let metadata = std::fs::metadata(&served_path).unwrap();
+        storage
+            .upsert_hash_cache(
+                &served_path,
+                mtime_millis(&metadata).unwrap(),
+                &served_hash,
+                1,
+            )
+            .unwrap();
+        // Our clock runs a minute behind the file's mtime.
+        let mtime = mtime_millis(&std::fs::metadata(&fresh_path).unwrap()).unwrap();
+        let now = Arc::new(AtomicU64::new((mtime - 60_000) as u64));
+        let clock: Clock = {
+            let now = Arc::clone(&now);
+            Arc::new(move || now.load(Ordering::SeqCst))
+        };
+        let cache_dir = tempfile::tempdir().unwrap();
+        let mut rig = spawn_rig_configured(
+            storage,
+            vec![root.path().to_path_buf()],
+            CacheRetention::default(),
+            cache_dir.path().to_path_buf(),
+            clock,
+            |config| config.scan_settle = Duration::from_secs(10),
+        );
+        // Serve a chunk of ep1: transfer traffic is now active.
+        rig.commands
+            .send(FileCommand::Resolve {
+                file: served_hash.root,
+                filename: "ep1.mkv".into(),
+            })
+            .await
+            .unwrap();
+        resolved_output(&mut rig).await;
+        rig.commands
+            .send(FileCommand::PeerMessage {
+                from: dessplay_core::net::PeerId::from(dessplay_core::types::UserId::new("kim")),
+                message: Box::new(dessplay_core::net::PeerMessage::ChunkRequest {
+                    file: served_hash.root,
+                    chunks: vec![0],
+                }),
+            })
+            .await
+            .unwrap();
+        // The walk sees ep2; ten observed seconds later it is settled, but
+        // its hash waits behind the transfer.
+        rig.commands.send(FileCommand::RescanLibrary).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        now.fetch_add(10_000, Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        // Another walk while it waits; our clock stands still from here.
+        rig.commands.send(FileCommand::RescanLibrary).await.unwrap();
+        // Once transfers go quiet it is hashed without a fresh wait.
+        loop {
+            if let FileOutput::LibraryIndexed { files } = next_output(&mut rig).await
+                && files.iter().any(|f| f.hash == ed2k_hash_bytes(fresh).root)
+            {
+                break;
+            }
+        }
+    }
+
+    /// Spawn a rig that watches `root` and walks only at startup, so
+    /// anything indexed afterwards was found through the watch.
+    async fn spawn_watching_rig(root: &Path) -> (Rig, tempfile::TempDir) {
+        let cache_dir = tempfile::tempdir().unwrap();
+        let rig = spawn_rig_configured(
+            Storage::open_in_memory().unwrap(),
+            vec![root.to_path_buf()],
+            CacheRetention::default(),
+            cache_dir.path().to_path_buf(),
+            test_clock(),
+            |config| {
+                config.watch_media_roots = true;
+                config.scan_interval = Some(Duration::from_secs(3600));
+            },
+        );
+        (rig, cache_dir)
+    }
+
+    /// The next `LibraryIndexed` naming `filename`, skipping other outputs.
+    async fn indexed(rig: &mut Rig, filename: &str) -> IndexedFile {
+        loop {
+            if let FileOutput::LibraryIndexed { files } = next_output(rig).await
+                && let Some(file) = files.into_iter().find(|f| f.filename == filename)
+            {
+                return file;
+            }
+        }
+    }
+
+    /// With auto-download off, a file copied into a media root used to
+    /// wait for the next minute-long rescan. Watching the roots indexes it
+    /// within seconds, including in a directory created after startup and
+    /// next to a directory the watch cannot read (an HDD's lost+found).
+    #[tokio::test]
+    async fn watched_roots_index_new_files_without_a_rescan() {
+        let root = tempfile::tempdir().unwrap();
+        write(root.path(), "Show/ep1.mkv", b"already here at startup");
+        #[cfg(unix)]
+        let unreadable = {
+            use std::os::unix::fs::PermissionsExt;
+            let dir = root.path().join("lost+found");
+            std::fs::create_dir(&dir).unwrap();
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o000)).unwrap();
+            dir
+        };
+        let (mut rig, _cache_dir) = spawn_watching_rig(root.path()).await;
+        // The startup walk registered the watches before reporting.
+        indexed(&mut rig, "ep1.mkv").await;
+
+        // A new episode in a directory the startup walk watched…
+        let contents = b"the next episode".as_slice();
+        write(root.path(), "Show/ep2.mkv", contents);
+        let file = indexed(&mut rig, "ep2.mkv").await;
+        assert_eq!(file.hash, ed2k_hash_bytes(contents).root);
+
+        // …a season directory copied in whole…
+        write(root.path(), "Other Show/ep1.mkv", b"another show");
+        indexed(&mut rig, "ep1.mkv").await;
+        // …and a later file in that new directory, which the walk the
+        // copy triggered must have started watching.
+        write(root.path(), "Other Show/ep2.mkv", b"another show, later");
+        indexed(&mut rig, "ep2.mkv").await;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
     }
 }

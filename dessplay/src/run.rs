@@ -1091,6 +1091,8 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
             // Interactive clients re-scan the library about once a minute.
             scan_interval: Some(std::time::Duration::from_secs(60)),
             scan_transfer_quiet: crate::actors::file::SCAN_TRANSFER_QUIET_DEFAULT,
+            scan_settle: crate::actors::file::SCAN_SETTLE_DEFAULT,
+            watch_media_roots: true,
             torrent,
             nyaa,
         },

@@ -20,8 +20,8 @@ use dessplay_core::types::{Ed2kHash, FileAvailability, UserId};
 use tokio::sync::mpsc;
 
 use crate::actors::file::{
-    DownloadFetch, FileCommand, FileConfig, FileOutput, Resolution, SCAN_TRANSFER_QUIET_DEFAULT,
-    WantedDownload, run,
+    DownloadFetch, FileCommand, FileConfig, FileOutput, Resolution, SCAN_SETTLE_DEFAULT,
+    SCAN_TRANSFER_QUIET_DEFAULT, WantedDownload, run,
 };
 use crate::actors::network::NetworkCommand;
 use crate::actors::sync::{Mutation, SyncCommand};
@@ -300,9 +300,12 @@ pub fn seeder_file_config(
         clock,
         download,
         upload_limit,
-        // A seeder's store is large and stable: scan daily, not minutely.
+        // A seeder's store is large and stable: walk daily, not minutely,
+        // and rely on the directory watch to see new arrivals sooner.
         scan_interval: Some(std::time::Duration::from_secs(24 * 60 * 60)),
         scan_transfer_quiet: SCAN_TRANSFER_QUIET_DEFAULT,
+        scan_settle: SCAN_SETTLE_DEFAULT,
+        watch_media_roots: true,
         // No torrent path on a seeder: the Nyaa browse import is an
         // interactive-only feature, and a file nyaa can supply makes
         // the seeder redundant — its job is the rare, peer-only files.
