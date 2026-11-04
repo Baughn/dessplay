@@ -1,6 +1,6 @@
 # DessPlay Decision Log
 
-Last updated: 2026-10-30
+Last updated: 2026-11-05
 
 The reasoning behind the rules in [design.md](design.md): the failure that
 motivated each one, the alternatives that were rejected, and the date it
@@ -721,15 +721,15 @@ their authored chrome when the form is rearranged.
 
 ### Playback intent is a latch
 
-**Rule:** Playback intent is a synced `LwwCell<PlaybackIntent>` that the server forces to Paused on any Lost, on graceful quit during playback, and on EOF-advance. See [design.md](design.md#playback-rules).
+**Rule:** Playback intent is a synced `LwwCell<PlaybackIntent>` that the server forces to Paused on any Lost while the video is not playing, when an outage grace window runs out, on graceful quit during playback, and on EOF-advance. See [design.md](design.md#playback-rules).
 
-**Why:** The register is the latch that keeps playback paused after a blocker leaves instead of silently auto-resuming. The server forces Paused on *any* Lost, committed or not; gating then decides whether pressing play resumes (yes for an absent Maybe user, no for a committed one until acknowledged).
+**Why:** The register is the latch that keeps playback paused after a blocker leaves instead of silently auto-resuming. The server forces Paused on *any* Lost, committed or not; gating then decides whether pressing play resumes (yes for an absent Maybe user, no for a committed one until acknowledged). Since 2026-11-04 a Lost during playback defers that pause to the end of an outage grace window (see [Outage grace](#outage-grace-dead-reckons-through-short-drops)); the latch itself is unchanged.
 
 ### Lost-to-Departed promotion does not re-pause
 
 **Rule:** The timeout-ladder Lost->Departed promotion does not re-force Paused; only the graceful-quit immediate departure force-pauses. See [design.md](design.md#playback-rules).
 
-**Why:** The peer was already paused at its Lost transition 30s earlier. Re-pausing at Departed would clobber a resume the present users legitimately made during the Lost window (an absent Maybe user is non-blocking, so such a resume is valid). Graceful quit skips Lost entirely, so it is the one departure that has not already paused.
+**Why:** The peer was already paused at its Lost transition 30s earlier (or, since 2026-11-04, is inside an outage grace window that pauses on expiry, which is 2.5 minutes after Departed). Re-pausing at Departed would clobber a resume the present users legitimately made during the Lost window (an absent Maybe user is non-blocking, so such a resume is valid). Graceful quit skips Lost entirely, so it is the one departure that has not already paused.
 
 ### Acknowledge is a per-file set, not an Away
 
@@ -997,6 +997,22 @@ Scoping watch-preference lines to the now-playing series keeps The List's bulk a
 **Rule:** `/quit` / Ctrl-C moves the user straight to Departed, keeps them listed like a timed-out peer, still gates if they are committed to the now-playing series, forces playback intent to Paused if playback was running, and hands seek authority back to the server at once; see [design.md](design.md#presence).
 
 **Why:** Skipping the Lost stage is the *only* thing a clean quit buys over a silent disconnect. It does not waive a commitment: per User States, the group waits for a committed user even when absent, "Lost, Departed, or quit". Playback pauses because leaving mid-episode should not be silent. The server reclaims seek authority immediately because a clean quit is final, unlike a Lost that may recover.
+
+### Outage grace dead-reckons through short drops
+
+**Rule (2026-11-04):** When an interactive user goes Lost while the video plays, the group plays on for 3 minutes. Inside the window that user never blocks. Nobody can pause, seek or switch the file, and seek authority moves off the dropped user at once. When the window runs out the server pauses everyone and closes every window. The dropped client runs the same window locally and then pauses without writing anything. A drop while paused, and a graceful quit, pause immediately as before. See [design.md](design.md#presence).
+
+**Why:** A Wi-Fi blip or a router restart used to stop the room for everyone, and a committed user's drop locked it out until they came back or were acknowledged. The players already share a clock and keep their positions, so a short outage can simply be dead-reckoned: the dropped person keeps playing alone and drift correction rejoins them on return. The lock is what makes that safe. A pause, seek or file change during the window would strand the person who cannot see it, and a forward seek would make the seeker the leader everyone else follows. The lock sits on the sync actor's write path, so every surface (player, Ctrl-R, playlist, IRC) hits the same check. The player also undoes its own pause or seek at once, so mpv never shows a state the group did not take. Specific choices:
+
+- **Only while playing.** With nothing to dead-reckon, a window would only stop people from pausing, and a play press inside it would play past a dropped committed user.
+- **The first expiry closes every window.** The group stops waiting for all absent members at once, rather than handing a second drop its own full window from a paused room.
+- **Windows close when playback stops anyway** (EOF-advance, or a pause or file change that raced past the lock). Otherwise a window would outlive the playback it protects, and pressing play on the next episode would play past a dropped committed user.
+- **The dropped client's expiry is local-only.** Its own pause is a view overlay, not a CRDT write. A buffered offline pause, stamped about when the server paused, could beat a play press the group made seconds after that pause and re-pause everyone on reconnect.
+- **Seek authority goes to the Server at the drop**, not to a named present user. Server authority already means "follow the furthest-ahead present peer with the file loaded", which is exactly someone still in the group, and it needs no new election (user's choice, 2026-11-04).
+- **File changes are locked too** (user's choice). A manual select pauses everyone and jumps, which is both of the things the window forbids.
+- **Graceful quit keeps the immediate pause** (user's choice). A quit is deliberate, not an outage.
+
+Rejected: making the Lost stage itself the 3-minute window, which would have needed no protocol change. Lost alone cannot tell "dropped mid-play" from "dropped while paused", nor "a window that already ended at EOF". Either gap lets a play press play past a committed user. The explicit `PeerInfo::grace_until` (protocol v15) carries that distinction and gives clients a deadline to show.
 
 ### Known-offline users are one list and valid skip targets
 

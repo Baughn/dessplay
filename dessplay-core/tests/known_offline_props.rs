@@ -33,6 +33,7 @@ fn arb_peer() -> impl Strategy<Value = PeerInfo> {
             presence,
             addresses: vec![],
             connected_since,
+            grace_until: None,
         })
 }
 

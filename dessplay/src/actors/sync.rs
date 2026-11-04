@@ -23,7 +23,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use dessplay_core::net::ServerControl;
+use dessplay_core::derive::OutageGrace;
+use dessplay_core::net::{PeerInfo, ServerControl};
 use dessplay_core::playlist::NewPlaylistEntry;
 use dessplay_core::types::{
     ActorId, AniDbMetadata, AniDbSeriesId, Ed2kHash, Epoch, FileAvailability, FileCatalogEntry,
@@ -274,6 +275,12 @@ pub enum SyncCommand {
         /// Server-minus-local offset, milliseconds.
         offset_millis: i64,
     },
+    /// Our own outage grace ran out while the link is still down: serve
+    /// the view paused until the server's state is back (design.md,
+    /// Presence: outage grace). Local only — nothing is written, so a
+    /// play press the group makes after the server's own pause can never
+    /// lose to a buffered offline pause. Cleared by the next full sync.
+    OfflineHold,
     /// Fetch the current resolved view.
     GetView(oneshot::Sender<StateView>),
     /// Fetch the current epoch.
@@ -306,6 +313,49 @@ pub enum SyncEvent {
     /// sticky flag — `HealthLevel::Ok` deliberately does not, because a
     /// healthy link says nothing about replica equality.
     DivergenceHealed,
+    /// A local write was refused because an outage grace window is open
+    /// (design.md, Presence). Tell the user why nothing happened.
+    GraceRefused {
+        /// What kind of write was refused.
+        refusal: GraceRefusal,
+        /// The window in force.
+        grace: OutageGrace,
+    },
+}
+
+/// A local write refused because an outage grace window is open.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GraceRefusal {
+    /// A pause: playback intent Paused, or a manual Paused override.
+    Pause,
+    /// A seek (writing seek authority).
+    Seek,
+    /// Switching now-playing to a different file.
+    FileChange,
+}
+
+/// Whether `mutation` must be refused while an outage grace window is
+/// open (design.md, Presence: outage grace): anything that would pause
+/// everyone, move everyone, or switch the file under someone
+/// dead-reckoning through an outage. Re-selecting the current
+/// now-playing file is not a change. Every local write passes through
+/// here (the sync actor's write path), so no UI, IRC or player path can
+/// bypass the lock.
+pub fn grace_refusal(mutation: &Mutation, now_playing: Option<Ed2kHash>) -> Option<GraceRefusal> {
+    match mutation {
+        Mutation::SetPlaybackIntent {
+            intent: PlaybackIntent::Paused,
+        }
+        | Mutation::SetManualOverride {
+            state: Some(ManualState::Paused),
+            ..
+        } => Some(GraceRefusal::Pause),
+        Mutation::SetUserSeek { .. } | Mutation::SetSeekAuthority { .. } => {
+            Some(GraceRefusal::Seek)
+        }
+        Mutation::SetNowPlaying { file } if *file != now_playing => Some(GraceRefusal::FileChange),
+        _ => None,
+    }
 }
 
 /// Static sync actor configuration.
@@ -327,6 +377,9 @@ pub struct SyncConfig {
     /// Publishes whether a state has been loaded from disk or adopted
     /// from the server this session (see [`SyncConfig::subscribe_adopted`]).
     adopted: watch::Sender<bool>,
+    /// The client's peer list (the one gating derives from), for the
+    /// outage grace write lock. `None` (tests) never locks.
+    pub peers: Option<watch::Receiver<Vec<PeerInfo>>>,
 }
 
 impl SyncConfig {
@@ -341,6 +394,7 @@ impl SyncConfig {
             flush_interval: Duration::from_secs(30),
             epoch,
             adopted: watch::Sender::new(false),
+            peers: None,
         }
     }
 
@@ -411,7 +465,18 @@ struct SyncActor {
     /// gate): flipped once when a state is loaded from disk or adopted
     /// from the server, never back. See [`SyncConfig::subscribe_adopted`].
     adopted: watch::Sender<bool>,
+    /// See [`SyncConfig::peers`].
+    peers: Option<watch::Receiver<Vec<PeerInfo>>>,
+    /// See [`SyncCommand::OfflineHold`].
+    offline_hold: bool,
+    /// When the last [`SyncEvent::GraceRefused`] went out. One user action
+    /// often makes several refused writes (Ctrl-R writes the override and
+    /// the intent; a file select, the file and the intent): one notice.
+    last_grace_refusal: Option<tokio::time::Instant>,
 }
+
+/// Refusals closer together than this are one user action.
+const GRACE_REFUSAL_COALESCE: Duration = Duration::from_secs(1);
 
 /// Run the sync actor until shutdown.
 pub async fn run(
@@ -456,6 +521,9 @@ pub async fn run(
         net,
         events,
         adopted: config.adopted,
+        peers: config.peers.take(),
+        offline_hold: false,
+        last_grace_refusal: None,
     };
 
     let mut flush = tokio::time::interval(config.flush_interval);
@@ -600,8 +668,15 @@ impl SyncActor {
             SyncCommand::ClockSync { offset_millis } => {
                 self.offset_millis = offset_millis;
             }
+            SyncCommand::OfflineHold => {
+                if self.link != Link::Synced && !self.offline_hold {
+                    tracing::info!("outage grace ran out offline; holding playback paused");
+                    self.offline_hold = true;
+                    self.changed();
+                }
+            }
             SyncCommand::GetView(reply) => {
-                let _ = reply.send(self.state.view());
+                let _ = reply.send(self.served_view());
             }
             SyncCommand::GetEpoch(reply) => {
                 let _ = reply.send(self.epoch());
@@ -610,7 +685,45 @@ impl SyncActor {
         }
     }
 
+    /// The view consumers see: the resolved state, paused while an
+    /// [`SyncCommand::OfflineHold`] is in force.
+    fn served_view(&self) -> StateView {
+        let mut view = self.state.view();
+        if self.offline_hold {
+            view.playback_intent = PlaybackIntent::Paused;
+        }
+        view
+    }
+
+    /// The outage grace window that refuses `mutation`, if one is open
+    /// and the write is a pause, seek or file change. See
+    /// [`grace_refusal`].
+    fn grace_lock(&self, mutation: &Mutation) -> Option<(GraceRefusal, OutageGrace)> {
+        let grace = dessplay_core::derive::outage_grace(&self.peers.as_ref()?.borrow())?;
+        let now_playing = dessplay_core::resolve_value(&self.state.now_playing).flatten();
+        Some((grace_refusal(mutation, now_playing)?, grace))
+    }
+
     async fn mutate(&mut self, mutation: Mutation) {
+        if let Some((refusal, grace)) = self.grace_lock(&mutation) {
+            tracing::info!(
+                mutation = mutation.name(),
+                ?refusal,
+                dropped = %grace.user,
+                "write refused: outage grace window open"
+            );
+            let now = tokio::time::Instant::now();
+            if self
+                .last_grace_refusal
+                .is_none_or(|at| now.duration_since(at) >= GRACE_REFUSAL_COALESCE)
+            {
+                let _ = self
+                    .events
+                    .try_send(SyncEvent::GraceRefused { refusal, grace });
+            }
+            self.last_grace_refusal = Some(now);
+            return;
+        }
         let actor = self.actor;
         let user = self.user.clone();
         let ts = self.stamp();
@@ -807,6 +920,11 @@ impl SyncActor {
         }
         let first_sync = self.link == Link::AwaitingSync;
         self.link = Link::Synced;
+        if self.offline_hold {
+            // The server's state is back; it decides from here.
+            tracing::info!("synced; releasing the offline playback hold");
+            self.offline_hold = false;
+        }
         if !first_sync {
             tracing::debug!("link: synced (mid-session heal)");
             return; // mid-session heal: nothing to push

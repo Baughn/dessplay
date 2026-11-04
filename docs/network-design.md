@@ -1,6 +1,6 @@
 # Network Design
 
-Last updated: 2026-10-28
+Last updated: 2026-11-05
 
 This document covers connection establishment, wire protocols, relay, and file
 transfer. For the replicated data types built on top of this layer, see
@@ -383,6 +383,7 @@ struct PeerInfo {
     presence: Presence,
     addresses: Vec<SocketAddr>,  // observed + self-reported (v4 + v6); informational
     connected_since: u64,
+    grace_until: Option<u64>,    // absent peers only: outage grace end, shared-clock millis (v15)
 }
 ```
 
@@ -405,8 +406,9 @@ while playing.
 | Stage | Trigger | Server action |
 |-------|---------|---------------|
 | Present | Normal traffic | -- |
-| Lost | 30s silence (QUIC idle timeout) | Push `PeerList` update; force playback intent to Paused (interactive peers only); system chat message |
+| Lost | 30s silence (QUIC idle timeout) | Interactive peers only: if the video was playing, open an outage grace window (`grace_until` = now + 3 min, in the same `PeerList` push that first shows them Lost); otherwise force playback intent to Paused. Take seek authority if they held it. Push `PeerList` update |
 | Departed | 60s silence | Push `PeerList` update; peer leaves ordinary gating; do **not** write playback intent again; server takes seek authority if the departed peer held it |
+| Grace expiry | `grace_until` passes, peer still absent | Force playback intent to Paused, then clear **every** window and push `PeerList` |
 
 Implementation note: with 10s keep-alives, "30s without traffic" coincides
 exactly with the QUIC idle timeout killing the connection — so the server
@@ -415,8 +417,16 @@ to Departed 30s later (60s of silence total). Lost and Departed entries stay
 in the `PeerList` (with their presence) until the user reconnects; a
 reconnecting user's new connection supersedes the old entry.
 
+Outage grace windows (design.md, Presence) also close, with a `PeerList`
+push, when the user returns (their new entry has none) and when playback
+stops anyway: after an EOF-advance, and after any client op or merge that
+leaves the intent Paused or moves now-playing off the file the windows
+opened on. The sweeper that promotes Lost entries checks for expired
+windows on the same 1s tick.
+
 The Lost -> Departed timeout promotion deliberately does not force another
-pause. Lost already wrote Paused; if the present users deliberately resume
+pause. Lost already wrote Paused (or opened a window, whose expiry pauses);
+if the present users deliberately resume
 during the next 30 seconds (valid for an absent Maybe user), the sweep must
 not overwrite that decision. Playback does not auto-resume merely because a
 peer departs: the Lost write remains latched until a user presses play.
@@ -1057,8 +1067,10 @@ remaining clients, and playback pauses if it was running (see
 
 ### Ungraceful Disconnect
 
-Handled by the presence stages: Lost at 30s (everyone pauses), Departed at
-60s (removed from gating; playback stays paused pending a human decision).
+Handled by the presence stages: Lost at 30s (everyone pauses, unless the
+video was playing: then the group plays on through a 3-minute outage grace
+window and pauses when it runs out), Departed at 60s (removed from gating;
+playback stays paused pending a human decision).
 Additionally:
 - The disconnected user's CRDT state remains until overwritten on
   reconnection, but is ignored by playback gating while they are not Present

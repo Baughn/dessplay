@@ -222,6 +222,8 @@ fn present_block_reason(
 /// with no peer entry is ignored). The matrix over (commitment ×
 /// presence), with the manual override mixed in:
 ///
+/// - **Absent inside an outage grace window** never blocks (see
+///   [`outage_grace`]).
 /// - **Away** (any presence) never blocks — also the manual escape hatch.
 /// - **NotWatching** (any presence) never blocks.
 /// - **Watching** (committed): present → manual-pause / file state;
@@ -243,6 +245,14 @@ pub fn playback_blockers(view: &StateView, peers: &[PeerInfo]) -> Vec<Blocker> {
         // is excused, and how a committed-absent block is acknowledged via
         // the per-user route — the per-file route is below).
         if matches!(manual, Some(ManualState::Away { .. })) {
+            continue;
+        }
+
+        // An absent peer inside their outage grace never blocks: the
+        // group is dead-reckoning through their outage (design.md,
+        // Presence). They were not blocking when they dropped — the
+        // server only opens a window while the video plays.
+        if peer.presence != Presence::Present && peer.grace_until.is_some() {
             continue;
         }
 
@@ -316,6 +326,7 @@ pub fn merge_known_offline(
             presence: Presence::Departed,
             addresses: Vec::new(),
             connected_since: user.last_seen,
+            grace_until: None,
         });
     }
     merged
@@ -371,6 +382,39 @@ pub fn saved_position(view: &StateView, peers: &[PeerInfo], file: Ed2kHash) -> O
         Some(d) if median as f64 >= WATCHED_FRACTION * d.get() as f64 => Some(0),
         _ => Some(median),
     }
+}
+
+/// How long the group plays on after someone's connection drops mid-play
+/// (design.md, Presence: outage grace). Measured from the moment the drop
+/// is detected — the server's Lost transition, or the dropped client's own
+/// link-down — not from the last packet.
+pub const OUTAGE_GRACE_MILLIS: u64 = 3 * 60 * 1000;
+
+/// An open outage grace window: someone dropped while the video played.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OutageGrace {
+    /// Who dropped (the earliest-ending window, if several are open).
+    pub user: UserId,
+    /// Shared-clock millis when the window ends and everyone pauses.
+    pub until: u64,
+}
+
+/// The outage grace window currently in force, if any: the soonest-ending
+/// one among absent interactive peers. While one is open, pausing,
+/// seeking and changing the now-playing file are locked for everyone
+/// (design.md, Presence), so nobody strands the person dead-reckoning
+/// through their outage.
+pub fn outage_grace(peers: &[PeerInfo]) -> Option<OutageGrace> {
+    peers
+        .iter()
+        .filter(|p| p.role == Role::Interactive && p.presence != Presence::Present)
+        .filter_map(|p| {
+            p.grace_until.map(|until| OutageGrace {
+                user: p.username.clone(),
+                until,
+            })
+        })
+        .min_by_key(|g| g.until)
 }
 
 /// The derived playback state: video plays iff the intent latch is
@@ -573,6 +617,15 @@ mod tests {
             presence,
             addresses: vec![],
             connected_since: 0,
+            grace_until: None,
+        }
+    }
+
+    /// An absent interactive peer inside an outage grace window.
+    fn in_grace(name: &str, presence: Presence, until: u64) -> PeerInfo {
+        PeerInfo {
+            grace_until: Some(until),
+            ..peer(name, Role::Interactive, presence)
         }
     }
 
@@ -850,13 +903,17 @@ mod tests {
     }
 
     /// The complete finite gating matrix promised by testing-strategy.md:
-    /// role x presence x commitment x manual override x file state. Keeping
+    /// role x presence x outage grace x commitment x manual override x
+    /// file state. Keeping
     /// the truth table in one test makes omissions visible and replaces a
     /// collection of overlapping one-axis examples.
     #[test]
     fn gating_matrix_matches_the_playback_rules() {
         let roles = [Role::Interactive, Role::Seeder];
         let presences = [Presence::Present, Presence::Lost, Presence::Departed];
+        // The server only sets a grace window on an absent peer; a stray
+        // one on a present peer must be inert.
+        let graces = [None, Some(1_000)];
         let preferences = [
             None,
             Some(SeriesWatchState::Watching),
@@ -894,7 +951,8 @@ mod tests {
         ];
 
         for role in roles {
-            for presence in presences {
+            for presence in presences.into_iter().flat_map(|p| graces.map(|g| (p, g))) {
+                let (presence, grace_until) = presence;
                 for preference in preferences {
                     for manual in &manuals {
                         for (availability, file_reason) in availabilities {
@@ -921,6 +979,7 @@ mod tests {
 
                             let effective = preference.unwrap_or(SeriesWatchState::Maybe);
                             let expected = if role == Role::Seeder
+                                || (presence != Presence::Present && grace_until.is_some())
                                 || matches!(manual, Some(ManualState::Away { .. }))
                                 || effective == SeriesWatchState::NotWatching
                             {
@@ -946,12 +1005,15 @@ mod tests {
                                 }
                             };
 
-                            let blockers =
-                                playback_blockers(&state.view(), &[peer("kim", role, presence)]);
+                            let kim = PeerInfo {
+                                grace_until,
+                                ..peer("kim", role, presence)
+                            };
+                            let blockers = playback_blockers(&state.view(), &[kim]);
                             let actual = blockers.first().map(|blocker| blocker.reason);
                             assert_eq!(
                                 actual, expected,
-                                "role={role:?}, presence={presence:?}, preference={preference:?}, manual={manual:?}, availability={availability:?}"
+                                "role={role:?}, presence={presence:?}, grace={grace_until:?}, preference={preference:?}, manual={manual:?}, availability={availability:?}"
                             );
                             assert!(blockers.len() <= 1);
                         }
@@ -959,6 +1021,53 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn committed_user_in_outage_grace_does_not_block() {
+        // The point of the window: a committed (Watching) user whose
+        // connection drops mid-play no longer stops the video at once.
+        let state = committed_state(&[("kim", SeriesWatchState::Watching)]);
+        let view = state.view();
+        for presence in [Presence::Lost, Presence::Departed] {
+            assert!(playback_active(
+                &view,
+                &[present("ben"), in_grace("kim", presence, 5)]
+            ));
+            // Without the window the committed-absent block is back.
+            assert_eq!(
+                playback_blockers(&view, &[peer("kim", Role::Interactive, presence)])
+                    .first()
+                    .map(|b| b.reason),
+                Some(BlockReason::CommittedAbsent)
+            );
+        }
+    }
+
+    #[test]
+    fn outage_grace_is_the_soonest_ending_absent_window() {
+        assert_eq!(outage_grace(&[present("ben")]), None);
+        let peers = [
+            present("ben"),
+            in_grace("kim", Presence::Lost, 9_000),
+            in_grace("nero", Presence::Departed, 7_000),
+            // Inert: a present peer's or a seeder's stray grace.
+            PeerInfo {
+                grace_until: Some(1),
+                ..present("amy")
+            },
+            PeerInfo {
+                grace_until: Some(2),
+                ..peer("nas", Role::Seeder, Presence::Lost)
+            },
+        ];
+        assert_eq!(
+            outage_grace(&peers),
+            Some(OutageGrace {
+                user: UserId::new("nero"),
+                until: 7_000
+            })
+        );
     }
 
     /// Unlinked mirror of [`committed_state`]: the same commitments, but

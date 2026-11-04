@@ -144,6 +144,7 @@ fn peer(name: &str) -> PeerInfo {
         presence: Presence::Present,
         addresses: vec![],
         connected_since: 0,
+        grace_until: None,
     }
 }
 

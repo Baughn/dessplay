@@ -29,7 +29,9 @@ use crate::types::{AniDbSeriesId, Ed2kHash, Epoch, UserId};
 /// v14 (2026-10-16): inserted `CrdtState::saved_position` and appended
 /// `CrdtOp::SavedPosition` (reshapes the persisted layout; v11–v13 decode
 /// through the frozen `CrdtStateV13` arm).
-pub const PROTOCOL_VERSION: u32 = 14;
+/// v15 (2026-11-04): appended `PeerInfo::grace_until` — the outage grace
+/// window (wire-only; the persisted layout is unchanged from v14).
+pub const PROTOCOL_VERSION: u32 = 15;
 
 /// Top-level wire message: only control traffic. File-transfer relay
 /// envelopes are **not** a `WireMessage` variant -- they are framed as
@@ -57,7 +59,9 @@ pub enum Role {
 pub enum Presence {
     /// Normal operation; counted in playback gating.
     Present,
-    /// 30s without traffic; everyone pauses.
+    /// 30s without traffic. If the video was playing, it plays on through
+    /// an outage grace window (see [`PeerInfo::grace_until`]); otherwise
+    /// everyone pauses.
     Lost,
     /// 60s without traffic; removed from gating, shown dimmed.
     Departed,
@@ -76,6 +80,13 @@ pub struct PeerInfo {
     pub addresses: Vec<SocketAddr>,
     /// Shared-clock millis when the peer connected.
     pub connected_since: u64,
+    /// Shared-clock millis when this absent peer's **outage grace** ends
+    /// (design.md, Presence): the video was playing when they dropped, so
+    /// the group plays on without them until then, with pause, seek and
+    /// file changes locked. Set only on a Lost/Departed peer; the server
+    /// clears it when they return, when the window expires (and the
+    /// server pauses everyone), or when playback stops for another reason.
+    pub grace_until: Option<u64>,
 }
 
 /// A username the server has seen before, with when it last connected or

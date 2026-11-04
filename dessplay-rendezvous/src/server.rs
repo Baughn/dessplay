@@ -186,6 +186,10 @@ struct PeerEntry<T> {
 
 struct Registry<T> {
     peers: HashMap<UserId, PeerEntry<T>>,
+    /// The now-playing file the open outage grace windows were opened on
+    /// (`Some` iff at least one is open). Windows live only while that
+    /// file keeps playing — see [`Shared::reconcile_grace_windows`].
+    grace_file: Option<Ed2kHash>,
 }
 
 impl<T> Registry<T> {
@@ -381,13 +385,24 @@ impl<T: Transport> Shared<T> {
     }
 
     /// Force the playback-intent latch to Paused (lost connection,
-    /// graceful quit, departure, EOF). Idempotent in effect.
+    /// graceful quit, outage grace expiry), closing every open outage
+    /// grace window: they exist only while the video plays (design.md,
+    /// Presence), and one left open over a paused room would keep it
+    /// locked and excuse its dropped user from gating. Pause first, then
+    /// the peer list: clients see the latch land while the window still
+    /// excuses the absent user, so a window's end never flashes up as a
+    /// committed-absent block over a still-Playing intent. Idempotent in
+    /// effect.
     async fn force_pause(&self) {
         tracing::debug!("forcing playback intent to Paused");
         self.server_write(|state, actor, ts| {
             state.set_playback_intent(actor, ts, PlaybackIntent::Paused)
         })
         .await;
+        if self.close_grace_windows() {
+            tracing::info!("forced pause; closing outage grace windows");
+            broadcast_peer_list(self);
+        }
     }
 
     /// The saved-position write for `file` as the group stops watching it
@@ -419,6 +434,65 @@ impl<T: Transport> Shared<T> {
             RelayTransport::Eager,
         )
         .await;
+    }
+
+    /// Try to open an outage grace window for `user`, who just went Lost
+    /// on connection `conn_id` (design.md, Presence: outage grace). Opens
+    /// only if the video was playing just before they dropped, judged
+    /// against `before_leave` (the peers with the leaver still Present)
+    /// plus the week of known-offline users clients gate on. Returns
+    /// whether a window opened; the caller broadcasts the peer list.
+    fn open_grace_window(&self, user: &UserId, conn_id: u64, before_leave: &[PeerInfo]) -> bool {
+        let now = (self.clock)();
+        let view = lock(&self.state).view();
+        let gating =
+            derive::merge_known_offline(before_leave, &known_offline(self, before_leave), now);
+        if !derive::playback_active(&view, &gating) {
+            return false;
+        }
+        let mut registry = lock(&self.registry);
+        let Registry { peers, grace_file } = &mut *registry;
+        match peers.get_mut(user) {
+            Some(entry) if entry.conn_id == conn_id && entry.info.presence == Presence::Lost => {
+                let until = now + derive::OUTAGE_GRACE_MILLIS;
+                entry.info.grace_until = Some(until);
+                *grace_file = view.now_playing;
+                tracing::info!(user = %user.0, until, "playing on through an outage grace window");
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Close every open outage grace window. Returns whether any was open
+    /// (the caller then broadcasts the peer list).
+    fn close_grace_windows(&self) -> bool {
+        let mut registry = lock(&self.registry);
+        let Registry { peers, grace_file } = &mut *registry;
+        let mut any = grace_file.take().is_some();
+        for entry in peers.values_mut() {
+            any |= entry.info.grace_until.take().is_some();
+        }
+        any
+    }
+
+    /// Outage grace windows exist only while their file keeps playing:
+    /// close them all if the intent latch went Paused or now-playing moved
+    /// off that file (a client write or merge, which clients refuse inside
+    /// a window but a race can still land). Without this a window would
+    /// outlive the playback it protects, and a later play press would play
+    /// past a dropped committed user. Cheap when no window is open (one
+    /// lock, no view). Returns whether any closed.
+    fn reconcile_grace_windows(&self) -> bool {
+        let Some(file) = lock(&self.registry).grace_file else {
+            return false;
+        };
+        let stopped = {
+            let state = lock(&self.state);
+            dessplay_core::resolve_value(&state.playback_intent) != Some(PlaybackIntent::Playing)
+                || dessplay_core::resolve_value(&state.now_playing).flatten() != Some(file)
+        };
+        stopped && self.close_grace_windows()
     }
 
     /// If `user` holds seek authority, the server takes it (so nobody
@@ -560,6 +634,7 @@ where
     let shared = Arc::new(Shared::<L::Conn> {
         registry: Mutex::new(Registry {
             peers: HashMap::new(),
+            grace_file: None,
         }),
         state: Mutex::new(initial.state),
         epoch: AtomicU64::new(initial.epoch.0),
@@ -604,7 +679,7 @@ where
             }
         });
     }
-    // Presence sweeper: Lost -> Departed promotions.
+    // Presence sweeper: Lost -> Departed promotions, outage grace expiry.
     {
         let shared = Arc::clone(&shared);
         tokio::spawn(async move {
@@ -613,6 +688,7 @@ where
             loop {
                 tick.tick().await;
                 sweep_departed(&shared).await;
+                sweep_grace(&shared).await;
             }
         });
     }
@@ -857,6 +933,25 @@ async fn sweep_departed<T: Transport>(shared: &Shared<T>) {
     }
 }
 
+/// End expired outage grace windows (design.md, Presence): the first to
+/// run out pauses everyone, and the forced pause closes every window —
+/// the group stops waiting on all its absent members at once, a later
+/// drop's included.
+async fn sweep_grace<T: Transport>(shared: &Shared<T>) {
+    let now = (shared.clock)();
+    let expired: Vec<UserId> = lock(&shared.registry)
+        .peers
+        .iter()
+        .filter(|(_, entry)| entry.info.grace_until.is_some_and(|until| until <= now))
+        .map(|(user, _)| user.clone())
+        .collect();
+    if expired.is_empty() {
+        return;
+    }
+    tracing::info!(users = ?expired, "outage grace ran out; pausing everyone");
+    shared.force_pause().await;
+}
+
 /// How an authenticated connection ended.
 enum AuthedEnd {
     /// The client said Goodbye: depart immediately (Present -> Departed),
@@ -1030,7 +1125,7 @@ async fn serve_connection<T: Transport>(
                 transfer_token,
             },
         );
-        registry.peers.insert(
+        let superseded = registry.peers.insert(
             username.clone(),
             PeerEntry {
                 conn_id,
@@ -1045,10 +1140,21 @@ async fn serve_connection<T: Transport>(
                     presence: Presence::Present,
                     addresses: vec![remote],
                     connected_since: clock(),
+                    // A return closes the user's window.
+                    grace_until: None,
                 },
                 lost_at: None,
             },
-        )
+        );
+        // The return may have closed the last open window.
+        if !registry
+            .peers
+            .values()
+            .any(|p| p.info.grace_until.is_some())
+        {
+            registry.grace_file = None;
+        }
+        superseded
     };
     if let Some(old) = superseded {
         tracing::debug!(user = %username.0, "superseding the user's old connection");
@@ -1088,10 +1194,10 @@ async fn serve_connection<T: Transport>(
 
     // A newer connection may have superseded us while we were closing;
     // in that case the registry entry is no longer ours to touch.
-    let (still_ours, dead_transfer, last_viewer_left) = {
+    let (still_ours, dead_transfer, last_viewer_left, before_leave) = {
         let mut registry = lock(&shared.registry);
         // The peers as they were before this leave, for the last-viewer
-        // saved position (the leaver counts).
+        // saved position (the leaver counts) and the outage grace decision.
         let before_leave = registry.peer_infos();
         let (still_ours, dead_transfer) = match registry.peers.get_mut(&username) {
             Some(entry) if entry.conn_id == conn_id => {
@@ -1128,9 +1234,9 @@ async fn serve_connection<T: Transport>(
             .peers
             .values()
             .any(|p| p.info.presence == Presence::Present && p.info.role == Role::Interactive);
-        let last_viewer_left =
-            (still_ours && role == Role::Interactive && nobody_watching).then_some(before_leave);
-        (still_ours, dead_transfer, last_viewer_left)
+        let last_viewer_left = (still_ours && role == Role::Interactive && nobody_watching)
+            .then(|| before_leave.clone());
+        (still_ours, dead_transfer, last_viewer_left, before_leave)
     };
     if let Some(transfer) = dead_transfer {
         transfer.close("session ended").await;
@@ -1170,9 +1276,21 @@ async fn serve_connection<T: Transport>(
         }
         AuthedEnd::Lost(reason) => {
             tracing::info!("{username:?} lost: {reason}");
+            // Dropped mid-play: play on through an outage grace window
+            // instead of pausing (design.md, Presence). The window must be
+            // in the same peer list that first shows them Lost — a list
+            // without it would make a committed user block at once.
+            let windowed = role == Role::Interactive
+                && shared.open_grace_window(&username, conn_id, &before_leave);
             broadcast_peer_list(&shared);
             if role == Role::Interactive {
-                shared.force_pause().await;
+                if !windowed {
+                    shared.force_pause().await;
+                }
+                // The group goes on without them either way: hand seek
+                // authority to whoever is still here (Server authority
+                // follows the furthest-ahead present peer).
+                shared.take_authority_from(&username).await;
             }
         }
     }
@@ -1598,6 +1716,10 @@ async fn serve_authed<T: Transport>(
                         })
                         .await;
                 }
+                if shared.reconcile_grace_windows() {
+                    tracing::info!("playback stopped; closing outage grace windows");
+                    broadcast_peer_list(shared);
+                }
             }
             ServerControl::EofReached { file } => {
                 handle_eof(shared, username, role, file).await;
@@ -1739,6 +1861,10 @@ async fn serve_authed<T: Transport>(
                         })
                         .await;
                 }
+                if shared.reconcile_grace_windows() {
+                    tracing::info!("playback stopped by a merge; closing outage grace windows");
+                    broadcast_peer_list(shared);
+                }
             }
             other => {
                 tracing::debug!("ignoring unexpected client message: {other:?}");
@@ -1812,6 +1938,11 @@ async fn handle_eof<T: Transport>(
     tracing::info!("EOF on {file:?} reported by {reporter:?}; advancing");
     for op in ops {
         shared.broadcast_op(op, None, RelayTransport::Eager).await;
+    }
+    // The next episode loads paused, which ends any outage grace (design.md,
+    // Presence): a dropped committed user gates the new file normally.
+    if shared.reconcile_grace_windows() {
+        broadcast_peer_list(shared);
     }
 }
 

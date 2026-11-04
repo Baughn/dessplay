@@ -2098,6 +2098,18 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                         ClientEvent::Sync(crate::actors::sync::SyncEvent::DivergenceHealed) => {
                             self.advisor.on_divergence_healed();
                         }
+                        ClientEvent::Sync(crate::actors::sync::SyncEvent::GraceRefused {
+                            refusal,
+                            grace,
+                        }) => {
+                            // A pause/seek/file change from any surface hit
+                            // the outage grace lock. The snapshot refresh
+                            // below re-asserts the player's state.
+                            let _ = self.ui.send(UiInput::System {
+                                timestamp: (system_clock())(),
+                                text: self.shell.grace_refused_notice(*refusal, grace),
+                            });
+                        }
                         _ => {}
                     }
                     // Any event can change what the UI shows -- and what

@@ -9,7 +9,7 @@ use std::num::NonZeroU64;
 use dessplay_core::derive::{self, DerivedUserState};
 use dessplay_core::net::{PeerInfo, Presence, Role};
 use dessplay_core::types::{
-    AniDbSeriesId, Ed2kHash, FileAvailability, ListEntryId, ListStatus, ManualState, NextEpState,
+    AniDbSeriesId, Ed2kHash, FileAvailability, ListEntryId, ListStatus, NextEpState,
     SeriesListEntry, SeriesWatchState, UserId, decode_action,
 };
 use dessplay_core::{StateView, franchise, series_identity};
@@ -115,6 +115,15 @@ pub fn users_props(
     now: u64,
 ) -> UsersProps {
     let mut props = UsersProps::default();
+    // Who blocks, straight from the gating derivation, so the pane can
+    // never draw a blocker gating does not (a mirrored copy of the rule
+    // missed the outage grace exemption).
+    let blockers = derive::playback_blockers(view, peers);
+    let committed_absent = |user: &UserId| {
+        blockers
+            .iter()
+            .any(|b| b.user == *user && b.reason == derive::BlockReason::CommittedAbsent)
+    };
     for peer in peers {
         let name = peer.username.to_string();
         if peer.role == Role::Seeder {
@@ -125,6 +134,16 @@ pub fn users_props(
             continue;
         }
         match peer.presence {
+            // Inside an outage grace window (design.md, Presence): the
+            // group is playing on without them, for this long still.
+            Presence::Lost | Presence::Departed if peer.grace_until.is_some() => {
+                let left = peer.grace_until.unwrap_or(now).saturating_sub(now) / 1000;
+                props.rows.push(UserRow {
+                    name,
+                    label: format!("dropped, playing on {}:{:02}", left / 60, left % 60),
+                    tone: Tone::Paused,
+                });
+            }
             // A committed (Watching) absent user keeps gating across
             // absence (until acknowledged), so they must read as a blocker
             // here too — never hidden on the dim known-offline line —
@@ -133,9 +152,7 @@ pub fn users_props(
             // Departed falls through to `known_offline` below, Lost shows
             // greyed (a dropped connection, not something we are waiting
             // on).
-            Presence::Departed | Presence::Lost
-                if committed_absent_blocker(view, &peer.username) =>
-            {
+            Presence::Departed | Presence::Lost if committed_absent(&peer.username) => {
                 props.rows.push(UserRow {
                     name,
                     label: "committed, away".into(),
@@ -226,29 +243,6 @@ pub fn users_props(
 fn availability(view: &StateView, user: &UserId) -> Option<FileAvailability> {
     let file = view.now_playing?;
     view.file_availability.get(&(user.clone(), file)).copied()
-}
-
-/// Whether an absent (Lost/Departed) peer still gates playback: committed
-/// (Watching) to the now-playing series and not yet acknowledged for that
-/// file. Mirrors the `Watching + Lost|Departed` arm of
-/// [`derive::playback_blockers`] so the Users pane and status bar agree.
-fn committed_absent_blocker(view: &StateView, user: &UserId) -> bool {
-    let Some(file) = view.now_playing else {
-        return false;
-    };
-    // Away is the per-user escape hatch: it excuses a committed-absent user
-    // from gating, so `derive::playback_blockers` early-`continue`s on it.
-    // Mirror that here, or the Users pane would keep drawing a red
-    // "committed, away" blocker after playback has already been allowed to
-    // proceed — contradicting both gating and this helper's own contract.
-    if matches!(
-        view.manual_override.get(user).and_then(|m| m.as_ref()),
-        Some(ManualState::Away { .. })
-    ) {
-        return false;
-    }
-    derive::series_watch_for_file(view, user, file) == SeriesWatchState::Watching
-        && !view.acknowledged_absent.contains(&(file, user.clone()))
 }
 
 // ---- Playlist pane ---------------------------------------------------
@@ -2834,6 +2828,7 @@ mod tests {
             presence,
             addresses: vec![],
             connected_since: 0,
+            grace_until: None,
         }
     }
 
@@ -3015,6 +3010,24 @@ mod tests {
         assert_eq!(by_name["mlost"].label, "lost");
         assert_eq!(by_name["mlost"].tone, Tone::Idle);
         assert_eq!(known_offline_names(&props), vec!["mgone"]);
+
+        // Inside an outage grace window nobody blocks: committed or not,
+        // Lost or Departed, they read as dropped with the time left, never
+        // as a red blocker, and stay off the dim line.
+        let graced: Vec<PeerInfo> = peers
+            .iter()
+            .map(|p| PeerInfo {
+                grace_until: Some(152_000),
+                ..p.clone()
+            })
+            .collect();
+        let props = users_props(&state.view(), &graced, &known_offline, 1_000);
+        for row in &props.rows {
+            assert_eq!(row.label, "dropped, playing on 2:31", "{}", row.name);
+            assert_eq!(row.tone, Tone::Paused, "{}", row.name);
+        }
+        assert_eq!(props.rows.len(), 4);
+        assert!(known_offline_names(&props).is_empty());
 
         // Acknowledging cgone for this file clears the block: it returns to
         // the dim known-offline line.

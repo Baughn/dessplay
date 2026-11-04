@@ -9,9 +9,9 @@
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 
-use dessplay_core::net::{Connector, KnownUser, PeerInfo, Role};
+use dessplay_core::net::{Connector, KnownUser, PeerInfo, Presence, Role};
 use dessplay_core::types::{ActorId, UserId};
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::actors::network::{self, Clock, NetworkConfig, NetworkEvent};
 use crate::actors::sync::{self, SyncCommand, SyncConfig, SyncEvent};
@@ -122,8 +122,10 @@ pub fn spawn_client<C: Connector>(
         sync_config.flush_interval = interval;
     }
     let state_adopted = sync_config.subscribe_adopted();
+    sync_config.peers = Some(peers_rx.clone());
 
     let router_clock = Arc::clone(&config.clock);
+    let router_me = config.username.clone();
     let network_config = NetworkConfig::new(
         config.username,
         config.password,
@@ -155,17 +157,67 @@ pub fn spawn_client<C: Connector>(
         // server-written). Before the first ClockSync it is 0 — local
         // time, close enough for a 7-day horizon.
         let mut clock_offset: i64 = 0;
-        while let Some(event) = net_event_rx.recv().await {
+        // The server's latest list (merged with known-offline), kept so
+        // our own outage grace can be laid over it while offline.
+        let mut listed: Vec<PeerInfo> = Vec::new();
+        // Whether a connection has authenticated since the last
+        // Disconnected: a failed redial also reports Disconnected, and
+        // only the drop of a live link may open our window.
+        let mut link_up = false;
+        // Our own outage grace (design.md, Presence): the link dropped
+        // while the video played, so we play on alone until this instant,
+        // then pause locally.
+        let mut offline_grace: Option<tokio::time::Instant> = None;
+        loop {
+            let event = tokio::select! {
+                event = net_event_rx.recv() => match event {
+                    Some(event) => event,
+                    None => break,
+                },
+                () = sleep_until_opt(offline_grace) => {
+                    offline_grace = None;
+                    tracing::info!("our outage grace ran out offline; pausing locally");
+                    let _ = peers_tx.send(self_lost(&listed, &router_me, None));
+                    if router_sync.send(SyncCommand::OfflineHold).await.is_err() {
+                        break;
+                    }
+                    continue;
+                }
+            };
             // Health samples land in the watch and go no further — see
             // the `health` field's doc for why they are not events.
             if let NetworkEvent::LinkHealth(report) = &event {
                 let _ = health_tx.send(Some(*report));
                 continue;
             }
+            if matches!(event, NetworkEvent::Connected { .. }) {
+                link_up = true;
+            }
             if matches!(event, NetworkEvent::Disconnected { .. }) {
                 // Stale health must not outlive the connection that
                 // measured it.
                 let _ = health_tx.send(None);
+                if std::mem::take(&mut link_up)
+                    && offline_grace.is_none()
+                    && let Some(view) = current_view(&router_sync).await
+                    && dessplay_core::derive::playback_active(&view, &listed)
+                {
+                    // Dropped mid-play: dead-reckon. Listing ourselves
+                    // inside the window locks our own pause and seek
+                    // exactly as the server's window locks everyone
+                    // else's, through the same derivation.
+                    let grace = std::time::Duration::from_millis(
+                        dessplay_core::derive::OUTAGE_GRACE_MILLIS,
+                    );
+                    let shared_now = ((router_clock)() as i64 + clock_offset).max(0) as u64;
+                    let until = shared_now + dessplay_core::derive::OUTAGE_GRACE_MILLIS;
+                    tracing::info!(
+                        until,
+                        "link dropped mid-play; playing on through our outage grace"
+                    );
+                    offline_grace = Some(tokio::time::Instant::now() + grace);
+                    let _ = peers_tx.send(self_lost(&listed, &router_me, Some(until)));
+                }
             }
             if let NetworkEvent::ClockSync { offset_millis } = &event {
                 clock_offset = *offset_millis;
@@ -181,6 +233,10 @@ pub fn spawn_client<C: Connector>(
                 // every absent user's commitment.
                 let now = ((router_clock)() as i64 + clock_offset).max(0) as u64;
                 let merged = dessplay_core::derive::merge_known_offline(peers, known_offline, now);
+                // The server's list is authoritative again: it shows us
+                // Present, which closes our own window.
+                offline_grace = None;
+                listed = merged.clone();
                 let _ = peers_tx.send(merged);
                 let _ = known_offline_tx.send(known_offline.clone());
             }
@@ -241,4 +297,43 @@ pub fn spawn_client<C: Connector>(
         health: health_rx,
         state_adopted,
     }
+}
+
+/// Sleep until `deadline`, or forever without one (a disabled
+/// `select!` arm that still type-checks).
+async fn sleep_until_opt(deadline: Option<tokio::time::Instant>) {
+    match deadline {
+        Some(deadline) => tokio::time::sleep_until(deadline).await,
+        None => std::future::pending().await,
+    }
+}
+
+/// The sync actor's current view, if it is still running.
+async fn current_view(sync: &mpsc::Sender<SyncCommand>) -> Option<dessplay_core::StateView> {
+    let (tx, rx) = oneshot::channel();
+    sync.send(SyncCommand::GetView(tx)).await.ok()?;
+    rx.await.ok()
+}
+
+/// `listed` as a client that lost its own link sees it: ourselves Lost,
+/// inside our own outage grace until `grace_until` (shared-clock millis),
+/// or past it with `None`. Everyone else keeps their last-known entry —
+/// we cannot know better until the server is back.
+fn self_lost(listed: &[PeerInfo], me: &UserId, grace_until: Option<u64>) -> Vec<PeerInfo> {
+    let mut peers = listed.to_vec();
+    match peers.iter_mut().find(|p| p.username == *me) {
+        Some(entry) => {
+            entry.presence = Presence::Lost;
+            entry.grace_until = grace_until;
+        }
+        None => peers.push(PeerInfo {
+            username: me.clone(),
+            role: Role::Interactive,
+            presence: Presence::Lost,
+            addresses: Vec::new(),
+            connected_since: 0,
+            grace_until,
+        }),
+    }
+    peers
 }

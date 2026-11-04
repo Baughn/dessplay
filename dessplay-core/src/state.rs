@@ -635,10 +635,9 @@ impl CrdtState {
     /// left this list when v11 appended `SeriesRelations::short_titles`
     /// (they decode through the frozen [`CrdtStateV10`] arm instead);
     /// v11 and v12 sat here until v14 inserted `saved_position`; with
-    /// v13 they now decode through the frozen [`CrdtStateV13`] arm. The
-    /// list is empty until a later bump leaves the persisted layout
-    /// unchanged.
-    pub const LAYOUT_COMPATIBLE_SNAPSHOT_VERSIONS: [u32; 0] = [];
+    /// v13 they now decode through the frozen [`CrdtStateV13`] arm. v14
+    /// is here since v15, which appended a wire-only `PeerInfo` field.
+    pub const LAYOUT_COMPATIBLE_SNAPSHOT_VERSIONS: [u32; 1] = [14];
 
     /// Older tagged versions decoded by an explicit **frozen-layout**
     /// decode arm in [`decode_snapshot_flagged`](Self::decode_snapshot_flagged)

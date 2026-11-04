@@ -80,8 +80,9 @@ async fn playing_session(
     (kim, baughn)
 }
 
-/// The full presence ladder: Lost pauses everyone, Departed leaves
-/// gating but playback stays paused, return does not auto-resume.
+/// The full presence ladder: Lost plays on through the outage grace,
+/// Departed leaves gating, the window's end pauses everyone and playback
+/// stays paused, return does not auto-resume.
 #[tokio::test(start_paused = true)]
 async fn presence_ladder_lost_departed_return() {
     let harness = Harness::new(0x5EED);
@@ -90,21 +91,22 @@ async fn presence_ladder_lost_departed_return() {
     // Kim's connection dies (and reconnects are blocked).
     harness.isolate("kim");
 
-    // Baughn sees: kim Lost, intent forced Paused, playback inactive.
+    // Baughn sees: kim Lost inside a grace window, still playing.
     eventually(&[&baughn], Duration::from_secs(30), |snaps| {
         let s = &snaps[0];
-        s.peer("kim").is_some_and(|p| p.presence == Presence::Lost)
-            && s.view.playback_intent == PlaybackIntent::Paused
-            && !s.playing()
+        s.peer("kim")
+            .is_some_and(|p| p.presence == Presence::Lost && p.grace_until.is_some())
+            && s.playing()
     })
     .await;
 
-    // 30 more silent seconds: kim becomes Departed — out of gating, but
-    // the intent latch keeps playback stopped (no auto-unpause).
-    eventually(&[&baughn], Duration::from_secs(60), |snaps| {
+    // Kim becomes Departed, and the window's end pauses everyone; the
+    // intent latch then keeps playback stopped (no auto-unpause).
+    eventually(&[&baughn], Duration::from_secs(240), |snaps| {
         let s = &snaps[0];
         s.peer("kim")
-            .is_some_and(|p| p.presence == Presence::Departed)
+            .is_some_and(|p| p.presence == Presence::Departed && p.grace_until.is_none())
+            && s.view.playback_intent == PlaybackIntent::Paused
     })
     .await;
     let snap = snapshot_of(&baughn).await;
@@ -148,7 +150,20 @@ async fn presence_ladder_lost_departed_return() {
 #[tokio::test(start_paused = true)]
 async fn departed_sweep_does_not_repause_a_resumed_group() {
     let harness = Harness::new(0x5EED);
-    let (_kim, baughn) = playing_session(&harness).await;
+    let (kim, baughn) = playing_session(&harness).await;
+    // Paused when kim drops, so no outage grace opens and the Lost
+    // transition force-pauses as before.
+    mutate(
+        &baughn,
+        Mutation::SetPlaybackIntent {
+            intent: PlaybackIntent::Paused,
+        },
+    )
+    .await;
+    eventually(&[&kim, &baughn], Duration::from_secs(30), |snaps| {
+        snaps.iter().all(|s| !s.playing())
+    })
+    .await;
 
     // Kim's connection dies -> Lost -> the server force-pauses everyone.
     harness.isolate("kim");
@@ -238,12 +253,13 @@ async fn committed_absent_user_blocks_until_acknowledged() {
     })
     .await;
 
-    // Baughn's connection dies; he eventually becomes Departed.
+    // Baughn's connection dies; he eventually becomes Departed and his
+    // outage grace runs out.
     harness.isolate("baughn");
-    eventually(&[&kim], Duration::from_secs(120), |snaps| {
+    eventually(&[&kim], Duration::from_secs(240), |snaps| {
         snaps[0]
             .peer("baughn")
-            .is_some_and(|p| p.presence == Presence::Departed)
+            .is_some_and(|p| p.presence == Presence::Departed && p.grace_until.is_none())
     })
     .await;
 
@@ -340,13 +356,13 @@ async fn marking_an_absent_committed_user_not_watching_unblocks_playback() {
     })
     .await;
 
-    // Kim's connection dies; she becomes Departed and, being committed,
-    // keeps blocking baughn's playback.
+    // Kim's connection dies; once her outage grace runs out she is
+    // Departed and, being committed, keeps blocking baughn's playback.
     harness.isolate("kim");
-    eventually(&[&baughn], Duration::from_secs(120), |snaps| {
+    eventually(&[&baughn], Duration::from_secs(240), |snaps| {
         snaps[0]
             .peer("kim")
-            .is_some_and(|p| p.presence == Presence::Departed)
+            .is_some_and(|p| p.presence == Presence::Departed && p.grace_until.is_none())
     })
     .await;
     mutate(
@@ -536,7 +552,7 @@ async fn seeders_never_pause_playback() {
     assert!(snap.playing(), "a seeder must never pause the party");
 }
 
-/// Seek authority follows departures: if the authority's user departs
+/// Seek authority follows departures: if the authority's user drops
 /// (or quits), the server takes authority so nobody syncs to a ghost.
 #[tokio::test(start_paused = true)]
 async fn authority_rescued_from_departed_user() {
@@ -556,11 +572,11 @@ async fn authority_rescued_from_departed_user() {
     .await;
 
     harness.isolate("kim");
-    // Lost alone doesn't move authority; departure does.
-    eventually(&[&baughn], Duration::from_secs(90), |snaps| {
+    // Authority moves off a dropped user at once (the group plays on
+    // without them through the outage grace), not at departure.
+    eventually(&[&baughn], Duration::from_secs(30), |snaps| {
         let s = &snaps[0];
-        s.peer("kim")
-            .is_some_and(|p| p.presence == Presence::Departed)
+        s.peer("kim").is_some_and(|p| p.presence == Presence::Lost)
             && s.view.seek_authority == Some(SeekAuthority::Server)
     })
     .await;

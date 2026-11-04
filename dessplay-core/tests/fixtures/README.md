@@ -12,6 +12,7 @@ encodes `multi_relations_sample_state()` (both in tests/migration.rs).
 |------|--------|
 | `snapshot-v7.bin` … `snapshot-v10.bin` | Tagged envelope, one per entry of `FROZEN_LAYOUT_SNAPSHOT_VERSIONS` (the shared v7–v10 layout, decoded via `CrdtStateV10`) |
 | `snapshot-v11.bin` … `snapshot-v13.bin` | Tagged envelope, frozen-layout entries decoded via `CrdtStateV13` (the shared v11–v13 layout; v11 and v12 were captured while layout-compatible) |
+| `snapshot-v14.bin` | Tagged envelope, an entry of `LAYOUT_COMPATIBLE_SNAPSHOT_VERSIONS` (decoded by the current `CrdtState`) |
 | `snapshot-untagged-v6.bin` | The pre-envelope untagged v6 layout (`CrdtStateUntaggedV6`) |
 | `snapshot-multi-relations-untagged-v6.bin` | Untagged v6 layout again, but with a **three-entry** `series_relations` map (distinct keys, stamps, and actors) — the map-rebuild pin (`multi_relations_untagged_v6_fixture_decodes_to_the_expected_view`, `multi_relations_fixture_merges_with_an_independently_migrated_subset`) |
 | `snapshot-multi-relations-v12.bin` | Tagged envelope at v12 (current at capture), the only blob whose `series_relations` carries a **non-empty `short_titles`** (`multi_relations_current_fixture_pins_nonempty_short_titles`) |
@@ -86,6 +87,10 @@ v14 bump inserted the top-level `CrdtState::saved_position`, the change
 that moved v11–v13 from `LAYOUT_COMPATIBLE_SNAPSHOT_VERSIONS` to the
 frozen `CrdtStateV13` decode arm. Its body is byte-identical to
 `snapshot-v12.bin`'s.
+
+`snapshot-v14.bin` was captured 2026-11-05 at the v15 bump (wire-only:
+`PeerInfo::grace_until`, the outage grace window), when v14 entered
+`LAYOUT_COMPATIBLE_SNAPSHOT_VERSIONS` — the ordinary capture-test flow.
 
 The `snapshot-multi-relations-*.bin` pair was captured 2026-08-20
 (current version v12, `capture_missing_multi_relations_fixtures`),

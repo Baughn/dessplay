@@ -39,7 +39,7 @@ use crate::actors::file::{
     Resolution, WantedDownload,
 };
 use crate::actors::player::{DRIFT_HARD_SEEK_MILLIS, PlayerCommand, PlayerOutput};
-use crate::actors::sync::Mutation;
+use crate::actors::sync::{GraceRefusal, Mutation};
 use crate::player::SpeakerName;
 
 /// A subtitle line bound for the UI. `video_millis` is the in-video
@@ -112,6 +112,15 @@ pub enum Directive {
     SystemLine {
         /// The line body (rendered dim, no sender).
         text: String,
+    },
+    /// The player undid a pause or seek because an outage grace window
+    /// is open: tell the user why (chat and OSD). The shell words it with
+    /// the time left, which needs its clock.
+    GraceRefused {
+        /// What was refused.
+        refusal: GraceRefusal,
+        /// The window in force.
+        grace: derive::OutageGrace,
     },
     /// Resolve a playlist entry against the media roots (blocking IO —
     /// the shell runs the matcher and calls
@@ -251,6 +260,9 @@ struct LoadedFile {
 /// The session's player-side policy state.
 pub struct PlayerWiring {
     me: UserId,
+    /// The outage grace window in force as of the last snapshot, for
+    /// wording a refused pause or seek the player reports.
+    grace: Option<derive::OutageGrace>,
     resolved: HashMap<Ed2kHash, Resolution>,
     /// Resolves requested but not yet answered, with the number of
     /// snapshots each has waited. An entry that outlives
@@ -490,6 +502,8 @@ struct NarratorState {
     series_preference: BTreeMap<(UserId, ListEntryId), dessplay_core::types::SeriesPreference>,
     /// Per-user presence (interactive users only; seeders never narrated).
     peers: BTreeMap<UserId, dessplay_core::net::Presence>,
+    /// Absent users inside an outage grace window.
+    graced: std::collections::BTreeSet<UserId>,
     /// Per-file acknowledgements of committed-absent users.
     acknowledged_absent: std::collections::BTreeSet<(dessplay_core::types::Ed2kHash, UserId)>,
     /// Whether the video was actually playing (derived state) at capture
@@ -517,6 +531,11 @@ impl NarratorState {
             manual_override: view.manual_override.clone(),
             series_preference: view.series_preference.clone(),
             peers: current_interactive(peers),
+            graced: peers
+                .iter()
+                .filter(|p| p.grace_until.is_some())
+                .map(|p| p.username.clone())
+                .collect(),
             acknowledged_absent: view.acknowledged_absent.clone(),
             active: derive::playback_active(view, peers),
         }
@@ -692,25 +711,103 @@ fn blocker_summary(view: &StateView, peers: &[PeerInfo]) -> Option<String> {
     Some(format!("Waiting for {}", parts.join(", ")))
 }
 
-/// The narration line for a single presence transition, if any.
+/// The outage grace as the narrator words it ("3 minutes").
+fn grace_span() -> String {
+    let minutes = derive::OUTAGE_GRACE_MILLIS / 60_000;
+    if minutes == 1 {
+        "a minute".to_string()
+    } else {
+        format!("{minutes} minutes")
+    }
+}
+
+/// One user's presence as the narrator diffs it: their stage, and whether
+/// they are absent inside an outage grace window.
+type NarratedPresence = (dessplay_core::net::Presence, bool);
+
+/// The narration line for a single presence transition, if any. `me`
+/// gets second-person lines: our own entry changes only when our link
+/// drops (the client lists itself Lost while offline) and comes back.
 fn presence_line(
     user: &UserId,
-    was: Option<dessplay_core::net::Presence>,
-    now: Option<dessplay_core::net::Presence>,
+    me: &UserId,
+    was: Option<NarratedPresence>,
+    now: Option<NarratedPresence>,
 ) -> Option<String> {
     use dessplay_core::net::Presence::{Departed, Lost, Present};
+    let mine = user == me;
     match (was, now) {
         // Appears (new, or returning from Departed) as a live peer.
-        (None | Some(Departed), Some(Present)) => Some(format!("{user} joined")),
-        // Recovered from a glitch.
-        (Some(Lost), Some(Present)) => Some(format!("{user} is back")),
-        // Dropped: 30s idle, everyone pauses.
-        (Some(Present), Some(Lost)) => {
+        (None | Some((Departed, _)), Some((Present, _))) => Some(format!("{user} joined")),
+        // Recovered from a glitch (inside the window, nobody ever paused).
+        (Some((Lost, _)), Some((Present, _))) if mine => Some("Reconnected".to_string()),
+        (Some((Lost, _)), Some((Present, _))) => Some(format!("{user} is back")),
+        // Dropped mid-play: the group dead-reckons through the outage.
+        (Some((Present, _)), Some((Lost, true))) if mine => Some(format!(
+            "Your connection dropped — playing on for {}",
+            grace_span()
+        )),
+        (Some((Present, _)), Some((Lost, true))) => Some(format!(
+            "{user}'s connection dropped — playing on for {}; pause and seek are locked",
+            grace_span()
+        )),
+        // Dropped while already paused.
+        (Some((Present, _)), Some((Lost, false))) if mine => {
+            Some("Your connection dropped".to_string())
+        }
+        (Some((Present, _)), Some((Lost, false))) => {
             Some(format!("{user}'s connection dropped — everyone paused"))
         }
+        // The window closed with them still away: it ran out (everyone
+        // paused), or playback stopped anyway (EOF), which reads the same.
+        (Some((p0, true)), Some((p1, false))) if p0 != Present && p1 != Present => Some(if mine {
+            "Still no connection — paused".to_string()
+        } else {
+            format!("{user} is still away — playback paused")
+        }),
         // Gone: departed (60s) or removed from the list (graceful quit).
-        (Some(Present | Lost), Some(Departed) | None) => Some(format!("{user} left")),
+        (Some((Present | Lost, _)), Some((Departed, _)) | None) => Some(format!("{user} left")),
         _ => None,
+    }
+}
+
+/// The overlay line while an outage grace window is open and nobody
+/// blocks: why the video is playing on and the controls are locked.
+fn grace_summary(peers: &[PeerInfo], me: &UserId) -> Option<String> {
+    let grace = derive::outage_grace(peers)?;
+    Some(if grace.user == *me {
+        "Connection lost — playing on".to_string()
+    } else {
+        format!(
+            "{}'s connection dropped — playing on; pause and seek are locked",
+            grace.user
+        )
+    })
+}
+
+/// The line for a refused pause, seek or file change: what was refused,
+/// who we are waiting on, and for how long. `now` is shared-clock millis
+/// (the window's own domain).
+pub fn grace_refused_line(
+    refusal: GraceRefusal,
+    grace: &derive::OutageGrace,
+    me: &UserId,
+    now: u64,
+) -> String {
+    let what = match refusal {
+        GraceRefusal::Pause => "pause",
+        GraceRefusal::Seek => "seek",
+        GraceRefusal::FileChange => "change the file",
+    };
+    let secs = grace.until.saturating_sub(now).div_ceil(1000);
+    let left = format!("{}:{:02}", secs / 60, secs % 60);
+    if grace.user == *me {
+        format!("Can't {what} while reconnecting ({left} left)")
+    } else {
+        format!(
+            "Can't {what} for {left} — {}'s connection dropped; playing on so they can catch up",
+            grace.user
+        )
     }
 }
 
@@ -727,6 +824,7 @@ impl PlayerWiring {
             // A player that has never been sent an overlay shows none,
             // so the no-blocker, nothing-loaded key starts as delivered.
             blocker_overlay_sent: Some((None, None)),
+            grace: None,
             lookups_requested: HashSet::new(),
             watcher_prefs_written: HashSet::new(),
             watched_recorded: HashSet::new(),
@@ -973,11 +1071,13 @@ impl PlayerWiring {
             .chain(current.peers.keys())
             .collect::<std::collections::BTreeSet<_>>();
         for user in peer_users {
-            if let Some(line) = presence_line(
-                user,
-                prev.peers.get(user).copied(),
-                current.peers.get(user).copied(),
-            ) {
+            let narrated = |state: &NarratorState| {
+                state
+                    .peers
+                    .get(user)
+                    .map(|presence| (*presence, state.graced.contains(user)))
+            };
+            if let Some(line) = presence_line(user, &self.me, narrated(&prev), narrated(current)) {
                 lines.push(line);
             }
         }
@@ -1928,9 +2028,16 @@ impl PlayerWiring {
         // on screen), force pause: never resume the wrong file.
         let active = derive::playback_active(view, peers);
         let showing_now_playing = self.holds_now_playing(view);
+        self.grace = derive::outage_grace(peers);
         if self.loaded.is_some() {
             out.push(Directive::Player(PlayerCommand::SetPlaying(
                 showing_now_playing && active,
+            )));
+            // While an outage grace window is open the player itself undoes
+            // the user's pauses and seeks at once (design.md, Presence);
+            // re-derived every snapshot like SetPlaying.
+            out.push(Directive::Player(PlayerCommand::SetGraceLock(
+                self.grace.is_some(),
             )));
         }
 
@@ -1980,7 +2087,9 @@ impl PlayerWiring {
         // now-playing file, cleared the moment nobody does. Deduped, but
         // keyed on the loaded file too: a Load in this same batch spawns
         // the player, and commands sent before it landed on nothing.
-        let summary = view.now_playing.and_then(|_| blocker_summary(view, peers));
+        let summary = view
+            .now_playing
+            .and_then(|_| blocker_summary(view, peers).or_else(|| grace_summary(peers, &self.me)));
         let key = (self.loaded.as_ref().map(|l| l.file), summary);
         if self.blocker_overlay_sent.as_ref() != Some(&key) {
             out.push(Directive::Player(PlayerCommand::SetBlockerOverlay(
@@ -2291,6 +2400,10 @@ impl PlayerWiring {
                     intent: PlaybackIntent::Paused,
                 }),
             ],
+            PlayerOutput::GraceRefused(refusal) => match self.grace.clone() {
+                Some(grace) => vec![Directive::GraceRefused { refusal, grace }],
+                None => vec![],
+            },
             PlayerOutput::UserUnpaused => vec![
                 // "You tried!" — clear our own block and latch Playing;
                 // playback starts when the last blocker clears.
@@ -2920,6 +3033,18 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
         self.clock_offset
     }
 
+    /// The user-facing line for a write refused by an outage grace window
+    /// (the player's undo, or the sync actor's refusal of any other
+    /// surface's write), with the time left on the shared clock.
+    pub fn grace_refused_notice(
+        &self,
+        refusal: GraceRefusal,
+        grace: &derive::OutageGrace,
+    ) -> String {
+        let now = (self.clock)().saturating_add_signed(self.clock_offset);
+        grace_refused_line(refusal, grace, &self.wiring.me, now)
+    }
+
     /// Quit the player (if one ever spawned).
     pub async fn shutdown(&mut self) {
         if let Some(player) = &self.player {
@@ -3102,6 +3227,18 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
                     timestamp: (self.clock)(),
                     text,
                 }),
+                Directive::GraceRefused { refusal, grace } => {
+                    let text = self.grace_refused_notice(refusal, &grace);
+                    // The user acted in the player, maybe fullscreen: say
+                    // it there too.
+                    if let Some(player) = &self.player {
+                        let _ = player.send(PlayerCommand::ShowOsd(text.clone())).await;
+                    }
+                    lines.system.push(SystemNotice {
+                        timestamp: (self.clock)(),
+                        text,
+                    });
+                }
             }
         }
         lines
@@ -3606,6 +3743,7 @@ mod tests {
             presence: Presence::Present,
             addresses: vec![],
             connected_since: 0,
+            grace_until: None,
         }
     }
 
@@ -3727,6 +3865,130 @@ mod tests {
         assert_eq!(
             narrate_diff(&view, &lost, &view, &present),
             ["nero is back"]
+        );
+    }
+
+    fn graced(name: &str, presence: Presence) -> PeerInfo {
+        PeerInfo {
+            grace_until: Some(1_000_000),
+            ..peer_p(name, presence)
+        }
+    }
+
+    #[test]
+    fn narrator_outage_grace_lines() {
+        let view = playing_state().view();
+        let present = [peer("kim"), peer("nero")];
+        let dropped = [peer("kim"), graced("nero", Presence::Lost)];
+        let ran_out = [peer("kim"), peer_p("nero", Presence::Departed)];
+        assert_eq!(
+            narrate_diff(&view, &present, &view, &dropped),
+            ["nero's connection dropped — playing on for 3 minutes; pause and seek are locked"]
+        );
+        // Lost -> Departed inside the window is still a leave...
+        let departed_in_window = [peer("kim"), graced("nero", Presence::Departed)];
+        assert_eq!(
+            narrate_diff(&view, &dropped, &view, &departed_in_window),
+            ["nero left"]
+        );
+        // ...and the window running out says so.
+        assert_eq!(
+            narrate_diff(&view, &departed_in_window, &view, &ran_out),
+            ["nero is still away — playback paused"]
+        );
+        // A return inside the window.
+        assert_eq!(
+            narrate_diff(&view, &dropped, &view, &present),
+            ["nero is back"]
+        );
+    }
+
+    #[test]
+    fn narrator_speaks_to_us_about_our_own_link() {
+        // Offline, the client lists itself Lost (inside its own window,
+        // then past it); the server's list brings it back.
+        let view = playing_state().view();
+        let online = [peer("kim"), peer("nero")];
+        let dropped = [graced("kim", Presence::Lost), peer("nero")];
+        let ran_out = [peer_p("kim", Presence::Lost), peer("nero")];
+        assert_eq!(
+            narrate_diff(&view, &online, &view, &dropped),
+            ["Your connection dropped — playing on for 3 minutes"]
+        );
+        assert_eq!(
+            narrate_diff(&view, &dropped, &view, &ran_out),
+            ["Still no connection — paused"]
+        );
+        assert_eq!(
+            narrate_diff(&view, &ran_out, &view, &online),
+            ["Reconnected"]
+        );
+    }
+
+    #[test]
+    fn outage_grace_overlay_and_player_lock() {
+        let view = playing_state().view();
+        let mut wiring = PlayerWiring::new(me());
+        wiring.loaded = Some(LoadedFile {
+            file: hash(1),
+            path: "/media/ep1.mkv".into(),
+            partial: false,
+        });
+        let out = wiring.on_state(&view, &[peer("kim"), graced("nero", Presence::Lost)]);
+        let cmds = player_cmds(&out);
+        assert!(
+            cmds.iter()
+                .any(|cmd| matches!(cmd, PlayerCommand::SetGraceLock(true)))
+        );
+        assert!(
+            cmds.iter().any(|cmd| matches!(
+                cmd,
+                PlayerCommand::SetBlockerOverlay(Some(text))
+                    if text == "nero's connection dropped — playing on; pause and seek are locked"
+            )),
+            "expected the grace overlay, got {out:?}"
+        );
+        // A refusal the player reports is worded with the window.
+        let out = wiring.on_player(PlayerOutput::GraceRefused(GraceRefusal::Seek), &view);
+        assert!(matches!(
+            out.as_slice(),
+            [Directive::GraceRefused { refusal: GraceRefusal::Seek, grace }]
+                if grace.user == UserId::new("nero")
+        ));
+
+        let out = wiring.on_state(&view, &[peer("kim"), peer("nero")]);
+        let cmds = player_cmds(&out);
+        assert!(
+            cmds.iter()
+                .any(|cmd| matches!(cmd, PlayerCommand::SetGraceLock(false)))
+        );
+        assert!(
+            cmds.iter()
+                .any(|cmd| matches!(cmd, PlayerCommand::SetBlockerOverlay(None)))
+        );
+    }
+
+    #[test]
+    fn grace_refused_lines_name_the_wait() {
+        let grace = derive::OutageGrace {
+            user: UserId::new("nero"),
+            until: 200_000,
+        };
+        assert_eq!(
+            grace_refused_line(GraceRefusal::Pause, &grace, &me(), 49_500),
+            "Can't pause for 2:31 — nero's connection dropped; playing on so they can catch up"
+        );
+        assert_eq!(
+            grace_refused_line(GraceRefusal::FileChange, &grace, &me(), 199_000),
+            "Can't change the file for 0:01 — nero's connection dropped; playing on so they can catch up"
+        );
+        let mine = derive::OutageGrace {
+            user: me(),
+            until: 200_000,
+        };
+        assert_eq!(
+            grace_refused_line(GraceRefusal::Seek, &mine, &me(), 80_000),
+            "Can't seek while reconnecting (2:00 left)"
         );
     }
 

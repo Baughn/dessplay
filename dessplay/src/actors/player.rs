@@ -58,6 +58,7 @@ use tokio::time::Instant;
 
 use super::drift::{DriftAction, DriftController};
 use super::network::Clock;
+use super::sync::GraceRefusal;
 use crate::player::{Player, PlayerError, PlayerEvent, PlayerFactory};
 
 pub use super::drift::{
@@ -137,6 +138,12 @@ pub enum PlayerCommand {
         /// Whether video is running (extrapolation only applies then).
         playing: bool,
     },
+    /// Whether an outage grace window is open (design.md, Presence): while
+    /// it is, the actor undoes the user's pause and seeks in the player at
+    /// once and reports [`PlayerOutput::GraceRefused`] instead of
+    /// [`PlayerOutput::UserPaused`] / [`PlayerOutput::UserSeeked`]. Sent on
+    /// every re-derivation, like [`PlayerCommand::SetPlaying`].
+    SetGraceLock(bool),
     /// Release any in-progress drift slew — reset playback rate to 1.0.
     /// Drift correction is reactive (it only touches speed inside a
     /// `SyncTo`); when the position reference drops (the followed peer
@@ -197,6 +204,9 @@ pub enum PlayerOutput {
     UserPaused,
     /// The user unpaused in the player.
     UserUnpaused,
+    /// The user paused or seeked while an outage grace window is open
+    /// ([`PlayerCommand::SetGraceLock`]); the actor already undid it.
+    GraceRefused(GraceRefusal),
     /// The user seeked (debounced; scrubbing already coalesced).
     UserSeeked {
         /// Position when the debounced scrub began.
@@ -301,6 +311,8 @@ struct Actor<F: PlayerFactory> {
     /// A user seek waiting out the debounce window.
     /// Debounced user scrub: initial position, latest destination, last move.
     pending_user_seek: Option<(u64, u64, Instant)>,
+    /// See [`PlayerCommand::SetGraceLock`].
+    grace_lock: bool,
     /// Restore-after-relaunch position.
     restore_millis: Option<u64>,
     estimate: Option<Estimate>,
@@ -365,6 +377,7 @@ pub async fn run<F: PlayerFactory>(
         pending_pause_echoes: VecDeque::new(),
         pending_seek_echoes: 0,
         pending_user_seek: None,
+        grace_lock: false,
         restore_millis: None,
         estimate: None,
         last_position_emit: None,
@@ -589,6 +602,24 @@ impl<F: PlayerFactory> Actor<F> {
             PlayerCommand::SetPlaying(playing) => {
                 self.desired_playing = playing;
                 self.apply_desired_pause().await;
+            }
+            PlayerCommand::SetGraceLock(locked) => {
+                if locked && !self.grace_lock {
+                    tracing::info!("outage grace: locking pause and seek");
+                    // A scrub still debouncing when the window opened would
+                    // land as a refused UserSeek with the player left where
+                    // it was dragged. Undo it now, to where it began.
+                    if let Some((from_millis, _, _)) = self.pending_user_seek.take() {
+                        self.seek_programmatic(from_millis).await;
+                        let _ = self
+                            .outputs
+                            .send(PlayerOutput::GraceRefused(GraceRefusal::Seek))
+                            .await;
+                    }
+                } else if !locked && self.grace_lock {
+                    tracing::info!("outage grace over: pause and seek unlocked");
+                }
+                self.grace_lock = locked;
             }
             PlayerCommand::SyncTo {
                 position_millis,
@@ -849,7 +880,22 @@ impl<F: PlayerFactory> Actor<F> {
                         .or_else(|| self.estimate_now())
                         .unwrap_or(position_millis);
                     self.note_position(position_millis);
-                    if !echo {
+                    if !echo && self.grace_lock {
+                        // Inside an outage grace window: snap straight back
+                        // to where dead reckoning says we are. A forward
+                        // seek left standing would make us the leader the
+                        // rest of the group follows.
+                        tracing::info!(
+                            position_millis,
+                            back_to = from_millis,
+                            "user seek inside an outage grace window; undoing"
+                        );
+                        self.seek_programmatic(from_millis).await;
+                        let _ = self
+                            .outputs
+                            .send(PlayerOutput::GraceRefused(GraceRefusal::Seek))
+                            .await;
+                    } else if !echo {
                         tracing::debug!(position_millis, "user seek (debouncing)");
                         self.pending_user_seek =
                             Some((from_millis, position_millis, Instant::now()));
@@ -995,6 +1041,17 @@ impl<F: PlayerFactory> Actor<F> {
         // Not what we commanded: the user did this. (A stale echo queue
         // self-heals — the main loop re-derives and re-commands.)
         self.pending_pause_echoes.clear();
+        if paused && self.grace_lock && self.desired_playing {
+            // Someone is dead-reckoning through an outage: playing on is
+            // the point. Undo the pause at once.
+            tracing::info!("user paused inside an outage grace window; resuming");
+            self.apply_desired_pause().await;
+            let _ = self
+                .outputs
+                .send(PlayerOutput::GraceRefused(GraceRefusal::Pause))
+                .await;
+            return;
+        }
         let output = if paused {
             tracing::info!("user paused");
             PlayerOutput::UserPaused
@@ -1394,6 +1451,7 @@ mod tests {
             pending_pause_echoes: VecDeque::new(),
             pending_seek_echoes: 0,
             pending_user_seek: None,
+            grace_lock: false,
             restore_millis: None,
             estimate: None,
             last_position_emit: None,
@@ -1704,6 +1762,127 @@ mod tests {
                 frozen, in_flight_millis, reported,
             );
         }
+    }
+
+    /// Outage grace (design.md, Presence): with the lock on, a user pause
+    /// is undone in the player at once and reported as refused, never as
+    /// a `UserPaused` the session would turn into a group pause.
+    #[tokio::test(start_paused = true)]
+    async fn grace_lock_undoes_a_user_pause() {
+        let (commands, mut outputs, mut control) = loaded_rig().await;
+        commands
+            .send(PlayerCommand::SetPlaying(true))
+            .await
+            .unwrap();
+        assert_eq!(
+            expect_command(&mut control).await,
+            MockCommand::SetPause(false)
+        );
+        control
+            .events
+            .send(PlayerEvent::PauseChanged(false))
+            .unwrap();
+        commands
+            .send(PlayerCommand::SetGraceLock(true))
+            .await
+            .unwrap();
+
+        control
+            .events
+            .send(PlayerEvent::PauseChanged(true))
+            .unwrap();
+        assert_eq!(
+            expect_command(&mut control).await,
+            MockCommand::SetPause(false)
+        );
+        assert_eq!(
+            expect_output(&mut outputs).await,
+            PlayerOutput::GraceRefused(GraceRefusal::Pause)
+        );
+        settle().await;
+        assert_eq!(drain_outputs(&mut outputs), vec![]);
+
+        // Unlocked again, a pause is the user's as before.
+        commands
+            .send(PlayerCommand::SetGraceLock(false))
+            .await
+            .unwrap();
+        control
+            .events
+            .send(PlayerEvent::PauseChanged(false))
+            .unwrap();
+        control
+            .events
+            .send(PlayerEvent::PauseChanged(true))
+            .unwrap();
+        settle().await;
+        assert!(drain_outputs(&mut outputs).contains(&PlayerOutput::UserPaused));
+    }
+
+    /// With the lock on, a user seek snaps straight back to where dead
+    /// reckoning puts us and never debounces into a `UserSeeked` (a
+    /// forward seek left standing would make us the group's leader).
+    #[tokio::test(start_paused = true)]
+    async fn grace_lock_snaps_a_user_seek_back() {
+        let (commands, mut outputs, mut control) = loaded_rig().await;
+        commands
+            .send(PlayerCommand::SetGraceLock(true))
+            .await
+            .unwrap();
+        settle().await;
+        control
+            .events
+            .send(PlayerEvent::Seeked {
+                position_millis: 60_000,
+            })
+            .unwrap();
+        assert_eq!(
+            expect_command(&mut control).await,
+            MockCommand::Seek(10_000)
+        );
+        assert_eq!(
+            expect_output(&mut outputs).await,
+            PlayerOutput::GraceRefused(GraceRefusal::Seek)
+        );
+        // The snap-back's own echo is not a second user seek.
+        control
+            .events
+            .send(PlayerEvent::Seeked {
+                position_millis: 10_000,
+            })
+            .unwrap();
+        tokio::time::sleep(SEEK_DEBOUNCE * 2).await;
+        assert_eq!(drain_outputs(&mut outputs), vec![]);
+        assert_eq!(control.drain_commands(), vec![]);
+    }
+
+    /// A scrub still debouncing when the window opens is undone to where
+    /// it began, instead of landing later as a refused `UserSeeked` with
+    /// the player left where it was dragged.
+    #[tokio::test(start_paused = true)]
+    async fn grace_lock_undoes_a_pending_scrub() {
+        let (commands, mut outputs, mut control) = loaded_rig().await;
+        control
+            .events
+            .send(PlayerEvent::Seeked {
+                position_millis: 60_000,
+            })
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        commands
+            .send(PlayerCommand::SetGraceLock(true))
+            .await
+            .unwrap();
+        assert_eq!(
+            expect_command(&mut control).await,
+            MockCommand::Seek(10_000)
+        );
+        assert_eq!(
+            expect_output(&mut outputs).await,
+            PlayerOutput::GraceRefused(GraceRefusal::Seek)
+        );
+        tokio::time::sleep(SEEK_DEBOUNCE * 2).await;
+        assert_eq!(drain_outputs(&mut outputs), vec![]);
     }
 
     #[tokio::test(start_paused = true)]

@@ -9,6 +9,17 @@ append-only; you cannot reword or remove existing entries.
 
 Add new days at the top. Add new entries at the bottom of existing days.
 
+## 2026-11-05
+
+- Changed: If someone's connection drops mid-episode, the video no longer
+  stops for everyone. It plays on for 3 minutes so a short outage goes
+  unnoticed, and if they're back in time nobody ever pauses. While
+  waiting, nobody can pause, seek or switch files, so the person who
+  dropped isn't left behind; a line says who you're waiting on and for
+  how long. After 3 minutes everyone pauses, including the person who
+  dropped. A drop while already paused, or a /quit, still pauses at
+  once. Everyone needs to update for this.
+
 ## 2026-10-30
 
 - Fixed: With auto-download off, a video you drop into a media folder (or

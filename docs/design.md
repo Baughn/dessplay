@@ -1,6 +1,6 @@
 # DessPlay Design Document
 
-Last updated: 2026-10-30
+Last updated: 2026-11-05
 
 A synchronized video player for watch parties. Terminal-first, built for
 reliability over flaky connections. Server-coordinated, including relayed
@@ -650,17 +650,21 @@ chat OSD, and survives player relaunches
      I've been gone a week." A committed-absent user blocks until they
      return ready, or until the group [acknowledges](#playback-rules) past
      them for the current file.
+   - **Absent inside an outage grace window** (any commitment): never
+     blocks. See [Presence](#presence).
 
    The intent is a synced register (`LwwCell<PlaybackIntent>`,
    `Playing | Paused`) written by users (play/pause actions) and the server.
-   The server forces it to Paused on **any** Lost (committed or not), on
-   graceful quit during playback, and on EOF-advance; gating then decides
+   The server forces it to Paused on **any** Lost (committed or not) while
+   the video is not playing, when an [outage grace](#presence) window runs
+   out, on graceful quit during playback, and on EOF-advance; gating then
+   decides
    whether pressing play resumes -- for an absent Maybe user it does, for a
    committed one it does not until acknowledged
    (why: [decisions](decisions.md#playback-intent-is-a-latch)). The
-   **timeout-ladder** Lost->Departed promotion does *not* re-force Paused.
-   Only the graceful-quit *immediate* departure (which skips Lost)
-   force-pauses
+   **timeout-ladder** Lost->Departed promotion does *not* re-force Paused
+   (the outage grace window, which outlives it, does the pausing). Only the
+   graceful-quit *immediate* departure (which skips Lost) force-pauses
    (why: [decisions](decisions.md#lost-to-departed-promotion-does-not-re-pause)).
 
    **Acknowledging a committed-absent blocker** is a deliberate per-file
@@ -1075,9 +1079,10 @@ mechanism that already posts command feedback and archive results).
 | **New file** (manual select) | now-playing register change, no watched flip | "Now playing: [Frieren] - 02.mkv" | Local (the *what* persists in the playlist pane) |
 | **New file** (EOF advance) | now-playing change + prior file's watched flag set | "Up next: [Frieren] - 02.mkv" | Local (ditto) |
 | **Joined** | `PeerList`: a peer becomes Present | "Nero joined" | Local |
-| **Connection lost** | `PeerList`: a peer becomes Lost | "Nero's connection dropped -- everyone paused" | Local |
+| **Connection lost** | `PeerList`: a peer becomes Lost | "Nero's connection dropped -- playing on for 3 minutes; pause and seek are locked" (an [outage grace](#presence) window opened), or "Nero's connection dropped -- everyone paused" (it was already paused). Our own drop reads "Your connection dropped -- playing on for 3 minutes" | Local |
+| **Grace ran out** | `PeerList`: an absent peer's outage grace window closes | "Nero is still away -- playback paused" (ours: "Still no connection -- paused") | Local |
 | **Left** | `PeerList`: a peer becomes Departed (a timeout *or* a graceful `Goodbye`) | "Nero left" | Local |
-| **Back** | `PeerList`: Lost -> Present | "Nero is back" | Local |
+| **Back** | `PeerList`: Lost -> Present | "Nero is back" (ours: "Reconnected") | Local |
 | **Paused** | manual-override map: None -> Paused | "Baughn paused" — or "Baughn is not ready" when nothing was actually playing (pause/unpause words are reserved for real video stops/starts) | Local |
 | **Resumed** | manual-override cleared (Paused -> None) | "Baughn unpaused" — or "Baughn is ready" when others still block (playback then starts on the last blocker's clear, which narrates the "unpaused") | Local |
 | **Away** | manual-override map -> Away | "Kim is away" / "Baughn marked Kim away" | Local |
@@ -2984,7 +2989,7 @@ A user's presence degrades in three stages:
 | Stage | Trigger | Effect |
 |-------|---------|--------|
 | **Present** | Normal operation | Counted in playback gating |
-| **Lost** | 30s without traffic (QUIC idle timeout; clients keep-alive every 10s, and position updates double as liveness) | Everyone pauses (server forces playback intent to Paused); system message in chat |
+| **Lost** | 30s without traffic (QUIC idle timeout; clients keep-alive every 10s, and position updates double as liveness) | If the video was playing: an **outage grace** window opens (below) and everyone plays on. Otherwise everyone pauses (server forces playback intent to Paused). System message in chat either way |
 | **Departed** | 60s without traffic | Removed from gating and from the active Users list (shown on the dim known-offline line -- see below). Playback **stays paused** -- the intent register holds Paused until a human presses play; the usual response is to switch shows. No auto-unpause. |
 
 Additional rules:
@@ -2992,20 +2997,54 @@ Additional rules:
 - **Brief glitches (< 30s) are invisible.** Everyone keeps watching; the
   shared clock keeps players aligned, and slew correction absorbs small drift
   on recovery.
+- **Outage grace** (3 minutes): when an interactive user goes Lost while the
+  video is playing, the group dead-reckons through the outage instead of
+  pausing (why: [decisions](decisions.md#outage-grace-dead-reckons-through-short-drops)).
+  - The server opens a window for that user, ending 3 minutes after it
+    marked them Lost, and lists it in the `PeerList` (`grace_until`). It
+    opens one only if the video was playing just before the drop, judged by
+    the normal gating with the user still present. A drop while paused opens
+    no window and pauses as before.
+  - Inside the window the user never blocks, whatever their commitment.
+  - While any window is open, nobody can pause (in the player, Ctrl-R
+    unready, or any other surface), seek, or switch now-playing to another
+    file. A pause or seek in the player is undone at once. Every refused
+    action posts a line saying who dropped and how long is left.
+    Re-selecting the current file, unpausing, chat and everything else
+    still work.
+  - Seek authority moves off the dropped user at once (the server takes
+    it, so the group follows the furthest-ahead present peer).
+  - The window closes when the user returns (nobody ever paused), and when
+    playback stops anyway: an EOF-advance (the next file loads paused as
+    usual) or a pause or file change that reached the server despite the
+    lock. When a window runs out with the user still absent, the server
+    pauses everyone and closes **every** open window, a later drop's
+    included. From then on the usual rules apply: a committed absent user
+    blocks until acknowledged.
+  - The dropped client runs the same window on its own clock. If the video
+    was playing when its link dropped, it lists itself Lost inside a
+    3-minute window (so its own pause and seek are locked too) and keeps
+    playing. When that runs out with the link still down, it pauses
+    locally, without writing anything: a buffered offline pause could
+    otherwise beat a play press the group made after the server's own
+    pause. The server's state takes over on reconnect.
+  - A server restart drops everyone at once; each client dead-reckons
+    through its own window and resumes with the restarted server.
 - **Graceful quit** (`/quit`, Ctrl-C): an *immediate departure*. The user
   goes straight to **Departed**, skipping the 30s Lost / 60s ladder, but
   stays listed exactly like a peer that timed out: shown on the dim
   known-offline line, and -- if **committed** (Watching) to the now-playing
   series -- still gating until the group acknowledges past them. A clean
   quit does not waive a commitment. If playback was running, it pauses
-  (server sets intent to Paused), and the server reclaims seek authority at
-  once. At session end this is a no-op
+  (server sets intent to Paused) -- a quit is not an outage, so it gets no
+  grace window -- and the server reclaims seek authority at once. At session end this is a no-op
   (why: [decisions](decisions.md#graceful-quit-skips-lost-but-keeps-the-commitment)).
 - **Return**: a reconnecting user re-enters as Present, syncs state, and is
   gated normally again. Playback does not auto-resume (intent is still
-  Paused from when they were Lost).
-- **Seek authority**: if the current seek authority becomes Departed, the
-  server takes seek authority.
+  Paused from when they were Lost, or from when their grace window ran
+  out); a return inside the window was never paused at all.
+- **Seek authority**: if the current seek authority goes Lost (or quits),
+  the server takes seek authority.
 - Departed users' CRDT state (manual override, file availability) persists
   but is ignored by gating until they return.
 
@@ -4043,7 +4082,7 @@ keep the same contents and ordering
 | Watched flags | `Map<Ed2kHash, LwwCell<bool>>` | Server-only writes (at EOF, or a manual `MarkWatched` request from the episode browser) |
 | Now Playing | `LwwCell<Option<Ed2kHash>>` | Standalone register; server writes on EOF |
 | Seek Authority | `LwwCell<SeekAuthority>` (`Server \| User(UserSeek { user, file, event_at, from_millis, to_millis })`) | Standalone register; last seeker is position authority, with the explicit user action that granted it |
-| Playback intent | `LwwCell<PlaybackIntent>` (`Playing \| Paused`) | Standalone register; users write on play/pause, server forces Paused on lost/graceful-quit/EOF-advance (not on the timeout-ladder Departed promotion -- already paused at Lost) |
+| Playback intent | `LwwCell<PlaybackIntent>` (`Playing \| Paused`) | Standalone register; users write on play/pause, server forces Paused on lost-while-paused/outage-grace-expiry/graceful-quit/EOF-advance (not on the timeout-ladder Departed promotion) |
 | Series preference | `Map<(UserId, ListEntryId), LwwCell<SeriesPreference>>` | Compound key, keyed on the List entry (not AniDB id -- see [Series Identity](#series-identity)); `SeriesPreference { state: Watching \| NotWatching \| Maybe, set_by: Option<UserId> }`, absent entry = Maybe; any user may write |
 | Manual override | `Map<UserId, LwwCell<Option<ManualState>>>` | Per user; Away writable by anyone |
 | Acknowledged absent | `GSet<(Ed2kHash, UserId)>` | Per-file one-shot: play past a committed-absent user; cleared on compaction |

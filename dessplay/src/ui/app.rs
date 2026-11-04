@@ -4083,6 +4083,7 @@ mod tests {
             presence,
             addresses: vec![],
             connected_since: 0,
+            grace_until: None,
         }
     }
 
