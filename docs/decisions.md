@@ -1014,6 +1014,19 @@ Scoping watch-preference lines to the now-playing series keeps The List's bulk a
 
 Rejected: making the Lost stage itself the 3-minute window, which would have needed no protocol change. Lost alone cannot tell "dropped mid-play" from "dropped while paused", nor "a window that already ended at EOF". Either gap lets a play press play past a committed user. The explicit `PeerInfo::grace_until` (protocol v15) carries that distinction and gives clients a deadline to show.
 
+### Rejoin follows the furthest behind
+
+**Rule (2026-11-05):** When a pause ends an outage grace window on the now-playing file, the server sets seek authority to `Laggard(file)`. Clients then follow the furthest-behind peer with the file loaded, ignoring anyone more than 3 minutes behind the front. When the group next presses play, the server pins that peer as an `Anchor`, followed like a seeker until the next seek, file change or EOF. See [design.md](design.md#presence).
+
+**Why:** The two sides of an outage pause on their own clocks. The dropped client starts its window when it detects the drop, which can be up to the 30s idle timeout before or after the server does. So it comes back up to that far ahead of the group, or behind it. Leader fallback follows the furthest-ahead peer, and drift correction acts even while paused. A returning client that is ahead would therefore drag the paused room forward before anyone pressed play, and one that is behind would itself be skipped forward. Either way someone misses video. Following the furthest behind means nobody skips; the players that are ahead rewatch a few seconds. Specific choices:
+
+- **It starts at the pause, not at the unpause** (the user first proposed the unpause). The forward skip happens while paused, as soon as the dropped client reconnects.
+- **Pinned at unpause** (user's choice). Following the furthest-behind peer live during playback would let any momentary stall drag the room back again and again, the very failure leader fallback avoids. A pinned anchor behaves like an ordinary seeker. "Unpause" means playback actually resuming (intent Playing and nobody blocking), not a play press: a press into a block still latches Playing, and pinning then would anchor a paused room that a blocking user, returning behind, would follow forward.
+- **A 3-minute cap** (user's choice). The outage logic can't open a gap wider than its own window. Anyone further back is stale, such as a relaunch resuming at an old saved position, which could be the start of the episode, and would otherwise rewind the whole room.
+- **Every window-ending pause** (user's choice): expiry, a quit or second drop during the window, or a pause that raced past the lock. In each of them the dropped client is still playing alone.
+- **Eligibility is one function** (`derive::loaded_positions`), shared by leader election, authority validation, the rejoin laggard and the saved-position median. The leader fallback and the saved position each had their own copy of the gates.
+- **`Anchor` is its own variant**, not a synthetic `UserSeek`. No seek happened, and a `UserSeek` would claim one, along with its narration and attribution.
+
 ### Known-offline users are one list and valid skip targets
 
 **Rule:** The Users pane renders every known-offline user (within 30 days) as one dim italic list, with "last seen" ages, whether they left minutes ago or have not shown up today; `n` and `/skip <name>` work on any of them; see [design.md](design.md#presence).

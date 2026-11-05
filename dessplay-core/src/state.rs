@@ -636,7 +636,8 @@ impl CrdtState {
     /// (they decode through the frozen [`CrdtStateV10`] arm instead);
     /// v11 and v12 sat here until v14 inserted `saved_position`; with
     /// v13 they now decode through the frozen [`CrdtStateV13`] arm. v14
-    /// is here since v15, which appended a wire-only `PeerInfo` field.
+    /// is here since v15, which appended a wire-only `PeerInfo` field and
+    /// two `SeekAuthority` variants (appended, so v14 bodies decode as is).
     pub const LAYOUT_COMPATIBLE_SNAPSHOT_VERSIONS: [u32; 1] = [14];
 
     /// Older tagged versions decoded by an explicit **frozen-layout**

@@ -19,7 +19,8 @@ use crate::net::{KnownUser, PeerInfo, Presence, Role};
 use crate::playlist::PlaylistEntry;
 use crate::state::StateView;
 use crate::types::{
-    Ed2kHash, FileAvailability, ManualState, PlaybackIntent, SeriesWatchState, UserId,
+    Ed2kHash, FileAvailability, ManualState, PlaybackIntent, PlaybackPosition, SeriesWatchState,
+    UserId,
 };
 
 /// A user's effective state, derived from their manual override and
@@ -332,6 +333,73 @@ pub fn merge_known_offline(
     merged
 }
 
+/// Every peer who has `file` **loaded**, with their position sample, in
+/// username order: present interactive peers whose latest position is for
+/// `file`. The one eligibility rule for every position-based decision —
+/// leader election, user-authority validation, the outage rejoin laggard
+/// and the saved-position median — so they can never disagree about who
+/// is really playing the file. It excludes peers who are absent, on a
+/// different file, or watching a placeholder (file missing / still
+/// downloading / not watching): their position is stale or for some other
+/// file.
+///
+/// Two independent gates, both required:
+/// - availability `Ready` or `DownloadingPlayable` for `file` (they hold
+///   the real video; a downloader whose window ahead is verified is
+///   playing it from its partial, and when the whole group is downloading
+///   a fresh episode they are the only sources there are), and
+/// - the position's **own `file` tag** equals `file`.
+///
+/// The file tag is the load-bearing one. `Ready` alone is **not** enough:
+/// it is set on prefetch, so right after a now-playing transition a peer
+/// can advertise Ready for the *new* file while its position register
+/// still holds the *previous* file's sample — and a single follow of that
+/// stale value latches the whole group forward onto it. The tag is a
+/// clock-free identity check. See [`PlaybackPosition::file`].
+pub fn loaded_positions(
+    view: &StateView,
+    peers: &[PeerInfo],
+    file: Ed2kHash,
+) -> Vec<(UserId, PlaybackPosition)> {
+    let loaded: std::collections::BTreeMap<UserId, PlaybackPosition> = peers
+        .iter()
+        .filter(|p| p.presence == Presence::Present && p.role == Role::Interactive)
+        .filter(|p| {
+            matches!(
+                view.file_availability.get(&(p.username.clone(), file)),
+                Some(FileAvailability::Ready) | Some(FileAvailability::DownloadingPlayable { .. })
+            )
+        })
+        .filter_map(|p| {
+            view.playback_position
+                .get(&p.username)
+                .filter(|pos| pos.file == file)
+                .map(|pos| (p.username.clone(), *pos))
+        })
+        .collect();
+    loaded.into_iter().collect()
+}
+
+/// Whom the group follows after an outage pause (design.md, Presence:
+/// outage grace): the **furthest-behind** peer with now-playing loaded
+/// ([`loaded_positions`]), so nobody skips video. A dropped client may
+/// have played on longer than the group (it learned of the drop later)
+/// or shorter, and following the front would skip the rest forward.
+///
+/// Only peers within [`OUTAGE_GRACE_MILLIS`] of the furthest-ahead one
+/// count: the outage logic can never open a gap wider than its own
+/// window, so anyone further back holds a stale position (a relaunch
+/// resuming at an old saved position, a late joiner) and catches up
+/// instead of rewinding the room. Ties go to the first in username order.
+pub fn rejoin_laggard(view: &StateView, peers: &[PeerInfo]) -> Option<(UserId, PlaybackPosition)> {
+    let loaded = loaded_positions(view, peers, view.now_playing?);
+    let front = loaded.iter().map(|(_, pos)| pos.position_millis).max()?;
+    loaded
+        .into_iter()
+        .filter(|(_, pos)| pos.position_millis.saturating_add(OUTAGE_GRACE_MILLIS) >= front)
+        .min_by_key(|(_, pos)| pos.position_millis)
+}
+
 /// Fraction of a file's duration past which it counts as watched
 /// (design.md, Watch Tracking): the personal watch record and
 /// auto-archive fire here, and a saved position at or past it is stored
@@ -350,18 +418,9 @@ pub const WATCHED_FRACTION: f64 = 0.85;
 /// position carries `file`'s tag. With an even count the median is the
 /// mean of the two middle values.
 pub fn saved_position(view: &StateView, peers: &[PeerInfo], file: Ed2kHash) -> Option<u64> {
-    let mut positions: Vec<u64> = peers
-        .iter()
-        .filter(|p| p.presence == Presence::Present && p.role == Role::Interactive)
-        .filter(|p| {
-            matches!(
-                view.file_availability.get(&(p.username.clone(), file)),
-                Some(FileAvailability::Ready) | Some(FileAvailability::DownloadingPlayable { .. })
-            )
-        })
-        .filter_map(|p| view.playback_position.get(&p.username))
-        .filter(|pos| pos.file == file)
-        .map(|pos| pos.position_millis)
+    let mut positions: Vec<u64> = loaded_positions(view, peers, file)
+        .into_iter()
+        .map(|(_, pos)| pos.position_millis)
         .collect();
     if positions.is_empty() {
         return None;
@@ -1042,6 +1101,68 @@ mod tests {
                 Some(BlockReason::CommittedAbsent)
             );
         }
+    }
+
+    #[test]
+    fn rejoin_laggard_is_the_furthest_behind_loaded_peer_within_the_window() {
+        use crate::types::PlaybackPosition;
+        let mut state = playing_state();
+        let mut t = 10;
+        let mut put =
+            |state: &mut CrdtState, who: &str, avail: FileAvailability, file: u8, at: u64| {
+                t += 1;
+                state.set_file_availability(SERVER, ts(t), UserId::new(who), hash(1), avail);
+                state.set_playback_position(
+                    SERVER,
+                    ts(t),
+                    UserId::new(who),
+                    PlaybackPosition {
+                        position_millis: at,
+                        timestamp: ts(t),
+                        file: hash(file),
+                    },
+                );
+            };
+        let ready = FileAvailability::Ready;
+        put(&mut state, "front", ready, 1, 500_000);
+        put(&mut state, "kim", ready, 1, 470_000);
+        put(
+            &mut state,
+            "dl",
+            FileAvailability::DownloadingPlayable {
+                progress_bps: 4_000,
+            },
+            1,
+            460_000,
+        );
+        // Not candidates: beyond the window behind the front (stale), on
+        // another file's tag, missing the file, absent, a seeder.
+        put(&mut state, "stale", ready, 1, 100_000);
+        put(&mut state, "prev", ready, 2, 1_000);
+        put(&mut state, "missing", FileAvailability::Missing, 1, 2_000);
+        put(&mut state, "gone", ready, 1, 3_000);
+        put(&mut state, "nas", ready, 1, 4_000);
+        let peers = [
+            present("front"),
+            present("kim"),
+            present("dl"),
+            present("stale"),
+            present("prev"),
+            present("missing"),
+            peer("gone", Role::Interactive, Presence::Lost),
+            peer("nas", Role::Seeder, Presence::Present),
+        ];
+        let view = state.view();
+        let (user, pos) = rejoin_laggard(&view, &peers).unwrap();
+        assert_eq!((user, pos.position_millis), (UserId::new("dl"), 460_000));
+        // Exactly the window behind the front still counts.
+        put(&mut state, "edge", ready, 1, 500_000 - OUTAGE_GRACE_MILLIS);
+        let mut with_edge = peers.to_vec();
+        with_edge.push(present("edge"));
+        let (user, _) = rejoin_laggard(&state.view(), &with_edge).unwrap();
+        assert_eq!(user, UserId::new("edge"));
+        // Nobody loaded: no laggard.
+        assert_eq!(rejoin_laggard(&view, &[present("prev")]), None);
     }
 
     #[test]

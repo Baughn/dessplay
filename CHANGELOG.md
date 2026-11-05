@@ -19,6 +19,9 @@ Add new days at the top. Add new entries at the bottom of existing days.
   how long. After 3 minutes everyone pauses, including the person who
   dropped. A drop while already paused, or a /quit, still pauses at
   once. Everyone needs to update for this.
+- Changed: After a dropout pause, everyone lines up with whoever is
+  furthest behind, so nobody skips part of the episode; players that got
+  ahead jump back a little instead.
 
 ## 2026-10-30
 

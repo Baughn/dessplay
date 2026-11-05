@@ -698,7 +698,9 @@ chat OSD, and survives player relaunches
    (why: [decisions](decisions.md#drift-correction-hysteresis-and-rate-limiting)).
 
    The position reference is the **seek authority's** position when a *user*
-   holds authority -- **but only when that user is a valid same-file source**:
+   holds authority (or the server has pinned an outage-rejoin `Anchor` user,
+   see [Presence](#presence)) -- **but only when that user is a valid
+   same-file source**:
    present and advertising the now-playing file `Ready` or
    `DownloadingPlayable` (a downloader playing the verified window counts;
    when the whole group is downloading a fresh episode they are the only
@@ -709,6 +711,10 @@ chat OSD, and survives player relaunches
    never *takes* seek authority or publishes a position from its
    placeholder in the first place -- see the `holds_now_playing` gate in
    [Player Integration](#player-integration).
+
+   Under the outage-rejoin `Laggard` authority, the reference is the
+   **furthest-behind** eligible peer instead of the furthest-ahead one
+   (see [Presence](#presence)).
 
    The authority is the **Server** for most of an episode -- it is set to
    `Server` on every EOF-advance and manual now-playing change, and only a
@@ -3021,6 +3027,25 @@ Additional rules:
     pauses everyone and closes **every** open window, a later drop's
     included. From then on the usual rules apply: a committed absent user
     blocks until acknowledged.
+  - **Rejoin follows the furthest behind.** Each side of an outage pauses
+    on its own clock, so the dropped client comes back ahead of the group
+    (it learned of the drop later) or behind it. Following the front, as
+    usual, would skip someone's video. So whenever a pause ends a window on
+    the now-playing file, the server sets seek authority to `Laggard`.
+    Every client then follows the **furthest-behind** peer that has the
+    file loaded (the leader-eligibility gates below), even while paused,
+    so the players that are ahead seek back. Peers more than 3 minutes
+    behind the furthest-ahead one don't count: the outage can't open a
+    wider gap than its own window, so they hold a stale position (a
+    relaunch resuming an old saved position, a late joiner) and catch up
+    instead. When playback actually resumes (intent Playing and nobody
+    blocking -- a play press into a block doesn't count), the server pins
+    whoever is furthest behind at that moment as an `Anchor`. Everyone follows the
+    anchor like a seeker until the next seek, file change or EOF ("Picking
+    up from Kim's position so nobody misses anything")
+    (why: [decisions](decisions.md#rejoin-follows-the-furthest-behind)).
+    A file change or EOF needs none of this: everyone starts the new file
+    afresh.
   - The dropped client runs the same window on its own clock. If the video
     was playing when its link dropped, it lists itself Lost inside a
     3-minute window (so its own pause and seek are locked too) and keeps
@@ -4081,7 +4106,7 @@ keep the same contents and ordering
 | Playlist | `Map<Ed2kHash, LwwCell<Option<PlaylistFileState>>>` | `Identifier`-based ordering; includes size and duration; `None` = removal tombstone (purged at compaction) |
 | Watched flags | `Map<Ed2kHash, LwwCell<bool>>` | Server-only writes (at EOF, or a manual `MarkWatched` request from the episode browser) |
 | Now Playing | `LwwCell<Option<Ed2kHash>>` | Standalone register; server writes on EOF |
-| Seek Authority | `LwwCell<SeekAuthority>` (`Server \| User(UserSeek { user, file, event_at, from_millis, to_millis })`) | Standalone register; last seeker is position authority, with the explicit user action that granted it |
+| Seek Authority | `LwwCell<SeekAuthority>` (`Server \| User(UserSeek { user, file, event_at, from_millis, to_millis }) \| Laggard(file) \| Anchor { user, file }`) | Standalone register; last seeker is position authority, with the explicit user action that granted it; the server writes Laggard/Anchor after an outage pause (see [Presence](#presence)) |
 | Playback intent | `LwwCell<PlaybackIntent>` (`Playing \| Paused`) | Standalone register; users write on play/pause, server forces Paused on lost-while-paused/outage-grace-expiry/graceful-quit/EOF-advance (not on the timeout-ladder Departed promotion) |
 | Series preference | `Map<(UserId, ListEntryId), LwwCell<SeriesPreference>>` | Compound key, keyed on the List entry (not AniDB id -- see [Series Identity](#series-identity)); `SeriesPreference { state: Watching \| NotWatching \| Maybe, set_by: Option<UserId> }`, absent entry = Maybe; any user may write |
 | Manual override | `Map<UserId, LwwCell<Option<ManualState>>>` | Per user; Away writable by anyone |

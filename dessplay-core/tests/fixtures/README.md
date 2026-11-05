@@ -88,9 +88,11 @@ that moved v11–v13 from `LAYOUT_COMPATIBLE_SNAPSHOT_VERSIONS` to the
 frozen `CrdtStateV13` decode arm. Its body is byte-identical to
 `snapshot-v12.bin`'s.
 
-`snapshot-v14.bin` was captured 2026-11-05 at the v15 bump (wire-only:
-`PeerInfo::grace_until`, the outage grace window), when v14 entered
-`LAYOUT_COMPATIBLE_SNAPSHOT_VERSIONS` — the ordinary capture-test flow.
+`snapshot-v14.bin` was captured 2026-11-05 at the v15 bump
+(`PeerInfo::grace_until` on the wire, plus the appended
+`SeekAuthority::Laggard` / `Anchor` variants, which leave every v14 body
+decodable), when v14 entered `LAYOUT_COMPATIBLE_SNAPSHOT_VERSIONS` — the
+ordinary capture-test flow.
 
 The `snapshot-multi-relations-*.bin` pair was captured 2026-08-20
 (current version v12, `capture_missing_multi_relations_fixtures`),

@@ -261,6 +261,13 @@ async fn a_committed_users_drop_plays_on_until_the_window_ends() {
     tokio::time::sleep(Duration::from_secs(2)).await;
     let snap = snapshot_of(baughn).await;
     assert!(!snap.playing(), "after the window kim blocks again");
+    // A play press into a block is not an unpause: the rejoin anchor waits
+    // for playback to actually resume, or a returning kim who is behind
+    // would follow it forward and skip video.
+    assert_eq!(
+        snap.view.seek_authority,
+        Some(SeekAuthority::Laggard(hash(1)))
+    );
     assert!(
         derive::playback_blockers(&snap.view, &snap.peers)
             .iter()
@@ -623,4 +630,146 @@ async fn a_server_forced_pause_closes_open_windows() {
     tokio::time::sleep(Duration::from_secs(2)).await;
     assert!(!snapshot_of(baughn).await.playing());
     drop(clients);
+}
+
+/// After an outage pause the group follows the **furthest-behind** viewer,
+/// so nobody skips video. Each side paused on its own clock, so the
+/// dropped client comes back ahead of the group (it learned of the drop
+/// later) or behind it (sooner). Either way only the player that is ahead
+/// seeks, back to the one behind; nobody seeks forward. Pressing play then
+/// anchors the group on whoever is furthest behind.
+#[tokio::test(start_paused = true)]
+async fn after_an_outage_pause_the_furthest_behind_viewer_leads() {
+    // The dropped client comes back 30s ahead, then (fresh run) 30s behind.
+    for skew in [30_000i64, -30_000] {
+        rejoin_follows_the_laggard(skew).await;
+    }
+}
+
+async fn rejoin_follows_the_laggard(skew: i64) {
+    use dessplay::player::PlayerEvent;
+    use dessplay::player::mock::MockCommand;
+    use dessplay_core::types::FileAvailability;
+
+    let harness = Harness::new(0x1A66);
+    let mut kim = harness.player_client("kim", 1);
+    let mut baughn = harness.player_client("baughn", 2);
+    let file = media_file(1);
+    kim.install(&file);
+    baughn.install(&file);
+    mutate(
+        &kim,
+        Mutation::PushPlaylist {
+            new: file_entry(&file, "kim"),
+        },
+    )
+    .await;
+    mutate(
+        &kim,
+        Mutation::SetNowPlaying {
+            file: Some(file.hash),
+        },
+    )
+    .await;
+    eventually(&[&kim, &baughn], Duration::from_secs(20), |snaps| {
+        snaps.iter().all(|s| {
+            s.view
+                .file_availability
+                .values()
+                .filter(|a| **a == FileAvailability::Ready)
+                .count()
+                == 2
+        })
+    })
+    .await;
+    kim.expect_load(Duration::from_secs(20)).await;
+    baughn.expect_load(Duration::from_secs(20)).await;
+    kim.user(PlayerEvent::PauseChanged(false));
+    eventually(&[&kim, &baughn], Duration::from_secs(20), |snaps| {
+        snaps.iter().all(|s| s.playing())
+    })
+    .await;
+    tokio::time::sleep(Duration::from_secs(60)).await;
+
+    // Kim drops; both sides play on, and both pause when the window ends.
+    harness.isolate("kim");
+    eventually(&[&baughn], GRACE + Duration::from_secs(30), |snaps| {
+        snaps[0].view.seek_authority == Some(SeekAuthority::Laggard(file.hash))
+            && !snaps[0].playing()
+    })
+    .await;
+    eventually(&[&kim], Duration::from_secs(30), |snaps| {
+        !snaps[0].playing()
+    })
+    .await;
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    // Kim's player paused `skew` away from the group's.
+    let group_at =
+        snapshot_of(&baughn).await.view.playback_position[&UserId::new("baughn")].position_millis;
+    let kim_at = group_at.saturating_add_signed(skew);
+    kim.user(PlayerEvent::Position {
+        position_millis: kim_at,
+    });
+    let (behind, behind_at) = if skew > 0 {
+        ("baughn", group_at)
+    } else {
+        ("kim", kim_at)
+    };
+    while kim.control.try_command().is_some() {}
+    while baughn.control.try_command().is_some() {}
+
+    // Kim comes back. The one ahead seeks back to the one behind...
+    harness.heal("kim");
+    eventually(&[&baughn], Duration::from_secs(30), |snaps| {
+        snaps[0]
+            .peer("kim")
+            .is_some_and(|p| p.presence == Presence::Present)
+    })
+    .await;
+    let (ahead_client, behind_client) = if skew > 0 {
+        (&mut kim, &mut baughn)
+    } else {
+        (&mut baughn, &mut kim)
+    };
+    let seek = ahead_client
+        .expect_player_command(Duration::from_secs(20), |cmd| {
+            matches!(cmd, MockCommand::Seek(_))
+        })
+        .await;
+    let MockCommand::Seek(to) = seek else {
+        unreachable!()
+    };
+    assert!(
+        to.abs_diff(behind_at) < 1_000,
+        "skew {skew}: the ahead player sought to {to}, not back to {behind}'s {behind_at}"
+    );
+    // ...and the one behind is never pulled forward.
+    tokio::time::sleep(Duration::from_secs(10)).await;
+    while let Some(cmd) = behind_client.control.try_command() {
+        assert!(
+            !matches!(cmd, MockCommand::Seek(to) if to > behind_at + 1_000),
+            "skew {skew}: {behind} was pulled forward ({cmd:?}), skipping video"
+        );
+    }
+
+    // Play: the group anchors on the furthest-behind viewer. By now the
+    // two are level (the ahead one sought back), so the anchor may be
+    // either; what matters is that it sits where the one behind was.
+    baughn.user(PlayerEvent::PauseChanged(false));
+    let snaps = eventually(&[&kim, &baughn], Duration::from_secs(20), |snaps| {
+        snaps.iter().all(|s| {
+            matches!(s.view.seek_authority, Some(SeekAuthority::Anchor { file: f, .. }) if f == file.hash)
+                && s.playing()
+        })
+    })
+    .await;
+    let Some(SeekAuthority::Anchor { user, .. }) = &snaps[0].view.seek_authority else {
+        unreachable!()
+    };
+    let anchored_at = snaps[0].view.playback_position[user].position_millis;
+    assert!(
+        anchored_at.abs_diff(behind_at) < 3_000,
+        "skew {skew}: anchored on {user} at {anchored_at}, not near {behind}'s {behind_at}"
+    );
 }

@@ -504,6 +504,8 @@ struct NarratorState {
     peers: BTreeMap<UserId, dessplay_core::net::Presence>,
     /// Absent users inside an outage grace window.
     graced: std::collections::BTreeSet<UserId>,
+    /// Whom the group anchored on when it unpaused after an outage pause.
+    anchor: Option<UserId>,
     /// Per-file acknowledgements of committed-absent users.
     acknowledged_absent: std::collections::BTreeSet<(dessplay_core::types::Ed2kHash, UserId)>,
     /// Whether the video was actually playing (derived state) at capture
@@ -536,6 +538,12 @@ impl NarratorState {
                 .filter(|p| p.grace_until.is_some())
                 .map(|p| p.username.clone())
                 .collect(),
+            anchor: match &view.seek_authority {
+                Some(SeekAuthority::Anchor { user, file }) if Some(*file) == view.now_playing => {
+                    Some(user.clone())
+                }
+                _ => None,
+            },
             acknowledged_absent: view.acknowledged_absent.clone(),
             active: derive::playback_active(view, peers),
         }
@@ -596,51 +604,17 @@ fn log_series_preference_changes(
     }
 }
 
-/// Present interactive peers whose latest reported position is **for the
-/// now-playing file**, paired with that position. This is the only set
-/// drift correction keys on: it excludes peers who are absent, on a
-/// different file, or watching a placeholder (file missing / still
-/// downloading / not watching) — their position is stale or for some other
-/// file and must never elect a bogus leader or inflate the measured spread.
-///
-/// Two independent gates, both required:
-/// - `file_availability == Ready` for the now-playing file (they hold the
-///   real video), and
-/// - the position's **own `file` tag** equals now-playing.
-///
-/// The file tag is the load-bearing one. `Ready` alone is **not** enough:
-/// it is set on prefetch (see `on_resolved`), so right after a now-playing
-/// transition a peer can advertise Ready for the *new* file while its
-/// position register still holds the *previous* file's sample — and a
-/// single follow of that stale value latches the whole group forward onto
-/// it (leader election only moves forward). The tag is a clock-free
-/// identity check; the previous reliance on `Ready` alone was the
-/// stale-position bug. See [`PlaybackPosition::file`].
+/// Peers with the now-playing file loaded, with their position samples
+/// ([`derive::loaded_positions`], the one eligibility rule): the only set
+/// drift correction keys on.
 fn same_file_positions(
     view: &StateView,
     peers: &[PeerInfo],
 ) -> Vec<(UserId, dessplay_core::types::PlaybackPosition)> {
-    let Some(now_playing) = view.now_playing else {
-        return Vec::new();
-    };
-    current_interactive(peers)
-        .into_iter()
-        .filter(|(_, presence)| *presence == dessplay_core::net::Presence::Present)
-        .filter(|(user, _)| {
-            // Ready holders, plus downloaders whose window ahead is
-            // verified: a `DownloadingPlayable` peer is playing the real
-            // file (their partial is loaded), so their file-tagged
-            // position is as trustworthy as a Ready holder's — and when
-            // the whole group is downloading a fresh episode, they are
-            // the only leaders there are.
-            matches!(
-                view.file_availability.get(&(user.clone(), now_playing)),
-                Some(FileAvailability::Ready) | Some(FileAvailability::DownloadingPlayable { .. })
-            )
-        })
-        .filter_map(|(user, _)| view.playback_position.get(&user).map(|p| (user, *p)))
-        .filter(|(_, p)| p.file == now_playing)
-        .collect()
+    match view.now_playing {
+        Some(file) => derive::loaded_positions(view, peers, file),
+        None => Vec::new(),
+    }
 }
 
 /// Where a `Load` of now-playing should resume: the file's group saved
@@ -1062,6 +1036,18 @@ impl PlayerWiring {
                     lines.push(format!("Playing past {user} (committed, away)"));
                 }
             }
+        }
+
+        // The unpause after an outage pause lined everyone up behind the
+        // furthest-behind viewer: say why the ahead players jumped back.
+        if let Some(user) = &current.anchor
+            && prev.anchor.as_ref() != Some(user)
+        {
+            lines.push(if *user == self.me {
+                "Picking up from your position so nobody misses anything".to_string()
+            } else {
+                format!("Picking up from {user}'s position so nobody misses anything")
+            });
         }
 
         // Presence changes (join / leave / lost / back), seeders excluded.
@@ -1743,8 +1729,23 @@ impl PlayerWiring {
         view: &StateView,
         peers: &[PeerInfo],
     ) -> Option<(UserId, dessplay_core::types::PlaybackPosition)> {
-        if let Some(SeekAuthority::User(seek)) = &view.seek_authority {
-            let authority = &seek.user;
+        // After an outage pause, follow the furthest-behind loaded peer
+        // instead of the front (design.md, Presence: outage grace), until
+        // the unpause pins one as the Anchor.
+        if let Some(SeekAuthority::Laggard(file)) = &view.seek_authority
+            && view.now_playing == Some(*file)
+            && let Some(laggard) = derive::rejoin_laggard(view, peers)
+        {
+            return (laggard.0 != self.me).then_some(laggard);
+        }
+        let authority = match &view.seek_authority {
+            Some(SeekAuthority::User(seek)) => Some(&seek.user),
+            Some(SeekAuthority::Anchor { user, file }) if view.now_playing == Some(*file) => {
+                Some(user)
+            }
+            _ => None,
+        };
+        if let Some(authority) = authority {
             if *authority == self.me {
                 return None;
             }
@@ -3900,6 +3901,32 @@ mod tests {
         assert_eq!(
             narrate_diff(&view, &dropped, &view, &present),
             ["nero is back"]
+        );
+    }
+
+    #[test]
+    fn narrator_explains_the_rejoin_anchor() {
+        let before = playing_state();
+        let anchored = |user: &str| {
+            let mut state = playing_state();
+            state.set_seek_authority(
+                A,
+                ts(9),
+                SeekAuthority::Anchor {
+                    user: UserId::new(user),
+                    file: hash(1),
+                },
+            );
+            state.view()
+        };
+        let peers = [peer("kim"), peer("nero")];
+        assert_eq!(
+            narrate_diff(&before.view(), &peers, &anchored("nero"), &peers),
+            ["Picking up from nero's position so nobody misses anything"]
+        );
+        assert_eq!(
+            narrate_diff(&before.view(), &peers, &anchored("kim"), &peers),
+            ["Picking up from your position so nobody misses anything"]
         );
     }
 
@@ -6426,8 +6453,9 @@ mod tests {
                 ),
                 0..4,
             ),
-            // 0 = Server, 1 = User(me), 2.. = User(candidate[k-2]).
-            authority_sel in 0usize..6,
+            // 0 = Server, 1 = User(me), 2..=5 = User(candidate[k-2]),
+            // 6 = Laggard(now-playing), 7..=10 = Anchor(candidate[k-7]).
+            authority_sel in 0usize..11,
         ) {
             use dessplay_core::net::Presence;
             let names = ["baughn", "dagger", "nero", "zombie"];
@@ -6458,6 +6486,11 @@ mod tests {
             let authority = match authority_sel {
                 0 => SeekAuthority::Server,
                 1 => SeekAuthority::User(user_seek(me(), t, 0, 10_000)),
+                6 => SeekAuthority::Laggard(hash(1)),
+                k @ 7.. => SeekAuthority::Anchor {
+                    user: UserId::new(names[(k - 7) % names.len()]),
+                    file: hash(1),
+                },
                 k => SeekAuthority::User(user_seek(
                     UserId::new(names[(k - 2) % names.len()]),
                     t,
@@ -6481,7 +6514,15 @@ mod tests {
                     u, p.file, hash(1)
                 );
             }
-            if let Some((u, p)) = wiring.position_reference(&view, &peers) {
+            let reference = wiring.position_reference(&view, &peers);
+            // Under Laggard, the reference is the rejoin laggard (never the
+            // front) whenever there is one and it isn't us.
+            if authority_sel == 6 {
+                let laggard = derive::rejoin_laggard(&view, &peers);
+                let expected = laggard.filter(|(u, _)| *u != me());
+                proptest::prop_assert_eq!(&reference, &expected);
+            }
+            if let Some((u, p)) = reference {
                 proptest::prop_assert!(
                     eligible.iter().any(|(eu, _)| *eu == u),
                     "position_reference returned {u}, not a valid same-file source; eligible = {:?}",
@@ -6761,6 +6802,64 @@ mod tests {
             d,
             Directive::Mutate(Mutation::SetManualOverride { state: None, .. })
         )));
+    }
+
+    /// Outage rejoin (design.md, Presence): we came back from the pause
+    /// further along than the group. Under Server authority nobody would
+    /// pull us back (and the others would chase us forward); under
+    /// Laggard we follow the furthest-behind peer back, and once the
+    /// unpause pins them as the Anchor we keep following them.
+    #[test]
+    fn an_ahead_client_follows_the_laggard_back_after_an_outage_pause() {
+        let sync_target = |authority: SeekAuthority| {
+            let mut state = playing_state();
+            state.set_playback_intent(A, ts(4), PlaybackIntent::Paused);
+            for (t, who, at) in [(10, me(), 130_000), (11, UserId::new("baughn"), 100_000)] {
+                state.set_file_availability(
+                    A,
+                    ts(t),
+                    who.clone(),
+                    hash(1),
+                    FileAvailability::Ready,
+                );
+                state.set_playback_position(
+                    A,
+                    ts(t),
+                    who,
+                    PlaybackPosition {
+                        position_millis: at,
+                        timestamp: ts(t),
+                        file: hash(1),
+                    },
+                );
+            }
+            state.set_seek_authority(A, ts(20), authority);
+            let mut wiring = PlayerWiring::new(me());
+            wiring.loaded = loaded(1);
+            let out = wiring.on_state(&state.view(), &[peer("kim"), peer("baughn")]);
+            player_cmds(&out).into_iter().find_map(|cmd| match cmd {
+                PlayerCommand::SyncTo {
+                    position_millis,
+                    playing,
+                    ..
+                } => Some((*position_millis, *playing)),
+                _ => None,
+            })
+        };
+        assert_eq!(sync_target(SeekAuthority::Server), None);
+        assert_eq!(
+            sync_target(SeekAuthority::Laggard(hash(1))),
+            Some((100_000, false))
+        );
+        assert_eq!(
+            sync_target(SeekAuthority::Anchor {
+                user: UserId::new("baughn"),
+                file: hash(1),
+            }),
+            Some((100_000, false))
+        );
+        // A Laggard for some other file is no reason to rewind.
+        assert_eq!(sync_target(SeekAuthority::Laggard(hash(2))), None);
     }
 
     #[test]

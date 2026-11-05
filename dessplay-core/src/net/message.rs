@@ -30,7 +30,8 @@ use crate::types::{AniDbSeriesId, Ed2kHash, Epoch, UserId};
 /// `CrdtOp::SavedPosition` (reshapes the persisted layout; v11–v13 decode
 /// through the frozen `CrdtStateV13` arm).
 /// v15 (2026-11-04): appended `PeerInfo::grace_until` — the outage grace
-/// window (wire-only; the persisted layout is unchanged from v14).
+/// window — and the `SeekAuthority::Laggard` / `Anchor` variants (appended,
+/// so v14-tagged snapshots still decode unchanged).
 pub const PROTOCOL_VERSION: u32 = 15;
 
 /// Top-level wire message: only control traffic. File-transfer relay

@@ -317,6 +317,13 @@ pub fn apply_step(state: &mut CrdtState, step: &ScriptStep) -> (u8, CrdtOp) {
             ts,
             if *authority % ACTORS == 0 {
                 crate::types::SeekAuthority::Server
+            } else if *authority % 5 == 1 {
+                crate::types::SeekAuthority::Laggard(file(0))
+            } else if *authority % 5 == 2 {
+                crate::types::SeekAuthority::Anchor {
+                    user: user(*authority),
+                    file: file(0),
+                }
             } else {
                 crate::types::SeekAuthority::User(crate::types::UserSeek {
                     user: user(*authority),

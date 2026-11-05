@@ -278,6 +278,21 @@ pub enum SeekAuthority {
     Server,
     /// The user holds authority because of this seek.
     User(UserSeek),
+    /// After an outage pause on this file (design.md, Presence: outage
+    /// grace), everyone follows the **furthest-behind** peer with it
+    /// loaded (`derive::rejoin_laggard`), so a dropped client that played
+    /// on longer or shorter than the group makes nobody skip video.
+    /// Server-written; replaced by [`SeekAuthority::Anchor`] at unpause.
+    Laggard(Ed2kHash),
+    /// The server pinned this user's position as the group's reference
+    /// when it unpaused after an outage pause: followed like a user
+    /// authority, but granted by no seek.
+    Anchor {
+        /// The furthest-behind user at the unpause.
+        user: UserId,
+        /// The file it applies to.
+        file: Ed2kHash,
+    },
 }
 
 /// The group's shared play/pause latch. Whether video *actually* plays

@@ -23,7 +23,7 @@ use dessplay_core::net::{
 use dessplay_core::state::StateView;
 use dessplay_core::types::{
     ActorId, AniDbMetadata, AniDbSeriesId, Ed2kHash, Epoch, FileCatalogEntry, NextEpState,
-    PlaybackIntent, SeekAuthority, SeriesRelations, SharedTimestamp, UserId,
+    PlaybackIntent, SeekAuthority, SeriesRelations, SharedTimestamp, UserId, UserSeek,
 };
 use dessplay_core::wire;
 use dessplay_core::{CrdtOp, CrdtState, StateSnapshot};
@@ -399,8 +399,12 @@ impl<T: Transport> Shared<T> {
             state.set_playback_intent(actor, ts, PlaybackIntent::Paused)
         })
         .await;
+        let file = lock(&self.registry).grace_file;
         if self.close_grace_windows() {
             tracing::info!("forced pause; closing outage grace windows");
+            if let Some(file) = file {
+                self.follow_laggard(file).await;
+            }
             broadcast_peer_list(self);
         }
     }
@@ -481,18 +485,112 @@ impl<T: Transport> Shared<T> {
     /// off that file (a client write or merge, which clients refuse inside
     /// a window but a race can still land). Without this a window would
     /// outlive the playback it protects, and a later play press would play
-    /// past a dropped committed user. Cheap when no window is open (one
-    /// lock, no view). Returns whether any closed.
-    fn reconcile_grace_windows(&self) -> bool {
+    /// past a dropped committed user. A pause on the same file is a
+    /// window-ending pause like any other, so the group then follows the
+    /// furthest-behind peer ([`Self::follow_laggard`]); a file change
+    /// needs no rejoin (everyone starts the new file afresh). Cheap when no
+    /// window is open (one lock, no view).
+    async fn reconcile_grace_windows(&self) {
         let Some(file) = lock(&self.registry).grace_file else {
-            return false;
+            return;
         };
-        let stopped = {
+        let (paused, moved) = {
             let state = lock(&self.state);
-            dessplay_core::resolve_value(&state.playback_intent) != Some(PlaybackIntent::Playing)
-                || dessplay_core::resolve_value(&state.now_playing).flatten() != Some(file)
+            (
+                dessplay_core::resolve_value(&state.playback_intent)
+                    != Some(PlaybackIntent::Playing),
+                dessplay_core::resolve_value(&state.now_playing).flatten() != Some(file),
+            )
         };
-        stopped && self.close_grace_windows()
+        if !(paused || moved) || !self.close_grace_windows() {
+            return;
+        }
+        tracing::info!(
+            paused,
+            moved,
+            "playback stopped; closing outage grace windows"
+        );
+        if !moved {
+            self.follow_laggard(file).await;
+        }
+        broadcast_peer_list(self);
+    }
+
+    /// A pause just ended outage grace windows on `file` while the dropped
+    /// users may still be away, playing on alone and drifting from the
+    /// group (each side paused when its own clock said so). Hand authority
+    /// to the furthest-behind peer (design.md, Presence: outage grace):
+    /// following the front instead would skip the rest of the room
+    /// forward to a returning client that played on longer, or skip that
+    /// client forward if it played on shorter.
+    async fn follow_laggard(&self, file: Ed2kHash) {
+        let still_on_file =
+            dessplay_core::resolve_value(&lock(&self.state).now_playing).flatten() == Some(file);
+        if still_on_file {
+            tracing::info!(%file, "outage pause: following the furthest-behind peer");
+            self.server_write(|state, actor, ts| {
+                state.set_seek_authority(actor, ts, SeekAuthority::Laggard(file))
+            })
+            .await;
+        }
+    }
+
+    /// Playback resumed after an outage pause: pin whoever is
+    /// furthest behind right now as the group's position source
+    /// ([`SeekAuthority::Anchor`]), followed like a seeker until the next
+    /// seek, file change or EOF. Following the furthest-behind peer live
+    /// while playing would let any momentary stall drag the room back
+    /// again and again. With nobody loaded, back to Server authority.
+    ///
+    /// "Resumed" means intent Playing **and** nobody blocking. A play press
+    /// into a block still latches Playing (design.md, Playback Rules), and
+    /// pinning then would anchor a paused room: a blocking user who later
+    /// returns behind would follow the anchor forward and skip video. The
+    /// hook runs on every client op and merge, so the pin lands within a
+    /// position tick of the last blocker clearing. Cheap unless the
+    /// Laggard is in force with intent Playing (one lock, no view); then
+    /// positions tick at the paused 1s cadence.
+    async fn pin_rejoin_anchor(&self) {
+        let laggard_file = {
+            let state = lock(&self.state);
+            match dessplay_core::resolve_value(&state.seek_authority) {
+                Some(SeekAuthority::Laggard(file))
+                    if dessplay_core::resolve_value(&state.playback_intent)
+                        == Some(PlaybackIntent::Playing) =>
+                {
+                    Some(file)
+                }
+                _ => None,
+            }
+        };
+        let Some(file) = laggard_file else {
+            return;
+        };
+        let peers = lock(&self.registry).peer_infos();
+        let gating =
+            derive::merge_known_offline(&peers, &known_offline(self, &peers), (self.clock)());
+        let authority = {
+            let view = lock(&self.state).view();
+            if view.now_playing != Some(file) {
+                return; // a file change resets authority on its own
+            }
+            if !derive::playback_active(&view, &gating) {
+                return; // pressed play into a block: not resumed yet
+            }
+            match derive::rejoin_laggard(&view, &peers) {
+                Some((user, pos)) => {
+                    tracing::info!(
+                        user = %user.0,
+                        position_millis = pos.position_millis,
+                        "unpaused after an outage pause; anchoring on the furthest-behind peer"
+                    );
+                    SeekAuthority::Anchor { user, file }
+                }
+                None => SeekAuthority::Server,
+            }
+        };
+        self.server_write(|state, actor, ts| state.set_seek_authority(actor, ts, authority))
+            .await;
     }
 
     /// If `user` holds seek authority, the server takes it (so nobody
@@ -502,7 +600,9 @@ impl<T: Transport> Shared<T> {
             let state = lock(&self.state);
             matches!(
                 dessplay_core::resolve_value(&state.seek_authority),
-                Some(SeekAuthority::User(seek)) if seek.user == *user
+                Some(SeekAuthority::User(UserSeek { user: holder, .. })
+                    | SeekAuthority::Anchor { user: holder, .. })
+                    if holder == *user
             )
         };
         if holds {
@@ -1716,10 +1816,8 @@ async fn serve_authed<T: Transport>(
                         })
                         .await;
                 }
-                if shared.reconcile_grace_windows() {
-                    tracing::info!("playback stopped; closing outage grace windows");
-                    broadcast_peer_list(shared);
-                }
+                shared.reconcile_grace_windows().await;
+                shared.pin_rejoin_anchor().await;
             }
             ServerControl::EofReached { file } => {
                 handle_eof(shared, username, role, file).await;
@@ -1861,10 +1959,8 @@ async fn serve_authed<T: Transport>(
                         })
                         .await;
                 }
-                if shared.reconcile_grace_windows() {
-                    tracing::info!("playback stopped by a merge; closing outage grace windows");
-                    broadcast_peer_list(shared);
-                }
+                shared.reconcile_grace_windows().await;
+                shared.pin_rejoin_anchor().await;
             }
             other => {
                 tracing::debug!("ignoring unexpected client message: {other:?}");
@@ -1941,9 +2037,7 @@ async fn handle_eof<T: Transport>(
     }
     // The next episode loads paused, which ends any outage grace (design.md,
     // Presence): a dropped committed user gates the new file normally.
-    if shared.reconcile_grace_windows() {
-        broadcast_peer_list(shared);
-    }
+    shared.reconcile_grace_windows().await;
 }
 
 /// Manual mark-watched from the episode browser (docs/design.md #10):

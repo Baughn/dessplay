@@ -1,6 +1,6 @@
 # Sync State Design
 
-Last updated: 2026-10-16
+Last updated: 2026-11-05
 
 DessPlay uses the **`crdts`** crate for state synchronization. All shared state
 is expressed as CRDT types from this library, synced through the server as
@@ -200,7 +200,7 @@ and the wire protocol uniform.
 | Playlist | `Map<Ed2kHash, LwwCell<Option<PlaylistFileState>>, ActorId>` | Any peer |
 | Watched flags | `Map<Ed2kHash, LwwCell<bool>, ActorId>` | Server only (at EOF) |
 | Now Playing | `LwwCell<Option<Ed2kHash>>` | Any peer; server on EOF |
-| Seek Authority | `LwwCell<SeekAuthority>` (`Server \| User(UserSeek)`) | Whoever last seeked; the user variant records the explicit scrub for attribution; server on file change or authority departure |
+| Seek Authority | `LwwCell<SeekAuthority>` (`Server \| User(UserSeek) \| Laggard(file) \| Anchor { user, file }`) | Whoever last seeked; the user variant records the explicit scrub for attribution; server on file change or authority departure; Laggard/Anchor after an outage pause |
 | Playback intent | `LwwCell<PlaybackIntent>` (`Playing \| Paused`) | Any user (play/pause); server forces Paused on Lost, graceful quit, and EOF-advance; not on the later timeout promotion to Departed |
 | Series preference | `Map<(UserId, ListEntryId), LwwCell<SeriesPreference>, ActorId>` | Any user (design.md #7/#13: `SeriesPreference { state, set_by }` lets one user write another's) |
 | Manual override | `Map<UserId, LwwCell<Option<ManualState>>, ActorId>` | Owning user; *anyone* may write `Away` |
@@ -295,8 +295,9 @@ ignored -- the transition is idempotent without any dedup bookkeeping.
 
 ### Seek Authority
 
-`LwwCell<SeekAuthority>` where `SeekAuthority = Server | User(UserSeek)` --
-whoever most recently initiated a seek. `UserSeek` contains the user, file,
+`LwwCell<SeekAuthority>` where `SeekAuthority = Server | User(UserSeek) |
+Laggard(file) | Anchor { user, file }` -- whoever most recently initiated a
+seek, or a server-written outage-rejoin authority (below). `UserSeek` contains the user, file,
 unique Lamport occurrence stamp, and the initial/final positions of the
 debounced scrub. This is control-plane causality: continuous position reports
 remain lossy telemetry for drift correction and are never used to infer that a
@@ -330,9 +331,19 @@ during the transition.
 produces no `UserSeek`. Raw `PlaybackPosition` samples are not a resume
 source. See design.md, Playback Rules (Saved position).
 
-**Authority departure:** if the current seek authority becomes Departed
+**Authority departure:** if the current seek authority goes Lost or quits
 (see presence in [network-design.md](network-design.md)), the server takes
 seek authority so remaining clients never sync to a ghost.
+
+**Outage rejoin** (design.md, Presence: outage grace): when a pause ends an
+outage grace window on a file, the server writes `Laggard(file)`. Clients
+then follow the **furthest-behind** peer with the file loaded, within 3
+minutes of the furthest-ahead one (`derive::rejoin_laggard`), instead of
+the front. When playback next actually resumes (intent Playing and nobody blocking),
+the server pins that peer as
+`Anchor { user, file }`, which clients follow exactly like a user
+authority but which records no seek (no "skipped" narration). The anchor
+holds until the next seek, file change or EOF, or until its user goes away.
 
 ### Playback Intent
 
